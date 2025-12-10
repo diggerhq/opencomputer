@@ -1,6 +1,6 @@
 {
-  "name": "worlds",
-  "version": "1.0.0",
+  "name": "opensandbox",
+  "version": "0.1.0",
   "description": "SDK for World Service sandbox VMs",
   "type": "module",
   "main": "./dist/index.js",
