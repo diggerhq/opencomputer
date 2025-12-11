@@ -36,6 +36,7 @@ interface ActiveVM {
   socketPath: string;
   agentPort: number;
   tapName: string;
+  vmIp: string;
   process?: ReturnType<typeof spawn>;
 }
 
@@ -122,8 +123,13 @@ export class FirecrackerRuntime implements SandboxRuntime {
     const workspaceSubvol = join(vmDir, "workspace");
     const snapshotsDir = join(vmDir, "snapshots");
     const agentPort = nextAgentPort++;
+    
+    // Each VM gets unique subnet: 172.16.X.0/24 where X = agentPort - 5000
+    const subnetId = agentPort - 5000;
+    const hostIp = `172.16.${subnetId}.1`;
+    const vmIp = `172.16.${subnetId}.2`;
 
-    console.log(`[Firecracker] Creating sandbox ${id}...`);
+    console.log(`[Firecracker] Creating sandbox ${id} (subnet ${subnetId}, vmIp ${vmIp})...`);
 
     await mkdir(vmDir, { recursive: true });
     await mkdir(snapshotsDir, { recursive: true });
@@ -139,11 +145,11 @@ export class FirecrackerRuntime implements SandboxRuntime {
     const rootfsCopy = join(vmDir, "rootfs.ext4");
     await copyFile(this.config.rootfsPath, rootfsCopy);
 
-    // Create VM config with networking for agent
+    // Create VM config with networking for agent - each VM gets unique subnet
     const vmConfig = {
       "boot-source": {
         kernel_image_path: this.config.kernelPath,
-        boot_args: `console=ttyS0 reboot=k panic=1 pci=off ip=172.16.0.2::172.16.0.1:255.255.255.0::eth0:off`,
+        boot_args: `console=ttyS0 reboot=k panic=1 pci=off ip=${vmIp}::${hostIp}:255.255.255.0::eth0:off`,
       },
       drives: [
         {
@@ -160,7 +166,7 @@ export class FirecrackerRuntime implements SandboxRuntime {
       "network-interfaces": [
         {
           iface_id: "eth0",
-          guest_mac: "AA:FC:00:00:00:01",
+          guest_mac: `AA:FC:00:00:00:${(subnetId + 1).toString(16).padStart(2, '0')}`,
           host_dev_name: tapName,
         },
       ],
@@ -172,11 +178,8 @@ export class FirecrackerRuntime implements SandboxRuntime {
     // Setup TAP device for networking
     try {
       execSync(`sudo ip tuntap add ${tapName} mode tap`);
-      execSync(`sudo ip addr add 172.16.0.1/24 dev ${tapName}`);
+      execSync(`sudo ip addr add ${hostIp}/24 dev ${tapName}`);
       execSync(`sudo ip link set ${tapName} up`);
-      // Forward agent port
-      execSync(`sudo iptables -t nat -A PREROUTING -p tcp --dport ${agentPort} -j DNAT --to-destination 172.16.0.2:3000`);
-      execSync(`sudo iptables -A FORWARD -p tcp -d 172.16.0.2 --dport 3000 -j ACCEPT`);
     } catch (e: any) {
       console.warn(`[Firecracker] Network setup warning: ${e.message}`);
     }
@@ -198,12 +201,13 @@ export class FirecrackerRuntime implements SandboxRuntime {
       socketPath,
       agentPort,
       tapName,
+      vmIp,
       process: fc,
     });
 
-    // Wait for VM and agent to be ready
-    console.log(`[Firecracker] Waiting for agent on port ${agentPort}...`);
-    await this.waitForAgent(agentPort, 30000);
+    // Wait for VM and agent to be ready - connect directly to VM IP
+    console.log(`[Firecracker] Waiting for agent at ${vmIp}:3000...`);
+    await this.waitForAgent(vmIp, 30000);
 
     console.log(`[Firecracker] Sandbox ${id} ready`);
 
@@ -211,15 +215,15 @@ export class FirecrackerRuntime implements SandboxRuntime {
       id,
       name: config.name,
       status: "running",
-      agentUrl: `http://localhost:${agentPort}`,
+      agentUrl: `http://${vmIp}:3000`,
     };
   }
 
-  private async waitForAgent(port: number, timeoutMs: number): Promise<void> {
+  private async waitForAgent(vmIp: string, timeoutMs: number): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       try {
-        const res = await fetch(`http://localhost:${port}/health`);
+        const res = await fetch(`http://${vmIp}:3000/health`);
         if (res.ok) return;
       } catch {}
       await new Promise((r) => setTimeout(r, 1000));
@@ -242,7 +246,6 @@ export class FirecrackerRuntime implements SandboxRuntime {
 
     // Cleanup networking
     try {
-      execSync(`sudo iptables -t nat -D PREROUTING -p tcp --dport ${vm.agentPort} -j DNAT --to-destination 172.16.0.2:3000 2>/dev/null || true`);
       execSync(`sudo ip link delete ${vm.tapName} 2>/dev/null || true`);
     } catch {}
 
@@ -277,7 +280,7 @@ export class FirecrackerRuntime implements SandboxRuntime {
     const timer = setTimeout(() => controller.abort(), timeout);
 
     try {
-      const res = await fetch(`http://localhost:${vm.agentPort}/exec`, {
+      const res = await fetch(`http://${vm.vmIp}:3000/exec`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command, timeout: Math.floor(timeout / 1000) }),
@@ -307,7 +310,7 @@ export class FirecrackerRuntime implements SandboxRuntime {
     }
 
     // Use agent for Btrfs snapshot (it has access to /workspace)
-    const res = await fetch(`http://localhost:${vm.agentPort}/snapshot`, {
+    const res = await fetch(`http://${vm.vmIp}:3000/snapshot`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
@@ -327,7 +330,7 @@ export class FirecrackerRuntime implements SandboxRuntime {
       throw new Error(`Sandbox ${id} not found`);
     }
 
-    const res = await fetch(`http://localhost:${vm.agentPort}/restore`, {
+    const res = await fetch(`http://${vm.vmIp}:3000/restore`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: snapshotName }),
@@ -346,7 +349,7 @@ export class FirecrackerRuntime implements SandboxRuntime {
     }
 
     try {
-      const res = await fetch(`http://localhost:${vm.agentPort}/snapshots`);
+      const res = await fetch(`http://${vm.vmIp}:3000/snapshots`);
       if (!res.ok) return [];
       const data = await res.json();
       return data.snapshots.map((s: any) => ({
@@ -364,7 +367,7 @@ export class FirecrackerRuntime implements SandboxRuntime {
       throw new Error(`Sandbox ${id} not found`);
     }
 
-    const res = await fetch(`http://localhost:${vm.agentPort}/wipe`, {
+    const res = await fetch(`http://${vm.vmIp}:3000/wipe`, {
       method: "POST",
     });
 
@@ -379,7 +382,7 @@ export class FirecrackerRuntime implements SandboxRuntime {
       throw new Error(`Sandbox ${id} not found`);
     }
 
-    const res = await fetch(`http://localhost:${vm.agentPort}/export`, {
+    const res = await fetch(`http://${vm.vmIp}:3000/export`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: snapshotName || "workspace" }),
@@ -391,7 +394,7 @@ export class FirecrackerRuntime implements SandboxRuntime {
     }
 
     const exportInfo = await res.json();
-    return `http://localhost:${vm.agentPort}/download/${exportInfo.name}`;
+    return `http://${vm.vmIp}:3000/download/${exportInfo.name}`;
   }
 
   async importFromFile(id: string, snapshotName: string, filePath: string): Promise<void> {
@@ -403,7 +406,7 @@ export class FirecrackerRuntime implements SandboxRuntime {
     const { readFile } = await import("fs/promises");
     const data = await readFile(filePath);
 
-    const res = await fetch(`http://localhost:${vm.agentPort}/upload/${snapshotName}`, {
+    const res = await fetch(`http://${vm.vmIp}:3000/upload/${snapshotName}`, {
       method: "PUT",
       headers: {
         "Content-Type": "application/gzip",
@@ -423,7 +426,7 @@ export class FirecrackerRuntime implements SandboxRuntime {
     if (!vm) return false;
 
     try {
-      const res = await fetch(`http://localhost:${vm.agentPort}/health`);
+      const res = await fetch(`http://${vm.vmIp}:3000/health`);
       return res.ok;
     } catch {
       return false;
