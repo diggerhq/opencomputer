@@ -1,0 +1,273 @@
+package podman
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+// ContainerConfig defines how to create a container.
+type ContainerConfig struct {
+	Name           string
+	Image          string
+	Labels         map[string]string
+	Env            map[string]string
+	Memory         string // e.g. "512m"
+	CPUs           string // e.g. "1"
+	PidsLimit      int
+	NetworkMode    string // "none", "slirp4netns"
+	ReadOnly       bool
+	TmpFS          map[string]string // mount -> options
+	CapDrop        []string
+	SecurityOpts   []string
+	UserNS         string
+	Entrypoint     []string
+	Command        []string
+}
+
+// DefaultContainerConfig returns a security-hardened container config.
+func DefaultContainerConfig(name, image string) ContainerConfig {
+	return ContainerConfig{
+		Name:        name,
+		Image:       image,
+		Labels:      make(map[string]string),
+		Env:         make(map[string]string),
+		Memory:      "512m",
+		CPUs:        "1",
+		PidsLimit:   256,
+		NetworkMode: "none",
+		ReadOnly:    true,
+		TmpFS: map[string]string{
+			"/tmp": "rw,size=100m",
+		},
+		CapDrop:      []string{"ALL"},
+		SecurityOpts: []string{"no-new-privileges"},
+		UserNS:       "",
+		Entrypoint:   []string{"/bin/sleep"},
+		Command:      []string{"infinity"},
+	}
+}
+
+// CreateContainer creates a container with the given config. Returns the container ID.
+func (c *Client) CreateContainer(ctx context.Context, cfg ContainerConfig) (string, error) {
+	args := []string{"create", "--name", cfg.Name}
+
+	for k, v := range cfg.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", k, v))
+	}
+
+	for k, v := range cfg.Env {
+		args = append(args, "--env", fmt.Sprintf("%s=%s", k, v))
+	}
+
+	if cfg.Memory != "" {
+		args = append(args, "--memory", cfg.Memory)
+	}
+	if cfg.CPUs != "" {
+		args = append(args, "--cpus", cfg.CPUs)
+	}
+	if cfg.PidsLimit > 0 {
+		args = append(args, "--pids-limit", fmt.Sprintf("%d", cfg.PidsLimit))
+	}
+	if cfg.NetworkMode != "" {
+		args = append(args, "--network", cfg.NetworkMode)
+	}
+	if cfg.ReadOnly {
+		args = append(args, "--read-only")
+	}
+	for mount, opts := range cfg.TmpFS {
+		args = append(args, "--tmpfs", fmt.Sprintf("%s:%s", mount, opts))
+	}
+	for _, cap := range cfg.CapDrop {
+		args = append(args, "--cap-drop", cap)
+	}
+	for _, opt := range cfg.SecurityOpts {
+		args = append(args, "--security-opt", opt)
+	}
+	if cfg.UserNS != "" {
+		args = append(args, "--userns", cfg.UserNS)
+	}
+
+	if len(cfg.Entrypoint) > 0 {
+		args = append(args, "--entrypoint", cfg.Entrypoint[0])
+	}
+
+	args = append(args, cfg.Image)
+	args = append(args, cfg.Command...)
+
+	result, err := c.Run(ctx, args...)
+	if err != nil {
+		return "", fmt.Errorf("failed to create container %s: %w", cfg.Name, err)
+	}
+	if result.ExitCode != 0 {
+		return "", fmt.Errorf("podman create failed (exit %d): %s",
+			result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+
+	return strings.TrimSpace(result.Stdout), nil
+}
+
+// StartContainer starts a container by name or ID.
+func (c *Client) StartContainer(ctx context.Context, nameOrID string) error {
+	result, err := c.Run(ctx, "start", nameOrID)
+	if err != nil {
+		return fmt.Errorf("failed to start container %s: %w", nameOrID, err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("podman start failed (exit %d): %s",
+			result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+// StopContainer stops a container by name or ID.
+func (c *Client) StopContainer(ctx context.Context, nameOrID string, timeoutSec int) error {
+	args := []string{"stop"}
+	if timeoutSec > 0 {
+		args = append(args, "--time", fmt.Sprintf("%d", timeoutSec))
+	}
+	args = append(args, nameOrID)
+
+	result, err := c.Run(ctx, args...)
+	if err != nil {
+		return fmt.Errorf("failed to stop container %s: %w", nameOrID, err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("podman stop failed (exit %d): %s",
+			result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+// RemoveContainer removes a container by name or ID. Force=true kills running containers.
+func (c *Client) RemoveContainer(ctx context.Context, nameOrID string, force bool) error {
+	args := []string{"rm"}
+	if force {
+		args = append(args, "--force", "--time", "0")
+	}
+	args = append(args, nameOrID)
+
+	result, err := c.Run(ctx, args...)
+	if err != nil {
+		return fmt.Errorf("failed to remove container %s: %w", nameOrID, err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("podman rm failed (exit %d): %s",
+			result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+// ContainerInfo holds inspect output for a container.
+type ContainerInfo struct {
+	ID    string `json:"Id"`
+	Name  string `json:"Name"`
+	State struct {
+		Status    string `json:"Status"`
+		Running   bool   `json:"Running"`
+		StartedAt string `json:"StartedAt"`
+	} `json:"State"`
+	Config struct {
+		Labels map[string]string `json:"Labels"`
+		Image  string            `json:"Image"`
+	} `json:"Config"`
+}
+
+// InspectContainer returns detailed info about a container.
+func (c *Client) InspectContainer(ctx context.Context, nameOrID string) (*ContainerInfo, error) {
+	var infos []ContainerInfo
+	if err := c.RunJSON(ctx, &infos, "inspect", nameOrID); err != nil {
+		return nil, fmt.Errorf("failed to inspect container %s: %w", nameOrID, err)
+	}
+	if len(infos) == 0 {
+		return nil, fmt.Errorf("container %s not found", nameOrID)
+	}
+	return &infos[0], nil
+}
+
+// PSEntry represents a container from podman ps.
+type PSEntry struct {
+	ID     string            `json:"Id"`
+	Names  []string          `json:"Names"`
+	State  string            `json:"State"`
+	Labels map[string]string `json:"Labels"`
+	Image  string            `json:"Image"`
+}
+
+// ListContainers lists containers matching the given label filter.
+func (c *Client) ListContainers(ctx context.Context, labelFilter string) ([]PSEntry, error) {
+	args := []string{"ps", "-a", "--format", "json"}
+	if labelFilter != "" {
+		args = append(args, "--filter", fmt.Sprintf("label=%s", labelFilter))
+	}
+
+	result, err := c.Run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("podman ps failed (exit %d): %s",
+			result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+
+	output := strings.TrimSpace(result.Stdout)
+	if output == "" {
+		return nil, nil
+	}
+
+	var entries []PSEntry
+	if err := parseJSONOutput(output, &entries); err != nil {
+		return nil, fmt.Errorf("failed to parse podman ps output: %w", err)
+	}
+	return entries, nil
+}
+
+// parseJSONOutput handles both JSON array and newline-delimited JSON.
+func parseJSONOutput(output string, dest *[]PSEntry) error {
+	output = strings.TrimSpace(output)
+	if output == "" || output == "[]" {
+		return nil
+	}
+
+	// Try array first (newer podman versions)
+	if strings.HasPrefix(output, "[") {
+		return json.Unmarshal([]byte(output), dest)
+	}
+
+	// Newline-delimited JSON (older podman versions)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry PSEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return err
+		}
+		*dest = append(*dest, entry)
+	}
+	return nil
+}
+
+// PullImage pulls a container image.
+func (c *Client) PullImage(ctx context.Context, image string) error {
+	result, err := c.Run(ctx, "pull", image)
+	if err != nil {
+		return fmt.Errorf("failed to pull image %s: %w", image, err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("podman pull failed (exit %d): %s",
+			result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+// ImageExists checks whether an image is available locally.
+func (c *Client) ImageExists(ctx context.Context, image string) (bool, error) {
+	result, err := c.Run(ctx, "image", "exists", image)
+	if err != nil {
+		return false, err
+	}
+	return result.ExitCode == 0, nil
+}

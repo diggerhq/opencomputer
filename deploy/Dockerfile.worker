@@ -1,0 +1,29 @@
+FROM golang:1.22-bookworm AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 go build -o /opensandbox-worker ./cmd/worker
+
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    podman \
+    crun \
+    uidmap \
+    fuse-overlayfs \
+    slirp4netns \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opensandbox-worker /usr/local/bin/opensandbox-worker
+
+# Pre-pull default template images
+RUN podman pull docker.io/library/ubuntu:22.04 && \
+    podman pull docker.io/library/python:3.12-slim && \
+    podman pull docker.io/library/node:20-slim || true
+
+EXPOSE 9090
+CMD ["opensandbox-worker"]
