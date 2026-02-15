@@ -1,0 +1,41 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor/IDE files
+.cursor/
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+
+# Build artifacts
+dist/
+
+# Compiled binaries
+bin/opensandbox-server
+bin/opensandbox-worker
+
+# Media files
+*.mp4
+*.gif
+
+# Temp files
+*.tmp
+*.log
