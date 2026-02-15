@@ -10,7 +10,9 @@ import (
 	"syscall"
 
 	"github.com/opensandbox/opensandbox/internal/api"
+	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/config"
+	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/podman"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/template"
@@ -48,9 +50,63 @@ func main() {
 	registry := template.NewRegistry()
 	builder := template.NewBuilder(podmanClient, registry)
 
+	// Build server options
+	opts := &api.ServerOpts{
+		Mode:     cfg.Mode,
+		WorkerID: cfg.WorkerID,
+		Region:   cfg.Region,
+		HTTPAddr: cfg.HTTPAddr,
+	}
+
+	// Initialize PostgreSQL if configured
+	if cfg.DatabaseURL != "" {
+		store, err := db.NewStore(ctx, cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("failed to connect to database: %v", err)
+		}
+		defer store.Close()
+
+		log.Println("opensandbox: running database migrations...")
+		if err := store.Migrate(ctx); err != nil {
+			log.Fatalf("failed to run migrations: %v", err)
+		}
+		log.Println("opensandbox: database migrations complete")
+
+		opts.Store = store
+	} else {
+		log.Println("opensandbox: no DATABASE_URL configured, running without PostgreSQL")
+	}
+
+	// Initialize JWT issuer if configured
+	if cfg.JWTSecret != "" {
+		opts.JWTIssuer = auth.NewJWTIssuer(cfg.JWTSecret)
+		log.Println("opensandbox: JWT issuer configured")
+	}
+
+	// Initialize per-sandbox SQLite manager
+	sandboxDBMgr := sandbox.NewSandboxDBManager(cfg.DataDir)
+	defer sandboxDBMgr.Close()
+	opts.SandboxDBs = sandboxDBMgr
+	log.Printf("opensandbox: SQLite data directory: %s", cfg.DataDir)
+
 	// Create API server
-	server := api.NewServer(mgr, ptyMgr, cfg.APIKey)
+	server := api.NewServer(mgr, ptyMgr, cfg.APIKey, opts)
 	server.SetTemplateDeps(registry, builder)
+
+	// Start NATS sync consumer if both PG and NATS are configured
+	if opts.Store != nil && cfg.NATSURL != "" {
+		consumer, err := db.NewSyncConsumer(opts.Store, cfg.NATSURL)
+		if err != nil {
+			log.Printf("opensandbox: NATS sync consumer not available: %v (continuing without)", err)
+		} else {
+			if err := consumer.Start(); err != nil {
+				log.Printf("opensandbox: failed to start NATS sync consumer: %v", err)
+			} else {
+				defer consumer.Stop()
+				log.Println("opensandbox: NATS sync consumer started")
+			}
+		}
+	}
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)

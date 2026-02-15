@@ -1,0 +1,128 @@
+{
+  "dashboard": {
+    "title": "OpenSandbox Overview",
+    "uid": "opensandbox-overview",
+    "panels": [
+      {
+        "title": "Active Sandboxes",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "sum(opensandbox_sandboxes_active)",
+            "legendFormat": "Total Active"
+          }
+        ]
+      },
+      {
+        "title": "Active Sandboxes by Region",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+        "targets": [
+          {
+            "expr": "sum by (region) (opensandbox_sandboxes_active)",
+            "legendFormat": "{{region}}"
+          }
+        ]
+      },
+      {
+        "title": "Sandbox Create Latency",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(opensandbox_sandbox_create_duration_seconds_bucket[5m])) by (le, region))",
+            "legendFormat": "p95 {{region}}"
+          },
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(opensandbox_sandbox_create_duration_seconds_bucket[5m])) by (le, region))",
+            "legendFormat": "p50 {{region}}"
+          }
+        ]
+      },
+      {
+        "title": "Worker Utilization",
+        "type": "gauge",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+        "targets": [
+          {
+            "expr": "avg(opensandbox_worker_utilization)",
+            "legendFormat": "Avg Utilization"
+          }
+        ]
+      },
+      {
+        "title": "Workers by Region & Status",
+        "type": "table",
+        "gridPos": {"h": 4, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "opensandbox_workers_total",
+            "legendFormat": "{{region}} {{status}}"
+          }
+        ]
+      },
+      {
+        "title": "Command Execution Latency",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(opensandbox_exec_duration_seconds_bucket[5m])) by (le))",
+            "legendFormat": "p95"
+          },
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(opensandbox_exec_duration_seconds_bucket[5m])) by (le))",
+            "legendFormat": "p50"
+          }
+        ]
+      },
+      {
+        "title": "Active PTY Sessions",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+        "targets": [
+          {
+            "expr": "sum by (region) (opensandbox_pty_sessions_active)",
+            "legendFormat": "{{region}}"
+          }
+        ]
+      },
+      {
+        "title": "HTTP Request Rate",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+        "targets": [
+          {
+            "expr": "sum(rate(opensandbox_http_requests_total[5m])) by (method, path)",
+            "legendFormat": "{{method}} {{path}}"
+          }
+        ]
+      },
+      {
+        "title": "SQLite Sync Lag",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+        "targets": [
+          {
+            "expr": "opensandbox_sqlite_sync_lag_seconds",
+            "legendFormat": "{{worker_id}}"
+          }
+        ]
+      },
+      {
+        "title": "Scale Events",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 28},
+        "targets": [
+          {
+            "expr": "sum(rate(opensandbox_scale_events_total[5m])) by (region, direction)",
+            "legendFormat": "{{region}} {{direction}}"
+          }
+        ]
+      }
+    ],
+    "time": {"from": "now-1h", "to": "now"},
+    "refresh": "10s"
+  }
+}

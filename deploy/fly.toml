@@ -14,3 +14,7 @@ primary_region = "iad"
 [env]
   OPENSANDBOX_MODE = "server"
   OPENSANDBOX_PORT = "8080"
+  OPENSANDBOX_REGION = "iad"
+  OPENSANDBOX_WORKER_ID = "cp-iad-1"
+  OPENSANDBOX_HTTP_ADDR = "https://opensandbox.fly.dev"
+  # DATABASE_URL, JWT_SECRET, NATS_URL set via fly secrets

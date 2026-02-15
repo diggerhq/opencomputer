@@ -13,6 +13,25 @@ type Config struct {
 	WorkerAddr string
 	Mode       string // "server", "worker", "combined"
 	LogLevel   string
+
+	// Database
+	DatabaseURL string // PostgreSQL connection string
+	DataDir     string // Local data directory for SQLite files
+
+	// Auth
+	JWTSecret string // Shared secret for sandbox-scoped JWTs
+
+	// NATS
+	NATSURL string // NATS server URL
+
+	// Worker identity
+	Region   string // Region identifier (e.g., "iad", "ams")
+	WorkerID string // Unique worker ID (e.g., "w-iad-1")
+	HTTPAddr string // Public HTTP address for direct SDK access
+
+	// WorkOS
+	WorkOSAPIKey  string
+	WorkOSClientID string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -23,6 +42,17 @@ func Load() (*Config, error) {
 		WorkerAddr: envOrDefault("OPENSANDBOX_WORKER_ADDR", "localhost:9090"),
 		Mode:       envOrDefault("OPENSANDBOX_MODE", "combined"),
 		LogLevel:   envOrDefault("OPENSANDBOX_LOG_LEVEL", "info"),
+
+		DatabaseURL: os.Getenv("OPENSANDBOX_DATABASE_URL"),
+		DataDir:     envOrDefault("OPENSANDBOX_DATA_DIR", "/data/sandboxes"),
+		JWTSecret:   os.Getenv("OPENSANDBOX_JWT_SECRET"),
+		NATSURL:     envOrDefault("OPENSANDBOX_NATS_URL", "nats://localhost:4222"),
+		Region:      envOrDefault("OPENSANDBOX_REGION", "local"),
+		WorkerID:    envOrDefault("OPENSANDBOX_WORKER_ID", "w-local-1"),
+		HTTPAddr:    envOrDefault("OPENSANDBOX_HTTP_ADDR", "http://localhost:8080"),
+
+		WorkOSAPIKey:   os.Getenv("WORKOS_API_KEY"),
+		WorkOSClientID: os.Getenv("WORKOS_CLIENT_ID"),
 	}
 
 	if portStr := os.Getenv("OPENSANDBOX_PORT"); portStr != "" {

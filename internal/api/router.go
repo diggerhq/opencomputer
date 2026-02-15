@@ -6,6 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/opensandbox/opensandbox/internal/auth"
+	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 )
 
@@ -15,10 +16,28 @@ type Server struct {
 	manager    *sandbox.Manager
 	ptyManager *sandbox.PTYManager
 	templates  *templateDeps
+	store      *db.Store           // nil in combined/dev mode without PG
+	jwtIssuer  *auth.JWTIssuer     // nil if JWT not configured
+	mode       string              // "server", "worker", "combined"
+	workerID   string              // this worker's ID
+	region     string              // this worker's region
+	httpAddr   string              // public HTTP address for direct access
+	sandboxDBs *sandbox.SandboxDBManager // per-sandbox SQLite manager
+}
+
+// ServerOpts holds optional dependencies for the API server.
+type ServerOpts struct {
+	Store      *db.Store
+	JWTIssuer  *auth.JWTIssuer
+	Mode       string // "server", "worker", "combined"
+	WorkerID   string
+	Region     string
+	HTTPAddr   string
+	SandboxDBs *sandbox.SandboxDBManager
 }
 
 // NewServer creates a new API server with all routes configured.
-func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string) *Server {
+func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, opts *ServerOpts) *Server {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
@@ -27,6 +46,16 @@ func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string) 
 		echo:       e,
 		manager:    mgr,
 		ptyManager: ptyMgr,
+	}
+
+	if opts != nil {
+		s.store = opts.Store
+		s.jwtIssuer = opts.JWTIssuer
+		s.mode = opts.Mode
+		s.workerID = opts.WorkerID
+		s.region = opts.Region
+		s.httpAddr = opts.HTTPAddr
+		s.sandboxDBs = opts.SandboxDBs
 	}
 
 	// Global middleware
@@ -42,7 +71,7 @@ func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string) 
 
 	// API routes (with auth)
 	api := e.Group("")
-	api.Use(auth.APIKeyMiddleware(apiKey))
+	api.Use(auth.PGAPIKeyMiddleware(s.store, apiKey))
 
 	// Sandbox lifecycle
 	api.POST("/sandboxes", s.createSandbox)
@@ -72,6 +101,9 @@ func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string) 
 	api.GET("/templates/:name", s.getTemplate)
 	api.DELETE("/templates/:name", s.deleteTemplate)
 
+	// Session history (requires PG)
+	api.GET("/sessions", s.listSessions)
+
 	return s
 }
 
@@ -83,4 +115,9 @@ func (s *Server) Start(addr string) error {
 // Close gracefully shuts down the server.
 func (s *Server) Close() error {
 	return s.echo.Close()
+}
+
+// Echo returns the underlying echo instance for reuse (e.g., worker HTTP server).
+func (s *Server) Echo() *echo.Echo {
+	return s.echo
 }

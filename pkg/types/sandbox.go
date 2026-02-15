@@ -24,6 +24,8 @@ type Sandbox struct {
 	CpuCount   int               `json:"cpuCount"`
 	MemoryMB   int               `json:"memoryMB"`
 	MachineID  string            `json:"machineID,omitempty"`
+	ConnectURL string            `json:"connectURL,omitempty"` // Direct worker URL for SDK access
+	Token      string            `json:"token,omitempty"`      // Sandbox-scoped JWT for worker auth
 }
 
 // SandboxConfig is the request body for creating a sandbox.

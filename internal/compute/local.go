@@ -51,3 +51,11 @@ func (p *LocalPool) ListMachines(_ context.Context) ([]*Machine, error) {
 func (p *LocalPool) HealthCheck(_ context.Context, _ string) error {
 	return nil // Local machine is always healthy
 }
+
+func (p *LocalPool) SupportedRegions(_ context.Context) ([]string, error) {
+	return []string{"local"}, nil
+}
+
+func (p *LocalPool) DrainMachine(_ context.Context, _ string) error {
+	return fmt.Errorf("cannot drain local machine")
+}

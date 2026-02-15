@@ -2,16 +2,28 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 
+	"github.com/opensandbox/opensandbox/internal/auth"
+	"github.com/opensandbox/opensandbox/internal/config"
+	"github.com/opensandbox/opensandbox/internal/metrics"
 	"github.com/opensandbox/opensandbox/internal/podman"
+	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/worker"
 )
 
 func main() {
-	log.Println("opensandbox-worker: starting...")
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	log.Printf("opensandbox-worker: starting (id=%s, region=%s)...", cfg.WorkerID, cfg.Region)
 
 	client, err := podman.NewClient()
 	if err != nil {
@@ -25,14 +37,90 @@ func main() {
 	}
 	log.Printf("opensandbox-worker: using podman %s", version)
 
-	// TODO: Start gRPC server for control plane communication
-	// For now, the worker functionality is embedded in the server (combined mode)
-	log.Println("opensandbox-worker: running in standalone mode (gRPC server not yet implemented)")
-	log.Println("opensandbox-worker: use --mode=combined on the server for single-machine deployment")
+	// Pre-pull common template images
+	log.Println("opensandbox-worker: pre-pulling template images...")
+	images := []string{
+		"docker.io/library/ubuntu:22.04",
+		"docker.io/library/python:3.12-slim",
+		"docker.io/library/node:20-slim",
+	}
+	for _, img := range images {
+		exists, _ := client.ImageExists(ctx, img)
+		if !exists {
+			log.Printf("opensandbox-worker: pulling %s...", img)
+			if err := client.PullImage(ctx, img); err != nil {
+				log.Printf("opensandbox-worker: warning: failed to pull %s: %v", img, err)
+			}
+		}
+	}
+
+	// Initialize sandbox manager
+	mgr := sandbox.NewManager(client)
+	defer mgr.Close()
+
+	// Initialize PTY manager
+	podmanPath, _ := exec.LookPath("podman")
+	ptyMgr := sandbox.NewPTYManager(podmanPath, client.AuthFile())
+	defer ptyMgr.CloseAll()
+
+	// Initialize per-sandbox SQLite manager
+	sandboxDBMgr := sandbox.NewSandboxDBManager(cfg.DataDir)
+	defer sandboxDBMgr.Close()
+
+	// JWT issuer for validating sandbox tokens
+	if cfg.JWTSecret == "" {
+		log.Fatalf("OPENSANDBOX_JWT_SECRET is required for worker mode")
+	}
+	jwtIssuer := auth.NewJWTIssuer(cfg.JWTSecret)
+
+	// Start Prometheus metrics server on :9091
+	metricsSrv := metrics.StartMetricsServer(":9091")
+	defer metricsSrv.Close()
+	log.Println("opensandbox-worker: metrics server started on :9091")
+
+	// Start gRPC server for control plane communication
+	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr)
+	grpcAddr := ":9090"
+	log.Printf("opensandbox-worker: starting gRPC server on %s", grpcAddr)
+	go func() {
+		if err := grpcServer.Start(grpcAddr); err != nil {
+			log.Printf("gRPC server error: %v", err)
+		}
+	}()
+
+	// Start HTTP server for direct SDK access
+	httpServer := worker.NewHTTPServer(mgr, ptyMgr, jwtIssuer, sandboxDBMgr)
+	httpAddr := fmt.Sprintf(":%d", cfg.Port)
+	log.Printf("opensandbox-worker: starting HTTP server on %s", httpAddr)
+	go func() {
+		if err := httpServer.Start(httpAddr); err != nil {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
+
+	// Start NATS event publisher if configured
+	if cfg.NATSURL != "" {
+		pub, err := worker.NewEventPublisher(cfg.NATSURL, cfg.Region, cfg.WorkerID, sandboxDBMgr)
+		if err != nil {
+			log.Printf("opensandbox-worker: NATS not available: %v (continuing without event sync)", err)
+		} else {
+			pub.Start()
+			pub.StartHeartbeat(func() (int, int, float64, float64) {
+				// TODO: get actual stats from sandbox manager
+				return 50, 0, 0.0, 0.0
+			})
+			defer pub.Stop()
+			log.Println("opensandbox-worker: NATS event publisher started")
+		}
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	log.Println("opensandbox-worker: shutting down...")
+	grpcServer.Stop()
+	if err := httpServer.Close(); err != nil {
+		log.Printf("error closing HTTP server: %v", err)
+	}
 }

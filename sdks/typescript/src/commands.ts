@@ -15,11 +15,16 @@ export class Commands {
     private apiUrl: string,
     private apiKey: string,
     private sandboxId: string,
+    private token: string = "",
   ) {}
 
   private get headers(): Record<string, string> {
     const h: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.apiKey) h["X-API-Key"] = this.apiKey;
+    if (this.token) {
+      h["Authorization"] = `Bearer ${this.token}`;
+    } else if (this.apiKey) {
+      h["X-API-Key"] = this.apiKey;
+    }
     return h;
   }
 

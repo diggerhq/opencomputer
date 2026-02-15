@@ -160,6 +160,15 @@ func (p *FlyPool) HealthCheck(ctx context.Context, machineID string) error {
 	return nil
 }
 
+func (p *FlyPool) SupportedRegions(_ context.Context) ([]string, error) {
+	return []string{"iad", "ams", "lhr", "sjc", "nrt", "syd", "cdg", "fra"}, nil
+}
+
+func (p *FlyPool) DrainMachine(ctx context.Context, machineID string) error {
+	// Stop the machine gracefully (Fly will drain connections)
+	return p.StopMachine(ctx, machineID)
+}
+
 func (p *FlyPool) machineAction(ctx context.Context, machineID, method, action string) error {
 	url := fmt.Sprintf("%s/apps/%s/machines/%s%s", flyAPIBase, p.appName, machineID, action)
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)

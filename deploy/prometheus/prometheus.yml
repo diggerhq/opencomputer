@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Control plane metrics
+  - job_name: 'opensandbox-cp'
+    static_configs:
+      - targets: ['opensandbox.internal:8080']
+    metrics_path: '/metrics'
+
+  # Worker metrics (auto-discovered via DNS)
+  - job_name: 'opensandbox-workers'
+    dns_sd_configs:
+      - names:
+          - '_prometheus._tcp.opensandbox-worker.internal'
+        type: SRV
+        refresh_interval: 30s
+    # Fallback to static for local development
+    static_configs:
+      - targets: ['localhost:9091']
+        labels:
+          region: 'local'
+          worker_id: 'w-local-1'

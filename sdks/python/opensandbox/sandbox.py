@@ -22,7 +22,10 @@ class Sandbox:
     template: str = ""
     _api_url: str = ""
     _api_key: str = ""
+    _connect_url: str = ""
+    _token: str = ""
     _client: httpx.AsyncClient = field(default=None, repr=False)
+    _data_client: httpx.AsyncClient = field(default=None, repr=False)
 
     @classmethod
     async def create(
@@ -57,13 +60,28 @@ class Sandbox:
         resp.raise_for_status()
         data = resp.json()
 
+        connect_url = data.get("connectURL", "")
+        token = data.get("token", "")
+
+        # If worker returned a direct connectURL, create a separate client for data ops
+        data_client = None
+        if connect_url and token:
+            data_client = httpx.AsyncClient(
+                base_url=connect_url,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30.0,
+            )
+
         return cls(
             sandbox_id=data["sandboxID"],
             status=data.get("status", "running"),
             template=template,
             _api_url=url,
             _api_key=key,
+            _connect_url=connect_url,
+            _token=token,
             _client=client,
+            _data_client=data_client,
         )
 
     @classmethod
@@ -87,14 +105,35 @@ class Sandbox:
         resp.raise_for_status()
         data = resp.json()
 
+        connect_url = data.get("connectURL", "")
+        token = data.get("token", "")
+
+        data_client = None
+        if connect_url and token:
+            data_client = httpx.AsyncClient(
+                base_url=connect_url,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30.0,
+            )
+
         return cls(
             sandbox_id=sandbox_id,
             status=data.get("status", "running"),
             template=data.get("templateID", ""),
             _api_url=url,
             _api_key=key,
+            _connect_url=connect_url,
+            _token=token,
             _client=client,
+            _data_client=data_client,
         )
+
+    @property
+    def _ops_client(self) -> httpx.AsyncClient:
+        """Return the client for data operations (direct worker if available, else CP)."""
+        if self._data_client is not None:
+            return self._data_client
+        return self._client
 
     async def kill(self) -> None:
         """Kill and remove the sandbox."""
@@ -124,21 +163,25 @@ class Sandbox:
     @property
     def files(self) -> Filesystem:
         """Access filesystem operations."""
-        return Filesystem(self._client, self.sandbox_id)
+        return Filesystem(self._ops_client, self.sandbox_id)
 
     @property
     def commands(self) -> Commands:
         """Access command execution."""
-        return Commands(self._client, self.sandbox_id)
+        return Commands(self._ops_client, self.sandbox_id)
 
     @property
     def pty(self) -> Pty:
         """Access PTY terminal sessions."""
-        return Pty(self._client, self.sandbox_id, self._api_url, self._api_key)
+        pty_url = self._connect_url or self._api_url
+        pty_key = self._token or self._api_key
+        return Pty(self._ops_client, self.sandbox_id, pty_url, pty_key)
 
     async def close(self) -> None:
         """Close the HTTP client (does not kill the sandbox)."""
         await self._client.aclose()
+        if self._data_client is not None:
+            await self._data_client.aclose()
 
     async def __aenter__(self) -> Sandbox:
         return self

@@ -1,0 +1,8 @@
+DROP TABLE IF EXISTS templates;
+DROP TABLE IF EXISTS workers;
+DROP TABLE IF EXISTS pty_session_logs;
+DROP TABLE IF EXISTS command_logs;
+DROP TABLE IF EXISTS sandbox_sessions;
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS orgs;

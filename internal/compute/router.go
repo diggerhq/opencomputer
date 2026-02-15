@@ -52,6 +52,39 @@ func (r *Router) Assign(ctx context.Context, sandboxID string) (*Machine, error)
 	return best, nil
 }
 
+// AssignInRegion picks the least-loaded machine in a specific region.
+func (r *Router) AssignInRegion(ctx context.Context, sandboxID, region string) (*Machine, error) {
+	machines, err := r.pool.ListMachines(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list machines: %w", err)
+	}
+
+	var best *Machine
+	for _, m := range machines {
+		if m.Status != "running" {
+			continue
+		}
+		if region != "" && m.Region != region {
+			continue
+		}
+		remaining := m.Capacity - m.Current
+		if best == nil || remaining > (best.Capacity-best.Current) {
+			best = m
+		}
+	}
+
+	if best == nil {
+		return nil, fmt.Errorf("no available machines in region %s", region)
+	}
+
+	r.mu.Lock()
+	r.mapping[sandboxID] = best.ID
+	best.Current++
+	r.mu.Unlock()
+
+	return best, nil
+}
+
 // Lookup returns the machine that hosts a given sandbox.
 func (r *Router) Lookup(sandboxID string) (string, error) {
 	r.mu.RLock()

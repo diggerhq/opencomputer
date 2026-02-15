@@ -15,6 +15,8 @@ interface SandboxData {
   sandboxID: string;
   status: string;
   templateID?: string;
+  connectURL?: string;
+  token?: string;
 }
 
 export class Sandbox {
@@ -25,6 +27,8 @@ export class Sandbox {
 
   private apiUrl: string;
   private apiKey: string;
+  private connectUrl: string;
+  private token: string;
   private _status: string;
 
   private constructor(data: SandboxData, apiUrl: string, apiKey: string) {
@@ -32,9 +36,17 @@ export class Sandbox {
     this._status = data.status;
     this.apiUrl = apiUrl;
     this.apiKey = apiKey;
-    this.files = new Filesystem(apiUrl, apiKey, this.sandboxId);
-    this.commands = new Commands(apiUrl, apiKey, this.sandboxId);
-    this.pty = new Pty(apiUrl, apiKey, this.sandboxId);
+    this.connectUrl = data.connectURL || "";
+    this.token = data.token || "";
+
+    // Use direct worker URL for data operations if available
+    const opsUrl = this.connectUrl || apiUrl;
+    const opsKey = this.connectUrl ? "" : apiKey;
+    const opsToken = this.connectUrl ? this.token : "";
+
+    this.files = new Filesystem(opsUrl, opsKey, this.sandboxId, opsToken);
+    this.commands = new Commands(opsUrl, opsKey, this.sandboxId, opsToken);
+    this.pty = new Pty(opsUrl, opsKey, this.sandboxId, opsToken);
   }
 
   get status(): string {

@@ -10,9 +10,11 @@ export class Filesystem {
     private apiUrl: string,
     private apiKey: string,
     private sandboxId: string,
+    private token: string = "",
   ) {}
 
   private get headers(): Record<string, string> {
+    if (this.token) return { "Authorization": `Bearer ${this.token}` };
     return this.apiKey ? { "X-API-Key": this.apiKey } : {};
   }
 

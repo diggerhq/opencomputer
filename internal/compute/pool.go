@@ -5,7 +5,8 @@ import "context"
 // Machine represents a worker machine in the compute pool.
 type Machine struct {
 	ID       string `json:"id"`
-	Addr     string `json:"addr"`     // internal address (host:port)
+	Addr     string `json:"addr"`     // internal address (host:port) for gRPC
+	HTTPAddr string `json:"httpAddr"` // public HTTP address for direct SDK access
 	Region   string `json:"region"`
 	Status   string `json:"status"`   // "running", "stopped", "creating"
 	Capacity int    `json:"capacity"` // max sandboxes
@@ -27,4 +28,6 @@ type Pool interface {
 	StopMachine(ctx context.Context, machineID string) error
 	ListMachines(ctx context.Context) ([]*Machine, error)
 	HealthCheck(ctx context.Context, machineID string) error
+	SupportedRegions(ctx context.Context) ([]string, error)
+	DrainMachine(ctx context.Context, machineID string) error
 }
