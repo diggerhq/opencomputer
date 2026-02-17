@@ -1,0 +1,83 @@
+---
+title: "Introduction"
+description: "Secure cloud sandboxes for AI agents and developers"
+---
+
+# OpenSandbox
+
+OpenSandbox gives you **secure, isolated cloud sandboxes** that spin up in milliseconds. Run untrusted code, build AI agent tooling, or create interactive development environments — all within containerized sandboxes you fully control.
+
+## Why OpenSandbox?
+
+<CardGroup cols={2}>
+  <Card title="Fast Startup" icon="bolt">
+    Sandboxes boot in under a second. Your agents and users never wait.
+  </Card>
+  <Card title="Secure Isolation" icon="shield">
+    Every sandbox runs in its own container with strict resource limits and network isolation.
+  </Card>
+  <Card title="Full Environment" icon="terminal">
+    Each sandbox includes a filesystem, command execution, and interactive terminal (PTY) access.
+  </Card>
+  <Card title="Custom Templates" icon="layer-group">
+    Build reusable templates from Dockerfiles with pre-installed tools and dependencies.
+  </Card>
+</CardGroup>
+
+## SDKs
+
+OpenSandbox provides first-class SDKs for TypeScript and Python with identical API surfaces.
+
+<CodeGroup>
+
+```bash npm
+npm install opensandbox
+```
+
+```bash pip
+pip install opensandbox
+```
+
+</CodeGroup>
+
+## Quick Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Sandbox } from 'opensandbox';
+
+const sandbox = await Sandbox.create({ template: 'base' });
+
+const result = await sandbox.commands.run('echo "Hello from OpenSandbox!"');
+console.log(result.stdout); // Hello from OpenSandbox!
+
+await sandbox.kill();
+```
+
+```python Python
+from opensandbox import Sandbox
+
+async with Sandbox.create(template='base') as sandbox:
+    result = await sandbox.commands.run('echo "Hello from OpenSandbox!"')
+    print(result.stdout)  # Hello from OpenSandbox!
+```
+
+</CodeGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get up and running in 5 minutes.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Set up API keys and environment variables.
+  </Card>
+  <Card title="TypeScript SDK" icon="js" href="/sdks/typescript/overview">
+    Full TypeScript/JavaScript SDK reference.
+  </Card>
+  <Card title="Python SDK" icon="python" href="/sdks/python/overview">
+    Full Python SDK reference.
+  </Card>
+</CardGroup>

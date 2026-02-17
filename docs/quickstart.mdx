@@ -1,0 +1,138 @@
+---
+title: "Quickstart"
+description: "Get up and running with OpenSandbox in 5 minutes"
+---
+
+## 1. Install the SDK
+
+<CodeGroup>
+
+```bash npm
+npm install opensandbox
+```
+
+```bash pip
+pip install opensandbox
+```
+
+</CodeGroup>
+
+## 2. Set Your API Key
+
+<CodeGroup>
+
+```bash TypeScript
+export OPENSANDBOX_API_KEY="your-api-key"
+export OPENSANDBOX_API_URL="https://api.opensandbox.dev"  # optional, defaults to localhost
+```
+
+```bash Python
+export OPENSANDBOX_API_KEY="your-api-key"
+export OPENSANDBOX_API_URL="https://api.opensandbox.dev"  # optional, defaults to localhost
+```
+
+</CodeGroup>
+
+Or pass credentials directly when creating a sandbox — see [Configuration](/configuration).
+
+## 3. Create a Sandbox
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Sandbox } from 'opensandbox';
+
+const sandbox = await Sandbox.create({
+  template: 'base',
+  timeout: 300,
+});
+
+console.log(`Sandbox created: ${sandbox.sandboxId}`);
+```
+
+```python Python
+from opensandbox import Sandbox
+
+sandbox = await Sandbox.create(template='base', timeout=300)
+print(f"Sandbox created: {sandbox.sandbox_id}")
+```
+
+</CodeGroup>
+
+## 4. Run a Command
+
+<CodeGroup>
+
+```typescript TypeScript
+const result = await sandbox.commands.run('echo "Hello, World!"');
+
+console.log(result.stdout);   // Hello, World!
+console.log(result.exitCode); // 0
+```
+
+```python Python
+result = await sandbox.commands.run('echo "Hello, World!"')
+
+print(result.stdout)     # Hello, World!
+print(result.exit_code)  # 0
+```
+
+</CodeGroup>
+
+## 5. Read and Write Files
+
+<CodeGroup>
+
+```typescript TypeScript
+// Write a file
+await sandbox.files.write('/tmp/hello.txt', 'Hello from OpenSandbox!');
+
+// Read it back
+const content = await sandbox.files.read('/tmp/hello.txt');
+console.log(content); // Hello from OpenSandbox!
+
+// List a directory
+const entries = await sandbox.files.list('/tmp');
+entries.forEach(e => console.log(`${e.isDir ? 'd' : 'f'} ${e.name}`));
+```
+
+```python Python
+# Write a file
+await sandbox.files.write('/tmp/hello.txt', 'Hello from OpenSandbox!')
+
+# Read it back
+content = await sandbox.files.read('/tmp/hello.txt')
+print(content)  # Hello from OpenSandbox!
+
+# List a directory
+entries = await sandbox.files.list('/tmp')
+for e in entries:
+    print(f"{'d' if e.is_dir else 'f'} {e.name}")
+```
+
+</CodeGroup>
+
+## 6. Clean Up
+
+<CodeGroup>
+
+```typescript TypeScript
+await sandbox.kill();
+```
+
+```python Python
+await sandbox.kill()
+
+# Or use the context manager for automatic cleanup:
+async with Sandbox.create() as sandbox:
+    # sandbox is automatically killed when the block exits
+    result = await sandbox.commands.run('whoami')
+```
+
+</CodeGroup>
+
+## Next Steps
+
+- [TypeScript SDK Reference](/sdks/typescript/overview) — full API docs for the TypeScript SDK
+- [Python SDK Reference](/sdks/python/overview) — full API docs for the Python SDK
+- [Configuration](/configuration) — API keys, URLs, and environment setup

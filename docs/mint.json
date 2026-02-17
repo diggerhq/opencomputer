@@ -1,0 +1,97 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "maple",
+  "name": "OpenSandbox",
+  "description": "Secure cloud sandboxes for AI agents and developers",
+  "colors": {
+    "primary": "#6366F1",
+    "light": "#818CF8",
+    "dark": "#4F46E5"
+  },
+  "favicon": "/images/favicon.svg",
+  "logo": {
+    "light": "/images/logo-light.svg",
+    "dark": "/images/logo-dark.svg",
+    "href": "https://opensandbox.dev"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/nicholasgriffintn/opensandbox"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Get Started",
+      "href": "/quickstart"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "icon": "book",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "TypeScript SDK",
+        "icon": "js",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "sdks/typescript/overview"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "sdks/typescript/sandbox",
+              "sdks/typescript/commands",
+              "sdks/typescript/filesystem",
+              "sdks/typescript/pty",
+              "sdks/typescript/templates"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Python SDK",
+        "icon": "python",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "sdks/python/overview"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "sdks/python/sandbox",
+              "sdks/python/commands",
+              "sdks/python/filesystem",
+              "sdks/python/pty",
+              "sdks/python/templates"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/nicholasgriffintn/opensandbox"
+    }
+  }
+}
