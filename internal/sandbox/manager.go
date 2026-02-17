@@ -3,12 +3,14 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/opensandbox/opensandbox/internal/podman"
+	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
@@ -28,9 +30,11 @@ const (
 
 // Manager handles sandbox lifecycle operations.
 type Manager struct {
-	podman  *podman.Client
-	mu      sync.RWMutex
-	timers  map[string]*time.Timer // sandbox ID -> timeout timer
+	podman          *podman.Client
+	mu              sync.RWMutex
+	timers          map[string]*time.Timer    // sandbox ID -> timeout timer
+	checkpointStore *storage.CheckpointStore  // nil if hibernation not configured
+	onHibernate     func(string, *HibernateResult) // callback after successful hibernate
 }
 
 // NewManager creates a new sandbox manager.
@@ -39,6 +43,17 @@ func NewManager(client *podman.Client) *Manager {
 		podman: client,
 		timers: make(map[string]*time.Timer),
 	}
+}
+
+// SetCheckpointStore configures the checkpoint store for hibernation support.
+// When set, sandboxes hibernate instead of being killed on timeout.
+func (m *Manager) SetCheckpointStore(store *storage.CheckpointStore) {
+	m.checkpointStore = store
+}
+
+// SetOnHibernate sets a callback invoked after successful hibernation.
+func (m *Manager) SetOnHibernate(fn func(sandboxID string, result *HibernateResult)) {
+	m.onHibernate = fn
 }
 
 // Create creates a new sandbox container and starts it.
@@ -199,9 +214,26 @@ func (m *Manager) scheduleTimeout(id, name string, d time.Duration) {
 	}
 
 	m.timers[id] = time.AfterFunc(d, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = m.podman.RemoveContainer(ctx, name, true)
+		// If checkpoint store is configured, hibernate instead of kill
+		if m.checkpointStore != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			result, err := m.Hibernate(ctx, id, m.checkpointStore)
+			if err != nil {
+				log.Printf("manager: hibernate failed for %s, falling back to kill: %v", id, err)
+				_ = m.podman.RemoveContainer(ctx, name, true)
+			} else {
+				log.Printf("manager: sandbox %s hibernated (key=%s, size=%d)", id, result.CheckpointKey, result.SizeBytes)
+				if m.onHibernate != nil {
+					m.onHibernate(id, result)
+				}
+			}
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = m.podman.RemoveContainer(ctx, name, true)
+		}
 
 		m.mu.Lock()
 		delete(m.timers, id)

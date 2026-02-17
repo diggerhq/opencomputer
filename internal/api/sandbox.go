@@ -220,6 +220,17 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 		})
 	}
 
+	// Hibernated sandboxes have no worker
+	if session.Status == "hibernated" {
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"sandboxID": sandboxID,
+			"status":    "hibernated",
+			"region":    session.Region,
+			"template":  session.Template,
+			"startedAt": session.StartedAt,
+		})
+	}
+
 	// Look up worker address
 	worker := s.workerRegistry.GetWorker(session.WorkerID)
 	connectURL := ""
@@ -425,6 +436,236 @@ func (s *Server) setTimeout(c echo.Context) error {
 	}
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Server) hibernateSandbox(c echo.Context) error {
+	id := c.Param("id")
+	ctx := c.Request().Context()
+
+	// Server mode: dispatch to worker via gRPC
+	if s.workerRegistry != nil {
+		return s.hibernateSandboxRemote(c, id)
+	}
+
+	// Combined mode: hibernate locally
+	if s.manager == nil || s.checkpointStore == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "hibernation not available",
+		})
+	}
+
+	result, err := s.manager.Hibernate(ctx, id, s.checkpointStore)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	// Record checkpoint in PG
+	orgID, hasOrg := auth.GetOrgID(c)
+	if s.store != nil && hasOrg {
+		session, _ := s.store.GetSandboxSession(ctx, id)
+		cfg := json.RawMessage("{}")
+		if session != nil {
+			cfg = session.Config
+		}
+		template := "base"
+		region := s.region
+		if session != nil {
+			template = session.Template
+			region = session.Region
+		}
+		_, _ = s.store.CreateCheckpoint(ctx, id, orgID, result.CheckpointKey, result.SizeBytes, region, template, cfg)
+		_ = s.store.UpdateSandboxSessionStatus(ctx, id, "hibernated", nil)
+	}
+
+	if s.sandboxDBs != nil {
+		_ = s.sandboxDBs.Remove(id)
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"sandboxID":     id,
+		"status":        "hibernated",
+		"checkpointKey": result.CheckpointKey,
+		"sizeBytes":     result.SizeBytes,
+	})
+}
+
+func (s *Server) hibernateSandboxRemote(c echo.Context, sandboxID string) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+	}
+	if session.Status != "running" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox is not running"})
+	}
+
+	client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker unreachable"})
+	}
+
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 60*time.Second)
+	defer cancel()
+
+	grpcResp, err := client.HibernateSandbox(grpcCtx, &pb.HibernateSandboxRequest{
+		SandboxId: sandboxID,
+	})
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "hibernate failed: " + err.Error(),
+		})
+	}
+
+	// Record checkpoint in PG
+	orgID, _ := auth.GetOrgID(c)
+	_, _ = s.store.CreateCheckpoint(c.Request().Context(), sandboxID, orgID,
+		grpcResp.CheckpointKey, grpcResp.SizeBytes,
+		session.Region, session.Template, session.Config)
+	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "hibernated", nil)
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"sandboxID":     sandboxID,
+		"status":        "hibernated",
+		"checkpointKey": grpcResp.CheckpointKey,
+		"sizeBytes":     grpcResp.SizeBytes,
+	})
+}
+
+func (s *Server) wakeSandbox(c echo.Context) error {
+	id := c.Param("id")
+	ctx := c.Request().Context()
+
+	var req types.WakeRequest
+	_ = c.Bind(&req)
+
+	// Server mode: pick any worker, dispatch via gRPC
+	if s.workerRegistry != nil {
+		return s.wakeSandboxRemote(c, id, req)
+	}
+
+	// Combined mode: wake locally
+	if s.manager == nil || s.checkpointStore == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "hibernation not available",
+		})
+	}
+
+	// Get checkpoint key from PG
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	checkpoint, err := s.store.GetActiveCheckpoint(ctx, id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "no active checkpoint found"})
+	}
+
+	sb, err := s.manager.Wake(ctx, id, checkpoint.CheckpointKey, s.checkpointStore, req.Timeout)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	_ = s.store.MarkCheckpointRestored(ctx, id)
+	_ = s.store.UpdateSandboxSessionForWake(ctx, id, s.workerID)
+
+	// Issue fresh JWT
+	orgID, _ := auth.GetOrgID(c)
+	if s.jwtIssuer != nil {
+		timeout := req.Timeout
+		if timeout <= 0 {
+			timeout = 300
+		}
+		token, err := s.jwtIssuer.IssueSandboxToken(orgID, id, s.workerID, time.Duration(timeout)*time.Second)
+		if err == nil {
+			sb.Token = token
+		}
+	}
+
+	sb.ConnectURL = s.httpAddr
+
+	return c.JSON(http.StatusOK, sb)
+}
+
+func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.WakeRequest) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	checkpoint, err := s.store.GetActiveCheckpoint(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "no active checkpoint found"})
+	}
+
+	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox session not found"})
+	}
+	if session.Status != "hibernated" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox is not hibernated"})
+	}
+
+	// Pick ANY worker in the same region
+	region := checkpoint.Region
+	worker, grpcClient, err := s.workerRegistry.GetLeastLoadedWorker(region)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "no workers available in region " + region,
+		})
+	}
+
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 60*time.Second)
+	defer cancel()
+
+	grpcResp, err := grpcClient.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{
+		SandboxId:     sandboxID,
+		CheckpointKey: checkpoint.CheckpointKey,
+		Timeout:       int32(req.Timeout),
+	})
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "wake failed: " + err.Error(),
+		})
+	}
+
+	// Mark checkpoint as restored, update session
+	_ = s.store.MarkCheckpointRestored(c.Request().Context(), sandboxID)
+	_ = s.store.UpdateSandboxSessionForWake(c.Request().Context(), sandboxID, worker.ID)
+
+	// Issue fresh JWT
+	orgID, _ := auth.GetOrgID(c)
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = 300
+	}
+	var token string
+	if s.jwtIssuer != nil {
+		t, err := s.jwtIssuer.IssueSandboxToken(orgID, sandboxID, worker.ID, time.Duration(timeout)*time.Second)
+		if err == nil {
+			token = t
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"sandboxID":  sandboxID,
+		"connectURL": worker.HTTPAddr,
+		"token":      token,
+		"status":     grpcResp.Status,
+		"region":     region,
+		"workerID":   worker.ID,
+	})
 }
 
 // listSessions returns session history from PostgreSQL.

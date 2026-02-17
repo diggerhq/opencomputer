@@ -41,6 +41,14 @@ type Config struct {
 
 	// Worker capacity
 	MaxCapacity int
+
+	// S3-compatible object storage for checkpoint hibernation
+	S3Endpoint        string // e.g. "https://<account>.r2.cloudflarestorage.com"
+	S3Bucket          string // e.g. "opensandbox-checkpoints"
+	S3Region          string // defaults to Region if not set
+	S3AccessKeyID     string
+	S3SecretAccessKey string
+	S3ForcePathStyle  bool // true for R2/MinIO
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -69,6 +77,18 @@ func Load() (*Config, error) {
 		RedisURL:    os.Getenv("OPENSANDBOX_REDIS_URL"),
 
 		MaxCapacity: envOrDefaultInt("OPENSANDBOX_MAX_CAPACITY", 50),
+
+		S3Endpoint:        os.Getenv("OPENSANDBOX_S3_ENDPOINT"),
+		S3Bucket:          os.Getenv("OPENSANDBOX_S3_BUCKET"),
+		S3Region:          os.Getenv("OPENSANDBOX_S3_REGION"),
+		S3AccessKeyID:     os.Getenv("OPENSANDBOX_S3_ACCESS_KEY_ID"),
+		S3SecretAccessKey: os.Getenv("OPENSANDBOX_S3_SECRET_ACCESS_KEY"),
+		S3ForcePathStyle:  os.Getenv("OPENSANDBOX_S3_FORCE_PATH_STYLE") == "true",
+	}
+
+	// Default S3 region to worker region for same-region storage
+	if cfg.S3Region == "" {
+		cfg.S3Region = cfg.Region
 	}
 
 	if portStr := os.Getenv("OPENSANDBOX_PORT"); portStr != "" {

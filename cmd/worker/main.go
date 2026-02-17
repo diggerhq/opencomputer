@@ -14,6 +14,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/metrics"
 	"github.com/opensandbox/opensandbox/internal/podman"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/worker"
 )
 
@@ -56,13 +57,38 @@ func main() {
 	}
 	jwtIssuer := auth.NewJWTIssuer(cfg.JWTSecret)
 
+	// Initialize S3 checkpoint store for hibernation (if configured)
+	var checkpointStore *storage.CheckpointStore
+	if cfg.S3Bucket != "" {
+		var err error
+		checkpointStore, err = storage.NewCheckpointStore(storage.S3Config{
+			Endpoint:        cfg.S3Endpoint,
+			Bucket:          cfg.S3Bucket,
+			Region:          cfg.S3Region,
+			AccessKeyID:     cfg.S3AccessKeyID,
+			SecretAccessKey: cfg.S3SecretAccessKey,
+			ForcePathStyle:  cfg.S3ForcePathStyle,
+		})
+		if err != nil {
+			log.Fatalf("failed to initialize checkpoint store: %v", err)
+		}
+		log.Printf("opensandbox-worker: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
+
+		// Enable hibernate-on-timeout
+		mgr.SetCheckpointStore(checkpointStore)
+		mgr.SetOnHibernate(func(sandboxID string, result *sandbox.HibernateResult) {
+			log.Printf("opensandbox-worker: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
+				sandboxID, result.CheckpointKey, result.SizeBytes)
+		})
+	}
+
 	// Start Prometheus metrics server on :9091
 	metricsSrv := metrics.StartMetricsServer(":9091")
 	defer metricsSrv.Close()
 	log.Println("opensandbox-worker: metrics server started on :9091")
 
 	// Start gRPC server for control plane communication
-	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr)
+	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr, checkpointStore)
 	grpcAddr := ":9090"
 	log.Printf("opensandbox-worker: starting gRPC server on %s", grpcAddr)
 	go func() {

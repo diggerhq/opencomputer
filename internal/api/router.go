@@ -14,6 +14,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/storage"
 )
 
 var errSandboxNotAvailable = map[string]string{
@@ -32,9 +33,10 @@ type Server struct {
 	workerID   string                  // this worker's ID
 	region     string                  // this worker's region
 	httpAddr   string                  // public HTTP address for direct access
-	sandboxDBs     *sandbox.SandboxDBManager         // per-sandbox SQLite manager
-	workos         *auth.WorkOSMiddleware            // nil if WorkOS not configured
-	workerRegistry *controlplane.RedisWorkerRegistry // nil in combined/worker mode
+	sandboxDBs      *sandbox.SandboxDBManager         // per-sandbox SQLite manager
+	workos          *auth.WorkOSMiddleware            // nil if WorkOS not configured
+	workerRegistry  *controlplane.RedisWorkerRegistry // nil in combined/worker mode
+	checkpointStore *storage.CheckpointStore          // nil if hibernation not configured
 }
 
 // ServerOpts holds optional dependencies for the API server.
@@ -46,8 +48,9 @@ type ServerOpts struct {
 	Region      string
 	HTTPAddr    string
 	SandboxDBs     *sandbox.SandboxDBManager
-	WorkOSConfig   *auth.WorkOSConfig                // nil if WorkOS not configured
-	WorkerRegistry *controlplane.RedisWorkerRegistry  // nil in combined/worker mode
+	WorkOSConfig    *auth.WorkOSConfig                // nil if WorkOS not configured
+	WorkerRegistry  *controlplane.RedisWorkerRegistry  // nil in combined/worker mode
+	CheckpointStore *storage.CheckpointStore           // nil if hibernation not configured
 }
 
 // NewServer creates a new API server with all routes configured.
@@ -71,6 +74,7 @@ func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, 
 		s.httpAddr = opts.HTTPAddr
 		s.sandboxDBs = opts.SandboxDBs
 		s.workerRegistry = opts.WorkerRegistry
+		s.checkpointStore = opts.CheckpointStore
 	}
 
 	// Global middleware
@@ -94,6 +98,10 @@ func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, 
 	api.GET("/sandboxes/:id", s.getSandbox)
 	api.DELETE("/sandboxes/:id", s.killSandbox)
 	api.POST("/sandboxes/:id/timeout", s.setTimeout)
+
+	// Hibernation
+	api.POST("/sandboxes/:id/hibernate", s.hibernateSandbox)
+	api.POST("/sandboxes/:id/wake", s.wakeSandbox)
 
 	// Commands
 	api.POST("/sandboxes/:id/commands", s.runCommand)

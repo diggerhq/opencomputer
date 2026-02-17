@@ -37,10 +37,8 @@ func DefaultContainerConfig(name, image string) ContainerConfig {
 		CPUs:        "1",
 		PidsLimit:   256,
 		NetworkMode: "none",
-		ReadOnly:    true,
-		TmpFS: map[string]string{
-			"/tmp": "rw,size=100m",
-		},
+		ReadOnly: false,
+		TmpFS:   map[string]string{},
 		CapDrop:      []string{"ALL"},
 		SecurityOpts: []string{"no-new-privileges"},
 		UserNS:       "",

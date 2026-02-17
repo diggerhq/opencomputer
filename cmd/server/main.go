@@ -16,6 +16,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/podman"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/template"
 )
 
@@ -112,6 +113,33 @@ func main() {
 			FrontendURL:  cfg.WorkOSFrontendURL,
 		}
 		log.Println("opensandbox: WorkOS authentication configured")
+	}
+
+	// Initialize S3 checkpoint store for hibernation (if configured)
+	if cfg.S3Bucket != "" {
+		checkpointStore, err := storage.NewCheckpointStore(storage.S3Config{
+			Endpoint:        cfg.S3Endpoint,
+			Bucket:          cfg.S3Bucket,
+			Region:          cfg.S3Region,
+			AccessKeyID:     cfg.S3AccessKeyID,
+			SecretAccessKey: cfg.S3SecretAccessKey,
+			ForcePathStyle:  cfg.S3ForcePathStyle,
+		})
+		if err != nil {
+			log.Printf("opensandbox: failed to initialize checkpoint store: %v (continuing without hibernation)", err)
+		} else {
+			opts.CheckpointStore = checkpointStore
+			log.Printf("opensandbox: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
+
+			// Enable hibernate-on-timeout in combined mode
+			if mgr != nil {
+				mgr.SetCheckpointStore(checkpointStore)
+				mgr.SetOnHibernate(func(sandboxID string, result *sandbox.HibernateResult) {
+					log.Printf("opensandbox: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
+						sandboxID, result.CheckpointKey, result.SizeBytes)
+				})
+			}
+		}
 	}
 
 	// Initialize Redis worker registry in server mode

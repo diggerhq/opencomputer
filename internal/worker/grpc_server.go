@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
@@ -15,19 +16,21 @@ import (
 // GRPCServer implements the SandboxWorker gRPC service for control plane communication.
 type GRPCServer struct {
 	pb.UnimplementedSandboxWorkerServer
-	manager    *sandbox.Manager
-	ptyManager *sandbox.PTYManager
-	sandboxDBs *sandbox.SandboxDBManager
-	server     *grpc.Server
+	manager         *sandbox.Manager
+	ptyManager      *sandbox.PTYManager
+	sandboxDBs      *sandbox.SandboxDBManager
+	checkpointStore *storage.CheckpointStore
+	server          *grpc.Server
 }
 
 // NewGRPCServer creates a new gRPC server wrapping the sandbox manager.
-func NewGRPCServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *sandbox.SandboxDBManager) *GRPCServer {
+func NewGRPCServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore) *GRPCServer {
 	s := &GRPCServer{
-		manager:    mgr,
-		ptyManager: ptyMgr,
-		sandboxDBs: sandboxDBs,
-		server:     grpc.NewServer(),
+		manager:         mgr,
+		ptyManager:      ptyMgr,
+		sandboxDBs:      sandboxDBs,
+		checkpointStore: checkpointStore,
+		server:          grpc.NewServer(),
 	}
 	pb.RegisterSandboxWorkerServer(s.server, s)
 	return s
@@ -207,4 +210,52 @@ func (s *GRPCServer) CreatePTY(ctx context.Context, req *pb.CreatePTYRequest) (*
 
 func (s *GRPCServer) PTYStream(_ pb.SandboxWorker_PTYStreamServer) error {
 	return fmt.Errorf("PTY streaming not implemented via gRPC, use WebSocket API directly")
+}
+
+func (s *GRPCServer) HibernateSandbox(ctx context.Context, req *pb.HibernateSandboxRequest) (*pb.HibernateSandboxResponse, error) {
+	if s.checkpointStore == nil {
+		return nil, fmt.Errorf("hibernation not configured on this worker")
+	}
+
+	result, err := s.manager.Hibernate(ctx, req.SandboxId, s.checkpointStore)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hibernate sandbox: %w", err)
+	}
+
+	// Clean up per-sandbox SQLite
+	if s.sandboxDBs != nil {
+		_ = s.sandboxDBs.Remove(req.SandboxId)
+	}
+
+	return &pb.HibernateSandboxResponse{
+		SandboxId:     result.SandboxID,
+		CheckpointKey: result.CheckpointKey,
+		SizeBytes:     result.SizeBytes,
+	}, nil
+}
+
+func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest) (*pb.WakeSandboxResponse, error) {
+	if s.checkpointStore == nil {
+		return nil, fmt.Errorf("hibernation not configured on this worker")
+	}
+
+	sb, err := s.manager.Wake(ctx, req.SandboxId, req.CheckpointKey, s.checkpointStore, int(req.Timeout))
+	if err != nil {
+		return nil, fmt.Errorf("failed to wake sandbox: %w", err)
+	}
+
+	// Re-initialize per-sandbox SQLite
+	if s.sandboxDBs != nil {
+		sdb, err := s.sandboxDBs.Get(sb.ID)
+		if err == nil {
+			_ = sdb.LogEvent("woke", map[string]string{
+				"sandbox_id": sb.ID,
+			})
+		}
+	}
+
+	return &pb.WakeSandboxResponse{
+		SandboxId: sb.ID,
+		Status:    string(sb.Status),
+	}, nil
 }

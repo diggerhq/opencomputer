@@ -6,9 +6,10 @@ import "time"
 type SandboxStatus string
 
 const (
-	SandboxStatusRunning SandboxStatus = "running"
-	SandboxStatusStopped SandboxStatus = "stopped"
-	SandboxStatusError   SandboxStatus = "error"
+	SandboxStatusRunning    SandboxStatus = "running"
+	SandboxStatusStopped    SandboxStatus = "stopped"
+	SandboxStatusError      SandboxStatus = "error"
+	SandboxStatusHibernated SandboxStatus = "hibernated"
 )
 
 // Sandbox represents a running sandbox instance.
@@ -48,4 +49,19 @@ type SandboxListResponse struct {
 // TimeoutRequest is the request body for updating sandbox timeout.
 type TimeoutRequest struct {
 	Timeout int `json:"timeout"` // seconds
+}
+
+// CheckpointInfo holds metadata about a hibernated sandbox's checkpoint.
+type CheckpointInfo struct {
+	SandboxID     string    `json:"sandboxId"`
+	CheckpointKey string    `json:"checkpointKey"`
+	SizeBytes     int64     `json:"sizeBytes"`
+	Region        string    `json:"region"`
+	Template      string    `json:"template"`
+	HibernatedAt  time.Time `json:"hibernatedAt"`
+}
+
+// WakeRequest is the request body for waking a hibernated sandbox.
+type WakeRequest struct {
+	Timeout int `json:"timeout,omitempty"` // new timeout in seconds after wake
 }
