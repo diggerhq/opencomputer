@@ -18,6 +18,10 @@ var upgrader = websocket.Upgrader{
 }
 
 func (s *Server) createPTY(c echo.Context) error {
+	if s.ptyManager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	id := c.Param("id")
 
 	var req types.PTYCreateRequest
@@ -41,6 +45,10 @@ func (s *Server) createPTY(c echo.Context) error {
 }
 
 func (s *Server) ptyWebSocket(c echo.Context) error {
+	if s.ptyManager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	sessionID := c.Param("sessionID")
 
 	session, err := s.ptyManager.GetSession(sessionID)
@@ -102,6 +110,10 @@ func (s *Server) ptyWebSocket(c echo.Context) error {
 }
 
 func (s *Server) killPTY(c echo.Context) error {
+	if s.ptyManager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	sessionID := c.Param("sessionID")
 
 	if err := s.ptyManager.KillSession(sessionID); err != nil {

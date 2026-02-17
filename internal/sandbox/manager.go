@@ -149,6 +149,15 @@ func (m *Manager) List(ctx context.Context) ([]types.Sandbox, error) {
 	return sandboxes, nil
 }
 
+// Count returns the number of active sandbox containers.
+func (m *Manager) Count(ctx context.Context) (int, error) {
+	entries, err := m.podman.ListContainers(ctx, labelID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count sandboxes: %w", err)
+	}
+	return len(entries), nil
+}
+
 // SetTimeout updates the timeout for a running sandbox.
 func (m *Manager) SetTimeout(ctx context.Context, id string, timeoutSec int) error {
 	name := fmt.Sprintf("%s-%s", containerName, id)

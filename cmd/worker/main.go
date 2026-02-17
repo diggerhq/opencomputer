@@ -37,23 +37,6 @@ func main() {
 	}
 	log.Printf("opensandbox-worker: using podman %s", version)
 
-	// Pre-pull common template images
-	log.Println("opensandbox-worker: pre-pulling template images...")
-	images := []string{
-		"docker.io/library/ubuntu:22.04",
-		"docker.io/library/python:3.12-slim",
-		"docker.io/library/node:20-slim",
-	}
-	for _, img := range images {
-		exists, _ := client.ImageExists(ctx, img)
-		if !exists {
-			log.Printf("opensandbox-worker: pulling %s...", img)
-			if err := client.PullImage(ctx, img); err != nil {
-				log.Printf("opensandbox-worker: warning: failed to pull %s: %v", img, err)
-			}
-		}
-	}
-
 	// Initialize sandbox manager
 	mgr := sandbox.NewManager(client)
 	defer mgr.Close()
@@ -98,6 +81,47 @@ func main() {
 		}
 	}()
 
+	// Pre-pull common template images in background (non-blocking)
+	go func() {
+		images := []string{
+			"docker.io/library/ubuntu:22.04",
+			"docker.io/library/python:3.12-slim",
+			"docker.io/library/node:20-slim",
+		}
+		for _, img := range images {
+			exists, _ := client.ImageExists(ctx, img)
+			if !exists {
+				log.Printf("opensandbox-worker: pulling %s...", img)
+				if err := client.PullImage(ctx, img); err != nil {
+					log.Printf("opensandbox-worker: warning: failed to pull %s: %v", img, err)
+				}
+			}
+		}
+		log.Println("opensandbox-worker: template images ready")
+	}()
+
+	// Start Redis heartbeat for control plane discovery
+	if cfg.RedisURL != "" {
+		// On Fly.io, use the machine-specific internal address for gRPC
+		grpcAdvertise := grpcAddr
+		if allocID := os.Getenv("FLY_ALLOC_ID"); allocID != "" {
+			grpcAdvertise = allocID + ".vm.opensandbox-worker.internal:9090"
+		}
+
+		hb, err := worker.NewRedisHeartbeat(cfg.RedisURL, cfg.WorkerID, cfg.Region, grpcAdvertise, cfg.HTTPAddr)
+		if err != nil {
+			log.Printf("opensandbox-worker: Redis heartbeat not available: %v", err)
+		} else {
+			hb.Start(func() (int, int, float64, float64) {
+				count, _ := mgr.Count(context.Background())
+				cpuPct, memPct := worker.SystemStats()
+				return cfg.MaxCapacity, count, cpuPct, memPct
+			})
+			defer hb.Stop()
+			log.Println("opensandbox-worker: Redis heartbeat started")
+		}
+	}
+
 	// Start NATS event publisher if configured
 	if cfg.NATSURL != "" {
 		pub, err := worker.NewEventPublisher(cfg.NATSURL, cfg.Region, cfg.WorkerID, sandboxDBMgr)
@@ -106,8 +130,9 @@ func main() {
 		} else {
 			pub.Start()
 			pub.StartHeartbeat(func() (int, int, float64, float64) {
-				// TODO: get actual stats from sandbox manager
-				return 50, 0, 0.0, 0.0
+				count, _ := mgr.Count(context.Background())
+				cpuPct, memPct := worker.SystemStats()
+				return cfg.MaxCapacity, count, cpuPct, memPct
 			})
 			defer pub.Stop()
 			log.Println("opensandbox-worker: NATS event publisher started")

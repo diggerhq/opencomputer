@@ -1,0 +1,10 @@
+.git
+bin/
+web/node_modules/
+web/dist/
+archive/
+examples/
+server/
+*.md
+deploy/grafana/
+deploy/prometheus/

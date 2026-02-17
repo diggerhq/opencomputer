@@ -8,6 +8,10 @@ import (
 )
 
 func (s *Server) readFile(c echo.Context) error {
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	id := c.Param("id")
 	path := c.QueryParam("path")
 	if path == "" {
@@ -27,6 +31,10 @@ func (s *Server) readFile(c echo.Context) error {
 }
 
 func (s *Server) writeFile(c echo.Context) error {
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	id := c.Param("id")
 	path := c.QueryParam("path")
 	if path == "" {
@@ -52,6 +60,10 @@ func (s *Server) writeFile(c echo.Context) error {
 }
 
 func (s *Server) listDir(c echo.Context) error {
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	id := c.Param("id")
 	path := c.QueryParam("path")
 	if path == "" {
@@ -69,6 +81,10 @@ func (s *Server) listDir(c echo.Context) error {
 }
 
 func (s *Server) makeDir(c echo.Context) error {
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	id := c.Param("id")
 	path := c.QueryParam("path")
 	if path == "" {
@@ -87,6 +103,10 @@ func (s *Server) makeDir(c echo.Context) error {
 }
 
 func (s *Server) removeFile(c echo.Context) error {
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	id := c.Param("id")
 	path := c.QueryParam("path")
 	if path == "" {

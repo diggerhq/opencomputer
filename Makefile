@@ -46,6 +46,35 @@ run-pg: build-server
 	OPENSANDBOX_HTTP_ADDR=http://localhost:8080 \
 	$(BUILD_DIR)/$(BINARY_SERVER)
 
+## run-pg-workos: Tier 2 - Combined with PG + WorkOS + Vite dev (requires: make infra-up)
+##   Redirect URI goes through Vite proxy so cookies are set on :3000.
+##   Add http://localhost:3000/auth/callback as redirect URI in your WorkOS dashboard.
+run-pg-workos: build-server
+	OPENSANDBOX_MODE=combined \
+	OPENSANDBOX_API_KEY=test-key \
+	OPENSANDBOX_JWT_SECRET=dev-secret-change-me \
+	OPENSANDBOX_DATABASE_URL="postgres://opensandbox:opensandbox@localhost:5432/opensandbox?sslmode=disable" \
+	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-data \
+	OPENSANDBOX_HTTP_ADDR=http://localhost:8080 \
+	WORKOS_API_KEY=$${WORKOS_API_KEY} \
+	WORKOS_CLIENT_ID=$${WORKOS_CLIENT_ID} \
+	WORKOS_REDIRECT_URI=http://localhost:3000/auth/callback \
+	WORKOS_FRONTEND_URL=$${WORKOS_FRONTEND_URL} \
+	$(BUILD_DIR)/$(BINARY_SERVER)
+
+## run-pg-workos-prod: Tier 2 - Combined with PG + WorkOS + built dashboard (requires: make infra-up web-build)
+run-pg-workos-prod: build-server
+	OPENSANDBOX_MODE=combined \
+	OPENSANDBOX_API_KEY=test-key \
+	OPENSANDBOX_JWT_SECRET=dev-secret-change-me \
+	OPENSANDBOX_DATABASE_URL="postgres://opensandbox:opensandbox@localhost:5432/opensandbox?sslmode=disable" \
+	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-data \
+	OPENSANDBOX_HTTP_ADDR=http://localhost:8080 \
+	WORKOS_API_KEY=$${WORKOS_API_KEY} \
+	WORKOS_CLIENT_ID=$${WORKOS_CLIENT_ID} \
+	WORKOS_REDIRECT_URI=http://localhost:8080/auth/callback \
+	$(BUILD_DIR)/$(BINARY_SERVER)
+
 ## run-full-server: Tier 3 - Control plane only (requires: make infra-up)
 run-full-server: build-server
 	OPENSANDBOX_MODE=server \
@@ -70,6 +99,7 @@ run-full-worker: build-worker
 	OPENSANDBOX_WORKER_ID=w-local-1 \
 	OPENSANDBOX_HTTP_ADDR=http://localhost:8081 \
 	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-worker-data \
+	OPENSANDBOX_MAX_CAPACITY=50 \
 	$(BUILD_DIR)/$(BINARY_WORKER)
 
 ## --- Infrastructure ---
@@ -98,6 +128,19 @@ seed:
 		FROM orgs WHERE slug = 'test-org' \
 		ON CONFLICT (key_hash) DO NOTHING; \
 	" 2>/dev/null && echo "Seeded: org=test-org, api_key=test-key" || echo "Seed failed (run migrations first by starting the server)"
+
+## --- Web Dashboard ---
+
+## web-dev: Start Vite dev server for dashboard (proxies to Go on :8080)
+web-dev:
+	cd web && npm run dev
+
+## web-build: Build dashboard for production
+web-build:
+	cd web && npm install && npm run build
+
+## build-all: Build Go binaries + web dashboard
+build-all: build web-build
 
 ## --- Standard ---
 

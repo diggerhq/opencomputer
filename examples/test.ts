@@ -2,7 +2,11 @@ import { Sandbox } from "../sdks/typescript/src/index";
 
 async function main() {
   console.log("Creating sandbox...");
-  const sb = await Sandbox.create({ template: "base", timeout: 3600 });
+  const sb = await Sandbox.create({
+    template: "base",
+    timeout: 3600,
+    apiUrl: "https://app.opensandbox.ai",
+  });
   console.log(`Sandbox created: ${sb.sandboxId}`);
 
   // Run commands
@@ -34,14 +38,17 @@ async function main() {
 
   // Run a multi-line script
   console.log("\n--- Script execution ---");
-  await sb.files.write("/tmp/script.sh", [
-    "#!/bin/bash",
-    'echo "Current directory: $(pwd)"',
-    'echo "User: $(whoami)"',
-    'echo "Date: $(date)"',
-    'echo "Files in /tmp:"',
-    "ls /tmp",
-  ].join("\n"));
+  await sb.files.write(
+    "/tmp/script.sh",
+    [
+      "#!/bin/bash",
+      'echo "Current directory: $(pwd)"',
+      'echo "User: $(whoami)"',
+      'echo "Date: $(date)"',
+      'echo "Files in /tmp:"',
+      "ls /tmp",
+    ].join("\n"),
+  );
 
   const script = await sb.commands.run("bash /tmp/script.sh");
   console.log(script.stdout);

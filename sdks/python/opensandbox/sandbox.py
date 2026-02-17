@@ -39,13 +39,17 @@ class Sandbox:
     ) -> Sandbox:
         """Create a new sandbox instance."""
         url = api_url or os.environ.get("OPENSANDBOX_API_URL", "http://localhost:8080")
+        url = url.rstrip("/")
         key = api_key or os.environ.get("OPENSANDBOX_API_KEY", "")
+
+        # Control plane client always uses /api prefix
+        api_base = url if url.endswith("/api") else f"{url}/api"
 
         headers = {}
         if key:
             headers["X-API-Key"] = key
 
-        client = httpx.AsyncClient(base_url=url, headers=headers, timeout=30.0)
+        client = httpx.AsyncClient(base_url=api_base, headers=headers, timeout=30.0)
 
         body: dict[str, Any] = {
             "templateID": template,
@@ -93,13 +97,16 @@ class Sandbox:
     ) -> Sandbox:
         """Connect to an existing sandbox."""
         url = api_url or os.environ.get("OPENSANDBOX_API_URL", "http://localhost:8080")
+        url = url.rstrip("/")
         key = api_key or os.environ.get("OPENSANDBOX_API_KEY", "")
+
+        api_base = url if url.endswith("/api") else f"{url}/api"
 
         headers = {}
         if key:
             headers["X-API-Key"] = key
 
-        client = httpx.AsyncClient(base_url=url, headers=headers, timeout=30.0)
+        client = httpx.AsyncClient(base_url=api_base, headers=headers, timeout=30.0)
 
         resp = await client.get(f"/sandboxes/{sandbox_id}")
         resp.raise_for_status()

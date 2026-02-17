@@ -1,5 +1,6 @@
 import asyncio
 import sys
+
 sys.path.insert(0, "../sdks/python")
 
 from opensandbox import Sandbox
@@ -7,12 +8,16 @@ from opensandbox import Sandbox
 
 async def main():
     print("Creating sandbox...")
-    async with await Sandbox.create(template="base", timeout=3600) as sb:
+    async with await Sandbox.create(
+        template="base",
+        timeout=3600,
+        api_url="https://app.opensandbox.ai",
+    ) as sb:
         print(f"Sandbox created: {sb.sandbox_id}")
 
         # Run commands
         print("\n--- Commands ---")
-        result = await sb.commands.run("echo hello from python sdk")
+        result = await sb.commands.run('echo "hello from python sdk"')
         print(f"stdout: {result.stdout.strip()}")
         print(f"exit code: {result.exit_code}")
 
@@ -39,26 +44,36 @@ async def main():
 
         # Run a multi-line script
         print("\n--- Script execution ---")
-        await sb.files.write("/tmp/script.sh", "\n".join([
-            "#!/bin/bash",
-            'echo "Current directory: $(pwd)"',
-            'echo "User: $(whoami)"',
-            'echo "Date: $(date)"',
-            'echo "Files in /tmp:"',
-            "ls /tmp",
-        ]))
+        await sb.files.write(
+            "/tmp/script.sh",
+            "\n".join(
+                [
+                    "#!/bin/bash",
+                    'echo "Current directory: $(pwd)"',
+                    'echo "User: $(whoami)"',
+                    'echo "Date: $(date)"',
+                    'echo "Files in /tmp:"',
+                    "ls /tmp",
+                ]
+            ),
+        )
 
         script = await sb.commands.run("bash /tmp/script.sh")
         print(script.stdout)
 
         # Run Python inside the sandbox
         print("--- Python in sandbox ---")
-        await sb.files.write("/tmp/hello.py", "\n".join([
-            "import os",
-            "print(f'PID: {os.getpid()}')",
-            "print(f'CWD: {os.getcwd()}')",
-            "print('2 + 2 =', 2 + 2)",
-        ]))
+        await sb.files.write(
+            "/tmp/hello.py",
+            "\n".join(
+                [
+                    "import os",
+                    "print(f'PID: {os.getpid()}')",
+                    "print(f'CWD: {os.getcwd()}')",
+                    "print('2 + 2 =', 2 + 2)",
+                ]
+            ),
+        )
         py = await sb.commands.run("python /tmp/hello.py")
         if py.exit_code == 0:
             print(py.stdout)

@@ -7,7 +7,7 @@ primary_region = "iad"
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = true
+  auto_stop_machines = false
   auto_start_machines = true
   min_machines_running = 1
 
@@ -16,5 +16,17 @@ primary_region = "iad"
   OPENSANDBOX_PORT = "8080"
   OPENSANDBOX_REGION = "iad"
   OPENSANDBOX_WORKER_ID = "cp-iad-1"
-  OPENSANDBOX_HTTP_ADDR = "https://opensandbox.fly.dev"
-  # DATABASE_URL, JWT_SECRET, NATS_URL set via fly secrets
+  OPENSANDBOX_HTTP_ADDR = "https://app.opensandbox.ai"
+  OPENSANDBOX_DATA_DIR = "/data/sandboxes"
+  WORKOS_REDIRECT_URI = "https://app.opensandbox.ai/auth/callback"
+  WORKOS_COOKIE_DOMAIN = "opensandbox.ai"
+  # Secrets via `fly secrets set`: OPENSANDBOX_DATABASE_URL, OPENSANDBOX_JWT_SECRET,
+  # WORKOS_API_KEY, WORKOS_CLIENT_ID, OPENSANDBOX_REDIS_URL
+
+[mounts]
+  source = "osb_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

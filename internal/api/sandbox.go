@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/pkg/types"
+	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
 
 func (s *Server) createSandbox(c echo.Context) error {
@@ -34,6 +37,16 @@ func (s *Server) createSandbox(c echo.Context) error {
 		}
 	}
 
+	// Server mode with worker registry: dispatch to remote worker via gRPC
+	if s.workerRegistry != nil {
+		return s.createSandboxRemote(c, ctx, cfg, orgID, hasOrg)
+	}
+
+	// Combined/worker mode: create locally
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	sb, err := s.manager.Create(ctx, cfg)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -52,9 +65,8 @@ func (s *Server) createSandbox(c echo.Context) error {
 		}
 	}
 
-	// Issue sandbox-scoped JWT and connectURL only in server mode (separate worker).
-	// In combined mode the SDK already talks to the right server, so no redirect needed.
-	if s.jwtIssuer != nil && s.mode == "server" {
+	// Issue sandbox-scoped JWT for combined mode
+	if s.jwtIssuer != nil {
 		timeout := cfg.Timeout
 		if timeout <= 0 {
 			timeout = 300
@@ -62,9 +74,6 @@ func (s *Server) createSandbox(c echo.Context) error {
 		token, err := s.jwtIssuer.IssueSandboxToken(orgID, sb.ID, s.workerID, time.Duration(timeout)*time.Second)
 		if err == nil {
 			sb.Token = token
-		}
-		if s.httpAddr != "" {
-			sb.ConnectURL = s.httpAddr
 		}
 	}
 
@@ -90,8 +99,90 @@ func (s *Server) createSandbox(c echo.Context) error {
 	return c.JSON(http.StatusCreated, sb)
 }
 
+// createSandboxRemote dispatches sandbox creation to a remote worker via gRPC.
+func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg types.SandboxConfig, orgID [16]byte, hasOrg bool) error {
+	// Select region (explicit header, or default to server's region)
+	region := c.Request().Header.Get("Fly-Region")
+	if region == "" {
+		region = s.region
+	}
+	if region == "" {
+		region = "iad"
+	}
+
+	worker, grpcClient, err := s.workerRegistry.GetLeastLoadedWorker(region)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "no workers available: " + err.Error(),
+		})
+	}
+
+	// Dispatch via persistent gRPC connection
+	grpcCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	grpcResp, err := grpcClient.CreateSandbox(grpcCtx, &pb.CreateSandboxRequest{
+		Template:       cfg.Template,
+		Timeout:        int32(cfg.Timeout),
+		Envs:           cfg.Envs,
+		MemoryMb:       int32(cfg.MemoryMB),
+		CpuCount:       int32(cfg.CpuCount),
+		NetworkEnabled: cfg.NetworkEnabled,
+	})
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "worker create failed: " + err.Error(),
+		})
+	}
+
+	// Issue sandbox-scoped JWT
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 300
+	}
+	var token string
+	if s.jwtIssuer != nil {
+		t, err := s.jwtIssuer.IssueSandboxToken(orgID, grpcResp.SandboxId, worker.ID, time.Duration(timeout)*time.Second)
+		if err != nil {
+			log.Printf("sandbox: failed to issue JWT: %v", err)
+		} else {
+			token = t
+		}
+	}
+
+	// Record session in PG
+	if s.store != nil && hasOrg {
+		template := cfg.Template
+		if template == "" {
+			template = "base"
+		}
+		cfgJSON, _ := json.Marshal(cfg)
+		metadataJSON, _ := json.Marshal(cfg.Metadata)
+		_, _ = s.store.CreateSandboxSession(ctx, grpcResp.SandboxId, orgID, nil, template, region, worker.ID, cfgJSON, metadataJSON)
+	}
+
+	return c.JSON(http.StatusCreated, map[string]interface{}{
+		"sandboxID":  grpcResp.SandboxId,
+		"connectURL": worker.HTTPAddr,
+		"token":      token,
+		"status":     grpcResp.Status,
+		"region":     region,
+		"workerID":   worker.ID,
+	})
+}
+
 func (s *Server) getSandbox(c echo.Context) error {
 	id := c.Param("id")
+
+	// Server mode with worker registry: look up from PG and issue fresh token
+	if s.workerRegistry != nil {
+		return s.getSandboxRemote(c, id)
+	}
+
+	// Combined/worker mode: look up locally
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
 
 	sb, err := s.manager.Get(c.Request().Context(), id)
 	if err != nil {
@@ -100,10 +191,7 @@ func (s *Server) getSandbox(c echo.Context) error {
 		})
 	}
 
-	// Attach connectURL for discovery only in server mode (separate worker)
-	if s.jwtIssuer != nil && s.httpAddr != "" && s.mode == "server" {
-		sb.ConnectURL = s.httpAddr
-
+	if s.jwtIssuer != nil {
 		orgID, hasOrg := auth.GetOrgID(c)
 		if hasOrg {
 			token, err := s.jwtIssuer.IssueSandboxToken(orgID, id, s.workerID, 24*time.Hour)
@@ -116,8 +204,63 @@ func (s *Server) getSandbox(c echo.Context) error {
 	return c.JSON(http.StatusOK, sb)
 }
 
+// getSandboxRemote looks up a sandbox via the PG session record and returns
+// the worker's connectURL + a fresh JWT.
+func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": "sandbox not found",
+		})
+	}
+
+	// Look up worker address
+	worker := s.workerRegistry.GetWorker(session.WorkerID)
+	connectURL := ""
+	if worker != nil {
+		connectURL = worker.HTTPAddr
+	}
+
+	// Issue a fresh token
+	orgID, _ := auth.GetOrgID(c)
+	var token string
+	if s.jwtIssuer != nil {
+		t, err := s.jwtIssuer.IssueSandboxToken(orgID, sandboxID, session.WorkerID, 24*time.Hour)
+		if err == nil {
+			token = t
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"sandboxID":  sandboxID,
+		"connectURL": connectURL,
+		"token":      token,
+		"status":     session.Status,
+		"region":     session.Region,
+		"workerID":   session.WorkerID,
+		"startedAt":  session.StartedAt,
+		"template":   session.Template,
+	})
+}
+
 func (s *Server) killSandbox(c echo.Context) error {
 	id := c.Param("id")
+
+	// Server mode with worker registry: dispatch destroy via gRPC
+	if s.workerRegistry != nil {
+		return s.killSandboxRemote(c, id)
+	}
+
+	// Combined/worker mode: kill locally
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
 
 	if err := s.manager.Kill(c.Request().Context(), id); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -125,12 +268,10 @@ func (s *Server) killSandbox(c echo.Context) error {
 		})
 	}
 
-	// Update session in PG
 	if s.store != nil {
 		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), id, "stopped", nil)
 	}
 
-	// Clean up SQLite
 	if s.sandboxDBs != nil {
 		_ = s.sandboxDBs.Remove(id)
 	}
@@ -138,7 +279,54 @@ func (s *Server) killSandbox(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// killSandboxRemote dispatches sandbox destruction to the appropriate worker via gRPC.
+func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": "sandbox not found",
+		})
+	}
+
+	// Attempt gRPC destroy (best-effort)
+	client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
+	if err != nil {
+		// Worker is unreachable — mark as error in PG
+		log.Printf("sandbox: worker %s unreachable for destroy: %v", session.WorkerID, err)
+		errMsg := "worker unreachable"
+		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "error", &errMsg)
+		return c.NoContent(http.StatusNoContent)
+	}
+
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 10*time.Second)
+	defer cancel()
+
+	if _, err := client.DestroySandbox(grpcCtx, &pb.DestroySandboxRequest{SandboxId: sandboxID}); err != nil {
+		log.Printf("sandbox: gRPC destroy failed for %s: %v", sandboxID, err)
+	}
+
+	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", nil)
+
+	return c.NoContent(http.StatusNoContent)
+}
+
 func (s *Server) listSandboxes(c echo.Context) error {
+	// Server mode with worker registry: query PG for org's running sandboxes
+	if s.workerRegistry != nil {
+		return s.listSandboxesRemote(c)
+	}
+
+	// Combined/worker mode: list locally
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	sandboxes, err := s.manager.List(c.Request().Context())
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -149,7 +337,72 @@ func (s *Server) listSandboxes(c echo.Context) error {
 	return c.JSON(http.StatusOK, sandboxes)
 }
 
+// listSandboxesRemote queries PG for the org's running sandboxes and returns
+// connectURL + fresh JWT for each.
+func (s *Server) listSandboxesRemote(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{
+			"error": "org context required",
+		})
+	}
+
+	sessions, err := s.store.ListSandboxSessions(c.Request().Context(), orgID, "running", 100, 0)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	result := make([]map[string]interface{}, 0, len(sessions))
+	for _, sess := range sessions {
+		entry := map[string]interface{}{
+			"sandboxID": sess.SandboxID,
+			"status":    sess.Status,
+			"region":    sess.Region,
+			"workerID":  sess.WorkerID,
+			"template":  sess.Template,
+			"startedAt": sess.StartedAt,
+		}
+
+		// Attach connectURL from registry
+		worker := s.workerRegistry.GetWorker(sess.WorkerID)
+		if worker != nil {
+			entry["connectURL"] = worker.HTTPAddr
+		}
+
+		// Issue fresh JWT
+		if s.jwtIssuer != nil {
+			token, err := s.jwtIssuer.IssueSandboxToken(orgID, sess.SandboxID, sess.WorkerID, 24*time.Hour)
+			if err == nil {
+				entry["token"] = token
+			}
+		}
+
+		result = append(result, entry)
+	}
+
+	return c.JSON(http.StatusOK, result)
+}
+
 func (s *Server) setTimeout(c echo.Context) error {
+	// In server mode, timeout must be set directly on the worker via connectURL
+	if s.workerRegistry != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "timeout must be set directly on the worker via connectURL",
+		})
+	}
+
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	id := c.Param("id")
 
 	var req types.TimeoutRequest

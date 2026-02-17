@@ -60,26 +60,36 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("failed to get current migration version: %w", err)
 	}
 
-	// Apply migration 1 if not applied
-	if currentVersion < 1 {
-		sql, err := migrationsFS.ReadFile("migrations/001_initial.up.sql")
+	migrations := []struct {
+		version  int
+		filename string
+	}{
+		{1, "migrations/001_initial.up.sql"},
+		{2, "migrations/002_user_sessions.up.sql"},
+	}
+
+	for _, m := range migrations {
+		if currentVersion >= m.version {
+			continue
+		}
+		sql, err := migrationsFS.ReadFile(m.filename)
 		if err != nil {
-			return fmt.Errorf("failed to read migration file: %w", err)
+			return fmt.Errorf("failed to read migration file %s: %w", m.filename, err)
 		}
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to begin transaction: %w", err)
+			return fmt.Errorf("failed to begin transaction for migration %d: %w", m.version, err)
 		}
 		defer tx.Rollback(ctx)
 
 		if _, err := tx.Exec(ctx, string(sql)); err != nil {
-			return fmt.Errorf("failed to apply migration 001: %w", err)
+			return fmt.Errorf("failed to apply migration %03d: %w", m.version, err)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES (1)`); err != nil {
-			return fmt.Errorf("failed to record migration 001: %w", err)
+		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, m.version); err != nil {
+			return fmt.Errorf("failed to record migration %03d: %w", m.version, err)
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("failed to commit migration 001: %w", err)
+			return fmt.Errorf("failed to commit migration %03d: %w", m.version, err)
 		}
 	}
 
@@ -135,6 +145,20 @@ func (s *Store) GetOrgBySlug(ctx context.Context, slug string) (*Org, error) {
 		&org.MaxSandboxTimeoutSec, &org.CreatedAt, &org.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("org not found: %w", err)
+	}
+	return org, nil
+}
+
+func (s *Store) UpdateOrg(ctx context.Context, id uuid.UUID, name string) (*Org, error) {
+	org := &Org{}
+	err := s.pool.QueryRow(ctx,
+		`UPDATE orgs SET name = $1, updated_at = now() WHERE id = $2
+		 RETURNING id, name, slug, plan, max_concurrent_sandboxes, max_sandbox_timeout_sec, created_at, updated_at`,
+		name, id,
+	).Scan(&org.ID, &org.Name, &org.Slug, &org.Plan, &org.MaxConcurrentSandboxes,
+		&org.MaxSandboxTimeoutSec, &org.CreatedAt, &org.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update org: %w", err)
 	}
 	return org, nil
 }
@@ -446,6 +470,42 @@ func (s *Store) ListHealthyWorkers(ctx context.Context, region string) ([]Worker
 		workers = append(workers, w)
 	}
 	return workers, nil
+}
+
+// --- User Session (access token) operations ---
+
+// StoreAccessToken stores a WorkOS access token mapped to a user ID.
+// Replaces any existing token for the user.
+func (s *Store) StoreAccessToken(ctx context.Context, userID uuid.UUID, accessToken string) error {
+	// Delete old sessions for this user
+	_, _ = s.pool.Exec(ctx, `DELETE FROM user_sessions WHERE user_id = $1`, userID)
+	// Insert new session
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO user_sessions (user_id, access_token) VALUES ($1, $2)`,
+		userID, accessToken)
+	return err
+}
+
+// GetUserByAccessToken looks up a user by their active access token.
+func (s *Store) GetUserByAccessToken(ctx context.Context, accessToken string) (*User, error) {
+	user := &User{}
+	err := s.pool.QueryRow(ctx,
+		`SELECT u.id, u.org_id, u.email, u.name, u.role, u.created_at
+		 FROM users u
+		 INNER JOIN user_sessions s ON s.user_id = u.id
+		 WHERE s.access_token = $1 AND s.expires_at > now()`,
+		accessToken,
+	).Scan(&user.ID, &user.OrgID, &user.Email, &user.Name, &user.Role, &user.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("session not found or expired: %w", err)
+	}
+	return user, nil
+}
+
+// DeleteAccessTokensForUser removes all sessions for a user (logout).
+func (s *Store) DeleteAccessTokensForUser(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM user_sessions WHERE user_id = $1`, userID)
+	return err
 }
 
 // Pool returns the underlying pgx pool for advanced use cases.

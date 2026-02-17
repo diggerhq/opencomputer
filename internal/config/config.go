@@ -30,8 +30,17 @@ type Config struct {
 	HTTPAddr string // Public HTTP address for direct SDK access
 
 	// WorkOS
-	WorkOSAPIKey  string
-	WorkOSClientID string
+	WorkOSAPIKey       string
+	WorkOSClientID     string
+	WorkOSRedirectURI  string
+	WorkOSCookieDomain string
+	WorkOSFrontendURL  string // e.g. "http://localhost:3000" for Vite dev
+
+	// Redis (Upstash) for worker discovery
+	RedisURL string
+
+	// Worker capacity
+	MaxCapacity int
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -43,7 +52,7 @@ func Load() (*Config, error) {
 		Mode:       envOrDefault("OPENSANDBOX_MODE", "combined"),
 		LogLevel:   envOrDefault("OPENSANDBOX_LOG_LEVEL", "info"),
 
-		DatabaseURL: os.Getenv("OPENSANDBOX_DATABASE_URL"),
+		DatabaseURL: envOrDefault("OPENSANDBOX_DATABASE_URL", os.Getenv("DATABASE_URL")),
 		DataDir:     envOrDefault("OPENSANDBOX_DATA_DIR", "/data/sandboxes"),
 		JWTSecret:   os.Getenv("OPENSANDBOX_JWT_SECRET"),
 		NATSURL:     envOrDefault("OPENSANDBOX_NATS_URL", "nats://localhost:4222"),
@@ -51,8 +60,15 @@ func Load() (*Config, error) {
 		WorkerID:    envOrDefault("OPENSANDBOX_WORKER_ID", "w-local-1"),
 		HTTPAddr:    envOrDefault("OPENSANDBOX_HTTP_ADDR", "http://localhost:8080"),
 
-		WorkOSAPIKey:   os.Getenv("WORKOS_API_KEY"),
-		WorkOSClientID: os.Getenv("WORKOS_CLIENT_ID"),
+		WorkOSAPIKey:       os.Getenv("WORKOS_API_KEY"),
+		WorkOSClientID:     os.Getenv("WORKOS_CLIENT_ID"),
+		WorkOSRedirectURI:  envOrDefault("WORKOS_REDIRECT_URI", "http://localhost:8080/auth/callback"),
+		WorkOSCookieDomain: os.Getenv("WORKOS_COOKIE_DOMAIN"),
+		WorkOSFrontendURL:  os.Getenv("WORKOS_FRONTEND_URL"),
+
+		RedisURL:    os.Getenv("OPENSANDBOX_REDIS_URL"),
+
+		MaxCapacity: envOrDefaultInt("OPENSANDBOX_MAX_CAPACITY", 50),
 	}
 
 	if portStr := os.Getenv("OPENSANDBOX_PORT"); portStr != "" {
@@ -69,6 +85,15 @@ func Load() (*Config, error) {
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envOrDefaultInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

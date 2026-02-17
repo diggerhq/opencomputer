@@ -12,6 +12,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/api"
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/config"
+	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/podman"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
@@ -24,31 +25,43 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
+	ctx := context.Background()
+
+	// Initialize Podman (optional in server mode — no container runtime needed)
+	var mgr *sandbox.Manager
+	var ptyMgr *sandbox.PTYManager
+	var registry *template.Registry
+	var builder *template.Builder
+
 	podmanClient, err := podman.NewClient()
 	if err != nil {
-		log.Fatalf("failed to initialize podman: %v", err)
+		if cfg.Mode == "server" {
+			log.Printf("opensandbox: podman not available (server-only mode, sandbox execution disabled): %v", err)
+		} else {
+			log.Fatalf("failed to initialize podman: %v", err)
+		}
+	} else {
+		version, err := podmanClient.Version(ctx)
+		if err != nil {
+			if cfg.Mode == "server" {
+				log.Printf("opensandbox: podman not responding (server-only mode, sandbox execution disabled): %v", err)
+			} else {
+				log.Fatalf("failed to get podman version: %v", err)
+			}
+		} else {
+			log.Printf("opensandbox: using podman %s", version)
+
+			mgr = sandbox.NewManager(podmanClient)
+			defer mgr.Close()
+
+			podmanPath, _ := exec.LookPath("podman")
+			ptyMgr = sandbox.NewPTYManager(podmanPath, podmanClient.AuthFile())
+			defer ptyMgr.CloseAll()
+
+			registry = template.NewRegistry()
+			builder = template.NewBuilder(podmanClient, registry)
+		}
 	}
-
-	// Verify podman is working
-	ctx := context.Background()
-	version, err := podmanClient.Version(ctx)
-	if err != nil {
-		log.Fatalf("failed to get podman version: %v", err)
-	}
-	log.Printf("opensandbox: using podman %s", version)
-
-	// Initialize sandbox manager
-	mgr := sandbox.NewManager(podmanClient)
-	defer mgr.Close()
-
-	// Initialize PTY manager
-	podmanPath, _ := exec.LookPath("podman")
-	ptyMgr := sandbox.NewPTYManager(podmanPath, podmanClient.AuthFile())
-	defer ptyMgr.CloseAll()
-
-	// Initialize template system
-	registry := template.NewRegistry()
-	builder := template.NewBuilder(podmanClient, registry)
 
 	// Build server options
 	opts := &api.ServerOpts{
@@ -89,9 +102,35 @@ func main() {
 	opts.SandboxDBs = sandboxDBMgr
 	log.Printf("opensandbox: SQLite data directory: %s", cfg.DataDir)
 
+	// Configure WorkOS if credentials are set
+	if cfg.WorkOSAPIKey != "" && cfg.WorkOSClientID != "" {
+		opts.WorkOSConfig = &auth.WorkOSConfig{
+			APIKey:       cfg.WorkOSAPIKey,
+			ClientID:     cfg.WorkOSClientID,
+			RedirectURI:  cfg.WorkOSRedirectURI,
+			CookieDomain: cfg.WorkOSCookieDomain,
+			FrontendURL:  cfg.WorkOSFrontendURL,
+		}
+		log.Println("opensandbox: WorkOS authentication configured")
+	}
+
+	// Initialize Redis worker registry in server mode
+	if cfg.Mode == "server" && cfg.RedisURL != "" {
+		redisRegistry, err := controlplane.NewRedisWorkerRegistry(cfg.RedisURL)
+		if err != nil {
+			log.Fatalf("failed to connect to Redis: %v", err)
+		}
+		redisRegistry.Start()
+		defer redisRegistry.Stop()
+		opts.WorkerRegistry = redisRegistry
+		log.Println("opensandbox: Redis worker registry started")
+	}
+
 	// Create API server
 	server := api.NewServer(mgr, ptyMgr, cfg.APIKey, opts)
-	server.SetTemplateDeps(registry, builder)
+	if registry != nil && builder != nil {
+		server.SetTemplateDeps(registry, builder)
+	}
 
 	// Start NATS sync consumer if both PG and NATS are configured
 	if opts.Store != nil && cfg.NATSURL != "" {

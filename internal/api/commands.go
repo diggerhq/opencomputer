@@ -9,6 +9,10 @@ import (
 )
 
 func (s *Server) runCommand(c echo.Context) error {
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
 	id := c.Param("id")
 
 	var cfg types.ProcessConfig

@@ -2,6 +2,11 @@ import { Filesystem } from "./filesystem";
 import { Commands } from "./commands";
 import { Pty } from "./pty";
 
+function resolveApiUrl(url: string): string {
+  const base = url.replace(/\/+$/, "");
+  return base.endsWith("/api") ? base : `${base}/api`;
+}
+
 export interface SandboxOpts {
   template?: string;
   timeout?: number;
@@ -54,7 +59,7 @@ export class Sandbox {
   }
 
   static async create(opts: SandboxOpts = {}): Promise<Sandbox> {
-    const apiUrl = opts.apiUrl ?? process.env.OPENSANDBOX_API_URL ?? "http://localhost:8080";
+    const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENSANDBOX_API_URL ?? "http://localhost:8080");
     const apiKey = opts.apiKey ?? process.env.OPENSANDBOX_API_KEY ?? "";
 
     const body: Record<string, unknown> = {
@@ -83,7 +88,7 @@ export class Sandbox {
   }
 
   static async connect(sandboxId: string, opts: Pick<SandboxOpts, "apiKey" | "apiUrl"> = {}): Promise<Sandbox> {
-    const apiUrl = opts.apiUrl ?? process.env.OPENSANDBOX_API_URL ?? "http://localhost:8080";
+    const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENSANDBOX_API_URL ?? "http://localhost:8080");
     const apiKey = opts.apiKey ?? process.env.OPENSANDBOX_API_KEY ?? "";
 
     const resp = await fetch(`${apiUrl}/sandboxes/${sandboxId}`, {
