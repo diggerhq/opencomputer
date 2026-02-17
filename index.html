@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Open Sandbox</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #f6f4f0;
+      --surface: #ffffff;
+      --border: #e4e0da;
+      --border-light: #ece9e3;
+      --text: #1a1a1a;
+      --muted: #888;
+      --accent: #0000f8;
+      --accent-light: rgba(0, 0, 248, 0.06);
+      --serif: 'Instrument Serif', Georgia, serif;
+      --sans: 'Inter', -apple-system, sans-serif;
+      --mono: 'JetBrains Mono', ui-monospace, monospace;
+      --radius: 16px;
+    }
+
+    html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    /* Nav */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      padding: 1.25rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(246, 244, 240, 0.8);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border-light);
+      animation: fadeIn 0.6s ease both;
+    }
+
+    .nav-logo {
+      font-family: var(--serif);
+      font-size: 1.3rem;
+      color: var(--text);
+      text-decoration: none;
+      letter-spacing: -0.02em;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 2rem;
+    }
+
+    .nav-links a {
+      font-size: 0.85rem;
+      color: var(--muted);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover { color: var(--text); }
+
+    .nav-btn {
+      font-family: var(--sans);
+      font-size: 0.82rem;
+      font-weight: 500;
+      color: #fff !important;
+      background: var(--text);
+      padding: 0.5rem 1.15rem;
+      border-radius: 100px;
+      transition: opacity 0.2s;
+    }
+
+    .nav-btn:hover { opacity: 0.8; color: #fff; }
+
+    /* Hero */
+    .hero {
+      text-align: center;
+      padding: 10rem 2rem 5rem;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-light);
+      border: 1px solid rgba(0, 0, 248, 0.12);
+      padding: 0.4rem 1rem;
+      border-radius: 100px;
+      margin-bottom: 2.5rem;
+      animation: fadeUp 0.7s ease 0.1s both;
+    }
+
+    .hero-badge::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    .hero h1 {
+      font-family: var(--serif);
+      font-size: clamp(3.5rem, 8vw, 6rem);
+      font-weight: 400;
+      letter-spacing: -0.03em;
+      line-height: 1;
+      margin-bottom: 1.25rem;
+      animation: fadeUp 0.7s ease 0.2s both;
+    }
+
+    .hero h1 em {
+      font-style: italic;
+      color: var(--accent);
+    }
+
+    .hero-sub {
+      font-size: 1.15rem;
+      color: var(--muted);
+      max-width: 440px;
+      margin: 0 auto 2.5rem;
+      line-height: 1.7;
+      animation: fadeUp 0.7s ease 0.3s both;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      animation: fadeUp 0.7s ease 0.4s both;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: var(--sans);
+      font-size: 0.88rem;
+      font-weight: 500;
+      text-decoration: none;
+      padding: 0.75rem 1.5rem;
+      border-radius: 100px;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn-dark {
+      background: var(--text);
+      color: #fff;
+    }
+
+    .btn-dark:hover {
+      opacity: 0.85;
+      transform: translateY(-1px);
+    }
+
+    .btn-outline {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn-outline:hover {
+      border-color: var(--text);
+      transform: translateY(-1px);
+    }
+
+    .btn svg { width: 16px; height: 16px; }
+
+    /* Terminal */
+    .terminal-section {
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 0 2rem 6rem;
+      animation: fadeUp 0.7s ease 0.5s both;
+    }
+
+    .terminal {
+      background: #1a1a1a;
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow:
+        0 1px 2px rgba(0,0,0,0.07),
+        0 4px 12px rgba(0,0,0,0.05),
+        0 16px 40px rgba(0,0,0,0.08);
+    }
+
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 1rem 1.25rem;
+      background: #222;
+    }
+
+    .terminal-dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+    }
+
+    .terminal-dot:nth-child(1) { background: #ff5f57; }
+    .terminal-dot:nth-child(2) { background: #febc2e; }
+    .terminal-dot:nth-child(3) { background: #28c840; }
+
+    .terminal-body {
+      padding: 1.5rem 1.75rem 1.75rem;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      line-height: 2;
+      color: #999;
+    }
+
+    .terminal-line { display: flex; gap: 0.5rem; }
+    .terminal-body .prompt { color: #6e7681; user-select: none; }
+    .terminal-body .cmd { color: #e6edf3; }
+    .terminal-body .flag { color: #79c0ff; }
+    .terminal-body .out { padding-left: 1.2rem; }
+    .terminal-body .success { color: #3fb950; }
+
+    /* Divider */
+    .divider {
+      max-width: 900px;
+      margin: 0 auto;
+      border: none;
+      border-top: 1px solid var(--border);
+    }
+
+    /* Features */
+    .features-section {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 6rem 2rem;
+    }
+
+    .features-header {
+      text-align: center;
+      margin-bottom: 4rem;
+    }
+
+    .features-header h2 {
+      font-family: var(--serif);
+      font-size: clamp(2rem, 4vw, 3rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.75rem;
+    }
+
+    .features-header p {
+      color: var(--muted);
+      font-size: 1rem;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .feature-card {
+      background: var(--surface);
+      padding: 2.5rem 2rem;
+      transition: background 0.3s;
+    }
+
+    .feature-card:hover { background: #faf9f7; }
+
+    .feature-number {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--accent);
+      margin-bottom: 1.25rem;
+      letter-spacing: 0.05em;
+    }
+
+    .feature-card h3 {
+      font-family: var(--serif);
+      font-size: 1.5rem;
+      font-weight: 400;
+      margin-bottom: 0.5rem;
+      letter-spacing: -0.01em;
+    }
+
+    .feature-card p {
+      font-size: 0.88rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    /* CTA */
+    .cta-section {
+      text-align: center;
+      padding: 5rem 2rem 7rem;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    .cta-section h2 {
+      font-family: var(--serif);
+      font-size: clamp(2rem, 4vw, 2.75rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      margin-bottom: 1rem;
+    }
+
+    .cta-section p {
+      color: var(--muted);
+      font-size: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    .cta-code {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 0.85rem 1.75rem;
+      border-radius: 100px;
+      color: var(--text);
+      margin-bottom: 2rem;
+      user-select: all;
+      cursor: text;
+    }
+
+    .cta-code span { color: var(--muted); }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2.5rem 2rem;
+      text-align: center;
+    }
+
+    footer p {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    footer a {
+      color: var(--muted);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    footer a:hover { color: var(--text); }
+
+    @media (max-width: 600px) {
+      .features-grid { grid-template-columns: 1fr; }
+      .hero { padding: 7rem 1.5rem 3rem; }
+      .nav-links a:not(.nav-btn) { display: none; }
+      .features-section { padding: 4rem 1.5rem; }
+      .terminal-section { padding: 0 1.5rem 4rem; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a href="#" class="nav-logo">Open Sandbox</a>
+  <div class="nav-links">
+    <a href="#">Docs</a>
+    <a href="#">GitHub</a>
+    <a href="#" class="nav-btn">Get started</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">Open Source</div>
+  <h1>Serverless sandbox that <em>never</em> times out</h1>
+  <p class="hero-sub">Self-hostable execution environments with built-in hibernation, secret management, and local-first development.</p>
+  <div class="hero-actions">
+    <a href="#" class="btn btn-dark">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      Star on GitHub
+    </a>
+    <a href="#" class="btn btn-outline">Read the docs</a>
+  </div>
+</section>
+
+<section class="terminal-section">
+  <div class="terminal">
+    <div class="terminal-bar">
+      <div class="terminal-dot"></div>
+      <div class="terminal-dot"></div>
+      <div class="terminal-dot"></div>
+    </div>
+    <div class="terminal-body">
+      <div class="terminal-line"><span class="prompt">$</span> <span class="cmd">docker run <span class="flag">-d</span> ghcr.io/opensandbox/sandbox</span></div>
+      <div class="out">Pulling image...</div>
+      <div class="out">Sandbox running on :8080</div>
+      <div>&nbsp;</div>
+      <div class="terminal-line"><span class="prompt">$</span> <span class="cmd">sandbox deploy <span class="flag">--local</span></span></div>
+      <div class="out"><span class="success">&#10003;</span> Environment ready. Secrets proxied. No timeout.</div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<section class="features-section">
+  <div class="features-header">
+    <h2>Built for developers</h2>
+    <p>Everything you need to run secure, persistent sandboxes.</p>
+  </div>
+
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-number">01</div>
+      <h3>Open source &amp; self-hostable</h3>
+      <p>Run it on your own infrastructure. No vendor lock-in, full control over your execution environment.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-number">02</div>
+      <h3>Secure secrets</h3>
+      <p>Built-in secret proxy keeps credentials safe. Your secrets never touch the sandbox directly.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-number">03</div>
+      <h3>Never times out</h3>
+      <p>Hibernation and restore means your sandbox sleeps when idle and wakes instantly when needed.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-number">04</div>
+      <h3>Local first</h3>
+      <p>Designed for both human developers and agentic workflows. Works the same locally and in production.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<section class="cta-section">
+  <h2>Get started in seconds</h2>
+  <p>One command to run your own sandbox.</p>
+  <div class="cta-code"><span>$</span> docker run -d ghcr.io/opensandbox/sandbox</div>
+  <div>
+    <a href="#" class="btn btn-dark">View on GitHub</a>
+  </div>
+</section>
+
+<footer>
+  <p>MIT License &middot; <a href="#">GitHub</a> &middot; <a href="#">Documentation</a></p>
+</footer>
+
+</body>
+</html>
