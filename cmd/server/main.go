@@ -167,6 +167,12 @@ func main() {
 		}
 	}
 
+	// Set sandbox domain for API responses (works in both server and combined mode)
+	if cfg.SandboxDomain != "" && cfg.SandboxDomain != "localhost" {
+		opts.SandboxDomain = cfg.SandboxDomain
+		log.Printf("opensandbox: sandbox domain configured (%s)", cfg.SandboxDomain)
+	}
+
 	// Initialize Redis worker registry in server mode
 	if cfg.Mode == "server" && cfg.RedisURL != "" {
 		redisRegistry, err := controlplane.NewRedisWorkerRegistry(cfg.RedisURL)

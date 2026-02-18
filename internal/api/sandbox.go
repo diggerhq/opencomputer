@@ -176,14 +176,19 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		_, _ = s.store.CreateSandboxSession(ctx, grpcResp.SandboxId, orgID, nil, template, region, worker.ID, cfgJSON, metadataJSON)
 	}
 
-	return c.JSON(http.StatusCreated, map[string]interface{}{
+	resp := map[string]interface{}{
 		"sandboxID":  grpcResp.SandboxId,
 		"connectURL": worker.HTTPAddr,
 		"token":      token,
 		"status":     grpcResp.Status,
 		"region":     region,
 		"workerID":   worker.ID,
-	})
+	}
+	if s.sandboxDomain != "" {
+		resp["domain"] = fmt.Sprintf("%s.%s", grpcResp.SandboxId, s.sandboxDomain)
+	}
+
+	return c.JSON(http.StatusCreated, resp)
 }
 
 func (s *Server) getSandbox(c echo.Context) error {
@@ -241,13 +246,17 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 
 	// Hibernated sandboxes have no worker
 	if session.Status == "hibernated" {
-		return c.JSON(http.StatusOK, map[string]interface{}{
+		resp := map[string]interface{}{
 			"sandboxID": sandboxID,
 			"status":    "hibernated",
 			"region":    session.Region,
 			"template":  session.Template,
 			"startedAt": session.StartedAt,
-		})
+		}
+		if s.sandboxDomain != "" {
+			resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
+		}
+		return c.JSON(http.StatusOK, resp)
 	}
 
 	// Look up worker address
@@ -267,7 +276,7 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 		}
 	}
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"sandboxID":  sandboxID,
 		"connectURL": connectURL,
 		"token":      token,
@@ -276,7 +285,12 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 		"workerID":   session.WorkerID,
 		"startedAt":  session.StartedAt,
 		"template":   session.Template,
-	})
+	}
+	if s.sandboxDomain != "" {
+		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
+	}
+
+	return c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) killSandbox(c echo.Context) error {
@@ -556,12 +570,17 @@ func (s *Server) hibernateSandboxRemote(c echo.Context, sandboxID string) error 
 		session.Region, session.Template, session.Config)
 	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "hibernated", nil)
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"sandboxID":     sandboxID,
 		"status":        "hibernated",
 		"checkpointKey": grpcResp.CheckpointKey,
 		"sizeBytes":     grpcResp.SizeBytes,
-	})
+	}
+	if s.sandboxDomain != "" {
+		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
+	}
+
+	return c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) wakeSandbox(c echo.Context) error {
@@ -696,14 +715,19 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 		}
 	}
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"sandboxID":  sandboxID,
 		"connectURL": worker.HTTPAddr,
 		"token":      token,
 		"status":     grpcResp.Status,
 		"region":     region,
 		"workerID":   worker.ID,
-	})
+	}
+	if s.sandboxDomain != "" {
+		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
+	}
+
+	return c.JSON(http.StatusOK, resp)
 }
 
 // listSessions returns session history from PostgreSQL.
