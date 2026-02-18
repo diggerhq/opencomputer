@@ -1,16 +1,48 @@
 {
   "name": "opensandbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript SDK for OpenSandbox - E2B-compatible sandbox platform",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": ["dist"],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
+  "keywords": [
+    "sandbox",
+    "opensandbox",
+    "e2b",
+    "cloud",
+    "containers",
+    "code-execution"
+  ],
+  "author": "OpenSandbox",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/diggerhq/opensandbox.git",
+    "directory": "sdks/typescript"
+  },
+  "homepage": "https://github.com/diggerhq/opensandbox/tree/main/sdks/typescript",
+  "bugs": {
+    "url": "https://github.com/diggerhq/opensandbox/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"

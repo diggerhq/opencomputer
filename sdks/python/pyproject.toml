@@ -3,12 +3,27 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "opensandbox"
+name = "opensandbox-sdk"
 version = "0.1.0"
 description = "Python SDK for OpenSandbox - E2B-compatible sandbox platform"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+authors = [
+    { name = "OpenSandbox" },
+]
+keywords = ["sandbox", "opensandbox", "e2b", "cloud", "containers", "code-execution"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
 dependencies = [
     "httpx>=0.27.0",
     "websockets>=12.0",
@@ -19,3 +34,13 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+
+[project.urls]
+Homepage = "https://github.com/diggerhq/opensandbox"
+Repository = "https://github.com/diggerhq/opensandbox"
+Documentation = "https://github.com/diggerhq/opensandbox/tree/main/sdks/python"
+Issues = "https://github.com/diggerhq/opensandbox/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["opensandbox"]
+exclude = ["__pycache__"]
