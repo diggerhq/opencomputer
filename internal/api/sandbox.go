@@ -54,6 +54,15 @@ func (s *Server) createSandbox(c echo.Context) error {
 		})
 	}
 
+	// Register with sandbox router for rolling timeout tracking
+	if s.router != nil {
+		timeout := cfg.Timeout
+		if timeout <= 0 {
+			timeout = 300
+		}
+		s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
+	}
+
 	// Initialize per-sandbox SQLite if available
 	if s.sandboxDBs != nil {
 		sdb, err := s.sandboxDBs.Get(sb.ID)
@@ -279,6 +288,11 @@ func (s *Server) killSandbox(c echo.Context) error {
 		})
 	}
 
+	// Unregister from sandbox router
+	if s.router != nil {
+		s.router.Unregister(id)
+	}
+
 	if s.store != nil {
 		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), id, "stopped", nil)
 	}
@@ -410,7 +424,7 @@ func (s *Server) setTimeout(c echo.Context) error {
 		})
 	}
 
-	if s.manager == nil {
+	if s.router == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
@@ -429,11 +443,7 @@ func (s *Server) setTimeout(c echo.Context) error {
 		})
 	}
 
-	if err := s.manager.SetTimeout(c.Request().Context(), id, req.Timeout); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": err.Error(),
-		})
-	}
+	s.router.SetTimeout(id, time.Duration(req.Timeout)*time.Second)
 
 	return c.NoContent(http.StatusNoContent)
 }
@@ -459,6 +469,12 @@ func (s *Server) hibernateSandbox(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
 		})
+	}
+
+	// Mark hibernated in sandbox router
+	if s.router != nil {
+		timeout := 600 // default for explicit hibernate
+		s.router.MarkHibernated(id, time.Duration(timeout)*time.Second)
 	}
 
 	// Record checkpoint in PG
@@ -574,6 +590,15 @@ func (s *Server) wakeSandbox(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
 		})
+	}
+
+	// Register with sandbox router after explicit wake
+	if s.router != nil {
+		timeout := req.Timeout
+		if timeout <= 0 {
+			timeout = 300
+		}
+		s.router.Register(id, time.Duration(timeout)*time.Second)
 	}
 
 	_ = s.store.MarkCheckpointRestored(ctx, id)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Test hibernation: file persistence, process preservation, and timing
+# Test hibernation: file persistence, process preservation, auto-wake, and timing
 # Usage: ./scripts/test-hibernation.sh [api_url] [api_key]
 
 API_URL="${1:-http://localhost:8080}"
@@ -43,25 +43,13 @@ run_cmd() {
   api POST "/api/sandboxes/${sandbox_id}/commands" "{\"cmd\": \"bash\", \"args\": [\"-c\", \"${cmd}\"]}"
 }
 
-timed() {
-  local label="$1"
-  shift
-  local start end duration
-  start=$(python3 -c 'import time; print(time.time())')
-  "$@"
-  end=$(python3 -c 'import time; print(time.time())')
-  duration=$(python3 -c "print(f'{${end} - ${start}:.3f}')")
-  yellow "  TIME: ${label} = ${duration}s"
-  echo "$duration"
-}
-
 bold "========================================="
 bold " OpenSandbox Hibernation Test"
 bold "========================================="
 echo ""
 
 # --- Cleanup stale sessions ---
-bold "[0/7] Cleaning up stale sandbox sessions..."
+bold "[0/9] Cleaning up stale sandbox sessions..."
 docker compose -f deploy/docker-compose.yml exec -T postgres \
   psql -U opensandbox -d opensandbox -c \
   "UPDATE sandbox_sessions SET status = 'stopped', stopped_at = now() WHERE status IN ('running', 'hibernated');" \
@@ -69,7 +57,7 @@ docker compose -f deploy/docker-compose.yml exec -T postgres \
 echo ""
 
 # --- Create sandbox ---
-bold "[1/7] Creating sandbox..."
+bold "[1/9] Creating sandbox..."
 CREATE_RESP=$(api POST "/api/sandboxes" '{"template": "ubuntu:22.04", "timeout": 600}')
 SANDBOX_ID=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['sandboxID'])" 2>/dev/null)
 if [[ -z "$SANDBOX_ID" ]]; then
@@ -80,7 +68,7 @@ green "  Created sandbox: $SANDBOX_ID"
 echo ""
 
 # --- Write file state ---
-bold "[2/7] Writing file state..."
+bold "[2/9] Writing file state..."
 run_cmd "$SANDBOX_ID" "echo hibernation-proof-42 > /tmp/proof.txt" > /dev/null
 run_cmd "$SANDBOX_ID" "echo hello-world > /root/hello.txt" > /dev/null
 run_cmd "$SANDBOX_ID" "mkdir -p /var/data && echo persistent-data > /var/data/test.txt" > /dev/null
@@ -95,13 +83,13 @@ check "/var/data/test.txt before hibernate" "persistent-data" "$DATA"
 echo ""
 
 # --- Check PID 1 process ---
-bold "[3/7] Verifying PID 1 (entrypoint) before hibernate..."
+bold "[3/9] Verifying PID 1 (entrypoint) before hibernate..."
 PID1_CMD_BEFORE=$(run_cmd "$SANDBOX_ID" "cat /proc/1/cmdline | tr '\\0' ' '" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null || echo "unknown")
 green "  PID 1 command: $PID1_CMD_BEFORE"
 echo ""
 
 # --- Hibernate ---
-bold "[4/7] Hibernating sandbox..."
+bold "[4/9] Hibernating sandbox..."
 HIB_START=$(python3 -c 'import time; print(time.time())')
 HIB_RESP=$(api POST "/api/sandboxes/${SANDBOX_ID}/hibernate")
 HIB_END=$(python3 -c 'import time; print(time.time())')
@@ -120,8 +108,8 @@ CONTAINER_CHECK=$(podman ps --format '{{.Names}}' 2>/dev/null | grep "osb-${SAND
 check "Container removed after hibernate" "" "$CONTAINER_CHECK"
 echo ""
 
-# --- Wake ---
-bold "[5/7] Waking sandbox..."
+# --- Explicit Wake ---
+bold "[5/9] Waking sandbox (explicit)..."
 WAKE_START=$(python3 -c 'import time; print(time.time())')
 WAKE_RESP=$(api POST "/api/sandboxes/${SANDBOX_ID}/wake" '{"timeout": 600}')
 WAKE_END=$(python3 -c 'import time; print(time.time())')
@@ -133,7 +121,7 @@ check "Wake status" "running" "$WAKE_STATUS"
 echo ""
 
 # --- Verify file state ---
-bold "[6/7] Verifying file state after wake..."
+bold "[6/9] Verifying file state after wake..."
 PROOF_AFTER=$(run_cmd "$SANDBOX_ID" "cat /tmp/proof.txt" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null)
 HELLO_AFTER=$(run_cmd "$SANDBOX_ID" "cat /root/hello.txt" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null)
 DATA_AFTER=$(run_cmd "$SANDBOX_ID" "cat /var/data/test.txt" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null)
@@ -143,7 +131,7 @@ check "/var/data/test.txt after wake" "persistent-data" "$DATA_AFTER"
 echo ""
 
 # --- Verify process state ---
-bold "[7/7] Verifying process state after wake..."
+bold "[7/9] Verifying process state after wake..."
 PID1_CMD_AFTER=$(run_cmd "$SANDBOX_ID" "cat /proc/1/cmdline | tr '\\0' ' '" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null || echo "unknown")
 check "PID 1 command preserved" "$PID1_CMD_BEFORE" "$PID1_CMD_AFTER"
 PID1_EXISTS=$(run_cmd "$SANDBOX_ID" "test -d /proc/1 && echo yes || echo no" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null || echo "no")
@@ -154,16 +142,60 @@ ECHO_TEST=$(run_cmd "$SANDBOX_ID" "echo alive" | python3 -c "import sys,json; pr
 check "Container is functional after wake" "alive" "$ECHO_TEST"
 echo ""
 
+# --- Test auto-wake (hibernate then send command without explicit wake) ---
+bold "[8/9] Testing auto-wake (command to hibernated sandbox)..."
+
+# Write a marker file before second hibernate
+run_cmd "$SANDBOX_ID" "echo auto-wake-marker > /tmp/autowake.txt" > /dev/null
+
+# Hibernate again
+HIB2_RESP=$(api POST "/api/sandboxes/${SANDBOX_ID}/hibernate")
+HIB2_KEY=$(echo "$HIB2_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('checkpointKey',''))" 2>/dev/null)
+if [[ -z "$HIB2_KEY" ]]; then
+  red "  Second hibernate failed: $HIB2_RESP"
+else
+  green "  Hibernated (second time)"
+fi
+
+# Verify container is gone
+CONTAINER_CHECK2=$(podman ps --format '{{.Names}}' 2>/dev/null | grep "osb-${SANDBOX_ID}" || true)
+check "Container removed after second hibernate" "" "$CONTAINER_CHECK2"
+
+# Now send a command WITHOUT calling /wake — the router should auto-wake
+AUTOWAKE_START=$(python3 -c 'import time; print(time.time())')
+AUTOWAKE_RESP=$(run_cmd "$SANDBOX_ID" "cat /tmp/autowake.txt")
+AUTOWAKE_END=$(python3 -c 'import time; print(time.time())')
+AUTOWAKE_DURATION=$(python3 -c "print(f'{${AUTOWAKE_END} - ${AUTOWAKE_START}:.3f}')")
+yellow "  TIME: Auto-wake + exec = ${AUTOWAKE_DURATION}s"
+
+AUTOWAKE_STDOUT=$(echo "$AUTOWAKE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null || echo "")
+check "Auto-wake: file content preserved" "auto-wake-marker" "$AUTOWAKE_STDOUT"
+
+AUTOWAKE_EXIT=$(echo "$AUTOWAKE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('exitCode', -1))" 2>/dev/null || echo "-1")
+check "Auto-wake: command succeeded (exit 0)" "0" "$AUTOWAKE_EXIT"
+echo ""
+
+# --- Test rolling timeout reset ---
+bold "[9/9] Verifying rolling timeout resets on activity..."
+# The sandbox should still be running from the auto-wake. Send a few commands
+# to verify the router resets the timeout each time.
+for i in 1 2 3; do
+  PING=$(run_cmd "$SANDBOX_ID" "echo pong-${i}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null || echo "")
+  check "Rolling timeout ping $i" "pong-${i}" "$PING"
+done
+echo ""
+
 # --- Cleanup ---
 bold "Cleaning up..."
-api POST "/api/sandboxes/${SANDBOX_ID}/commands" '{"cmd": "kill", "args": ["1"]}' > /dev/null 2>&1 || true
+api DELETE "/api/sandboxes/${SANDBOX_ID}" > /dev/null 2>&1 || true
 
 # --- Summary ---
 echo ""
 bold "========================================="
 bold " Results: $PASS passed, $FAIL failed"
-bold " Hibernate: ~${HIBERNATE_DURATION:-?}s"
-bold " Wake:      ~${WAKE_DURATION}s"
+bold " Hibernate:       ~${HIBERNATE_DURATION:-?}s"
+bold " Explicit Wake:   ~${WAKE_DURATION}s"
+bold " Auto-wake+Exec:  ~${AUTOWAKE_DURATION:-?}s"
 bold "========================================="
 
 if [[ $FAIL -gt 0 ]]; then

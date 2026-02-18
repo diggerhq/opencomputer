@@ -73,14 +73,20 @@ func main() {
 			log.Fatalf("failed to initialize checkpoint store: %v", err)
 		}
 		log.Printf("opensandbox-worker: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
+	}
 
-		// Enable hibernate-on-timeout
-		mgr.SetCheckpointStore(checkpointStore)
-		mgr.SetOnHibernate(func(sandboxID string, result *sandbox.HibernateResult) {
+	// Initialize SandboxRouter for rolling timeouts, auto-wake, and command routing
+	sbRouter := sandbox.NewSandboxRouter(sandbox.RouterConfig{
+		Manager:         mgr,
+		CheckpointStore: checkpointStore,
+		WorkerID:        cfg.WorkerID,
+		OnHibernate: func(sandboxID string, result *sandbox.HibernateResult) {
 			log.Printf("opensandbox-worker: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
 				sandboxID, result.CheckpointKey, result.SizeBytes)
-		})
-	}
+		},
+	})
+	defer sbRouter.Close()
+	log.Println("opensandbox-worker: sandbox router initialized (rolling timeouts, auto-wake)")
 
 	// Start Prometheus metrics server on :9091
 	metricsSrv := metrics.StartMetricsServer(":9091")
@@ -88,7 +94,7 @@ func main() {
 	log.Println("opensandbox-worker: metrics server started on :9091")
 
 	// Start gRPC server for control plane communication
-	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr, checkpointStore)
+	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr, checkpointStore, sbRouter)
 	grpcAddr := ":9090"
 	log.Printf("opensandbox-worker: starting gRPC server on %s", grpcAddr)
 	go func() {

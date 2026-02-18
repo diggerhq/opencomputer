@@ -3,14 +3,11 @@ package sandbox
 import (
 	"context"
 	"fmt"
-	"log"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/opensandbox/opensandbox/internal/podman"
-	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
@@ -28,32 +25,17 @@ const (
 	defaultCPU      = 1
 )
 
-// Manager handles sandbox lifecycle operations.
+// Manager handles sandbox lifecycle operations (pure container executor).
+// Timer management and state machine logic live in SandboxRouter.
 type Manager struct {
-	podman          *podman.Client
-	mu              sync.RWMutex
-	timers          map[string]*time.Timer    // sandbox ID -> timeout timer
-	checkpointStore *storage.CheckpointStore  // nil if hibernation not configured
-	onHibernate     func(string, *HibernateResult) // callback after successful hibernate
+	podman *podman.Client
 }
 
 // NewManager creates a new sandbox manager.
 func NewManager(client *podman.Client) *Manager {
 	return &Manager{
 		podman: client,
-		timers: make(map[string]*time.Timer),
 	}
-}
-
-// SetCheckpointStore configures the checkpoint store for hibernation support.
-// When set, sandboxes hibernate instead of being killed on timeout.
-func (m *Manager) SetCheckpointStore(store *storage.CheckpointStore) {
-	m.checkpointStore = store
-}
-
-// SetOnHibernate sets a callback invoked after successful hibernation.
-func (m *Manager) SetOnHibernate(fn func(sandboxID string, result *HibernateResult)) {
-	m.onHibernate = fn
 }
 
 // Create creates a new sandbox container and starts it.
@@ -125,8 +107,6 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 		MemoryMB:  memoryMB,
 	}
 
-	m.scheduleTimeout(id, name, time.Duration(timeout)*time.Second)
-
 	return sandbox, nil
 }
 
@@ -143,7 +123,6 @@ func (m *Manager) Get(ctx context.Context, id string) (*types.Sandbox, error) {
 // Kill forcefully removes a sandbox.
 func (m *Manager) Kill(ctx context.Context, id string) error {
 	name := fmt.Sprintf("%s-%s", containerName, id)
-	m.cancelTimeout(id)
 	if err := m.podman.RemoveContainer(ctx, name, true); err != nil {
 		return fmt.Errorf("failed to kill sandbox %s: %w", id, err)
 	}
@@ -173,82 +152,13 @@ func (m *Manager) Count(ctx context.Context) (int, error) {
 	return len(entries), nil
 }
 
-// SetTimeout updates the timeout for a running sandbox.
-func (m *Manager) SetTimeout(ctx context.Context, id string, timeoutSec int) error {
-	name := fmt.Sprintf("%s-%s", containerName, id)
-
-	// Verify sandbox exists and is running
-	info, err := m.podman.InspectContainer(ctx, name)
-	if err != nil {
-		return fmt.Errorf("sandbox %s not found: %w", id, err)
-	}
-	if !info.State.Running {
-		return fmt.Errorf("sandbox %s is not running", id)
-	}
-
-	m.scheduleTimeout(id, name, time.Duration(timeoutSec)*time.Second)
-	return nil
-}
-
 // ContainerName returns the podman container name for a sandbox ID.
 func (m *Manager) ContainerName(id string) string {
 	return fmt.Sprintf("%s-%s", containerName, id)
 }
 
-// Close cancels all timeout timers.
-func (m *Manager) Close() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, timer := range m.timers {
-		timer.Stop()
-	}
-	m.timers = make(map[string]*time.Timer)
-}
-
-func (m *Manager) scheduleTimeout(id, name string, d time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if existing, ok := m.timers[id]; ok {
-		existing.Stop()
-	}
-
-	m.timers[id] = time.AfterFunc(d, func() {
-		// If checkpoint store is configured, hibernate instead of kill
-		if m.checkpointStore != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-
-			result, err := m.Hibernate(ctx, id, m.checkpointStore)
-			if err != nil {
-				log.Printf("manager: hibernate failed for %s, falling back to kill: %v", id, err)
-				_ = m.podman.RemoveContainer(ctx, name, true)
-			} else {
-				log.Printf("manager: sandbox %s hibernated (key=%s, size=%d)", id, result.CheckpointKey, result.SizeBytes)
-				if m.onHibernate != nil {
-					m.onHibernate(id, result)
-				}
-			}
-		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			_ = m.podman.RemoveContainer(ctx, name, true)
-		}
-
-		m.mu.Lock()
-		delete(m.timers, id)
-		m.mu.Unlock()
-	})
-}
-
-func (m *Manager) cancelTimeout(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if timer, ok := m.timers[id]; ok {
-		timer.Stop()
-		delete(m.timers, id)
-	}
-}
+// Close is a no-op — timer management now lives in SandboxRouter.
+func (m *Manager) Close() {}
 
 func resolveTemplateImage(template string) string {
 	switch template {

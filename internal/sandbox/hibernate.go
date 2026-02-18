@@ -60,7 +60,7 @@ func (m *Manager) Hibernate(ctx context.Context, sandboxID string, checkpointSto
 	}
 
 	// 4. Remove the container (checkpoint --export already stopped it)
-	m.cancelTimeout(sandboxID)
+	// Note: timer management now lives in SandboxRouter (caller handles MarkHibernated)
 	_ = m.podman.RemoveContainer(ctx, name, true)
 
 	return &HibernateResult{
@@ -87,13 +87,7 @@ func (m *Manager) Wake(ctx context.Context, sandboxID string, checkpointKey stri
 		return nil, fmt.Errorf("failed to restore sandbox %s: %w", sandboxID, err)
 	}
 
-	// 3. Schedule new timeout
-	if timeout <= 0 {
-		timeout = defaultTimeout
-	}
-	m.scheduleTimeout(sandboxID, name, time.Duration(timeout)*time.Second)
-
-	// 4. Get sandbox info
+	// 3. Get sandbox info (timer management now lives in SandboxRouter; caller handles Register)
 	info, err := m.podman.InspectContainer(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect restored sandbox %s: %w", sandboxID, err)

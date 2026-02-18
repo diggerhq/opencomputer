@@ -130,16 +130,32 @@ func main() {
 		} else {
 			opts.CheckpointStore = checkpointStore
 			log.Printf("opensandbox: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
-
-			// Enable hibernate-on-timeout in combined mode
-			if mgr != nil {
-				mgr.SetCheckpointStore(checkpointStore)
-				mgr.SetOnHibernate(func(sandboxID string, result *sandbox.HibernateResult) {
-					log.Printf("opensandbox: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
-						sandboxID, result.CheckpointKey, result.SizeBytes)
-				})
-			}
 		}
+	}
+
+	// Initialize SandboxRouter for rolling timeouts, auto-wake, and command routing
+	if mgr != nil {
+		workerID := cfg.WorkerID
+		if workerID == "" {
+			workerID = "w-local-1"
+		}
+		sbRouter := sandbox.NewSandboxRouter(sandbox.RouterConfig{
+			Manager:         mgr,
+			CheckpointStore: opts.CheckpointStore,
+			Store:           opts.Store,
+			WorkerID:        workerID,
+			OnHibernate: func(sandboxID string, result *sandbox.HibernateResult) {
+				log.Printf("opensandbox: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
+					sandboxID, result.CheckpointKey, result.SizeBytes)
+				// Update PG session status if store is available
+				if opts.Store != nil {
+					_ = opts.Store.UpdateSandboxSessionStatus(context.Background(), sandboxID, "hibernated", nil)
+				}
+			},
+		})
+		defer sbRouter.Close()
+		opts.Router = sbRouter
+		log.Println("opensandbox: sandbox router initialized (rolling timeouts, auto-wake)")
 	}
 
 	// Initialize Redis worker registry in server mode

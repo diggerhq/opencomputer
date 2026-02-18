@@ -25,6 +25,7 @@ var errSandboxNotAvailable = map[string]string{
 type Server struct {
 	echo       *echo.Echo
 	manager    *sandbox.Manager
+	router     *sandbox.SandboxRouter  // routes all sandbox interactions (state machine, auto-wake, rolling timeout)
 	ptyManager *sandbox.PTYManager
 	templates  *templateDeps
 	store      *db.Store               // nil in combined/dev mode without PG
@@ -48,6 +49,7 @@ type ServerOpts struct {
 	Region      string
 	HTTPAddr    string
 	SandboxDBs     *sandbox.SandboxDBManager
+	Router         *sandbox.SandboxRouter             // nil in server-only mode
 	WorkOSConfig    *auth.WorkOSConfig                // nil if WorkOS not configured
 	WorkerRegistry  *controlplane.RedisWorkerRegistry  // nil in combined/worker mode
 	CheckpointStore *storage.CheckpointStore           // nil if hibernation not configured
@@ -73,6 +75,7 @@ func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, 
 		s.region = opts.Region
 		s.httpAddr = opts.HTTPAddr
 		s.sandboxDBs = opts.SandboxDBs
+		s.router = opts.Router
 		s.workerRegistry = opts.WorkerRegistry
 		s.checkpointStore = opts.CheckpointStore
 	}

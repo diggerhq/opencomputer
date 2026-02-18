@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -17,6 +18,7 @@ import (
 type GRPCServer struct {
 	pb.UnimplementedSandboxWorkerServer
 	manager         *sandbox.Manager
+	router          *sandbox.SandboxRouter
 	ptyManager      *sandbox.PTYManager
 	sandboxDBs      *sandbox.SandboxDBManager
 	checkpointStore *storage.CheckpointStore
@@ -24,9 +26,10 @@ type GRPCServer struct {
 }
 
 // NewGRPCServer creates a new gRPC server wrapping the sandbox manager.
-func NewGRPCServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore) *GRPCServer {
+func NewGRPCServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore, router *sandbox.SandboxRouter) *GRPCServer {
 	s := &GRPCServer{
 		manager:         mgr,
+		router:          router,
 		ptyManager:      ptyMgr,
 		sandboxDBs:      sandboxDBs,
 		checkpointStore: checkpointStore,
@@ -65,6 +68,15 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		return nil, fmt.Errorf("failed to create sandbox: %w", err)
 	}
 
+	// Register with sandbox router for rolling timeout tracking
+	if s.router != nil {
+		timeout := cfg.Timeout
+		if timeout <= 0 {
+			timeout = 300
+		}
+		s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
+	}
+
 	// Initialize per-sandbox SQLite
 	if s.sandboxDBs != nil {
 		sdb, err := s.sandboxDBs.Get(sb.ID)
@@ -85,6 +97,11 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 func (s *GRPCServer) DestroySandbox(ctx context.Context, req *pb.DestroySandboxRequest) (*pb.DestroySandboxResponse, error) {
 	if err := s.manager.Kill(ctx, req.SandboxId); err != nil {
 		return nil, fmt.Errorf("failed to destroy sandbox: %w", err)
+	}
+
+	// Unregister from sandbox router
+	if s.router != nil {
+		s.router.Unregister(req.SandboxId)
 	}
 
 	// Clean up SQLite
@@ -139,9 +156,23 @@ func (s *GRPCServer) ExecCommand(ctx context.Context, req *pb.ExecCommandRequest
 		Timeout: int(req.Timeout),
 	}
 
-	result, err := s.manager.Exec(ctx, req.SandboxId, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("exec failed: %w", err)
+	var result *types.ProcessResult
+
+	routeOp := func(ctx context.Context) error {
+		var err error
+		result, err = s.manager.Exec(ctx, req.SandboxId, cfg)
+		return err
+	}
+
+	// Route through sandbox router (handles auto-wake, rolling timeout reset)
+	if s.router != nil {
+		if err := s.router.Route(ctx, req.SandboxId, "exec", routeOp); err != nil {
+			return nil, fmt.Errorf("exec failed: %w", err)
+		}
+	} else {
+		if err := routeOp(ctx); err != nil {
+			return nil, fmt.Errorf("exec failed: %w", err)
+		}
 	}
 
 	return &pb.ExecCommandResponse{
@@ -152,24 +183,62 @@ func (s *GRPCServer) ExecCommand(ctx context.Context, req *pb.ExecCommandRequest
 }
 
 func (s *GRPCServer) ReadFile(ctx context.Context, req *pb.ReadFileRequest) (*pb.ReadFileResponse, error) {
-	content, err := s.manager.ReadFile(ctx, req.SandboxId, req.Path)
-	if err != nil {
-		return nil, fmt.Errorf("read file failed: %w", err)
+	var content string
+
+	routeOp := func(ctx context.Context) error {
+		var err error
+		content, err = s.manager.ReadFile(ctx, req.SandboxId, req.Path)
+		return err
 	}
+
+	if s.router != nil {
+		if err := s.router.Route(ctx, req.SandboxId, "readFile", routeOp); err != nil {
+			return nil, fmt.Errorf("read file failed: %w", err)
+		}
+	} else {
+		if err := routeOp(ctx); err != nil {
+			return nil, fmt.Errorf("read file failed: %w", err)
+		}
+	}
+
 	return &pb.ReadFileResponse{Content: []byte(content)}, nil
 }
 
 func (s *GRPCServer) WriteFile(ctx context.Context, req *pb.WriteFileRequest) (*pb.WriteFileResponse, error) {
-	if err := s.manager.WriteFile(ctx, req.SandboxId, req.Path, string(req.Content)); err != nil {
-		return nil, fmt.Errorf("write file failed: %w", err)
+	routeOp := func(ctx context.Context) error {
+		return s.manager.WriteFile(ctx, req.SandboxId, req.Path, string(req.Content))
 	}
+
+	if s.router != nil {
+		if err := s.router.Route(ctx, req.SandboxId, "writeFile", routeOp); err != nil {
+			return nil, fmt.Errorf("write file failed: %w", err)
+		}
+	} else {
+		if err := routeOp(ctx); err != nil {
+			return nil, fmt.Errorf("write file failed: %w", err)
+		}
+	}
+
 	return &pb.WriteFileResponse{}, nil
 }
 
 func (s *GRPCServer) ListDir(ctx context.Context, req *pb.ListDirRequest) (*pb.ListDirResponse, error) {
-	entries, err := s.manager.ListDir(ctx, req.SandboxId, req.Path)
-	if err != nil {
-		return nil, fmt.Errorf("list dir failed: %w", err)
+	var entries []types.EntryInfo
+
+	routeOp := func(ctx context.Context) error {
+		var err error
+		entries, err = s.manager.ListDir(ctx, req.SandboxId, req.Path)
+		return err
+	}
+
+	if s.router != nil {
+		if err := s.router.Route(ctx, req.SandboxId, "listDir", routeOp); err != nil {
+			return nil, fmt.Errorf("list dir failed: %w", err)
+		}
+	} else {
+		if err := routeOp(ctx); err != nil {
+			return nil, fmt.Errorf("list dir failed: %w", err)
+		}
 	}
 
 	var pbEntries []*pb.DirEntry
@@ -222,6 +291,11 @@ func (s *GRPCServer) HibernateSandbox(ctx context.Context, req *pb.HibernateSand
 		return nil, fmt.Errorf("failed to hibernate sandbox: %w", err)
 	}
 
+	// Mark hibernated in sandbox router
+	if s.router != nil {
+		s.router.MarkHibernated(req.SandboxId, 600*time.Second)
+	}
+
 	// Clean up per-sandbox SQLite
 	if s.sandboxDBs != nil {
 		_ = s.sandboxDBs.Remove(req.SandboxId)
@@ -242,6 +316,15 @@ func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest
 	sb, err := s.manager.Wake(ctx, req.SandboxId, req.CheckpointKey, s.checkpointStore, int(req.Timeout))
 	if err != nil {
 		return nil, fmt.Errorf("failed to wake sandbox: %w", err)
+	}
+
+	// Register with sandbox router after explicit wake
+	if s.router != nil {
+		timeout := int(req.Timeout)
+		if timeout <= 0 {
+			timeout = 300
+		}
+		s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
 	}
 
 	// Re-initialize per-sandbox SQLite

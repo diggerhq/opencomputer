@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
+	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
@@ -31,11 +33,27 @@ func (s *Server) createPTY(c echo.Context) error {
 		})
 	}
 
-	session, err := s.ptyManager.CreateSession(id, req)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": err.Error(),
-		})
+	var session *sandbox.PTYSessionHandle
+
+	routeOp := func(_ context.Context) error {
+		var err error
+		session, err = s.ptyManager.CreateSession(id, req)
+		return err
+	}
+
+	// Route through sandbox router (handles auto-wake, rolling timeout reset)
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "createPTY", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
 	}
 
 	return c.JSON(http.StatusCreated, types.PTYSession{
@@ -49,7 +67,13 @@ func (s *Server) ptyWebSocket(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
+	id := c.Param("id")
 	sessionID := c.Param("sessionID")
+
+	// Touch the router on initial WebSocket connection to reset timeout
+	if s.router != nil {
+		s.router.Touch(id)
+	}
 
 	session, err := s.ptyManager.GetSession(sessionID)
 	if err != nil {
@@ -82,7 +106,7 @@ func (s *Server) ptyWebSocket(c echo.Context) error {
 		}
 	}()
 
-	// Read from WebSocket -> write to PTY
+	// Read from WebSocket -> write to PTY (with router touch on activity)
 	go func() {
 		for {
 			_, msg, err := ws.ReadMessage()
@@ -91,6 +115,10 @@ func (s *Server) ptyWebSocket(c echo.Context) error {
 			}
 			if _, err := session.PTY.Write(msg); err != nil {
 				return
+			}
+			// Touch on every WebSocket message to keep sandbox alive
+			if s.router != nil {
+				s.router.Touch(id)
 			}
 		}
 	}()
@@ -114,14 +142,27 @@ func (s *Server) killPTY(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
+	id := c.Param("id")
 	sessionID := c.Param("sessionID")
 
-	if err := s.ptyManager.KillSession(sessionID); err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": err.Error(),
-		})
+	routeOp := func(_ context.Context) error {
+		return s.ptyManager.KillSession(sessionID)
+	}
+
+	// Route through sandbox router
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "killPTY", routeOp); err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{
+				"error": err.Error(),
+			})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{
+				"error": err.Error(),
+			})
+		}
 	}
 
 	return c.NoContent(http.StatusNoContent)
 }
-
