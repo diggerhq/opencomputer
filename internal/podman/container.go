@@ -16,12 +16,14 @@ type ContainerConfig struct {
 	Memory         string // e.g. "512m"
 	CPUs           string // e.g. "1"
 	PidsLimit      int
-	NetworkMode    string // "none", "slirp4netns"
+	NetworkMode    string // "none", "slirp4netns", "bridge"
 	ReadOnly       bool
 	TmpFS          map[string]string // mount -> options
 	CapDrop        []string
 	SecurityOpts   []string
 	UserNS         string
+	Publish        []string // port mappings, e.g. ["12345:80/tcp"]
+	CapAdd         []string
 	Entrypoint     []string
 	Command        []string
 }
@@ -85,6 +87,12 @@ func (c *Client) CreateContainer(ctx context.Context, cfg ContainerConfig) (stri
 	}
 	if cfg.UserNS != "" {
 		args = append(args, "--userns", cfg.UserNS)
+	}
+	for _, pub := range cfg.Publish {
+		args = append(args, "--publish", pub)
+	}
+	for _, cap := range cfg.CapAdd {
+		args = append(args, "--cap-add", cap)
 	}
 
 	if len(cfg.Entrypoint) > 0 {

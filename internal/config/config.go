@@ -42,6 +42,9 @@ type Config struct {
 	// Worker capacity
 	MaxCapacity int
 
+	// Sandbox subdomain routing
+	SandboxDomain string // Base domain for sandbox subdomains (e.g., "workers.opensandbox.dev", default "localhost")
+
 	// S3-compatible object storage for checkpoint hibernation
 	S3Endpoint        string // e.g. "https://<account>.r2.cloudflarestorage.com"
 	S3Bucket          string // e.g. "opensandbox-checkpoints"
@@ -77,6 +80,8 @@ func Load() (*Config, error) {
 		RedisURL:    os.Getenv("OPENSANDBOX_REDIS_URL"),
 
 		MaxCapacity: envOrDefaultInt("OPENSANDBOX_MAX_CAPACITY", 50),
+
+		SandboxDomain: envOrDefault("OPENSANDBOX_SANDBOX_DOMAIN", "localhost"),
 
 		S3Endpoint:        os.Getenv("OPENSANDBOX_S3_ENDPOINT"),
 		S3Bucket:          os.Getenv("OPENSANDBOX_S3_BUCKET"),

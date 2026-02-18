@@ -13,6 +13,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
 )
@@ -38,6 +39,7 @@ type Server struct {
 	workos          *auth.WorkOSMiddleware            // nil if WorkOS not configured
 	workerRegistry  *controlplane.RedisWorkerRegistry // nil in combined/worker mode
 	checkpointStore *storage.CheckpointStore          // nil if hibernation not configured
+	sandboxDomain   string                            // base domain for sandbox subdomains
 }
 
 // ServerOpts holds optional dependencies for the API server.
@@ -50,6 +52,8 @@ type ServerOpts struct {
 	HTTPAddr    string
 	SandboxDBs     *sandbox.SandboxDBManager
 	Router         *sandbox.SandboxRouter             // nil in server-only mode
+	SandboxProxy   *proxy.SandboxProxy               // nil if subdomain routing not configured
+	SandboxDomain  string                             // base domain for sandbox subdomains
 	WorkOSConfig    *auth.WorkOSConfig                // nil if WorkOS not configured
 	WorkerRegistry  *controlplane.RedisWorkerRegistry  // nil in combined/worker mode
 	CheckpointStore *storage.CheckpointStore           // nil if hibernation not configured
@@ -78,6 +82,7 @@ func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, 
 		s.router = opts.Router
 		s.workerRegistry = opts.WorkerRegistry
 		s.checkpointStore = opts.CheckpointStore
+		s.sandboxDomain = opts.SandboxDomain
 	}
 
 	// Global middleware
@@ -85,6 +90,11 @@ func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, 
 	e.Use(middleware.Logger())
 	e.Use(middleware.CORS())
 	e.Use(middleware.RequestID())
+
+	// Subdomain proxy middleware (before auth — subdomain traffic is public)
+	if opts != nil && opts.SandboxProxy != nil {
+		e.Use(opts.SandboxProxy.Middleware())
+	}
 
 	// Health check (no auth)
 	e.GET("/health", func(c echo.Context) error {

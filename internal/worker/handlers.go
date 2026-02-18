@@ -10,6 +10,33 @@ import (
 	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
+func (s *HTTPServer) setTimeout(c echo.Context) error {
+	if s.router == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "sandbox router not available",
+		})
+	}
+
+	id := c.Param("id")
+
+	var req types.TimeoutRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid request body: " + err.Error(),
+		})
+	}
+
+	if req.Timeout <= 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "timeout must be positive",
+		})
+	}
+
+	s.router.SetTimeout(id, time.Duration(req.Timeout)*time.Second)
+
+	return c.NoContent(http.StatusNoContent)
+}
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -84,6 +85,11 @@ func (s *Server) createSandbox(c echo.Context) error {
 		if err == nil {
 			sb.Token = token
 		}
+	}
+
+	// Assign subdomain
+	if s.sandboxDomain != "" {
+		sb.Domain = fmt.Sprintf("%s.%s", sb.ID, s.sandboxDomain)
 	}
 
 	// Write session record to PG if available
@@ -208,6 +214,10 @@ func (s *Server) getSandbox(c echo.Context) error {
 				sb.Token = token
 			}
 		}
+	}
+
+	if s.sandboxDomain != "" {
+		sb.Domain = fmt.Sprintf("%s.%s", id, s.sandboxDomain)
 	}
 
 	return c.JSON(http.StatusOK, sb)
@@ -618,6 +628,9 @@ func (s *Server) wakeSandbox(c echo.Context) error {
 	}
 
 	sb.ConnectURL = s.httpAddr
+	if s.sandboxDomain != "" {
+		sb.Domain = fmt.Sprintf("%s.%s", id, s.sandboxDomain)
+	}
 
 	return c.JSON(http.StatusOK, sb)
 }

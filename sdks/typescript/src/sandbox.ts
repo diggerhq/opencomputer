@@ -22,10 +22,12 @@ interface SandboxData {
   templateID?: string;
   connectURL?: string;
   token?: string;
+  domain?: string;
 }
 
 export class Sandbox {
   readonly sandboxId: string;
+  readonly domain: string;
   readonly files: Filesystem;
   readonly commands: Commands;
   readonly pty: Pty;
@@ -38,6 +40,7 @@ export class Sandbox {
 
   private constructor(data: SandboxData, apiUrl: string, apiKey: string) {
     this.sandboxId = data.sandboxID;
+    this.domain = data.domain || "";
     this._status = data.status;
     this.apiUrl = apiUrl;
     this.apiKey = apiKey;

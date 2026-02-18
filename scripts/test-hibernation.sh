@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Test hibernation: file persistence, process preservation, auto-wake, and timing
+# Test hibernation: file persistence, process preservation, auto-wake, subdomain proxy, and timing
 # Usage: ./scripts/test-hibernation.sh [api_url] [api_key]
 
 API_URL="${1:-http://localhost:8080}"
@@ -49,7 +49,7 @@ bold "========================================="
 echo ""
 
 # --- Cleanup stale sessions ---
-bold "[0/9] Cleaning up stale sandbox sessions..."
+bold "[0/11] Cleaning up stale sandbox sessions..."
 docker compose -f deploy/docker-compose.yml exec -T postgres \
   psql -U opensandbox -d opensandbox -c \
   "UPDATE sandbox_sessions SET status = 'stopped', stopped_at = now() WHERE status IN ('running', 'hibernated');" \
@@ -57,18 +57,23 @@ docker compose -f deploy/docker-compose.yml exec -T postgres \
 echo ""
 
 # --- Create sandbox ---
-bold "[1/9] Creating sandbox..."
+bold "[1/11] Creating sandbox..."
 CREATE_RESP=$(api POST "/api/sandboxes" '{"template": "ubuntu:22.04", "timeout": 600}')
 SANDBOX_ID=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['sandboxID'])" 2>/dev/null)
 if [[ -z "$SANDBOX_ID" ]]; then
   red "Failed to create sandbox: $CREATE_RESP"
   exit 1
 fi
+SANDBOX_DOMAIN=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('domain',''))" 2>/dev/null || echo "")
+SANDBOX_HOST_PORT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('hostPort',0))" 2>/dev/null || echo "0")
 green "  Created sandbox: $SANDBOX_ID"
+if [[ -n "$SANDBOX_DOMAIN" ]]; then
+  green "  Domain: $SANDBOX_DOMAIN (host port: $SANDBOX_HOST_PORT)"
+fi
 echo ""
 
 # --- Write file state ---
-bold "[2/9] Writing file state..."
+bold "[2/11] Writing file state..."
 run_cmd "$SANDBOX_ID" "echo hibernation-proof-42 > /tmp/proof.txt" > /dev/null
 run_cmd "$SANDBOX_ID" "echo hello-world > /root/hello.txt" > /dev/null
 run_cmd "$SANDBOX_ID" "mkdir -p /var/data && echo persistent-data > /var/data/test.txt" > /dev/null
@@ -83,13 +88,13 @@ check "/var/data/test.txt before hibernate" "persistent-data" "$DATA"
 echo ""
 
 # --- Check PID 1 process ---
-bold "[3/9] Verifying PID 1 (entrypoint) before hibernate..."
+bold "[3/11] Verifying PID 1 (entrypoint) before hibernate..."
 PID1_CMD_BEFORE=$(run_cmd "$SANDBOX_ID" "cat /proc/1/cmdline | tr '\\0' ' '" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null || echo "unknown")
 green "  PID 1 command: $PID1_CMD_BEFORE"
 echo ""
 
 # --- Hibernate ---
-bold "[4/9] Hibernating sandbox..."
+bold "[4/11] Hibernating sandbox..."
 HIB_START=$(python3 -c 'import time; print(time.time())')
 HIB_RESP=$(api POST "/api/sandboxes/${SANDBOX_ID}/hibernate")
 HIB_END=$(python3 -c 'import time; print(time.time())')
@@ -109,7 +114,7 @@ check "Container removed after hibernate" "" "$CONTAINER_CHECK"
 echo ""
 
 # --- Explicit Wake ---
-bold "[5/9] Waking sandbox (explicit)..."
+bold "[5/11] Waking sandbox (explicit)..."
 WAKE_START=$(python3 -c 'import time; print(time.time())')
 WAKE_RESP=$(api POST "/api/sandboxes/${SANDBOX_ID}/wake" '{"timeout": 600}')
 WAKE_END=$(python3 -c 'import time; print(time.time())')
@@ -121,7 +126,7 @@ check "Wake status" "running" "$WAKE_STATUS"
 echo ""
 
 # --- Verify file state ---
-bold "[6/9] Verifying file state after wake..."
+bold "[6/11] Verifying file state after wake..."
 PROOF_AFTER=$(run_cmd "$SANDBOX_ID" "cat /tmp/proof.txt" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null)
 HELLO_AFTER=$(run_cmd "$SANDBOX_ID" "cat /root/hello.txt" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null)
 DATA_AFTER=$(run_cmd "$SANDBOX_ID" "cat /var/data/test.txt" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null)
@@ -131,7 +136,7 @@ check "/var/data/test.txt after wake" "persistent-data" "$DATA_AFTER"
 echo ""
 
 # --- Verify process state ---
-bold "[7/9] Verifying process state after wake..."
+bold "[7/11] Verifying process state after wake..."
 PID1_CMD_AFTER=$(run_cmd "$SANDBOX_ID" "cat /proc/1/cmdline | tr '\\0' ' '" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null || echo "unknown")
 check "PID 1 command preserved" "$PID1_CMD_BEFORE" "$PID1_CMD_AFTER"
 PID1_EXISTS=$(run_cmd "$SANDBOX_ID" "test -d /proc/1 && echo yes || echo no" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null || echo "no")
@@ -143,7 +148,7 @@ check "Container is functional after wake" "alive" "$ECHO_TEST"
 echo ""
 
 # --- Test auto-wake (hibernate then send command without explicit wake) ---
-bold "[8/9] Testing auto-wake (command to hibernated sandbox)..."
+bold "[8/11] Testing auto-wake (command to hibernated sandbox)..."
 
 # Write a marker file before second hibernate
 run_cmd "$SANDBOX_ID" "echo auto-wake-marker > /tmp/autowake.txt" > /dev/null
@@ -176,13 +181,71 @@ check "Auto-wake: command succeeded (exit 0)" "0" "$AUTOWAKE_EXIT"
 echo ""
 
 # --- Test rolling timeout reset ---
-bold "[9/9] Verifying rolling timeout resets on activity..."
+bold "[9/11] Verifying rolling timeout resets on activity..."
 # The sandbox should still be running from the auto-wake. Send a few commands
 # to verify the router resets the timeout each time.
 for i in 1 2 3; do
   PING=$(run_cmd "$SANDBOX_ID" "echo pong-${i}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout','').strip())" 2>/dev/null || echo "")
   check "Rolling timeout ping $i" "pong-${i}" "$PING"
 done
+echo ""
+
+# --- Test subdomain proxy ---
+bold "[10/11] Testing subdomain proxy..."
+
+# Extract the port from API_URL (default 8080)
+API_PORT=$(echo "$API_URL" | python3 -c "import sys; from urllib.parse import urlparse; print(urlparse(sys.stdin.read().strip()).port or 8080)" 2>/dev/null || echo "8080")
+
+# Start a simple HTTP server on port 80 inside the sandbox using perl (available in ubuntu:22.04)
+run_cmd "$SANDBOX_ID" "echo 'hello from sandbox' > /tmp/index.html" > /dev/null
+# Write a tiny perl HTTP server script using base64 to avoid escaping issues
+PERL_HTTPD=$(printf '%s' 'use IO::Socket::INET;my $s=IO::Socket::INET->new(LocalPort=>80,Listen=>5,ReuseAddr=>1) or die;while(my $c=$s->accept){my $r=<$c>;open my $f,"<","/tmp/index.html";my $b=do{local $/;<$f>};print $c "HTTP/1.0 200 OK\r\nContent-Length:".length($b)."\r\n\r\n".$b;close $c}' | base64)
+run_cmd "$SANDBOX_ID" "echo ${PERL_HTTPD} | base64 -d > /tmp/httpd.pl" > /dev/null
+run_cmd "$SANDBOX_ID" "nohup perl /tmp/httpd.pl > /dev/null 2>&1 &" > /dev/null
+sleep 1
+
+if [[ -n "$SANDBOX_DOMAIN" ]]; then
+  # Curl through subdomain proxy (resolve sandbox_id.localhost to 127.0.0.1)
+  PROXY_RESP=$(curl -s --max-time 5 \
+    --resolve "${SANDBOX_DOMAIN}:${API_PORT}:127.0.0.1" \
+    "http://${SANDBOX_DOMAIN}:${API_PORT}/index.html" 2>/dev/null || echo "")
+  check "Subdomain proxy: HTTP response" "hello from sandbox" "$PROXY_RESP"
+else
+  yellow "  SKIP: No domain assigned (OPENSANDBOX_SANDBOX_DOMAIN not set)"
+fi
+echo ""
+
+# --- Test subdomain proxy after hibernate/wake ---
+bold "[11/11] Testing subdomain proxy survives hibernate/wake..."
+
+if [[ -n "$SANDBOX_DOMAIN" ]]; then
+  # Hibernate
+  HIB3_RESP=$(api POST "/api/sandboxes/${SANDBOX_ID}/hibernate")
+  HIB3_KEY=$(echo "$HIB3_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('checkpointKey',''))" 2>/dev/null)
+  if [[ -n "$HIB3_KEY" ]]; then
+    green "  Hibernated for proxy test"
+  else
+    red "  Hibernate failed: $HIB3_RESP"
+  fi
+
+  # Wake
+  WAKE3_RESP=$(api POST "/api/sandboxes/${SANDBOX_ID}/wake" '{"timeout": 600}')
+  WAKE3_STATUS=$(echo "$WAKE3_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+  check "Wake for proxy test" "running" "$WAKE3_STATUS"
+
+  # Restart the web server (process state is restored but the HTTP server may not survive checkpoint)
+  # /tmp/httpd.pl was written in step 10 and survives hibernate (tmpfs is checkpointed)
+  run_cmd "$SANDBOX_ID" "nohup perl /tmp/httpd.pl > /dev/null 2>&1 &" > /dev/null
+  sleep 1
+
+  # Curl through subdomain proxy again
+  PROXY_RESP2=$(curl -s --max-time 5 \
+    --resolve "${SANDBOX_DOMAIN}:${API_PORT}:127.0.0.1" \
+    "http://${SANDBOX_DOMAIN}:${API_PORT}/index.html" 2>/dev/null || echo "")
+  check "Subdomain proxy after wake: HTTP response" "hello from sandbox" "$PROXY_RESP2"
+else
+  yellow "  SKIP: No domain assigned"
+fi
 echo ""
 
 # --- Cleanup ---

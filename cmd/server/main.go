@@ -15,6 +15,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/podman"
+	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/template"
@@ -156,6 +157,14 @@ func main() {
 		defer sbRouter.Close()
 		opts.Router = sbRouter
 		log.Println("opensandbox: sandbox router initialized (rolling timeouts, auto-wake)")
+
+		// Initialize subdomain reverse proxy
+		if cfg.SandboxDomain != "" {
+			sbProxy := proxy.New(cfg.SandboxDomain, mgr, sbRouter)
+			opts.SandboxProxy = sbProxy
+			opts.SandboxDomain = cfg.SandboxDomain
+			log.Printf("opensandbox: subdomain proxy configured (*.%s)", cfg.SandboxDomain)
+		}
 	}
 
 	// Initialize Redis worker registry in server mode

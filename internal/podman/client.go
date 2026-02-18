@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -303,6 +304,17 @@ func (c *Client) RestoreContainerFromStream(ctx context.Context, reader io.Reade
 
 	// Wait for podman restore to complete
 	return <-errCh
+}
+
+// FindFreePort asks the OS for a free TCP port by listening on :0.
+func FindFreePort() (int, error) {
+	l, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return 0, fmt.Errorf("failed to find free port: %w", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	return port, nil
 }
 
 // Version returns the podman version string.
