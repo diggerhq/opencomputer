@@ -42,7 +42,7 @@ export class Filesystem {
       {
         method: "PUT",
         headers: this.headers,
-        body: content,
+        body: content as BodyInit,
       },
     );
     if (!resp.ok) throw new Error(`Failed to write ${path}: ${resp.status}`);
