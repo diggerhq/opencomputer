@@ -31,7 +31,7 @@ await sandbox.kill();
 
 | Option    | Env Variable            | Default                  |
 |-----------|------------------------|--------------------------|
-| `apiUrl`  | `OPENSANDBOX_API_URL`  | `http://localhost:8080`  |
+| `apiUrl`  | `OPENSANDBOX_API_URL`  | `https://app.opensandbox.ai`  |
 | `apiKey`  | `OPENSANDBOX_API_KEY`  | (none)                   |
 
 ## License

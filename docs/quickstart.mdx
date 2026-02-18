@@ -3,7 +3,11 @@ title: "Quickstart"
 description: "Get up and running with OpenSandbox in 5 minutes"
 ---
 
-## 1. Install the SDK
+## 1. Get Your API Key
+
+Sign up at [app.opensandbox.ai](https://app.opensandbox.ai) and grab your API key from the dashboard.
+
+## 2. Install the SDK
 
 <CodeGroup>
 
@@ -17,25 +21,13 @@ pip install opensandbox-sdk
 
 </CodeGroup>
 
-## 2. Set Your API Key
+## 3. Set Your API Key
 
-<CodeGroup>
-
-```bash TypeScript
+```bash
 export OPENSANDBOX_API_KEY="your-api-key"
-export OPENSANDBOX_API_URL="https://api.opensandbox.dev"  # optional, defaults to localhost
 ```
 
-```bash Python
-export OPENSANDBOX_API_KEY="your-api-key"
-export OPENSANDBOX_API_URL="https://api.opensandbox.dev"  # optional, defaults to localhost
-```
-
-</CodeGroup>
-
-Or pass credentials directly when creating a sandbox — see [Configuration](/configuration).
-
-## 3. Create a Sandbox
+## 4. Create a Sandbox
 
 <CodeGroup>
 
@@ -59,7 +51,7 @@ print(f"Sandbox created: {sandbox.sandbox_id}")
 
 </CodeGroup>
 
-## 4. Run a Command
+## 5. Run a Command
 
 <CodeGroup>
 
@@ -79,7 +71,7 @@ print(result.exit_code)  # 0
 
 </CodeGroup>
 
-## 5. Read and Write Files
+## 6. Read and Write Files
 
 <CodeGroup>
 
@@ -112,7 +104,7 @@ for e in entries:
 
 </CodeGroup>
 
-## 6. Clean Up
+## 7. Clean Up
 
 <CodeGroup>
 
@@ -135,4 +127,3 @@ async with Sandbox.create() as sandbox:
 
 - [TypeScript SDK Reference](/sdks/typescript/overview) — full API docs for the TypeScript SDK
 - [Python SDK Reference](/sdks/python/overview) — full API docs for the Python SDK
-- [Configuration](/configuration) — API keys, URLs, and environment setup
