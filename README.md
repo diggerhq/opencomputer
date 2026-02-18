@@ -47,6 +47,10 @@ curl -X DELETE http://localhost:8080/sandboxes/{id}
 
 ### Python SDK
 
+```bash
+pip install opensandbox-sdk
+```
+
 ```python
 import asyncio
 from opensandbox import Sandbox
@@ -64,6 +68,10 @@ asyncio.run(main())
 ```
 
 ### TypeScript SDK
+
+```bash
+npm install opensandbox
+```
 
 ```typescript
 import { Sandbox } from "opensandbox";
