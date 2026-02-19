@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +17,7 @@ const (
 	labelTemplate = labelPrefix + ".template"
 	labelCreated  = labelPrefix + ".created"
 	labelTimeout  = labelPrefix + ".timeout"
+	labelHostPort = labelPrefix + ".host_port"
 	containerName = "osb"
 
 	defaultTimeout  = 300 // 5 minutes
@@ -26,18 +26,16 @@ const (
 	defaultCPU      = 1
 )
 
-// Manager handles sandbox lifecycle operations.
+// Manager handles sandbox lifecycle operations (pure container executor).
+// Timer management and state machine logic live in SandboxRouter.
 type Manager struct {
-	podman  *podman.Client
-	mu      sync.RWMutex
-	timers  map[string]*time.Timer // sandbox ID -> timeout timer
+	podman *podman.Client
 }
 
 // NewManager creates a new sandbox manager.
 func NewManager(client *podman.Client) *Manager {
 	return &Manager{
 		podman: client,
-		timers: make(map[string]*time.Timer),
 	}
 }
 
@@ -79,9 +77,17 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 		ccfg.Env[k] = v
 	}
 
-	if cfg.NetworkEnabled {
-		ccfg.NetworkMode = "slirp4netns"
+	// Always use bridge networking for subdomain proxy access.
+	// Containers get port 80 published to a random host port.
+	ccfg.NetworkMode = "bridge"
+	ccfg.CapAdd = []string{"NET_BIND_SERVICE"} // Allow binding to port 80 inside the container
+
+	hostPort, err := podman.FindFreePort()
+	if err != nil {
+		return nil, fmt.Errorf("failed to allocate host port for sandbox %s: %w", id, err)
 	}
+	ccfg.Publish = []string{fmt.Sprintf("%d:80/tcp", hostPort)}
+	ccfg.Labels[labelHostPort] = strconv.Itoa(hostPort)
 
 	// Make /tmp writable for sandbox use
 	ccfg.TmpFS["/tmp"] = "rw,size=100m"
@@ -108,9 +114,8 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 		Metadata:  cfg.Metadata,
 		CpuCount:  cpuCount,
 		MemoryMB:  memoryMB,
+		HostPort:  hostPort,
 	}
-
-	m.scheduleTimeout(id, name, time.Duration(timeout)*time.Second)
 
 	return sandbox, nil
 }
@@ -128,7 +133,6 @@ func (m *Manager) Get(ctx context.Context, id string) (*types.Sandbox, error) {
 // Kill forcefully removes a sandbox.
 func (m *Manager) Kill(ctx context.Context, id string) error {
 	name := fmt.Sprintf("%s-%s", containerName, id)
-	m.cancelTimeout(id)
 	if err := m.podman.RemoveContainer(ctx, name, true); err != nil {
 		return fmt.Errorf("failed to kill sandbox %s: %w", id, err)
 	}
@@ -158,65 +162,31 @@ func (m *Manager) Count(ctx context.Context) (int, error) {
 	return len(entries), nil
 }
 
-// SetTimeout updates the timeout for a running sandbox.
-func (m *Manager) SetTimeout(ctx context.Context, id string, timeoutSec int) error {
-	name := fmt.Sprintf("%s-%s", containerName, id)
-
-	// Verify sandbox exists and is running
-	info, err := m.podman.InspectContainer(ctx, name)
-	if err != nil {
-		return fmt.Errorf("sandbox %s not found: %w", id, err)
-	}
-	if !info.State.Running {
-		return fmt.Errorf("sandbox %s is not running", id)
-	}
-
-	m.scheduleTimeout(id, name, time.Duration(timeoutSec)*time.Second)
-	return nil
-}
-
 // ContainerName returns the podman container name for a sandbox ID.
 func (m *Manager) ContainerName(id string) string {
 	return fmt.Sprintf("%s-%s", containerName, id)
 }
 
-// Close cancels all timeout timers.
-func (m *Manager) Close() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, timer := range m.timers {
-		timer.Stop()
+// HostPort returns the mapped host port for a sandbox's container port 80.
+func (m *Manager) HostPort(ctx context.Context, sandboxID string) (int, error) {
+	name := m.ContainerName(sandboxID)
+	info, err := m.podman.InspectContainer(ctx, name)
+	if err != nil {
+		return 0, fmt.Errorf("sandbox %s not found: %w", sandboxID, err)
 	}
-	m.timers = make(map[string]*time.Timer)
+	portStr := info.Config.Labels[labelHostPort]
+	if portStr == "" {
+		return 0, fmt.Errorf("sandbox %s has no host port mapping", sandboxID)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid host port label for sandbox %s: %w", sandboxID, err)
+	}
+	return port, nil
 }
 
-func (m *Manager) scheduleTimeout(id, name string, d time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if existing, ok := m.timers[id]; ok {
-		existing.Stop()
-	}
-
-	m.timers[id] = time.AfterFunc(d, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = m.podman.RemoveContainer(ctx, name, true)
-
-		m.mu.Lock()
-		delete(m.timers, id)
-		m.mu.Unlock()
-	})
-}
-
-func (m *Manager) cancelTimeout(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if timer, ok := m.timers[id]; ok {
-		timer.Stop()
-		delete(m.timers, id)
-	}
-}
+// Close is a no-op — timer management now lives in SandboxRouter.
+func (m *Manager) Close() {}
 
 func resolveTemplateImage(template string) string {
 	switch template {
@@ -243,6 +213,7 @@ func containerInfoToSandbox(info *podman.ContainerInfo) *types.Sandbox {
 	startedAt, _ := time.Parse(time.RFC3339, info.Config.Labels[labelCreated])
 	timeoutSec, _ := strconv.Atoi(info.Config.Labels[labelTimeout])
 	endAt := startedAt.Add(time.Duration(timeoutSec) * time.Second)
+	hostPort, _ := strconv.Atoi(info.Config.Labels[labelHostPort])
 
 	return &types.Sandbox{
 		ID:        id,
@@ -250,6 +221,7 @@ func containerInfoToSandbox(info *podman.ContainerInfo) *types.Sandbox {
 		Status:    status,
 		StartedAt: startedAt,
 		EndAt:     endAt,
+		HostPort:  hostPort,
 	}
 }
 
@@ -264,6 +236,7 @@ func psEntryToSandbox(entry podman.PSEntry) types.Sandbox {
 	startedAt, _ := time.Parse(time.RFC3339, entry.Labels[labelCreated])
 	timeoutSec, _ := strconv.Atoi(entry.Labels[labelTimeout])
 	endAt := startedAt.Add(time.Duration(timeoutSec) * time.Second)
+	hostPort, _ := strconv.Atoi(entry.Labels[labelHostPort])
 
 	return types.Sandbox{
 		ID:        id,
@@ -271,5 +244,6 @@ func psEntryToSandbox(entry podman.PSEntry) types.Sandbox {
 		Status:    status,
 		StartedAt: startedAt,
 		EndAt:     endAt,
+		HostPort:  hostPort,
 	}
 }

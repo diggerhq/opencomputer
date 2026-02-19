@@ -20,6 +20,7 @@ class Sandbox:
     sandbox_id: str
     status: str = "running"
     template: str = ""
+    domain: str = ""
     _api_url: str = ""
     _api_key: str = ""
     _connect_url: str = ""
@@ -80,6 +81,7 @@ class Sandbox:
             sandbox_id=data["sandboxID"],
             status=data.get("status", "running"),
             template=template,
+            domain=data.get("domain", ""),
             _api_url=url,
             _api_key=key,
             _connect_url=connect_url,
@@ -127,6 +129,7 @@ class Sandbox:
             sandbox_id=sandbox_id,
             status=data.get("status", "running"),
             template=data.get("templateID", ""),
+            domain=data.get("domain", ""),
             _api_url=url,
             _api_key=key,
             _connect_url=connect_url,

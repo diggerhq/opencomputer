@@ -6,9 +6,10 @@ import "time"
 type SandboxStatus string
 
 const (
-	SandboxStatusRunning SandboxStatus = "running"
-	SandboxStatusStopped SandboxStatus = "stopped"
-	SandboxStatusError   SandboxStatus = "error"
+	SandboxStatusRunning    SandboxStatus = "running"
+	SandboxStatusStopped    SandboxStatus = "stopped"
+	SandboxStatusError      SandboxStatus = "error"
+	SandboxStatusHibernated SandboxStatus = "hibernated"
 )
 
 // Sandbox represents a running sandbox instance.
@@ -26,6 +27,8 @@ type Sandbox struct {
 	MachineID  string            `json:"machineID,omitempty"`
 	ConnectURL string            `json:"connectURL,omitempty"` // Direct worker URL for SDK access
 	Token      string            `json:"token,omitempty"`      // Sandbox-scoped JWT for worker auth
+	Domain     string            `json:"domain,omitempty"`     // Subdomain for web access (e.g., "abc123.workers.opensandbox.dev")
+	HostPort   int               `json:"hostPort,omitempty"`   // Mapped host port for container port 80
 }
 
 // SandboxConfig is the request body for creating a sandbox.
@@ -48,4 +51,19 @@ type SandboxListResponse struct {
 // TimeoutRequest is the request body for updating sandbox timeout.
 type TimeoutRequest struct {
 	Timeout int `json:"timeout"` // seconds
+}
+
+// CheckpointInfo holds metadata about a hibernated sandbox's checkpoint.
+type CheckpointInfo struct {
+	SandboxID     string    `json:"sandboxId"`
+	CheckpointKey string    `json:"checkpointKey"`
+	SizeBytes     int64     `json:"sizeBytes"`
+	Region        string    `json:"region"`
+	Template      string    `json:"template"`
+	HibernatedAt  time.Time `json:"hibernatedAt"`
+}
+
+// WakeRequest is the request body for waking a hibernated sandbox.
+type WakeRequest struct {
+	Timeout int `json:"timeout,omitempty"` // new timeout in seconds after wake
 }

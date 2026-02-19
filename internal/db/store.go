@@ -66,6 +66,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}{
 		{1, "migrations/001_initial.up.sql"},
 		{2, "migrations/002_user_sessions.up.sql"},
+		{3, "migrations/003_checkpoint_hibernation.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -317,6 +318,10 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 	if status == "stopped" || status == "error" {
 		query = `UPDATE sandbox_sessions SET status = $1, stopped_at = now(), error_msg = $2 WHERE sandbox_id = $3 AND status = 'running'`
 		args = []interface{}{status, errorMsg, sandboxID}
+	} else if status == "hibernated" {
+		// Hibernated sandboxes are not stopped — don't set stopped_at
+		query = `UPDATE sandbox_sessions SET status = $1 WHERE sandbox_id = $2 AND status = 'running'`
+		args = []interface{}{status, sandboxID}
 	} else {
 		query = `UPDATE sandbox_sessions SET status = $1 WHERE sandbox_id = $2 AND status = 'running'`
 		args = []interface{}{status, sandboxID}
@@ -511,4 +516,70 @@ func (s *Store) DeleteAccessTokensForUser(ctx context.Context, userID uuid.UUID)
 // Pool returns the underlying pgx pool for advanced use cases.
 func (s *Store) Pool() *pgxpool.Pool {
 	return s.pool
+}
+
+// --- Checkpoint operations ---
+
+// SandboxCheckpoint represents a hibernated sandbox's checkpoint record.
+type SandboxCheckpoint struct {
+	ID             uuid.UUID       `json:"id"`
+	SandboxID      string          `json:"sandboxId"`
+	OrgID          uuid.UUID       `json:"orgId"`
+	CheckpointKey  string          `json:"checkpointKey"`
+	SizeBytes      int64           `json:"sizeBytes"`
+	Region         string          `json:"region"`
+	Template       string          `json:"template"`
+	SandboxConfig  json.RawMessage `json:"sandboxConfig"`
+	HibernatedAt   time.Time       `json:"hibernatedAt"`
+	RestoredAt     *time.Time      `json:"restoredAt,omitempty"`
+	ExpiredAt      *time.Time      `json:"expiredAt,omitempty"`
+}
+
+// CreateCheckpoint inserts a new checkpoint record.
+func (s *Store) CreateCheckpoint(ctx context.Context, sandboxID string, orgID uuid.UUID, checkpointKey string, sizeBytes int64, region, template string, sandboxConfig json.RawMessage) (*SandboxCheckpoint, error) {
+	cp := &SandboxCheckpoint{}
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO sandbox_checkpoints (sandbox_id, org_id, checkpoint_key, size_bytes, region, template, sandbox_config)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING id, sandbox_id, org_id, checkpoint_key, size_bytes, region, template, sandbox_config, hibernated_at`,
+		sandboxID, orgID, checkpointKey, sizeBytes, region, template, sandboxConfig,
+	).Scan(&cp.ID, &cp.SandboxID, &cp.OrgID, &cp.CheckpointKey, &cp.SizeBytes,
+		&cp.Region, &cp.Template, &cp.SandboxConfig, &cp.HibernatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create checkpoint: %w", err)
+	}
+	return cp, nil
+}
+
+// GetActiveCheckpoint returns the active (not restored, not expired) checkpoint for a sandbox.
+func (s *Store) GetActiveCheckpoint(ctx context.Context, sandboxID string) (*SandboxCheckpoint, error) {
+	cp := &SandboxCheckpoint{}
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, sandbox_id, org_id, checkpoint_key, size_bytes, region, template, sandbox_config, hibernated_at, restored_at, expired_at
+		 FROM sandbox_checkpoints
+		 WHERE sandbox_id = $1 AND restored_at IS NULL AND expired_at IS NULL`, sandboxID,
+	).Scan(&cp.ID, &cp.SandboxID, &cp.OrgID, &cp.CheckpointKey, &cp.SizeBytes,
+		&cp.Region, &cp.Template, &cp.SandboxConfig, &cp.HibernatedAt, &cp.RestoredAt, &cp.ExpiredAt)
+	if err != nil {
+		return nil, fmt.Errorf("active checkpoint not found: %w", err)
+	}
+	return cp, nil
+}
+
+// MarkCheckpointRestored marks the active checkpoint for a sandbox as restored.
+func (s *Store) MarkCheckpointRestored(ctx context.Context, sandboxID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_checkpoints SET restored_at = now()
+		 WHERE sandbox_id = $1 AND restored_at IS NULL AND expired_at IS NULL`,
+		sandboxID)
+	return err
+}
+
+// UpdateSandboxSessionForWake changes a hibernated session back to running on a new worker.
+func (s *Store) UpdateSandboxSessionForWake(ctx context.Context, sandboxID, newWorkerID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET status = 'running', worker_id = $1, stopped_at = NULL
+		 WHERE sandbox_id = $2 AND status = 'hibernated'`,
+		newWorkerID, sandboxID)
+	return err
 }

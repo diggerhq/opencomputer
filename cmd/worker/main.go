@@ -11,9 +11,12 @@ import (
 
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/config"
+	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/metrics"
 	"github.com/opensandbox/opensandbox/internal/podman"
+	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/worker"
 )
 
@@ -56,13 +59,62 @@ func main() {
 	}
 	jwtIssuer := auth.NewJWTIssuer(cfg.JWTSecret)
 
+	// Initialize S3 checkpoint store for hibernation (if configured)
+	var checkpointStore *storage.CheckpointStore
+	if cfg.S3Bucket != "" {
+		var err error
+		checkpointStore, err = storage.NewCheckpointStore(storage.S3Config{
+			Endpoint:        cfg.S3Endpoint,
+			Bucket:          cfg.S3Bucket,
+			Region:          cfg.S3Region,
+			AccessKeyID:     cfg.S3AccessKeyID,
+			SecretAccessKey: cfg.S3SecretAccessKey,
+			ForcePathStyle:  cfg.S3ForcePathStyle,
+		})
+		if err != nil {
+			log.Fatalf("failed to initialize checkpoint store: %v", err)
+		}
+		log.Printf("opensandbox-worker: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
+	}
+
+	// Initialize PostgreSQL store for checkpoint lookups (auto-wake)
+	var store *db.Store
+	dbURL := cfg.DatabaseURL
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL != "" {
+		var err error
+		store, err = db.NewStore(ctx, dbURL)
+		if err != nil {
+			log.Printf("opensandbox-worker: warning: failed to connect to database: %v (auto-wake disabled)", err)
+		} else {
+			defer store.Close()
+			log.Println("opensandbox-worker: PostgreSQL store connected (auto-wake enabled)")
+		}
+	}
+
+	// Initialize SandboxRouter for rolling timeouts, auto-wake, and command routing
+	sbRouter := sandbox.NewSandboxRouter(sandbox.RouterConfig{
+		Manager:         mgr,
+		CheckpointStore: checkpointStore,
+		Store:           store,
+		WorkerID:        cfg.WorkerID,
+		OnHibernate: func(sandboxID string, result *sandbox.HibernateResult) {
+			log.Printf("opensandbox-worker: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
+				sandboxID, result.CheckpointKey, result.SizeBytes)
+		},
+	})
+	defer sbRouter.Close()
+	log.Println("opensandbox-worker: sandbox router initialized (rolling timeouts, auto-wake)")
+
 	// Start Prometheus metrics server on :9091
 	metricsSrv := metrics.StartMetricsServer(":9091")
 	defer metricsSrv.Close()
 	log.Println("opensandbox-worker: metrics server started on :9091")
 
 	// Start gRPC server for control plane communication
-	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr)
+	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr, checkpointStore, sbRouter)
 	grpcAddr := ":9090"
 	log.Printf("opensandbox-worker: starting gRPC server on %s", grpcAddr)
 	go func() {
@@ -71,8 +123,15 @@ func main() {
 		}
 	}()
 
+	// Initialize subdomain reverse proxy
+	var sbProxy *proxy.SandboxProxy
+	if cfg.SandboxDomain != "" {
+		sbProxy = proxy.New(cfg.SandboxDomain, mgr, sbRouter)
+		log.Printf("opensandbox-worker: subdomain proxy configured (*.%s)", cfg.SandboxDomain)
+	}
+
 	// Start HTTP server for direct SDK access
-	httpServer := worker.NewHTTPServer(mgr, ptyMgr, jwtIssuer, sandboxDBMgr)
+	httpServer := worker.NewHTTPServer(mgr, ptyMgr, jwtIssuer, sandboxDBMgr, sbProxy, sbRouter, cfg.SandboxDomain)
 	httpAddr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("opensandbox-worker: starting HTTP server on %s", httpAddr)
 	go func() {
@@ -102,9 +161,11 @@ func main() {
 
 	// Start Redis heartbeat for control plane discovery
 	if cfg.RedisURL != "" {
-		// On Fly.io, use the machine-specific internal address for gRPC
+		// Determine the gRPC address to advertise to the control plane.
 		grpcAdvertise := grpcAddr
-		if allocID := os.Getenv("FLY_ALLOC_ID"); allocID != "" {
+		if addr := os.Getenv("OPENSANDBOX_GRPC_ADVERTISE"); addr != "" {
+			grpcAdvertise = addr
+		} else if allocID := os.Getenv("FLY_ALLOC_ID"); allocID != "" {
 			grpcAdvertise = allocID + ".vm.opensandbox-worker.internal:9090"
 		}
 

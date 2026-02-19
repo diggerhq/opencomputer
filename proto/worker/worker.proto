@@ -19,6 +19,9 @@ service SandboxWorker {
 
   rpc CreatePTY(CreatePTYRequest) returns (CreatePTYResponse);
   rpc PTYStream(stream PTYInput) returns (stream PTYOutput);
+
+  rpc HibernateSandbox(HibernateSandboxRequest) returns (HibernateSandboxResponse);
+  rpc WakeSandbox(WakeSandboxRequest) returns (WakeSandboxResponse);
 }
 
 message CreateSandboxRequest {
@@ -143,4 +146,25 @@ message PTYResize {
 message PTYOutput {
   string session_id = 1;
   bytes data = 2;
+}
+
+message HibernateSandboxRequest {
+  string sandbox_id = 1;
+}
+
+message HibernateSandboxResponse {
+  string sandbox_id = 1;
+  string checkpoint_key = 2;
+  int64 size_bytes = 3;
+}
+
+message WakeSandboxRequest {
+  string sandbox_id = 1;
+  string checkpoint_key = 2;
+  int32 timeout = 3;
+}
+
+message WakeSandboxResponse {
+  string sandbox_id = 1;
+  string status = 2;
 }

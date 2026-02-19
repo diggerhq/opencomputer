@@ -152,6 +152,10 @@ test:
 test-unit:
 	go test ./... -v -count=1 -short
 
+## test-hibernation: Run hibernation integration test (requires: server running with S3)
+test-hibernation:
+	@./scripts/test-hibernation.sh
+
 ## fmt: Format code
 fmt:
 	go fmt ./...

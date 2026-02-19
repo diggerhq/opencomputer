@@ -22,10 +22,12 @@ interface SandboxData {
   templateID?: string;
   connectURL?: string;
   token?: string;
+  domain?: string;
 }
 
 export class Sandbox {
   readonly sandboxId: string;
+  readonly domain: string;
   readonly files: Filesystem;
   readonly commands: Commands;
   readonly pty: Pty;
@@ -38,6 +40,7 @@ export class Sandbox {
 
   private constructor(data: SandboxData, apiUrl: string, apiKey: string) {
     this.sandboxId = data.sandboxID;
+    this.domain = data.domain || "";
     this._status = data.status;
     this.apiUrl = apiUrl;
     this.apiKey = apiKey;
@@ -127,6 +130,52 @@ export class Sandbox {
     } catch {
       return false;
     }
+  }
+
+  async hibernate(): Promise<void> {
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/hibernate`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.apiKey ? { "X-API-Key": this.apiKey } : {}),
+      },
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Failed to hibernate sandbox: ${resp.status} ${text}`);
+    }
+    this._status = "hibernated";
+  }
+
+  async wake(opts: { timeout?: number } = {}): Promise<void> {
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/wake`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.apiKey ? { "X-API-Key": this.apiKey } : {}),
+      },
+      body: JSON.stringify({ timeout: opts.timeout ?? 300 }),
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Failed to wake sandbox: ${resp.status} ${text}`);
+    }
+
+    const data: SandboxData = await resp.json();
+    this._status = data.status;
+    this.connectUrl = data.connectURL || "";
+    this.token = data.token || "";
+
+    // Rebuild ops clients with new worker connection
+    const opsUrl = this.connectUrl || this.apiUrl;
+    const opsKey = this.connectUrl ? "" : this.apiKey;
+    const opsToken = this.connectUrl ? this.token : "";
+
+    (this as any).files = new Filesystem(opsUrl, opsKey, this.sandboxId, opsToken);
+    (this as any).commands = new Commands(opsUrl, opsKey, this.sandboxId, opsToken);
+    (this as any).pty = new Pty(opsUrl, opsKey, this.sandboxId, opsToken);
   }
 
   async setTimeout(timeout: number): Promise<void> {

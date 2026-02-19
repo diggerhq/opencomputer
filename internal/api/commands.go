@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -28,15 +29,32 @@ func (s *Server) runCommand(c echo.Context) error {
 		})
 	}
 
-	start := time.Now()
-	result, err := s.manager.Exec(c.Request().Context(), id, cfg)
-	durationMs := int(time.Since(start).Milliseconds())
+	var result *types.ProcessResult
+	var execErr error
 
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": err.Error(),
-		})
+	start := time.Now()
+
+	routeOp := func(ctx context.Context) error {
+		result, execErr = s.manager.Exec(ctx, id, cfg)
+		return execErr
 	}
+
+	// Route through sandbox router (handles auto-wake, rolling timeout reset)
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "exec", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
+	}
+
+	durationMs := int(time.Since(start).Milliseconds())
 
 	// Log command to per-sandbox SQLite
 	if s.sandboxDBs != nil {
