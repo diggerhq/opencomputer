@@ -10,7 +10,9 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
@@ -207,9 +209,29 @@ func (r *RedisWorkerRegistry) handleHeartbeat(entry WorkerEntry) {
 		log.Printf("redis_registry: new worker registered: %s (region=%s, grpc=%s)", entry.ID, entry.Region, entry.GRPCAddr)
 	}
 
-	// Ensure gRPC connection exists
-	if _, hasConn := r.conns[entry.ID]; !hasConn && entry.GRPCAddr != "" {
-		r.dialWorkerLocked(entry.ID, entry.GRPCAddr)
+	// Ensure gRPC connection exists and is healthy.
+	// Re-dial if address changed OR connection is in a failed state.
+	if entry.GRPCAddr != "" {
+		if conn, hasConn := r.conns[entry.ID]; hasConn {
+			addrChanged := existing != nil && existing.GRPCAddr != entry.GRPCAddr
+			state := conn.GetState()
+			connDead := state == connectivity.TransientFailure || state == connectivity.Shutdown
+			if addrChanged || connDead {
+				if addrChanged {
+					log.Printf("redis_registry: worker %s gRPC address changed (%s → %s), re-dialing",
+						entry.ID, existing.GRPCAddr, entry.GRPCAddr)
+				} else {
+					log.Printf("redis_registry: worker %s gRPC connection in %s state, re-dialing",
+						entry.ID, conn.GetState().String())
+				}
+				conn.Close()
+				delete(r.conns, entry.ID)
+				delete(r.clients, entry.ID)
+				r.dialWorkerLocked(entry.ID, entry.GRPCAddr)
+			}
+		} else {
+			r.dialWorkerLocked(entry.ID, entry.GRPCAddr)
+		}
 	}
 }
 
@@ -217,14 +239,23 @@ func (r *RedisWorkerRegistry) handleHeartbeat(entry WorkerEntry) {
 func (r *RedisWorkerRegistry) dialWorkerLocked(workerID, grpcAddr string) {
 	conn, err := grpc.NewClient(grpcAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                10 * time.Second,
+			Timeout:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
 	)
 	if err != nil {
 		log.Printf("redis_registry: failed to dial gRPC for worker %s at %s: %v", workerID, grpcAddr, err)
 		return
 	}
+	// Force the lazy connection to start connecting immediately.
+	// Without this, grpc.NewClient stays IDLE until the first RPC,
+	// which means keepalive can't detect a dead connection.
+	conn.Connect()
 	r.conns[workerID] = conn
 	r.clients[workerID] = pb.NewSandboxWorkerClient(conn)
-	log.Printf("redis_registry: gRPC connection established to worker %s at %s", workerID, grpcAddr)
+	log.Printf("redis_registry: gRPC connection initiated to worker %s at %s", workerID, grpcAddr)
 }
 
 // GetLeastLoadedWorker returns the worker with the most remaining capacity.

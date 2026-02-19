@@ -11,6 +11,7 @@ import (
 
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/config"
+	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/metrics"
 	"github.com/opensandbox/opensandbox/internal/podman"
 	"github.com/opensandbox/opensandbox/internal/proxy"
@@ -76,10 +77,28 @@ func main() {
 		log.Printf("opensandbox-worker: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
 	}
 
+	// Initialize PostgreSQL store for checkpoint lookups (auto-wake)
+	var store *db.Store
+	dbURL := cfg.DatabaseURL
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL != "" {
+		var err error
+		store, err = db.NewStore(ctx, dbURL)
+		if err != nil {
+			log.Printf("opensandbox-worker: warning: failed to connect to database: %v (auto-wake disabled)", err)
+		} else {
+			defer store.Close()
+			log.Println("opensandbox-worker: PostgreSQL store connected (auto-wake enabled)")
+		}
+	}
+
 	// Initialize SandboxRouter for rolling timeouts, auto-wake, and command routing
 	sbRouter := sandbox.NewSandboxRouter(sandbox.RouterConfig{
 		Manager:         mgr,
 		CheckpointStore: checkpointStore,
+		Store:           store,
 		WorkerID:        cfg.WorkerID,
 		OnHibernate: func(sandboxID string, result *sandbox.HibernateResult) {
 			log.Printf("opensandbox-worker: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
@@ -112,7 +131,7 @@ func main() {
 	}
 
 	// Start HTTP server for direct SDK access
-	httpServer := worker.NewHTTPServer(mgr, ptyMgr, jwtIssuer, sandboxDBMgr, sbProxy, sbRouter)
+	httpServer := worker.NewHTTPServer(mgr, ptyMgr, jwtIssuer, sandboxDBMgr, sbProxy, sbRouter, cfg.SandboxDomain)
 	httpAddr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("opensandbox-worker: starting HTTP server on %s", httpAddr)
 	go func() {
@@ -142,9 +161,11 @@ func main() {
 
 	// Start Redis heartbeat for control plane discovery
 	if cfg.RedisURL != "" {
-		// On Fly.io, use the machine-specific internal address for gRPC
+		// Determine the gRPC address to advertise to the control plane.
 		grpcAdvertise := grpcAddr
-		if allocID := os.Getenv("FLY_ALLOC_ID"); allocID != "" {
+		if addr := os.Getenv("OPENSANDBOX_GRPC_ADVERTISE"); addr != "" {
+			grpcAdvertise = addr
+		} else if allocID := os.Getenv("FLY_ALLOC_ID"); allocID != "" {
 			grpcAdvertise = allocID + ".vm.opensandbox-worker.internal:9090"
 		}
 

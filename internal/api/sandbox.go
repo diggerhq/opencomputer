@@ -75,13 +75,9 @@ func (s *Server) createSandbox(c echo.Context) error {
 		}
 	}
 
-	// Issue sandbox-scoped JWT for combined mode
+	// Issue sandbox-scoped JWT for combined mode (24h TTL — independent of sandbox idle timeout)
 	if s.jwtIssuer != nil {
-		timeout := cfg.Timeout
-		if timeout <= 0 {
-			timeout = 300
-		}
-		token, err := s.jwtIssuer.IssueSandboxToken(orgID, sb.ID, s.workerID, time.Duration(timeout)*time.Second)
+		token, err := s.jwtIssuer.IssueSandboxToken(orgID, sb.ID, s.workerID, 24*time.Hour)
 		if err == nil {
 			sb.Token = token
 		}
@@ -133,7 +129,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	}
 
 	// Dispatch via persistent gRPC connection
-	grpcCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	grpcCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	grpcResp, err := grpcClient.CreateSandbox(grpcCtx, &pb.CreateSandboxRequest{
@@ -150,14 +146,10 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		})
 	}
 
-	// Issue sandbox-scoped JWT
-	timeout := cfg.Timeout
-	if timeout <= 0 {
-		timeout = 300
-	}
+	// Issue sandbox-scoped JWT (24h TTL — independent of sandbox idle timeout)
 	var token string
 	if s.jwtIssuer != nil {
-		t, err := s.jwtIssuer.IssueSandboxToken(orgID, grpcResp.SandboxId, worker.ID, time.Duration(timeout)*time.Second)
+		t, err := s.jwtIssuer.IssueSandboxToken(orgID, grpcResp.SandboxId, worker.ID, 24*time.Hour)
 		if err != nil {
 			log.Printf("sandbox: failed to issue JWT: %v", err)
 		} else {
@@ -636,11 +628,7 @@ func (s *Server) wakeSandbox(c echo.Context) error {
 	// Issue fresh JWT
 	orgID, _ := auth.GetOrgID(c)
 	if s.jwtIssuer != nil {
-		timeout := req.Timeout
-		if timeout <= 0 {
-			timeout = 300
-		}
-		token, err := s.jwtIssuer.IssueSandboxToken(orgID, id, s.workerID, time.Duration(timeout)*time.Second)
+		token, err := s.jwtIssuer.IssueSandboxToken(orgID, id, s.workerID, 24*time.Hour)
 		if err == nil {
 			sb.Token = token
 		}
@@ -709,7 +697,7 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 	}
 	var token string
 	if s.jwtIssuer != nil {
-		t, err := s.jwtIssuer.IssueSandboxToken(orgID, sandboxID, worker.ID, time.Duration(timeout)*time.Second)
+		t, err := s.jwtIssuer.IssueSandboxToken(orgID, sandboxID, worker.ID, 24*time.Hour)
 		if err == nil {
 			token = t
 		}

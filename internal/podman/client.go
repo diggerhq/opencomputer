@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 )
 
 // Client wraps the podman CLI for container operations.
@@ -151,7 +150,7 @@ func (c *Client) runSSH(ctx context.Context, sshCmd string) (*ExecResult, error)
 func (c *Client) CheckpointContainer(ctx context.Context, nameOrID, exportPath string) error {
 	if c.useSSH {
 		// exportPath is a VM-local path (e.g. /tmp/...) since we'll copy it out separately
-		sshCmd := fmt.Sprintf("podman container checkpoint --export %s --compress zstd %s", exportPath, nameOrID)
+		sshCmd := fmt.Sprintf("podman container checkpoint --tcp-established --export %s --compress zstd %s", exportPath, nameOrID)
 		result, err := c.runSSH(ctx, sshCmd)
 		if err != nil {
 			return fmt.Errorf("failed to checkpoint container %s: %w", nameOrID, err)
@@ -162,7 +161,7 @@ func (c *Client) CheckpointContainer(ctx context.Context, nameOrID, exportPath s
 		return nil
 	}
 
-	result, err := c.Run(ctx, "container", "checkpoint", "--export", exportPath, "--compress", "zstd", nameOrID)
+	result, err := c.Run(ctx, "container", "checkpoint", "--tcp-established", "--export", exportPath, "--compress", "zstd", nameOrID)
 	if err != nil {
 		return fmt.Errorf("failed to checkpoint container %s: %w", nameOrID, err)
 	}
@@ -174,9 +173,15 @@ func (c *Client) CheckpointContainer(ctx context.Context, nameOrID, exportPath s
 
 // RestoreContainer restores a container from a checkpoint archive on disk.
 // On macOS, restore runs inside the Podman machine VM via SSH.
+// It force-removes any existing container with the same name first to avoid
+// "that ID is already in use" errors from previous restore cycles.
 func (c *Client) RestoreContainer(ctx context.Context, importPath, name string) error {
+	// Pre-cleanup: remove any existing container with this name to avoid ID conflicts.
+	// This is best-effort — the container may not exist, which is fine.
+	_ = c.RemoveContainer(ctx, name, true)
+
 	if c.useSSH {
-		sshCmd := fmt.Sprintf("podman container restore --import %s --name %s", importPath, name)
+		sshCmd := fmt.Sprintf("podman container restore --tcp-established --import %s", importPath)
 		result, err := c.runSSH(ctx, sshCmd)
 		if err != nil {
 			return fmt.Errorf("failed to restore container %s: %w", name, err)
@@ -187,7 +192,7 @@ func (c *Client) RestoreContainer(ctx context.Context, importPath, name string) 
 		return nil
 	}
 
-	result, err := c.Run(ctx, "container", "restore", "--import", importPath, "--name", name)
+	result, err := c.Run(ctx, "container", "restore", "--tcp-established", "--import", importPath)
 	if err != nil {
 		return fmt.Errorf("failed to restore container %s: %w", name, err)
 	}
@@ -274,36 +279,21 @@ func (c *Client) RestoreContainerFromStream(ctx context.Context, reader io.Reade
 		return c.RestoreContainer(ctx, vmPath, name)
 	}
 
-	tmpDir, err := os.MkdirTemp("", "osb-restore-")
+	// Download to temp file, then restore from file
+	tmpFile, err := os.CreateTemp("", "osb-restore-*.tar.zst")
 	if err != nil {
-		return fmt.Errorf("failed to create temp dir: %w", err)
+		return fmt.Errorf("failed to create temp file: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	localPath := tmpFile.Name()
+	defer os.Remove(localPath)
 
-	fifoPath := filepath.Join(tmpDir, "checkpoint.tar.zst")
-	if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
-		return fmt.Errorf("failed to create FIFO: %w", err)
+	if _, err := io.Copy(tmpFile, reader); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write checkpoint to temp file: %w", err)
 	}
+	tmpFile.Close()
 
-	// Start podman restore reading from the FIFO (blocks until data is available)
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- c.RestoreContainer(ctx, fifoPath, name)
-	}()
-
-	// Open FIFO for writing and copy stream data into it
-	fifo, err := os.OpenFile(fifoPath, os.O_WRONLY, 0)
-	if err != nil {
-		return fmt.Errorf("failed to open FIFO for writing: %w", err)
-	}
-	if _, err := io.Copy(fifo, reader); err != nil {
-		fifo.Close()
-		return fmt.Errorf("failed to stream checkpoint to FIFO: %w", err)
-	}
-	fifo.Close() // Signal EOF to podman
-
-	// Wait for podman restore to complete
-	return <-errCh
+	return c.RestoreContainer(ctx, localPath, name)
 }
 
 // FindFreePort asks the OS for a free TCP port by listening on :0.
