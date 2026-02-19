@@ -42,7 +42,7 @@ func DefaultContainerConfig(name, image string) ContainerConfig {
 		ReadOnly: false,
 		TmpFS:   map[string]string{},
 		CapDrop:      []string{"ALL"},
-		SecurityOpts: []string{"no-new-privileges"},
+		SecurityOpts: []string{},
 		UserNS:       "",
 		Entrypoint:   []string{"/bin/sleep"},
 		Command:      []string{"infinity"},

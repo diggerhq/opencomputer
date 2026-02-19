@@ -7,19 +7,129 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 go build -o /opensandbox-worker ./cmd/worker
 
-FROM ubuntu:22.04
+# Build CRIU from source (Ubuntu 24.04 doesn't ship CRIU in repos)
+FROM ubuntu:24.04 AS criu-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    gcc \
+    make \
+    automake \
+    autoconf \
+    libtool \
+    pkg-config \
+    libprotobuf-dev \
+    libprotobuf-c-dev \
+    protobuf-c-compiler \
+    protobuf-compiler \
+    python3 \
+    python3-protobuf \
+    python3-yaml \
+    libbsd-dev \
+    iproute2 \
+    libcap-dev \
+    libnl-3-dev \
+    libnet-dev \
+    libaio-dev \
+    libgnutls28-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch v4.0 https://github.com/checkpoint-restore/criu.git /criu
+WORKDIR /criu
+RUN make -j$(nproc) && make install-criu install-lib PREFIX=/usr/local LIBDIR=/usr/local/lib
+
+# Build crun from source with CRIU checkpoint support
+FROM ubuntu:24.04 AS crun-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    gcc \
+    make \
+    automake \
+    autoconf \
+    libtool \
+    pkg-config \
+    libsystemd-dev \
+    libcap-dev \
+    libseccomp-dev \
+    libyajl-dev \
+    libprotobuf-c-dev \
+    python3 \
+    go-md2man \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy CRIU headers and libs so crun can compile with --with-criu
+COPY --from=criu-builder /usr/local/include/criu /usr/local/include/criu
+COPY --from=criu-builder /usr/local/lib/libcriu.so* /usr/local/lib/
+
+# Create pkg-config file for criu (CRIU 4.0)
+RUN mkdir -p /usr/local/lib/pkgconfig && \
+    printf 'prefix=/usr/local\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: criu\nDescription: CRIU library\nVersion: 4.0\nLibs: -L${libdir} -lcriu\nCflags: -I${includedir}\n' \
+    > /usr/local/lib/pkgconfig/criu.pc
+
+RUN ldconfig
+
+RUN git clone --depth 1 --branch 1.19.1 https://github.com/containers/crun.git /crun
+WORKDIR /crun
+RUN ./autogen.sh && PKG_CONFIG_PATH=/usr/local/lib/pkgconfig ./configure --with-criu && make -j$(nproc)
+
+# Runtime: Ubuntu 24.04 gives us Podman 4.9+ with proper maskedPaths handling for CRIU
+FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     podman \
-    crun \
-    criu \
     uidmap \
     fuse-overlayfs \
     slirp4netns \
     ca-certificates \
+    libyajl2 \
+    libseccomp2 \
+    libsystemd0 \
+    libprotobuf-c1 \
+    libnl-3-200 \
+    libnet1 \
+    libbsd0 \
+    libgnutls30t64 \
+    iproute2 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install our source-built CRIU and crun
+COPY --from=criu-builder /usr/local/sbin/criu /usr/local/sbin/criu
+COPY --from=criu-builder /usr/local/lib/libcriu.so* /usr/local/lib/
+COPY --from=crun-builder /crun/crun /usr/bin/crun
+RUN ldconfig
+
+# Configure podman to use cgroupfs (Fly VMs use cgroup v1 without systemd)
+RUN mkdir -p /etc/containers && \
+    printf '[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"\n' \
+    > /etc/containers/containers.conf
 
 COPY --from=builder /opensandbox-worker /usr/local/bin/opensandbox-worker
 
+# Entrypoint script fixes cgroup v1 symlinks on Fly.io before starting the worker.
+# Fly VMs mount "cpu,cpuacct" as the real cgroup controller but leave "cpu" as a
+# plain empty directory instead of a symlink. This breaks podman resource limits.
+RUN printf '#!/bin/sh\nset -e\n\
+# Ensure cgroup v1 combined controllers have single-name symlinks.\n\
+# Fly VMs may mount "cpu,cpuacct" without a "cpu" symlink, or leave\n\
+# "cpu" as an empty plain directory. Either case breaks podman.\n\
+fix_cgroup() {\n\
+  combined="/sys/fs/cgroup/$2"\n\
+  single="/sys/fs/cgroup/$1"\n\
+  [ -d "$combined" ] || return 0\n\
+  if [ -L "$single" ]; then return 0; fi\n\
+  rm -rf "$single" 2>/dev/null || true\n\
+  ln -s "$combined" "$single"\n\
+}\n\
+fix_cgroup cpu cpu,cpuacct\n\
+fix_cgroup cpuacct cpu,cpuacct\n\
+fix_cgroup net_cls net_cls,net_prio\n\
+fix_cgroup net_prio net_cls,net_prio\n\
+exec "$@"\n' > /usr/local/bin/worker-entrypoint.sh && \
+    chmod +x /usr/local/bin/worker-entrypoint.sh
+
 EXPOSE 8080 9090 9091
+ENTRYPOINT ["worker-entrypoint.sh"]
 CMD ["opensandbox-worker"]
