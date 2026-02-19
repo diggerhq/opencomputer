@@ -15,7 +15,9 @@ import (
 	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/podman"
+	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/template"
 )
 
@@ -112,6 +114,63 @@ func main() {
 			FrontendURL:  cfg.WorkOSFrontendURL,
 		}
 		log.Println("opensandbox: WorkOS authentication configured")
+	}
+
+	// Initialize S3 checkpoint store for hibernation (if configured)
+	if cfg.S3Bucket != "" {
+		checkpointStore, err := storage.NewCheckpointStore(storage.S3Config{
+			Endpoint:        cfg.S3Endpoint,
+			Bucket:          cfg.S3Bucket,
+			Region:          cfg.S3Region,
+			AccessKeyID:     cfg.S3AccessKeyID,
+			SecretAccessKey: cfg.S3SecretAccessKey,
+			ForcePathStyle:  cfg.S3ForcePathStyle,
+		})
+		if err != nil {
+			log.Printf("opensandbox: failed to initialize checkpoint store: %v (continuing without hibernation)", err)
+		} else {
+			opts.CheckpointStore = checkpointStore
+			log.Printf("opensandbox: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
+		}
+	}
+
+	// Initialize SandboxRouter for rolling timeouts, auto-wake, and command routing
+	if mgr != nil {
+		workerID := cfg.WorkerID
+		if workerID == "" {
+			workerID = "w-local-1"
+		}
+		sbRouter := sandbox.NewSandboxRouter(sandbox.RouterConfig{
+			Manager:         mgr,
+			CheckpointStore: opts.CheckpointStore,
+			Store:           opts.Store,
+			WorkerID:        workerID,
+			OnHibernate: func(sandboxID string, result *sandbox.HibernateResult) {
+				log.Printf("opensandbox: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
+					sandboxID, result.CheckpointKey, result.SizeBytes)
+				// Update PG session status if store is available
+				if opts.Store != nil {
+					_ = opts.Store.UpdateSandboxSessionStatus(context.Background(), sandboxID, "hibernated", nil)
+				}
+			},
+		})
+		defer sbRouter.Close()
+		opts.Router = sbRouter
+		log.Println("opensandbox: sandbox router initialized (rolling timeouts, auto-wake)")
+
+		// Initialize subdomain reverse proxy
+		if cfg.SandboxDomain != "" {
+			sbProxy := proxy.New(cfg.SandboxDomain, mgr, sbRouter)
+			opts.SandboxProxy = sbProxy
+			opts.SandboxDomain = cfg.SandboxDomain
+			log.Printf("opensandbox: subdomain proxy configured (*.%s)", cfg.SandboxDomain)
+		}
+	}
+
+	// Set sandbox domain for API responses (works in both server and combined mode)
+	if cfg.SandboxDomain != "" && cfg.SandboxDomain != "localhost" {
+		opts.SandboxDomain = cfg.SandboxDomain
+		log.Printf("opensandbox: sandbox domain configured (%s)", cfg.SandboxDomain)
 	}
 
 	// Initialize Redis worker registry in server mode

@@ -13,7 +13,9 @@ import (
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/storage"
 )
 
 var errSandboxNotAvailable = map[string]string{
@@ -24,6 +26,7 @@ var errSandboxNotAvailable = map[string]string{
 type Server struct {
 	echo       *echo.Echo
 	manager    *sandbox.Manager
+	router     *sandbox.SandboxRouter  // routes all sandbox interactions (state machine, auto-wake, rolling timeout)
 	ptyManager *sandbox.PTYManager
 	templates  *templateDeps
 	store      *db.Store               // nil in combined/dev mode without PG
@@ -32,9 +35,11 @@ type Server struct {
 	workerID   string                  // this worker's ID
 	region     string                  // this worker's region
 	httpAddr   string                  // public HTTP address for direct access
-	sandboxDBs     *sandbox.SandboxDBManager         // per-sandbox SQLite manager
-	workos         *auth.WorkOSMiddleware            // nil if WorkOS not configured
-	workerRegistry *controlplane.RedisWorkerRegistry // nil in combined/worker mode
+	sandboxDBs      *sandbox.SandboxDBManager         // per-sandbox SQLite manager
+	workos          *auth.WorkOSMiddleware            // nil if WorkOS not configured
+	workerRegistry  *controlplane.RedisWorkerRegistry // nil in combined/worker mode
+	checkpointStore *storage.CheckpointStore          // nil if hibernation not configured
+	sandboxDomain   string                            // base domain for sandbox subdomains
 }
 
 // ServerOpts holds optional dependencies for the API server.
@@ -46,8 +51,12 @@ type ServerOpts struct {
 	Region      string
 	HTTPAddr    string
 	SandboxDBs     *sandbox.SandboxDBManager
-	WorkOSConfig   *auth.WorkOSConfig                // nil if WorkOS not configured
-	WorkerRegistry *controlplane.RedisWorkerRegistry  // nil in combined/worker mode
+	Router         *sandbox.SandboxRouter             // nil in server-only mode
+	SandboxProxy   *proxy.SandboxProxy               // nil if subdomain routing not configured
+	SandboxDomain  string                             // base domain for sandbox subdomains
+	WorkOSConfig    *auth.WorkOSConfig                // nil if WorkOS not configured
+	WorkerRegistry  *controlplane.RedisWorkerRegistry  // nil in combined/worker mode
+	CheckpointStore *storage.CheckpointStore           // nil if hibernation not configured
 }
 
 // NewServer creates a new API server with all routes configured.
@@ -70,7 +79,10 @@ func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, 
 		s.region = opts.Region
 		s.httpAddr = opts.HTTPAddr
 		s.sandboxDBs = opts.SandboxDBs
+		s.router = opts.Router
 		s.workerRegistry = opts.WorkerRegistry
+		s.checkpointStore = opts.CheckpointStore
+		s.sandboxDomain = opts.SandboxDomain
 	}
 
 	// Global middleware
@@ -78,6 +90,11 @@ func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, 
 	e.Use(middleware.Logger())
 	e.Use(middleware.CORS())
 	e.Use(middleware.RequestID())
+
+	// Subdomain proxy middleware (before auth — subdomain traffic is public)
+	if opts != nil && opts.SandboxProxy != nil {
+		e.Use(opts.SandboxProxy.Middleware())
+	}
 
 	// Health check (no auth)
 	e.GET("/health", func(c echo.Context) error {
@@ -94,6 +111,10 @@ func NewServer(mgr *sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, 
 	api.GET("/sandboxes/:id", s.getSandbox)
 	api.DELETE("/sandboxes/:id", s.killSandbox)
 	api.POST("/sandboxes/:id/timeout", s.setTimeout)
+
+	// Hibernation
+	api.POST("/sandboxes/:id/hibernate", s.hibernateSandbox)
+	api.POST("/sandboxes/:id/wake", s.wakeSandbox)
 
 	// Commands
 	api.POST("/sandboxes/:id/commands", s.runCommand)

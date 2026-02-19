@@ -1,14 +1,45 @@
 package worker
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
+	"github.com/opensandbox/opensandbox/internal/auth"
+	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/pkg/types"
 )
+
+func (s *HTTPServer) setTimeout(c echo.Context) error {
+	if s.router == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "sandbox router not available",
+		})
+	}
+
+	id := c.Param("id")
+
+	var req types.TimeoutRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid request body: " + err.Error(),
+		})
+	}
+
+	if req.Timeout <= 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "timeout must be positive",
+		})
+	}
+
+	s.router.SetTimeout(id, time.Duration(req.Timeout)*time.Second)
+
+	return c.NoContent(http.StatusNoContent)
+}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -38,13 +69,26 @@ func (s *HTTPServer) runCommand(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "cmd is required"})
 	}
 
+	var result *types.ProcessResult
+	var execErr error
 	start := time.Now()
-	result, err := s.manager.Exec(c.Request().Context(), id, cfg)
-	durationMs := int(time.Since(start).Milliseconds())
 
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	routeOp := func(ctx context.Context) error {
+		result, execErr = s.manager.Exec(ctx, id, cfg)
+		return execErr
 	}
+
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "exec", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+
+	durationMs := int(time.Since(start).Milliseconds())
 
 	// Log command to per-sandbox SQLite
 	if s.sandboxDBs != nil {
@@ -63,10 +107,24 @@ func (s *HTTPServer) readFile(c echo.Context) error {
 	if path == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "path query parameter is required"})
 	}
-	content, err := s.manager.ReadFile(c.Request().Context(), id, path)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+
+	var content string
+	routeOp := func(ctx context.Context) error {
+		var err error
+		content, err = s.manager.ReadFile(ctx, id, path)
+		return err
 	}
+
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "readFile", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+
 	return c.String(http.StatusOK, content)
 }
 
@@ -80,9 +138,21 @@ func (s *HTTPServer) writeFile(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read request body: " + err.Error()})
 	}
-	if err := s.manager.WriteFile(c.Request().Context(), id, path, string(body)); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+
+	routeOp := func(ctx context.Context) error {
+		return s.manager.WriteFile(ctx, id, path, string(body))
 	}
+
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "writeFile", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -92,10 +162,24 @@ func (s *HTTPServer) listDir(c echo.Context) error {
 	if path == "" {
 		path = "/"
 	}
-	entries, err := s.manager.ListDir(c.Request().Context(), id, path)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+
+	var entries []types.EntryInfo
+	routeOp := func(ctx context.Context) error {
+		var err error
+		entries, err = s.manager.ListDir(ctx, id, path)
+		return err
 	}
+
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "listDir", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+
 	return c.JSON(http.StatusOK, entries)
 }
 
@@ -105,9 +189,21 @@ func (s *HTTPServer) makeDir(c echo.Context) error {
 	if path == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "path query parameter is required"})
 	}
-	if err := s.manager.MakeDir(c.Request().Context(), id, path); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+
+	routeOp := func(ctx context.Context) error {
+		return s.manager.MakeDir(ctx, id, path)
 	}
+
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "makeDir", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -117,9 +213,21 @@ func (s *HTTPServer) removeFile(c echo.Context) error {
 	if path == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "path query parameter is required"})
 	}
-	if err := s.manager.Remove(c.Request().Context(), id, path); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+
+	routeOp := func(ctx context.Context) error {
+		return s.manager.Remove(ctx, id, path)
 	}
+
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "removeFile", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -131,9 +239,21 @@ func (s *HTTPServer) createPTY(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
 	}
 
-	session, err := s.ptyManager.CreateSession(id, req)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	var session *sandbox.PTYSessionHandle
+	routeOp := func(ctx context.Context) error {
+		var err error
+		session, err = s.ptyManager.CreateSession(id, req)
+		return err
+	}
+
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "createPTY", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
 	}
 
 	// Log PTY start to SQLite
@@ -151,11 +271,17 @@ func (s *HTTPServer) createPTY(c echo.Context) error {
 }
 
 func (s *HTTPServer) ptyWebSocket(c echo.Context) error {
+	id := c.Param("id")
 	sessionID := c.Param("sessionID")
 
 	session, err := s.ptyManager.GetSession(sessionID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+	}
+
+	// Touch to reset rolling timeout when PTY connects
+	if s.router != nil {
+		s.router.Touch(id)
 	}
 
 	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
@@ -171,6 +297,10 @@ func (s *HTTPServer) ptyWebSocket(c echo.Context) error {
 		for {
 			n, err := session.PTY.Read(buf)
 			if n > 0 {
+				// Touch on PTY output to keep sandbox alive
+				if s.router != nil {
+					s.router.Touch(id)
+				}
 				if writeErr := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
 					return
 				}
@@ -186,6 +316,10 @@ func (s *HTTPServer) ptyWebSocket(c echo.Context) error {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
 				return
+			}
+			// Touch on PTY input to keep sandbox alive
+			if s.router != nil {
+				s.router.Touch(id)
 			}
 			if _, err := session.PTY.Write(msg); err != nil {
 				return
@@ -206,11 +340,49 @@ func (s *HTTPServer) ptyWebSocket(c echo.Context) error {
 }
 
 func (s *HTTPServer) killPTY(c echo.Context) error {
+	id := c.Param("id")
 	sessionID := c.Param("sessionID")
 
-	if err := s.ptyManager.KillSession(sessionID); err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+	routeOp := func(ctx context.Context) error {
+		return s.ptyManager.KillSession(sessionID)
+	}
+
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "killPTY", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		}
 	}
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+// refreshToken issues a fresh 24h JWT for a sandbox.
+// The caller must already be authenticated (existing valid JWT via middleware).
+func (s *HTTPServer) refreshToken(c echo.Context) error {
+	sandboxID := c.Param("id")
+
+	orgIDVal := c.Get(string(auth.ContextKeyOrgID))
+	orgID, _ := orgIDVal.(uuid.UUID)
+	workerID, _ := c.Get("worker_id").(string)
+
+	if s.jwtIssuer == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "JWT issuer not configured",
+		})
+	}
+
+	token, err := s.jwtIssuer.IssueSandboxToken(orgID, sandboxID, workerID, 24*time.Hour)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to issue token: " + err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{
+		"token": token,
+	})
 }

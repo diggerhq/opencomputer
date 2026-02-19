@@ -154,12 +154,8 @@ func (s *Server) createSandbox(c echo.Context) error {
 	metadataJSON, _ := json.Marshal(req.Metadata)
 	_, _ = s.store.CreateSandboxSession(ctx, grpcResp.SandboxId, orgID, nil, template, region, worker.ID, cfgJSON, metadataJSON)
 
-	// Issue sandbox-scoped JWT
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = 300
-	}
-	token, err := s.jwtIssuer.IssueSandboxToken(orgID, grpcResp.SandboxId, worker.ID, time.Duration(timeout)*time.Second)
+	// Issue sandbox-scoped JWT (24h TTL — independent of sandbox idle timeout)
+	token, err := s.jwtIssuer.IssueSandboxToken(orgID, grpcResp.SandboxId, worker.ID, 24*time.Hour)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to issue token"})
 	}

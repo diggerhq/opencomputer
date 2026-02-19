@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -54,6 +55,15 @@ func (s *Server) createSandbox(c echo.Context) error {
 		})
 	}
 
+	// Register with sandbox router for rolling timeout tracking
+	if s.router != nil {
+		timeout := cfg.Timeout
+		if timeout <= 0 {
+			timeout = 300
+		}
+		s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
+	}
+
 	// Initialize per-sandbox SQLite if available
 	if s.sandboxDBs != nil {
 		sdb, err := s.sandboxDBs.Get(sb.ID)
@@ -65,16 +75,17 @@ func (s *Server) createSandbox(c echo.Context) error {
 		}
 	}
 
-	// Issue sandbox-scoped JWT for combined mode
+	// Issue sandbox-scoped JWT for combined mode (24h TTL — independent of sandbox idle timeout)
 	if s.jwtIssuer != nil {
-		timeout := cfg.Timeout
-		if timeout <= 0 {
-			timeout = 300
-		}
-		token, err := s.jwtIssuer.IssueSandboxToken(orgID, sb.ID, s.workerID, time.Duration(timeout)*time.Second)
+		token, err := s.jwtIssuer.IssueSandboxToken(orgID, sb.ID, s.workerID, 24*time.Hour)
 		if err == nil {
 			sb.Token = token
 		}
+	}
+
+	// Assign subdomain
+	if s.sandboxDomain != "" {
+		sb.Domain = fmt.Sprintf("%s.%s", sb.ID, s.sandboxDomain)
 	}
 
 	// Write session record to PG if available
@@ -118,7 +129,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	}
 
 	// Dispatch via persistent gRPC connection
-	grpcCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	grpcCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	grpcResp, err := grpcClient.CreateSandbox(grpcCtx, &pb.CreateSandboxRequest{
@@ -135,14 +146,10 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		})
 	}
 
-	// Issue sandbox-scoped JWT
-	timeout := cfg.Timeout
-	if timeout <= 0 {
-		timeout = 300
-	}
+	// Issue sandbox-scoped JWT (24h TTL — independent of sandbox idle timeout)
 	var token string
 	if s.jwtIssuer != nil {
-		t, err := s.jwtIssuer.IssueSandboxToken(orgID, grpcResp.SandboxId, worker.ID, time.Duration(timeout)*time.Second)
+		t, err := s.jwtIssuer.IssueSandboxToken(orgID, grpcResp.SandboxId, worker.ID, 24*time.Hour)
 		if err != nil {
 			log.Printf("sandbox: failed to issue JWT: %v", err)
 		} else {
@@ -161,14 +168,19 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		_, _ = s.store.CreateSandboxSession(ctx, grpcResp.SandboxId, orgID, nil, template, region, worker.ID, cfgJSON, metadataJSON)
 	}
 
-	return c.JSON(http.StatusCreated, map[string]interface{}{
+	resp := map[string]interface{}{
 		"sandboxID":  grpcResp.SandboxId,
 		"connectURL": worker.HTTPAddr,
 		"token":      token,
 		"status":     grpcResp.Status,
 		"region":     region,
 		"workerID":   worker.ID,
-	})
+	}
+	if s.sandboxDomain != "" {
+		resp["domain"] = fmt.Sprintf("%s.%s", grpcResp.SandboxId, s.sandboxDomain)
+	}
+
+	return c.JSON(http.StatusCreated, resp)
 }
 
 func (s *Server) getSandbox(c echo.Context) error {
@@ -201,6 +213,10 @@ func (s *Server) getSandbox(c echo.Context) error {
 		}
 	}
 
+	if s.sandboxDomain != "" {
+		sb.Domain = fmt.Sprintf("%s.%s", id, s.sandboxDomain)
+	}
+
 	return c.JSON(http.StatusOK, sb)
 }
 
@@ -220,6 +236,21 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 		})
 	}
 
+	// Hibernated sandboxes have no worker
+	if session.Status == "hibernated" {
+		resp := map[string]interface{}{
+			"sandboxID": sandboxID,
+			"status":    "hibernated",
+			"region":    session.Region,
+			"template":  session.Template,
+			"startedAt": session.StartedAt,
+		}
+		if s.sandboxDomain != "" {
+			resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
+		}
+		return c.JSON(http.StatusOK, resp)
+	}
+
 	// Look up worker address
 	worker := s.workerRegistry.GetWorker(session.WorkerID)
 	connectURL := ""
@@ -237,7 +268,7 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 		}
 	}
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"sandboxID":  sandboxID,
 		"connectURL": connectURL,
 		"token":      token,
@@ -246,7 +277,12 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 		"workerID":   session.WorkerID,
 		"startedAt":  session.StartedAt,
 		"template":   session.Template,
-	})
+	}
+	if s.sandboxDomain != "" {
+		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
+	}
+
+	return c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) killSandbox(c echo.Context) error {
@@ -266,6 +302,11 @@ func (s *Server) killSandbox(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
 		})
+	}
+
+	// Unregister from sandbox router
+	if s.router != nil {
+		s.router.Unregister(id)
 	}
 
 	if s.store != nil {
@@ -399,7 +440,7 @@ func (s *Server) setTimeout(c echo.Context) error {
 		})
 	}
 
-	if s.manager == nil {
+	if s.router == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
@@ -418,13 +459,263 @@ func (s *Server) setTimeout(c echo.Context) error {
 		})
 	}
 
-	if err := s.manager.SetTimeout(c.Request().Context(), id, req.Timeout); err != nil {
+	s.router.SetTimeout(id, time.Duration(req.Timeout)*time.Second)
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Server) hibernateSandbox(c echo.Context) error {
+	id := c.Param("id")
+	ctx := c.Request().Context()
+
+	// Server mode: dispatch to worker via gRPC
+	if s.workerRegistry != nil {
+		return s.hibernateSandboxRemote(c, id)
+	}
+
+	// Combined mode: hibernate locally
+	if s.manager == nil || s.checkpointStore == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "hibernation not available",
+		})
+	}
+
+	result, err := s.manager.Hibernate(ctx, id, s.checkpointStore)
+	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
 		})
 	}
 
-	return c.NoContent(http.StatusNoContent)
+	// Mark hibernated in sandbox router
+	if s.router != nil {
+		timeout := 600 // default for explicit hibernate
+		s.router.MarkHibernated(id, time.Duration(timeout)*time.Second)
+	}
+
+	// Record checkpoint in PG
+	orgID, hasOrg := auth.GetOrgID(c)
+	if s.store != nil && hasOrg {
+		session, _ := s.store.GetSandboxSession(ctx, id)
+		cfg := json.RawMessage("{}")
+		if session != nil {
+			cfg = session.Config
+		}
+		template := "base"
+		region := s.region
+		if session != nil {
+			template = session.Template
+			region = session.Region
+		}
+		_, _ = s.store.CreateCheckpoint(ctx, id, orgID, result.CheckpointKey, result.SizeBytes, region, template, cfg)
+		_ = s.store.UpdateSandboxSessionStatus(ctx, id, "hibernated", nil)
+	}
+
+	if s.sandboxDBs != nil {
+		_ = s.sandboxDBs.Remove(id)
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"sandboxID":     id,
+		"status":        "hibernated",
+		"checkpointKey": result.CheckpointKey,
+		"sizeBytes":     result.SizeBytes,
+	})
+}
+
+func (s *Server) hibernateSandboxRemote(c echo.Context, sandboxID string) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+	}
+	if session.Status != "running" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox is not running"})
+	}
+
+	client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker unreachable"})
+	}
+
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 60*time.Second)
+	defer cancel()
+
+	grpcResp, err := client.HibernateSandbox(grpcCtx, &pb.HibernateSandboxRequest{
+		SandboxId: sandboxID,
+	})
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "hibernate failed: " + err.Error(),
+		})
+	}
+
+	// Record checkpoint in PG
+	orgID, _ := auth.GetOrgID(c)
+	_, _ = s.store.CreateCheckpoint(c.Request().Context(), sandboxID, orgID,
+		grpcResp.CheckpointKey, grpcResp.SizeBytes,
+		session.Region, session.Template, session.Config)
+	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "hibernated", nil)
+
+	resp := map[string]interface{}{
+		"sandboxID":     sandboxID,
+		"status":        "hibernated",
+		"checkpointKey": grpcResp.CheckpointKey,
+		"sizeBytes":     grpcResp.SizeBytes,
+	}
+	if s.sandboxDomain != "" {
+		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
+	}
+
+	return c.JSON(http.StatusOK, resp)
+}
+
+func (s *Server) wakeSandbox(c echo.Context) error {
+	id := c.Param("id")
+	ctx := c.Request().Context()
+
+	var req types.WakeRequest
+	_ = c.Bind(&req)
+
+	// Server mode: pick any worker, dispatch via gRPC
+	if s.workerRegistry != nil {
+		return s.wakeSandboxRemote(c, id, req)
+	}
+
+	// Combined mode: wake locally
+	if s.manager == nil || s.checkpointStore == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "hibernation not available",
+		})
+	}
+
+	// Get checkpoint key from PG
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	checkpoint, err := s.store.GetActiveCheckpoint(ctx, id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "no active checkpoint found"})
+	}
+
+	sb, err := s.manager.Wake(ctx, id, checkpoint.CheckpointKey, s.checkpointStore, req.Timeout)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	// Register with sandbox router after explicit wake
+	if s.router != nil {
+		timeout := req.Timeout
+		if timeout <= 0 {
+			timeout = 300
+		}
+		s.router.Register(id, time.Duration(timeout)*time.Second)
+	}
+
+	_ = s.store.MarkCheckpointRestored(ctx, id)
+	_ = s.store.UpdateSandboxSessionForWake(ctx, id, s.workerID)
+
+	// Issue fresh JWT
+	orgID, _ := auth.GetOrgID(c)
+	if s.jwtIssuer != nil {
+		token, err := s.jwtIssuer.IssueSandboxToken(orgID, id, s.workerID, 24*time.Hour)
+		if err == nil {
+			sb.Token = token
+		}
+	}
+
+	sb.ConnectURL = s.httpAddr
+	if s.sandboxDomain != "" {
+		sb.Domain = fmt.Sprintf("%s.%s", id, s.sandboxDomain)
+	}
+
+	return c.JSON(http.StatusOK, sb)
+}
+
+func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.WakeRequest) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	checkpoint, err := s.store.GetActiveCheckpoint(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "no active checkpoint found"})
+	}
+
+	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox session not found"})
+	}
+	if session.Status != "hibernated" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox is not hibernated"})
+	}
+
+	// Pick ANY worker in the same region
+	region := checkpoint.Region
+	worker, grpcClient, err := s.workerRegistry.GetLeastLoadedWorker(region)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "no workers available in region " + region,
+		})
+	}
+
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 60*time.Second)
+	defer cancel()
+
+	grpcResp, err := grpcClient.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{
+		SandboxId:     sandboxID,
+		CheckpointKey: checkpoint.CheckpointKey,
+		Timeout:       int32(req.Timeout),
+	})
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "wake failed: " + err.Error(),
+		})
+	}
+
+	// Mark checkpoint as restored, update session
+	_ = s.store.MarkCheckpointRestored(c.Request().Context(), sandboxID)
+	_ = s.store.UpdateSandboxSessionForWake(c.Request().Context(), sandboxID, worker.ID)
+
+	// Issue fresh JWT
+	orgID, _ := auth.GetOrgID(c)
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = 300
+	}
+	var token string
+	if s.jwtIssuer != nil {
+		t, err := s.jwtIssuer.IssueSandboxToken(orgID, sandboxID, worker.ID, 24*time.Hour)
+		if err == nil {
+			token = t
+		}
+	}
+
+	resp := map[string]interface{}{
+		"sandboxID":  sandboxID,
+		"connectURL": worker.HTTPAddr,
+		"token":      token,
+		"status":     grpcResp.Status,
+		"region":     region,
+		"workerID":   worker.ID,
+	}
+	if s.sandboxDomain != "" {
+		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
+	}
+
+	return c.JSON(http.StatusOK, resp)
 }
 
 // listSessions returns session history from PostgreSQL.
