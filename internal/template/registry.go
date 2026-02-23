@@ -27,7 +27,7 @@ func NewRegistry() *Registry {
 	}{
 		{"base", "docker.io/library/ubuntu:22.04"},
 		{"python", "docker.io/library/python:3.12-slim"},
-		{"node", "docker.io/library/node:20-slim"},
+		{"node", "docker.io/library/node:20"},
 	}
 
 	now := time.Now()

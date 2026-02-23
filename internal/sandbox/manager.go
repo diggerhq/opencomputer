@@ -22,20 +22,22 @@ const (
 
 	defaultTimeout  = 300 // 5 minutes
 	defaultImage    = "docker.io/library/ubuntu:22.04"
-	defaultMemoryMB = 512
-	defaultCPU      = 1
+	defaultMemoryMB = 2048
+	defaultCPU      = 4
 )
 
 // Manager handles sandbox lifecycle operations (pure container executor).
 // Timer management and state machine logic live in SandboxRouter.
 type Manager struct {
-	podman *podman.Client
+	podman  *podman.Client
+	dataDir string
 }
 
 // NewManager creates a new sandbox manager.
-func NewManager(client *podman.Client) *Manager {
+func NewManager(client *podman.Client, dataDir string) *Manager {
 	return &Manager{
-		podman: client,
+		podman:  client,
+		dataDir: dataDir,
 	}
 }
 
@@ -97,9 +99,11 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 	ccfg.Labels[labelHostPort] = strconv.Itoa(hostPort)
 
 	// Make /tmp writable for sandbox use
-	ccfg.TmpFS["/tmp"] = "rw,size=100m"
+	ccfg.TmpFS["/tmp"] = "rw,size=256m"
 	// Add a writable workspace directory (default working directory for users)
 	ccfg.TmpFS["/workspace"] = "rw,size=200m"
+	// Writable home directory backed by tmpfs for fast small-file I/O (npm etc.)
+	ccfg.TmpFS["/home/user"] = "rw,size=1024m"
 
 	if _, err := m.podman.CreateContainer(ctx, ccfg); err != nil {
 		return nil, fmt.Errorf("failed to create sandbox %s: %w", id, err)
@@ -208,7 +212,7 @@ func resolveTemplateImage(template string) string {
 	case "python":
 		return "docker.io/library/python:3.12-slim"
 	case "node":
-		return "docker.io/library/node:20-slim"
+		return "docker.io/library/node:20"
 	default:
 		// Custom template: assume it's an image name tagged by the template system
 		return fmt.Sprintf("localhost/opensandbox-template/%s:latest", template)

@@ -8,5 +8,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_public_name_tag
 INSERT INTO templates (org_id, name, tag, image_ref, is_public) VALUES
     (NULL, 'base',   'latest', 'docker.io/library/ubuntu:22.04',     true),
     (NULL, 'python', 'latest', 'docker.io/library/python:3.12-slim', true),
-    (NULL, 'node',   'latest', 'docker.io/library/node:20-slim',     true)
+    (NULL, 'node',   'latest', 'docker.io/library/node:20',          true)
 ON CONFLICT DO NOTHING;

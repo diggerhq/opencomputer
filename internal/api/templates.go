@@ -44,7 +44,8 @@ func (s *Server) buildTemplate(c echo.Context) error {
 		req.Tag = "latest"
 	}
 
-	ctx := c.Request().Context()
+	// Use a detached context for the build — HTTP client disconnects
+	// (e.g. reverse proxy timeouts) must not cancel the long-running gRPC build.
 
 	// Compute ECR image reference
 	var ecrImageRef string
@@ -71,7 +72,7 @@ func (s *Server) buildTemplate(c echo.Context) error {
 		})
 	}
 
-	grpcCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	grpcCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	grpcResp, err := grpcClient.BuildTemplate(grpcCtx, &pb.BuildTemplateRequest{
@@ -87,7 +88,7 @@ func (s *Server) buildTemplate(c echo.Context) error {
 	}
 
 	// Insert template record in DB
-	tmpl, err := s.store.CreateTemplate(ctx, &orgID, req.Name, req.Tag, grpcResp.ImageRef, &req.Dockerfile, false)
+	tmpl, err := s.store.CreateTemplate(grpcCtx, &orgID, req.Name, req.Tag, grpcResp.ImageRef, &req.Dockerfile, false)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "failed to save template: " + err.Error(),
