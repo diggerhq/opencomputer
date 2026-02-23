@@ -50,7 +50,7 @@ func main() {
 		} else {
 			log.Printf("opensandbox: using podman %s", version)
 
-			mgr = sandbox.NewManager(podmanClient)
+			mgr = sandbox.NewManager(podmanClient, cfg.DataDir)
 			defer mgr.Close()
 
 			podmanPath, _ := exec.LookPath("podman")

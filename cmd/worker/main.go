@@ -43,7 +43,7 @@ func main() {
 	log.Printf("opensandbox-worker: using podman %s", version)
 
 	// Initialize sandbox manager
-	mgr := sandbox.NewManager(client)
+	mgr := sandbox.NewManager(client, cfg.DataDir)
 	defer mgr.Close()
 
 	// Initialize PTY manager
