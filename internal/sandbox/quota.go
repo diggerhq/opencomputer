@@ -14,7 +14,7 @@ import (
 // SetDiskQuota enforces a disk quota on a sandbox's data directory using XFS project quotas.
 // This requires the filesystem to be mounted with -o prjquota and xfs_quota to be available.
 // If quotas are not supported (e.g., dev mode on non-XFS), the error is logged and ignored.
-func (m *Manager) SetDiskQuota(sandboxID string, limitMB int) {
+func (m *PodmanManager) SetDiskQuota(sandboxID string, limitMB int) {
 	if m.dataDir == "" || limitMB <= 0 {
 		return
 	}
@@ -50,7 +50,7 @@ func (m *Manager) SetDiskQuota(sandboxID string, limitMB int) {
 }
 
 // RemoveDiskQuota removes the XFS project quota entries for a sandbox.
-func (m *Manager) RemoveDiskQuota(sandboxID string) {
+func (m *PodmanManager) RemoveDiskQuota(sandboxID string) {
 	if m.dataDir == "" {
 		return
 	}

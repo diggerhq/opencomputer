@@ -27,7 +27,7 @@ type HibernateResult struct {
 // Hibernate checkpoints a running sandbox, uploads to S3, and removes the container.
 // The CRIU checkpoint (process memory) is cached on local NVMe for fast same-machine wake.
 // The workspace directory stays on local NVMe and is archived to S3 async for cross-machine wake.
-func (m *Manager) Hibernate(ctx context.Context, sandboxID string, checkpointStore *storage.CheckpointStore) (*HibernateResult, error) {
+func (m *PodmanManager) Hibernate(ctx context.Context, sandboxID string, checkpointStore *storage.CheckpointStore) (*HibernateResult, error) {
 	name := m.ContainerName(sandboxID)
 
 	// 1. Trim memory before checkpoint (best-effort)
@@ -112,7 +112,7 @@ func (m *Manager) Hibernate(ctx context.Context, sandboxID string, checkpointSto
 // Wake restores a hibernated sandbox.
 // Fast path: if CRIU checkpoint + workspace are both on local NVMe, no S3 calls at all.
 // Slow path: downloads missing data from S3 (and caches it locally for next time).
-func (m *Manager) Wake(ctx context.Context, sandboxID string, checkpointKey string, checkpointStore *storage.CheckpointStore, timeout int) (*types.Sandbox, error) {
+func (m *PodmanManager) Wake(ctx context.Context, sandboxID string, checkpointKey string, checkpointStore *storage.CheckpointStore, timeout int) (*types.Sandbox, error) {
 	name := m.ContainerName(sandboxID)
 
 	// 1. Ensure workspace is available
@@ -163,7 +163,7 @@ func (m *Manager) Wake(ctx context.Context, sandboxID string, checkpointKey stri
 }
 
 // trimBeforeCheckpoint reduces the container's memory footprint before checkpointing.
-func (m *Manager) trimBeforeCheckpoint(ctx context.Context, containerName string) {
+func (m *PodmanManager) trimBeforeCheckpoint(ctx context.Context, containerName string) {
 	trimCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -186,7 +186,7 @@ func WorkspaceS3Key(sandboxID string) string {
 }
 
 // archiveWorkspaceToS3 creates a tar.zst archive of the workspace directory and uploads it to S3.
-func (m *Manager) archiveWorkspaceToS3(ctx context.Context, sandboxID, workspaceDir string, store *storage.CheckpointStore) error {
+func (m *PodmanManager) archiveWorkspaceToS3(ctx context.Context, sandboxID, workspaceDir string, store *storage.CheckpointStore) error {
 	archivePath, err := createTarZstd(workspaceDir)
 	if err != nil {
 		return fmt.Errorf("failed to archive workspace: %w", err)
@@ -201,7 +201,7 @@ func (m *Manager) archiveWorkspaceToS3(ctx context.Context, sandboxID, workspace
 }
 
 // restoreWorkspaceFromS3 downloads a workspace archive from S3 and extracts it.
-func (m *Manager) restoreWorkspaceFromS3(ctx context.Context, sandboxID, workspaceDir string, store *storage.CheckpointStore) error {
+func (m *PodmanManager) restoreWorkspaceFromS3(ctx context.Context, sandboxID, workspaceDir string, store *storage.CheckpointStore) error {
 	s3Key := WorkspaceS3Key(sandboxID)
 	reader, err := store.Download(ctx, s3Key)
 	if err != nil {

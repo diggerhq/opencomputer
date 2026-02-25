@@ -233,41 +233,116 @@ func (s *CheckpointStore) openCached(key string) (io.ReadCloser, error) {
 	return f, nil
 }
 
-// downloadAndCache downloads from S3, writes to NVMe cache, returns the cached file.
+// downloadAndCache downloads from S3 using parallel byte-range requests,
+// writes to NVMe cache, returns the cached file.
 func (s *CheckpointStore) downloadAndCache(ctx context.Context, key string) (io.ReadCloser, error) {
-	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to download checkpoint from S3: %w", err)
-	}
-
 	s.evictIfNeeded()
 
 	cachePath := s.CachePath(key)
 	tmpFile, err := os.CreateTemp(s.cacheDir, ".dl-tmp-*")
 	if err != nil {
-		// Can't write to cache — fall back to direct S3 stream
-		log.Printf("checkpoint-cache: can't create temp, streaming from S3: %v", err)
-		return resp.Body, nil
+		// Can't write to cache — fall back to single-stream
+		log.Printf("checkpoint-cache: can't create temp, falling back to single-stream: %v", err)
+		return s.downloadFromS3(ctx, key)
 	}
 	tmpPath := tmpFile.Name()
 
-	written, err := io.Copy(tmpFile, resp.Body)
-	resp.Body.Close()
+	// Get object size via HeadObject
+	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
 	if err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
-		return nil, fmt.Errorf("failed to download checkpoint from S3: %w", err)
+		return nil, fmt.Errorf("failed to head checkpoint in S3: %w", err)
 	}
+
+	totalSize := aws.ToInt64(head.ContentLength)
+	if totalSize <= 0 {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return nil, fmt.Errorf("checkpoint has zero size in S3: %s", key)
+	}
+
+	// Pre-allocate the file
+	if err := tmpFile.Truncate(totalSize); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return nil, fmt.Errorf("failed to preallocate temp file: %w", err)
+	}
+
+	const chunkSize = 64 * 1024 * 1024 // 64 MB chunks
+	const maxParallel = 16
+
+	numChunks := int((totalSize + chunkSize - 1) / chunkSize)
+	t0 := time.Now()
+	log.Printf("checkpoint-cache: downloading %s (%.1f MB, %d chunks, %d parallel)",
+		key, float64(totalSize)/(1024*1024), numChunks, maxParallel)
+
+	// Download chunks in parallel
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxParallel)
+	errs := make([]error, numChunks)
+
+	for i := 0; i < numChunks; i++ {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			start := int64(idx) * chunkSize
+			end := start + chunkSize - 1
+			if end >= totalSize {
+				end = totalSize - 1
+			}
+			rangeHeader := fmt.Sprintf("bytes=%d-%d", start, end)
+
+			resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+				Bucket: aws.String(s.bucket),
+				Key:    aws.String(key),
+				Range:  aws.String(rangeHeader),
+			})
+			if err != nil {
+				errs[idx] = fmt.Errorf("chunk %d: %w", idx, err)
+				return
+			}
+			defer resp.Body.Close()
+
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				errs[idx] = fmt.Errorf("chunk %d read: %w", idx, err)
+				return
+			}
+
+			if _, err := tmpFile.WriteAt(buf, start); err != nil {
+				errs[idx] = fmt.Errorf("chunk %d write: %w", idx, err)
+				return
+			}
+		}(i)
+	}
+	wg.Wait()
+
 	tmpFile.Close()
+
+	// Check for errors
+	for _, e := range errs {
+		if e != nil {
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("parallel download failed: %w", e)
+		}
+	}
+
+	elapsed := time.Since(t0)
+	mbPerSec := float64(totalSize) / (1024 * 1024) / elapsed.Seconds()
 
 	if err := os.Rename(tmpPath, cachePath); err != nil {
 		os.Remove(tmpPath)
 		log.Printf("checkpoint-cache: rename failed: %v", err)
 	} else {
-		log.Printf("checkpoint-cache: MISS %s (%d MB downloaded from S3, now cached)", key, written>>20)
+		log.Printf("checkpoint-cache: MISS %s (%.1f MB downloaded from S3 in %dms, %.0f MB/s, now cached)",
+			key, float64(totalSize)/(1024*1024), elapsed.Milliseconds(), mbPerSec)
 	}
 
 	f, err := os.Open(cachePath)

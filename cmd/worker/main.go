@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -13,7 +12,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/config"
 	"github.com/opensandbox/opensandbox/internal/db"
-	"github.com/opensandbox/opensandbox/internal/ecr"
+	fc "github.com/opensandbox/opensandbox/internal/firecracker"
 	"github.com/opensandbox/opensandbox/internal/metrics"
 	"github.com/opensandbox/opensandbox/internal/podman"
 	"github.com/opensandbox/opensandbox/internal/proxy"
@@ -21,6 +20,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/template"
 	"github.com/opensandbox/opensandbox/internal/worker"
+	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
 func main() {
@@ -31,30 +31,70 @@ func main() {
 
 	log.Printf("opensandbox-worker: starting (id=%s, region=%s)...", cfg.WorkerID, cfg.Region)
 
-	client, err := podman.NewClient()
-	if err != nil {
-		log.Fatalf("failed to initialize podman: %v", err)
-	}
-
 	ctx := context.Background()
-	version, err := client.Version(ctx)
-	if err != nil {
-		log.Fatalf("failed to get podman version: %v", err)
+
+	// Initialize Firecracker-based sandbox manager
+	fcCfg := fc.Config{
+		DataDir:         cfg.DataDir,
+		KernelPath:      cfg.KernelPath,
+		ImagesDir:       cfg.ImagesDir,
+		FirecrackerBin:  cfg.FirecrackerBin,
+		DefaultMemoryMB: cfg.DefaultSandboxMemoryMB,
+		DefaultCPUs:     cfg.DefaultSandboxCPUs,
+		DefaultDiskMB:   cfg.DefaultSandboxDiskMB,
 	}
-	log.Printf("opensandbox-worker: using podman %s", version)
 
-	// Initialize sandbox manager
-	mgr := sandbox.NewManager(client,
-		sandbox.WithDataDir(cfg.DataDir),
-		sandbox.WithDefaultMemoryMB(cfg.DefaultSandboxMemoryMB),
-		sandbox.WithDefaultCPUs(cfg.DefaultSandboxCPUs),
-		sandbox.WithDefaultDiskMB(cfg.DefaultSandboxDiskMB),
-	)
-	defer mgr.Close()
+	fcMgr, err := fc.NewManager(fcCfg)
+	if err != nil {
+		log.Fatalf("failed to initialize Firecracker manager: %v", err)
+	}
+	defer fcMgr.Close()
+	log.Println("opensandbox-worker: Firecracker VM manager initialized")
 
-	// Initialize PTY manager
-	podmanPath, _ := exec.LookPath("podman")
-	ptyMgr := sandbox.NewPTYManager(podmanPath, client.AuthFile())
+	// The Firecracker manager implements sandbox.Manager
+	var mgr sandbox.Manager = fcMgr
+
+	// Initialize PTY manager using Firecracker agent gRPC
+	ptyMgr := sandbox.NewAgentPTYManager(func(sandboxID string, req types.PTYCreateRequest) (*sandbox.PTYSessionHandle, error) {
+		agent, err := fcMgr.GetAgent(sandboxID)
+		if err != nil {
+			return nil, fmt.Errorf("get agent for %s: %w", sandboxID, err)
+		}
+		vsockPath, err := fcMgr.GetVsockPath(sandboxID)
+		if err != nil {
+			return nil, fmt.Errorf("get vsock path for %s: %w", sandboxID, err)
+		}
+
+		cols := int32(req.Cols)
+		if cols <= 0 {
+			cols = 80
+		}
+		rows := int32(req.Rows)
+		if rows <= 0 {
+			rows = 24
+		}
+
+		sessionID, dataPort, err := agent.PTYCreate(context.Background(), cols, rows, req.Shell)
+		if err != nil {
+			return nil, fmt.Errorf("create PTY in VM: %w", err)
+		}
+
+		// Connect to the PTY data stream via vsock
+		conn, err := agent.ConnectPTYData(vsockPath, dataPort)
+		if err != nil {
+			_ = agent.PTYKill(context.Background(), sessionID)
+			return nil, fmt.Errorf("connect PTY data: %w", err)
+		}
+
+		done := make(chan struct{})
+
+		return &sandbox.PTYSessionHandle{
+			ID:        sessionID,
+			SandboxID: sandboxID,
+			PTY:       conn,
+			Done:      done,
+		}, nil
+	})
 	defer ptyMgr.CloseAll()
 
 	// Initialize per-sandbox SQLite manager
@@ -138,19 +178,20 @@ func main() {
 	defer metricsSrv.Close()
 	log.Println("opensandbox-worker: metrics server started on :9091")
 
-	// Initialize ECR config + template builder for building custom templates
-	var ecrCfg *ecr.Config
-	if cfg.ECRRegistry != "" {
-		ecrCfg = &ecr.Config{
-			Registry:   cfg.ECRRegistry,
-			Repository: cfg.ECRRepository,
-			Region:     cfg.S3Region,
-			AccessKey:  cfg.S3AccessKeyID,
-			SecretKey:  cfg.S3SecretAccessKey,
+	// Initialize template builder (Podman as build tool → ext4 images)
+	var builder *template.Builder
+	podmanClient, podmanErr := podman.NewClient()
+	if podmanErr != nil {
+		log.Printf("opensandbox-worker: podman not available: %v (template building disabled)", podmanErr)
+	} else {
+		imagesDir := fcCfg.ImagesDir
+		agentPath := filepath.Join(filepath.Dir(os.Args[0]), "osb-agent")
+		if _, err := os.Stat(agentPath); err != nil {
+			agentPath = "/usr/local/bin/osb-agent"
 		}
-		log.Printf("opensandbox-worker: ECR configured (registry=%s, repo=%s)", cfg.ECRRegistry, cfg.ECRRepository)
+		builder = template.NewBuilder(podmanClient, imagesDir, agentPath)
+		log.Printf("opensandbox-worker: template builder configured (images=%s, agent=%s)", imagesDir, agentPath)
 	}
-	builder := template.NewBuilder(client, ecrCfg)
 
 	// Start gRPC server for control plane communication
 	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr, checkpointStore, sbRouter, builder)
@@ -179,28 +220,8 @@ func main() {
 		}
 	}()
 
-	// Pre-pull common template images in background (non-blocking)
-	go func() {
-		images := []string{
-			"docker.io/library/ubuntu:22.04",
-			"docker.io/library/python:3.12-slim",
-			"docker.io/library/node:20-slim",
-		}
-		for _, img := range images {
-			exists, _ := client.ImageExists(ctx, img)
-			if !exists {
-				log.Printf("opensandbox-worker: pulling %s...", img)
-				if err := client.PullImage(ctx, img); err != nil {
-					log.Printf("opensandbox-worker: warning: failed to pull %s: %v", img, err)
-				}
-			}
-		}
-		log.Println("opensandbox-worker: template images ready")
-	}()
-
 	// Start Redis heartbeat for control plane discovery
 	if cfg.RedisURL != "" {
-		// Determine the gRPC address to advertise to the control plane.
 		grpcAdvertise := grpcAddr
 		if addr := os.Getenv("OPENSANDBOX_GRPC_ADVERTISE"); addr != "" {
 			grpcAdvertise = addr
@@ -210,7 +231,6 @@ func main() {
 		if err != nil {
 			log.Printf("opensandbox-worker: Redis heartbeat not available: %v", err)
 		} else {
-			// Try to get EC2 instance ID from IMDS for scaler drain/terminate
 			if machineID := worker.GetEC2InstanceID(); machineID != "" {
 				hb.SetMachineID(machineID)
 				log.Printf("opensandbox-worker: EC2 instance ID: %s", machineID)
