@@ -47,3 +47,4 @@ sdks/typescript/examples/loom/
 # Temp files
 *.tmp
 *.log
+delme/
