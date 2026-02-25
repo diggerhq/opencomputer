@@ -53,12 +53,12 @@ echo ""
 
 # ─────────────────────────────────────────────────────
 header "TEST 1: Fresh Launch (cold start)"
-info "Creating sandbox from base template..."
+info "Creating sandbox from ubuntu template..."
 
 T_START=$(python3 -c 'import time; print(time.time())')
 
 RESP=$(api POST /api/sandboxes -d '{
-  "templateID": "base",
+  "templateID": "ubuntu",
   "timeout": 600,
   "memoryMB": 512,
   "cpuCount": 2
@@ -90,13 +90,13 @@ fi
 curl -s -X POST "${EXEC_URL}/sandboxes/${SANDBOX_ID}/commands" \
   -H "${AUTH_HEADER}" \
   -H "Content-Type: application/json" \
-  -d '{"cmd":"bash","args":["-c","echo benchmark-marker-12345 > /tmp/bench.txt && date +%s > /tmp/bench-time.txt"]}' > /dev/null 2>&1
+  -d '{"cmd":"bash","args":["-c","echo benchmark-marker-12345 > /workspace/bench.txt && date +%s > /workspace/bench-time.txt"]}' > /dev/null 2>&1
 
 # Verify state
 CMD_RESP=$(curl -s -X POST "${EXEC_URL}/sandboxes/${SANDBOX_ID}/commands" \
   -H "${AUTH_HEADER}" \
   -H "Content-Type: application/json" \
-  -d '{"cmd":"bash","args":["-c","cat /tmp/bench.txt"]}')
+  -d '{"cmd":"bash","args":["-c","cat /workspace/bench.txt"]}')
 MARKER=$(echo "$CMD_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('stdout','').strip())" 2>/dev/null || echo "")
 if [[ "$MARKER" == "benchmark-marker-12345" ]]; then
   ok "State written and verified"
@@ -146,7 +146,7 @@ info "Verifying state persistence..."
 CMD_RESP=$(curl -s -X POST "${EXEC_URL}/sandboxes/${SANDBOX_ID}/commands" \
   -H "${AUTH_HEADER}" \
   -H "Content-Type: application/json" \
-  -d '{"cmd":"bash","args":["-c","cat /tmp/bench.txt"]}')
+  -d '{"cmd":"bash","args":["-c","cat /workspace/bench.txt"]}')
 MARKER=$(echo "$CMD_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('stdout','').strip())" 2>/dev/null || echo "")
 if [[ "$MARKER" == "benchmark-marker-12345" ]]; then
   ok "State verified after local wake ✓"
@@ -225,7 +225,7 @@ info "Verifying state persistence after S3 restore..."
 CMD_RESP=$(curl -s -X POST "${EXEC_URL}/sandboxes/${SANDBOX_ID}/commands" \
   -H "${AUTH_HEADER}" \
   -H "Content-Type: application/json" \
-  -d '{"cmd":"bash","args":["-c","cat /tmp/bench.txt"]}')
+  -d '{"cmd":"bash","args":["-c","cat /workspace/bench.txt"]}')
 MARKER=$(echo "$CMD_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('stdout','').strip())" 2>/dev/null || echo "")
 if [[ "$MARKER" == "benchmark-marker-12345" ]]; then
   ok "State verified after S3 wake ✓"

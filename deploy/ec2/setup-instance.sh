@@ -6,18 +6,19 @@ set -euo pipefail
 #   ssh -i key.pem ubuntu@<IP> 'bash -s' < deploy/ec2/setup-instance.sh
 #
 # Supports both x86_64 (amd64) and aarch64 (arm64/Graviton) instances.
+# Optimized for Firecracker microVMs on bare-metal Graviton (r7gd.metal).
 #
 # Prerequisites:
 #   - Ubuntu 24.04 LTS AMI
-#   - t3.medium or larger (x86) / r7gd.medium or larger (arm64)
-#   - Security group: 443 (HTTPS), 9090 (gRPC) open inbound
+#   - r7gd.metal (ARM64) or c7i.metal (x86_64) for production
+#   - Security group: 443 (HTTPS), 8080 (HTTP), 9090 (gRPC), 9091 (metrics) open inbound
 #   - SSH access
 
 # Detect architecture
 ARCH=$(uname -m)
 case "$ARCH" in
-  x86_64)  GOARCH="amd64" ;;
-  aarch64) GOARCH="arm64" ;;
+  x86_64)  GOARCH="amd64"; FC_ARCH="x86_64" ;;
+  aarch64) GOARCH="arm64"; FC_ARCH="aarch64" ;;
   *)       echo "ERROR: Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 echo "==> Detected architecture: $ARCH ($GOARCH)"
@@ -26,66 +27,45 @@ echo "==> Updating packages..."
 sudo apt-get update && sudo apt-get upgrade -y
 
 # -------------------------------------------------------------------
-# Podman (runtime will be configured after crun is built)
+# Firecracker microVM runtime
 # -------------------------------------------------------------------
-echo "==> Installing Podman..."
+echo "==> Installing Firecracker..."
+FC_VERSION="v1.9.1"
+FC_RELEASE="firecracker-${FC_VERSION}-${FC_ARCH}"
+FC_URL="https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/${FC_RELEASE}.tgz"
+
+cd /tmp
+curl -fSL -o firecracker.tgz "$FC_URL"
+tar xzf firecracker.tgz
+sudo cp "release-${FC_VERSION}-${FC_ARCH}/firecracker-${FC_VERSION}-${FC_ARCH}" /usr/local/bin/firecracker
+sudo chmod +x /usr/local/bin/firecracker
+rm -rf firecracker.tgz "release-${FC_VERSION}-${FC_ARCH}"
+cd /
+
+echo "==> Verifying Firecracker..."
+firecracker --version
+
+# Verify KVM access (required for Firecracker)
+if [ ! -e /dev/kvm ]; then
+    echo "WARNING: /dev/kvm not found. Firecracker requires bare-metal or nested virt."
+    echo "  For bare-metal instances (r7gd.metal), /dev/kvm should exist."
+    echo "  For regular instances, enable nested virtualization in the AMI."
+fi
+
+# Ensure KVM permissions
+sudo chmod 666 /dev/kvm 2>/dev/null || true
+
+# -------------------------------------------------------------------
+# Podman (kept as build tool for Dockerfile → ext4 conversion)
+# -------------------------------------------------------------------
+echo "==> Installing Podman (for template building)..."
 sudo apt-get install -y podman uidmap slirp4netns
 
 # -------------------------------------------------------------------
-# CRIU 4.2 (must be installed BEFORE crun so headers are available)
+# System tools for ext4 image creation
 # -------------------------------------------------------------------
-echo "==> Installing CRIU 4.2 from source..."
-sudo apt-get install -y \
-  make gcc pkg-config git \
-  libprotobuf-dev libprotobuf-c-dev protobuf-c-compiler protobuf-compiler \
-  libcap-dev libnl-3-dev libnet1-dev libbsd-dev \
-  python3-protobuf python3-yaml iproute2 \
-  libdrm-dev libnftables-dev uuid-dev libaio-dev
-
-cd /tmp
-rm -rf /tmp/criu
-git clone --branch v4.2 --depth 1 https://github.com/checkpoint-restore/criu.git
-cd criu
-make -j"$(nproc)"
-sudo make install-criu PREFIX=/usr/local
-sudo make install-lib PREFIX=/usr/local
-sudo ldconfig
-cd / && rm -rf /tmp/criu
-
-echo "==> Verifying CRIU..."
-criu --version
-
-# -------------------------------------------------------------------
-# crun 1.26 (with CRIU support — requires CRIU headers from above)
-# -------------------------------------------------------------------
-echo "==> Installing crun from source (with CRIU support)..."
-sudo apt-get install -y \
-  libsystemd-dev libseccomp-dev \
-  libyajl-dev go-md2man autoconf automake libtool
-
-cd /tmp
-rm -rf /tmp/crun
-git clone --branch "1.26" --depth 1 https://github.com/containers/crun.git
-cd crun
-export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-./autogen.sh
-./configure --with-criu
-make -j"$(nproc)"
-sudo make install
-cd / && rm -rf /tmp/crun
-
-echo "==> Verifying crun has CRIU support..."
-crun --version | grep "+CRIU" || { echo "ERROR: crun built without CRIU"; exit 1; }
-
-# -------------------------------------------------------------------
-# Configure Podman to use crun
-# -------------------------------------------------------------------
-echo "==> Configuring Podman to use crun..."
-sudo mkdir -p /etc/containers
-sudo tee /etc/containers/containers.conf > /dev/null <<'EOF'
-[engine]
-runtime = "crun"
-EOF
+echo "==> Installing ext4 and rootfs tools..."
+sudo apt-get install -y e2fsprogs
 
 # -------------------------------------------------------------------
 # Redis
@@ -120,7 +100,7 @@ sudo cp /tmp/deploy-ec2/caddy.service /etc/systemd/system/caddy.service 2>/dev/n
   echo "    NOTE: Copy deploy/ec2/caddy.service to /etc/systemd/system/ manually"
 
 # -------------------------------------------------------------------
-# NVMe instance storage (handled at boot by opensandbox-nvme.service)
+# NVMe instance storage (XFS with reflink for instant rootfs copies)
 # -------------------------------------------------------------------
 echo "==> Installing NVMe boot service..."
 sudo apt-get install -y xfsprogs nvme-cli
@@ -128,7 +108,7 @@ sudo apt-get install -y xfsprogs nvme-cli
 sudo tee /usr/local/bin/opensandbox-nvme-setup.sh > /dev/null << 'NVME'
 #!/usr/bin/env bash
 set -euo pipefail
-MOUNT_POINT="/data/sandboxes"
+MOUNT_POINT="/data"
 mkdir -p "$MOUNT_POINT"
 if mountpoint -q "$MOUNT_POINT"; then
   echo "opensandbox-nvme: $MOUNT_POINT already mounted"
@@ -143,11 +123,16 @@ for dev in /dev/nvme1n1 /dev/nvme2n1 /dev/nvme3n1 /dev/nvme4n1; do
 done
 if [ -z "$NVME_DEV" ]; then
   echo "opensandbox-nvme: no NVMe instance storage found, using root disk"
+  mkdir -p "$MOUNT_POINT/sandboxes" "$MOUNT_POINT/firecracker/images" "$MOUNT_POINT/checkpoints"
   exit 0
 fi
-echo "opensandbox-nvme: formatting $NVME_DEV as XFS with project quotas"
-mkfs.xfs -f "$NVME_DEV"
+echo "opensandbox-nvme: formatting $NVME_DEV as XFS with reflink + project quotas"
+mkfs.xfs -f -m reflink=1 "$NVME_DEV"
 mount -o prjquota "$NVME_DEV" "$MOUNT_POINT"
+# Create directory structure
+mkdir -p "$MOUNT_POINT/sandboxes"
+mkdir -p "$MOUNT_POINT/firecracker/images"
+mkdir -p "$MOUNT_POINT/checkpoints"
 echo "opensandbox-nvme: mounted $NVME_DEV at $MOUNT_POINT"
 NVME
 sudo chmod +x /usr/local/bin/opensandbox-nvme-setup.sh
@@ -167,6 +152,35 @@ ExecStart=/usr/local/bin/opensandbox-nvme-setup.sh
 [Install]
 WantedBy=multi-user.target
 SVC
+
+# -------------------------------------------------------------------
+# Firecracker kernel + base rootfs images
+# -------------------------------------------------------------------
+echo "==> Setting up Firecracker kernel and base images directory..."
+sudo mkdir -p /data/firecracker/images
+
+# Download kernel (will be populated by deploy script)
+echo "    Kernel will be installed by deploy-worker.sh at /data/firecracker/vmlinux-arm64"
+echo "    Base rootfs images will be installed at /data/firecracker/images/"
+
+# -------------------------------------------------------------------
+# IP forwarding + iptables for VM networking
+# -------------------------------------------------------------------
+echo "==> Configuring IP forwarding for Firecracker VMs..."
+sudo tee /etc/sysctl.d/99-opensandbox.conf > /dev/null << 'SYSCTL'
+# Enable IP forwarding for Firecracker VM networking
+net.ipv4.ip_forward = 1
+# Increase ARP cache for many TAP interfaces
+net.ipv4.neigh.default.gc_thresh1 = 1024
+net.ipv4.neigh.default.gc_thresh2 = 4096
+net.ipv4.neigh.default.gc_thresh3 = 8192
+# Increase max open files for many VMs
+fs.file-max = 1000000
+# Increase inotify limits
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 524288
+SYSCTL
+sudo sysctl --system
 
 # -------------------------------------------------------------------
 # Dynamic worker identity (from EC2 IMDS at boot)
@@ -212,23 +226,18 @@ WantedBy=multi-user.target
 SVC
 
 # -------------------------------------------------------------------
-# Worker systemd unit
+# Worker systemd unit (Firecracker)
 # -------------------------------------------------------------------
 echo "==> Installing worker systemd unit..."
 sudo tee /etc/systemd/system/opensandbox-worker.service > /dev/null << 'SVC'
 [Unit]
-Description=OpenSandbox Worker
+Description=OpenSandbox Worker (Firecracker)
 After=network-online.target opensandbox-nvme.service opensandbox-identity.service
 Wants=network-online.target
 Requires=opensandbox-nvme.service opensandbox-identity.service
 
 [Service]
 Type=simple
-ExecStartPre=/sbin/modprobe inet_diag
-ExecStartPre=/sbin/modprobe tcp_diag
-ExecStartPre=/sbin/modprobe udp_diag
-ExecStartPre=/sbin/modprobe unix_diag
-ExecStartPre=/sbin/modprobe netlink_diag
 ExecStart=/usr/local/bin/opensandbox-worker
 Restart=always
 RestartSec=5
@@ -236,28 +245,22 @@ Environment=HOME=/root
 Environment=OPENSANDBOX_MODE=worker
 Environment=OPENSANDBOX_PORT=8080
 Environment=OPENSANDBOX_REGION=use2
-Environment=OPENSANDBOX_DATA_DIR=/data/sandboxes
+Environment=OPENSANDBOX_DATA_DIR=/data
 Environment=OPENSANDBOX_SANDBOX_DOMAIN=workers.opensandbox.ai
+Environment=OPENSANDBOX_FIRECRACKER_BIN=/usr/local/bin/firecracker
+Environment=OPENSANDBOX_KERNEL_PATH=/data/firecracker/vmlinux-arm64
+Environment=OPENSANDBOX_IMAGES_DIR=/data/firecracker/images
 Environment=OPENSANDBOX_SECRETS_ARN=arn:aws:secretsmanager:us-east-2:739940681129:secret:opensandbox/worker-vtN2Ez
 EnvironmentFile=/etc/opensandbox/worker-identity.env
+# Raise limits for many concurrent VMs
+LimitNOFILE=1000000
+LimitNPROC=65536
 
 [Install]
 WantedBy=multi-user.target
 SVC
 
-sudo mkdir -p /etc/opensandbox /data/sandboxes
-
-# -------------------------------------------------------------------
-# Kernel modules for CRIU (loaded at boot)
-# -------------------------------------------------------------------
-echo "==> Configuring kernel modules for CRIU..."
-sudo tee /etc/modules-load.d/opensandbox.conf > /dev/null <<EOF
-inet_diag
-tcp_diag
-udp_diag
-unix_diag
-netlink_diag
-EOF
+sudo mkdir -p /etc/opensandbox /data/sandboxes /data/firecracker/images /data/checkpoints
 
 # -------------------------------------------------------------------
 # Enable services
@@ -280,9 +283,17 @@ echo ""
 echo "============================================"
 echo " Instance setup complete! ($ARCH)"
 echo ""
+echo " Installed:"
+echo "   - Firecracker $(firecracker --version | head -1)"
+echo "   - Podman $(podman --version)"
+echo "   - Redis"
+echo "   - Caddy (with Route53 DNS)"
+echo ""
 echo " Remaining steps:"
-echo "   1. Deploy the worker binary: ./deploy/ec2/deploy-worker.sh"
-echo "   2. Copy Caddyfile to /etc/caddy/Caddyfile"
-echo "   3. Start services: sudo systemctl start opensandbox-worker"
-echo "   4. Set up wildcard DNS: *.workers.opensandbox.ai -> this instance IP"
+echo "   1. Deploy worker + agent binaries: ./deploy/ec2/deploy-worker.sh"
+echo "   2. Download kernel: scp bin/vmlinux-arm64 to /data/firecracker/"
+echo "   3. Build base rootfs images: sudo ./scripts/build-rootfs.sh all"
+echo "   4. Copy Caddyfile to /etc/caddy/Caddyfile"
+echo "   5. Start services: sudo systemctl start opensandbox-worker"
+echo "   6. Set up wildcard DNS: *.workers.opensandbox.ai -> this instance IP"
 echo "============================================"

@@ -33,7 +33,7 @@ func main() {
 	ctx := context.Background()
 
 	// Initialize Podman (optional in server mode — no container runtime needed)
-	var mgr *sandbox.Manager
+	var mgr sandbox.Manager
 	var ptyMgr *sandbox.PTYManager
 	podmanClient, err := podman.NewClient()
 	if err != nil {
@@ -234,6 +234,15 @@ func main() {
 		scaler.Start()
 		defer scaler.Stop()
 		log.Printf("opensandbox: EC2 autoscaler started (ami=%s, type=%s)", cfg.EC2AMI, cfg.EC2InstanceType)
+	}
+
+	// Initialize control plane subdomain proxy (server mode only).
+	// Routes *.workers.opensandbox.ai requests to the correct worker
+	// by looking up sandbox → worker mapping in PG + Redis registry.
+	if cfg.Mode == "server" && cfg.SandboxDomain != "" && opts.Store != nil && redisRegistry != nil {
+		cpProxy := proxy.NewControlPlaneProxy(cfg.SandboxDomain, opts.Store, redisRegistry)
+		opts.ControlPlaneProxy = cpProxy
+		log.Printf("opensandbox: control plane subdomain proxy configured (*.%s)", cfg.SandboxDomain)
 	}
 
 	// Create API server

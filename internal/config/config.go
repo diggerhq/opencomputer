@@ -70,8 +70,13 @@ type Config struct {
 	DefaultSandboxCPUs     int // default vCPUs per sandbox, default 1
 	DefaultSandboxDiskMB   int // default disk quota per sandbox (MB), 0 = no quota
 
+	// Firecracker microVM configuration (worker mode)
+	FirecrackerBin string // Path to firecracker binary (default: "firecracker")
+	KernelPath     string // Path to vmlinux kernel (default: $DataDir/firecracker/vmlinux-arm64)
+	ImagesDir      string // Path to base rootfs images (default: $DataDir/firecracker/images/)
+
 	// AWS EC2 compute pool (server mode only — for auto-scaling worker machines)
-	EC2AMI             string // Custom AMI with Podman+CRIU pre-installed
+	EC2AMI             string // Custom AMI with Firecracker pre-installed
 	EC2InstanceType    string // e.g. "c7gd.metal", "r6gd.metal", "r7gd.metal"
 	EC2SubnetID        string // VPC subnet for worker instances
 	EC2SecurityGroupID string // Security group (allow 8080, 9090, 9091)
@@ -140,6 +145,10 @@ func Load() (*Config, error) {
 		DefaultSandboxMemoryMB: envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB", 512),
 		DefaultSandboxCPUs:     envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_CPUS", 1),
 		DefaultSandboxDiskMB:   envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_DISK_MB", 0),
+
+		FirecrackerBin: envOrDefault("OPENSANDBOX_FIRECRACKER_BIN", "firecracker"),
+		KernelPath:     os.Getenv("OPENSANDBOX_KERNEL_PATH"),     // default derived from DataDir
+		ImagesDir:      os.Getenv("OPENSANDBOX_IMAGES_DIR"),      // default derived from DataDir
 
 		EC2AMI:             os.Getenv("OPENSANDBOX_EC2_AMI"),
 		EC2InstanceType:    envOrDefault("OPENSANDBOX_EC2_INSTANCE_TYPE", "c7gd.metal"),

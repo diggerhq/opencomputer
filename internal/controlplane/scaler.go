@@ -13,6 +13,8 @@ const (
 	scaleUpThreshold    = 0.70 // Scale up when utilization > 70%
 	scaleDownThreshold  = 0.30 // Scale down when utilization < 30%
 	minWorkersPerRegion = 1
+	maxWorkersPerRegion = 10   // Hard cap to prevent runaway launches
+	pendingWorkerTTL    = 10 * time.Minute // How long to wait for a launched worker to register
 )
 
 // ScalerRegistry is the interface the Scaler uses to query worker state.
@@ -32,6 +34,12 @@ type ScalerConfig struct {
 	Interval    time.Duration // how often to evaluate scaling (0 = default 30s)
 }
 
+// pendingLaunch tracks an EC2 instance that was launched but hasn't registered yet.
+type pendingLaunch struct {
+	machineID string
+	launchedAt time.Time
+}
+
 // Scaler manages autoscaling of workers via the compute Pool.
 type Scaler struct {
 	pool        compute.Pool
@@ -39,7 +47,8 @@ type Scaler struct {
 	image       string
 	cooldown    time.Duration
 	interval    time.Duration
-	lastScaleUp map[string]time.Time // region -> last scale-up time
+	lastScaleUp map[string]time.Time      // region -> last scale-up time
+	pending     map[string][]pendingLaunch // region -> pending (unregistered) launches
 	stop        chan struct{}
 	wg          sync.WaitGroup
 }
@@ -61,6 +70,7 @@ func NewScaler(cfg ScalerConfig) *Scaler {
 		cooldown:    cooldown,
 		interval:    interval,
 		lastScaleUp: make(map[string]time.Time),
+		pending:     make(map[string][]pendingLaunch),
 		stop:        make(chan struct{}),
 	}
 }
@@ -105,6 +115,9 @@ func (s *Scaler) evaluateRegion(ctx context.Context, region string) {
 	workers := s.registry.GetWorkersByRegion(region)
 	utilization := s.registry.RegionUtilization(region)
 
+	// Expire stale pending launches
+	s.expirePending(region)
+
 	if utilization > scaleUpThreshold {
 		// Check cooldown before scaling up
 		if last, ok := s.lastScaleUp[region]; ok && time.Since(last) < s.cooldown {
@@ -112,6 +125,22 @@ func (s *Scaler) evaluateRegion(ctx context.Context, region string) {
 				region, s.cooldown-time.Since(last))
 			return
 		}
+
+		// Don't scale up if there are already pending (unregistered) workers
+		pending := s.pending[region]
+		if len(pending) > 0 {
+			log.Printf("scaler: region %s needs scale-up but %d worker(s) still pending registration",
+				region, len(pending))
+			return
+		}
+
+		// Don't exceed max workers per region
+		totalWorkers := len(workers) + len(pending)
+		if totalWorkers >= maxWorkersPerRegion {
+			log.Printf("scaler: region %s at max workers (%d), skipping scale-up", region, totalWorkers)
+			return
+		}
+
 		log.Printf("scaler: region %s utilization %.1f%% > %.0f%%, scaling up", region, utilization*100, scaleUpThreshold*100)
 		s.scaleUp(ctx, region)
 	} else if utilization < scaleDownThreshold && len(workers) > minWorkersPerRegion {
@@ -133,7 +162,47 @@ func (s *Scaler) scaleUp(ctx context.Context, region string) {
 	}
 
 	s.lastScaleUp[region] = time.Now()
-	log.Printf("scaler: created machine %s in %s (addr=%s)", machine.ID, region, machine.Addr)
+	s.pending[region] = append(s.pending[region], pendingLaunch{
+		machineID:  machine.ID,
+		launchedAt: time.Now(),
+	})
+	log.Printf("scaler: created machine %s in %s (addr=%s), pending registration", machine.ID, region, machine.Addr)
+}
+
+// expirePending removes pending launches that have either registered or timed out.
+func (s *Scaler) expirePending(region string) {
+	pending := s.pending[region]
+	if len(pending) == 0 {
+		return
+	}
+
+	// Get currently registered worker machine IDs
+	registered := make(map[string]bool)
+	for _, w := range s.registry.GetWorkersByRegion(region) {
+		if w.MachineID != "" {
+			registered[w.MachineID] = true
+		}
+	}
+
+	var remaining []pendingLaunch
+	for _, p := range pending {
+		if registered[p.machineID] {
+			log.Printf("scaler: pending machine %s in %s has registered", p.machineID, region)
+			continue
+		}
+		if time.Since(p.launchedAt) > pendingWorkerTTL {
+			log.Printf("scaler: pending machine %s in %s timed out after %s, terminating",
+				p.machineID, region, pendingWorkerTTL)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := s.pool.DestroyMachine(ctx, p.machineID); err != nil {
+				log.Printf("scaler: failed to terminate stale machine %s: %v", p.machineID, err)
+			}
+			cancel()
+			continue
+		}
+		remaining = append(remaining, p)
+	}
+	s.pending[region] = remaining
 }
 
 func (s *Scaler) scaleDown(ctx context.Context, region string, workers []*WorkerInfo) {
