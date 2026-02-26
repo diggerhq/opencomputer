@@ -262,15 +262,16 @@ func (r *RedisWorkerRegistry) dialWorkerLocked(workerID, grpcAddr string) {
 	log.Printf("redis_registry: gRPC connection initiated to worker %s at %s", workerID, grpcAddr)
 }
 
-// GetLeastLoadedWorker returns the worker with the most remaining capacity.
-// If region is non-empty, only workers in that region are considered.
+// GetLeastLoadedWorker returns the worker with the best combination of remaining capacity
+// and resource headroom. Workers under heavy resource pressure (CPU > 90% or mem > 90%)
+// are skipped. If region is non-empty, only workers in that region are considered.
 // If no workers match the region, falls back to all workers.
 func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry, pb.SandboxWorkerClient, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	var best *WorkerEntry
-	bestRemaining := -1
+	bestScore := -1.0
 
 	// First pass: try workers in the requested region
 	for _, w := range r.workers {
@@ -281,9 +282,16 @@ func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry,
 		if remaining <= 0 {
 			continue
 		}
-		if remaining > bestRemaining {
+		// Skip workers under heavy resource pressure
+		if w.CPUPct > 90 || w.MemPct > 90 {
+			continue
+		}
+		// Score: remaining capacity weighted by resource headroom
+		resourceScore := (100.0 - w.CPUPct) / 100.0 * (100.0 - w.MemPct) / 100.0
+		score := float64(remaining) * resourceScore
+		if score > bestScore {
 			best = w
-			bestRemaining = remaining
+			bestScore = score
 		}
 	}
 
@@ -294,9 +302,14 @@ func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry,
 			if remaining <= 0 {
 				continue
 			}
-			if remaining > bestRemaining {
+			if w.CPUPct > 90 || w.MemPct > 90 {
+				continue
+			}
+			resourceScore := (100.0 - w.CPUPct) / 100.0 * (100.0 - w.MemPct) / 100.0
+			score := float64(remaining) * resourceScore
+			if score > bestScore {
 				best = w
-				bestRemaining = remaining
+				bestScore = score
 			}
 		}
 	}
@@ -400,6 +413,20 @@ func (r *RedisWorkerRegistry) GetWorkersByRegion(region string) []*WorkerInfo {
 		}
 	}
 	return result
+}
+
+// RegionResourcePressure returns the maximum CPU and memory usage across all workers in a region (satisfies ScalerRegistry).
+func (r *RedisWorkerRegistry) RegionResourcePressure(region string) (maxCPU, maxMem float64) {
+	workers := r.GetWorkersByRegion(region)
+	for _, w := range workers {
+		if w.CPUPct > maxCPU {
+			maxCPU = w.CPUPct
+		}
+		if w.MemPct > maxMem {
+			maxMem = w.MemPct
+		}
+	}
+	return maxCPU, maxMem
 }
 
 // RegionUtilization returns the average utilization for a region (satisfies ScalerRegistry).

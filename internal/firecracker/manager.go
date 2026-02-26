@@ -66,9 +66,10 @@ type Manager struct {
 	cfg     Config
 	subnets *SubnetAllocator
 
-	mu      sync.RWMutex
-	vms     map[string]*VMInstance
-	nextCID uint32 // next guest CID to assign (starts at 3, 0-2 are reserved)
+	mu       sync.RWMutex
+	vms      map[string]*VMInstance
+	nextCID  uint32 // next guest CID to assign (starts at 3, 0-2 are reserved)
+	uploadWg sync.WaitGroup // tracks in-flight async S3 uploads
 }
 
 // NewManager creates a new Firecracker-backed sandbox manager.
@@ -502,6 +503,69 @@ func (m *Manager) Close() {
 	log.Printf("firecracker: manager closed, %d VMs destroyed", len(vms))
 }
 
+// WaitUploads blocks until all in-flight async S3 uploads complete,
+// or the timeout expires.
+func (m *Manager) WaitUploads(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		m.uploadWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		log.Println("firecracker: all S3 uploads complete")
+	case <-time.After(timeout):
+		log.Printf("firecracker: timed out waiting for S3 uploads after %s", timeout)
+	}
+}
+
+// HibernateAllResult holds the result of a single VM hibernation during HibernateAll.
+type HibernateAllResult struct {
+	SandboxID     string
+	CheckpointKey string
+	Err           error
+}
+
+// HibernateAll hibernates all running VMs concurrently.
+// The local snapshot (syncfs + pause + dump) is fast (~200ms per VM) and runs in parallel.
+// S3 uploads happen asynchronously and are tracked by uploadWg.
+func (m *Manager) HibernateAll(ctx context.Context, checkpointStore *storage.CheckpointStore) []HibernateAllResult {
+	m.mu.RLock()
+	ids := make([]string, 0, len(m.vms))
+	for id := range m.vms {
+		ids = append(ids, id)
+	}
+	m.mu.RUnlock()
+
+	if len(ids) == 0 {
+		return nil
+	}
+
+	var results []HibernateAllResult
+	var resultsMu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, id := range ids {
+		wg.Add(1)
+		go func(sandboxID string) {
+			defer wg.Done()
+			result, err := m.Hibernate(ctx, sandboxID, checkpointStore)
+
+			resultsMu.Lock()
+			defer resultsMu.Unlock()
+			if err != nil {
+				log.Printf("firecracker: HibernateAll: %s failed: %v", sandboxID, err)
+				results = append(results, HibernateAllResult{SandboxID: sandboxID, Err: err})
+			} else {
+				results = append(results, HibernateAllResult{SandboxID: sandboxID, CheckpointKey: result.CheckpointKey})
+			}
+		}(id)
+	}
+
+	wg.Wait()
+	return results
+}
+
 // Exec runs a command in the VM via the agent.
 func (m *Manager) Exec(ctx context.Context, sandboxID string, cfg types.ProcessConfig) (*types.ProcessResult, error) {
 	vm, err := m.getVM(sandboxID)
@@ -738,4 +802,25 @@ func (m *Manager) GetAgent(sandboxID string) (*AgentClient, error) {
 		return nil, err
 	}
 	return vm.agent, nil
+}
+
+// GetWorkspacePath returns the host path to a sandbox's workspace.ext4 drive.
+func (m *Manager) GetWorkspacePath(sandboxID string) (string, error) {
+	vm, err := m.getVM(sandboxID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(vm.sandboxDir, "workspace.ext4"), nil
+}
+
+// SyncFS flushes filesystem buffers inside the VM via the agent.
+func (m *Manager) SyncFS(ctx context.Context, sandboxID string) error {
+	vm, err := m.getVM(sandboxID)
+	if err != nil {
+		return err
+	}
+	if vm.agent == nil {
+		return fmt.Errorf("no agent connection for %s", sandboxID)
+	}
+	return vm.agent.SyncFS(ctx)
 }

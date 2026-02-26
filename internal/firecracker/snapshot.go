@@ -150,7 +150,9 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 	// The rootfs is NOT archived — it's recreated from the template on wake.
 	sandboxDir := vm.sandboxDir
 	sandboxID := vm.ID
+	m.uploadWg.Add(1)
 	go func() {
+		defer m.uploadWg.Done()
 		t1 := time.Now()
 		archivePath := filepath.Join(sandboxDir, "checkpoint.tar.zst")
 

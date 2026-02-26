@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/config"
@@ -147,6 +148,14 @@ func main() {
 		} else {
 			defer store.Close()
 			log.Println("opensandbox-worker: PostgreSQL store connected (auto-wake enabled)")
+
+			// Startup reconciliation: mark stale "running" sessions from a previous crash
+			hibernated, stopped, err := store.ReconcileWorkerSessions(ctx, cfg.WorkerID)
+			if err != nil {
+				log.Printf("opensandbox-worker: warning: session reconciliation failed: %v", err)
+			} else if hibernated+stopped > 0 {
+				log.Printf("opensandbox-worker: reconciled stale sessions: %d hibernated, %d stopped", hibernated, stopped)
+			}
 		}
 	}
 
@@ -160,6 +169,12 @@ func main() {
 			log.Printf("opensandbox-worker: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
 				sandboxID, result.CheckpointKey, result.SizeBytes)
 			if store != nil {
+				// Create checkpoint record so wake-on-request can find it
+				session, err := store.GetSandboxSession(context.Background(), sandboxID)
+				if err == nil {
+					_, _ = store.CreateCheckpoint(context.Background(), sandboxID, session.OrgID,
+						result.CheckpointKey, result.SizeBytes, session.Region, session.Template, session.Config)
+				}
 				_ = store.UpdateSandboxSessionStatus(context.Background(), sandboxID, "hibernated", nil)
 			}
 		},
@@ -262,13 +277,63 @@ func main() {
 		}
 	}
 
+	// Start periodic workspace autosave for crash recovery
+	var autosaver *worker.WorkspaceAutosaver
+	if checkpointStore != nil && store != nil {
+		autosaver = worker.NewWorkspaceAutosaver(mgr, fcMgr, checkpointStore, store, cfg.WorkerID, cfg.Region, 5*time.Minute)
+		autosaver.Start()
+	}
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("opensandbox-worker: shutting down...")
+	log.Println("opensandbox-worker: graceful shutdown starting...")
+
+	// 1. Stop accepting new work
 	grpcServer.Stop()
 	if err := httpServer.Close(); err != nil {
 		log.Printf("error closing HTTP server: %v", err)
+	}
+
+	// Stop autosaver before hibernating
+	if autosaver != nil {
+		autosaver.Stop()
+	}
+
+	// 2. Hibernate all running sandboxes for seamless resume
+	if checkpointStore != nil {
+		vms, _ := mgr.List(context.Background())
+		if len(vms) > 0 {
+			log.Printf("opensandbox-worker: hibernating %d sandboxes...", len(vms))
+			shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			results := fcMgr.HibernateAll(shutCtx, checkpointStore)
+			cancel()
+
+			for _, r := range results {
+				if r.Err != nil {
+					log.Printf("opensandbox-worker: hibernate failed for %s: %v", r.SandboxID, r.Err)
+					if store != nil {
+						errMsg := "hibernate failed on shutdown: " + r.Err.Error()
+						_ = store.UpdateSandboxSessionStatus(context.Background(), r.SandboxID, "stopped", &errMsg)
+					}
+					continue
+				}
+				log.Printf("opensandbox-worker: hibernated %s (key=%s)", r.SandboxID, r.CheckpointKey)
+				if store != nil {
+					session, err := store.GetSandboxSession(context.Background(), r.SandboxID)
+					if err == nil {
+						_, _ = store.CreateCheckpoint(context.Background(), r.SandboxID, session.OrgID,
+							r.CheckpointKey, 0, session.Region, session.Template, session.Config)
+						_ = store.UpdateSandboxSessionStatus(context.Background(), r.SandboxID, "hibernated", nil)
+					}
+				}
+			}
+
+			// 3. Wait for async S3 uploads to complete
+			log.Println("opensandbox-worker: waiting for S3 uploads...")
+			fcMgr.WaitUploads(3 * time.Minute)
+			log.Println("opensandbox-worker: graceful shutdown complete")
+		}
 	}
 }

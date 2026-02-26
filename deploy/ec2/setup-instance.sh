@@ -103,37 +103,68 @@ sudo cp /tmp/deploy-ec2/caddy.service /etc/systemd/system/caddy.service 2>/dev/n
 # NVMe instance storage (XFS with reflink for instant rootfs copies)
 # -------------------------------------------------------------------
 echo "==> Installing NVMe boot service..."
-sudo apt-get install -y xfsprogs nvme-cli
+sudo apt-get install -y xfsprogs nvme-cli mdadm
 
 sudo tee /usr/local/bin/opensandbox-nvme-setup.sh > /dev/null << 'NVME'
 #!/usr/bin/env bash
 set -euo pipefail
-MOUNT_POINT="/data"
+MOUNT_POINT="/data/sandboxes"
 mkdir -p "$MOUNT_POINT"
 if mountpoint -q "$MOUNT_POINT"; then
   echo "opensandbox-nvme: $MOUNT_POINT already mounted"
   exit 0
 fi
-NVME_DEV=""
-for dev in /dev/nvme1n1 /dev/nvme2n1 /dev/nvme3n1 /dev/nvme4n1; do
-  if [ -b "$dev" ]; then
-    NVME_DEV="$dev"
-    break
-  fi
+
+# Find the root EBS device so we can exclude it.
+ROOT_DEV=$(lsblk -no PKNAME $(findmnt -n -o SOURCE /) | head -1)
+
+# Collect all NVMe instance store devices (skip the root EBS volume).
+NVME_DEVS=()
+for dev in /dev/nvme0n1 /dev/nvme1n1 /dev/nvme2n1 /dev/nvme3n1 /dev/nvme4n1; do
+  [ -b "$dev" ] || continue
+  # Skip if this is the root device
+  [ "$(basename "$dev")" = "$ROOT_DEV" ] && continue
+  NVME_DEVS+=("$dev")
 done
-if [ -z "$NVME_DEV" ]; then
+
+if [ ${#NVME_DEVS[@]} -eq 0 ]; then
   echo "opensandbox-nvme: no NVMe instance storage found, using root disk"
   mkdir -p "$MOUNT_POINT/sandboxes" "$MOUNT_POINT/firecracker/images" "$MOUNT_POINT/checkpoints"
   exit 0
 fi
-echo "opensandbox-nvme: formatting $NVME_DEV as XFS with reflink + project quotas"
-mkfs.xfs -f -m reflink=1 "$NVME_DEV"
-mount -o prjquota "$NVME_DEV" "$MOUNT_POINT"
+
+echo "opensandbox-nvme: found ${#NVME_DEVS[@]} NVMe instance store device(s): ${NVME_DEVS[*]}"
+
+if [ ${#NVME_DEVS[@]} -eq 1 ]; then
+  # Single drive — format and mount directly
+  DEV="${NVME_DEVS[0]}"
+  echo "opensandbox-nvme: formatting $DEV as XFS with project quotas"
+  mkfs.xfs -f "$DEV"
+  mount -o prjquota "$DEV" "$MOUNT_POINT"
+else
+  # Multiple drives — RAID-0 for maximum throughput + capacity
+  echo "opensandbox-nvme: creating RAID-0 across ${#NVME_DEVS[@]} devices"
+  mdadm --create /dev/md0 --level=0 --raid-devices=${#NVME_DEVS[@]} "${NVME_DEVS[@]}" --force --run
+  echo "opensandbox-nvme: formatting /dev/md0 as XFS with project quotas"
+  mkfs.xfs -f /dev/md0
+  mount -o prjquota /dev/md0 "$MOUNT_POINT"
+fi
+
 # Create directory structure
 mkdir -p "$MOUNT_POINT/sandboxes"
 mkdir -p "$MOUNT_POINT/firecracker/images"
 mkdir -p "$MOUNT_POINT/checkpoints"
-echo "opensandbox-nvme: mounted $NVME_DEV at $MOUNT_POINT"
+
+# Copy Firecracker assets from EBS to NVMe if available
+SRC="/opt/opensandbox/firecracker"
+DST="$MOUNT_POINT/firecracker"
+if [ -d "$SRC" ] && [ ! -f "$DST/vmlinux-arm64" ]; then
+  echo "opensandbox-nvme: copying Firecracker assets from $SRC to $DST"
+  cp "$SRC/vmlinux-arm64" "$DST/"
+  cp "$SRC/images/"* "$DST/images/"
+  echo "opensandbox-nvme: assets copied ($(du -sh "$DST" | cut -f1))"
+fi
+echo "opensandbox-nvme: mounted at $MOUNT_POINT ($(df -h "$MOUNT_POINT" | tail -1 | awk '{print $2}') total)"
 NVME
 sudo chmod +x /usr/local/bin/opensandbox-nvme-setup.sh
 
@@ -252,6 +283,10 @@ Environment=OPENSANDBOX_KERNEL_PATH=/data/firecracker/vmlinux-arm64
 Environment=OPENSANDBOX_IMAGES_DIR=/data/firecracker/images
 Environment=OPENSANDBOX_SECRETS_ARN=arn:aws:secretsmanager:us-east-2:739940681129:secret:opensandbox/worker-vtN2Ez
 EnvironmentFile=/etc/opensandbox/worker-identity.env
+# Only signal the main process on stop (not Firecracker children)
+# so graceful shutdown can hibernate VMs before they are killed
+KillMode=process
+TimeoutStopSec=300
 # Raise limits for many concurrent VMs
 LimitNOFILE=1000000
 LimitNPROC=65536
