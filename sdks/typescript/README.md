@@ -31,8 +31,8 @@ await sandbox.kill();
 
 | Option    | Env Variable            | Default                  |
 |-----------|------------------------|--------------------------|
-| `apiUrl`  | `OPENSANDBOX_API_URL`  | `https://app.opencomputer.dev`  |
-| `apiKey`  | `OPENSANDBOX_API_KEY`  | (none)                   |
+| `apiUrl`  | `OPENCOMPUTER_API_URL`  | `https://app.opencomputer.dev`  |
+| `apiKey`  | `OPENCOMPUTER_API_KEY`  | (none)                   |
 
 ## License
 

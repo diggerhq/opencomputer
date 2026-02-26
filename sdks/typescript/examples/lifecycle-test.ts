@@ -7,14 +7,14 @@
  *   npx tsx examples/lifecycle-test.ts
  *
  * Environment:
- *   OPENSANDBOX_API_URL  (default: http://localhost:8080)
- *   OPENSANDBOX_API_KEY  (default: test-key)
+ *   OPENCOMPUTER_API_URL  (default: http://localhost:8080)
+ *   OPENCOMPUTER_API_KEY  (default: test-key)
  */
 
 import { Sandbox } from "../src/index";
 
-const API_URL = process.env.OPENSANDBOX_API_URL ?? "http://localhost:8080";
-const API_KEY = process.env.OPENSANDBOX_API_KEY ?? "test-key";
+const API_URL = process.env.OPENCOMPUTER_API_URL ?? "http://localhost:8080";
+const API_KEY = process.env.OPENCOMPUTER_API_KEY ?? "test-key";
 
 function green(msg: string) { console.log(`\x1b[32m✓ ${msg}\x1b[0m`); }
 function red(msg: string) { console.log(`\x1b[31m✗ ${msg}\x1b[0m`); }
