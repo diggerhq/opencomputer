@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,12 +11,13 @@ import httpx
 
 from opensandbox.commands import Commands
 from opensandbox.filesystem import Filesystem
+from opensandbox.git import Git
 from opensandbox.pty import Pty
 
 
 @dataclass
 class Sandbox:
-    """E2B-compatible sandbox interface."""
+    """OpenSandbox interface."""
 
     sandbox_id: str
     status: str = "running"
@@ -25,6 +27,8 @@ class Sandbox:
     _api_key: str = ""
     _connect_url: str = ""
     _token: str = ""
+    _git_domain: str = ""
+    _org_slug: str = ""
     _client: httpx.AsyncClient = field(default=None, repr=False)
     _data_client: httpx.AsyncClient = field(default=None, repr=False)
 
@@ -68,6 +72,11 @@ class Sandbox:
         connect_url = data.get("connectURL", "")
         token = data.get("token", "")
 
+        # Extract git server info
+        git_url = data.get("gitURL", "")
+        git_domain = re.sub(r"^https?://", "", git_url) if git_url else ""
+        org_slug = data.get("orgSlug", "")
+
         # If worker returned a direct connectURL, create a separate client for data ops
         data_client = None
         if connect_url and token:
@@ -86,6 +95,8 @@ class Sandbox:
             _api_key=key,
             _connect_url=connect_url,
             _token=token,
+            _git_domain=git_domain,
+            _org_slug=org_slug,
             _client=client,
             _data_client=data_client,
         )
@@ -117,6 +128,10 @@ class Sandbox:
         connect_url = data.get("connectURL", "")
         token = data.get("token", "")
 
+        git_url = data.get("gitURL", "")
+        git_domain = re.sub(r"^https?://", "", git_url) if git_url else ""
+        org_slug = data.get("orgSlug", "")
+
         data_client = None
         if connect_url and token:
             data_client = httpx.AsyncClient(
@@ -134,6 +149,8 @@ class Sandbox:
             _api_key=key,
             _connect_url=connect_url,
             _token=token,
+            _git_domain=git_domain,
+            _org_slug=org_slug,
             _client=client,
             _data_client=data_client,
         )
@@ -179,6 +196,18 @@ class Sandbox:
     def commands(self) -> Commands:
         """Access command execution."""
         return Commands(self._ops_client, self.sandbox_id)
+
+    @property
+    def git(self) -> Git:
+        """Access git operations with transparent authentication."""
+        return Git(
+            _client=self._client,
+            _sandbox_id=self.sandbox_id,
+            _commands=Commands(self._ops_client, self.sandbox_id),
+            _api_key=self._api_key,
+            _git_domain=self._git_domain,
+            _org_slug=self._org_slug,
+        )
 
     @property
     def pty(self) -> Pty:

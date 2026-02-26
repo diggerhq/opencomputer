@@ -69,6 +69,12 @@ export const getSessionDetail = (sandboxId: string) =>
 export const getSessionStats = (sandboxId: string) =>
   apiFetch<SandboxStats>(`/sessions/${sandboxId}/stats`)
 
+export const saveAsTemplate = (sandboxId: string, name: string, tag?: string) =>
+  apiFetch<SaveAsTemplateResult>(`/sessions/${sandboxId}/save-as-template`, {
+    method: 'POST',
+    body: JSON.stringify({ name, tag: tag || 'latest' }),
+  })
+
 export const getOrg = () => apiFetch<Org>('/org')
 
 export const updateOrg = (name: string) =>
@@ -106,6 +112,20 @@ export interface Template {
   tag: string
   dockerfile?: string
   isPublic: boolean
+  templateType: string  // "dockerfile" or "sandbox"
+  rootfsS3Key?: string
+  workspaceS3Key?: string
+  createdBySandboxId?: string
+  createdAt: string
+}
+
+export interface SaveAsTemplateResult {
+  id: string
+  name: string
+  tag: string
+  templateType: string
+  rootfsS3Key?: string
+  workspaceS3Key?: string
   createdAt: string
 }
 
@@ -118,6 +138,7 @@ export interface SessionDetail {
   stoppedAt?: string
   errorMsg?: string
   domain?: string
+  basedOnTemplateId?: string
   config?: {
     timeout?: number
     cpuCount?: number

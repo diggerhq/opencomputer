@@ -41,6 +41,7 @@ type Server struct {
 	checkpointStore *storage.CheckpointStore          // nil if hibernation not configured
 	sandboxDomain   string                            // base domain for sandbox subdomains
 	ecrConfig       *ecr.Config                       // nil if ECR not configured
+	gitDomain       string                            // git server domain for clone URLs (e.g., "git.opensandbox.ai")
 }
 
 // ServerOpts holds optional dependencies for the API server.
@@ -60,6 +61,7 @@ type ServerOpts struct {
 	WorkerRegistry  *controlplane.RedisWorkerRegistry  // nil in combined/worker mode
 	CheckpointStore *storage.CheckpointStore           // nil if hibernation not configured
 	ECRConfig       *ecr.Config                        // nil if ECR not configured
+	GitDomain       string                             // git server domain for clone URLs
 }
 
 // NewServer creates a new API server with all routes configured.
@@ -87,6 +89,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.checkpointStore = opts.CheckpointStore
 		s.sandboxDomain = opts.SandboxDomain
 		s.ecrConfig = opts.ECRConfig
+		s.gitDomain = opts.GitDomain
 	}
 
 	// Global middleware
@@ -144,6 +147,12 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	api.GET("/templates/:name", s.getTemplate)
 	api.DELETE("/templates/:name", s.deleteTemplate)
 
+	// Git repositories
+	api.POST("/repos", s.createRepo)
+	api.GET("/repos", s.listRepos)
+	api.GET("/repos/:owner/:name", s.getRepoAPI)
+	api.DELETE("/repos/:owner/:name", s.deleteRepoAPI)
+
 	// Workers (server mode only — queries worker registry)
 	api.GET("/workers", s.listWorkers)
 
@@ -181,6 +190,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		// Session detail + stats
 		dash.GET("/sessions/:sandboxId", s.dashboardGetSession)
 		dash.GET("/sessions/:sandboxId/stats", s.dashboardGetSessionStats)
+		dash.POST("/sessions/:sandboxId/save-as-template", s.dashboardSaveAsTemplate)
 
 		// PTY (terminal)
 		dash.POST("/sessions/:sandboxId/pty", s.dashboardCreatePTY)

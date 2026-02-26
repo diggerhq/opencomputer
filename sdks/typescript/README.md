@@ -1,6 +1,6 @@
 # opensandbox
 
-TypeScript SDK for [OpenSandbox](https://github.com/diggerhq/opensandbox) — an open-source, E2B-compatible sandbox platform.
+TypeScript SDK for [OpenSandbox](https://github.com/diggerhq/opensandbox) — an open-source cloud sandbox platform.
 
 ## Install
 

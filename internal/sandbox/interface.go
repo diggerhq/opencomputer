@@ -54,4 +54,13 @@ type Manager interface {
 	// Hibernation
 	Hibernate(ctx context.Context, sandboxID string, checkpointStore *storage.CheckpointStore) (*HibernateResult, error)
 	Wake(ctx context.Context, sandboxID string, checkpointKey string, checkpointStore *storage.CheckpointStore, timeout int) (*types.Sandbox, error)
+
+	// IsTAPAvailable reports whether the deterministic TAP for sandboxID is free on this worker.
+	// Always returns true on non-Firecracker backends.
+	IsTAPAvailable(sandboxID string) bool
+
+	// SaveAsTemplate snapshots a running sandbox's drives (rootfs + workspace) for use as a
+	// template. The VM is briefly paused during file copy then resumed. S3 upload is async.
+	// Returns the pre-computed S3 keys immediately (they become valid once the async upload finishes).
+	SaveAsTemplate(ctx context.Context, sandboxID, templateID string, checkpointStore *storage.CheckpointStore) (rootfsKey, workspaceKey string, err error)
 }

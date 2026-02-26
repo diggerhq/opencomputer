@@ -4,6 +4,7 @@
 BINARY_SERVER = opensandbox-server
 BINARY_WORKER = opensandbox-worker
 BINARY_AGENT = osb-agent
+BINARY_GITSERVER = opensandbox-gitserver
 BUILD_DIR = bin
 
 ## help: Show this help message
@@ -32,6 +33,14 @@ build-agent:
 ## build-server-arm64: Cross-compile server for Linux ARM64
 build-server-arm64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o $(BUILD_DIR)/$(BINARY_SERVER)-arm64 ./cmd/server
+
+## build-gitserver: Build the standalone git server
+build-gitserver:
+	CGO_ENABLED=0 go build -o $(BUILD_DIR)/$(BINARY_GITSERVER) ./cmd/gitserver
+
+## build-gitserver-amd64: Cross-compile git server for Linux AMD64
+build-gitserver-amd64:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY_GITSERVER)-amd64 ./cmd/gitserver
 
 ## --- Local Testing (3 tiers) ---
 
@@ -114,6 +123,14 @@ run-full-worker: build-worker
 	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-worker-data \
 	OPENSANDBOX_MAX_CAPACITY=50 \
 	$(BUILD_DIR)/$(BINARY_WORKER)
+
+## run-gitserver: Run standalone git server (requires: make infra-up)
+run-gitserver: build-gitserver
+	OPENSANDBOX_DATABASE_URL="postgres://opensandbox:opensandbox@localhost:5432/opensandbox?sslmode=disable" \
+	OPENSANDBOX_GIT_REPO_ROOT=/tmp/opensandbox-repos \
+	OPENSANDBOX_GIT_PORT=3000 \
+	OPENSANDBOX_GIT_DOMAIN=localhost:3000 \
+	$(BUILD_DIR)/$(BINARY_GITSERVER)
 
 ## --- Infrastructure ---
 
@@ -209,6 +226,14 @@ download-kernel:
 ## deploy-worker: Deploy worker + agent to EC2 instance (set WORKER_IP=<ip>)
 deploy-worker:
 	./deploy/ec2/deploy-worker.sh
+
+## deploy-server: Deploy control plane to EC2 instance
+deploy-server:
+	./deploy/ec2/deploy-server.sh
+
+## deploy-gitserver: Deploy git server to EC2 control plane instance
+deploy-gitserver:
+	./deploy/ec2/deploy-gitserver.sh
 
 ## --- Docker ---
 

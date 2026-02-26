@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { getSessionDetail, getSessionStats } from '../api/client'
+import { getSessionDetail, getSessionStats, saveAsTemplate } from '../api/client'
 import Terminal from '../components/Terminal'
 
 function StatusBadge({ status }: { status: string }) {
@@ -61,6 +61,11 @@ export default function SessionDetail() {
   const navigate = useNavigate()
   const [copied, setCopied] = useState(false)
   const [showTerminal, setShowTerminal] = useState(false)
+  const [showSaveModal, setShowSaveModal] = useState(false)
+  const [templateName, setTemplateName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [saveSuccess, setSaveSuccess] = useState<string | null>(null)
 
   const { data: session, isLoading } = useQuery({
     queryKey: ['session-detail', sandboxId],
@@ -81,6 +86,22 @@ export default function SessionDetail() {
       navigator.clipboard.writeText(`https://${session.domain}`)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
+    }
+  }
+
+  const handleSaveAsTemplate = async () => {
+    if (!sandboxId || !templateName.trim()) return
+    setSaving(true)
+    setSaveError(null)
+    try {
+      const tmpl = await saveAsTemplate(sandboxId, templateName.trim())
+      setSaveSuccess(`Template "${tmpl.name}" saved — drives are uploading to S3 in the background.`)
+      setShowSaveModal(false)
+      setTemplateName('')
+    } catch (err: unknown) {
+      setSaveError(err instanceof Error ? err.message : 'Save failed')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -135,20 +156,115 @@ export default function SessionDetail() {
           {/* Actions */}
           <div style={{ display: 'flex', gap: 8 }}>
             {session.status === 'running' && (
-              <button
-                className={showTerminal ? 'btn-primary' : 'btn-ghost'}
-                onClick={() => setShowTerminal(!showTerminal)}
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="4 17 10 11 4 5" />
-                  <line x1="12" y1="19" x2="20" y2="19" />
-                </svg>
-                Terminal
-              </button>
+              <>
+                <button
+                  className={showTerminal ? 'btn-primary' : 'btn-ghost'}
+                  onClick={() => setShowTerminal(!showTerminal)}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="4 17 10 11 4 5" />
+                    <line x1="12" y1="19" x2="20" y2="19" />
+                  </svg>
+                  Terminal
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={() => { setShowSaveModal(true); setSaveError(null) }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
+                    <polyline points="17 21 17 13 7 13 7 21" />
+                    <polyline points="7 3 7 8 15 8" />
+                  </svg>
+                  Save as Template
+                </button>
+              </>
             )}
           </div>
         </div>
       </div>
+
+      {/* Save as Template success banner */}
+      {saveSuccess && (
+        <div className="animate-in" style={{
+          background: 'rgba(74,222,128,0.08)',
+          border: '1px solid rgba(74,222,128,0.3)',
+          borderRadius: 'var(--radius-md)',
+          padding: '12px 16px',
+          marginBottom: 16,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          fontSize: 13,
+          color: 'var(--text-primary)',
+        }}>
+          <span>{saveSuccess}</span>
+          <button
+            onClick={() => setSaveSuccess(null)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: 16, lineHeight: 1 }}
+          >×</button>
+        </div>
+      )}
+
+      {/* Save as Template modal */}
+      {showSaveModal && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <div className="glass-card" style={{ padding: 28, width: 420, maxWidth: '90vw' }}>
+            <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
+              Save as Template
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 20 }}>
+              Snapshots the current filesystem state of <code style={{ fontFamily: 'var(--font-mono)' }}>{session.sandboxId}</code> (installed packages + workspace files).
+              The sandbox continues running. A new template will appear in your Templates list once the upload finishes.
+            </div>
+
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+              Template name
+            </label>
+            <input
+              autoFocus
+              value={templateName}
+              onChange={e => setTemplateName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleSaveAsTemplate() }}
+              placeholder="e.g. my-node-env"
+              style={{
+                width: '100%', boxSizing: 'border-box',
+                background: 'var(--bg-deep)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '10px 12px',
+                fontSize: 13, color: 'var(--text-primary)',
+                fontFamily: 'var(--font-mono)',
+                marginBottom: saveError ? 10 : 20,
+                outline: 'none',
+              }}
+            />
+            {saveError && (
+              <div style={{ fontSize: 12, color: 'var(--accent-rose)', marginBottom: 16 }}>{saveError}</div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                className="btn-ghost"
+                onClick={() => { setShowSaveModal(false); setTemplateName(''); setSaveError(null) }}
+                disabled={saving}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-primary"
+                onClick={handleSaveAsTemplate}
+                disabled={saving || !templateName.trim()}
+              >
+                {saving ? 'Saving…' : 'Save Template'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Terminal */}
       {showTerminal && session.status === 'running' && (

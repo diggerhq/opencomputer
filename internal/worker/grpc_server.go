@@ -3,7 +3,12 @@ package worker
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -77,6 +82,27 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		ImageRef:       req.ImageRef,
 		Port:           int(req.Port),
 	}
+
+	// If this is a template-based creation, download the snapshot drives from S3 first.
+	// We extract them to temp paths and pass those to Create() via the "local://" scheme.
+	var tmpDir string
+	if req.TemplateRootfsKey != "" && req.TemplateWorkspaceKey != "" {
+		if s.checkpointStore == nil {
+			return nil, fmt.Errorf("template-based creation requires checkpoint store (S3)")
+		}
+		var err error
+		tmpDir, err = s.downloadTemplateDrives(ctx, req.TemplateRootfsKey, req.TemplateWorkspaceKey)
+		if err != nil {
+			return nil, fmt.Errorf("download template drives: %w", err)
+		}
+		cfg.TemplateRootfsKey = "local://" + filepath.Join(tmpDir, "rootfs.ext4")
+		cfg.TemplateWorkspaceKey = "local://" + filepath.Join(tmpDir, "workspace.ext4")
+	}
+	defer func() {
+		if tmpDir != "" {
+			os.RemoveAll(tmpDir)
+		}
+	}()
 
 	sb, err := s.manager.Create(ctx, cfg)
 	if err != nil {
@@ -356,6 +382,110 @@ func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest
 		SandboxId: sb.ID,
 		Status:    string(sb.Status),
 	}, nil
+}
+
+func (s *GRPCServer) IsTAPAvailable(ctx context.Context, req *pb.IsTAPAvailableRequest) (*pb.IsTAPAvailableResponse, error) {
+	return &pb.IsTAPAvailableResponse{
+		Available: s.manager.IsTAPAvailable(req.SandboxId),
+	}, nil
+}
+
+func (s *GRPCServer) SaveAsTemplate(ctx context.Context, req *pb.SaveAsTemplateRequest) (*pb.SaveAsTemplateResponse, error) {
+	if s.checkpointStore == nil {
+		return nil, fmt.Errorf("save-as-template requires checkpoint store (S3) — not configured on this worker")
+	}
+
+	rootfsKey, workspaceKey, err := s.manager.SaveAsTemplate(ctx, req.SandboxId, req.TemplateId, s.checkpointStore)
+	if err != nil {
+		return nil, fmt.Errorf("save-as-template failed: %w", err)
+	}
+
+	return &pb.SaveAsTemplateResponse{
+		RootfsS3Key:    rootfsKey,
+		WorkspaceS3Key: workspaceKey,
+	}, nil
+}
+
+// copyStream copies from r to w, returning bytes written.
+func copyStream(w io.Writer, r io.Reader) (int64, error) {
+	return io.Copy(w, r)
+}
+
+// extractArchiveCmd extracts a tar.zst archive to a directory using the system tar command.
+func extractArchiveCmd(archivePath, destDir string) error {
+	cmd := exec.Command("tar", "--zstd", "-xf", archivePath, "-C", destDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tar extract: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// downloadTemplateDrives downloads and extracts template rootfs and workspace archives from S3.
+// Returns the path to a temp directory containing rootfs.ext4 and workspace.ext4.
+// The caller is responsible for removing the temp directory.
+func (s *GRPCServer) downloadTemplateDrives(ctx context.Context, rootfsKey, workspaceKey string) (string, error) {
+	tmpDir, err := os.MkdirTemp("", "osb-template-")
+	if err != nil {
+		return "", fmt.Errorf("create temp dir: %w", err)
+	}
+
+	// Download and extract rootfs archive
+	rootfsArchive := filepath.Join(tmpDir, "rootfs.tar.zst")
+	rootfsData, err := s.checkpointStore.Download(ctx, rootfsKey)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("download rootfs from S3: %w", err)
+	}
+	f, err := os.Create(rootfsArchive)
+	if err != nil {
+		rootfsData.Close()
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("create rootfs archive file: %w", err)
+	}
+	if _, err := copyStream(f, rootfsData); err != nil {
+		f.Close()
+		rootfsData.Close()
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("write rootfs archive: %w", err)
+	}
+	f.Close()
+	rootfsData.Close()
+
+	if err := extractArchiveCmd(rootfsArchive, tmpDir); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("extract rootfs archive: %w", err)
+	}
+	os.Remove(rootfsArchive)
+
+	// Download and extract workspace archive
+	wsArchive := filepath.Join(tmpDir, "workspace.tar.zst")
+	wsData, err := s.checkpointStore.Download(ctx, workspaceKey)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("download workspace from S3: %w", err)
+	}
+	f, err = os.Create(wsArchive)
+	if err != nil {
+		wsData.Close()
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("create workspace archive file: %w", err)
+	}
+	if _, err := copyStream(f, wsData); err != nil {
+		f.Close()
+		wsData.Close()
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("write workspace archive: %w", err)
+	}
+	f.Close()
+	wsData.Close()
+
+	if err := extractArchiveCmd(wsArchive, tmpDir); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("extract workspace archive: %w", err)
+	}
+	os.Remove(wsArchive)
+
+	return tmpDir, nil
 }
 
 func (s *GRPCServer) BuildTemplate(ctx context.Context, req *pb.BuildTemplateRequest) (*pb.BuildTemplateResponse, error) {

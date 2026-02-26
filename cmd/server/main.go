@@ -69,10 +69,11 @@ func main() {
 
 	// Build server options
 	opts := &api.ServerOpts{
-		Mode:     cfg.Mode,
-		WorkerID: cfg.WorkerID,
-		Region:   cfg.Region,
-		HTTPAddr: cfg.HTTPAddr,
+		Mode:      cfg.Mode,
+		WorkerID:  cfg.WorkerID,
+		Region:    cfg.Region,
+		HTTPAddr:  cfg.HTTPAddr,
+		GitDomain: cfg.GitDomain,
 	}
 
 	// Initialize PostgreSQL if configured

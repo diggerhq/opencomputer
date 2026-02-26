@@ -1,5 +1,6 @@
 import { Filesystem } from "./filesystem";
 import { Commands } from "./commands";
+import { Git } from "./git";
 import { Pty } from "./pty";
 
 function resolveApiUrl(url: string): string {
@@ -25,6 +26,8 @@ interface SandboxData {
   connectURL?: string;
   token?: string;
   domain?: string;
+  gitURL?: string;
+  orgSlug?: string;
 }
 
 export class Sandbox {
@@ -33,12 +36,15 @@ export class Sandbox {
   readonly files: Filesystem;
   readonly commands: Commands;
   readonly pty: Pty;
+  readonly git: Git;
 
   private apiUrl: string;
   private apiKey: string;
   private connectUrl: string;
   private token: string;
   private _status: string;
+  private gitDomain: string;
+  private orgSlug: string;
 
   private constructor(data: SandboxData, apiUrl: string, apiKey: string) {
     this.sandboxId = data.sandboxID;
@@ -48,6 +54,8 @@ export class Sandbox {
     this.apiKey = apiKey;
     this.connectUrl = data.connectURL || "";
     this.token = data.token || "";
+    this.gitDomain = data.gitURL?.replace(/^https?:\/\//, "") || "";
+    this.orgSlug = data.orgSlug || "";
 
     // Use direct worker URL for data operations if available
     const opsUrl = this.connectUrl || apiUrl;
@@ -57,6 +65,7 @@ export class Sandbox {
     this.files = new Filesystem(opsUrl, opsKey, this.sandboxId, opsToken);
     this.commands = new Commands(opsUrl, opsKey, this.sandboxId, opsToken);
     this.pty = new Pty(opsUrl, opsKey, this.sandboxId, opsToken);
+    this.git = new Git(apiUrl, apiKey, this.sandboxId, opsToken, this.commands, this.gitDomain, this.orgSlug);
   }
 
   get status(): string {
@@ -177,9 +186,11 @@ export class Sandbox {
     const opsKey = this.connectUrl ? "" : this.apiKey;
     const opsToken = this.connectUrl ? this.token : "";
 
+    const newCommands = new Commands(opsUrl, opsKey, this.sandboxId, opsToken);
     (this as any).files = new Filesystem(opsUrl, opsKey, this.sandboxId, opsToken);
-    (this as any).commands = new Commands(opsUrl, opsKey, this.sandboxId, opsToken);
+    (this as any).commands = newCommands;
     (this as any).pty = new Pty(opsUrl, opsKey, this.sandboxId, opsToken);
+    (this as any).git = new Git(this.apiUrl, this.apiKey, this.sandboxId, opsToken, newCommands, this.gitDomain, this.orgSlug);
   }
 
   async setTimeout(timeout: number): Promise<void> {

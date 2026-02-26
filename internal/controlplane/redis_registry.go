@@ -326,6 +326,56 @@ func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry,
 	return best, client, nil
 }
 
+// WorkerWithClient pairs a WorkerEntry with its gRPC client.
+type WorkerWithClient struct {
+	Entry  *WorkerEntry
+	Client pb.SandboxWorkerClient
+}
+
+// GetWorkersOrderedByLoad returns all eligible workers in a region sorted by
+// load score (best first). Used by the control plane to iterate candidates for
+// TAP-aware wake destination selection.
+func (r *RedisWorkerRegistry) GetWorkersOrderedByLoad(region string) []WorkerWithClient {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	type scored struct {
+		w     *WorkerEntry
+		score float64
+	}
+
+	var candidates []scored
+	for _, w := range r.workers {
+		if region != "" && w.Region != region {
+			continue
+		}
+		if w.Capacity-w.Current <= 0 {
+			continue
+		}
+		if w.CPUPct > 90 || w.MemPct > 90 {
+			continue
+		}
+		resourceScore := (100.0 - w.CPUPct) / 100.0 * (100.0 - w.MemPct) / 100.0
+		score := float64(w.Capacity-w.Current) * resourceScore
+		candidates = append(candidates, scored{w, score})
+	}
+
+	// Sort descending by score (best = most available capacity + headroom)
+	for i := 1; i < len(candidates); i++ {
+		for j := i; j > 0 && candidates[j].score > candidates[j-1].score; j-- {
+			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
+		}
+	}
+
+	result := make([]WorkerWithClient, 0, len(candidates))
+	for _, c := range candidates {
+		if client, ok := r.clients[c.w.ID]; ok {
+			result = append(result, WorkerWithClient{Entry: c.w, Client: client})
+		}
+	}
+	return result
+}
+
 // GetWorkerClient returns the gRPC client for a specific worker.
 func (r *RedisWorkerRegistry) GetWorkerClient(workerID string) (pb.SandboxWorkerClient, error) {
 	r.mu.RLock()

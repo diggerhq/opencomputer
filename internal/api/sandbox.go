@@ -12,7 +12,33 @@ import (
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
+
+	"github.com/google/uuid"
 )
+
+// enrichSandboxWithGitInfo adds gitURL and orgSlug to a Sandbox response.
+func (s *Server) enrichSandboxWithGitInfo(ctx context.Context, sb *types.Sandbox, orgID uuid.UUID, hasOrg bool) {
+	if s.gitDomain != "" {
+		sb.GitURL = "http://" + s.gitDomain
+	}
+	if s.store != nil && hasOrg {
+		if org, err := s.store.GetOrg(ctx, orgID); err == nil {
+			sb.OrgSlug = org.Slug
+		}
+	}
+}
+
+// addGitInfoToMap adds gitURL and orgSlug to a map-based response.
+func (s *Server) addGitInfoToMap(ctx context.Context, resp map[string]interface{}, orgID uuid.UUID) {
+	if s.gitDomain != "" {
+		resp["gitURL"] = "http://" + s.gitDomain
+	}
+	if s.store != nil {
+		if org, err := s.store.GetOrg(ctx, orgID); err == nil {
+			resp["orgSlug"] = org.Slug
+		}
+	}
+}
 
 func (s *Server) createSandbox(c echo.Context) error {
 	var cfg types.SandboxConfig
@@ -105,6 +131,9 @@ func (s *Server) createSandbox(c echo.Context) error {
 	if s.sandboxDomain != "" {
 		sb.Domain = fmt.Sprintf("%s.%s", sb.ID, s.sandboxDomain)
 	}
+
+	// Add git server info if configured
+	s.enrichSandboxWithGitInfo(ctx, sb, orgID, hasOrg)
 
 	// Write session record to PG if available
 	if s.store != nil && hasOrg {
@@ -208,6 +237,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	if s.sandboxDomain != "" {
 		resp["domain"] = fmt.Sprintf("%s.%s", grpcResp.SandboxId, s.sandboxDomain)
 	}
+	s.addGitInfoToMap(ctx, resp, orgID)
 
 	return c.JSON(http.StatusCreated, resp)
 }
@@ -232,19 +262,19 @@ func (s *Server) getSandbox(c echo.Context) error {
 		})
 	}
 
-	if s.jwtIssuer != nil {
-		orgID, hasOrg := auth.GetOrgID(c)
-		if hasOrg {
-			token, err := s.jwtIssuer.IssueSandboxToken(orgID, id, s.workerID, 24*time.Hour)
-			if err == nil {
-				sb.Token = token
-			}
+	orgID, hasOrg := auth.GetOrgID(c)
+	if s.jwtIssuer != nil && hasOrg {
+		token, err := s.jwtIssuer.IssueSandboxToken(orgID, id, s.workerID, 24*time.Hour)
+		if err == nil {
+			sb.Token = token
 		}
 	}
 
 	if s.sandboxDomain != "" {
 		sb.Domain = fmt.Sprintf("%s.%s", id, s.sandboxDomain)
 	}
+
+	s.enrichSandboxWithGitInfo(c.Request().Context(), sb, orgID, hasOrg)
 
 	return c.JSON(http.StatusOK, sb)
 }
@@ -265,6 +295,8 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 		})
 	}
 
+	orgID, _ := auth.GetOrgID(c)
+
 	// Hibernated sandboxes have no worker
 	if session.Status == "hibernated" {
 		resp := map[string]interface{}{
@@ -277,6 +309,7 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 		if s.sandboxDomain != "" {
 			resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
 		}
+		s.addGitInfoToMap(c.Request().Context(), resp, orgID)
 		return c.JSON(http.StatusOK, resp)
 	}
 
@@ -287,8 +320,7 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 		connectURL = worker.HTTPAddr
 	}
 
-	// Issue a fresh token
-	orgID, _ := auth.GetOrgID(c)
+	// Issue a fresh token (orgID already fetched above)
 	var token string
 	if s.jwtIssuer != nil {
 		t, err := s.jwtIssuer.IssueSandboxToken(orgID, sandboxID, session.WorkerID, 24*time.Hour)
@@ -310,6 +342,7 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 	if s.sandboxDomain != "" {
 		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
 	}
+	s.addGitInfoToMap(c.Request().Context(), resp, orgID)
 
 	return c.JSON(http.StatusOK, resp)
 }

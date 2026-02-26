@@ -1,24 +1,33 @@
 [Unit]
-Description=OpenSandbox Worker
-After=network-online.target
+Description=OpenSandbox Worker (Firecracker)
+After=network-online.target opensandbox-nvme.service opensandbox-identity.service
 Wants=network-online.target
+Requires=opensandbox-nvme.service opensandbox-identity.service
 
 [Service]
 Type=simple
-# Load kernel modules required by CRIU for checkpoint/restore
-ExecStartPre=/sbin/modprobe inet_diag
-ExecStartPre=/sbin/modprobe tcp_diag
-ExecStartPre=/sbin/modprobe udp_diag
-ExecStartPre=/sbin/modprobe unix_diag
-ExecStartPre=/sbin/modprobe netlink_diag
 ExecStart=/usr/local/bin/opensandbox-worker
 Restart=always
 RestartSec=5
-
-# Secrets and instance-specific config are loaded from an env file.
-# Copy deploy/ec2/worker.env.example to /etc/opensandbox/worker.env
-# and fill in values for your deployment.
-EnvironmentFile=/etc/opensandbox/worker.env
+Environment=HOME=/root
+Environment=OPENSANDBOX_MODE=worker
+Environment=OPENSANDBOX_PORT=8080
+Environment=OPENSANDBOX_REGION=use2
+Environment=OPENSANDBOX_DATA_DIR=/data
+Environment=OPENSANDBOX_SANDBOX_DOMAIN=workers.opensandbox.ai
+Environment=OPENSANDBOX_FIRECRACKER_BIN=/usr/local/bin/firecracker
+Environment=OPENSANDBOX_KERNEL_PATH=/data/firecracker/vmlinux-arm64
+Environment=OPENSANDBOX_IMAGES_DIR=/data/firecracker/images
+Environment=OPENSANDBOX_SECRETS_ARN=arn:aws:secretsmanager:us-east-2:739940681129:secret:opensandbox/worker-vtN2Ez
+# Dynamic identity (worker ID, public IP) written at boot by opensandbox-identity.service
+EnvironmentFile=/etc/opensandbox/worker-identity.env
+# Only signal the main process on stop — Firecracker children must stay alive
+# long enough for graceful shutdown to hibernate VMs before they are killed
+KillMode=process
+TimeoutStopSec=300
+# Raise limits for many concurrent VMs
+LimitNOFILE=1000000
+LimitNPROC=65536
 
 [Install]
 WantedBy=multi-user.target

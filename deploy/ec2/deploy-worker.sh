@@ -14,7 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/opensandbox-worker.pem}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/opensandbox-digger.pem}"
 WORKER_IP="${WORKER_IP:?Set WORKER_IP to the EC2 instance public IP}"
 SSH_USER="${SSH_USER:-ubuntu}"
 SSH="ssh -i $SSH_KEY $SSH_USER@$WORKER_IP"

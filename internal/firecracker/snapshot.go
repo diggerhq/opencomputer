@@ -195,6 +195,143 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 	}, nil
 }
 
+// doSaveAsTemplate snapshots a running VM's drives (rootfs + workspace) to use as a template.
+// The VM is briefly paused while the drives are copied, then resumed. The user's sandbox
+// continues running uninterrupted; the copied drives are compressed and uploaded to S3 async.
+//
+// Flow:
+//  1. SyncFS via agent (flush disk buffers — agent stays alive)
+//  2. Close gRPC connection (vsock must be inactive for pause)
+//  3. Pause VM
+//  4. Copy rootfs.ext4 and workspace.ext4 to temp files (VM paused — drives stable)
+//  5. Resume VM
+//  6. Reconnect agent
+//  7. (async) Compress each temp file → upload to S3 → delete temp files
+func (m *Manager) doSaveAsTemplate(ctx context.Context, vm *VMInstance, templateID string, checkpointStore *storage.CheckpointStore) (rootfsKey, workspaceKey string, err error) {
+	t0 := time.Now()
+
+	rootfsKey = fmt.Sprintf("templates/%s/rootfs.tar.zst", templateID)
+	workspaceKey = fmt.Sprintf("templates/%s/workspace.tar.zst", templateID)
+
+	srcRootfs := filepath.Join(vm.sandboxDir, "rootfs.ext4")
+	srcWorkspace := filepath.Join(vm.sandboxDir, "workspace.ext4")
+
+	tmpRootfs := filepath.Join(os.TempDir(), fmt.Sprintf("tmpl-%s-rootfs.ext4", templateID))
+	tmpWorkspace := filepath.Join(os.TempDir(), fmt.Sprintf("tmpl-%s-workspace.ext4", templateID))
+
+	// Step 1: SyncFS (agent stays alive — only the gRPC connection needs to be closed for pause)
+	if vm.agent != nil {
+		syncCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if syncErr := vm.agent.SyncFS(syncCtx); syncErr != nil {
+			log.Printf("firecracker: SaveAsTemplate %s: SyncFS warning: %v", vm.ID, syncErr)
+		}
+		cancel()
+	}
+
+	// Step 2: Close gRPC connection (vsock must be inactive before Firecracker pause)
+	if vm.agent != nil {
+		vm.agent.Close()
+		vm.agent = nil
+	}
+
+	// Step 3: Pause the VM
+	if err = vm.fcClient.PauseVM(); err != nil {
+		// Try to reconnect agent even on error so the VM stays usable
+		if agent, reconnErr := m.waitForAgent(ctx, vm.vsockPath, 5*time.Second); reconnErr == nil {
+			vm.agent = agent
+		}
+		return "", "", fmt.Errorf("pause VM for template snapshot: %w", err)
+	}
+	log.Printf("firecracker: SaveAsTemplate %s: VM paused (%dms)", vm.ID, time.Since(t0).Milliseconds())
+
+	// Step 4: Copy drive files while VM is paused (drives are stable)
+	copyErr := copyFileReflink(srcRootfs, tmpRootfs)
+	if copyErr == nil {
+		copyErr = copyFileReflink(srcWorkspace, tmpWorkspace)
+		if copyErr != nil {
+			os.Remove(tmpRootfs)
+		}
+	}
+
+	// Step 5: Resume the VM regardless of copy result
+	resumeErr := vm.fcClient.ResumeVM()
+	if resumeErr != nil {
+		log.Printf("firecracker: SaveAsTemplate %s: CRITICAL: resume failed: %v", vm.ID, resumeErr)
+		os.Remove(tmpRootfs)
+		os.Remove(tmpWorkspace)
+		return "", "", fmt.Errorf("resume VM after template snapshot: %w", resumeErr)
+	}
+	log.Printf("firecracker: SaveAsTemplate %s: VM resumed (%dms)", vm.ID, time.Since(t0).Milliseconds())
+
+	if copyErr != nil {
+		// Reconnect agent since VM is running again
+		if agent, reconnErr := m.waitForAgent(ctx, vm.vsockPath, 10*time.Second); reconnErr == nil {
+			vm.agent = agent
+		}
+		return "", "", fmt.Errorf("copy drives for template: %w", copyErr)
+	}
+
+	// Step 6: Reconnect agent (it was running inside the VM the whole time — just paused)
+	agent, reconnErr := m.waitForAgent(ctx, vm.vsockPath, 10*time.Second)
+	if reconnErr != nil {
+		log.Printf("firecracker: SaveAsTemplate %s: agent reconnect failed: %v (VM still running)", vm.ID, reconnErr)
+	} else {
+		vm.agent = agent
+	}
+
+	// Step 7: Async compress + upload both drives
+	sandboxID := vm.ID
+	m.uploadWg.Add(1)
+	go func() {
+		defer m.uploadWg.Done()
+		defer os.Remove(tmpRootfs)
+		defer os.Remove(tmpWorkspace)
+
+		uploadCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+
+		t1 := time.Now()
+		if err := compressAndUploadFile(uploadCtx, tmpRootfs, rootfsKey, checkpointStore); err != nil {
+			log.Printf("firecracker: template %s: rootfs upload failed for sandbox %s: %v", templateID, sandboxID, err)
+			return
+		}
+		log.Printf("firecracker: template %s: rootfs uploaded (%dms)", templateID, time.Since(t1).Milliseconds())
+
+		t2 := time.Now()
+		if err := compressAndUploadFile(uploadCtx, tmpWorkspace, workspaceKey, checkpointStore); err != nil {
+			log.Printf("firecracker: template %s: workspace upload failed for sandbox %s: %v", templateID, sandboxID, err)
+			return
+		}
+		log.Printf("firecracker: template %s: workspace uploaded (%dms, total=%dms)", templateID, time.Since(t2).Milliseconds(), time.Since(t0).Milliseconds())
+	}()
+
+	return rootfsKey, workspaceKey, nil
+}
+
+// copyFileReflink copies a file using cp --reflink=auto (instant on XFS reflink, fallback to full copy).
+func copyFileReflink(src, dst string) error {
+	cmd := exec.Command("cp", "--reflink=auto", src, dst)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("cp %s → %s: %w (%s)", src, dst, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// compressAndUploadFile compresses a single file as a tar.zst archive and uploads it to S3.
+func compressAndUploadFile(ctx context.Context, srcPath, s3Key string, store *storage.CheckpointStore) error {
+	// Write archive to a temp file alongside the source
+	archivePath := srcPath + ".tar.zst"
+	if err := createArchive(archivePath, filepath.Dir(srcPath), []string{filepath.Base(srcPath)}); err != nil {
+		return fmt.Errorf("compress: %w", err)
+	}
+	defer os.Remove(archivePath)
+
+	if _, err := store.Upload(ctx, s3Key, archivePath); err != nil {
+		return fmt.Errorf("upload to %s: %w", s3Key, err)
+	}
+	return nil
+}
+
 // doWake restores a VM from a memory snapshot. The VM resumes exactly where it
 // was paused — all processes, memory, open files, and PIDs are intact.
 //

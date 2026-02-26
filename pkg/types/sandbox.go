@@ -29,6 +29,8 @@ type Sandbox struct {
 	Token      string            `json:"token,omitempty"`      // Sandbox-scoped JWT for worker auth
 	Domain     string            `json:"domain,omitempty"`     // Subdomain for web access (e.g., "abc123.workers.opensandbox.dev")
 	HostPort   int               `json:"hostPort,omitempty"`   // Mapped host port for the sandbox's container port
+	GitURL     string            `json:"gitURL,omitempty"`     // Git server base URL for clone/push/pull
+	OrgSlug    string            `json:"orgSlug,omitempty"`    // Organization slug for git repo paths
 }
 
 // SandboxConfig is the request body for creating a sandbox.
@@ -42,7 +44,11 @@ type SandboxConfig struct {
 	Envs       map[string]string `json:"envs,omitempty"`
 	Port       int               `json:"port,omitempty"`       // container port to expose via subdomain (default 80)
 	NetworkEnabled bool          `json:"networkEnabled,omitempty"`
-	ImageRef       string            `json:"imageRef,omitempty"`       // resolved ECR URI for custom templates
+	ImageRef       string        `json:"imageRef,omitempty"`       // resolved ECR URI for custom templates
+	// Sandbox snapshot template: S3 keys for rootfs and workspace drives.
+	// When set, the sandbox boots from these drives instead of the standard base image.
+	TemplateRootfsKey    string `json:"templateRootfsKey,omitempty"`
+	TemplateWorkspaceKey string `json:"templateWorkspaceKey,omitempty"`
 }
 
 // SandboxListResponse is the response for listing sandboxes.
