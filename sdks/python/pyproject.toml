@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "opencomputer"
+name = "opencomputer-sdk"
 version = "0.3.0"
 description = "Python SDK for OpenComputer - cloud sandbox platform"
 readme = "README.md"
