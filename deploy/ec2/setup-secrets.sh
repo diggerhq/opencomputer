@@ -36,11 +36,11 @@ RDS_PASSWORD="OpnSbx2026SecurePG"
 JWT_SECRET="${JWT_SECRET}"
 DATABASE_URL="postgres://opensandbox:${RDS_PASSWORD}@${RDS_HOST}:5432/opensandbox?sslmode=require"
 
-# WorkOS (server only)
+# WorkOS (server only) — set these env vars before running
 WORKOS_API_KEY="${WORKOS_API_KEY}"
 WORKOS_CLIENT_ID="${WORKOS_CLIENT_ID}"
-WORKOS_REDIRECT_URI="https://app.opensandbox.ai/auth/callback"
-WORKOS_COOKIE_DOMAIN="opensandbox.ai"
+WORKOS_REDIRECT_URI="${WORKOS_REDIRECT_URI:-https://app.opensandbox.ai/auth/callback}"
+WORKOS_COOKIE_DOMAIN="${WORKOS_COOKIE_DOMAIN:-opensandbox.ai}"
 
 # Shorthand — every aws call uses the digger profile
 aws() { command aws --profile "$AWS_PROFILE" "$@"; }
