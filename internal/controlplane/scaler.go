@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -15,6 +16,10 @@ const (
 	minWorkersPerRegion = 1
 	maxWorkersPerRegion = 10   // Hard cap to prevent runaway launches
 	pendingWorkerTTL    = 10 * time.Minute // How long to wait for a launched worker to register
+
+	// Resource-based scaling thresholds (applied per-worker, trigger on ANY worker exceeding)
+	resourceCPUThreshold = 80.0 // Scale up if any worker CPU > 80%
+	resourceMemThreshold = 85.0 // Scale up if any worker memory > 85%
 )
 
 // ScalerRegistry is the interface the Scaler uses to query worker state.
@@ -23,6 +28,7 @@ type ScalerRegistry interface {
 	Regions() []string
 	GetWorkersByRegion(region string) []*WorkerInfo
 	RegionUtilization(region string) float64
+	RegionResourcePressure(region string) (maxCPU, maxMem float64)
 }
 
 // ScalerConfig configures the autoscaler.
@@ -114,23 +120,41 @@ func (s *Scaler) evaluate() {
 func (s *Scaler) evaluateRegion(ctx context.Context, region string) {
 	workers := s.registry.GetWorkersByRegion(region)
 	utilization := s.registry.RegionUtilization(region)
+	maxCPU, maxMem := s.registry.RegionResourcePressure(region)
 
 	// Expire stale pending launches
 	s.expirePending(region)
 
+	// Determine if we need to scale up: count-based OR resource-based
+	needsScaleUp := false
+	reason := ""
+
 	if utilization > scaleUpThreshold {
+		needsScaleUp = true
+		reason = fmt.Sprintf("utilization %.1f%% > %.0f%%", utilization*100, scaleUpThreshold*100)
+	}
+	if !needsScaleUp && maxCPU > resourceCPUThreshold {
+		needsScaleUp = true
+		reason = fmt.Sprintf("CPU pressure %.1f%% > %.0f%%", maxCPU, resourceCPUThreshold)
+	}
+	if !needsScaleUp && maxMem > resourceMemThreshold {
+		needsScaleUp = true
+		reason = fmt.Sprintf("memory pressure %.1f%% > %.0f%%", maxMem, resourceMemThreshold)
+	}
+
+	if needsScaleUp {
 		// Check cooldown before scaling up
 		if last, ok := s.lastScaleUp[region]; ok && time.Since(last) < s.cooldown {
-			log.Printf("scaler: region %s needs scale-up but cooldown active (%s remaining)",
-				region, s.cooldown-time.Since(last))
+			log.Printf("scaler: region %s needs scale-up (%s) but cooldown active (%s remaining)",
+				region, reason, s.cooldown-time.Since(last))
 			return
 		}
 
 		// Don't scale up if there are already pending (unregistered) workers
 		pending := s.pending[region]
 		if len(pending) > 0 {
-			log.Printf("scaler: region %s needs scale-up but %d worker(s) still pending registration",
-				region, len(pending))
+			log.Printf("scaler: region %s needs scale-up (%s) but %d worker(s) still pending registration",
+				region, reason, len(pending))
 			return
 		}
 
@@ -141,7 +165,8 @@ func (s *Scaler) evaluateRegion(ctx context.Context, region string) {
 			return
 		}
 
-		log.Printf("scaler: region %s utilization %.1f%% > %.0f%%, scaling up", region, utilization*100, scaleUpThreshold*100)
+		log.Printf("scaler: region %s %s, scaling up (cpu=%.1f%% mem=%.1f%% util=%.1f%%)",
+			region, reason, maxCPU, maxMem, utilization*100)
 		s.scaleUp(ctx, region)
 	} else if utilization < scaleDownThreshold && len(workers) > minWorkersPerRegion {
 		log.Printf("scaler: region %s utilization %.1f%% < %.0f%%, scaling down", region, utilization*100, scaleDownThreshold*100)
