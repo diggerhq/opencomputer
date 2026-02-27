@@ -558,11 +558,6 @@ func (s *Server) dashboardGetSession(c echo.Context) error {
 		resp["errorMsg"] = *session.ErrorMsg
 	}
 
-	// Compute domain (prefer org custom domain if verified)
-	if domain := s.sandboxDomainForOrg(c.Request().Context(), orgID); domain != "" {
-		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, domain)
-	}
-
 	// Parse config JSON if available
 	if len(session.Config) > 0 {
 		var cfg map[string]interface{}
@@ -583,10 +578,12 @@ func (s *Server) dashboardGetSession(c echo.Context) error {
 		}
 	}
 
-	// Include preview URL if one exists
-	previewURL, err := s.store.GetPreviewURL(c.Request().Context(), sandboxID)
-	if err == nil && previewURL != nil {
-		resp["previewUrl"] = previewURL
+	// Include preview URLs
+	urls, err := s.store.ListPreviewURLs(c.Request().Context(), sandboxID)
+	if err == nil && len(urls) > 0 {
+		resp["previewUrls"] = urls
+	} else {
+		resp["previewUrls"] = []interface{}{}
 	}
 
 	return c.JSON(http.StatusOK, resp)

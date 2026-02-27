@@ -123,6 +123,7 @@ export interface PreviewURL {
   sandboxId: string
   orgId: string
   hostname: string
+  port: number
   cfHostnameId?: string
   sslStatus: string
   authConfig: Record<string, unknown>
@@ -137,7 +138,6 @@ export interface SessionDetail {
   startedAt: string
   stoppedAt?: string
   errorMsg?: string
-  domain?: string
   config?: {
     timeout?: number
     cpuCount?: number
@@ -150,7 +150,7 @@ export interface SessionDetail {
     sizeBytes: number
     hibernatedAt: string
   }
-  previewUrl?: PreviewURL
+  previewUrls?: PreviewURL[]
 }
 
 export interface SandboxStats {

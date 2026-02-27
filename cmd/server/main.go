@@ -182,9 +182,6 @@ func main() {
 		// Initialize subdomain reverse proxy
 		if cfg.SandboxDomain != "" {
 			sbProxy := proxy.New(cfg.SandboxDomain, mgr, sbRouter)
-			if opts.Store != nil {
-				sbProxy.SetStore(opts.Store)
-			}
 			opts.SandboxProxy = sbProxy
 			opts.SandboxDomain = cfg.SandboxDomain
 			log.Printf("opensandbox: subdomain proxy configured (*.%s)", cfg.SandboxDomain)

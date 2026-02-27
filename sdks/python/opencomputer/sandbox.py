@@ -20,7 +20,6 @@ class Sandbox:
     sandbox_id: str
     status: str = "running"
     template: str = ""
-    domain: str = ""
     _api_url: str = ""
     _api_key: str = ""
     _connect_url: str = ""
@@ -81,7 +80,6 @@ class Sandbox:
             sandbox_id=data["sandboxID"],
             status=data.get("status", "running"),
             template=template,
-            domain=data.get("domain", ""),
             _api_url=url,
             _api_key=key,
             _connect_url=connect_url,
@@ -129,7 +127,6 @@ class Sandbox:
             sandbox_id=sandbox_id,
             status=data.get("status", "running"),
             template=data.get("templateID", ""),
-            domain=data.get("domain", ""),
             _api_url=url,
             _api_key=key,
             _connect_url=connect_url,
@@ -187,26 +184,24 @@ class Sandbox:
         pty_key = self._token or self._api_key
         return Pty(self._ops_client, self.sandbox_id, pty_url, pty_key)
 
-    async def create_preview_url(self, auth_config: dict | None = None) -> dict:
-        """Create an on-demand preview URL using the org's verified custom domain."""
+    async def create_preview_url(self, port: int, auth_config: dict | None = None) -> dict:
+        """Create a preview URL targeting a specific container port."""
         resp = await self._client.post(
             f"/sandboxes/{self.sandbox_id}/preview",
-            json={"authConfig": auth_config or {}},
+            json={"port": port, "authConfig": auth_config or {}},
         )
         resp.raise_for_status()
         return resp.json()
 
-    async def get_preview_url(self) -> dict | None:
-        """Get the preview URL for this sandbox, or None if not set."""
+    async def list_preview_urls(self) -> list[dict]:
+        """List all preview URLs for this sandbox."""
         resp = await self._client.get(f"/sandboxes/{self.sandbox_id}/preview")
-        if resp.status_code == 404:
-            return None
         resp.raise_for_status()
         return resp.json()
 
-    async def delete_preview_url(self) -> None:
-        """Delete the preview URL for this sandbox."""
-        resp = await self._client.delete(f"/sandboxes/{self.sandbox_id}/preview")
+    async def delete_preview_url(self, port: int) -> None:
+        """Delete the preview URL for a specific port."""
+        resp = await self._client.delete(f"/sandboxes/{self.sandbox_id}/preview/{port}")
         if resp.status_code != 404:
             resp.raise_for_status()
 
