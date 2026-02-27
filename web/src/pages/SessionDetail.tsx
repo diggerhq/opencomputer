@@ -59,7 +59,7 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
 export default function SessionDetail() {
   const { sandboxId } = useParams<{ sandboxId: string }>()
   const navigate = useNavigate()
-  const [copied, setCopied] = useState(false)
+  const [copiedPort, setCopiedPort] = useState<number | null>(null)
   const [showTerminal, setShowTerminal] = useState(false)
 
   const { data: session, isLoading } = useQuery({
@@ -76,12 +76,10 @@ export default function SessionDetail() {
     retry: false,
   })
 
-  const copyUrl = () => {
-    if (session?.domain) {
-      navigator.clipboard.writeText(`https://${session.domain}`)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }
+  const copyUrl = (hostname: string, port: number) => {
+    navigator.clipboard.writeText(`https://${hostname}`)
+    setCopiedPort(port)
+    setTimeout(() => setCopiedPort(null), 2000)
   }
 
   if (isLoading) {
@@ -186,35 +184,48 @@ export default function SessionDetail() {
         </div>
       )}
 
-      {/* Live URL */}
-      {session.domain && (session.status === 'running' || session.status === 'hibernated') && (
+      {/* Preview URLs */}
+      {session.previewUrls && session.previewUrls.length > 0 && (
         <div className="glass-card animate-in stagger-2" style={{ padding: 20, marginBottom: 16 }}>
           <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
-            Live URL
+            Preview URLs
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{
-              flex: 1,
-              background: 'var(--bg-deep)',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--radius-sm)',
-              padding: '10px 14px',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 13,
-              color: 'var(--text-accent)',
-            }}>
-              <a
-                href={`https://${session.domain}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: 'var(--text-accent)', textDecoration: 'none' }}
-              >
-                https://{session.domain}
-              </a>
-            </div>
-            <button className="btn-ghost" onClick={copyUrl} style={{ whiteSpace: 'nowrap' }}>
-              {copied ? '✓ Copied' : 'Copy'}
-            </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {session.previewUrls.map((url) => (
+              <div key={url.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  minWidth: 60,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: 'var(--text-tertiary)',
+                  fontFamily: 'var(--font-mono)',
+                }}>
+                  :{url.port}
+                </div>
+                <div style={{
+                  flex: 1,
+                  background: 'var(--bg-deep)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '10px 14px',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 13,
+                  color: 'var(--text-accent)',
+                }}>
+                  <a
+                    href={`https://${url.hostname}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: 'var(--text-accent)', textDecoration: 'none' }}
+                  >
+                    https://{url.hostname}
+                  </a>
+                </div>
+                <button className="btn-ghost" onClick={() => copyUrl(url.hostname, url.port)} style={{ whiteSpace: 'nowrap' }}>
+                  {copiedPort === url.port ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            ))}
           </div>
         </div>
       )}

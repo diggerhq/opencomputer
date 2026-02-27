@@ -70,6 +70,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{4, "migrations/004_seed_templates.up.sql"},
 		{5, "migrations/005_org_custom_domain.up.sql"},
 		{6, "migrations/006_sandbox_preview_urls.up.sql"},
+		{7, "migrations/007_preview_urls_port.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -816,46 +817,60 @@ type PreviewURL struct {
 	SandboxID    string          `json:"sandboxId"`
 	OrgID        uuid.UUID       `json:"orgId"`
 	Hostname     string          `json:"hostname"`
+	Port         int             `json:"port"`
 	CFHostnameID *string         `json:"cfHostnameId,omitempty"`
 	SSLStatus    string          `json:"sslStatus"`
 	AuthConfig   json.RawMessage `json:"authConfig"`
 	CreatedAt    time.Time       `json:"createdAt"`
 }
 
-// CreatePreviewURL inserts a new preview URL record.
-func (s *Store) CreatePreviewURL(ctx context.Context, sandboxID string, orgID uuid.UUID, hostname string, cfHostnameID *string, sslStatus string, authConfig json.RawMessage) (*PreviewURL, error) {
+// CreatePreviewURL inserts a new preview URL record for a specific port.
+func (s *Store) CreatePreviewURL(ctx context.Context, sandboxID string, orgID uuid.UUID, hostname string, port int, cfHostnameID *string, sslStatus string, authConfig json.RawMessage) (*PreviewURL, error) {
 	p := &PreviewURL{}
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO sandbox_preview_urls (sandbox_id, org_id, hostname, cf_hostname_id, ssl_status, auth_config)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING id, sandbox_id, org_id, hostname, cf_hostname_id, ssl_status, auth_config, created_at`,
-		sandboxID, orgID, hostname, cfHostnameID, sslStatus, authConfig,
-	).Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt)
+		`INSERT INTO sandbox_preview_urls (sandbox_id, org_id, hostname, port, cf_hostname_id, ssl_status, auth_config)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING id, sandbox_id, org_id, hostname, port, cf_hostname_id, ssl_status, auth_config, created_at`,
+		sandboxID, orgID, hostname, port, cfHostnameID, sslStatus, authConfig,
+	).Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.Port, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create preview URL: %w", err)
 	}
 	return p, nil
 }
 
-// GetPreviewURL returns the preview URL for a sandbox (one per sandbox).
-func (s *Store) GetPreviewURL(ctx context.Context, sandboxID string) (*PreviewURL, error) {
+// ListPreviewURLs returns all preview URLs for a sandbox.
+func (s *Store) ListPreviewURLs(ctx context.Context, sandboxID string) ([]PreviewURL, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, sandbox_id, org_id, hostname, port, cf_hostname_id, ssl_status, auth_config, created_at
+		 FROM sandbox_preview_urls WHERE sandbox_id = $1 ORDER BY port`, sandboxID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list preview URLs: %w", err)
+	}
+	defer rows.Close()
+
+	var urls []PreviewURL
+	for rows.Next() {
+		var p PreviewURL
+		if err := rows.Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.Port, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan preview URL: %w", err)
+		}
+		urls = append(urls, p)
+	}
+	return urls, nil
+}
+
+// GetPreviewURLByPort returns the preview URL for a sandbox on a specific port.
+func (s *Store) GetPreviewURLByPort(ctx context.Context, sandboxID string, port int) (*PreviewURL, error) {
 	p := &PreviewURL{}
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, sandbox_id, org_id, hostname, cf_hostname_id, ssl_status, auth_config, created_at
-		 FROM sandbox_preview_urls WHERE sandbox_id = $1 LIMIT 1`, sandboxID,
-	).Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt)
+		`SELECT id, sandbox_id, org_id, hostname, port, cf_hostname_id, ssl_status, auth_config, created_at
+		 FROM sandbox_preview_urls WHERE sandbox_id = $1 AND port = $2`, sandboxID, port,
+	).Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.Port, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("preview URL not found: %w", err)
 	}
 	return p, nil
-}
-
-// UpdatePreviewURLSSL updates the SSL status for a preview URL.
-func (s *Store) UpdatePreviewURLSSL(ctx context.Context, id uuid.UUID, sslStatus string) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE sandbox_preview_urls SET ssl_status = $1 WHERE id = $2`,
-		sslStatus, id)
-	return err
 }
 
 // DeletePreviewURL deletes a preview URL by ID.
@@ -864,30 +879,25 @@ func (s *Store) DeletePreviewURL(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-// GetPreviewURLByHostname looks up a preview URL by its hostname.
-// Used by the proxy middleware to route custom domain traffic to the correct sandbox.
-func (s *Store) GetPreviewURLByHostname(ctx context.Context, hostname string) (*PreviewURL, error) {
-	p := &PreviewURL{}
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, sandbox_id, org_id, hostname, cf_hostname_id, ssl_status, auth_config, created_at
-		 FROM sandbox_preview_urls WHERE hostname = $1 LIMIT 1`, hostname,
-	).Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("preview URL not found for hostname: %w", err)
-	}
-	return p, nil
-}
-
-// DeletePreviewURLBySandbox deletes the preview URL for a sandbox (cleanup on kill).
-func (s *Store) DeletePreviewURLBySandbox(ctx context.Context, sandboxID string) (*PreviewURL, error) {
-	p := &PreviewURL{}
-	err := s.pool.QueryRow(ctx,
+// DeletePreviewURLsBySandbox deletes all preview URLs for a sandbox (cleanup on kill).
+// Returns the deleted records so callers can clean up CF hostnames.
+func (s *Store) DeletePreviewURLsBySandbox(ctx context.Context, sandboxID string) ([]PreviewURL, error) {
+	rows, err := s.pool.Query(ctx,
 		`DELETE FROM sandbox_preview_urls WHERE sandbox_id = $1
-		 RETURNING id, sandbox_id, org_id, hostname, cf_hostname_id, ssl_status, auth_config, created_at`,
-		sandboxID,
-	).Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt)
+		 RETURNING id, sandbox_id, org_id, hostname, port, cf_hostname_id, ssl_status, auth_config, created_at`,
+		sandboxID)
 	if err != nil {
-		return nil, err // no preview URL is fine
+		return nil, err
 	}
-	return p, nil
+	defer rows.Close()
+
+	var urls []PreviewURL
+	for rows.Next() {
+		var p PreviewURL
+		if err := rows.Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.Port, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		urls = append(urls, p)
+	}
+	return urls, nil
 }

@@ -24,7 +24,6 @@ interface SandboxData {
   templateID?: string;
   connectURL?: string;
   token?: string;
-  domain?: string;
 }
 
 export interface PreviewURLResult {
@@ -32,6 +31,7 @@ export interface PreviewURLResult {
   sandboxId: string;
   orgId: string;
   hostname: string;
+  port: number;
   cfHostnameId?: string;
   sslStatus: string;
   authConfig: Record<string, unknown>;
@@ -40,7 +40,6 @@ export interface PreviewURLResult {
 
 export class Sandbox {
   readonly sandboxId: string;
-  readonly domain: string;
   readonly files: Filesystem;
   readonly commands: Commands;
   readonly pty: Pty;
@@ -53,7 +52,6 @@ export class Sandbox {
 
   private constructor(data: SandboxData, apiUrl: string, apiKey: string) {
     this.sandboxId = data.sandboxID;
-    this.domain = data.domain || "";
     this._status = data.status;
     this.apiUrl = apiUrl;
     this.apiKey = apiKey;
@@ -208,14 +206,14 @@ export class Sandbox {
     }
   }
 
-  async createPreviewURL(opts?: { authConfig?: Record<string, unknown> }): Promise<PreviewURLResult> {
+  async createPreviewURL(opts: { port: number; authConfig?: Record<string, unknown> }): Promise<PreviewURLResult> {
     const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(this.apiKey ? { "X-API-Key": this.apiKey } : {}),
       },
-      body: JSON.stringify({ authConfig: opts?.authConfig ?? {} }),
+      body: JSON.stringify({ port: opts.port, authConfig: opts.authConfig ?? {} }),
     });
 
     if (!resp.ok) {
@@ -226,21 +224,20 @@ export class Sandbox {
     return resp.json();
   }
 
-  async getPreviewURL(): Promise<PreviewURLResult | null> {
+  async listPreviewURLs(): Promise<PreviewURLResult[]> {
     const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview`, {
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });
 
-    if (resp.status === 404) return null;
     if (!resp.ok) {
-      throw new Error(`Failed to get preview URL: ${resp.status}`);
+      throw new Error(`Failed to list preview URLs: ${resp.status}`);
     }
 
     return resp.json();
   }
 
-  async deletePreviewURL(): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview`, {
+  async deletePreviewURL(port: number): Promise<void> {
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview/${port}`, {
       method: "DELETE",
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });

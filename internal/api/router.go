@@ -127,10 +127,10 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	api.POST("/sandboxes/:id/hibernate", s.hibernateSandbox)
 	api.POST("/sandboxes/:id/wake", s.wakeSandbox)
 
-	// Preview URLs (on-demand custom domain)
+	// Preview URLs (on-demand port-based)
 	api.POST("/sandboxes/:id/preview", s.createPreviewURL)
-	api.GET("/sandboxes/:id/preview", s.getPreviewURL)
-	api.DELETE("/sandboxes/:id/preview", s.deletePreviewURL)
+	api.GET("/sandboxes/:id/preview", s.listPreviewURLs)
+	api.DELETE("/sandboxes/:id/preview/:port", s.deletePreviewURL)
 
 	// Commands
 	api.POST("/sandboxes/:id/commands", s.runCommand)
