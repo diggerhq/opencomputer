@@ -8,9 +8,9 @@ from typing import Any
 
 import httpx
 
-from opensandbox.commands import Commands
-from opensandbox.filesystem import Filesystem
-from opensandbox.pty import Pty
+from opencomputer.commands import Commands
+from opencomputer.filesystem import Filesystem
+from opencomputer.pty import Pty
 
 
 @dataclass
@@ -39,9 +39,9 @@ class Sandbox:
         metadata: dict[str, str] | None = None,
     ) -> Sandbox:
         """Create a new sandbox instance."""
-        url = api_url or os.environ.get("OPENSANDBOX_API_URL", "https://app.opensandbox.ai")
+        url = api_url or os.environ.get("OPENCOMPUTER_API_URL", "https://app.opencomputer.dev")
         url = url.rstrip("/")
-        key = api_key or os.environ.get("OPENSANDBOX_API_KEY", "")
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
 
         # Control plane client always uses /api prefix
         api_base = url if url.endswith("/api") else f"{url}/api"
@@ -98,9 +98,9 @@ class Sandbox:
         api_url: str | None = None,
     ) -> Sandbox:
         """Connect to an existing sandbox."""
-        url = api_url or os.environ.get("OPENSANDBOX_API_URL", "https://app.opensandbox.ai")
+        url = api_url or os.environ.get("OPENCOMPUTER_API_URL", "https://app.opencomputer.dev")
         url = url.rstrip("/")
-        key = api_key or os.environ.get("OPENSANDBOX_API_KEY", "")
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
 
         api_base = url if url.endswith("/api") else f"{url}/api"
 
