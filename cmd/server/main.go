@@ -13,6 +13,7 @@ import (
 
 	"github.com/opensandbox/opensandbox/internal/api"
 	"github.com/opensandbox/opensandbox/internal/auth"
+	"github.com/opensandbox/opensandbox/internal/cloudflare"
 	"github.com/opensandbox/opensandbox/internal/compute"
 	"github.com/opensandbox/opensandbox/internal/config"
 	"github.com/opensandbox/opensandbox/internal/controlplane"
@@ -181,6 +182,9 @@ func main() {
 		// Initialize subdomain reverse proxy
 		if cfg.SandboxDomain != "" {
 			sbProxy := proxy.New(cfg.SandboxDomain, mgr, sbRouter)
+			if opts.Store != nil {
+				sbProxy.SetStore(opts.Store)
+			}
 			opts.SandboxProxy = sbProxy
 			opts.SandboxDomain = cfg.SandboxDomain
 			log.Printf("opensandbox: subdomain proxy configured (*.%s)", cfg.SandboxDomain)
@@ -243,6 +247,12 @@ func main() {
 		cpProxy := proxy.NewControlPlaneProxy(cfg.SandboxDomain, opts.Store, redisRegistry)
 		opts.ControlPlaneProxy = cpProxy
 		log.Printf("opensandbox: control plane subdomain proxy configured (*.%s)", cfg.SandboxDomain)
+	}
+
+	// Initialize Cloudflare client for custom hostnames (if configured)
+	if cfg.CFAPIToken != "" && cfg.CFZoneID != "" {
+		opts.CFClient = cloudflare.NewClient(cfg.CFAPIToken, cfg.CFZoneID)
+		log.Println("opensandbox: Cloudflare custom hostnames configured")
 	}
 
 	// Create API server

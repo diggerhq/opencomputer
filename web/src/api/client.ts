@@ -74,6 +74,15 @@ export const getOrg = () => apiFetch<Org>('/org')
 export const updateOrg = (name: string) =>
   apiFetch<Org>('/org', { method: 'PUT', body: JSON.stringify({ name }) })
 
+export const setCustomDomain = (domain: string) =>
+  apiFetch<Org>('/org/custom-domain', { method: 'PUT', body: JSON.stringify({ domain }) })
+
+export const deleteCustomDomain = () =>
+  apiFetch<Org>('/org/custom-domain', { method: 'DELETE' })
+
+export const refreshCustomDomain = () =>
+  apiFetch<Org>('/org/custom-domain/refresh', { method: 'POST' })
+
 // Types
 export interface Session {
   id: string
@@ -109,6 +118,17 @@ export interface Template {
   createdAt: string
 }
 
+export interface PreviewURL {
+  id: string
+  sandboxId: string
+  orgId: string
+  hostname: string
+  cfHostnameId?: string
+  sslStatus: string
+  authConfig: Record<string, unknown>
+  createdAt: string
+}
+
 export interface SessionDetail {
   id: string
   sandboxId: string
@@ -130,6 +150,7 @@ export interface SessionDetail {
     sizeBytes: number
     hibernatedAt: string
   }
+  previewUrl?: PreviewURL
 }
 
 export interface SandboxStats {
@@ -150,4 +171,12 @@ export interface Org {
   maxSandboxTimeoutSec: number
   createdAt: string
   updatedAt: string
+  customDomain?: string
+  cfHostnameId?: string
+  domainVerificationStatus: string
+  domainSslStatus: string
+  verificationTxtName?: string
+  verificationTxtValue?: string
+  sslTxtName?: string
+  sslTxtValue?: string
 }
