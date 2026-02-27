@@ -123,6 +123,7 @@ export interface PreviewURL {
   sandboxId: string
   orgId: string
   hostname: string
+  customHostname?: string
   port: number
   cfHostnameId?: string
   sslStatus: string

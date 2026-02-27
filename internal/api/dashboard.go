@@ -578,10 +578,37 @@ func (s *Server) dashboardGetSession(c echo.Context) error {
 		}
 	}
 
-	// Include preview URLs
+	// Include preview URLs — add custom domain hostname if the org has one
 	urls, err := s.store.ListPreviewURLs(c.Request().Context(), sandboxID)
 	if err == nil && len(urls) > 0 {
-		resp["previewUrls"] = urls
+		var customDomain string
+		org, orgErr := s.store.GetOrg(c.Request().Context(), orgID)
+		if orgErr == nil && org.CustomDomain != nil && *org.CustomDomain != "" {
+			customDomain = *org.CustomDomain
+		}
+
+		urlMaps := make([]map[string]interface{}, len(urls))
+		for i, u := range urls {
+			urlMaps[i] = map[string]interface{}{
+				"id":         u.ID,
+				"sandboxId":  u.SandboxID,
+				"orgId":      u.OrgID,
+				"hostname":   u.Hostname,
+				"port":       u.Port,
+				"sslStatus":  u.SSLStatus,
+				"authConfig": u.AuthConfig,
+				"createdAt":  u.CreatedAt,
+			}
+			if u.CFHostnameID != nil {
+				urlMaps[i]["cfHostnameId"] = *u.CFHostnameID
+			}
+			if customDomain != "" {
+				if dot := strings.Index(u.Hostname, "."); dot > 0 {
+					urlMaps[i]["customHostname"] = u.Hostname[:dot+1] + customDomain
+				}
+			}
+		}
+		resp["previewUrls"] = urlMaps
 	} else {
 		resp["previewUrls"] = []interface{}{}
 	}
