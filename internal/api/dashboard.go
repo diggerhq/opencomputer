@@ -258,7 +258,7 @@ func (s *Server) dashboardListTemplates(c echo.Context) error {
 		})
 	}
 
-	// Strip internal image refs from dashboard response
+	// Strip internal fields from dashboard response
 	type safeTemplate struct {
 		ID                 uuid.UUID  `json:"id"`
 		OrgID              *uuid.UUID `json:"orgId,omitempty"`
@@ -267,6 +267,7 @@ func (s *Server) dashboardListTemplates(c echo.Context) error {
 		IsPublic           bool       `json:"isPublic"`
 		TemplateType       string     `json:"templateType"`
 		CreatedBySandboxID *string    `json:"createdBySandboxId,omitempty"`
+		Status             string     `json:"status"`
 		CreatedAt          time.Time  `json:"createdAt"`
 	}
 	safe := make([]safeTemplate, len(templates))
@@ -275,7 +276,7 @@ func (s *Server) dashboardListTemplates(c echo.Context) error {
 			ID: t.ID, OrgID: t.OrgID, Name: t.Name,
 			Tag: t.Tag, IsPublic: t.IsPublic,
 			TemplateType: t.TemplateType, CreatedBySandboxID: t.CreatedBySandboxID,
-			CreatedAt: t.CreatedAt,
+			Status: t.Status, CreatedAt: t.CreatedAt,
 		}
 	}
 
@@ -909,7 +910,15 @@ func (s *Server) dashboardSaveAsTemplate(c echo.Context) error {
 				"error": "checkpoint store not configured",
 			})
 		}
-		rootfsKey, workspaceKey, err = s.manager.SaveAsTemplate(ctx, sandboxID, templateID.String(), s.checkpointStore)
+		// In combined mode, provide callback to mark template ready when upload finishes
+		onReady := func() {
+			if err := s.store.SetTemplateReady(context.Background(), templateID); err != nil {
+				log.Printf("dashboard: failed to mark template %s ready: %v", templateID, err)
+			} else {
+				log.Printf("dashboard: template %s is now ready", templateID)
+			}
+		}
+		rootfsKey, workspaceKey, err = s.manager.SaveAsTemplate(ctx, sandboxID, templateID.String(), s.checkpointStore, onReady)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{
 				"error": "save-as-template failed: " + err.Error(),
@@ -921,10 +930,10 @@ func (s *Server) dashboardSaveAsTemplate(c echo.Context) error {
 		})
 	}
 
-	// Create template record in DB
+	// Create template record in DB (status=processing for sandbox templates)
 	tmpl, err := s.store.CreateSandboxTemplate(ctx, &orgID, req.Name, req.Tag, rootfsKey, workspaceKey, sandboxID)
 	if err != nil {
-		log.Printf("dashboard: created template S3 keys but DB insert failed for sandbox %s: %v", sandboxID, err)
+		log.Printf("dashboard: template snapshot succeeded but DB insert failed for sandbox %s: %v", sandboxID, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "failed to save template record: " + err.Error(),
 		})
@@ -936,13 +945,12 @@ func (s *Server) dashboardSaveAsTemplate(c echo.Context) error {
 	log.Printf("dashboard: saved sandbox %s as template %s (%s)", sandboxID, tmpl.Name, tmpl.ID)
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"id":              tmpl.ID,
-		"name":            tmpl.Name,
-		"tag":             tmpl.Tag,
-		"templateType":    tmpl.TemplateType,
-		"rootfsS3Key":     tmpl.RootfsS3Key,
-		"workspaceS3Key":  tmpl.WorkspaceS3Key,
-		"createdAt":       tmpl.CreatedAt,
+		"id":           tmpl.ID,
+		"name":         tmpl.Name,
+		"tag":          tmpl.Tag,
+		"templateType": tmpl.TemplateType,
+		"status":       tmpl.Status,
+		"createdAt":    tmpl.CreatedAt,
 	})
 }
 

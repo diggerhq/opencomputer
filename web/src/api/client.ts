@@ -113,9 +113,8 @@ export interface Template {
   dockerfile?: string
   isPublic: boolean
   templateType: string  // "dockerfile" or "sandbox"
-  rootfsS3Key?: string
-  workspaceS3Key?: string
   createdBySandboxId?: string
+  status: string  // "ready" or "processing"
   createdAt: string
 }
 
@@ -124,8 +123,7 @@ export interface SaveAsTemplateResult {
   name: string
   tag: string
   templateType: string
-  rootfsS3Key?: string
-  workspaceS3Key?: string
+  status: string
   createdAt: string
 }
 

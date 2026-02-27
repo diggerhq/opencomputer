@@ -95,7 +95,7 @@ export default function SessionDetail() {
     setSaveError(null)
     try {
       const tmpl = await saveAsTemplate(sandboxId, templateName.trim())
-      setSaveSuccess(`Template "${tmpl.name}" saved — drives are uploading to S3 in the background.`)
+      setSaveSuccess(`Template "${tmpl.name}" saved. It will be ready to use shortly.`)
       setShowSaveModal(false)
       setTemplateName('')
     } catch (err: unknown) {
@@ -218,7 +218,7 @@ export default function SessionDetail() {
             </div>
             <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 20 }}>
               Snapshots the current filesystem state of <code style={{ fontFamily: 'var(--font-mono)' }}>{session.sandboxId}</code> (installed packages + workspace files).
-              The sandbox continues running. A new template will appear in your Templates list once the upload finishes.
+              The sandbox continues running while the template is being prepared.
             </div>
 
             <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>

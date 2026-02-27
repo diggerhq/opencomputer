@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/sparse"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/template"
 	"github.com/opensandbox/opensandbox/pkg/types"
@@ -83,26 +85,40 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		Port:           int(req.Port),
 	}
 
-	// If this is a template-based creation, download the snapshot drives from S3 first.
-	// We extract them to temp paths and pass those to Create() via the "local://" scheme.
+	// If this is a template-based creation, resolve the template drives.
+	// Fast path: check local cache (reflink copy from cached ext4 — instant).
+	// Slow path: download from S3, extract, and cache for next time.
 	var tmpDir string
 	if req.TemplateRootfsKey != "" && req.TemplateWorkspaceKey != "" {
-		if s.checkpointStore == nil {
-			return nil, fmt.Errorf("template-based creation requires checkpoint store (S3)")
+		// Extract template ID from S3 key: "templates/{id}/rootfs.tar.zst" → "{id}"
+		templateID := extractTemplateID(req.TemplateRootfsKey)
+
+		// Check local cache first
+		cachedRootfs := s.manager.TemplateCachePath(templateID, "rootfs.ext4")
+		cachedWorkspace := s.manager.TemplateCachePath(templateID, "workspace.ext4")
+
+		if cachedRootfs != "" && cachedWorkspace != "" {
+			// Fast path: use cached template drives directly (reflink copy happens in Create)
+			log.Printf("firecracker: template %s: using cached drives", templateID)
+			cfg.TemplateRootfsKey = "local://" + cachedRootfs
+			cfg.TemplateWorkspaceKey = "local://" + cachedWorkspace
+		} else {
+			// Slow path: download from S3, extract, and cache
+			if s.checkpointStore == nil {
+				return nil, fmt.Errorf("template-based creation requires checkpoint store (S3)")
+			}
+			log.Printf("firecracker: template %s: cache miss, downloading from S3", templateID)
+			var err error
+			tmpDir, err = s.downloadAndCacheTemplateDrives(ctx, templateID, req.TemplateRootfsKey, req.TemplateWorkspaceKey)
+			if err != nil {
+				return nil, fmt.Errorf("download template drives: %w", err)
+			}
+			cfg.TemplateRootfsKey = "local://" + filepath.Join(tmpDir, "rootfs.ext4")
+			cfg.TemplateWorkspaceKey = "local://" + filepath.Join(tmpDir, "workspace.ext4")
 		}
-		var err error
-		tmpDir, err = s.downloadTemplateDrives(ctx, req.TemplateRootfsKey, req.TemplateWorkspaceKey)
-		if err != nil {
-			return nil, fmt.Errorf("download template drives: %w", err)
-		}
-		cfg.TemplateRootfsKey = "local://" + filepath.Join(tmpDir, "rootfs.ext4")
-		cfg.TemplateWorkspaceKey = "local://" + filepath.Join(tmpDir, "workspace.ext4")
 	}
-	defer func() {
-		if tmpDir != "" {
-			os.RemoveAll(tmpDir)
-		}
-	}()
+	// tmpDir is only set for S3 downloads — don't clean up (it's the permanent cache dir)
+	_ = tmpDir
 
 	sb, err := s.manager.Create(ctx, cfg)
 	if err != nil {
@@ -395,7 +411,7 @@ func (s *GRPCServer) SaveAsTemplate(ctx context.Context, req *pb.SaveAsTemplateR
 		return nil, fmt.Errorf("save-as-template requires checkpoint store (S3) — not configured on this worker")
 	}
 
-	rootfsKey, workspaceKey, err := s.manager.SaveAsTemplate(ctx, req.SandboxId, req.TemplateId, s.checkpointStore)
+	rootfsKey, workspaceKey, err := s.manager.SaveAsTemplate(ctx, req.SandboxId, req.TemplateId, s.checkpointStore, nil)
 	if err != nil {
 		return nil, fmt.Errorf("save-as-template failed: %w", err)
 	}
@@ -412,80 +428,119 @@ func copyStream(w io.Writer, r io.Reader) (int64, error) {
 }
 
 // extractArchiveCmd extracts a tar.zst archive to a directory using the system tar command.
+// Uses --sparse to handle large sparse files (e.g., 20GB workspace.ext4 that is mostly zeros).
 func extractArchiveCmd(archivePath, destDir string) error {
-	cmd := exec.Command("tar", "--zstd", "-xf", archivePath, "-C", destDir)
+	cmd := exec.Command("tar", "--zstd", "--sparse", "-xf", archivePath, "-C", destDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tar extract: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// downloadTemplateDrives downloads and extracts template rootfs and workspace archives from S3.
-// Returns the path to a temp directory containing rootfs.ext4 and workspace.ext4.
-// The caller is responsible for removing the temp directory.
-func (s *GRPCServer) downloadTemplateDrives(ctx context.Context, rootfsKey, workspaceKey string) (string, error) {
-	tmpDir, err := os.MkdirTemp("", "osb-template-")
-	if err != nil {
-		return "", fmt.Errorf("create temp dir: %w", err)
+// extractTemplateID extracts the template UUID from an S3 key like "templates/{id}/rootfs.tar.zst".
+func extractTemplateID(s3Key string) string {
+	// "templates/495327c0-.../rootfs.tar.zst" → "495327c0-..."
+	parts := strings.SplitN(s3Key, "/", 3)
+	if len(parts) >= 2 {
+		return parts[1]
 	}
+	return ""
+}
+
+// downloadAndCacheTemplateDrives downloads template archives from S3, extracts them to the
+// permanent template cache directory, and returns the cache dir path. On subsequent creates
+// the cached ext4 files are used directly (reflink copy — instant).
+func (s *GRPCServer) downloadAndCacheTemplateDrives(ctx context.Context, templateID, rootfsKey, workspaceKey string) (string, error) {
+	cacheDir := filepath.Join(s.manager.DataDir(), "templates", templateID)
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return "", fmt.Errorf("create template cache dir: %w", err)
+	}
+	log.Printf("firecracker: downloading template %s from S3 to cache %s", templateID, cacheDir)
 
 	// Download and extract rootfs archive
-	rootfsArchive := filepath.Join(tmpDir, "rootfs.tar.zst")
-	rootfsData, err := s.checkpointStore.Download(ctx, rootfsKey)
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("download rootfs from S3: %w", err)
+	t0 := time.Now()
+	if err := s.downloadAndExtract(ctx, rootfsKey, cacheDir); err != nil {
+		os.RemoveAll(cacheDir)
+		return "", fmt.Errorf("rootfs: %w", err)
 	}
-	f, err := os.Create(rootfsArchive)
-	if err != nil {
-		rootfsData.Close()
-		os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("create rootfs archive file: %w", err)
-	}
-	if _, err := copyStream(f, rootfsData); err != nil {
-		f.Close()
-		rootfsData.Close()
-		os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("write rootfs archive: %w", err)
-	}
-	f.Close()
-	rootfsData.Close()
-
-	if err := extractArchiveCmd(rootfsArchive, tmpDir); err != nil {
-		os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("extract rootfs archive: %w", err)
-	}
-	os.Remove(rootfsArchive)
+	log.Printf("firecracker: template %s: rootfs cached (%dms)", templateID, time.Since(t0).Milliseconds())
 
 	// Download and extract workspace archive
-	wsArchive := filepath.Join(tmpDir, "workspace.tar.zst")
-	wsData, err := s.checkpointStore.Download(ctx, workspaceKey)
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("download workspace from S3: %w", err)
+	t1 := time.Now()
+	if err := s.downloadAndExtract(ctx, workspaceKey, cacheDir); err != nil {
+		os.RemoveAll(cacheDir)
+		return "", fmt.Errorf("workspace: %w", err)
 	}
-	f, err = os.Create(wsArchive)
+	log.Printf("firecracker: template %s: workspace cached (%dms)", templateID, time.Since(t1).Milliseconds())
+	log.Printf("firecracker: template %s: cached (total %dms)", templateID, time.Since(t0).Milliseconds())
+
+	return cacheDir, nil
+}
+
+// downloadAndExtract downloads an archive from S3 and extracts it to destDir.
+// Supports two formats:
+//   - .sparse.zst — sparse block archive (workspace), restored via sparse.Restore
+//   - .tar.zst — standard tar archive (rootfs), extracted via tar command
+//
+// After extraction, normalizes filenames to canonical names (rootfs.ext4, workspace.ext4).
+func (s *GRPCServer) downloadAndExtract(ctx context.Context, s3Key, destDir string) error {
+	data, err := s.checkpointStore.Download(ctx, s3Key)
 	if err != nil {
-		wsData.Close()
-		os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("create workspace archive file: %w", err)
+		return fmt.Errorf("download %s: %w", s3Key, err)
 	}
-	if _, err := copyStream(f, wsData); err != nil {
+
+	archivePath := filepath.Join(destDir, filepath.Base(s3Key))
+	f, err := os.Create(archivePath)
+	if err != nil {
+		data.Close()
+		return fmt.Errorf("create archive file: %w", err)
+	}
+	if _, err := copyStream(f, data); err != nil {
 		f.Close()
-		wsData.Close()
-		os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("write workspace archive: %w", err)
+		data.Close()
+		return fmt.Errorf("write archive: %w", err)
 	}
 	f.Close()
-	wsData.Close()
+	data.Close()
 
-	if err := extractArchiveCmd(wsArchive, tmpDir); err != nil {
-		os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("extract workspace archive: %w", err)
+	if strings.HasSuffix(s3Key, ".sparse.zst") {
+		// Sparse format: restore directly to the target ext4 path
+		targetName := "workspace.ext4"
+		if strings.Contains(s3Key, "rootfs") {
+			targetName = "rootfs.ext4"
+		}
+		dstPath := filepath.Join(destDir, targetName)
+		if err := sparse.Restore(archivePath, dstPath); err != nil {
+			return fmt.Errorf("sparse restore: %w", err)
+		}
+		os.Remove(archivePath)
+		return nil
 	}
-	os.Remove(wsArchive)
 
-	return tmpDir, nil
+	// tar.zst format
+	if err := extractArchiveCmd(archivePath, destDir); err != nil {
+		return fmt.Errorf("extract: %w", err)
+	}
+	os.Remove(archivePath)
+
+	// Normalize extracted filenames: older archives may contain "tmpl-{id}-rootfs.ext4"
+	// instead of just "rootfs.ext4". Rename to canonical names for consistent cache lookups.
+	targetName := "rootfs.ext4"
+	if strings.Contains(s3Key, "workspace") {
+		targetName = "workspace.ext4"
+	}
+	canonicalPath := filepath.Join(destDir, targetName)
+	if _, err := os.Stat(canonicalPath); err != nil {
+		// File doesn't exist with canonical name — find and rename the extracted ext4
+		entries, _ := os.ReadDir(destDir)
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".ext4") && strings.Contains(e.Name(), strings.TrimSuffix(targetName, ".ext4")) {
+				os.Rename(filepath.Join(destDir, e.Name()), canonicalPath)
+				break
+			}
+		}
+	}
+	return nil
 }
 
 func (s *GRPCServer) BuildTemplate(ctx context.Context, req *pb.BuildTemplateRequest) (*pb.BuildTemplateResponse, error) {

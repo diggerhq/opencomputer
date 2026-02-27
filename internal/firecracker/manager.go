@@ -798,12 +798,12 @@ func (m *Manager) IsTAPAvailable(sandboxID string) bool {
 }
 
 // SaveAsTemplate snapshots a running sandbox's drives for use as a template.
-func (m *Manager) SaveAsTemplate(ctx context.Context, sandboxID, templateID string, checkpointStore *storage.CheckpointStore) (rootfsKey, workspaceKey string, err error) {
+func (m *Manager) SaveAsTemplate(ctx context.Context, sandboxID, templateID string, checkpointStore *storage.CheckpointStore, onReady func()) (rootfsKey, workspaceKey string, err error) {
 	vm, err := m.getVM(sandboxID)
 	if err != nil {
 		return "", "", err
 	}
-	return m.doSaveAsTemplate(ctx, vm, templateID, checkpointStore)
+	return m.doSaveAsTemplate(ctx, vm, templateID, checkpointStore, onReady)
 }
 
 // getVM retrieves a VM by ID (read-locked).

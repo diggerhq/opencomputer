@@ -60,7 +60,11 @@ type Manager interface {
 	IsTAPAvailable(sandboxID string) bool
 
 	// SaveAsTemplate snapshots a running sandbox's drives (rootfs + workspace) for use as a
-	// template. The VM is briefly paused during file copy then resumed. S3 upload is async.
-	// Returns the pre-computed S3 keys immediately (they become valid once the async upload finishes).
-	SaveAsTemplate(ctx context.Context, sandboxID, templateID string, checkpointStore *storage.CheckpointStore) (rootfsKey, workspaceKey string, err error)
+	// template. The VM is briefly paused during file copy then resumed. Archive upload is async.
+	// Returns the pre-computed storage keys immediately. onReady is called when the async upload finishes (may be nil).
+	SaveAsTemplate(ctx context.Context, sandboxID, templateID string, checkpointStore *storage.CheckpointStore, onReady func()) (rootfsKey, workspaceKey string, err error)
+
+	// TemplateCachePath returns the local path to a cached template drive file (e.g., "rootfs.ext4"),
+	// or "" if the template is not cached locally. Used to skip S3 download when creating from template.
+	TemplateCachePath(templateID, filename string) string
 }
