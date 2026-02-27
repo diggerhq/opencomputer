@@ -17,6 +17,7 @@ export interface SandboxOpts {
   metadata?: Record<string, string>;
   cpuCount?: number;
   memoryMB?: number;
+  secretGroupId?: string;
 }
 
 interface SandboxData {
@@ -84,6 +85,7 @@ export class Sandbox {
     if (opts.metadata) body.metadata = opts.metadata;
     if (opts.cpuCount != null) body.cpuCount = opts.cpuCount;
     if (opts.memoryMB != null) body.memoryMB = opts.memoryMB;
+    if (opts.secretGroupId) body.secretGroupId = opts.secretGroupId;
 
     const resp = await fetch(`${apiUrl}/sandboxes`, {
       method: "POST",

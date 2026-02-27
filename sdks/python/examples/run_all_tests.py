@@ -17,6 +17,7 @@ Individual tests:
   python examples/test_multi_template.py
   python examples/test_reconnect.py
   python examples/test_domain_tls.py
+  python examples/test_git.py
   python examples/test_concurrent.py
   python examples/test_timeout.py
 """
@@ -68,6 +69,16 @@ SUITES = [
         "name": "Domain/TLS",
         "file": "test_domain_tls.py",
         "description": "Subdomains, HTTPS requests, routing isolation",
+    },
+    {
+        "name": "Git",
+        "file": "test_git.py",
+        "description": "Init, push, clone, branch, pull across sandboxes",
+    },
+    {
+        "name": "Secrets",
+        "file": "test_secrets.py",
+        "description": "Secrets vault, sealed tokens, proxy substitution, egress allowlist",
     },
     {
         "name": "Concurrent",

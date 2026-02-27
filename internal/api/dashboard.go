@@ -954,6 +954,245 @@ func (s *Server) dashboardSaveAsTemplate(c echo.Context) error {
 	})
 }
 
+// --- Secrets vault handlers ---
+
+func (s *Server) dashboardListSecrets(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+	secrets, err := s.store.ListSecrets(c.Request().Context(), orgID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if secrets == nil {
+		secrets = []db.DBSecret{}
+	}
+	return c.JSON(http.StatusOK, secrets)
+}
+
+func (s *Server) dashboardCreateSecret(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+	var req struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Value       string `json:"value"`
+	}
+	if err := c.Bind(&req); err != nil || req.Name == "" || req.Value == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name and value are required"})
+	}
+	secret, err := s.store.CreateSecret(c.Request().Context(), orgID, req.Name, req.Description, req.Value)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusCreated, secret)
+}
+
+func (s *Server) dashboardUpdateSecret(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+	secretID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid secret ID"})
+	}
+	var req struct {
+		Name        string  `json:"name"`
+		Description string  `json:"description"`
+		Value       *string `json:"value"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+	if err := s.store.UpdateSecret(c.Request().Context(), orgID, secretID, req.Name, req.Description, req.Value); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Server) dashboardDeleteSecret(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+	secretID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid secret ID"})
+	}
+	if err := s.store.DeleteSecret(c.Request().Context(), orgID, secretID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// --- Secret group handlers ---
+
+func (s *Server) dashboardListSecretGroups(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+	groups, err := s.store.ListSecretGroups(c.Request().Context(), orgID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if groups == nil {
+		groups = []db.DBSecretGroup{}
+	}
+	return c.JSON(http.StatusOK, groups)
+}
+
+func (s *Server) dashboardCreateSecretGroup(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+	var req struct {
+		Name         string   `json:"name"`
+		Description  string   `json:"description"`
+		AllowedHosts []string `json:"allowedHosts"`
+		Entries      []struct {
+			SecretID   string `json:"secretId"`
+			EnvVarName string `json:"envVarName"`
+		} `json:"entries"`
+	}
+	if err := c.Bind(&req); err != nil || req.Name == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
+	}
+	ctx := c.Request().Context()
+	group, err := s.store.CreateSecretGroup(ctx, orgID, req.Name, req.Description, req.AllowedHosts)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if len(req.Entries) > 0 {
+		entries := make([]db.SecretGroupEntry, 0, len(req.Entries))
+		for _, e := range req.Entries {
+			sid, err := uuid.Parse(e.SecretID)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, db.SecretGroupEntry{SecretID: sid, EnvVarName: e.EnvVarName})
+		}
+		if err := s.store.SetSecretGroupEntries(ctx, group.ID, entries); err != nil {
+			log.Printf("dashboard: failed to set group entries for %s: %v", group.ID, err)
+		}
+	}
+	return c.JSON(http.StatusCreated, group)
+}
+
+func (s *Server) dashboardGetSecretGroup(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+	groupID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid group ID"})
+	}
+	ctx := c.Request().Context()
+	group, err := s.store.GetSecretGroup(ctx, orgID, groupID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "secret group not found"})
+	}
+	entries, _ := s.store.GetSecretGroupEntries(ctx, groupID)
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"id":           group.ID,
+		"orgId":        group.OrgID,
+		"name":         group.Name,
+		"description":  group.Description,
+		"allowedHosts": group.AllowedHosts,
+		"createdAt":    group.CreatedAt,
+		"entries":      entries,
+	})
+}
+
+func (s *Server) dashboardUpdateSecretGroup(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+	groupID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid group ID"})
+	}
+	var req struct {
+		Name         string   `json:"name"`
+		Description  string   `json:"description"`
+		AllowedHosts []string `json:"allowedHosts"`
+		Entries      []struct {
+			SecretID   string `json:"secretId"`
+			EnvVarName string `json:"envVarName"`
+		} `json:"entries"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+	ctx := c.Request().Context()
+	if err := s.store.UpdateSecretGroup(ctx, orgID, groupID, req.Name, req.Description, req.AllowedHosts); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if req.Entries != nil {
+		entries := make([]db.SecretGroupEntry, 0, len(req.Entries))
+		for _, e := range req.Entries {
+			sid, err := uuid.Parse(e.SecretID)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, db.SecretGroupEntry{SecretID: sid, EnvVarName: e.EnvVarName})
+		}
+		if err := s.store.SetSecretGroupEntries(ctx, groupID, entries); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Server) dashboardDeleteSecretGroup(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+	groupID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid group ID"})
+	}
+	if err := s.store.DeleteSecretGroup(c.Request().Context(), orgID, groupID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
 // dashboardResolveSandbox validates the sandbox belongs to the authenticated org and is running.
 func (s *Server) dashboardResolveSandbox(c echo.Context) (string, *db.SandboxSession, error) {
 	if s.store == nil {

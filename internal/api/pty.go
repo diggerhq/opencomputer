@@ -26,6 +26,11 @@ func (s *Server) createPTY(c echo.Context) error {
 
 	id := c.Param("id")
 
+	// Verify the caller owns this sandbox
+	if _, err := s.requireSandboxOwnership(c, id); err != nil {
+		return err
+	}
+
 	var req types.PTYCreateRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
@@ -69,6 +74,11 @@ func (s *Server) ptyWebSocket(c echo.Context) error {
 
 	id := c.Param("id")
 	sessionID := c.Param("sessionID")
+
+	// Verify the caller owns this sandbox
+	if _, err := s.requireSandboxOwnership(c, id); err != nil {
+		return err
+	}
 
 	// Touch the router on initial WebSocket connection to reset timeout
 	if s.router != nil {
@@ -144,6 +154,11 @@ func (s *Server) killPTY(c echo.Context) error {
 
 	id := c.Param("id")
 	sessionID := c.Param("sessionID")
+
+	// Verify the caller owns this sandbox
+	if _, err := s.requireSandboxOwnership(c, id); err != nil {
+		return err
+	}
 
 	routeOp := func(_ context.Context) error {
 		return s.ptyManager.KillSession(sessionID)

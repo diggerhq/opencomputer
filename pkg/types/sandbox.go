@@ -49,6 +49,11 @@ type SandboxConfig struct {
 	// When set, the sandbox boots from these drives instead of the standard base image.
 	TemplateRootfsKey    string `json:"templateRootfsKey,omitempty"`
 	TemplateWorkspaceKey string `json:"templateWorkspaceKey,omitempty"`
+
+	// SecretGroupID attaches a secret group to the sandbox at creation time.
+	// The server resolves secrets before forwarding to the worker; real values
+	// never leave the server unencrypted — the worker only receives sealed tokens.
+	SecretGroupID string `json:"secretGroupId,omitempty"`
 }
 
 // SandboxListResponse is the response for listing sandboxes.

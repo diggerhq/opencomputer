@@ -5,14 +5,15 @@ BINARY_SERVER = opensandbox-server
 BINARY_WORKER = opensandbox-worker
 BINARY_AGENT = osb-agent
 BINARY_GITSERVER = opensandbox-gitserver
+BINARY_CLI = osb
 BUILD_DIR = bin
 
 ## help: Show this help message
 help:
 	@grep -E '^##' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
 
-## build: Build server, worker, and agent binaries
-build: build-server build-worker build-agent
+## build: Build server, worker, agent, and CLI binaries
+build: build-server build-worker build-agent build-cli
 
 ## build-server: Build the control plane server
 build-server:
@@ -41,6 +42,15 @@ build-gitserver:
 ## build-gitserver-amd64: Cross-compile git server for Linux AMD64
 build-gitserver-amd64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY_GITSERVER)-amd64 ./cmd/gitserver
+
+## build-cli: Build the OpenSandbox CLI (osb)
+build-cli:
+	CGO_ENABLED=0 go build -o $(BUILD_DIR)/$(BINARY_CLI) ./cmd/cli
+
+## install-cli: Install CLI to /usr/local/bin
+install-cli: build-cli
+	sudo cp $(BUILD_DIR)/$(BINARY_CLI) /usr/local/bin/$(BINARY_CLI)
+	@echo "✓ osb installed to /usr/local/bin/osb"
 
 ## --- Local Testing (3 tiers) ---
 
@@ -185,6 +195,30 @@ test-unit:
 ## test-hibernation: Run hibernation integration test (requires: server running with S3)
 test-hibernation:
 	@./scripts/test-hibernation.sh
+
+## test-cli: Run all CLI tests (requires: server running)
+test-cli:
+	@./scripts/cli-tests/run-all-tests.sh
+
+## test-cli-lifecycle: Run CLI lifecycle tests
+test-cli-lifecycle:
+	@./scripts/cli-tests/test-lifecycle.sh
+
+## test-cli-commands: Run CLI command execution tests
+test-cli-commands:
+	@./scripts/cli-tests/test-commands.sh
+
+## test-cli-file-ops: Run CLI file operations tests
+test-cli-file-ops:
+	@./scripts/cli-tests/test-file-ops.sh
+
+## test-cli-python: Run CLI Python template tests
+test-cli-python:
+	@./scripts/cli-tests/test-python-template.sh
+
+## test-cli-multi: Run CLI multi-template tests
+test-cli-multi:
+	@./scripts/cli-tests/test-multi-template.sh
 
 ## fmt: Format code
 fmt:

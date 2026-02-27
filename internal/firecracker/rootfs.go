@@ -64,10 +64,10 @@ func CreateWorkspace(path string, sizeMB int) error {
 }
 
 // ResolveBaseImage finds the base rootfs image for a given template.
-// Templates map to image files: "ubuntu" → "ubuntu-base.ext4"
+// Templates map to image files: "default" → "default.ext4", "ubuntu" → "ubuntu.ext4", etc.
 func ResolveBaseImage(imagesDir, template string) (string, error) {
-	if template == "" {
-		template = "ubuntu"
+	if template == "" || template == "base" {
+		template = "default"
 	}
 
 	// Check for exact match first

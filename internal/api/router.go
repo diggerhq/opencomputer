@@ -159,6 +159,17 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	// Session history (requires PG)
 	api.GET("/sessions", s.listSessions)
 
+	// Secrets vault (API key auth — same handlers as dashboard, just different auth layer)
+	api.GET("/secrets", s.dashboardListSecrets)
+	api.POST("/secrets", s.dashboardCreateSecret)
+	api.PUT("/secrets/:id", s.dashboardUpdateSecret)
+	api.DELETE("/secrets/:id", s.dashboardDeleteSecret)
+	api.GET("/secret-groups", s.dashboardListSecretGroups)
+	api.POST("/secret-groups", s.dashboardCreateSecretGroup)
+	api.GET("/secret-groups/:id", s.dashboardGetSecretGroup)
+	api.PUT("/secret-groups/:id", s.dashboardUpdateSecretGroup)
+	api.DELETE("/secret-groups/:id", s.dashboardDeleteSecretGroup)
+
 	// WorkOS OAuth + Dashboard API routes (only if WorkOS is configured)
 	var frontendURL string
 	if opts != nil && opts.WorkOSConfig != nil && opts.WorkOSConfig.APIKey != "" {
@@ -197,6 +208,19 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		dash.GET("/sessions/:sandboxId/pty/:sessionId", s.dashboardPTYWebSocket)
 		dash.POST("/sessions/:sandboxId/pty/:sessionId/resize", s.dashboardResizePTY)
 		dash.DELETE("/sessions/:sandboxId/pty/:sessionId", s.dashboardKillPTY)
+
+		// Secrets vault
+		dash.GET("/secrets", s.dashboardListSecrets)
+		dash.POST("/secrets", s.dashboardCreateSecret)
+		dash.PUT("/secrets/:id", s.dashboardUpdateSecret)
+		dash.DELETE("/secrets/:id", s.dashboardDeleteSecret)
+
+		// Secret groups
+		dash.GET("/secret-groups", s.dashboardListSecretGroups)
+		dash.POST("/secret-groups", s.dashboardCreateSecretGroup)
+		dash.GET("/secret-groups/:id", s.dashboardGetSecretGroup)
+		dash.PUT("/secret-groups/:id", s.dashboardUpdateSecretGroup)
+		dash.DELETE("/secret-groups/:id", s.dashboardDeleteSecretGroup)
 	}
 
 	// Auto-detect FrontendURL for dev: if web/dist doesn't exist, assume Vite dev on :3000

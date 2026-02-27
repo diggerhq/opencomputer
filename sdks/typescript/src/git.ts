@@ -76,7 +76,7 @@ export class Git {
 
   /** Build the clone URL for a repo on the OpenSandbox git server. */
   private remoteUrl(repoSlug: string): string {
-    return `http://${this.gitDomain}/${this.orgSlug}/${repoSlug}.git`;
+    return `https://${this.gitDomain}/${this.orgSlug}/${repoSlug}.git`;
   }
 
   /**

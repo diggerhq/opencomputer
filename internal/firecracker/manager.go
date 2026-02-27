@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/secretsproxy"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/agent"
@@ -72,6 +73,11 @@ type Config struct {
 	DefaultCPUs     int    // default vCPUs per VM (default: 1)
 	DefaultDiskMB   int    // default workspace size in MB (default: 20480 = 20GB)
 	DefaultPort     int    // default guest port to expose (default: 80)
+
+	// SecretsProxy, if set, intercepts outbound HTTPS from sandboxes and
+	// substitutes sealed tokens with real secret values. When non-nil, env vars
+	// in SandboxConfig are passed through ProxyEnvs to generate sealed tokens.
+	SecretsProxy *secretsproxy.SecretsProxy
 }
 
 // Manager implements sandbox.Manager using Firecracker microVMs.
@@ -155,8 +161,8 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 
 	// Resolve template name (used for logging and cold-boot recovery)
 	template := cfg.Template
-	if template == "" {
-		template = "ubuntu"
+	if template == "" || template == "base" {
+		template = "default"
 	}
 
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.ext4")
@@ -372,6 +378,21 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 		return nil, fmt.Errorf("agent not ready: %w", err)
 	}
 	vm.agent = agentClient
+
+	// Inject environment variables into the VM's persistent environment.
+	// If a SecretsProxy is configured, real values are replaced with sealed tokens
+	// before injection so they never appear in plaintext inside the VM.
+	envsToInject := cfg.Envs
+	if m.cfg.SecretsProxy != nil && len(cfg.Envs) > 0 {
+		envsToInject = m.cfg.SecretsProxy.ProxyEnvs(id, netCfg.GuestIP, netCfg.HostIP, cfg.Envs, nil)
+	}
+	if len(envsToInject) > 0 {
+		if err := m.injectEnvs(context.Background(), agentClient, envsToInject); err != nil {
+			log.Printf("firecracker: warning: env injection failed for %s: %v", id, err)
+		} else {
+			log.Printf("firecracker: injected %d env vars into %s", len(envsToInject), id)
+		}
+	}
 
 	// Register VM
 	m.mu.Lock()
@@ -989,4 +1010,39 @@ func (m *Manager) RecoverLocalSandboxes() []LocalRecovery {
 		}
 	}
 	return recoveries
+}
+
+// injectEnvs writes environment variables into the VM's /etc/environment and
+// /etc/profile.d/osb.sh so they are visible to all processes (login shells,
+// PTY sessions, exec'd commands).
+func (m *Manager) injectEnvs(ctx context.Context, agent *AgentClient, envs map[string]string) error {
+	if len(envs) == 0 {
+		return nil
+	}
+
+	// Build shell-safe assignments using single-quoting.
+	var envLines []string
+	var exportLines []string
+	for k, v := range envs {
+		quoted := "'" + strings.ReplaceAll(v, "'", "'\\''") + "'"
+		envLines = append(envLines, k+"="+quoted)
+		exportLines = append(exportLines, "export "+k+"="+quoted)
+	}
+
+	// Append to /etc/environment (read by PAM for login sessions) and write
+	// /etc/profile.d/osb.sh (sourced by interactive shells).
+	script := fmt.Sprintf(
+		`mkdir -p /etc/profile.d && printf '%%s\n' %s >> /etc/environment && printf '%%s\n' %s > /etc/profile.d/osb.sh`,
+		strings.Join(envLines, " "),
+		strings.Join(exportLines, " "),
+	)
+
+	execCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := agent.Exec(execCtx, &pb.ExecRequest{
+		Command:        "sh",
+		Args:           []string{"-c", script},
+		TimeoutSeconds: 10,
+	})
+	return err
 }

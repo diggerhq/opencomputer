@@ -15,6 +15,8 @@
  *   npx tsx examples/test-file-ops.ts
  *   npx tsx examples/test-reconnect.ts
  *   npx tsx examples/test-domain-tls.ts
+ *   npx tsx examples/test-git.ts
+ *   npx tsx examples/test-secrets.ts
  *   npx tsx examples/test-concurrent.ts
  *   npx tsx examples/test-hibernation-stress.ts
  *   npx tsx examples/test-timeout.ts
@@ -51,6 +53,8 @@ const SUITES: TestSuite[] = [
   { name: "Multi-Template", file: "test-multi-template.ts", description: "base, python, node templates" },
   { name: "Reconnect", file: "test-reconnect.ts", description: "Sandbox.connect(), state persistence, multi-conn" },
   { name: "Domain/TLS", file: "test-domain-tls.ts", description: "Subdomains, Let's Encrypt certs, routing isolation" },
+  { name: "Git", file: "test-git.ts", description: "Init, push, clone, branch, pull across sandboxes" },
+  { name: "Secrets", file: "test-secrets.ts", description: "Secrets vault, sealed tokens, proxy substitution, egress allowlist" },
   { name: "Concurrent", file: "test-concurrent.ts", description: "5 sandboxes in parallel, isolation, parallel ops" },
   { name: "Hibernation", file: "test-hibernation-stress.ts", description: "Multi-cycle hibernate/wake, large state, auto-wake" },
   { name: "Timeout", file: "test-timeout.ts", slow: true, description: "30s timeout, setTimeout(), rolling timeout (takes ~2min)" },

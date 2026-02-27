@@ -41,6 +41,7 @@ class Sandbox:
         api_url: str | None = None,
         envs: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
+        secret_group_id: str | None = None,
     ) -> Sandbox:
         """Create a new sandbox instance."""
         url = api_url or os.environ.get("OPENSANDBOX_API_URL", "https://app.opensandbox.ai")
@@ -64,6 +65,8 @@ class Sandbox:
             body["envs"] = envs
         if metadata:
             body["metadata"] = metadata
+        if secret_group_id:
+            body["secretGroupId"] = secret_group_id
 
         resp = await client.post("/sandboxes", json=body)
         resp.raise_for_status()

@@ -63,7 +63,7 @@ class Git:
 
     def _remote_url(self, repo_slug: str) -> str:
         """Build the clone URL for a repo on the OpenSandbox git server."""
-        return f"http://{self._git_domain}/{self._org_slug}/{repo_slug}.git"
+        return f"https://{self._git_domain}/{self._org_slug}/{repo_slug}.git"
 
     async def init(
         self,

@@ -80,6 +80,41 @@ export const getOrg = () => apiFetch<Org>('/org')
 export const updateOrg = (name: string) =>
   apiFetch<Org>('/org', { method: 'PUT', body: JSON.stringify({ name }) })
 
+// Secrets vault
+export const getSecrets = () => apiFetch<Secret[]>('/secrets')
+
+export const createSecret = (name: string, description: string, value: string) =>
+  apiFetch<Secret>('/secrets', { method: 'POST', body: JSON.stringify({ name, description, value }) })
+
+export const updateSecret = (id: string, updates: { name?: string; description?: string; value?: string }) =>
+  apiFetch<void>(`/secrets/${id}`, { method: 'PUT', body: JSON.stringify(updates) })
+
+export const deleteSecret = (id: string) =>
+  apiFetch<void>(`/secrets/${id}`, { method: 'DELETE' })
+
+// Secret groups
+export const getSecretGroups = () => apiFetch<SecretGroup[]>('/secret-groups')
+
+export const createSecretGroup = (
+  name: string, description: string, allowedHosts: string[],
+  entries: Array<{ secretId: string; envVarName: string }>,
+) =>
+  apiFetch<SecretGroup>('/secret-groups', {
+    method: 'POST',
+    body: JSON.stringify({ name, description, allowedHosts, entries }),
+  })
+
+export const getSecretGroup = (id: string) => apiFetch<SecretGroupDetail>(`/secret-groups/${id}`)
+
+export const updateSecretGroup = (
+  id: string,
+  updates: { name?: string; description?: string; allowedHosts?: string[]; entries?: Array<{ secretId: string; envVarName: string }> },
+) =>
+  apiFetch<void>(`/secret-groups/${id}`, { method: 'PUT', body: JSON.stringify(updates) })
+
+export const deleteSecretGroup = (id: string) =>
+  apiFetch<void>(`/secret-groups/${id}`, { method: 'DELETE' })
+
 // Types
 export interface Session {
   id: string
@@ -169,4 +204,34 @@ export interface Org {
   maxSandboxTimeoutSec: number
   createdAt: string
   updatedAt: string
+}
+
+export interface Secret {
+  id: string
+  orgId: string
+  name: string
+  description: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SecretGroup {
+  id: string
+  orgId: string
+  name: string
+  description: string
+  allowedHosts: string[]
+  createdAt: string
+}
+
+export interface SecretGroupEntry {
+  id: string
+  groupId: string
+  secretId: string
+  secretName: string
+  envVarName: string
+}
+
+export interface SecretGroupDetail extends SecretGroup {
+  entries: SecretGroupEntry[]
 }

@@ -9,6 +9,7 @@ import APIKeys from './pages/APIKeys'
 import Templates from './pages/Templates'
 import Settings from './pages/Settings'
 import SessionDetail from './pages/SessionDetail'
+import Secrets from './pages/Secrets'
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
             <Route path="sessions" element={<Sessions />} />
             <Route path="sessions/:sandboxId" element={<SessionDetail />} />
             <Route path="templates" element={<Templates />} />
+            <Route path="secrets" element={<Secrets />} />
             <Route path="api-keys" element={<APIKeys />} />
             <Route path="settings" element={<Settings />} />
           </Route>

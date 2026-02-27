@@ -275,7 +275,9 @@ func (m *PodmanManager) Close() {}
 
 func resolveTemplateImage(template string) string {
 	switch template {
-	case "base", "":
+	case "base", "default", "":
+		return "docker.io/library/ubuntu:22.04"
+	case "ubuntu":
 		return "docker.io/library/ubuntu:22.04"
 	case "python":
 		return "docker.io/library/python:3.12-slim"
