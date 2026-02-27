@@ -9,7 +9,7 @@
  *   5. Verify data persisted across the sleep/wake cycle
  *
  * Usage:
- *   OPENSANDBOX_API_KEY=osb_... npx tsx examples/webhook-demo.ts
+ *   OPENCOMPUTER_API_KEY=osb_... npx tsx examples/webhook-demo.ts
  */
 
 import { Sandbox } from "../src/index";

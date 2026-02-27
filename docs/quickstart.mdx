@@ -5,18 +5,18 @@ description: "Get up and running with OpenSandbox in 5 minutes"
 
 ## 1. Get Your API Key
 
-Sign up at [app.opensandbox.ai](https://app.opensandbox.ai) and grab your API key from the dashboard.
+Sign up at [app.opencomputer.dev](https://app.opencomputer.dev) and grab your API key from the dashboard.
 
 ## 2. Install the SDK
 
 <CodeGroup>
 
 ```bash npm
-npm install opensandbox
+npm install @opencomputer/sdk
 ```
 
 ```bash pip
-pip install opensandbox-sdk
+pip install opencomputer
 ```
 
 </CodeGroup>
@@ -24,7 +24,7 @@ pip install opensandbox-sdk
 ## 3. Set Your API Key
 
 ```bash
-export OPENSANDBOX_API_KEY="your-api-key"
+export OPENCOMPUTER_API_KEY="your-api-key"
 ```
 
 ## 4. Create a Sandbox
@@ -32,7 +32,7 @@ export OPENSANDBOX_API_KEY="your-api-key"
 <CodeGroup>
 
 ```typescript TypeScript
-import { Sandbox } from 'opensandbox';
+import { Sandbox } from '@opencomputer/sdk';
 
 const sandbox = await Sandbox.create({
   template: 'base',
@@ -43,7 +43,7 @@ console.log(`Sandbox created: ${sandbox.sandboxId}`);
 ```
 
 ```python Python
-from opensandbox import Sandbox
+from opencomputer import Sandbox
 
 sandbox = await Sandbox.create(template='base', timeout=300)
 print(f"Sandbox created: {sandbox.sandbox_id}")

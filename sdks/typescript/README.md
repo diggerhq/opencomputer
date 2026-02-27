@@ -1,17 +1,17 @@
-# opensandbox
+# @opencomputer/sdk
 
-TypeScript SDK for [OpenSandbox](https://github.com/diggerhq/opensandbox) — an open-source cloud sandbox platform.
+TypeScript SDK for [OpenComputer](https://github.com/diggerhq/opensandbox) — cloud sandbox platform.
 
 ## Install
 
 ```bash
-npm install opensandbox
+npm install @opencomputer/sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { Sandbox } from "opensandbox";
+import { Sandbox } from "@opencomputer/sdk";
 
 const sandbox = await Sandbox.create({ template: "base" });
 
@@ -31,8 +31,8 @@ await sandbox.kill();
 
 | Option    | Env Variable            | Default                  |
 |-----------|------------------------|--------------------------|
-| `apiUrl`  | `OPENSANDBOX_API_URL`  | `https://app.opensandbox.ai`  |
-| `apiKey`  | `OPENSANDBOX_API_KEY`  | (none)                   |
+| `apiUrl`  | `OPENCOMPUTER_API_URL`  | `https://app.opencomputer.dev`  |
+| `apiKey`  | `OPENCOMPUTER_API_KEY`  | (none)                   |
 
 ## License
 

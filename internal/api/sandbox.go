@@ -452,6 +452,7 @@ func (s *Server) killSandbox(c echo.Context) error {
 
 	if s.store != nil {
 		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), id, "stopped", nil)
+		s.cleanupPreviewURLs(c.Request().Context(), id)
 	}
 
 	if s.sandboxDBs != nil {
@@ -494,6 +495,7 @@ func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
 	}
 
 	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", nil)
+	s.cleanupPreviewURLs(c.Request().Context(), sandboxID)
 
 	return c.NoContent(http.StatusNoContent)
 }
@@ -749,9 +751,6 @@ func (s *Server) hibernateSandboxRemote(c echo.Context, sandboxID string) error 
 		"checkpointKey": grpcResp.CheckpointKey,
 		"sizeBytes":     grpcResp.SizeBytes,
 	}
-	if s.sandboxDomain != "" {
-		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
-	}
 
 	return c.JSON(http.StatusOK, resp)
 }
@@ -821,9 +820,6 @@ func (s *Server) wakeSandbox(c echo.Context) error {
 	}
 
 	sb.ConnectURL = s.httpAddr
-	if s.sandboxDomain != "" {
-		sb.Domain = fmt.Sprintf("%s.%s", id, s.sandboxDomain)
-	}
 
 	return c.JSON(http.StatusOK, sb)
 }
@@ -897,9 +893,6 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 		"region":     region,
 		"workerID":   worker.ID,
 	}
-	if s.sandboxDomain != "" {
-		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
-	}
 
 	return c.JSON(http.StatusOK, resp)
 }
@@ -937,4 +930,163 @@ func (s *Server) listSessions(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, sessions)
+}
+
+// --- Preview URL handlers ---
+
+// createPreviewURL creates an on-demand preview URL for a running sandbox
+// targeting a specific container port. Hostname format: {sandboxID}-p{port}.{baseDomain}
+func (s *Server) createPreviewURL(c echo.Context) error {
+	sandboxID := c.Param("id")
+	ctx := c.Request().Context()
+
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{
+			"error": "org context required",
+		})
+	}
+
+	// Parse request body — port is required
+	var req struct {
+		Port       int             `json:"port"`
+		AuthConfig json.RawMessage `json:"authConfig"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid request body: " + err.Error(),
+		})
+	}
+	if req.Port < 1 || req.Port > 65535 {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "port must be between 1 and 65535",
+		})
+	}
+	if req.AuthConfig == nil {
+		req.AuthConfig = json.RawMessage("{}")
+	}
+
+	// Verify sandbox is running
+	sandboxRunning := false
+	if s.manager != nil {
+		if _, err := s.manager.Get(ctx, sandboxID); err == nil {
+			sandboxRunning = true
+		}
+	}
+	if !sandboxRunning && s.store != nil {
+		session, err := s.store.GetSandboxSession(ctx, sandboxID)
+		if err == nil && session.Status == "running" && session.OrgID == orgID {
+			sandboxRunning = true
+		}
+	}
+	if !sandboxRunning {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "sandbox is not running or not found",
+		})
+	}
+
+	// Check for duplicate port
+	existing, err := s.store.GetPreviewURLByPort(ctx, sandboxID, req.Port)
+	if err == nil && existing != nil {
+		return c.JSON(http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("preview URL already exists for port %d", req.Port),
+		})
+	}
+
+	// Build hostname: {sandboxID}-p{port}.{baseDomain}
+	hostname := fmt.Sprintf("%s-p%d.%s", sandboxID, req.Port, s.sandboxDomain)
+
+	previewURL, err := s.store.CreatePreviewURL(ctx, sandboxID, orgID, hostname, req.Port, nil, "active", req.AuthConfig)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusCreated, previewURL)
+}
+
+// listPreviewURLs returns all preview URLs for a sandbox.
+func (s *Server) listPreviewURLs(c echo.Context) error {
+	sandboxID := c.Param("id")
+
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	urls, err := s.store.ListPreviewURLs(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	if urls == nil {
+		urls = []db.PreviewURL{}
+	}
+
+	return c.JSON(http.StatusOK, urls)
+}
+
+// deletePreviewURL removes the preview URL for a sandbox on a specific port.
+func (s *Server) deletePreviewURL(c echo.Context) error {
+	sandboxID := c.Param("id")
+	portStr := c.Param("port")
+	ctx := c.Request().Context()
+
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	port := 0
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil || port < 1 || port > 65535 {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid port",
+		})
+	}
+
+	previewURL, err := s.store.GetPreviewURLByPort(ctx, sandboxID, port)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": "no preview URL for this port",
+		})
+	}
+
+	// Delete from Cloudflare if applicable (for legacy custom domain URLs)
+	if s.cfClient != nil && previewURL.CFHostnameID != nil && *previewURL.CFHostnameID != "" {
+		if err := s.cfClient.DeleteCustomHostname(*previewURL.CFHostnameID); err != nil {
+			log.Printf("preview: failed to delete CF hostname %s: %v", *previewURL.CFHostnameID, err)
+		}
+	}
+
+	_ = s.store.DeletePreviewURL(ctx, previewURL.ID)
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// cleanupPreviewURLs removes all preview URLs for a sandbox on kill (best-effort).
+func (s *Server) cleanupPreviewURLs(ctx context.Context, sandboxID string) {
+	if s.store == nil {
+		return
+	}
+	urls, err := s.store.DeletePreviewURLsBySandbox(ctx, sandboxID)
+	if err != nil {
+		return
+	}
+	for _, u := range urls {
+		if s.cfClient != nil && u.CFHostnameID != nil && *u.CFHostnameID != "" {
+			if err := s.cfClient.DeleteCustomHostname(*u.CFHostnameID); err != nil {
+				log.Printf("preview: cleanup failed for CF hostname %s: %v", *u.CFHostnameID, err)
+			}
+		}
+	}
 }

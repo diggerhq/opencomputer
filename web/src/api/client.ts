@@ -69,51 +69,19 @@ export const getSessionDetail = (sandboxId: string) =>
 export const getSessionStats = (sandboxId: string) =>
   apiFetch<SandboxStats>(`/sessions/${sandboxId}/stats`)
 
-export const saveAsTemplate = (sandboxId: string, name: string, tag?: string) =>
-  apiFetch<SaveAsTemplateResult>(`/sessions/${sandboxId}/save-as-template`, {
-    method: 'POST',
-    body: JSON.stringify({ name, tag: tag || 'latest' }),
-  })
-
 export const getOrg = () => apiFetch<Org>('/org')
 
 export const updateOrg = (name: string) =>
   apiFetch<Org>('/org', { method: 'PUT', body: JSON.stringify({ name }) })
 
-// Secrets vault
-export const getSecrets = () => apiFetch<Secret[]>('/secrets')
+export const setCustomDomain = (domain: string) =>
+  apiFetch<Org>('/org/custom-domain', { method: 'PUT', body: JSON.stringify({ domain }) })
 
-export const createSecret = (name: string, description: string, value: string) =>
-  apiFetch<Secret>('/secrets', { method: 'POST', body: JSON.stringify({ name, description, value }) })
+export const deleteCustomDomain = () =>
+  apiFetch<Org>('/org/custom-domain', { method: 'DELETE' })
 
-export const updateSecret = (id: string, updates: { name?: string; description?: string; value?: string }) =>
-  apiFetch<void>(`/secrets/${id}`, { method: 'PUT', body: JSON.stringify(updates) })
-
-export const deleteSecret = (id: string) =>
-  apiFetch<void>(`/secrets/${id}`, { method: 'DELETE' })
-
-// Secret groups
-export const getSecretGroups = () => apiFetch<SecretGroup[]>('/secret-groups')
-
-export const createSecretGroup = (
-  name: string, description: string, allowedHosts: string[],
-  entries: Array<{ secretId: string; envVarName: string }>,
-) =>
-  apiFetch<SecretGroup>('/secret-groups', {
-    method: 'POST',
-    body: JSON.stringify({ name, description, allowedHosts, entries }),
-  })
-
-export const getSecretGroup = (id: string) => apiFetch<SecretGroupDetail>(`/secret-groups/${id}`)
-
-export const updateSecretGroup = (
-  id: string,
-  updates: { name?: string; description?: string; allowedHosts?: string[]; entries?: Array<{ secretId: string; envVarName: string }> },
-) =>
-  apiFetch<void>(`/secret-groups/${id}`, { method: 'PUT', body: JSON.stringify(updates) })
-
-export const deleteSecretGroup = (id: string) =>
-  apiFetch<void>(`/secret-groups/${id}`, { method: 'DELETE' })
+export const refreshCustomDomain = () =>
+  apiFetch<Org>('/org/custom-domain/refresh', { method: 'POST' })
 
 // Types
 export interface Session {
@@ -147,18 +115,19 @@ export interface Template {
   tag: string
   dockerfile?: string
   isPublic: boolean
-  templateType: string  // "dockerfile" or "sandbox"
-  createdBySandboxId?: string
-  status: string  // "ready" or "processing"
   createdAt: string
 }
 
-export interface SaveAsTemplateResult {
+export interface PreviewURL {
   id: string
-  name: string
-  tag: string
-  templateType: string
-  status: string
+  sandboxId: string
+  orgId: string
+  hostname: string
+  customHostname?: string
+  port: number
+  cfHostnameId?: string
+  sslStatus: string
+  authConfig: Record<string, unknown>
   createdAt: string
 }
 
@@ -170,8 +139,6 @@ export interface SessionDetail {
   startedAt: string
   stoppedAt?: string
   errorMsg?: string
-  domain?: string
-  basedOnTemplateId?: string
   config?: {
     timeout?: number
     cpuCount?: number
@@ -184,6 +151,7 @@ export interface SessionDetail {
     sizeBytes: number
     hibernatedAt: string
   }
+  previewUrls?: PreviewURL[]
 }
 
 export interface SandboxStats {
@@ -204,34 +172,12 @@ export interface Org {
   maxSandboxTimeoutSec: number
   createdAt: string
   updatedAt: string
-}
-
-export interface Secret {
-  id: string
-  orgId: string
-  name: string
-  description: string
-  createdAt: string
-  updatedAt: string
-}
-
-export interface SecretGroup {
-  id: string
-  orgId: string
-  name: string
-  description: string
-  allowedHosts: string[]
-  createdAt: string
-}
-
-export interface SecretGroupEntry {
-  id: string
-  groupId: string
-  secretId: string
-  secretName: string
-  envVarName: string
-}
-
-export interface SecretGroupDetail extends SecretGroup {
-  entries: SecretGroupEntry[]
+  customDomain?: string
+  cfHostnameId?: string
+  domainVerificationStatus: string
+  domainSslStatus: string
+  verificationTxtName?: string
+  verificationTxtValue?: string
+  sslTxtName?: string
+  sslTxtValue?: string
 }

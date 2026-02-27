@@ -9,10 +9,10 @@ from typing import Any
 
 import httpx
 
-from opensandbox.commands import Commands
-from opensandbox.filesystem import Filesystem
-from opensandbox.git import Git
-from opensandbox.pty import Pty
+from opencomputer.commands import Commands
+from opencomputer.filesystem import Filesystem
+from opencomputer.git import Git
+from opencomputer.pty import Pty
 
 
 @dataclass
@@ -22,7 +22,6 @@ class Sandbox:
     sandbox_id: str
     status: str = "running"
     template: str = ""
-    domain: str = ""
     _api_url: str = ""
     _api_key: str = ""
     _connect_url: str = ""
@@ -44,9 +43,9 @@ class Sandbox:
         secret_group_id: str | None = None,
     ) -> Sandbox:
         """Create a new sandbox instance."""
-        url = api_url or os.environ.get("OPENSANDBOX_API_URL", "https://app.opensandbox.ai")
+        url = api_url or os.environ.get("OPENCOMPUTER_API_URL", "https://app.opencomputer.dev")
         url = url.rstrip("/")
-        key = api_key or os.environ.get("OPENSANDBOX_API_KEY", "")
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
 
         # Control plane client always uses /api prefix
         api_base = url if url.endswith("/api") else f"{url}/api"
@@ -93,7 +92,6 @@ class Sandbox:
             sandbox_id=data["sandboxID"],
             status=data.get("status", "running"),
             template=template,
-            domain=data.get("domain", ""),
             _api_url=url,
             _api_key=key,
             _connect_url=connect_url,
@@ -112,9 +110,9 @@ class Sandbox:
         api_url: str | None = None,
     ) -> Sandbox:
         """Connect to an existing sandbox."""
-        url = api_url or os.environ.get("OPENSANDBOX_API_URL", "https://app.opensandbox.ai")
+        url = api_url or os.environ.get("OPENCOMPUTER_API_URL", "https://app.opencomputer.dev")
         url = url.rstrip("/")
-        key = api_key or os.environ.get("OPENSANDBOX_API_KEY", "")
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
 
         api_base = url if url.endswith("/api") else f"{url}/api"
 
@@ -147,7 +145,6 @@ class Sandbox:
             sandbox_id=sandbox_id,
             status=data.get("status", "running"),
             template=data.get("templateID", ""),
-            domain=data.get("domain", ""),
             _api_url=url,
             _api_key=key,
             _connect_url=connect_url,
@@ -218,6 +215,27 @@ class Sandbox:
         pty_url = self._connect_url or self._api_url
         pty_key = self._token or self._api_key
         return Pty(self._ops_client, self.sandbox_id, pty_url, pty_key)
+
+    async def create_preview_url(self, port: int, auth_config: dict | None = None) -> dict:
+        """Create a preview URL targeting a specific container port."""
+        resp = await self._client.post(
+            f"/sandboxes/{self.sandbox_id}/preview",
+            json={"port": port, "authConfig": auth_config or {}},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def list_preview_urls(self) -> list[dict]:
+        """List all preview URLs for this sandbox."""
+        resp = await self._client.get(f"/sandboxes/{self.sandbox_id}/preview")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def delete_preview_url(self, port: int) -> None:
+        """Delete the preview URL for a specific port."""
+        resp = await self._client.delete(f"/sandboxes/{self.sandbox_id}/preview/{port}")
+        if resp.status_code != 404:
+            resp.raise_for_status()
 
     async def close(self) -> None:
         """Close the HTTP client (does not kill the sandbox)."""
