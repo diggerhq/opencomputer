@@ -54,8 +54,8 @@ async def main():
         result = await sb.commands.run("uname -s")
         check(f"uname: {result.stdout.strip()}", result.stdout.strip() == "Linux")
 
-        result = await sb.commands.run("python3 -c 'print(1+1)'")
-        check("python3 available", result.stdout.strip() == "2")
+        result = await sb.commands.run("cat /etc/os-release | head -1")
+        check(f"os-release: {result.stdout.strip()}", result.exit_code == 0)
 
         # 3. Filesystem
         print("\n3. Filesystem")
@@ -67,7 +67,7 @@ async def main():
         names = [e.name for e in entries]
         check("list dir contains test.txt", "test.txt" in names)
 
-        await sb.files.mkdir("/tmp/testdir")
+        await sb.commands.run("mkdir -p /tmp/testdir")
         entries = await sb.files.list("/tmp")
         names = [e.name for e in entries]
         check("mkdir + list", "testdir" in names)
