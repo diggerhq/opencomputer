@@ -27,6 +27,17 @@ interface SandboxData {
   domain?: string;
 }
 
+export interface PreviewURLResult {
+  id: string;
+  sandboxId: string;
+  orgId: string;
+  hostname: string;
+  cfHostnameId?: string;
+  sslStatus: string;
+  authConfig: Record<string, unknown>;
+  createdAt: string;
+}
+
 export class Sandbox {
   readonly sandboxId: string;
   readonly domain: string;
@@ -194,6 +205,48 @@ export class Sandbox {
 
     if (!resp.ok) {
       throw new Error(`Failed to set timeout: ${resp.status}`);
+    }
+  }
+
+  async createPreviewURL(opts?: { authConfig?: Record<string, unknown> }): Promise<PreviewURLResult> {
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.apiKey ? { "X-API-Key": this.apiKey } : {}),
+      },
+      body: JSON.stringify({ authConfig: opts?.authConfig ?? {} }),
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Failed to create preview URL: ${resp.status} ${text}`);
+    }
+
+    return resp.json();
+  }
+
+  async getPreviewURL(): Promise<PreviewURLResult | null> {
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview`, {
+      headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
+    });
+
+    if (resp.status === 404) return null;
+    if (!resp.ok) {
+      throw new Error(`Failed to get preview URL: ${resp.status}`);
+    }
+
+    return resp.json();
+  }
+
+  async deletePreviewURL(): Promise<void> {
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/preview`, {
+      method: "DELETE",
+      headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
+    });
+
+    if (!resp.ok && resp.status !== 404) {
+      throw new Error(`Failed to delete preview URL: ${resp.status}`);
     }
   }
 }

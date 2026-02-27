@@ -236,6 +236,204 @@ func (s *Server) dashboardUpdateOrg(c echo.Context) error {
 	return c.JSON(http.StatusOK, org)
 }
 
+// dashboardSetCustomDomain sets or updates the custom domain for the org.
+func (s *Server) dashboardSetCustomDomain(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+	if s.cfClient == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "Cloudflare not configured",
+		})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{
+			"error": "org context required",
+		})
+	}
+
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	if err := c.Bind(&req); err != nil || req.Domain == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "domain is required",
+		})
+	}
+
+	// If org already has a CF hostname, delete it first
+	org, err := s.store.GetOrg(c.Request().Context(), orgID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	if org.CFHostnameID != nil && *org.CFHostnameID != "" {
+		_ = s.cfClient.DeleteCustomHostname(*org.CFHostnameID)
+	}
+
+	// Create wildcard custom hostname via Cloudflare
+	result, err := s.cfClient.CreateCustomHostname(req.Domain)
+	if err != nil {
+		return c.JSON(http.StatusBadGateway, map[string]string{
+			"error": "Cloudflare API error: " + err.Error(),
+		})
+	}
+
+	// Extract verification TXT record
+	var verifyName, verifyValue *string
+	if result.OwnershipVerification != nil {
+		verifyName = strPtr(result.OwnershipVerification.Name)
+		verifyValue = strPtr(result.OwnershipVerification.Value)
+	}
+
+	// Extract SSL validation TXT record
+	var sslName, sslValue *string
+	if result.SSL.TxtName != "" {
+		sslName = strPtr(result.SSL.TxtName)
+		sslValue = strPtr(result.SSL.TxtValue)
+	} else if len(result.SSL.ValidationRecords) > 0 {
+		sslName = strPtr(result.SSL.ValidationRecords[0].Name)
+		sslValue = strPtr(result.SSL.ValidationRecords[0].Value)
+	}
+
+	updated, err := s.store.SetOrgCustomDomain(c.Request().Context(), orgID,
+		req.Domain, result.ID,
+		result.Status, result.SSL.Status,
+		verifyName, verifyValue, sslName, sslValue,
+	)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, updated)
+}
+
+// dashboardDeleteCustomDomain removes the custom domain from the org.
+func (s *Server) dashboardDeleteCustomDomain(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+	if s.cfClient == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "Cloudflare not configured",
+		})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{
+			"error": "org context required",
+		})
+	}
+
+	org, err := s.store.GetOrg(c.Request().Context(), orgID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	// Delete from Cloudflare if we have a hostname ID
+	if org.CFHostnameID != nil && *org.CFHostnameID != "" {
+		if err := s.cfClient.DeleteCustomHostname(*org.CFHostnameID); err != nil {
+			log.Printf("dashboard: failed to delete CF hostname %s: %v", *org.CFHostnameID, err)
+		}
+	}
+
+	updated, err := s.store.ClearOrgCustomDomain(c.Request().Context(), orgID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, updated)
+}
+
+// dashboardRefreshCustomDomain polls Cloudflare for updated verification/SSL status.
+func (s *Server) dashboardRefreshCustomDomain(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+	if s.cfClient == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "Cloudflare not configured",
+		})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{
+			"error": "org context required",
+		})
+	}
+
+	org, err := s.store.GetOrg(c.Request().Context(), orgID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	if org.CFHostnameID == nil || *org.CFHostnameID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "no custom domain configured",
+		})
+	}
+
+	result, err := s.cfClient.GetCustomHostname(*org.CFHostnameID)
+	if err != nil {
+		return c.JSON(http.StatusBadGateway, map[string]string{
+			"error": "Cloudflare API error: " + err.Error(),
+		})
+	}
+
+	var verifyName, verifyValue *string
+	if result.OwnershipVerification != nil {
+		verifyName = strPtr(result.OwnershipVerification.Name)
+		verifyValue = strPtr(result.OwnershipVerification.Value)
+	}
+
+	var sslName, sslValue *string
+	if result.SSL.TxtName != "" {
+		sslName = strPtr(result.SSL.TxtName)
+		sslValue = strPtr(result.SSL.TxtValue)
+	} else if len(result.SSL.ValidationRecords) > 0 {
+		sslName = strPtr(result.SSL.ValidationRecords[0].Name)
+		sslValue = strPtr(result.SSL.ValidationRecords[0].Value)
+	}
+
+	updated, err := s.store.UpdateOrgDomainStatus(c.Request().Context(), orgID,
+		result.Status, result.SSL.Status,
+		verifyName, verifyValue, sslName, sslValue,
+	)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, updated)
+}
+
+func strPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // dashboardListTemplates returns all templates visible to the authenticated org.
 func (s *Server) dashboardListTemplates(c echo.Context) error {
 	if s.store == nil {
@@ -360,9 +558,9 @@ func (s *Server) dashboardGetSession(c echo.Context) error {
 		resp["errorMsg"] = *session.ErrorMsg
 	}
 
-	// Compute domain
-	if s.sandboxDomain != "" {
-		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
+	// Compute domain (prefer org custom domain if verified)
+	if domain := s.sandboxDomainForOrg(c.Request().Context(), orgID); domain != "" {
+		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, domain)
 	}
 
 	// Parse config JSON if available
@@ -383,6 +581,12 @@ func (s *Server) dashboardGetSession(c echo.Context) error {
 				"hibernatedAt":  checkpoint.HibernatedAt,
 			}
 		}
+	}
+
+	// Include preview URL if one exists
+	previewURL, err := s.store.GetPreviewURL(c.Request().Context(), sandboxID)
+	if err == nil && previewURL != nil {
+		resp["previewUrl"] = previewURL
 	}
 
 	return c.JSON(http.StatusOK, resp)

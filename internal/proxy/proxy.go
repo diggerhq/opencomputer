@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 )
 
@@ -24,6 +25,7 @@ type SandboxProxy struct {
 	baseDomain string
 	manager    sandbox.Manager
 	router     *sandbox.SandboxRouter
+	store      *db.Store // optional — for preview URL hostname lookup
 }
 
 // New creates a new SandboxProxy.
@@ -34,6 +36,11 @@ func New(baseDomain string, mgr sandbox.Manager, router *sandbox.SandboxRouter) 
 		manager:    mgr,
 		router:     router,
 	}
+}
+
+// SetStore sets the database store for preview URL hostname lookups.
+func (p *SandboxProxy) SetStore(store *db.Store) {
+	p.store = store
 }
 
 // Middleware returns an Echo middleware that intercepts subdomain requests
@@ -51,7 +58,11 @@ func (p *SandboxProxy) Middleware() echo.MiddlewareFunc {
 
 			sandboxID, ok := p.extractSandboxID(hostOnly)
 			if !ok {
-				return next(c)
+				// Fallback: check if this hostname is a registered preview URL
+				sandboxID, ok = p.extractSandboxIDFromPreviewURL(c.Request().Context(), hostOnly)
+				if !ok {
+					return next(c)
+				}
 			}
 
 			return p.doProxy(c, sandboxID)
@@ -72,6 +83,19 @@ func (p *SandboxProxy) extractSandboxID(host string) (string, bool) {
 		return "", false
 	}
 	return sandboxID, true
+}
+
+// extractSandboxIDFromPreviewURL checks if the hostname matches a registered
+// preview URL in the database.
+func (p *SandboxProxy) extractSandboxIDFromPreviewURL(ctx context.Context, host string) (string, bool) {
+	if p.store == nil {
+		return "", false
+	}
+	previewURL, err := p.store.GetPreviewURLByHostname(ctx, host)
+	if err != nil || previewURL == nil {
+		return "", false
+	}
+	return previewURL.SandboxID, true
 }
 
 // isWebSocketUpgrade returns true if the request is a WebSocket upgrade.

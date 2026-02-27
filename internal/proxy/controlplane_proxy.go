@@ -52,7 +52,11 @@ func (p *ControlPlaneProxy) Middleware() echo.MiddlewareFunc {
 
 			sandboxID, ok := p.extractSandboxID(hostOnly)
 			if !ok {
-				return next(c)
+				// Fallback: check if this hostname is a registered preview URL
+				sandboxID, ok = p.extractSandboxIDFromPreviewURL(c.Request().Context(), hostOnly)
+				if !ok {
+					return next(c)
+				}
 			}
 
 			return p.doProxy(c, sandboxID)
@@ -71,6 +75,20 @@ func (p *ControlPlaneProxy) extractSandboxID(host string) (string, bool) {
 		return "", false
 	}
 	return sandboxID, true
+}
+
+// extractSandboxIDFromPreviewURL checks if the hostname matches a registered
+// preview URL in the database. This handles custom domain preview hostnames
+// like "sb-xxx.x.opensandbox.ai" that don't match the base domain pattern.
+func (p *ControlPlaneProxy) extractSandboxIDFromPreviewURL(ctx context.Context, host string) (string, bool) {
+	if p.store == nil {
+		return "", false
+	}
+	previewURL, err := p.store.GetPreviewURLByHostname(ctx, host)
+	if err != nil || previewURL == nil {
+		return "", false
+	}
+	return previewURL.SandboxID, true
 }
 
 // doProxy looks up the worker that owns this sandbox and reverse-proxies to it.
@@ -243,13 +261,14 @@ func (p *ControlPlaneProxy) doHTTP(c echo.Context, sandboxID, workerURL string) 
 		proxyErr = err
 	}
 
-	// The worker's proxy middleware matches on the Host header,
-	// so we keep the original Host (sb-xxx.workers.opensandbox.ai).
+	// The worker's proxy middleware matches on the Host header using baseDomain.
+	// Rewrite the Host to {sandboxID}.{baseDomain} so the worker can always match,
+	// even when the original request came via a custom domain preview URL.
+	workerHost := sandboxID + "." + p.baseDomain
 	proxy.Director = func(r *http.Request) {
 		r.URL.Scheme = target.Scheme
 		r.URL.Host = target.Host
-		// Preserve original Host header so the worker's proxy can match the subdomain
-		r.Host = c.Request().Host
+		r.Host = workerHost
 	}
 
 	rec := &responseRecorder{
@@ -324,7 +343,8 @@ func (p *ControlPlaneProxy) doWebSocket(c echo.Context, sandboxID, workerURL str
 	}
 	defer clientConn.Close()
 
-	// Forward the original request to the worker (preserving Host header)
+	// Rewrite Host to {sandboxID}.{baseDomain} so the worker's proxy can match
+	c.Request().Host = sandboxID + "." + p.baseDomain
 	if err := c.Request().Write(upstream); err != nil {
 		log.Printf("cp-proxy: websocket write request failed for sandbox %s: %v", sandboxID, err)
 		return nil

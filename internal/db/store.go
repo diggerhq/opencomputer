@@ -68,6 +68,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{2, "migrations/002_user_sessions.up.sql"},
 		{3, "migrations/003_checkpoint_hibernation.up.sql"},
 		{4, "migrations/004_seed_templates.up.sql"},
+		{5, "migrations/005_org_custom_domain.up.sql"},
+		{6, "migrations/006_sandbox_preview_urls.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -109,16 +111,41 @@ type Org struct {
 	MaxSandboxTimeoutSec   int       `json:"maxSandboxTimeoutSec"`
 	CreatedAt              time.Time `json:"createdAt"`
 	UpdatedAt              time.Time `json:"updatedAt"`
+
+	// Custom domain fields
+	CustomDomain               *string `json:"customDomain,omitempty"`
+	CFHostnameID               *string `json:"cfHostnameId,omitempty"`
+	DomainVerificationStatus   string  `json:"domainVerificationStatus"`
+	DomainSSLStatus            string  `json:"domainSslStatus"`
+	VerificationTxtName        *string `json:"verificationTxtName,omitempty"`
+	VerificationTxtValue       *string `json:"verificationTxtValue,omitempty"`
+	SSLTxtName                 *string `json:"sslTxtName,omitempty"`
+	SSLTxtValue                *string `json:"sslTxtValue,omitempty"`
+}
+
+// orgColumns is the list of columns returned by all Org queries.
+const orgColumns = `id, name, slug, plan, max_concurrent_sandboxes, max_sandbox_timeout_sec, created_at, updated_at,
+	custom_domain, cf_hostname_id, domain_verification_status, domain_ssl_status,
+	verification_txt_name, verification_txt_value, ssl_txt_name, ssl_txt_value`
+
+// scanOrg scans a row into an Org struct.
+func scanOrg(row pgx.Row) (*Org, error) {
+	org := &Org{}
+	err := row.Scan(
+		&org.ID, &org.Name, &org.Slug, &org.Plan, &org.MaxConcurrentSandboxes,
+		&org.MaxSandboxTimeoutSec, &org.CreatedAt, &org.UpdatedAt,
+		&org.CustomDomain, &org.CFHostnameID, &org.DomainVerificationStatus, &org.DomainSSLStatus,
+		&org.VerificationTxtName, &org.VerificationTxtValue, &org.SSLTxtName, &org.SSLTxtValue,
+	)
+	return org, err
 }
 
 func (s *Store) CreateOrg(ctx context.Context, name, slug string) (*Org, error) {
-	org := &Org{}
-	err := s.pool.QueryRow(ctx,
+	org, err := scanOrg(s.pool.QueryRow(ctx,
 		`INSERT INTO orgs (name, slug) VALUES ($1, $2)
-		 RETURNING id, name, slug, plan, max_concurrent_sandboxes, max_sandbox_timeout_sec, created_at, updated_at`,
+		 RETURNING `+orgColumns,
 		name, slug,
-	).Scan(&org.ID, &org.Name, &org.Slug, &org.Plan, &org.MaxConcurrentSandboxes,
-		&org.MaxSandboxTimeoutSec, &org.CreatedAt, &org.UpdatedAt)
+	))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create org: %w", err)
 	}
@@ -126,12 +153,9 @@ func (s *Store) CreateOrg(ctx context.Context, name, slug string) (*Org, error) 
 }
 
 func (s *Store) GetOrg(ctx context.Context, id uuid.UUID) (*Org, error) {
-	org := &Org{}
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, name, slug, plan, max_concurrent_sandboxes, max_sandbox_timeout_sec, created_at, updated_at
-		 FROM orgs WHERE id = $1`, id,
-	).Scan(&org.ID, &org.Name, &org.Slug, &org.Plan, &org.MaxConcurrentSandboxes,
-		&org.MaxSandboxTimeoutSec, &org.CreatedAt, &org.UpdatedAt)
+	org, err := scanOrg(s.pool.QueryRow(ctx,
+		`SELECT `+orgColumns+` FROM orgs WHERE id = $1`, id,
+	))
 	if err != nil {
 		return nil, fmt.Errorf("org not found: %w", err)
 	}
@@ -139,12 +163,9 @@ func (s *Store) GetOrg(ctx context.Context, id uuid.UUID) (*Org, error) {
 }
 
 func (s *Store) GetOrgBySlug(ctx context.Context, slug string) (*Org, error) {
-	org := &Org{}
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, name, slug, plan, max_concurrent_sandboxes, max_sandbox_timeout_sec, created_at, updated_at
-		 FROM orgs WHERE slug = $1`, slug,
-	).Scan(&org.ID, &org.Name, &org.Slug, &org.Plan, &org.MaxConcurrentSandboxes,
-		&org.MaxSandboxTimeoutSec, &org.CreatedAt, &org.UpdatedAt)
+	org, err := scanOrg(s.pool.QueryRow(ctx,
+		`SELECT `+orgColumns+` FROM orgs WHERE slug = $1`, slug,
+	))
 	if err != nil {
 		return nil, fmt.Errorf("org not found: %w", err)
 	}
@@ -152,15 +173,73 @@ func (s *Store) GetOrgBySlug(ctx context.Context, slug string) (*Org, error) {
 }
 
 func (s *Store) UpdateOrg(ctx context.Context, id uuid.UUID, name string) (*Org, error) {
-	org := &Org{}
-	err := s.pool.QueryRow(ctx,
+	org, err := scanOrg(s.pool.QueryRow(ctx,
 		`UPDATE orgs SET name = $1, updated_at = now() WHERE id = $2
-		 RETURNING id, name, slug, plan, max_concurrent_sandboxes, max_sandbox_timeout_sec, created_at, updated_at`,
+		 RETURNING `+orgColumns,
 		name, id,
-	).Scan(&org.ID, &org.Name, &org.Slug, &org.Plan, &org.MaxConcurrentSandboxes,
-		&org.MaxSandboxTimeoutSec, &org.CreatedAt, &org.UpdatedAt)
+	))
 	if err != nil {
 		return nil, fmt.Errorf("failed to update org: %w", err)
+	}
+	return org, nil
+}
+
+// SetOrgCustomDomain sets the custom domain and Cloudflare hostname info for an org.
+func (s *Store) SetOrgCustomDomain(ctx context.Context, orgID uuid.UUID, domain, cfHostnameID, verificationStatus, sslStatus string, verificationTxtName, verificationTxtValue, sslTxtName, sslTxtValue *string) (*Org, error) {
+	org, err := scanOrg(s.pool.QueryRow(ctx,
+		`UPDATE orgs SET
+			custom_domain = $1, cf_hostname_id = $2,
+			domain_verification_status = $3, domain_ssl_status = $4,
+			verification_txt_name = $5, verification_txt_value = $6,
+			ssl_txt_name = $7, ssl_txt_value = $8,
+			updated_at = now()
+		 WHERE id = $9
+		 RETURNING `+orgColumns,
+		domain, cfHostnameID, verificationStatus, sslStatus,
+		verificationTxtName, verificationTxtValue, sslTxtName, sslTxtValue,
+		orgID,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("failed to set custom domain: %w", err)
+	}
+	return org, nil
+}
+
+// ClearOrgCustomDomain removes the custom domain from an org.
+func (s *Store) ClearOrgCustomDomain(ctx context.Context, orgID uuid.UUID) (*Org, error) {
+	org, err := scanOrg(s.pool.QueryRow(ctx,
+		`UPDATE orgs SET
+			custom_domain = NULL, cf_hostname_id = NULL,
+			domain_verification_status = 'none', domain_ssl_status = 'none',
+			verification_txt_name = NULL, verification_txt_value = NULL,
+			ssl_txt_name = NULL, ssl_txt_value = NULL,
+			updated_at = now()
+		 WHERE id = $1
+		 RETURNING `+orgColumns,
+		orgID,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("failed to clear custom domain: %w", err)
+	}
+	return org, nil
+}
+
+// UpdateOrgDomainStatus updates the verification and SSL status for an org's custom domain.
+func (s *Store) UpdateOrgDomainStatus(ctx context.Context, orgID uuid.UUID, verificationStatus, sslStatus string, verificationTxtName, verificationTxtValue, sslTxtName, sslTxtValue *string) (*Org, error) {
+	org, err := scanOrg(s.pool.QueryRow(ctx,
+		`UPDATE orgs SET
+			domain_verification_status = $1, domain_ssl_status = $2,
+			verification_txt_name = $3, verification_txt_value = $4,
+			ssl_txt_name = $5, ssl_txt_value = $6,
+			updated_at = now()
+		 WHERE id = $7
+		 RETURNING `+orgColumns,
+		verificationStatus, sslStatus,
+		verificationTxtName, verificationTxtValue, sslTxtName, sslTxtValue,
+		orgID,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("failed to update domain status: %w", err)
 	}
 	return org, nil
 }
@@ -727,4 +806,88 @@ func (s *Store) DeleteTemplateForOrg(ctx context.Context, id uuid.UUID, orgID uu
 		return fmt.Errorf("template not found or not owned by this org")
 	}
 	return nil
+}
+
+// --- Preview URL operations ---
+
+// PreviewURL represents an on-demand preview URL for a sandbox.
+type PreviewURL struct {
+	ID           uuid.UUID       `json:"id"`
+	SandboxID    string          `json:"sandboxId"`
+	OrgID        uuid.UUID       `json:"orgId"`
+	Hostname     string          `json:"hostname"`
+	CFHostnameID *string         `json:"cfHostnameId,omitempty"`
+	SSLStatus    string          `json:"sslStatus"`
+	AuthConfig   json.RawMessage `json:"authConfig"`
+	CreatedAt    time.Time       `json:"createdAt"`
+}
+
+// CreatePreviewURL inserts a new preview URL record.
+func (s *Store) CreatePreviewURL(ctx context.Context, sandboxID string, orgID uuid.UUID, hostname string, cfHostnameID *string, sslStatus string, authConfig json.RawMessage) (*PreviewURL, error) {
+	p := &PreviewURL{}
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO sandbox_preview_urls (sandbox_id, org_id, hostname, cf_hostname_id, ssl_status, auth_config)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, sandbox_id, org_id, hostname, cf_hostname_id, ssl_status, auth_config, created_at`,
+		sandboxID, orgID, hostname, cfHostnameID, sslStatus, authConfig,
+	).Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create preview URL: %w", err)
+	}
+	return p, nil
+}
+
+// GetPreviewURL returns the preview URL for a sandbox (one per sandbox).
+func (s *Store) GetPreviewURL(ctx context.Context, sandboxID string) (*PreviewURL, error) {
+	p := &PreviewURL{}
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, sandbox_id, org_id, hostname, cf_hostname_id, ssl_status, auth_config, created_at
+		 FROM sandbox_preview_urls WHERE sandbox_id = $1 LIMIT 1`, sandboxID,
+	).Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("preview URL not found: %w", err)
+	}
+	return p, nil
+}
+
+// UpdatePreviewURLSSL updates the SSL status for a preview URL.
+func (s *Store) UpdatePreviewURLSSL(ctx context.Context, id uuid.UUID, sslStatus string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_preview_urls SET ssl_status = $1 WHERE id = $2`,
+		sslStatus, id)
+	return err
+}
+
+// DeletePreviewURL deletes a preview URL by ID.
+func (s *Store) DeletePreviewURL(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM sandbox_preview_urls WHERE id = $1`, id)
+	return err
+}
+
+// GetPreviewURLByHostname looks up a preview URL by its hostname.
+// Used by the proxy middleware to route custom domain traffic to the correct sandbox.
+func (s *Store) GetPreviewURLByHostname(ctx context.Context, hostname string) (*PreviewURL, error) {
+	p := &PreviewURL{}
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, sandbox_id, org_id, hostname, cf_hostname_id, ssl_status, auth_config, created_at
+		 FROM sandbox_preview_urls WHERE hostname = $1 LIMIT 1`, hostname,
+	).Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("preview URL not found for hostname: %w", err)
+	}
+	return p, nil
+}
+
+// DeletePreviewURLBySandbox deletes the preview URL for a sandbox (cleanup on kill).
+func (s *Store) DeletePreviewURLBySandbox(ctx context.Context, sandboxID string) (*PreviewURL, error) {
+	p := &PreviewURL{}
+	err := s.pool.QueryRow(ctx,
+		`DELETE FROM sandbox_preview_urls WHERE sandbox_id = $1
+		 RETURNING id, sandbox_id, org_id, hostname, cf_hostname_id, ssl_status, auth_config, created_at`,
+		sandboxID,
+	).Scan(&p.ID, &p.SandboxID, &p.OrgID, &p.Hostname, &p.CFHostnameID, &p.SSLStatus, &p.AuthConfig, &p.CreatedAt)
+	if err != nil {
+		return nil, err // no preview URL is fine
+	}
+	return p, nil
 }

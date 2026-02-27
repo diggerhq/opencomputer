@@ -187,6 +187,29 @@ class Sandbox:
         pty_key = self._token or self._api_key
         return Pty(self._ops_client, self.sandbox_id, pty_url, pty_key)
 
+    async def create_preview_url(self, auth_config: dict | None = None) -> dict:
+        """Create an on-demand preview URL using the org's verified custom domain."""
+        resp = await self._client.post(
+            f"/sandboxes/{self.sandbox_id}/preview",
+            json={"authConfig": auth_config or {}},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_preview_url(self) -> dict | None:
+        """Get the preview URL for this sandbox, or None if not set."""
+        resp = await self._client.get(f"/sandboxes/{self.sandbox_id}/preview")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    async def delete_preview_url(self) -> None:
+        """Delete the preview URL for this sandbox."""
+        resp = await self._client.delete(f"/sandboxes/{self.sandbox_id}/preview")
+        if resp.status_code != 404:
+            resp.raise_for_status()
+
     async def close(self) -> None:
         """Close the HTTP client (does not kill the sandbox)."""
         await self._client.aclose()
