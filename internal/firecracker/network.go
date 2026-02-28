@@ -2,6 +2,7 @@ package firecracker
 
 import (
 	"fmt"
+	"hash/fnv"
 	"net"
 	"os/exec"
 	"strings"
@@ -10,9 +11,9 @@ import (
 
 // NetworkConfig holds the networking state for a single VM.
 type NetworkConfig struct {
-	TAPName string // e.g., "tap0"
-	HostIP  string // e.g., "172.16.0.1"
-	GuestIP string // e.g., "172.16.0.2"
+	TAPName string // e.g., "fc-tap0"
+	HostIP  string // e.g., "10.0.0.1"
+	GuestIP string // e.g., "10.0.0.2"
 	Mask    string // e.g., "255.255.255.252"
 	CIDR    int    // /30
 
@@ -22,7 +23,23 @@ type NetworkConfig struct {
 	DNATRuleAdded bool
 }
 
-// SubnetAllocator manages /30 subnet allocation from a 172.16.0.0/16 pool.
+const tapPoolSize = 4_194_304 // 10.0.0.0/8 split into /30 blocks: 2^24 / 4
+
+// DeterministicTAPBlock returns the TAP block index for a sandbox ID.
+// The same sandbox always maps to the same block on every worker, enabling
+// cross-worker snapshot restore without any coordination.
+func DeterministicTAPBlock(sandboxID string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(sandboxID))
+	return h.Sum32() % tapPoolSize
+}
+
+// DeterministicTAPName returns the TAP device name for a sandbox ID.
+func DeterministicTAPName(sandboxID string) string {
+	return fmt.Sprintf("fc-tap%d", DeterministicTAPBlock(sandboxID))
+}
+
+// SubnetAllocator manages /30 subnet allocation from a 10.0.0.0/8 pool.
 // Each VM gets a /30: host IP (.1) and guest IP (.2), with .0 as network and .3 as broadcast.
 type SubnetAllocator struct {
 	mu   sync.Mutex
@@ -47,22 +64,14 @@ func (a *SubnetAllocator) Allocate() (*NetworkConfig, error) {
 	block := a.next
 	for a.used[block] {
 		block++
-		if block > 16383 { // 172.16.0.0/16 has 16384 /30 blocks
+		if block >= tapPoolSize { // 10.0.0.0/8 has 4,194,304 /30 blocks
 			return nil, fmt.Errorf("subnet pool exhausted")
 		}
 	}
 	a.used[block] = true
 	a.next = block + 1
 
-	// Calculate IPs: 172.16.{high}.{low*4}
-	// Each /30 block is 4 IPs: base+0 (network), base+1 (host), base+2 (guest), base+3 (broadcast)
-	base := block * 4
-	b2 := byte(base >> 8)       // second octet offset
-	b3 := byte(base & 0xFF)     // third octet base
-
-	// base+0 is network address, base+1 is host, base+2 is guest, base+3 is broadcast
-	hostIP := fmt.Sprintf("172.16.%d.%d", b2, b3+1)
-	guestIP := fmt.Sprintf("172.16.%d.%d", b2, b3+2)
+	hostIP, guestIP := blockToIPs(block)
 
 	tapName := fmt.Sprintf("fc-tap%d", block)
 
@@ -90,18 +99,39 @@ func (a *SubnetAllocator) AllocateSpecific(tapName string) (*NetworkConfig, erro
 	}
 	a.used[block] = true
 
-	// Calculate IPs using same math as Allocate()
-	base := block * 4
-	b2 := byte(base >> 8)
-	b3 := byte(base & 0xFF)
-
+	hostIP, guestIP := blockToIPs(block)
 	return &NetworkConfig{
 		TAPName: tapName,
-		HostIP:  fmt.Sprintf("172.16.%d.%d", b2, b3+1),
-		GuestIP: fmt.Sprintf("172.16.%d.%d", b2, b3+2),
+		HostIP:  hostIP,
+		GuestIP: guestIP,
 		Mask:    "255.255.255.252",
 		CIDR:    30,
 	}, nil
+}
+
+// CanAllocateSpecific reports whether a TAP block is currently free.
+// Read-only: does not reserve anything.
+func (a *SubnetAllocator) CanAllocateSpecific(tapName string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var block uint32
+	if _, err := fmt.Sscanf(tapName, "fc-tap%d", &block); err != nil {
+		return false
+	}
+	return !a.used[block]
+}
+
+// blockToIPs converts a /30 block index to host and guest IP strings.
+// IP layout: 10.{b1}.{b2}.{b3} where base = block*4 encodes the last 24 bits.
+// Each /30: .0=network, .1=host, .2=guest, .3=broadcast.
+func blockToIPs(block uint32) (hostIP, guestIP string) {
+	base := block * 4
+	b1 := byte(base >> 16)
+	b2 := byte(base >> 8)
+	b3 := byte(base)
+	hostIP = fmt.Sprintf("10.%d.%d.%d", b1, b2, b3+1)
+	guestIP = fmt.Sprintf("10.%d.%d.%d", b1, b2, b3+2)
+	return
 }
 
 // Release returns a /30 block to the pool.
@@ -204,17 +234,17 @@ func EnableForwarding() error {
 	// Add masquerade rule for VM subnet (idempotent — check if exists first)
 	out, _ := exec.Command("iptables", "-t", "nat", "-S", "POSTROUTING").CombinedOutput()
 	outRules := string(out)
-	if !strings.Contains(outRules, "172.16.0.0/16") {
+	if !strings.Contains(outRules, "10.0.0.0/8") {
 		// Detect the default outgoing interface
 		outIface := detectDefaultInterface()
 		if outIface != "" {
 			_ = run("iptables", "-t", "nat", "-A", "POSTROUTING",
-				"-s", "172.16.0.0/16", "-o", outIface,
+				"-s", "10.0.0.0/8", "-o", outIface,
 				"-j", "MASQUERADE")
 		} else {
 			// Fallback: masquerade on all interfaces except TAPs
 			_ = run("iptables", "-t", "nat", "-A", "POSTROUTING",
-				"-s", "172.16.0.0/16", "!", "-o", "fc-tap+",
+				"-s", "10.0.0.0/8", "!", "-o", "fc-tap+",
 				"-j", "MASQUERADE")
 		}
 	}
@@ -222,9 +252,9 @@ func EnableForwarding() error {
 	// Masquerade for DNAT'd traffic from the host to VMs (e.g. localhost:PORT → guest:80).
 	// Without this, packets arrive at the guest with src=127.0.0.1, and replies go nowhere.
 	// This rewrites src to the host's TAP IP so the guest replies back through the TAP.
-	if !strings.Contains(outRules, "172.16.0.0/16 -j MASQUERADE") {
+	if !strings.Contains(outRules, "10.0.0.0/8 -j MASQUERADE") {
 		_ = run("iptables", "-t", "nat", "-A", "POSTROUTING",
-			"-d", "172.16.0.0/16",
+			"-d", "10.0.0.0/8",
 			"-j", "MASQUERADE")
 	}
 

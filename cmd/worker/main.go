@@ -18,6 +18,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/podman"
 	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/secretsproxy"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/template"
 	"github.com/opensandbox/opensandbox/internal/worker"
@@ -34,6 +35,23 @@ func main() {
 
 	ctx := context.Background()
 
+	// Initialize the secrets proxy CA and HTTPS MITM proxy.
+	// The proxy intercepts outbound HTTPS from sandboxes and substitutes
+	// sealed tokens with real secret values so real secrets never enter VMs.
+	caDir := filepath.Join(cfg.DataDir, "proxy-ca")
+	proxyCA, err := secretsproxy.LoadOrCreateCA(caDir)
+	if err != nil {
+		log.Fatalf("failed to initialize proxy CA: %v", err)
+	}
+	log.Printf("opensandbox-worker: proxy CA loaded from %s", caDir)
+
+	secrProxy, err := secretsproxy.NewSecretsProxy(proxyCA, "0.0.0.0:3128")
+	if err != nil {
+		log.Fatalf("failed to start secrets proxy: %v", err)
+	}
+	defer secrProxy.Close()
+	log.Println("opensandbox-worker: secrets proxy started on :3128")
+
 	// Initialize Firecracker-based sandbox manager
 	fcCfg := fc.Config{
 		DataDir:         cfg.DataDir,
@@ -43,6 +61,7 @@ func main() {
 		DefaultMemoryMB: cfg.DefaultSandboxMemoryMB,
 		DefaultCPUs:     cfg.DefaultSandboxCPUs,
 		DefaultDiskMB:   cfg.DefaultSandboxDiskMB,
+		SecretsProxy:    secrProxy,
 	}
 
 	fcMgr, err := fc.NewManager(fcCfg)
@@ -241,7 +260,7 @@ func main() {
 	}
 
 	// Start gRPC server for control plane communication
-	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr, checkpointStore, sbRouter, builder)
+	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr, checkpointStore, sbRouter, builder, store, secrProxy)
 	grpcAddr := ":9090"
 	log.Printf("opensandbox-worker: starting gRPC server on %s", grpcAddr)
 	go func() {

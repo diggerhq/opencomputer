@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -91,6 +92,12 @@ type Config struct {
 	// Autoscaler
 	ScaleCooldownSec int // Cooldown between scale-up actions (seconds), default 300
 
+	// Git server
+	GitRepoRoot   string // Local directory for bare git repos (default: $DataDir/repos)
+	GitPort       int    // HTTP port for git server (default: 3000)
+	GitWebhookURL string // Optional webhook URL to POST after each push
+	GitDomain     string // Public domain for clone URLs (default: localhost:3000)
+
 	// AWS Secrets Manager — if set, secrets are fetched at startup using IAM credentials.
 	// The secret should be a JSON object with keys matching env var names (e.g. OPENSANDBOX_JWT_SECRET).
 	// Env vars take precedence over secret values (for local overrides).
@@ -167,7 +174,17 @@ func Load() (*Config, error) {
 
 		ScaleCooldownSec: envOrDefaultInt("OPENSANDBOX_SCALE_COOLDOWN_SEC", 300),
 
+		GitRepoRoot:   os.Getenv("OPENSANDBOX_GIT_REPO_ROOT"),   // default derived from DataDir
+		GitPort:       envOrDefaultInt("OPENSANDBOX_GIT_PORT", 3000),
+		GitWebhookURL: os.Getenv("OPENSANDBOX_GIT_WEBHOOK_URL"),
+		GitDomain:     envOrDefault("OPENSANDBOX_GIT_DOMAIN", "localhost:3000"),
+
 		SecretsARN: os.Getenv("OPENSANDBOX_SECRETS_ARN"),
+	}
+
+	// Default GitRepoRoot to $DataDir/repos
+	if cfg.GitRepoRoot == "" {
+		cfg.GitRepoRoot = filepath.Join(cfg.DataDir, "repos")
 	}
 
 	// Default S3 region to worker region for same-region storage

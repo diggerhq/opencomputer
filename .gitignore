@@ -31,6 +31,8 @@ dist/
 # Compiled binaries
 bin/
 opensandbox-worker
+opensandbox-server
+gitserver
 
 # Worker env (secrets)
 worker.env

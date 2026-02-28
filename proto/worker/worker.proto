@@ -22,6 +22,9 @@ service SandboxWorker {
 
   rpc HibernateSandbox(HibernateSandboxRequest) returns (HibernateSandboxResponse);
   rpc WakeSandbox(WakeSandboxRequest) returns (WakeSandboxResponse);
+  rpc IsTAPAvailable(IsTAPAvailableRequest) returns (IsTAPAvailableResponse);
+
+  rpc SaveAsTemplate(SaveAsTemplateRequest) returns (SaveAsTemplateResponse);
 
   rpc BuildTemplate(BuildTemplateRequest) returns (BuildTemplateResponse);
 
@@ -37,6 +40,11 @@ message CreateSandboxRequest {
   bool network_enabled = 6;
   string image_ref = 7;
   int32 port = 8;  // container port to expose via subdomain (default 80)
+  // Sandbox snapshot template: if non-empty, boot from these S3 keys instead of base image.
+  string template_rootfs_key = 9;
+  string template_workspace_key = 10;
+  // Secrets proxy egress allowlist: if non-empty, only these hosts can be reached via HTTPS.
+  repeated string allowed_hosts = 11;
 }
 
 message CreateSandboxResponse {
@@ -173,6 +181,24 @@ message WakeSandboxRequest {
 message WakeSandboxResponse {
   string sandbox_id = 1;
   string status = 2;
+}
+
+message IsTAPAvailableRequest {
+  string sandbox_id = 1;
+}
+
+message IsTAPAvailableResponse {
+  bool available = 1;
+}
+
+message SaveAsTemplateRequest {
+  string sandbox_id = 1;
+  string template_id = 2;  // UUID assigned by control plane
+}
+
+message SaveAsTemplateResponse {
+  string rootfs_s3_key = 1;
+  string workspace_s3_key = 2;
 }
 
 message BuildTemplateRequest {

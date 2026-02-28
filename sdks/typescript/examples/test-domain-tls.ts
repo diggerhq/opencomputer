@@ -95,10 +95,18 @@ async function main() {
     const domains = sandboxes.map(s => s.domain);
     const uniqueDomains = new Set(domains);
     check("All 3 sandboxes got unique domains", uniqueDomains.size === 3);
-    check("All domains end with .workers.opencomputer.dev",
-      domains.every(d => d.endsWith(".workers.opencomputer.dev")));
-    check("All domains are subdomains (single level)",
-      domains.every(d => d.split(".workers.opencomputer.dev")[0].indexOf(".") === -1));
+
+    // Extract the base domain dynamically from the first sandbox's domain
+    // e.g., "sb-abc123.dev.workers.opensandbox.ai" → baseDomain = "dev.workers.opensandbox.ai"
+    const firstDomain = domains[0] || "";
+    const firstDot = firstDomain.indexOf(".");
+    const baseDomain = firstDot > 0 ? firstDomain.slice(firstDot + 1) : "";
+    dim(`Base domain: ${baseDomain}`);
+
+    check("All domains share the same base domain",
+      domains.every(d => d.endsWith(`.${baseDomain}`)));
+    check("All domains have a single-level subdomain prefix",
+      domains.every(d => d.replace(`.${baseDomain}`, "").indexOf(".") === -1));
     console.log();
 
     // ── Test 2: TLS certificate validation ──────────────────────────
@@ -136,9 +144,16 @@ async function main() {
     // ── Test 3: HTTPS requests work ─────────────────────────────────
     bold("━━━ Test 3: HTTPS requests to sandbox servers ━━━\n");
 
+    // Preview URLs use the format: {sandboxID}-p{port}.{baseDomain}
+    function previewUrl(sb: Sandbox, path: string): string {
+      return `https://${sb.sandboxId}-p80.${baseDomain}${path}`;
+    }
+
     for (let i = 0; i < sandboxes.length; i++) {
       try {
-        const resp = await fetch(`https://${sandboxes[i].domain}/test-path`);
+        const url = previewUrl(sandboxes[i], "/test-path");
+        dim(`URL: ${url}`);
+        const resp = await fetch(url);
         check(`Sandbox ${i + 1}: HTTPS 200`, resp.ok, `status ${resp.status}`);
 
         if (resp.ok) {
@@ -159,7 +174,7 @@ async function main() {
     const routingResults = await Promise.all(
       sandboxes.map(async (sb, i) => {
         try {
-          const resp = await fetch(`https://${sb.domain}/`);
+          const resp = await fetch(previewUrl(sb, "/"));
           const data = await resp.json();
           return { index: i, sandboxId: sb.sandboxId, returnedId: data.sandboxId, hostname: data.hostname };
         } catch (err: any) {
@@ -178,9 +193,9 @@ async function main() {
 
     // Cross-check: request to sandbox 1's domain should NOT get sandbox 2's response
     if (sandboxes.length >= 2) {
-      const cross1 = await fetch(`https://${sandboxes[0].domain}/`);
+      const cross1 = await fetch(previewUrl(sandboxes[0], "/"));
       const cross1Data = await cross1.json();
-      const cross2 = await fetch(`https://${sandboxes[1].domain}/`);
+      const cross2 = await fetch(previewUrl(sandboxes[1], "/"));
       const cross2Data = await cross2.json();
       check(
         "Cross-routing: different sandboxes return different IDs",
@@ -192,18 +207,17 @@ async function main() {
     // ── Test 5: Multiple methods ────────────────────────────────────
     bold("━━━ Test 5: HTTP methods through TLS ━━━\n");
 
-    const domain = sandboxes[0].domain;
-    const getResp = await fetch(`https://${domain}/get-test`);
+    const getResp = await fetch(previewUrl(sandboxes[0], "/get-test"));
     check("GET request works", getResp.ok);
 
-    const postResp = await fetch(`https://${domain}/post-test`, {
+    const postResp = await fetch(previewUrl(sandboxes[0], "/post-test"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ test: true }),
     });
     check("POST request works", postResp.ok);
 
-    const putResp = await fetch(`https://${domain}/put-test`, {
+    const putResp = await fetch(previewUrl(sandboxes[0], "/put-test"), {
       method: "PUT",
       body: "put-data",
     });

@@ -1,5 +1,6 @@
 import { Filesystem } from "./filesystem";
 import { Commands } from "./commands";
+import { Git } from "./git";
 import { Pty } from "./pty";
 
 function resolveApiUrl(url: string): string {
@@ -16,6 +17,7 @@ export interface SandboxOpts {
   metadata?: Record<string, string>;
   cpuCount?: number;
   memoryMB?: number;
+  secretGroupId?: string;
 }
 
 interface SandboxData {
@@ -24,6 +26,9 @@ interface SandboxData {
   templateID?: string;
   connectURL?: string;
   token?: string;
+  domain?: string;
+  gitURL?: string;
+  orgSlug?: string;
 }
 
 export interface PreviewURLResult {
@@ -40,23 +45,30 @@ export interface PreviewURLResult {
 
 export class Sandbox {
   readonly sandboxId: string;
+  readonly domain: string | undefined;
   readonly files: Filesystem;
   readonly commands: Commands;
   readonly pty: Pty;
+  readonly git: Git;
 
   private apiUrl: string;
   private apiKey: string;
   private connectUrl: string;
   private token: string;
   private _status: string;
+  private gitDomain: string;
+  private orgSlug: string;
 
   private constructor(data: SandboxData, apiUrl: string, apiKey: string) {
     this.sandboxId = data.sandboxID;
+    this.domain = data.domain;
     this._status = data.status;
     this.apiUrl = apiUrl;
     this.apiKey = apiKey;
     this.connectUrl = data.connectURL || "";
     this.token = data.token || "";
+    this.gitDomain = data.gitURL?.replace(/^https?:\/\//, "") || "";
+    this.orgSlug = data.orgSlug || "";
 
     // Use direct worker URL for data operations if available
     const opsUrl = this.connectUrl || apiUrl;
@@ -66,6 +78,7 @@ export class Sandbox {
     this.files = new Filesystem(opsUrl, opsKey, this.sandboxId, opsToken);
     this.commands = new Commands(opsUrl, opsKey, this.sandboxId, opsToken);
     this.pty = new Pty(opsUrl, opsKey, this.sandboxId, opsToken);
+    this.git = new Git(apiUrl, apiKey, this.sandboxId, opsToken, this.commands, this.gitDomain, this.orgSlug);
   }
 
   get status(): string {
@@ -84,6 +97,7 @@ export class Sandbox {
     if (opts.metadata) body.metadata = opts.metadata;
     if (opts.cpuCount != null) body.cpuCount = opts.cpuCount;
     if (opts.memoryMB != null) body.memoryMB = opts.memoryMB;
+    if (opts.secretGroupId) body.secretGroupId = opts.secretGroupId;
 
     const resp = await fetch(`${apiUrl}/sandboxes`, {
       method: "POST",
@@ -186,9 +200,11 @@ export class Sandbox {
     const opsKey = this.connectUrl ? "" : this.apiKey;
     const opsToken = this.connectUrl ? this.token : "";
 
+    const newCommands = new Commands(opsUrl, opsKey, this.sandboxId, opsToken);
     (this as any).files = new Filesystem(opsUrl, opsKey, this.sandboxId, opsToken);
-    (this as any).commands = new Commands(opsUrl, opsKey, this.sandboxId, opsToken);
+    (this as any).commands = newCommands;
     (this as any).pty = new Pty(opsUrl, opsKey, this.sandboxId, opsToken);
+    (this as any).git = new Git(this.apiUrl, this.apiKey, this.sandboxId, opsToken, newCommands, this.gitDomain, this.orgSlug);
   }
 
   async setTimeout(timeout: number): Promise<void> {
@@ -245,5 +261,23 @@ export class Sandbox {
     if (!resp.ok && resp.status !== 404) {
       throw new Error(`Failed to delete preview URL: ${resp.status}`);
     }
+  }
+
+  async saveAsTemplate(opts: { name: string; tag?: string }): Promise<{ id: string; name: string; tag: string }> {
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/save-as-template`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.apiKey ? { "X-API-Key": this.apiKey } : {}),
+      },
+      body: JSON.stringify({ name: opts.name, tag: opts.tag ?? "latest" }),
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Failed to save as template: ${resp.status} ${text}`);
+    }
+
+    return resp.json();
   }
 }

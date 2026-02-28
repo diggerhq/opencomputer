@@ -4,14 +4,16 @@
 BINARY_SERVER = opensandbox-server
 BINARY_WORKER = opensandbox-worker
 BINARY_AGENT = osb-agent
+BINARY_GITSERVER = opensandbox-gitserver
+BINARY_CLI = osb
 BUILD_DIR = bin
 
 ## help: Show this help message
 help:
 	@grep -E '^##' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
 
-## build: Build server, worker, and agent binaries
-build: build-server build-worker build-agent
+## build: Build server, worker, agent, and CLI binaries
+build: build-server build-worker build-agent build-cli
 
 ## build-server: Build the control plane server
 build-server:
@@ -32,6 +34,23 @@ build-agent:
 ## build-server-arm64: Cross-compile server for Linux ARM64
 build-server-arm64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o $(BUILD_DIR)/$(BINARY_SERVER)-arm64 ./cmd/server
+
+## build-gitserver: Build the standalone git server
+build-gitserver:
+	CGO_ENABLED=0 go build -o $(BUILD_DIR)/$(BINARY_GITSERVER) ./cmd/gitserver
+
+## build-gitserver-amd64: Cross-compile git server for Linux AMD64
+build-gitserver-amd64:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY_GITSERVER)-amd64 ./cmd/gitserver
+
+## build-cli: Build the OpenSandbox CLI (osb)
+build-cli:
+	CGO_ENABLED=0 go build -o $(BUILD_DIR)/$(BINARY_CLI) ./cmd/cli
+
+## install-cli: Install CLI to /usr/local/bin
+install-cli: build-cli
+	sudo cp $(BUILD_DIR)/$(BINARY_CLI) /usr/local/bin/$(BINARY_CLI)
+	@echo "✓ osb installed to /usr/local/bin/osb"
 
 ## --- Local Testing (3 tiers) ---
 
@@ -115,6 +134,14 @@ run-full-worker: build-worker
 	OPENSANDBOX_MAX_CAPACITY=50 \
 	$(BUILD_DIR)/$(BINARY_WORKER)
 
+## run-gitserver: Run standalone git server (requires: make infra-up)
+run-gitserver: build-gitserver
+	OPENSANDBOX_DATABASE_URL="postgres://opensandbox:opensandbox@localhost:5432/opensandbox?sslmode=disable" \
+	OPENSANDBOX_GIT_REPO_ROOT=/tmp/opensandbox-repos \
+	OPENSANDBOX_GIT_PORT=3000 \
+	OPENSANDBOX_GIT_DOMAIN=localhost:3000 \
+	$(BUILD_DIR)/$(BINARY_GITSERVER)
+
 ## --- Infrastructure ---
 
 ## infra-up: Start PostgreSQL + NATS via Docker Compose
@@ -169,6 +196,30 @@ test-unit:
 test-hibernation:
 	@./scripts/test-hibernation.sh
 
+## test-cli: Run all CLI tests (requires: server running)
+test-cli:
+	@./scripts/cli-tests/run-all-tests.sh
+
+## test-cli-lifecycle: Run CLI lifecycle tests
+test-cli-lifecycle:
+	@./scripts/cli-tests/test-lifecycle.sh
+
+## test-cli-commands: Run CLI command execution tests
+test-cli-commands:
+	@./scripts/cli-tests/test-commands.sh
+
+## test-cli-file-ops: Run CLI file operations tests
+test-cli-file-ops:
+	@./scripts/cli-tests/test-file-ops.sh
+
+## test-cli-python: Run CLI Python template tests
+test-cli-python:
+	@./scripts/cli-tests/test-python-template.sh
+
+## test-cli-multi: Run CLI multi-template tests
+test-cli-multi:
+	@./scripts/cli-tests/test-multi-template.sh
+
 ## fmt: Format code
 fmt:
 	go fmt ./...
@@ -209,6 +260,14 @@ download-kernel:
 ## deploy-worker: Deploy worker + agent to EC2 instance (set WORKER_IP=<ip>)
 deploy-worker:
 	./deploy/ec2/deploy-worker.sh
+
+## deploy-server: Deploy control plane to EC2 instance
+deploy-server:
+	./deploy/ec2/deploy-server.sh
+
+## deploy-gitserver: Deploy git server to EC2 control plane instance
+deploy-gitserver:
+	./deploy/ec2/deploy-gitserver.sh
 
 ## --- Docker ---
 

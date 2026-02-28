@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/opensandbox/opensandbox/internal/crypto"
 )
 
 //go:embed migrations/*.sql
@@ -68,9 +69,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{2, "migrations/002_user_sessions.up.sql"},
 		{3, "migrations/003_checkpoint_hibernation.up.sql"},
 		{4, "migrations/004_seed_templates.up.sql"},
-		{5, "migrations/005_org_custom_domain.up.sql"},
-		{6, "migrations/006_sandbox_preview_urls.up.sql"},
-		{7, "migrations/007_preview_urls_port.up.sql"},
+		{5, "migrations/005_repositories.up.sql"},
+		{6, "migrations/006_sandbox_templates.up.sql"},
+		{7, "migrations/007_template_status.up.sql"},
+		{8, "migrations/008_secrets.up.sql"},
+		{9, "migrations/009_default_template.up.sql"},
+		{10, "migrations/005_org_custom_domain.up.sql"},
+		{11, "migrations/006_sandbox_preview_urls.up.sql"},
+		{12, "migrations/007_preview_urls_port.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -731,42 +737,95 @@ func (s *Store) UpsertWorkspaceBackup(ctx context.Context, sandboxID string, org
 
 // DBTemplate represents a template record in the database.
 type DBTemplate struct {
-	ID         uuid.UUID  `json:"id"`
-	OrgID      *uuid.UUID `json:"orgId,omitempty"`
-	Name       string     `json:"name"`
-	Tag        string     `json:"tag"`
-	ImageRef   string     `json:"imageRef"`
-	Dockerfile *string    `json:"dockerfile,omitempty"`
-	IsPublic   bool       `json:"isPublic"`
-	CreatedAt  time.Time  `json:"createdAt"`
+	ID                 uuid.UUID  `json:"id"`
+	OrgID              *uuid.UUID `json:"orgId,omitempty"`
+	Name               string     `json:"name"`
+	Tag                string     `json:"tag"`
+	ImageRef           string     `json:"-"`
+	Dockerfile         *string    `json:"dockerfile,omitempty"`
+	IsPublic           bool       `json:"isPublic"`
+	TemplateType       string     `json:"templateType"` // "dockerfile" or "sandbox"
+	RootfsS3Key        *string    `json:"-"`
+	WorkspaceS3Key     *string    `json:"-"`
+	CreatedBySandboxID *string    `json:"createdBySandboxId,omitempty"`
+	Status             string     `json:"status"` // "ready" or "processing"
+	CreatedAt          time.Time  `json:"createdAt"`
 }
 
-// CreateTemplate inserts a new template record.
+// templateColumns is the standard column list for template queries.
+const templateColumns = `id, org_id, name, tag, COALESCE(image_ref,''), dockerfile, is_public, template_type, rootfs_s3_key, workspace_s3_key, created_by_sandbox_id, COALESCE(status,'ready'), created_at`
+
+func scanTemplate(row interface{ Scan(...any) error }, t *DBTemplate) error {
+	return row.Scan(&t.ID, &t.OrgID, &t.Name, &t.Tag, &t.ImageRef, &t.Dockerfile, &t.IsPublic, &t.TemplateType, &t.RootfsS3Key, &t.WorkspaceS3Key, &t.CreatedBySandboxID, &t.Status, &t.CreatedAt)
+}
+
+// CreateTemplate inserts a new dockerfile-based template record.
 func (s *Store) CreateTemplate(ctx context.Context, orgID *uuid.UUID, name, tag, imageRef string, dockerfile *string, isPublic bool) (*DBTemplate, error) {
 	t := &DBTemplate{}
-	err := s.pool.QueryRow(ctx,
-		`INSERT INTO templates (org_id, name, tag, image_ref, dockerfile, is_public)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING id, org_id, name, tag, image_ref, dockerfile, is_public, created_at`,
+	err := scanTemplate(s.pool.QueryRow(ctx,
+		`INSERT INTO templates (org_id, name, tag, image_ref, dockerfile, is_public, template_type)
+		 VALUES ($1, $2, $3, $4, $5, $6, 'dockerfile')
+		 RETURNING `+templateColumns,
 		orgID, name, tag, imageRef, dockerfile, isPublic,
-	).Scan(&t.ID, &t.OrgID, &t.Name, &t.Tag, &t.ImageRef, &t.Dockerfile, &t.IsPublic, &t.CreatedAt)
+	), t)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create template: %w", err)
 	}
 	return t, nil
 }
 
+// CreateSandboxTemplate inserts a new sandbox-snapshot template record (status=processing).
+func (s *Store) CreateSandboxTemplate(ctx context.Context, id uuid.UUID, orgID *uuid.UUID, name, tag, rootfsS3Key, workspaceS3Key, createdBySandboxID string) (*DBTemplate, error) {
+	t := &DBTemplate{}
+	err := scanTemplate(s.pool.QueryRow(ctx,
+		`INSERT INTO templates (id, org_id, name, tag, image_ref, is_public, template_type, rootfs_s3_key, workspace_s3_key, created_by_sandbox_id, status)
+		 VALUES ($1, $2, $3, $4, '', false, 'sandbox', $5, $6, $7, 'processing')
+		 RETURNING `+templateColumns,
+		id, orgID, name, tag, rootfsS3Key, workspaceS3Key, createdBySandboxID,
+	), t)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create sandbox template: %w", err)
+	}
+	return t, nil
+}
+
+// SetTemplateReady marks a template as ready for use.
+func (s *Store) SetTemplateReady(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `UPDATE templates SET status = 'ready' WHERE id = $1`, id)
+	return err
+}
+
+// GetTemplateByID finds a template by its UUID.
+func (s *Store) GetTemplateByID(ctx context.Context, id uuid.UUID) (*DBTemplate, error) {
+	t := &DBTemplate{}
+	err := scanTemplate(s.pool.QueryRow(ctx,
+		`SELECT `+templateColumns+` FROM templates WHERE id = $1`, id,
+	), t)
+	if err != nil {
+		return nil, fmt.Errorf("template %s not found: %w", id, err)
+	}
+	return t, nil
+}
+
+// UpdateSandboxSessionTemplate sets the based_on_template_id for a sandbox session.
+func (s *Store) UpdateSandboxSessionTemplate(ctx context.Context, sandboxID string, templateID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET based_on_template_id = $1 WHERE sandbox_id = $2`,
+		templateID, sandboxID)
+	return err
+}
+
 // GetTemplateByName finds a template by name, preferring org-specific over public.
 func (s *Store) GetTemplateByName(ctx context.Context, orgID uuid.UUID, name string) (*DBTemplate, error) {
 	t := &DBTemplate{}
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, org_id, name, tag, image_ref, dockerfile, is_public, created_at
+	err := scanTemplate(s.pool.QueryRow(ctx,
+		`SELECT `+templateColumns+`
 		 FROM templates
 		 WHERE name = $1 AND (org_id = $2 OR (is_public = true AND org_id IS NULL))
 		 ORDER BY org_id IS NULL ASC
 		 LIMIT 1`,
 		name, orgID,
-	).Scan(&t.ID, &t.OrgID, &t.Name, &t.Tag, &t.ImageRef, &t.Dockerfile, &t.IsPublic, &t.CreatedAt)
+	), t)
 	if err != nil {
 		return nil, fmt.Errorf("template %q not found: %w", name, err)
 	}
@@ -776,7 +835,7 @@ func (s *Store) GetTemplateByName(ctx context.Context, orgID uuid.UUID, name str
 // ListTemplates returns all templates visible to an org (org-specific + public).
 func (s *Store) ListTemplates(ctx context.Context, orgID uuid.UUID) ([]DBTemplate, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, org_id, name, tag, image_ref, dockerfile, is_public, created_at
+		`SELECT `+templateColumns+`
 		 FROM templates
 		 WHERE org_id = $1 OR (is_public = true AND org_id IS NULL)
 		 ORDER BY is_public DESC, name ASC`,
@@ -789,7 +848,7 @@ func (s *Store) ListTemplates(ctx context.Context, orgID uuid.UUID) ([]DBTemplat
 	var templates []DBTemplate
 	for rows.Next() {
 		var t DBTemplate
-		if err := rows.Scan(&t.ID, &t.OrgID, &t.Name, &t.Tag, &t.ImageRef, &t.Dockerfile, &t.IsPublic, &t.CreatedAt); err != nil {
+		if err := scanTemplate(rows, &t); err != nil {
 			return nil, err
 		}
 		templates = append(templates, t)
@@ -807,6 +866,310 @@ func (s *Store) DeleteTemplateForOrg(ctx context.Context, id uuid.UUID, orgID uu
 		return fmt.Errorf("template not found or not owned by this org")
 	}
 	return nil
+}
+
+// --- Secret operations ---
+
+// DBSecret represents a row in org_secrets. The encrypted_value field is never
+// returned to API callers; use GetSecretValue to decrypt.
+type DBSecret struct {
+	ID          uuid.UUID `json:"id"`
+	OrgID       uuid.UUID `json:"orgId"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// DBSecretGroup represents a row in secret_groups.
+type DBSecretGroup struct {
+	ID           uuid.UUID `json:"id"`
+	OrgID        uuid.UUID `json:"orgId"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description"`
+	AllowedHosts []string  `json:"allowedHosts,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+// DBSecretGroupEntry represents a row in secret_group_entries.
+type DBSecretGroupEntry struct {
+	ID          uuid.UUID `json:"id"`
+	GroupID     uuid.UUID `json:"groupId"`
+	SecretID    uuid.UUID `json:"secretId"`
+	SecretName  string    `json:"secretName,omitempty"` // populated by joins
+	EnvVarName  string    `json:"envVarName"`
+}
+
+// SecretGroupEntry is used when setting entries on a group.
+type SecretGroupEntry struct {
+	SecretID   uuid.UUID
+	EnvVarName string
+}
+
+// CreateSecret stores a new secret with the plaintext value encrypted at rest.
+func (s *Store) CreateSecret(ctx context.Context, orgID uuid.UUID, name, description, plaintextValue string) (*DBSecret, error) {
+	encrypted, err := crypto.Encrypt(plaintextValue)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt secret: %w", err)
+	}
+	secret := &DBSecret{}
+	err = s.pool.QueryRow(ctx,
+		`INSERT INTO org_secrets (org_id, name, description, encrypted_value)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING id, org_id, name, COALESCE(description,''), created_at, updated_at`,
+		orgID, name, description, encrypted,
+	).Scan(&secret.ID, &secret.OrgID, &secret.Name, &secret.Description, &secret.CreatedAt, &secret.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("create secret: %w", err)
+	}
+	return secret, nil
+}
+
+// ListSecrets returns all secrets for an org. Values are never included.
+func (s *Store) ListSecrets(ctx context.Context, orgID uuid.UUID) ([]DBSecret, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, org_id, name, COALESCE(description,''), created_at, updated_at
+		 FROM org_secrets WHERE org_id = $1 ORDER BY name ASC`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var secrets []DBSecret
+	for rows.Next() {
+		var sec DBSecret
+		if err := rows.Scan(&sec.ID, &sec.OrgID, &sec.Name, &sec.Description, &sec.CreatedAt, &sec.UpdatedAt); err != nil {
+			return nil, err
+		}
+		secrets = append(secrets, sec)
+	}
+	return secrets, nil
+}
+
+// UpdateSecret updates the name, description, and/or value of a secret.
+// Pass empty string for name/description to leave them unchanged; pass nil valuePtr to skip value update.
+func (s *Store) UpdateSecret(ctx context.Context, orgID, secretID uuid.UUID, name, description string, newValue *string) error {
+	if newValue != nil {
+		encrypted, err := crypto.Encrypt(*newValue)
+		if err != nil {
+			return fmt.Errorf("encrypt secret: %w", err)
+		}
+		_, err = s.pool.Exec(ctx,
+			`UPDATE org_secrets SET name = COALESCE(NULLIF($1,''), name),
+			 description = COALESCE(NULLIF($2,''), description),
+			 encrypted_value = $3, updated_at = now()
+			 WHERE id = $4 AND org_id = $5`,
+			name, description, encrypted, secretID, orgID)
+		return err
+	}
+	_, err := s.pool.Exec(ctx,
+		`UPDATE org_secrets SET name = COALESCE(NULLIF($1,''), name),
+		 description = COALESCE(NULLIF($2,''), description),
+		 updated_at = now()
+		 WHERE id = $3 AND org_id = $4`,
+		name, description, secretID, orgID)
+	return err
+}
+
+// DeleteSecret deletes a secret scoped to the given org.
+func (s *Store) DeleteSecret(ctx context.Context, orgID, secretID uuid.UUID) error {
+	result, err := s.pool.Exec(ctx,
+		`DELETE FROM org_secrets WHERE id = $1 AND org_id = $2`, secretID, orgID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("secret not found or not owned by this org")
+	}
+	return nil
+}
+
+// GetSecretValue decrypts and returns the plaintext value of a secret.
+// Only for internal use at sandbox creation time — never exposed via API.
+func (s *Store) GetSecretValue(ctx context.Context, secretID uuid.UUID) (string, error) {
+	var encrypted string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT encrypted_value FROM org_secrets WHERE id = $1`, secretID,
+	).Scan(&encrypted); err != nil {
+		return "", fmt.Errorf("secret not found: %w", err)
+	}
+	return crypto.Decrypt(encrypted)
+}
+
+// --- Secret Group operations ---
+
+// CreateSecretGroup creates a new secret group.
+func (s *Store) CreateSecretGroup(ctx context.Context, orgID uuid.UUID, name, description string, allowedHosts []string) (*DBSecretGroup, error) {
+	g := &DBSecretGroup{}
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO secret_groups (org_id, name, description, allowed_hosts)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING id, org_id, name, COALESCE(description,''), COALESCE(allowed_hosts, '{}'), created_at`,
+		orgID, name, description, allowedHosts,
+	).Scan(&g.ID, &g.OrgID, &g.Name, &g.Description, &g.AllowedHosts, &g.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("create secret group: %w", err)
+	}
+	return g, nil
+}
+
+// ListSecretGroups returns all secret groups for an org.
+func (s *Store) ListSecretGroups(ctx context.Context, orgID uuid.UUID) ([]DBSecretGroup, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, org_id, name, COALESCE(description,''), COALESCE(allowed_hosts, '{}'), created_at
+		 FROM secret_groups WHERE org_id = $1 ORDER BY name ASC`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var groups []DBSecretGroup
+	for rows.Next() {
+		var g DBSecretGroup
+		if err := rows.Scan(&g.ID, &g.OrgID, &g.Name, &g.Description, &g.AllowedHosts, &g.CreatedAt); err != nil {
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	return groups, nil
+}
+
+// GetSecretGroup returns a single secret group scoped to the org.
+func (s *Store) GetSecretGroup(ctx context.Context, orgID, groupID uuid.UUID) (*DBSecretGroup, error) {
+	g := &DBSecretGroup{}
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, org_id, name, COALESCE(description,''), COALESCE(allowed_hosts, '{}'), created_at
+		 FROM secret_groups WHERE id = $1 AND org_id = $2`,
+		groupID, orgID,
+	).Scan(&g.ID, &g.OrgID, &g.Name, &g.Description, &g.AllowedHosts, &g.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("secret group not found: %w", err)
+	}
+	return g, nil
+}
+
+// UpdateSecretGroup updates name, description, and allowed_hosts of a group.
+func (s *Store) UpdateSecretGroup(ctx context.Context, orgID, groupID uuid.UUID, name, description string, allowedHosts []string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE secret_groups SET
+		 name = COALESCE(NULLIF($1,''), name),
+		 description = COALESCE(NULLIF($2,''), description),
+		 allowed_hosts = $3
+		 WHERE id = $4 AND org_id = $5`,
+		name, description, allowedHosts, groupID, orgID)
+	return err
+}
+
+// DeleteSecretGroup deletes a group scoped to the org.
+func (s *Store) DeleteSecretGroup(ctx context.Context, orgID, groupID uuid.UUID) error {
+	result, err := s.pool.Exec(ctx,
+		`DELETE FROM secret_groups WHERE id = $1 AND org_id = $2`, groupID, orgID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("secret group not found or not owned by this org")
+	}
+	return nil
+}
+
+// SetSecretGroupEntries replaces all entries for a group (delete + insert).
+func (s *Store) SetSecretGroupEntries(ctx context.Context, groupID uuid.UUID, entries []SecretGroupEntry) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `DELETE FROM secret_group_entries WHERE group_id = $1`, groupID); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO secret_group_entries (group_id, secret_id, env_var_name) VALUES ($1, $2, $3)`,
+			groupID, e.SecretID, e.EnvVarName); err != nil {
+			return fmt.Errorf("insert entry %s: %w", e.EnvVarName, err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// GetSecretGroupEntries returns all entries for a group with secret names joined.
+func (s *Store) GetSecretGroupEntries(ctx context.Context, groupID uuid.UUID) ([]DBSecretGroupEntry, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT sge.id, sge.group_id, sge.secret_id, os.name, sge.env_var_name
+		 FROM secret_group_entries sge
+		 JOIN org_secrets os ON os.id = sge.secret_id
+		 WHERE sge.group_id = $1
+		 ORDER BY sge.env_var_name ASC`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var entries []DBSecretGroupEntry
+	for rows.Next() {
+		var e DBSecretGroupEntry
+		if err := rows.Scan(&e.ID, &e.GroupID, &e.SecretID, &e.SecretName, &e.EnvVarName); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+// GetSandboxSecretGroupID returns the secret_group_id for a sandbox session, or nil if not set.
+func (s *Store) GetSandboxSecretGroupID(ctx context.Context, sandboxID string) (*uuid.UUID, error) {
+	var groupID *uuid.UUID
+	err := s.pool.QueryRow(ctx,
+		`SELECT secret_group_id FROM sandbox_sessions WHERE sandbox_id = $1 ORDER BY started_at DESC LIMIT 1`,
+		sandboxID,
+	).Scan(&groupID)
+	if err != nil {
+		return nil, fmt.Errorf("get sandbox secret group id: %w", err)
+	}
+	return groupID, nil
+}
+
+// UpdateSandboxSessionSecretGroup records the secret_group_id on a sandbox session.
+func (s *Store) UpdateSandboxSessionSecretGroup(ctx context.Context, sandboxID string, groupID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET secret_group_id = $1 WHERE sandbox_id = $2`,
+		groupID, sandboxID)
+	return err
+}
+
+// ResolveSecretGroup decrypts all secrets in a group and returns a map of
+// {envVarName: plaintextValue} plus the allowed_hosts list.
+// Called at sandbox creation time — values are passed directly to the worker
+// and never stored in the DB unencrypted.
+func (s *Store) ResolveSecretGroup(ctx context.Context, groupID uuid.UUID) (envVars map[string]string, allowedHosts []string, err error) {
+	// Load the group to get allowed_hosts
+	rows, err := s.pool.Query(ctx,
+		`SELECT sge.env_var_name, os.encrypted_value, sg.allowed_hosts
+		 FROM secret_group_entries sge
+		 JOIN org_secrets os ON os.id = sge.secret_id
+		 JOIN secret_groups sg ON sg.id = sge.group_id
+		 WHERE sge.group_id = $1`, groupID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query secret group: %w", err)
+	}
+	defer rows.Close()
+
+	envVars = make(map[string]string)
+	for rows.Next() {
+		var envVar, encrypted string
+		var hosts []string
+		if err := rows.Scan(&envVar, &encrypted, &hosts); err != nil {
+			return nil, nil, err
+		}
+		if allowedHosts == nil {
+			allowedHosts = hosts
+		}
+		plaintext, err := crypto.Decrypt(encrypted)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decrypt secret for %s: %w", envVar, err)
+		}
+		envVars[envVar] = plaintext
+	}
+	return envVars, allowedHosts, nil
 }
 
 // --- Preview URL operations ---

@@ -42,6 +42,7 @@ type Server struct {
 	checkpointStore *storage.CheckpointStore          // nil if hibernation not configured
 	sandboxDomain   string                            // base domain for sandbox subdomains
 	ecrConfig       *ecr.Config                       // nil if ECR not configured
+	gitDomain       string                            // git server domain for clone URLs (e.g., "git.opensandbox.ai")
 	cfClient        *cloudflare.Client                // nil if Cloudflare not configured
 }
 
@@ -62,6 +63,7 @@ type ServerOpts struct {
 	WorkerRegistry  *controlplane.RedisWorkerRegistry  // nil in combined/worker mode
 	CheckpointStore *storage.CheckpointStore           // nil if hibernation not configured
 	ECRConfig       *ecr.Config                        // nil if ECR not configured
+	GitDomain       string                             // git server domain for clone URLs
 	CFClient        *cloudflare.Client                 // nil if Cloudflare not configured
 }
 
@@ -90,6 +92,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.checkpointStore = opts.CheckpointStore
 		s.sandboxDomain = opts.SandboxDomain
 		s.ecrConfig = opts.ECRConfig
+		s.gitDomain = opts.GitDomain
 		s.cfClient = opts.CFClient
 	}
 
@@ -152,12 +155,30 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	api.GET("/templates", s.listTemplates)
 	api.GET("/templates/:name", s.getTemplate)
 	api.DELETE("/templates/:name", s.deleteTemplate)
+	api.POST("/sandboxes/:sandboxId/save-as-template", s.dashboardSaveAsTemplate)
+
+	// Git repositories
+	api.POST("/repos", s.createRepo)
+	api.GET("/repos", s.listRepos)
+	api.GET("/repos/:owner/:name", s.getRepoAPI)
+	api.DELETE("/repos/:owner/:name", s.deleteRepoAPI)
 
 	// Workers (server mode only — queries worker registry)
 	api.GET("/workers", s.listWorkers)
 
 	// Session history (requires PG)
 	api.GET("/sessions", s.listSessions)
+
+	// Secrets vault (API key auth — same handlers as dashboard, just different auth layer)
+	api.GET("/secrets", s.dashboardListSecrets)
+	api.POST("/secrets", s.dashboardCreateSecret)
+	api.PUT("/secrets/:id", s.dashboardUpdateSecret)
+	api.DELETE("/secrets/:id", s.dashboardDeleteSecret)
+	api.GET("/secret-groups", s.dashboardListSecretGroups)
+	api.POST("/secret-groups", s.dashboardCreateSecretGroup)
+	api.GET("/secret-groups/:id", s.dashboardGetSecretGroup)
+	api.PUT("/secret-groups/:id", s.dashboardUpdateSecretGroup)
+	api.DELETE("/secret-groups/:id", s.dashboardDeleteSecretGroup)
 
 	// WorkOS OAuth + Dashboard API routes (only if WorkOS is configured)
 	var frontendURL string
@@ -193,12 +214,26 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		// Session detail + stats
 		dash.GET("/sessions/:sandboxId", s.dashboardGetSession)
 		dash.GET("/sessions/:sandboxId/stats", s.dashboardGetSessionStats)
+		dash.POST("/sessions/:sandboxId/save-as-template", s.dashboardSaveAsTemplate)
 
 		// PTY (terminal)
 		dash.POST("/sessions/:sandboxId/pty", s.dashboardCreatePTY)
 		dash.GET("/sessions/:sandboxId/pty/:sessionId", s.dashboardPTYWebSocket)
 		dash.POST("/sessions/:sandboxId/pty/:sessionId/resize", s.dashboardResizePTY)
 		dash.DELETE("/sessions/:sandboxId/pty/:sessionId", s.dashboardKillPTY)
+
+		// Secrets vault
+		dash.GET("/secrets", s.dashboardListSecrets)
+		dash.POST("/secrets", s.dashboardCreateSecret)
+		dash.PUT("/secrets/:id", s.dashboardUpdateSecret)
+		dash.DELETE("/secrets/:id", s.dashboardDeleteSecret)
+
+		// Secret groups
+		dash.GET("/secret-groups", s.dashboardListSecretGroups)
+		dash.POST("/secret-groups", s.dashboardCreateSecretGroup)
+		dash.GET("/secret-groups/:id", s.dashboardGetSecretGroup)
+		dash.PUT("/secret-groups/:id", s.dashboardUpdateSecretGroup)
+		dash.DELETE("/secret-groups/:id", s.dashboardDeleteSecretGroup)
 	}
 
 	// Auto-detect FrontendURL for dev: if web/dist doesn't exist, assume Vite dev on :3000

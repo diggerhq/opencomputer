@@ -24,6 +24,17 @@ type HibernateResult struct {
 	SizeBytes     int64  `json:"sizeBytes"`
 }
 
+// IsTAPAvailable always returns true for the Podman backend (no TAP concept).
+func (m *PodmanManager) IsTAPAvailable(sandboxID string) bool { return true }
+
+// SaveAsTemplate is not supported for the Podman backend.
+func (m *PodmanManager) SaveAsTemplate(_ context.Context, _, _ string, _ *storage.CheckpointStore, _ func()) (string, string, error) {
+	return "", "", fmt.Errorf("save-as-template not supported on Podman backend")
+}
+
+// TemplateCachePath always returns "" for the Podman backend (no template drive caching).
+func (m *PodmanManager) TemplateCachePath(_, _ string) string { return "" }
+
 // Hibernate checkpoints a running sandbox, uploads to S3, and removes the container.
 // The CRIU checkpoint (process memory) is cached on local NVMe for fast same-machine wake.
 // The workspace directory stays on local NVMe and is archived to S3 async for cross-machine wake.

@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/secretsproxy"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/agent"
@@ -72,6 +73,11 @@ type Config struct {
 	DefaultCPUs     int    // default vCPUs per VM (default: 1)
 	DefaultDiskMB   int    // default workspace size in MB (default: 20480 = 20GB)
 	DefaultPort     int    // default guest port to expose (default: 80)
+
+	// SecretsProxy, if set, intercepts outbound HTTPS from sandboxes and
+	// substitutes sealed tokens with real secret values. When non-nil, env vars
+	// in SandboxConfig are passed through ProxyEnvs to generate sealed tokens.
+	SecretsProxy *secretsproxy.SecretsProxy
 }
 
 // Manager implements sandbox.Manager using Firecracker microVMs.
@@ -153,37 +159,54 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 		return nil, fmt.Errorf("mkdir sandbox dir: %w", err)
 	}
 
-	// Resolve base image
+	// Resolve template name (used for logging and cold-boot recovery)
 	template := cfg.Template
-	if template == "" {
-		template = "ubuntu"
-	}
-	baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, template)
-	if err != nil {
-		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("resolve base image: %w", err)
+	if template == "" || template == "base" {
+		template = "default"
 	}
 
-	// Prepare rootfs (reflink copy)
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.ext4")
-	if err := PrepareRootfs(baseImage, rootfsPath); err != nil {
-		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("prepare rootfs: %w", err)
-	}
-
-	// Create workspace
-	diskMB := m.cfg.DefaultDiskMB
 	workspacePath := filepath.Join(sandboxDir, "workspace.ext4")
-	if err := CreateWorkspace(workspacePath, diskMB); err != nil {
-		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("create workspace: %w", err)
+
+	if cfg.TemplateRootfsKey != "" {
+		// Sandbox snapshot template: gRPC handler extracted template drives to local paths
+		// encoded as "local://<absolute-path>" in TemplateRootfsKey / TemplateWorkspaceKey.
+		srcRootfs := strings.TrimPrefix(cfg.TemplateRootfsKey, "local://")
+		srcWorkspace := strings.TrimPrefix(cfg.TemplateWorkspaceKey, "local://")
+		log.Printf("firecracker: create %s from snapshot template (rootfs=%s, workspace=%s)", id, srcRootfs, srcWorkspace)
+		if err := copyFileReflink(srcRootfs, rootfsPath); err != nil {
+			os.RemoveAll(sandboxDir)
+			return nil, fmt.Errorf("copy template rootfs: %w", err)
+		}
+		if err := copyFileReflink(srcWorkspace, workspacePath); err != nil {
+			os.RemoveAll(sandboxDir)
+			return nil, fmt.Errorf("copy template workspace: %w", err)
+		}
+	} else {
+		// Standard base image + fresh workspace
+		baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, template)
+		if err != nil {
+			os.RemoveAll(sandboxDir)
+			return nil, fmt.Errorf("resolve base image: %w", err)
+		}
+		if err := PrepareRootfs(baseImage, rootfsPath); err != nil {
+			os.RemoveAll(sandboxDir)
+			return nil, fmt.Errorf("prepare rootfs: %w", err)
+		}
+
+		diskMB := m.cfg.DefaultDiskMB
+		if err := CreateWorkspace(workspacePath, diskMB); err != nil {
+			os.RemoveAll(sandboxDir)
+			return nil, fmt.Errorf("create workspace: %w", err)
+		}
 	}
 
-	// Allocate network
-	netCfg, err := m.subnets.Allocate()
+	// Allocate network — use the deterministic TAP for this sandbox ID so that
+	// cross-worker snapshot restore always finds the right TAP free.
+	netCfg, err := m.subnets.AllocateSpecific(DeterministicTAPName(id))
 	if err != nil {
 		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("allocate subnet: %w", err)
+		return nil, fmt.Errorf("tap conflict on this worker: %w", err)
 	}
 
 	// Create TAP device
@@ -355,6 +378,37 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 		return nil, fmt.Errorf("agent not ready: %w", err)
 	}
 	vm.agent = agentClient
+
+	// Inject environment variables into the VM's persistent environment.
+	// If a SecretsProxy is configured, real values are replaced with sealed tokens
+	// before injection so they never appear in plaintext inside the VM.
+	envsToInject := cfg.Envs
+	if m.cfg.SecretsProxy != nil && len(cfg.Envs) > 0 {
+		envsToInject = m.cfg.SecretsProxy.ProxyEnvs(id, netCfg.GuestIP, netCfg.HostIP, cfg.Envs, cfg.AllowedHosts)
+
+		// Inject the MITM proxy CA certificate into the VM so curl/node/python trust it.
+		caCertPEM := m.cfg.SecretsProxy.CACertPEM()
+		if len(caCertPEM) > 0 {
+			certScript := fmt.Sprintf(
+				"mkdir -p /usr/local/share/ca-certificates && cat > /usr/local/share/ca-certificates/osb-proxy.crt <<'CERTEOF'\n%s\nCERTEOF\nupdate-ca-certificates 2>/dev/null || true",
+				string(caCertPEM),
+			)
+			if _, err := agentClient.Exec(context.Background(), &pb.ExecRequest{
+				Command:        "sh",
+				Args:           []string{"-c", certScript},
+				TimeoutSeconds: 10,
+			}); err != nil {
+				log.Printf("firecracker: warning: CA cert injection failed for %s: %v", id, err)
+			}
+		}
+	}
+	if len(envsToInject) > 0 {
+		if err := m.injectEnvs(context.Background(), agentClient, envsToInject); err != nil {
+			log.Printf("firecracker: warning: env injection failed for %s: %v", id, err)
+		} else {
+			log.Printf("firecracker: injected %d env vars into %s", len(envsToInject), id)
+		}
+	}
 
 	// Register VM
 	m.mu.Lock()
@@ -786,6 +840,22 @@ func (m *Manager) Wake(ctx context.Context, sandboxID string, checkpointKey stri
 	return m.doWake(ctx, sandboxID, checkpointKey, checkpointStore, timeout)
 }
 
+// IsTAPAvailable reports whether the deterministic TAP for the given sandbox ID
+// is currently free on this worker. Used by the control plane to pick a destination
+// worker that can do a full snapshot restore without cold-booting.
+func (m *Manager) IsTAPAvailable(sandboxID string) bool {
+	return m.subnets.CanAllocateSpecific(DeterministicTAPName(sandboxID))
+}
+
+// SaveAsTemplate snapshots a running sandbox's drives for use as a template.
+func (m *Manager) SaveAsTemplate(ctx context.Context, sandboxID, templateID string, checkpointStore *storage.CheckpointStore, onReady func()) (rootfsKey, workspaceKey string, err error) {
+	vm, err := m.getVM(sandboxID)
+	if err != nil {
+		return "", "", err
+	}
+	return m.doSaveAsTemplate(ctx, vm, templateID, checkpointStore, onReady)
+}
+
 // getVM retrieves a VM by ID (read-locked).
 func (m *Manager) getVM(id string) (*VMInstance, error) {
 	m.mu.RLock()
@@ -799,7 +869,7 @@ func (m *Manager) getVM(id string) (*VMInstance, error) {
 
 // vmToSandbox converts a VMInstance to a types.Sandbox.
 func vmToSandbox(vm *VMInstance) *types.Sandbox {
-	return &types.Sandbox{
+	sb := &types.Sandbox{
 		ID:        vm.ID,
 		Template:  vm.Template,
 		Status:    vm.Status,
@@ -809,6 +879,10 @@ func vmToSandbox(vm *VMInstance) *types.Sandbox {
 		MemoryMB:  vm.MemoryMB,
 		HostPort:  vm.HostPort,
 	}
+	if vm.network != nil {
+		sb.GuestIP = vm.network.GuestIP
+	}
+	return sb
 }
 
 // generateMAC creates a deterministic MAC address from a sandbox ID.
@@ -969,4 +1043,40 @@ func (m *Manager) RecoverLocalSandboxes() []LocalRecovery {
 		}
 	}
 	return recoveries
+}
+
+// injectEnvs writes environment variables into the VM's /etc/environment and
+// /etc/profile.d/osb.sh so they are visible to all processes (login shells,
+// PTY sessions, exec'd commands).
+func (m *Manager) injectEnvs(ctx context.Context, agent *AgentClient, envs map[string]string) error {
+	if len(envs) == 0 {
+		return nil
+	}
+
+	// Build shell-safe assignments using single-quoting.
+	var envLines []string
+	var exportLines []string
+	for k, v := range envs {
+		quoted := "'" + strings.ReplaceAll(v, "'", "'\\''") + "'"
+		envLines = append(envLines, k+"="+quoted)
+		exportLines = append(exportLines, "export "+k+"="+quoted)
+	}
+
+	// Append to /etc/environment (read by PAM for login sessions) and write
+	// /etc/profile.d/osb.sh (sourced by interactive shells).
+	// Use heredocs to avoid shell word-splitting issues with printf arguments.
+	script := fmt.Sprintf(
+		"mkdir -p /etc/profile.d && cat >> /etc/environment <<'ENVEOF'\n%s\nENVEOF\ncat > /etc/profile.d/osb.sh <<'PROFILEEOF'\n%s\nPROFILEEOF",
+		strings.Join(envLines, "\n"),
+		strings.Join(exportLines, "\n"),
+	)
+
+	execCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := agent.Exec(execCtx, &pb.ExecRequest{
+		Command:        "sh",
+		Args:           []string{"-c", script},
+		TimeoutSeconds: 10,
+	})
+	return err
 }

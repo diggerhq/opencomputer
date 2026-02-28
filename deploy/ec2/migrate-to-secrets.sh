@@ -51,7 +51,7 @@ WORKOS_REDIRECT_URI="${WORKOS_REDIRECT_URI:-https://app.opensandbox.ai/auth/call
 WORKOS_COOKIE_DOMAIN="${WORKOS_COOKIE_DOMAIN:-opensandbox.ai}"
 
 # Instance IPs
-WORKER_IP="18.219.23.64"
+WORKER_IP="3.148.203.208"
 SERVER_IP="3.135.246.117"
 
 aws() { command aws --profile "$AWS_PROFILE" "$@"; }

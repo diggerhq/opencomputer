@@ -28,6 +28,10 @@ type Sandbox struct {
 	ConnectURL string            `json:"connectURL,omitempty"` // Direct worker URL for SDK access
 	Token      string            `json:"token,omitempty"`      // Sandbox-scoped JWT for worker auth
 	HostPort   int               `json:"hostPort,omitempty"`   // Mapped host port for the sandbox's container port
+	Domain     string            `json:"domain,omitempty"`     // Subdomain for sandbox access (e.g., "sb-123.sandbox.opensandbox.ai")
+	GitURL     string            `json:"gitURL,omitempty"`     // Git server base URL for clone/push/pull
+	OrgSlug    string            `json:"orgSlug,omitempty"`    // Organization slug for git repo paths
+	GuestIP    string            `json:"guestIP,omitempty"`    // VM's internal guest IP (worker-internal, not sent to clients)
 }
 
 // SandboxConfig is the request body for creating a sandbox.
@@ -41,7 +45,20 @@ type SandboxConfig struct {
 	Envs       map[string]string `json:"envs,omitempty"`
 	Port       int               `json:"port,omitempty"`       // container port to expose via subdomain (default 80)
 	NetworkEnabled bool          `json:"networkEnabled,omitempty"`
-	ImageRef       string            `json:"imageRef,omitempty"`       // resolved ECR URI for custom templates
+	ImageRef       string        `json:"imageRef,omitempty"`       // resolved ECR URI for custom templates
+	// Sandbox snapshot template: S3 keys for rootfs and workspace drives.
+	// When set, the sandbox boots from these drives instead of the standard base image.
+	TemplateRootfsKey    string `json:"templateRootfsKey,omitempty"`
+	TemplateWorkspaceKey string `json:"templateWorkspaceKey,omitempty"`
+
+	// SecretGroupID attaches a secret group to the sandbox at creation time.
+	// The server resolves secrets before forwarding to the worker; real values
+	// never leave the server unencrypted — the worker only receives sealed tokens.
+	SecretGroupID string `json:"secretGroupId,omitempty"`
+
+	// AllowedHosts is the secrets proxy egress allowlist. When non-empty, only
+	// HTTPS requests to these hosts are permitted through the proxy.
+	AllowedHosts []string `json:"-"` // internal only, not from client JSON
 }
 
 // SandboxListResponse is the response for listing sandboxes.

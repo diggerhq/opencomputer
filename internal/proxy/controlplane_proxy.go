@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opensandbox/opensandbox/internal/firecracker"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
 
@@ -158,8 +159,8 @@ func (p *ControlPlaneProxy) tryRecoverOrFail(c echo.Context, ctx context.Context
 }
 
 // wakeHibernatedSandbox wakes a hibernated sandbox on-demand when its subdomain
-// is accessed. It picks the least loaded worker, sends a WakeSandbox gRPC call,
-// and updates the DB. Returns the worker entry and its HTTP address for proxying.
+// is accessed. It picks the best worker for a full snapshot restore (TAP-aware),
+// sends a WakeSandbox gRPC call, and updates the DB.
 func (p *ControlPlaneProxy) wakeHibernatedSandbox(ctx context.Context, sandboxID string) (*controlplane.WorkerEntry, string, error) {
 	// Look up the active checkpoint
 	checkpoint, err := p.store.GetActiveCheckpoint(ctx, sandboxID)
@@ -167,27 +168,45 @@ func (p *ControlPlaneProxy) wakeHibernatedSandbox(ctx context.Context, sandboxID
 		return nil, "", fmt.Errorf("no active checkpoint: %w", err)
 	}
 
-	// Pick the least loaded worker in the same region
 	region := checkpoint.Region
-	worker, grpcClient, err := p.registry.GetLeastLoadedWorker(region)
-	if err != nil {
-		return nil, "", fmt.Errorf("no workers available in region %s: %w", region, err)
+	deterministicTAP := firecracker.DeterministicTAPName(sandboxID)
+
+	// Iterate workers in load order; pick the first one where the deterministic
+	// TAP is free. That worker can do a full snapshot restore (processes live).
+	// Fall back to overall least-loaded if none have the TAP free (cold boot).
+	workers := p.registry.GetWorkersOrderedByLoad(region)
+	if len(workers) == 0 {
+		return nil, "", fmt.Errorf("no workers available in region %s", region)
 	}
 
-	log.Printf("cp-proxy: waking sandbox %s on worker %s (region=%s)", sandboxID, worker.ID, region)
+	chosen := workers[0] // default: best by load (cold boot fallback)
+	tapCheckCtx, tapCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer tapCancel()
+	for _, w := range workers {
+		resp, err := w.Client.IsTAPAvailable(tapCheckCtx, &pb.IsTAPAvailableRequest{SandboxId: sandboxID})
+		if err == nil && resp.Available {
+			chosen = w
+			break
+		}
+	}
 
-	// Wake via gRPC with a generous timeout (cold boot + S3 download)
+	log.Printf("cp-proxy: waking sandbox %s on worker %s (tap=%s, region=%s)",
+		sandboxID, chosen.Entry.ID, deterministicTAP, region)
+
+	// Wake via gRPC with a generous timeout (snapshot restore or cold boot + S3 download)
 	grpcCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	_, err = grpcClient.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{
+	_, err = chosen.Client.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{
 		SandboxId:     sandboxID,
 		CheckpointKey: checkpoint.CheckpointKey,
-		Timeout:       300, // default 5 min timeout after wake
+		Timeout:       300,
 	})
 	if err != nil {
 		return nil, "", fmt.Errorf("gRPC WakeSandbox failed: %w", err)
 	}
+
+	worker := chosen.Entry
 
 	// Update DB: mark checkpoint restored, update session to running on new worker
 	_ = p.store.MarkCheckpointRestored(ctx, sandboxID)

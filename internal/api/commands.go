@@ -14,6 +14,11 @@ import (
 func (s *Server) runCommand(c echo.Context) error {
 	id := c.Param("id")
 
+	// Verify the caller owns this sandbox
+	if _, err := s.requireSandboxOwnership(c, id); err != nil {
+		return err
+	}
+
 	// Server mode: dispatch to worker via gRPC
 	if s.workerRegistry != nil {
 		return s.runCommandRemote(c, id)

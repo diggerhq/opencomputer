@@ -13,8 +13,53 @@ import (
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
+
+	"github.com/google/uuid"
 )
 
+// enrichSandboxWithGitInfo adds gitURL and orgSlug to a Sandbox response.
+func (s *Server) enrichSandboxWithGitInfo(ctx context.Context, sb *types.Sandbox, orgID uuid.UUID, hasOrg bool) {
+	if s.gitDomain != "" {
+		sb.GitURL = "http://" + s.gitDomain
+	}
+	if s.store != nil && hasOrg {
+		if org, err := s.store.GetOrg(ctx, orgID); err == nil {
+			sb.OrgSlug = org.Slug
+		}
+	}
+}
+
+// addGitInfoToMap adds gitURL and orgSlug to a map-based response.
+func (s *Server) addGitInfoToMap(ctx context.Context, resp map[string]interface{}, orgID uuid.UUID) {
+	if s.gitDomain != "" {
+		resp["gitURL"] = "http://" + s.gitDomain
+	}
+	if s.store != nil {
+		if org, err := s.store.GetOrg(ctx, orgID); err == nil {
+			resp["orgSlug"] = org.Slug
+		}
+	}
+}
+
+// requireSandboxOwnership verifies that the sandbox identified by sandboxID belongs
+// to the org of the authenticated caller. Returns the session on success.
+// In dev mode (no store / no org context) it returns nil, nil — callers must
+// treat a nil session as "skip enforcement" and proceed as before.
+func (s *Server) requireSandboxOwnership(c echo.Context, sandboxID string) (*db.SandboxSession, error) {
+	orgID, hasOrg := auth.GetOrgID(c)
+	if !hasOrg || s.store == nil {
+		return nil, nil // dev / combined mode without PG — no enforcement possible
+	}
+
+	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
+	if err != nil {
+		return nil, echo.NewHTTPError(http.StatusNotFound, "sandbox not found")
+	}
+	if session.OrgID != orgID {
+		return nil, echo.NewHTTPError(http.StatusNotFound, "sandbox not found")
+	}
+	return session, nil
+}
 
 func (s *Server) createSandbox(c echo.Context) error {
 	var cfg types.SandboxConfig
@@ -103,6 +148,14 @@ func (s *Server) createSandbox(c echo.Context) error {
 		}
 	}
 
+	// Assign subdomain
+	if s.sandboxDomain != "" {
+		sb.Domain = fmt.Sprintf("%s.%s", sb.ID, s.sandboxDomain)
+	}
+
+	// Add git server info if configured
+	s.enrichSandboxWithGitInfo(ctx, sb, orgID, hasOrg)
+
 	// Write session record to PG if available
 	if s.store != nil && hasOrg {
 		cfgJSON, _ := json.Marshal(cfg)
@@ -145,26 +198,71 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 
 	// Resolve template image from DB (org-scoped lookup with public fallback)
 	var imageRef string
+	var templateRootfsKey, templateWorkspaceKey string
+	var templateID *uuid.UUID
 	if s.store != nil && hasOrg {
 		tmpl, err := s.store.GetTemplateByName(ctx, orgID, cfg.Template)
 		if err == nil {
 			imageRef = tmpl.ImageRef
+			templateID = &tmpl.ID
+			log.Printf("sandbox: resolved template %q (type=%s, id=%s)", cfg.Template, tmpl.TemplateType, tmpl.ID)
+			// Sandbox-type templates provide S3 drive keys instead of ECR image refs
+			if tmpl.TemplateType == "sandbox" && tmpl.RootfsS3Key != nil && tmpl.WorkspaceS3Key != nil {
+				templateRootfsKey = *tmpl.RootfsS3Key
+				templateWorkspaceKey = *tmpl.WorkspaceS3Key
+				log.Printf("sandbox: using snapshot template drives: rootfs=%s, workspace=%s", templateRootfsKey, templateWorkspaceKey)
+			}
+		} else {
+			log.Printf("sandbox: template %q lookup failed: %v", cfg.Template, err)
 		}
 	}
 
-	// Dispatch via persistent gRPC connection
-	grpcCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Resolve secret group: decrypt values on the server so real secrets never
+	// travel as plaintext to the worker or get stored in any DB field.
+	var secretGroupID *uuid.UUID
+	var allowedHosts []string
+	if cfg.SecretGroupID != "" && s.store != nil && hasOrg {
+		gid, err := uuid.Parse(cfg.SecretGroupID)
+		if err == nil {
+			var envVars map[string]string
+			envVars, allowedHosts, err = s.store.ResolveSecretGroup(ctx, gid)
+			if err != nil {
+				log.Printf("sandbox: secret group %s resolution failed: %v", cfg.SecretGroupID, err)
+			} else {
+				if cfg.Envs == nil {
+					cfg.Envs = make(map[string]string)
+				}
+				for k, v := range envVars {
+					cfg.Envs[k] = v
+				}
+				cfg.SecretGroupID = "" // don't forward group ID to worker
+				secretGroupID = &gid
+				log.Printf("sandbox: resolved secret group %s (%d vars, %d allowed hosts)", gid, len(envVars), len(allowedHosts))
+			}
+		}
+	}
+
+	// Dispatch via persistent gRPC connection.
+	// Template-based creation needs more time for S3 download + decompression of drives.
+	grpcTimeout := 30 * time.Second
+	if templateRootfsKey != "" {
+		grpcTimeout = 120 * time.Second
+	}
+	grpcCtx, cancel := context.WithTimeout(ctx, grpcTimeout)
 	defer cancel()
 
 	grpcResp, err := grpcClient.CreateSandbox(grpcCtx, &pb.CreateSandboxRequest{
-		Template:       cfg.Template,
-		Timeout:        int32(cfg.Timeout),
-		Envs:           cfg.Envs,
-		MemoryMb:       int32(cfg.MemoryMB),
-		CpuCount:       int32(cfg.CpuCount),
-		NetworkEnabled: cfg.NetworkEnabled,
-		ImageRef:       imageRef,
-		Port:           int32(cfg.Port),
+		Template:             cfg.Template,
+		Timeout:              int32(cfg.Timeout),
+		Envs:                 cfg.Envs,
+		MemoryMb:             int32(cfg.MemoryMB),
+		CpuCount:             int32(cfg.CpuCount),
+		NetworkEnabled:       cfg.NetworkEnabled,
+		ImageRef:             imageRef,
+		Port:                 int32(cfg.Port),
+		TemplateRootfsKey:    templateRootfsKey,
+		TemplateWorkspaceKey: templateWorkspaceKey,
+		AllowedHosts:         allowedHosts,
 	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -192,6 +290,12 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		cfgJSON, _ := json.Marshal(cfg)
 		metadataJSON, _ := json.Marshal(cfg.Metadata)
 		_, _ = s.store.CreateSandboxSession(ctx, grpcResp.SandboxId, orgID, nil, template, region, worker.ID, cfgJSON, metadataJSON)
+		if templateID != nil {
+			_ = s.store.UpdateSandboxSessionTemplate(ctx, grpcResp.SandboxId, *templateID)
+		}
+		if secretGroupID != nil {
+			_ = s.store.UpdateSandboxSessionSecretGroup(ctx, grpcResp.SandboxId, *secretGroupID)
+		}
 	}
 
 	resp := map[string]interface{}{
@@ -202,12 +306,21 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		"region":     region,
 		"workerID":   worker.ID,
 	}
+	if s.sandboxDomain != "" {
+		resp["domain"] = fmt.Sprintf("%s.%s", grpcResp.SandboxId, s.sandboxDomain)
+	}
+	s.addGitInfoToMap(ctx, resp, orgID)
 
 	return c.JSON(http.StatusCreated, resp)
 }
 
 func (s *Server) getSandbox(c echo.Context) error {
 	id := c.Param("id")
+
+	// Verify the caller owns this sandbox
+	if _, err := s.requireSandboxOwnership(c, id); err != nil {
+		return err
+	}
 
 	// Server mode with worker registry: look up from PG and issue fresh token
 	if s.workerRegistry != nil {
@@ -227,14 +340,18 @@ func (s *Server) getSandbox(c echo.Context) error {
 	}
 
 	orgID, hasOrg := auth.GetOrgID(c)
-	if s.jwtIssuer != nil {
-		if hasOrg {
-			token, err := s.jwtIssuer.IssueSandboxToken(orgID, id, s.workerID, 24*time.Hour)
-			if err == nil {
-				sb.Token = token
-			}
+	if s.jwtIssuer != nil && hasOrg {
+		token, err := s.jwtIssuer.IssueSandboxToken(orgID, id, s.workerID, 24*time.Hour)
+		if err == nil {
+			sb.Token = token
 		}
 	}
+
+	if s.sandboxDomain != "" {
+		sb.Domain = fmt.Sprintf("%s.%s", id, s.sandboxDomain)
+	}
+
+	s.enrichSandboxWithGitInfo(c.Request().Context(), sb, orgID, hasOrg)
 
 	return c.JSON(http.StatusOK, sb)
 }
@@ -266,6 +383,10 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 			"template":  session.Template,
 			"startedAt": session.StartedAt,
 		}
+		if s.sandboxDomain != "" {
+			resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
+		}
+		s.addGitInfoToMap(c.Request().Context(), resp, orgID)
 		return c.JSON(http.StatusOK, resp)
 	}
 
@@ -276,7 +397,7 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 		connectURL = worker.HTTPAddr
 	}
 
-	// Issue a fresh token
+	// Issue a fresh token (orgID already fetched above)
 	var token string
 	if s.jwtIssuer != nil {
 		t, err := s.jwtIssuer.IssueSandboxToken(orgID, sandboxID, session.WorkerID, 24*time.Hour)
@@ -295,12 +416,21 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 		"startedAt":  session.StartedAt,
 		"template":   session.Template,
 	}
+	if s.sandboxDomain != "" {
+		resp["domain"] = fmt.Sprintf("%s.%s", sandboxID, s.sandboxDomain)
+	}
+	s.addGitInfoToMap(c.Request().Context(), resp, orgID)
 
 	return c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) killSandbox(c echo.Context) error {
 	id := c.Param("id")
+
+	// Verify the caller owns this sandbox
+	if _, err := s.requireSandboxOwnership(c, id); err != nil {
+		return err
+	}
 
 	// Server mode with worker registry: dispatch destroy via gRPC
 	if s.workerRegistry != nil {
@@ -384,6 +514,36 @@ func (s *Server) listSandboxes(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
+	// If PG is available, only return sandboxes owned by this org
+	orgID, hasOrg := auth.GetOrgID(c)
+	if hasOrg && s.store != nil {
+		sessions, err := s.store.ListSandboxSessions(c.Request().Context(), orgID, "running", 100, 0)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
+		// Build a set of sandbox IDs belonging to this org
+		ownedIDs := make(map[string]bool, len(sessions))
+		for _, sess := range sessions {
+			ownedIDs[sess.SandboxID] = true
+		}
+
+		allSandboxes, err := s.manager.List(c.Request().Context())
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
+		filtered := make([]types.Sandbox, 0)
+		for _, sb := range allSandboxes {
+			if ownedIDs[sb.ID] {
+				filtered = append(filtered, sb)
+			}
+		}
+		return c.JSON(http.StatusOK, filtered)
+	}
+
 	sandboxes, err := s.manager.List(c.Request().Context())
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -462,6 +622,11 @@ func (s *Server) setTimeout(c echo.Context) error {
 
 	id := c.Param("id")
 
+	// Verify the caller owns this sandbox
+	if _, err := s.requireSandboxOwnership(c, id); err != nil {
+		return err
+	}
+
 	var req types.TimeoutRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
@@ -483,6 +648,11 @@ func (s *Server) setTimeout(c echo.Context) error {
 func (s *Server) hibernateSandbox(c echo.Context) error {
 	id := c.Param("id")
 	ctx := c.Request().Context()
+
+	// Verify the caller owns this sandbox
+	if _, err := s.requireSandboxOwnership(c, id); err != nil {
+		return err
+	}
 
 	// Server mode: dispatch to worker via gRPC
 	if s.workerRegistry != nil {
@@ -594,6 +764,11 @@ func (s *Server) wakeSandbox(c echo.Context) error {
 
 	var req types.WakeRequest
 	_ = c.Bind(&req)
+
+	// Verify the caller owns this sandbox
+	if _, err := s.requireSandboxOwnership(c, id); err != nil {
+		return err
+	}
 
 	// Server mode: pick any worker, dispatch via gRPC
 	if s.workerRegistry != nil {

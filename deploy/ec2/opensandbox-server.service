@@ -1,0 +1,27 @@
+[Unit]
+Description=OpenSandbox Control Plane (server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/opensandbox-server
+Restart=always
+RestartSec=5
+Environment=HOME=/root
+Environment=OPENSANDBOX_MODE=server
+Environment=OPENSANDBOX_PORT=8080
+Environment=OPENSANDBOX_REGION=use2
+Environment=OPENSANDBOX_DATA_DIR=/data/sandboxes
+Environment=OPENSANDBOX_WORKER_ID=cp-use2-1
+Environment=OPENSANDBOX_HTTP_ADDR=http://3.135.246.117:8080
+Environment=OPENSANDBOX_SANDBOX_DOMAIN=workers.opensandbox.ai
+Environment=OPENSANDBOX_EC2_AMI=ami-0ea22d459a1061e56
+Environment=OPENSANDBOX_EC2_INSTANCE_TYPE=r7gd.metal
+Environment=OPENSANDBOX_EC2_IAM_INSTANCE_PROFILE=opensandbox-worker
+Environment=OPENSANDBOX_SECRETS_ARN=arn:aws:secretsmanager:us-east-2:739940681129:secret:opensandbox/server-vtN2Ez
+EnvironmentFile=-/etc/opensandbox/server.env
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

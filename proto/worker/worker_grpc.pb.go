@@ -32,6 +32,8 @@ const (
 	SandboxWorker_PTYStream_FullMethodName         = "/worker.SandboxWorker/PTYStream"
 	SandboxWorker_HibernateSandbox_FullMethodName  = "/worker.SandboxWorker/HibernateSandbox"
 	SandboxWorker_WakeSandbox_FullMethodName       = "/worker.SandboxWorker/WakeSandbox"
+	SandboxWorker_IsTAPAvailable_FullMethodName    = "/worker.SandboxWorker/IsTAPAvailable"
+	SandboxWorker_SaveAsTemplate_FullMethodName    = "/worker.SandboxWorker/SaveAsTemplate"
 	SandboxWorker_BuildTemplate_FullMethodName     = "/worker.SandboxWorker/BuildTemplate"
 	SandboxWorker_GetSandboxStats_FullMethodName   = "/worker.SandboxWorker/GetSandboxStats"
 )
@@ -53,6 +55,8 @@ type SandboxWorkerClient interface {
 	PTYStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PTYInput, PTYOutput], error)
 	HibernateSandbox(ctx context.Context, in *HibernateSandboxRequest, opts ...grpc.CallOption) (*HibernateSandboxResponse, error)
 	WakeSandbox(ctx context.Context, in *WakeSandboxRequest, opts ...grpc.CallOption) (*WakeSandboxResponse, error)
+	IsTAPAvailable(ctx context.Context, in *IsTAPAvailableRequest, opts ...grpc.CallOption) (*IsTAPAvailableResponse, error)
+	SaveAsTemplate(ctx context.Context, in *SaveAsTemplateRequest, opts ...grpc.CallOption) (*SaveAsTemplateResponse, error)
 	BuildTemplate(ctx context.Context, in *BuildTemplateRequest, opts ...grpc.CallOption) (*BuildTemplateResponse, error)
 	GetSandboxStats(ctx context.Context, in *GetSandboxStatsRequest, opts ...grpc.CallOption) (*GetSandboxStatsResponse, error)
 }
@@ -207,6 +211,26 @@ func (c *sandboxWorkerClient) WakeSandbox(ctx context.Context, in *WakeSandboxRe
 	return out, nil
 }
 
+func (c *sandboxWorkerClient) IsTAPAvailable(ctx context.Context, in *IsTAPAvailableRequest, opts ...grpc.CallOption) (*IsTAPAvailableResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IsTAPAvailableResponse)
+	err := c.cc.Invoke(ctx, SandboxWorker_IsTAPAvailable_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sandboxWorkerClient) SaveAsTemplate(ctx context.Context, in *SaveAsTemplateRequest, opts ...grpc.CallOption) (*SaveAsTemplateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SaveAsTemplateResponse)
+	err := c.cc.Invoke(ctx, SandboxWorker_SaveAsTemplate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *sandboxWorkerClient) BuildTemplate(ctx context.Context, in *BuildTemplateRequest, opts ...grpc.CallOption) (*BuildTemplateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BuildTemplateResponse)
@@ -244,6 +268,8 @@ type SandboxWorkerServer interface {
 	PTYStream(grpc.BidiStreamingServer[PTYInput, PTYOutput]) error
 	HibernateSandbox(context.Context, *HibernateSandboxRequest) (*HibernateSandboxResponse, error)
 	WakeSandbox(context.Context, *WakeSandboxRequest) (*WakeSandboxResponse, error)
+	IsTAPAvailable(context.Context, *IsTAPAvailableRequest) (*IsTAPAvailableResponse, error)
+	SaveAsTemplate(context.Context, *SaveAsTemplateRequest) (*SaveAsTemplateResponse, error)
 	BuildTemplate(context.Context, *BuildTemplateRequest) (*BuildTemplateResponse, error)
 	GetSandboxStats(context.Context, *GetSandboxStatsRequest) (*GetSandboxStatsResponse, error)
 	mustEmbedUnimplementedSandboxWorkerServer()
@@ -294,6 +320,12 @@ func (UnimplementedSandboxWorkerServer) HibernateSandbox(context.Context, *Hiber
 }
 func (UnimplementedSandboxWorkerServer) WakeSandbox(context.Context, *WakeSandboxRequest) (*WakeSandboxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method WakeSandbox not implemented")
+}
+func (UnimplementedSandboxWorkerServer) IsTAPAvailable(context.Context, *IsTAPAvailableRequest) (*IsTAPAvailableResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IsTAPAvailable not implemented")
+}
+func (UnimplementedSandboxWorkerServer) SaveAsTemplate(context.Context, *SaveAsTemplateRequest) (*SaveAsTemplateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SaveAsTemplate not implemented")
 }
 func (UnimplementedSandboxWorkerServer) BuildTemplate(context.Context, *BuildTemplateRequest) (*BuildTemplateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BuildTemplate not implemented")
@@ -538,6 +570,42 @@ func _SandboxWorker_WakeSandbox_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SandboxWorker_IsTAPAvailable_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IsTAPAvailableRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxWorkerServer).IsTAPAvailable(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxWorker_IsTAPAvailable_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxWorkerServer).IsTAPAvailable(ctx, req.(*IsTAPAvailableRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SandboxWorker_SaveAsTemplate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SaveAsTemplateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxWorkerServer).SaveAsTemplate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxWorker_SaveAsTemplate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxWorkerServer).SaveAsTemplate(ctx, req.(*SaveAsTemplateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SandboxWorker_BuildTemplate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BuildTemplateRequest)
 	if err := dec(in); err != nil {
@@ -624,6 +692,14 @@ var SandboxWorker_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "WakeSandbox",
 			Handler:    _SandboxWorker_WakeSandbox_Handler,
+		},
+		{
+			MethodName: "IsTAPAvailable",
+			Handler:    _SandboxWorker_IsTAPAvailable_Handler,
+		},
+		{
+			MethodName: "SaveAsTemplate",
+			Handler:    _SandboxWorker_SaveAsTemplate_Handler,
 		},
 		{
 			MethodName: "BuildTemplate",
