@@ -9,7 +9,7 @@ import (
 
 	ptylib "github.com/creack/pty"
 	"github.com/google/uuid"
-	"github.com/opensandbox/opensandbox/pkg/types"
+	"github.com/opencomputer/opencomputer/pkg/types"
 )
 
 // PTYManager manages PTY sessions.

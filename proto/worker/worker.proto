@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package worker;
 
-option go_package = "github.com/opensandbox/opensandbox/proto/worker";
+option go_package = "github.com/opencomputer/opencomputer/proto/worker";
 
 service SandboxWorker {
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);

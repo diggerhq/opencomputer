@@ -1,8 +1,8 @@
-# OpenSandbox Service API Documentation
+# OpenComputer Service API Documentation
 
 ## Overview
 
-OpenSandbox Service provides on-demand sandbox VMs with instant filesystem snapshots. Authentication is service-level — one API key for all operations.
+OpenComputer Service provides on-demand sandbox VMs with instant filesystem snapshots. Authentication is service-level — one API key for all operations.
 
 **Base URL:** `http://localhost:4000`
 

@@ -1,4 +1,4 @@
-# Ubuntu base rootfs for OpenSandbox Firecracker VMs
+# Ubuntu base rootfs for OpenComputer Firecracker VMs
 # Build: scripts/build-rootfs.sh ubuntu
 FROM ubuntu:22.04
 

@@ -1,4 +1,4 @@
-# Dockerfile.full - Build from repo root to include OpenSandbox SDK
+# Dockerfile.full - Build from repo root to include OpenComputer SDK
 # Usage: docker build -f examples/claude-agent-sdk-test/Dockerfile.full -t claude-sandbox-test .
 
 FROM python:3.11-slim
@@ -22,9 +22,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 RUN npm install -g @anthropic-ai/claude-code 2>/dev/null || \
     echo "Note: Claude Code npm package not available, will test without it"
 
-# Copy and install the OpenSandbox Python SDK
-COPY sdk/python /app/opensandbox-sdk
-RUN pip install --no-cache-dir /app/opensandbox-sdk
+# Copy and install the OpenComputer Python SDK
+COPY sdk/python /app/opencomputer-sdk
+RUN pip install --no-cache-dir /app/opencomputer-sdk
 
 # Install additional Python dependencies
 RUN pip install --no-cache-dir \

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Main benchmark runner for OpenSandbox vs E2B comparison.
+Main benchmark runner for OpenComputer vs E2B comparison.
 
 Usage:
     python run_benchmarks.py                    # Run all benchmarks for both providers
-    python run_benchmarks.py --provider opensandbox  # Only test opensandbox
+    python run_benchmarks.py --provider opencomputer  # Only test opencomputer
     python run_benchmarks.py --only creation commands  # Only run specific benchmarks
     python run_benchmarks.py --iterations 5     # Run 5 iterations per test
 """
@@ -33,8 +33,8 @@ BENCHMARKS = {
 }
 
 
-def check_opensandbox_available(url: str) -> bool:
-    """Check if OpenSandbox server is running."""
+def check_opencomputer_available(url: str) -> bool:
+    """Check if OpenComputer server is running."""
     import httpx
     try:
         response = httpx.get(f"{url}/health", timeout=5)
@@ -252,14 +252,14 @@ def generate_markdown_report(results: dict, output_path: Path) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run OpenSandbox vs E2B benchmarks",
+        description="Run OpenComputer vs E2B benchmarks",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python run_benchmarks.py                              # Run all benchmarks (HTTP, gRPC, E2B)
-  python run_benchmarks.py --provider opensandbox       # Test opensandbox with gRPC
-  python run_benchmarks.py --provider opensandbox-http  # Test opensandbox with HTTP only
-  python run_benchmarks.py --provider opensandbox-grpc  # Test opensandbox with gRPC only
+  python run_benchmarks.py --provider opencomputer       # Test opencomputer with gRPC
+  python run_benchmarks.py --provider opencomputer-http  # Test opencomputer with HTTP only
+  python run_benchmarks.py --provider opencomputer-grpc  # Test opencomputer with gRPC only
   python run_benchmarks.py --only creation              # Only creation benchmark
   python run_benchmarks.py --iterations 5               # 5 iterations per test
         """
@@ -267,9 +267,9 @@ Examples:
 
     parser.add_argument(
         "--provider",
-        choices=["opensandbox", "opensandbox-http", "opensandbox-grpc", "e2b", "all"],
+        choices=["opencomputer", "opencomputer-http", "opencomputer-grpc", "e2b", "all"],
         default="all",
-        help="Which provider to benchmark: opensandbox (gRPC), opensandbox-http, opensandbox-grpc, e2b, all (default: all)"
+        help="Which provider to benchmark: opencomputer (gRPC), opencomputer-http, opencomputer-grpc, e2b, all (default: all)"
     )
     parser.add_argument(
         "--only",
@@ -285,9 +285,9 @@ Examples:
         help="Number of iterations per benchmark (default: 3)"
     )
     parser.add_argument(
-        "--opensandbox-url",
-        default=os.environ.get("OPENSANDBOX_URL", "https://opensandbox-test.fly.dev"),
-        help="OpenSandbox server URL"
+        "--opencomputer-url",
+        default=os.environ.get("OPENCOMPUTER_URL", "https://opencomputer-test.fly.dev"),
+        help="OpenComputer server URL"
     )
     parser.add_argument(
         "--output-dir",
@@ -299,25 +299,25 @@ Examples:
 
     # Determine which providers to test
     providers = []
-    opensandbox_providers = ["opensandbox", "opensandbox-http", "opensandbox-grpc"]
+    opencomputer_providers = ["opencomputer", "opencomputer-http", "opencomputer-grpc"]
 
-    # Check if we need to test any opensandbox variant
-    if args.provider in opensandbox_providers or args.provider == "all":
-        if check_opensandbox_available(args.opensandbox_url):
+    # Check if we need to test any opencomputer variant
+    if args.provider in opencomputer_providers or args.provider == "all":
+        if check_opencomputer_available(args.opencomputer_url):
             if args.provider == "all":
                 # Test both HTTP and gRPC when running all
-                providers.extend(["opensandbox-http", "opensandbox-grpc"])
-                print(f"✓ OpenSandbox available at {args.opensandbox_url} (testing HTTP and gRPC)")
-            elif args.provider == "opensandbox":
-                # Default "opensandbox" uses gRPC
-                providers.append("opensandbox-grpc")
-                print(f"✓ OpenSandbox available at {args.opensandbox_url} (using gRPC)")
+                providers.extend(["opencomputer-http", "opencomputer-grpc"])
+                print(f"✓ OpenComputer available at {args.opencomputer_url} (testing HTTP and gRPC)")
+            elif args.provider == "opencomputer":
+                # Default "opencomputer" uses gRPC
+                providers.append("opencomputer-grpc")
+                print(f"✓ OpenComputer available at {args.opencomputer_url} (using gRPC)")
             else:
                 providers.append(args.provider)
-                print(f"✓ OpenSandbox available at {args.opensandbox_url} (using {args.provider})")
+                print(f"✓ OpenComputer available at {args.opencomputer_url} (using {args.provider})")
         else:
-            print(f"✗ OpenSandbox not available at {args.opensandbox_url}")
-            if args.provider in opensandbox_providers:
+            print(f"✗ OpenComputer not available at {args.opencomputer_url}")
+            if args.provider in opencomputer_providers:
                 print("  Start it with: fly deploy")
                 sys.exit(1)
 
@@ -366,7 +366,7 @@ Examples:
                 result = bench_module.run_benchmark(
                     provider,
                     iterations=args.iterations,
-                    base_url=args.opensandbox_url
+                    base_url=args.opencomputer_url
                 )
                 results["benchmarks"][bench_name][provider] = result.to_dict()
             except Exception as e:

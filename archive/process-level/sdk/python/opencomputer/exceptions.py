@@ -1,22 +1,22 @@
-"""Custom exceptions for the OpenSandbox SDK."""
+"""Custom exceptions for the OpenComputer SDK."""
 
 
-class OpenSandboxError(Exception):
-    """Base exception for OpenSandbox errors."""
+class OpenComputerError(Exception):
+    """Base exception for OpenComputer errors."""
     pass
 
 
-class SandboxNotFoundError(OpenSandboxError):
+class SandboxNotFoundError(OpenComputerError):
     """Raised when a sandbox session is not found."""
     pass
 
 
-class SandboxConnectionError(OpenSandboxError):
+class SandboxConnectionError(OpenComputerError):
     """Raised when connection to the sandbox server fails."""
     pass
 
 
-class CommandExecutionError(OpenSandboxError):
+class CommandExecutionError(OpenComputerError):
     """Raised when a command execution fails."""
 
     def __init__(self, message: str, exit_code: int = 1, stdout: str = "", stderr: str = ""):
@@ -26,6 +26,6 @@ class CommandExecutionError(OpenSandboxError):
         self.stderr = stderr
 
 
-class FileOperationError(OpenSandboxError):
+class FileOperationError(OpenComputerError):
     """Raised when a file operation fails."""
     pass

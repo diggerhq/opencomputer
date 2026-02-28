@@ -70,7 +70,7 @@ check_prereqs() {
 generate_init_script() {
     cat << 'INIT_EOF'
 #!/bin/busybox sh
-# OpenSandbox VM init script
+# OpenComputer VM init script
 # Runs as PID 1 inside the Firecracker microVM
 
 # Mount virtual filesystems
@@ -153,7 +153,7 @@ build_image() {
     tmpdir=$(mktemp -d /tmp/osb-rootfs-XXXXXXXX)
     trap "rm -rf $tmpdir" RETURN
 
-    local image_tag="localhost/opensandbox-rootfs/${name}:build"
+    local image_tag="localhost/opencomputer-rootfs/${name}:build"
 
     # Copy Dockerfile to build context
     cp "$dockerfile" "$tmpdir/Dockerfile"
@@ -169,7 +169,7 @@ build_image() {
     # Append agent/init injection to Dockerfile
     cat >> "$tmpdir/Dockerfile" << 'INJECT_EOF'
 
-# --- OpenSandbox agent injection ---
+# --- OpenComputer agent injection ---
 COPY osb-agent /usr/local/bin/osb-agent
 RUN chmod +x /usr/local/bin/osb-agent
 COPY init /sbin/init

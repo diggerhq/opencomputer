@@ -1,5 +1,5 @@
 [Unit]
-Description=OpenSandbox Worker
+Description=OpenComputer Worker
 After=network-online.target
 Wants=network-online.target
 
@@ -11,14 +11,14 @@ ExecStartPre=/sbin/modprobe tcp_diag
 ExecStartPre=/sbin/modprobe udp_diag
 ExecStartPre=/sbin/modprobe unix_diag
 ExecStartPre=/sbin/modprobe netlink_diag
-ExecStart=/usr/local/bin/opensandbox-worker
+ExecStart=/usr/local/bin/opencomputer-worker
 Restart=always
 RestartSec=5
 
 # Secrets and instance-specific config are loaded from an env file.
-# Copy deploy/ec2/worker.env.example to /etc/opensandbox/worker.env
+# Copy deploy/ec2/worker.env.example to /etc/opencomputer/worker.env
 # and fill in values for your deployment.
-EnvironmentFile=/etc/opensandbox/worker.env
+EnvironmentFile=/etc/opencomputer/worker.env
 
 [Install]
 WantedBy=multi-user.target

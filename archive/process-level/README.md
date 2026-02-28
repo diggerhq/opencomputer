@@ -1,4 +1,4 @@
-# OpenSandbox - Linux Sandbox with HTTP API
+# OpenComputer - Linux Sandbox with HTTP API
 
 A Rust implementation of a Linux sandbox that runs commands in isolated environments with namespace separation, resource limits, and optional stateful sessions.
 
@@ -127,7 +127,7 @@ curl -X POST http://localhost:8080/sessions/{id}/cwd \
 The binary also supports direct CLI execution:
 
 ```bash
-sudo ./opensandbox --run --time 1000 --mem 262144 -- /bin/echo "hello"
+sudo ./opencomputer --run --time 1000 --mem 262144 -- /bin/echo "hello"
 ```
 
 ## Available Tools
@@ -188,7 +188,7 @@ The sandbox includes:
 cargo build --release
 
 # Run (requires root)
-sudo ./target/release/opensandbox serve --port 8080
+sudo ./target/release/opencomputer serve --port 8080
 ```
 
 ## Session Lifecycle
@@ -209,7 +209,7 @@ fly auth login
 
 2. Create `fly.toml` in the project root:
 ```toml
-app = "opensandbox"
+app = "opencomputer"
 primary_region = "ord"
 
 [build]
@@ -255,33 +255,33 @@ curl https://your-app-name.fly.dev/health
 
 See [benchmarks/](./benchmarks/) for full performance comparisons with E2B.
 
-**Summary (OpenSandbox gRPC vs E2B Cloud):**
+**Summary (OpenComputer gRPC vs E2B Cloud):**
 
-| Metric | OpenSandbox | E2B | Winner |
+| Metric | OpenComputer | E2B | Winner |
 |--------|-------------|-----|--------|
-| Sandbox creation | 120ms | 232ms | **OpenSandbox 1.9x faster** |
-| Command execution | 28ms | 52ms | **OpenSandbox 1.9x faster** |
-| File write | 10ms | 34ms | **OpenSandbox 3.4x faster** |
-| File read | 9ms | 50ms | **OpenSandbox 5.5x faster** |
-| Git clone workflow | 756ms | 1322ms | **OpenSandbox 1.7x faster** |
-| Concurrency (8x) | 27.5/sec | 11.8/sec | **OpenSandbox 2.3x faster** |
+| Sandbox creation | 120ms | 232ms | **OpenComputer 1.9x faster** |
+| Command execution | 28ms | 52ms | **OpenComputer 1.9x faster** |
+| File write | 10ms | 34ms | **OpenComputer 3.4x faster** |
+| File read | 9ms | 50ms | **OpenComputer 5.5x faster** |
+| Git clone workflow | 756ms | 1322ms | **OpenComputer 1.7x faster** |
+| Concurrency (8x) | 27.5/sec | 11.8/sec | **OpenComputer 2.3x faster** |
 
-**OpenSandbox wins every category** with the gRPC SDK and edge deployment.
+**OpenComputer wins every category** with the gRPC SDK and edge deployment.
 
 ## Python SDK
 
 Install the SDK for high-performance gRPC access:
 
 ```bash
-pip install opensandbox  # or: pip install -e sdk/python
+pip install opencomputer  # or: pip install -e sdk/python
 ```
 
 Usage:
 
 ```python
-from opensandbox import OpenSandbox
+from opencomputer import OpenComputer
 
-async with OpenSandbox("https://your-server.fly.dev") as client:
+async with OpenComputer("https://your-server.fly.dev") as client:
     sandbox = await client.create()
 
     # Run commands (fast - uses gRPC)

@@ -11,18 +11,18 @@ import (
 
 	"time"
 
-	"github.com/opensandbox/opensandbox/internal/api"
-	"github.com/opensandbox/opensandbox/internal/auth"
-	"github.com/opensandbox/opensandbox/internal/cloudflare"
-	"github.com/opensandbox/opensandbox/internal/compute"
-	"github.com/opensandbox/opensandbox/internal/config"
-	"github.com/opensandbox/opensandbox/internal/controlplane"
-	"github.com/opensandbox/opensandbox/internal/db"
-	"github.com/opensandbox/opensandbox/internal/ecr"
-	"github.com/opensandbox/opensandbox/internal/podman"
-	"github.com/opensandbox/opensandbox/internal/proxy"
-	"github.com/opensandbox/opensandbox/internal/sandbox"
-	"github.com/opensandbox/opensandbox/internal/storage"
+	"github.com/opencomputer/opencomputer/internal/api"
+	"github.com/opencomputer/opencomputer/internal/auth"
+	"github.com/opencomputer/opencomputer/internal/cloudflare"
+	"github.com/opencomputer/opencomputer/internal/compute"
+	"github.com/opencomputer/opencomputer/internal/config"
+	"github.com/opencomputer/opencomputer/internal/controlplane"
+	"github.com/opencomputer/opencomputer/internal/db"
+	"github.com/opencomputer/opencomputer/internal/ecr"
+	"github.com/opencomputer/opencomputer/internal/podman"
+	"github.com/opencomputer/opencomputer/internal/proxy"
+	"github.com/opencomputer/opencomputer/internal/sandbox"
+	"github.com/opencomputer/opencomputer/internal/storage"
 )
 
 func main() {
@@ -39,7 +39,7 @@ func main() {
 	podmanClient, err := podman.NewClient()
 	if err != nil {
 		if cfg.Mode == "server" {
-			log.Printf("opensandbox: podman not available (server-only mode, sandbox execution disabled): %v", err)
+			log.Printf("opencomputer: podman not available (server-only mode, sandbox execution disabled): %v", err)
 		} else {
 			log.Fatalf("failed to initialize podman: %v", err)
 		}
@@ -47,12 +47,12 @@ func main() {
 		version, err := podmanClient.Version(ctx)
 		if err != nil {
 			if cfg.Mode == "server" {
-				log.Printf("opensandbox: podman not responding (server-only mode, sandbox execution disabled): %v", err)
+				log.Printf("opencomputer: podman not responding (server-only mode, sandbox execution disabled): %v", err)
 			} else {
 				log.Fatalf("failed to get podman version: %v", err)
 			}
 		} else {
-			log.Printf("opensandbox: using podman %s", version)
+			log.Printf("opencomputer: using podman %s", version)
 
 			mgr = sandbox.NewManager(podmanClient,
 				sandbox.WithDataDir(cfg.DataDir),
@@ -84,28 +84,28 @@ func main() {
 		}
 		defer store.Close()
 
-		log.Println("opensandbox: running database migrations...")
+		log.Println("opencomputer: running database migrations...")
 		if err := store.Migrate(ctx); err != nil {
 			log.Fatalf("failed to run migrations: %v", err)
 		}
-		log.Println("opensandbox: database migrations complete")
+		log.Println("opencomputer: database migrations complete")
 
 		opts.Store = store
 	} else {
-		log.Println("opensandbox: no DATABASE_URL configured, running without PostgreSQL")
+		log.Println("opencomputer: no DATABASE_URL configured, running without PostgreSQL")
 	}
 
 	// Initialize JWT issuer if configured
 	if cfg.JWTSecret != "" {
 		opts.JWTIssuer = auth.NewJWTIssuer(cfg.JWTSecret)
-		log.Println("opensandbox: JWT issuer configured")
+		log.Println("opencomputer: JWT issuer configured")
 	}
 
 	// Initialize per-sandbox SQLite manager
 	sandboxDBMgr := sandbox.NewSandboxDBManager(cfg.DataDir)
 	defer sandboxDBMgr.Close()
 	opts.SandboxDBs = sandboxDBMgr
-	log.Printf("opensandbox: SQLite data directory: %s", cfg.DataDir)
+	log.Printf("opencomputer: SQLite data directory: %s", cfg.DataDir)
 
 	// Configure WorkOS if credentials are set
 	if cfg.WorkOSAPIKey != "" && cfg.WorkOSClientID != "" {
@@ -116,7 +116,7 @@ func main() {
 			CookieDomain: cfg.WorkOSCookieDomain,
 			FrontendURL:  cfg.WorkOSFrontendURL,
 		}
-		log.Println("opensandbox: WorkOS authentication configured")
+		log.Println("opencomputer: WorkOS authentication configured")
 	}
 
 	// Initialize S3 checkpoint store for hibernation (if configured)
@@ -130,10 +130,10 @@ func main() {
 			ForcePathStyle:  cfg.S3ForcePathStyle,
 		})
 		if err != nil {
-			log.Printf("opensandbox: failed to initialize checkpoint store: %v (continuing without hibernation)", err)
+			log.Printf("opencomputer: failed to initialize checkpoint store: %v (continuing without hibernation)", err)
 		} else {
 			opts.CheckpointStore = checkpointStore
-			log.Printf("opensandbox: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
+			log.Printf("opencomputer: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
 		}
 	}
 
@@ -147,7 +147,7 @@ func main() {
 			SecretKey:  cfg.S3SecretAccessKey,
 		}
 		opts.ECRConfig = ecrCfg
-		log.Printf("opensandbox: ECR configured (registry=%s, repo=%s)", cfg.ECRRegistry, cfg.ECRRepository)
+		log.Printf("opencomputer: ECR configured (registry=%s, repo=%s)", cfg.ECRRegistry, cfg.ECRRepository)
 	}
 
 	// Initialize SandboxRouter for rolling timeouts, auto-wake, and command routing
@@ -162,14 +162,14 @@ func main() {
 			Store:           opts.Store,
 			WorkerID:        workerID,
 			OnHibernate: func(sandboxID string, result *sandbox.HibernateResult) {
-				log.Printf("opensandbox: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
+				log.Printf("opencomputer: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
 					sandboxID, result.CheckpointKey, result.SizeBytes)
 				if opts.Store != nil {
 					_ = opts.Store.UpdateSandboxSessionStatus(context.Background(), sandboxID, "hibernated", nil)
 				}
 			},
 			OnKill: func(sandboxID string) {
-				log.Printf("opensandbox: sandbox %s killed on timeout", sandboxID)
+				log.Printf("opencomputer: sandbox %s killed on timeout", sandboxID)
 				if opts.Store != nil {
 					_ = opts.Store.UpdateSandboxSessionStatus(context.Background(), sandboxID, "stopped", nil)
 				}
@@ -177,21 +177,21 @@ func main() {
 		})
 		defer sbRouter.Close()
 		opts.Router = sbRouter
-		log.Println("opensandbox: sandbox router initialized (rolling timeouts, auto-wake)")
+		log.Println("opencomputer: sandbox router initialized (rolling timeouts, auto-wake)")
 
 		// Initialize subdomain reverse proxy
 		if cfg.SandboxDomain != "" {
 			sbProxy := proxy.New(cfg.SandboxDomain, mgr, sbRouter)
 			opts.SandboxProxy = sbProxy
 			opts.SandboxDomain = cfg.SandboxDomain
-			log.Printf("opensandbox: subdomain proxy configured (*.%s)", cfg.SandboxDomain)
+			log.Printf("opencomputer: subdomain proxy configured (*.%s)", cfg.SandboxDomain)
 		}
 	}
 
 	// Set sandbox domain for API responses (works in both server and combined mode)
 	if cfg.SandboxDomain != "" && cfg.SandboxDomain != "localhost" {
 		opts.SandboxDomain = cfg.SandboxDomain
-		log.Printf("opensandbox: sandbox domain configured (%s)", cfg.SandboxDomain)
+		log.Printf("opencomputer: sandbox domain configured (%s)", cfg.SandboxDomain)
 	}
 
 	// Initialize Redis worker registry in server mode
@@ -205,7 +205,7 @@ func main() {
 		redisRegistry.Start()
 		defer redisRegistry.Stop()
 		opts.WorkerRegistry = redisRegistry
-		log.Println("opensandbox: Redis worker registry started")
+		log.Println("opencomputer: Redis worker registry started")
 	}
 
 	// Initialize EC2 compute pool + autoscaler (server mode with AWS configured)
@@ -223,7 +223,7 @@ func main() {
 			SecretsARN:         cfg.SecretsARN,
 		})
 		if err != nil {
-			log.Fatalf("opensandbox: failed to create EC2 pool: %v", err)
+			log.Fatalf("opencomputer: failed to create EC2 pool: %v", err)
 		}
 
 		scaler := controlplane.NewScaler(controlplane.ScalerConfig{
@@ -234,22 +234,22 @@ func main() {
 		})
 		scaler.Start()
 		defer scaler.Stop()
-		log.Printf("opensandbox: EC2 autoscaler started (ami=%s, type=%s)", cfg.EC2AMI, cfg.EC2InstanceType)
+		log.Printf("opencomputer: EC2 autoscaler started (ami=%s, type=%s)", cfg.EC2AMI, cfg.EC2InstanceType)
 	}
 
 	// Initialize control plane subdomain proxy (server mode only).
-	// Routes *.workers.opensandbox.ai requests to the correct worker
+	// Routes *.workers.opencomputer.ai requests to the correct worker
 	// by looking up sandbox → worker mapping in PG + Redis registry.
 	if cfg.Mode == "server" && cfg.SandboxDomain != "" && opts.Store != nil && redisRegistry != nil {
 		cpProxy := proxy.NewControlPlaneProxy(cfg.SandboxDomain, opts.Store, redisRegistry)
 		opts.ControlPlaneProxy = cpProxy
-		log.Printf("opensandbox: control plane subdomain proxy configured (*.%s)", cfg.SandboxDomain)
+		log.Printf("opencomputer: control plane subdomain proxy configured (*.%s)", cfg.SandboxDomain)
 	}
 
 	// Initialize Cloudflare client for custom hostnames (if configured)
 	if cfg.CFAPIToken != "" && cfg.CFZoneID != "" {
 		opts.CFClient = cloudflare.NewClient(cfg.CFAPIToken, cfg.CFZoneID)
-		log.Println("opensandbox: Cloudflare custom hostnames configured")
+		log.Println("opencomputer: Cloudflare custom hostnames configured")
 	}
 
 	// Create API server
@@ -259,13 +259,13 @@ func main() {
 	if opts.Store != nil && cfg.NATSURL != "" {
 		consumer, err := db.NewSyncConsumer(opts.Store, cfg.NATSURL)
 		if err != nil {
-			log.Printf("opensandbox: NATS sync consumer not available: %v (continuing without)", err)
+			log.Printf("opencomputer: NATS sync consumer not available: %v (continuing without)", err)
 		} else {
 			if err := consumer.Start(); err != nil {
-				log.Printf("opensandbox: failed to start NATS sync consumer: %v", err)
+				log.Printf("opencomputer: failed to start NATS sync consumer: %v", err)
 			} else {
 				defer consumer.Stop()
-				log.Println("opensandbox: NATS sync consumer started")
+				log.Println("opencomputer: NATS sync consumer started")
 			}
 		}
 	}
@@ -275,7 +275,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
-	log.Printf("opensandbox: starting server on %s (mode=%s)", addr, cfg.Mode)
+	log.Printf("opencomputer: starting server on %s (mode=%s)", addr, cfg.Mode)
 
 	go func() {
 		if err := server.Start(addr); err != nil {
@@ -284,7 +284,7 @@ func main() {
 	}()
 
 	<-quit
-	log.Println("opensandbox: shutting down...")
+	log.Println("opencomputer: shutting down...")
 	if err := server.Close(); err != nil {
 		log.Printf("error closing server: %v", err)
 	}

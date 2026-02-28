@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/opensandbox/opensandbox/internal/podman"
-	"github.com/opensandbox/opensandbox/internal/storage"
-	"github.com/opensandbox/opensandbox/pkg/types"
+	"github.com/opencomputer/opencomputer/internal/podman"
+	"github.com/opencomputer/opencomputer/internal/storage"
+	"github.com/opencomputer/opencomputer/pkg/types"
 )
 
 // HibernateResult holds the result of a hibernate operation.

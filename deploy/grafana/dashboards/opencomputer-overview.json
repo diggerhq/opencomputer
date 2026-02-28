@@ -1,7 +1,7 @@
 {
   "dashboard": {
-    "title": "OpenSandbox Overview",
-    "uid": "opensandbox-overview",
+    "title": "OpenComputer Overview",
+    "uid": "opencomputer-overview",
     "panels": [
       {
         "title": "Active Sandboxes",
@@ -9,7 +9,7 @@
         "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
         "targets": [
           {
-            "expr": "sum(opensandbox_sandboxes_active)",
+            "expr": "sum(opencomputer_sandboxes_active)",
             "legendFormat": "Total Active"
           }
         ]
@@ -20,7 +20,7 @@
         "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
         "targets": [
           {
-            "expr": "sum by (region) (opensandbox_sandboxes_active)",
+            "expr": "sum by (region) (opencomputer_sandboxes_active)",
             "legendFormat": "{{region}}"
           }
         ]
@@ -31,11 +31,11 @@
         "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
         "targets": [
           {
-            "expr": "histogram_quantile(0.95, sum(rate(opensandbox_sandbox_create_duration_seconds_bucket[5m])) by (le, region))",
+            "expr": "histogram_quantile(0.95, sum(rate(opencomputer_sandbox_create_duration_seconds_bucket[5m])) by (le, region))",
             "legendFormat": "p95 {{region}}"
           },
           {
-            "expr": "histogram_quantile(0.50, sum(rate(opensandbox_sandbox_create_duration_seconds_bucket[5m])) by (le, region))",
+            "expr": "histogram_quantile(0.50, sum(rate(opencomputer_sandbox_create_duration_seconds_bucket[5m])) by (le, region))",
             "legendFormat": "p50 {{region}}"
           }
         ]
@@ -46,7 +46,7 @@
         "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
         "targets": [
           {
-            "expr": "avg(opensandbox_worker_utilization)",
+            "expr": "avg(opencomputer_worker_utilization)",
             "legendFormat": "Avg Utilization"
           }
         ]
@@ -57,7 +57,7 @@
         "gridPos": {"h": 4, "w": 12, "x": 12, "y": 0},
         "targets": [
           {
-            "expr": "opensandbox_workers_total",
+            "expr": "opencomputer_workers_total",
             "legendFormat": "{{region}} {{status}}"
           }
         ]
@@ -68,11 +68,11 @@
         "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
         "targets": [
           {
-            "expr": "histogram_quantile(0.95, sum(rate(opensandbox_exec_duration_seconds_bucket[5m])) by (le))",
+            "expr": "histogram_quantile(0.95, sum(rate(opencomputer_exec_duration_seconds_bucket[5m])) by (le))",
             "legendFormat": "p95"
           },
           {
-            "expr": "histogram_quantile(0.50, sum(rate(opensandbox_exec_duration_seconds_bucket[5m])) by (le))",
+            "expr": "histogram_quantile(0.50, sum(rate(opencomputer_exec_duration_seconds_bucket[5m])) by (le))",
             "legendFormat": "p50"
           }
         ]
@@ -83,7 +83,7 @@
         "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
         "targets": [
           {
-            "expr": "sum by (region) (opensandbox_pty_sessions_active)",
+            "expr": "sum by (region) (opencomputer_pty_sessions_active)",
             "legendFormat": "{{region}}"
           }
         ]
@@ -94,7 +94,7 @@
         "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
         "targets": [
           {
-            "expr": "sum(rate(opensandbox_http_requests_total[5m])) by (method, path)",
+            "expr": "sum(rate(opencomputer_http_requests_total[5m])) by (method, path)",
             "legendFormat": "{{method}} {{path}}"
           }
         ]
@@ -105,7 +105,7 @@
         "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
         "targets": [
           {
-            "expr": "opensandbox_sqlite_sync_lag_seconds",
+            "expr": "opencomputer_sqlite_sync_lag_seconds",
             "legendFormat": "{{worker_id}}"
           }
         ]
@@ -116,7 +116,7 @@
         "gridPos": {"h": 8, "w": 24, "x": 0, "y": 28},
         "targets": [
           {
-            "expr": "sum(rate(opensandbox_scale_events_total[5m])) by (region, direction)",
+            "expr": "sum(rate(opencomputer_scale_events_total[5m])) by (region, direction)",
             "legendFormat": "{{region}} {{direction}}"
           }
         ]

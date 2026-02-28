@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	pb "github.com/opensandbox/opensandbox/proto/agent"
+	pb "github.com/opencomputer/opencomputer/proto/agent"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

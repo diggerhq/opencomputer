@@ -1,5 +1,5 @@
 /**
- * OpenSandbox client for creating and managing sandbox sessions.
+ * OpenComputer client for creating and managing sandbox sessions.
  */
 
 import * as grpc from '@grpc/grpc-js';
@@ -20,14 +20,14 @@ interface ProtoGrpcType {
 }
 
 /**
- * Client for connecting to an OpenSandbox server.
+ * Client for connecting to an OpenComputer server.
  *
  * This client uses HTTP for sandbox lifecycle (create/destroy) and
  * optionally gRPC for fast command execution and file operations.
  *
  * @example
  * ```typescript
- * const client = new OpenSandbox('http://localhost:8080');
+ * const client = new OpenComputer('http://localhost:8080');
  * const sandbox = await client.create();
  * const result = await sandbox.run('echo hello');
  * console.log(result.stdout); // "hello\n"
@@ -35,7 +35,7 @@ interface ProtoGrpcType {
  * await client.close();
  * ```
  */
-export class OpenSandbox {
+export class OpenComputer {
   private _baseUrl: string;
   private _grpcPort: number;
   private _grpcInsecure: boolean;
@@ -46,9 +46,9 @@ export class OpenSandbox {
   private _grpcSecure: boolean;
 
   /**
-   * Initialize the OpenSandbox client.
+   * Initialize the OpenComputer client.
    *
-   * @param baseUrl - Base URL of the OpenSandbox server (e.g., "http://localhost:8080")
+   * @param baseUrl - Base URL of the OpenComputer server (e.g., "http://localhost:8080")
    * @param options - Client options
    */
   constructor(baseUrl: string, options: ClientOptions = {}) {

@@ -36,10 +36,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/diggerhq/opensandbox"
-Repository = "https://github.com/diggerhq/opensandbox"
-Documentation = "https://github.com/diggerhq/opensandbox/tree/main/sdks/python"
-Issues = "https://github.com/diggerhq/opensandbox/issues"
+Homepage = "https://github.com/diggerhq/opencomputer"
+Repository = "https://github.com/diggerhq/opencomputer"
+Documentation = "https://github.com/diggerhq/opencomputer/tree/main/sdks/python"
+Issues = "https://github.com/diggerhq/opencomputer/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["opencomputer"]

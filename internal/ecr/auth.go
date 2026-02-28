@@ -15,7 +15,7 @@ import (
 // Config holds ECR connection settings.
 type Config struct {
 	Registry   string // e.g. "086971355112.dkr.ecr.us-east-2.amazonaws.com"
-	Repository string // e.g. "opensandbox-templates"
+	Repository string // e.g. "opencomputer-templates"
 	Region     string // e.g. "us-east-2"
 	AccessKey  string
 	SecretKey  string

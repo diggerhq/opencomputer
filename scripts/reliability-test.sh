@@ -5,13 +5,13 @@ set -uo pipefail
 # Usage: ./scripts/reliability-test.sh [iterations]
 
 ITERATIONS="${1:-10}"
-SERVER="https://app.opensandbox.ai"
+SERVER="https://app.opencomputer.ai"
 API_KEY="osb_600b1a9ba2e515c6e54141588da39204d5123cb4b1a28da22b7bd92b88be1534"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Export env vars for SDK tests
-export OPENSANDBOX_API_KEY="$API_KEY"
-export OPENSANDBOX_API_URL="$SERVER"
+export OPENCOMPUTER_API_KEY="$API_KEY"
+export OPENCOMPUTER_API_URL="$SERVER"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -67,7 +67,7 @@ for i in $(seq 1 "$ITERATIONS"); do
   cleanup_sandboxes
 
   # Light benchmark (gRPC, runs on worker)
-  run_test "$i" "bench-grpc" "bash ${REPO_DIR}/scripts/bench-grpc.sh ubuntu@18.117.11.151 ~/.ssh/opensandbox-digger.pem"
+  run_test "$i" "bench-grpc" "bash ${REPO_DIR}/scripts/bench-grpc.sh ubuntu@18.117.11.151 ~/.ssh/opencomputer-digger.pem"
 
   # Clean slate
   cleanup_sandboxes

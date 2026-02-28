@@ -28,7 +28,7 @@ jobs:
           go-version: '1.23'
 
       - name: Build worker binary
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ env.GOARCH }} go build -o bin/opensandbox-worker ./cmd/worker/
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ env.GOARCH }} go build -o bin/opencomputer-worker ./cmd/worker/
 
       - name: Build agent binary
         run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ env.GOARCH }} go build -o bin/osb-agent ./cmd/agent/
@@ -42,21 +42,21 @@ jobs:
 
       - name: Upload binaries
         run: |
-          scp -i ~/.ssh/deploy.pem bin/opensandbox-worker ${{ env.SSH_USER }}@${{ secrets.WORKER_IP }}:/tmp/opensandbox-worker
+          scp -i ~/.ssh/deploy.pem bin/opencomputer-worker ${{ env.SSH_USER }}@${{ secrets.WORKER_IP }}:/tmp/opencomputer-worker
           scp -i ~/.ssh/deploy.pem bin/osb-agent ${{ env.SSH_USER }}@${{ secrets.WORKER_IP }}:/tmp/osb-agent
 
       - name: Install and restart
         run: |
           ssh -i ~/.ssh/deploy.pem ${{ env.SSH_USER }}@${{ secrets.WORKER_IP }} '
-            sudo mv /tmp/opensandbox-worker /usr/local/bin/opensandbox-worker
-            sudo chmod +x /usr/local/bin/opensandbox-worker
+            sudo mv /tmp/opencomputer-worker /usr/local/bin/opencomputer-worker
+            sudo chmod +x /usr/local/bin/opencomputer-worker
             sudo mv /tmp/osb-agent /usr/local/bin/osb-agent
             sudo chmod +x /usr/local/bin/osb-agent
-            sudo systemctl restart opensandbox-worker
+            sudo systemctl restart opencomputer-worker
           '
 
       - name: Verify deployment
         run: |
           sleep 3
-          ssh -i ~/.ssh/deploy.pem ${{ env.SSH_USER }}@${{ secrets.WORKER_IP }} 'sudo systemctl is-active opensandbox-worker'
+          ssh -i ~/.ssh/deploy.pem ${{ env.SSH_USER }}@${{ secrets.WORKER_IP }} 'sudo systemctl is-active opencomputer-worker'
           echo "Worker deployed successfully!"

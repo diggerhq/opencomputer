@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opencomputer/opencomputer/internal/sandbox"
 )
 
 // EventPublisher publishes sandbox events from local SQLite to NATS JetStream.

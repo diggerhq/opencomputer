@@ -1,5 +1,5 @@
 /**
- * TypeScript type definitions for OpenSandbox SDK.
+ * TypeScript type definitions for OpenComputer SDK.
  */
 
 /**
@@ -45,7 +45,7 @@ export interface CreateOptions {
 }
 
 /**
- * Options for the OpenSandbox client.
+ * Options for the OpenComputer client.
  */
 export interface ClientOptions {
   /** gRPC port (default: 50051) */

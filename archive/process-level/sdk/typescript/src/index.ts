@@ -1,13 +1,13 @@
 /**
- * OpenSandbox TypeScript SDK
+ * OpenComputer TypeScript SDK
  *
- * A TypeScript SDK for interacting with OpenSandbox - secure code execution environments.
+ * A TypeScript SDK for interacting with OpenComputer - secure code execution environments.
  *
  * @example
  * ```typescript
- * import { OpenSandbox } from '@opensandbox/sdk';
+ * import { OpenComputer } from '@opencomputer/sdk';
  *
- * const client = new OpenSandbox('http://localhost:8080');
+ * const client = new OpenComputer('http://localhost:8080');
  * const sandbox = await client.create();
  *
  * // Run commands
@@ -30,7 +30,7 @@
  */
 
 // Main exports
-export { OpenSandbox } from './client';
+export { OpenComputer } from './client';
 export { Sandbox } from './sandbox';
 
 // Type exports
@@ -48,7 +48,7 @@ export type {
 
 // Error exports
 export {
-  OpenSandboxError,
+  OpenComputerError,
   SandboxNotFoundError,
   ConnectionError,
   CommandExecutionError,

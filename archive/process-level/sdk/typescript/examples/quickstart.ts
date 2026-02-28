@@ -1,5 +1,5 @@
 /**
- * OpenSandbox Quick Start Example
+ * OpenComputer Quick Start Example
  *
  * A minimal example showing basic usage of the SDK.
  *
@@ -7,13 +7,13 @@
  *   npx ts-node examples/quickstart.ts [server-url]
  */
 
-import { OpenSandbox } from '../src/index';
+import { OpenComputer } from '../src/index';
 
 const SERVER_URL = process.argv[2] || 'http://localhost:8080';
 
 async function main() {
   // Create client
-  const client = new OpenSandbox(SERVER_URL);
+  const client = new OpenComputer(SERVER_URL);
 
   // Create a sandbox session
   console.log('Creating sandbox...');
@@ -27,7 +27,7 @@ async function main() {
     // Run commands
     console.log('\n--- Running Commands ---');
 
-    const result = await sandbox.run('echo "Hello from OpenSandbox!" && date');
+    const result = await sandbox.run('echo "Hello from OpenComputer!" && date');
     console.log('Output:', result.stdout.trim());
 
     const lsResult = await sandbox.run('ls -la /');

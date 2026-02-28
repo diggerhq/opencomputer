@@ -5,7 +5,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 go build -o /opensandbox-worker ./cmd/worker
+RUN CGO_ENABLED=1 go build -o /opencomputer-worker ./cmd/worker
 
 # Build CRIU from source (Ubuntu 24.04 doesn't ship CRIU in repos)
 FROM ubuntu:24.04 AS criu-builder
@@ -106,7 +106,7 @@ RUN mkdir -p /etc/containers && \
     printf '[engine]\nruntime = "crun"\nevents_logger = "file"\n' \
     > /etc/containers/containers.conf
 
-COPY --from=builder /opensandbox-worker /usr/local/bin/opensandbox-worker
+COPY --from=builder /opencomputer-worker /usr/local/bin/opencomputer-worker
 
 EXPOSE 8080 9090 9091
-CMD ["opensandbox-worker"]
+CMD ["opencomputer-worker"]

@@ -241,7 +241,7 @@ fi
 # ─────────────────────────────────────────────────────────
 header "PHASE 3: Worker resource usage with ${SUCCESS} active sandboxes"
 
-ssh -i ~/.ssh/opensandbox-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@18.117.11.151 \
+ssh -i ~/.ssh/opencomputer-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@18.117.11.151 \
   "echo '=== Memory ===' && free -g && echo '' && \
    echo '=== Firecracker VMs ===' && ps aux | grep 'firecracker --api-sock' | grep -v grep | wc -l && echo '' && \
    echo '=== TAP devices ===' && ip link show | grep fc-tap | wc -l && echo '' && \
@@ -274,7 +274,7 @@ ok "All ${SUCCESS} sandboxes deleted in $((DEL_MS/1000))s"
 sleep 5
 
 info "Post-cleanup worker state:"
-ssh -i ~/.ssh/opensandbox-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@18.117.11.151 \
+ssh -i ~/.ssh/opencomputer-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@18.117.11.151 \
   "echo 'Firecracker VMs:' && ps aux | grep 'firecracker --api-sock' | grep -v grep | wc -l && \
    echo 'Memory:' && free -g | head -2" 2>/dev/null || true
 

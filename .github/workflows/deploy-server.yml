@@ -32,7 +32,7 @@ jobs:
           node-version: '20'
 
       - name: Build server binary
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ env.GOARCH }} go build -o bin/opensandbox-server ./cmd/server/
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ env.GOARCH }} go build -o bin/opencomputer-server ./cmd/server/
 
       - name: Build web dashboard
         run: cd web && npm ci && npm run build
@@ -49,24 +49,24 @@ jobs:
 
       - name: Upload artifacts
         run: |
-          scp -i ~/.ssh/deploy.pem bin/opensandbox-server ${{ env.SSH_USER }}@${{ secrets.SERVER_IP }}:/tmp/opensandbox-server
+          scp -i ~/.ssh/deploy.pem bin/opencomputer-server ${{ env.SSH_USER }}@${{ secrets.SERVER_IP }}:/tmp/opencomputer-server
           scp -i ~/.ssh/deploy.pem bin/web-dist.tar.gz ${{ env.SSH_USER }}@${{ secrets.SERVER_IP }}:/tmp/web-dist.tar.gz
 
       - name: Install and restart
         run: |
           ssh -i ~/.ssh/deploy.pem ${{ env.SSH_USER }}@${{ secrets.SERVER_IP }} '
-            sudo mv /tmp/opensandbox-server /usr/local/bin/opensandbox-server
-            sudo chmod +x /usr/local/bin/opensandbox-server
-            sudo mkdir -p /opt/opensandbox/web
-            sudo tar xzf /tmp/web-dist.tar.gz -C /opt/opensandbox/web
+            sudo mv /tmp/opencomputer-server /usr/local/bin/opencomputer-server
+            sudo chmod +x /usr/local/bin/opencomputer-server
+            sudo mkdir -p /opt/opencomputer/web
+            sudo tar xzf /tmp/web-dist.tar.gz -C /opt/opencomputer/web
             rm /tmp/web-dist.tar.gz
-            sudo systemctl restart opensandbox-server
+            sudo systemctl restart opencomputer-server
           '
 
       - name: Pull secrets from AWS Secrets Manager
         run: |
           ssh -i ~/.ssh/deploy.pem ${{ env.SSH_USER }}@${{ secrets.SERVER_IP }} '
-            SECRETS_ARN=$(grep OPENSANDBOX_SECRETS_ARN /etc/opensandbox/server.env 2>/dev/null | cut -d= -f2-) || true
+            SECRETS_ARN=$(grep OPENCOMPUTER_SECRETS_ARN /etc/opencomputer/server.env 2>/dev/null | cut -d= -f2-) || true
             if [ -n "$SECRETS_ARN" ]; then
               SECRETS_JSON=$(aws --region us-east-2 secretsmanager get-secret-value \
                 --secret-id "$SECRETS_ARN" --query SecretString --output text 2>&1) || {
@@ -78,7 +78,7 @@ jobs:
           secrets = json.load(sys.stdin)
           existing = {}
           try:
-              with open(\"/etc/opensandbox/server.env\") as f:
+              with open(\"/etc/opencomputer/server.env\") as f:
                   for line in f:
                       line = line.strip()
                       if line and not line.startswith(\"#\") and \"=\" in line:
@@ -90,7 +90,7 @@ jobs:
           with open(\"/tmp/server.env.new\", \"w\") as f:
               for k, v in existing.items():
                   f.write(f\"{k}={v}\n\")
-          " && sudo mv /tmp/server.env.new /etc/opensandbox/server.env
+          " && sudo mv /tmp/server.env.new /etc/opencomputer/server.env
               echo "Secrets merged."
             fi
           '
@@ -98,5 +98,5 @@ jobs:
       - name: Verify deployment
         run: |
           sleep 3
-          ssh -i ~/.ssh/deploy.pem ${{ env.SSH_USER }}@${{ secrets.SERVER_IP }} 'sudo systemctl is-active opensandbox-server'
+          ssh -i ~/.ssh/deploy.pem ${{ env.SSH_USER }}@${{ secrets.SERVER_IP }} 'sudo systemctl is-active opencomputer-server'
           echo "Server deployed successfully!"

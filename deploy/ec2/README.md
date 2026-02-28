@@ -9,7 +9,7 @@
 | crun | 1.26 | OCI runtime with +CRIU support |
 | Caddy | latest | Wildcard TLS for `*.workers.opencomputer.dev` (DNS-01 via Route53) |
 | Redis | 7.0.15 | Local, used for sandbox state/routing |
-| Go worker | custom | `/usr/local/bin/opensandbox-worker` |
+| Go worker | custom | `/usr/local/bin/opencomputer-worker` |
 
 ## Architecture
 
@@ -20,7 +20,7 @@ Internet
 Caddy (port 443) -- wildcard TLS for *.workers.opencomputer.dev (DNS-01 via Route53)
   |
   v
-opensandbox-worker (port 8080) -- HTTP API + gRPC (9090)
+opencomputer-worker (port 8080) -- HTTP API + gRPC (9090)
   |
   v
 Podman containers (osb-*) -- one per sandbox
@@ -33,7 +33,7 @@ CRIU checkpoint/restore -- hibernate to S3, wake on demand
 
 - `setup-instance.sh` - Full instance setup from a fresh Ubuntu 24.04 AMI
 - `deploy-worker.sh` - Build and deploy the worker binary (run from repo root)
-- `opensandbox-worker.service` - Systemd unit template (fill in env vars)
+- `opencomputer-worker.service` - Systemd unit template (fill in env vars)
 - `caddy.service` - Caddy systemd unit file
 - `Caddyfile` - Caddy configuration
 
@@ -44,17 +44,17 @@ CRIU checkpoint/restore -- hibernate to S3, wake on demand
 ./deploy/ec2/deploy-worker.sh
 
 # SSH into the instance
-ssh -i ~/.ssh/opensandbox-worker.pem ubuntu@$WORKER_IP
+ssh -i ~/.ssh/opencomputer-worker.pem ubuntu@$WORKER_IP
 
 # Check worker logs
-sudo journalctl -u opensandbox-worker -f
+sudo journalctl -u opencomputer-worker -f
 
 # Check caddy logs
 sudo journalctl -u caddy -f
 
 # Restart worker
-sudo systemctl restart opensandbox-worker
+sudo systemctl restart opencomputer-worker
 
 # List running sandboxes
-sudo podman ps --filter label=opensandbox.id
+sudo podman ps --filter label=opencomputer.id
 ```

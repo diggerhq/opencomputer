@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
-	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opencomputer/opencomputer/internal/db"
 )
 
 type contextKey string

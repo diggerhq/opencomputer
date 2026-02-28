@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/opensandbox/opensandbox/internal/podman"
-	"github.com/opensandbox/opensandbox/pkg/types"
+	"github.com/opencomputer/opencomputer/internal/podman"
+	"github.com/opencomputer/opencomputer/pkg/types"
 )
 
 const (
-	labelPrefix   = "opensandbox"
+	labelPrefix   = "opencomputer"
 	labelID       = labelPrefix + ".id"
 	labelTemplate = labelPrefix + ".template"
 	labelCreated  = labelPrefix + ".created"
@@ -300,7 +300,7 @@ func resolveTemplateImage(template string) string {
 		return "docker.io/library/node:20-slim"
 	default:
 		// Custom template: assume it's an image name tagged by the template system
-		return fmt.Sprintf("localhost/opensandbox-template/%s:latest", template)
+		return fmt.Sprintf("localhost/opencomputer-template/%s:latest", template)
 	}
 }
 

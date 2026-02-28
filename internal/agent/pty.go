@@ -10,7 +10,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/google/uuid"
-	pb "github.com/opensandbox/opensandbox/proto/agent"
+	pb "github.com/opencomputer/opencomputer/proto/agent"
 )
 
 // ptySession holds a live PTY session inside the VM.

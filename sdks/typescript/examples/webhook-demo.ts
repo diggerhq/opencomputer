@@ -1,5 +1,5 @@
 /**
- * OpenSandbox Webhook Demo
+ * OpenComputer Webhook Demo
  *
  * Demonstrates:
  *   1. Create a sandbox with a webhook server
@@ -86,7 +86,7 @@ server.listen(80, '0.0.0.0', () => {
 
 async function main() {
   bold("\n╔══════════════════════════════════════════════════╗");
-  bold("║       OpenSandbox Webhook Demo                   ║");
+  bold("║       OpenComputer Webhook Demo                   ║");
   bold("║       Webhooks that survive sleep                ║");
   bold("╚══════════════════════════════════════════════════╝\n");
 

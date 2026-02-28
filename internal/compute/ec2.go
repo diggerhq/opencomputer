@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	tagRole         = "opensandbox:role"
-	tagInstanceType = "opensandbox:instance-type"
-	tagDraining     = "opensandbox:draining"
+	tagRole         = "opencomputer:role"
+	tagInstanceType = "opencomputer:instance-type"
+	tagDraining     = "opencomputer:draining"
 )
 
 // EC2PoolConfig configures the EC2 compute pool.
@@ -90,7 +90,7 @@ func (p *EC2Pool) CreateMachine(ctx context.Context, opts MachineOpts) (*Machine
 			{
 				ResourceType: ec2types.ResourceTypeInstance,
 				Tags: []ec2types.Tag{
-					{Key: aws.String("Name"), Value: aws.String("opensandbox-worker")},
+					{Key: aws.String("Name"), Value: aws.String("opencomputer-worker")},
 					{Key: aws.String(tagRole), Value: aws.String("worker")},
 					{Key: aws.String(tagInstanceType), Value: aws.String(instanceType)},
 				},
@@ -265,16 +265,16 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 	sb.WriteString("#!/bin/bash\nset -euo pipefail\n\n")
 
 	// Write minimal env file — secrets come from Secrets Manager via IAM role
-	sb.WriteString("mkdir -p /etc/opensandbox\n")
-	sb.WriteString("cat > /etc/opensandbox/worker.env << 'ENVEOF'\n")
+	sb.WriteString("mkdir -p /etc/opencomputer\n")
+	sb.WriteString("cat > /etc/opencomputer/worker.env << 'ENVEOF'\n")
 	sb.WriteString("HOME=/root\n")
-	sb.WriteString("OPENSANDBOX_MODE=worker\n")
-	sb.WriteString(fmt.Sprintf("OPENSANDBOX_DATA_DIR=/data/sandboxes\n"))
+	sb.WriteString("OPENCOMPUTER_MODE=worker\n")
+	sb.WriteString(fmt.Sprintf("OPENCOMPUTER_DATA_DIR=/data/sandboxes\n"))
 	if opts.Region != "" {
-		sb.WriteString(fmt.Sprintf("OPENSANDBOX_REGION=%s\n", opts.Region))
+		sb.WriteString(fmt.Sprintf("OPENCOMPUTER_REGION=%s\n", opts.Region))
 	}
 	if p.cfg.SecretsARN != "" {
-		sb.WriteString(fmt.Sprintf("OPENSANDBOX_SECRETS_ARN=%s\n", p.cfg.SecretsARN))
+		sb.WriteString(fmt.Sprintf("OPENCOMPUTER_SECRETS_ARN=%s\n", p.cfg.SecretsARN))
 	}
 	sb.WriteString("ENVEOF\n\n")
 
@@ -287,7 +287,7 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 	sb.WriteString("fi\n\n")
 
 	// Start the worker service
-	sb.WriteString("systemctl restart opensandbox-worker\n")
+	sb.WriteString("systemctl restart opencomputer-worker\n")
 
 	return sb.String()
 }

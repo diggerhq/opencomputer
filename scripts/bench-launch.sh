@@ -187,15 +187,15 @@ else
 fi
 
 # Remove local checkpoint data
-ssh -i ~/.ssh/opensandbox-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 "ubuntu@${WORKER_IP}" \
+ssh -i ~/.ssh/opencomputer-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 "ubuntu@${WORKER_IP}" \
   "sudo find /data/sandboxes/checkpoints -name '*${SANDBOX_ID}*' -exec rm -rf {} + 2>/dev/null; echo 'purged'" 2>/dev/null || info "Could not purge on ${WORKER_IP}, trying other worker..."
 
 # Also try the other worker just in case
 if [[ "$WORKER_IP" == "18.117.11.151" ]]; then
-  ssh -i ~/.ssh/opensandbox-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@18.219.23.64 \
+  ssh -i ~/.ssh/opencomputer-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@18.219.23.64 \
     "sudo find /data/sandboxes/checkpoints -name '*${SANDBOX_ID}*' -exec rm -rf {} + 2>/dev/null; echo 'purged'" 2>/dev/null || true
 else
-  ssh -i ~/.ssh/opensandbox-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@18.117.11.151 \
+  ssh -i ~/.ssh/opencomputer-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@18.117.11.151 \
     "sudo find /data/sandboxes/checkpoints -name '*${SANDBOX_ID}*' -exec rm -rf {} + 2>/dev/null; echo 'purged'" 2>/dev/null || true
 fi
 

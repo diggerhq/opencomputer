@@ -1,4 +1,4 @@
-# OpenSandbox Service
+# OpenComputer Service
 
 Multi-runtime sandbox orchestrator with instant Btrfs snapshots.
 

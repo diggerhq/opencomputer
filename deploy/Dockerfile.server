@@ -15,7 +15,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 go build -o /opensandbox-server ./cmd/server
+RUN CGO_ENABLED=1 go build -o /opencomputer-server ./cmd/server
 
 # Stage 3: Runtime
 FROM debian:bookworm-slim
@@ -25,8 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /opensandbox-server /usr/local/bin/opensandbox-server
+COPY --from=builder /opencomputer-server /usr/local/bin/opencomputer-server
 COPY --from=frontend /web/dist /app/web/dist
 
 EXPOSE 8080
-CMD ["opensandbox-server"]
+CMD ["opencomputer-server"]

@@ -95,7 +95,7 @@ async def run_agent(
         llm_provider: LLM provider to use ("anthropic" or "openai")
         model: Specific model to use (None = use provider default)
         max_iterations: Max LLM iterations (None = use config default)
-        sandbox_provider: Sandbox provider ("opensandbox" or "e2b", None = use config default)
+        sandbox_provider: Sandbox provider ("opencomputer" or "e2b", None = use config default)
         
     Returns:
         Final state dict with results

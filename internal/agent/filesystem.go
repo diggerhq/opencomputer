@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	pb "github.com/opensandbox/opensandbox/proto/agent"
+	pb "github.com/opencomputer/opencomputer/proto/agent"
 )
 
 // ReadFile reads a file from the VM filesystem.

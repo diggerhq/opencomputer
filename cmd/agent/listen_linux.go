@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/opensandbox/opensandbox/internal/agent"
+	"github.com/opencomputer/opencomputer/internal/agent"
 	"golang.org/x/sys/unix"
 )
 

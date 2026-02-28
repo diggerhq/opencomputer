@@ -1,4 +1,4 @@
-"""Test script for the OpenSandbox Templates API.
+"""Test script for the OpenComputer Templates API.
 
 Templates are standalone — they're not accessed through a Sandbox instance.
 They let you build custom container images from Dockerfiles, which can then
@@ -21,8 +21,8 @@ import httpx
 
 
 async def main():
-    api_url = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("OPENSANDBOX_API_URL", "http://localhost:8080")
-    api_key = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("OPENSANDBOX_API_KEY", "")
+    api_url = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("OPENCOMPUTER_API_URL", "http://localhost:8080")
+    api_key = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("OPENCOMPUTER_API_KEY", "")
 
     api_url = api_url.rstrip("/")
     api_base = api_url if api_url.endswith("/api") else f"{api_url}/api"

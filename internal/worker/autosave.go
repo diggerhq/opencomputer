@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	fc "github.com/opensandbox/opensandbox/internal/firecracker"
-	"github.com/opensandbox/opensandbox/internal/sandbox"
+	fc "github.com/opencomputer/opencomputer/internal/firecracker"
+	"github.com/opencomputer/opencomputer/internal/sandbox"
 )
 
 // WorkspaceAutosaver periodically flushes filesystem buffers inside each

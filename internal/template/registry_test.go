@@ -3,7 +3,7 @@ package template
 import (
 	"testing"
 
-	"github.com/opensandbox/opensandbox/pkg/types"
+	"github.com/opencomputer/opencomputer/pkg/types"
 )
 
 func TestNewRegistry_HasDefaults(t *testing.T) {

@@ -1,4 +1,4 @@
-"""OpenSandbox client for creating and managing sandbox sessions."""
+"""OpenComputer client for creating and managing sandbox sessions."""
 
 from typing import Optional, Dict
 from urllib.parse import urlparse
@@ -10,14 +10,14 @@ from .sandbox import Sandbox
 from .exceptions import SandboxConnectionError
 
 
-class OpenSandbox:
-    """Client for connecting to an OpenSandbox server.
+class OpenComputer:
+    """Client for connecting to an OpenComputer server.
 
     This client uses HTTP for sandbox lifecycle (create/destroy) and
     gRPC for fast command execution and file operations.
 
     Usage:
-        async with OpenSandbox("https://opensandbox.example.com") as client:
+        async with OpenComputer("https://opencomputer.example.com") as client:
             sandbox = await client.create()
             result = await sandbox.run("echo hello")
             print(result.stdout)
@@ -32,10 +32,10 @@ class OpenSandbox:
         grpc_insecure: Optional[bool] = None,
         timeout: float = 30.0,
     ):
-        """Initialize the OpenSandbox client.
+        """Initialize the OpenComputer client.
 
         Args:
-            base_url: Base URL of the OpenSandbox server (e.g., "https://opensandbox.fly.dev").
+            base_url: Base URL of the OpenComputer server (e.g., "https://opencomputer.fly.dev").
             grpc_port: gRPC port (default: 50051). If None, uses 50051.
             grpc_insecure: Force insecure gRPC even with HTTPS. Useful for Fly.io where
                           gRPC is exposed as raw TCP. If None, auto-detects from URL scheme.

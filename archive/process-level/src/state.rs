@@ -49,7 +49,7 @@ pub type Sessions = Arc<RwLock<HashMap<String, Session>>>;
 #[derive(Clone)]
 pub struct AppState {
     pub sessions: Sessions,
-    /// Preview domain for generating preview URLs (e.g., "preview.opensandbox.fly.dev")
+    /// Preview domain for generating preview URLs (e.g., "preview.opencomputer.fly.dev")
     pub preview_domain: Option<String>,
     /// Port counter for auto-assigning unique ports to background processes
     pub next_port: Arc<AtomicU16>,

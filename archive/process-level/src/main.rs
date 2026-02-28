@@ -1,8 +1,8 @@
-//! OpenSandbox - Linux sandbox with HTTP API and gRPC support.
+//! OpenComputer - Linux sandbox with HTTP API and gRPC support.
 //!
 //! Usage:
-//!   opensandbox serve [--port 8080] [--grpc-port 50051]   # Start HTTP + gRPC servers
-//!   opensandbox --run -- <command> [args]                  # CLI mode (original)
+//!   opencomputer serve [--port 8080] [--grpc-port 50051]   # Start HTTP + gRPC servers
+//!   opencomputer --run -- <command> [args]                  # CLI mode (original)
 
 #[cfg(not(target_os = "linux"))]
 compile_error!("This program only works on Linux.");
@@ -23,7 +23,7 @@ use std::collections::HashMap;
 
 #[cfg(target_os = "linux")]
 #[derive(Parser, Debug)]
-#[command(name = "opensandbox")]
+#[command(name = "opencomputer")]
 #[command(about = "Linux sandbox with HTTP API and gRPC support")]
 struct Args {
     #[command(subcommand)]
@@ -67,8 +67,8 @@ enum Commands {
         #[arg(long, default_value = "50051")]
         grpc_port: u16,
 
-        /// Preview domain for sandbox web servers (e.g., "preview.opensandbox.fly.dev")
-        /// When set, sessions will get preview URLs like https://{session-id}.preview.opensandbox.fly.dev
+        /// Preview domain for sandbox web servers (e.g., "preview.opencomputer.fly.dev")
+        /// When set, sessions will get preview URLs like https://{session-id}.preview.opencomputer.fly.dev
         #[arg(long)]
         preview_domain: Option<String>,
     },

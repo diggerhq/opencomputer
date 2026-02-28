@@ -1,12 +1,12 @@
-"""OpenSandbox Python SDK.
+"""OpenComputer Python SDK.
 
-A high-performance Python client for OpenSandbox, using gRPC for
+A high-performance Python client for OpenComputer, using gRPC for
 fast command execution and file operations.
 
 Usage:
-    from opensandbox import OpenSandbox
+    from opencomputer import OpenComputer
 
-    async with OpenSandbox("https://opensandbox.fly.dev") as client:
+    async with OpenComputer("https://opencomputer.fly.dev") as client:
         sandbox = await client.create()
 
         result = await sandbox.run("echo hello")
@@ -18,10 +18,10 @@ Usage:
         await sandbox.destroy()
 """
 
-from .client import OpenSandbox
+from .client import OpenComputer
 from .sandbox import Sandbox, CommandResult
 from .exceptions import (
-    OpenSandboxError,
+    OpenComputerError,
     SandboxNotFoundError,
     SandboxConnectionError,
     CommandExecutionError,
@@ -31,10 +31,10 @@ from .exceptions import (
 __version__ = "0.1.0"
 
 __all__ = [
-    "OpenSandbox",
+    "OpenComputer",
     "Sandbox",
     "CommandResult",
-    "OpenSandboxError",
+    "OpenComputerError",
     "SandboxNotFoundError",
     "SandboxConnectionError",
     "CommandExecutionError",

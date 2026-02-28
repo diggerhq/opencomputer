@@ -1,4 +1,4 @@
-"""OpenSandbox implementation using HTTP API."""
+"""OpenComputer implementation using HTTP API."""
 
 import logging
 import uuid
@@ -12,11 +12,11 @@ from src.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-class OpenSandbox(BaseSandbox):
+class OpenComputer(BaseSandbox):
     """
-    OpenSandbox implementation.
+    OpenComputer implementation.
     
-    Uses a local OpenSandbox server for Linux-based sandboxed execution.
+    Uses a local OpenComputer server for Linux-based sandboxed execution.
     Communicates via HTTP API.
     """
     
@@ -38,7 +38,7 @@ class OpenSandbox(BaseSandbox):
     
     async def create(self, timeout: int = 1800) -> str:
         """
-        Create a new OpenSandbox session.
+        Create a new OpenComputer session.
         
         Args:
             timeout: Session timeout (not directly used, sessions auto-expire)
@@ -46,7 +46,7 @@ class OpenSandbox(BaseSandbox):
         Returns:
             The session ID
         """
-        logger.info("Creating OpenSandbox session...")
+        logger.info("Creating OpenComputer session...")
         
         # Create session with initial environment
         response = self._client.post(
@@ -127,7 +127,7 @@ class OpenSandbox(BaseSandbox):
             )
         
         # Run the command via shell
-        # OpenSandbox expects command as array, wrap in shell for string commands
+        # OpenComputer expects command as array, wrap in shell for string commands
         response = self._client.post(
             f"{self._base_url}/sessions/{self._session_id}/run",
             json={

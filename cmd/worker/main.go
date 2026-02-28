@@ -10,18 +10,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/opensandbox/opensandbox/internal/auth"
-	"github.com/opensandbox/opensandbox/internal/config"
-	"github.com/opensandbox/opensandbox/internal/db"
-	fc "github.com/opensandbox/opensandbox/internal/firecracker"
-	"github.com/opensandbox/opensandbox/internal/metrics"
-	"github.com/opensandbox/opensandbox/internal/podman"
-	"github.com/opensandbox/opensandbox/internal/proxy"
-	"github.com/opensandbox/opensandbox/internal/sandbox"
-	"github.com/opensandbox/opensandbox/internal/storage"
-	"github.com/opensandbox/opensandbox/internal/template"
-	"github.com/opensandbox/opensandbox/internal/worker"
-	"github.com/opensandbox/opensandbox/pkg/types"
+	"github.com/opencomputer/opencomputer/internal/auth"
+	"github.com/opencomputer/opencomputer/internal/config"
+	"github.com/opencomputer/opencomputer/internal/db"
+	fc "github.com/opencomputer/opencomputer/internal/firecracker"
+	"github.com/opencomputer/opencomputer/internal/metrics"
+	"github.com/opencomputer/opencomputer/internal/podman"
+	"github.com/opencomputer/opencomputer/internal/proxy"
+	"github.com/opencomputer/opencomputer/internal/sandbox"
+	"github.com/opencomputer/opencomputer/internal/storage"
+	"github.com/opencomputer/opencomputer/internal/template"
+	"github.com/opencomputer/opencomputer/internal/worker"
+	"github.com/opencomputer/opencomputer/pkg/types"
 )
 
 func main() {
@@ -30,7 +30,7 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	log.Printf("opensandbox-worker: starting (id=%s, region=%s)...", cfg.WorkerID, cfg.Region)
+	log.Printf("opencomputer-worker: starting (id=%s, region=%s)...", cfg.WorkerID, cfg.Region)
 
 	ctx := context.Background()
 
@@ -50,7 +50,7 @@ func main() {
 		log.Fatalf("failed to initialize Firecracker manager: %v", err)
 	}
 	defer fcMgr.Close()
-	log.Println("opensandbox-worker: Firecracker VM manager initialized")
+	log.Println("opencomputer-worker: Firecracker VM manager initialized")
 
 	// The Firecracker manager implements sandbox.Manager
 	var mgr sandbox.Manager = fcMgr
@@ -104,7 +104,7 @@ func main() {
 
 	// JWT issuer for validating sandbox tokens
 	if cfg.JWTSecret == "" {
-		log.Fatalf("OPENSANDBOX_JWT_SECRET is required for worker mode")
+		log.Fatalf("OPENCOMPUTER_JWT_SECRET is required for worker mode")
 	}
 	jwtIssuer := auth.NewJWTIssuer(cfg.JWTSecret)
 
@@ -123,13 +123,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to initialize checkpoint store: %v", err)
 		}
-		log.Printf("opensandbox-worker: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
+		log.Printf("opencomputer-worker: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
 
 		// Enable local NVMe checkpoint cache if data dir is configured
 		if cfg.DataDir != "" {
 			cacheDir := filepath.Join(cfg.DataDir, "checkpoints")
 			if err := checkpointStore.SetCacheDir(cacheDir); err != nil {
-				log.Printf("opensandbox-worker: warning: checkpoint cache disabled: %v", err)
+				log.Printf("opencomputer-worker: warning: checkpoint cache disabled: %v", err)
 			}
 		}
 	}
@@ -144,10 +144,10 @@ func main() {
 		var err error
 		store, err = db.NewStore(ctx, dbURL)
 		if err != nil {
-			log.Printf("opensandbox-worker: warning: failed to connect to database: %v (auto-wake disabled)", err)
+			log.Printf("opencomputer-worker: warning: failed to connect to database: %v (auto-wake disabled)", err)
 		} else {
 			defer store.Close()
-			log.Println("opensandbox-worker: PostgreSQL store connected (auto-wake enabled)")
+			log.Println("opencomputer-worker: PostgreSQL store connected (auto-wake enabled)")
 
 			// Kill orphaned Firecracker processes + TAP devices from previous run
 			fcMgr.CleanupOrphanedProcesses()
@@ -159,7 +159,7 @@ func main() {
 				for _, r := range recoveries {
 					session, err := store.GetSandboxSession(ctx, r.SandboxID)
 					if err != nil {
-						log.Printf("opensandbox-worker: no DB session for %s, skipping recovery", r.SandboxID)
+						log.Printf("opencomputer-worker: no DB session for %s, skipping recovery", r.SandboxID)
 						continue
 					}
 					if r.HasSnapshot {
@@ -177,16 +177,16 @@ func main() {
 					}
 				}
 				if snapshotCount+workspaceCount > 0 {
-					log.Printf("opensandbox-worker: local recovery: %d with snapshot, %d workspace-only", snapshotCount, workspaceCount)
+					log.Printf("opencomputer-worker: local recovery: %d with snapshot, %d workspace-only", snapshotCount, workspaceCount)
 				}
 			}
 
 			// Mark any remaining stale "running" sessions (no local data) as stopped
 			_, stopped, err := store.ReconcileWorkerSessions(ctx, cfg.WorkerID)
 			if err != nil {
-				log.Printf("opensandbox-worker: warning: session reconciliation failed: %v", err)
+				log.Printf("opencomputer-worker: warning: session reconciliation failed: %v", err)
 			} else if stopped > 0 {
-				log.Printf("opensandbox-worker: reconciled %d unrecoverable sessions as stopped", stopped)
+				log.Printf("opencomputer-worker: reconciled %d unrecoverable sessions as stopped", stopped)
 			}
 		}
 	}
@@ -198,7 +198,7 @@ func main() {
 		Store:           store,
 		WorkerID:        cfg.WorkerID,
 		OnHibernate: func(sandboxID string, result *sandbox.HibernateResult) {
-			log.Printf("opensandbox-worker: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
+			log.Printf("opencomputer-worker: sandbox %s auto-hibernated (key=%s, size=%d bytes)",
 				sandboxID, result.CheckpointKey, result.SizeBytes)
 			if store != nil {
 				// Create checkpoint record so wake-on-request can find it
@@ -211,25 +211,25 @@ func main() {
 			}
 		},
 		OnKill: func(sandboxID string) {
-			log.Printf("opensandbox-worker: sandbox %s killed on timeout", sandboxID)
+			log.Printf("opencomputer-worker: sandbox %s killed on timeout", sandboxID)
 			if store != nil {
 				_ = store.UpdateSandboxSessionStatus(context.Background(), sandboxID, "stopped", nil)
 			}
 		},
 	})
 	defer sbRouter.Close()
-	log.Println("opensandbox-worker: sandbox router initialized (rolling timeouts, auto-wake)")
+	log.Println("opencomputer-worker: sandbox router initialized (rolling timeouts, auto-wake)")
 
 	// Start Prometheus metrics server on :9091
 	metricsSrv := metrics.StartMetricsServer(":9091")
 	defer metricsSrv.Close()
-	log.Println("opensandbox-worker: metrics server started on :9091")
+	log.Println("opencomputer-worker: metrics server started on :9091")
 
 	// Initialize template builder (Podman as build tool → ext4 images)
 	var builder *template.Builder
 	podmanClient, podmanErr := podman.NewClient()
 	if podmanErr != nil {
-		log.Printf("opensandbox-worker: podman not available: %v (template building disabled)", podmanErr)
+		log.Printf("opencomputer-worker: podman not available: %v (template building disabled)", podmanErr)
 	} else {
 		imagesDir := fcCfg.ImagesDir
 		agentPath := filepath.Join(filepath.Dir(os.Args[0]), "osb-agent")
@@ -237,13 +237,13 @@ func main() {
 			agentPath = "/usr/local/bin/osb-agent"
 		}
 		builder = template.NewBuilder(podmanClient, imagesDir, agentPath)
-		log.Printf("opensandbox-worker: template builder configured (images=%s, agent=%s)", imagesDir, agentPath)
+		log.Printf("opencomputer-worker: template builder configured (images=%s, agent=%s)", imagesDir, agentPath)
 	}
 
 	// Start gRPC server for control plane communication
 	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr, checkpointStore, sbRouter, builder)
 	grpcAddr := ":9090"
-	log.Printf("opensandbox-worker: starting gRPC server on %s", grpcAddr)
+	log.Printf("opencomputer-worker: starting gRPC server on %s", grpcAddr)
 	go func() {
 		if err := grpcServer.Start(grpcAddr); err != nil {
 			log.Printf("gRPC server error: %v", err)
@@ -254,13 +254,13 @@ func main() {
 	var sbProxy *proxy.SandboxProxy
 	if cfg.SandboxDomain != "" {
 		sbProxy = proxy.New(cfg.SandboxDomain, mgr, sbRouter)
-		log.Printf("opensandbox-worker: subdomain proxy configured (*.%s)", cfg.SandboxDomain)
+		log.Printf("opencomputer-worker: subdomain proxy configured (*.%s)", cfg.SandboxDomain)
 	}
 
 	// Start HTTP server for direct SDK access
 	httpServer := worker.NewHTTPServer(mgr, ptyMgr, jwtIssuer, sandboxDBMgr, sbProxy, sbRouter, cfg.SandboxDomain)
 	httpAddr := fmt.Sprintf(":%d", cfg.Port)
-	log.Printf("opensandbox-worker: starting HTTP server on %s", httpAddr)
+	log.Printf("opencomputer-worker: starting HTTP server on %s", httpAddr)
 	go func() {
 		if err := httpServer.Start(httpAddr); err != nil {
 			log.Printf("HTTP server error: %v", err)
@@ -270,17 +270,17 @@ func main() {
 	// Start Redis heartbeat for control plane discovery
 	if cfg.RedisURL != "" {
 		grpcAdvertise := grpcAddr
-		if addr := os.Getenv("OPENSANDBOX_GRPC_ADVERTISE"); addr != "" {
+		if addr := os.Getenv("OPENCOMPUTER_GRPC_ADVERTISE"); addr != "" {
 			grpcAdvertise = addr
 		}
 
 		hb, err := worker.NewRedisHeartbeat(cfg.RedisURL, cfg.WorkerID, cfg.Region, grpcAdvertise, cfg.HTTPAddr)
 		if err != nil {
-			log.Printf("opensandbox-worker: Redis heartbeat not available: %v", err)
+			log.Printf("opencomputer-worker: Redis heartbeat not available: %v", err)
 		} else {
 			if machineID := worker.GetEC2InstanceID(); machineID != "" {
 				hb.SetMachineID(machineID)
-				log.Printf("opensandbox-worker: EC2 instance ID: %s", machineID)
+				log.Printf("opencomputer-worker: EC2 instance ID: %s", machineID)
 			}
 			hb.Start(func() (int, int, float64, float64) {
 				count, _ := mgr.Count(context.Background())
@@ -288,7 +288,7 @@ func main() {
 				return cfg.MaxCapacity, count, cpuPct, memPct
 			})
 			defer hb.Stop()
-			log.Println("opensandbox-worker: Redis heartbeat started")
+			log.Println("opencomputer-worker: Redis heartbeat started")
 		}
 	}
 
@@ -296,7 +296,7 @@ func main() {
 	if cfg.NATSURL != "" {
 		pub, err := worker.NewEventPublisher(cfg.NATSURL, cfg.Region, cfg.WorkerID, sandboxDBMgr)
 		if err != nil {
-			log.Printf("opensandbox-worker: NATS not available: %v (continuing without event sync)", err)
+			log.Printf("opencomputer-worker: NATS not available: %v (continuing without event sync)", err)
 		} else {
 			pub.Start()
 			pub.StartHeartbeat(func() (int, int, float64, float64) {
@@ -305,7 +305,7 @@ func main() {
 				return cfg.MaxCapacity, count, cpuPct, memPct
 			})
 			defer pub.Stop()
-			log.Println("opensandbox-worker: NATS event publisher started")
+			log.Println("opencomputer-worker: NATS event publisher started")
 		}
 	}
 
@@ -317,7 +317,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("opensandbox-worker: graceful shutdown starting...")
+	log.Println("opencomputer-worker: graceful shutdown starting...")
 
 	// 1. Stop accepting new work
 	grpcServer.Stop()
@@ -332,21 +332,21 @@ func main() {
 	if checkpointStore != nil {
 		vms, _ := mgr.List(context.Background())
 		if len(vms) > 0 {
-			log.Printf("opensandbox-worker: hibernating %d sandboxes...", len(vms))
+			log.Printf("opencomputer-worker: hibernating %d sandboxes...", len(vms))
 			shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			results := fcMgr.HibernateAll(shutCtx, checkpointStore)
 			cancel()
 
 			for _, r := range results {
 				if r.Err != nil {
-					log.Printf("opensandbox-worker: hibernate failed for %s: %v", r.SandboxID, r.Err)
+					log.Printf("opencomputer-worker: hibernate failed for %s: %v", r.SandboxID, r.Err)
 					if store != nil {
 						errMsg := "hibernate failed on shutdown: " + r.Err.Error()
 						_ = store.UpdateSandboxSessionStatus(context.Background(), r.SandboxID, "stopped", &errMsg)
 					}
 					continue
 				}
-				log.Printf("opensandbox-worker: hibernated %s (key=%s)", r.SandboxID, r.CheckpointKey)
+				log.Printf("opencomputer-worker: hibernated %s (key=%s)", r.SandboxID, r.CheckpointKey)
 				if store != nil {
 					session, err := store.GetSandboxSession(context.Background(), r.SandboxID)
 					if err == nil {
@@ -358,9 +358,9 @@ func main() {
 			}
 
 			// 3. Wait for async S3 uploads to complete
-			log.Println("opensandbox-worker: waiting for S3 uploads...")
+			log.Println("opencomputer-worker: waiting for S3 uploads...")
 			fcMgr.WaitUploads(3 * time.Minute)
-			log.Println("opensandbox-worker: graceful shutdown complete")
+			log.Println("opencomputer-worker: graceful shutdown complete")
 		}
 	}
 }

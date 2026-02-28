@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
-// Config holds all configuration for the opensandbox server.
+// Config holds all configuration for the opencomputer server.
 type Config struct {
 	Port       int
 	APIKey     string
@@ -51,11 +51,11 @@ type Config struct {
 	MaxCapacity int
 
 	// Sandbox subdomain routing
-	SandboxDomain string // Base domain for sandbox subdomains (e.g., "workers.opensandbox.dev", default "localhost")
+	SandboxDomain string // Base domain for sandbox subdomains (e.g., "workers.opencomputer.dev", default "localhost")
 
 	// S3-compatible object storage for checkpoint hibernation
 	S3Endpoint        string // e.g. "https://<account>.r2.cloudflarestorage.com"
-	S3Bucket          string // e.g. "opensandbox-checkpoints"
+	S3Bucket          string // e.g. "opencomputer-checkpoints"
 	S3Region          string // defaults to Region if not set
 	S3AccessKeyID     string
 	S3SecretAccessKey string
@@ -63,7 +63,7 @@ type Config struct {
 
 	// ECR for template images
 	ECRRegistry   string // e.g. "086971355112.dkr.ecr.us-east-2.amazonaws.com"
-	ECRRepository string // e.g. "opensandbox-templates"
+	ECRRepository string // e.g. "opencomputer-templates"
 
 	// Sandbox resource defaults (overridable per-sandbox via API)
 	DefaultSandboxMemoryMB int // default RAM per sandbox (MB), default 1024
@@ -92,18 +92,18 @@ type Config struct {
 	ScaleCooldownSec int // Cooldown between scale-up actions (seconds), default 300
 
 	// AWS Secrets Manager — if set, secrets are fetched at startup using IAM credentials.
-	// The secret should be a JSON object with keys matching env var names (e.g. OPENSANDBOX_JWT_SECRET).
+	// The secret should be a JSON object with keys matching env var names (e.g. OPENCOMPUTER_JWT_SECRET).
 	// Env vars take precedence over secret values (for local overrides).
 	SecretsARN string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
-// If OPENSANDBOX_SECRETS_ARN is set, secrets are fetched from AWS Secrets Manager
+// If OPENCOMPUTER_SECRETS_ARN is set, secrets are fetched from AWS Secrets Manager
 // first, then environment variables are applied on top (env vars take precedence).
 func Load() (*Config, error) {
 	// Fetch secrets from AWS Secrets Manager if configured.
 	// This populates the process environment so subsequent os.Getenv calls pick them up.
-	if arn := os.Getenv("OPENSANDBOX_SECRETS_ARN"); arn != "" {
+	if arn := os.Getenv("OPENCOMPUTER_SECRETS_ARN"); arn != "" {
 		if err := loadSecretsManager(arn); err != nil {
 			return nil, fmt.Errorf("failed to load secrets from %s: %w", arn, err)
 		}
@@ -111,18 +111,18 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		Port:       8080,
-		APIKey:     os.Getenv("OPENSANDBOX_API_KEY"),
-		WorkerAddr: envOrDefault("OPENSANDBOX_WORKER_ADDR", "localhost:9090"),
-		Mode:       envOrDefault("OPENSANDBOX_MODE", "combined"),
-		LogLevel:   envOrDefault("OPENSANDBOX_LOG_LEVEL", "info"),
+		APIKey:     os.Getenv("OPENCOMPUTER_API_KEY"),
+		WorkerAddr: envOrDefault("OPENCOMPUTER_WORKER_ADDR", "localhost:9090"),
+		Mode:       envOrDefault("OPENCOMPUTER_MODE", "combined"),
+		LogLevel:   envOrDefault("OPENCOMPUTER_LOG_LEVEL", "info"),
 
-		DatabaseURL: envOrDefault("OPENSANDBOX_DATABASE_URL", os.Getenv("DATABASE_URL")),
-		DataDir:     envOrDefault("OPENSANDBOX_DATA_DIR", "/data/sandboxes"),
-		JWTSecret:   os.Getenv("OPENSANDBOX_JWT_SECRET"),
-		NATSURL:     envOrDefault("OPENSANDBOX_NATS_URL", "nats://localhost:4222"),
-		Region:      envOrDefault("OPENSANDBOX_REGION", "local"),
-		WorkerID:    envOrDefault("OPENSANDBOX_WORKER_ID", "w-local-1"),
-		HTTPAddr:    envOrDefault("OPENSANDBOX_HTTP_ADDR", "http://localhost:8080"),
+		DatabaseURL: envOrDefault("OPENCOMPUTER_DATABASE_URL", os.Getenv("DATABASE_URL")),
+		DataDir:     envOrDefault("OPENCOMPUTER_DATA_DIR", "/data/sandboxes"),
+		JWTSecret:   os.Getenv("OPENCOMPUTER_JWT_SECRET"),
+		NATSURL:     envOrDefault("OPENCOMPUTER_NATS_URL", "nats://localhost:4222"),
+		Region:      envOrDefault("OPENCOMPUTER_REGION", "local"),
+		WorkerID:    envOrDefault("OPENCOMPUTER_WORKER_ID", "w-local-1"),
+		HTTPAddr:    envOrDefault("OPENCOMPUTER_HTTP_ADDR", "http://localhost:8080"),
 
 		WorkOSAPIKey:       os.Getenv("WORKOS_API_KEY"),
 		WorkOSClientID:     os.Getenv("WORKOS_CLIENT_ID"),
@@ -130,44 +130,44 @@ func Load() (*Config, error) {
 		WorkOSCookieDomain: os.Getenv("WORKOS_COOKIE_DOMAIN"),
 		WorkOSFrontendURL:  os.Getenv("WORKOS_FRONTEND_URL"),
 
-		RedisURL:    os.Getenv("OPENSANDBOX_REDIS_URL"),
+		RedisURL:    os.Getenv("OPENCOMPUTER_REDIS_URL"),
 
-		MaxCapacity: envOrDefaultInt("OPENSANDBOX_MAX_CAPACITY", 50),
+		MaxCapacity: envOrDefaultInt("OPENCOMPUTER_MAX_CAPACITY", 50),
 
-		SandboxDomain: envOrDefault("OPENSANDBOX_SANDBOX_DOMAIN", "localhost"),
+		SandboxDomain: envOrDefault("OPENCOMPUTER_SANDBOX_DOMAIN", "localhost"),
 
-		S3Endpoint:        os.Getenv("OPENSANDBOX_S3_ENDPOINT"),
-		S3Bucket:          os.Getenv("OPENSANDBOX_S3_BUCKET"),
-		S3Region:          os.Getenv("OPENSANDBOX_S3_REGION"),
-		S3AccessKeyID:     os.Getenv("OPENSANDBOX_S3_ACCESS_KEY_ID"),
-		S3SecretAccessKey: os.Getenv("OPENSANDBOX_S3_SECRET_ACCESS_KEY"),
-		S3ForcePathStyle:  os.Getenv("OPENSANDBOX_S3_FORCE_PATH_STYLE") == "true",
+		S3Endpoint:        os.Getenv("OPENCOMPUTER_S3_ENDPOINT"),
+		S3Bucket:          os.Getenv("OPENCOMPUTER_S3_BUCKET"),
+		S3Region:          os.Getenv("OPENCOMPUTER_S3_REGION"),
+		S3AccessKeyID:     os.Getenv("OPENCOMPUTER_S3_ACCESS_KEY_ID"),
+		S3SecretAccessKey: os.Getenv("OPENCOMPUTER_S3_SECRET_ACCESS_KEY"),
+		S3ForcePathStyle:  os.Getenv("OPENCOMPUTER_S3_FORCE_PATH_STYLE") == "true",
 
-		ECRRegistry:   os.Getenv("OPENSANDBOX_ECR_REGISTRY"),
-		ECRRepository: envOrDefault("OPENSANDBOX_ECR_REPOSITORY", "opensandbox-templates"),
+		ECRRegistry:   os.Getenv("OPENCOMPUTER_ECR_REGISTRY"),
+		ECRRepository: envOrDefault("OPENCOMPUTER_ECR_REPOSITORY", "opencomputer-templates"),
 
-		DefaultSandboxMemoryMB: envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB", 1024),
-		DefaultSandboxCPUs:     envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_CPUS", 1),
-		DefaultSandboxDiskMB:   envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_DISK_MB", 0),
+		DefaultSandboxMemoryMB: envOrDefaultInt("OPENCOMPUTER_DEFAULT_SANDBOX_MEMORY_MB", 1024),
+		DefaultSandboxCPUs:     envOrDefaultInt("OPENCOMPUTER_DEFAULT_SANDBOX_CPUS", 1),
+		DefaultSandboxDiskMB:   envOrDefaultInt("OPENCOMPUTER_DEFAULT_SANDBOX_DISK_MB", 0),
 
-		FirecrackerBin: envOrDefault("OPENSANDBOX_FIRECRACKER_BIN", "firecracker"),
-		KernelPath:     os.Getenv("OPENSANDBOX_KERNEL_PATH"),     // default derived from DataDir
-		ImagesDir:      os.Getenv("OPENSANDBOX_IMAGES_DIR"),      // default derived from DataDir
+		FirecrackerBin: envOrDefault("OPENCOMPUTER_FIRECRACKER_BIN", "firecracker"),
+		KernelPath:     os.Getenv("OPENCOMPUTER_KERNEL_PATH"),     // default derived from DataDir
+		ImagesDir:      os.Getenv("OPENCOMPUTER_IMAGES_DIR"),      // default derived from DataDir
 
-		EC2AMI:             os.Getenv("OPENSANDBOX_EC2_AMI"),
-		EC2InstanceType:    envOrDefault("OPENSANDBOX_EC2_INSTANCE_TYPE", "c7gd.metal"),
-		EC2SubnetID:        os.Getenv("OPENSANDBOX_EC2_SUBNET_ID"),
-		EC2SecurityGroupID: os.Getenv("OPENSANDBOX_EC2_SECURITY_GROUP_ID"),
-		EC2KeyName:         os.Getenv("OPENSANDBOX_EC2_KEY_NAME"),
-		EC2WorkerImage:         envOrDefault("OPENSANDBOX_EC2_WORKER_IMAGE", "opensandbox-worker:latest"),
-		EC2IAMInstanceProfile:  os.Getenv("OPENSANDBOX_EC2_IAM_INSTANCE_PROFILE"),
+		EC2AMI:             os.Getenv("OPENCOMPUTER_EC2_AMI"),
+		EC2InstanceType:    envOrDefault("OPENCOMPUTER_EC2_INSTANCE_TYPE", "c7gd.metal"),
+		EC2SubnetID:        os.Getenv("OPENCOMPUTER_EC2_SUBNET_ID"),
+		EC2SecurityGroupID: os.Getenv("OPENCOMPUTER_EC2_SECURITY_GROUP_ID"),
+		EC2KeyName:         os.Getenv("OPENCOMPUTER_EC2_KEY_NAME"),
+		EC2WorkerImage:         envOrDefault("OPENCOMPUTER_EC2_WORKER_IMAGE", "opencomputer-worker:latest"),
+		EC2IAMInstanceProfile:  os.Getenv("OPENCOMPUTER_EC2_IAM_INSTANCE_PROFILE"),
 
-		CFAPIToken: os.Getenv("OPENSANDBOX_CF_API_TOKEN"),
-		CFZoneID:   os.Getenv("OPENSANDBOX_CF_ZONE_ID"),
+		CFAPIToken: os.Getenv("OPENCOMPUTER_CF_API_TOKEN"),
+		CFZoneID:   os.Getenv("OPENCOMPUTER_CF_ZONE_ID"),
 
-		ScaleCooldownSec: envOrDefaultInt("OPENSANDBOX_SCALE_COOLDOWN_SEC", 300),
+		ScaleCooldownSec: envOrDefaultInt("OPENCOMPUTER_SCALE_COOLDOWN_SEC", 300),
 
-		SecretsARN: os.Getenv("OPENSANDBOX_SECRETS_ARN"),
+		SecretsARN: os.Getenv("OPENCOMPUTER_SECRETS_ARN"),
 	}
 
 	// Default S3 region to worker region for same-region storage
@@ -175,10 +175,10 @@ func Load() (*Config, error) {
 		cfg.S3Region = cfg.Region
 	}
 
-	if portStr := os.Getenv("OPENSANDBOX_PORT"); portStr != "" {
+	if portStr := os.Getenv("OPENCOMPUTER_PORT"); portStr != "" {
 		port, err := strconv.Atoi(portStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid OPENSANDBOX_PORT %q: %w", portStr, err)
+			return nil, fmt.Errorf("invalid OPENCOMPUTER_PORT %q: %w", portStr, err)
 		}
 		cfg.Port = port
 	}

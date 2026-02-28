@@ -12,9 +12,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/opensandbox/opensandbox/internal/auth"
-	"github.com/opensandbox/opensandbox/internal/db"
-	pb "github.com/opensandbox/opensandbox/proto/worker"
+	"github.com/opencomputer/opencomputer/internal/auth"
+	"github.com/opencomputer/opencomputer/internal/db"
+	pb "github.com/opencomputer/opencomputer/proto/worker"
 )
 
 // Server is the control plane API server.

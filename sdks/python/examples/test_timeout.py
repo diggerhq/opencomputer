@@ -14,7 +14,7 @@ Usage:
 import asyncio
 import sys
 
-from opensandbox import Sandbox
+from opencomputer import Sandbox
 
 GREEN = "\033[32m"
 RED = "\033[31m"

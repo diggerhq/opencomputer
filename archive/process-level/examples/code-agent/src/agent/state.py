@@ -30,7 +30,7 @@ class AgentState(TypedDict):
     max_iterations: Optional[int]       # Max LLM iterations (None = use config default)
     
     # Sandbox configuration
-    sandbox_provider: Optional[str]     # "opensandbox" or "e2b" (None = use config default)
+    sandbox_provider: Optional[str]     # "opencomputer" or "e2b" (None = use config default)
     
     # Sandbox state
     sandbox_id: Optional[str]           # Sandbox/session instance ID

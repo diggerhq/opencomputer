@@ -30,7 +30,7 @@ dist/
 
 # Compiled binaries
 bin/
-opensandbox-worker
+opencomputer-worker
 
 # Worker env (secrets)
 worker.env

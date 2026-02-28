@@ -1,7 +1,7 @@
 {
-  "name": "opensandbox",
+  "name": "opencomputer",
   "version": "1.0.0",
-  "description": "SDK for OpenSandbox VMs",
+  "description": "SDK for OpenComputer VMs",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

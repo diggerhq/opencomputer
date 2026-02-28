@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Deploy the opensandbox-server binary + web dashboard to the EC2 instance.
+# Deploy the opencomputer-server binary + web dashboard to the EC2 instance.
 # Run from the repo root: ./deploy/ec2/deploy-server.sh
 #
 # This script:
@@ -14,14 +14,14 @@ set -euo pipefail
 #   WORKER_IP   - EC2 instance public IP
 #
 # Optional env vars:
-#   SSH_KEY     - path to SSH key (default: ~/.ssh/opensandbox-worker.pem)
+#   SSH_KEY     - path to SSH key (default: ~/.ssh/opencomputer-worker.pem)
 #   SSH_USER    - SSH user (default: ubuntu)
 #   GOARCH      - target arch (default: amd64)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/opensandbox-worker.pem}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/opencomputer-worker.pem}"
 WORKER_IP="${WORKER_IP:?Set WORKER_IP to the EC2 instance public IP}"
 SSH_USER="${SSH_USER:-ubuntu}"
 SSH="ssh -i $SSH_KEY $SSH_USER@$WORKER_IP"
@@ -32,9 +32,9 @@ GOARCH="${GOARCH:-amd64}"
 cd "$REPO_ROOT"
 
 # 1. Build server binary
-echo "==> Building opensandbox-server (linux/${GOARCH})..."
-CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -o bin/opensandbox-server-deploy ./cmd/server/
-echo "    Built: opensandbox-server ($(du -h bin/opensandbox-server-deploy | cut -f1), ${GOARCH})"
+echo "==> Building opencomputer-server (linux/${GOARCH})..."
+CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -o bin/opencomputer-server-deploy ./cmd/server/
+echo "    Built: opencomputer-server ($(du -h bin/opencomputer-server-deploy | cut -f1), ${GOARCH})"
 
 # 2. Build web dashboard
 echo "==> Building web dashboard..."
@@ -44,20 +44,20 @@ echo "    Built: web/dist"
 
 # 3. Upload
 echo "==> Uploading to $WORKER_IP..."
-$SCP bin/opensandbox-server-deploy "$SSH_USER@$WORKER_IP:/tmp/opensandbox-server"
+$SCP bin/opencomputer-server-deploy "$SSH_USER@$WORKER_IP:/tmp/opencomputer-server"
 $SCP bin/web-dist.tar.gz "$SSH_USER@$WORKER_IP:/tmp/web-dist.tar.gz"
 
 # 4. Install and pull secrets
 echo "==> Installing binary and web assets..."
-$SSH "sudo mv /tmp/opensandbox-server /usr/local/bin/opensandbox-server && \
-      sudo chmod +x /usr/local/bin/opensandbox-server && \
-      sudo mkdir -p /opt/opensandbox/web && \
-      sudo tar xzf /tmp/web-dist.tar.gz -C /opt/opensandbox/web && \
+$SSH "sudo mv /tmp/opencomputer-server /usr/local/bin/opencomputer-server && \
+      sudo chmod +x /usr/local/bin/opencomputer-server && \
+      sudo mkdir -p /opt/opencomputer/web && \
+      sudo tar xzf /tmp/web-dist.tar.gz -C /opt/opencomputer/web && \
       rm /tmp/web-dist.tar.gz"
 
 # 5. Pull secrets from AWS Secrets Manager and merge into server.env
 echo "==> Pulling secrets from AWS Secrets Manager..."
-$SSH 'SECRETS_ARN=$(grep OPENSANDBOX_SECRETS_ARN /etc/opensandbox/server.env 2>/dev/null | cut -d= -f2-)
+$SSH 'SECRETS_ARN=$(grep OPENCOMPUTER_SECRETS_ARN /etc/opencomputer/server.env 2>/dev/null | cut -d= -f2-)
 if [ -n "$SECRETS_ARN" ]; then
     SECRETS_JSON=$(aws --region us-east-2 secretsmanager get-secret-value \
         --secret-id "$SECRETS_ARN" --query SecretString --output text 2>&1) || {
@@ -72,7 +72,7 @@ secrets = json.load(sys.stdin)
 # Read existing env
 existing = {}
 try:
-    with open(\"/etc/opensandbox/server.env\") as f:
+    with open(\"/etc/opencomputer/server.env\") as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith(\"#\") and \"=\" in line:
@@ -86,23 +86,23 @@ existing.update(secrets)
 with open(\"/tmp/server.env.new\", \"w\") as f:
     for k, v in existing.items():
         f.write(f\"{k}={v}\n\")
-" && sudo mv /tmp/server.env.new /etc/opensandbox/server.env
+" && sudo mv /tmp/server.env.new /etc/opencomputer/server.env
     echo "    Secrets merged into server.env"
 else
-    echo "    No OPENSANDBOX_SECRETS_ARN found, skipping secrets pull."
+    echo "    No OPENCOMPUTER_SECRETS_ARN found, skipping secrets pull."
 fi'
 
 # 6. Restart
 echo "==> Restarting server service..."
-$SSH "sudo systemctl restart opensandbox-server"
+$SSH "sudo systemctl restart opencomputer-server"
 
 echo "==> Waiting for server to start..."
 sleep 2
-$SSH "sudo systemctl is-active opensandbox-server"
+$SSH "sudo systemctl is-active opencomputer-server"
 
 echo "==> Deployed successfully!"
-echo "    Server: /usr/local/bin/opensandbox-server"
-echo "    Web:    /opt/opensandbox/web/dist"
+echo "    Server: /usr/local/bin/opencomputer-server"
+echo "    Web:    /opt/opencomputer/web/dist"
 
 # Cleanup
-rm -f bin/opensandbox-server-deploy bin/web-dist.tar.gz
+rm -f bin/opencomputer-server-deploy bin/web-dist.tar.gz

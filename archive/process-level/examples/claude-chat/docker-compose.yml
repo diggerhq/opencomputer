@@ -1,6 +1,6 @@
 services:
-  # OpenSandbox server for isolated code execution
-  opensandbox:
+  # OpenComputer server for isolated code execution
+  opencomputer:
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -26,10 +26,10 @@ services:
       - "8000:8000"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENSANDBOX_URL=http://opensandbox:8080
-      - OPENSANDBOX_GRPC_PORT=50051
+      - OPENCOMPUTER_URL=http://opencomputer:8080
+      - OPENCOMPUTER_GRPC_PORT=50051
     depends_on:
-      opensandbox:
+      opencomputer:
         condition: service_healthy
     volumes:
       # Mount for live development

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/opensandbox/opensandbox/internal/podman"
-	"github.com/opensandbox/opensandbox/pkg/types"
+	"github.com/opencomputer/opencomputer/internal/podman"
+	"github.com/opencomputer/opencomputer/pkg/types"
 )
 
 // ReadFile reads a file from inside the sandbox.

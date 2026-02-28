@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -o pipefail
 
-SERVER="https://app.opensandbox.ai"
+SERVER="https://app.opencomputer.ai"
 API_KEY="osb_600b1a9ba2e515c6e54141588da39204d5123cb4b1a28da22b7bd92b88be1534"
 AUTH_HEADER="X-API-Key: $API_KEY"
-SSH="ssh -i ~/.ssh/opensandbox-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5"
+SSH="ssh -i ~/.ssh/opencomputer-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5"
 CP=ubuntu@3.135.246.117
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -123,7 +123,7 @@ for i in $(seq 10 10 900); do
   fi
   if [[ "$i" -ge 900 ]]; then
     fail "Timed out after 15 min"
-    $SSH $CP "sudo journalctl -u opensandbox-server --no-pager -n 20 --grep scaler" 2>/dev/null
+    $SSH $CP "sudo journalctl -u opencomputer-server --no-pager -n 20 --grep scaler" 2>/dev/null
     exit 1
   fi
 done

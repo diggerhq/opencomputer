@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run script for testing OpenSandbox + Claude Agent SDK
+# Run script for testing OpenComputer + Claude Agent SDK
 
 set -e
 
@@ -12,7 +12,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}OpenSandbox + Claude Agent SDK Test${NC}"
+echo -e "${GREEN}OpenComputer + Claude Agent SDK Test${NC}"
 echo "========================================"
 
 # Check for .env file
@@ -47,7 +47,7 @@ case "$ACTION" in
         ;;
 
     test-local)
-        echo -e "\n${GREEN}Running tests locally (requires OpenSandbox running)...${NC}"
+        echo -e "\n${GREEN}Running tests locally (requires OpenComputer running)...${NC}"
         cd "$SCRIPT_DIR"
 
         # Check if ANTHROPIC_API_KEY is set
@@ -76,7 +76,7 @@ case "$ACTION" in
         echo "  build      - Build Docker images"
         echo "  up         - Start all services with docker compose"
         echo "  down       - Stop all services"
-        echo "  test-local - Run tests locally (OpenSandbox must be running)"
+        echo "  test-local - Run tests locally (OpenComputer must be running)"
         echo "  build-full - Build image from repo root (includes SDK)"
         exit 1
         ;;

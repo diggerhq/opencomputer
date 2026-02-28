@@ -6,7 +6,7 @@ services:
     env_file:
       - .env
     environment:
-      - OPENSANDBOX_URL=http://host.docker.internal:8080
+      - OPENCOMPUTER_URL=http://host.docker.internal:8080
     volumes:
       - ./src:/app/src
       - ./run_api.py:/app/run_api.py
@@ -25,7 +25,7 @@ services:
     env_file:
       - .env
     environment:
-      - OPENSANDBOX_URL=http://host.docker.internal:8080
+      - OPENCOMPUTER_URL=http://host.docker.internal:8080
       - API_URL=http://api:8000
     volumes:
       - ./src:/app/src

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# OpenSandbox — AWS Secrets Manager + IAM Setup (Digger account)
+# OpenComputer — AWS Secrets Manager + IAM Setup (Digger account)
 #
 # This script creates:
 #   1. Two Secrets Manager secrets (worker + server)
@@ -20,27 +20,27 @@ set -euo pipefail
 
 AWS_PROFILE="digger"
 REGION="us-east-2"
-WORKER_SECRET_NAME="opensandbox/worker"
-SERVER_SECRET_NAME="opensandbox/server"
-S3_BUCKET="opensandbox-checkpoints-digger"
-ROLE_NAME="opensandbox-worker-role"
-POLICY_NAME="opensandbox-worker-policy"
-INSTANCE_PROFILE_NAME="opensandbox-worker"
+WORKER_SECRET_NAME="opencomputer/worker"
+SERVER_SECRET_NAME="opencomputer/server"
+S3_BUCKET="opencomputer-checkpoints-digger"
+ROLE_NAME="opencomputer-worker-role"
+POLICY_NAME="opencomputer-worker-policy"
+INSTANCE_PROFILE_NAME="opencomputer-worker"
 ECR_REGISTRY="739940681129.dkr.ecr.us-east-2.amazonaws.com"
-ECR_REPOSITORY="opensandbox-templates"
+ECR_REPOSITORY="opencomputer-templates"
 
 # Known infrastructure — pulled from running production instances
-REDIS_URL="redis://opensandbox-redis.c1cbz5.0001.use2.cache.amazonaws.com:6379"
-RDS_HOST="opensandbox-pg.chwjcxjqzouh.us-east-2.rds.amazonaws.com"
+REDIS_URL="redis://opencomputer-redis.c1cbz5.0001.use2.cache.amazonaws.com:6379"
+RDS_HOST="opencomputer-pg.chwjcxjqzouh.us-east-2.rds.amazonaws.com"
 RDS_PASSWORD="OpnSbx2026SecurePG"
 JWT_SECRET="${JWT_SECRET}"
-DATABASE_URL="postgres://opensandbox:${RDS_PASSWORD}@${RDS_HOST}:5432/opensandbox?sslmode=require"
+DATABASE_URL="postgres://opencomputer:${RDS_PASSWORD}@${RDS_HOST}:5432/opencomputer?sslmode=require"
 
 # WorkOS (server only) — set these env vars before running
 WORKOS_API_KEY="${WORKOS_API_KEY}"
 WORKOS_CLIENT_ID="${WORKOS_CLIENT_ID}"
-WORKOS_REDIRECT_URI="${WORKOS_REDIRECT_URI:-https://app.opensandbox.ai/auth/callback}"
-WORKOS_COOKIE_DOMAIN="${WORKOS_COOKIE_DOMAIN:-opensandbox.ai}"
+WORKOS_REDIRECT_URI="${WORKOS_REDIRECT_URI:-https://app.opencomputer.ai/auth/callback}"
+WORKOS_COOKIE_DOMAIN="${WORKOS_COOKIE_DOMAIN:-opencomputer.ai}"
 
 # Shorthand — every aws call uses the digger profile
 aws() { command aws --profile "$AWS_PROFILE" "$@"; }
@@ -50,7 +50,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${GREEN}==> OpenSandbox Secrets Manager Setup (profile: ${AWS_PROFILE})${NC}"
+echo -e "${GREEN}==> OpenComputer Secrets Manager Setup (profile: ${AWS_PROFILE})${NC}"
 echo ""
 
 # --- Step 0: Verify credentials ---
@@ -76,13 +76,13 @@ WORKER_SECRET_JSON=$(jq -n \
   --arg ecr_registry "$ECR_REGISTRY" \
   --arg ecr_repo "$ECR_REPOSITORY" \
   '{
-    "OPENSANDBOX_JWT_SECRET": $jwt,
-    "OPENSANDBOX_REDIS_URL": $redis,
+    "OPENCOMPUTER_JWT_SECRET": $jwt,
+    "OPENCOMPUTER_REDIS_URL": $redis,
     "DATABASE_URL": $db,
-    "OPENSANDBOX_S3_BUCKET": $s3bucket,
-    "OPENSANDBOX_S3_REGION": $s3region,
-    "OPENSANDBOX_ECR_REGISTRY": $ecr_registry,
-    "OPENSANDBOX_ECR_REPOSITORY": $ecr_repo
+    "OPENCOMPUTER_S3_BUCKET": $s3bucket,
+    "OPENCOMPUTER_S3_REGION": $s3region,
+    "OPENCOMPUTER_ECR_REGISTRY": $ecr_registry,
+    "OPENCOMPUTER_ECR_REPOSITORY": $ecr_repo
   }')
 
 if aws secretsmanager describe-secret --secret-id "$WORKER_SECRET_NAME" --region "$REGION" &>/dev/null; then
@@ -95,7 +95,7 @@ else
   aws secretsmanager create-secret \
     --name "$WORKER_SECRET_NAME" \
     --region "$REGION" \
-    --description "OpenSandbox worker secrets (JWT, Redis, S3, DB, ECR)" \
+    --description "OpenComputer worker secrets (JWT, Redis, S3, DB, ECR)" \
     --secret-string "$WORKER_SECRET_JSON"
 fi
 
@@ -123,13 +123,13 @@ SERVER_SECRET_JSON=$(jq -n \
   --arg workos_redirect "$WORKOS_REDIRECT_URI" \
   --arg workos_cookie "$WORKOS_COOKIE_DOMAIN" \
   '{
-    "OPENSANDBOX_JWT_SECRET": $jwt,
-    "OPENSANDBOX_REDIS_URL": $redis,
+    "OPENCOMPUTER_JWT_SECRET": $jwt,
+    "OPENCOMPUTER_REDIS_URL": $redis,
     "DATABASE_URL": $db,
-    "OPENSANDBOX_S3_BUCKET": $s3bucket,
-    "OPENSANDBOX_S3_REGION": $s3region,
-    "OPENSANDBOX_ECR_REGISTRY": $ecr_registry,
-    "OPENSANDBOX_ECR_REPOSITORY": $ecr_repo,
+    "OPENCOMPUTER_S3_BUCKET": $s3bucket,
+    "OPENCOMPUTER_S3_REGION": $s3region,
+    "OPENCOMPUTER_ECR_REGISTRY": $ecr_registry,
+    "OPENCOMPUTER_ECR_REPOSITORY": $ecr_repo,
     "WORKOS_API_KEY": $workos_key,
     "WORKOS_CLIENT_ID": $workos_client,
     "WORKOS_REDIRECT_URI": $workos_redirect,
@@ -146,7 +146,7 @@ else
   aws secretsmanager create-secret \
     --name "$SERVER_SECRET_NAME" \
     --region "$REGION" \
-    --description "OpenSandbox server secrets (JWT, Redis, S3, DB, ECR, WorkOS)" \
+    --description "OpenComputer server secrets (JWT, Redis, S3, DB, ECR, WorkOS)" \
     --secret-string "$SERVER_SECRET_JSON"
 fi
 
@@ -228,7 +228,7 @@ if [ -n "$EXISTING_POLICY_ARN" ] && [ "$EXISTING_POLICY_ARN" != "None" ]; then
 else
   POLICY_ARN=$(aws iam create-policy \
     --policy-name "$POLICY_NAME" \
-    --description "OpenSandbox: Secrets Manager + S3 + ECR access" \
+    --description "OpenComputer: Secrets Manager + S3 + ECR access" \
     --policy-document "$POLICY_DOC" \
     --query 'Policy.Arn' --output text)
 fi
@@ -259,7 +259,7 @@ else
   aws iam create-role \
     --role-name "$ROLE_NAME" \
     --assume-role-policy-document "$TRUST_POLICY" \
-    --description "OpenSandbox EC2 role (workers + server)"
+    --description "OpenComputer EC2 role (workers + server)"
   echo "Created role '$ROLE_NAME'"
 fi
 
@@ -289,7 +289,7 @@ echo -e "${YELLOW}==> Step 5: Attaching instance profile to running instances...
 ALL_INSTANCES=$(aws ec2 describe-instances \
   --region "$REGION" \
   --filters "Name=instance-state-name,Values=running" \
-  --query 'Reservations[].Instances[?Tags[?Key==`Name` && contains(Value, `opensandbox`)]].InstanceId' \
+  --query 'Reservations[].Instances[?Tags[?Key==`Name` && contains(Value, `opencomputer`)]].InstanceId' \
   --output text 2>/dev/null || echo "")
 
 if [ -n "$ALL_INSTANCES" ] && [ "$ALL_INSTANCES" != "None" ]; then
@@ -303,7 +303,7 @@ if [ -n "$ALL_INSTANCES" ] && [ "$ALL_INSTANCES" != "None" ]; then
       || echo "(already attached or error)"
   done
 else
-  echo "No running opensandbox instances found."
+  echo "No running opencomputer instances found."
 fi
 
 echo ""
@@ -320,14 +320,14 @@ echo ""
 echo "Next steps:"
 echo ""
 echo "  Worker — update systemd unit to use Secrets Manager:"
-echo "    sudo systemctl edit opensandbox-worker --force"
+echo "    sudo systemctl edit opencomputer-worker --force"
 echo "    # Replace inline secrets with:"
-echo "    #   Environment=OPENSANDBOX_SECRETS_ARN=${WORKER_SECRET_ARN}"
+echo "    #   Environment=OPENCOMPUTER_SECRETS_ARN=${WORKER_SECRET_ARN}"
 echo ""
 echo "  Server — update env file to use Secrets Manager:"
-echo "    Add to /etc/opensandbox/server.env:"
-echo "      OPENSANDBOX_SECRETS_ARN=${SERVER_SECRET_ARN}"
-echo "    Then remove: DATABASE_URL, OPENSANDBOX_REDIS_URL, OPENSANDBOX_JWT_SECRET,"
-echo "      OPENSANDBOX_S3_*, OPENSANDBOX_ECR_*, WORKOS_*"
+echo "    Add to /etc/opencomputer/server.env:"
+echo "      OPENCOMPUTER_SECRETS_ARN=${SERVER_SECRET_ARN}"
+echo "    Then remove: DATABASE_URL, OPENCOMPUTER_REDIS_URL, OPENCOMPUTER_JWT_SECRET,"
+echo "      OPENCOMPUTER_S3_*, OPENCOMPUTER_ECR_*, WORKOS_*"
 echo ""
 echo -e "${GREEN}============================================${NC}"

@@ -14,7 +14,7 @@ import (
 var (
 	SandboxesActive = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "opensandbox_sandboxes_active",
+			Name: "opencomputer_sandboxes_active",
 			Help: "Number of currently active sandboxes",
 		},
 		[]string{"region", "worker_id", "template"},
@@ -22,7 +22,7 @@ var (
 
 	SandboxCreateDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "opensandbox_sandbox_create_duration_seconds",
+			Name:    "opencomputer_sandbox_create_duration_seconds",
 			Help:    "Time to create a sandbox",
 			Buckets: []float64{0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0},
 		},
@@ -31,7 +31,7 @@ var (
 
 	ExecDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "opensandbox_exec_duration_seconds",
+			Name:    "opencomputer_exec_duration_seconds",
 			Help:    "Time to execute a command in a sandbox",
 			Buckets: []float64{0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0, 60.0},
 		},
@@ -40,7 +40,7 @@ var (
 
 	PTYSessionsActive = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "opensandbox_pty_sessions_active",
+			Name: "opencomputer_pty_sessions_active",
 			Help: "Number of active PTY sessions",
 		},
 		[]string{"region", "worker_id"},
@@ -48,7 +48,7 @@ var (
 
 	WorkerUtilization = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "opensandbox_worker_utilization",
+			Name: "opencomputer_worker_utilization",
 			Help: "Worker utilization (0-1)",
 		},
 		[]string{"region", "worker_id"},
@@ -56,7 +56,7 @@ var (
 
 	PodmanOpDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "opensandbox_podman_op_duration_seconds",
+			Name:    "opencomputer_podman_op_duration_seconds",
 			Help:    "Time for podman operations",
 			Buckets: []float64{0.01, 0.05, 0.1, 0.5, 1.0, 5.0},
 		},
@@ -65,7 +65,7 @@ var (
 
 	DirectConnectionsActive = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "opensandbox_direct_connections_active",
+			Name: "opencomputer_direct_connections_active",
 			Help: "Number of active direct SDK connections to worker",
 		},
 		[]string{"region", "worker_id"},
@@ -73,7 +73,7 @@ var (
 
 	SQLiteSyncLag = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "opensandbox_sqlite_sync_lag_seconds",
+			Name: "opencomputer_sqlite_sync_lag_seconds",
 			Help: "Time since last NATS sync",
 		},
 		[]string{"region", "worker_id"},
@@ -84,7 +84,7 @@ var (
 var (
 	HTTPRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "opensandbox_http_requests_total",
+			Name: "opencomputer_http_requests_total",
 			Help: "Total HTTP requests",
 		},
 		[]string{"method", "path", "status"},
@@ -92,7 +92,7 @@ var (
 
 	SandboxCreatesTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "opensandbox_sandbox_creates_total",
+			Name: "opencomputer_sandbox_creates_total",
 			Help: "Total sandbox creations",
 		},
 		[]string{"region", "template", "status"},
@@ -100,7 +100,7 @@ var (
 
 	AuthAttemptsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "opensandbox_auth_attempts_total",
+			Name: "opencomputer_auth_attempts_total",
 			Help: "Total auth attempts",
 		},
 		[]string{"type", "result"},
@@ -108,7 +108,7 @@ var (
 
 	WorkersTotal = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "opensandbox_workers_total",
+			Name: "opencomputer_workers_total",
 			Help: "Number of workers",
 		},
 		[]string{"region", "status"},
@@ -116,7 +116,7 @@ var (
 
 	ScaleEventsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "opensandbox_scale_events_total",
+			Name: "opencomputer_scale_events_total",
 			Help: "Total scaling events",
 		},
 		[]string{"region", "direction"},

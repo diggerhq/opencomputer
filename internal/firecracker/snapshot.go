@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/opensandbox/opensandbox/internal/sandbox"
-	"github.com/opensandbox/opensandbox/internal/storage"
-	"github.com/opensandbox/opensandbox/pkg/types"
+	"github.com/opencomputer/opencomputer/internal/sandbox"
+	"github.com/opencomputer/opencomputer/internal/storage"
+	"github.com/opencomputer/opencomputer/pkg/types"
 )
 
 // SnapshotMeta holds metadata persisted alongside snapshot files.

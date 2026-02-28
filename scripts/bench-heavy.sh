@@ -246,7 +246,7 @@ info "Waiting for async S3 upload to finish..."
 sleep 30
 
 info "Purging snapshot files + all NVMe cache (keeping drives for restore)..."
-ssh -i ~/.ssh/opensandbox-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@18.117.11.151 \
+ssh -i ~/.ssh/opencomputer-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@18.117.11.151 \
   "sudo rm -rf /data/sandboxes/sandboxes/${SANDBOX_ID}/snapshot /data/sandboxes/sandboxes/${SANDBOX_ID}/checkpoint.tar.zst && sudo rm -rf /data/sandboxes/checkpoints && sudo mkdir -p /data/sandboxes/checkpoints && echo purged" 2>/dev/null || true
 ok "Snapshot + cache purged (drives kept)"
 

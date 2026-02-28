@@ -112,13 +112,13 @@ with st.sidebar:
     # Sandbox provider selection
     sandbox_provider = st.selectbox(
         "Sandbox Provider",
-        ["opensandbox", "e2b"],
+        ["opencomputer", "e2b"],
         index=0,
-        help="OpenSandbox (local) or E2B (cloud)"
+        help="OpenComputer (local) or E2B (cloud)"
     )
     
-    if sandbox_provider == "opensandbox":
-        st.caption("🖥️ Using local OpenSandbox (localhost:8080)")
+    if sandbox_provider == "opencomputer":
+        st.caption("🖥️ Using local OpenComputer (localhost:8080)")
     else:
         st.caption("☁️ Using E2B cloud sandbox")
     
@@ -283,8 +283,8 @@ with tab1:
                     logs = task_data.get("logs", [])
                     sandbox_used = "unknown"
                     for log in logs:
-                        if "Creating opensandbox" in log:
-                            sandbox_used = "opensandbox"
+                        if "Creating opencomputer" in log:
+                            sandbox_used = "opencomputer"
                             break
                         elif "Creating e2b" in log:
                             sandbox_used = "e2b"
@@ -296,7 +296,7 @@ with tab1:
                     with info_cols[1]:
                         st.text(f"Branch: {task_data.get('branch_name', 'N/A')}")
                     with info_cols[2]:
-                        sandbox_icon = "🖥️" if sandbox_used == "opensandbox" else "☁️"
+                        sandbox_icon = "🖥️" if sandbox_used == "opencomputer" else "☁️"
                         st.text(f"Sandbox: {sandbox_icon} {sandbox_used}")
                     
                     if task_data.get("pr_url"):

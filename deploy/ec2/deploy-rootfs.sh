@@ -12,7 +12,7 @@ set -euo pipefail
 #
 # Environment variables:
 #   WORKER_IP    (required) — EC2 instance public IP
-#   SSH_KEY      (optional) — path to SSH key (default: ~/.ssh/opensandbox-worker.pem)
+#   SSH_KEY      (optional) — path to SSH key (default: ~/.ssh/opencomputer-worker.pem)
 #   SSH_USER     (optional) — SSH user (default: ubuntu)
 #   IMAGES_DIR   (optional) — remote images dir (default: /data/sandboxes/firecracker/images)
 #   GOARCH       (optional) — target arch (default: arm64)
@@ -20,7 +20,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/opensandbox-worker.pem}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/opencomputer-worker.pem}"
 WORKER_IP="${WORKER_IP:?Set WORKER_IP to the EC2 instance public IP}"
 SSH_USER="${SSH_USER:-ubuntu}"
 IMAGES_DIR="${IMAGES_DIR:-/data/sandboxes/firecracker/images}"

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/opensandbox/opensandbox/internal/podman"
-	"github.com/opensandbox/opensandbox/pkg/types"
+	"github.com/opencomputer/opencomputer/internal/podman"
+	"github.com/opencomputer/opencomputer/pkg/types"
 )
 
 // Exec runs a command inside a sandbox and returns the result.

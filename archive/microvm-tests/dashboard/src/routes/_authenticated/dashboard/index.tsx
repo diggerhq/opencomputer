@@ -130,7 +130,7 @@ function DashboardOverview() {
         <div className="border border-neutral-800 rounded-lg p-6 hover:border-neutral-700 transition-colors">
           <h3 className="font-mono text-white mb-2">Documentation</h3>
           <p className="text-neutral-500 font-mono text-sm mb-4">
-            Learn how to get the most out of OpenSandbox.
+            Learn how to get the most out of OpenComputer.
           </p>
           <a
             href="#"

@@ -1,11 +1,11 @@
-# OpenSandbox Python SDK
+# OpenComputer Python SDK
 
-A high-performance Python client for [OpenSandbox](https://github.com/yourusername/opensandbox), using gRPC for fast command execution and file operations.
+A high-performance Python client for [OpenComputer](https://github.com/yourusername/opencomputer), using gRPC for fast command execution and file operations.
 
 ## Installation
 
 ```bash
-pip install opensandbox
+pip install opencomputer
 ```
 
 Or install from source:
@@ -19,10 +19,10 @@ pip install -e .
 
 ```python
 import asyncio
-from opensandbox import OpenSandbox
+from opencomputer import OpenComputer
 
 async def main():
-    async with OpenSandbox("https://opensandbox.fly.dev") as client:
+    async with OpenComputer("https://opencomputer.fly.dev") as client:
         # Create a sandbox
         sandbox = await client.create()
 
@@ -48,13 +48,13 @@ asyncio.run(main())
 
 ## API Reference
 
-### OpenSandbox
+### OpenComputer
 
-The main client class for connecting to an OpenSandbox server.
+The main client class for connecting to an OpenComputer server.
 
 ```python
-client = OpenSandbox(
-    base_url="https://opensandbox.fly.dev",  # Server URL
+client = OpenComputer(
+    base_url="https://opencomputer.fly.dev",  # Server URL
     grpc_port=50051,                          # gRPC port (default: 50051)
     timeout=30.0,                              # HTTP timeout in seconds
 )
@@ -120,10 +120,10 @@ await sandbox.destroy()
 
 ## Context Manager Support
 
-Both `OpenSandbox` and `Sandbox` support async context managers:
+Both `OpenComputer` and `Sandbox` support async context managers:
 
 ```python
-async with OpenSandbox("https://opensandbox.fly.dev") as client:
+async with OpenComputer("https://opencomputer.fly.dev") as client:
     async with await client.create() as sandbox:
         result = await sandbox.run("echo hello")
         # sandbox.destroy() called automatically
@@ -133,8 +133,8 @@ async with OpenSandbox("https://opensandbox.fly.dev") as client:
 ## Error Handling
 
 ```python
-from opensandbox import (
-    OpenSandboxError,
+from opencomputer import (
+    OpenComputerError,
     SandboxNotFoundError,
     SandboxConnectionError,
     CommandExecutionError,

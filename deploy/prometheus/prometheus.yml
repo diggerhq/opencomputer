@@ -4,16 +4,16 @@ global:
 
 scrape_configs:
   # Control plane metrics
-  - job_name: 'opensandbox-cp'
+  - job_name: 'opencomputer-cp'
     static_configs:
-      - targets: ['opensandbox.internal:8080']
+      - targets: ['opencomputer.internal:8080']
     metrics_path: '/metrics'
 
   # Worker metrics (auto-discovered via DNS)
-  - job_name: 'opensandbox-workers'
+  - job_name: 'opencomputer-workers'
     dns_sd_configs:
       - names:
-          - '_prometheus._tcp.opensandbox-worker.internal'
+          - '_prometheus._tcp.opencomputer-worker.internal'
         type: SRV
         refresh_interval: 30s
     # Fallback to static for local development

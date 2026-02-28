@@ -1,7 +1,7 @@
 {
-  "name": "@opensandbox/sdk",
+  "name": "@opencomputer/sdk",
   "version": "0.1.0",
-  "description": "TypeScript SDK for OpenSandbox - secure code execution environments",
+  "description": "TypeScript SDK for OpenComputer - secure code execution environments",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -35,7 +35,7 @@
   },
   "keywords": [
     "sandbox",
-    "opensandbox",
+    "opencomputer",
     "code-execution",
     "isolation",
     "container"
@@ -44,6 +44,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/diggerhq/opensandbox"
+    "url": "https://github.com/diggerhq/opencomputer"
   }
 }

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	pb "github.com/opensandbox/opensandbox/proto/agent"
+	pb "github.com/opencomputer/opencomputer/proto/agent"
 )
 
 // Ping responds with the agent version and uptime.

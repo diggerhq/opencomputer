@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/opensandbox/opensandbox/internal/compute"
+	"github.com/opencomputer/opencomputer/internal/compute"
 )
 
 const (

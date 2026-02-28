@@ -7,8 +7,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
-	"github.com/opensandbox/opensandbox/internal/sandbox"
-	"github.com/opensandbox/opensandbox/pkg/types"
+	"github.com/opencomputer/opencomputer/internal/sandbox"
+	"github.com/opencomputer/opencomputer/pkg/types"
 )
 
 var upgrader = websocket.Upgrader{

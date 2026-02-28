@@ -58,8 +58,8 @@ class BaseSandbox(ABC):
         pass
 
 
-class OpenSandboxClient(BaseSandbox):
-    """OpenSandbox HTTP client for benchmarking (legacy, uses HTTP only)."""
+class OpenComputerClient(BaseSandbox):
+    """OpenComputer HTTP client for benchmarking (legacy, uses HTTP only)."""
 
     def __init__(self, base_url: str = "http://localhost:8080"):
         self.base_url = base_url
@@ -68,7 +68,7 @@ class OpenSandboxClient(BaseSandbox):
 
     @property
     def name(self) -> str:
-        return "opensandbox-http"
+        return "opencomputer-http"
 
     def create(self, timeout: int = 300) -> str:
         response = self.client.post(
@@ -134,8 +134,8 @@ class OpenSandboxClient(BaseSandbox):
         self.client.close()
 
 
-class OpenSandboxGrpcClient(BaseSandbox):
-    """OpenSandbox gRPC client for benchmarking (uses gRPC for operations)."""
+class OpenComputerGrpcClient(BaseSandbox):
+    """OpenComputer gRPC client for benchmarking (uses gRPC for operations)."""
 
     def __init__(
         self,
@@ -159,7 +159,7 @@ class OpenSandboxGrpcClient(BaseSandbox):
         """Ensure gRPC connection is established."""
         if self._grpc_channel is None:
             import grpc
-            from opensandbox.proto import sandbox_pb2_grpc
+            from opencomputer.proto import sandbox_pb2_grpc
 
             grpc_target = f"{self._host}:{self.grpc_port}"
             # Use insecure channel - Fly.io forwards raw TCP
@@ -168,7 +168,7 @@ class OpenSandboxGrpcClient(BaseSandbox):
 
     @property
     def name(self) -> str:
-        return "opensandbox-grpc"
+        return "opencomputer-grpc"
 
     def create(self, timeout: int = 300) -> str:
         response = self.http_client.post(
@@ -184,7 +184,7 @@ class OpenSandboxGrpcClient(BaseSandbox):
         if not self.session_id:
             raise RuntimeError("Session not created")
 
-        from opensandbox.proto import sandbox_pb2
+        from opencomputer.proto import sandbox_pb2
 
         request = sandbox_pb2.RunCommandRequest(
             session_id=self.session_id,
@@ -214,7 +214,7 @@ class OpenSandboxGrpcClient(BaseSandbox):
         if not self.session_id:
             raise RuntimeError("Session not created")
 
-        from opensandbox.proto import sandbox_pb2
+        from opencomputer.proto import sandbox_pb2
 
         request = sandbox_pb2.WriteFileRequest(
             session_id=self.session_id,
@@ -235,7 +235,7 @@ class OpenSandboxGrpcClient(BaseSandbox):
         if not self.session_id:
             raise RuntimeError("Session not created")
 
-        from opensandbox.proto import sandbox_pb2
+        from opencomputer.proto import sandbox_pb2
 
         request = sandbox_pb2.ReadFileRequest(
             session_id=self.session_id,
@@ -329,20 +329,20 @@ class E2BSandboxClient(BaseSandbox):
 
 def get_sandbox(provider: str, **kwargs) -> BaseSandbox:
     """Factory function to get a sandbox instance."""
-    if provider == "opensandbox":
+    if provider == "opencomputer":
         # Default to gRPC for better performance
-        base_url = kwargs.get("base_url", os.environ.get("OPENSANDBOX_URL", "https://opensandbox-test.fly.dev"))
-        grpc_port = kwargs.get("grpc_port", int(os.environ.get("OPENSANDBOX_GRPC_PORT", "50051")))
-        return OpenSandboxGrpcClient(base_url=base_url, grpc_port=grpc_port)
-    elif provider == "opensandbox-http":
+        base_url = kwargs.get("base_url", os.environ.get("OPENCOMPUTER_URL", "https://opencomputer-test.fly.dev"))
+        grpc_port = kwargs.get("grpc_port", int(os.environ.get("OPENCOMPUTER_GRPC_PORT", "50051")))
+        return OpenComputerGrpcClient(base_url=base_url, grpc_port=grpc_port)
+    elif provider == "opencomputer-http":
         # Legacy HTTP-only mode
-        base_url = kwargs.get("base_url", os.environ.get("OPENSANDBOX_URL", "https://opensandbox-test.fly.dev"))
-        return OpenSandboxClient(base_url=base_url)
-    elif provider == "opensandbox-grpc":
+        base_url = kwargs.get("base_url", os.environ.get("OPENCOMPUTER_URL", "https://opencomputer-test.fly.dev"))
+        return OpenComputerClient(base_url=base_url)
+    elif provider == "opencomputer-grpc":
         # Explicit gRPC mode
-        base_url = kwargs.get("base_url", os.environ.get("OPENSANDBOX_URL", "https://opensandbox-test.fly.dev"))
-        grpc_port = kwargs.get("grpc_port", int(os.environ.get("OPENSANDBOX_GRPC_PORT", "50051")))
-        return OpenSandboxGrpcClient(base_url=base_url, grpc_port=grpc_port)
+        base_url = kwargs.get("base_url", os.environ.get("OPENCOMPUTER_URL", "https://opencomputer-test.fly.dev"))
+        grpc_port = kwargs.get("grpc_port", int(os.environ.get("OPENCOMPUTER_GRPC_PORT", "50051")))
+        return OpenComputerGrpcClient(base_url=base_url, grpc_port=grpc_port)
     elif provider == "e2b":
         return E2BSandboxClient()
     else:

@@ -1,4 +1,4 @@
-# Python base rootfs for OpenSandbox Firecracker VMs
+# Python base rootfs for OpenComputer Firecracker VMs
 # Build: scripts/build-rootfs.sh python
 FROM ubuntu:22.04
 

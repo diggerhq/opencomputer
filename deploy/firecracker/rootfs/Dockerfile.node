@@ -1,4 +1,4 @@
-# Node.js base rootfs for OpenSandbox Firecracker VMs
+# Node.js base rootfs for OpenComputer Firecracker VMs
 # Build: scripts/build-rootfs.sh node
 FROM ubuntu:22.04
 

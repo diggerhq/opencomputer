@@ -41,8 +41,8 @@ async def setup_node(state: AgentState) -> dict:
         logs = logs + [f"[{datetime.now().strftime('%H:%M:%S')}] Creating {provider} sandbox..."]
         
         sandbox_kwargs = {}
-        if provider == "opensandbox":
-            sandbox_kwargs["base_url"] = settings.opensandbox_url
+        if provider == "opencomputer":
+            sandbox_kwargs["base_url"] = settings.opencomputer_url
         
         sandbox_start = time.time()
         sandbox = get_sandbox(provider, **sandbox_kwargs)

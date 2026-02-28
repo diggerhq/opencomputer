@@ -1,4 +1,4 @@
-# Default rootfs for OpenSandbox Firecracker VMs
+# Default rootfs for OpenComputer Firecracker VMs
 # Includes Python 3, Node.js 20 LTS, build tools, and common utilities.
 # Build: scripts/build-rootfs.sh default
 FROM ubuntu:22.04

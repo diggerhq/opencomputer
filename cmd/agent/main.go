@@ -11,7 +11,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/opensandbox/opensandbox/internal/agent"
+	"github.com/opencomputer/opencomputer/internal/agent"
 )
 
 const version = "0.1.0"

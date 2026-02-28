@@ -10,10 +10,10 @@ export const Route = createFileRoute('/')({
 type InstallTab = 'npm' | 'yarn' | 'pnpm' | 'curl'
 
 const installCommands: Record<InstallTab, string> = {
-  npm: 'npm install @opensandbox/sdk',
-  yarn: 'yarn add @opensandbox/sdk',
-  pnpm: 'pnpm add @opensandbox/sdk',
-  curl: 'curl -fsSL https://opensandbox.dev/install | bash',
+  npm: 'npm install @opencomputer/sdk',
+  yarn: 'yarn add @opencomputer/sdk',
+  pnpm: 'pnpm add @opencomputer/sdk',
+  curl: 'curl -fsSL https://opencomputer.dev/install | bash',
 }
 
 function LandingPage() {
@@ -38,7 +38,7 @@ function LandingPage() {
           
           <div className="flex items-center gap-8">
             <a 
-              href="https://github.com/diggerhq/opensandbox" 
+              href="https://github.com/diggerhq/opencomputer" 
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-2 text-neutral-400 hover:text-white transition-colors font-mono text-sm"
@@ -46,7 +46,7 @@ function LandingPage() {
               <Github className="w-4 h-4" />
               GitHub
             </a>
-            <a href="https://docs.opensandbox.ai" className="text-neutral-400 hover:text-white transition-colors font-mono text-sm">
+            <a href="https://docs.opencomputer.ai" className="text-neutral-400 hover:text-white transition-colors font-mono text-sm">
               Docs
             </a>
             <a href="/pricing" className="text-neutral-400 hover:text-white transition-colors font-mono text-sm">
@@ -89,7 +89,7 @@ function LandingPage() {
           
           {/* Description */}
           <p className="text-neutral-400 font-mono text-lg leading-relaxed mb-4 max-w-2xl">
-            OpenSandbox provides instant, isolated development environments.
+            OpenComputer provides instant, isolated development environments.
             Spin up sandboxes programmatically with our SDK or CLI.
           </p>
 
@@ -148,7 +148,7 @@ function LandingPage() {
       <footer className="border-t border-neutral-800 py-8">
         <div className="max-w-6xl mx-auto px-6 flex items-center justify-between">
           <span className="font-mono text-sm text-neutral-600">
-            © 2024 OpenSandbox
+            © 2024 OpenComputer
           </span>
           <div className="flex items-center gap-6">
             <a href="#" className="text-neutral-600 hover:text-neutral-400 transition-colors font-mono text-sm">

@@ -1,20 +1,20 @@
-# OpenSandbox TypeScript SDK
+# OpenComputer TypeScript SDK
 
-TypeScript/JavaScript SDK for [OpenSandbox](https://github.com/diggerhq/opensandbox) - secure code execution environments.
+TypeScript/JavaScript SDK for [OpenComputer](https://github.com/diggerhq/opencomputer) - secure code execution environments.
 
 ## Installation
 
 ```bash
-npm install @opensandbox/sdk
+npm install @opencomputer/sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { OpenSandbox } from '@opensandbox/sdk';
+import { OpenComputer } from '@opencomputer/sdk';
 
 // Create client
-const client = new OpenSandbox('http://localhost:8080');
+const client = new OpenComputer('http://localhost:8080');
 
 // Create a sandbox session
 const sandbox = await client.create();
@@ -105,18 +105,18 @@ await sandbox.run('python3 -m http.server 5173 &');
 // Access via preview URL
 if (sandbox.previewUrl) {
   console.log(`Web server available at: ${sandbox.previewUrl}`);
-  // e.g., https://abc-123.preview.opensandbox.fly.dev
+  // e.g., https://abc-123.preview.opencomputer.fly.dev
 }
 ```
 
 ## API Reference
 
-### `OpenSandbox`
+### `OpenComputer`
 
-Main client for connecting to an OpenSandbox server.
+Main client for connecting to an OpenComputer server.
 
 ```typescript
-const client = new OpenSandbox(baseUrl, options?);
+const client = new OpenComputer(baseUrl, options?);
 ```
 
 **Options:**
@@ -148,7 +148,7 @@ Represents a sandbox session.
 
 ### Error Classes
 
-- `OpenSandboxError` - Base error class
+- `OpenComputerError` - Base error class
 - `SandboxNotFoundError` - Session not found
 - `ConnectionError` - Connection to server failed
 - `CommandExecutionError` - Command execution failed

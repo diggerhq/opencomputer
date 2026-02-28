@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Provision a fresh Ubuntu 24.04 EC2 instance as an OpenSandbox worker.
+# Provision a fresh Ubuntu 24.04 EC2 instance as an OpenComputer worker.
 # Run this ON the instance (ssh in first), or pipe via ssh:
 #   ssh -i key.pem ubuntu@<IP> 'bash -s' < deploy/ec2/setup-instance.sh
 #
@@ -105,13 +105,13 @@ sudo cp /tmp/deploy-ec2/caddy.service /etc/systemd/system/caddy.service 2>/dev/n
 echo "==> Installing NVMe boot service..."
 sudo apt-get install -y xfsprogs nvme-cli mdadm
 
-sudo tee /usr/local/bin/opensandbox-nvme-setup.sh > /dev/null << 'NVME'
+sudo tee /usr/local/bin/opencomputer-nvme-setup.sh > /dev/null << 'NVME'
 #!/usr/bin/env bash
 set -euo pipefail
 MOUNT_POINT="/data/sandboxes"
 mkdir -p "$MOUNT_POINT"
 if mountpoint -q "$MOUNT_POINT"; then
-  echo "opensandbox-nvme: $MOUNT_POINT already mounted"
+  echo "opencomputer-nvme: $MOUNT_POINT already mounted"
   exit 0
 fi
 
@@ -128,24 +128,24 @@ for dev in /dev/nvme0n1 /dev/nvme1n1 /dev/nvme2n1 /dev/nvme3n1 /dev/nvme4n1; do
 done
 
 if [ ${#NVME_DEVS[@]} -eq 0 ]; then
-  echo "opensandbox-nvme: no NVMe instance storage found, using root disk"
+  echo "opencomputer-nvme: no NVMe instance storage found, using root disk"
   mkdir -p "$MOUNT_POINT/sandboxes" "$MOUNT_POINT/firecracker/images" "$MOUNT_POINT/checkpoints"
   exit 0
 fi
 
-echo "opensandbox-nvme: found ${#NVME_DEVS[@]} NVMe instance store device(s): ${NVME_DEVS[*]}"
+echo "opencomputer-nvme: found ${#NVME_DEVS[@]} NVMe instance store device(s): ${NVME_DEVS[*]}"
 
 if [ ${#NVME_DEVS[@]} -eq 1 ]; then
   # Single drive — format and mount directly
   DEV="${NVME_DEVS[0]}"
-  echo "opensandbox-nvme: formatting $DEV as XFS with project quotas"
+  echo "opencomputer-nvme: formatting $DEV as XFS with project quotas"
   mkfs.xfs -f "$DEV"
   mount -o prjquota "$DEV" "$MOUNT_POINT"
 else
   # Multiple drives — RAID-0 for maximum throughput + capacity
-  echo "opensandbox-nvme: creating RAID-0 across ${#NVME_DEVS[@]} devices"
+  echo "opencomputer-nvme: creating RAID-0 across ${#NVME_DEVS[@]} devices"
   mdadm --create /dev/md0 --level=0 --raid-devices=${#NVME_DEVS[@]} "${NVME_DEVS[@]}" --force --run
-  echo "opensandbox-nvme: formatting /dev/md0 as XFS with project quotas"
+  echo "opencomputer-nvme: formatting /dev/md0 as XFS with project quotas"
   mkfs.xfs -f /dev/md0
   mount -o prjquota /dev/md0 "$MOUNT_POINT"
 fi
@@ -156,29 +156,29 @@ mkdir -p "$MOUNT_POINT/firecracker/images"
 mkdir -p "$MOUNT_POINT/checkpoints"
 
 # Copy Firecracker assets from EBS to NVMe if available
-SRC="/opt/opensandbox/firecracker"
+SRC="/opt/opencomputer/firecracker"
 DST="$MOUNT_POINT/firecracker"
 if [ -d "$SRC" ] && [ ! -f "$DST/vmlinux-arm64" ]; then
-  echo "opensandbox-nvme: copying Firecracker assets from $SRC to $DST"
+  echo "opencomputer-nvme: copying Firecracker assets from $SRC to $DST"
   cp "$SRC/vmlinux-arm64" "$DST/"
   cp "$SRC/images/"* "$DST/images/"
-  echo "opensandbox-nvme: assets copied ($(du -sh "$DST" | cut -f1))"
+  echo "opencomputer-nvme: assets copied ($(du -sh "$DST" | cut -f1))"
 fi
-echo "opensandbox-nvme: mounted at $MOUNT_POINT ($(df -h "$MOUNT_POINT" | tail -1 | awk '{print $2}') total)"
+echo "opencomputer-nvme: mounted at $MOUNT_POINT ($(df -h "$MOUNT_POINT" | tail -1 | awk '{print $2}') total)"
 NVME
-sudo chmod +x /usr/local/bin/opensandbox-nvme-setup.sh
+sudo chmod +x /usr/local/bin/opencomputer-nvme-setup.sh
 
-sudo tee /etc/systemd/system/opensandbox-nvme.service > /dev/null << 'SVC'
+sudo tee /etc/systemd/system/opencomputer-nvme.service > /dev/null << 'SVC'
 [Unit]
-Description=OpenSandbox NVMe Instance Storage Setup
+Description=OpenComputer NVMe Instance Storage Setup
 DefaultDependencies=no
-Before=opensandbox-worker.service
+Before=opencomputer-worker.service
 After=local-fs.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/opensandbox-nvme-setup.sh
+ExecStart=/usr/local/bin/opencomputer-nvme-setup.sh
 
 [Install]
 WantedBy=multi-user.target
@@ -198,7 +198,7 @@ echo "    Base rootfs images will be installed at /data/firecracker/images/"
 # IP forwarding + iptables for VM networking
 # -------------------------------------------------------------------
 echo "==> Configuring IP forwarding for Firecracker VMs..."
-sudo tee /etc/sysctl.d/99-opensandbox.conf > /dev/null << 'SYSCTL'
+sudo tee /etc/sysctl.d/99-opencomputer.conf > /dev/null << 'SYSCTL'
 # Enable IP forwarding for Firecracker VM networking
 net.ipv4.ip_forward = 1
 # Increase ARP cache for many TAP interfaces
@@ -217,7 +217,7 @@ sudo sysctl --system
 # Dynamic worker identity (from EC2 IMDS at boot)
 # -------------------------------------------------------------------
 echo "==> Installing identity service..."
-sudo tee /usr/local/bin/opensandbox-worker-identity.sh > /dev/null << 'IDENT'
+sudo tee /usr/local/bin/opencomputer-worker-identity.sh > /dev/null << 'IDENT'
 #!/usr/bin/env bash
 set -euo pipefail
 TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
@@ -230,27 +230,27 @@ PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
   http://169.254.169.254/latest/meta-data/public-ipv4 || echo "")
 SHORT_ID=$(echo "$INSTANCE_ID" | sed 's/^i-//' | cut -c1-8)
 WORKER_ID="w-use2-${SHORT_ID}"
-mkdir -p /etc/opensandbox
-cat > /etc/opensandbox/worker-identity.env << EOF
-OPENSANDBOX_WORKER_ID=${WORKER_ID}
-OPENSANDBOX_HTTP_ADDR=http://${PUBLIC_IP:-$PRIVATE_IP}:8080
-OPENSANDBOX_GRPC_ADVERTISE=${PRIVATE_IP}:9090
+mkdir -p /etc/opencomputer
+cat > /etc/opencomputer/worker-identity.env << EOF
+OPENCOMPUTER_WORKER_ID=${WORKER_ID}
+OPENCOMPUTER_HTTP_ADDR=http://${PUBLIC_IP:-$PRIVATE_IP}:8080
+OPENCOMPUTER_GRPC_ADVERTISE=${PRIVATE_IP}:9090
 EOF
-echo "opensandbox-identity: ${WORKER_ID} private=${PRIVATE_IP} public=${PUBLIC_IP:-none}"
+echo "opencomputer-identity: ${WORKER_ID} private=${PRIVATE_IP} public=${PUBLIC_IP:-none}"
 IDENT
-sudo chmod +x /usr/local/bin/opensandbox-worker-identity.sh
+sudo chmod +x /usr/local/bin/opencomputer-worker-identity.sh
 
-sudo tee /etc/systemd/system/opensandbox-identity.service > /dev/null << 'SVC'
+sudo tee /etc/systemd/system/opencomputer-identity.service > /dev/null << 'SVC'
 [Unit]
-Description=OpenSandbox Worker Identity (from EC2 IMDS)
+Description=OpenComputer Worker Identity (from EC2 IMDS)
 After=network-online.target
 Wants=network-online.target
-Before=opensandbox-worker.service
+Before=opencomputer-worker.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/opensandbox-worker-identity.sh
+ExecStart=/usr/local/bin/opencomputer-worker-identity.sh
 
 [Install]
 WantedBy=multi-user.target
@@ -260,29 +260,29 @@ SVC
 # Worker systemd unit (Firecracker)
 # -------------------------------------------------------------------
 echo "==> Installing worker systemd unit..."
-sudo tee /etc/systemd/system/opensandbox-worker.service > /dev/null << 'SVC'
+sudo tee /etc/systemd/system/opencomputer-worker.service > /dev/null << 'SVC'
 [Unit]
-Description=OpenSandbox Worker (Firecracker)
-After=network-online.target opensandbox-nvme.service opensandbox-identity.service
+Description=OpenComputer Worker (Firecracker)
+After=network-online.target opencomputer-nvme.service opencomputer-identity.service
 Wants=network-online.target
-Requires=opensandbox-nvme.service opensandbox-identity.service
+Requires=opencomputer-nvme.service opencomputer-identity.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/opensandbox-worker
+ExecStart=/usr/local/bin/opencomputer-worker
 Restart=always
 RestartSec=5
 Environment=HOME=/root
-Environment=OPENSANDBOX_MODE=worker
-Environment=OPENSANDBOX_PORT=8080
-Environment=OPENSANDBOX_REGION=use2
-Environment=OPENSANDBOX_DATA_DIR=/data
-Environment=OPENSANDBOX_SANDBOX_DOMAIN=workers.opensandbox.ai
-Environment=OPENSANDBOX_FIRECRACKER_BIN=/usr/local/bin/firecracker
-Environment=OPENSANDBOX_KERNEL_PATH=/data/firecracker/vmlinux-arm64
-Environment=OPENSANDBOX_IMAGES_DIR=/data/firecracker/images
-Environment=OPENSANDBOX_SECRETS_ARN=arn:aws:secretsmanager:us-east-2:739940681129:secret:opensandbox/worker-vtN2Ez
-EnvironmentFile=/etc/opensandbox/worker-identity.env
+Environment=OPENCOMPUTER_MODE=worker
+Environment=OPENCOMPUTER_PORT=8080
+Environment=OPENCOMPUTER_REGION=use2
+Environment=OPENCOMPUTER_DATA_DIR=/data
+Environment=OPENCOMPUTER_SANDBOX_DOMAIN=workers.opencomputer.ai
+Environment=OPENCOMPUTER_FIRECRACKER_BIN=/usr/local/bin/firecracker
+Environment=OPENCOMPUTER_KERNEL_PATH=/data/firecracker/vmlinux-arm64
+Environment=OPENCOMPUTER_IMAGES_DIR=/data/firecracker/images
+Environment=OPENCOMPUTER_SECRETS_ARN=arn:aws:secretsmanager:us-east-2:739940681129:secret:opencomputer/worker-vtN2Ez
+EnvironmentFile=/etc/opencomputer/worker-identity.env
 # Only signal the main process on stop (not Firecracker children)
 # so graceful shutdown can hibernate VMs before they are killed
 KillMode=process
@@ -295,16 +295,16 @@ LimitNPROC=65536
 WantedBy=multi-user.target
 SVC
 
-sudo mkdir -p /etc/opensandbox /data/sandboxes /data/firecracker/images /data/checkpoints
+sudo mkdir -p /etc/opencomputer /data/sandboxes /data/firecracker/images /data/checkpoints
 
 # -------------------------------------------------------------------
 # Enable services
 # -------------------------------------------------------------------
 echo "==> Enabling services..."
 sudo systemctl daemon-reload
-sudo systemctl enable opensandbox-nvme
-sudo systemctl enable opensandbox-identity
-sudo systemctl enable opensandbox-worker
+sudo systemctl enable opencomputer-nvme
+sudo systemctl enable opencomputer-identity
+sudo systemctl enable opencomputer-worker
 sudo systemctl enable caddy 2>/dev/null || true
 
 # -------------------------------------------------------------------
@@ -327,7 +327,7 @@ echo " Remaining steps:"
 echo "   1. Deploy worker + agent binaries: ./deploy/ec2/deploy-worker.sh"
 echo "   2. Download kernel: scp bin/vmlinux-arm64 to /data/firecracker/"
 echo "   3. Build base rootfs images: sudo ./scripts/build-rootfs.sh all"
-echo "   4. Copy worker.env.example to /etc/opensandbox/worker.env and fill in secrets"
-echo "   5. Start services: sudo systemctl start opensandbox-worker"
+echo "   4. Copy worker.env.example to /etc/opencomputer/worker.env and fill in secrets"
+echo "   5. Start services: sudo systemctl start opencomputer-worker"
 echo "   6. Set up wildcard DNS: *.workers.opencomputer.dev -> this instance IP"
 echo "============================================"

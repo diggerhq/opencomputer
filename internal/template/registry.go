@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/opensandbox/opensandbox/pkg/types"
+	"github.com/opencomputer/opencomputer/pkg/types"
 )
 
 // Registry stores template metadata in-memory.

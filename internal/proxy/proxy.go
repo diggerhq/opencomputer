@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opencomputer/opencomputer/internal/sandbox"
 )
 
 // SandboxProxy reverse-proxies HTTP traffic from subdomain requests
@@ -27,7 +27,7 @@ type SandboxProxy struct {
 }
 
 // New creates a new SandboxProxy.
-// baseDomain is the base domain for sandbox subdomains (e.g., "workers.opensandbox.dev" or "localhost").
+// baseDomain is the base domain for sandbox subdomains (e.g., "workers.opencomputer.dev" or "localhost").
 func New(baseDomain string, mgr sandbox.Manager, router *sandbox.SandboxRouter) *SandboxProxy {
 	return &SandboxProxy{
 		baseDomain: baseDomain,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OpenSandbox Production Test Suite Runner (Python)
+OpenComputer Production Test Suite Runner (Python)
 
 Runs all production tests in sequence, with a summary at the end.
 Tests are ordered from fast/simple to slow/complex.
@@ -86,7 +86,7 @@ SUITES = [
 def main() -> None:
     print(f"{BOLD}")
     print("╔════════════════════════════════════════════════════════╗")
-    print("║       OpenSandbox Production Test Suite (Python)      ║")
+    print("║       OpenComputer Production Test Suite (Python)      ║")
     print(f"╚════════════════════════════════════════════════════════╝{RESET}\n")
 
     skip_slow = "--skip-slow" in sys.argv

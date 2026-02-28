@@ -56,7 +56,7 @@ func ensureAuthFile() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".config", "opensandbox")
+	dir := filepath.Join(home, ".config", "opencomputer")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}

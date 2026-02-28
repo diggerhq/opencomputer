@@ -1,4 +1,4 @@
-module github.com/opensandbox/opensandbox
+module github.com/opencomputer/opencomputer
 
 go 1.24.0
 

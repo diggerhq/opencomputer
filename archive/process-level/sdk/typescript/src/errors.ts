@@ -1,21 +1,21 @@
 /**
- * Custom error classes for the OpenSandbox SDK.
+ * Custom error classes for the OpenComputer SDK.
  */
 
 /**
- * Base error class for OpenSandbox errors.
+ * Base error class for OpenComputer errors.
  */
-export class OpenSandboxError extends Error {
+export class OpenComputerError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'OpenSandboxError';
+    this.name = 'OpenComputerError';
   }
 }
 
 /**
  * Error thrown when a sandbox session is not found.
  */
-export class SandboxNotFoundError extends OpenSandboxError {
+export class SandboxNotFoundError extends OpenComputerError {
   constructor(message = 'Sandbox session not found') {
     super(message);
     this.name = 'SandboxNotFoundError';
@@ -25,7 +25,7 @@ export class SandboxNotFoundError extends OpenSandboxError {
 /**
  * Error thrown when connection to the sandbox server fails.
  */
-export class ConnectionError extends OpenSandboxError {
+export class ConnectionError extends OpenComputerError {
   constructor(message: string) {
     super(message);
     this.name = 'ConnectionError';
@@ -35,7 +35,7 @@ export class ConnectionError extends OpenSandboxError {
 /**
  * Error thrown when a command execution fails.
  */
-export class CommandExecutionError extends OpenSandboxError {
+export class CommandExecutionError extends OpenComputerError {
   /** Exit code of the failed command */
   exitCode: number;
   /** Standard output from the command */
@@ -55,7 +55,7 @@ export class CommandExecutionError extends OpenSandboxError {
 /**
  * Error thrown when a file operation fails.
  */
-export class FileOperationError extends OpenSandboxError {
+export class FileOperationError extends OpenComputerError {
   constructor(message: string) {
     super(message);
     this.name = 'FileOperationError';

@@ -7,10 +7,10 @@ import (
 
 func TestLoadDefaults(t *testing.T) {
 	// Clear env to test defaults
-	os.Unsetenv("OPENSANDBOX_PORT")
-	os.Unsetenv("OPENSANDBOX_API_KEY")
-	os.Unsetenv("OPENSANDBOX_WORKER_ADDR")
-	os.Unsetenv("OPENSANDBOX_MODE")
+	os.Unsetenv("OPENCOMPUTER_PORT")
+	os.Unsetenv("OPENCOMPUTER_API_KEY")
+	os.Unsetenv("OPENCOMPUTER_WORKER_ADDR")
+	os.Unsetenv("OPENCOMPUTER_MODE")
 
 	cfg, err := Load()
 	if err != nil {
@@ -29,13 +29,13 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadFromEnv(t *testing.T) {
-	os.Setenv("OPENSANDBOX_PORT", "9999")
-	os.Setenv("OPENSANDBOX_API_KEY", "test-key")
-	os.Setenv("OPENSANDBOX_MODE", "server")
+	os.Setenv("OPENCOMPUTER_PORT", "9999")
+	os.Setenv("OPENCOMPUTER_API_KEY", "test-key")
+	os.Setenv("OPENCOMPUTER_MODE", "server")
 	defer func() {
-		os.Unsetenv("OPENSANDBOX_PORT")
-		os.Unsetenv("OPENSANDBOX_API_KEY")
-		os.Unsetenv("OPENSANDBOX_MODE")
+		os.Unsetenv("OPENCOMPUTER_PORT")
+		os.Unsetenv("OPENCOMPUTER_API_KEY")
+		os.Unsetenv("OPENCOMPUTER_MODE")
 	}()
 
 	cfg, err := Load()
@@ -55,8 +55,8 @@ func TestLoadFromEnv(t *testing.T) {
 }
 
 func TestLoadInvalidPort(t *testing.T) {
-	os.Setenv("OPENSANDBOX_PORT", "not-a-number")
-	defer os.Unsetenv("OPENSANDBOX_PORT")
+	os.Setenv("OPENCOMPUTER_PORT", "not-a-number")
+	defer os.Unsetenv("OPENCOMPUTER_PORT")
 
 	_, err := Load()
 	if err == nil {

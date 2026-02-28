@@ -1,6 +1,6 @@
 # @opencomputer/sdk
 
-TypeScript SDK for [OpenComputer](https://github.com/diggerhq/opensandbox) — cloud sandbox platform.
+TypeScript SDK for [OpenComputer](https://github.com/diggerhq/opencomputer) — cloud sandbox platform.
 
 ## Install
 

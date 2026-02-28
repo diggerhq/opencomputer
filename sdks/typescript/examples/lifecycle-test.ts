@@ -1,5 +1,5 @@
 /**
- * OpenSandbox SDK Lifecycle Test
+ * OpenComputer SDK Lifecycle Test
  *
  * Tests: create → commands → files → domain → kill
  *
@@ -36,7 +36,7 @@ function check(desc: string, expected: string, actual: string) {
 
 async function main() {
   bold("\n========================================");
-  bold(" OpenSandbox TypeScript SDK Lifecycle");
+  bold(" OpenComputer TypeScript SDK Lifecycle");
   bold("========================================\n");
   dim(`API: ${API_URL}`);
   console.log();
@@ -110,7 +110,7 @@ async function main() {
   if (sandbox.domain) {
     green(`Domain assigned: ${sandbox.domain}`);
   } else {
-    dim("No domain assigned (OPENSANDBOX_SANDBOX_DOMAIN not configured on server)");
+    dim("No domain assigned (OPENCOMPUTER_SANDBOX_DOMAIN not configured on server)");
   }
   console.log();
 

@@ -57,7 +57,7 @@ parse_resp() {
 }
 
 bold "========================================="
-bold " OpenSandbox Preview URL Test"
+bold " OpenComputer Preview URL Test"
 bold "========================================="
 echo ""
 echo "API: $API_URL"

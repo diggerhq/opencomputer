@@ -3,7 +3,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROTO_DIR="$SCRIPT_DIR/../../proto"
-OUT_DIR="$SCRIPT_DIR/opensandbox/proto"
+OUT_DIR="$SCRIPT_DIR/opencomputer/proto"
 
 python -m grpc_tools.protoc \
     -I"$PROTO_DIR" \

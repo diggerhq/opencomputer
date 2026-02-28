@@ -1,5 +1,5 @@
 /**
- * Test script for the OpenSandbox Templates API.
+ * Test script for the OpenComputer Templates API.
  *
  * Templates are standalone — they're not accessed through a Sandbox instance.
  * They let you build custom container images from Dockerfiles, which can then
@@ -21,10 +21,10 @@ function resolveApiUrl(url: string): string {
 
 async function main() {
   const apiUrl = resolveApiUrl(
-    process.argv[2] ?? process.env.OPENSANDBOX_API_URL ?? "http://localhost:8080"
+    process.argv[2] ?? process.env.OPENCOMPUTER_API_URL ?? "http://localhost:8080"
   );
-  const apiKey = process.argv[3] ?? process.env.OPENSANDBOX_API_KEY ?? "";
-  const rawUrl = process.argv[2] ?? process.env.OPENSANDBOX_API_URL ?? "http://localhost:8080";
+  const apiKey = process.argv[3] ?? process.env.OPENCOMPUTER_API_KEY ?? "";
+  const rawUrl = process.argv[2] ?? process.env.OPENCOMPUTER_API_URL ?? "http://localhost:8080";
 
   const templates = new Templates(apiUrl, apiKey);
 

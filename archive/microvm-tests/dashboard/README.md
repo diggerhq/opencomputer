@@ -1,6 +1,6 @@
-# OpenSandbox Dashboard
+# OpenComputer Dashboard
 
-A modern dashboard UI for OpenSandbox built with TanStack Router, TanStack Query, and WorkOS AuthKit.
+A modern dashboard UI for OpenComputer built with TanStack Router, TanStack Query, and WorkOS AuthKit.
 
 ## Tech Stack
 

@@ -1,6 +1,6 @@
-# Dockerfile for testing OpenSandbox + Claude Agent SDK
+# Dockerfile for testing OpenComputer + Claude Agent SDK
 # This image can be used as:
-# 1. A client that connects to OpenSandbox and runs Claude Agent SDK tasks
+# 1. A client that connects to OpenComputer and runs Claude Agent SDK tasks
 # 2. A base for the sandbox itself (with Claude Code pre-installed)
 
 FROM python:3.11-slim

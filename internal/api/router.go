@@ -10,14 +10,14 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/opensandbox/opensandbox/internal/auth"
-	"github.com/opensandbox/opensandbox/internal/cloudflare"
-	"github.com/opensandbox/opensandbox/internal/controlplane"
-	"github.com/opensandbox/opensandbox/internal/db"
-	"github.com/opensandbox/opensandbox/internal/ecr"
-	"github.com/opensandbox/opensandbox/internal/proxy"
-	"github.com/opensandbox/opensandbox/internal/sandbox"
-	"github.com/opensandbox/opensandbox/internal/storage"
+	"github.com/opencomputer/opencomputer/internal/auth"
+	"github.com/opencomputer/opencomputer/internal/cloudflare"
+	"github.com/opencomputer/opencomputer/internal/controlplane"
+	"github.com/opencomputer/opencomputer/internal/db"
+	"github.com/opencomputer/opencomputer/internal/ecr"
+	"github.com/opencomputer/opencomputer/internal/proxy"
+	"github.com/opencomputer/opencomputer/internal/sandbox"
+	"github.com/opencomputer/opencomputer/internal/storage"
 )
 
 var errSandboxNotAvailable = map[string]string{
@@ -204,7 +204,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	// Auto-detect FrontendURL for dev: if web/dist doesn't exist, assume Vite dev on :3000
 	if frontendURL == "" && !dashboardDistExists() {
 		frontendURL = "http://localhost:3000"
-		log.Println("opensandbox: web/dist/ not found, auto-setting FrontendURL=http://localhost:3000 (Vite dev)")
+		log.Println("opencomputer: web/dist/ not found, auto-setting FrontendURL=http://localhost:3000 (Vite dev)")
 	}
 
 	// Serve web dashboard SPA at root (catch-all after API/auth routes)
@@ -269,7 +269,7 @@ func (s *Server) serveDashboardUI(e *echo.Echo, frontendURL string) {
 			return c.Redirect(http.StatusFound, target)
 		}
 		return c.HTML(http.StatusOK, `<!DOCTYPE html>
-<html><head><title>OpenSandbox</title></head><body style="font-family:sans-serif;padding:40px;text-align:center">
+<html><head><title>OpenComputer</title></head><body style="font-family:sans-serif;padding:40px;text-align:center">
 <h1>Dashboard not built</h1>
 <p>Run <code>cd web && npm run build</code> or start Vite dev: <code>cd web && npm run dev</code></p>
 </body></html>`)

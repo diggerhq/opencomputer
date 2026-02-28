@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Real-time chat interface for Claude Agent SDK with OpenSandbox integration.
+Real-time chat interface for Claude Agent SDK with OpenComputer integration.
 
 This provides a WebSocket-based chat interface where you can interact with
 Claude in real-time, with code execution happening in an isolated sandbox.
@@ -16,7 +16,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="Claude Chat with OpenSandbox")
+app = FastAPI(title="Claude Chat with OpenComputer")
 
 # Store active sandbox sessions per WebSocket connection
 active_sessions: dict[str, any] = {}
@@ -36,14 +36,14 @@ async def health():
 
 
 async def create_sandbox():
-    """Create an OpenSandbox session."""
+    """Create an OpenComputer session."""
     try:
-        from opensandbox import OpenSandbox
+        from opencomputer import OpenComputer
 
-        url = os.environ.get("OPENSANDBOX_URL", "http://localhost:8080")
-        grpc_port = int(os.environ.get("OPENSANDBOX_GRPC_PORT", "50051"))
+        url = os.environ.get("OPENCOMPUTER_URL", "http://localhost:8080")
+        grpc_port = int(os.environ.get("OPENCOMPUTER_GRPC_PORT", "50051"))
 
-        client = OpenSandbox(url, grpc_port=grpc_port)
+        client = OpenComputer(url, grpc_port=grpc_port)
         await client._ensure_connected()
 
         sandbox = await client.create(
@@ -168,7 +168,7 @@ async def websocket_chat(websocket: WebSocket):
         else:
             await websocket.send_json({
                 "type": "system",
-                "message": "Running without sandbox (OpenSandbox not available)"
+                "message": "Running without sandbox (OpenComputer not available)"
             })
 
         # Main chat loop

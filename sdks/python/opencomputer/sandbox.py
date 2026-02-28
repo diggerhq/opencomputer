@@ -1,4 +1,4 @@
-"""Sandbox class - main entry point for the OpenSandbox SDK."""
+"""Sandbox class - main entry point for the OpenComputer SDK."""
 
 from __future__ import annotations
 

@@ -23,7 +23,7 @@ class LLMProvider(str, Enum):
 
 class SandboxProvider(str, Enum):
     """Supported sandbox providers."""
-    OPENSANDBOX = "opensandbox"
+    OPENCOMPUTER = "opencomputer"
     E2B = "e2b"
 
 
@@ -52,7 +52,7 @@ class TaskRequest(BaseModel):
     github_token: str = Field(..., description="GitHub personal access token")
     llm_provider: LLMProvider = Field(default=LLMProvider.ANTHROPIC, description="LLM provider to use")
     model: Optional[str] = Field(default=None, description="Specific model to use (uses provider default if not specified)")
-    sandbox_provider: SandboxProvider = Field(default=SandboxProvider.OPENSANDBOX, description="Sandbox provider to use")
+    sandbox_provider: SandboxProvider = Field(default=SandboxProvider.OPENCOMPUTER, description="Sandbox provider to use")
     branch_name: Optional[str] = Field(default=None, description="Custom branch name (auto-generated if not provided)")
     base_branch: Optional[str] = Field(default=None, description="Base branch for PR (auto-detected from repo default if not provided)")
     max_iterations: Optional[int] = Field(default=None, description="Max LLM iterations (uses config default if not specified)")

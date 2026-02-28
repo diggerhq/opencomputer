@@ -1,6 +1,6 @@
 # opencomputer
 
-Python SDK for [OpenComputer](https://github.com/diggerhq/opensandbox) — cloud sandbox platform.
+Python SDK for [OpenComputer](https://github.com/diggerhq/opencomputer) — cloud sandbox platform.
 
 ## Install
 

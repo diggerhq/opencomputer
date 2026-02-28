@@ -80,7 +80,7 @@ function ApiTokensPage() {
         <div>
           <h1 className="text-2xl font-mono text-white">API Tokens</h1>
           <p className="text-neutral-500 font-mono text-sm mt-1">
-            Manage API tokens for programmatic access to OpenSandbox
+            Manage API tokens for programmatic access to OpenComputer
           </p>
         </div>
         <button
@@ -95,7 +95,7 @@ function ApiTokensPage() {
       {/* Info banner */}
       <div className="border border-neutral-800 rounded-lg p-4 bg-neutral-900/50">
         <p className="font-mono text-sm text-neutral-400">
-          API tokens are used to authenticate requests to the OpenSandbox API. 
+          API tokens are used to authenticate requests to the OpenComputer API. 
           Keep your tokens secure and never share them publicly.
         </p>
       </div>
@@ -111,7 +111,7 @@ function ApiTokensPage() {
             <Key className="w-12 h-12 text-neutral-700 mx-auto mb-4" />
             <h3 className="font-mono text-neutral-400 mb-2">No API tokens yet</h3>
             <p className="text-neutral-600 font-mono text-sm mb-6">
-              Create your first API token to start using the OpenSandbox API
+              Create your first API token to start using the OpenComputer API
             </p>
             <button
               onClick={() => setShowNewModal(true)}

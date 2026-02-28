@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/opensandbox/opensandbox/internal/podman"
+	"github.com/opencomputer/opencomputer/internal/podman"
 )
 
 // Builder builds ext4 rootfs images from Dockerfiles using Podman as a build tool.
@@ -43,10 +43,10 @@ func (b *Builder) Build(ctx context.Context, dockerfile, name, tag, _ string) (s
 		tag = "latest"
 	}
 
-	localImage := fmt.Sprintf("localhost/opensandbox-template/%s:%s", name, tag)
+	localImage := fmt.Sprintf("localhost/opencomputer-template/%s:%s", name, tag)
 
 	// Write Dockerfile to temp directory
-	tmpDir, err := os.MkdirTemp("", "opensandbox-build-*")
+	tmpDir, err := os.MkdirTemp("", "opencomputer-build-*")
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create temp dir for build: %w", err)
 	}
@@ -125,7 +125,7 @@ func (b *Builder) augmentDockerfile(dockerfile string) string {
 	// Append agent + init injection after the user's Dockerfile
 	injection := `
 
-# --- OpenSandbox agent injection ---
+# --- OpenComputer agent injection ---
 COPY osb-agent /usr/local/bin/osb-agent
 RUN chmod +x /usr/local/bin/osb-agent
 COPY init /sbin/init
@@ -242,7 +242,7 @@ func tarToExt4(tarPath, ext4Path string, sizeMB int) error {
 // generateInitScript creates the /sbin/init script for Firecracker VMs.
 func generateInitScript() string {
 	return `#!/bin/busybox sh
-# OpenSandbox VM init script
+# OpenComputer VM init script
 # Runs as PID 1 inside the Firecracker microVM
 
 # Mount virtual filesystems

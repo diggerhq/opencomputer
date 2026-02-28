@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package agent;
 
-option go_package = "github.com/opensandbox/opensandbox/proto/agent";
+option go_package = "github.com/opencomputer/opencomputer/proto/agent";
 
 // SandboxAgent runs inside each Firecracker microVM and handles
 // exec, file ops, PTY, and stats over gRPC via vsock.

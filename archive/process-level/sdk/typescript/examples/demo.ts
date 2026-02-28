@@ -1,5 +1,5 @@
 /**
- * OpenSandbox TypeScript SDK Demo
+ * OpenComputer TypeScript SDK Demo
  *
  * This demo showcases all the features of the SDK:
  * - Creating sandbox sessions
@@ -15,7 +15,7 @@
  *   npx ts-node examples/demo.ts http://localhost:8080
  */
 
-import { OpenSandbox, Sandbox, CommandResult } from '../src/index';
+import { OpenComputer, Sandbox, CommandResult } from '../src/index';
 
 // Configuration
 const SERVER_URL = process.argv[2] || 'http://localhost:8080';
@@ -40,10 +40,10 @@ function printResult(label: string, result: CommandResult): void {
 }
 
 async function main(): Promise<void> {
-  console.log('OpenSandbox TypeScript SDK Demo');
+  console.log('OpenComputer TypeScript SDK Demo');
   console.log(`Connecting to: ${SERVER_URL}`);
 
-  const client = new OpenSandbox(SERVER_URL);
+  const client = new OpenComputer(SERVER_URL);
   let sandbox: Sandbox | null = null;
 
   try {
@@ -63,7 +63,7 @@ async function main(): Promise<void> {
     // =========================================
 
     // Simple echo
-    const echoResult = await sandbox.run('echo "Hello from OpenSandbox!"');
+    const echoResult = await sandbox.run('echo "Hello from OpenComputer!"');
     printResult('Echo command', echoResult);
 
     // Check environment variable
@@ -89,7 +89,7 @@ async function main(): Promise<void> {
 
     // Write a JSON file
     const jsonData = {
-      name: 'OpenSandbox Demo',
+      name: 'OpenComputer Demo',
       version: '1.0.0',
       features: ['commands', 'files', 'isolation'],
     };

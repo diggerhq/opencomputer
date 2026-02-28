@@ -19,9 +19,9 @@ class Settings(BaseSettings):
     openai_model: str = Field(default="gpt-5.2", alias="OPENAI_MODEL")
     
     # Sandbox Configuration
-    sandbox_provider: str = Field(default="opensandbox", alias="SANDBOX_PROVIDER")
+    sandbox_provider: str = Field(default="opencomputer", alias="SANDBOX_PROVIDER")
     sandbox_timeout: int = Field(default=1800, alias="SANDBOX_TIMEOUT")  # 30 minutes
-    opensandbox_url: str = Field(default="http://localhost:8080", alias="OPENSANDBOX_URL")
+    opencomputer_url: str = Field(default="http://localhost:8080", alias="OPENCOMPUTER_URL")
     
     # Agent Configuration
     max_iterations: int = Field(default=50, alias="MAX_ITERATIONS")  # Max LLM tool-calling iterations

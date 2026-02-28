@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/opensandbox/opensandbox/internal/sandbox"
-	"github.com/opensandbox/opensandbox/internal/storage"
-	"github.com/opensandbox/opensandbox/pkg/types"
-	pb "github.com/opensandbox/opensandbox/proto/agent"
+	"github.com/opencomputer/opencomputer/internal/sandbox"
+	"github.com/opencomputer/opencomputer/internal/storage"
+	"github.com/opencomputer/opencomputer/pkg/types"
+	pb "github.com/opencomputer/opencomputer/proto/agent"
 )
 
 // Compile-time check that Manager implements sandbox.Manager.

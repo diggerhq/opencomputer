@@ -50,8 +50,8 @@ type SandboxDB struct {
 	sandboxID string
 }
 
-// OpenSandboxDB opens (or creates) the SQLite database for a sandbox.
-func OpenSandboxDB(dataDir, sandboxID string) (*SandboxDB, error) {
+// OpenComputerDB opens (or creates) the SQLite database for a sandbox.
+func OpenComputerDB(dataDir, sandboxID string) (*SandboxDB, error) {
 	dir := filepath.Join(dataDir, sandboxID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create sandbox data dir: %w", err)
@@ -230,7 +230,7 @@ func (m *SandboxDBManager) Get(sandboxID string) (*SandboxDB, error) {
 		return db, nil
 	}
 
-	db, err := OpenSandboxDB(m.dataDir, sandboxID)
+	db, err := OpenComputerDB(m.dataDir, sandboxID)
 	if err != nil {
 		return nil, err
 	}

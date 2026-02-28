@@ -3,7 +3,7 @@
 Quick test to verify sandbox connectivity before running full benchmarks.
 
 Usage:
-    python quick_test.py                    # Test opensandbox on localhost
+    python quick_test.py                    # Test opencomputer on localhost
     python quick_test.py --provider e2b     # Test e2b (requires E2B_API_KEY)
 """
 
@@ -97,21 +97,21 @@ def main():
     parser = argparse.ArgumentParser(description="Quick sandbox connectivity test")
     parser.add_argument(
         "--provider",
-        choices=["opensandbox", "e2b", "all"],
-        default="opensandbox",
+        choices=["opencomputer", "e2b", "all"],
+        default="opencomputer",
         help="Provider to test"
     )
     parser.add_argument(
-        "--opensandbox-url",
-        default=os.environ.get("OPENSANDBOX_URL", "https://opensandbox-test.fly.dev"),
-        help="OpenSandbox URL"
+        "--opencomputer-url",
+        default=os.environ.get("OPENCOMPUTER_URL", "https://opencomputer-test.fly.dev"),
+        help="OpenComputer URL"
     )
 
     args = parser.parse_args()
 
     providers = []
-    if args.provider in ["opensandbox", "all"]:
-        providers.append(("opensandbox", {"base_url": args.opensandbox_url}))
+    if args.provider in ["opencomputer", "all"]:
+        providers.append(("opencomputer", {"base_url": args.opencomputer_url}))
     if args.provider in ["e2b", "all"]:
         if not os.environ.get("E2B_API_KEY"):
             print("WARNING: E2B_API_KEY not set, skipping e2b test")

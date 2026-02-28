@@ -9,11 +9,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
-	"github.com/opensandbox/opensandbox/internal/sandbox"
-	"github.com/opensandbox/opensandbox/internal/storage"
-	"github.com/opensandbox/opensandbox/internal/template"
-	"github.com/opensandbox/opensandbox/pkg/types"
-	pb "github.com/opensandbox/opensandbox/proto/worker"
+	"github.com/opencomputer/opencomputer/internal/sandbox"
+	"github.com/opencomputer/opencomputer/internal/storage"
+	"github.com/opencomputer/opencomputer/internal/template"
+	"github.com/opencomputer/opencomputer/pkg/types"
+	pb "github.com/opencomputer/opencomputer/proto/worker"
 )
 
 // GRPCServer implements the SandboxWorker gRPC service for control plane communication.

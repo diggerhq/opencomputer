@@ -34,7 +34,7 @@ func (j *JWTIssuer) IssueSandboxToken(orgID uuid.UUID, sandboxID, workerID strin
 			Subject:   orgID.String(),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
-			Issuer:    "opensandbox",
+			Issuer:    "opencomputer",
 		},
 		OrgID:     orgID,
 		SandboxID: sandboxID,

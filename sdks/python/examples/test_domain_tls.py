@@ -19,7 +19,7 @@ import sys
 
 import httpx
 
-from opensandbox import Sandbox
+from opencomputer import Sandbox
 
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -111,10 +111,10 @@ async def main() -> None:
         domains = [s.domain for s in sandboxes]
         unique_domains = set(domains)
         check("All 3 sandboxes got unique domains", len(unique_domains) == 3)
-        check("All domains end with .workers.opensandbox.ai",
-              all(d.endswith(".workers.opensandbox.ai") for d in domains))
+        check("All domains end with .workers.opencomputer.ai",
+              all(d.endswith(".workers.opencomputer.ai") for d in domains))
         check("All domains are subdomains (single level)",
-              all("." not in d.split(".workers.opensandbox.ai")[0] for d in domains))
+              all("." not in d.split(".workers.opencomputer.ai")[0] for d in domains))
         print()
 
         # ── Test 2: TLS certificate validation ──

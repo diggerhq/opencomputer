@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Test script for OpenSandbox + Claude Agent SDK integration.
+Test script for OpenComputer + Claude Agent SDK integration.
 
 This script demonstrates two approaches:
 1. Running Claude Agent SDK directly (tools execute locally)
-2. Using OpenSandbox to isolate code execution
+2. Using OpenComputer to isolate code execution
 """
 
 import asyncio
@@ -54,21 +54,21 @@ async def test_claude_sdk_direct():
         print(f"Error during Claude SDK test: {e}\n")
 
 
-async def test_opensandbox_connection():
-    """Test basic OpenSandbox connectivity."""
+async def test_opencomputer_connection():
+    """Test basic OpenComputer connectivity."""
     try:
-        from opensandbox import OpenSandbox
+        from opencomputer import OpenComputer
 
         print("=" * 60)
-        print("Test 2: OpenSandbox Connection")
+        print("Test 2: OpenComputer Connection")
         print("=" * 60)
 
-        sandbox_url = os.environ.get("OPENSANDBOX_URL", "http://localhost:8080")
-        grpc_port = int(os.environ.get("OPENSANDBOX_GRPC_PORT", "50051"))
+        sandbox_url = os.environ.get("OPENCOMPUTER_URL", "http://localhost:8080")
+        grpc_port = int(os.environ.get("OPENCOMPUTER_GRPC_PORT", "50051"))
 
         print(f"Connecting to: {sandbox_url} (gRPC port: {grpc_port})\n")
 
-        async with OpenSandbox(sandbox_url, grpc_port=grpc_port) as client:
+        async with OpenComputer(sandbox_url, grpc_port=grpc_port) as client:
             # Create a sandbox session
             sandbox = await client.create(
                 env={"TEST_VAR": "hello_from_sandbox"}
@@ -87,7 +87,7 @@ async def test_opensandbox_connection():
 
             # Test file operations
             print("\nTesting file operations...")
-            await sandbox.write_file("/tmp/test.txt", "Hello from OpenSandbox!")
+            await sandbox.write_file("/tmp/test.txt", "Hello from OpenComputer!")
             content = await sandbox.read_file_text("/tmp/test.txt")
             print(f"File content: {content}")
 
@@ -97,38 +97,38 @@ async def test_opensandbox_connection():
 
     except ImportError as e:
         print("=" * 60)
-        print("Test 2: OpenSandbox Connection")
+        print("Test 2: OpenComputer Connection")
         print("=" * 60)
-        print(f"OpenSandbox SDK not available: {e}\n")
+        print(f"OpenComputer SDK not available: {e}\n")
     except Exception as e:
         print("=" * 60)
-        print("Test 2: OpenSandbox Connection")
+        print("Test 2: OpenComputer Connection")
         print("=" * 60)
-        print(f"OpenSandbox test failed: {e}\n")
+        print(f"OpenComputer test failed: {e}\n")
         import traceback
         traceback.print_exc()
 
 
 async def test_claude_in_sandbox():
     """
-    Test running Claude Agent SDK with tools executing inside OpenSandbox.
+    Test running Claude Agent SDK with tools executing inside OpenComputer.
 
     This is the advanced use case where:
     - Claude Agent SDK runs in the host/orchestrator
     - Tool execution (Bash, file ops) happens inside the sandbox
     """
     try:
-        from opensandbox import OpenSandbox
+        from opencomputer import OpenComputer
 
         print("=" * 60)
         print("Test 3: Check Claude Code in Sandbox")
         print("=" * 60)
         print("Checking if Claude Code CLI is available in the sandbox...\n")
 
-        sandbox_url = os.environ.get("OPENSANDBOX_URL", "http://localhost:8080")
-        grpc_port = int(os.environ.get("OPENSANDBOX_GRPC_PORT", "50051"))
+        sandbox_url = os.environ.get("OPENCOMPUTER_URL", "http://localhost:8080")
+        grpc_port = int(os.environ.get("OPENCOMPUTER_GRPC_PORT", "50051"))
 
-        async with OpenSandbox(sandbox_url, grpc_port=grpc_port) as client:
+        async with OpenComputer(sandbox_url, grpc_port=grpc_port) as client:
             sandbox = await client.create()
 
             print(f"Created sandbox session: {sandbox.session_id}")
@@ -148,7 +148,7 @@ async def test_claude_in_sandbox():
         print("=" * 60)
         print("Test 3: Check Claude Code in Sandbox")
         print("=" * 60)
-        print(f"OpenSandbox SDK not available: {e}\n")
+        print(f"OpenComputer SDK not available: {e}\n")
     except Exception as e:
         print("=" * 60)
         print("Test 3: Check Claude Code in Sandbox")
@@ -159,7 +159,7 @@ async def test_claude_in_sandbox():
 async def main():
     """Run all tests."""
     print("\n" + "=" * 60)
-    print("OpenSandbox + Claude Agent SDK Test Suite")
+    print("OpenComputer + Claude Agent SDK Test Suite")
     print("=" * 60 + "\n")
 
     # Check for required environment variables
@@ -168,7 +168,7 @@ async def main():
         print("Note: ANTHROPIC_API_KEY not set. Claude SDK tests will be skipped.\n")
 
     # Run tests
-    await test_opensandbox_connection()
+    await test_opencomputer_connection()
     await test_claude_sdk_direct()
     await test_claude_in_sandbox()
 

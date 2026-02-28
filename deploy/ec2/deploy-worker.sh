@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Deploy the opensandbox-worker + osb-agent binaries to the EC2 instance.
+# Deploy the opencomputer-worker + osb-agent binaries to the EC2 instance.
 # Run from the repo root: ./deploy/ec2/deploy-worker.sh
 #
 # This script:
@@ -14,7 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/opensandbox-worker.pem}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/opencomputer-worker.pem}"
 WORKER_IP="${WORKER_IP:?Set WORKER_IP to the EC2 instance public IP}"
 SSH_USER="${SSH_USER:-ubuntu}"
 SSH="ssh -i $SSH_KEY $SSH_USER@$WORKER_IP"
@@ -25,21 +25,21 @@ DEPLOY_KERNEL="${DEPLOY_KERNEL:-0}"
 
 cd "$REPO_ROOT"
 
-echo "==> Building opensandbox-worker (linux/${GOARCH})..."
-CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -o bin/opensandbox-worker-deploy ./cmd/worker/
-echo "    Built: opensandbox-worker ($(du -h bin/opensandbox-worker-deploy | cut -f1), ${GOARCH})"
+echo "==> Building opencomputer-worker (linux/${GOARCH})..."
+CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -o bin/opencomputer-worker-deploy ./cmd/worker/
+echo "    Built: opencomputer-worker ($(du -h bin/opencomputer-worker-deploy | cut -f1), ${GOARCH})"
 
 echo "==> Building osb-agent (linux/${GOARCH})..."
 CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -o bin/osb-agent-deploy ./cmd/agent/
 echo "    Built: osb-agent ($(du -h bin/osb-agent-deploy | cut -f1), ${GOARCH})"
 
 echo "==> Uploading binaries to $WORKER_IP..."
-$SCP bin/opensandbox-worker-deploy "$SSH_USER@$WORKER_IP:/tmp/opensandbox-worker"
+$SCP bin/opencomputer-worker-deploy "$SSH_USER@$WORKER_IP:/tmp/opencomputer-worker"
 $SCP bin/osb-agent-deploy "$SSH_USER@$WORKER_IP:/tmp/osb-agent"
 
 echo "==> Installing binaries..."
-$SSH "sudo mv /tmp/opensandbox-worker /usr/local/bin/opensandbox-worker && \
-      sudo chmod +x /usr/local/bin/opensandbox-worker && \
+$SSH "sudo mv /tmp/opencomputer-worker /usr/local/bin/opencomputer-worker && \
+      sudo chmod +x /usr/local/bin/opencomputer-worker && \
       sudo mv /tmp/osb-agent /usr/local/bin/osb-agent && \
       sudo chmod +x /usr/local/bin/osb-agent"
 
@@ -56,15 +56,15 @@ if [ "$DEPLOY_KERNEL" = "1" ]; then
 fi
 
 echo "==> Restarting worker service..."
-$SSH "sudo systemctl restart opensandbox-worker"
+$SSH "sudo systemctl restart opencomputer-worker"
 
 echo "==> Waiting for worker to start..."
 sleep 2
-$SSH "sudo systemctl is-active opensandbox-worker"
+$SSH "sudo systemctl is-active opencomputer-worker"
 
 echo "==> Deployed successfully!"
-echo "    Worker: /usr/local/bin/opensandbox-worker"
+echo "    Worker: /usr/local/bin/opencomputer-worker"
 echo "    Agent:  /usr/local/bin/osb-agent"
 
 # Cleanup
-rm -f bin/opensandbox-worker-deploy bin/osb-agent-deploy
+rm -f bin/opencomputer-worker-deploy bin/osb-agent-deploy

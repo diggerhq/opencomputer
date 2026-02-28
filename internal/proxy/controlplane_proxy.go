@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/opensandbox/opensandbox/internal/controlplane"
-	"github.com/opensandbox/opensandbox/internal/db"
-	pb "github.com/opensandbox/opensandbox/proto/worker"
+	"github.com/opencomputer/opencomputer/internal/controlplane"
+	"github.com/opencomputer/opencomputer/internal/db"
+	pb "github.com/opencomputer/opencomputer/proto/worker"
 )
 
 // ControlPlaneProxy routes subdomain requests to the correct worker.

@@ -1,5 +1,5 @@
 /**
- * OpenSandbox Production Test Suite Runner
+ * OpenComputer Production Test Suite Runner
  *
  * Runs all production tests in sequence, with a summary at the end.
  * Tests are ordered from fast/simple to slow/complex.
@@ -58,7 +58,7 @@ const SUITES: TestSuite[] = [
 
 async function main() {
   console.log(`${BOLD}\n╔════════════════════════════════════════════════════════╗`);
-  console.log(`║       OpenSandbox Production Test Suite                ║`);
+  console.log(`║       OpenComputer Production Test Suite                ║`);
   console.log(`╚════════════════════════════════════════════════════════╝${RESET}\n`);
 
   const filteredSuites = skipSlow ? SUITES.filter(s => !s.slow) : SUITES;

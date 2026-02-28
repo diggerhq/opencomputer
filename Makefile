@@ -1,8 +1,8 @@
 .PHONY: build run test fmt lint clean help
 
 # Build variables
-BINARY_SERVER = opensandbox-server
-BINARY_WORKER = opensandbox-worker
+BINARY_SERVER = opencomputer-server
+BINARY_WORKER = opencomputer-worker
 BINARY_AGENT = osb-agent
 BUILD_DIR = bin
 
@@ -37,38 +37,38 @@ build-server-arm64:
 
 ## run-dev: Tier 1 - Combined mode, no auth, no PG/NATS (simplest)
 run-dev: build-server
-	OPENSANDBOX_MODE=combined \
-	OPENSANDBOX_API_KEY= \
-	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-data \
+	OPENCOMPUTER_MODE=combined \
+	OPENCOMPUTER_API_KEY= \
+	OPENCOMPUTER_DATA_DIR=/tmp/opencomputer-data \
 	$(BUILD_DIR)/$(BINARY_SERVER)
 
 ## run: Tier 1 - Combined mode with static API key
 run: build-server
-	OPENSANDBOX_MODE=combined \
-	OPENSANDBOX_API_KEY=test-key \
-	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-data \
+	OPENCOMPUTER_MODE=combined \
+	OPENCOMPUTER_API_KEY=test-key \
+	OPENCOMPUTER_DATA_DIR=/tmp/opencomputer-data \
 	$(BUILD_DIR)/$(BINARY_SERVER)
 
 ## run-pg: Tier 2 - Combined mode with PostgreSQL (requires: make infra-up)
 run-pg: build-server
-	OPENSANDBOX_MODE=combined \
-	OPENSANDBOX_API_KEY=test-key \
-	OPENSANDBOX_JWT_SECRET=dev-secret-change-me \
-	OPENSANDBOX_DATABASE_URL="postgres://opensandbox:opensandbox@localhost:5432/opensandbox?sslmode=disable" \
-	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-data \
-	OPENSANDBOX_HTTP_ADDR=http://localhost:8080 \
+	OPENCOMPUTER_MODE=combined \
+	OPENCOMPUTER_API_KEY=test-key \
+	OPENCOMPUTER_JWT_SECRET=dev-secret-change-me \
+	OPENCOMPUTER_DATABASE_URL="postgres://opencomputer:opencomputer@localhost:5432/opencomputer?sslmode=disable" \
+	OPENCOMPUTER_DATA_DIR=/tmp/opencomputer-data \
+	OPENCOMPUTER_HTTP_ADDR=http://localhost:8080 \
 	$(BUILD_DIR)/$(BINARY_SERVER)
 
 ## run-pg-workos: Tier 2 - Combined with PG + WorkOS + Vite dev (requires: make infra-up)
 ##   Redirect URI goes through Vite proxy so cookies are set on :3000.
 ##   Add http://localhost:3000/auth/callback as redirect URI in your WorkOS dashboard.
 run-pg-workos: build-server
-	OPENSANDBOX_MODE=combined \
-	OPENSANDBOX_API_KEY=test-key \
-	OPENSANDBOX_JWT_SECRET=dev-secret-change-me \
-	OPENSANDBOX_DATABASE_URL="postgres://opensandbox:opensandbox@localhost:5432/opensandbox?sslmode=disable" \
-	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-data \
-	OPENSANDBOX_HTTP_ADDR=http://localhost:8080 \
+	OPENCOMPUTER_MODE=combined \
+	OPENCOMPUTER_API_KEY=test-key \
+	OPENCOMPUTER_JWT_SECRET=dev-secret-change-me \
+	OPENCOMPUTER_DATABASE_URL="postgres://opencomputer:opencomputer@localhost:5432/opencomputer?sslmode=disable" \
+	OPENCOMPUTER_DATA_DIR=/tmp/opencomputer-data \
+	OPENCOMPUTER_HTTP_ADDR=http://localhost:8080 \
 	WORKOS_API_KEY=$${WORKOS_API_KEY} \
 	WORKOS_CLIENT_ID=$${WORKOS_CLIENT_ID} \
 	WORKOS_REDIRECT_URI=http://localhost:3000/auth/callback \
@@ -77,12 +77,12 @@ run-pg-workos: build-server
 
 ## run-pg-workos-prod: Tier 2 - Combined with PG + WorkOS + built dashboard (requires: make infra-up web-build)
 run-pg-workos-prod: build-server
-	OPENSANDBOX_MODE=combined \
-	OPENSANDBOX_API_KEY=test-key \
-	OPENSANDBOX_JWT_SECRET=dev-secret-change-me \
-	OPENSANDBOX_DATABASE_URL="postgres://opensandbox:opensandbox@localhost:5432/opensandbox?sslmode=disable" \
-	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-data \
-	OPENSANDBOX_HTTP_ADDR=http://localhost:8080 \
+	OPENCOMPUTER_MODE=combined \
+	OPENCOMPUTER_API_KEY=test-key \
+	OPENCOMPUTER_JWT_SECRET=dev-secret-change-me \
+	OPENCOMPUTER_DATABASE_URL="postgres://opencomputer:opencomputer@localhost:5432/opencomputer?sslmode=disable" \
+	OPENCOMPUTER_DATA_DIR=/tmp/opencomputer-data \
+	OPENCOMPUTER_HTTP_ADDR=http://localhost:8080 \
 	WORKOS_API_KEY=$${WORKOS_API_KEY} \
 	WORKOS_CLIENT_ID=$${WORKOS_CLIENT_ID} \
 	WORKOS_REDIRECT_URI=http://localhost:8080/auth/callback \
@@ -90,29 +90,29 @@ run-pg-workos-prod: build-server
 
 ## run-full-server: Tier 3 - Control plane only (requires: make infra-up)
 run-full-server: build-server
-	OPENSANDBOX_MODE=server \
-	OPENSANDBOX_PORT=8080 \
-	OPENSANDBOX_API_KEY=test-key \
-	OPENSANDBOX_JWT_SECRET=dev-secret-change-me \
-	OPENSANDBOX_DATABASE_URL="postgres://opensandbox:opensandbox@localhost:5432/opensandbox?sslmode=disable" \
-	OPENSANDBOX_NATS_URL=nats://localhost:4222 \
-	OPENSANDBOX_REGION=local \
-	OPENSANDBOX_WORKER_ID=cp-local-1 \
-	OPENSANDBOX_HTTP_ADDR=http://localhost:8080 \
-	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-data \
+	OPENCOMPUTER_MODE=server \
+	OPENCOMPUTER_PORT=8080 \
+	OPENCOMPUTER_API_KEY=test-key \
+	OPENCOMPUTER_JWT_SECRET=dev-secret-change-me \
+	OPENCOMPUTER_DATABASE_URL="postgres://opencomputer:opencomputer@localhost:5432/opencomputer?sslmode=disable" \
+	OPENCOMPUTER_NATS_URL=nats://localhost:4222 \
+	OPENCOMPUTER_REGION=local \
+	OPENCOMPUTER_WORKER_ID=cp-local-1 \
+	OPENCOMPUTER_HTTP_ADDR=http://localhost:8080 \
+	OPENCOMPUTER_DATA_DIR=/tmp/opencomputer-data \
 	$(BUILD_DIR)/$(BINARY_SERVER)
 
 ## run-full-worker: Tier 3 - Worker only (requires: make infra-up)
 run-full-worker: build-worker
-	OPENSANDBOX_MODE=worker \
-	OPENSANDBOX_PORT=8081 \
-	OPENSANDBOX_JWT_SECRET=dev-secret-change-me \
-	OPENSANDBOX_NATS_URL=nats://localhost:4222 \
-	OPENSANDBOX_REGION=local \
-	OPENSANDBOX_WORKER_ID=w-local-1 \
-	OPENSANDBOX_HTTP_ADDR=http://localhost:8081 \
-	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-worker-data \
-	OPENSANDBOX_MAX_CAPACITY=50 \
+	OPENCOMPUTER_MODE=worker \
+	OPENCOMPUTER_PORT=8081 \
+	OPENCOMPUTER_JWT_SECRET=dev-secret-change-me \
+	OPENCOMPUTER_NATS_URL=nats://localhost:4222 \
+	OPENCOMPUTER_REGION=local \
+	OPENCOMPUTER_WORKER_ID=w-local-1 \
+	OPENCOMPUTER_HTTP_ADDR=http://localhost:8081 \
+	OPENCOMPUTER_DATA_DIR=/tmp/opencomputer-worker-data \
+	OPENCOMPUTER_MAX_CAPACITY=50 \
 	$(BUILD_DIR)/$(BINARY_WORKER)
 
 ## --- Infrastructure ---
@@ -121,7 +121,7 @@ run-full-worker: build-worker
 infra-up:
 	docker compose -f deploy/docker-compose.yml up -d
 	@echo "Waiting for PostgreSQL..."
-	@until docker compose -f deploy/docker-compose.yml exec -T postgres pg_isready -U opensandbox 2>/dev/null; do sleep 1; done
+	@until docker compose -f deploy/docker-compose.yml exec -T postgres pg_isready -U opencomputer 2>/dev/null; do sleep 1; done
 	@echo "Infrastructure ready: PostgreSQL :5432, NATS :4222"
 
 ## infra-down: Stop infrastructure
@@ -134,7 +134,7 @@ infra-reset:
 
 ## seed: Create a test org and API key in PostgreSQL (requires: make infra-up)
 seed:
-	@docker compose -f deploy/docker-compose.yml exec -T postgres psql -U opensandbox -d opensandbox -c " \
+	@docker compose -f deploy/docker-compose.yml exec -T postgres psql -U opencomputer -d opencomputer -c " \
 		INSERT INTO orgs (name, slug) VALUES ('Test Org', 'test-org') ON CONFLICT (slug) DO NOTHING; \
 		INSERT INTO api_keys (org_id, key_hash, key_prefix, name) \
 		SELECT id, encode(sha256('test-key'::bytea), 'hex'), 'test-key', 'Dev Key' \
@@ -185,7 +185,7 @@ tidy:
 ## clean: Remove build artifacts
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -rf /tmp/opensandbox-data /tmp/opensandbox-worker-data
+	rm -rf /tmp/opencomputer-data /tmp/opencomputer-worker-data
 
 ## proto: Regenerate protobuf/gRPC code
 proto:
@@ -214,11 +214,11 @@ deploy-worker:
 
 ## docker-server: Build server Docker image
 docker-server:
-	docker build -f deploy/Dockerfile.server -t opensandbox-server .
+	docker build -f deploy/Dockerfile.server -t opencomputer-server .
 
 ## docker-worker: Build worker Docker image
 docker-worker:
-	docker build -f deploy/Dockerfile.worker -t opensandbox-worker .
+	docker build -f deploy/Dockerfile.worker -t opencomputer-worker .
 
 ## docker: Build all Docker images
 docker: docker-server docker-worker

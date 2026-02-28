@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/opensandbox/opensandbox/internal/db"
-	"github.com/opensandbox/opensandbox/internal/storage"
+	"github.com/opencomputer/opencomputer/internal/db"
+	"github.com/opencomputer/opencomputer/internal/storage"
 )
 
 // SandboxState represents the lifecycle state of a sandbox from the router's perspective.

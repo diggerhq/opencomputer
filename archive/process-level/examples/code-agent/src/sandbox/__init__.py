@@ -2,15 +2,15 @@
 
 from .base import BaseSandbox
 from .e2b import E2BSandbox
-from .opensandbox import OpenSandbox
+from .opencomputer import OpenComputer
 
 
-def get_sandbox(provider: str = "opensandbox", **kwargs) -> BaseSandbox:
+def get_sandbox(provider: str = "opencomputer", **kwargs) -> BaseSandbox:
     """
     Factory function to get a sandbox instance.
     
     Args:
-        provider: The sandbox provider to use ("e2b" or "opensandbox")
+        provider: The sandbox provider to use ("e2b" or "opencomputer")
         **kwargs: Additional arguments passed to the sandbox constructor
         
     Returns:
@@ -21,10 +21,10 @@ def get_sandbox(provider: str = "opensandbox", **kwargs) -> BaseSandbox:
     """
     if provider == "e2b":
         return E2BSandbox()
-    elif provider == "opensandbox":
+    elif provider == "opencomputer":
         base_url = kwargs.get("base_url", "http://localhost:8080")
-        return OpenSandbox(base_url=base_url)
-    raise ValueError(f"Unknown sandbox provider: {provider}. Supported: ['e2b', 'opensandbox']")
+        return OpenComputer(base_url=base_url)
+    raise ValueError(f"Unknown sandbox provider: {provider}. Supported: ['e2b', 'opencomputer']")
 
 
-__all__ = ["BaseSandbox", "E2BSandbox", "OpenSandbox", "get_sandbox"]
+__all__ = ["BaseSandbox", "E2BSandbox", "OpenComputer", "get_sandbox"]

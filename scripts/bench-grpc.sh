@@ -10,7 +10,7 @@ set -euo pipefail
 #   4. Process survival verification (the "money test")
 #
 # Usage: ./scripts/bench-grpc.sh <worker-ssh> <ssh-key>
-# Example: ./scripts/bench-grpc.sh ubuntu@18.117.11.151 ~/.ssh/opensandbox-digger.pem
+# Example: ./scripts/bench-grpc.sh ubuntu@18.117.11.151 ~/.ssh/opencomputer-digger.pem
 
 WORKER_SSH="${1:?Usage: $0 <user@host> <ssh-key>}"
 SSH_KEY="${2:?Usage: $0 <user@host> <ssh-key>}"

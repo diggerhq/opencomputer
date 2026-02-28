@@ -268,9 +268,9 @@ for i in $(seq 15 15 600); do
     fail "Timed out after 10 min — no new worker spawned"
     info "Checking server logs for scaler activity..."
     # Try to fetch recent scaler logs
-    ssh -i ~/.ssh/opensandbox-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+    ssh -i ~/.ssh/opencomputer-digger.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
       ubuntu@3.135.246.117 \
-      "sudo journalctl -u opensandbox-server --no-pager -n 30 --grep scaler" 2>/dev/null || true
+      "sudo journalctl -u opencomputer-server --no-pager -n 30 --grep scaler" 2>/dev/null || true
     exit 1
   fi
 done

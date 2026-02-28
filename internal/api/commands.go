@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/opensandbox/opensandbox/pkg/types"
-	pb "github.com/opensandbox/opensandbox/proto/worker"
+	"github.com/opencomputer/opencomputer/pkg/types"
+	pb "github.com/opencomputer/opencomputer/proto/worker"
 )
 
 func (s *Server) runCommand(c echo.Context) error {

@@ -14,7 +14,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
-	pb "github.com/opensandbox/opensandbox/proto/worker"
+	pb "github.com/opencomputer/opencomputer/proto/worker"
 )
 
 // WorkerEntry represents a worker in the Redis-backed registry.

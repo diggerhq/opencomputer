@@ -1727,7 +1727,7 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\tPTYResize\x12\x17.agent.PTYResizeRequest\x1a\x18.agent.PTYResizeResponse\x128\n" +
 	"\aPTYKill\x12\x15.agent.PTYKillRequest\x1a\x16.agent.PTYKillResponse\x12;\n" +
 	"\bShutdown\x12\x16.agent.ShutdownRequest\x1a\x17.agent.ShutdownResponse\x125\n" +
-	"\x06SyncFS\x12\x14.agent.SyncFSRequest\x1a\x15.agent.SyncFSResponseB0Z.github.com/opensandbox/opensandbox/proto/agentb\x06proto3"
+	"\x06SyncFS\x12\x14.agent.SyncFSRequest\x1a\x15.agent.SyncFSResponseB0Z.github.com/opencomputer/opencomputer/proto/agentb\x06proto3"
 
 var (
 	file_proto_agent_agent_proto_rawDescOnce sync.Once

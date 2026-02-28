@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Basic usage example for the OpenSandbox SDK."""
+"""Basic usage example for the OpenComputer SDK."""
 
 import asyncio
-from opensandbox import OpenSandbox
+from opencomputer import OpenComputer
 
 
 async def main():
-    # Connect to OpenSandbox server
-    async with OpenSandbox("https://opensandbox-test.fly.dev") as client:
+    # Connect to OpenComputer server
+    async with OpenComputer("https://opencomputer-test.fly.dev") as client:
         # Create a new sandbox
         sandbox = await client.create()
         print(f"Created sandbox: {sandbox.session_id}")
 
         try:
             # Run a simple command
-            result = await sandbox.run("echo 'Hello, OpenSandbox!'")
+            result = await sandbox.run("echo 'Hello, OpenComputer!'")
             print(f"Command output: {result.stdout}")
             print(f"Exit code: {result.exit_code}")
 

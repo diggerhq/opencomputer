@@ -1,6 +1,6 @@
 services:
-  # OpenSandbox server
-  opensandbox:
+  # OpenComputer server
+  opencomputer:
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -17,7 +17,7 @@ services:
       retries: 10
       start_period: 10s
 
-  # The test runner - connects to OpenSandbox and runs Claude Agent SDK
+  # The test runner - connects to OpenComputer and runs Claude Agent SDK
   # Built from repo root to include the SDK
   test-runner:
     build:
@@ -26,9 +26,9 @@ services:
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - E2B_API_KEY=${E2B_API_KEY}
-      - OPENSANDBOX_URL=http://opensandbox:8080
-      - OPENSANDBOX_GRPC_PORT=50051
+      - OPENCOMPUTER_URL=http://opencomputer:8080
+      - OPENCOMPUTER_GRPC_PORT=50051
     depends_on:
-      opensandbox:
+      opencomputer:
         condition: service_healthy
     command: python test_agent.py

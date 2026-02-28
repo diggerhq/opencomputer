@@ -60,7 +60,7 @@ def run_benchmark(provider: str, iterations: int = 3, **kwargs) -> CreationResul
     Benchmark sandbox creation and destruction time.
 
     Args:
-        provider: "opensandbox" or "e2b"
+        provider: "opencomputer" or "e2b"
         iterations: Number of create/destroy cycles
 
     Returns:
@@ -123,16 +123,16 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Benchmark sandbox creation time")
-    parser.add_argument("--provider", choices=["opensandbox", "opensandbox-http", "opensandbox-grpc", "e2b"], default="opensandbox-grpc")
+    parser.add_argument("--provider", choices=["opencomputer", "opencomputer-http", "opencomputer-grpc", "e2b"], default="opencomputer-grpc")
     parser.add_argument("--iterations", type=int, default=3)
-    parser.add_argument("--opensandbox-url", default="https://opensandbox-test.fly.dev")
+    parser.add_argument("--opencomputer-url", default="https://opencomputer-test.fly.dev")
 
     args = parser.parse_args()
 
     result = run_benchmark(
         args.provider,
         iterations=args.iterations,
-        base_url=args.opensandbox_url
+        base_url=args.opencomputer_url
     )
 
     print("\n\nFinal Results:")

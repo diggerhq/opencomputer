@@ -1,4 +1,4 @@
-# Dockerfile for Claude Chat with OpenSandbox
+# Dockerfile for Claude Chat with OpenComputer
 # Build from repo root: docker build -f examples/claude-chat/Dockerfile -t claude-chat .
 
 FROM python:3.11-slim
@@ -21,9 +21,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Copy and install OpenSandbox SDK
-COPY sdk/python /app/opensandbox-sdk
-RUN pip install --no-cache-dir /app/opensandbox-sdk
+# Copy and install OpenComputer SDK
+COPY sdk/python /app/opencomputer-sdk
+RUN pip install --no-cache-dir /app/opencomputer-sdk
 
 # Copy and install chat app requirements
 COPY examples/claude-chat/requirements.txt /app/requirements.txt

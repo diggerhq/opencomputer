@@ -6,9 +6,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/opensandbox/opensandbox/internal/auth"
-	"github.com/opensandbox/opensandbox/internal/proxy"
-	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opencomputer/opencomputer/internal/auth"
+	"github.com/opencomputer/opencomputer/internal/proxy"
+	"github.com/opencomputer/opencomputer/internal/sandbox"
 )
 
 // HTTPServer serves the REST/WebSocket API for direct SDK access on the worker.

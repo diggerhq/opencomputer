@@ -44,14 +44,14 @@ run_cmd() {
 }
 
 bold "========================================="
-bold " OpenSandbox Hibernation Test"
+bold " OpenComputer Hibernation Test"
 bold "========================================="
 echo ""
 
 # --- Cleanup stale sessions ---
 bold "[0/11] Cleaning up stale sandbox sessions..."
 docker compose -f deploy/docker-compose.yml exec -T postgres \
-  psql -U opensandbox -d opensandbox -c \
+  psql -U opencomputer -d opencomputer -c \
   "UPDATE sandbox_sessions SET status = 'stopped', stopped_at = now() WHERE status IN ('running', 'hibernated');" \
   2>/dev/null | grep -q "UPDATE" && green "  Cleaned up stale sessions" || yellow "  No stale sessions"
 echo ""
@@ -211,7 +211,7 @@ if [[ -n "$SANDBOX_DOMAIN" ]]; then
     "http://${SANDBOX_DOMAIN}:${API_PORT}/index.html" 2>/dev/null || echo "")
   check "Subdomain proxy: HTTP response" "hello from sandbox" "$PROXY_RESP"
 else
-  yellow "  SKIP: No domain assigned (OPENSANDBOX_SANDBOX_DOMAIN not set)"
+  yellow "  SKIP: No domain assigned (OPENCOMPUTER_SANDBOX_DOMAIN not set)"
 fi
 echo ""
 

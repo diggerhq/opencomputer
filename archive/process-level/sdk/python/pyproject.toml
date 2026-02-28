@@ -3,14 +3,14 @@ requires = ["setuptools>=61.0", "grpcio-tools>=1.60.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "opensandbox"
+name = "opencomputer"
 version = "0.1.0"
-description = "Python SDK for OpenSandbox - High-performance Linux sandbox with gRPC support"
+description = "Python SDK for OpenComputer - High-performance Linux sandbox with gRPC support"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
-    {name = "OpenSandbox Team"}
+    {name = "OpenComputer Team"}
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -36,12 +36,12 @@ dev = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/yourusername/opensandbox"
-"Bug Tracker" = "https://github.com/yourusername/opensandbox/issues"
+"Homepage" = "https://github.com/yourusername/opencomputer"
+"Bug Tracker" = "https://github.com/yourusername/opencomputer/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["opensandbox*"]
+include = ["opencomputer*"]
 
 [tool.setuptools.package-data]
-opensandbox = ["proto/*.py"]
+opencomputer = ["proto/*.py"]

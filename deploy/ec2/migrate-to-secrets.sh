@@ -2,53 +2,53 @@
 set -euo pipefail
 
 # =============================================================================
-# OpenSandbox — Migrate running instances to use AWS Secrets Manager
+# OpenComputer — Migrate running instances to use AWS Secrets Manager
 #
 # Current state (after setup-secrets.sh was run):
-#   - opensandbox/worker secret exists (JWT, Redis, DB, S3) — needs ECR added
-#   - opensandbox-ec2 instance profile is attached to both instances
-#   - opensandbox-ec2 role only has ECR access — needs Secrets Manager + S3
+#   - opencomputer/worker secret exists (JWT, Redis, DB, S3) — needs ECR added
+#   - opencomputer-ec2 instance profile is attached to both instances
+#   - opencomputer-ec2 role only has ECR access — needs Secrets Manager + S3
 #   - No server secret exists yet
 #   - Both instances use inline secrets in systemd/env files
 #
 # This script:
 #   1. Updates the worker secret to include ECR values
 #   2. Creates a server secret with WorkOS values
-#   3. Updates the opensandbox-ec2 role with Secrets Manager + S3 + ECR policy
-#   4. SSHes into both instances and migrates them to OPENSANDBOX_SECRETS_ARN
+#   3. Updates the opencomputer-ec2 role with Secrets Manager + S3 + ECR policy
+#   4. SSHes into both instances and migrates them to OPENCOMPUTER_SECRETS_ARN
 #
 # Prerequisites:
 #   - AWS CLI v2 with "digger" profile configured
-#   - SSH access via opensandbox-digger.pem
+#   - SSH access via opencomputer-digger.pem
 #   - jq installed
 # =============================================================================
 
 AWS_PROFILE="digger"
 REGION="us-east-2"
-SSH_KEY="$HOME/.ssh/opensandbox-digger.pem"
+SSH_KEY="$HOME/.ssh/opencomputer-digger.pem"
 
 # Existing infra
-WORKER_SECRET_NAME="opensandbox/worker"
-ROLE_NAME="opensandbox-ec2"  # the role actually attached to instances
-S3_BUCKET="opensandbox-checkpoints-digger"
+WORKER_SECRET_NAME="opencomputer/worker"
+ROLE_NAME="opencomputer-ec2"  # the role actually attached to instances
+S3_BUCKET="opencomputer-checkpoints-digger"
 ECR_REGISTRY="739940681129.dkr.ecr.us-east-2.amazonaws.com"
-ECR_REPOSITORY="opensandbox-templates"
+ECR_REPOSITORY="opencomputer-templates"
 
 # Server secret (new)
-SERVER_SECRET_NAME="opensandbox/server"
+SERVER_SECRET_NAME="opencomputer/server"
 
 # Production values — from running worker systemd unit
-REDIS_URL="redis://opensandbox-redis.c1cbz5.0001.use2.cache.amazonaws.com:6379"
-RDS_HOST="opensandbox-pg.chwjcxjqzouh.us-east-2.rds.amazonaws.com"
+REDIS_URL="redis://opencomputer-redis.c1cbz5.0001.use2.cache.amazonaws.com:6379"
+RDS_HOST="opencomputer-pg.chwjcxjqzouh.us-east-2.rds.amazonaws.com"
 RDS_PASSWORD="OpnSbx2026SecurePG"
 JWT_SECRET="${JWT_SECRET}"
-DATABASE_URL="postgres://opensandbox:${RDS_PASSWORD}@${RDS_HOST}:5432/opensandbox?sslmode=require"
+DATABASE_URL="postgres://opencomputer:${RDS_PASSWORD}@${RDS_HOST}:5432/opencomputer?sslmode=require"
 
 # WorkOS (server only) — set these env vars before running
 WORKOS_API_KEY="${WORKOS_API_KEY}"
 WORKOS_CLIENT_ID="${WORKOS_CLIENT_ID}"
-WORKOS_REDIRECT_URI="${WORKOS_REDIRECT_URI:-https://app.opensandbox.ai/auth/callback}"
-WORKOS_COOKIE_DOMAIN="${WORKOS_COOKIE_DOMAIN:-opensandbox.ai}"
+WORKOS_REDIRECT_URI="${WORKOS_REDIRECT_URI:-https://app.opencomputer.ai/auth/callback}"
+WORKOS_COOKIE_DOMAIN="${WORKOS_COOKIE_DOMAIN:-opencomputer.ai}"
 
 # Instance IPs
 WORKER_IP="18.219.23.64"
@@ -61,7 +61,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${GREEN}==> OpenSandbox: Migrate to Secrets Manager${NC}"
+echo -e "${GREEN}==> OpenComputer: Migrate to Secrets Manager${NC}"
 echo ""
 
 # --- Step 1: Update worker secret to include ECR ---
@@ -76,13 +76,13 @@ WORKER_SECRET_JSON=$(jq -n \
   --arg ecr_registry "$ECR_REGISTRY" \
   --arg ecr_repo "$ECR_REPOSITORY" \
   '{
-    "OPENSANDBOX_JWT_SECRET": $jwt,
-    "OPENSANDBOX_REDIS_URL": $redis,
+    "OPENCOMPUTER_JWT_SECRET": $jwt,
+    "OPENCOMPUTER_REDIS_URL": $redis,
     "DATABASE_URL": $db,
-    "OPENSANDBOX_S3_BUCKET": $s3bucket,
-    "OPENSANDBOX_S3_REGION": $s3region,
-    "OPENSANDBOX_ECR_REGISTRY": $ecr_registry,
-    "OPENSANDBOX_ECR_REPOSITORY": $ecr_repo
+    "OPENCOMPUTER_S3_BUCKET": $s3bucket,
+    "OPENCOMPUTER_S3_REGION": $s3region,
+    "OPENCOMPUTER_ECR_REGISTRY": $ecr_registry,
+    "OPENCOMPUTER_ECR_REPOSITORY": $ecr_repo
   }')
 
 aws secretsmanager put-secret-value \
@@ -114,13 +114,13 @@ SERVER_SECRET_JSON=$(jq -n \
   --arg workos_redirect "$WORKOS_REDIRECT_URI" \
   --arg workos_cookie "$WORKOS_COOKIE_DOMAIN" \
   '{
-    "OPENSANDBOX_JWT_SECRET": $jwt,
-    "OPENSANDBOX_REDIS_URL": $redis,
+    "OPENCOMPUTER_JWT_SECRET": $jwt,
+    "OPENCOMPUTER_REDIS_URL": $redis,
     "DATABASE_URL": $db,
-    "OPENSANDBOX_S3_BUCKET": $s3bucket,
-    "OPENSANDBOX_S3_REGION": $s3region,
-    "OPENSANDBOX_ECR_REGISTRY": $ecr_registry,
-    "OPENSANDBOX_ECR_REPOSITORY": $ecr_repo,
+    "OPENCOMPUTER_S3_BUCKET": $s3bucket,
+    "OPENCOMPUTER_S3_REGION": $s3region,
+    "OPENCOMPUTER_ECR_REGISTRY": $ecr_registry,
+    "OPENCOMPUTER_ECR_REPOSITORY": $ecr_repo,
     "WORKOS_API_KEY": $workos_key,
     "WORKOS_CLIENT_ID": $workos_client,
     "WORKOS_REDIRECT_URI": $workos_redirect,
@@ -137,7 +137,7 @@ else
   aws secretsmanager create-secret \
     --name "$SERVER_SECRET_NAME" \
     --region "$REGION" \
-    --description "OpenSandbox server secrets (JWT, Redis, S3, DB, ECR, WorkOS)" \
+    --description "OpenComputer server secrets (JWT, Redis, S3, DB, ECR, WorkOS)" \
     --secret-string "$SERVER_SECRET_JSON"
 fi
 
@@ -149,10 +149,10 @@ SERVER_SECRET_ARN=$(aws secretsmanager describe-secret \
 echo -e "Server Secret ARN: ${GREEN}${SERVER_SECRET_ARN}${NC}"
 echo ""
 
-# --- Step 3: Update opensandbox-ec2 role with Secrets Manager + S3 policy ---
+# --- Step 3: Update opencomputer-ec2 role with Secrets Manager + S3 policy ---
 echo -e "${YELLOW}==> Step 3: Updating IAM role '${ROLE_NAME}' with Secrets Manager + S3 policy...${NC}"
 
-POLICY_NAME="opensandbox-secrets-s3-ecr"
+POLICY_NAME="opencomputer-secrets-s3-ecr"
 POLICY_DOC=$(cat <<EOF
 {
   "Version": "2012-10-17",
@@ -219,7 +219,7 @@ if [ -n "$EXISTING_POLICY_ARN" ] && [ "$EXISTING_POLICY_ARN" != "None" ]; then
 else
   POLICY_ARN=$(aws iam create-policy \
     --policy-name "$POLICY_NAME" \
-    --description "OpenSandbox: Secrets Manager + S3 + ECR access" \
+    --description "OpenComputer: Secrets Manager + S3 + ECR access" \
     --policy-document "$POLICY_DOC" \
     --query 'Policy.Arn' --output text)
 fi
@@ -239,9 +239,9 @@ ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "ubuntu@${WORKER_IP}" bash <<REMOT
 set -euo pipefail
 
 # Write new minimal systemd unit that uses Secrets Manager
-sudo tee /etc/systemd/system/opensandbox-worker.service > /dev/null <<'UNIT'
+sudo tee /etc/systemd/system/opencomputer-worker.service > /dev/null <<'UNIT'
 [Unit]
-Description=OpenSandbox Worker
+Description=OpenComputer Worker
 After=network-online.target
 Wants=network-online.target
 
@@ -252,20 +252,20 @@ ExecStartPre=/sbin/modprobe tcp_diag
 ExecStartPre=/sbin/modprobe udp_diag
 ExecStartPre=/sbin/modprobe unix_diag
 ExecStartPre=/sbin/modprobe netlink_diag
-ExecStart=/usr/local/bin/opensandbox-worker
+ExecStart=/usr/local/bin/opencomputer-worker
 Restart=always
 RestartSec=5
 
 Environment=HOME=/root
-Environment=OPENSANDBOX_MODE=worker
-Environment=OPENSANDBOX_PORT=8080
-Environment=OPENSANDBOX_REGION=use2
-Environment=OPENSANDBOX_DATA_DIR=/data/sandboxes
-Environment=OPENSANDBOX_WORKER_ID=w-use2-1
-Environment=OPENSANDBOX_HTTP_ADDR=http://${WORKER_IP}:8080
-Environment=OPENSANDBOX_GRPC_ADVERTISE=10.10.1.54:9090
-Environment=OPENSANDBOX_SANDBOX_DOMAIN=workers.opensandbox.ai
-Environment=OPENSANDBOX_SECRETS_ARN=${WORKER_SECRET_ARN}
+Environment=OPENCOMPUTER_MODE=worker
+Environment=OPENCOMPUTER_PORT=8080
+Environment=OPENCOMPUTER_REGION=use2
+Environment=OPENCOMPUTER_DATA_DIR=/data/sandboxes
+Environment=OPENCOMPUTER_WORKER_ID=w-use2-1
+Environment=OPENCOMPUTER_HTTP_ADDR=http://${WORKER_IP}:8080
+Environment=OPENCOMPUTER_GRPC_ADVERTISE=10.10.1.54:9090
+Environment=OPENCOMPUTER_SANDBOX_DOMAIN=workers.opencomputer.ai
+Environment=OPENCOMPUTER_SECRETS_ARN=${WORKER_SECRET_ARN}
 
 [Install]
 WantedBy=multi-user.target
@@ -285,15 +285,15 @@ ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "ubuntu@${SERVER_IP}" bash <<REMOT
 set -euo pipefail
 
 # Write new minimal server.env that uses Secrets Manager
-sudo tee /etc/opensandbox/server.env > /dev/null <<'ENV'
-OPENSANDBOX_MODE=server
-OPENSANDBOX_PORT=8080
-OPENSANDBOX_REGION=use2
-OPENSANDBOX_DATA_DIR=/data/sandboxes
-OPENSANDBOX_WORKER_ID=cp-use2-1
-OPENSANDBOX_HTTP_ADDR=http://${SERVER_IP}:8080
-OPENSANDBOX_SANDBOX_DOMAIN=workers.opensandbox.ai
-OPENSANDBOX_SECRETS_ARN=${SERVER_SECRET_ARN}
+sudo tee /etc/opencomputer/server.env > /dev/null <<'ENV'
+OPENCOMPUTER_MODE=server
+OPENCOMPUTER_PORT=8080
+OPENCOMPUTER_REGION=use2
+OPENCOMPUTER_DATA_DIR=/data/sandboxes
+OPENCOMPUTER_WORKER_ID=cp-use2-1
+OPENCOMPUTER_HTTP_ADDR=http://${SERVER_IP}:8080
+OPENCOMPUTER_SANDBOX_DOMAIN=workers.opencomputer.ai
+OPENCOMPUTER_SECRETS_ARN=${SERVER_SECRET_ARN}
 ENV
 
 echo "Server env file updated. Secrets will be fetched from Secrets Manager at next restart."
@@ -311,14 +311,14 @@ echo "Server Secret ARN: $SERVER_SECRET_ARN"
 echo "IAM Policy:        $POLICY_ARN"
 echo ""
 echo "Both instances are configured but NOT restarted."
-echo "Inline secrets have been replaced with OPENSANDBOX_SECRETS_ARN."
+echo "Inline secrets have been replaced with OPENCOMPUTER_SECRETS_ARN."
 echo ""
 echo "To apply (restart services):"
-echo "  Worker: ssh -i $SSH_KEY ubuntu@${WORKER_IP} 'sudo systemctl restart opensandbox-worker'"
-echo "  Server: ssh -i $SSH_KEY ubuntu@${SERVER_IP} 'sudo systemctl restart opensandbox-server'"
+echo "  Worker: ssh -i $SSH_KEY ubuntu@${WORKER_IP} 'sudo systemctl restart opencomputer-worker'"
+echo "  Server: ssh -i $SSH_KEY ubuntu@${SERVER_IP} 'sudo systemctl restart opencomputer-server'"
 echo ""
 echo "Or restart both:"
-echo "  ssh -i $SSH_KEY ubuntu@${WORKER_IP} 'sudo systemctl restart opensandbox-worker' && \\"
-echo "  ssh -i $SSH_KEY ubuntu@${SERVER_IP} 'sudo systemctl restart opensandbox-server'"
+echo "  ssh -i $SSH_KEY ubuntu@${WORKER_IP} 'sudo systemctl restart opencomputer-worker' && \\"
+echo "  ssh -i $SSH_KEY ubuntu@${SERVER_IP} 'sudo systemctl restart opencomputer-server'"
 echo ""
 echo -e "${GREEN}============================================${NC}"

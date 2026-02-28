@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	pb "github.com/opensandbox/opensandbox/proto/agent"
+	pb "github.com/opencomputer/opencomputer/proto/agent"
 )
 
 // baseEnv returns the current OS environment with HOME replaced to /workspace

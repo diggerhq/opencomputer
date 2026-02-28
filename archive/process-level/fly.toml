@@ -1,9 +1,9 @@
-# fly.toml app configuration file generated for opensandbox-test on 2026-01-30T16:08:35-08:00
+# fly.toml app configuration file generated for opencomputer-test on 2026-01-30T16:08:35-08:00
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'opensandbox-test'
+app = 'opencomputer-test'
 primary_region = 'ord'
 
 [build]
@@ -44,4 +44,4 @@ primary_region = 'ord'
 
 
 [env]
-  PREVIEW_DOMAIN = "preview.opensandbox.ai"
+  PREVIEW_DOMAIN = "preview.opencomputer.ai"

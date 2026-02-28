@@ -1,8 +1,8 @@
-# OpenSandbox — Implementation Handoff
+# OpenComputer — Implementation Handoff
 
 ## What Was Built
 
-OpenSandbox was evolved from a single-process Go server into a globally distributed sandbox platform. The architecture is inspired by Cloudflare Durable Objects: the control plane is removed from the data path. SDKs connect directly to workers after initial sandbox creation.
+OpenComputer was evolved from a single-process Go server into a globally distributed sandbox platform. The architecture is inspired by Cloudflare Durable Objects: the control plane is removed from the data path. SDKs connect directly to workers after initial sandbox creation.
 
 ```
 CREATION (one-time):
@@ -38,7 +38,7 @@ ASYNC SYNC (background):
 |------|-------------|
 | `internal/worker/http_server.go` | Echo HTTP server on worker — same REST API as control plane, but with JWT auth |
 | `internal/worker/handlers.go` | All handlers: getSandbox, runCommand, readFile, writeFile, listDir, makeDir, removeFile, createPTY, ptyWebSocket, killPTY |
-| `sdks/python/opensandbox/sandbox.py` | Uses `connectURL` + `token` from create response. `_data_client` for direct worker access |
+| `sdks/python/opencomputer/sandbox.py` | Uses `connectURL` + `token` from create response. `_data_client` for direct worker access |
 | `sdks/typescript/src/sandbox.ts` | Same pattern. `connectUrl`/`token` fields, passed to Filesystem/Commands/Pty classes |
 | `sdks/typescript/src/commands.ts`, `filesystem.ts`, `pty.ts` | Accept `token` param, use `Authorization: Bearer` when available |
 
@@ -69,7 +69,7 @@ ASYNC SYNC (background):
 | `deploy/docker-compose.yml` | PostgreSQL 16 + NATS 2 (JetStream) for local dev |
 | `deploy/ec2/` | EC2 bare-metal deployment (setup, deploy, Caddy, systemd) |
 | `deploy/prometheus/prometheus.yml` | Scrape configs for CP and workers |
-| `deploy/grafana/dashboards/opensandbox-overview.json` | Dashboard: active sandboxes, create latency, utilization, sync lag |
+| `deploy/grafana/dashboards/opencomputer-overview.json` | Dashboard: active sandboxes, create latency, utilization, sync lag |
 | `deploy/Dockerfile.server`, `Dockerfile.worker` | Both use CGO_ENABLED=1 (required by go-sqlite3) |
 
 ### Phase 6: WorkOS (skeleton only)
@@ -242,7 +242,7 @@ internal/
   metrics/metrics.go          — Prometheus metrics + Echo middleware
 
 sdks/
-  python/opensandbox/sandbox.py   — Uses connectURL for direct worker access
+  python/opencomputer/sandbox.py   — Uses connectURL for direct worker access
   typescript/src/
     sandbox.ts                — Uses connectURL for direct worker access
     commands.ts               — Bearer token support

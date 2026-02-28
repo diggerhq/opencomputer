@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/opensandbox/opensandbox/internal/auth"
-	"github.com/opensandbox/opensandbox/internal/ecr"
-	pb "github.com/opensandbox/opensandbox/proto/worker"
+	"github.com/opencomputer/opencomputer/internal/auth"
+	"github.com/opencomputer/opencomputer/internal/ecr"
+	pb "github.com/opencomputer/opencomputer/proto/worker"
 )
 
 func (s *Server) buildTemplate(c echo.Context) error {

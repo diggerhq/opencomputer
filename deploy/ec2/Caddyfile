@@ -1,4 +1,4 @@
-*.workers.opensandbox.ai {
+*.workers.opencomputer.ai {
     tls {
         dns route53 {
             access_key_id {env.AWS_ACCESS_KEY_ID}

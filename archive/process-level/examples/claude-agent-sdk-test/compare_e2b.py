@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Compare OpenSandbox vs E2B for Claude Agent SDK integration.
+Compare OpenComputer vs E2B for Claude Agent SDK integration.
 
 This script runs the same operations on both sandbox providers
 to compare their APIs and performance.
 
 Requirements:
 - E2B_API_KEY environment variable for E2B
-- OPENSANDBOX_URL environment variable for OpenSandbox (or localhost:8080)
+- OPENCOMPUTER_URL environment variable for OpenComputer (or localhost:8080)
 """
 
 import asyncio
@@ -38,8 +38,8 @@ class SandboxProvider(Protocol):
     async def destroy(self) -> None: ...
 
 
-class OpenSandboxProvider:
-    """OpenSandbox implementation."""
+class OpenComputerProvider:
+    """OpenComputer implementation."""
 
     def __init__(self):
         self._client = None
@@ -47,17 +47,17 @@ class OpenSandboxProvider:
 
     @property
     def name(self) -> str:
-        return "OpenSandbox"
+        return "OpenComputer"
 
     async def create(self) -> None:
-        from opensandbox import OpenSandbox
+        from opencomputer import OpenComputer
 
-        url = os.environ.get("OPENSANDBOX_URL", "http://localhost:8080")
-        grpc_port = int(os.environ.get("OPENSANDBOX_GRPC_PORT", "50051"))
+        url = os.environ.get("OPENCOMPUTER_URL", "http://localhost:8080")
+        grpc_port = int(os.environ.get("OPENCOMPUTER_GRPC_PORT", "50051"))
         # Use insecure gRPC for Fly.io (raw TCP, no TLS on gRPC port)
-        grpc_insecure = os.environ.get("OPENSANDBOX_GRPC_INSECURE", "").lower() in ("1", "true", "yes")
+        grpc_insecure = os.environ.get("OPENCOMPUTER_GRPC_INSECURE", "").lower() in ("1", "true", "yes")
 
-        self._client = OpenSandbox(url, grpc_port=grpc_port, grpc_insecure=grpc_insecure)
+        self._client = OpenComputer(url, grpc_port=grpc_port, grpc_insecure=grpc_insecure)
         await self._client._ensure_connected()
         self._sandbox = await self._client.create()
 
@@ -231,23 +231,23 @@ def print_comparison(results: list[dict]):
 
 
 async def main():
-    """Run comparison between E2B and OpenSandbox."""
+    """Run comparison between E2B and OpenComputer."""
     print("\n" + "=" * 70)
-    print("E2B vs OpenSandbox Comparison")
+    print("E2B vs OpenComputer Comparison")
     print("=" * 70)
 
     results = []
 
-    # Test OpenSandbox
-    print("\n[OpenSandbox]")
+    # Test OpenComputer
+    print("\n[OpenComputer]")
     try:
-        provider = OpenSandboxProvider()
+        provider = OpenComputerProvider()
         result = await run_benchmark(provider)
         results.append(result)
     except ImportError:
-        print("  OpenSandbox SDK not available")
+        print("  OpenComputer SDK not available")
     except Exception as e:
-        print(f"  OpenSandbox failed: {e}")
+        print(f"  OpenComputer failed: {e}")
 
     # Test E2B
     print("\n[E2B]")
@@ -272,7 +272,7 @@ async def main():
     print("FEATURE COMPARISON")
     print("=" * 70)
     print("""
-| Feature                    | OpenSandbox           | E2B                    |
+| Feature                    | OpenComputer           | E2B                    |
 |----------------------------|----------------------|------------------------|
 | Hosting                    | Self-hosted / Fly.io | Cloud only             |
 | Protocol                   | gRPC + HTTP          | HTTP (WebSocket)       |
