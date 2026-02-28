@@ -1115,6 +1115,19 @@ func (s *Store) GetSecretGroupEntries(ctx context.Context, groupID uuid.UUID) ([
 	return entries, nil
 }
 
+// GetSandboxSecretGroupID returns the secret_group_id for a sandbox session, or nil if not set.
+func (s *Store) GetSandboxSecretGroupID(ctx context.Context, sandboxID string) (*uuid.UUID, error) {
+	var groupID *uuid.UUID
+	err := s.pool.QueryRow(ctx,
+		`SELECT secret_group_id FROM sandbox_sessions WHERE sandbox_id = $1 ORDER BY started_at DESC LIMIT 1`,
+		sandboxID,
+	).Scan(&groupID)
+	if err != nil {
+		return nil, fmt.Errorf("get sandbox secret group id: %w", err)
+	}
+	return groupID, nil
+}
+
 // UpdateSandboxSessionSecretGroup records the secret_group_id on a sandbox session.
 func (s *Store) UpdateSandboxSessionSecretGroup(ctx context.Context, sandboxID string, groupID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx,

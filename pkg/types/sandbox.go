@@ -28,8 +28,10 @@ type Sandbox struct {
 	ConnectURL string            `json:"connectURL,omitempty"` // Direct worker URL for SDK access
 	Token      string            `json:"token,omitempty"`      // Sandbox-scoped JWT for worker auth
 	HostPort   int               `json:"hostPort,omitempty"`   // Mapped host port for the sandbox's container port
+	Domain     string            `json:"domain,omitempty"`     // Subdomain for sandbox access (e.g., "sb-123.sandbox.opensandbox.ai")
 	GitURL     string            `json:"gitURL,omitempty"`     // Git server base URL for clone/push/pull
 	OrgSlug    string            `json:"orgSlug,omitempty"`    // Organization slug for git repo paths
+	GuestIP    string            `json:"guestIP,omitempty"`    // VM's internal guest IP (worker-internal, not sent to clients)
 }
 
 // SandboxConfig is the request body for creating a sandbox.

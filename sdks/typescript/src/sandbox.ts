@@ -41,11 +41,11 @@ export interface PreviewURLResult {
   sslStatus: string;
   authConfig: Record<string, unknown>;
   createdAt: string;
->>>>>>> main
 }
 
 export class Sandbox {
   readonly sandboxId: string;
+  readonly domain: string | undefined;
   readonly files: Filesystem;
   readonly commands: Commands;
   readonly pty: Pty;
@@ -61,6 +61,7 @@ export class Sandbox {
 
   private constructor(data: SandboxData, apiUrl: string, apiKey: string) {
     this.sandboxId = data.sandboxID;
+    this.domain = data.domain;
     this._status = data.status;
     this.apiUrl = apiUrl;
     this.apiKey = apiKey;

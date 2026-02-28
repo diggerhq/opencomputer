@@ -155,6 +155,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	api.GET("/templates", s.listTemplates)
 	api.GET("/templates/:name", s.getTemplate)
 	api.DELETE("/templates/:name", s.deleteTemplate)
+	api.POST("/sandboxes/:id/save-as-template", s.dashboardSaveAsTemplate)
 
 	// Git repositories
 	api.POST("/repos", s.createRepo)

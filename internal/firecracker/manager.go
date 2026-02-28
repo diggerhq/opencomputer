@@ -853,7 +853,7 @@ func (m *Manager) getVM(id string) (*VMInstance, error) {
 
 // vmToSandbox converts a VMInstance to a types.Sandbox.
 func vmToSandbox(vm *VMInstance) *types.Sandbox {
-	return &types.Sandbox{
+	sb := &types.Sandbox{
 		ID:        vm.ID,
 		Template:  vm.Template,
 		Status:    vm.Status,
@@ -863,6 +863,10 @@ func vmToSandbox(vm *VMInstance) *types.Sandbox {
 		MemoryMB:  vm.MemoryMB,
 		HostPort:  vm.HostPort,
 	}
+	if vm.network != nil {
+		sb.GuestIP = vm.network.GuestIP
+	}
+	return sb
 }
 
 // generateMAC creates a deterministic MAC address from a sandbox ID.
@@ -1044,10 +1048,11 @@ func (m *Manager) injectEnvs(ctx context.Context, agent *AgentClient, envs map[s
 
 	// Append to /etc/environment (read by PAM for login sessions) and write
 	// /etc/profile.d/osb.sh (sourced by interactive shells).
+	// Use heredocs to avoid shell word-splitting issues with printf arguments.
 	script := fmt.Sprintf(
-		`mkdir -p /etc/profile.d && printf '%%s\n' %s >> /etc/environment && printf '%%s\n' %s > /etc/profile.d/osb.sh`,
-		strings.Join(envLines, " "),
-		strings.Join(exportLines, " "),
+		"mkdir -p /etc/profile.d && cat >> /etc/environment <<'ENVEOF'\n%s\nENVEOF\ncat > /etc/profile.d/osb.sh <<'PROFILEEOF'\n%s\nPROFILEEOF",
+		strings.Join(envLines, "\n"),
+		strings.Join(exportLines, "\n"),
 	)
 
 	execCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

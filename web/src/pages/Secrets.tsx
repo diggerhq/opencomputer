@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import {
-  getSecrets, createSecret, updateSecret, deleteSecret,
-  getSecretGroups, createSecretGroup, updateSecretGroup, deleteSecretGroup, getSecretGroup,
-  Secret, SecretGroup, SecretGroupDetail,
+  getSecrets, createSecret, deleteSecret,
+  getSecretGroups, createSecretGroup, deleteSecretGroup, getSecretGroup,
+  type Secret, type SecretGroup, type SecretGroupDetail,
 } from '../api/client'
 
 /* ── helpers ──────────────────────────────────────────────── */
@@ -213,7 +213,7 @@ function SecretGroupsPanel({ groups, secrets, onRefresh }: { groups: SecretGroup
               </div>
               {selected?.id === g.id && selected.entries && selected.entries.length > 0 && (
                 <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {selected.entries.map(e => (
+                  {selected.entries.map((e: SecretGroupDetail['entries'][number]) => (
                     <div key={e.id} style={{ display: 'flex', gap: 8, fontSize: 12, color: 'var(--text-secondary)' }}>
                       <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-indigo)' }}>{e.envVarName}</code>
                       <span style={{ color: 'var(--text-tertiary)' }}>→</span>

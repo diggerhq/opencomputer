@@ -68,6 +68,19 @@ func (sp *SecretsProxy) DeleteSession(sandboxIP string) {
 	sp.sessions.Delete(sandboxIP)
 }
 
+// RestoreSession re-populates the proxy session for a sandbox that has woken from
+// hibernation. tokenMap is {sealedToken → realValue}, reconstructed by
+// cross-referencing the VM's /etc/environment with the re-resolved secret group.
+func (sp *SecretsProxy) RestoreSession(sandboxIP, sandboxID string, tokenMap map[string]string, allowedHosts []string) {
+	session := &ProxySession{
+		SandboxID:    sandboxID,
+		SealedTokens: tokenMap,
+		AllowedHosts: allowedHosts,
+	}
+	sp.sessions.Store(sandboxIP, session)
+	log.Printf("secrets-proxy: restored session for sandbox %s (ip=%s, vars=%d)", sandboxID, sandboxIP, len(tokenMap))
+}
+
 // ProxyEnvs creates a proxy session and returns the complete set of env vars to
 // inject into the VM — sealed tokens plus proxy configuration vars.
 // gatewayIP is the host-side TAP IP (gateway for the VM's subnet).

@@ -15,7 +15,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
+	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/secretsproxy"
 	"github.com/opensandbox/opensandbox/internal/sparse"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/template"
@@ -32,11 +34,13 @@ type GRPCServer struct {
 	sandboxDBs      *sandbox.SandboxDBManager
 	checkpointStore *storage.CheckpointStore
 	builder         *template.Builder
+	store           *db.Store                   // nil if no DB configured
+	secretsProxy    *secretsproxy.SecretsProxy  // nil if secrets proxy not configured
 	server          *grpc.Server
 }
 
 // NewGRPCServer creates a new gRPC server wrapping the sandbox manager.
-func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore, router *sandbox.SandboxRouter, builder *template.Builder) *GRPCServer {
+func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore, router *sandbox.SandboxRouter, builder *template.Builder, store *db.Store, sp *secretsproxy.SecretsProxy) *GRPCServer {
 	s := &GRPCServer{
 		manager:         mgr,
 		router:          router,
@@ -44,6 +48,8 @@ func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *
 		sandboxDBs:      sandboxDBs,
 		checkpointStore: checkpointStore,
 		builder:         builder,
+		store:           store,
+		secretsProxy:    sp,
 		server: grpc.NewServer(
 			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 				MinTime:             5 * time.Second,
@@ -394,10 +400,82 @@ func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest
 		}
 	}
 
+	// Restore secrets proxy session if this sandbox had a secret group attached.
+	// The VM snapshot preserves sealed tokens in /etc/environment, but the worker's
+	// in-memory {sealedToken→realValue} map is lost on hibernate. Re-resolve from DB.
+	if s.secretsProxy != nil && s.store != nil && sb.GuestIP != "" {
+		if err := s.restoreProxySession(ctx, sb); err != nil {
+			log.Printf("grpc: wake %s: restore proxy session (non-fatal): %v", req.SandboxId, err)
+		}
+	}
+
 	return &pb.WakeSandboxResponse{
 		SandboxId: sb.ID,
 		Status:    string(sb.Status),
 	}, nil
+}
+
+// restoreProxySession re-creates the secrets proxy session after a sandbox wakes from
+// hibernation. It re-resolves the secret group from the DB, reads the sealed tokens
+// from /etc/environment inside the VM, and rebuilds the {sealedToken→realValue} map.
+func (s *GRPCServer) restoreProxySession(ctx context.Context, sb *types.Sandbox) error {
+	groupID, err := s.store.GetSandboxSecretGroupID(ctx, sb.ID)
+	if err != nil || groupID == nil {
+		return nil // No secret group attached — nothing to restore
+	}
+
+	envVars, allowedHosts, err := s.store.ResolveSecretGroup(ctx, *groupID)
+	if err != nil {
+		return fmt.Errorf("resolve secret group: %w", err)
+	}
+	if len(envVars) == 0 {
+		return nil
+	}
+
+	// Read /etc/environment from the woken VM to find existing sealed tokens
+	envContent, err := s.manager.ReadFile(ctx, sb.ID, "/etc/environment")
+	if err != nil {
+		return fmt.Errorf("read /etc/environment: %w", err)
+	}
+
+	vmEnvs := parseEnvFile(envContent)
+
+	// Build {sealedToken→realValue} by cross-referencing VM env vars with DB values
+	tokenMap := make(map[string]string, len(envVars))
+	for envVar, realValue := range envVars {
+		if sealedToken, ok := vmEnvs[envVar]; ok && strings.HasPrefix(sealedToken, "osb_sealed_") {
+			tokenMap[sealedToken] = realValue
+		}
+	}
+	if len(tokenMap) == 0 {
+		return nil // Sandbox was created without the proxy (e.g., before this feature)
+	}
+
+	s.secretsProxy.RestoreSession(sb.GuestIP, sb.ID, tokenMap, allowedHosts)
+	return nil
+}
+
+// parseEnvFile parses /etc/environment format (KEY=VALUE lines, optional quotes) into a map.
+func parseEnvFile(content string) map[string]string {
+	result := make(map[string]string)
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		key := line[:idx]
+		val := line[idx+1:]
+		// Strip surrounding quotes if present
+		if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
+			val = val[1 : len(val)-1]
+		}
+		result[key] = val
+	}
+	return result
 }
 
 func (s *GRPCServer) IsTAPAvailable(ctx context.Context, req *pb.IsTAPAvailableRequest) (*pb.IsTAPAvailableResponse, error) {

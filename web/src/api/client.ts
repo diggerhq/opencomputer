@@ -115,6 +115,7 @@ export interface Template {
   tag: string
   dockerfile?: string
   isPublic: boolean
+  status?: string
   createdAt: string
 }
 
@@ -181,3 +182,78 @@ export interface Org {
   sslTxtName?: string
   sslTxtValue?: string
 }
+
+// Secrets types
+export interface Secret {
+  id: string
+  orgId: string
+  name: string
+  description: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SecretGroup {
+  id: string
+  orgId: string
+  name: string
+  description: string
+  createdAt: string
+}
+
+export interface SecretGroupDetail extends SecretGroup {
+  allowedHosts?: string[]
+  entries: Array<{
+    id: string
+    secretId: string
+    secretName: string
+    envVarName: string
+  }>
+}
+
+// Secrets API
+export const getSecrets = () => apiFetch<Secret[]>('/secrets')
+
+export const createSecret = (name: string, description: string, value: string) =>
+  apiFetch<Secret>('/secrets', {
+    method: 'POST',
+    body: JSON.stringify({ name, description, value }),
+  })
+
+export const updateSecret = (id: string, data: { name?: string; description?: string; value?: string }) =>
+  apiFetch<Secret>(`/secrets/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+
+export const deleteSecret = (id: string) =>
+  apiFetch<void>(`/secrets/${id}`, { method: 'DELETE' })
+
+// Secret Groups API
+export const getSecretGroups = () => apiFetch<SecretGroup[]>('/secret-groups')
+
+export const getSecretGroup = (id: string) =>
+  apiFetch<SecretGroupDetail>(`/secret-groups/${id}`)
+
+export const createSecretGroup = (
+  name: string,
+  description: string,
+  allowedHosts: string[],
+  entries: Array<{ secretId: string; envVarName: string }>,
+) =>
+  apiFetch<SecretGroup>('/secret-groups', {
+    method: 'POST',
+    body: JSON.stringify({ name, description, allowedHosts, entries }),
+  })
+
+export const updateSecretGroup = (
+  id: string,
+  data: { name?: string; description?: string; allowedHosts?: string[]; entries?: Array<{ secretId: string; envVarName: string }> },
+) =>
+  apiFetch<SecretGroup>(`/secret-groups/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+
+export const deleteSecretGroup = (id: string) =>
+  apiFetch<void>(`/secret-groups/${id}`, { method: 'DELETE' })

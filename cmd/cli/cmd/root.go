@@ -27,8 +27,8 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&baseURL, "url", getEnvOrDefault("OPENSANDBOX_URL", "http://localhost:8080"), "OpenSandbox API base URL")
-	rootCmd.PersistentFlags().StringVar(&apiKey, "api-key", os.Getenv("OPENSANDBOX_API_KEY"), "OpenSandbox API key")
+	rootCmd.PersistentFlags().StringVar(&baseURL, "url", getEnvOrDefault("OPENCOMPUTER_API_URL", "http://localhost:8080"), "OpenSandbox API base URL")
+	rootCmd.PersistentFlags().StringVar(&apiKey, "api-key", os.Getenv("OPENCOMPUTER_API_KEY"), "OpenSandbox API key")
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
@@ -40,7 +40,7 @@ func getEnvOrDefault(key, defaultValue string) string {
 
 func checkAPIKey() error {
 	if apiKey == "" {
-		return fmt.Errorf("API key is required. Set OPENSANDBOX_API_KEY environment variable or use --api-key flag")
+		return fmt.Errorf("API key is required. Set OPENCOMPUTER_API_KEY environment variable or use --api-key flag")
 	}
 	return nil
 }
