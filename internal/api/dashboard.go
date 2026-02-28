@@ -1159,7 +1159,7 @@ func (s *Server) dashboardSaveAsTemplate(c echo.Context) error {
 	}
 
 	// Create template record in DB (status=processing for sandbox templates)
-	tmpl, err := s.store.CreateSandboxTemplate(ctx, &orgID, req.Name, req.Tag, rootfsKey, workspaceKey, sandboxID)
+	tmpl, err := s.store.CreateSandboxTemplate(ctx, templateID, &orgID, req.Name, req.Tag, rootfsKey, workspaceKey, sandboxID)
 	if err != nil {
 		log.Printf("dashboard: template snapshot succeeded but DB insert failed for sandbox %s: %v", sandboxID, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{

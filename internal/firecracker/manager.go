@@ -384,7 +384,23 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 	// before injection so they never appear in plaintext inside the VM.
 	envsToInject := cfg.Envs
 	if m.cfg.SecretsProxy != nil && len(cfg.Envs) > 0 {
-		envsToInject = m.cfg.SecretsProxy.ProxyEnvs(id, netCfg.GuestIP, netCfg.HostIP, cfg.Envs, nil)
+		envsToInject = m.cfg.SecretsProxy.ProxyEnvs(id, netCfg.GuestIP, netCfg.HostIP, cfg.Envs, cfg.AllowedHosts)
+
+		// Inject the MITM proxy CA certificate into the VM so curl/node/python trust it.
+		caCertPEM := m.cfg.SecretsProxy.CACertPEM()
+		if len(caCertPEM) > 0 {
+			certScript := fmt.Sprintf(
+				"mkdir -p /usr/local/share/ca-certificates && cat > /usr/local/share/ca-certificates/osb-proxy.crt <<'CERTEOF'\n%s\nCERTEOF\nupdate-ca-certificates 2>/dev/null || true",
+				string(caCertPEM),
+			)
+			if _, err := agentClient.Exec(context.Background(), &pb.ExecRequest{
+				Command:        "sh",
+				Args:           []string{"-c", certScript},
+				TimeoutSeconds: 10,
+			}); err != nil {
+				log.Printf("firecracker: warning: CA cert injection failed for %s: %v", id, err)
+			}
+		}
 	}
 	if len(envsToInject) > 0 {
 		if err := m.injectEnvs(context.Background(), agentClient, envsToInject); err != nil {

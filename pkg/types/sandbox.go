@@ -55,6 +55,10 @@ type SandboxConfig struct {
 	// The server resolves secrets before forwarding to the worker; real values
 	// never leave the server unencrypted — the worker only receives sealed tokens.
 	SecretGroupID string `json:"secretGroupId,omitempty"`
+
+	// AllowedHosts is the secrets proxy egress allowlist. When non-empty, only
+	// HTTPS requests to these hosts are permitted through the proxy.
+	AllowedHosts []string `json:"-"` // internal only, not from client JSON
 }
 
 // SandboxListResponse is the response for listing sandboxes.

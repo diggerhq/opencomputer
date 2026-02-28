@@ -43,6 +43,8 @@ message CreateSandboxRequest {
   // Sandbox snapshot template: if non-empty, boot from these S3 keys instead of base image.
   string template_rootfs_key = 9;
   string template_workspace_key = 10;
+  // Secrets proxy egress allowlist: if non-empty, only these hosts can be reached via HTTPS.
+  repeated string allowed_hosts = 11;
 }
 
 message CreateSandboxResponse {

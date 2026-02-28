@@ -38,7 +38,7 @@ function check(desc: string, condition: boolean, detail?: string) {
 }
 
 async function apiFetch(url: string, opts: RequestInit = {}): Promise<Response> {
-  const apiKey = process.env.OPENSANDBOX_API_KEY ?? "";
+  const apiKey = process.env.OPENCOMPUTER_API_KEY ?? process.env.OPENSANDBOX_API_KEY ?? "";
   return fetch(url, {
     ...opts,
     headers: {
@@ -54,10 +54,10 @@ async function main() {
   bold("\u2551       Secrets Proxy Test                          \u2551");
   bold("\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\n");
 
-  const apiUrl = (process.env.OPENSANDBOX_API_URL ?? "https://app.opensandbox.ai").replace(/\/+$/, "");
-  const apiKey = process.env.OPENSANDBOX_API_KEY ?? "";
+  const apiUrl = (process.env.OPENCOMPUTER_API_URL ?? process.env.OPENSANDBOX_API_URL ?? "https://app.opensandbox.ai").replace(/\/+$/, "");
+  const apiKey = process.env.OPENCOMPUTER_API_KEY ?? process.env.OPENSANDBOX_API_KEY ?? "";
   if (!apiKey) {
-    red("OPENSANDBOX_API_KEY is not set");
+    red("OPENCOMPUTER_API_KEY is not set");
     process.exit(1);
   }
 

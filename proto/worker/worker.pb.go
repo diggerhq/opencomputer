@@ -80,8 +80,10 @@ type CreateSandboxRequest struct {
 	// Sandbox snapshot template: if non-empty, boot from these S3 keys instead of base image.
 	TemplateRootfsKey    string `protobuf:"bytes,9,opt,name=template_rootfs_key,json=templateRootfsKey,proto3" json:"template_rootfs_key,omitempty"`
 	TemplateWorkspaceKey string `protobuf:"bytes,10,opt,name=template_workspace_key,json=templateWorkspaceKey,proto3" json:"template_workspace_key,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// Secrets proxy egress allowlist: if non-empty, only these hosts can be reached via HTTPS.
+	AllowedHosts  []string `protobuf:"bytes,11,rep,name=allowed_hosts,json=allowedHosts,proto3" json:"allowed_hosts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateSandboxRequest) Reset() {
@@ -182,6 +184,13 @@ func (x *CreateSandboxRequest) GetTemplateWorkspaceKey() string {
 		return x.TemplateWorkspaceKey
 	}
 	return ""
+}
+
+func (x *CreateSandboxRequest) GetAllowedHosts() []string {
+	if x != nil {
+		return x.AllowedHosts
+	}
+	return nil
 }
 
 type CreateSandboxResponse struct {
@@ -2034,7 +2043,7 @@ var File_proto_worker_worker_proto protoreflect.FileDescriptor
 
 const file_proto_worker_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x19proto/worker/worker.proto\x12\x06worker\"\xbb\x03\n" +
+	"\x19proto/worker/worker.proto\x12\x06worker\"\xe0\x03\n" +
 	"\x14CreateSandboxRequest\x12\x1a\n" +
 	"\btemplate\x18\x01 \x01(\tR\btemplate\x12\x18\n" +
 	"\atimeout\x18\x02 \x01(\x05R\atimeout\x12:\n" +
@@ -2046,7 +2055,8 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\x04port\x18\b \x01(\x05R\x04port\x12.\n" +
 	"\x13template_rootfs_key\x18\t \x01(\tR\x11templateRootfsKey\x124\n" +
 	"\x16template_workspace_key\x18\n" +
-	" \x01(\tR\x14templateWorkspaceKey\x1a7\n" +
+	" \x01(\tR\x14templateWorkspaceKey\x12#\n" +
+	"\rallowed_hosts\x18\v \x03(\tR\fallowedHosts\x1a7\n" +
 	"\tEnvsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"N\n" +

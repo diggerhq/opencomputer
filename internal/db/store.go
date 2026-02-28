@@ -775,13 +775,13 @@ func (s *Store) CreateTemplate(ctx context.Context, orgID *uuid.UUID, name, tag,
 }
 
 // CreateSandboxTemplate inserts a new sandbox-snapshot template record (status=processing).
-func (s *Store) CreateSandboxTemplate(ctx context.Context, orgID *uuid.UUID, name, tag, rootfsS3Key, workspaceS3Key, createdBySandboxID string) (*DBTemplate, error) {
+func (s *Store) CreateSandboxTemplate(ctx context.Context, id uuid.UUID, orgID *uuid.UUID, name, tag, rootfsS3Key, workspaceS3Key, createdBySandboxID string) (*DBTemplate, error) {
 	t := &DBTemplate{}
 	err := scanTemplate(s.pool.QueryRow(ctx,
-		`INSERT INTO templates (org_id, name, tag, image_ref, is_public, template_type, rootfs_s3_key, workspace_s3_key, created_by_sandbox_id, status)
-		 VALUES ($1, $2, $3, '', false, 'sandbox', $4, $5, $6, 'processing')
+		`INSERT INTO templates (id, org_id, name, tag, image_ref, is_public, template_type, rootfs_s3_key, workspace_s3_key, created_by_sandbox_id, status)
+		 VALUES ($1, $2, $3, $4, '', false, 'sandbox', $5, $6, $7, 'processing')
 		 RETURNING `+templateColumns,
-		orgID, name, tag, rootfsS3Key, workspaceS3Key, createdBySandboxID,
+		id, orgID, name, tag, rootfsS3Key, workspaceS3Key, createdBySandboxID,
 	), t)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sandbox template: %w", err)

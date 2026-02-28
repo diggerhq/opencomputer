@@ -220,10 +220,12 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// Resolve secret group: decrypt values on the server so real secrets never
 	// travel as plaintext to the worker or get stored in any DB field.
 	var secretGroupID *uuid.UUID
+	var allowedHosts []string
 	if cfg.SecretGroupID != "" && s.store != nil && hasOrg {
 		gid, err := uuid.Parse(cfg.SecretGroupID)
 		if err == nil {
-			envVars, allowedHosts, err := s.store.ResolveSecretGroup(ctx, gid)
+			var envVars map[string]string
+			envVars, allowedHosts, err = s.store.ResolveSecretGroup(ctx, gid)
 			if err != nil {
 				log.Printf("sandbox: secret group %s resolution failed: %v", cfg.SecretGroupID, err)
 			} else {
@@ -260,6 +262,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		Port:                 int32(cfg.Port),
 		TemplateRootfsKey:    templateRootfsKey,
 		TemplateWorkspaceKey: templateWorkspaceKey,
+		AllowedHosts:         allowedHosts,
 	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{

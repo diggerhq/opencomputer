@@ -13,17 +13,47 @@ import (
 	pb "github.com/opensandbox/opensandbox/proto/agent"
 )
 
-// baseEnv returns the current OS environment with HOME replaced to /workspace
-// so tools (npm, pip, git, etc.) use the NVMe-backed workspace for caches.
+// baseEnv returns the process environment merged with /etc/environment, with
+// HOME forced to /workspace so tools (npm, pip, git, etc.) use the NVMe-backed
+// workspace for caches. /etc/environment is re-read on each call so that env
+// vars injected after the agent starts (e.g., sealed tokens, proxy config) are
+// visible to all Exec commands.
 func baseEnv() []string {
-	var env []string
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "HOME=") {
-			continue
+	// Start with vars from /etc/environment (injected by injectEnvs on the host).
+	merged := make(map[string]string)
+	if data, err := os.ReadFile("/etc/environment"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if k, v, ok := strings.Cut(line, "="); ok {
+				// Strip surrounding quotes from the value.
+				v = strings.TrimSpace(v)
+				if len(v) >= 2 && (v[0] == '\'' && v[len(v)-1] == '\'') {
+					v = v[1 : len(v)-1]
+				} else if len(v) >= 2 && (v[0] == '"' && v[len(v)-1] == '"') {
+					v = v[1 : len(v)-1]
+				}
+				merged[strings.TrimSpace(k)] = v
+			}
 		}
-		env = append(env, e)
 	}
-	env = append(env, "HOME=/workspace")
+
+	// Overlay the agent's own process environment (takes precedence).
+	for _, e := range os.Environ() {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			merged[k] = v
+		}
+	}
+
+	// Force HOME=/workspace.
+	merged["HOME"] = "/workspace"
+
+	env := make([]string, 0, len(merged))
+	for k, v := range merged {
+		env = append(env, k+"="+v)
+	}
 	return env
 }
 

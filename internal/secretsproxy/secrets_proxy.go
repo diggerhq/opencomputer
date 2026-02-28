@@ -81,6 +81,11 @@ func (sp *SecretsProxy) RestoreSession(sandboxIP, sandboxID string, tokenMap map
 	log.Printf("secrets-proxy: restored session for sandbox %s (ip=%s, vars=%d)", sandboxID, sandboxIP, len(tokenMap))
 }
 
+// CACertPEM returns the CA certificate PEM for injection into sandboxes.
+func (sp *SecretsProxy) CACertPEM() []byte {
+	return sp.ca.CertPEM()
+}
+
 // ProxyEnvs creates a proxy session and returns the complete set of env vars to
 // inject into the VM — sealed tokens plus proxy configuration vars.
 // gatewayIP is the host-side TAP IP (gateway for the VM's subnet).

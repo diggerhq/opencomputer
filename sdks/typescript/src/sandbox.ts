@@ -262,4 +262,22 @@ export class Sandbox {
       throw new Error(`Failed to delete preview URL: ${resp.status}`);
     }
   }
+
+  async saveAsTemplate(opts: { name: string; tag?: string }): Promise<{ id: string; name: string; tag: string }> {
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/save-as-template`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.apiKey ? { "X-API-Key": this.apiKey } : {}),
+      },
+      body: JSON.stringify({ name: opts.name, tag: opts.tag ?? "latest" }),
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Failed to save as template: ${resp.status} ${text}`);
+    }
+
+    return resp.json();
+  }
 }

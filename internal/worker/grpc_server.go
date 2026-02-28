@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
+	"github.com/google/uuid"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/secretsproxy"
@@ -89,6 +90,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		NetworkEnabled: req.NetworkEnabled,
 		ImageRef:       req.ImageRef,
 		Port:           int(req.Port),
+		AllowedHosts:   req.AllowedHosts,
 	}
 
 	// If this is a template-based creation, resolve the template drives.
@@ -489,7 +491,22 @@ func (s *GRPCServer) SaveAsTemplate(ctx context.Context, req *pb.SaveAsTemplateR
 		return nil, fmt.Errorf("save-as-template requires checkpoint store (S3) — not configured on this worker")
 	}
 
-	rootfsKey, workspaceKey, err := s.manager.SaveAsTemplate(ctx, req.SandboxId, req.TemplateId, s.checkpointStore, nil)
+	// Provide an onReady callback so the template is marked "ready" in PG after
+	// the async S3 upload completes. Without this, the template stays "processing".
+	var onReady func()
+	if s.store != nil {
+		templateUUID, parseErr := uuid.Parse(req.TemplateId)
+		if parseErr == nil {
+			onReady = func() {
+				if err := s.store.SetTemplateReady(context.Background(), templateUUID); err != nil {
+					log.Printf("worker: failed to mark template %s ready: %v", req.TemplateId, err)
+				} else {
+					log.Printf("worker: template %s is now ready", req.TemplateId)
+				}
+			}
+		}
+	}
+	rootfsKey, workspaceKey, err := s.manager.SaveAsTemplate(ctx, req.SandboxId, req.TemplateId, s.checkpointStore, onReady)
 	if err != nil {
 		return nil, fmt.Errorf("save-as-template failed: %w", err)
 	}
