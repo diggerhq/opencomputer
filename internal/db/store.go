@@ -71,6 +71,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{5, "migrations/005_org_custom_domain.up.sql"},
 		{6, "migrations/006_sandbox_preview_urls.up.sql"},
 		{7, "migrations/007_preview_urls_port.up.sql"},
+		{8, "migrations/008_default_template.up.sql"},
 	}
 
 	for _, m := range migrations {
