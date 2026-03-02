@@ -23,6 +23,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
+	"github.com/opensandbox/opensandbox/pkg/secretsclient"
 )
 
 func main() {
@@ -245,6 +246,25 @@ func main() {
 	if cfg.CFAPIToken != "" && cfg.CFZoneID != "" {
 		opts.CFClient = cloudflare.NewClient(cfg.CFAPIToken, cfg.CFZoneID)
 		log.Println("opensandbox: Cloudflare custom hostnames configured")
+	}
+
+	// Initialize secrets gRPC client (if configured)
+	if cfg.SecretsGRPCAddr != "" {
+		scOpts := &secretsclient.ClientOpts{
+			APIKey:   cfg.SecretsAPIKey,
+			Insecure: cfg.SecretsTLSCA == "",
+		}
+		if cfg.SecretsTLSCA != "" {
+			scOpts.TLSCAFile = cfg.SecretsTLSCA
+			scOpts.Insecure = false
+		}
+		sc, err := secretsclient.NewClient(cfg.SecretsGRPCAddr, scOpts)
+		if err != nil {
+			log.Fatalf("opensandbox: failed to connect to secrets service at %s: %v", cfg.SecretsGRPCAddr, err)
+		}
+		defer sc.Close()
+		opts.SecretsClient = sc
+		log.Printf("opensandbox: secrets gRPC client configured (%s)", cfg.SecretsGRPCAddr)
 	}
 
 	// Create API server

@@ -217,27 +217,32 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		}
 	}
 
-	// Resolve secret group: decrypt values on the server so real secrets never
-	// travel as plaintext to the worker or get stored in any DB field.
+	// Create a secret session: the secrets server resolves + holds plaintext.
+	// We get back sealed tokens (no plaintext) and pass session credentials to the worker.
 	var secretGroupID *uuid.UUID
 	var allowedHosts []string
-	if cfg.SecretGroupID != "" && s.store != nil && hasOrg {
+	var secretSessionID, secretSessionToken string
+	if cfg.SecretGroupID != "" && s.secretsClient != nil && hasOrg {
 		gid, err := uuid.Parse(cfg.SecretGroupID)
 		if err == nil {
-			var envVars map[string]string
-			envVars, allowedHosts, err = s.store.ResolveSecretGroup(ctx, gid)
-			if err != nil {
-				log.Printf("sandbox: secret group %s resolution failed: %v", cfg.SecretGroupID, err)
+			session, sessErr := s.secretsClient.CreateSecretSession(ctx, orgID, gid, "pending", 0)
+			if sessErr != nil {
+				log.Printf("sandbox: secret session creation failed for group %s: %v", cfg.SecretGroupID, sessErr)
 			} else {
+				allowedHosts = session.AllowedHosts
+				secretSessionID = session.SessionID
+				secretSessionToken = session.SessionToken
+				// Inject sealed tokens as env vars — the VM sees osb_sealed_xxx, not real values
 				if cfg.Envs == nil {
 					cfg.Envs = make(map[string]string)
 				}
-				for k, v := range envVars {
-					cfg.Envs[k] = v
+				for envVar, sealedToken := range session.SealedTokens {
+					cfg.Envs[envVar] = sealedToken
 				}
 				cfg.SecretGroupID = "" // don't forward group ID to worker
 				secretGroupID = &gid
-				log.Printf("sandbox: resolved secret group %s (%d vars, %d allowed hosts)", gid, len(envVars), len(allowedHosts))
+				log.Printf("sandbox: created secret session %s for group %s (%d sealed tokens, %d allowed hosts)",
+					secretSessionID, gid, len(session.SealedTokens), len(allowedHosts))
 			}
 		}
 	}
@@ -263,6 +268,8 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		TemplateRootfsKey:    templateRootfsKey,
 		TemplateWorkspaceKey: templateWorkspaceKey,
 		AllowedHosts:         allowedHosts,
+		SecretSessionId:      secretSessionID,
+		SecretSessionToken:   secretSessionToken,
 	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -295,6 +302,9 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		}
 		if secretGroupID != nil {
 			_ = s.store.UpdateSandboxSessionSecretGroup(ctx, grpcResp.SandboxId, *secretGroupID)
+		}
+		if secretSessionID != "" {
+			_ = s.store.UpdateSandboxSessionSecretSession(ctx, grpcResp.SandboxId, secretSessionID, secretSessionToken)
 		}
 	}
 
@@ -859,11 +869,18 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 60*time.Second)
 	defer cancel()
 
-	grpcResp, err := grpcClient.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{
+	wakeReq := &pb.WakeSandboxRequest{
 		SandboxId:     sandboxID,
 		CheckpointKey: checkpoint.CheckpointKey,
 		Timeout:       int32(req.Timeout),
-	})
+	}
+	// Pass secret group ID so worker can restore proxy session via secrets gRPC
+	if s.store != nil {
+		if sgID, err := s.store.GetSandboxSecretGroupID(c.Request().Context(), sandboxID); err == nil && sgID != nil {
+			wakeReq.SecretGroupId = sgID.String()
+		}
+	}
+	grpcResp, err := grpcClient.WakeSandbox(grpcCtx, wakeReq)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "wake failed: " + err.Error(),

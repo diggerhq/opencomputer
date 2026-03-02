@@ -197,11 +197,21 @@ func (p *ControlPlaneProxy) wakeHibernatedSandbox(ctx context.Context, sandboxID
 	grpcCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	_, err = chosen.Client.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{
+	wakeReq := &pb.WakeSandboxRequest{
 		SandboxId:     sandboxID,
 		CheckpointKey: checkpoint.CheckpointKey,
 		Timeout:       300,
-	})
+	}
+	// Pass secret session credentials so worker can restore proxy session.
+	// Prefer session-based flow (no plaintext over gRPC); fall back to deprecated secret group ID.
+	if sessID, sessToken, err := p.store.GetSandboxSecretSession(ctx, sandboxID); err == nil && sessID != "" {
+		wakeReq.SecretSessionId = sessID
+		wakeReq.SecretSessionToken = sessToken
+	} else if sgID, err := p.store.GetSandboxSecretGroupID(ctx, sandboxID); err == nil && sgID != nil {
+		wakeReq.SecretGroupId = sgID.String()
+		wakeReq.OrgId = checkpoint.OrgID.String()
+	}
+	_, err = chosen.Client.WakeSandbox(grpcCtx, wakeReq)
 	if err != nil {
 		return nil, "", fmt.Errorf("gRPC WakeSandbox failed: %w", err)
 	}

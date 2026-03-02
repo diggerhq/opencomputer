@@ -22,6 +22,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/sparse"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/template"
+	"github.com/opensandbox/opensandbox/pkg/secretsclient"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
@@ -37,11 +38,12 @@ type GRPCServer struct {
 	builder         *template.Builder
 	store           *db.Store                   // nil if no DB configured
 	secretsProxy    *secretsproxy.SecretsProxy  // nil if secrets proxy not configured
+	secretsClient   *secretsclient.Client       // nil if secrets gRPC service not configured
 	server          *grpc.Server
 }
 
 // NewGRPCServer creates a new gRPC server wrapping the sandbox manager.
-func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore, router *sandbox.SandboxRouter, builder *template.Builder, store *db.Store, sp *secretsproxy.SecretsProxy) *GRPCServer {
+func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore, router *sandbox.SandboxRouter, builder *template.Builder, store *db.Store, sp *secretsproxy.SecretsProxy, sc *secretsclient.Client) *GRPCServer {
 	s := &GRPCServer{
 		manager:         mgr,
 		router:          router,
@@ -51,6 +53,7 @@ func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *
 		builder:         builder,
 		store:           store,
 		secretsProxy:    sp,
+		secretsClient:   sc,
 		server: grpc.NewServer(
 			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 				MinTime:             5 * time.Second,
@@ -153,6 +156,16 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		}
 	}
 
+	// Set up secrets proxy session if session credentials were provided.
+	// The control plane sent sealed tokens as env vars; now we resolve the
+	// {sealedToken → realValue} mapping from the secrets server.
+	if s.secretsProxy != nil && s.secretsClient != nil && sb.GuestIP != "" &&
+		req.SecretSessionId != "" && req.SecretSessionToken != "" {
+		if err := s.setupProxyFromSession(ctx, sb, req.SecretSessionId, req.SecretSessionToken, req.AllowedHosts); err != nil {
+			log.Printf("grpc: create %s: setup proxy session (non-fatal): %v", sb.ID, err)
+		}
+	}
+
 	return &pb.CreateSandboxResponse{
 		SandboxId: sb.ID,
 		Status:    string(sb.Status),
@@ -160,8 +173,19 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 }
 
 func (s *GRPCServer) DestroySandbox(ctx context.Context, req *pb.DestroySandboxRequest) (*pb.DestroySandboxResponse, error) {
+	// Capture guest IP before kill so we can clean up the secrets proxy session.
+	var guestIP string
+	if sb, err := s.manager.Get(ctx, req.SandboxId); err == nil {
+		guestIP = sb.GuestIP
+	}
+
 	if err := s.manager.Kill(ctx, req.SandboxId); err != nil {
 		return nil, fmt.Errorf("failed to destroy sandbox: %w", err)
+	}
+
+	// Clean up secrets proxy session (prevents unbounded memory growth).
+	if s.secretsProxy != nil && guestIP != "" {
+		s.secretsProxy.DeleteSession(guestIP)
 	}
 
 	// Unregister from sandbox router
@@ -351,9 +375,20 @@ func (s *GRPCServer) HibernateSandbox(ctx context.Context, req *pb.HibernateSand
 		return nil, fmt.Errorf("hibernation not configured on this worker")
 	}
 
+	// Capture guest IP before hibernate so we can clean up the proxy session.
+	var guestIP string
+	if sb, err := s.manager.Get(ctx, req.SandboxId); err == nil {
+		guestIP = sb.GuestIP
+	}
+
 	result, err := s.manager.Hibernate(ctx, req.SandboxId, s.checkpointStore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hibernate sandbox: %w", err)
+	}
+
+	// Clean up secrets proxy session (restored on wake via restoreProxySession).
+	if s.secretsProxy != nil && guestIP != "" {
+		s.secretsProxy.DeleteSession(guestIP)
 	}
 
 	// Mark hibernated in sandbox router
@@ -402,12 +437,20 @@ func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest
 		}
 	}
 
-	// Restore secrets proxy session if this sandbox had a secret group attached.
+	// Restore secrets proxy session if this sandbox had secrets attached.
 	// The VM snapshot preserves sealed tokens in /etc/environment, but the worker's
-	// in-memory {sealedToken→realValue} map is lost on hibernate. Re-resolve from DB.
-	if s.secretsProxy != nil && s.store != nil && sb.GuestIP != "" {
-		if err := s.restoreProxySession(ctx, sb); err != nil {
-			log.Printf("grpc: wake %s: restore proxy session (non-fatal): %v", req.SandboxId, err)
+	// in-memory {sealedToken→realValue} map is lost on hibernate. Re-resolve via gRPC.
+	if s.secretsProxy != nil && sb.GuestIP != "" {
+		if req.SecretSessionId != "" && req.SecretSessionToken != "" {
+			// New session-based flow: resolve session to get token→value mapping
+			if err := s.setupProxyFromSession(ctx, sb, req.SecretSessionId, req.SecretSessionToken, nil); err != nil {
+				log.Printf("grpc: wake %s: setup proxy from session (non-fatal): %v", req.SandboxId, err)
+			}
+		} else if req.SecretGroupId != "" && req.OrgId != "" {
+			// Deprecated fallback: resolve secret group directly (plaintext travels over gRPC)
+			if err := s.restoreProxySession(ctx, sb, req.OrgId, req.SecretGroupId); err != nil {
+				log.Printf("grpc: wake %s: restore proxy session (non-fatal): %v", req.SandboxId, err)
+			}
 		}
 	}
 
@@ -417,23 +460,65 @@ func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest
 	}, nil
 }
 
-// restoreProxySession re-creates the secrets proxy session after a sandbox wakes from
-// hibernation. It re-resolves the secret group from the DB, reads the sealed tokens
-// from /etc/environment inside the VM, and rebuilds the {sealedToken→realValue} map.
-func (s *GRPCServer) restoreProxySession(ctx context.Context, sb *types.Sandbox) error {
-	groupID, err := s.store.GetSandboxSecretGroupID(ctx, sb.ID)
-	if err != nil || groupID == nil {
-		return nil // No secret group attached — nothing to restore
+// setupProxyFromSession resolves a secret session via the secrets gRPC service and
+// creates a local proxy session with the {sealedToken → realValue} mapping.
+// Called during CreateSandbox when the control plane provides session credentials.
+func (s *GRPCServer) setupProxyFromSession(ctx context.Context, sb *types.Sandbox, sessionID, sessionToken string, allowedHosts []string) error {
+	if s.secretsClient == nil {
+		return fmt.Errorf("secrets gRPC client not configured")
 	}
 
-	envVars, allowedHosts, err := s.store.ResolveSecretGroup(ctx, *groupID)
+	result, err := s.secretsClient.ResolveSecretSession(ctx, sessionID, sessionToken)
 	if err != nil {
-		return fmt.Errorf("resolve secret group: %w", err)
+		return fmt.Errorf("resolve secret session: %w", err)
 	}
-	if len(envVars) == 0 {
+	if len(result.TokenValues) == 0 {
 		return nil
 	}
 
+	// result.TokenValues is {sealedToken → realValue} — exactly what the proxy needs.
+	// Use AllowedHosts from the session if the request didn't provide them.
+	hosts := allowedHosts
+	if len(hosts) == 0 {
+		hosts = result.AllowedHosts
+	}
+
+	s.secretsProxy.RestoreSession(sb.GuestIP, sb.ID, result.TokenValues, hosts)
+	log.Printf("grpc: create %s: proxy session established (tokens=%d)", sb.ID, len(result.TokenValues))
+	return nil
+}
+
+// restoreProxySession re-creates the secrets proxy session after a sandbox wakes from
+// hibernation. Uses the secrets gRPC service to resolve the secret group, reads sealed
+// tokens from /etc/environment inside the VM, and rebuilds the {sealedToken→realValue} map.
+func (s *GRPCServer) restoreProxySession(ctx context.Context, sb *types.Sandbox, orgIDStr, secretGroupID string) error {
+	if s.secretsClient == nil {
+		return fmt.Errorf("secrets gRPC client not configured")
+	}
+
+	orgID, err := uuid.Parse(orgIDStr)
+	if err != nil {
+		return fmt.Errorf("invalid org ID: %w", err)
+	}
+	gid, err := uuid.Parse(secretGroupID)
+	if err != nil {
+		return fmt.Errorf("invalid secret group ID: %w", err)
+	}
+
+	result, err := s.secretsClient.ResolveSecretGroup(ctx, orgID, gid)
+	if err != nil {
+		return fmt.Errorf("resolve secret group via gRPC: %w", err)
+	}
+	if len(result.EnvVars) == 0 {
+		return nil
+	}
+
+	return s.rebuildProxyTokenMap(ctx, sb, result.EnvVars, result.AllowedHosts)
+}
+
+// rebuildProxyTokenMap reads /etc/environment from the VM, cross-references sealed
+// tokens with real values, and restores the proxy session.
+func (s *GRPCServer) rebuildProxyTokenMap(ctx context.Context, sb *types.Sandbox, envVars map[string]string, allowedHosts []string) error {
 	// Read /etc/environment from the woken VM to find existing sealed tokens
 	envContent, err := s.manager.ReadFile(ctx, sb.ID, "/etc/environment")
 	if err != nil {
@@ -442,7 +527,7 @@ func (s *GRPCServer) restoreProxySession(ctx context.Context, sb *types.Sandbox)
 
 	vmEnvs := parseEnvFile(envContent)
 
-	// Build {sealedToken→realValue} by cross-referencing VM env vars with DB values
+	// Build {sealedToken→realValue} by cross-referencing VM env vars with resolved values
 	tokenMap := make(map[string]string, len(envVars))
 	for envVar, realValue := range envVars {
 		if sealedToken, ok := vmEnvs[envVar]; ok && strings.HasPrefix(sealedToken, "osb_sealed_") {

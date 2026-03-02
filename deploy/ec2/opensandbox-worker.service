@@ -18,6 +18,7 @@ Environment=OPENSANDBOX_SANDBOX_DOMAIN=workers.opensandbox.ai
 Environment=OPENSANDBOX_FIRECRACKER_BIN=/usr/local/bin/firecracker
 Environment=OPENSANDBOX_KERNEL_PATH=/data/firecracker/vmlinux-arm64
 Environment=OPENSANDBOX_IMAGES_DIR=/data/firecracker/images
+Environment=OPENSANDBOX_SECRETS_GRPC_ADDR=3.135.246.117:9095
 Environment=OPENSANDBOX_SECRETS_ARN=arn:aws:secretsmanager:us-east-2:739940681129:secret:opensandbox/worker-vtN2Ez
 # Dynamic identity (worker ID, public IP) written at boot by opensandbox-identity.service
 EnvironmentFile=/etc/opensandbox/worker-identity.env

@@ -18,6 +18,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
+	"github.com/opensandbox/opensandbox/pkg/secretsclient"
 )
 
 var errSandboxNotAvailable = map[string]string{
@@ -44,6 +45,7 @@ type Server struct {
 	ecrConfig       *ecr.Config                       // nil if ECR not configured
 	gitDomain       string                            // git server domain for clone URLs (e.g., "git.opensandbox.ai")
 	cfClient        *cloudflare.Client                // nil if Cloudflare not configured
+	secretsClient   *secretsclient.Client             // nil if secrets service not configured
 }
 
 // ServerOpts holds optional dependencies for the API server.
@@ -65,6 +67,7 @@ type ServerOpts struct {
 	ECRConfig       *ecr.Config                        // nil if ECR not configured
 	GitDomain       string                             // git server domain for clone URLs
 	CFClient        *cloudflare.Client                 // nil if Cloudflare not configured
+	SecretsClient   *secretsclient.Client              // nil if secrets service not configured
 }
 
 // NewServer creates a new API server with all routes configured.
@@ -94,6 +97,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.ecrConfig = opts.ECRConfig
 		s.gitDomain = opts.GitDomain
 		s.cfClient = opts.CFClient
+		s.secretsClient = opts.SecretsClient
 	}
 
 	// Global middleware

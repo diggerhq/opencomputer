@@ -21,7 +21,9 @@ require (
 	github.com/nats-io/nats.go v1.48.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/redis/go-redis/v9 v9.18.0
+	github.com/spf13/cobra v1.10.2
 	github.com/workos/workos-go/v4 v4.46.1
+	golang.org/x/sys v0.41.0
 	google.golang.org/grpc v1.69.4
 	google.golang.org/protobuf v1.36.3
 )
@@ -60,7 +62,6 @@ require (
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
-	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
@@ -68,7 +69,6 @@ require (
 	golang.org/x/crypto v0.37.0 // indirect
 	golang.org/x/net v0.33.0 // indirect
 	golang.org/x/sync v0.13.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.24.0 // indirect
 	golang.org/x/time v0.8.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241015192408-796eee8c2d53 // indirect

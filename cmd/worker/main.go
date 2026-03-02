@@ -22,6 +22,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/template"
 	"github.com/opensandbox/opensandbox/internal/worker"
+	"github.com/opensandbox/opensandbox/pkg/secretsclient"
 	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
@@ -259,8 +260,29 @@ func main() {
 		log.Printf("opensandbox-worker: template builder configured (images=%s, agent=%s)", imagesDir, agentPath)
 	}
 
+	// Initialize secrets gRPC client (if configured)
+	var secrClient *secretsclient.Client
+	if cfg.SecretsGRPCAddr != "" {
+		scOpts := &secretsclient.ClientOpts{
+			APIKey:   cfg.SecretsAPIKey,
+			Insecure: cfg.SecretsTLSCA == "",
+		}
+		if cfg.SecretsTLSCA != "" {
+			scOpts.TLSCAFile = cfg.SecretsTLSCA
+			scOpts.Insecure = false
+		}
+		var err error
+		secrClient, err = secretsclient.NewClient(cfg.SecretsGRPCAddr, scOpts)
+		if err != nil {
+			log.Printf("opensandbox-worker: warning: failed to connect to secrets service at %s: %v", cfg.SecretsGRPCAddr, err)
+		} else {
+			defer secrClient.Close()
+			log.Printf("opensandbox-worker: secrets gRPC client configured (%s)", cfg.SecretsGRPCAddr)
+		}
+	}
+
 	// Start gRPC server for control plane communication
-	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr, checkpointStore, sbRouter, builder, store, secrProxy)
+	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, sandboxDBMgr, checkpointStore, sbRouter, builder, store, secrProxy, secrClient)
 	grpcAddr := ":9090"
 	log.Printf("opensandbox-worker: starting gRPC server on %s", grpcAddr)
 	go func() {

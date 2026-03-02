@@ -5,6 +5,7 @@ BINARY_SERVER = opensandbox-server
 BINARY_WORKER = opensandbox-worker
 BINARY_AGENT = osb-agent
 BINARY_GITSERVER = opensandbox-gitserver
+BINARY_SECRETS = opensandbox-secrets
 BINARY_CLI = osb
 BUILD_DIR = bin
 
@@ -42,6 +43,14 @@ build-gitserver:
 ## build-gitserver-amd64: Cross-compile git server for Linux AMD64
 build-gitserver-amd64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY_GITSERVER)-amd64 ./cmd/gitserver
+
+## build-secrets: Build the standalone secrets service
+build-secrets:
+	CGO_ENABLED=0 go build -o $(BUILD_DIR)/$(BINARY_SECRETS) ./cmd/secrets-server
+
+## build-secrets-amd64: Cross-compile secrets service for Linux AMD64
+build-secrets-amd64:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY_SECRETS)-amd64 ./cmd/secrets-server
 
 ## build-cli: Build the OpenSandbox CLI (osb)
 build-cli:
@@ -246,6 +255,9 @@ proto:
 	protoc --go_out=. --go_opt=paths=source_relative \
 		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
 		proto/agent/agent.proto
+	protoc --go_out=. --go_opt=paths=source_relative \
+		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+		proto/secrets/secrets.proto
 
 ## --- Firecracker ---
 
@@ -268,6 +280,10 @@ deploy-server:
 ## deploy-gitserver: Deploy git server to EC2 control plane instance
 deploy-gitserver:
 	./deploy/ec2/deploy-gitserver.sh
+
+## deploy-secrets: Deploy secrets service to EC2 control plane instance
+deploy-secrets:
+	./deploy/ec2/deploy-secrets.sh
 
 ## --- Docker ---
 

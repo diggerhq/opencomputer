@@ -98,6 +98,20 @@ type Config struct {
 	GitWebhookURL string // Optional webhook URL to POST after each push
 	GitDomain     string // Public domain for clone URLs (default: localhost:3000)
 
+	// Secrets gRPC service address (internal only)
+	SecretsGRPCAddr string // e.g. "localhost:9095"
+	SecretsGRPCPort int    // Port for secrets-server binary (default 9095)
+
+	// Secrets gRPC authentication
+	SecretsAPIKey  string // Shared API key for authenticating to the secrets service
+	SecretsTLSCert string // TLS certificate file for secrets-server
+	SecretsTLSKey  string // TLS key file for secrets-server
+	SecretsTLSCA   string // CA cert for verifying secrets-server TLS (clients)
+
+	// Encryption key ring for secrets at rest (versioned AES-256-GCM)
+	// Format: "v1:<64hex>,v2:<64hex>" — last key is active for new encryptions
+	EncryptionKeys string
+
 	// AWS Secrets Manager — if set, secrets are fetched at startup using IAM credentials.
 	// The secret should be a JSON object with keys matching env var names (e.g. OPENSANDBOX_JWT_SECRET).
 	// Env vars take precedence over secret values (for local overrides).
@@ -178,6 +192,16 @@ func Load() (*Config, error) {
 		GitPort:       envOrDefaultInt("OPENSANDBOX_GIT_PORT", 3000),
 		GitWebhookURL: os.Getenv("OPENSANDBOX_GIT_WEBHOOK_URL"),
 		GitDomain:     envOrDefault("OPENSANDBOX_GIT_DOMAIN", "localhost:3000"),
+
+		SecretsGRPCAddr: os.Getenv("OPENSANDBOX_SECRETS_GRPC_ADDR"),
+		SecretsGRPCPort: envOrDefaultInt("OPENSANDBOX_SECRETS_GRPC_PORT", 9095),
+
+		SecretsAPIKey:  os.Getenv("OPENSANDBOX_SECRETS_API_KEY"),
+		SecretsTLSCert: os.Getenv("OPENSANDBOX_SECRETS_TLS_CERT"),
+		SecretsTLSKey:  os.Getenv("OPENSANDBOX_SECRETS_TLS_KEY"),
+		SecretsTLSCA:   os.Getenv("OPENSANDBOX_SECRETS_TLS_CA"),
+
+		EncryptionKeys: os.Getenv("OPENSANDBOX_ENCRYPTION_KEYS"),
 
 		SecretsARN: os.Getenv("OPENSANDBOX_SECRETS_ARN"),
 	}

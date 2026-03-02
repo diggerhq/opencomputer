@@ -81,9 +81,12 @@ type CreateSandboxRequest struct {
 	TemplateRootfsKey    string `protobuf:"bytes,9,opt,name=template_rootfs_key,json=templateRootfsKey,proto3" json:"template_rootfs_key,omitempty"`
 	TemplateWorkspaceKey string `protobuf:"bytes,10,opt,name=template_workspace_key,json=templateWorkspaceKey,proto3" json:"template_workspace_key,omitempty"`
 	// Secrets proxy egress allowlist: if non-empty, only these hosts can be reached via HTTPS.
-	AllowedHosts  []string `protobuf:"bytes,11,rep,name=allowed_hosts,json=allowedHosts,proto3" json:"allowed_hosts,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AllowedHosts []string `protobuf:"bytes,11,rep,name=allowed_hosts,json=allowedHosts,proto3" json:"allowed_hosts,omitempty"`
+	// Session-based secrets: worker calls ResolveSecretSession to get {sealed→real} mapping.
+	SecretSessionId    string `protobuf:"bytes,12,opt,name=secret_session_id,json=secretSessionId,proto3" json:"secret_session_id,omitempty"`
+	SecretSessionToken string `protobuf:"bytes,13,opt,name=secret_session_token,json=secretSessionToken,proto3" json:"secret_session_token,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *CreateSandboxRequest) Reset() {
@@ -191,6 +194,20 @@ func (x *CreateSandboxRequest) GetAllowedHosts() []string {
 		return x.AllowedHosts
 	}
 	return nil
+}
+
+func (x *CreateSandboxRequest) GetSecretSessionId() string {
+	if x != nil {
+		return x.SecretSessionId
+	}
+	return ""
+}
+
+func (x *CreateSandboxRequest) GetSecretSessionToken() string {
+	if x != nil {
+		return x.SecretSessionToken
+	}
+	return ""
 }
 
 type CreateSandboxResponse struct {
@@ -1492,8 +1509,13 @@ type WakeSandboxRequest struct {
 	SandboxId     string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
 	CheckpointKey string                 `protobuf:"bytes,2,opt,name=checkpoint_key,json=checkpointKey,proto3" json:"checkpoint_key,omitempty"`
 	Timeout       int32                  `protobuf:"varint,3,opt,name=timeout,proto3" json:"timeout,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SecretGroupId string                 `protobuf:"bytes,4,opt,name=secret_group_id,json=secretGroupId,proto3" json:"secret_group_id,omitempty"` // deprecated: use secret_session_id instead
+	OrgId         string                 `protobuf:"bytes,5,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`                           // deprecated: use secret_session_id instead
+	// Session-based secrets: worker calls ResolveSecretSession to get {sealed→real} mapping.
+	SecretSessionId    string `protobuf:"bytes,6,opt,name=secret_session_id,json=secretSessionId,proto3" json:"secret_session_id,omitempty"`
+	SecretSessionToken string `protobuf:"bytes,7,opt,name=secret_session_token,json=secretSessionToken,proto3" json:"secret_session_token,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *WakeSandboxRequest) Reset() {
@@ -1545,6 +1567,34 @@ func (x *WakeSandboxRequest) GetTimeout() int32 {
 		return x.Timeout
 	}
 	return 0
+}
+
+func (x *WakeSandboxRequest) GetSecretGroupId() string {
+	if x != nil {
+		return x.SecretGroupId
+	}
+	return ""
+}
+
+func (x *WakeSandboxRequest) GetOrgId() string {
+	if x != nil {
+		return x.OrgId
+	}
+	return ""
+}
+
+func (x *WakeSandboxRequest) GetSecretSessionId() string {
+	if x != nil {
+		return x.SecretSessionId
+	}
+	return ""
+}
+
+func (x *WakeSandboxRequest) GetSecretSessionToken() string {
+	if x != nil {
+		return x.SecretSessionToken
+	}
+	return ""
 }
 
 type WakeSandboxResponse struct {
@@ -2043,7 +2093,7 @@ var File_proto_worker_worker_proto protoreflect.FileDescriptor
 
 const file_proto_worker_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x19proto/worker/worker.proto\x12\x06worker\"\xe0\x03\n" +
+	"\x19proto/worker/worker.proto\x12\x06worker\"\xbe\x04\n" +
 	"\x14CreateSandboxRequest\x12\x1a\n" +
 	"\btemplate\x18\x01 \x01(\tR\btemplate\x12\x18\n" +
 	"\atimeout\x18\x02 \x01(\x05R\atimeout\x12:\n" +
@@ -2056,7 +2106,9 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\x13template_rootfs_key\x18\t \x01(\tR\x11templateRootfsKey\x124\n" +
 	"\x16template_workspace_key\x18\n" +
 	" \x01(\tR\x14templateWorkspaceKey\x12#\n" +
-	"\rallowed_hosts\x18\v \x03(\tR\fallowedHosts\x1a7\n" +
+	"\rallowed_hosts\x18\v \x03(\tR\fallowedHosts\x12*\n" +
+	"\x11secret_session_id\x18\f \x01(\tR\x0fsecretSessionId\x120\n" +
+	"\x14secret_session_token\x18\r \x01(\tR\x12secretSessionToken\x1a7\n" +
 	"\tEnvsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"N\n" +
@@ -2158,12 +2210,16 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12%\n" +
 	"\x0echeckpoint_key\x18\x02 \x01(\tR\rcheckpointKey\x12\x1d\n" +
 	"\n" +
-	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\"t\n" +
+	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\"\x91\x02\n" +
 	"\x12WakeSandboxRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12%\n" +
 	"\x0echeckpoint_key\x18\x02 \x01(\tR\rcheckpointKey\x12\x18\n" +
-	"\atimeout\x18\x03 \x01(\x05R\atimeout\"L\n" +
+	"\atimeout\x18\x03 \x01(\x05R\atimeout\x12&\n" +
+	"\x0fsecret_group_id\x18\x04 \x01(\tR\rsecretGroupId\x12\x15\n" +
+	"\x06org_id\x18\x05 \x01(\tR\x05orgId\x12*\n" +
+	"\x11secret_session_id\x18\x06 \x01(\tR\x0fsecretSessionId\x120\n" +
+	"\x14secret_session_token\x18\a \x01(\tR\x12secretSessionToken\"L\n" +
 	"\x13WakeSandboxResponse\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x16\n" +

@@ -10,7 +10,11 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
+
+// DefaultSessionTTL is the default lifetime for a proxy session.
+const DefaultSessionTTL = 24 * time.Hour
 
 // SecretsProxy is an HTTP CONNECT proxy that intercepts HTTPS traffic from
 // sandboxes and substitutes sealed opaque tokens with real secret values.
@@ -26,6 +30,12 @@ type ProxySession struct {
 	SandboxID    string
 	SealedTokens map[string]string // "osb_sealed_xxx" → real value
 	AllowedHosts []string          // nil = all allowed; supports "*." prefix wildcards
+	ExpiresAt    time.Time         // session expires after this time
+}
+
+// Expired returns true if the session has passed its TTL.
+func (s *ProxySession) Expired() bool {
+	return !s.ExpiresAt.IsZero() && time.Now().After(s.ExpiresAt)
 }
 
 // NewSecretsProxy starts an HTTP proxy listener on addr (e.g. "0.0.0.0:3128").
@@ -57,9 +67,10 @@ func (sp *SecretsProxy) CreateSession(sandboxIP, sandboxID string, envVars map[s
 		SandboxID:    sandboxID,
 		SealedTokens: tokenMap,
 		AllowedHosts: allowedHosts,
+		ExpiresAt:    time.Now().Add(DefaultSessionTTL),
 	}
 	sp.sessions.Store(sandboxIP, session)
-	log.Printf("secrets-proxy: created session for sandbox %s (ip=%s, vars=%d)", sandboxID, sandboxIP, len(envVars))
+	log.Printf("secrets-proxy: created session for sandbox %s (ip=%s, vars=%d, ttl=%s)", sandboxID, sandboxIP, len(envVars), DefaultSessionTTL)
 	return sealed
 }
 
@@ -76,6 +87,7 @@ func (sp *SecretsProxy) RestoreSession(sandboxIP, sandboxID string, tokenMap map
 		SandboxID:    sandboxID,
 		SealedTokens: tokenMap,
 		AllowedHosts: allowedHosts,
+		ExpiresAt:    time.Now().Add(DefaultSessionTTL),
 	}
 	sp.sessions.Store(sandboxIP, session)
 	log.Printf("secrets-proxy: restored session for sandbox %s (ip=%s, vars=%d)", sandboxID, sandboxIP, len(tokenMap))
@@ -131,6 +143,7 @@ func (sp *SecretsProxy) Close() error {
 
 func (sp *SecretsProxy) handleConn(conn net.Conn) {
 	defer conn.Close()
+	start := time.Now()
 
 	clientIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
 
@@ -138,6 +151,25 @@ func (sp *SecretsProxy) handleConn(conn net.Conn) {
 	if v, ok := sp.sessions.Load(clientIP); ok {
 		session = v.(*ProxySession)
 	}
+
+	// Reject unauthenticated connections — no session means no sandbox owns this IP
+	if session == nil {
+		conn.Write([]byte("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n"))
+		log.Printf("secrets-proxy: audit src=%s action=rejected reason=no_session duration=%s",
+			clientIP, time.Since(start))
+		return
+	}
+
+	// Reject expired sessions
+	if session.Expired() {
+		conn.Write([]byte("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n"))
+		log.Printf("secrets-proxy: audit sandbox=%s src=%s action=rejected reason=session_expired duration=%s",
+			session.SandboxID, clientIP, time.Since(start))
+		sp.sessions.Delete(clientIP)
+		return
+	}
+
+	sandboxID := session.SandboxID
 
 	// Read the HTTP CONNECT request line
 	buf := make([]byte, 4096)
@@ -160,13 +192,20 @@ func (sp *SecretsProxy) handleConn(conn net.Conn) {
 	}
 
 	// Egress allowlist check
-	if session != nil && len(session.AllowedHosts) > 0 {
+	if len(session.AllowedHosts) > 0 {
 		if !hostAllowed(host, session.AllowedHosts) {
 			conn.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"))
-			log.Printf("secrets-proxy: sandbox %s blocked egress to %s (not in allowlist)", session.SandboxID, host)
+			log.Printf("secrets-proxy: audit sandbox=%s src=%s host=%s action=blocked reason=not_in_allowlist duration=%s",
+				sandboxID, clientIP, host, time.Since(start))
 			return
 		}
 	}
+
+	tokenCount := len(session.SealedTokens)
+	shouldSubstitute := tokenCount > 0 && (len(session.AllowedHosts) == 0 || hostAllowed(host, session.AllowedHosts))
+
+	log.Printf("secrets-proxy: audit sandbox=%s src=%s host=%s action=connect tokens=%d substitute=%t",
+		sandboxID, clientIP, host, tokenCount, shouldSubstitute)
 
 	// Acknowledge the CONNECT tunnel
 	conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
@@ -195,8 +234,8 @@ func (sp *SecretsProxy) handleConn(conn net.Conn) {
 	}
 	defer upstream.Close()
 
-	if session == nil || len(session.SealedTokens) == 0 {
-		// No tokens — plain bidirectional pipe
+	if !shouldSubstitute {
+		// No tokens to substitute — plain bidirectional pipe
 		go io.Copy(upstream, tlsConn)
 		io.Copy(tlsConn, upstream)
 		return

@@ -1,4 +1,13 @@
-// Package crypto provides AES-256-GCM encryption for secrets at rest.
+// Package crypto provides AES-256-GCM encryption with versioned key rotation.
+//
+// Encrypted format: enc:<version>:<nonce-base64>:<ciphertext-base64>
+//
+// Key ring format (env var OPENSANDBOX_ENCRYPTION_KEYS):
+//
+//	v1:aabbccdd...(64 hex chars),v2:eeff0011...(64 hex chars)
+//
+// The last key in the list is the "active" key used for new encryptions.
+// All keys are available for decryption, enabling seamless key rotation.
 package crypto
 
 import (
@@ -9,125 +18,148 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
-	"os"
 	"strings"
 )
 
-const (
-	encPrefix   = "enc:"
-	plainPrefix = "plain:"
-)
+// KeyRing holds multiple versioned AES-256-GCM keys for encryption and decryption.
+// The active version is used for all new encryptions; all versions decrypt.
+type KeyRing struct {
+	keys          map[string]cipher.AEAD
+	activeVersion string
+}
 
-// keyFromEnv loads the 32-byte encryption key from OPENSANDBOX_SECRET_ENCRYPTION_KEY.
-// Accepts hex (64 chars) or base64 (44 chars) encoded values.
-// Returns nil if not set (dev/test mode).
-func keyFromEnv() []byte {
-	raw := os.Getenv("OPENSANDBOX_SECRET_ENCRYPTION_KEY")
+// DecryptResult holds the decrypted plaintext and whether re-encryption is needed.
+type DecryptResult struct {
+	Plaintext  string
+	NeedsRekey bool   // true if decrypted with a non-active key version
+	Version    string // key version that was used for decryption
+}
+
+// NewKeyRing parses a versioned key string and builds a KeyRing.
+// Format: "v1:<64hex>,v2:<64hex>,..." — last key becomes the active version.
+func NewKeyRing(raw string) (*KeyRing, error) {
 	if raw == "" {
-		return nil
+		return nil, fmt.Errorf("encryption keys cannot be empty")
 	}
-	// Try hex first (64 hex chars = 32 bytes)
-	if len(raw) == 64 {
-		b, err := hex.DecodeString(raw)
-		if err == nil && len(b) == 32 {
-			return b
+
+	kr := &KeyRing{keys: make(map[string]cipher.AEAD)}
+
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
 		}
+
+		idx := strings.Index(part, ":")
+		if idx < 0 {
+			return nil, fmt.Errorf("invalid key format (expected version:hex): %q", part)
+		}
+
+		version := part[:idx]
+		hexKey := part[idx+1:]
+
+		if version == "" {
+			return nil, fmt.Errorf("empty version in key segment: %q", part)
+		}
+		if _, exists := kr.keys[version]; exists {
+			return nil, fmt.Errorf("duplicate key version: %q", version)
+		}
+
+		keyBytes, err := hex.DecodeString(hexKey)
+		if err != nil {
+			return nil, fmt.Errorf("invalid hex for version %q: %w", version, err)
+		}
+		if len(keyBytes) != 32 {
+			return nil, fmt.Errorf("key version %q must be 32 bytes (64 hex chars), got %d bytes", version, len(keyBytes))
+		}
+
+		block, err := aes.NewCipher(keyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("create cipher for version %q: %w", version, err)
+		}
+		gcm, err := cipher.NewGCM(block)
+		if err != nil {
+			return nil, fmt.Errorf("create GCM for version %q: %w", version, err)
+		}
+
+		kr.keys[version] = gcm
+		kr.activeVersion = version
 	}
-	// Try base64
-	b, err := base64.StdEncoding.DecodeString(raw)
-	if err == nil && len(b) == 32 {
-		return b
+
+	if len(kr.keys) == 0 {
+		return nil, fmt.Errorf("no valid keys found")
 	}
-	b, err = base64.RawStdEncoding.DecodeString(raw)
-	if err == nil && len(b) == 32 {
-		return b
-	}
-	log.Printf("crypto: warning: OPENSANDBOX_SECRET_ENCRYPTION_KEY is set but could not be decoded as 32-byte hex or base64 — falling back to plaintext storage")
-	return nil
+	return kr, nil
 }
 
-// Encrypt encrypts plaintext using AES-256-GCM with the configured key.
-// Returns "enc:<base64(nonce+ciphertext)>" on success.
-// If no key is configured, returns "plain:<base64(plaintext)>" with a startup warning.
-func Encrypt(plaintext string) (string, error) {
-	key := keyFromEnv()
-	if key == nil {
-		log.Printf("crypto: WARNING — no encryption key configured; storing secret as base64 plaintext (set OPENSANDBOX_SECRET_ENCRYPTION_KEY for production)")
-		return plainPrefix + base64.StdEncoding.EncodeToString([]byte(plaintext)), nil
-	}
-	return EncryptWithKey(plaintext, key)
+// ActiveVersion returns the version string of the active encryption key.
+func (kr *KeyRing) ActiveVersion() string {
+	return kr.activeVersion
 }
 
-// EncryptWithKey encrypts plaintext with the given 32-byte key.
-func EncryptWithKey(plaintext string, key []byte) (string, error) {
-	if len(key) != 32 {
-		return "", fmt.Errorf("encryption key must be 32 bytes, got %d", len(key))
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", fmt.Errorf("create cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("create GCM: %w", err)
-	}
+// Encrypt encrypts plaintext using the active key version.
+// Returns format: enc:<version>:<nonce-base64>:<ciphertext-base64>
+func (kr *KeyRing) Encrypt(plaintext string) (string, error) {
+	gcm := kr.keys[kr.activeVersion]
+
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", fmt.Errorf("generate nonce: %w", err)
 	}
-	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return encPrefix + base64.StdEncoding.EncodeToString(ciphertext), nil
+
+	ciphertext := gcm.Seal(nil, nonce, []byte(plaintext), nil)
+
+	return fmt.Sprintf("enc:%s:%s:%s",
+		kr.activeVersion,
+		base64.StdEncoding.EncodeToString(nonce),
+		base64.StdEncoding.EncodeToString(ciphertext),
+	), nil
 }
 
-// Decrypt decrypts a value produced by Encrypt.
-// Handles both "enc:..." (AES-GCM) and "plain:..." (dev/test) formats.
-func Decrypt(stored string) (string, error) {
-	if strings.HasPrefix(stored, plainPrefix) {
-		b, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(stored, plainPrefix))
-		if err != nil {
-			return "", fmt.Errorf("decode plaintext value: %w", err)
-		}
-		return string(b), nil
+// Decrypt decrypts a stored value in format enc:<version>:<nonce>:<ciphertext>.
+// Returns DecryptResult with NeedsRekey=true if encrypted with a non-active key.
+func (kr *KeyRing) Decrypt(stored string) (*DecryptResult, error) {
+	if !strings.HasPrefix(stored, "enc:") {
+		return nil, fmt.Errorf("unknown secret format (expected enc: prefix, got %q)", stored[:min(len(stored), 10)])
 	}
-	if !strings.HasPrefix(stored, encPrefix) {
-		return "", fmt.Errorf("unknown secret format (expected enc: or plain: prefix)")
-	}
-	key := keyFromEnv()
-	if key == nil {
-		return "", fmt.Errorf("OPENSANDBOX_SECRET_ENCRYPTION_KEY not configured — cannot decrypt enc: values")
-	}
-	return DecryptWithKey(stored, key)
-}
 
-// DecryptWithKey decrypts an "enc:..." value with the given key.
-func DecryptWithKey(stored string, key []byte) (string, error) {
-	if len(key) != 32 {
-		return "", fmt.Errorf("encryption key must be 32 bytes, got %d", len(key))
+	parts := strings.SplitN(stored[4:], ":", 3)
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid encrypted format: expected enc:<version>:<nonce>:<ciphertext>")
 	}
-	if !strings.HasPrefix(stored, encPrefix) {
-		return "", fmt.Errorf("expected enc: prefix")
+
+	version, nonceB64, ctB64 := parts[0], parts[1], parts[2]
+
+	gcm, ok := kr.keys[version]
+	if !ok {
+		return nil, fmt.Errorf("unknown key version %q — not in key ring", version)
 	}
-	data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(stored, encPrefix))
+
+	nonce, err := base64.StdEncoding.DecodeString(nonceB64)
 	if err != nil {
-		return "", fmt.Errorf("base64 decode: %w", err)
+		return nil, fmt.Errorf("decode nonce: %w", err)
 	}
-	block, err := aes.NewCipher(key)
+
+	ciphertext, err := base64.StdEncoding.DecodeString(ctB64)
 	if err != nil {
-		return "", fmt.Errorf("create cipher: %w", err)
+		return nil, fmt.Errorf("decode ciphertext: %w", err)
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("create GCM: %w", err)
-	}
-	nonceSize := gcm.NonceSize()
-	if len(data) < nonceSize {
-		return "", fmt.Errorf("ciphertext too short")
-	}
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return "", fmt.Errorf("decrypt: %w", err)
+		return nil, fmt.Errorf("decrypt (version %s): %w", version, err)
 	}
-	return string(plaintext), nil
+
+	return &DecryptResult{
+		Plaintext:  string(plaintext),
+		NeedsRekey: version != kr.activeVersion,
+		Version:    version,
+	}, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
