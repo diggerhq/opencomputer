@@ -789,12 +789,27 @@ func (m *Manager) ContainerName(id string) string {
 }
 
 // Hibernate snapshots a VM and uploads to S3.
+// On success the Firecracker process is killed, network is torn down, and the
+// VM is removed from the in-memory tracking map so it no longer counts toward
+// worker capacity. The sandbox can later be restored via Wake().
 func (m *Manager) Hibernate(ctx context.Context, sandboxID string, checkpointStore *storage.CheckpointStore) (*sandbox.HibernateResult, error) {
 	vm, err := m.getVM(sandboxID)
 	if err != nil {
 		return nil, err
 	}
-	return m.doHibernate(ctx, vm, checkpointStore)
+	result, err := m.doHibernate(ctx, vm, checkpointStore)
+	if err != nil {
+		return nil, err
+	}
+
+	// Remove the VM from tracking — the Firecracker process is dead and
+	// resources (TAP, memory, CPU) are released. This frees the capacity
+	// slot so the worker can accept new sandboxes.
+	m.mu.Lock()
+	delete(m.vms, sandboxID)
+	m.mu.Unlock()
+
+	return result, nil
 }
 
 // Wake restores a VM from a snapshot.

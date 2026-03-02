@@ -119,7 +119,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 		}
 		template := cfg.Template
 		if template == "" {
-			template = "base"
+			template = "default"
 		}
 		_, _ = s.store.CreateSandboxSession(ctx, sb.ID, orgID, nil, template, region, workerID, cfgJSON, metadataJSON)
 	}
@@ -208,7 +208,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	if s.store != nil && hasOrg {
 		template := cfg.Template
 		if template == "" {
-			template = "base"
+			template = "default"
 		}
 		cfgJSON, _ := json.Marshal(cfg)
 		metadataJSON, _ := json.Marshal(cfg.Metadata)

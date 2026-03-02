@@ -456,7 +456,7 @@ func (s *Server) dashboardListTemplates(c echo.Context) error {
 		})
 	}
 
-	// Strip internal fields from dashboard response
+	// Strip internal fields and filter: only show "default" as built-in template.
 	type safeTemplate struct {
 		ID                 uuid.UUID  `json:"id"`
 		OrgID              *uuid.UUID `json:"orgId,omitempty"`
@@ -468,14 +468,18 @@ func (s *Server) dashboardListTemplates(c echo.Context) error {
 		Status             string     `json:"status"`
 		CreatedAt          time.Time  `json:"createdAt"`
 	}
-	safe := make([]safeTemplate, len(templates))
-	for i, t := range templates {
-		safe[i] = safeTemplate{
+	safe := make([]safeTemplate, 0, len(templates))
+	for _, t := range templates {
+		// Only show "default" as the built-in template; hide base, node, python, etc.
+		if t.IsPublic && t.Name != "default" {
+			continue
+		}
+		safe = append(safe, safeTemplate{
 			ID: t.ID, OrgID: t.OrgID, Name: t.Name,
 			Tag: t.Tag, IsPublic: t.IsPublic,
 			TemplateType: t.TemplateType, CreatedBySandboxID: t.CreatedBySandboxID,
 			Status: t.Status, CreatedAt: t.CreatedAt,
-		}
+		})
 	}
 
 	return c.JSON(http.StatusOK, safe)

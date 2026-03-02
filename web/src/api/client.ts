@@ -54,17 +54,17 @@ export const deleteAPIKey = (keyId: string) =>
 
 export const getTemplates = () => apiFetch<Template[]>('/templates')
 
-export const buildTemplate = (name: string, dockerfile: string) =>
-  apiFetch<Template>('/templates', {
-    method: 'POST',
-    body: JSON.stringify({ name, dockerfile }),
-  })
-
 export const deleteTemplate = (id: string) =>
   apiFetch<void>(`/templates/${id}`, { method: 'DELETE' })
 
 export const getSessionDetail = (sandboxId: string) =>
   apiFetch<SessionDetail>(`/sessions/${sandboxId}`)
+
+export const saveAsTemplate = (sandboxId: string, name: string, tag?: string) =>
+  apiFetch<Template>(`/sessions/${sandboxId}/save-as-template`, {
+    method: 'POST',
+    body: JSON.stringify({ name, tag: tag || 'latest' }),
+  })
 
 export const getSessionStats = (sandboxId: string) =>
   apiFetch<SandboxStats>(`/sessions/${sandboxId}/stats`)
