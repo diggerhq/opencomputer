@@ -77,6 +77,24 @@ func (s *Server) runCommand(c echo.Context) error {
 }
 
 func (s *Server) runCommandRemote(c echo.Context, sandboxID string) error {
+	// Wait for sandbox if it's being created asynchronously
+	if v, ok := s.pendingCreates.Load(sandboxID); ok {
+		pending := v.(*pendingCreate)
+		select {
+		case <-pending.ready:
+			if pending.err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{
+					"error": "sandbox creation failed: " + pending.err.Error(),
+				})
+			}
+			s.pendingCreates.Delete(sandboxID)
+		case <-c.Request().Context().Done():
+			return c.JSON(http.StatusGatewayTimeout, map[string]string{
+				"error": "timed out waiting for sandbox creation",
+			})
+		}
+	}
+
 	if s.store == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{
 			"error": "database not configured",

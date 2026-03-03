@@ -767,6 +767,14 @@ func (s *Store) SetCheckpointReady(ctx context.Context, checkpointID uuid.UUID, 
 	return err
 }
 
+// SetCheckpointFailed marks a checkpoint as failed.
+func (s *Store) SetCheckpointFailed(ctx context.Context, checkpointID uuid.UUID, reason string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_checkpoints SET status = 'failed' WHERE id = $1`,
+		checkpointID)
+	return err
+}
+
 // GetCheckpoint returns a checkpoint by ID.
 func (s *Store) GetCheckpoint(ctx context.Context, checkpointID uuid.UUID) (*Checkpoint, error) {
 	cp := &Checkpoint{}

@@ -46,6 +46,9 @@ type SandboxConfig struct {
 	// When set, the sandbox boots from these drives instead of the standard base image.
 	TemplateRootfsKey    string `json:"templateRootfsKey,omitempty"`
 	TemplateWorkspaceKey string `json:"templateWorkspaceKey,omitempty"`
+	// SandboxID allows pre-determining the sandbox ID for async creation.
+	// If empty, a new ID is generated automatically.
+	SandboxID string `json:"-"`
 }
 
 // SandboxListResponse is the response for listing sandboxes.

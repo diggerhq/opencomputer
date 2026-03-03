@@ -49,6 +49,7 @@ type VMInstance struct {
 	guestMAC    string             // e.g., "AA:FC:00:00:2d:31"
 	guestCID    uint32             // vsock CID
 	bootArgs    string             // kernel boot args
+	restoring   chan struct{}      // closed when an in-progress restore completes; nil when not restoring
 }
 
 // SandboxMeta is persisted to sandbox-meta.json in each sandbox directory.
@@ -74,6 +75,14 @@ type Config struct {
 	DefaultPort     int    // default guest port to expose (default: 80)
 }
 
+// GoldenSnapshot holds the pre-booted default VM snapshot for fast creation.
+// Stored at {DataDir}/golden-snapshot/default/ with rootfs, workspace, mem, vmstate.
+type GoldenSnapshot struct {
+	Dir      string       // path to golden snapshot directory
+	Meta     SnapshotMeta // metadata from the golden VM
+	Ready    bool         // true if golden snapshot is available
+}
+
 // Manager implements sandbox.Manager using Firecracker microVMs.
 type Manager struct {
 	cfg     Config
@@ -83,6 +92,9 @@ type Manager struct {
 	vms      map[string]*VMInstance
 	nextCID  uint32 // next guest CID to assign (starts at 3, 0-2 are reserved)
 	uploadWg sync.WaitGroup // tracks in-flight async S3 uploads
+
+	goldenMu sync.RWMutex
+	golden   *GoldenSnapshot // pre-booted default VM snapshot for fast creation
 }
 
 // NewManager creates a new Firecracker-backed sandbox manager.
@@ -146,23 +158,33 @@ func (m *Manager) allocateCID() uint32 {
 
 // Create launches a new Firecracker microVM.
 func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.Sandbox, error) {
-	id := "sb-" + uuid.New().String()[:8]
+	id := cfg.SandboxID
+	if id == "" {
+		id = "sb-" + uuid.New().String()[:8]
+	}
 	return m.createWithID(ctx, id, cfg)
 }
 
 // createWithID is the internal implementation of Create that accepts a specific sandbox ID.
 // Used by Create (with a new UUID) and RestoreFromCheckpoint (with the existing ID).
 func (m *Manager) createWithID(ctx context.Context, id string, cfg types.SandboxConfig) (*types.Sandbox, error) {
+	// Try golden snapshot for default template VMs (avoids cold boot, ~500ms vs ~2s)
+	template := cfg.Template
+	if template == "" || template == "base" {
+		template = "default"
+	}
+	if template == "default" && cfg.TemplateRootfsKey == "" {
+		if sb, err := m.createFromGoldenSnapshot(ctx, id, cfg); err == nil {
+			return sb, nil
+		} else if err != errNoGoldenSnapshot {
+			log.Printf("firecracker: golden snapshot create failed for %s: %v, falling back to cold boot", id, err)
+		}
+	}
+
 	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", id)
 
 	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
 		return nil, fmt.Errorf("mkdir sandbox dir: %w", err)
-	}
-
-	// Resolve template name (used for logging and cold-boot recovery)
-	template := cfg.Template
-	if template == "" || template == "base" {
-		template = "default"
 	}
 
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.ext4")
@@ -615,7 +637,7 @@ func (m *Manager) HibernateAll(ctx context.Context, checkpointStore *storage.Che
 
 // Exec runs a command in the VM via the agent.
 func (m *Manager) Exec(ctx context.Context, sandboxID string, cfg types.ProcessConfig) (*types.ProcessResult, error) {
-	vm, err := m.getVM(sandboxID)
+	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return nil, err
 	}
@@ -653,7 +675,7 @@ func (m *Manager) Exec(ctx context.Context, sandboxID string, cfg types.ProcessC
 
 // ReadFile reads a file from the VM.
 func (m *Manager) ReadFile(ctx context.Context, sandboxID, path string) (string, error) {
-	vm, err := m.getVM(sandboxID)
+	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return "", err
 	}
@@ -666,7 +688,7 @@ func (m *Manager) ReadFile(ctx context.Context, sandboxID, path string) (string,
 
 // WriteFile writes a file in the VM.
 func (m *Manager) WriteFile(ctx context.Context, sandboxID, path, content string) error {
-	vm, err := m.getVM(sandboxID)
+	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return err
 	}
@@ -675,7 +697,7 @@ func (m *Manager) WriteFile(ctx context.Context, sandboxID, path, content string
 
 // ListDir lists a directory in the VM.
 func (m *Manager) ListDir(ctx context.Context, sandboxID, path string) ([]types.EntryInfo, error) {
-	vm, err := m.getVM(sandboxID)
+	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return nil, err
 	}
@@ -697,7 +719,7 @@ func (m *Manager) ListDir(ctx context.Context, sandboxID, path string) ([]types.
 
 // MakeDir creates a directory in the VM.
 func (m *Manager) MakeDir(ctx context.Context, sandboxID, path string) error {
-	vm, err := m.getVM(sandboxID)
+	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return err
 	}
@@ -706,7 +728,7 @@ func (m *Manager) MakeDir(ctx context.Context, sandboxID, path string) error {
 
 // Remove removes a file/directory in the VM.
 func (m *Manager) Remove(ctx context.Context, sandboxID, path string) error {
-	vm, err := m.getVM(sandboxID)
+	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return err
 	}
@@ -715,7 +737,7 @@ func (m *Manager) Remove(ctx context.Context, sandboxID, path string) error {
 
 // Exists checks if a path exists in the VM.
 func (m *Manager) Exists(ctx context.Context, sandboxID, path string) (bool, error) {
-	vm, err := m.getVM(sandboxID)
+	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return false, err
 	}
@@ -724,7 +746,7 @@ func (m *Manager) Exists(ctx context.Context, sandboxID, path string) (bool, err
 
 // Stat returns file metadata from the VM.
 func (m *Manager) Stat(ctx context.Context, sandboxID, path string) (*types.FileInfo, error) {
-	vm, err := m.getVM(sandboxID)
+	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return nil, err
 	}
@@ -744,7 +766,7 @@ func (m *Manager) Stat(ctx context.Context, sandboxID, path string) (*types.File
 
 // Stats returns live resource usage from the VM.
 func (m *Manager) Stats(ctx context.Context, sandboxID string) (*sandbox.SandboxStats, error) {
-	vm, err := m.getVM(sandboxID)
+	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return nil, err
 	}
@@ -839,6 +861,34 @@ func (m *Manager) getVM(id string) (*VMInstance, error) {
 	m.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("sandbox %s not found", id)
+	}
+	return vm, nil
+}
+
+// getReadyVM returns a VM that is ready for agent operations.
+// If the VM is currently being restored, it waits for the restore to complete.
+func (m *Manager) getReadyVM(ctx context.Context, id string) (*VMInstance, error) {
+	vm, err := m.getVM(id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Wait for in-progress restore to complete
+	if vm.restoring != nil {
+		select {
+		case <-vm.restoring:
+			// Restore finished — re-fetch VM (may have been replaced)
+			vm, err = m.getVM(id)
+			if err != nil {
+				return nil, err
+			}
+		case <-ctx.Done():
+			return nil, fmt.Errorf("sandbox %s: timed out waiting for restore", id)
+		}
+	}
+
+	if vm.agent == nil {
+		return nil, fmt.Errorf("sandbox %s: agent not available", id)
 	}
 	return vm, nil
 }

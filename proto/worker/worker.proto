@@ -45,6 +45,10 @@ message CreateSandboxRequest {
   // Sandbox snapshot template: if non-empty, boot from these S3 keys instead of base image.
   string template_rootfs_key = 9;
   string template_workspace_key = 10;
+  // If set, attempt warm fork from local checkpoint snapshot (LoadSnapshot instead of cold boot).
+  string checkpoint_id = 11;
+  // Server-assigned sandbox ID. If non-empty, worker uses this instead of generating one.
+  string sandbox_id = 12;
 }
 
 message CreateSandboxResponse {

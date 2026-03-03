@@ -68,5 +68,6 @@ type Manager interface {
 	// Checkpointing
 	CreateCheckpoint(ctx context.Context, sandboxID, checkpointID string, checkpointStore *storage.CheckpointStore, onReady func()) (rootfsKey, workspaceKey string, err error)
 	RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpointID string) error
+	ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error)
 	CheckpointCachePath(checkpointID, filename string) string
 }

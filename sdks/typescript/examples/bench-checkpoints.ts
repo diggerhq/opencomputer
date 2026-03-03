@@ -18,8 +18,6 @@ import { Sandbox } from "../src/index";
 
 function bold(msg: string) { console.log(`\x1b[1m${msg}\x1b[0m`); }
 function dim(msg: string) { console.log(`\x1b[2m  ${msg}\x1b[0m`); }
-function cyan(msg: string) { console.log(`\x1b[36m${msg}\x1b[0m`); }
-function green(msg: string) { console.log(`\x1b[32m${msg}\x1b[0m`); }
 function red(msg: string) { console.log(`\x1b[31m${msg}\x1b[0m`); }
 
 async function sleep(ms: number) {
@@ -93,6 +91,7 @@ async function main() {
   console.log();
 
   const timings: Timing[] = [];
+  const createSbTiming: Timing = { label: "Create sandbox", samples: [] };
   const createTiming: Timing = { label: "Create checkpoint", samples: [] };
   const listTiming: Timing = { label: "List checkpoints", samples: [] };
   const restoreTiming: Timing = { label: "Restore (in-place)", samples: [] };
@@ -100,24 +99,50 @@ async function main() {
   const deleteTiming: Timing = { label: "Delete checkpoint", samples: [] };
   const firstCmdTiming: Timing = { label: "First cmd after restore", samples: [] };
 
-  timings.push(createTiming, listTiming, restoreTiming, firstCmdTiming, forkTiming, deleteTiming);
+  timings.push(createSbTiming, createTiming, listTiming, restoreTiming, firstCmdTiming, forkTiming, deleteTiming);
 
   const sandboxes: Sandbox[] = [];
 
   try {
+    // ── Benchmark: Create sandbox ─────────────────────────────────
+    bold("━━━ Create sandbox ━━━\n");
+
+    let sandbox!: Sandbox;
+    for (let i = 0; i < ITERATIONS; i++) {
+      const { result: sb, ms } = await timed(() =>
+        Sandbox.create({ template: "base", timeout: 300 }),
+      );
+      createSbTiming.samples.push(ms);
+      sandboxes.push(sb);
+      dim(`#${i + 1}: ${formatMs(ms)} (sandbox=${sb.sandboxId})`);
+      if (i === 0) sandbox = sb;
+      // Kill extra sandboxes — we only need the first for remaining benchmarks
+      if (i > 0) sb.kill().catch(() => {});
+    }
+    console.log();
+
     // ── Setup ──────────────────────────────────────────────────────
     bold("━━━ Setup ━━━\n");
+    dim(`Using sandbox ${sandbox.sandboxId} for checkpoint benchmarks`);
 
-    const { result: sandbox, ms: createSbMs } = await timed(() =>
-      Sandbox.create({ template: "base", timeout: 300 }),
-    );
-    sandboxes.push(sandbox);
-    dim(`Sandbox created: ${sandbox.sandboxId} (${formatMs(createSbMs)})`);
-
-    // Write some state so the workspace isn't empty
-    await sandbox.commands.run("dd if=/dev/urandom of=/workspace/payload.bin bs=1M count=10 2>/dev/null");
+    // Write payload data to workspace
+    const payloadMB = parseInt(process.env.BENCH_PAYLOAD_MB || "10240", 10);
+    const payloadGB = payloadMB / 1024;
+    dim(`Writing ${payloadMB >= 1024 ? payloadGB + " GB" : payloadMB + " MB"} payload...`);
+    const { ms: writeMs } = await timed(async () => {
+      if (payloadMB >= 1024) {
+        // Write in 1GB chunks for large payloads
+        const chunks = Math.ceil(payloadMB / 1024);
+        for (let i = 0; i < chunks; i++) {
+          await sandbox.commands.run(`dd if=/dev/urandom of=/workspace/payload-${i}.bin bs=1M count=1024 2>/dev/null`, { timeout: 300 });
+          dim(`  chunk ${i + 1}/${chunks} written`);
+        }
+      } else {
+        await sandbox.commands.run(`dd if=/dev/urandom of=/workspace/payload.bin bs=1M count=${payloadMB} 2>/dev/null`, { timeout: 120 });
+      }
+    });
     await sandbox.commands.run("echo bench-state > /workspace/marker.txt");
-    dim("Wrote 10 MB payload + marker file");
+    dim(`Wrote ${payloadMB >= 1024 ? payloadGB + " GB" : payloadMB + " MB"} payload + marker file (${formatMs(writeMs)})`);
     console.log();
 
     // ── Benchmark: Create checkpoint ───────────────────────────────

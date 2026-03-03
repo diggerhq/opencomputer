@@ -52,6 +52,13 @@ func main() {
 	defer fcMgr.Close()
 	log.Println("opensandbox-worker: Firecracker VM manager initialized")
 
+	// Prepare golden snapshot for fast default VM creation (~500ms vs ~2s cold boot)
+	go func() {
+		if err := fcMgr.PrepareGoldenSnapshot(); err != nil {
+			log.Printf("opensandbox-worker: golden snapshot preparation failed: %v (cold boot fallback active)", err)
+		}
+	}()
+
 	// The Firecracker manager implements sandbox.Manager
 	var mgr sandbox.Manager = fcMgr
 

@@ -86,6 +86,35 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		NetworkEnabled: req.NetworkEnabled,
 		ImageRef:       req.ImageRef,
 		Port:           int(req.Port),
+		SandboxID:      req.SandboxId, // use server-assigned ID if provided
+	}
+
+	// Warm fork: if checkpoint_id is set, try snapshot-based fork first.
+	// ForkFromCheckpoint handles warm fork with cold boot fallback internally.
+	if req.CheckpointId != "" {
+		// Ensure checkpoint drives are cached locally (download from S3 if needed)
+		if req.TemplateRootfsKey != "" && req.TemplateWorkspaceKey != "" {
+			if _, _, err := s.resolveTemplateDrives(ctx, req.TemplateRootfsKey, req.TemplateWorkspaceKey); err != nil {
+				log.Printf("grpc: warm fork %s: resolve drives failed: %v, continuing with ForkFromCheckpoint", req.CheckpointId, err)
+			}
+		}
+
+		sb, err := s.manager.ForkFromCheckpoint(ctx, req.CheckpointId, cfg)
+		if err == nil {
+			// Register with sandbox router for rolling timeout tracking
+			if s.router != nil {
+				timeout := cfg.Timeout
+				if timeout <= 0 {
+					timeout = 300
+				}
+				s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
+			}
+			return &pb.CreateSandboxResponse{
+				SandboxId: sb.ID,
+				Status:    string(sb.Status),
+			}, nil
+		}
+		log.Printf("grpc: ForkFromCheckpoint %s failed: %v, falling back to standard Create", req.CheckpointId, err)
 	}
 
 	// Handle sandbox snapshot template: resolve S3 keys to local paths.

@@ -18,6 +18,7 @@ const (
 	StateRunning    SandboxState = iota
 	StateHibernated
 	StateWaking
+	StateCreating // async creation in progress — commands wait until ready
 )
 
 func (s SandboxState) String() string {
@@ -28,6 +29,8 @@ func (s SandboxState) String() string {
 		return "hibernated"
 	case StateWaking:
 		return "waking"
+	case StateCreating:
+		return "creating"
 	default:
 		return "unknown"
 	}
@@ -130,6 +133,53 @@ func (r *SandboxRouter) Register(sandboxID string, timeout time.Duration) {
 		r.onTimeout(sandboxID)
 	})
 	r.sandboxes[sandboxID] = entry
+}
+
+// RegisterCreating registers a sandbox that is being created asynchronously.
+// Commands routed to this sandbox will block until MarkCreated is called.
+func (r *SandboxRouter) RegisterCreating(sandboxID string, timeout time.Duration) {
+	if timeout <= 0 {
+		timeout = r.defaultTimeout
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry := &sandboxEntry{
+		state:   StateCreating,
+		timeout: timeout,
+		wakeCh:  make(chan struct{}), // reuse wakeCh as the "ready" signal
+	}
+	r.sandboxes[sandboxID] = entry
+}
+
+// MarkCreated transitions a sandbox from StateCreating to StateRunning.
+// This unblocks any commands waiting on the sandbox.
+func (r *SandboxRouter) MarkCreated(sandboxID string, err error) {
+	r.mu.RLock()
+	entry, ok := r.sandboxes[sandboxID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	if entry.state != StateCreating {
+		return
+	}
+
+	if err != nil {
+		entry.wakeErr = err
+		entry.state = StateHibernated // mark as failed
+	} else {
+		entry.state = StateRunning
+		entry.timer = time.AfterFunc(entry.timeout, func() {
+			r.onTimeout(sandboxID)
+		})
+	}
+	close(entry.wakeCh)
 }
 
 // Unregister removes a sandbox from the router (called on kill/destroy).
@@ -324,6 +374,24 @@ func (r *SandboxRouter) ensureRunning(ctx context.Context, sandboxID string) err
 			entry.mu.Unlock()
 			if err != nil {
 				return fmt.Errorf("auto-wake failed for sandbox %s: %w", sandboxID, err)
+			}
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+	case StateCreating:
+		// Sandbox is being created asynchronously — wait for it
+		readyCh := entry.wakeCh
+		entry.mu.Unlock()
+
+		select {
+		case <-readyCh:
+			entry.mu.Lock()
+			err := entry.wakeErr
+			entry.mu.Unlock()
+			if err != nil {
+				return fmt.Errorf("sandbox %s creation failed: %w", sandboxID, err)
 			}
 			return nil
 		case <-ctx.Done():

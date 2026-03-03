@@ -29,7 +29,8 @@ func NewFirecrackerClient(socketPath string) *FirecrackerClient {
 	}
 	return &FirecrackerClient{
 		socketPath: socketPath,
-		httpClient: &http.Client{Transport: transport, Timeout: 30 * time.Second},
+		// No global timeout — per-request timeouts are set via context in doRequest/doRequestWithTimeout.
+		httpClient: &http.Client{Transport: transport},
 	}
 }
 
@@ -63,6 +64,15 @@ func (c *FirecrackerClient) PutDrive(driveID, pathOnHost string, isRootDevice, i
 		"is_read_only":   isReadOnly,
 	}
 	return c.putWithID("/drives", driveID, body)
+}
+
+// PatchDrive updates a drive's path_on_host. Works in Paused state after LoadSnapshot.
+func (c *FirecrackerClient) PatchDrive(driveID, pathOnHost string) error {
+	body := map[string]interface{}{
+		"drive_id":     driveID,
+		"path_on_host": pathOnHost,
+	}
+	return c.patch("/drives/"+driveID, body)
 }
 
 // PutNetworkInterface attaches a network interface.
@@ -119,13 +129,14 @@ func (c *FirecrackerClient) ResumeVM() error {
 
 // CreateSnapshot creates a full VM snapshot (memory + device state).
 // The VM must be paused before calling this.
+// Uses a 5-minute timeout since memory dump can take a while on slower storage.
 func (c *FirecrackerClient) CreateSnapshot(snapshotPath, memFilePath string) error {
 	body := map[string]string{
 		"snapshot_type": "Full",
 		"snapshot_path": snapshotPath,
 		"mem_file_path": memFilePath,
 	}
-	return c.put("/snapshot/create", body)
+	return c.doRequestWithTimeout(http.MethodPut, "/snapshot/create", body, 5*time.Minute)
 }
 
 // LoadSnapshot restores a VM from a snapshot.
@@ -155,13 +166,16 @@ func (c *FirecrackerClient) patch(path string, body interface{}) error {
 	return c.doRequest(http.MethodPatch, path, body)
 }
 
-func (c *FirecrackerClient) doRequest(method, path string, body interface{}) error {
+func (c *FirecrackerClient) doRequestWithTimeout(method, path string, body interface{}, timeout time.Duration) error {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequest(method, "http://localhost"+path, bytes.NewReader(jsonBody))
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, method, "http://localhost"+path, bytes.NewReader(jsonBody))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -179,4 +193,8 @@ func (c *FirecrackerClient) doRequest(method, path string, body interface{}) err
 	}
 
 	return nil
+}
+
+func (c *FirecrackerClient) doRequest(method, path string, body interface{}) error {
+	return c.doRequestWithTimeout(method, path, body, 30*time.Second)
 }
