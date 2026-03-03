@@ -372,6 +372,11 @@ func (m *PodmanManager) RestoreFromCheckpoint(_ context.Context, _, _ string) er
 	return fmt.Errorf("checkpoints are only supported on Firecracker backend")
 }
 
+// ForkFromCheckpoint is not supported on the Podman backend (Firecracker only).
+func (m *PodmanManager) ForkFromCheckpoint(_ context.Context, _ string, _ types.SandboxConfig) (*types.Sandbox, error) {
+	return nil, fmt.Errorf("checkpoints are only supported on Firecracker backend")
+}
+
 // CheckpointCachePath always returns "" on the Podman backend (Firecracker only).
 func (m *PodmanManager) CheckpointCachePath(_, _ string) string {
 	return ""

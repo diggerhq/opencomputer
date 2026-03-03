@@ -80,8 +80,12 @@ type CreateSandboxRequest struct {
 	// Sandbox snapshot template: if non-empty, boot from these S3 keys instead of base image.
 	TemplateRootfsKey    string `protobuf:"bytes,9,opt,name=template_rootfs_key,json=templateRootfsKey,proto3" json:"template_rootfs_key,omitempty"`
 	TemplateWorkspaceKey string `protobuf:"bytes,10,opt,name=template_workspace_key,json=templateWorkspaceKey,proto3" json:"template_workspace_key,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// If set, attempt warm fork from local checkpoint snapshot (LoadSnapshot instead of cold boot).
+	CheckpointId string `protobuf:"bytes,11,opt,name=checkpoint_id,json=checkpointId,proto3" json:"checkpoint_id,omitempty"`
+	// Server-assigned sandbox ID. If non-empty, worker uses this instead of generating one.
+	SandboxId     string `protobuf:"bytes,12,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateSandboxRequest) Reset() {
@@ -180,6 +184,20 @@ func (x *CreateSandboxRequest) GetTemplateRootfsKey() string {
 func (x *CreateSandboxRequest) GetTemplateWorkspaceKey() string {
 	if x != nil {
 		return x.TemplateWorkspaceKey
+	}
+	return ""
+}
+
+func (x *CreateSandboxRequest) GetCheckpointId() string {
+	if x != nil {
+		return x.CheckpointId
+	}
+	return ""
+}
+
+func (x *CreateSandboxRequest) GetSandboxId() string {
+	if x != nil {
+		return x.SandboxId
 	}
 	return ""
 }
@@ -2146,7 +2164,7 @@ var File_proto_worker_worker_proto protoreflect.FileDescriptor
 
 const file_proto_worker_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x19proto/worker/worker.proto\x12\x06worker\"\xbb\x03\n" +
+	"\x19proto/worker/worker.proto\x12\x06worker\"\xff\x03\n" +
 	"\x14CreateSandboxRequest\x12\x1a\n" +
 	"\btemplate\x18\x01 \x01(\tR\btemplate\x12\x18\n" +
 	"\atimeout\x18\x02 \x01(\x05R\atimeout\x12:\n" +
@@ -2158,7 +2176,10 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\x04port\x18\b \x01(\x05R\x04port\x12.\n" +
 	"\x13template_rootfs_key\x18\t \x01(\tR\x11templateRootfsKey\x124\n" +
 	"\x16template_workspace_key\x18\n" +
-	" \x01(\tR\x14templateWorkspaceKey\x1a7\n" +
+	" \x01(\tR\x14templateWorkspaceKey\x12#\n" +
+	"\rcheckpoint_id\x18\v \x01(\tR\fcheckpointId\x12\x1d\n" +
+	"\n" +
+	"sandbox_id\x18\f \x01(\tR\tsandboxId\x1a7\n" +
 	"\tEnvsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"N\n" +

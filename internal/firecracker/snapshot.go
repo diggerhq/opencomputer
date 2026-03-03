@@ -1,7 +1,9 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,10 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/sparse"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/pkg/types"
+	pb "github.com/opensandbox/opensandbox/proto/agent"
 )
 
 // SnapshotMeta holds metadata persisted alongside snapshot files.
@@ -864,9 +868,16 @@ func (m *Manager) CheckpointCachePath(checkpointID, filename string) string {
 	return ""
 }
 
-// CreateCheckpoint snapshots a running sandbox's drives (rootfs + workspace) for later restore.
-// The VM is briefly paused (~10-50ms) during file copy then resumed. Archive upload is async.
+// CreateCheckpoint snapshots a running sandbox's state for later restore.
+// The VM is briefly paused during memory snapshot + drive reflink then resumed. Archive upload is async.
 // Returns the pre-computed S3 keys immediately. onReady is called when the async upload finishes.
+//
+// SyncFS is intentionally skipped: the memory snapshot captures the guest kernel's entire page
+// cache, including all dirty (unflushed) data. On warm restore, the guest resumes with its full
+// page cache intact — no data is lost regardless of how much dirty data existed at snapshot time.
+// For cold boot fallback (no memory snapshot), unflushed data would be lost, equivalent to crash
+// recovery (ext4 journaling handles consistency). Skipping SyncFS eliminates the biggest latency
+// contributor: flushing 10GB+ of dirty data to disk could take 20-30s on EBS gp3.
 func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID string, checkpointStore *storage.CheckpointStore, onReady func()) (rootfsKey, workspaceKey string, err error) {
 	vm, err := m.getVM(sandboxID)
 	if err != nil {
@@ -889,13 +900,12 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	cachedRootfs := filepath.Join(cacheDir, "rootfs.ext4")
 	cachedWorkspace := filepath.Join(cacheDir, "workspace.ext4")
 
-	// Step 1: SyncFS (agent stays alive)
+	// Step 1: Flush workspace data to disk (required for cold boot forks that don't use memory snapshot).
+	// SyncFS ensures the ext4 filesystem is consistent on disk before we copy it.
 	if vm.agent != nil {
-		syncCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if syncErr := vm.agent.SyncFS(syncCtx); syncErr != nil {
-			log.Printf("firecracker: CreateCheckpoint %s: SyncFS warning: %v", vm.ID, syncErr)
+		if syncErr := vm.agent.SyncFS(ctx); syncErr != nil {
+			log.Printf("firecracker: CreateCheckpoint %s: SyncFS failed: %v (unflushed data may be lost in cold boot forks)", vm.ID, syncErr)
 		}
-		cancel()
 	}
 
 	// Step 2: Close gRPC connection (vsock must be inactive before pause)
@@ -913,6 +923,38 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 		return "", "", fmt.Errorf("pause VM for checkpoint: %w", err)
 	}
 	log.Printf("firecracker: CreateCheckpoint %s/%s: VM paused (%dms)", vm.ID, checkpointID, time.Since(t0).Milliseconds())
+
+	// Step 3: Create memory snapshot (best-effort — enables warm restore, captures dirty page cache)
+	snapshotDir := filepath.Join(cacheDir, "snapshot")
+	if mkErr := os.MkdirAll(snapshotDir, 0755); mkErr != nil {
+		log.Printf("firecracker: CreateCheckpoint %s/%s: mkdir snapshot dir failed: %v (warm restore will be unavailable)", vm.ID, checkpointID, mkErr)
+	} else {
+		memFile := filepath.Join(snapshotDir, "mem")
+		vmstateFile := filepath.Join(snapshotDir, "vmstate")
+		if snapErr := vm.fcClient.CreateSnapshot(vmstateFile, memFile); snapErr != nil {
+			log.Printf("firecracker: CreateCheckpoint %s/%s: memory snapshot failed: %v (warm restore will be unavailable)", vm.ID, checkpointID, snapErr)
+			os.RemoveAll(snapshotDir)
+		} else {
+			// Write snapshot metadata (reuse SnapshotMeta from hibernate)
+			meta := &SnapshotMeta{
+				SandboxID:     vm.ID,
+				Network:       vm.network,
+				GuestCID:      vm.guestCID,
+				GuestMAC:      vm.guestMAC,
+				BootArgs:      vm.bootArgs,
+				RootfsPath:    filepath.Join(vm.sandboxDir, "rootfs.ext4"),
+				WorkspacePath: filepath.Join(vm.sandboxDir, "workspace.ext4"),
+				VsockPath:     vm.vsockPath,
+				CpuCount:      vm.CpuCount,
+				MemoryMB:      vm.MemoryMB,
+				Template:      vm.Template,
+				GuestPort:     vm.GuestPort,
+			}
+			metaJSON, _ := json.Marshal(meta)
+			_ = os.WriteFile(filepath.Join(snapshotDir, "snapshot-meta.json"), metaJSON, 0644)
+			log.Printf("firecracker: CreateCheckpoint %s/%s: memory snapshot captured (%dms)", vm.ID, checkpointID, time.Since(t0).Milliseconds())
+		}
+	}
 
 	// Step 4: Copy drive files while VM is paused (drives are stable)
 	copyErr := copyFileReflink(srcRootfs, cachedRootfs)
@@ -952,6 +994,11 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	m.uploadWg.Add(1)
 	go func() {
 		defer m.uploadWg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("firecracker: checkpoint %s: upload goroutine panic: %v", checkpointID, r)
+			}
+		}()
 
 		uploadCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
@@ -978,19 +1025,24 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 }
 
 // RestoreFromCheckpoint reverts a running sandbox to a checkpoint.
-// The current VM is killed, drives are replaced with checkpoint copies, and a new VM is cold booted.
-// The sandbox ID stays the same.
+// Attempts warm restore (LoadSnapshot) if a memory snapshot exists in the checkpoint cache.
+// Falls back to cold boot if warm restore fails or no snapshot is available.
 func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpointID string) error {
 	vm, err := m.getVM(sandboxID)
 	if err != nil {
 		return err
 	}
 
+	// Signal that this VM is restoring — Exec and other operations will wait on this channel
+	restoreCh := make(chan struct{})
+	vm.restoring = restoreCh
+	defer close(restoreCh)
+
 	cacheDir := m.checkpointCacheDir(checkpointID)
 	cachedRootfs := filepath.Join(cacheDir, "rootfs.ext4")
 	cachedWorkspace := filepath.Join(cacheDir, "workspace.ext4")
 
-	// Verify checkpoint files exist locally
+	// Verify checkpoint drives exist locally
 	if _, err := os.Stat(cachedRootfs); err != nil {
 		return fmt.Errorf("checkpoint rootfs not found locally: %w", err)
 	}
@@ -998,11 +1050,54 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 		return fmt.Errorf("checkpoint workspace not found locally: %w", err)
 	}
 
-	// Step 1: SyncFS (best effort — save current state in case needed)
+	// Check if warm restore is possible (memory snapshot exists in checkpoint cache)
+	snapshotDir := filepath.Join(cacheDir, "snapshot")
+	memFile := filepath.Join(snapshotDir, "mem")
+	vmstateFile := filepath.Join(snapshotDir, "vmstate")
+	metaPath := filepath.Join(snapshotDir, "snapshot-meta.json")
+	canWarmRestore := fileExists(memFile) && fileExists(vmstateFile) && fileExists(metaPath)
+
+	if canWarmRestore {
+		if err := m.warmRestoreFromCheckpoint(ctx, vm, sandboxID, checkpointID, cacheDir); err != nil {
+			log.Printf("firecracker: RestoreFromCheckpoint %s/%s: warm restore failed: %v, falling back to cold boot", sandboxID, checkpointID, err)
+			// Warm restore may have killed the VM — re-fetch to check
+			vm, _ = m.getVM(sandboxID)
+		} else {
+			return nil // Warm restore succeeded
+		}
+	}
+
+	// Cold boot fallback
+	return m.coldBootRestoreFromCheckpoint(ctx, vm, sandboxID, checkpointID, cachedRootfs, cachedWorkspace)
+}
+
+// warmRestoreFromCheckpoint restores a sandbox using Firecracker's snapshot load.
+// The VM resumes from the exact state when the checkpoint was created — all processes
+// are preserved, and restore completes in ~200-500ms instead of ~3.5s cold boot.
+func (m *Manager) warmRestoreFromCheckpoint(ctx context.Context, vm *VMInstance, sandboxID, checkpointID string, cacheDir string) error {
+	t0 := time.Now()
+
+	snapshotDir := filepath.Join(cacheDir, "snapshot")
+	memFile := filepath.Join(snapshotDir, "mem")
+	vmstateFile := filepath.Join(snapshotDir, "vmstate")
+	metaPath := filepath.Join(snapshotDir, "snapshot-meta.json")
+
+	// Read snapshot metadata
+	metaJSON, err := os.ReadFile(metaPath)
+	if err != nil {
+		return fmt.Errorf("read snapshot meta: %w", err)
+	}
+	var meta SnapshotMeta
+	if err := json.Unmarshal(metaJSON, &meta); err != nil {
+		return fmt.Errorf("parse snapshot meta: %w", err)
+	}
+
+	// Save VM state we need after kill
+	sandboxDir := vm.sandboxDir
+	endAt := vm.EndAt
+
+	// Step 1: Close agent on current VM
 	if vm.agent != nil {
-		syncCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_ = vm.agent.SyncFS(syncCtx)
-		cancel()
 		vm.agent.Close()
 		vm.agent = nil
 	}
@@ -1013,33 +1108,186 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 		_ = vm.cmd.Wait()
 	}
 
-	// Step 2b: Clean up socket files so the new VM can bind
+	// Step 3: Clean up sockets
 	_ = os.Remove(vm.vsockPath)
 	if vm.apiSockPath != "" {
 		_ = os.Remove(vm.apiSockPath)
 	}
 
-	// Step 3: Save VM config before removing from map
-	template := vm.Template
-	cpuCount := vm.CpuCount
-	memoryMB := vm.MemoryMB
-	guestPort := vm.GuestPort
+	// Step 4: Reflink copy checkpoint drives to sandbox dir (same absolute paths baked into vmstate)
+	rootfsPath := filepath.Join(sandboxDir, "rootfs.ext4")
+	workspacePath := filepath.Join(sandboxDir, "workspace.ext4")
+	if err := copyFileReflink(filepath.Join(cacheDir, "rootfs.ext4"), rootfsPath); err != nil {
+		return fmt.Errorf("copy checkpoint rootfs: %w", err)
+	}
+	if err := copyFileReflink(filepath.Join(cacheDir, "workspace.ext4"), workspacePath); err != nil {
+		return fmt.Errorf("copy checkpoint workspace: %w", err)
+	}
 
-	// Step 4: Clean up network
+	// Step 5: Release old network and reclaim the same TAP name (baked into vmstate)
 	if vm.network != nil {
 		RemoveDNAT(vm.network)
 		DeleteTAP(vm.network.TAPName)
 		m.subnets.Release(vm.network.TAPName)
 	}
 
-	// Step 5: Remove old VM from tracking
+	netCfg, err := m.subnets.AllocateSpecific(meta.Network.TAPName)
+	if err != nil {
+		return fmt.Errorf("reclaim TAP %s for warm restore: %w", meta.Network.TAPName, err)
+	}
+	if err := CreateTAP(netCfg); err != nil {
+		m.subnets.Release(netCfg.TAPName)
+		return fmt.Errorf("create TAP: %w", err)
+	}
+
+	hostPort, err := FindFreePort()
+	if err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		return fmt.Errorf("find free port: %w", err)
+	}
+	netCfg.HostPort = hostPort
+	netCfg.GuestPort = meta.GuestPort
+	if netCfg.GuestPort == 0 {
+		netCfg.GuestPort = m.cfg.DefaultPort
+	}
+
+	if err := AddDNAT(netCfg); err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		return fmt.Errorf("add DNAT: %w", err)
+	}
+
+	// Step 6: Start fresh Firecracker process (snapshot mode — no config needed)
+	apiSockPath := filepath.Join(sandboxDir, "firecracker.sock")
+	vsockPath := meta.VsockPath
+	_ = os.Remove(apiSockPath)
+	_ = os.Remove(vsockPath)
+
+	logPath := filepath.Join(sandboxDir, "firecracker.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		m.cleanupVM(netCfg, "")
+		return fmt.Errorf("create log file: %w", err)
+	}
+
+	cmd := exec.Command(m.cfg.FirecrackerBin, "--api-sock", apiSockPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		m.cleanupVM(netCfg, "")
+		return fmt.Errorf("start firecracker: %w", err)
+	}
+	logFile.Close()
+
+	fcClient := NewFirecrackerClient(apiSockPath)
+	if err := fcClient.WaitForSocket(5 * time.Second); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, "")
+		return fmt.Errorf("wait for API socket: %w", err)
+	}
+
+	// Step 7: Load snapshot — VM resumes exactly where it was paused during checkpoint
+	if err := fcClient.LoadSnapshot(vmstateFile, memFile, true); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, "")
+		return fmt.Errorf("load snapshot: %w", err)
+	}
+
+	log.Printf("firecracker: RestoreFromCheckpoint %s/%s: snapshot loaded (%dms)", sandboxID, checkpointID, time.Since(t0).Milliseconds())
+
+	// Step 8: Wait for agent (should be near-instant — agent was running when snapshot was taken)
+	agentClient, err := m.waitForAgent(context.Background(), vsockPath, 10*time.Second)
+	if err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, "")
+		return fmt.Errorf("agent not ready after warm restore: %w", err)
+	}
+
+	// Step 9: Register restored VM in tracking map
+	newVM := &VMInstance{
+		ID:          sandboxID,
+		Template:    meta.Template,
+		Status:      types.SandboxStatusRunning,
+		StartedAt:   time.Now(),
+		EndAt:       endAt,
+		CpuCount:    meta.CpuCount,
+		MemoryMB:    meta.MemoryMB,
+		HostPort:    hostPort,
+		GuestPort:   netCfg.GuestPort,
+		pid:         cmd.Process.Pid,
+		cmd:         cmd,
+		network:     netCfg,
+		vsockPath:   vsockPath,
+		sandboxDir:  sandboxDir,
+		apiSockPath: apiSockPath,
+		fcClient:    fcClient,
+		guestMAC:    meta.GuestMAC,
+		guestCID:    meta.GuestCID,
+		bootArgs:    meta.BootArgs,
+		agent:       agentClient,
+	}
+
 	m.mu.Lock()
-	delete(m.vms, sandboxID)
+	delete(m.vms, sandboxID) // remove old entry if still present
+	m.vms[sandboxID] = newVM
 	m.mu.Unlock()
 
-	// Step 6: Cold boot a fresh VM using checkpoint drives
-	// Pass checkpoint cache paths as template keys so createWithID copies them
-	// instead of creating fresh drives from the base image.
+	log.Printf("firecracker: RestoreFromCheckpoint %s/%s: warm restore complete (%dms, port=%d, tap=%s)",
+		sandboxID, checkpointID, time.Since(t0).Milliseconds(), hostPort, netCfg.TAPName)
+
+	return nil
+}
+
+// coldBootRestoreFromCheckpoint is the fallback restore path.
+// Kills the VM, replaces drives, and cold boots a new VM from checkpoint drives.
+func (m *Manager) coldBootRestoreFromCheckpoint(ctx context.Context, vm *VMInstance, sandboxID, checkpointID, cachedRootfs, cachedWorkspace string) error {
+	if vm != nil {
+		// Close agent and kill process if not already done by failed warm restore
+		if vm.agent != nil {
+			vm.agent.Close()
+			vm.agent = nil
+		}
+		if vm.cmd != nil && vm.cmd.Process != nil {
+			_ = vm.cmd.Process.Kill()
+			_ = vm.cmd.Wait()
+		}
+
+		// Clean up sockets
+		_ = os.Remove(vm.vsockPath)
+		if vm.apiSockPath != "" {
+			_ = os.Remove(vm.apiSockPath)
+		}
+
+		// Clean up network
+		if vm.network != nil {
+			RemoveDNAT(vm.network)
+			DeleteTAP(vm.network.TAPName)
+			m.subnets.Release(vm.network.TAPName)
+		}
+	}
+
+	// NOTE: We do NOT delete the old VM from the tracking map here.
+	// The old VM entry (with restoring channel) must remain so that
+	// concurrent Exec calls can find it and wait on the restoring channel.
+	// createWithID below will overwrite the entry with the new VM.
+
+	// Cold boot a fresh VM using checkpoint drives
+	template := "default"
+	cpuCount := 0
+	memoryMB := 0
+	guestPort := 0
+	if vm != nil {
+		template = vm.Template
+		cpuCount = vm.CpuCount
+		memoryMB = vm.MemoryMB
+		guestPort = vm.GuestPort
+	}
+
 	cfg := types.SandboxConfig{
 		Template:             template,
 		CpuCount:             cpuCount,
@@ -1078,7 +1326,10 @@ func sparseCompressAndUpload(ctx context.Context, srcPath, s3Key string, store *
 	}
 	defer os.Remove(archivePath)
 
-	info, _ := os.Stat(archivePath)
+	info, statErr := os.Stat(archivePath)
+	if statErr != nil {
+		return fmt.Errorf("stat sparse archive %s: %w", archivePath, statErr)
+	}
 	log.Printf("firecracker: sparse archive %s: %d non-zero blocks, %d KB compressed",
 		filepath.Base(srcPath), blocks, info.Size()/1024)
 
@@ -1100,4 +1351,867 @@ func compressAndUploadFile(ctx context.Context, srcPath, s3Key string, store *st
 		return fmt.Errorf("upload to %s: %w", s3Key, err)
 	}
 	return nil
+}
+
+// --- Warm Fork from Checkpoint ---
+
+// Firecracker CRC64: Jones polynomial (bit-reversed form) with init=0, no final XOR.
+// Polynomial 0x95AC9329AC4BC9B5 is the bit-reverse of 0xad93d23594c935a9.
+// Go's hash/crc64 package uses a different polynomial (ECMA or ISO), so we build
+// our own table. The lookup algorithm is standard LSB-first (reflected).
+var firecrackerCRC64Table = func() [256]uint64 {
+	const poly = 0x95AC9329AC4BC9B5
+	var table [256]uint64
+	for i := 0; i < 256; i++ {
+		crc := uint64(i)
+		for j := 0; j < 8; j++ {
+			if crc&1 == 1 {
+				crc = (crc >> 1) ^ poly
+			} else {
+				crc >>= 1
+			}
+		}
+		table[i] = crc
+	}
+	return table
+}()
+
+func firecrackerCRC64(data []byte) uint64 {
+	crc := uint64(0)
+	for _, v := range data {
+		crc = firecrackerCRC64Table[byte(crc)^v] ^ (crc >> 8)
+	}
+	return crc
+}
+
+// patchVMStateBinary performs binary find-and-replace on a Firecracker vmstate file.
+// It patches sandbox ID (fixing drive paths + vsock path), TAP name, and CID,
+// then recalculates the CRC64 checksum that Firecracker validates on load.
+//
+// The vmstate format: [serialized data][8-byte CRC64 Jones/Redis checksum]
+// TAP names must be the same length (use fixed-width fc-tap%07d format).
+// Returns an error if the old sandbox ID is not found (safety check).
+func patchVMStateBinary(vmstatePath, oldSandboxID, newSandboxID, oldTAP, newTAP string, oldCID, newCID uint32) error {
+	raw, err := os.ReadFile(vmstatePath)
+	if err != nil {
+		return fmt.Errorf("read vmstate: %w", err)
+	}
+
+	if len(raw) < 8 {
+		return fmt.Errorf("vmstate too small (%d bytes)", len(raw))
+	}
+
+	// Split into data and trailing CRC64 checksum.
+	// Firecracker uses Jones/Redis CRC64 (bit-reversed polynomial 0x95AC9329AC4BC9B5,
+	// reflected/LSB-first lookup, init=0, no final XOR).
+	data := raw[:len(raw)-8]
+	storedCRC := binary.LittleEndian.Uint64(raw[len(raw)-8:])
+
+	computedCRC := firecrackerCRC64(data)
+	if computedCRC != storedCRC {
+		return fmt.Errorf("vmstate CRC mismatch before patching: stored=%d computed=%d (unexpected format)", storedCRC, computedCRC)
+	}
+
+	// Patch sandbox ID — fixes drive paths (/data/sandboxes/{id}/rootfs.ext4, workspace.ext4)
+	// and vsock path (/data/sandboxes/{id}/vsock.sock)
+	oldID := []byte(oldSandboxID)
+	newID := []byte(newSandboxID)
+	if len(oldID) != len(newID) {
+		return fmt.Errorf("sandbox ID length mismatch: %q (%d) vs %q (%d)", oldSandboxID, len(oldID), newSandboxID, len(newID))
+	}
+	if !bytes.Contains(data, oldID) {
+		return fmt.Errorf("old sandbox ID %q not found in vmstate — cannot patch", oldSandboxID)
+	}
+	data = bytes.ReplaceAll(data, oldID, newID)
+
+	// Patch TAP name — must be same length (fixed-width format)
+	if oldTAP != "" && newTAP != "" && oldTAP != newTAP {
+		oldTAPBytes := []byte(oldTAP)
+		newTAPBytes := []byte(newTAP)
+		if len(oldTAPBytes) != len(newTAPBytes) {
+			return fmt.Errorf("TAP name length mismatch: %q (%d) vs %q (%d) — use fixed-width format", oldTAP, len(oldTAPBytes), newTAP, len(newTAPBytes))
+		}
+		data = bytes.ReplaceAll(data, oldTAPBytes, newTAPBytes)
+	}
+
+	// Patch CID — search for the old CID (uint32 LE) near the vsock.sock string.
+	// The CID appears in the vsock device state in the vmstate binary.
+	if oldCID != newCID {
+		oldCIDBytes := make([]byte, 4)
+		newCIDBytes := make([]byte, 4)
+		binary.LittleEndian.PutUint32(oldCIDBytes, oldCID)
+		binary.LittleEndian.PutUint32(newCIDBytes, newCID)
+
+		// Find vsock.sock marker and search within 1KB around it for the CID
+		marker := []byte("vsock.sock")
+		idx := bytes.Index(data, marker)
+		if idx >= 0 {
+			searchStart := idx - 512
+			if searchStart < 0 {
+				searchStart = 0
+			}
+			searchEnd := idx + 512
+			if searchEnd > len(data) {
+				searchEnd = len(data)
+			}
+			region := data[searchStart:searchEnd]
+			cidIdx := bytes.Index(region, oldCIDBytes)
+			if cidIdx >= 0 {
+				absIdx := searchStart + cidIdx
+				copy(data[absIdx:absIdx+4], newCIDBytes)
+				log.Printf("firecracker: patchVMState: patched CID %d→%d at offset %d", oldCID, newCID, absIdx)
+			} else {
+				log.Printf("firecracker: patchVMState: CID %d not found near vsock marker (best-effort, continuing)", oldCID)
+			}
+		} else {
+			log.Printf("firecracker: patchVMState: vsock.sock marker not found (best-effort, continuing)")
+		}
+	}
+
+	// Recompute CRC64 over patched data and append
+	newCRC := firecrackerCRC64(data)
+	crcBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(crcBytes, newCRC)
+	patched := append(data, crcBytes...)
+
+	if err := os.WriteFile(vmstatePath, patched, 0644); err != nil {
+		return fmt.Errorf("write patched vmstate: %w", err)
+	}
+	log.Printf("firecracker: patchVMState: CRC64 updated (%d→%d)", storedCRC, newCRC)
+	return nil
+}
+
+// reconfigureGuestNetwork updates the guest's network configuration via agent Exec.
+// After warm fork/golden snapshot, the guest has the old network from the source snapshot.
+// This brings eth0 up (golden snapshot takes it down to drain virtio queues),
+// flushes the old config, and applies the new IPs and gateway.
+func reconfigureGuestNetwork(ctx context.Context, agent *AgentClient, guestIP, hostIP string, cidr int) error {
+	cmd := fmt.Sprintf("ip link set eth0 up && ip addr flush dev eth0 && ip addr add %s/%d dev eth0 && ip route add default via %s", guestIP, cidr, hostIP)
+	resp, err := agent.Exec(ctx, &pb.ExecRequest{
+		Command:        "/bin/sh",
+		Args:           []string{"-c", cmd},
+		TimeoutSeconds: 5,
+	})
+	if err != nil {
+		return fmt.Errorf("exec network reconfig: %w", err)
+	}
+	if resp.ExitCode != 0 {
+		return fmt.Errorf("network reconfig failed (exit %d): %s", resp.ExitCode, resp.Stderr)
+	}
+	return nil
+}
+
+// ForkFromCheckpoint creates a new sandbox from an existing checkpoint.
+// Tries warm fork first (LoadSnapshot with binary-patched vmstate, ~300ms),
+// falls back to cold boot (~1.8s) if warm fork fails or snapshot files are missing.
+// The sandbox ID can be pre-determined via cfg.SandboxID for async creation flows.
+func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error) {
+	cacheDir := m.checkpointCacheDir(checkpointID)
+
+	newID := cfg.SandboxID
+	if newID == "" {
+		newID = "sb-" + uuid.New().String()[:8]
+	}
+
+	// Try warm fork if snapshot files exist locally
+	snapshotDir := filepath.Join(cacheDir, "snapshot")
+	canWarm := fileExists(filepath.Join(snapshotDir, "mem")) &&
+		fileExists(filepath.Join(snapshotDir, "vmstate")) &&
+		fileExists(filepath.Join(snapshotDir, "snapshot-meta.json"))
+
+	if canWarm {
+		sb, err := m.warmForkFromCheckpoint(ctx, checkpointID, cfg, cacheDir)
+		if err == nil {
+			return sb, nil
+		}
+		log.Printf("firecracker: ForkFromCheckpoint %s: warm fork failed: %v, falling back to cold boot", checkpointID, err)
+	}
+
+	// Cold boot fallback: use checkpoint drives from local cache
+	rootfsPath := filepath.Join(cacheDir, "rootfs.ext4")
+	workspacePath := filepath.Join(cacheDir, "workspace.ext4")
+	if fileExists(rootfsPath) && fileExists(workspacePath) {
+		cfg.TemplateRootfsKey = "local://" + rootfsPath
+		cfg.TemplateWorkspaceKey = "local://" + workspacePath
+		log.Printf("firecracker: ForkFromCheckpoint %s: cold boot from local cached drives for %s", checkpointID, newID)
+	} else {
+		log.Printf("firecracker: ForkFromCheckpoint %s: no local drives, will download from S3 for %s", checkpointID, newID)
+	}
+
+	return m.createWithID(ctx, newID, cfg)
+}
+
+// warmForkFromCheckpoint creates a new sandbox by loading the checkpoint's memory snapshot
+// into a fresh Firecracker process. The vmstate is binary-patched to update the sandbox ID,
+// TAP name, and CID. Guest networking is reconfigured after resume via Exec RPC.
+func (m *Manager) warmForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig, cacheDir string) (*types.Sandbox, error) {
+	t0 := time.Now()
+
+	// Step 1: Generate new sandbox ID and create sandbox dir
+	newID := cfg.SandboxID
+	if newID == "" {
+		newID = "sb-" + uuid.New().String()[:8]
+	}
+	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", newID)
+	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
+		return nil, fmt.Errorf("mkdir sandbox dir: %w", err)
+	}
+
+	// Step 2: Read source snapshot metadata
+	snapshotDir := filepath.Join(cacheDir, "snapshot")
+	metaJSON, err := os.ReadFile(filepath.Join(snapshotDir, "snapshot-meta.json"))
+	if err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("read snapshot meta: %w", err)
+	}
+	var meta SnapshotMeta
+	if err := json.Unmarshal(metaJSON, &meta); err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("parse snapshot meta: %w", err)
+	}
+
+	oldSandboxID := meta.SandboxID
+	log.Printf("firecracker: warmFork %s→%s from checkpoint %s", oldSandboxID, newID, checkpointID)
+
+	// Step 3: Copy checkpoint drives to new sandbox dir (reflink)
+	rootfsPath := filepath.Join(sandboxDir, "rootfs.ext4")
+	workspacePath := filepath.Join(sandboxDir, "workspace.ext4")
+	if err := copyFileReflink(filepath.Join(cacheDir, "rootfs.ext4"), rootfsPath); err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("copy checkpoint rootfs: %w", err)
+	}
+	if err := copyFileReflink(filepath.Join(cacheDir, "workspace.ext4"), workspacePath); err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("copy checkpoint workspace: %w", err)
+	}
+
+	// Step 4: Copy snapshot files (mem + vmstate) to new sandbox dir
+	newSnapshotDir := filepath.Join(sandboxDir, "snapshot")
+	if err := os.MkdirAll(newSnapshotDir, 0755); err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("mkdir snapshot dir: %w", err)
+	}
+	memFile := filepath.Join(newSnapshotDir, "mem")
+	vmstateFile := filepath.Join(newSnapshotDir, "vmstate")
+	if err := copyFileReflink(filepath.Join(snapshotDir, "mem"), memFile); err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("copy mem: %w", err)
+	}
+	if err := copyFileReflink(filepath.Join(snapshotDir, "vmstate"), vmstateFile); err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("copy vmstate: %w", err)
+	}
+
+	log.Printf("firecracker: warmFork %s: files copied (%dms)", newID, time.Since(t0).Milliseconds())
+
+	// Step 5: Allocate new network (TAP, subnet, DNAT)
+	netCfg, err := m.subnets.Allocate()
+	if err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("allocate subnet: %w", err)
+	}
+	if err := CreateTAP(netCfg); err != nil {
+		m.subnets.Release(netCfg.TAPName)
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("create TAP: %w", err)
+	}
+
+	hostPort, err := FindFreePort()
+	if err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("find free port: %w", err)
+	}
+	netCfg.HostPort = hostPort
+	netCfg.GuestPort = meta.GuestPort
+	if netCfg.GuestPort == 0 {
+		netCfg.GuestPort = m.cfg.DefaultPort
+	}
+
+	if err := AddDNAT(netCfg); err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("add DNAT: %w", err)
+	}
+
+	// Step 6: Binary-patch vmstate (sandbox ID, TAP, CID)
+	newCID := m.allocateCID()
+	oldTAP := ""
+	if meta.Network != nil {
+		oldTAP = meta.Network.TAPName
+	}
+	if err := patchVMStateBinary(vmstateFile, oldSandboxID, newID, oldTAP, netCfg.TAPName, meta.GuestCID, newCID); err != nil {
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("patch vmstate: %w", err)
+	}
+	log.Printf("firecracker: warmFork %s: vmstate patched (%dms)", newID, time.Since(t0).Milliseconds())
+
+	// Step 7: Start fresh Firecracker process
+	vsockPath := filepath.Join(sandboxDir, "vsock.sock")
+	apiSockPath := filepath.Join(sandboxDir, "firecracker.sock")
+	_ = os.Remove(apiSockPath)
+	_ = os.Remove(vsockPath)
+
+	logPath := filepath.Join(sandboxDir, "firecracker.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("create log file: %w", err)
+	}
+
+	cmd := exec.Command(m.cfg.FirecrackerBin, "--api-sock", apiSockPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("start firecracker: %w", err)
+	}
+	logFile.Close()
+
+	fcClient := NewFirecrackerClient(apiSockPath)
+	if err := fcClient.WaitForSocket(5 * time.Second); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("wait for API socket: %w", err)
+	}
+
+	// Step 8: Load snapshot — VM resumes from checkpoint state
+	if err := fcClient.LoadSnapshot(vmstateFile, memFile, true); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("load snapshot: %w", err)
+	}
+	log.Printf("firecracker: warmFork %s: snapshot loaded (%dms)", newID, time.Since(t0).Milliseconds())
+
+	// Step 9: Wait for agent (should be near-instant — agent was running when snapshot was taken)
+	agentClient, err := m.waitForAgent(context.Background(), vsockPath, 10*time.Second)
+	if err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("agent not ready after warm fork: %w", err)
+	}
+
+	// Step 10: Reconfigure guest network (guest has old IPs from checkpoint)
+	if err := reconfigureGuestNetwork(ctx, agentClient, netCfg.GuestIP, netCfg.HostIP, netCfg.CIDR); err != nil {
+		log.Printf("firecracker: warmFork %s: network reconfig failed: %v (VM still running, network may not work)", newID, err)
+		// Don't fail — the VM is running and accessible via vsock, just external network may be broken
+	}
+
+	// Step 11: Write sandbox-meta.json for crash recovery
+	sbMeta := SandboxMeta{
+		SandboxID: newID,
+		Template:  meta.Template,
+		CpuCount:  meta.CpuCount,
+		MemoryMB:  meta.MemoryMB,
+		GuestPort: netCfg.GuestPort,
+	}
+	sbMetaJSON, _ := json.Marshal(sbMeta)
+	_ = os.WriteFile(filepath.Join(sandboxDir, "sandbox-meta.json"), sbMetaJSON, 0644)
+
+	// Step 12: Register VM
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 300
+	}
+
+	now := time.Now()
+	vm := &VMInstance{
+		ID:          newID,
+		Template:    meta.Template,
+		Status:      types.SandboxStatusRunning,
+		StartedAt:   now,
+		EndAt:       now.Add(time.Duration(timeout) * time.Second),
+		CpuCount:    meta.CpuCount,
+		MemoryMB:    meta.MemoryMB,
+		HostPort:    hostPort,
+		GuestPort:   netCfg.GuestPort,
+		pid:         cmd.Process.Pid,
+		cmd:         cmd,
+		network:     netCfg,
+		vsockPath:   vsockPath,
+		sandboxDir:  sandboxDir,
+		apiSockPath: apiSockPath,
+		fcClient:    fcClient,
+		guestMAC:    meta.GuestMAC,
+		guestCID:    newCID,
+		bootArgs:    meta.BootArgs,
+		agent:       agentClient,
+	}
+
+	m.mu.Lock()
+	m.vms[newID] = vm
+	m.mu.Unlock()
+
+	log.Printf("firecracker: warmFork %s from checkpoint %s: complete (%dms, port=%d, tap=%s)",
+		newID, checkpointID, time.Since(t0).Milliseconds(), hostPort, netCfg.TAPName)
+
+	return vmToSandbox(vm), nil
+}
+
+// --- Golden Snapshot ---
+
+// errNoGoldenSnapshot is returned when no golden snapshot is available.
+var errNoGoldenSnapshot = fmt.Errorf("no golden snapshot available")
+
+// PrepareGoldenSnapshot boots a default VM, creates a memory snapshot, and stores it
+// for fast VM creation. All subsequent Sandbox.create() calls for the default template
+// will use LoadSnapshot (~500ms) instead of cold boot (~2s).
+func (m *Manager) PrepareGoldenSnapshot() error {
+	t0 := time.Now()
+	goldenDir := filepath.Join(m.cfg.DataDir, "golden-snapshot", "default")
+
+	// Clean up any existing golden snapshot
+	os.RemoveAll(goldenDir)
+	if err := os.MkdirAll(goldenDir, 0755); err != nil {
+		return fmt.Errorf("mkdir golden dir: %w", err)
+	}
+
+	// Step 1: Boot a temporary VM with default config
+	// Use same-length ID as real sandboxes (sb-XXXXXXXX = 11 chars) for vmstate binary patching
+	tempID := "sb-" + uuid.New().String()[:8]
+	tempDir := filepath.Join(m.cfg.DataDir, "sandboxes", tempID)
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return fmt.Errorf("mkdir temp sandbox dir: %w", err)
+	}
+
+	// Prepare drives
+	rootfsPath := filepath.Join(tempDir, "rootfs.ext4")
+	workspacePath := filepath.Join(tempDir, "workspace.ext4")
+
+	baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, "default")
+	if err != nil {
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("resolve base image: %w", err)
+	}
+	if err := PrepareRootfs(baseImage, rootfsPath); err != nil {
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("prepare rootfs: %w", err)
+	}
+	if err := CreateWorkspace(workspacePath, m.cfg.DefaultDiskMB); err != nil {
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("create workspace: %w", err)
+	}
+
+	// Allocate network
+	netCfg, err := m.subnets.Allocate()
+	if err != nil {
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("allocate subnet: %w", err)
+	}
+	if err := CreateTAP(netCfg); err != nil {
+		m.subnets.Release(netCfg.TAPName)
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("create TAP: %w", err)
+	}
+
+	cpus := m.cfg.DefaultCPUs
+	memMB := m.cfg.DefaultMemoryMB
+	guestCID := m.allocateCID()
+	vsockPath := filepath.Join(tempDir, "vsock.sock")
+	guestMAC := generateMAC(tempID)
+
+	bootArgs := fmt.Sprintf(
+		"keep_bootcon console=ttyS0 reboot=k panic=1 pci=off "+
+			"ip=%s::%s:%s::eth0:off "+
+			"init=/sbin/init "+
+			"osb.gateway=%s",
+		netCfg.GuestIP, netCfg.HostIP, netCfg.Mask, netCfg.HostIP,
+	)
+
+	// Start Firecracker
+	apiSockPath := filepath.Join(tempDir, "firecracker.sock")
+	logPath := filepath.Join(tempDir, "firecracker.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("create log file: %w", err)
+	}
+
+	cmd := exec.Command(m.cfg.FirecrackerBin, "--api-sock", apiSockPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("start firecracker: %w", err)
+	}
+	logFile.Close()
+
+	// Configure VM
+	fcClient := NewFirecrackerClient(apiSockPath)
+	if err := fcClient.WaitForSocket(5 * time.Second); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("wait for API socket: %w", err)
+	}
+	if err := fcClient.PutMachineConfig(cpus, memMB); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("put machine config: %w", err)
+	}
+	if err := fcClient.PutBootSource(m.cfg.KernelPath, bootArgs); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("put boot source: %w", err)
+	}
+	if err := fcClient.PutDrive("rootfs", rootfsPath, true, false); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("put rootfs drive: %w", err)
+	}
+	if err := fcClient.PutDrive("workspace", workspacePath, false, false); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("put workspace drive: %w", err)
+	}
+	if err := fcClient.PutNetworkInterface("eth0", guestMAC, netCfg.TAPName); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("put network interface: %w", err)
+	}
+	if err := fcClient.PutVsock(guestCID, vsockPath); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("put vsock: %w", err)
+	}
+	if err := fcClient.StartInstance(); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("start instance: %w", err)
+	}
+
+	log.Printf("firecracker: golden snapshot: VM booted (%dms)", time.Since(t0).Milliseconds())
+
+	// Step 2: Wait for agent
+	agent, err := m.waitForAgent(context.Background(), vsockPath, 30*time.Second)
+	if err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("agent not ready: %w", err)
+	}
+
+	log.Printf("firecracker: golden snapshot: agent ready (%dms)", time.Since(t0).Milliseconds())
+
+	// Step 3: Flush filesystem, quiesce network, close agent, pause VM, snapshot
+	_ = agent.SyncFS(context.Background())
+
+	// Bring eth0 down to drain virtio-net queues cleanly. Without this,
+	// snapshot restore with a different TAP backend causes virtqueue corruption
+	// ("output.0:id 0 is not a head!") and a soft lockup in the guest kernel.
+	_, _ = agent.Exec(context.Background(), &pb.ExecRequest{
+		Command:        "/bin/sh",
+		Args:           []string{"-c", "ip link set eth0 down"},
+		TimeoutSeconds: 5,
+	})
+
+	agent.Close()
+
+	if err := fcClient.PauseVM(); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("pause VM: %w", err)
+	}
+
+	snapshotDir := filepath.Join(goldenDir, "snapshot")
+	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("mkdir snapshot dir: %w", err)
+	}
+
+	memFile := filepath.Join(snapshotDir, "mem")
+	vmstateFile := filepath.Join(snapshotDir, "vmstate")
+	if err := fcClient.CreateSnapshot(vmstateFile, memFile); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		return fmt.Errorf("create snapshot: %w", err)
+	}
+
+	log.Printf("firecracker: golden snapshot: memory snapshot captured (%dms)", time.Since(t0).Milliseconds())
+
+	// Step 4: Copy drives to golden dir (reflink for speed)
+	if err := copyFileReflink(rootfsPath, filepath.Join(goldenDir, "rootfs.ext4")); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		os.RemoveAll(goldenDir)
+		return fmt.Errorf("copy rootfs: %w", err)
+	}
+	if err := copyFileReflink(workspacePath, filepath.Join(goldenDir, "workspace.ext4")); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, tempDir)
+		os.RemoveAll(goldenDir)
+		return fmt.Errorf("copy workspace: %w", err)
+	}
+
+	// Step 5: Write metadata
+	meta := SnapshotMeta{
+		SandboxID: tempID,
+		Network:   netCfg,
+		GuestCID:  guestCID,
+		GuestMAC:  guestMAC,
+		BootArgs:  bootArgs,
+		CpuCount:  cpus,
+		MemoryMB:  memMB,
+		Template:  "default",
+		GuestPort: m.cfg.DefaultPort,
+	}
+	metaJSON, _ := json.Marshal(meta)
+	_ = os.WriteFile(filepath.Join(snapshotDir, "snapshot-meta.json"), metaJSON, 0644)
+
+	// Step 6: Kill the temporary VM + clean up
+	cmd.Process.Kill()
+	cmd.Wait()
+	DeleteTAP(netCfg.TAPName)
+	m.subnets.Release(netCfg.TAPName)
+	RemoveDNAT(netCfg)
+	os.RemoveAll(tempDir)
+
+	// Step 7: Register golden snapshot
+	gs := &GoldenSnapshot{
+		Dir:   goldenDir,
+		Meta:  meta,
+		Ready: true,
+	}
+	m.goldenMu.Lock()
+	m.golden = gs
+	m.goldenMu.Unlock()
+
+	log.Printf("firecracker: golden snapshot ready at %s (%dms)", goldenDir, time.Since(t0).Milliseconds())
+	return nil
+}
+
+// createFromGoldenSnapshot creates a new sandbox using the pre-booted golden snapshot.
+// Returns errNoGoldenSnapshot if no golden snapshot is available.
+func (m *Manager) createFromGoldenSnapshot(ctx context.Context, id string, cfg types.SandboxConfig) (*types.Sandbox, error) {
+	m.goldenMu.RLock()
+	gs := m.golden
+	m.goldenMu.RUnlock()
+
+	if gs == nil || !gs.Ready {
+		return nil, errNoGoldenSnapshot
+	}
+
+	t0 := time.Now()
+	meta := gs.Meta
+	goldenDir := gs.Dir
+
+	// Verify golden snapshot files still exist
+	if !fileExists(filepath.Join(goldenDir, "snapshot", "mem")) ||
+		!fileExists(filepath.Join(goldenDir, "snapshot", "vmstate")) {
+		return nil, errNoGoldenSnapshot
+	}
+
+	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", id)
+	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
+		return nil, fmt.Errorf("mkdir sandbox dir: %w", err)
+	}
+
+	// Step 1: Copy drives from golden snapshot (reflink = instant CoW)
+	rootfsPath := filepath.Join(sandboxDir, "rootfs.ext4")
+	workspacePath := filepath.Join(sandboxDir, "workspace.ext4")
+	if err := copyFileReflink(filepath.Join(goldenDir, "rootfs.ext4"), rootfsPath); err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("copy golden rootfs: %w", err)
+	}
+	if err := copyFileReflink(filepath.Join(goldenDir, "workspace.ext4"), workspacePath); err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("copy golden workspace: %w", err)
+	}
+
+	// Step 2: Copy snapshot files (mem + vmstate)
+	snapshotDir := filepath.Join(sandboxDir, "snapshot")
+	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("mkdir snapshot dir: %w", err)
+	}
+	memFile := filepath.Join(snapshotDir, "mem")
+	vmstateFile := filepath.Join(snapshotDir, "vmstate")
+	if err := copyFileReflink(filepath.Join(goldenDir, "snapshot", "mem"), memFile); err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("copy golden mem: %w", err)
+	}
+	if err := copyFileReflink(filepath.Join(goldenDir, "snapshot", "vmstate"), vmstateFile); err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("copy golden vmstate: %w", err)
+	}
+
+	log.Printf("firecracker: goldenCreate %s: files copied (%dms)", id, time.Since(t0).Milliseconds())
+
+	// Step 3: Allocate new network
+	netCfg, err := m.subnets.Allocate()
+	if err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("allocate subnet: %w", err)
+	}
+	if err := CreateTAP(netCfg); err != nil {
+		m.subnets.Release(netCfg.TAPName)
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("create TAP: %w", err)
+	}
+
+	hostPort, err := FindFreePort()
+	if err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("find free port: %w", err)
+	}
+	guestPort := cfg.Port
+	if guestPort == 0 {
+		guestPort = m.cfg.DefaultPort
+	}
+	netCfg.HostPort = hostPort
+	netCfg.GuestPort = guestPort
+
+	if err := AddDNAT(netCfg); err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("add DNAT: %w", err)
+	}
+
+	// Step 4: Binary-patch vmstate
+	newCID := m.allocateCID()
+	oldTAP := ""
+	if meta.Network != nil {
+		oldTAP = meta.Network.TAPName
+	}
+	if err := patchVMStateBinary(vmstateFile, meta.SandboxID, id, oldTAP, netCfg.TAPName, meta.GuestCID, newCID); err != nil {
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("patch vmstate: %w", err)
+	}
+	log.Printf("firecracker: goldenCreate %s: vmstate patched (%dms)", id, time.Since(t0).Milliseconds())
+
+	// Step 5: Start fresh Firecracker process
+	vsockPath := filepath.Join(sandboxDir, "vsock.sock")
+	apiSockPath := filepath.Join(sandboxDir, "firecracker.sock")
+	_ = os.Remove(apiSockPath)
+	_ = os.Remove(vsockPath)
+
+	logPath := filepath.Join(sandboxDir, "firecracker.log")
+	logFileH, err := os.Create(logPath)
+	if err != nil {
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("create log file: %w", err)
+	}
+
+	cmd := exec.Command(m.cfg.FirecrackerBin, "--api-sock", apiSockPath)
+	cmd.Stdout = logFileH
+	cmd.Stderr = logFileH
+	if err := cmd.Start(); err != nil {
+		logFileH.Close()
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("start firecracker: %w", err)
+	}
+	logFileH.Close()
+
+	fcClient := NewFirecrackerClient(apiSockPath)
+	if err := fcClient.WaitForSocket(5 * time.Second); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("wait for API socket: %w", err)
+	}
+
+	// Step 6: Load snapshot
+	if err := fcClient.LoadSnapshot(vmstateFile, memFile, true); err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("load snapshot: %w", err)
+	}
+	log.Printf("firecracker: goldenCreate %s: snapshot loaded (%dms)", id, time.Since(t0).Milliseconds())
+
+	// Step 7: Wait for agent
+	agentClient, err := m.waitForAgent(context.Background(), vsockPath, 10*time.Second)
+	if err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("agent not ready after golden create: %w", err)
+	}
+
+	// Step 8: Reconfigure guest network
+	if err := reconfigureGuestNetwork(ctx, agentClient, netCfg.GuestIP, netCfg.HostIP, netCfg.CIDR); err != nil {
+		log.Printf("firecracker: goldenCreate %s: network reconfig failed: %v (VM still running)", id, err)
+	}
+
+	// Step 9: Write sandbox-meta.json
+	cpus := cfg.CpuCount
+	if cpus <= 0 {
+		cpus = m.cfg.DefaultCPUs
+	}
+	memMB := cfg.MemoryMB
+	if memMB <= 0 {
+		memMB = m.cfg.DefaultMemoryMB
+	}
+
+	sbMeta := SandboxMeta{
+		SandboxID: id,
+		Template:  "default",
+		CpuCount:  cpus,
+		MemoryMB:  memMB,
+		GuestPort: guestPort,
+	}
+	sbMetaJSON, _ := json.Marshal(sbMeta)
+	_ = os.WriteFile(filepath.Join(sandboxDir, "sandbox-meta.json"), sbMetaJSON, 0644)
+
+	// Step 10: Register VM
+	timeout := time.Duration(cfg.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = 300 * time.Second
+	}
+
+	now := time.Now()
+	vm := &VMInstance{
+		ID:          id,
+		Template:    "default",
+		Status:      types.SandboxStatusRunning,
+		StartedAt:   now,
+		EndAt:       now.Add(timeout),
+		CpuCount:    cpus,
+		MemoryMB:    memMB,
+		HostPort:    hostPort,
+		GuestPort:   guestPort,
+		pid:         cmd.Process.Pid,
+		cmd:         cmd,
+		network:     netCfg,
+		vsockPath:   vsockPath,
+		sandboxDir:  sandboxDir,
+		apiSockPath: apiSockPath,
+		fcClient:    fcClient,
+		guestMAC:    generateMAC(id),
+		guestCID:    newCID,
+		bootArgs:    meta.BootArgs,
+		agent:       agentClient,
+	}
+
+	m.mu.Lock()
+	m.vms[id] = vm
+	m.mu.Unlock()
+
+	log.Printf("firecracker: goldenCreate %s: complete (%dms, port=%d, tap=%s)",
+		id, time.Since(t0).Milliseconds(), hostPort, netCfg.TAPName)
+
+	return vmToSandbox(vm), nil
 }
