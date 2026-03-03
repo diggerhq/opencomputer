@@ -35,7 +35,9 @@ build-server-arm64:
 
 ## --- Local Testing (3 tiers) ---
 
-## run-dev: Tier 1 - Combined mode, no auth, no PG/NATS (simplest)
+## run-dev: Tier 1 - Combined mode, no auth, no PG/NATS
+##   Requires: Firecracker binary, kernel, and base images.
+##   Set OPENSANDBOX_KERNEL_PATH and OPENSANDBOX_IMAGES_DIR if not using default paths.
 run-dev: build-server
 	OPENSANDBOX_MODE=combined \
 	OPENSANDBOX_API_KEY= \
@@ -43,6 +45,7 @@ run-dev: build-server
 	$(BUILD_DIR)/$(BINARY_SERVER)
 
 ## run: Tier 1 - Combined mode with static API key
+##   Requires: Firecracker binary, kernel, and base images.
 run: build-server
 	OPENSANDBOX_MODE=combined \
 	OPENSANDBOX_API_KEY=test-key \

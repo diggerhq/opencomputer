@@ -82,8 +82,8 @@ ASYNC SYNC (background):
 
 | File | What it does |
 |------|-------------|
-| `cmd/server/main.go` | Wires up: Podman, sandbox/PTY managers, templates, PG + migrations, JWT, SQLite, NATS consumer |
-| `cmd/worker/main.go` | Wires up: Podman, sandbox/PTY managers, SQLite, JWT, gRPC (:9090), HTTP (cfg.Port), NATS publisher, metrics (:9091), image pre-pulling |
+| `cmd/server/main.go` | Wires up: Firecracker VM manager, PTY manager, PG + migrations, JWT, SQLite, NATS consumer |
+| `cmd/worker/main.go` | Wires up: Firecracker VM manager, PTY manager, SQLite, JWT, gRPC (:9090), HTTP (cfg.Port), NATS publisher, metrics (:9091) |
 
 ---
 
@@ -127,7 +127,7 @@ No frontend exists. The plan calls for a web dashboard with:
 
 ### Prerequisites
 - Go 1.23+
-- Podman installed and running
+- Firecracker binary, kernel, and base rootfs images (see `make build-rootfs`, `make download-kernel`)
 - Docker (for infrastructure containers)
 
 ### Tier 1 — Simplest (no PG, no auth)
@@ -229,7 +229,7 @@ internal/
     event_publisher.go        — NATS publisher (events + heartbeats)
 
   sandbox/
-    manager.go                — Container lifecycle (Podman)
+    interface.go              — Manager interface + HibernateResult
     pty.go                    — PTY session management
     sqlite.go                 — Per-sandbox SQLite
 

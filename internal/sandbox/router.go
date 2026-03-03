@@ -341,7 +341,7 @@ func (r *SandboxRouter) ensureRunning(ctx context.Context, sandboxID string) err
 func (r *SandboxRouter) discoverAndEnsure(ctx context.Context, sandboxID string) error {
 	if r.store == nil || r.checkpointStore == nil {
 		// No DB/S3 — can't auto-wake, let the operation proceed
-		// (podman will return an error if the container doesn't exist)
+		// (the manager will return an error if the sandbox doesn't exist)
 		return nil
 	}
 

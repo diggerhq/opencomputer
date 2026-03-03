@@ -749,9 +749,9 @@ func (m *Manager) HostPort(ctx context.Context, sandboxID string) (int, error) {
 	return vm.HostPort, nil
 }
 
-// ContainerAddr returns the VM's guest IP and the requested port as "ip:port".
+// SandboxAddr returns the VM's guest IP and the requested port as "ip:port".
 // Used by the proxy to route preview URL traffic to a specific port inside the VM.
-func (m *Manager) ContainerAddr(ctx context.Context, sandboxID string, port int) (string, error) {
+func (m *Manager) SandboxAddr(ctx context.Context, sandboxID string, port int) (string, error) {
 	vm, err := m.getVM(sandboxID)
 	if err != nil {
 		return "", err
@@ -767,8 +767,8 @@ func (m *Manager) DataDir() string {
 	return m.cfg.DataDir
 }
 
-// ContainerName returns a human-readable name for the sandbox (for logging).
-func (m *Manager) ContainerName(id string) string {
+// SandboxName returns a human-readable name for the sandbox (for logging).
+func (m *Manager) SandboxName(id string) string {
 	return "fc-" + id
 }
 

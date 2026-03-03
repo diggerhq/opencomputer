@@ -7,8 +7,14 @@ import (
 	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
+// HibernateResult holds the result of a hibernate operation.
+type HibernateResult struct {
+	SandboxID     string `json:"sandboxId"`
+	CheckpointKey string `json:"checkpointKey"`
+	SizeBytes     int64  `json:"sizeBytes"`
+}
+
 // SandboxStats holds live resource usage for a sandbox.
-// Runtime-agnostic: both Podman and Firecracker backends populate these fields.
 type SandboxStats struct {
 	CPUPercent float64 `json:"cpuPercent"`
 	MemUsage   uint64  `json:"memUsage"` // bytes
@@ -20,8 +26,7 @@ type SandboxStats struct {
 
 // Manager defines the sandbox lifecycle interface.
 // Upper layers (SandboxRouter, HTTP/gRPC servers, proxy) depend on this interface,
-// not on a concrete implementation. This allows swapping the backend
-// (e.g., Podman containers → Firecracker microVMs) without changing callers.
+// not on a concrete implementation.
 type Manager interface {
 	// Lifecycle
 	Create(ctx context.Context, cfg types.SandboxConfig) (*types.Sandbox, error)
@@ -46,11 +51,11 @@ type Manager interface {
 	// Monitoring
 	Stats(ctx context.Context, sandboxID string) (*SandboxStats, error)
 	HostPort(ctx context.Context, sandboxID string) (int, error)
-	ContainerAddr(ctx context.Context, sandboxID string, port int) (string, error)
+	SandboxAddr(ctx context.Context, sandboxID string, port int) (string, error)
 	DataDir() string
 
 	// Sandbox name (for logging/cleanup)
-	ContainerName(id string) string
+	SandboxName(id string) string
 
 	// Hibernation
 	Hibernate(ctx context.Context, sandboxID string, checkpointStore *storage.CheckpointStore) (*HibernateResult, error)

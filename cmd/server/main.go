@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -19,10 +18,11 @@ import (
 	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/ecr"
-	"github.com/opensandbox/opensandbox/internal/podman"
+	fc "github.com/opensandbox/opensandbox/internal/firecracker"
 	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
+	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
 func main() {
@@ -33,39 +33,72 @@ func main() {
 
 	ctx := context.Background()
 
-	// Initialize Podman (optional in server mode — no container runtime needed)
+	// Initialize Firecracker sandbox manager (optional in server-only mode)
 	var mgr sandbox.Manager
 	var ptyMgr *sandbox.PTYManager
-	podmanClient, err := podman.NewClient()
-	if err != nil {
-		if cfg.Mode == "server" {
-			log.Printf("opensandbox: podman not available (server-only mode, sandbox execution disabled): %v", err)
-		} else {
-			log.Fatalf("failed to initialize podman: %v", err)
+	var fcMgr *fc.Manager
+	if cfg.Mode != "server" {
+		fcCfg := fc.Config{
+			DataDir:         cfg.DataDir,
+			KernelPath:      cfg.KernelPath,
+			ImagesDir:       cfg.ImagesDir,
+			FirecrackerBin:  cfg.FirecrackerBin,
+			DefaultMemoryMB: cfg.DefaultSandboxMemoryMB,
+			DefaultCPUs:     cfg.DefaultSandboxCPUs,
+			DefaultDiskMB:   cfg.DefaultSandboxDiskMB,
 		}
-	} else {
-		version, err := podmanClient.Version(ctx)
+		var err error
+		fcMgr, err = fc.NewManager(fcCfg)
 		if err != nil {
-			if cfg.Mode == "server" {
-				log.Printf("opensandbox: podman not responding (server-only mode, sandbox execution disabled): %v", err)
-			} else {
-				log.Fatalf("failed to get podman version: %v", err)
-			}
-		} else {
-			log.Printf("opensandbox: using podman %s", version)
-
-			mgr = sandbox.NewManager(podmanClient,
-				sandbox.WithDataDir(cfg.DataDir),
-				sandbox.WithDefaultMemoryMB(cfg.DefaultSandboxMemoryMB),
-				sandbox.WithDefaultCPUs(cfg.DefaultSandboxCPUs),
-				sandbox.WithDefaultDiskMB(cfg.DefaultSandboxDiskMB),
-			)
-			defer mgr.Close()
-
-			podmanPath, _ := exec.LookPath("podman")
-			ptyMgr = sandbox.NewPTYManager(podmanPath, podmanClient.AuthFile())
-			defer ptyMgr.CloseAll()
+			log.Fatalf("failed to initialize Firecracker manager: %v", err)
 		}
+		defer fcMgr.Close()
+		log.Println("opensandbox: Firecracker VM manager initialized")
+
+		mgr = fcMgr
+
+		ptyMgr = sandbox.NewAgentPTYManager(func(sandboxID string, req types.PTYCreateRequest) (*sandbox.PTYSessionHandle, error) {
+			agent, err := fcMgr.GetAgent(sandboxID)
+			if err != nil {
+				return nil, fmt.Errorf("get agent for %s: %w", sandboxID, err)
+			}
+			vsockPath, err := fcMgr.GetVsockPath(sandboxID)
+			if err != nil {
+				return nil, fmt.Errorf("get vsock path for %s: %w", sandboxID, err)
+			}
+
+			cols := int32(req.Cols)
+			if cols <= 0 {
+				cols = 80
+			}
+			rows := int32(req.Rows)
+			if rows <= 0 {
+				rows = 24
+			}
+
+			sessionID, dataPort, err := agent.PTYCreate(context.Background(), cols, rows, req.Shell)
+			if err != nil {
+				return nil, fmt.Errorf("create PTY in VM: %w", err)
+			}
+
+			conn, err := agent.ConnectPTYData(vsockPath, dataPort)
+			if err != nil {
+				_ = agent.PTYKill(context.Background(), sessionID)
+				return nil, fmt.Errorf("connect PTY data: %w", err)
+			}
+
+			done := make(chan struct{})
+
+			return &sandbox.PTYSessionHandle{
+				ID:        sessionID,
+				SandboxID: sandboxID,
+				PTY:       conn,
+				Done:      done,
+			}, nil
+		})
+		defer ptyMgr.CloseAll()
+	} else {
+		log.Println("opensandbox: server-only mode, sandbox execution disabled")
 	}
 
 	// Build server options

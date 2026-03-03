@@ -105,7 +105,7 @@ func (p *SandboxProxy) doProxy(c echo.Context, sandboxID string, port int) error
 	var addrErr error
 
 	routeOp := func(ctx context.Context) error {
-		addr, addrErr = p.manager.ContainerAddr(ctx, sandboxID, port)
+		addr, addrErr = p.manager.SandboxAddr(ctx, sandboxID, port)
 		return addrErr
 	}
 
