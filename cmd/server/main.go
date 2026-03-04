@@ -33,39 +33,33 @@ func main() {
 
 	ctx := context.Background()
 
-	// Initialize Podman (optional in server mode — no container runtime needed)
+	// Initialize Podman (skipped in server mode — server delegates to workers via gRPC)
 	var mgr sandbox.Manager
 	var ptyMgr *sandbox.PTYManager
-	podmanClient, err := podman.NewClient()
-	if err != nil {
-		if cfg.Mode == "server" {
-			log.Printf("opensandbox: podman not available (server-only mode, sandbox execution disabled): %v", err)
-		} else {
+	if cfg.Mode == "server" {
+		log.Printf("opensandbox: server mode — skipping local podman/sandbox manager (delegating to workers)")
+	} else {
+		podmanClient, err := podman.NewClient()
+		if err != nil {
 			log.Fatalf("failed to initialize podman: %v", err)
 		}
-	} else {
 		version, err := podmanClient.Version(ctx)
 		if err != nil {
-			if cfg.Mode == "server" {
-				log.Printf("opensandbox: podman not responding (server-only mode, sandbox execution disabled): %v", err)
-			} else {
-				log.Fatalf("failed to get podman version: %v", err)
-			}
-		} else {
-			log.Printf("opensandbox: using podman %s", version)
-
-			mgr = sandbox.NewManager(podmanClient,
-				sandbox.WithDataDir(cfg.DataDir),
-				sandbox.WithDefaultMemoryMB(cfg.DefaultSandboxMemoryMB),
-				sandbox.WithDefaultCPUs(cfg.DefaultSandboxCPUs),
-				sandbox.WithDefaultDiskMB(cfg.DefaultSandboxDiskMB),
-			)
-			defer mgr.Close()
-
-			podmanPath, _ := exec.LookPath("podman")
-			ptyMgr = sandbox.NewPTYManager(podmanPath, podmanClient.AuthFile())
-			defer ptyMgr.CloseAll()
+			log.Fatalf("failed to get podman version: %v", err)
 		}
+		log.Printf("opensandbox: using podman %s", version)
+
+		mgr = sandbox.NewManager(podmanClient,
+			sandbox.WithDataDir(cfg.DataDir),
+			sandbox.WithDefaultMemoryMB(cfg.DefaultSandboxMemoryMB),
+			sandbox.WithDefaultCPUs(cfg.DefaultSandboxCPUs),
+			sandbox.WithDefaultDiskMB(cfg.DefaultSandboxDiskMB),
+		)
+		defer mgr.Close()
+
+		podmanPath, _ := exec.LookPath("podman")
+		ptyMgr = sandbox.NewPTYManager(podmanPath, podmanClient.AuthFile())
+		defer ptyMgr.CloseAll()
 	}
 
 	// Build server options
