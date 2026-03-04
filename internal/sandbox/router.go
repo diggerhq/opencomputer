@@ -18,6 +18,7 @@ const (
 	StateRunning    SandboxState = iota
 	StateHibernated
 	StateWaking
+	StateCreating // async creation in progress — commands wait until ready
 )
 
 func (s SandboxState) String() string {
@@ -28,6 +29,8 @@ func (s SandboxState) String() string {
 		return "hibernated"
 	case StateWaking:
 		return "waking"
+	case StateCreating:
+		return "creating"
 	default:
 		return "unknown"
 	}
@@ -130,6 +133,53 @@ func (r *SandboxRouter) Register(sandboxID string, timeout time.Duration) {
 		r.onTimeout(sandboxID)
 	})
 	r.sandboxes[sandboxID] = entry
+}
+
+// RegisterCreating registers a sandbox that is being created asynchronously.
+// Commands routed to this sandbox will block until MarkCreated is called.
+func (r *SandboxRouter) RegisterCreating(sandboxID string, timeout time.Duration) {
+	if timeout <= 0 {
+		timeout = r.defaultTimeout
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry := &sandboxEntry{
+		state:   StateCreating,
+		timeout: timeout,
+		wakeCh:  make(chan struct{}), // reuse wakeCh as the "ready" signal
+	}
+	r.sandboxes[sandboxID] = entry
+}
+
+// MarkCreated transitions a sandbox from StateCreating to StateRunning.
+// This unblocks any commands waiting on the sandbox.
+func (r *SandboxRouter) MarkCreated(sandboxID string, err error) {
+	r.mu.RLock()
+	entry, ok := r.sandboxes[sandboxID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	if entry.state != StateCreating {
+		return
+	}
+
+	if err != nil {
+		entry.wakeErr = err
+		entry.state = StateHibernated // mark as failed
+	} else {
+		entry.state = StateRunning
+		entry.timer = time.AfterFunc(entry.timeout, func() {
+			r.onTimeout(sandboxID)
+		})
+	}
+	close(entry.wakeCh)
 }
 
 // Unregister removes a sandbox from the router (called on kill/destroy).
@@ -330,6 +380,24 @@ func (r *SandboxRouter) ensureRunning(ctx context.Context, sandboxID string) err
 			return ctx.Err()
 		}
 
+	case StateCreating:
+		// Sandbox is being created asynchronously — wait for it
+		readyCh := entry.wakeCh
+		entry.mu.Unlock()
+
+		select {
+		case <-readyCh:
+			entry.mu.Lock()
+			err := entry.wakeErr
+			entry.mu.Unlock()
+			if err != nil {
+				return fmt.Errorf("sandbox %s creation failed: %w", sandboxID, err)
+			}
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
 	default:
 		entry.mu.Unlock()
 		return fmt.Errorf("sandbox %s in unexpected state: %v", sandboxID, entry.state)
@@ -345,14 +413,14 @@ func (r *SandboxRouter) discoverAndEnsure(ctx context.Context, sandboxID string)
 		return nil
 	}
 
-	// Check if there's an active checkpoint (meaning it's hibernated)
-	checkpoint, err := r.store.GetActiveCheckpoint(ctx, sandboxID)
+	// Check if there's an active hibernation (meaning it's hibernated)
+	checkpoint, err := r.store.GetActiveHibernation(ctx, sandboxID)
 	if err != nil || checkpoint == nil {
-		// No checkpoint found — sandbox might be running or doesn't exist
+		// No hibernation found — sandbox might be running or doesn't exist
 		return nil
 	}
 
-	// Found a checkpoint — register as hibernated and then ensure running
+	// Found a hibernation — register as hibernated and then ensure running
 	r.MarkHibernated(sandboxID, r.defaultTimeout)
 	return r.ensureRunning(ctx, sandboxID)
 }
@@ -382,9 +450,9 @@ func (r *SandboxRouter) doWake(ctx context.Context, sandboxID string, entry *san
 		return
 	}
 
-	checkpoint, err := r.store.GetActiveCheckpoint(wakeCtx, sandboxID)
+	hibernation, err := r.store.GetActiveHibernation(wakeCtx, sandboxID)
 	if err != nil {
-		wakeErr = fmt.Errorf("no active checkpoint: %w", err)
+		wakeErr = fmt.Errorf("no active hibernation: %w", err)
 		return
 	}
 
@@ -393,14 +461,14 @@ func (r *SandboxRouter) doWake(ctx context.Context, sandboxID string, entry *san
 		timeout = int(r.defaultTimeout.Seconds())
 	}
 
-	sb, err := r.manager.Wake(wakeCtx, sandboxID, checkpoint.CheckpointKey, r.checkpointStore, timeout)
+	sb, err := r.manager.Wake(wakeCtx, sandboxID, hibernation.HibernationKey, r.checkpointStore, timeout)
 	if err != nil {
 		wakeErr = err
 		return
 	}
 
 	// Update DB records
-	_ = r.store.MarkCheckpointRestored(wakeCtx, sandboxID)
+	_ = r.store.MarkHibernationRestored(wakeCtx, sandboxID)
 	_ = r.store.UpdateSandboxSessionForWake(wakeCtx, sandboxID, r.workerID)
 
 	log.Printf("router: auto-woke sandbox %s (status=%s)", sandboxID, sb.Status)
@@ -472,7 +540,7 @@ func (r *SandboxRouter) onTimeout(sandboxID string) {
 			return
 		}
 
-		log.Printf("router: sandbox %s hibernated on timeout (key=%s, size=%d)", sandboxID, result.CheckpointKey, result.SizeBytes)
+		log.Printf("router: sandbox %s hibernated on timeout (key=%s, size=%d)", sandboxID, result.HibernationKey, result.SizeBytes)
 
 		entry.mu.Lock()
 		entry.state = StateHibernated

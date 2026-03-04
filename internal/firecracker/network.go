@@ -64,7 +64,7 @@ func (a *SubnetAllocator) Allocate() (*NetworkConfig, error) {
 	hostIP := fmt.Sprintf("172.16.%d.%d", b2, b3+1)
 	guestIP := fmt.Sprintf("172.16.%d.%d", b2, b3+2)
 
-	tapName := fmt.Sprintf("fc-tap%d", block)
+	tapName := fmt.Sprintf("fc-tap%07d", block)
 
 	return &NetworkConfig{
 		TAPName: tapName,

@@ -46,6 +46,9 @@ type SandboxConfig struct {
 	// When set, the sandbox boots from these drives instead of the standard base image.
 	TemplateRootfsKey    string `json:"templateRootfsKey,omitempty"`
 	TemplateWorkspaceKey string `json:"templateWorkspaceKey,omitempty"`
+	// SandboxID allows pre-determining the sandbox ID for async creation.
+	// If empty, a new ID is generated automatically.
+	SandboxID string `json:"-"`
 }
 
 // SandboxListResponse is the response for listing sandboxes.
@@ -58,14 +61,14 @@ type TimeoutRequest struct {
 	Timeout int `json:"timeout"` // seconds
 }
 
-// CheckpointInfo holds metadata about a hibernated sandbox's checkpoint.
-type CheckpointInfo struct {
-	SandboxID     string    `json:"sandboxId"`
-	CheckpointKey string    `json:"checkpointKey"`
-	SizeBytes     int64     `json:"sizeBytes"`
-	Region        string    `json:"region"`
-	Template      string    `json:"template"`
-	HibernatedAt  time.Time `json:"hibernatedAt"`
+// HibernationInfo holds metadata about a hibernated sandbox.
+type HibernationInfo struct {
+	SandboxID      string    `json:"sandboxId"`
+	HibernationKey string    `json:"hibernationKey"`
+	SizeBytes      int64     `json:"sizeBytes"`
+	Region         string    `json:"region"`
+	Template       string    `json:"template"`
+	HibernatedAt   time.Time `json:"hibernatedAt"`
 }
 
 // WakeRequest is the request body for waking a hibernated sandbox.

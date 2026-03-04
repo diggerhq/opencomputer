@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -43,6 +44,13 @@ type Server struct {
 	sandboxDomain   string                            // base domain for sandbox subdomains
 	ecrConfig       *ecr.Config                       // nil if ECR not configured
 	cfClient        *cloudflare.Client                // nil if Cloudflare not configured
+	pendingCreates  sync.Map                          // map[sandboxID]*pendingCreate — async sandbox creation tracking
+}
+
+// pendingCreate tracks an async sandbox creation.
+type pendingCreate struct {
+	ready chan struct{} // closed when creation completes
+	err   error        // set before closing ready
 }
 
 // ServerOpts holds optional dependencies for the API server.
@@ -126,6 +134,13 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	// Hibernation
 	api.POST("/sandboxes/:id/hibernate", s.hibernateSandbox)
 	api.POST("/sandboxes/:id/wake", s.wakeSandbox)
+
+	// Checkpoints
+	api.POST("/sandboxes/:id/checkpoints", s.createCheckpoint)
+	api.GET("/sandboxes/:id/checkpoints", s.listCheckpoints)
+	api.POST("/sandboxes/:id/checkpoints/:checkpointId/restore", s.restoreCheckpoint)
+	api.POST("/sandboxes/from-checkpoint/:checkpointId", s.createFromCheckpoint)
+	api.DELETE("/sandboxes/:id/checkpoints/:checkpointId", s.deleteCheckpoint)
 
 	// Preview URLs (on-demand port-based)
 	api.POST("/sandboxes/:id/preview", s.createPreviewURL)

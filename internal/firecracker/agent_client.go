@@ -10,6 +10,7 @@ import (
 
 	pb "github.com/opensandbox/opensandbox/proto/agent"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -34,6 +35,14 @@ func NewAgentClient(vsockPath string) (*AgentClient, error) {
 		"passthrough:///vsock",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithBlock(),
+		grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff: backoff.Config{
+				BaseDelay:  10 * time.Millisecond,
+				Multiplier: 1.6,
+				Jitter:     0.2,
+				MaxDelay:   1 * time.Second,
+			},
+		}),
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 			return dialVsock(ctx, vsockPath, 1024)
 		}),
@@ -106,10 +115,10 @@ func (c *vsockConn) Read(p []byte) (int, error) {
 
 // Close closes the gRPC connection.
 func (c *AgentClient) Close() error {
-	if c.conn != nil {
-		return c.conn.Close()
+	if c == nil || c.conn == nil {
+		return nil
 	}
-	return nil
+	return c.conn.Close()
 }
 
 // Ping verifies the agent is responsive.

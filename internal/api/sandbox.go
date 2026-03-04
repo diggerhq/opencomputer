@@ -547,7 +547,7 @@ func (s *Server) hibernateSandbox(c echo.Context) error {
 			template = session.Template
 			region = session.Region
 		}
-		_, _ = s.store.CreateCheckpoint(ctx, id, orgID, result.CheckpointKey, result.SizeBytes, region, template, cfg)
+		_, _ = s.store.CreateHibernation(ctx, id, orgID, result.HibernationKey, result.SizeBytes, region, template, cfg)
 		_ = s.store.UpdateSandboxSessionStatus(ctx, id, "hibernated", nil)
 	}
 
@@ -556,10 +556,10 @@ func (s *Server) hibernateSandbox(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"sandboxID":     id,
-		"status":        "hibernated",
-		"checkpointKey": result.CheckpointKey,
-		"sizeBytes":     result.SizeBytes,
+		"sandboxID":      id,
+		"status":         "hibernated",
+		"hibernationKey": result.HibernationKey,
+		"sizeBytes":      result.SizeBytes,
 	})
 }
 
@@ -595,18 +595,18 @@ func (s *Server) hibernateSandboxRemote(c echo.Context, sandboxID string) error 
 		})
 	}
 
-	// Record checkpoint in PG
+	// Record hibernation in PG
 	orgID, _ := auth.GetOrgID(c)
-	_, _ = s.store.CreateCheckpoint(c.Request().Context(), sandboxID, orgID,
+	_, _ = s.store.CreateHibernation(c.Request().Context(), sandboxID, orgID,
 		grpcResp.CheckpointKey, grpcResp.SizeBytes,
 		session.Region, session.Template, session.Config)
 	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "hibernated", nil)
 
 	resp := map[string]interface{}{
-		"sandboxID":     sandboxID,
-		"status":        "hibernated",
-		"checkpointKey": grpcResp.CheckpointKey,
-		"sizeBytes":     grpcResp.SizeBytes,
+		"sandboxID":      sandboxID,
+		"status":         "hibernated",
+		"hibernationKey": grpcResp.CheckpointKey,
+		"sizeBytes":      grpcResp.SizeBytes,
 	}
 
 	return c.JSON(http.StatusOK, resp)
@@ -638,12 +638,12 @@ func (s *Server) wakeSandbox(c echo.Context) error {
 		})
 	}
 
-	checkpoint, err := s.store.GetActiveCheckpoint(ctx, id)
+	hibernation, err := s.store.GetActiveHibernation(ctx, id)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "no active checkpoint found"})
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "no active hibernation found"})
 	}
 
-	sb, err := s.manager.Wake(ctx, id, checkpoint.CheckpointKey, s.checkpointStore, req.Timeout)
+	sb, err := s.manager.Wake(ctx, id, hibernation.HibernationKey, s.checkpointStore, req.Timeout)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
@@ -659,7 +659,7 @@ func (s *Server) wakeSandbox(c echo.Context) error {
 		s.router.Register(id, time.Duration(timeout)*time.Second)
 	}
 
-	_ = s.store.MarkCheckpointRestored(ctx, id)
+	_ = s.store.MarkHibernationRestored(ctx, id)
 	_ = s.store.UpdateSandboxSessionForWake(ctx, id, s.workerID)
 
 	// Issue fresh JWT
@@ -683,9 +683,9 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 		})
 	}
 
-	checkpoint, err := s.store.GetActiveCheckpoint(c.Request().Context(), sandboxID)
+	hibernation, err := s.store.GetActiveHibernation(c.Request().Context(), sandboxID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "no active checkpoint found"})
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "no active hibernation found"})
 	}
 
 	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
@@ -697,7 +697,7 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 	}
 
 	// Pick ANY worker in the same region
-	region := checkpoint.Region
+	region := hibernation.Region
 	worker, grpcClient, err := s.workerRegistry.GetLeastLoadedWorker(region)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{
@@ -710,7 +710,7 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 
 	grpcResp, err := grpcClient.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{
 		SandboxId:     sandboxID,
-		CheckpointKey: checkpoint.CheckpointKey,
+		CheckpointKey: hibernation.HibernationKey,
 		Timeout:       int32(req.Timeout),
 	})
 	if err != nil {
@@ -719,8 +719,8 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 		})
 	}
 
-	// Mark checkpoint as restored, update session
-	_ = s.store.MarkCheckpointRestored(c.Request().Context(), sandboxID)
+	// Mark hibernation as restored, update session
+	_ = s.store.MarkHibernationRestored(c.Request().Context(), sandboxID)
 	_ = s.store.UpdateSandboxSessionForWake(c.Request().Context(), sandboxID, worker.ID)
 
 	// Issue fresh JWT
@@ -747,6 +747,470 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 	}
 
 	return c.JSON(http.StatusOK, resp)
+}
+
+// --- Checkpoint handlers ---
+
+// createCheckpoint creates a named checkpoint of a running sandbox.
+func (s *Server) createCheckpoint(c echo.Context) error {
+	sandboxID := c.Param("id")
+	ctx := c.Request().Context()
+
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{
+			"error": "org context required",
+		})
+	}
+
+	// Verify sandbox is running and belongs to org
+	session, err := s.store.GetSandboxSession(ctx, sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+	}
+	if session.OrgID != orgID {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "sandbox does not belong to this organization"})
+	}
+	if session.Status != "running" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox must be running to create a checkpoint"})
+	}
+
+	// Parse request body
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+	if req.Name == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
+	}
+
+	// Enforce max 10 checkpoints per sandbox
+	count, err := s.store.CountCheckpoints(ctx, sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to count checkpoints"})
+	}
+	if count >= 10 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "maximum 10 checkpoints per sandbox"})
+	}
+
+	// Reserve a checkpoint UUID
+	checkpointID := uuid.New()
+
+	// Create DB record (status='processing')
+	cp := &db.Checkpoint{
+		ID:            checkpointID,
+		SandboxID:     sandboxID,
+		OrgID:         orgID,
+		Name:          req.Name,
+		Status:        "processing",
+		SandboxConfig: session.Config,
+	}
+	if err := s.store.CreateCheckpoint(ctx, cp); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return c.JSON(http.StatusConflict, map[string]string{"error": "checkpoint name already exists for this sandbox"})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create checkpoint: " + err.Error()})
+	}
+
+	// Dispatch checkpoint creation in background — return immediately with status "processing".
+	// The heavy work (SyncFS + pause + memory snapshot + drive copy + resume + S3 upload)
+	// runs async. Clients poll listCheckpoints for status=ready.
+	if s.workerRegistry != nil {
+		grpcClient, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
+		if err != nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker not available: " + err.Error()})
+		}
+
+		go func() {
+			grpcCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			grpcResp, err := grpcClient.CreateCheckpoint(grpcCtx, &pb.CreateCheckpointRequest{
+				SandboxId:    sandboxID,
+				CheckpointId: checkpointID.String(),
+			})
+			if err != nil {
+				log.Printf("api: async checkpoint %s failed: %v", checkpointID, err)
+				_ = s.store.SetCheckpointFailed(context.Background(), checkpointID, err.Error())
+				return
+			}
+			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key, 0)
+			log.Printf("api: checkpoint %s ready", checkpointID)
+		}()
+	} else if s.manager != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			rootfsKey, workspaceKey, err := s.manager.CreateCheckpoint(bgCtx, sandboxID, checkpointID.String(), s.checkpointStore, func() {})
+			if err != nil {
+				log.Printf("api: async checkpoint %s failed: %v", checkpointID, err)
+				_ = s.store.SetCheckpointFailed(context.Background(), checkpointID, err.Error())
+				return
+			}
+			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, rootfsKey, workspaceKey, 0)
+			log.Printf("api: checkpoint %s ready", checkpointID)
+		}()
+	} else {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
+	return c.JSON(http.StatusCreated, cp)
+}
+
+// listCheckpoints returns all checkpoints for a sandbox.
+func (s *Server) listCheckpoints(c echo.Context) error {
+	sandboxID := c.Param("id")
+
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+
+	// Verify sandbox belongs to org
+	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+	}
+	if session.OrgID != orgID {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "sandbox does not belong to this organization"})
+	}
+
+	checkpoints, err := s.store.ListCheckpoints(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, checkpoints)
+}
+
+// restoreCheckpoint restores a sandbox to a checkpoint (in-place revert).
+func (s *Server) restoreCheckpoint(c echo.Context) error {
+	sandboxID := c.Param("id")
+	checkpointIDStr := c.Param("checkpointId")
+	ctx := c.Request().Context()
+
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+
+	checkpointID, err := uuid.Parse(checkpointIDStr)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid checkpoint ID"})
+	}
+
+	// Verify sandbox belongs to org and is running
+	session, err := s.store.GetSandboxSession(ctx, sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+	}
+	if session.OrgID != orgID {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "sandbox does not belong to this organization"})
+	}
+	if session.Status != "running" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox must be running to restore a checkpoint"})
+	}
+
+	// Verify checkpoint exists, belongs to this sandbox, and is ready
+	cp, err := s.store.GetCheckpoint(ctx, checkpointID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "checkpoint not found"})
+	}
+	if cp.SandboxID != sandboxID {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "checkpoint does not belong to this sandbox"})
+	}
+	if cp.Status != "ready" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "checkpoint is not ready (status: " + cp.Status + ")"})
+	}
+
+	// Dispatch restore in background — return immediately.
+	// Commands will block until restore completes.
+	pending := &pendingCreate{ready: make(chan struct{})}
+	s.pendingCreates.Store(sandboxID, pending)
+
+	if s.workerRegistry != nil {
+		grpcClient, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
+		if err != nil {
+			s.pendingCreates.Delete(sandboxID)
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker not available: " + err.Error()})
+		}
+
+		go func() {
+			grpcCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+
+			_, restoreErr := grpcClient.RestoreCheckpoint(grpcCtx, &pb.RestoreCheckpointRequest{
+				SandboxId:    sandboxID,
+				CheckpointId: checkpointID.String(),
+			})
+			if restoreErr != nil {
+				log.Printf("api: async restore %s/%s failed: %v", sandboxID, checkpointID, restoreErr)
+			}
+			pending.err = restoreErr
+			close(pending.ready)
+		}()
+	} else if s.manager != nil {
+		go func() {
+			restoreErr := s.manager.RestoreFromCheckpoint(context.Background(), sandboxID, checkpointID.String())
+			if restoreErr != nil {
+				log.Printf("api: async restore %s/%s failed: %v", sandboxID, checkpointID, restoreErr)
+			}
+			pending.err = restoreErr
+			close(pending.ready)
+		}()
+	} else {
+		s.pendingCreates.Delete(sandboxID)
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{
+		"sandboxId":    sandboxID,
+		"checkpointId": checkpointID.String(),
+		"status":       "restoring",
+	})
+}
+
+// createFromCheckpoint creates a new sandbox from an existing checkpoint (fork).
+func (s *Server) createFromCheckpoint(c echo.Context) error {
+	checkpointIDStr := c.Param("checkpointId")
+	ctx := c.Request().Context()
+
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+
+	checkpointID, err := uuid.Parse(checkpointIDStr)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid checkpoint ID"})
+	}
+
+	// Verify checkpoint exists, belongs to org, and is ready
+	cp, err := s.store.GetCheckpoint(ctx, checkpointID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "checkpoint not found"})
+	}
+	if cp.OrgID != orgID {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "checkpoint does not belong to this organization"})
+	}
+	if cp.Status != "ready" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "checkpoint is not ready (status: " + cp.Status + ")"})
+	}
+
+	// Parse optional overrides from request body
+	var req struct {
+		Timeout int `json:"timeout"`
+	}
+	_ = c.Bind(&req)
+
+	// Get S3 keys from the checkpoint
+	if cp.RootfsS3Key == nil || cp.WorkspaceS3Key == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "checkpoint S3 keys not available"})
+	}
+
+	// Parse the original sandbox config to reuse settings
+	var originalCfg types.SandboxConfig
+	_ = json.Unmarshal(cp.SandboxConfig, &originalCfg)
+
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = originalCfg.Timeout
+	}
+	if timeout <= 0 {
+		timeout = 300
+	}
+
+	// Unified async fork: return immediately, boot VM in background.
+	// First command from SDK will block until VM is ready.
+
+	// Pre-generate sandbox ID
+	sandboxID := "sb-" + uuid.New().String()[:8]
+
+	// Determine execution target
+	region := s.region
+	if region == "" {
+		region = "iad"
+	}
+	var workerID string
+	var grpcClient pb.SandboxWorkerClient
+
+	if s.workerRegistry != nil {
+		// Server mode: pick a worker
+		worker, client, err := s.workerRegistry.GetLeastLoadedWorker(region)
+		if err != nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "no workers available: " + err.Error()})
+		}
+		workerID = worker.ID
+		grpcClient = client
+	} else if s.manager != nil {
+		// Combined mode: local execution
+		workerID = s.workerID
+	} else {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
+	// Register pending create — commands will wait until ready
+	pending := &pendingCreate{ready: make(chan struct{})}
+	s.pendingCreates.Store(sandboxID, pending)
+
+	// Also register with sandbox router if available (combined mode)
+	if s.router != nil {
+		s.router.RegisterCreating(sandboxID, time.Duration(timeout)*time.Second)
+	}
+
+	// Issue JWT immediately
+	var token string
+	if s.jwtIssuer != nil {
+		t, err := s.jwtIssuer.IssueSandboxToken(orgID, sandboxID, workerID, 24*time.Hour)
+		if err == nil {
+			token = t
+		}
+	}
+
+	// Record session immediately
+	if s.store != nil {
+		template := originalCfg.Template
+		if template == "" {
+			template = "default"
+		}
+		cfgJSON, _ := json.Marshal(originalCfg)
+		metadataJSON, _ := json.Marshal(originalCfg.Metadata)
+		_, _ = s.store.CreateSandboxSession(ctx, sandboxID, orgID, nil, template, region, workerID, cfgJSON, metadataJSON)
+	}
+
+	// Boot VM in background
+	go func() {
+		createCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		var createErr error
+
+		if grpcClient != nil {
+			// Server mode: dispatch to worker via gRPC
+			_, createErr = grpcClient.CreateSandbox(createCtx, &pb.CreateSandboxRequest{
+				Template:             originalCfg.Template,
+				Timeout:              int32(timeout),
+				Envs:                 originalCfg.Envs,
+				MemoryMb:             int32(originalCfg.MemoryMB),
+				CpuCount:             int32(originalCfg.CpuCount),
+				NetworkEnabled:       originalCfg.NetworkEnabled,
+				Port:                 int32(originalCfg.Port),
+				TemplateRootfsKey:    *cp.RootfsS3Key,
+				TemplateWorkspaceKey: *cp.WorkspaceS3Key,
+				CheckpointId:         checkpointID.String(),
+				SandboxId:            sandboxID,
+			})
+		} else {
+			// Combined mode: create locally
+			cfg := originalCfg
+			cfg.Timeout = timeout
+			cfg.TemplateRootfsKey = *cp.RootfsS3Key
+			cfg.TemplateWorkspaceKey = *cp.WorkspaceS3Key
+			cfg.SandboxID = sandboxID
+
+			forkMgr, hasFork := s.manager.(interface {
+				ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error)
+			})
+			if hasFork {
+				_, createErr = forkMgr.ForkFromCheckpoint(createCtx, checkpointID.String(), cfg)
+			} else {
+				_, createErr = s.manager.Create(createCtx, cfg)
+			}
+		}
+
+		if createErr != nil {
+			log.Printf("api: async fork %s failed: %v", sandboxID, createErr)
+		}
+
+		// Signal completion
+		pending.err = createErr
+		close(pending.ready)
+
+		// Also signal router if available (combined mode)
+		if s.router != nil {
+			s.router.MarkCreated(sandboxID, createErr)
+		}
+	}()
+
+	return c.JSON(http.StatusCreated, map[string]interface{}{
+		"sandboxID":        sandboxID,
+		"status":           "creating",
+		"token":            token,
+		"region":           region,
+		"workerID":         workerID,
+		"fromCheckpointId": checkpointID.String(),
+	})
+}
+
+// deleteCheckpoint deletes a checkpoint.
+func (s *Server) deleteCheckpoint(c echo.Context) error {
+	sandboxID := c.Param("id")
+	checkpointIDStr := c.Param("checkpointId")
+	ctx := c.Request().Context()
+
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+
+	checkpointID, err := uuid.Parse(checkpointIDStr)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid checkpoint ID"})
+	}
+
+	// Verify checkpoint exists and belongs to this sandbox and org
+	cp, err := s.store.GetCheckpoint(ctx, checkpointID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "checkpoint not found"})
+	}
+	if cp.SandboxID != sandboxID {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "checkpoint does not belong to this sandbox"})
+	}
+
+	// Delete from DB (enforces org ownership)
+	if err := s.store.DeleteCheckpoint(ctx, orgID, checkpointID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	// Best-effort: delete S3 objects if checkpoint store is configured
+	if s.checkpointStore != nil && cp.RootfsS3Key != nil && cp.WorkspaceS3Key != nil {
+		go func() {
+			bgCtx := context.Background()
+			if err := s.checkpointStore.Delete(bgCtx, *cp.RootfsS3Key); err != nil {
+				log.Printf("checkpoint: failed to delete S3 rootfs %s: %v", *cp.RootfsS3Key, err)
+			}
+			if err := s.checkpointStore.Delete(bgCtx, *cp.WorkspaceS3Key); err != nil {
+				log.Printf("checkpoint: failed to delete S3 workspace %s: %v", *cp.WorkspaceS3Key, err)
+			}
+		}()
+	}
+
+	return c.NoContent(http.StatusNoContent)
 }
 
 // listSessions returns session history from PostgreSQL.
