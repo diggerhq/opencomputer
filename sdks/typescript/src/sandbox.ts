@@ -51,12 +51,6 @@ export interface PatchInfo {
 
 export interface PatchResult {
   patch: PatchInfo;
-  results: {
-    total: number;
-    runningPatched: number;
-    runningFailed: number;
-    hibernatedQueued: number;
-  };
 }
 
 export interface PreviewURLResult {
@@ -337,7 +331,7 @@ export class Sandbox {
 
   static async createCheckpointPatch(
     checkpointId: string,
-    opts: { script: string; description?: string; strategy?: "hot" | "on_wake"; apiKey?: string; apiUrl?: string }
+    opts: { script: string; description?: string; apiKey?: string; apiUrl?: string }
   ): Promise<PatchResult> {
     const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
     const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
@@ -351,7 +345,6 @@ export class Sandbox {
       body: JSON.stringify({
         script: opts.script,
         description: opts.description ?? "",
-        strategy: opts.strategy ?? "hot",
       }),
     });
 

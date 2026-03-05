@@ -2,14 +2,11 @@
  * Checkpoint Patch System Test
  *
  * Tests:
- *   1. Create a sandbox, checkpoint it, fork 2 sandboxes from it
- *   2. Create a "hot" patch on the checkpoint (should exec on running sandboxes)
- *   3. Verify the patch was applied to both running forks
- *   4. Create a third fork — verify existing patches are applied on boot
- *   5. Create an "on_wake" patch
- *   6. Hibernate a fork, wake it, verify on_wake patch was applied
- *   7. List patches and verify ordering
- *   8. Verify patch failure handling (bad script)
+ *   1. Create a sandbox, checkpoint it, create a patch
+ *   2. Fork a sandbox — verify patch is applied on boot
+ *   3. Create a second patch, hibernate fork, wake it — verify both patches applied
+ *   4. List patches and verify ordering
+ *   5. Verify bad patch script fails gracefully
  *
  * Usage:
  *   npx tsx examples/test-checkpoint-patches.ts
@@ -71,9 +68,8 @@ async function main() {
     green(`Created source sandbox: ${source.sandboxId}`);
 
     // Install a marker to verify patch effects
-    await source.commands.run("echo 'original' > /workspace/patch-marker.txt");
-    await source.commands.run("echo 'python3.10' > /workspace/python-version.txt");
-    const initial = await source.commands.run("cat /workspace/python-version.txt");
+    await source.commands.run("echo 'python3.10' > /root/python-version.txt");
+    const initial = await source.commands.run("cat /root/python-version.txt");
     check("Initial state set", initial.stdout.trim() === "python3.10");
 
     // Create checkpoint
@@ -86,102 +82,50 @@ async function main() {
     if (!ready) throw new Error("Checkpoint not ready, cannot proceed");
     console.log();
 
-    // ── Test 1: Fork 2 sandboxes from checkpoint ──────────────────
-    bold("--- Test 1: Fork sandboxes from checkpoint ---\n");
+    // ── Test 1: Create a patch ──────────────────────────────────
+    bold("--- Test 1: Create a patch ---\n");
+
+    const patchResult = await Sandbox.createCheckpointPatch(cp.id, {
+      script: "echo 'python3.11' > /root/python-version.txt && echo 'patched' > /root/patch-applied.txt",
+      description: "Upgrade Python version marker",
+    });
+
+    check("Patch created", patchResult.patch.id !== undefined);
+    check("Patch sequence is 1", patchResult.patch.sequence === 1);
+    dim(`Patch ID: ${patchResult.patch.id}`);
+    console.log();
+
+    // ── Test 2: Fork sandbox — patch applied on boot ────────────
+    bold("--- Test 2: Fork sandbox — patch applied on boot ---\n");
 
     const fork1 = await Sandbox.createFromCheckpoint(cp.id, { timeout: 600 });
     sandboxes.push(fork1);
     green(`Fork 1 created: ${fork1.sandboxId}`);
 
-    const fork2 = await Sandbox.createFromCheckpoint(cp.id, { timeout: 600 });
-    sandboxes.push(fork2);
-    green(`Fork 2 created: ${fork2.sandboxId}`);
-
-    // Wait for forks to boot
-    await sleep(5000);
-
-    // Verify forks have the original state
-    const f1State = await fork1.commands.run("cat /workspace/python-version.txt");
-    check("Fork 1 has original state", f1State.stdout.trim() === "python3.10");
-    const f2State = await fork2.commands.run("cat /workspace/python-version.txt");
-    check("Fork 2 has original state", f2State.stdout.trim() === "python3.10");
-    console.log();
-
-    // ── Test 2: Create a "hot" patch ─────────────────────────────
-    bold("--- Test 2: Create hot patch (should apply to running forks) ---\n");
-
-    const patchResult = await Sandbox.createCheckpointPatch(cp.id, {
-      script: "echo 'python3.11' > /workspace/python-version.txt && echo 'patched' > /workspace/patch-applied.txt",
-      description: "Upgrade Python version marker",
-      strategy: "hot",
-    });
-
-    check("Patch created", patchResult.patch.id !== undefined);
-    check("Patch sequence is 1", patchResult.patch.sequence === 1);
-    check("Patch strategy is hot", patchResult.patch.strategy === "hot");
-    dim(`Patch ID: ${patchResult.patch.id}`);
-    dim(`Results: total=${patchResult.results.total}, patched=${patchResult.results.runningPatched}, failed=${patchResult.results.runningFailed}, queued=${patchResult.results.hibernatedQueued}`);
-
-    // The source sandbox is not forked from the checkpoint, so only fork1 and fork2 should be patched
-    check("Running sandboxes were patched", patchResult.results.runningPatched >= 2, `got ${patchResult.results.runningPatched}`);
-    check("No failures", patchResult.results.runningFailed === 0, `got ${patchResult.results.runningFailed}`);
-    console.log();
-
-    // ── Test 3: Verify patch was applied ─────────────────────────
-    bold("--- Test 3: Verify patch applied to running forks ---\n");
-
-    // Small delay for exec to complete
-    await sleep(2000);
-
-    const f1Patched = await fork1.commands.run("cat /workspace/python-version.txt");
-    check("Fork 1 has patched state", f1Patched.stdout.trim() === "python3.11", `got: ${f1Patched.stdout.trim()}`);
-
-    const f1Marker = await fork1.commands.run("cat /workspace/patch-applied.txt");
-    check("Fork 1 has patch marker", f1Marker.stdout.trim() === "patched");
-
-    const f2Patched = await fork2.commands.run("cat /workspace/python-version.txt");
-    check("Fork 2 has patched state", f2Patched.stdout.trim() === "python3.11", `got: ${f2Patched.stdout.trim()}`);
-    console.log();
-
-    // ── Test 4: New fork gets existing patches applied ───────────
-    bold("--- Test 4: New fork gets existing patches on boot ---\n");
-
-    const fork3 = await Sandbox.createFromCheckpoint(cp.id, { timeout: 600 });
-    sandboxes.push(fork3);
-    green(`Fork 3 created: ${fork3.sandboxId}`);
-
     // Wait for boot + patch application
     await sleep(8000);
 
-    const f3Patched = await fork3.commands.run("cat /workspace/python-version.txt");
-    check("Fork 3 has patched state (applied on boot)", f3Patched.stdout.trim() === "python3.11", `got: ${f3Patched.stdout.trim()}`);
+    const f1Patched = await fork1.commands.run("cat /root/python-version.txt");
+    check("Fork 1 has patched state (applied on boot)", f1Patched.stdout.trim() === "python3.11", `got: ${f1Patched.stdout.trim()}`);
 
-    const f3Marker = await fork3.commands.run("cat /workspace/patch-applied.txt");
-    check("Fork 3 has patch marker", f3Marker.stdout.trim() === "patched", `got: ${f3Marker.stdout.trim()}`);
+    const f1Marker = await fork1.commands.run("cat /root/patch-applied.txt");
+    check("Fork 1 has patch marker", f1Marker.stdout.trim() === "patched");
     console.log();
 
-    // ── Test 5: Create "on_wake" patch ───────────────────────────
-    bold("--- Test 5: Create on_wake patch ---\n");
+    // ── Test 3: Second patch + hibernate/wake ───────────────────
+    bold("--- Test 3: Second patch applied after hibernate + wake ---\n");
 
     const patch2Result = await Sandbox.createCheckpointPatch(cp.id, {
-      script: "echo 'security-fix-applied' > /workspace/security-patch.txt",
+      script: "echo 'security-fix-applied' > /root/security-patch.txt",
       description: "Security hotfix",
-      strategy: "on_wake",
     });
 
-    check("on_wake patch created", patch2Result.patch.id !== undefined);
+    check("Second patch created", patch2Result.patch.id !== undefined);
     check("Patch sequence is 2", patch2Result.patch.sequence === 2);
-    check("on_wake patch did NOT exec on running sandboxes", patch2Result.results.runningPatched === 0);
-    dim(`Hibernated queued: ${patch2Result.results.hibernatedQueued}`);
-    console.log();
 
-    // Verify on_wake patch was NOT applied to running fork1
-    const f1Security = await fork1.commands.run("test -f /workspace/security-patch.txt && echo exists || echo missing");
-    check("on_wake patch not applied to running sandbox", f1Security.stdout.trim() === "missing");
-    console.log();
-
-    // ── Test 6: Hibernate + wake → on_wake patch applied ─────────
-    bold("--- Test 6: Hibernate and wake fork (patches applied on wake) ---\n");
+    // Verify patch is NOT yet applied (fork1 is still running, patch only applies on wake/boot)
+    const f1Security = await fork1.commands.run("test -f /root/security-patch.txt && echo exists || echo missing");
+    check("Patch not applied to running sandbox", f1Security.stdout.trim() === "missing");
 
     dim("Hibernating fork 1...");
     await fork1.hibernate();
@@ -196,38 +140,47 @@ async function main() {
     // Wait for post-wake patching
     await sleep(5000);
 
-    const f1SecurityAfterWake = await fork1.commands.run("cat /workspace/security-patch.txt");
-    check("on_wake patch applied after wake", f1SecurityAfterWake.stdout.trim() === "security-fix-applied", `got: ${f1SecurityAfterWake.stdout.trim()}`);
+    const f1SecurityAfterWake = await fork1.commands.run("cat /root/security-patch.txt");
+    check("Second patch applied after wake", f1SecurityAfterWake.stdout.trim() === "security-fix-applied", `got: ${f1SecurityAfterWake.stdout.trim()}`);
 
     // Verify prior patches still present
-    const f1PythonAfterWake = await fork1.commands.run("cat /workspace/python-version.txt");
+    const f1PythonAfterWake = await fork1.commands.run("cat /root/python-version.txt");
     check("Prior patch state preserved after wake", f1PythonAfterWake.stdout.trim() === "python3.11", `got: ${f1PythonAfterWake.stdout.trim()}`);
     console.log();
 
-    // ── Test 7: List patches ─────────────────────────────────────
-    bold("--- Test 7: List patches ---\n");
+    // ── Test 4: List patches ─────────────────────────────────────
+    bold("--- Test 4: List patches ---\n");
 
     const patches = await Sandbox.listCheckpointPatches(cp.id);
     check("2 patches listed", patches.length === 2, `got ${patches.length}`);
     check("First patch has sequence 1", patches[0]?.sequence === 1);
     check("Second patch has sequence 2", patches[1]?.sequence === 2);
-    check("First patch is hot", patches[0]?.strategy === "hot");
-    check("Second patch is on_wake", patches[1]?.strategy === "on_wake");
     console.log();
 
-    // ── Test 8: Bad patch (should fail gracefully) ───────────────
-    bold("--- Test 8: Bad patch script ---\n");
+    // ── Test 5: Bad patch (should fail gracefully) ───────────────
+    bold("--- Test 5: Bad patch script ---\n");
 
     const badPatch = await Sandbox.createCheckpointPatch(cp.id, {
       script: "exit 1",
       description: "Intentionally failing patch",
-      strategy: "hot",
     });
 
     check("Bad patch created", badPatch.patch.id !== undefined);
     check("Bad patch sequence is 3", badPatch.patch.sequence === 3);
-    // Running sandboxes should report failures
-    check("Running sandboxes reported failures", badPatch.results.runningFailed > 0, `failed=${badPatch.results.runningFailed}`);
+
+    // Fork a new sandbox — bad patch should fail and stop the chain
+    const fork2 = await Sandbox.createFromCheckpoint(cp.id, { timeout: 600 });
+    sandboxes.push(fork2);
+    green(`Fork 2 created: ${fork2.sandboxId}`);
+
+    await sleep(8000);
+
+    // Patches 1 and 2 should have applied, but patch 3 (exit 1) should have failed
+    const f2Patched = await fork2.commands.run("cat /root/python-version.txt");
+    check("Good patches applied before bad one", f2Patched.stdout.trim() === "python3.11", `got: ${f2Patched.stdout.trim()}`);
+
+    const f2Security = await fork2.commands.run("cat /root/security-patch.txt");
+    check("Second good patch also applied", f2Security.stdout.trim() === "security-fix-applied", `got: ${f2Security.stdout.trim()}`);
     console.log();
 
   } catch (err: any) {
