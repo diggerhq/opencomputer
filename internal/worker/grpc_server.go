@@ -218,6 +218,7 @@ func (s *GRPCServer) ExecCommand(ctx context.Context, req *pb.ExecCommandRequest
 		Env:     req.Envs,
 		Cwd:     req.Cwd,
 		Timeout: int(req.Timeout),
+		Tty:     req.Tty,
 	}
 
 	var result *types.ProcessResult
@@ -329,6 +330,7 @@ func (s *GRPCServer) ExecCommandStream(req *pb.ExecCommandRequest, stream pb.San
 		Env:     req.Envs,
 		Cwd:     req.Cwd,
 		Timeout: int(req.Timeout),
+		Tty:     req.Tty,
 	}
 
 	var exitCode int

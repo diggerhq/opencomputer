@@ -72,6 +72,7 @@ class Commands:
         cwd: str | None = None,
         on_stdout: Callable[[str], None] | None = None,
         on_stderr: Callable[[str], None] | None = None,
+        tty: bool = False,
     ) -> ProcessResult:
         """Execute a command and stream output in real time via SSE.
 
@@ -82,6 +83,8 @@ class Commands:
             cwd: Optional working directory.
             on_stdout: Callback for each stdout chunk.
             on_stderr: Callback for each stderr chunk.
+            tty: Allocate a PTY for the command (enables real-time output
+                for programs like npm, apt, pip that buffer without a TTY).
 
         Returns:
             ProcessResult with exit code and accumulated stdout/stderr.
@@ -94,6 +97,8 @@ class Commands:
             body["envs"] = env
         if cwd:
             body["cwd"] = cwd
+        if tty:
+            body["tty"] = True
 
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
@@ -150,6 +155,7 @@ class Commands:
         timeout: int = 60,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        tty: bool = False,
     ) -> AsyncIterator[ExecChunk]:
         """Execute a command and yield output chunks as an async iterator.
 
@@ -158,6 +164,7 @@ class Commands:
             timeout: Timeout in seconds (default 60).
             env: Optional environment variables.
             cwd: Optional working directory.
+            tty: Allocate a PTY for the command.
 
         Yields:
             ExecChunk for each stdout/stderr output chunk.
@@ -170,6 +177,8 @@ class Commands:
             body["envs"] = env
         if cwd:
             body["cwd"] = cwd
+        if tty:
+            body["tty"] = True
 
         read_timeout = timeout + 30
         async with self._client.stream(

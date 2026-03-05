@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/creack/pty"
 	pb "github.com/opensandbox/opensandbox/proto/agent"
 )
 
@@ -86,6 +87,88 @@ func (s *Server) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.ExecRespons
 
 // ExecStream runs a command and streams stdout/stderr chunks.
 func (s *Server) ExecStream(req *pb.ExecRequest, stream pb.SandboxAgent_ExecStreamServer) error {
+	if req.Tty {
+		return s.execStreamPTY(req, stream)
+	}
+	return s.execStreamPipes(req, stream)
+}
+
+// execStreamPTY runs a command inside a pseudo-terminal so programs see a TTY
+// and produce real-time, unbuffered output (progress bars, colors, etc.).
+// All output arrives on stdout since a PTY merges stdout+stderr.
+func (s *Server) execStreamPTY(req *pb.ExecRequest, stream pb.SandboxAgent_ExecStreamServer) error {
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(stream.Context(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, req.Command, req.Args...)
+
+	if req.Cwd != "" {
+		cmd.Dir = req.Cwd
+	} else {
+		cmd.Dir = "/root"
+	}
+
+	cmd.Env = append(baseEnv(), "TERM=xterm-256color")
+	if len(req.Envs) > 0 {
+		cmd.Env = append(cmd.Env, mapToEnv(req.Envs)...)
+	}
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 120, Rows: 40})
+	if err != nil {
+		return fmt.Errorf("pty start: %w", err)
+	}
+	defer ptmx.Close()
+
+	// Read from PTY and stream as stdout chunks
+	errCh := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := ptmx.Read(buf)
+			if n > 0 {
+				if sendErr := stream.Send(&pb.ExecOutputChunk{
+					Stream: pb.ExecOutputChunk_STDOUT,
+					Data:   buf[:n],
+				}); sendErr != nil {
+					errCh <- sendErr
+					return
+				}
+			}
+			if readErr != nil {
+				errCh <- nil
+				return
+			}
+		}
+	}()
+
+	<-errCh
+
+	exitCode := int32(0)
+	if err := cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = int32(exitErr.ExitCode())
+		} else if ctx.Err() == context.DeadlineExceeded {
+			exitCode = -1
+		}
+	}
+
+	_ = stream.Send(&pb.ExecOutputChunk{
+		Stream:   pb.ExecOutputChunk_EXIT,
+		ExitCode: exitCode,
+	})
+
+	return nil
+}
+
+// execStreamPipes runs a command with separate stdout/stderr pipes (no TTY).
+func (s *Server) execStreamPipes(req *pb.ExecRequest, stream pb.SandboxAgent_ExecStreamServer) error {
 	timeout := time.Duration(req.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 60 * time.Second

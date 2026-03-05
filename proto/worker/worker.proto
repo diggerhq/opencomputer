@@ -87,6 +87,7 @@ message ExecCommandRequest {
   map<string, string> envs = 4;
   string cwd = 5;
   int32 timeout = 6;
+  bool tty = 7;              // Allocate a PTY for the command (enables real-time output)
 }
 
 message ExecCommandResponse {

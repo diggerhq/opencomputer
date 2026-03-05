@@ -545,6 +545,7 @@ type ExecCommandRequest struct {
 	Envs          map[string]string      `protobuf:"bytes,4,rep,name=envs,proto3" json:"envs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Cwd           string                 `protobuf:"bytes,5,opt,name=cwd,proto3" json:"cwd,omitempty"`
 	Timeout       int32                  `protobuf:"varint,6,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	Tty           bool                   `protobuf:"varint,7,opt,name=tty,proto3" json:"tty,omitempty"` // Allocate a PTY for the command (enables real-time output)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -619,6 +620,13 @@ func (x *ExecCommandRequest) GetTimeout() int32 {
 		return x.Timeout
 	}
 	return 0
+}
+
+func (x *ExecCommandRequest) GetTty() bool {
+	if x != nil {
+		return x.Tty
+	}
+	return false
 }
 
 type ExecCommandResponse struct {
@@ -2215,7 +2223,7 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\x06end_at\x18\x05 \x01(\x03R\x05endAt\"\x16\n" +
 	"\x14ListSandboxesRequest\"Q\n" +
 	"\x15ListSandboxesResponse\x128\n" +
-	"\tsandboxes\x18\x01 \x03(\v2\x1a.worker.GetSandboxResponseR\tsandboxes\"\x80\x02\n" +
+	"\tsandboxes\x18\x01 \x03(\v2\x1a.worker.GetSandboxResponseR\tsandboxes\"\x92\x02\n" +
 	"\x12ExecCommandRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n" +
@@ -2223,7 +2231,8 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\x04args\x18\x03 \x03(\tR\x04args\x128\n" +
 	"\x04envs\x18\x04 \x03(\v2$.worker.ExecCommandRequest.EnvsEntryR\x04envs\x12\x10\n" +
 	"\x03cwd\x18\x05 \x01(\tR\x03cwd\x12\x18\n" +
-	"\atimeout\x18\x06 \x01(\x05R\atimeout\x1a7\n" +
+	"\atimeout\x18\x06 \x01(\x05R\atimeout\x12\x10\n" +
+	"\x03tty\x18\a \x01(\bR\x03tty\x1a7\n" +
 	"\tEnvsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"b\n" +

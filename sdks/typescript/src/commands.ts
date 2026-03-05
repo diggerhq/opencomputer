@@ -13,6 +13,9 @@ export interface RunOpts {
 export interface StreamOpts extends RunOpts {
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
+  /** Allocate a PTY for the command. Enables real-time output for programs
+   *  that buffer when not connected to a terminal (npm, apt, pip, etc.). */
+  tty?: boolean;
 }
 
 export interface ExecChunk {
@@ -83,6 +86,7 @@ export class Commands {
     };
     if (opts.env) body.envs = opts.env;
     if (opts.cwd) body.cwd = opts.cwd;
+    if (opts.tty) body.tty = true;
 
     return new StreamHandle(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/exec`,

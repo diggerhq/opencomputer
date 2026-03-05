@@ -712,6 +712,7 @@ func (m *Manager) ExecStream(ctx context.Context, sandboxID string, cfg types.Pr
 		Envs:           cfg.Env,
 		Cwd:            cfg.Cwd,
 		TimeoutSeconds: timeout,
+		Tty:            cfg.Tty,
 	}, func(stream string, data []byte) error {
 		return onChunk(types.ExecOutputChunk{Stream: stream, Data: data})
 	})

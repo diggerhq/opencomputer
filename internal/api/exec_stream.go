@@ -169,6 +169,7 @@ func (s *Server) execStreamRemote(c echo.Context, sandboxID string) error {
 		Envs:      cfg.Env,
 		Cwd:       cfg.Cwd,
 		Timeout:   int32(cfg.Timeout),
+		Tty:       cfg.Tty,
 	})
 	if err != nil {
 		log.Printf("exec_stream: gRPC stream failed for %s: %v", sandboxID, err)

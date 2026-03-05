@@ -14,6 +14,7 @@ type ProcessConfig struct {
 	Env     map[string]string `json:"envs,omitempty"`
 	Cwd     string            `json:"cwd,omitempty"`
 	Timeout int               `json:"timeout,omitempty"` // seconds, default 60
+	Tty     bool              `json:"tty,omitempty"`     // allocate PTY for real-time output
 }
 
 // ExecOutputChunk is a single chunk of streaming command output.
