@@ -137,6 +137,32 @@ func (s *Server) ptyWebSocket(c echo.Context) error {
 	return nil
 }
 
+func (s *Server) resizePTY(c echo.Context) error {
+	if s.ptyManager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
+	sessionID := c.Param("sessionID")
+
+	var req struct {
+		Cols int `json:"cols"`
+		Rows int `json:"rows"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid request body",
+		})
+	}
+
+	if err := s.ptyManager.Resize(sessionID, req.Cols, req.Rows); err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	return c.NoContent(http.StatusOK)
+}
+
 func (s *Server) killPTY(c echo.Context) error {
 	if s.ptyManager == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
