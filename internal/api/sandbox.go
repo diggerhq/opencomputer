@@ -1262,7 +1262,6 @@ func (s *Server) createCheckpointPatch(c echo.Context) error {
 	var req struct {
 		Script      string `json:"script"`
 		Description string `json:"description"`
-		Strategy    string `json:"strategy"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -1270,61 +1269,20 @@ func (s *Server) createCheckpointPatch(c echo.Context) error {
 	if req.Script == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "script is required"})
 	}
-	if req.Strategy == "" {
-		req.Strategy = "hot"
-	}
-	if req.Strategy != "hot" && req.Strategy != "on_wake" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "strategy must be 'hot' or 'on_wake'"})
-	}
-
-	// Create the patch record
+	// Create the patch record (patches apply on next wake/boot)
 	patch := &db.CheckpointPatch{
 		ID:           uuid.New(),
 		CheckpointID: checkpointID,
 		Script:       req.Script,
 		Description:  req.Description,
-		Strategy:     req.Strategy,
+		Strategy:     "on_wake",
 	}
 	if err := s.store.CreateCheckpointPatch(ctx, patch); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create patch: " + err.Error()})
 	}
 
-	// Fan out to running sandboxes if strategy is "hot"
-	var results struct {
-		Total           int `json:"total"`
-		RunningPatched  int `json:"runningPatched"`
-		RunningFailed   int `json:"runningFailed"`
-		HibernatedQueued int `json:"hibernatedQueued"`
-	}
-
-	sandboxes, err := s.store.ListSandboxesByCheckpoint(ctx, checkpointID)
-	if err != nil {
-		log.Printf("api: patch %s: failed to list sandboxes: %v", patch.ID, err)
-	} else {
-		results.Total = len(sandboxes)
-
-		for _, sess := range sandboxes {
-			if sess.Status == "hibernated" {
-				results.HibernatedQueued++
-				continue
-			}
-
-			if sess.Status == "running" && req.Strategy == "hot" {
-				// Execute patch on running sandbox
-				if err := s.execPatchOnSandbox(ctx, sess.SandboxID, sess.WorkerID, patch); err != nil {
-					log.Printf("api: patch %s: sandbox %s failed: %v", patch.ID, sess.SandboxID, err)
-					results.RunningFailed++
-				} else {
-					results.RunningPatched++
-					_ = s.store.UpdateSandboxPatchSequence(ctx, sess.SandboxID, patch.Sequence)
-				}
-			}
-		}
-	}
-
 	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"patch":   patch,
-		"results": results,
+		"patch": patch,
 	})
 }
 
