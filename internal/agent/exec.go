@@ -118,7 +118,8 @@ func (s *Server) execStreamPTY(req *pb.ExecRequest, stream pb.SandboxAgent_ExecS
 		cmd.Env = append(cmd.Env, mapToEnv(req.Envs)...)
 	}
 
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Don't set SysProcAttr here — pty.StartWithSize sets Setsid: true
+	// internally, which is required for proper PTY session establishment.
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 120, Rows: 40})
 	if err != nil {
