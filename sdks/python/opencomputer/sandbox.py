@@ -161,7 +161,9 @@ class Sandbox:
 
     async def set_timeout(self, timeout: int) -> None:
         """Update the sandbox timeout in seconds."""
-        resp = await self._client.post(
+        # Route to worker directly (like commands/files/pty) — the control plane
+        # rejects this call in server mode.
+        resp = await self._ops_client.post(
             f"/sandboxes/{self.sandbox_id}/timeout",
             json={"timeout": timeout},
         )
@@ -291,6 +293,107 @@ class Sandbox:
             _client=client,
             _data_client=data_client,
         )
+
+    @staticmethod
+    async def create_checkpoint_patch(
+        checkpoint_id: str,
+        script: str,
+        description: str = "",
+        api_key: str | None = None,
+        api_url: str | None = None,
+    ) -> dict:
+        """Create a patch for a checkpoint (applied on next wake/boot).
+
+        Args:
+            checkpoint_id: UUID of the checkpoint to patch.
+            script: Bash script to execute on each forked sandbox.
+            description: Human-readable description of the patch.
+            api_key: API key (or OPENCOMPUTER_API_KEY env var).
+            api_url: API URL (or OPENCOMPUTER_API_URL env var).
+
+        Returns:
+            Dict with "patch" info (id, sequence, script, etc.).
+        """
+        url = api_url or os.environ.get("OPENCOMPUTER_API_URL", "https://app.opencomputer.dev")
+        url = url.rstrip("/")
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
+
+        api_base = url if url.endswith("/api") else f"{url}/api"
+
+        headers = {}
+        if key:
+            headers["X-API-Key"] = key
+
+        async with httpx.AsyncClient(base_url=api_base, headers=headers, timeout=300.0) as client:
+            resp = await client.post(
+                f"/sandboxes/checkpoints/{checkpoint_id}/patches",
+                json={"script": script, "description": description},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    @staticmethod
+    async def list_checkpoint_patches(
+        checkpoint_id: str,
+        api_key: str | None = None,
+        api_url: str | None = None,
+    ) -> list[dict]:
+        """List all patches for a checkpoint, ordered by sequence.
+
+        Args:
+            checkpoint_id: UUID of the checkpoint.
+            api_key: API key (or OPENCOMPUTER_API_KEY env var).
+            api_url: API URL (or OPENCOMPUTER_API_URL env var).
+
+        Returns:
+            List of patch dicts with id, sequence, script, strategy, etc.
+        """
+        url = api_url or os.environ.get("OPENCOMPUTER_API_URL", "https://app.opencomputer.dev")
+        url = url.rstrip("/")
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
+
+        api_base = url if url.endswith("/api") else f"{url}/api"
+
+        headers = {}
+        if key:
+            headers["X-API-Key"] = key
+
+        async with httpx.AsyncClient(base_url=api_base, headers=headers, timeout=30.0) as client:
+            resp = await client.get(f"/sandboxes/checkpoints/{checkpoint_id}/patches")
+            resp.raise_for_status()
+            return resp.json()
+
+    @staticmethod
+    async def delete_checkpoint_patch(
+        checkpoint_id: str,
+        patch_id: str,
+        api_key: str | None = None,
+        api_url: str | None = None,
+    ) -> None:
+        """Delete a patch from a checkpoint.
+
+        Args:
+            checkpoint_id: UUID of the checkpoint.
+            patch_id: UUID of the patch to delete.
+            api_key: API key (or OPENCOMPUTER_API_KEY env var).
+            api_url: API URL (or OPENCOMPUTER_API_URL env var).
+        """
+        url = api_url or os.environ.get("OPENCOMPUTER_API_URL", "https://app.opencomputer.dev")
+        url = url.rstrip("/")
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
+
+        api_base = url if url.endswith("/api") else f"{url}/api"
+
+        headers = {}
+        if key:
+            headers["X-API-Key"] = key
+
+        async with httpx.AsyncClient(base_url=api_base, headers=headers, timeout=30.0) as client:
+            resp = await client.delete(
+                f"/sandboxes/checkpoints/{checkpoint_id}/patches/{patch_id}"
+            )
+            if resp.status_code != 404:
+                resp.raise_for_status()
 
     async def delete_checkpoint(self, checkpoint_id: str) -> None:
         """Delete a checkpoint.

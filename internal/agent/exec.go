@@ -13,8 +13,9 @@ import (
 	pb "github.com/opensandbox/opensandbox/proto/agent"
 )
 
-// baseEnv returns the current OS environment with HOME replaced to /workspace
-// so tools (npm, pip, git, etc.) use the NVMe-backed workspace for caches.
+// baseEnv returns the current OS environment with HOME set to /root.
+// With overlayfs, the entire filesystem is backed by the data disk,
+// so /root (the standard root home) has full disk space available.
 func baseEnv() []string {
 	var env []string
 	for _, e := range os.Environ() {
@@ -23,7 +24,7 @@ func baseEnv() []string {
 		}
 		env = append(env, e)
 	}
-	env = append(env, "HOME=/workspace")
+	env = append(env, "HOME=/root")
 	return env
 }
 
@@ -53,7 +54,7 @@ func (s *Server) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.ExecRespons
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
 	} else {
-		cmd.Dir = "/workspace"
+		cmd.Dir = "/root"
 	}
 
 	// Build env: base < sandbox-level < per-command
@@ -113,7 +114,7 @@ func (s *Server) ExecStream(req *pb.ExecRequest, stream pb.SandboxAgent_ExecStre
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
 	} else {
-		cmd.Dir = "/workspace"
+		cmd.Dir = "/root"
 	}
 
 	// Build env: base < sandbox-level < per-command
