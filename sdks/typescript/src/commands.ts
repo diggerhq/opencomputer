@@ -124,10 +124,15 @@ export class StreamHandle implements AsyncIterable<ExecChunk>, PromiseLike<Proce
 
   private async _run(): Promise<ProcessResult> {
     const controller = new AbortController();
-    const timeoutId = globalThis.setTimeout(
-      () => controller.abort(),
-      (this.timeout + 10) * 1000,
-    );
+    // Idle timeout: resets every time we receive data (including keepalives).
+    // This allows long-running commands that produce no output to survive as
+    // long as the server sends keepalive comments.
+    const idleMs = (this.timeout + 30) * 1000;
+    let idleTimer = globalThis.setTimeout(() => controller.abort(), idleMs);
+    const resetIdle = () => {
+      globalThis.clearTimeout(idleTimer);
+      idleTimer = globalThis.setTimeout(() => controller.abort(), idleMs);
+    };
 
     let stdout = "";
     let stderr = "";
@@ -156,6 +161,9 @@ export class StreamHandle implements AsyncIterable<ExecChunk>, PromiseLike<Proce
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+
+        // Reset idle timer on any received data (including keepalives)
+        resetIdle();
 
         buffer += decoder.decode(value, { stream: true });
 
@@ -193,7 +201,7 @@ export class StreamHandle implements AsyncIterable<ExecChunk>, PromiseLike<Proce
         }
       }
     } finally {
-      globalThis.clearTimeout(timeoutId);
+      globalThis.clearTimeout(idleTimer);
       this._done = true;
     }
 

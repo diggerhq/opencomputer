@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -49,11 +50,33 @@ func (s *Server) execStream(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})
 	}
 
+	// Keepalive goroutine — sends SSE comments every 15s to prevent
+	// client-side timeouts when the command produces no output.
+	var writeMu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				writeMu.Lock()
+				fmt.Fprintf(w, ": keepalive\n\n")
+				flusher.Flush()
+				writeMu.Unlock()
+			}
+		}
+	}()
+
 	var exitCode int
 
 	routeOp := func(ctx context.Context) error {
 		var err error
 		exitCode, err = s.manager.ExecStream(ctx, id, cfg, func(chunk types.ExecOutputChunk) error {
+			writeMu.Lock()
+			defer writeMu.Unlock()
 			return writeSSEChunk(w, flusher, chunk.Stream, chunk.Data)
 		})
 		return err
@@ -61,15 +84,18 @@ func (s *Server) execStream(c echo.Context) error {
 
 	if s.router != nil {
 		if err := s.router.Route(c.Request().Context(), id, "execStream", routeOp); err != nil {
+			close(done)
 			writeSSEError(w, flusher, err.Error())
 			return nil
 		}
 	} else {
 		if err := routeOp(c.Request().Context()); err != nil {
+			close(done)
 			writeSSEError(w, flusher, err.Error())
 			return nil
 		}
 	}
+	close(done)
 
 	// Send exit event
 	writeSSEExit(w, flusher, exitCode)
@@ -162,12 +188,32 @@ func (s *Server) execStreamRemote(c echo.Context, sandboxID string) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})
 	}
 
+	// Keepalive goroutine for the gRPC-proxied stream
+	var writeMu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				writeMu.Lock()
+				fmt.Fprintf(w, ": keepalive\n\n")
+				flusher.Flush()
+				writeMu.Unlock()
+			}
+		}
+	}()
+
 	for {
 		chunk, recvErr := streamClient.Recv()
 		if recvErr != nil {
 			break
 		}
 		if chunk.Stream == pb.ExecOutputChunk_EXIT {
+			close(done)
 			writeSSEExit(w, flusher, int(chunk.ExitCode))
 			return nil
 		}
@@ -175,11 +221,16 @@ func (s *Server) execStreamRemote(c echo.Context, sandboxID string) error {
 		if chunk.Stream == pb.ExecOutputChunk_STDERR {
 			stream = "stderr"
 		}
-		if err := writeSSEChunk(w, flusher, stream, chunk.Data); err != nil {
+		writeMu.Lock()
+		err := writeSSEChunk(w, flusher, stream, chunk.Data)
+		writeMu.Unlock()
+		if err != nil {
+			close(done)
 			return nil
 		}
 	}
 
+	close(done)
 	return nil
 }
 

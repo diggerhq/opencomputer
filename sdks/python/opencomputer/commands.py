@@ -99,11 +99,15 @@ class Commands:
         stderr_parts: list[str] = []
         exit_code = -1
 
+        # Read timeout must exceed the server keepalive interval (15s).
+        # The server sends keepalive comments so the connection stays alive
+        # even when the command produces no output.
+        read_timeout = timeout + 30
         async with self._client.stream(
             "POST",
             f"/sandboxes/{self._sandbox_id}/exec",
             json=body,
-            timeout=timeout + 10,
+            timeout=httpx.Timeout(5.0, read=read_timeout),
         ) as resp:
             resp.raise_for_status()
             buffer = ""
@@ -167,11 +171,12 @@ class Commands:
         if cwd:
             body["cwd"] = cwd
 
+        read_timeout = timeout + 30
         async with self._client.stream(
             "POST",
             f"/sandboxes/{self._sandbox_id}/exec",
             json=body,
-            timeout=timeout + 10,
+            timeout=httpx.Timeout(5.0, read=read_timeout),
         ) as resp:
             resp.raise_for_status()
             buffer = ""
