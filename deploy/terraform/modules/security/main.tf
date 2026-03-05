@@ -30,6 +30,15 @@ resource "aws_security_group" "dev" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # Worker HTTP (direct SDK access)
+  ingress {
+    description = "Worker HTTP"
+    from_port   = 8081
+    to_port     = 8081
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   # SSH
   ingress {
     description = "SSH"
