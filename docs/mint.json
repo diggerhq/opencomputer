@@ -57,7 +57,9 @@
         "sdks/typescript/commands",
         "sdks/typescript/filesystem",
         "sdks/typescript/pty",
-        "sdks/typescript/templates"
+        "sdks/typescript/templates",
+        "sdks/typescript/checkpoints",
+        "sdks/typescript/patches"
       ]
     },
     {
@@ -68,7 +70,9 @@
         "sdks/python/commands",
         "sdks/python/filesystem",
         "sdks/python/pty",
-        "sdks/python/templates"
+        "sdks/python/templates",
+        "sdks/python/checkpoints",
+        "sdks/python/patches"
       ]
     }
   ],
