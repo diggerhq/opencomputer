@@ -39,6 +39,20 @@ export interface CheckpointInfo {
   createdAt: string;
 }
 
+export interface PatchInfo {
+  id: string;
+  checkpointId: string;
+  sequence: number;
+  script: string;
+  description: string;
+  strategy: string;
+  createdAt: string;
+}
+
+export interface PatchResult {
+  patch: PatchInfo;
+}
+
 export interface PreviewURLResult {
   id: string;
   sandboxId: string;
@@ -312,6 +326,69 @@ export class Sandbox {
 
     if (!resp.ok && resp.status !== 404) {
       throw new Error(`Failed to delete checkpoint: ${resp.status}`);
+    }
+  }
+
+  static async createCheckpointPatch(
+    checkpointId: string,
+    opts: { script: string; description?: string; apiKey?: string; apiUrl?: string }
+  ): Promise<PatchResult> {
+    const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
+    const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
+
+    const resp = await fetch(`${apiUrl}/sandboxes/checkpoints/${checkpointId}/patches`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { "X-API-Key": apiKey } : {}),
+      },
+      body: JSON.stringify({
+        script: opts.script,
+        description: opts.description ?? "",
+      }),
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Failed to create checkpoint patch: ${resp.status} ${text}`);
+    }
+
+    return resp.json();
+  }
+
+  static async listCheckpointPatches(
+    checkpointId: string,
+    opts: { apiKey?: string; apiUrl?: string } = {}
+  ): Promise<PatchInfo[]> {
+    const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
+    const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
+
+    const resp = await fetch(`${apiUrl}/sandboxes/checkpoints/${checkpointId}/patches`, {
+      headers: apiKey ? { "X-API-Key": apiKey } : {},
+    });
+
+    if (!resp.ok) {
+      throw new Error(`Failed to list checkpoint patches: ${resp.status}`);
+    }
+
+    return resp.json();
+  }
+
+  static async deleteCheckpointPatch(
+    checkpointId: string,
+    patchId: string,
+    opts: { apiKey?: string; apiUrl?: string } = {}
+  ): Promise<void> {
+    const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
+    const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
+
+    const resp = await fetch(`${apiUrl}/sandboxes/checkpoints/${checkpointId}/patches/${patchId}`, {
+      method: "DELETE",
+      headers: apiKey ? { "X-API-Key": apiKey } : {},
+    });
+
+    if (!resp.ok && resp.status !== 404) {
+      throw new Error(`Failed to delete checkpoint patch: ${resp.status}`);
     }
   }
 
