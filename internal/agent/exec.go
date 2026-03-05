@@ -169,8 +169,21 @@ func (s *Server) ExecStream(req *pb.ExecRequest, stream pb.SandboxAgent_ExecStre
 	<-errCh
 	<-errCh
 
-	// Wait for command to finish
-	_ = cmd.Wait()
+	// Wait for command to finish and capture exit code
+	exitCode := int32(0)
+	if err := cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = int32(exitErr.ExitCode())
+		} else if ctx.Err() == context.DeadlineExceeded {
+			exitCode = -1
+		}
+	}
+
+	// Send final EXIT chunk with exit code
+	_ = stream.Send(&pb.ExecOutputChunk{
+		Stream:   pb.ExecOutputChunk_EXIT,
+		ExitCode: exitCode,
+	})
 
 	return nil
 }

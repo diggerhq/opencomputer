@@ -52,6 +52,46 @@ func (m *PodmanManager) Exec(ctx context.Context, sandboxID string, cfg types.Pr
 	}, nil
 }
 
+// ExecStream runs a command and streams output chunks via callback. Returns exit code.
+func (m *PodmanManager) ExecStream(ctx context.Context, sandboxID string, cfg types.ProcessConfig, onChunk func(chunk types.ExecOutputChunk) error) (int, error) {
+	container := m.ContainerName(sandboxID)
+
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 60
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	command := buildCommand(cfg.Command, cfg.Args)
+
+	cwd := cfg.Cwd
+	if cwd == "" {
+		cwd = "/workspace"
+	}
+
+	exitCode, err := m.podman.ExecStreamInContainer(execCtx, podman.ExecConfig{
+		Container: container,
+		Command:   command,
+		Env:       cfg.Env,
+		Cwd:       cwd,
+	}, func(data []byte) error {
+		return onChunk(types.ExecOutputChunk{Stream: "stdout", Data: data})
+	}, func(data []byte) error {
+		return onChunk(types.ExecOutputChunk{Stream: "stderr", Data: data})
+	})
+	if err != nil {
+		if execCtx.Err() == context.DeadlineExceeded {
+			_ = onChunk(types.ExecOutputChunk{Stream: "stderr", Data: []byte(fmt.Sprintf("command timed out after %ds", timeout))})
+			return 124, nil
+		}
+		return -1, fmt.Errorf("exec stream in sandbox %s failed: %w", sandboxID, err)
+	}
+
+	return exitCode, nil
+}
+
 func buildCommand(cmd string, args []string) []string {
 	if len(args) > 0 {
 		return append([]string{cmd}, args...)

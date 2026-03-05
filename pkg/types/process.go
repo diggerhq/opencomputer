@@ -16,6 +16,12 @@ type ProcessConfig struct {
 	Timeout int               `json:"timeout,omitempty"` // seconds, default 60
 }
 
+// ExecOutputChunk is a single chunk of streaming command output.
+type ExecOutputChunk struct {
+	Stream string `json:"stream"` // "stdout" or "stderr"
+	Data   []byte `json:"data"`
+}
+
 // BackgroundProcess represents a background process.
 type BackgroundProcess struct {
 	PID int    `json:"pid"`

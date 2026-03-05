@@ -33,6 +33,7 @@ type Manager interface {
 
 	// Execution
 	Exec(ctx context.Context, sandboxID string, cfg types.ProcessConfig) (*types.ProcessResult, error)
+	ExecStream(ctx context.Context, sandboxID string, cfg types.ProcessConfig, onChunk func(chunk types.ExecOutputChunk) error) (int, error)
 
 	// Filesystem
 	ReadFile(ctx context.Context, sandboxID, path string) (string, error)

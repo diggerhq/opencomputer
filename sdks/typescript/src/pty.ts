@@ -2,11 +2,13 @@ export interface PtyOpts {
   cols?: number;
   rows?: number;
   onOutput?: (data: Uint8Array) => void;
+  onClose?: () => void;
 }
 
 export interface PtySession {
   sessionId: string;
   send(data: string | Uint8Array): void;
+  resize(cols: number, rows: number): Promise<void>;
   close(): void;
 }
 
@@ -65,14 +67,26 @@ export class Pty {
       };
     }
 
+    if (opts.onClose) {
+      ws.onclose = () => opts.onClose!();
+    }
+
+    const headers = this.headers;
+    const resizeUrl = `${this.apiUrl}/sandboxes/${this.sandboxId}/pty/${sessionId}/resize`;
+
     return {
       sessionId,
       send(data: string | Uint8Array): void {
-        if (typeof data === "string") {
-          ws.send(data);
-        } else {
+        if (ws.readyState === ws.OPEN) {
           ws.send(data);
         }
+      },
+      async resize(cols: number, rows: number): Promise<void> {
+        await fetch(resizeUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ cols, rows }),
+        }).catch(() => {});
       },
       close(): void {
         ws.close();

@@ -80,6 +80,7 @@ export class Sandbox {
     this.files = new Filesystem(opsUrl, opsKey, this.sandboxId, opsToken);
     this.commands = new Commands(opsUrl, opsKey, this.sandboxId, opsToken);
     this.pty = new Pty(opsUrl, opsKey, this.sandboxId, opsToken);
+
   }
 
   get status(): string {
@@ -203,6 +204,7 @@ export class Sandbox {
     (this as any).files = new Filesystem(opsUrl, opsKey, this.sandboxId, opsToken);
     (this as any).commands = new Commands(opsUrl, opsKey, this.sandboxId, opsToken);
     (this as any).pty = new Pty(opsUrl, opsKey, this.sandboxId, opsToken);
+
   }
 
   async setTimeout(timeout: number): Promise<void> {
@@ -277,6 +279,7 @@ export class Sandbox {
     (this as any).files = new Filesystem(opsUrl, opsKey, this.sandboxId, opsToken);
     (this as any).commands = new Commands(opsUrl, opsKey, this.sandboxId, opsToken);
     (this as any).pty = new Pty(opsUrl, opsKey, this.sandboxId, opsToken);
+
   }
 
   static async createFromCheckpoint(checkpointId: string, opts: Pick<SandboxOpts, "apiKey" | "apiUrl" | "timeout"> = {}): Promise<Sandbox> {

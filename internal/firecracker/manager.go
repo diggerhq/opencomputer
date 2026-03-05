@@ -687,6 +687,41 @@ func (m *Manager) Exec(ctx context.Context, sandboxID string, cfg types.ProcessC
 	}, nil
 }
 
+// ExecStream runs a command in the VM and streams output chunks via callback. Returns exit code.
+func (m *Manager) ExecStream(ctx context.Context, sandboxID string, cfg types.ProcessConfig, onChunk func(chunk types.ExecOutputChunk) error) (int, error) {
+	vm, err := m.getReadyVM(ctx, sandboxID)
+	if err != nil {
+		return -1, err
+	}
+
+	timeout := int32(cfg.Timeout)
+	if timeout <= 0 {
+		timeout = 60
+	}
+
+	command := cfg.Command
+	args := cfg.Args
+	if len(args) == 0 {
+		args = []string{"-c", command}
+		command = "/bin/sh"
+	}
+
+	exitCode, err := vm.agent.ExecStream(ctx, &pb.ExecRequest{
+		Command:        command,
+		Args:           args,
+		Envs:           cfg.Env,
+		Cwd:            cfg.Cwd,
+		TimeoutSeconds: timeout,
+	}, func(stream string, data []byte) error {
+		return onChunk(types.ExecOutputChunk{Stream: stream, Data: data})
+	})
+	if err != nil {
+		return -1, fmt.Errorf("exec stream in %s: %w", sandboxID, err)
+	}
+
+	return exitCode, nil
+}
+
 // ReadFile reads a file from the VM.
 func (m *Manager) ReadFile(ctx context.Context, sandboxID, path string) (string, error) {
 	vm, err := m.getReadyVM(ctx, sandboxID)

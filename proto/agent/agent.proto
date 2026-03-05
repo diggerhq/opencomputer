@@ -61,9 +61,11 @@ message ExecOutputChunk {
   enum Stream {
     STDOUT = 0;
     STDERR = 1;
+    EXIT = 2;   // Final chunk: data is empty, exit_code is set
   }
   Stream stream = 1;
   bytes data = 2;
+  int32 exit_code = 3; // Only meaningful when stream == EXIT
 }
 
 // --- Filesystem ---

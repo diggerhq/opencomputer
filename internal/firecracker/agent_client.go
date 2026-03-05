@@ -131,6 +131,35 @@ func (c *AgentClient) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.ExecRe
 	return c.client.Exec(ctx, req)
 }
 
+// ExecStream runs a command and streams output chunks. Returns exit code.
+func (c *AgentClient) ExecStream(ctx context.Context, req *pb.ExecRequest, onChunk func(stream string, data []byte) error) (int, error) {
+	streamClient, err := c.client.ExecStream(ctx, req)
+	if err != nil {
+		return -1, fmt.Errorf("exec stream: %w", err)
+	}
+
+	exitCode := 0
+	for {
+		chunk, recvErr := streamClient.Recv()
+		if recvErr != nil {
+			break
+		}
+		if chunk.Stream == pb.ExecOutputChunk_EXIT {
+			exitCode = int(chunk.ExitCode)
+			break
+		}
+		streamName := "stdout"
+		if chunk.Stream == pb.ExecOutputChunk_STDERR {
+			streamName = "stderr"
+		}
+		if sendErr := onChunk(streamName, chunk.Data); sendErr != nil {
+			return -1, sendErr
+		}
+	}
+
+	return exitCode, nil
+}
+
 // ReadFile reads a file from the VM.
 func (c *AgentClient) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	resp, err := c.client.ReadFile(ctx, &pb.ReadFileRequest{Path: path})

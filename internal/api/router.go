@@ -149,6 +149,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 
 	// Commands
 	api.POST("/sandboxes/:id/commands", s.runCommand)
+	api.POST("/sandboxes/:id/exec", s.execStream)
 
 	// Filesystem
 	api.GET("/sandboxes/:id/files", s.readFile)

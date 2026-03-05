@@ -322,8 +322,47 @@ func (s *GRPCServer) ListDir(ctx context.Context, req *pb.ListDirRequest) (*pb.L
 // SDKs connect directly to the worker HTTP/WS server.
 // Stubbed out to satisfy the interface.
 
-func (s *GRPCServer) ExecCommandStream(_ *pb.ExecCommandRequest, _ pb.SandboxWorker_ExecCommandStreamServer) error {
-	return fmt.Errorf("streaming exec not implemented, use HTTP API directly")
+func (s *GRPCServer) ExecCommandStream(req *pb.ExecCommandRequest, stream pb.SandboxWorker_ExecCommandStreamServer) error {
+	cfg := types.ProcessConfig{
+		Command: req.Command,
+		Args:    req.Args,
+		Env:     req.Envs,
+		Cwd:     req.Cwd,
+		Timeout: int(req.Timeout),
+	}
+
+	var exitCode int
+
+	routeOp := func(ctx context.Context) error {
+		var err error
+		exitCode, err = s.manager.ExecStream(ctx, req.SandboxId, cfg, func(chunk types.ExecOutputChunk) error {
+			pbStream := pb.ExecOutputChunk_STDOUT
+			if chunk.Stream == "stderr" {
+				pbStream = pb.ExecOutputChunk_STDERR
+			}
+			return stream.Send(&pb.ExecOutputChunk{
+				Stream: pbStream,
+				Data:   chunk.Data,
+			})
+		})
+		return err
+	}
+
+	if s.router != nil {
+		if err := s.router.Route(stream.Context(), req.SandboxId, "execStream", routeOp); err != nil {
+			return fmt.Errorf("exec stream failed: %w", err)
+		}
+	} else {
+		if err := routeOp(stream.Context()); err != nil {
+			return fmt.Errorf("exec stream failed: %w", err)
+		}
+	}
+
+	// Send final EXIT chunk with exit code
+	return stream.Send(&pb.ExecOutputChunk{
+		Stream:   pb.ExecOutputChunk_EXIT,
+		ExitCode: int32(exitCode),
+	})
 }
 
 func (s *GRPCServer) CreatePTY(ctx context.Context, req *pb.CreatePTYRequest) (*pb.CreatePTYResponse, error) {

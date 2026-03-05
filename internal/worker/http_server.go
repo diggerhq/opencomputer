@@ -81,6 +81,7 @@ func NewHTTPServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, jwtIssuer *a
 
 	// Commands
 	api.POST("/sandboxes/:id/commands", s.runCommand)
+	api.POST("/sandboxes/:id/exec", s.execStream)
 
 	// Timeout
 	api.POST("/sandboxes/:id/timeout", s.setTimeout)
