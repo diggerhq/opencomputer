@@ -244,7 +244,7 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/preview.pem \
             ${{ env.SSH_USER }}@${{ steps.tf_output.outputs.dev_ip }} "
               sudo bash ${{ env.REMOTE_DIR }}/deploy/ec2/setup-dev-env.sh 'pr-${{ steps.pr.outputs.number }}-key'
-              sudo rm -rf /data/golden-snapshot 2>/dev/null || true
+              sudo rm -rf /data/sandboxes/golden-snapshot 2>/dev/null || true
               sudo systemctl restart opensandbox-server
               sudo systemctl restart opensandbox-worker
               echo 'Services restarted'
