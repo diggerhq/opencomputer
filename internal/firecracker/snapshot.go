@@ -25,18 +25,18 @@ import (
 // SnapshotMeta holds metadata persisted alongside snapshot files.
 // This is needed to restore the exact same VM configuration on wake.
 type SnapshotMeta struct {
-	SandboxID     string         `json:"sandboxId"`
-	Network       *NetworkConfig `json:"network"`
-	GuestCID      uint32         `json:"guestCID"`
-	GuestMAC      string         `json:"guestMAC"`
-	BootArgs      string         `json:"bootArgs"`
-	RootfsPath    string         `json:"rootfsPath"`
-	WorkspacePath string         `json:"workspacePath"`
-	VsockPath     string         `json:"vsockPath"`
-	CpuCount      int            `json:"cpuCount"`
-	MemoryMB      int            `json:"memoryMB"`
-	Template      string         `json:"template"`
-	GuestPort     int            `json:"guestPort"`
+	SandboxID     string            `json:"sandboxId"`
+	Network       *NetworkConfig    `json:"network"`
+	GuestCID      uint32            `json:"guestCID"`
+	GuestMAC      string            `json:"guestMAC"`
+	BootArgs      string            `json:"bootArgs"`
+	RootfsPath    string            `json:"rootfsPath"`
+	WorkspacePath string            `json:"workspacePath"`
+	VsockPath     string            `json:"vsockPath"`
+	CpuCount      int               `json:"cpuCount"`
+	MemoryMB      int               `json:"memoryMB"`
+	Template      string            `json:"template"`
+	GuestPort     int               `json:"guestPort"`
 }
 
 // doHibernate pauses a running VM, creates a full memory snapshot, and kicks off
@@ -1817,6 +1817,16 @@ func (m *Manager) warmForkFromCheckpoint(ctx context.Context, checkpointID strin
 		// Don't fail — the VM is running and accessible via vsock, just external network may be broken
 	}
 
+	// Send sandbox-level env vars into the forked VM agent
+	if len(cfg.Envs) > 0 {
+		envCtx, envCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := agentClient.SetEnvs(envCtx, cfg.Envs); err != nil {
+			envCancel()
+			log.Printf("firecracker: warning: SetEnvs failed for %s: %v", newID, err)
+		}
+		envCancel()
+	}
+
 	// Step 11: Write sandbox-meta.json for crash recovery
 	sbMeta := SandboxMeta{
 		SandboxID: newID,
@@ -2024,12 +2034,15 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	// Step 3: Flush filesystem, quiesce network, close agent, pause VM, snapshot
 	_ = agent.SyncFS(context.Background())
 
-	// Bring eth0 down to drain virtio-net queues cleanly. Without this,
-	// snapshot restore with a different TAP backend causes virtqueue corruption
-	// ("output.0:id 0 is not a head!") and a soft lockup in the guest kernel.
+	// Quiesce eth0 before snapshotting to ensure clean virtio-net virtqueues.
+	// Flush all addresses first so the host stops sending ARP/IPv6 ND traffic to
+	// this TAP, eliminating the race where a packet arrives in the RX used ring
+	// while NAPI is draining. Without this, snapshot restore triggers
+	// "input.0:id 0 is not a head!" (vq->broken=true) which permanently breaks
+	// virtio-net RX for every sandbox created from this golden snapshot.
 	_, _ = agent.Exec(context.Background(), &pb.ExecRequest{
 		Command:        "/bin/sh",
-		Args:           []string{"-c", "ip link set eth0 down"},
+		Args:           []string{"-c", "ip addr flush dev eth0 && ip link set eth0 down"},
 		TimeoutSeconds: 5,
 	})
 
@@ -2268,6 +2281,16 @@ func (m *Manager) createFromGoldenSnapshot(ctx context.Context, id string, cfg t
 	// Step 8: Reconfigure guest network
 	if err := reconfigureGuestNetwork(ctx, agentClient, netCfg.GuestIP, netCfg.HostIP, netCfg.CIDR); err != nil {
 		log.Printf("firecracker: goldenCreate %s: network reconfig failed: %v (VM still running)", id, err)
+	}
+
+	// Send sandbox-level env vars into the VM agent
+	if len(cfg.Envs) > 0 {
+		envCtx, envCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := agentClient.SetEnvs(envCtx, cfg.Envs); err != nil {
+			envCancel()
+			log.Printf("firecracker: warning: SetEnvs failed for %s: %v", id, err)
+		}
+		envCancel()
 	}
 
 	// Step 9: Write sandbox-meta.json

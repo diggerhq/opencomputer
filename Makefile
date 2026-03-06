@@ -10,8 +10,8 @@ BUILD_DIR = bin
 help:
 	@grep -E '^##' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s ':'
 
-## build: Build server, worker, and agent binaries
-build: build-server build-worker build-agent
+## build: Build server, worker, agent, and CLI binaries
+build: build-server build-worker build-agent build-oc
 
 ## build-server: Build the control plane server
 build-server:
@@ -36,6 +36,14 @@ build-agent-amd64:
 ## build-server-arm64: Cross-compile server for Linux ARM64
 build-server-arm64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o $(BUILD_DIR)/$(BINARY_SERVER)-arm64 ./cmd/server
+
+## build-oc: Build the oc CLI tool
+build-oc:
+	CGO_ENABLED=0 go build -o $(BUILD_DIR)/oc ./cmd/oc
+
+## install-oc: Build and install oc to $GOPATH/bin
+install-oc:
+	CGO_ENABLED=0 go install ./cmd/oc
 
 ## --- Local Testing (3 tiers) ---
 

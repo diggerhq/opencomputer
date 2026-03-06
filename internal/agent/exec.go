@@ -29,6 +29,16 @@ func baseEnv() []string {
 	return env
 }
 
+// SetEnvs stores sandbox-level environment variables that are injected into
+// every subsequent Exec/ExecStream call. Safe to call multiple times; last write wins.
+func (s *Server) SetEnvs(ctx context.Context, req *pb.SetEnvsRequest) (*pb.SetEnvsResponse, error) {
+	envs := mapToEnv(req.Envs)
+	s.envMu.Lock()
+	s.sandboxEnvs = envs
+	s.envMu.Unlock()
+	return &pb.SetEnvsResponse{}, nil
+}
+
 // Exec runs a command synchronously and returns stdout/stderr/exit code.
 func (s *Server) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.ExecResponse, error) {
 	timeout := time.Duration(req.TimeoutSeconds) * time.Second
@@ -48,8 +58,13 @@ func (s *Server) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.ExecRespons
 		cmd.Dir = "/root"
 	}
 
-	// Set environment variables with HOME=/root
+	// Build env: base < sandbox-level < per-command
 	cmd.Env = baseEnv()
+	s.envMu.RLock()
+	if len(s.sandboxEnvs) > 0 {
+		cmd.Env = append(cmd.Env, s.sandboxEnvs...)
+	}
+	s.envMu.RUnlock()
 	if len(req.Envs) > 0 {
 		cmd.Env = append(cmd.Env, mapToEnv(req.Envs)...)
 	}
@@ -186,7 +201,13 @@ func (s *Server) execStreamPipes(req *pb.ExecRequest, stream pb.SandboxAgent_Exe
 		cmd.Dir = "/root"
 	}
 
+	// Build env: base < sandbox-level < per-command
 	cmd.Env = baseEnv()
+	s.envMu.RLock()
+	if len(s.sandboxEnvs) > 0 {
+		cmd.Env = append(cmd.Env, s.sandboxEnvs...)
+	}
+	s.envMu.RUnlock()
 	if len(req.Envs) > 0 {
 		cmd.Env = append(cmd.Env, mapToEnv(req.Envs)...)
 	}
