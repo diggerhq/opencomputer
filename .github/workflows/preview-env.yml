@@ -164,6 +164,15 @@ jobs:
             sleep 10
           done
 
+      - name: Generate kernel presigned URL
+        if: >-
+          github.event_name == 'issue_comment' ||
+          steps.check_env.outputs.exists == 'true'
+        id: kernel_url
+        run: |
+          URL=$(aws s3 presign "s3://${{ secrets.TF_STATE_BUCKET }}/artifacts/vmlinux-arm64" --expires-in 3600 --region us-east-1)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
       - name: Provision instance (idempotent)
         if: >-
           github.event_name == 'issue_comment' ||
@@ -174,7 +183,7 @@ jobs:
             "if command -v firecracker &>/dev/null; then echo 'Already provisioned, skipping'; else echo 'First deploy — running setup...'; fi"
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/preview.pem \
             ${{ env.SSH_USER }}@${{ steps.tf_output.outputs.dev_ip }} \
-            'sudo bash -s' < deploy/ec2/setup-single-host.sh
+            "export OPENSANDBOX_KERNEL_URL='${{ steps.kernel_url.outputs.url }}' && sudo -E bash -s" < deploy/ec2/setup-single-host.sh
 
       - name: Rsync repo to instance
         if: >-

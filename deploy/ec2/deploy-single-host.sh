@@ -129,7 +129,7 @@ done'
 echo "==> Step 4: Downloading Firecracker kernel..."
 case "$REMOTE_ARCH" in
   x86_64)  KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin" ;;
-  aarch64) KERNEL_URL="https://github.com/diggerhq/opencomputer/releases/download/kernel-v1/vmlinux-arm64" ;;
+  aarch64) KERNEL_URL="${OPENSANDBOX_KERNEL_URL:-https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/aarch64/kernels/vmlinux.bin}" ;;
 esac
 
 $SSH "sudo mkdir -p /data/firecracker && \
