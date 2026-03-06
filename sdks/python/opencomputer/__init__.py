@@ -2,7 +2,7 @@
 
 from opencomputer.sandbox import Sandbox
 from opencomputer.filesystem import Filesystem
-from opencomputer.commands import Commands, ProcessResult, ExecChunk
+from opencomputer.commands import Commands, ProcessResult, ExecChunk, CommandHandle
 from opencomputer.pty import Pty, PtySession
 from opencomputer.template import Template
 
@@ -12,6 +12,7 @@ __all__ = [
     "Commands",
     "ProcessResult",
     "ExecChunk",
+    "CommandHandle",
     "Pty",
     "PtySession",
     "Template",

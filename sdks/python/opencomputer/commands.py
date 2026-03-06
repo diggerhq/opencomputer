@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable
 
 import httpx
@@ -27,6 +27,27 @@ class ExecChunk:
 
 
 @dataclass
+class CommandHandle:
+    """Handle for a background process running in the sandbox."""
+
+    session_id: str
+    _client: httpx.AsyncClient = field(repr=False)
+    _sandbox_id: str = field(repr=False)
+
+    async def kill(self) -> None:
+        """Kill the background process."""
+        await self._client.delete(
+            f"/sandboxes/{self._sandbox_id}/pty/{self.session_id}",
+        )
+
+    async def send_input(self, data: str) -> None:
+        """Send data to the process's stdin (requires websocket — placeholder)."""
+        raise NotImplementedError(
+            "Use the PTY websocket to send stdin to background processes"
+        )
+
+
+@dataclass
 class Commands:
     """Command execution for a sandbox."""
 
@@ -39,8 +60,62 @@ class Commands:
         timeout: int = 60,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        on_stdout: Callable[[str], None] | None = None,
+        on_stderr: Callable[[str], None] | None = None,
+        tty: bool = False,
+        background: bool = False,
+    ) -> ProcessResult | CommandHandle:
+        """Run a command in the sandbox.
+
+        Args:
+            command: The command to run.
+            timeout: Timeout in seconds (default 60).
+            env: Optional environment variables.
+            cwd: Optional working directory.
+            on_stdout: Callback for each stdout chunk (enables streaming).
+            on_stderr: Callback for each stderr chunk (enables streaming).
+            tty: Allocate a PTY for real-time unbuffered output.
+            background: Start the process in the background and return a
+                CommandHandle immediately. The process runs in a PTY session
+                and survives client disconnect.
+
+        Returns:
+            ProcessResult for foreground commands, CommandHandle for background.
+        """
+        if background:
+            return await self._run_background(command, env=env, cwd=cwd)
+
+        if on_stdout or on_stderr or tty:
+            return await self._run_streaming(
+                command, timeout=timeout, env=env, cwd=cwd,
+                on_stdout=on_stdout, on_stderr=on_stderr, tty=tty,
+            )
+
+        return await self._run_simple(command, timeout=timeout, env=env, cwd=cwd)
+
+    async def connect(self, session_id: str) -> CommandHandle:
+        """Connect to an already-running background process by session ID."""
+        return CommandHandle(
+            session_id=session_id,
+            _client=self._client,
+            _sandbox_id=self._sandbox_id,
+        )
+
+    async def kill(self, session_id: str) -> None:
+        """Kill a background process by session ID."""
+        await self._client.delete(
+            f"/sandboxes/{self._sandbox_id}/pty/{session_id}",
+        )
+
+    # --- Private implementations ---
+
+    async def _run_simple(
+        self,
+        command: str,
+        timeout: int = 60,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> ProcessResult:
-        """Run a command and wait for completion."""
         body: dict[str, Any] = {
             "cmd": command,
             "timeout": timeout,
@@ -64,7 +139,7 @@ class Commands:
             stderr=data.get("stderr", ""),
         )
 
-    async def stream(
+    async def _run_streaming(
         self,
         command: str,
         timeout: int = 60,
@@ -74,21 +149,6 @@ class Commands:
         on_stderr: Callable[[str], None] | None = None,
         tty: bool = False,
     ) -> ProcessResult:
-        """Execute a command and stream output in real time via SSE.
-
-        Args:
-            command: The command to run.
-            timeout: Timeout in seconds (default 60).
-            env: Optional environment variables.
-            cwd: Optional working directory.
-            on_stdout: Callback for each stdout chunk.
-            on_stderr: Callback for each stderr chunk.
-            tty: Allocate a PTY for the command (enables real-time output
-                for programs like npm, apt, pip that buffer without a TTY).
-
-        Returns:
-            ProcessResult with exit code and accumulated stdout/stderr.
-        """
         body: dict[str, Any] = {
             "cmd": command,
             "timeout": timeout,
@@ -104,9 +164,6 @@ class Commands:
         stderr_parts: list[str] = []
         exit_code = -1
 
-        # Read timeout must exceed the server keepalive interval (15s).
-        # The server sends keepalive comments so the connection stays alive
-        # even when the command produces no output.
         read_timeout = timeout + 30
         async with self._client.stream(
             "POST",
@@ -118,7 +175,6 @@ class Commands:
             buffer = ""
             async for raw in resp.aiter_text():
                 buffer += raw
-                # Parse SSE events from buffer
                 while "\n\n" in buffer:
                     event_str, buffer = buffer.split("\n\n", 1)
                     event = _parse_sse_event(event_str)
@@ -141,7 +197,7 @@ class Commands:
                         exit_code = payload["exit_code"]
                     elif event["type"] == "error":
                         payload = json.loads(event["data"])
-                        raise RuntimeError(f"Stream exec error: {payload['error']}")
+                        raise RuntimeError(f"Exec error: {payload['error']}")
 
         return ProcessResult(
             exit_code=exit_code,
@@ -149,60 +205,44 @@ class Commands:
             stderr="".join(stderr_parts),
         )
 
-    async def stream_iter(
+    async def _run_background(
         self,
         command: str,
-        timeout: int = 60,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
-        tty: bool = False,
-    ) -> AsyncIterator[ExecChunk]:
-        """Execute a command and yield output chunks as an async iterator.
+    ) -> CommandHandle:
+        # Create a PTY session
+        resp = await self._client.post(
+            f"/sandboxes/{self._sandbox_id}/pty",
+            json={"cols": 120, "rows": 40},
+        )
+        resp.raise_for_status()
+        session_id = resp.json()["sessionID"]
 
-        Args:
-            command: The command to run.
-            timeout: Timeout in seconds (default 60).
-            env: Optional environment variables.
-            cwd: Optional working directory.
-            tty: Allocate a PTY for the command.
-
-        Yields:
-            ExecChunk for each stdout/stderr output chunk.
-        """
-        body: dict[str, Any] = {
-            "cmd": command,
-            "timeout": timeout,
-        }
+        # Build the command with env/cwd prefixes
+        parts = []
         if env:
-            body["envs"] = env
+            for k, v in env.items():
+                parts.append(f"export {k}={_shell_escape(v)}")
         if cwd:
-            body["cwd"] = cwd
-        if tty:
-            body["tty"] = True
+            parts.append(f"cd {_shell_escape(cwd)}")
+        parts.append(command)
+        full_cmd = " && ".join(parts)
 
-        read_timeout = timeout + 30
-        async with self._client.stream(
-            "POST",
-            f"/sandboxes/{self._sandbox_id}/exec",
-            json=body,
-            timeout=httpx.Timeout(5.0, read=read_timeout),
-        ) as resp:
-            resp.raise_for_status()
-            buffer = ""
-            async for raw in resp.aiter_text():
-                buffer += raw
-                while "\n\n" in buffer:
-                    event_str, buffer = buffer.split("\n\n", 1)
-                    event = _parse_sse_event(event_str)
-                    if event is None:
-                        continue
+        # Send command via a short-lived websocket
+        import websockets  # type: ignore
 
-                    if event["type"] in ("stdout", "stderr"):
-                        payload = json.loads(event["data"])
-                        yield ExecChunk(stream=event["type"], data=payload["data"])
-                    elif event["type"] == "error":
-                        payload = json.loads(event["data"])
-                        raise RuntimeError(f"Stream exec error: {payload['error']}")
+        ws_url = str(self._client.base_url).replace("http://", "ws://").replace("https://", "wss://")
+        ws_endpoint = f"{ws_url}/sandboxes/{self._sandbox_id}/pty/{session_id}"
+
+        async with websockets.connect(ws_endpoint) as ws:
+            await ws.send(full_cmd + "\n")
+
+        return CommandHandle(
+            session_id=session_id,
+            _client=self._client,
+            _sandbox_id=self._sandbox_id,
+        )
 
 
 def _parse_sse_event(raw: str) -> dict[str, str] | None:
@@ -217,3 +257,7 @@ def _parse_sse_event(raw: str) -> dict[str, str] | None:
     if not data:
         return None
     return {"type": event_type, "data": data}
+
+
+def _shell_escape(s: str) -> str:
+    return "'" + s.replace("'", "'\\''") + "'"

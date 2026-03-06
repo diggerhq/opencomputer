@@ -57,11 +57,15 @@ oc sandbox set-timeout <sandbox-id> <seconds>
 ### Execute Commands
 
 ```bash
-# Run a command in a sandbox
+# Run a command (streams output in real time)
 oc exec <sandbox-id> -- echo hello
 oc exec <sandbox-id> --cwd /app -- npm install
 oc exec <sandbox-id> --timeout 120 -- make build
 oc exec <sandbox-id> --env NODE_ENV=production -- node server.js
+
+# Start a background process (returns session ID, process keeps running)
+oc exec <sandbox-id> --background -- python manage.py runserver 0.0.0.0:8000
+oc exec <sandbox-id> --background --follow -- node server.js  # follow output, Ctrl+C to detach
 
 # JSON output includes exitCode, stdout, stderr
 oc exec <sandbox-id> --json -- whoami

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -205,4 +206,76 @@ func (c *Client) PostRaw(ctx context.Context, path string) error {
 // BaseURL returns the client's base URL.
 func (c *Client) BaseURL() string {
 	return c.baseURL
+}
+
+// PostSSE performs a POST and streams SSE events, calling onEvent for each parsed event.
+// Returns the exit code from the "exit" event, or -1 if none received.
+func (c *Client) PostSSE(ctx context.Context, path string, body interface{}, onEvent func(eventType string, data json.RawMessage)) (int, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return -1, err
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+path, bodyReader)
+	if err != nil {
+		return -1, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := c.do(req)
+	if err != nil {
+		return -1, err
+	}
+	defer resp.Body.Close()
+
+	exitCode := -1
+	scanner := bufio.NewScanner(resp.Body)
+	var eventType string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			eventType = ""
+			continue
+		}
+		if strings.HasPrefix(line, ": ") {
+			// SSE comment (keepalive)
+			continue
+		}
+		if strings.HasPrefix(line, "event: ") {
+			eventType = strings.TrimSpace(line[7:])
+			continue
+		}
+		if strings.HasPrefix(line, "data: ") {
+			raw := json.RawMessage(line[6:])
+			if eventType == "exit" {
+				var exitData struct {
+					ExitCode int `json:"exit_code"`
+				}
+				if json.Unmarshal(raw, &exitData) == nil {
+					exitCode = exitData.ExitCode
+				}
+			}
+			if onEvent != nil {
+				onEvent(eventType, raw)
+			}
+		}
+	}
+	return exitCode, scanner.Err()
+}
+
+// CreatePTYSession creates a PTY session and returns the session ID.
+func (c *Client) CreatePTYSession(ctx context.Context, sandboxID string) (string, error) {
+	var result struct {
+		SessionID string `json:"sessionID"`
+	}
+	err := c.Post(ctx, "/sandboxes/"+sandboxID+"/pty", map[string]int{"cols": 120, "rows": 40}, &result)
+	if err != nil {
+		return "", err
+	}
+	return result.SessionID, nil
 }

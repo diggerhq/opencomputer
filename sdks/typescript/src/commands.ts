@@ -8,19 +8,74 @@ export interface RunOpts {
   timeout?: number;
   env?: Record<string, string>;
   cwd?: string;
-}
-
-export interface StreamOpts extends RunOpts {
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
-  /** Allocate a PTY for the command. Enables real-time output for programs
-   *  that buffer when not connected to a terminal (npm, apt, pip, etc.). */
+  /** Allocate a PTY for real-time unbuffered output (npm, apt, pip, etc.). */
   tty?: boolean;
+  /** Run the command in the background. Returns a CommandHandle immediately
+   *  instead of waiting for the process to exit. Use for long-running servers,
+   *  dev tools, etc. The process keeps running even if you don't hold a reference. */
+  background?: boolean;
 }
 
 export interface ExecChunk {
   stream: "stdout" | "stderr";
   data: string;
+}
+
+/** Handle for a background process. Allows waiting, killing, or disconnecting. */
+export class CommandHandle {
+  readonly sessionId: string;
+  private _ws: WebSocket | null = null;
+  private _killed = false;
+
+  constructor(
+    sessionId: string,
+    private apiUrl: string,
+    private headers: Record<string, string>,
+    private sandboxId: string,
+    ws: WebSocket | null,
+    private onStdout?: (data: string) => void,
+    private onStderr?: (data: string) => void,
+  ) {
+    this.sessionId = sessionId;
+    this._ws = ws;
+  }
+
+  /** Send data to the process's stdin. */
+  sendInput(data: string): void {
+    if (this._ws && this._ws.readyState === this._ws.OPEN) {
+      this._ws.send(data);
+    }
+  }
+
+  /** Kill the background process. */
+  async kill(): Promise<void> {
+    if (this._killed) return;
+    this._killed = true;
+    this._ws?.close();
+    await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/pty/${this.sessionId}`, {
+      method: "DELETE",
+      headers: this.headers,
+    }).catch(() => {});
+  }
+
+  /** Disconnect from the process without killing it. The process keeps running
+   *  in the sandbox. You can reconnect later via `commands.connect()`. */
+  disconnect(): void {
+    this._ws?.close();
+    this._ws = null;
+  }
+
+  /** Wait for the background process to exit. Resolves when the WebSocket closes. */
+  async wait(): Promise<void> {
+    if (!this._ws) return;
+    const ws = this._ws;
+    if (ws.readyState === ws.CLOSED) return;
+    await new Promise<void>((resolve) => {
+      ws.addEventListener("close", () => resolve(), { once: true });
+    });
+  }
 }
 
 export class Commands {
@@ -41,7 +96,52 @@ export class Commands {
     return h;
   }
 
-  async run(command: string, opts: RunOpts = {}): Promise<ProcessResult> {
+  /**
+   * Run a command in the sandbox.
+   *
+   * - Default: waits for completion, returns ProcessResult.
+   * - `{ background: true }`: starts the process and returns a CommandHandle immediately.
+   *   The process runs in a PTY session and survives client disconnect.
+   * - `onStdout`/`onStderr`: stream output in real-time via SSE (foreground only).
+   */
+  run(command: string, opts: RunOpts & { background: true }): Promise<CommandHandle>;
+  run(command: string, opts?: RunOpts & { background?: false }): Promise<ProcessResult>;
+  run(command: string, opts: RunOpts = {}): Promise<ProcessResult | CommandHandle> {
+    if (opts.background) {
+      return this._runBackground(command, opts);
+    }
+    if (opts.onStdout || opts.onStderr || opts.tty) {
+      return this._runStreaming(command, opts);
+    }
+    return this._runSimple(command, opts);
+  }
+
+  /**
+   * Connect to an already-running background process by its session ID.
+   */
+  async connect(sessionId: string, opts?: {
+    onStdout?: (data: string) => void;
+    onStderr?: (data: string) => void;
+  }): Promise<CommandHandle> {
+    const ws = this._connectWebSocket(sessionId, opts?.onStdout, opts?.onStderr);
+    return new CommandHandle(sessionId, this.apiUrl, this.headers, this.sandboxId, ws, opts?.onStdout, opts?.onStderr);
+  }
+
+  /** List active PTY sessions (background processes). */
+  // Note: This relies on the existing PTY list if/when the backend exposes it.
+  // For now, callers track session IDs themselves.
+
+  /** Kill a background process by session ID. */
+  async kill(sessionId: string): Promise<void> {
+    await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/pty/${sessionId}`, {
+      method: "DELETE",
+      headers: this.headers,
+    }).catch(() => {});
+  }
+
+  // --- Private implementations ---
+
+  private async _runSimple(command: string, opts: RunOpts): Promise<ProcessResult> {
     const timeout = opts.timeout ?? 60;
 
     const body: Record<string, unknown> = {
@@ -73,11 +173,7 @@ export class Commands {
     }
   }
 
-  /**
-   * Execute a command and stream stdout/stderr in real time via SSE.
-   * Returns an async iterable of output chunks that also resolves to the final ProcessResult.
-   */
-  stream(command: string, opts: StreamOpts = {}): StreamHandle {
+  private async _runStreaming(command: string, opts: RunOpts): Promise<ProcessResult> {
     const timeout = opts.timeout ?? 60;
 
     const body: Record<string, unknown> = {
@@ -88,50 +184,8 @@ export class Commands {
     if (opts.cwd) body.cwd = opts.cwd;
     if (opts.tty) body.tty = true;
 
-    return new StreamHandle(
-      `${this.apiUrl}/sandboxes/${this.sandboxId}/exec`,
-      this.headers,
-      body,
-      timeout,
-      opts.onStdout,
-      opts.onStderr,
-    );
-  }
-}
-
-/**
- * Handle for a streaming command execution.
- * Can be used as an async iterable or awaited for the final result.
- */
-export class StreamHandle implements AsyncIterable<ExecChunk>, PromiseLike<ProcessResult> {
-  private _resultPromise: Promise<ProcessResult> | null = null;
-  private _chunks: ExecChunk[] = [];
-  private _listeners: Array<(chunk: ExecChunk) => void> = [];
-  private _done = false;
-  private _exitCode = 0;
-
-  constructor(
-    private url: string,
-    private headers: Record<string, string>,
-    private body: Record<string, unknown>,
-    private timeout: number,
-    private onStdout?: (data: string) => void,
-    private onStderr?: (data: string) => void,
-  ) {}
-
-  private _start(): Promise<ProcessResult> {
-    if (this._resultPromise) return this._resultPromise;
-
-    this._resultPromise = this._run();
-    return this._resultPromise;
-  }
-
-  private async _run(): Promise<ProcessResult> {
     const controller = new AbortController();
-    // Idle timeout: resets every time we receive data (including keepalives).
-    // This allows long-running commands that produce no output to survive as
-    // long as the server sends keepalive comments.
-    const idleMs = (this.timeout + 30) * 1000;
+    const idleMs = (timeout + 30) * 1000;
     let idleTimer = globalThis.setTimeout(() => controller.abort(), idleMs);
     const resetIdle = () => {
       globalThis.clearTimeout(idleTimer);
@@ -140,18 +194,19 @@ export class StreamHandle implements AsyncIterable<ExecChunk>, PromiseLike<Proce
 
     let stdout = "";
     let stderr = "";
+    let exitCode = 0;
 
     try {
-      const resp = await fetch(this.url, {
+      const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec`, {
         method: "POST",
         headers: this.headers,
-        body: JSON.stringify(this.body),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
 
       if (!resp.ok) {
         const text = await resp.text();
-        throw new Error(`Stream exec failed: ${resp.status} ${text}`);
+        throw new Error(`Command failed: ${resp.status} ${text}`);
       }
 
       if (!resp.body) {
@@ -165,13 +220,9 @@ export class StreamHandle implements AsyncIterable<ExecChunk>, PromiseLike<Proce
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-
-        // Reset idle timer on any received data (including keepalives)
         resetIdle();
 
         buffer += decoder.decode(value, { stream: true });
-
-        // Parse SSE events from buffer
         const parts = buffer.split("\n\n");
         buffer = parts.pop() || "";
 
@@ -181,23 +232,16 @@ export class StreamHandle implements AsyncIterable<ExecChunk>, PromiseLike<Proce
 
           if (event.type === "stdout" || event.type === "stderr") {
             const data = JSON.parse(event.data);
-            const chunk: ExecChunk = { stream: event.type, data: data.data };
-
             if (event.type === "stdout") {
               stdout += data.data;
-              this.onStdout?.(data.data);
+              opts.onStdout?.(data.data);
             } else {
               stderr += data.data;
-              this.onStderr?.(data.data);
-            }
-
-            this._chunks.push(chunk);
-            for (const listener of this._listeners) {
-              listener(chunk);
+              opts.onStderr?.(data.data);
             }
           } else if (event.type === "exit") {
             const data = JSON.parse(event.data);
-            this._exitCode = data.exit_code;
+            exitCode = data.exit_code;
           } else if (event.type === "error") {
             const data = JSON.parse(event.data);
             throw new Error(data.error);
@@ -206,68 +250,72 @@ export class StreamHandle implements AsyncIterable<ExecChunk>, PromiseLike<Proce
       }
     } finally {
       globalThis.clearTimeout(idleTimer);
-      this._done = true;
     }
 
-    return {
-      exitCode: this._exitCode,
-      stdout,
-      stderr,
-    };
+    return { exitCode, stdout, stderr };
   }
 
-  then<TResult1 = ProcessResult, TResult2 = never>(
-    onfulfilled?: ((value: ProcessResult) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-  ): Promise<TResult1 | TResult2> {
-    return this._start().then(onfulfilled, onrejected);
-  }
+  private async _runBackground(command: string, opts: RunOpts): Promise<CommandHandle> {
+    // Create a PTY session
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/pty`, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({
+        cols: 120,
+        rows: 40,
+      }),
+    });
 
-  async *[Symbol.asyncIterator](): AsyncIterator<ExecChunk> {
-    // Start the stream
-    const resultPromise = this._start();
-
-    let resolveNext: ((value: ExecChunk | null) => void) | null = null;
-    const pending: ExecChunk[] = [];
-
-    const listener = (chunk: ExecChunk) => {
-      if (resolveNext) {
-        const resolve = resolveNext;
-        resolveNext = null;
-        resolve(chunk);
-      } else {
-        pending.push(chunk);
-      }
-    };
-
-    this._listeners.push(listener);
-
-    try {
-      while (true) {
-        if (pending.length > 0) {
-          yield pending.shift()!;
-          continue;
-        }
-
-        if (this._done) break;
-
-        const chunk = await new Promise<ExecChunk | null>((resolve) => {
-          if (this._done) {
-            resolve(null);
-            return;
-          }
-          resolveNext = resolve;
-        });
-
-        if (chunk === null) break;
-        yield chunk;
-      }
-    } finally {
-      const idx = this._listeners.indexOf(listener);
-      if (idx >= 0) this._listeners.splice(idx, 1);
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Failed to start background process: ${resp.status} ${text}`);
     }
 
-    await resultPromise;
+    const data = await resp.json();
+    const sessionId: string = data.sessionID;
+
+    // Connect WebSocket for output
+    const ws = this._connectWebSocket(sessionId, opts.onStdout, opts.onStderr);
+
+    // Wait for WebSocket to open, then send the command
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener("open", () => resolve(), { once: true });
+      ws.addEventListener("error", (e) => reject(new Error("WebSocket connection failed")), { once: true });
+    });
+
+    // Send command + newline to execute it
+    const envPrefix = opts.env
+      ? Object.entries(opts.env).map(([k, v]) => `export ${k}=${shellEscape(v)}`).join(" && ") + " && "
+      : "";
+    const cdPrefix = opts.cwd ? `cd ${shellEscape(opts.cwd)} && ` : "";
+    ws.send(`${envPrefix}${cdPrefix}${command}\n`);
+
+    return new CommandHandle(sessionId, this.apiUrl, this.headers, this.sandboxId, ws, opts.onStdout, opts.onStderr);
+  }
+
+  private _connectWebSocket(
+    sessionId: string,
+    onStdout?: (data: string) => void,
+    onStderr?: (data: string) => void,
+  ): WebSocket {
+    const wsUrl = this.apiUrl
+      .replace("http://", "ws://")
+      .replace("https://", "wss://");
+    const ws = new WebSocket(`${wsUrl}/sandboxes/${this.sandboxId}/pty/${sessionId}`);
+    ws.binaryType = "arraybuffer";
+
+    if (onStdout) {
+      const decoder = new TextDecoder();
+      ws.onmessage = (event) => {
+        const text = event.data instanceof ArrayBuffer
+          ? decoder.decode(new Uint8Array(event.data))
+          : event.data as string;
+        // PTY merges stdout/stderr, so everything comes as stdout
+        onStdout(text);
+      };
+    }
+
+    return ws;
   }
 }
 
@@ -285,4 +333,8 @@ function parseSSEEvent(raw: string): { type: string; data: string } | null {
 
   if (!data) return null;
   return { type, data };
+}
+
+function shellEscape(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
 }

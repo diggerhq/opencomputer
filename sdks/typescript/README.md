@@ -27,51 +27,50 @@ const content = await sandbox.files.read("/tmp/test.txt");
 await sandbox.kill();
 ```
 
-## Streaming Commands
+## Streaming Output
 
-For long-running commands, use `stream()` to get real-time output instead of waiting for completion:
+For long-running commands, pass `onStdout`/`onStderr` callbacks to get real-time output:
 
 ```typescript
-// Callback style — get output as it arrives, await final result
-const result = await sandbox.commands.stream("make build && make test", {
+const result = await sandbox.commands.run("make build && make test", {
   timeout: 300,
   onStdout: (data) => process.stdout.write(data),
   onStderr: (data) => process.stderr.write(data),
 });
 console.log(`Exit code: ${result.exitCode}`);
-
-// Async iterator — process chunks one at a time
-for await (const chunk of sandbox.commands.stream("npm install")) {
-  // chunk.stream is "stdout" or "stderr"
-  process.stdout.write(chunk.data);
-}
 ```
 
-### `run()` vs `stream()`
-
-| | `run()` | `stream()` |
-|---|---|---|
-| **Use case** | Short commands, scripting | Long builds, tailing logs, anything > ~30s |
-| **Returns** | `ProcessResult` after completion | Async iterable of chunks, resolves to `ProcessResult` |
-| **Output** | Buffered (stdout/stderr as strings) | Real-time chunks via SSE |
-| **Timeout risk** | Yes, for long commands | No — SSE keeps the connection alive |
-
-### StreamHandle
-
-`stream()` returns a `StreamHandle` that is both:
-- **`PromiseLike<ProcessResult>`** — await it to get the final result with accumulated stdout/stderr
-- **`AsyncIterable<ExecChunk>`** — iterate over it to process chunks as they arrive
+Use `tty: true` for programs that buffer output when not connected to a terminal (npm, apt, pip):
 
 ```typescript
-// These are equivalent:
-const result = await sandbox.commands.stream("echo hi");
-// result.exitCode, result.stdout, result.stderr
+await sandbox.commands.run("npm install", {
+  tty: true,
+  onStdout: (data) => process.stdout.write(data),
+});
+```
 
-// Or iterate:
-const handle = sandbox.commands.stream("echo hi");
-for await (const chunk of handle) {
-  // { stream: "stdout", data: "hi\n" }
-}
+## Background Processes
+
+Start long-running processes (servers, watchers) that keep running in the sandbox:
+
+```typescript
+// Start a server in the background — returns immediately
+const handle = await sandbox.commands.run("python manage.py runserver 0.0.0.0:8000", {
+  background: true,
+  onStdout: (data) => console.log(data),
+});
+
+// handle.sessionId — for reconnection
+// handle.sendInput("quit\n") — send stdin
+// handle.disconnect() — detach without killing
+// handle.kill() — terminate the process
+// handle.wait() — wait for process to exit
+
+// Reconnect to a running process later
+const handle2 = await sandbox.commands.connect(handle.sessionId);
+
+// Kill by session ID
+await sandbox.commands.kill(handle.sessionId);
 ```
 
 ## PTY (Terminal)
