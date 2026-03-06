@@ -1,0 +1,137 @@
+---
+title: "Sandbox"
+description: "Create, list, and manage sandbox lifecycles"
+---
+
+The `sandbox` command group manages the full lifecycle of OpenComputer sandboxes. The most common operations — `create` and `ls` — are also available as top-level shortcuts.
+
+## Create a Sandbox
+
+```bash
+oc create
+```
+
+Or with options:
+
+```bash
+oc create --timeout 600 --cpu 2 --memory 2048 --env NODE_ENV=production
+```
+
+### `oc create`
+
+Alias for `oc sandbox create`. Creates a new sandbox and prints its ID.
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--template` | string | `default` | Template to use |
+| `--timeout` | int | `300` | Sandbox TTL in seconds |
+| `--cpu` | int | `1` | Number of vCPUs |
+| `--memory` | int | `1024` | Memory in MB |
+| `--env` | string | — | Environment variable (`KEY=VALUE`, repeatable) |
+| `--metadata` | string | — | Metadata (`KEY=VALUE`, repeatable) |
+
+## List Sandboxes
+
+```bash
+oc ls
+```
+
+Output:
+
+```
+ID           TEMPLATE  STATUS   CPU  MEM     AGE
+sb-e148d1b0            running  1    1024MB  2m30s
+sb-a3f91c27            running  2    2048MB  15m0s
+```
+
+### `oc ls`
+
+Alias for `oc sandbox list`. Lists all sandboxes for your organization.
+
+## Get Sandbox Details
+
+```bash
+oc sandbox get sb-abc123
+```
+
+### `oc sandbox get <id>`
+
+Displays detailed information about a sandbox including status, resources, and timestamps.
+
+## Kill a Sandbox
+
+```bash
+oc sandbox kill sb-abc123
+```
+
+### `oc sandbox kill <id>`
+
+Immediately terminates a sandbox. All data is lost unless a [checkpoint](/cli/checkpoints) was created.
+
+## Hibernate
+
+```bash
+oc sandbox hibernate sb-abc123
+```
+
+### `oc sandbox hibernate <id>`
+
+Saves the sandbox's full state (memory + disk) to S3 and stops the VM. The sandbox can be resumed later with `wake`.
+
+## Wake
+
+```bash
+oc sandbox wake sb-abc123
+```
+
+Or with a new timeout:
+
+```bash
+oc sandbox wake sb-abc123 --timeout 600
+```
+
+### `oc sandbox wake <id>`
+
+Resumes a hibernated sandbox. All processes and state are restored exactly as they were.
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--timeout` | int | `300` | New TTL in seconds after waking |
+
+## Set Timeout
+
+```bash
+oc sandbox set-timeout sb-abc123 600
+```
+
+### `oc sandbox set-timeout <id> <seconds>`
+
+Updates the sandbox's idle timeout and resets the TTL countdown.
+
+## Examples
+
+### Create and Immediately Shell In
+
+```bash
+ID=$(oc create --json | jq -r '.sandboxID')
+oc shell $ID
+```
+
+### Hibernate and Resume Later
+
+```bash
+# Save state and stop
+oc sandbox hibernate sb-abc123
+
+# ... hours later ...
+
+# Resume exactly where you left off
+oc sandbox wake sb-abc123
+oc shell sb-abc123
+```
+
+### List Running Sandboxes as JSON
+
+```bash
+oc ls --json | jq '.[] | select(.status == "running") | .sandboxID'
+```
