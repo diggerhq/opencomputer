@@ -485,6 +485,15 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 	}
 	vm.agent = agentClient
 
+	// For hot snapshot restores the network IPs are already correct (same TAP),
+	// but snapshots taken before the DNS fix may have empty resolv.conf.
+	// Write it unconditionally — cheap and safe.
+	if snapshotRestore {
+		if err := ensureGuestDNS(context.Background(), agentClient); err != nil {
+			log.Printf("firecracker: wake %s: DNS fix failed: %v", sandboxID, err)
+		}
+	}
+
 	// Register VM
 	m.mu.Lock()
 	m.vms[sandboxID] = vm
@@ -1600,7 +1609,18 @@ func patchVMStateBinary(vmstatePath, oldSandboxID, newSandboxID, oldTAP, newTAP 
 // This brings eth0 up (golden snapshot takes it down to drain virtio queues),
 // flushes the old config, and applies the new IPs and gateway.
 func reconfigureGuestNetwork(ctx context.Context, agent *AgentClient, guestIP, hostIP string, cidr int) error {
-	cmd := fmt.Sprintf("ip link set eth0 up && ip addr flush dev eth0 && ip addr add %s/%d dev eth0 && ip route add default via %s", guestIP, cidr, hostIP)
+	// Flush existing address (also removes connected routes), delete any stale
+	// default route, add new address+route, then write resolv.conf so DNS works
+	// regardless of what was baked into the snapshot.
+	cmd := fmt.Sprintf(
+		"ip link set eth0 up && "+
+			"ip addr flush dev eth0 && "+
+			"ip addr add %s/%d dev eth0 && "+
+			"ip route del default 2>/dev/null; "+
+			"ip route add default via %s && "+
+			"echo 'nameserver 8.8.8.8' > /etc/resolv.conf && "+
+			"echo 'nameserver 8.8.4.4' >> /etc/resolv.conf",
+		guestIP, cidr, hostIP)
 	resp, err := agent.Exec(ctx, &pb.ExecRequest{
 		Command:        "/bin/sh",
 		Args:           []string{"-c", cmd},
@@ -1611,6 +1631,26 @@ func reconfigureGuestNetwork(ctx context.Context, agent *AgentClient, guestIP, h
 	}
 	if resp.ExitCode != 0 {
 		return fmt.Errorf("network reconfig failed (exit %d): %s", resp.ExitCode, resp.Stderr)
+	}
+	return nil
+}
+
+// ensureGuestDNS writes 8.8.8.8 / 8.8.4.4 into /etc/resolv.conf inside the VM.
+// Called after snapshot restore to fix sandboxes that were snapshotted before
+// the init script had DNS setup (or whose page cache had stale empty content).
+func ensureGuestDNS(ctx context.Context, agent *AgentClient) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	resp, err := agent.Exec(ctx, &pb.ExecRequest{
+		Command:        "/bin/sh",
+		Args:           []string{"-c", "echo 'nameserver 8.8.8.8' > /etc/resolv.conf && echo 'nameserver 8.8.4.4' >> /etc/resolv.conf"},
+		TimeoutSeconds: 3,
+	})
+	if err != nil {
+		return err
+	}
+	if resp.ExitCode != 0 {
+		return fmt.Errorf("exit %d: %s", resp.ExitCode, resp.Stderr)
 	}
 	return nil
 }
