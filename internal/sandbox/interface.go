@@ -27,8 +27,7 @@ type SandboxStats struct {
 
 // Manager defines the sandbox lifecycle interface.
 // Upper layers (SandboxRouter, HTTP/gRPC servers, proxy) depend on this interface,
-// not on a concrete implementation. This allows swapping the backend
-// Currently implemented by the Firecracker backend.
+// not on a concrete implementation. Currently implemented by the Firecracker backend.
 type Manager interface {
 	// Lifecycle
 	Create(ctx context.Context, cfg types.SandboxConfig) (*types.Sandbox, error)
