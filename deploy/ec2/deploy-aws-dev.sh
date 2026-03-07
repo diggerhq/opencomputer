@@ -384,6 +384,13 @@ cmd_deploy() {
         echo '  Server started'
         sudo systemctl restart opensandbox-worker
         echo '  Worker started'
+
+        # Docker sets FORWARD policy to DROP — add rules so Firecracker VMs can reach the internet
+        sudo iptables -C FORWARD -s 172.16.0.0/16 -j ACCEPT 2>/dev/null || \
+            sudo iptables -I FORWARD -s 172.16.0.0/16 -j ACCEPT
+        sudo iptables -C FORWARD -d 172.16.0.0/16 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+            sudo iptables -I FORWARD -d 172.16.0.0/16 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+        echo '  iptables FORWARD rules for VM subnet added'
     "
 
     log "Step 6: Waiting for migrations, then seeding database..."

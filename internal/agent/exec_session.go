@@ -104,7 +104,11 @@ func (s *Server) ExecSessionCreate(ctx context.Context, req *pb.ExecSessionCreat
 	s.execMu.Unlock()
 
 	// Pipe stdout/stderr into scrollback buffer
+	var pipeWg sync.WaitGroup
+	pipeWg.Add(2)
+
 	go func() {
+		defer pipeWg.Done()
 		buf := make([]byte, 4096)
 		for {
 			n, err := stdoutPipe.Read(buf)
@@ -118,6 +122,7 @@ func (s *Server) ExecSessionCreate(ctx context.Context, req *pb.ExecSessionCreat
 	}()
 
 	go func() {
+		defer pipeWg.Done()
 		buf := make([]byte, 4096)
 		for {
 			n, err := stderrPipe.Read(buf)
@@ -130,9 +135,11 @@ func (s *Server) ExecSessionCreate(ctx context.Context, req *pb.ExecSessionCreat
 		}
 	}()
 
-	// Wait for command exit
+	// Wait for command exit — ensure all pipe output is collected first
 	go func() {
 		_ = cmd.Wait()
+		// Wait for stdout/stderr goroutines to finish reading remaining pipe data
+		pipeWg.Wait()
 		code := int32(cmd.ProcessState.ExitCode())
 		sess.mu.Lock()
 		sess.exitCode = &code

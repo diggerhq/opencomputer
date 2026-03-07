@@ -41,6 +41,8 @@ export interface ExecSessionInfo {
 
 export interface ExecSession {
   sessionId: string;
+  /** Resolves with the exit code when the process exits. */
+  done: Promise<number>;
   sendStdin(data: string | Uint8Array): void;
   kill(signal?: number): Promise<void>;
   close(): void;
@@ -103,6 +105,10 @@ export class Exec {
     const ws = new WebSocket(wsEndpoint);
     ws.binaryType = "arraybuffer";
 
+    let gotExit = false;
+    let resolveDone: (code: number) => void;
+    const done = new Promise<number>((resolve) => { resolveDone = resolve; });
+
     ws.onmessage = (event) => {
       const buf = new Uint8Array(event.data as ArrayBuffer);
       if (buf.length < 1) return;
@@ -118,10 +124,15 @@ export class Exec {
           opts.onStderr?.(payload);
           break;
         case 0x03: // exit
+          gotExit = true;
           if (payload.length >= 4) {
             const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
             const exitCode = view.getInt32(0, false); // big-endian
             opts.onExit?.(exitCode);
+            resolveDone(exitCode);
+          } else {
+            opts.onExit?.(0);
+            resolveDone(0);
           }
           break;
         case 0x04: // scrollback_end
@@ -130,11 +141,27 @@ export class Exec {
       }
     };
 
+    ws.onclose = () => {
+      if (!gotExit) {
+        opts.onExit?.(-1);
+        resolveDone(-1);
+      }
+    };
+
+    ws.onerror = () => {
+      if (!gotExit) {
+        opts.onExit?.(-1);
+        resolveDone(-1);
+      }
+    };
+
     const exec = this;
 
     return {
       sessionId,
+      done,
       sendStdin(data: string | Uint8Array): void {
+        if (ws.readyState !== WebSocket.OPEN) return;
         const payload = typeof data === "string"
           ? new TextEncoder().encode(data)
           : data;
@@ -183,15 +210,17 @@ export class Exec {
   async run(command: string, opts: RunOpts = {}): Promise<ProcessResult> {
     let stdout = "";
     let stderr = "";
+    const timeout = opts.timeout ?? 60;
 
     return new Promise<ProcessResult>((resolve, reject) => {
       const decoder = new TextDecoder();
+      let resolved = false;
 
       this.start("sh", {
         args: ["-c", command],
         env: opts.env,
         cwd: opts.cwd,
-        timeout: opts.timeout,
+        timeout,
         onStdout: (data) => {
           stdout += decoder.decode(data, { stream: true });
         },
@@ -199,9 +228,17 @@ export class Exec {
           stderr += decoder.decode(data, { stream: true });
         },
         onExit: (exitCode) => {
-          resolve({ exitCode, stdout, stderr });
+          if (!resolved) {
+            resolved = true;
+            resolve({ exitCode, stdout, stderr });
+          }
         },
-      }).catch(reject);
+      }).catch((err) => {
+        if (!resolved) {
+          resolved = true;
+          reject(err);
+        }
+      });
     });
   }
 }

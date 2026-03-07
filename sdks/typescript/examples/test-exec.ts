@@ -3,16 +3,16 @@
  *
  * Usage:
  *   cd sdks/typescript
- *   npx tsx test-exec.ts
+ *   npx tsx examples/test-exec.ts
  *
  * Environment:
- *   OPENCOMPUTER_API_URL  (default: http://50.17.44.74:8080)
+ *   OPENCOMPUTER_API_URL  (default: http://localhost:8080)
  *   OPENCOMPUTER_API_KEY  (default: opensandbox-dev)
  */
 
 import { Sandbox } from "../src/index.js";
 
-const API_URL = process.env.OPENCOMPUTER_API_URL || "http://50.17.44.74:8080";
+const API_URL = process.env.OPENCOMPUTER_API_URL || "http://localhost:8080";
 const API_KEY = process.env.OPENCOMPUTER_API_KEY || "opensandbox-dev";
 
 const decoder = new TextDecoder();
@@ -104,7 +104,7 @@ async function main() {
     },
   });
   console.log(`  session: ${session.sessionId}`);
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+  await session.done;
   assert(lines.includes("line-1"), "got line-1");
   assert(lines.includes("line-3"), "got line-3");
   assert(streamExitCode === 0, `stream exit code is 0 (got ${streamExitCode})`);
@@ -126,7 +126,7 @@ async function main() {
   });
   await new Promise((resolve) => setTimeout(resolve, 500));
   await sleepSession.kill();
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  await sleepSession.done;
   console.log(`  exit after kill: ${killExitCode}`);
   assert(killExitCode !== -999, "got exit callback after kill");
 
@@ -146,24 +146,39 @@ async function main() {
   assert(scriptResult.stdout.includes("hostname="), "has hostname");
   assert(scriptResult.stdout.includes("user="), "has user");
 
-  // 13. apt update shell script
-  console.log("\n--- 13. apt update script ---");
-  const aptUpdate = await sandbox.exec.start("apt", {
-    args: ["update"],
+  // 13. Network connectivity
+  console.log("\n--- 13. Network connectivity ---");
+  const extPing = await sandbox.exec.run("ping -c 1 -W 3 8.8.8.8 2>&1", { timeout: 10 });
+  const extReachable = extPing.stdout.includes("bytes from");
+  console.log(`  ping 8.8.8.8: ${extReachable ? "reachable" : "unreachable"}`);
+  assert(extReachable, "external ping works");
+
+  const dnsResult = await sandbox.exec.run("getent hosts google.com 2>&1 | head -1", { timeout: 10 });
+  const dnsOk = dnsResult.exitCode === 0 && dnsResult.stdout.trim().length > 0;
+  console.log(`  DNS: ${dnsOk ? dnsResult.stdout.trim() : "failed"}`);
+  assert(dnsOk, "DNS resolution works");
+
+  // 14. apt-get update (streaming via start + await done)
+  console.log("\n--- 14. apt-get update (streaming) ---");
+  const aptLines: string[] = [];
+  const aptSession = await sandbox.exec.start("sh", {
+    args: ["-c", "apt-get update 2>&1 | head -10"],
+    timeout: 30,
     onStdout: (data) => {
       const text = decoder.decode(data);
-      text
-        .split("\n")
-        .filter(Boolean)
-        .forEach((l) => lines.push(l));
-    },
-    onExit: (code) => {
-      killExitCode = code;
+      for (const line of text.split("\n").filter(Boolean)) {
+        aptLines.push(line);
+        process.stdout.write(`  > ${line}\n`);
+      }
     },
   });
+  const aptExitCode = await aptSession.done;
+  console.log(`  exit: ${aptExitCode} (${aptLines.length} lines)`);
+  assert(aptExitCode === 0, "apt-get update succeeds");
+  assert(aptLines.some((l) => l.includes("Hit:") || l.includes("Get:")), "apt-get fetched package lists");
 
-  // 14. Cleanup
-  console.log("\n--- 13. Killing sandbox ---");
+  // 15. Cleanup
+  console.log("\n--- 15. Killing sandbox ---");
   await sandbox.kill();
   assert(sandbox.status === "stopped", "sandbox stopped");
 

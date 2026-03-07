@@ -7,7 +7,7 @@ Usage:
     python examples/test_exec.py
 
 Environment:
-    OPENCOMPUTER_API_URL  (default: http://50.17.44.74:8080)
+    OPENCOMPUTER_API_URL  (default: http://localhost:8080)
     OPENCOMPUTER_API_KEY  (default: opensandbox-dev)
 """
 
@@ -16,7 +16,7 @@ import os
 
 from opencomputer import Sandbox
 
-API_URL = os.environ.get("OPENCOMPUTER_API_URL", "http://50.17.44.74:8080")
+API_URL = os.environ.get("OPENCOMPUTER_API_URL", "http://localhost:8080")
 API_KEY = os.environ.get("OPENCOMPUTER_API_KEY", "opensandbox-dev")
 
 passed = 0
