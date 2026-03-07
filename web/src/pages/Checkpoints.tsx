@@ -2,14 +2,6 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getCheckpoints, deleteCheckpointDashboard, type CheckpointItem } from '../api/client'
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '-'
-  const mb = bytes / 1024 / 1024
-  if (mb < 1) return `${(bytes / 1024).toFixed(0)} KB`
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`
-  return `${mb.toFixed(1)} MB`
-}
-
 export default function Checkpoints() {
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
@@ -52,7 +44,6 @@ export default function Checkpoints() {
                 <th>Name</th>
                 <th>Sandbox</th>
                 <th>Status</th>
-                <th>Size</th>
                 <th style={{ textAlign: 'right' }}>Active Forks</th>
                 <th style={{ textAlign: 'right' }}>Total Forks</th>
                 <th>Created</th>
@@ -93,9 +84,6 @@ export default function Checkpoints() {
                       {cp.status === 'ready' ? 'Ready' : cp.status === 'failed' ? 'Failed' : 'Processing'}
                     </span>
                   </td>
-                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                    {formatBytes(cp.sizeBytes)}
-                  </td>
                   <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                     {cp.activeForks > 0 ? (
                       <span style={{ color: 'var(--accent-emerald)' }}>{cp.activeForks}</span>
@@ -125,7 +113,7 @@ export default function Checkpoints() {
               ))}
               {checkpoints.length === 0 && (
                 <tr>
-                  <td colSpan={8} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>
+                  <td colSpan={7} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>
                     No checkpoints yet
                   </td>
                 </tr>
