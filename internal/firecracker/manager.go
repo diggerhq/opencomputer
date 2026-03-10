@@ -869,13 +869,9 @@ func (m *Manager) Wake(ctx context.Context, sandboxID string, checkpointKey stri
 	return m.doWake(ctx, sandboxID, checkpointKey, checkpointStore, timeout)
 }
 
-// SaveAsTemplate snapshots a running sandbox's drives for use as a template.
+// SaveAsTemplate is deprecated. Use the declarative image builder instead.
 func (m *Manager) SaveAsTemplate(ctx context.Context, sandboxID, templateID string, checkpointStore *storage.CheckpointStore, onReady func()) (rootfsKey, workspaceKey string, err error) {
-	vm, err := m.getVM(sandboxID)
-	if err != nil {
-		return "", "", err
-	}
-	return m.doSaveAsTemplate(ctx, vm, templateID, checkpointStore, onReady)
+	return "", "", fmt.Errorf("deprecated: use declarative image builder")
 }
 
 // getVM retrieves a VM by ID (read-locked).
