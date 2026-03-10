@@ -6,7 +6,6 @@ from opencomputer.commands import Commands, ProcessResult
 from opencomputer.image import Image
 from opencomputer.pty import Pty, PtySession
 from opencomputer.snapshot import Snapshots
-from opencomputer.template import Template
 
 __all__ = [
     "Sandbox",
@@ -17,7 +16,6 @@ __all__ = [
     "Pty",
     "PtySession",
     "Snapshots",
-    "Template",
 ]
 
 __version__ = "0.5.0"

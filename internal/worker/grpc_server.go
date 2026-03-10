@@ -15,11 +15,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/sparse"
 	"github.com/opensandbox/opensandbox/internal/storage"
-	"github.com/opensandbox/opensandbox/internal/template"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
@@ -32,20 +34,18 @@ type GRPCServer struct {
 	ptyManager      *sandbox.PTYManager
 	sandboxDBs      *sandbox.SandboxDBManager
 	checkpointStore *storage.CheckpointStore
-	builder         *template.Builder
 	store           *db.Store // nil if no DB configured
 	server          *grpc.Server
 }
 
 // NewGRPCServer creates a new gRPC server wrapping the sandbox manager.
-func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore, router *sandbox.SandboxRouter, builder *template.Builder, store *db.Store) *GRPCServer {
+func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore, router *sandbox.SandboxRouter, store *db.Store) *GRPCServer {
 	s := &GRPCServer{
 		manager:         mgr,
 		router:          router,
 		ptyManager:      ptyMgr,
 		sandboxDBs:      sandboxDBs,
 		checkpointStore: checkpointStore,
-		builder:         builder,
 		store:           store,
 		server: grpc.NewServer(
 			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
@@ -408,53 +408,11 @@ func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest
 }
 
 func (s *GRPCServer) BuildTemplate(ctx context.Context, req *pb.BuildTemplateRequest) (*pb.BuildTemplateResponse, error) {
-	if s.builder == nil {
-		return nil, fmt.Errorf("template builder not configured on this worker")
-	}
-
-	imageRef, buildLog, err := s.builder.Build(ctx, req.Dockerfile, req.Name, req.Tag, req.EcrImageRef)
-	if err != nil {
-		return nil, fmt.Errorf("template build failed: %w", err)
-	}
-
-	return &pb.BuildTemplateResponse{
-		ImageRef: imageRef,
-		BuildLog: buildLog,
-	}, nil
+	return nil, status.Errorf(codes.Unimplemented, "deprecated")
 }
 
 func (s *GRPCServer) SaveAsTemplate(ctx context.Context, req *pb.SaveAsTemplateRequest) (*pb.SaveAsTemplateResponse, error) {
-	if s.checkpointStore == nil {
-		return nil, fmt.Errorf("checkpoint store not configured on this worker")
-	}
-
-	templateID := req.TemplateId
-	if _, err := uuid.Parse(templateID); err != nil {
-		return nil, fmt.Errorf("invalid template ID: %w", err)
-	}
-
-	// The onReady callback marks the template as ready in the DB when the async S3 upload completes.
-	var onReady func()
-	if s.store != nil {
-		tid, _ := uuid.Parse(templateID)
-		onReady = func() {
-			if err := s.store.SetTemplateReady(context.Background(), tid); err != nil {
-				log.Printf("grpc: SaveAsTemplate: failed to mark template %s ready: %v", templateID, err)
-			} else {
-				log.Printf("grpc: SaveAsTemplate: template %s is now ready", templateID)
-			}
-		}
-	}
-
-	rootfsKey, workspaceKey, err := s.manager.SaveAsTemplate(ctx, req.SandboxId, templateID, s.checkpointStore, onReady)
-	if err != nil {
-		return nil, fmt.Errorf("save-as-template failed: %w", err)
-	}
-
-	return &pb.SaveAsTemplateResponse{
-		RootfsS3Key:    rootfsKey,
-		WorkspaceS3Key: workspaceKey,
-	}, nil
+	return nil, status.Errorf(codes.Unimplemented, "deprecated")
 }
 
 func (s *GRPCServer) CreateCheckpoint(ctx context.Context, req *pb.CreateCheckpointRequest) (*pb.CreateCheckpointResponse, error) {

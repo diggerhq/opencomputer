@@ -52,11 +52,6 @@ export const createAPIKey = (name: string) =>
 export const deleteAPIKey = (keyId: string) =>
   apiFetch<void>(`/api-keys/${keyId}`, { method: 'DELETE' })
 
-export const getTemplates = () => apiFetch<Template[]>('/templates')
-
-export const deleteTemplate = (id: string) =>
-  apiFetch<void>(`/templates/${id}`, { method: 'DELETE' })
-
 export const getCheckpoints = (page = 1, perPage = 20) =>
   apiFetch<CheckpointsResponse>(`/checkpoints?page=${page}&per_page=${perPage}`)
 
@@ -71,12 +66,6 @@ export const deleteImage = (id: string) =>
 
 export const getSessionDetail = (sandboxId: string) =>
   apiFetch<SessionDetail>(`/sessions/${sandboxId}`)
-
-export const saveAsTemplate = (sandboxId: string, name: string, tag?: string) =>
-  apiFetch<Template>(`/sessions/${sandboxId}/save-as-template`, {
-    method: 'POST',
-    body: JSON.stringify({ name, tag: tag || 'latest' }),
-  })
 
 export const getSessionStats = (sandboxId: string) =>
   apiFetch<SandboxStats>(`/sessions/${sandboxId}/stats`)
@@ -117,19 +106,6 @@ export interface APIKey {
   scopes: string[]
   lastUsed?: string
   expiresAt?: string
-  createdAt: string
-}
-
-export interface Template {
-  id: string
-  orgId?: string
-  name: string
-  tag: string
-  dockerfile?: string
-  isPublic: boolean
-  templateType?: string
-  createdBySandboxId?: string
-  status?: string
   createdAt: string
 }
 
