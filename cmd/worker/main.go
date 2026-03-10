@@ -289,27 +289,6 @@ func main() {
 		if fetchErr != nil {
 			log.Printf("opensandbox-worker: cert fetcher init failed: %v (TLS disabled)", fetchErr)
 		} else {
-			// Set up fallback renewal — if cert is close to expiry and server
-			// hasn't renewed, this worker will attempt renewal directly.
-			if cfg.Route53HostedZoneID != "" && cfg.ACMEEmail != "" {
-				cm, cmErr := certmanager.NewCertManager(certmanager.Config{
-					Domain:         cfg.SandboxDomain,
-					HostedZoneID:   cfg.Route53HostedZoneID,
-					S3Bucket:       certBucket,
-					S3Prefix:       cfg.CertS3Prefix,
-					S3Region:       cfg.S3Region,
-					AccessKeyID:    cfg.S3AccessKeyID,
-					SecretAccessKey: cfg.S3SecretAccessKey,
-					ACMEEmail:      cfg.ACMEEmail,
-				})
-				if cmErr != nil {
-					log.Printf("opensandbox-worker: fallback cert renewal disabled: %v", cmErr)
-				} else {
-					certFetcher.SetRenewer(cm)
-					log.Println("opensandbox-worker: fallback cert renewal enabled (worker can renew if server is down)")
-				}
-			}
-
 			if err := certFetcher.FetchAndStore(ctx); err != nil {
 				log.Printf("opensandbox-worker: initial cert fetch failed: %v (TLS disabled, will retry)", err)
 				certFetcher = nil

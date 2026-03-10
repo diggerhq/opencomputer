@@ -36,8 +36,7 @@ type CertFetcher struct {
 	s3Client *s3.Client
 	cert     atomic.Pointer[tls.Certificate]
 	expiry   atomic.Pointer[time.Time]
-	renewer  *CertManager // optional: fallback renewal if server is down
-	stop     chan struct{}
+	stop chan struct{}
 }
 
 // NewCertFetcher creates a new cert fetcher for workers.
@@ -66,13 +65,6 @@ func NewCertFetcher(cfg FetcherConfig) (*CertFetcher, error) {
 		s3Client: s3.NewFromConfig(awsCfg),
 		stop:     make(chan struct{}),
 	}, nil
-}
-
-// SetRenewer sets an optional CertManager that the fetcher can use to renew
-// the cert if it's close to expiry and the server hasn't renewed it.
-// This provides redundancy — any worker can renew if the server is down.
-func (f *CertFetcher) SetRenewer(cm *CertManager) {
-	f.renewer = cm
 }
 
 // FetchAndStore downloads the cert from S3, optionally writes to local disk,
@@ -145,9 +137,8 @@ func (f *CertFetcher) fetchOnce(ctx context.Context) error {
 	return nil
 }
 
-// StartRefreshLoop runs a background goroutine that re-fetches the cert every hour.
-// If the cert is within 7 days of expiry and a renewer is configured, it attempts
-// renewal directly (fallback for when the server is down).
+// StartRefreshLoop runs a background goroutine that re-fetches the cert from S3
+// every 12 hours, picking up any server-side renewals.
 func (f *CertFetcher) StartRefreshLoop(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(12 * time.Hour)
@@ -155,19 +146,7 @@ func (f *CertFetcher) StartRefreshLoop(ctx context.Context) {
 		for {
 			select {
 			case <-ticker.C:
-				// Check if cert is critically close to expiry
-				if f.renewer != nil {
-					if exp := f.expiry.Load(); exp != nil && time.Until(*exp) < 7*24*time.Hour {
-						log.Printf("certfetcher: cert expires in %s, attempting fallback renewal", time.Until(*exp).Round(time.Hour))
-						if err := f.renewer.ObtainOrRenew(ctx); err != nil {
-							log.Printf("certfetcher: fallback renewal failed: %v", err)
-						} else {
-							log.Printf("certfetcher: fallback renewal succeeded")
-						}
-					}
-				}
-
-				// Always re-fetch from S3 (picks up server-renewed or self-renewed cert)
+				// Re-fetch from S3 (picks up server-renewed cert)
 				if err := f.FetchAndStore(ctx); err != nil {
 					log.Printf("certfetcher: refresh failed: %v", err)
 				}
