@@ -2,12 +2,14 @@
 
 ## Guiding Principles
 
-1. **Single sidebar, no tabs.** Every page lives in one navigation tree. SDK languages shown side-by-side via CodeGroup, not separated into tabs.
+1. **Single sidebar, no tabs.** Every page lives in one navigation tree.
 2. **Entity-first.** Pages organized around things the user encounters (sandboxes, agents, checkpoints, templates), not by SDK or abstract category. Each entity page is self-contained: what it is, how to use it, full API reference.
-3. **Quality over quantity.** If it can be said in fewer words, it should be. No filler sections. Every page earns its place.
-4. **Entity → Example → Reference** flow on each page. Open with what the entity *is* (2-3 sentences), show a working code example, then provide the full API reference below.
-5. **Code-forward.** The first thing on every entity page (after the short explanation) should be a working code example. Parameters and types come after.
-6. **Honest about gaps.** Don't document features that don't exist yet. Mark experimental/beta features clearly.
+3. **Three-tab examples.** Every code example wraps in tabs: TypeScript / Python / HTTP API (where applicable). The user picks their preferred surface once and sees it everywhere. Some examples are SDK-only (no HTTP equivalent for streaming); some are HTTP-only (auth headers). Use judgement — include a tab only when it adds value.
+4. **Quality over quantity.** If it can be said in fewer words, it should be. No filler sections. Every page earns its place.
+5. **Entity → Example → Reference** flow on each page. Open with what the entity *is* (2-3 sentences), show a working code example, then provide the full API reference below.
+6. **Code-forward.** The first thing on every entity page (after the short explanation) should be a working code example. Parameters and types come after.
+7. **Reference section is exhaustive.** The Agents/Sandboxes pages teach with curated examples. The Reference pages document every endpoint, method, type, and parameter — the source of truth when the entity pages aren't enough.
+8. **Honest about gaps.** Don't document features that don't exist yet. Mark experimental/beta features clearly.
 
 ---
 
@@ -60,6 +62,11 @@ docs/
 │   ├── templates.mdx              ← REWRITE (entity: what templates are + API)
 │   ├── patches.mdx                ← REWRITE (entity: what patches are + API)
 │   └── preview-urls.mdx           ← NEW (entity: what preview URLs are + API)
+│
+├── reference/                      ← NEW directory
+│   ├── api.mdx                    ← NEW (HTTP API — every endpoint)
+│   ├── typescript-sdk.mdx         ← NEW (every class, method, type)
+│   └── python-sdk.mdx             ← NEW (every class, method, type)
 │
 ├── cli/                            ← KEEP (trimmed)
 │   ├── overview.mdx
@@ -114,6 +121,14 @@ docs/
         "sandboxes/templates",
         "sandboxes/patches",
         "sandboxes/preview-urls"
+      ]
+    },
+    {
+      "group": "Reference",
+      "pages": [
+        "reference/api",
+        "reference/typescript-sdk",
+        "reference/python-sdk"
       ]
     },
     {
@@ -198,10 +213,10 @@ docs/
 
 Each entity page follows this template:
 1. **What is this** — 2-3 sentences explaining the entity for someone who's never seen it
-2. **Primary code example** (TS + Python via CodeGroup)
+2. **Primary code example** in tabs (TypeScript / Python / HTTP API where applicable)
 3. **API reference** with `<ParamField>` for each method
-4. **Additional examples**
-5. **Related** — links to CLI equivalent and related entity pages
+4. **Additional examples** (also tabbed where applicable)
+5. **Related** — links to CLI equivalent, reference pages, and related entity pages
 
 ### Agents (`agents/`)
 
@@ -416,6 +431,135 @@ Each entity page follows this template:
 
 ---
 
+### Reference (`reference/`)
+
+These are exhaustive, lookup-oriented pages. No tutorials, no "why" — just every endpoint/method/type with parameters, return types, and a minimal example. The entity pages (Agents, Sandboxes) teach; these pages are the source of truth.
+
+#### `reference/api.mdx` — NEW
+
+**Goal:** Complete HTTP API reference. Every endpoint, request/response format, auth headers, status codes. A developer using curl or a non-SDK language should be able to build a full integration from this page alone.
+
+**Structure:**
+1. **Base URL & Authentication**
+   - Base: `https://app.opencomputer.dev/api`
+   - Auth: `Authorization: Bearer <API_KEY>` header
+   - All requests/responses are JSON
+2. **Sandbox Lifecycle**
+   - `POST /api/sandboxes` — create (params: template, timeout, envs, metadata, cpuCount, memoryMB)
+   - `GET /api/sandboxes` — list all
+   - `GET /api/sandboxes/:id` — get details
+   - `DELETE /api/sandboxes/:id` — kill
+   - `POST /api/sandboxes/:id/timeout` — set idle timeout
+   - `POST /api/sandboxes/:id/hibernate` — hibernate
+   - `POST /api/sandboxes/:id/wake` — wake
+3. **Commands (Exec)**
+   - `POST /api/sandboxes/:id/exec/run` — run command and wait
+   - `POST /api/sandboxes/:id/exec` — create exec session
+   - `GET /api/sandboxes/:id/exec` — list sessions
+   - `GET /api/sandboxes/:id/exec/:sessionID` — WebSocket attach
+   - `POST /api/sandboxes/:id/exec/:sessionID/kill` — kill session
+4. **Agent Sessions**
+   - `POST /api/sandboxes/:id/agent` — create agent session
+   - `GET /api/sandboxes/:id/agent` — list agent sessions
+   - `POST /api/sandboxes/:id/agent/:sid/prompt` — send follow-up
+   - `POST /api/sandboxes/:id/agent/:sid/interrupt` — interrupt
+   - `POST /api/sandboxes/:id/agent/:sid/kill` — kill
+5. **Filesystem**
+   - `GET /api/sandboxes/:id/files?path=...` — read file
+   - `PUT /api/sandboxes/:id/files` — write file
+   - `GET /api/sandboxes/:id/files/list?path=...` — list directory
+   - `POST /api/sandboxes/:id/files/mkdir` — create directory
+   - `DELETE /api/sandboxes/:id/files?path=...` — remove
+6. **Checkpoints**
+   - `POST /api/sandboxes/:id/checkpoints` — create
+   - `GET /api/sandboxes/:id/checkpoints` — list
+   - `POST /api/sandboxes/:id/checkpoints/:checkpointId/restore` — restore in-place
+   - `POST /api/sandboxes/from-checkpoint/:checkpointId` — fork new sandbox
+   - `DELETE /api/sandboxes/:id/checkpoints/:checkpointId` — delete
+7. **Checkpoint Patches**
+   - `POST /api/sandboxes/checkpoints/:checkpointId/patches` — create
+   - `GET /api/sandboxes/checkpoints/:checkpointId/patches` — list
+   - `DELETE /api/sandboxes/checkpoints/:checkpointId/patches/:patchId` — delete
+8. **Preview URLs**
+   - `POST /api/sandboxes/:id/preview` — create
+   - `GET /api/sandboxes/:id/preview` — list
+   - `DELETE /api/sandboxes/:id/preview/:port` — delete
+9. **Templates**
+   - `POST /api/templates` — build
+   - `GET /api/templates` — list
+   - `GET /api/templates/:name` — get
+   - `DELETE /api/templates/:name` — delete
+10. **PTY**
+    - `POST /api/sandboxes/:id/pty` — create
+    - `GET /api/sandboxes/:id/pty/:sessionID` — WebSocket
+    - `POST /api/sandboxes/:id/pty/:sessionID/resize` — resize
+    - `DELETE /api/sandboxes/:id/pty/:sessionID` — kill
+11. **Error format** — standard error response structure, common status codes
+
+Each endpoint: method, path, request body (JSON), response body (JSON), status codes, curl example.
+
+**Source:** `internal/api/router.go` (lines 131-191 define every route).
+
+#### `reference/typescript-sdk.mdx` — NEW
+
+**Goal:** Exhaustive TypeScript SDK reference. Every class, every method, every type, every parameter. The page a developer lands on when they need the exact signature.
+
+**Structure:**
+1. **Installation & setup** — `npm install @opencomputer/sdk`, env vars
+2. **Sandbox** class
+   - Static: `create(opts?)`, `connect(sandboxId, opts?)`, `createFromCheckpoint(checkpointId, opts?)`, `createCheckpointPatch(checkpointId, opts)`, `listCheckpointPatches(checkpointId, opts?)`, `deleteCheckpointPatch(checkpointId, patchId, opts?)`
+   - Instance: `kill()`, `isRunning()`, `hibernate()`, `wake(opts?)`, `setTimeout(timeout)`, `createCheckpoint(name)`, `listCheckpoints()`, `restoreCheckpoint(checkpointId)`, `deleteCheckpoint(checkpointId)`, `createPreviewURL(opts)`, `listPreviewURLs()`, `deletePreviewURL(port)`
+   - Properties: `sandboxId`, `agent`, `exec`, `files`, `pty`
+   - All types: `SandboxOpts`, `CheckpointInfo`, `PreviewURLResult`
+3. **Agent** class
+   - `start(opts?)`, `attach(sessionId, opts?)`, `list()`
+   - `AgentSession`: `sessionId`, `done`, `sendPrompt()`, `interrupt()`, `configure()`, `kill()`, `close()`
+   - Types: `AgentStartOpts`, `AgentConfig`, `AgentEvent`
+4. **Exec** class
+   - `run(command, opts?)`, `start(command, opts?)`, `attach(sessionId, opts?)`, `list()`, `kill(sessionId, signal?)`
+   - `ExecSession`: `sessionId`, `done`, `sendStdin()`, `kill()`, `close()`
+   - Types: `RunOpts`, `ExecStartOpts`, `ProcessResult`, `ExecSessionInfo`
+5. **Filesystem** class
+   - `read(path)`, `readBytes(path)`, `write(path, content)`, `list(path?)`, `makeDir(path)`, `remove(path)`, `exists(path)`
+   - Types: `EntryInfo`
+6. **Pty** class
+   - `create(opts?)`
+   - `PtySession`: `sessionId`, `send()`, `close()`
+   - Types: `PtyOpts`
+7. **Template** class
+   - `build(name, dockerfile)`, `list()`, `get(name)`, `delete(name)`
+   - Types: `TemplateInfo`
+
+Each method: full signature, params with types and defaults, return type, one-line example.
+
+**Source:** `sdks/typescript/src/` — all source files.
+
+#### `reference/python-sdk.mdx` — NEW
+
+**Goal:** Same as TypeScript reference but for Python. Exhaustive, every class/method/type.
+
+**Structure:** Mirrors TypeScript reference exactly, with Python idioms:
+1. **Installation & setup** — `pip install opencomputer-sdk`, env vars
+2. **Sandbox** class — all static and instance methods (snake_case)
+   - `create()`, `connect()`, `create_from_checkpoint()`, `create_checkpoint_patch()`, etc.
+   - `kill()`, `is_running()`, `hibernate()`, `wake()`, `set_timeout()`, etc.
+3. **Agent** class
+   - `start()`, `attach()`, `list()`
+   - `AgentSession`: `session_id`, `collect_events()`, `wait()`, `send_prompt()`, `interrupt()`, `configure()`, `kill()`, `close()`
+4. **Exec** class
+   - `run()`, `start()`, `list()`, `kill()`
+   - Types: `ProcessResult` (dataclass)
+5. **Filesystem** class
+   - `read()`, `read_bytes()`, `write()`, `list()`, `make_dir()`, `remove()`, `exists()`
+6. **Pty** class — `create()`, `PtySession`
+7. **Template** class — `build()`, `list()`, `get()`, `delete()`
+
+Each method: full async signature, params with types and defaults, return type, one-line example.
+
+**Source:** `sdks/python/opencomputer/` — all source files.
+
+---
+
 ### CLI Reference (KEEP, streamline)
 
 CLI pages stay as a separate nav group. These are reference-only (no conceptual content — that lives in feature pages). Each page: flags table, output examples, practical one-liners.
@@ -557,22 +701,27 @@ These are specific pieces of information that exist in the codebase but are miss
 13. Rewrite `sandboxes/patches.mdx` (entity page: concept + API)
 14. Create `sandboxes/preview-urls.mdx` (entity page: concept + API)
 
-### Phase 4: CLI + Support Pages
-15. Rewrite `cli/overview.mdx`
-16. Update `cli/sandbox.mdx`
-17. Create `cli/exec.mdx` (rename from commands)
-18. Update `cli/shell.mdx`
-19. Create `cli/checkpoint.mdx` (merge checkpoint + patch)
-20. Create `cli/preview.mdx` (rename from previews)
-21. Create `troubleshooting.mdx`
-22. Create `changelog.mdx` (stub)
+### Phase 4: Reference Pages
+15. Create `reference/api.mdx` (HTTP API — derived from router.go)
+16. Create `reference/typescript-sdk.mdx` (derived from sdks/typescript/src/)
+17. Create `reference/python-sdk.mdx` (derived from sdks/python/opencomputer/)
 
-### Phase 5: Cleanup
-23. Update `guides/build-a-lovable-clone.mdx` (minor fixes)
-24. Delete all `sdks/` pages
-25. Delete old root-level feature pages (agents.mdx, running-commands.mdx, working-with-files.mdx)
-26. Delete obsolete CLI pages
-27. Update `mint.json` with new navigation
+### Phase 5: CLI + Support Pages
+18. Rewrite `cli/overview.mdx`
+19. Update `cli/sandbox.mdx`
+20. Create `cli/exec.mdx` (rename from commands)
+21. Update `cli/shell.mdx`
+22. Create `cli/checkpoint.mdx` (merge checkpoint + patch)
+23. Create `cli/preview.mdx` (rename from previews)
+24. Create `troubleshooting.mdx`
+25. Create `changelog.mdx` (stub)
+
+### Phase 6: Cleanup
+26. Update `guides/build-a-lovable-clone.mdx` (minor fixes)
+27. Delete all `sdks/` pages
+28. Delete old root-level feature pages (agents.mdx, running-commands.mdx, working-with-files.mdx)
+29. Delete obsolete CLI pages
+30. Update `mint.json` with new navigation
 
 ---
 
@@ -583,15 +732,16 @@ These are specific pieces of information that exist in the codebase but are miss
 | Getting Started | 2 | 2 | 0 |
 | Agents | 1* | 4 | +3 |
 | Sandboxes | 2* | 8 | +6 |
+| Reference | 0 | 3 | +3 |
 | CLI | 7 | 6 | -1 |
 | Guides | 2 | 2 | 0 |
 | Resources | 0 | 2 | +2 |
 | SDK (tabs) | 16 | 0 | -16 |
-| **Total** | **30** | **24** | **-6** |
+| **Total** | **30** | **27** | **-3** |
 
 *Current agents.mdx + running-commands.mdx + working-with-files.mdx exist at root level without clear grouping.
 
-Net result: 6 fewer pages, proper depth on both top-level entities, zero duplication.
+Net result: 3 fewer pages. Entity pages teach with curated examples; Reference pages are exhaustive lookup. Zero duplication between SDK tabs.
 
 ---
 
@@ -599,10 +749,12 @@ Net result: 6 fewer pages, proper depth on both top-level entities, zero duplica
 
 Each page must pass these checks before shipping:
 - [ ] Opens with a working code example (not prose)
-- [ ] Every code example uses CodeGroup for TS + Python (feature pages)
+- [ ] Code examples use tabs (TypeScript / Python / HTTP API) where applicable
+- [ ] HTTP API tab included for operations that map cleanly to a single endpoint
+- [ ] Streaming/WebSocket operations can omit HTTP tab (SDK-only is fine)
 - [ ] No deprecated API names (`commands` → `exec`)
 - [ ] All parameters documented match actual SDK code
 - [ ] No "coming soon" for features that now exist
 - [ ] No filler sentences ("In this section we will..." — just do it)
-- [ ] Cross-links to related pages where useful
+- [ ] Cross-links to reference pages for full method signatures
 - [ ] CLI equivalent noted where applicable
