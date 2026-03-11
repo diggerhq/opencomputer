@@ -3,7 +3,20 @@ title: "Sandboxes"
 description: "The compute primitive — full Linux VMs in the cloud"
 ---
 
-{/* STUB — Progressive JPEG pass 1. The definitive sandbox page: concept + lifecycle + API. */}
+{/*
+  TODO: Expand this stub into full content.
+
+  GOAL: The definitive page for understanding and working with the sandbox primitive.
+  Concept + lifecycle + full SDK API for sandbox management.
+
+  ABSORBS: sdks/typescript/sandbox.mdx, sdks/python/sandbox.mdx.
+
+  KEY NOTES:
+  - Python context manager: async with Sandbox.create() as sandbox: (auto-kills on exit)
+  - TS-only: cpuCount, memoryMB on create. Python must use HTTP API for custom resources.
+  - Lifecycle states: running, hibernated, stopped, error
+  - Rolling timeout resets on every operation, default 300s
+*/}
 
 ## What is a Sandbox
 

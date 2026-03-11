@@ -3,7 +3,19 @@ title: "Interactive Terminals"
 description: "Full PTY sessions inside sandboxes"
 ---
 
-{/* STUB — Progressive JPEG pass 1. PTY sessions — like SSH but over WebSocket. */}
+{/*
+  TODO: Expand this stub into full content.
+
+  GOAL: Full guide to interactive terminal sessions inside sandboxes.
+  Promoted from SDK-only pages — most users discover PTY through oc shell.
+
+  ABSORBS: sdks/typescript/pty.mdx, sdks/python/pty.mdx.
+
+  KEY NOTES:
+  - recv() is Python-only (pull-based alternative to onOutput callback)
+  - resize() not available in SDKs. HTTP API has POST /sandboxes/:id/pty/:sessionID/resize but no SDK wrapper.
+  - CLI: oc shell <sandbox-id> supports --shell flag (default /bin/bash)
+*/}
 
 ## What is a PTY Session
 
