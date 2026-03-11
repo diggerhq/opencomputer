@@ -3,7 +3,21 @@ title: "HTTP API"
 description: "Complete REST API reference"
 ---
 
-{/* STUB — Progressive JPEG pass 1. Every endpoint, request/response format, auth, status codes. */}
+{/*
+  TODO: Expand this stub into full content.
+
+  GOAL: Complete HTTP API reference. Every endpoint, request/response format, auth headers, status codes.
+  A developer using curl or a non-SDK language should be able to build a full integration from this page alone.
+
+  SOURCE: internal/api/router.go (routes), internal/api/sandbox.go, exec_session.go,
+  agent_session.go, filesystem.go, templates.go (handlers).
+
+  KEY NOTES:
+  - Each endpoint: method, path, request body (JSON), response body (JSON), status codes, curl example
+  - Dual auth: X-API-Key for control plane, JWT Bearer for worker direct access
+  - WebSocket binary protocol section is essential for non-SDK users
+  - Token refresh: POST /sandboxes/:id/token/refresh — returns new JWT
+*/}
 
 ## Base URL & Authentication
 

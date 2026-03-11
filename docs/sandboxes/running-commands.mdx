@@ -3,7 +3,20 @@ title: "Running Commands"
 description: "Execute shell commands inside a sandbox"
 ---
 
-{/* STUB — Progressive JPEG pass 1. Two modes: run() (sync) and start() (streaming/async). */}
+{/*
+  TODO: Expand this stub into full content.
+
+  GOAL: Comprehensive guide to executing shell commands inside sandboxes.
+  Two modes: run() (wait for result) and start() (streaming/async).
+
+  ABSORBS: sdks/typescript/commands.mdx, sdks/python/commands.mdx, running-commands.mdx (root).
+
+  KEY NOTES:
+  - Use sandbox.exec.* consistently (NOT sandbox.commands — deprecated alias)
+  - Be honest about Python SDK gaps in streaming — don't pretend parity exists
+  - TS exec.start() returns ExecSession with callbacks; Python returns str (session ID only)
+  - TS-only: attach(), streaming callbacks (onStdout, onStderr, onExit), maxRunAfterDisconnect
+*/}
 
 ## Quick Commands: `sandbox.exec.run()`
 
