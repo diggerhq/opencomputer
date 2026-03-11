@@ -400,7 +400,7 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 
 	if snapshotRestore {
 		// Hot restore: load snapshot, VM resumes exactly where it was paused
-		if err := fcClient.LoadSnapshot(vmstateFile, memFile, true, snapshotClockDeltaUs(meta, memFile)); err != nil {
+		if err := fcClient.LoadSnapshot(vmstateFile, memFile, true); err != nil {
 			cmd.Process.Kill()
 			cmd.Wait()
 			m.cleanupVM(netCfg, "")
@@ -755,23 +755,6 @@ func extractArchive(archivePath, destDir string) error {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
-}
-
-// snapshotClockDeltaUs returns the microseconds elapsed since the snapshot was taken,
-// for use as clock_delta_us when restoring. If SnapshotedAt is not recorded in metadata
-// (legacy snapshots), it falls back to the mtime of the mem file — Firecracker writes
-// it at snapshot time so it's a reliable proxy.
-func snapshotClockDeltaUs(meta SnapshotMeta, memFile string) int64 {
-	t := meta.SnapshotedAt
-	if t.IsZero() {
-		if info, err := os.Stat(memFile); err == nil {
-			t = info.ModTime()
-		}
-	}
-	if t.IsZero() {
-		return 0
-	}
-	return time.Since(t).Microseconds()
 }
 
 // --- Save as Template ---
@@ -1371,7 +1354,7 @@ func (m *Manager) warmRestoreFromCheckpoint(ctx context.Context, vm *VMInstance,
 	log.Printf("firecracker: warmRestore %s: FC started (%dms)", sandboxID, time.Since(t0).Milliseconds())
 
 	// Step 5: Load snapshot — VM resumes exactly where it was paused during checkpoint
-	if err := fcClient.LoadSnapshot(vmstateFile, memFile, true, snapshotClockDeltaUs(meta, memFile)); err != nil {
+	if err := fcClient.LoadSnapshot(vmstateFile, memFile, true); err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
 		m.cleanupVM(netCfg, "")
@@ -1901,7 +1884,7 @@ func (m *Manager) warmForkFromCheckpoint(ctx context.Context, checkpointID strin
 	}
 
 	// Step 8: Load snapshot — VM resumes from checkpoint state
-	if err := fcClient.LoadSnapshot(vmstateFile, memFile, true, snapshotClockDeltaUs(meta, memFile)); err != nil {
+	if err := fcClient.LoadSnapshot(vmstateFile, memFile, true); err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
 		m.cleanupVM(netCfg, sandboxDir)
@@ -2375,7 +2358,7 @@ func (m *Manager) createFromGoldenSnapshot(ctx context.Context, id string, cfg t
 	}
 
 	// Step 6: Load snapshot, advancing guest clock to compensate for time since golden snapshot was taken
-	if err := fcClient.LoadSnapshot(vmstateFile, memFile, true, snapshotClockDeltaUs(meta, memFile)); err != nil {
+	if err := fcClient.LoadSnapshot(vmstateFile, memFile, true); err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
 		m.cleanupVM(netCfg, sandboxDir)
