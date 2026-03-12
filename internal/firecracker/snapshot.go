@@ -2376,12 +2376,14 @@ func (m *Manager) createFromGoldenSnapshot(ctx context.Context, id string, cfg t
 	}
 
 	// Step 8: Reconfigure guest network
-	if err := reconfigureGuestNetwork(ctx, agentClient, netCfg.GuestIP, netCfg.HostIP, netCfg.CIDR); err != nil {
+	// Use background context — the HTTP request context may be cancelled by the client
+	bgCtx := context.Background()
+	if err := reconfigureGuestNetwork(bgCtx, agentClient, netCfg.GuestIP, netCfg.HostIP, netCfg.CIDR); err != nil {
 		log.Printf("firecracker: goldenCreate %s: network reconfig failed: %v (VM still running)", id, err)
 	}
 
 	// Sync guest clock — golden snapshot time is stale
-	if err := syncGuestClock(ctx, agentClient); err != nil {
+	if err := syncGuestClock(bgCtx, agentClient); err != nil {
 		log.Printf("firecracker: goldenCreate %s: clock sync failed: %v", id, err)
 	}
 
