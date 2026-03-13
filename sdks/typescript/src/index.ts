@@ -5,3 +5,8 @@ export { Exec, type ProcessResult, type RunOpts, type ExecSession, type ExecSess
 export { Pty, type PtySession, type PtyOpts } from "./pty.js";
 export { Templates, type TemplateInfo } from "./template.js";
 export { Project, type ProjectInfo, type ProjectOpts, type CreateProjectOpts, type UpdateProjectOpts } from "./project.js";
+// Node.js-only modules (use crypto, fs, path) — import directly if needed:
+//   import { Image } from "@opencomputer/sdk/dist/image.js";
+//   import { Snapshots } from "@opencomputer/sdk/dist/snapshot.js";
+export type { ImageManifest, ImageStep } from "./image.js";
+export type { SnapshotInfo, CreateSnapshotOpts } from "./snapshot.js";
