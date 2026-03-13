@@ -17,11 +17,9 @@ import (
 	fc "github.com/opensandbox/opensandbox/internal/firecracker"
 	agentpb "github.com/opensandbox/opensandbox/proto/agent"
 	"github.com/opensandbox/opensandbox/internal/metrics"
-	"github.com/opensandbox/opensandbox/internal/podman"
 	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
-	"github.com/opensandbox/opensandbox/internal/template"
 	"github.com/opensandbox/opensandbox/internal/worker"
 	"github.com/opensandbox/opensandbox/pkg/types"
 )
@@ -337,23 +335,8 @@ func main() {
 	defer metricsSrv.Close()
 	log.Println("opensandbox-worker: metrics server started on :9091")
 
-	// Initialize template builder (Podman as build tool → ext4 images)
-	var builder *template.Builder
-	podmanClient, podmanErr := podman.NewClient()
-	if podmanErr != nil {
-		log.Printf("opensandbox-worker: podman not available: %v (template building disabled)", podmanErr)
-	} else {
-		imagesDir := fcCfg.ImagesDir
-		agentPath := filepath.Join(filepath.Dir(os.Args[0]), "osb-agent")
-		if _, err := os.Stat(agentPath); err != nil {
-			agentPath = "/usr/local/bin/osb-agent"
-		}
-		builder = template.NewBuilder(podmanClient, imagesDir, agentPath)
-		log.Printf("opensandbox-worker: template builder configured (images=%s, agent=%s)", imagesDir, agentPath)
-	}
-
 	// Start gRPC server for control plane communication
-	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, execMgr, sandboxDBMgr, checkpointStore, sbRouter, builder, store)
+	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, execMgr, sandboxDBMgr, checkpointStore, sbRouter, store)
 	grpcAddr := ":9090"
 	log.Printf("opensandbox-worker: starting gRPC server on %s", grpcAddr)
 	go func() {
