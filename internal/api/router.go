@@ -182,12 +182,11 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	api.POST("/sandboxes/:id/pty/:sessionID/resize", s.resizePTY)
 	api.DELETE("/sandboxes/:id/pty/:sessionID", s.killPTY)
 
-	// Templates
-	api.POST("/templates", s.buildTemplate)
-	api.GET("/templates", s.listTemplates)
-	api.GET("/templates/:name", s.getTemplate)
-	api.DELETE("/templates/:name", s.deleteTemplate)
-	api.POST("/sandboxes/:sandboxId/save-as-template", s.dashboardSaveAsTemplate)
+	// Snapshots (pre-built declarative images)
+	api.POST("/snapshots", s.createSnapshot)
+	api.GET("/snapshots", s.listSnapshots)
+	api.GET("/snapshots/:name", s.getSnapshot)
+	api.DELETE("/snapshots/:name", s.deleteSnapshot)
 
 	// Workers (server mode only — queries worker registry)
 	api.GET("/workers", s.listWorkers)
@@ -222,16 +221,14 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		dash.PUT("/org/custom-domain", s.dashboardSetCustomDomain)
 		dash.DELETE("/org/custom-domain", s.dashboardDeleteCustomDomain)
 		dash.POST("/org/custom-domain/refresh", s.dashboardRefreshCustomDomain)
-		dash.GET("/templates", s.dashboardListTemplates)
-		dash.DELETE("/templates/:id", s.dashboardDeleteTemplate)
 		dash.GET("/checkpoints", s.dashboardListCheckpoints)
 		dash.DELETE("/checkpoints/:id", s.dashboardDeleteCheckpoint)
+		dash.GET("/images", s.dashboardListImages)
+		dash.DELETE("/images/:id", s.dashboardDeleteImage)
 
 		// Session detail + stats
 		dash.GET("/sessions/:sandboxId", s.dashboardGetSession)
 		dash.GET("/sessions/:sandboxId/stats", s.dashboardGetSessionStats)
-		dash.POST("/sessions/:sandboxId/save-as-template", s.dashboardSaveAsTemplate)
-
 		// PTY (terminal)
 		dash.POST("/sessions/:sandboxId/pty", s.dashboardCreatePTY)
 		dash.GET("/sessions/:sandboxId/pty/:sessionId", s.dashboardPTYWebSocket)
