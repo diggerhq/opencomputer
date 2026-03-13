@@ -116,7 +116,7 @@ func (p *EventPublisher) PublishHeartbeat(capacity, current int, cpuPct, memPct 
 }
 
 // StartHeartbeat begins sending heartbeats every 5 seconds.
-func (p *EventPublisher) StartHeartbeat(getStats func() (capacity, current int, cpuPct, memPct float64)) {
+func (p *EventPublisher) StartHeartbeat(getStats func() (capacity, current int, cpuPct, memPct, memUsedGB, memTotalGB float64)) {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
@@ -126,7 +126,7 @@ func (p *EventPublisher) StartHeartbeat(getStats func() (capacity, current int, 
 		for {
 			select {
 			case <-ticker.C:
-				cap, cur, cpu, mem := getStats()
+				cap, cur, cpu, mem, _, _ := getStats()
 				p.PublishHeartbeat(cap, cur, cpu, mem)
 			case <-p.stop:
 				return

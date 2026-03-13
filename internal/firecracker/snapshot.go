@@ -524,6 +524,9 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 	m.vms[sandboxID] = vm
 	m.mu.Unlock()
 
+	// Create cgroup for elastic memory management
+	m.setupCgroup(sandboxID, cmd.Process.Pid, meta.MemoryMB)
+
 	mode := "snapshot restore"
 	if !snapshotRestore {
 		mode = "cold boot (cross-worker)"
@@ -721,6 +724,9 @@ func (m *Manager) coldBootLocal(ctx context.Context, sandboxID string, timeout i
 	m.mu.Lock()
 	m.vms[sandboxID] = vm
 	m.mu.Unlock()
+
+	// Create cgroup for elastic memory management
+	m.setupCgroup(sandboxID, cmd.Process.Pid, memMB)
 
 	log.Printf("firecracker: cold-boot-local %s (template=%s, port=%d, tap=%s)", sandboxID, meta.Template, hostPort, netCfg.TAPName)
 	return vmToSandbox(vm), nil
@@ -1411,6 +1417,9 @@ func (m *Manager) warmRestoreFromCheckpoint(ctx context.Context, vm *VMInstance,
 	m.vms[sandboxID] = newVM
 	m.mu.Unlock()
 
+	// Create cgroup for elastic memory management
+	m.setupCgroup(sandboxID, cmd.Process.Pid, meta.MemoryMB)
+
 	log.Printf("firecracker: RestoreFromCheckpoint %s/%s: warm restore complete (%dms, port=%d, tap=%s)",
 		sandboxID, checkpointID, time.Since(t0).Milliseconds(), hostPort, netCfg.TAPName)
 
@@ -1967,6 +1976,9 @@ func (m *Manager) warmForkFromCheckpoint(ctx context.Context, checkpointID strin
 	m.vms[newID] = vm
 	m.mu.Unlock()
 
+	// Create cgroup for elastic memory management
+	m.setupCgroup(newID, cmd.Process.Pid, meta.MemoryMB)
+
 	log.Printf("firecracker: warmFork %s from checkpoint %s: complete (%dms, port=%d, tap=%s)",
 		newID, checkpointID, time.Since(t0).Milliseconds(), hostPort, netCfg.TAPName)
 
@@ -2450,6 +2462,9 @@ func (m *Manager) createFromGoldenSnapshot(ctx context.Context, id string, cfg t
 	m.mu.Lock()
 	m.vms[id] = vm
 	m.mu.Unlock()
+
+	// Create cgroup for elastic memory management
+	m.setupCgroup(id, cmd.Process.Pid, memMB)
 
 	log.Printf("firecracker: goldenCreate %s: complete (%dms, port=%d, tap=%s)",
 		id, time.Since(t0).Milliseconds(), hostPort, netCfg.TAPName)

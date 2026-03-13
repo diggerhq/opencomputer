@@ -12,15 +12,17 @@ import (
 
 // redisHeartbeatPayload is the JSON structure published to Redis.
 type redisHeartbeatPayload struct {
-	WorkerID  string  `json:"worker_id"`
-	MachineID string  `json:"machine_id,omitempty"` // EC2 instance ID (e.g. i-099088f8ac4a34ef3)
-	Region    string  `json:"region"`
-	GRPCAddr  string  `json:"grpc_addr"`
-	HTTPAddr  string  `json:"http_addr"`
-	Capacity  int     `json:"capacity"`
-	Current   int     `json:"current"`
-	CPUPct    float64 `json:"cpu_pct"`
-	MemPct    float64 `json:"mem_pct"`
+	WorkerID   string  `json:"worker_id"`
+	MachineID  string  `json:"machine_id,omitempty"` // EC2 instance ID (e.g. i-099088f8ac4a34ef3)
+	Region     string  `json:"region"`
+	GRPCAddr   string  `json:"grpc_addr"`
+	HTTPAddr   string  `json:"http_addr"`
+	Capacity   int     `json:"capacity"`
+	Current    int     `json:"current"`
+	CPUPct     float64 `json:"cpu_pct"`
+	MemPct     float64 `json:"mem_pct"`
+	MemUsedGB  float64 `json:"mem_used_gb,omitempty"`
+	MemTotalGB float64 `json:"mem_total_gb,omitempty"`
 }
 
 // RedisHeartbeat publishes periodic heartbeats to Redis for worker discovery.
@@ -34,7 +36,7 @@ type RedisHeartbeat struct {
 	region    string
 	grpcAddr  string
 	httpAddr  string
-	getStats  func() (capacity, current int, cpuPct, memPct float64)
+	getStats  func() (capacity, current int, cpuPct, memPct, memUsedGB, memTotalGB float64)
 	stop      chan struct{}
 }
 
@@ -70,7 +72,7 @@ func (h *RedisHeartbeat) SetMachineID(id string) {
 }
 
 // Start begins publishing heartbeats every 10 seconds.
-func (h *RedisHeartbeat) Start(getStats func() (int, int, float64, float64)) {
+func (h *RedisHeartbeat) Start(getStats func() (int, int, float64, float64, float64, float64)) {
 	h.getStats = getStats
 
 	go func() {
@@ -92,18 +94,20 @@ func (h *RedisHeartbeat) Start(getStats func() (int, int, float64, float64)) {
 }
 
 func (h *RedisHeartbeat) publish() {
-	capacity, current, cpuPct, memPct := h.getStats()
+	capacity, current, cpuPct, memPct, memUsedGB, memTotalGB := h.getStats()
 
 	payload := redisHeartbeatPayload{
-		WorkerID:  h.workerID,
-		MachineID: h.machineID,
-		Region:    h.region,
-		GRPCAddr:  h.grpcAddr,
-		HTTPAddr:  h.httpAddr,
-		Capacity:  capacity,
-		Current:   current,
-		CPUPct:    cpuPct,
-		MemPct:    memPct,
+		WorkerID:   h.workerID,
+		MachineID:  h.machineID,
+		Region:     h.region,
+		GRPCAddr:   h.grpcAddr,
+		HTTPAddr:   h.httpAddr,
+		Capacity:   capacity,
+		Current:    current,
+		CPUPct:     cpuPct,
+		MemPct:     memPct,
+		MemUsedGB:  memUsedGB,
+		MemTotalGB: memTotalGB,
 	}
 
 	data, err := json.Marshal(payload)

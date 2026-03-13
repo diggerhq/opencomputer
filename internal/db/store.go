@@ -396,6 +396,8 @@ type SandboxSession struct {
 	ErrorMsg             *string         `json:"errorMsg,omitempty"`
 	BasedOnCheckpointID  *uuid.UUID      `json:"basedOnCheckpointId,omitempty"`
 	LastPatchSequence    int             `json:"lastPatchSequence"`
+	VCPUSeconds          float64         `json:"vcpuSeconds"`
+	GBSeconds            float64         `json:"gbSeconds"`
 }
 
 func (s *Store) CreateSandboxSession(ctx context.Context, sandboxID string, orgID uuid.UUID, userID *uuid.UUID, template, region, workerID string, config, metadata json.RawMessage) (*SandboxSession, error) {
@@ -431,6 +433,18 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 	_, err := s.pool.Exec(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to update sandbox session: %w", err)
+	}
+	return nil
+}
+
+// UpdateSandboxUsage atomically adds vCPU-seconds and GB-seconds to a sandbox session's billing accumulators.
+func (s *Store) UpdateSandboxUsage(ctx context.Context, sandboxID string, vcpuSeconds, gbSeconds float64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET vcpu_seconds = vcpu_seconds + $1, gb_seconds = gb_seconds + $2
+		 WHERE sandbox_id = $3 AND status IN ('running', 'hibernated')`,
+		vcpuSeconds, gbSeconds, sandboxID)
+	if err != nil {
+		return fmt.Errorf("failed to update sandbox usage: %w", err)
 	}
 	return nil
 }

@@ -415,6 +415,9 @@ func (m *Manager) createWithID(ctx context.Context, id string, cfg types.Sandbox
 	m.vms[id] = vm
 	m.mu.Unlock()
 
+	// Create cgroup for elastic memory management
+	m.setupCgroup(id, cmd.Process.Pid, memMB)
+
 	// Write sandbox-meta.json for local NVMe recovery after hard kill
 	sbMeta := SandboxMeta{
 		SandboxID: id,
@@ -535,6 +538,11 @@ func (m *Manager) destroyVM(vm *VMInstance) error {
 		vm.cmd.Wait()
 	}
 
+	// Remove cgroup
+	if err := RemoveCgroup(vm.ID); err != nil {
+		log.Printf("firecracker: failed to remove cgroup for %s: %v", vm.ID, err)
+	}
+
 	// Clean up network
 	if vm.network != nil {
 		RemoveDNAT(vm.network)
@@ -554,6 +562,15 @@ func (m *Manager) destroyVM(vm *VMInstance) error {
 
 	log.Printf("firecracker: destroyed VM %s", vm.ID)
 	return nil
+}
+
+// setupCgroup creates a cgroup v2 for a sandbox VM to enable elastic memory management.
+// Called after cmd.Start() succeeds. Non-fatal — logs on failure.
+func (m *Manager) setupCgroup(sandboxID string, pid int, memoryMB int) {
+	memBytes := int64(memoryMB) * 1024 * 1024
+	if err := CreateCgroup(sandboxID, pid, memBytes); err != nil {
+		log.Printf("firecracker: failed to create cgroup for %s: %v", sandboxID, err)
+	}
 }
 
 // cleanupVM cleans up resources on failed creation.

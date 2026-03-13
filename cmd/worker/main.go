@@ -369,6 +369,33 @@ func main() {
 		log.Printf("opensandbox-worker: subdomain proxy configured (*.%s)", cfg.SandboxDomain)
 	}
 
+	// Start pressure monitor for elastic memory management + billing
+	workerRAMBytes := worker.SystemRAMBytes()
+	pressureMon := worker.NewPressureMonitor(workerRAMBytes, func() []worker.SandboxInfo {
+		sbs, _ := mgr.List(context.Background())
+		var infos []worker.SandboxInfo
+		for _, sb := range sbs {
+			infos = append(infos, worker.SandboxInfo{
+				ID:       sb.ID,
+				CpuCount: sb.CpuCount,
+				MemoryMB: sb.MemoryMB,
+			})
+		}
+		return infos
+	}, func(flushes []worker.UsageFlush) {
+		if store == nil {
+			return
+		}
+		for _, f := range flushes {
+			if err := store.UpdateSandboxUsage(context.Background(), f.SandboxID, f.VCPUSeconds, f.GBSeconds); err != nil {
+				log.Printf("opensandbox-worker: billing flush error for %s: %v", f.SandboxID, err)
+			}
+		}
+	})
+	pressureMon.Start()
+	defer pressureMon.Stop()
+	log.Printf("opensandbox-worker: pressure monitor started (worker RAM: %.1f GB)", float64(workerRAMBytes)/(1<<30))
+
 	// Start HTTP server for direct SDK access
 	httpServer := worker.NewHTTPServer(mgr, ptyMgr, execMgr, jwtIssuer, sandboxDBMgr, sbProxy, sbRouter, cfg.SandboxDomain)
 	httpAddr := fmt.Sprintf(":%d", cfg.Port)
@@ -394,10 +421,12 @@ func main() {
 				hb.SetMachineID(machineID)
 				log.Printf("opensandbox-worker: EC2 instance ID: %s", machineID)
 			}
-			hb.Start(func() (int, int, float64, float64) {
+			hb.Start(func() (int, int, float64, float64, float64, float64) {
 				count, _ := mgr.Count(context.Background())
 				cpuPct, memPct := worker.SystemStats()
-				return cfg.MaxCapacity, count, cpuPct, memPct
+				memUsedGB := float64(pressureMon.TotalMemoryUsed()) / (1 << 30)
+				memTotalGB := float64(workerRAMBytes) / (1 << 30)
+				return cfg.MaxCapacity, count, cpuPct, memPct, memUsedGB, memTotalGB
 			})
 			defer hb.Stop()
 			log.Println("opensandbox-worker: Redis heartbeat started")
@@ -411,10 +440,12 @@ func main() {
 			log.Printf("opensandbox-worker: NATS not available: %v (continuing without event sync)", err)
 		} else {
 			pub.Start()
-			pub.StartHeartbeat(func() (int, int, float64, float64) {
+			pub.StartHeartbeat(func() (int, int, float64, float64, float64, float64) {
 				count, _ := mgr.Count(context.Background())
 				cpuPct, memPct := worker.SystemStats()
-				return cfg.MaxCapacity, count, cpuPct, memPct
+				memUsedGB := float64(pressureMon.TotalMemoryUsed()) / (1 << 30)
+				memTotalGB := float64(workerRAMBytes) / (1 << 30)
+				return cfg.MaxCapacity, count, cpuPct, memPct, memUsedGB, memTotalGB
 			})
 			defer pub.Stop()
 			log.Println("opensandbox-worker: NATS event publisher started")
