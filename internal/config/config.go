@@ -66,7 +66,7 @@ type Config struct {
 	ECRRepository string // e.g. "opensandbox-templates"
 
 	// Sandbox resource defaults (overridable per-sandbox via API)
-	DefaultSandboxMemoryMB int // default RAM per sandbox (MB), default 1024
+	DefaultSandboxMemoryMB int // default RAM per sandbox (MB), default 8192 (elastic ceiling)
 	DefaultSandboxCPUs     int // default vCPUs per sandbox, default 1
 	DefaultSandboxDiskMB   int // default disk quota per sandbox (MB), 0 = no quota
 
@@ -146,7 +146,7 @@ func Load() (*Config, error) {
 		ECRRegistry:   os.Getenv("OPENSANDBOX_ECR_REGISTRY"),
 		ECRRepository: envOrDefault("OPENSANDBOX_ECR_REPOSITORY", "opensandbox-templates"),
 
-		DefaultSandboxMemoryMB: envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB", 1024),
+		DefaultSandboxMemoryMB: envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB", 8192),
 		DefaultSandboxCPUs:     envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_CPUS", 1),
 		DefaultSandboxDiskMB:   envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_DISK_MB", 0),
 
