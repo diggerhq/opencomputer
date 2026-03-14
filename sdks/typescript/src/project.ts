@@ -3,43 +3,40 @@ function resolveApiUrl(url: string): string {
   return base.endsWith("/api") ? base : `${base}/api`;
 }
 
-export interface ProjectInfo {
+export interface SecretStoreInfo {
   id: string;
   orgId: string;
   name: string;
-  template: string;
-  cpuCount: number;
-  memoryMB: number;
-  timeoutSec: number;
   egressAllowlist: string[];
   createdAt: string;
   updatedAt: string;
 }
 
-export interface ProjectOpts {
+export interface SecretEntryInfo {
+  id: string;
+  storeId: string;
+  name: string;
+  allowedHosts: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SecretStoreOpts {
   apiKey?: string;
   apiUrl?: string;
 }
 
-export interface CreateProjectOpts extends ProjectOpts {
+export interface CreateSecretStoreOpts extends SecretStoreOpts {
   name: string;
-  template?: string;
-  cpuCount?: number;
-  memoryMB?: number;
-  timeoutSec?: number;
   egressAllowlist?: string[];
 }
 
-export interface UpdateProjectOpts extends ProjectOpts {
+export interface UpdateSecretStoreOpts extends SecretStoreOpts {
   name?: string;
-  template?: string;
-  cpuCount?: number;
-  memoryMB?: number;
-  timeoutSec?: number;
   egressAllowlist?: string[];
 }
 
-function getConfig(opts: ProjectOpts) {
+function getConfig(opts: SecretStoreOpts) {
   const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
   const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -47,20 +44,16 @@ function getConfig(opts: ProjectOpts) {
   return { apiUrl, headers };
 }
 
-export class Project {
+export class SecretStore {
   private constructor() {}
 
-  static async create(opts: CreateProjectOpts): Promise<ProjectInfo> {
+  static async create(opts: CreateSecretStoreOpts): Promise<SecretStoreInfo> {
     const { apiUrl, headers } = getConfig(opts);
 
     const body: Record<string, unknown> = { name: opts.name };
-    if (opts.template) body.template = opts.template;
-    if (opts.cpuCount != null) body.cpuCount = opts.cpuCount;
-    if (opts.memoryMB != null) body.memoryMB = opts.memoryMB;
-    if (opts.timeoutSec != null) body.timeoutSec = opts.timeoutSec;
     if (opts.egressAllowlist) body.egressAllowlist = opts.egressAllowlist;
 
-    const resp = await fetch(`${apiUrl}/projects`, {
+    const resp = await fetch(`${apiUrl}/secret-stores`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -68,48 +61,44 @@ export class Project {
 
     if (!resp.ok) {
       const text = await resp.text();
-      throw new Error(`Failed to create project: ${resp.status} ${text}`);
+      throw new Error(`Failed to create secret store: ${resp.status} ${text}`);
     }
 
     return resp.json();
   }
 
-  static async list(opts: ProjectOpts = {}): Promise<ProjectInfo[]> {
+  static async list(opts: SecretStoreOpts = {}): Promise<SecretStoreInfo[]> {
     const { apiUrl, headers } = getConfig(opts);
 
-    const resp = await fetch(`${apiUrl}/projects`, { headers });
+    const resp = await fetch(`${apiUrl}/secret-stores`, { headers });
 
     if (!resp.ok) {
-      throw new Error(`Failed to list projects: ${resp.status}`);
+      throw new Error(`Failed to list secret stores: ${resp.status}`);
     }
 
     return resp.json();
   }
 
-  static async get(projectId: string, opts: ProjectOpts = {}): Promise<ProjectInfo> {
+  static async get(storeId: string, opts: SecretStoreOpts = {}): Promise<SecretStoreInfo> {
     const { apiUrl, headers } = getConfig(opts);
 
-    const resp = await fetch(`${apiUrl}/projects/${projectId}`, { headers });
+    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}`, { headers });
 
     if (!resp.ok) {
-      throw new Error(`Failed to get project: ${resp.status}`);
+      throw new Error(`Failed to get secret store: ${resp.status}`);
     }
 
     return resp.json();
   }
 
-  static async update(projectId: string, opts: UpdateProjectOpts): Promise<ProjectInfo> {
+  static async update(storeId: string, opts: UpdateSecretStoreOpts): Promise<SecretStoreInfo> {
     const { apiUrl, headers } = getConfig(opts);
 
     const body: Record<string, unknown> = {};
     if (opts.name) body.name = opts.name;
-    if (opts.template) body.template = opts.template;
-    if (opts.cpuCount != null) body.cpuCount = opts.cpuCount;
-    if (opts.memoryMB != null) body.memoryMB = opts.memoryMB;
-    if (opts.timeoutSec != null) body.timeoutSec = opts.timeoutSec;
     if (opts.egressAllowlist) body.egressAllowlist = opts.egressAllowlist;
 
-    const resp = await fetch(`${apiUrl}/projects/${projectId}`, {
+    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}`, {
       method: "PUT",
       headers,
       body: JSON.stringify(body),
@@ -117,34 +106,37 @@ export class Project {
 
     if (!resp.ok) {
       const text = await resp.text();
-      throw new Error(`Failed to update project: ${resp.status} ${text}`);
+      throw new Error(`Failed to update secret store: ${resp.status} ${text}`);
     }
 
     return resp.json();
   }
 
-  static async delete(projectId: string, opts: ProjectOpts = {}): Promise<void> {
+  static async delete(storeId: string, opts: SecretStoreOpts = {}): Promise<void> {
     const { apiUrl, headers } = getConfig(opts);
 
-    const resp = await fetch(`${apiUrl}/projects/${projectId}`, {
+    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}`, {
       method: "DELETE",
       headers,
     });
 
     if (!resp.ok) {
-      throw new Error(`Failed to delete project: ${resp.status}`);
+      throw new Error(`Failed to delete secret store: ${resp.status}`);
     }
   }
 
-  // ── Secrets ──────────────────────────────────────────────────────────────
+  // ── Secret Entries ──────────────────────────────────────────────────────
 
-  static async setSecret(projectId: string, name: string, value: string, opts: ProjectOpts = {}): Promise<void> {
+  static async setSecret(storeId: string, name: string, value: string, opts: SecretStoreOpts & { allowedHosts?: string[] } = {}): Promise<void> {
     const { apiUrl, headers } = getConfig(opts);
 
-    const resp = await fetch(`${apiUrl}/projects/${projectId}/secrets/${name}`, {
+    const body: Record<string, unknown> = { value };
+    if (opts.allowedHosts) body.allowedHosts = opts.allowedHosts;
+
+    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}/secrets/${name}`, {
       method: "PUT",
       headers,
-      body: JSON.stringify({ value }),
+      body: JSON.stringify(body),
     });
 
     if (!resp.ok) {
@@ -153,10 +145,10 @@ export class Project {
     }
   }
 
-  static async deleteSecret(projectId: string, name: string, opts: ProjectOpts = {}): Promise<void> {
+  static async deleteSecret(storeId: string, name: string, opts: SecretStoreOpts = {}): Promise<void> {
     const { apiUrl, headers } = getConfig(opts);
 
-    const resp = await fetch(`${apiUrl}/projects/${projectId}/secrets/${name}`, {
+    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}/secrets/${name}`, {
       method: "DELETE",
       headers,
     });
@@ -166,10 +158,10 @@ export class Project {
     }
   }
 
-  static async listSecrets(projectId: string, opts: ProjectOpts = {}): Promise<string[]> {
+  static async listSecrets(storeId: string, opts: SecretStoreOpts = {}): Promise<SecretEntryInfo[]> {
     const { apiUrl, headers } = getConfig(opts);
 
-    const resp = await fetch(`${apiUrl}/projects/${projectId}/secrets`, { headers });
+    const resp = await fetch(`${apiUrl}/secret-stores/${storeId}/secrets`, { headers });
 
     if (!resp.ok) {
       throw new Error(`Failed to list secrets: ${resp.status}`);

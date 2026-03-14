@@ -26,7 +26,7 @@ var sandboxCreateCmd = &cobra.Command{
 		memory, _ := cmd.Flags().GetInt("memory")
 		envSlice, _ := cmd.Flags().GetStringSlice("env")
 		metaSlice, _ := cmd.Flags().GetStringSlice("metadata")
-		project, _ := cmd.Flags().GetString("project")
+		secretStore, _ := cmd.Flags().GetString("secret-store")
 
 		config := types.SandboxConfig{
 			Timeout:  timeout,
@@ -36,7 +36,7 @@ var sandboxCreateCmd = &cobra.Command{
 			Metadata: parseKVSlice(metaSlice),
 		}
 
-		// Build request body — include project if set
+		// Build request body — include secret store if set
 		body := map[string]interface{}{
 			"timeout": config.Timeout,
 		}
@@ -52,8 +52,8 @@ var sandboxCreateCmd = &cobra.Command{
 		if config.Metadata != nil {
 			body["metadata"] = config.Metadata
 		}
-		if project != "" {
-			body["project"] = project
+		if secretStore != "" {
+			body["secretStore"] = secretStore
 		}
 
 		var sandbox types.Sandbox
@@ -229,7 +229,7 @@ func init() {
 		cmd.Flags().Int("memory", 0, "Memory in MB")
 		cmd.Flags().StringSlice("env", nil, "Environment variables (KEY=VALUE)")
 		cmd.Flags().StringSlice("metadata", nil, "Metadata (KEY=VALUE)")
-		cmd.Flags().String("project", "", "Project name (inherits config + secrets)")
+		cmd.Flags().String("secret-store", "", "Secret store name (injects encrypted secrets)")
 	}
 
 	// sandbox wake flags

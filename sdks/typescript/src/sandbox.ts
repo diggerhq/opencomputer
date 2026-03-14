@@ -17,8 +17,8 @@ export interface SandboxOpts {
   metadata?: Record<string, string>;
   cpuCount?: number;
   memoryMB?: number;
-  /** Project name — inherits template, cpu, memory, timeout, and secrets from the project. */
-  project?: string;
+  /** Secret store name — resolves encrypted secrets and egress allowlist. */
+  secretStore?: string;
 }
 
 interface SandboxData {
@@ -120,7 +120,7 @@ export class Sandbox {
     if (opts.metadata) body.metadata = opts.metadata;
     if (opts.cpuCount != null) body.cpuCount = opts.cpuCount;
     if (opts.memoryMB != null) body.memoryMB = opts.memoryMB;
-    if (opts.project) body.project = opts.project;
+    if (opts.secretStore) body.secretStore = opts.secretStore;
 
     const resp = await fetch(`${apiUrl}/sandboxes`, {
       method: "POST",

@@ -1,113 +1,85 @@
 ---
-title: "Projects & Secrets"
-description: "Manage projects and encrypted secrets that are securely injected into sandboxes"
+title: "Secret Stores & Secrets"
+description: "Manage secret stores and encrypted secrets that are securely injected into sandboxes"
 ---
 
-Projects group sandboxes together with shared configuration defaults and encrypted secrets. When you create a sandbox with a project, it inherits the project's template, resource limits, and timeout — and secrets are sealed inside the sandbox so they never exist as plaintext in VM memory.
+Secret stores hold encrypted secrets that are injected into sandboxes as sealed tokens. When you create a sandbox with a secret store, secrets are sealed inside the sandbox so they never exist as plaintext in VM memory.
 
 ## How Secrets Work
 
-When a sandbox is created with a project:
+When a sandbox is created with a secret store:
 
-1. The server decrypts the project's secrets
+1. The server decrypts the store's secrets
 2. Secrets are sent to the worker and **sealed** into opaque tokens (`osb_sealed_...`)
 3. Inside the sandbox, env vars contain sealed tokens — never real values
 4. When the sandbox makes an outbound HTTPS request, the MITM proxy intercepts it and replaces sealed tokens with real values in headers and request body
 5. The real secret only exists in the proxy's memory on the host, never inside the VM
 
-## Creating a Project
+## Creating a Secret Store
 
 ```python
-from opencomputer import Project
+from opencomputer import SecretStore
 
-project = await Project.create(
-    name='my-agent',
-    template='default',
-    cpu_count=2,
-    memory_mb=1024,
-    timeout_sec=600,
+store = await SecretStore.create(
+    name='my-agent-secrets',
+    egress_allowlist=['api.anthropic.com'],
 )
 ```
 
-### `Project.create(**kwargs)`
+### `SecretStore.create(**kwargs)`
 
 <ParamField body="name" type="str" required>
-  Project name (unique per organization).
-</ParamField>
-<ParamField body="template" type="str" default="">
-  Default template for sandboxes in this project.
-</ParamField>
-<ParamField body="cpu_count" type="int" default="0">
-  Default vCPU count.
-</ParamField>
-<ParamField body="memory_mb" type="int" default="0">
-  Default memory in MB.
-</ParamField>
-<ParamField body="timeout_sec" type="int" default="0">
-  Default sandbox timeout in seconds.
+  Store name (unique per organization).
 </ParamField>
 <ParamField body="egress_allowlist" type="list[str] | None" default="None">
   Allowed egress hosts (e.g. `["api.anthropic.com"]`).
 </ParamField>
 
-**Returns:** `dict` — Project info with `id`, `name`, `template`, etc.
+**Returns:** `dict` — Secret store info with `id`, `name`, `egressAllowlist`, etc.
 
-## Listing Projects
+## Listing Secret Stores
 
 ```python
-projects = await Project.list()
+stores = await SecretStore.list()
 ```
 
-### `Project.list(**kwargs)`
+### `SecretStore.list(**kwargs)`
 
 **Returns:** `list[dict]`
 
-## Getting a Project
+## Getting a Secret Store
 
 ```python
-project = await Project.get('project-uuid')
+store = await SecretStore.get('store-uuid')
 ```
 
-### `Project.get(project_id, **kwargs)`
+### `SecretStore.get(store_id, **kwargs)`
 
-<ParamField body="project_id" type="str" required>
-  UUID of the project.
+<ParamField body="store_id" type="str" required>
+  UUID of the secret store.
 </ParamField>
 
 **Returns:** `dict`
 
-## Updating a Project
+## Updating a Secret Store
 
 Partial updates — only the fields you pass are changed.
 
 ```python
-updated = await Project.update(
-    'project-uuid',
-    memory_mb=2048,
-    timeout_sec=900,
+updated = await SecretStore.update(
+    'store-uuid',
+    name='new-name',
+    egress_allowlist=['api.anthropic.com', '*.openai.com'],
 )
-# Name, template, cpu_count are preserved
 ```
 
-### `Project.update(project_id, **kwargs)`
+### `SecretStore.update(store_id, **kwargs)`
 
-<ParamField body="project_id" type="str" required>
-  UUID of the project to update.
+<ParamField body="store_id" type="str" required>
+  UUID of the store to update.
 </ParamField>
 <ParamField body="name" type="str" default="">
-  New project name (empty = no change).
-</ParamField>
-<ParamField body="template" type="str" default="">
-  New default template (empty = no change).
-</ParamField>
-<ParamField body="cpu_count" type="int" default="0">
-  New default vCPU count (0 = no change).
-</ParamField>
-<ParamField body="memory_mb" type="int" default="0">
-  New default memory in MB (0 = no change).
-</ParamField>
-<ParamField body="timeout_sec" type="int" default="0">
-  New default timeout in seconds (0 = no change).
+  New store name (empty = no change).
 </ParamField>
 <ParamField body="egress_allowlist" type="list[str] | None" default="None">
   New allowed egress hosts (None = no change).
@@ -115,30 +87,41 @@ updated = await Project.update(
 
 **Returns:** `dict`
 
-## Deleting a Project
+## Deleting a Secret Store
 
 ```python
-await Project.delete('project-uuid')
+await SecretStore.delete('store-uuid')
 ```
 
-Deletes the project and all its secrets. Running sandboxes are not affected.
+Deletes the store and all its secrets. Running sandboxes are not affected.
 
-### `Project.delete(project_id, **kwargs)`
+### `SecretStore.delete(store_id, **kwargs)`
 
 **Returns:** `None`
 
 ## Setting a Secret
 
 ```python
-await Project.set_secret('project-uuid', 'ANTHROPIC_API_KEY', 'sk-ant-...')
+await SecretStore.set_secret('store-uuid', 'ANTHROPIC_API_KEY', 'sk-ant-...')
 ```
 
 Secrets are encrypted at rest. The value is never returned by the API.
 
-### `Project.set_secret(project_id, name, value, **kwargs)`
+Optionally restrict which hosts can receive this secret:
 
-<ParamField body="project_id" type="str" required>
-  UUID of the project.
+```python
+await SecretStore.set_secret(
+    'store-uuid',
+    'ANTHROPIC_API_KEY',
+    'sk-ant-...',
+    allowed_hosts=['api.anthropic.com'],
+)
+```
+
+### `SecretStore.set_secret(store_id, name, value, **kwargs)`
+
+<ParamField body="store_id" type="str" required>
+  UUID of the secret store.
 </ParamField>
 <ParamField body="name" type="str" required>
   Secret name (used as the env var name in sandboxes).
@@ -146,41 +129,44 @@ Secrets are encrypted at rest. The value is never returned by the API.
 <ParamField body="value" type="str" required>
   Secret value (encrypted at rest, never returned by API).
 </ParamField>
+<ParamField body="allowed_hosts" type="list[str] | None" default="None">
+  Restrict this secret to specific hosts only.
+</ParamField>
 
 **Returns:** `None`
 
 ## Listing Secrets
 
 ```python
-names = await Project.list_secrets('project-uuid')
-# ['ANTHROPIC_API_KEY', 'DATABASE_URL']
+entries = await SecretStore.list_secrets('store-uuid')
+# [{'name': 'ANTHROPIC_API_KEY', 'allowedHosts': ['api.anthropic.com'], ...}, ...]
 ```
 
-Returns secret names only. Values are never exposed.
+Returns secret metadata only. Values are never exposed.
 
-### `Project.list_secrets(project_id, **kwargs)`
+### `SecretStore.list_secrets(store_id, **kwargs)`
 
-**Returns:** `list[str]`
+**Returns:** `list[dict]`
 
 ## Deleting a Secret
 
 ```python
-await Project.delete_secret('project-uuid', 'DATABASE_URL')
+await SecretStore.delete_secret('store-uuid', 'DATABASE_URL')
 ```
 
-### `Project.delete_secret(project_id, name, **kwargs)`
+### `SecretStore.delete_secret(store_id, name, **kwargs)`
 
 **Returns:** `None`
 
-## Creating a Sandbox with a Project
+## Creating a Sandbox with a Secret Store
 
-Pass the `project` parameter to `Sandbox.create()` to inherit the project's config and secrets:
+Pass the `secret_store` parameter to `Sandbox.create()` to inject the store's secrets:
 
 ```python
 from opencomputer import Sandbox
 
 sandbox = await Sandbox.create(
-    project='my-agent',
+    secret_store='my-agent-secrets',
     timeout=600,
 )
 
@@ -195,4 +181,4 @@ api_result = await sandbox.commands.run(
 # The proxy replaces the sealed token with the real key before it hits Anthropic
 ```
 
-Request-level options (`timeout`, `envs`, `cpu_count`, etc.) override project defaults.
+Request-level options (`timeout`, `envs`, `cpu_count`, etc.) work as normal alongside `secret_store`.

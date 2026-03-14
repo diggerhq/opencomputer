@@ -1,26 +1,26 @@
 /**
- * Projects & Secrets Test
+ * Secret Stores & Secrets Test
  *
  * Tests:
- *   1. Create a project
- *   2. List projects
- *   3. Get project by ID
- *   4. Update project
- *   5. Set secrets on a project
+ *   1. Create a secret store
+ *   2. List secret stores
+ *   3. Get secret store by ID
+ *   4. Update secret store
+ *   5. Set secrets on a store
  *   6. List secrets (names only, values never returned)
- *   7. Create sandbox with project (inherits config + secrets)
- *   8. Verify secrets are injected as env vars
+ *   7. Create sandbox with secret store (inherits secrets)
+ *   8. Verify secrets are injected as sealed env vars
  *   9. Delete secret
- *  10. Delete project
+ *  10. Delete secret store
  *
  * Usage:
  *   npx tsx examples/test-projects.ts
  */
 
-import { Sandbox, Project } from "../src/index";
+import { Sandbox, SecretStore } from "../src/index";
 
-function green(msg: string) { console.log(`\x1b[32m✓ ${msg}\x1b[0m`); }
-function red(msg: string) { console.log(`\x1b[31m✗ ${msg}\x1b[0m`); }
+function green(msg: string) { console.log(`\x1b[32m\u2713 ${msg}\x1b[0m`); }
+function red(msg: string) { console.log(`\x1b[31m\u2717 ${msg}\x1b[0m`); }
 function bold(msg: string) { console.log(`\x1b[1m${msg}\x1b[0m`); }
 function dim(msg: string) { console.log(`\x1b[2m  ${msg}\x1b[0m`); }
 
@@ -38,104 +38,99 @@ function check(desc: string, condition: boolean, detail?: string) {
 }
 
 async function main() {
-  bold("\n╔══════════════════════════════════════════════════╗");
-  bold("║       Projects & Secrets Test                    ║");
-  bold("╚══════════════════════════════════════════════════╝\n");
+  bold("\n\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557");
+  bold("\u2551       Secret Stores & Secrets Test               \u2551");
+  bold("\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\n");
 
-  let projectId: string | null = null;
+  let storeId: string | null = null;
   let sandbox: Sandbox | null = null;
-  const projectName = `test-project-${Date.now()}`;
+  const storeName = `test-store-${Date.now()}`;
 
   try {
-    // ── Test 1: Create project ────────────────────────────────────
-    bold("━━━ Test 1: Create project ━━━\n");
+    // -- Test 1: Create secret store --
+    bold("--- Test 1: Create secret store ---\n");
 
-    const project = await Project.create({
-      name: projectName,
-      template: "base",
-      cpuCount: 1,
-      memoryMB: 512,
-      timeoutSec: 120,
+    const store = await SecretStore.create({
+      name: storeName,
+      egressAllowlist: ["api.anthropic.com"],
     });
 
-    projectId = project.id;
-    check("Project created", !!project.id);
-    check("Name matches", project.name === projectName);
-    check("Template set", project.template === "base");
-    check("CPU set", project.cpuCount === 1);
-    check("Memory set", project.memoryMB === 512);
-    check("Timeout set", project.timeoutSec === 120);
-    dim(`Project ID: ${project.id}`);
+    storeId = store.id;
+    check("Store created", !!store.id);
+    check("Name matches", store.name === storeName);
+    check("Egress allowlist set", store.egressAllowlist?.length === 1);
+    dim(`Store ID: ${store.id}`);
     console.log();
 
-    // ── Test 2: List projects ─────────────────────────────────────
-    bold("━━━ Test 2: List projects ━━━\n");
+    // -- Test 2: List secret stores --
+    bold("--- Test 2: List secret stores ---\n");
 
-    const projects = await Project.list();
-    check("List returns array", Array.isArray(projects));
-    const found = projects.find((p) => p.id === projectId);
-    check("Created project in list", !!found);
-    dim(`Total projects: ${projects.length}`);
+    const stores = await SecretStore.list();
+    check("List returns array", Array.isArray(stores));
+    const found = stores.find((s) => s.id === storeId);
+    check("Created store in list", !!found);
+    dim(`Total stores: ${stores.length}`);
     console.log();
 
-    // ── Test 3: Get project ───────────────────────────────────────
-    bold("━━━ Test 3: Get project by ID ━━━\n");
+    // -- Test 3: Get secret store --
+    bold("--- Test 3: Get secret store by ID ---\n");
 
-    const fetched = await Project.get(projectId!);
-    check("Get returns correct project", fetched.id === projectId);
-    check("Get has correct name", fetched.name === projectName);
+    const fetched = await SecretStore.get(storeId!);
+    check("Get returns correct store", fetched.id === storeId);
+    check("Get has correct name", fetched.name === storeName);
     console.log();
 
-    // ── Test 4: Update project ────────────────────────────────────
-    bold("━━━ Test 4: Update project ━━━\n");
+    // -- Test 4: Update secret store --
+    bold("--- Test 4: Update secret store ---\n");
 
-    const updated = await Project.update(projectId!, {
-      memoryMB: 1024,
-      timeoutSec: 300,
+    const updatedName = `${storeName}-updated`;
+    const updated = await SecretStore.update(storeId!, {
+      name: updatedName,
+      egressAllowlist: ["api.anthropic.com", "*.openai.com"],
     });
-    check("Memory updated to 1024", updated.memoryMB === 1024);
-    check("Timeout updated to 300", updated.timeoutSec === 300);
-    check("Name unchanged", updated.name === projectName);
+    check("Name updated", updated.name === updatedName);
+    check("Egress allowlist updated", updated.egressAllowlist?.length === 2);
     console.log();
 
-    // ── Test 5: Set secrets ───────────────────────────────────────
-    bold("━━━ Test 5: Set project secrets ━━━\n");
+    // -- Test 5: Set secrets --
+    bold("--- Test 5: Set secrets ---\n");
 
-    await Project.setSecret(projectId!, "TEST_API_KEY", "sk-test-12345");
+    await SecretStore.setSecret(storeId!, "TEST_API_KEY", "sk-test-12345");
     green("Set TEST_API_KEY");
 
-    await Project.setSecret(projectId!, "DATABASE_URL", "postgres://localhost/test");
+    await SecretStore.setSecret(storeId!, "DATABASE_URL", "postgres://localhost/test");
     green("Set DATABASE_URL");
 
-    await Project.setSecret(projectId!, "TEMP_SECRET", "will-be-deleted");
+    await SecretStore.setSecret(storeId!, "TEMP_SECRET", "will-be-deleted");
     green("Set TEMP_SECRET");
     console.log();
 
-    // ── Test 6: List secrets ──────────────────────────────────────
-    bold("━━━ Test 6: List secret names ━━━\n");
+    // -- Test 6: List secrets --
+    bold("--- Test 6: List secret entries ---\n");
 
-    const secretNames = await Project.listSecrets(projectId!);
-    check("Returns array", Array.isArray(secretNames));
-    check("Has TEST_API_KEY", secretNames.includes("TEST_API_KEY"));
-    check("Has DATABASE_URL", secretNames.includes("DATABASE_URL"));
-    check("Has TEMP_SECRET", secretNames.includes("TEMP_SECRET"));
-    check("3 secrets total", secretNames.length === 3, `got ${secretNames.length}`);
-    dim(`Secret names: ${secretNames.join(", ")}`);
+    const entries = await SecretStore.listSecrets(storeId!);
+    check("Returns array", Array.isArray(entries));
+    const names = entries.map((e) => e.name);
+    check("Has TEST_API_KEY", names.includes("TEST_API_KEY"));
+    check("Has DATABASE_URL", names.includes("DATABASE_URL"));
+    check("Has TEMP_SECRET", names.includes("TEMP_SECRET"));
+    check("3 secrets total", entries.length === 3, `got ${entries.length}`);
+    dim(`Secret names: ${names.join(", ")}`);
     console.log();
 
-    // ── Test 7: Create sandbox with project ───────────────────────
-    bold("━━━ Test 7: Create sandbox with project ━━━\n");
+    // -- Test 7: Create sandbox with secret store --
+    bold("--- Test 7: Create sandbox with secret store ---\n");
 
     sandbox = await Sandbox.create({
-      project: projectName,
+      secretStore: updatedName,
       timeout: 120,
     });
     check("Sandbox created", !!sandbox.sandboxId);
     dim(`Sandbox ID: ${sandbox.sandboxId}`);
     console.log();
 
-    // ── Test 8: Verify secrets are sealed in sandbox ──────────────
-    bold("━━━ Test 8: Verify secrets sealed in sandbox ━━━\n");
+    // -- Test 8: Verify secrets are sealed in sandbox --
+    bold("--- Test 8: Verify secrets sealed in sandbox ---\n");
 
     // Secrets should be sealed tokens (osb_sealed_*) inside the VM.
     // The MITM proxy replaces sealed tokens with real values on outbound HTTPS requests,
@@ -156,38 +151,39 @@ async function main() {
       `got "${tempVal}"`);
     console.log();
 
-    // ── Test 9: Delete secret ─────────────────────────────────────
-    bold("━━━ Test 9: Delete secret ━━━\n");
+    // -- Test 9: Delete secret --
+    bold("--- Test 9: Delete secret ---\n");
 
-    await Project.deleteSecret(projectId!, "TEMP_SECRET");
+    await SecretStore.deleteSecret(storeId!, "TEMP_SECRET");
     green("Deleted TEMP_SECRET");
 
-    const afterDelete = await Project.listSecrets(projectId!);
-    check("TEMP_SECRET removed", !afterDelete.includes("TEMP_SECRET"));
+    const afterDelete = await SecretStore.listSecrets(storeId!);
+    const afterNames = afterDelete.map((e) => e.name);
+    check("TEMP_SECRET removed", !afterNames.includes("TEMP_SECRET"));
     check("2 secrets remaining", afterDelete.length === 2, `got ${afterDelete.length}`);
     console.log();
 
-    // ── Test 10: Delete project ───────────────────────────────────
-    bold("━━━ Test 10: Delete project ━━━\n");
+    // -- Test 10: Delete secret store --
+    bold("--- Test 10: Delete secret store ---\n");
 
     // Kill sandbox first
     await sandbox.kill();
     green("Sandbox killed");
     sandbox = null;
 
-    await Project.delete(projectId!);
-    green("Project deleted");
+    await SecretStore.delete(storeId!);
+    green("Secret store deleted");
 
     // Verify it's gone
     try {
-      await Project.get(projectId!);
-      red("Project should not exist after delete");
+      await SecretStore.get(storeId!);
+      red("Store should not exist after delete");
       failed++;
     } catch {
-      green("Project not found after delete (expected)");
+      green("Store not found after delete (expected)");
       passed++;
     }
-    projectId = null;
+    storeId = null;
     console.log();
 
   } catch (err: any) {
@@ -199,8 +195,8 @@ async function main() {
     if (sandbox) {
       try { await sandbox.kill(); } catch {}
     }
-    if (projectId) {
-      try { await Project.delete(projectId); } catch {}
+    if (storeId) {
+      try { await SecretStore.delete(storeId); } catch {}
     }
   }
 
