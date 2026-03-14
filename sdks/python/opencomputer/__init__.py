@@ -6,7 +6,7 @@ from opencomputer.filesystem import Filesystem
 from opencomputer.exec import Exec, ProcessResult, ExecSessionInfo
 from opencomputer.pty import Pty, PtySession
 from opencomputer.template import Template
-from opencomputer.project import Project
+from opencomputer.project import SecretStore
 
 __all__ = [
     "Sandbox",
@@ -21,7 +21,7 @@ __all__ = [
     "Pty",
     "PtySession",
     "Template",
-    "Project",
+    "SecretStore",
 ]
 
 __version__ = "0.5.0"

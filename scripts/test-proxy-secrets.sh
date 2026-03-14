@@ -35,8 +35,8 @@ fail() { echo -e "${RED}✗ $1${RESET}"; }
 info() { echo -e "${DIM}  $1${RESET}"; }
 header() { echo -e "\n${BOLD}━━━ $1 ━━━${RESET}\n"; }
 
-PROJ_NAME="proxy-test-$(date +%s)"
-PROJ_ID=""
+STORE_NAME="proxy-test-$(date +%s)"
+STORE_ID=""
 SB_ID=""
 TOKEN=""
 WORKER="https://dev.opensandbox.ai"
@@ -45,8 +45,8 @@ cleanup() {
   if [ -n "$SB_ID" ]; then
     curl -s -X DELETE "$API/api/sandboxes/$SB_ID" -H "X-API-Key: $KEY" > /dev/null 2>&1 || true
   fi
-  if [ -n "$PROJ_ID" ]; then
-    curl -s -X DELETE "$API/api/projects/$PROJ_ID" -H "X-API-Key: $KEY" > /dev/null 2>&1 || true
+  if [ -n "$STORE_ID" ]; then
+    curl -s -X DELETE "$API/api/secret-stores/$STORE_ID" -H "X-API-Key: $KEY" > /dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -57,38 +57,38 @@ echo "║   Sealed Secrets + Proxy Replacement Test        ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo -e "${RESET}"
 
-# ── 1. Create project ──
-header "1. Create project"
+# ── 1. Create secret store ──
+header "1. Create secret store"
 
-PROJ_RESP=$(curl -s -X POST "$API/api/projects" \
+STORE_RESP=$(curl -s -X POST "$API/api/secret-stores" \
   -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d "{\"name\":\"$PROJ_NAME\",\"timeoutSec\":300}")
+  -d "{\"name\":\"$STORE_NAME\"}")
 
-PROJ_ID=$(echo "$PROJ_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || true)
+STORE_ID=$(echo "$STORE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || true)
 
-if [ -n "$PROJ_ID" ]; then
-  pass "Project created: $PROJ_ID"
+if [ -n "$STORE_ID" ]; then
+  pass "Secret store created: $STORE_ID"
 else
-  fail "Project creation failed: $PROJ_RESP"
+  fail "Secret store creation failed: $STORE_RESP"
   exit 1
 fi
 
 # ── 2. Set Anthropic key as secret ──
 header "2. Set ANTHROPIC_API_KEY secret"
 
-SECRET_RESP=$(curl -s -X PUT "$API/api/projects/$PROJ_ID/secrets/ANTHROPIC_API_KEY" \
+SECRET_RESP=$(curl -s -X PUT "$API/api/secret-stores/$STORE_ID/secrets/ANTHROPIC_API_KEY" \
   -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
   -d "{\"value\":\"$ANTHROPIC_KEY\"}")
 
 pass "Secret set (encrypted at rest)"
 info "Key prefix: ${ANTHROPIC_KEY:0:12}..."
 
-# ── 3. Create sandbox with project ──
-header "3. Create sandbox with project"
+# ── 3. Create sandbox with secret store ──
+header "3. Create sandbox with secret store"
 
 SB_RESP=$(curl -s -X POST "$API/api/sandboxes" \
   -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d "{\"project\":\"$PROJ_NAME\",\"timeout\":300}")
+  -d "{\"secretStore\":\"$STORE_NAME\",\"timeout\":300}")
 
 SB_ID=$(echo "$SB_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['sandboxID'])" 2>/dev/null || true)
 TOKEN=$(echo "$SB_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null || true)

@@ -37,7 +37,7 @@ class Sandbox:
         api_url: str | None = None,
         envs: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
-        project: str | None = None,
+        secret_store: str | None = None,
     ) -> Sandbox:
         """Create a new sandbox instance.
 
@@ -46,10 +46,10 @@ class Sandbox:
             timeout: Sandbox timeout in seconds (default 300).
             api_key: API key (or OPENCOMPUTER_API_KEY env var).
             api_url: API URL (or OPENCOMPUTER_API_URL env var).
-            envs: Environment variables to inject. Overrides project secrets.
+            envs: Environment variables to inject. Overrides store secrets.
             metadata: Custom metadata key-value pairs.
-            project: Project name — inherits template, cpu, memory, timeout,
-                and secrets from the project.
+            secret_store: Secret store name — resolves encrypted secrets
+                and egress allowlist.
         """
         url = api_url or os.environ.get("OPENCOMPUTER_API_URL", "https://app.opencomputer.dev")
         url = url.rstrip("/")
@@ -72,8 +72,8 @@ class Sandbox:
             body["envs"] = envs
         if metadata:
             body["metadata"] = metadata
-        if project:
-            body["project"] = project
+        if secret_store:
+            body["secretStore"] = secret_store
 
         resp = await client.post("/sandboxes", json=body)
         resp.raise_for_status()

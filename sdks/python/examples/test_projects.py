@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Projects & Secrets Test
+Secret Stores & Secrets Test
 
 Tests:
-  1. Create a project
-  2. List projects
-  3. Get project by ID
-  4. Update project
-  5. Set secrets on a project
+  1. Create a secret store
+  2. List secret stores
+  3. Get secret store by ID
+  4. Update secret store
+  5. Set secrets on a store
   6. List secrets (names only, values never returned)
-  7. Create sandbox with project (inherits config + secrets)
-  8. Verify secrets are injected as env vars
+  7. Create sandbox with secret store (inherits secrets)
+  8. Verify secrets are injected as sealed env vars
   9. Delete secret
- 10. Delete project
+ 10. Delete secret store
 
 Usage:
   python examples/test_projects.py
@@ -22,7 +22,7 @@ import asyncio
 import sys
 import time
 
-from opencomputer import Sandbox, Project
+from opencomputer import Sandbox, SecretStore
 
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -35,11 +35,11 @@ failed = 0
 
 
 def green(msg: str) -> None:
-    print(f"{GREEN}✓ {msg}{RESET}")
+    print(f"{GREEN}\u2713 {msg}{RESET}")
 
 
 def red(msg: str) -> None:
-    print(f"{RED}✗ {msg}{RESET}")
+    print(f"{RED}\u2717 {msg}{RESET}")
 
 
 def bold(msg: str) -> None:
@@ -63,105 +63,100 @@ def check(desc: str, condition: bool, detail: str = "") -> None:
 async def main() -> None:
     global passed, failed
 
-    bold("\n╔══════════════════════════════════════════════════╗")
-    bold("║       Projects & Secrets Test                    ║")
-    bold("╚══════════════════════════════════════════════════╝\n")
+    bold("\n\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557")
+    bold("\u2551       Secret Stores & Secrets Test               \u2551")
+    bold("\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\n")
 
-    project_id = None
+    store_id = None
     sandbox = None
-    project_name = f"test-project-{int(time.time())}"
+    store_name = f"test-store-{int(time.time())}"
 
     try:
-        # ── Test 1: Create project ──
-        bold("━━━ Test 1: Create project ━━━\n")
+        # -- Test 1: Create secret store --
+        bold("--- Test 1: Create secret store ---\n")
 
-        project = await Project.create(
-            name=project_name,
-            template="base",
-            cpu_count=1,
-            memory_mb=512,
-            timeout_sec=120,
+        store = await SecretStore.create(
+            name=store_name,
+            egress_allowlist=["api.anthropic.com"],
         )
 
-        project_id = project["id"]
-        check("Project created", bool(project["id"]))
-        check("Name matches", project["name"] == project_name)
-        check("Template set", project["template"] == "base")
-        check("CPU set", project["cpuCount"] == 1)
-        check("Memory set", project["memoryMB"] == 512)
-        check("Timeout set", project["timeoutSec"] == 120)
-        dim(f"Project ID: {project_id}")
+        store_id = store["id"]
+        check("Store created", bool(store["id"]))
+        check("Name matches", store["name"] == store_name)
+        check("Egress allowlist set", len(store.get("egressAllowlist", [])) == 1)
+        dim(f"Store ID: {store_id}")
         print()
 
-        # ── Test 2: List projects ──
-        bold("━━━ Test 2: List projects ━━━\n")
+        # -- Test 2: List secret stores --
+        bold("--- Test 2: List secret stores ---\n")
 
-        projects = await Project.list()
-        check("List returns list", isinstance(projects, list))
-        found = any(p["id"] == project_id for p in projects)
-        check("Created project in list", found)
-        dim(f"Total projects: {len(projects)}")
+        stores = await SecretStore.list()
+        check("List returns list", isinstance(stores, list))
+        found = any(s["id"] == store_id for s in stores)
+        check("Created store in list", found)
+        dim(f"Total stores: {len(stores)}")
         print()
 
-        # ── Test 3: Get project ──
-        bold("━━━ Test 3: Get project by ID ━━━\n")
+        # -- Test 3: Get secret store --
+        bold("--- Test 3: Get secret store by ID ---\n")
 
-        fetched = await Project.get(project_id)
-        check("Get returns correct project", fetched["id"] == project_id)
-        check("Get has correct name", fetched["name"] == project_name)
+        fetched = await SecretStore.get(store_id)
+        check("Get returns correct store", fetched["id"] == store_id)
+        check("Get has correct name", fetched["name"] == store_name)
         print()
 
-        # ── Test 4: Update project ──
-        bold("━━━ Test 4: Update project ━━━\n")
+        # -- Test 4: Update secret store --
+        bold("--- Test 4: Update secret store ---\n")
 
-        updated = await Project.update(
-            project_id,
-            memory_mb=1024,
-            timeout_sec=300,
+        updated_name = f"{store_name}-updated"
+        updated = await SecretStore.update(
+            store_id,
+            name=updated_name,
+            egress_allowlist=["api.anthropic.com", "*.openai.com"],
         )
-        check("Memory updated to 1024", updated["memoryMB"] == 1024)
-        check("Timeout updated to 300", updated["timeoutSec"] == 300)
-        check("Name unchanged", updated["name"] == project_name)
+        check("Name updated", updated["name"] == updated_name)
+        check("Egress allowlist updated", len(updated.get("egressAllowlist", [])) == 2)
         print()
 
-        # ── Test 5: Set secrets ──
-        bold("━━━ Test 5: Set project secrets ━━━\n")
+        # -- Test 5: Set secrets --
+        bold("--- Test 5: Set secrets ---\n")
 
-        await Project.set_secret(project_id, "TEST_API_KEY", "sk-test-12345")
+        await SecretStore.set_secret(store_id, "TEST_API_KEY", "sk-test-12345")
         green("Set TEST_API_KEY")
 
-        await Project.set_secret(project_id, "DATABASE_URL", "postgres://localhost/test")
+        await SecretStore.set_secret(store_id, "DATABASE_URL", "postgres://localhost/test")
         green("Set DATABASE_URL")
 
-        await Project.set_secret(project_id, "TEMP_SECRET", "will-be-deleted")
+        await SecretStore.set_secret(store_id, "TEMP_SECRET", "will-be-deleted")
         green("Set TEMP_SECRET")
         print()
 
-        # ── Test 6: List secrets ──
-        bold("━━━ Test 6: List secret names ━━━\n")
+        # -- Test 6: List secrets --
+        bold("--- Test 6: List secret entries ---\n")
 
-        secret_names = await Project.list_secrets(project_id)
-        check("Returns list", isinstance(secret_names, list))
-        check("Has TEST_API_KEY", "TEST_API_KEY" in secret_names)
-        check("Has DATABASE_URL", "DATABASE_URL" in secret_names)
-        check("Has TEMP_SECRET", "TEMP_SECRET" in secret_names)
-        check("3 secrets total", len(secret_names) == 3, f"got {len(secret_names)}")
-        dim(f"Secret names: {', '.join(secret_names)}")
+        entries = await SecretStore.list_secrets(store_id)
+        check("Returns list", isinstance(entries, list))
+        names = [e["name"] for e in entries]
+        check("Has TEST_API_KEY", "TEST_API_KEY" in names)
+        check("Has DATABASE_URL", "DATABASE_URL" in names)
+        check("Has TEMP_SECRET", "TEMP_SECRET" in names)
+        check("3 secrets total", len(entries) == 3, f"got {len(entries)}")
+        dim(f"Secret names: {', '.join(names)}")
         print()
 
-        # ── Test 7: Create sandbox with project ──
-        bold("━━━ Test 7: Create sandbox with project ━━━\n")
+        # -- Test 7: Create sandbox with secret store --
+        bold("--- Test 7: Create sandbox with secret store ---\n")
 
         sandbox = await Sandbox.create(
-            project=project_name,
+            secret_store=updated_name,
             timeout=120,
         )
         check("Sandbox created", bool(sandbox.sandbox_id))
         dim(f"Sandbox ID: {sandbox.sandbox_id}")
         print()
 
-        # ── Test 8: Verify secrets are sealed in sandbox ──
-        bold("━━━ Test 8: Verify secrets sealed in sandbox ━━━\n")
+        # -- Test 8: Verify secrets are sealed in sandbox --
+        bold("--- Test 8: Verify secrets sealed in sandbox ---\n")
 
         # Secrets should be sealed tokens (osb_sealed_*) inside the VM.
         # The MITM proxy replaces sealed tokens with real values on outbound HTTPS requests,
@@ -182,37 +177,38 @@ async def main() -> None:
               f'got "{temp_val}"')
         print()
 
-        # ── Test 9: Delete secret ──
-        bold("━━━ Test 9: Delete secret ━━━\n")
+        # -- Test 9: Delete secret --
+        bold("--- Test 9: Delete secret ---\n")
 
-        await Project.delete_secret(project_id, "TEMP_SECRET")
+        await SecretStore.delete_secret(store_id, "TEMP_SECRET")
         green("Deleted TEMP_SECRET")
 
-        after_delete = await Project.list_secrets(project_id)
-        check("TEMP_SECRET removed", "TEMP_SECRET" not in after_delete)
+        after_delete = await SecretStore.list_secrets(store_id)
+        after_names = [e["name"] for e in after_delete]
+        check("TEMP_SECRET removed", "TEMP_SECRET" not in after_names)
         check("2 secrets remaining", len(after_delete) == 2, f"got {len(after_delete)}")
         print()
 
-        # ── Test 10: Delete project ──
-        bold("━━━ Test 10: Delete project ━━━\n")
+        # -- Test 10: Delete secret store --
+        bold("--- Test 10: Delete secret store ---\n")
 
         # Kill sandbox first
         await sandbox.kill()
         green("Sandbox killed")
         sandbox = None
 
-        await Project.delete(project_id)
-        green("Project deleted")
+        await SecretStore.delete(store_id)
+        green("Secret store deleted")
 
         # Verify it's gone
         try:
-            await Project.get(project_id)
-            red("Project should not exist after delete")
+            await SecretStore.get(store_id)
+            red("Store should not exist after delete")
             failed += 1
         except Exception:
-            green("Project not found after delete (expected)")
+            green("Store not found after delete (expected)")
             passed += 1
-        project_id = None
+        store_id = None
         print()
 
     except Exception as e:
@@ -227,9 +223,9 @@ async def main() -> None:
                 await sandbox.kill()
             except Exception:
                 pass
-        if project_id:
+        if store_id:
             try:
-                await Project.delete(project_id)
+                await SecretStore.delete(store_id)
             except Exception:
                 pass
 

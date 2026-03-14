@@ -1,136 +1,129 @@
 ---
-title: "Projects & Secrets"
-description: "Manage projects and encrypted secrets from the CLI"
+title: "Secret Stores & Secrets"
+description: "Manage secret stores and encrypted secrets from the CLI"
 ---
 
-Projects group sandboxes with shared config defaults and encrypted secrets. Use `oc project` to manage projects and `oc secret` to manage their secrets.
+Secret stores hold encrypted secrets that are injected into sandboxes as sealed tokens. Use `oc secret-store` to manage stores and `oc secret` to manage their secrets.
 
-## Projects
+## Secret Stores
 
-### Create a Project
+### Create a Secret Store
 
 ```bash
-oc project create --name my-agent --cpu 2 --memory 1024 --timeout 600
+oc secret-store create --name my-agent-secrets --egress-allowlist api.anthropic.com
 ```
 
-#### `oc project create`
+#### `oc secret-store create`
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--name` | string | *required* | Project name (unique per org) |
-| `--template` | string | — | Default template for sandboxes |
-| `--cpu` | int | — | Default vCPU count |
-| `--memory` | int | — | Default memory in MB |
-| `--timeout` | int | — | Default timeout in seconds |
+| `--name` | string | *required* | Store name (unique per org) |
+| `--egress-allowlist` | string[] | — | Allowed egress hosts (comma-separated) |
 
-### List Projects
+### List Secret Stores
 
 ```bash
-oc project list
+oc secret-store list
 ```
 
 Output:
 
 ```
-ID                                    NAME       TEMPLATE  CPU  MEMORY  TIMEOUT
-9961c10e-c83c-4e6b-ad61-b91144323a3d  my-agent   default   2    1024    600
+ID                                    NAME               EGRESS ALLOWLIST
+9961c10e-c83c-4e6b-ad61-b91144323a3d  my-agent-secrets   api.anthropic.com
 ```
 
-### Get Project Details
+### Get Secret Store Details
 
 ```bash
-oc project get <project-id>
+oc secret-store get <store-id>
 ```
 
-### Update a Project
+### Update a Secret Store
 
 Partial updates — only the flags you pass are changed.
 
 ```bash
-oc project update <project-id> --memory 2048
-# Name, template, CPU, timeout are preserved
+oc secret-store update <store-id> --name new-name --egress-allowlist api.anthropic.com,*.openai.com
 ```
 
-#### `oc project update`
+#### `oc secret-store update`
 
 | Flag | Type | Description |
 | --- | --- | --- |
-| `--name` | string | New project name |
-| `--template` | string | New default template |
-| `--cpu` | int | New default vCPU count |
-| `--memory` | int | New default memory in MB |
-| `--timeout` | int | New default timeout in seconds |
+| `--name` | string | New store name |
+| `--egress-allowlist` | string[] | New allowed egress hosts |
 
-### Delete a Project
+### Delete a Secret Store
 
 ```bash
-oc project delete <project-id>
+oc secret-store delete <store-id>
 ```
 
-Deletes the project and all its secrets. Running sandboxes are not affected.
+Deletes the store and all its secrets. Running sandboxes are not affected.
 
 ## Secrets
 
-Secrets are encrypted at rest and injected as sealed tokens when a sandbox is created with the project. The real values are never visible inside the sandbox — they are only substituted by the MITM proxy on outbound HTTPS requests.
+Secrets are encrypted at rest and injected as sealed tokens when a sandbox is created with a secret store. The real values are never visible inside the sandbox — they are only substituted by the MITM proxy on outbound HTTPS requests.
 
 ### Set a Secret
 
 ```bash
-oc secret set <project-id> ANTHROPIC_API_KEY sk-ant-...
+oc secret set <store-id> ANTHROPIC_API_KEY sk-ant-...
 ```
 
 Or pipe from stdin (useful for multiline values or scripts):
 
 ```bash
-cat ~/.anthropic_key | oc secret set <project-id> ANTHROPIC_API_KEY --from-stdin
+cat ~/.anthropic_key | oc secret set <store-id> ANTHROPIC_API_KEY --from-stdin
 ```
 
 ```bash
-echo "sk-ant-..." | oc secret set <project-id> ANTHROPIC_API_KEY --from-stdin
+echo "sk-ant-..." | oc secret set <store-id> ANTHROPIC_API_KEY --from-stdin
 ```
 
 #### `oc secret set`
 
 | Argument | Description |
 | --- | --- |
-| `<project-id>` | UUID of the project |
+| `<store-id>` | UUID of the secret store |
 | `<name>` | Secret name (becomes the env var name in sandboxes) |
 | `<value>` | Secret value (omit if using `--from-stdin`) |
 
 | Flag | Description |
 | --- | --- |
 | `--from-stdin` | Read the secret value from stdin |
+| `--allowed-hosts` | Restrict this secret to specific hosts only |
 
 ### List Secrets
 
 ```bash
-oc secret list <project-id>
+oc secret list <store-id>
 ```
 
 Output:
 
 ```
-ANTHROPIC_API_KEY
+NAME                ALLOWED HOSTS
+ANTHROPIC_API_KEY   api.anthropic.com
 DATABASE_URL
 ```
 
-Returns names only. Values are never exposed.
+Returns names and host restrictions only. Values are never exposed.
 
 ### Delete a Secret
 
 ```bash
-oc secret delete <project-id> ANTHROPIC_API_KEY
+oc secret delete <store-id> ANTHROPIC_API_KEY
 ```
 
-## Creating Sandboxes with Projects
+## Creating Sandboxes with Secret Stores
 
-Use the `--project` flag on `oc create` to inherit a project's config and secrets:
+Use the `--secret-store` flag on `oc create` to inject a store's secrets:
 
 ```bash
-oc create --project my-agent --timeout 600
+oc create --secret-store my-agent-secrets --timeout 600
 ```
-
-The sandbox inherits the project's template, CPU, memory, and timeout as defaults. Any flags you pass explicitly override the project defaults.
 
 Secrets are injected as sealed tokens:
 
@@ -144,18 +137,18 @@ The proxy replaces sealed tokens with real values on outbound HTTPS requests, so
 ## Example Workflow
 
 ```bash
-# Create a project
-oc project create --name my-agent --cpu 2 --memory 1024 --timeout 600
+# Create a secret store
+oc secret-store create --name my-agent-secrets --egress-allowlist api.anthropic.com
 
 # Add secrets
-oc secret set <project-id> ANTHROPIC_API_KEY sk-ant-...
-oc secret set <project-id> DATABASE_URL postgres://user:pass@host/db
+oc secret set <store-id> ANTHROPIC_API_KEY sk-ant-...
+oc secret set <store-id> DATABASE_URL postgres://user:pass@host/db
 
 # Verify secrets are stored
-oc secret list <project-id>
+oc secret list <store-id>
 
-# Create a sandbox — inherits config + secrets
-oc create --project my-agent
+# Create a sandbox — inherits secrets
+oc create --secret-store my-agent-secrets
 
 # Secrets are sealed inside the sandbox
 oc exec <sandbox-id> -- env | grep -E 'API_KEY|DATABASE'
@@ -171,5 +164,5 @@ oc exec <sandbox-id> -- curl -s https://api.anthropic.com/v1/messages \
 
 # Clean up
 oc sandbox delete <sandbox-id>
-oc project delete <project-id>
+oc secret-store delete <store-id>
 ```
