@@ -58,26 +58,23 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 
 	memFile := filepath.Join(snapshotDir, "mem")
 
-	// Step 1: Sync filesystems, unmount workspace, then kill the agent.
-	// Killing the agent (SIGTERM → PID 1) cleanly closes the vsock listener
-	// from inside the guest. This ensures the host kernel's vhost-vsock module
-	// properly unregisters the CID when QEMU exits, so the next QEMU process
-	// can use vhost-vsock without stale state.
+	// Step 1: Sync filesystems and unmount workspace.
+	// With virtio-serial, we don't need to kill the agent — the device
+	// survives migration. Just sync and unmount so the workspace qcow2 is clean.
 	if vm.agent != nil {
 		shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		_, _ = vm.agent.Exec(shutdownCtx, &pb.ExecRequest{
 			Command: "/bin/sh",
-			Args:    []string{"-c", "umount /workspace 2>/dev/null; sync; kill -TERM 1"},
+			Args:    []string{"-c", "umount /workspace 2>/dev/null; sync"},
 		})
 		cancel()
 	}
-	log.Printf("qemu: hibernate %s: guest shutdown done (%dms)", vm.ID, time.Since(t0).Milliseconds())
+	log.Printf("qemu: hibernate %s: guest sync + unmount done (%dms)", vm.ID, time.Since(t0).Milliseconds())
 
-	// Step 2: Close host-side gRPC connection and wait for vsock to drain.
+	// Step 2: Close host-side gRPC connection.
 	if vm.agent != nil {
 		vm.agent.Close()
 		vm.agent = nil
-		time.Sleep(500 * time.Millisecond)
 	}
 
 	// Step 3: Stop (pause) the VM via QMP
@@ -350,6 +347,8 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 
 	qmpSockPath := filepath.Join(sandboxDir, "qmp.sock")
 	os.Remove(qmpSockPath)
+	agentSockPath := filepath.Join(sandboxDir, "agent.sock")
+	os.Remove(agentSockPath)
 
 	logPath := filepath.Join(sandboxDir, "qemu.log")
 	logFile, err := os.Create(logPath)
@@ -360,7 +359,7 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 
 	// Start QEMU with golden migration state + user's workspace
 	args := m.buildQEMUArgs(meta.CpuCount, meta.MemoryMB, rootfsPath, workspacePath,
-		netCfg.TAPName, guestMAC, guestCID, qmpSockPath, bootArgs)
+		netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
 	goldenMemZst := filepath.Join(m.goldenDir, "mem.zst")
 	goldenMemRaw := filepath.Join(m.goldenDir, "mem")
 	var incomingURI string
@@ -404,15 +403,8 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		return nil, fmt.Errorf("QMP cont for wake: %w", err)
 	}
 
-	// Connect agent via vsock. Try allocated CID, fall back to golden CID.
-	agentClient, err := m.waitForAgent(context.Background(), guestCID, 3*time.Second)
-	if err != nil {
-		log.Printf("qemu: wake %s: CID=%d failed, trying golden CID=%d", sandboxID, guestCID, m.goldenCID)
-		agentClient, err = m.waitForAgent(context.Background(), m.goldenCID, 5*time.Second)
-		if err == nil {
-			guestCID = m.goldenCID
-		}
-	}
+	// Connect agent via Unix socket
+	agentClient, err := m.waitForAgentSocket(context.Background(), agentSockPath, 10*time.Second)
 	if err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
@@ -447,24 +439,25 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 	}
 
 	vm := &VMInstance{
-		ID:          sandboxID,
-		Template:    meta.Template,
-		Status:      types.SandboxStatusRunning,
-		StartedAt:   now,
-		EndAt:       now.Add(ttl),
-		CpuCount:    meta.CpuCount,
-		MemoryMB:    meta.MemoryMB,
-		HostPort:    hostPort,
-		GuestPort:   netCfg.GuestPort,
-		pid:         cmd.Process.Pid,
-		cmd:         cmd,
-		network:     netCfg,
-		sandboxDir:  sandboxDir,
-		qmpSockPath: qmpSockPath,
-		qmp:         qmpClient,
-		guestMAC:    guestMAC,
-		guestCID:    guestCID,
-		bootArgs:    bootArgs,
+		ID:            sandboxID,
+		Template:      meta.Template,
+		Status:        types.SandboxStatusRunning,
+		StartedAt:     now,
+		EndAt:         now.Add(ttl),
+		CpuCount:      meta.CpuCount,
+		MemoryMB:      meta.MemoryMB,
+		HostPort:      hostPort,
+		GuestPort:     netCfg.GuestPort,
+		pid:           cmd.Process.Pid,
+		cmd:           cmd,
+		network:       netCfg,
+		sandboxDir:    sandboxDir,
+		qmpSockPath:   qmpSockPath,
+		agentSockPath: agentSockPath,
+		qmp:           qmpClient,
+		guestMAC:      guestMAC,
+		guestCID:      guestCID,
+		bootArgs:      bootArgs,
 	}
 	vm.agent = agentClient
 
@@ -558,6 +551,8 @@ func (m *Manager) coldBootLocal(ctx context.Context, sandboxID string, timeout i
 
 	qmpSockPath := filepath.Join(sandboxDir, "qmp.sock")
 	os.Remove(qmpSockPath)
+	agentSockPath := filepath.Join(sandboxDir, "agent.sock")
+	os.Remove(agentSockPath)
 
 	logPath := filepath.Join(sandboxDir, "qemu.log")
 	logFile, err := os.Create(logPath)
@@ -567,7 +562,7 @@ func (m *Manager) coldBootLocal(ctx context.Context, sandboxID string, timeout i
 	}
 
 	args := m.buildQEMUArgs(cpus, memMB, rootfsPath, workspacePath,
-		netCfg.TAPName, guestMAC, guestCID, qmpSockPath, bootArgs)
+		netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
 
 	cmd := exec.Command(m.cfg.QEMUBin, args...)
 	cmd.Stdout = logFile
@@ -594,27 +589,28 @@ func (m *Manager) coldBootLocal(ctx context.Context, sandboxID string, timeout i
 	}
 
 	vm := &VMInstance{
-		ID:          sandboxID,
-		Template:    meta.Template,
-		Status:      types.SandboxStatusRunning,
-		StartedAt:   now,
-		EndAt:       now.Add(ttl),
-		CpuCount:    cpus,
-		MemoryMB:    memMB,
-		HostPort:    hostPort,
-		GuestPort:   guestPort,
-		pid:         cmd.Process.Pid,
-		cmd:         cmd,
-		network:     netCfg,
-		sandboxDir:  sandboxDir,
-		qmpSockPath: qmpSockPath,
-		qmp:         qmpClient,
-		guestMAC:    guestMAC,
-		guestCID:    guestCID,
-		bootArgs:    bootArgs,
+		ID:            sandboxID,
+		Template:      meta.Template,
+		Status:        types.SandboxStatusRunning,
+		StartedAt:     now,
+		EndAt:         now.Add(ttl),
+		CpuCount:      cpus,
+		MemoryMB:      memMB,
+		HostPort:      hostPort,
+		GuestPort:     guestPort,
+		pid:           cmd.Process.Pid,
+		cmd:           cmd,
+		network:       netCfg,
+		sandboxDir:    sandboxDir,
+		qmpSockPath:   qmpSockPath,
+		agentSockPath: agentSockPath,
+		qmp:           qmpClient,
+		guestMAC:      guestMAC,
+		guestCID:      guestCID,
+		bootArgs:      bootArgs,
 	}
 
-	agentClient, err := m.waitForAgent(context.Background(), guestCID, 30*time.Second)
+	agentClient, err := m.waitForAgentSocket(context.Background(), agentSockPath, 30*time.Second)
 	if err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()

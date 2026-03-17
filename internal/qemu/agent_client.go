@@ -321,15 +321,14 @@ func (c *AgentClient) ConnectPTYData(guestCID uint32, dataPort uint32) (net.Conn
 	return conn, nil
 }
 
-// NewAgentClientTCP connects to the agent via TCP using the guest IP.
-// Used by QEMU backend — TCP over virtio-net survives QEMU migration.
-func NewAgentClientTCP(guestIP string) (*AgentClient, error) {
+// NewAgentClientSocket connects to the agent via a Unix socket (virtio-serial chardev).
+// Used by QEMU backend — virtio-serial survives QEMU live migration.
+func NewAgentClientSocket(socketPath string) (*AgentClient, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	addr := fmt.Sprintf("%s:%d", guestIP, 1024)
 	conn, err := grpc.DialContext(ctx,
-		addr,
+		"unix://"+socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithBlock(),
 		grpc.WithConnectParams(grpc.ConnectParams{
@@ -346,21 +345,11 @@ func NewAgentClientTCP(guestIP string) (*AgentClient, error) {
 		),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("connect to agent at %s: %w", addr, err)
+		return nil, fmt.Errorf("connect to agent at %s: %w", socketPath, err)
 	}
 
 	return &AgentClient{
 		conn:   conn,
 		client: pb.NewSandboxAgentClient(conn),
 	}, nil
-}
-
-// ConnectPTYDataTCP connects to a PTY data port via TCP.
-func ConnectPTYDataTCP(guestIP string, dataPort uint32) (net.Conn, error) {
-	addr := fmt.Sprintf("%s:%d", guestIP, dataPort)
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		return nil, fmt.Errorf("connect to PTY data %s: %w", addr, err)
-	}
-	return conn, nil
 }

@@ -12,8 +12,150 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// vsockListener implements net.Listener for AF_VSOCK sockets.
-// Go's net.FileListener doesn't support AF_VSOCK, so we must wrap the raw fd.
+// listenVsock creates the main agent listener.
+// Tries virtio-serial first (QEMU), then vsock (Firecracker), then Unix socket (testing).
+func listenVsock() (net.Listener, error) {
+	// Try virtio-serial first — survives QEMU live migration.
+	// The device path depends on the virtio device index (vportNpM where N is
+	// the virtio-serial controller index). Check common paths.
+	for _, path := range []string{"/dev/virtio-ports/agent", "/dev/vport0p1", "/dev/vport1p1", "/dev/vport2p1"} {
+		if _, err := os.Stat(path); err == nil {
+			lis, err := listenVirtioSerial(path)
+			if err == nil {
+				log.Printf("agent: listening on virtio-serial %s", path)
+				return lis, nil
+			}
+			log.Printf("agent: virtio-serial open %s failed: %v", path, err)
+		}
+	}
+
+	// Fall back to vsock (Firecracker path)
+	lis, err := listenVsockPort(agent.DefaultGRPCPort)
+	if err == nil {
+		hasVsock = true
+		return lis, nil
+	}
+
+	// Fall back to Unix domain socket (testing)
+	return listenUnix(err)
+}
+
+// hasVsock tracks whether we're inside a VM with AF_VSOCK support.
+var hasVsock bool
+
+// listenPortForPTY returns a listener for PTY data ports.
+// For virtio-serial, PTY data uses vsock if available, otherwise Unix sockets.
+func listenPortForPTY(port uint32) (net.Listener, error) {
+	if hasVsock {
+		return listenVsockPort(port)
+	}
+	// Fallback: Unix socket
+	sockPath := fmt.Sprintf("/tmp/pty-%d.sock", port)
+	os.Remove(sockPath)
+	lis, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return nil, fmt.Errorf("pty unix listen port %d: %w", port, err)
+	}
+	log.Printf("agent: PTY data listening on %s", sockPath)
+	return lis, nil
+}
+
+// --- virtio-serial listener ---
+
+// virtioSerialListener wraps a virtio-serial device as a net.Listener.
+// The device is a bidirectional byte stream — one "connection" at a time.
+// When gRPC's Serve() loop calls Accept() after a connection drops (e.g.,
+// after golden snapshot restore), we return a new conn wrapping the same fd.
+type virtioSerialListener struct {
+	f      *os.File
+	once   sync.Once
+	closed chan struct{}
+	mu     sync.Mutex
+	active bool // true when a connection is being served
+}
+
+func listenVirtioSerial(path string) (net.Listener, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open virtio-serial %s: %w", path, err)
+	}
+
+	return &virtioSerialListener{
+		f:      f,
+		closed: make(chan struct{}),
+	}, nil
+}
+
+func (l *virtioSerialListener) Accept() (net.Conn, error) {
+	// Wait until no connection is active, then provide a new one.
+	// This handles: initial boot, reconnect after golden restore, etc.
+	for {
+		select {
+		case <-l.closed:
+			return nil, net.ErrClosed
+		default:
+		}
+
+		l.mu.Lock()
+		if !l.active {
+			l.active = true
+			l.mu.Unlock()
+			return &virtioSerialConn{
+				f: l.f,
+				onClose: func() {
+					l.mu.Lock()
+					l.active = false
+					l.mu.Unlock()
+				},
+			}, nil
+		}
+		l.mu.Unlock()
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (l *virtioSerialListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return l.f.Close()
+}
+
+func (l *virtioSerialListener) Addr() net.Addr {
+	return virtioSerialAddr(l.f.Name())
+}
+
+type virtioSerialAddr string
+
+func (a virtioSerialAddr) Network() string { return "virtio-serial" }
+func (a virtioSerialAddr) String() string  { return string(a) }
+
+// virtioSerialConn wraps an os.File as a net.Conn for gRPC.
+// onClose is called when gRPC drops the connection, signaling the listener
+// to accept a new one (e.g., after golden snapshot restore).
+type virtioSerialConn struct {
+	f       *os.File
+	onClose func()
+	once    sync.Once
+}
+
+func (c *virtioSerialConn) Read(b []byte) (int, error)  { return c.f.Read(b) }
+func (c *virtioSerialConn) Write(b []byte) (int, error) { return c.f.Write(b) }
+func (c *virtioSerialConn) Close() error {
+	c.once.Do(func() {
+		if c.onClose != nil {
+			c.onClose()
+		}
+	})
+	// Don't close the file — the listener still owns it for future connections
+	return nil
+}
+func (c *virtioSerialConn) LocalAddr() net.Addr                { return virtioSerialAddr("local") }
+func (c *virtioSerialConn) RemoteAddr() net.Addr               { return virtioSerialAddr("remote") }
+func (c *virtioSerialConn) SetDeadline(t time.Time) error      { return c.f.SetDeadline(t) }
+func (c *virtioSerialConn) SetReadDeadline(t time.Time) error  { return c.f.SetReadDeadline(t) }
+func (c *virtioSerialConn) SetWriteDeadline(t time.Time) error { return c.f.SetWriteDeadline(t) }
+
+// --- vsock support (Firecracker backward compat) ---
+
 type vsockListener struct {
 	fd     int
 	port   uint32
@@ -40,8 +182,6 @@ func (l *vsockListener) Accept() (net.Conn, error) {
 			}
 			return nil, fmt.Errorf("vsock accept: %w", err)
 		}
-		// Wrap the accepted fd directly as a raw vsock connection.
-		// net.FileConn doesn't support AF_VSOCK, so we use our own wrapper.
 		return newRawVsockConn(nfd), nil
 	}
 }
@@ -59,39 +199,6 @@ func (l *vsockListener) Addr() net.Addr {
 	return vsockAddr{cid: unix.VMADDR_CID_ANY, port: l.port}
 }
 
-// listenPortForPTY returns a ListenPortFunc suitable for PTY data ports.
-// Inside Firecracker it uses native AF_VSOCK; outside, it falls back to Unix sockets.
-func listenPortForPTY(port uint32) (net.Listener, error) {
-	if hasVsock {
-		return listenVsockPort(port)
-	}
-	// Fallback: Unix socket (for testing outside Firecracker)
-	sockPath := fmt.Sprintf("/tmp/pty-%d.sock", port)
-	os.Remove(sockPath)
-	lis, err := net.Listen("unix", sockPath)
-	if err != nil {
-		return nil, fmt.Errorf("pty unix listen port %d: %w", port, err)
-	}
-	log.Printf("agent: PTY data listening on %s (vsock not available)", sockPath)
-	return lis, nil
-}
-
-// hasVsock tracks whether we're inside a Firecracker VM with AF_VSOCK support.
-var hasVsock bool
-
-// listenVsock creates a vsock listener on port 1024.
-func listenVsock() (net.Listener, error) {
-	lis, err := listenVsockPort(agent.DefaultGRPCPort)
-	if err == nil {
-		hasVsock = true
-		return lis, nil
-	}
-
-	// Fallback to Unix domain socket (testing outside Firecracker)
-	return listenUnix(err)
-}
-
-// listenVsockPort creates a vsock listener on the given port.
 func listenVsockPort(port uint32) (net.Listener, error) {
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -133,12 +240,11 @@ func newRawVsockConn(fd int) *rawVsockConn {
 	return &rawVsockConn{file: os.NewFile(uintptr(fd), "vsock-raw")}
 }
 
-func (c *rawVsockConn) Read(b []byte) (int, error)  { return c.file.Read(b) }
-func (c *rawVsockConn) Write(b []byte) (int, error) { return c.file.Write(b) }
-func (c *rawVsockConn) Close() error                { return c.file.Close() }
-
-func (c *rawVsockConn) LocalAddr() net.Addr                     { return vsockAddr{} }
-func (c *rawVsockConn) RemoteAddr() net.Addr                    { return vsockAddr{} }
-func (c *rawVsockConn) SetDeadline(_ time.Time) error           { return nil }
-func (c *rawVsockConn) SetReadDeadline(_ time.Time) error       { return nil }
-func (c *rawVsockConn) SetWriteDeadline(_ time.Time) error      { return nil }
+func (c *rawVsockConn) Read(b []byte) (int, error)         { return c.file.Read(b) }
+func (c *rawVsockConn) Write(b []byte) (int, error)        { return c.file.Write(b) }
+func (c *rawVsockConn) Close() error                       { return c.file.Close() }
+func (c *rawVsockConn) LocalAddr() net.Addr                { return vsockAddr{} }
+func (c *rawVsockConn) RemoteAddr() net.Addr               { return vsockAddr{} }
+func (c *rawVsockConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *rawVsockConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *rawVsockConn) SetWriteDeadline(_ time.Time) error { return nil }
