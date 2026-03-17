@@ -159,8 +159,9 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 	// Step 9: Archive + upload to S3 in the background.
 	sandboxDir := vm.sandboxDir
 	sandboxID := vm.ID
-	// Determine workspace filename (qcow2 or ext4) for archiving
+	// Determine drive filenames for archiving (rootfs + workspace)
 	workspaceFile := filepath.Base(detectDrivePath(sandboxDir, "workspace"))
+	rootfsFile := filepath.Base(detectDrivePath(sandboxDir, "rootfs"))
 	m.uploadWg.Add(1)
 	go func() {
 		defer m.uploadWg.Done()
@@ -170,6 +171,7 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		if err := createArchive(archivePath, sandboxDir, []string{
 			"snapshot/mem",
 			"snapshot/snapshot-meta.json",
+			rootfsFile,
 			workspaceFile,
 		}); err != nil {
 			log.Printf("qemu: async archive failed for %s: %v", sandboxID, err)
@@ -325,13 +327,20 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		return nil, fmt.Errorf("add DNAT: %w", err)
 	}
 
-	// Fresh rootfs from golden (COW copy, instant)
-	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	os.Remove(rootfsPath)
-	goldenRootfs := filepath.Join(m.goldenDir, "rootfs.qcow2")
-	if err := copyFileReflink(goldenRootfs, rootfsPath); err != nil {
-		m.cleanupVM(netCfg, "")
-		return nil, fmt.Errorf("copy golden rootfs for wake: %w", err)
+	// Use the user's rootfs if it exists (preserves apt/pip installs).
+	// Fall back to fresh golden rootfs copy if missing (e.g., S3 restore
+	// of an old checkpoint that didn't include rootfs).
+	rootfsPath := detectDrivePath(sandboxDir, "rootfs")
+	if !fileExists(rootfsPath) {
+		rootfsPath = filepath.Join(sandboxDir, "rootfs.qcow2")
+		goldenRootfs := filepath.Join(m.goldenDir, "rootfs.qcow2")
+		if err := copyFileReflink(goldenRootfs, rootfsPath); err != nil {
+			m.cleanupVM(netCfg, "")
+			return nil, fmt.Errorf("copy golden rootfs for wake: %w", err)
+		}
+		log.Printf("qemu: wake %s: rootfs recreated from golden (no local rootfs)", sandboxID)
+	} else {
+		log.Printf("qemu: wake %s: using existing rootfs (user modifications preserved)", sandboxID)
 	}
 
 	guestCID := m.allocateCID()
@@ -412,13 +421,19 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		return nil, fmt.Errorf("agent not ready after wake: %w", err)
 	}
 
-	// Mount user's workspace (golden snapshot had /workspace unmounted)
-	mountCtx, mountCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	_, _ = agentClient.Exec(mountCtx, &pb.ExecRequest{
+	// Drop page caches — the golden snapshot cached rootfs blocks from the base
+	// image, but the user's rootfs.qcow2 may have modified blocks (apt/pip installs).
+	// Also mount the user's workspace.
+	// Drop page caches so the kernel re-reads from the user's rootfs.qcow2.
+	// Run drop_caches twice: the first call re-populates some cache entries
+	// (the agent forks /bin/sh which reads from rootfs), the second drop clears those.
+	// Also mount the user's workspace drive.
+	postRestoreCtx, postRestoreCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	_, _ = agentClient.Exec(postRestoreCtx, &pb.ExecRequest{
 		Command: "/bin/sh",
-		Args:    []string{"-c", "mount /dev/vdb /workspace 2>/dev/null || true"},
+		Args:    []string{"-c", "echo 3 > /proc/sys/vm/drop_caches; mount /dev/vdb /workspace 2>/dev/null; echo 3 > /proc/sys/vm/drop_caches"},
 	})
-	mountCancel()
+	postRestoreCancel()
 
 	// Patch network (golden had different IP)
 	if err := patchGuestNetwork(context.Background(), agentClient, netCfg); err != nil {
