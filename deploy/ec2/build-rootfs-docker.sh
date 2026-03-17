@@ -134,6 +134,9 @@ echo "nameserver 8.8.4.4" >> /etc/resolv.conf
 
 hostname sandbox
 
+# Debug: check for virtio-serial device
+ls -la /dev/vport* /dev/virtio-ports/ 2>/dev/null || echo "init: no virtio-serial devices found"
+
 exec /usr/local/bin/osb-agent
 INIT_EOF
 chmod +x "$TMPDIR/init"

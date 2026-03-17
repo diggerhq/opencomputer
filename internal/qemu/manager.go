@@ -46,10 +46,11 @@ type VMInstance struct {
 	network     *NetworkConfig
 	sandboxDir  string
 	agent       *AgentClient
-	qmpSockPath string
-	qmp         *QMPClient
-	guestMAC    string
-	guestCID    uint32
+	qmpSockPath   string
+	agentSockPath string
+	qmp           *QMPClient
+	guestMAC      string
+	guestCID      uint32
 	bootArgs    string
 	restoring   chan struct{}
 }
@@ -214,7 +215,9 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	)
 
 	qmpSockPath := filepath.Join(goldenDir, "qmp.sock")
+	agentSockPath := filepath.Join(goldenDir, "agent.sock")
 	os.Remove(qmpSockPath)
+	os.Remove(agentSockPath)
 
 	logPath := filepath.Join(goldenDir, "qemu.log")
 	logFile, err := os.Create(logPath)
@@ -223,7 +226,7 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	}
 
 	args := m.buildQEMUArgs(m.cfg.DefaultCPUs, m.cfg.DefaultMemoryMB,
-		rootfsFile, workspaceFile, netCfg.TAPName, goldenMAC, goldenCID, qmpSockPath, bootArgs)
+		rootfsFile, workspaceFile, netCfg.TAPName, goldenMAC, agentSockPath, qmpSockPath, bootArgs)
 
 	cmd := exec.Command(m.cfg.QEMUBin, args...)
 	cmd.Stdout = logFile
@@ -242,8 +245,8 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		return fmt.Errorf("golden QMP connect: %w", err)
 	}
 
-	// Wait for agent to be ready
-	agentClient, err := m.waitForAgent(context.Background(), goldenCID, 30*time.Second)
+	// Wait for agent via virtio-serial Unix socket
+	agentClient, err := m.waitForAgentSocket(context.Background(), agentSockPath, 30*time.Second)
 	if err != nil {
 		qmpClient.Close()
 		cmd.Process.Kill()
@@ -433,6 +436,8 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 
 	qmpSockPath := filepath.Join(sandboxDir, "qmp.sock")
 	os.Remove(qmpSockPath)
+	agentSockPath := filepath.Join(sandboxDir, "agent.sock")
+	os.Remove(agentSockPath)
 
 	logPath := filepath.Join(sandboxDir, "qemu.log")
 	logFile, err := os.Create(logPath)
@@ -452,7 +457,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		incomingURI = fmt.Sprintf("exec:cat %s", goldenMemRaw)
 	}
 	args := m.buildQEMUArgs(cpus, memMB, rootfsPath, workspacePath,
-		netCfg.TAPName, guestMAC, guestCID, qmpSockPath, bootArgs)
+		netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
 	args = append(args, "-incoming", incomingURI)
 
 	cmd := exec.Command(m.cfg.QEMUBin, args...)
@@ -504,38 +509,30 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	}
 
 	vm := &VMInstance{
-		ID:          id,
-		Template:    template,
-		Status:      types.SandboxStatusRunning,
-		StartedAt:   now,
-		EndAt:       now.Add(timeout),
-		CpuCount:    cpus,
-		MemoryMB:    memMB,
-		HostPort:    hostPort,
-		GuestPort:   guestPort,
-		pid:         cmd.Process.Pid,
-		cmd:         cmd,
-		network:     netCfg,
-		sandboxDir:  sandboxDir,
-		qmpSockPath: qmpSockPath,
-		qmp:         qmpClient,
-		guestMAC:    guestMAC,
-		guestCID:    guestCID,
-		bootArgs:    bootArgs,
+		ID:            id,
+		Template:      template,
+		Status:        types.SandboxStatusRunning,
+		StartedAt:     now,
+		EndAt:         now.Add(timeout),
+		CpuCount:      cpus,
+		MemoryMB:      memMB,
+		HostPort:      hostPort,
+		GuestPort:     guestPort,
+		pid:           cmd.Process.Pid,
+		cmd:           cmd,
+		network:       netCfg,
+		sandboxDir:    sandboxDir,
+		qmpSockPath:   qmpSockPath,
+		agentSockPath: agentSockPath,
+		qmp:           qmpClient,
+		guestMAC:      guestMAC,
+		guestCID:      guestCID,
+		bootArgs:      bootArgs,
 	}
 
-	// Connect to agent via vsock. Try new CID first, fall back to golden CID
-	// (migration may preserve the golden CID in the virtio device).
+	// Connect to agent via Unix socket
 	var agentClient *AgentClient
-	agentClient, err = m.waitForAgent(context.Background(), guestCID, 3*time.Second)
-	if err != nil {
-		log.Printf("qemu: golden-create %s: CID=%d failed, trying golden CID=%d", id, guestCID, m.goldenCID)
-		agentClient, err = m.waitForAgent(context.Background(), m.goldenCID, 5*time.Second)
-		if err == nil {
-			guestCID = m.goldenCID
-			vm.guestCID = guestCID
-		}
-	}
+	agentClient, err = m.waitForAgentSocket(context.Background(), agentSockPath, 10*time.Second)
 	if err != nil {
 		log.Printf("qemu: golden-create %s: agent not ready, falling back to cold boot: %v", id, err)
 		qmpClient.Close()
@@ -697,7 +694,8 @@ func (m *Manager) allocateCID() uint32 {
 }
 
 // buildQEMUArgs constructs the QEMU command-line arguments.
-func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapName, mac string, cid uint32, qmpSock, bootArgs string) []string {
+// agentSock is the Unix socket path for the virtio-serial agent channel.
+func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapName, mac, agentSock, qmpSock, bootArgs string) []string {
 	// Detect drive format from file extension
 	rootfsFmt := "qcow2"
 	if strings.HasSuffix(rootfsPath, ".ext4") {
@@ -718,7 +716,11 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 		"-drive", fmt.Sprintf("file=%s,format=%s,if=virtio,cache=writethrough", workspacePath, wsFmt),
 		"-netdev", fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
 		"-device", fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", mac),
-		"-device", fmt.Sprintf("vhost-vsock-pci,guest-cid=%d,id=vsock0", cid),
+		// Agent communication via virtio-serial (survives QEMU migration,
+		// unlike vhost-vsock which uses a per-process kernel fd).
+		"-device", "virtio-serial-pci-non-transitional",
+		"-chardev", fmt.Sprintf("socket,id=agent,path=%s,server=on,wait=off", agentSock),
+		"-device", "virtserialport,chardev=agent,name=agent",
 		"-qmp", fmt.Sprintf("unix:%s,server,nowait", qmpSock),
 		"-nographic",
 		"-nodefaults",
@@ -843,6 +845,8 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 
 	qmpSockPath := filepath.Join(sandboxDir, "qmp.sock")
 	os.Remove(qmpSockPath)
+	agentSockPath := filepath.Join(sandboxDir, "agent.sock")
+	os.Remove(agentSockPath)
 
 	logPath := filepath.Join(sandboxDir, "qemu.log")
 	logFile, err := os.Create(logPath)
@@ -852,7 +856,7 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 	}
 
 	args := m.buildQEMUArgs(cpus, memMB, rootfsPath, workspacePath,
-		netCfg.TAPName, guestMAC, guestCID, qmpSockPath, bootArgs)
+		netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
 
 	cmd := exec.Command(m.cfg.QEMUBin, args...)
 	cmd.Stdout = logFile
@@ -881,28 +885,29 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 	}
 
 	vm := &VMInstance{
-		ID:          id,
-		Template:    template,
-		Status:      types.SandboxStatusRunning,
-		StartedAt:   now,
-		EndAt:       now.Add(timeout),
-		CpuCount:    cpus,
-		MemoryMB:    memMB,
-		HostPort:    hostPort,
-		GuestPort:   guestPort,
-		pid:         cmd.Process.Pid,
-		cmd:         cmd,
-		network:     netCfg,
-		sandboxDir:  sandboxDir,
-		qmpSockPath: qmpSockPath,
-		qmp:         qmpClient,
-		guestMAC:    guestMAC,
-		guestCID:    guestCID,
-		bootArgs:    bootArgs,
+		ID:            id,
+		Template:      template,
+		Status:        types.SandboxStatusRunning,
+		StartedAt:     now,
+		EndAt:         now.Add(timeout),
+		CpuCount:      cpus,
+		MemoryMB:      memMB,
+		HostPort:      hostPort,
+		GuestPort:     guestPort,
+		pid:           cmd.Process.Pid,
+		cmd:           cmd,
+		network:       netCfg,
+		sandboxDir:    sandboxDir,
+		qmpSockPath:   qmpSockPath,
+		agentSockPath: agentSockPath,
+		qmp:           qmpClient,
+		guestMAC:      guestMAC,
+		guestCID:      guestCID,
+		bootArgs:      bootArgs,
 	}
 
-	// Wait for agent via vsock
-	agentClient, err := m.waitForAgent(context.Background(), guestCID, 30*time.Second)
+	// Wait for agent via Unix socket
+	agentClient, err := m.waitForAgentSocket(context.Background(), agentSockPath, 30*time.Second)
 	if err != nil {
 		log.Printf("qemu: agent not ready for %s, killing VM: %v", id, err)
 		qmpClient.Close()
@@ -995,9 +1000,9 @@ func (m *Manager) waitForAgent(ctx context.Context, guestCID uint32, timeout tim
 	return nil, fmt.Errorf("agent not ready after %v (%d attempts): %v", timeout, attempts, lastErr)
 }
 
-// waitForAgentTCP polls the agent via TCP until it responds or times out.
-// Used by QEMU backend — TCP over virtio-net survives migration.
-func (m *Manager) waitForAgentTCP(ctx context.Context, guestIP string, timeout time.Duration) (*AgentClient, error) {
+// waitForAgentSocket polls the agent via Unix socket (virtio-serial chardev)
+// until it responds or times out.
+func (m *Manager) waitForAgentSocket(ctx context.Context, socketPath string, timeout time.Duration) (*AgentClient, error) {
 	t0 := time.Now()
 	deadline := t0.Add(timeout)
 	var lastErr error
@@ -1006,12 +1011,12 @@ func (m *Manager) waitForAgentTCP(ctx context.Context, guestIP string, timeout t
 	for time.Now().Before(deadline) {
 		attempts++
 		tAttempt := time.Now()
-		client, err := NewAgentClientTCP(guestIP)
+		client, err := NewAgentClientSocket(socketPath)
 		if err != nil {
 			lastErr = err
 			if attempts <= 3 || attempts%10 == 0 {
-				log.Printf("qemu: waitForAgentTCP: attempt %d dial %s failed (%dms): %v",
-					attempts, guestIP, time.Since(tAttempt).Milliseconds(), err)
+				log.Printf("qemu: waitForAgentSocket: attempt %d dial %s failed (%dms): %v",
+					attempts, socketPath, time.Since(tAttempt).Milliseconds(), err)
 			}
 			time.Sleep(50 * time.Millisecond)
 			continue
@@ -1027,8 +1032,8 @@ func (m *Manager) waitForAgentTCP(ctx context.Context, guestIP string, timeout t
 			continue
 		}
 
-		log.Printf("qemu: waitForAgentTCP: connected to %s on attempt %d (%dms total)",
-			guestIP, attempts, time.Since(t0).Milliseconds())
+		log.Printf("qemu: waitForAgentSocket: connected to %s on attempt %d (%dms total)",
+			socketPath, attempts, time.Since(t0).Milliseconds())
 		return client, nil
 	}
 
@@ -1555,8 +1560,8 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 		return fmt.Errorf("cont after loadvm failed: %w", err)
 	}
 
-	// Reconnect agent via TCP
-	agent, err := m.waitForAgent(context.Background(), vm.guestCID, 10*time.Second)
+	// Reconnect agent via Unix socket
+	agent, err := m.waitForAgentSocket(context.Background(), vm.agentSockPath, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("agent reconnect after loadvm: %w", err)
 	}
@@ -1666,6 +1671,8 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 
 	qmpSockPath := filepath.Join(sandboxDir, "qmp.sock")
 	os.Remove(qmpSockPath)
+	agentSockPath := filepath.Join(sandboxDir, "agent.sock")
+	os.Remove(agentSockPath)
 
 	logPath := filepath.Join(sandboxDir, "qemu.log")
 	logFile, err := os.Create(logPath)
@@ -1676,7 +1683,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 
 	// Start QEMU paused — we'll loadvm then cont
 	args := m.buildQEMUArgs(cpus, memMB, rootfsPath, workspacePath,
-		netCfg.TAPName, guestMAC, guestCID, qmpSockPath, bootArgs)
+		netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
 	args = append(args, "-S") // start paused
 
 	cmd := exec.Command(m.cfg.QEMUBin, args...)
@@ -1715,9 +1722,9 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	}
 	log.Printf("qemu: ForkFromCheckpoint %s → %s: VM resumed (%dms)", checkpointID, id, time.Since(t0).Milliseconds())
 
-	// Connect agent via TCP
+	// Connect agent via Unix socket
 	var agent *AgentClient
-	agent, err = m.waitForAgent(context.Background(), guestCID, 10*time.Second)
+	agent, err = m.waitForAgentSocket(context.Background(), agentSockPath, 10*time.Second)
 	if err != nil {
 		qmpClient.Close()
 		cmd.Process.Kill()
@@ -1745,25 +1752,26 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	}
 
 	vm := &VMInstance{
-		ID:          id,
-		Template:    meta.Template,
-		Status:      types.SandboxStatusRunning,
-		StartedAt:   now,
-		EndAt:       now.Add(timeout),
-		CpuCount:    cpus,
-		MemoryMB:    memMB,
-		HostPort:    hostPort,
-		GuestPort:   guestPort,
-		pid:         cmd.Process.Pid,
-		cmd:         cmd,
-		network:     netCfg,
-		sandboxDir:  sandboxDir,
-		qmpSockPath: qmpSockPath,
-		qmp:         qmpClient,
-		guestMAC:    guestMAC,
-		guestCID:    guestCID,
-		bootArgs:    bootArgs,
-		agent:       agent,
+		ID:            id,
+		Template:      meta.Template,
+		Status:        types.SandboxStatusRunning,
+		StartedAt:     now,
+		EndAt:         now.Add(timeout),
+		CpuCount:      cpus,
+		MemoryMB:      memMB,
+		HostPort:      hostPort,
+		GuestPort:     guestPort,
+		pid:           cmd.Process.Pid,
+		cmd:           cmd,
+		network:       netCfg,
+		sandboxDir:    sandboxDir,
+		qmpSockPath:   qmpSockPath,
+		agentSockPath: agentSockPath,
+		qmp:           qmpClient,
+		guestMAC:      guestMAC,
+		guestCID:      guestCID,
+		bootArgs:      bootArgs,
+		agent:         agent,
 	}
 
 	m.mu.Lock()
