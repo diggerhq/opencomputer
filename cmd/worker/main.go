@@ -390,6 +390,41 @@ func main() {
 	autosaver := worker.NewWorkspaceAutosaver(mgr, autosaverSyncer, 5*time.Minute)
 	autosaver.Start()
 
+	// Usage collector for billing (samples cgroup stats every 60s, flushes to DB every 5 min)
+	if store != nil {
+		usageCollector := worker.NewUsageCollector(mgr, store)
+		usageCollector.Start()
+		defer usageCollector.Stop()
+	}
+
+	// Pressure monitor: watches host RAM/disk and triggers hibernate/migration.
+	// Disabled by default — enable with OPENSANDBOX_PRESSURE_MONITOR=true.
+	// Not useful with a single worker since there's nowhere to migrate to.
+	if qemuMgr, ok := mgr.(*qm.Manager); ok && os.Getenv("OPENSANDBOX_PRESSURE_MONITOR") == "true" {
+		pressureMonitor := qm.NewPressureMonitor(qemuMgr, cfg.DataDir, qm.DefaultThresholds(), qm.PressureCallbacks{
+			OnLevelChange: func(from, to qm.PressureLevel) {
+				log.Printf("opensandbox-worker: pressure %s → %s", from, to)
+			},
+			OnHibernateIdle: func(sandboxIDs []string) {
+				for _, id := range sandboxIDs {
+					if checkpointStore != nil {
+						_, err := mgr.Hibernate(context.Background(), id, checkpointStore)
+						if err != nil {
+							log.Printf("pressure-hibernate %s: %v", id, err)
+						}
+					}
+				}
+			},
+			OnHibernateAll: func() {
+				if checkpointStore != nil && doGracefulShutdown != nil {
+					doGracefulShutdown(checkpointStore, store)
+				}
+			},
+		})
+		pressureMonitor.Start()
+		defer pressureMonitor.Stop()
+	}
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

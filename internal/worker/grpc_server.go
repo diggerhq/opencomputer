@@ -702,6 +702,18 @@ func (s *GRPCServer) SetSandboxLimits(ctx context.Context, req *pb.SetSandboxLim
 	if err := s.manager.SetResourceLimits(ctx, req.SandboxId, req.MaxPids, req.MaxMemoryBytes, req.CpuMaxUsec, req.CpuPeriodUsec); err != nil {
 		return nil, fmt.Errorf("set sandbox limits failed: %w", err)
 	}
+
+	// Record scale event for billing
+	if s.store != nil && (req.MaxMemoryBytes > 0 || req.CpuMaxUsec > 0) {
+		memMB := int(req.MaxMemoryBytes / (1024 * 1024))
+		cpuPct := int(req.CpuMaxUsec / 1000) // 100000 usec = 100%
+		// Look up org from sandbox session
+		session, err := s.store.GetSandboxSession(ctx, req.SandboxId)
+		if err == nil {
+			_ = s.store.RecordScaleEvent(ctx, req.SandboxId, session.OrgID.String(), memMB, cpuPct)
+		}
+	}
+
 	return &pb.SetSandboxLimitsResponse{}, nil
 }
 
