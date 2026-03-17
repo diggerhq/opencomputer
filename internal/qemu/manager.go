@@ -756,6 +756,10 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 		"-nographic",
 		"-nodefaults",
 		"-serial", "stdio",
+		// Seccomp sandbox: restricts QEMU's syscalls after initialization.
+		// If a guest exploits a QEMU vulnerability, dangerous syscalls
+		// (execve, fork, mount, ptrace) are blocked by the kernel.
+		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
 	}
 }
 
