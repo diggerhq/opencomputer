@@ -29,6 +29,7 @@ type SnapshotMeta struct {
 	WorkspacePath string         `json:"workspacePath"`
 	CpuCount      int            `json:"cpuCount"`
 	MemoryMB      int            `json:"memoryMB"`
+	BaseMemoryMB  int            `json:"baseMemoryMB,omitempty"`
 	Template      string         `json:"template"`
 	GuestPort     int            `json:"guestPort"`
 	SnapshotedAt  time.Time      `json:"snapshotedAt,omitempty"`
@@ -71,11 +72,25 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 	}
 	log.Printf("qemu: hibernate %s: guest sync + unmount done (%dms)", vm.ID, time.Since(t0).Milliseconds())
 
-	// Step 2: Close host-side gRPC connection.
+	// Step 2: Quiesce agent for hibernate.
+	// Tell the agent to close its gRPC connection so the virtio-serial listener's
+	// active flag is false when the VM state is captured. On resume from migration,
+	// the Accept loop will poll for the new host-side connection.
+	// We exec "kill -USR1 1" to signal the agent (PID 1) to drop its gRPC server.
+	// Then close the host-side gRPC connection and give the guest time to process.
 	if vm.agent != nil {
+		// Ask the agent to prepare for hibernate — it will GracefulStop the gRPC server
+		prepCtx, prepCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, _ = vm.agent.Exec(prepCtx, &pb.ExecRequest{
+			Command: "/bin/sh",
+			Args:    []string{"-c", "kill -USR1 1"},
+		})
+		prepCancel()
 		vm.agent.Close()
 		vm.agent = nil
 	}
+	// Give the guest time to process the gRPC shutdown and reset the listener
+	time.Sleep(500 * time.Millisecond)
 
 	// Step 3: Stop (pause) the VM via QMP
 	if vm.qmp == nil {
@@ -126,6 +141,7 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		WorkspacePath: detectDrivePath(vm.sandboxDir, "workspace"),
 		CpuCount:      vm.CpuCount,
 		MemoryMB:      vm.MemoryMB,
+		BaseMemoryMB:  vm.baseMemoryMB,
 		Template:      vm.Template,
 		GuestPort:     vm.GuestPort,
 		SnapshotedAt:  time.Now(),
@@ -371,17 +387,31 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		return nil, fmt.Errorf("create log file: %w", err)
 	}
 
-	// Start QEMU with golden migration state + user's workspace
-	args := m.buildQEMUArgs(meta.CpuCount, meta.MemoryMB, rootfsPath, workspacePath,
-		netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
-	goldenMemZst := filepath.Join(m.goldenDir, "mem.zst")
-	goldenMemRaw := filepath.Join(m.goldenDir, "mem")
+	// Start QEMU with migration state.
+	// If the sandbox has its own snapshot/mem (from a real hibernate), use that
+	// for true hot restore — all processes, memory, and virtio-mem state resume
+	// exactly where they were. The agent was prepared for hibernate via SIGUSR1
+	// (gRPC GracefulStop), so its Accept loop will pick up the new connection.
+	// Otherwise fall back to golden restore (fast path for workspace-only wake).
+	baseMem := m.cfg.DefaultMemoryMB
 	var incomingURI string
-	if fileExists(goldenMemZst) {
-		incomingURI = fmt.Sprintf("exec:zstdcat %s", goldenMemZst)
+	if fileExists(memFile) {
+		// Hot restore: use sandbox's own migration state
+		incomingURI = fmt.Sprintf("exec:cat %s", memFile)
+		log.Printf("qemu: wake %s: hot restore from own snapshot (base=%dMB, total=%dMB)", sandboxID, baseMem, meta.MemoryMB)
 	} else {
-		incomingURI = fmt.Sprintf("exec:cat %s", goldenMemRaw)
+		// Golden restore: use golden snapshot with default memory
+		goldenMemZst := filepath.Join(m.goldenDir, "mem.zst")
+		goldenMemRaw := filepath.Join(m.goldenDir, "mem")
+		if fileExists(goldenMemZst) {
+			incomingURI = fmt.Sprintf("exec:zstdcat %s", goldenMemZst)
+		} else {
+			incomingURI = fmt.Sprintf("exec:cat %s", goldenMemRaw)
+		}
+		log.Printf("qemu: wake %s: golden restore (base=%dMB)", sandboxID, baseMem)
 	}
+	args := m.buildQEMUArgs(meta.CpuCount, baseMem, rootfsPath, workspacePath,
+		netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
 	args = append(args, "-incoming", incomingURI)
 
 	cmd := exec.Command(m.cfg.QEMUBin, args...)
@@ -466,6 +496,7 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		EndAt:         now.Add(ttl),
 		CpuCount:      meta.CpuCount,
 		MemoryMB:      meta.MemoryMB,
+		baseMemoryMB:  baseMem,
 		HostPort:      hostPort,
 		GuestPort:     netCfg.GuestPort,
 		pid:           cmd.Process.Pid,
@@ -626,6 +657,7 @@ func (m *Manager) coldBootLocal(ctx context.Context, sandboxID string, timeout i
 		EndAt:         now.Add(ttl),
 		CpuCount:      cpus,
 		MemoryMB:      memMB,
+		baseMemoryMB:  memMB,
 		HostPort:      hostPort,
 		GuestPort:     guestPort,
 		pid:           cmd.Process.Pid,

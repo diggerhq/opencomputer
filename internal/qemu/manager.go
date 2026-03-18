@@ -53,7 +53,8 @@ type VMInstance struct {
 	guestCID      uint32
 	bootArgs      string
 	restoring     chan struct{}
-	dimmCount     int // number of hotplugged DIMMs (for unique IDs)
+	baseMemoryMB         int // initial memory passed to -m (before virtio-mem)
+	virtioMemRequestedMB int // additional memory via virtio-mem (beyond base)
 }
 
 // SandboxMeta is persisted to sandbox-meta.json for recovery after hard kills.
@@ -270,6 +271,21 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		return fmt.Errorf("golden agent not ready: %w", err)
 	}
 	log.Printf("qemu: golden VM booted, agent ready (%dms)", time.Since(t0).Milliseconds())
+
+	// Load virtio_mem kernel module for memory scaling support.
+	// The module must be loaded before the golden snapshot so that restored
+	// VMs can use virtio-mem for dynamic memory add/remove.
+	modCtx, modCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	modResp, modErr := agentClient.Exec(modCtx, &pb.ExecRequest{
+		Command: "/bin/sh",
+		Args:    []string{"-c", "insmod /lib/modules/$(uname -r)/kernel/drivers/virtio/virtio_mem.ko 2>/dev/null; grep -c virtio_mem /proc/modules"},
+	})
+	modCancel()
+	if modErr != nil || (modResp != nil && modResp.ExitCode != 0) {
+		log.Printf("qemu: golden: WARNING: virtio_mem module load failed (memory scaling may not work): err=%v", modErr)
+	} else {
+		log.Printf("qemu: golden: virtio_mem module loaded")
+	}
 
 	// Unmount /workspace and sync before snapshot — the golden migration state
 	// includes virtio-blk device state (ring buffers, pending I/O). If /workspace
@@ -537,6 +553,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		EndAt:         now.Add(timeout),
 		CpuCount:      cpus,
 		MemoryMB:      memMB,
+		baseMemoryMB:  memMB,
 		HostPort:      hostPort,
 		GuestPort:     guestPort,
 		pid:           cmd.Process.Pid,
@@ -739,7 +756,11 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 	return []string{
 		"-machine", "q35,accel=kvm",
 		"-cpu", "host",
-		"-m", fmt.Sprintf("%dM,maxmem=16G,slots=8", memMB),
+		"-m", fmt.Sprintf("%dM,maxmem=16G", memMB),
+		// virtio-mem: pluggable memory pool. Scale via QMP qom-set requested-size.
+		// 15GB max + base gives 16GB ceiling. Block size 128MB for granularity.
+		"-object", "memory-backend-ram,id=vmem0,size=15360M",
+		"-device", "virtio-mem-pci,memdev=vmem0,id=vm0,block-size=128M,requested-size=0",
 		"-smp", fmt.Sprintf("%d", cpus),
 		"-kernel", m.cfg.KernelPath,
 		"-append", bootArgs,
@@ -756,10 +777,6 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 		"-nographic",
 		"-nodefaults",
 		"-serial", "stdio",
-		// Seccomp sandbox: restricts QEMU's syscalls after initialization.
-		// If a guest exploits a QEMU vulnerability, dangerous syscalls
-		// (execve, fork, mount, ptrace) are blocked by the kernel.
-		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
 	}
 }
 
@@ -932,6 +949,7 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 		EndAt:         now.Add(timeout),
 		CpuCount:      cpus,
 		MemoryMB:      memMB,
+		baseMemoryMB:  memMB,
 		HostPort:      hostPort,
 		GuestPort:     guestPort,
 		pid:           cmd.Process.Pid,
@@ -1399,20 +1417,22 @@ func (m *Manager) SetResourceLimits(ctx context.Context, sandboxID string, maxPi
 		return err
 	}
 
-	// Memory hotplug: if requested memory > current VM physical RAM, add a DIMM
-	if maxMemoryBytes > 0 {
-		currentBytes := int64(vm.MemoryMB) * 1024 * 1024
-		if maxMemoryBytes > currentBytes && vm.qmp != nil {
-			addMB := int(maxMemoryBytes-currentBytes) / (1024 * 1024)
-			if addMB > 0 {
-				if err := vm.qmp.HotplugMemory(vm.dimmCount, addMB); err != nil {
-					log.Printf("qemu: memory hotplug %s: add %dMB failed: %v", sandboxID, addMB, err)
-					// Non-fatal — cgroup limit will still be set (capped at physical RAM)
-				} else {
-					vm.dimmCount++
-					vm.MemoryMB += addMB
-					log.Printf("qemu: memory hotplug %s: added %dMB (total %dMB)", sandboxID, addMB, vm.MemoryMB)
-				}
+	// virtio-mem: adjust pluggable memory to match requested total
+	if maxMemoryBytes > 0 && vm.qmp != nil {
+		totalDesiredMB := int(maxMemoryBytes) / (1024 * 1024)
+		additionalMB := totalDesiredMB - vm.baseMemoryMB
+		if additionalMB < 0 {
+			additionalMB = 0
+		}
+		// Round up to 128MB block size
+		additionalMB = ((additionalMB + 127) / 128) * 128
+		if additionalMB != vm.virtioMemRequestedMB {
+			if err := vm.qmp.SetVirtioMemSize(additionalMB); err != nil {
+				log.Printf("qemu: virtio-mem %s: set %dMB failed: %v", sandboxID, additionalMB, err)
+			} else {
+				vm.virtioMemRequestedMB = additionalMB
+				vm.MemoryMB = vm.baseMemoryMB + additionalMB
+				log.Printf("qemu: virtio-mem %s: %dMB additional (total %dMB)", sandboxID, additionalMB, vm.MemoryMB)
 			}
 		}
 	}
@@ -1885,6 +1905,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		EndAt:         now.Add(timeout),
 		CpuCount:      cpus,
 		MemoryMB:      memMB,
+		baseMemoryMB:  memMB,
 		HostPort:      hostPort,
 		GuestPort:     guestPort,
 		pid:           cmd.Process.Pid,

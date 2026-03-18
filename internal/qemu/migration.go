@@ -301,6 +301,7 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 		EndAt:         now.Add(300 * time.Second),
 		CpuCount:      cpus,
 		MemoryMB:      memMB,
+		baseMemoryMB:  memMB,
 		HostPort:      hp,
 		GuestPort:     netCfg.GuestPort,
 		pid:           cmd.Process.Pid,
