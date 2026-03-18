@@ -28,8 +28,11 @@ type Sandbox struct {
 	CpuCount   int               `json:"cpuCount"`
 	MemoryMB   int               `json:"memoryMB"`
 	MachineID  string            `json:"machineID,omitempty"`
-	ConnectURL string            `json:"connectURL,omitempty"` // Direct worker URL for SDK access
-	Token      string            `json:"token,omitempty"`      // Sandbox-scoped JWT for worker auth
+	// ConnectURL and Token are currently unused by SDKs. All data-plane traffic
+	// flows through the control plane's SandboxAPIProxy, which proxies to workers
+	// over the internal VPC network. Direct worker access support coming in a future release.
+	ConnectURL string            `json:"connectURL,omitempty"`
+	Token      string            `json:"token,omitempty"`
 	HostPort   int               `json:"hostPort,omitempty"`   // Mapped host port for the sandbox's container port
 }
 

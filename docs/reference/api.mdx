@@ -5,44 +5,15 @@ description: "Complete REST API reference"
 
 ## Base URL & Authentication
 
-OpenComputer exposes two API surfaces:
+All API requests go through the control plane:
 
-| Surface | Base URL | Auth Header | Use |
-| --- | --- | --- | --- |
-| **Control plane** | `https://app.opencomputer.dev/api` | `X-API-Key: <key>` | Create/list/kill sandboxes, templates, hibernation |
-| **Worker direct** | `connectURL` from create/get response | `Authorization: Bearer <jwt>` | Exec, files, agents, PTY, timeout |
+| Base URL | Auth Header |
+| --- | --- |
+| `https://app.opencomputer.dev/api` | `X-API-Key: <key>` |
 
-The `connectURL` and `token` fields are returned when you create or get a sandbox. Worker-direct routes have **no `/api` prefix** — for example, `POST {connectURL}/sandboxes/:id/exec/run`.
+The control plane handles sandbox lifecycle (create, list, kill, hibernate, wake) and transparently proxies data-plane requests (exec, files, agents, PTY) to the worker that owns the sandbox.
 
-SDK users only need the API key. The SDK resolves `connectURL` and manages the JWT automatically.
-
-### Route Availability
-
-Most operational routes are available on **both** surfaces. Exceptions:
-
-| Route | Control Plane | Worker |
-| --- | --- | --- |
-| `POST /api/sandboxes` (create) | Yes | — |
-| `GET /api/sandboxes` (list all) | Yes | — |
-| `DELETE /api/sandboxes/:id` (kill) | Yes | — |
-| `POST .../hibernate`, `.../wake` | Yes | — |
-| Checkpoint routes | Yes | — |
-| Preview URL routes | Yes | — |
-| Snapshot routes | Yes | — |
-| `POST .../token/refresh` | — | Yes |
-| `POST .../timeout` | — | Yes |
-| Exec, filesystem, agent, PTY routes | Yes | Yes |
-
-### Token Refresh
-
-Worker JWTs are short-lived. To refresh:
-
-```bash
-curl -X POST {connectURL}/sandboxes/{id}/token/refresh \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Returns a new JWT. The SDKs handle this automatically.
+SDK users only need the API key.
 
 ---
 
@@ -70,15 +41,9 @@ Create a new sandbox.
 ```json
 {
   "sandboxID": "sb-abc123",
-  "templateID": "base",
   "status": "running",
-  "startedAt": "2025-01-15T10:30:00Z",
-  "endAt": "2025-01-15T10:35:00Z",
-  "cpuCount": 1,
-  "memoryMB": 512,
-  "metadata": {},
-  "connectURL": "https://worker-xyz.opencomputer.dev",
-  "token": "eyJhbG..."
+  "region": "use2",
+  "workerID": "w-use2-abc123"
 }
 ```
 
@@ -109,7 +74,7 @@ Terminate and remove a sandbox.
 
 ### `POST /api/sandboxes/:id/timeout` — Set Timeout
 
-Update the idle timeout. **Worker-direct only** — must be sent to the worker via `connectURL` with a Bearer token. The control plane will reject this request.
+Update the idle timeout.
 
 **Request body:**
 
@@ -175,8 +140,8 @@ Execute a command synchronously and return the result. Available on both surface
 ```
 
 ```bash
-curl -X POST {connectURL}/sandboxes/{id}/exec/run \
-  -H "Authorization: Bearer $TOKEN" \
+curl -X POST https://app.opencomputer.dev/api/sandboxes/{id}/exec/run \
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"cmd": "echo", "args": ["Hello, World!"]}'
 ```
@@ -219,7 +184,7 @@ Start a long-running command as a session. Attach via WebSocket to stream I/O.
 
 Upgrade to WebSocket. Streams I/O using the [binary protocol](#websocket-binary-protocol).
 
-Pass auth via query parameter: `?token=<jwt>`
+Pass auth via query parameter: `?api_key=<key>`
 
 On connect, the server replays the scrollback buffer, sends a `0x04` end marker, then streams live output.
 
@@ -268,8 +233,8 @@ Agent sessions run the Claude Agent SDK inside the sandbox. Events stream over t
 ```
 
 ```bash
-curl -X POST {connectURL}/sandboxes/{id}/agent \
-  -H "Authorization: Bearer $TOKEN" \
+curl -X POST https://app.opencomputer.dev/api/sandboxes/{id}/agent \
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Create a hello world app", "model": "claude-sonnet-4-20250514"}'
 ```
@@ -309,8 +274,8 @@ Terminate the agent session.
 Returns file content as **plain text** (not JSON). The `path` query parameter is required.
 
 ```bash
-curl {connectURL}/sandboxes/{id}/files?path=/app/index.js \
-  -H "Authorization: Bearer $TOKEN"
+curl https://app.opencomputer.dev/api/sandboxes/{id}/files?path=/app/index.js \
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY"
 ```
 
 **Response** `200`: Raw file content with `Content-Type: text/plain`.
@@ -320,8 +285,8 @@ curl {connectURL}/sandboxes/{id}/files?path=/app/index.js \
 The request body is written as raw file content (not JSON). The `path` query parameter specifies the destination.
 
 ```bash
-curl -X PUT {connectURL}/sandboxes/{id}/files?path=/app/hello.txt \
-  -H "Authorization: Bearer $TOKEN" \
+curl -X PUT https://app.opencomputer.dev/api/sandboxes/{id}/files?path=/app/hello.txt \
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
   -H "Content-Type: text/plain" \
   -d "Hello, World!"
 ```
@@ -587,7 +552,7 @@ Terminal sessions for interactive shell access.
 
 Upgrade to WebSocket. Raw binary I/O — data from the PTY is sent as-is, data received is written to PTY stdin.
 
-Pass auth via query parameter: `?token=<jwt>`
+Pass auth via query parameter: `?api_key=<key>`
 
 ### `POST /api/sandboxes/:id/pty/:sessionID/resize` — Resize
 
@@ -626,7 +591,7 @@ Exec and PTY WebSocket sessions use binary frames with a 1-byte stream prefix:
 
 **Connection flow:**
 
-1. Client opens WebSocket with `?token=<jwt>`
+1. Client opens WebSocket with `?api_key=<key>`
 2. Server replays scrollback buffer (historical output)
 3. Server sends `0x04` to mark end of scrollback
 4. Live output streams as `0x01`/`0x02` frames
