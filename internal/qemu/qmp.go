@@ -254,33 +254,17 @@ func (q *QMPClient) Execute(command string, args map[string]interface{}) error {
 	return err
 }
 
-// HotplugMemory adds a memory DIMM to the running VM.
-// The guest kernel detects the new memory automatically.
-// Each DIMM gets a unique ID based on the index (dimm0, dimm1, etc.).
-func (q *QMPClient) HotplugMemory(dimmIndex int, sizeMB int) error {
-	backendID := fmt.Sprintf("mem%d", dimmIndex)
-	dimmID := fmt.Sprintf("dimm%d", dimmIndex)
+// SetVirtioMemSize sets the requested size of the virtio-mem device.
+// sizeMB is the additional memory beyond base (not total).
+// The guest kernel onlines/offlines memory blocks automatically.
+// Can both scale up and scale down.
+func (q *QMPClient) SetVirtioMemSize(sizeMB int) error {
 	sizeBytes := int64(sizeMB) * 1024 * 1024
-
-	// Step 1: Create memory backend
-	if err := q.Execute("object-add", map[string]interface{}{
-		"qom-type": "memory-backend-ram",
-		"id":       backendID,
-		"size":     sizeBytes,
-	}); err != nil {
-		return fmt.Errorf("object-add memory backend: %w", err)
-	}
-
-	// Step 2: Attach DIMM device
-	if err := q.Execute("device_add", map[string]interface{}{
-		"driver": "pc-dimm",
-		"id":     dimmID,
-		"memdev": backendID,
-	}); err != nil {
-		return fmt.Errorf("device_add dimm: %w", err)
-	}
-
-	return nil
+	return q.Execute("qom-set", map[string]interface{}{
+		"path":     "/machine/peripheral/vm0",
+		"property": "requested-size",
+		"value":    sizeBytes,
+	})
 }
 
 // SendFd passes an open file descriptor to QEMU via the QMP getfd command.

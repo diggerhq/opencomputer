@@ -139,6 +139,16 @@ func waitForReadable(f *os.File, timeout time.Duration) bool {
 	return fds[0].Revents&(unix.POLLIN|unix.POLLHUP) != 0
 }
 
+// PrepareHibernate resets the active flag so that after migration restore,
+// the Accept loop will poll for a new host-side connection instead of
+// thinking the old connection is still active.
+func (l *virtioSerialListener) PrepareHibernate() {
+	l.mu.Lock()
+	l.active = false
+	l.mu.Unlock()
+	log.Printf("agent: virtio-serial: prepared for hibernate (active=false)")
+}
+
 func (l *virtioSerialListener) Close() error {
 	l.once.Do(func() { close(l.closed) })
 	return l.f.Close()
