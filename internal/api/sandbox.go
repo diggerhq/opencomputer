@@ -60,6 +60,42 @@ func (s *Server) createSandbox(c echo.Context) error {
 		}
 	}
 
+	// Resolve secret store: decrypt secrets + inherit egress config
+	if cfg.SecretStore != "" && s.store != nil && hasOrg {
+		store, err := s.store.GetSecretStoreByName(ctx, orgID, cfg.SecretStore)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": "secret store not found: " + cfg.SecretStore,
+			})
+		}
+
+		cfg.EgressAllowlist = store.EgressAllowlist
+
+		secrets, err := s.store.DecryptSecretEntries(ctx, store.ID)
+		if err != nil {
+			log.Printf("api: decrypt secrets failed for store %s: %v", cfg.SecretStore, err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": "failed to decrypt secrets",
+			})
+		}
+		if len(secrets) > 0 {
+			if cfg.Envs == nil {
+				cfg.Envs = make(map[string]string)
+			}
+			for _, secret := range secrets {
+				if _, exists := cfg.Envs[secret.Name]; !exists {
+					cfg.Envs[secret.Name] = secret.Value
+				}
+				if len(secret.AllowedHosts) > 0 {
+					if cfg.SecretAllowedHosts == nil {
+						cfg.SecretAllowedHosts = make(map[string][]string)
+					}
+					cfg.SecretAllowedHosts[secret.Name] = secret.AllowedHosts
+				}
+			}
+		}
+	}
+
 	// Declarative image or named snapshot → resolve to checkpoint and use createFromCheckpoint flow
 	if len(cfg.ImageManifest) > 0 || cfg.Snapshot != "" {
 		if !hasOrg {
@@ -984,10 +1020,15 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 
 	// Dispatch checkpoint creation in background — return immediately with status "processing".
 	// The heavy work (SyncFS + pause + memory snapshot + drive copy + resume + S3 upload)
-	// runs async. Clients poll listCheckpoints for status=ready.
+	// runs async. The sandbox is registered as pending so exec requests block until the VM
+	// resumes, rather than failing with 500.
+	pending := &pendingCreate{ready: make(chan struct{})}
+	s.pendingCreates.Store(sandboxID, pending)
+
 	if s.workerRegistry != nil {
 		grpcClient, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
 		if err != nil {
+			s.pendingCreates.Delete(sandboxID)
 			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker not available: " + err.Error()})
 		}
 
@@ -999,11 +1040,19 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				SandboxId:    sandboxID,
 				CheckpointId: checkpointID.String(),
 			})
+
+			// Signal that the sandbox is usable again (VM resumed, agent reconnected).
+			// This unblocks any exec/file requests that arrived during the checkpoint pause.
+			pending.err = err
+			close(pending.ready)
+
 			if err != nil {
 				log.Printf("api: async checkpoint %s failed: %v", checkpointID, err)
 				_ = s.store.SetCheckpointFailed(context.Background(), checkpointID, err.Error())
 				return
 			}
+			// Mark ready immediately — S3 upload continues async inside CreateCheckpoint
+			// but the checkpoint is locally usable now.
 			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key, 0)
 			log.Printf("api: checkpoint %s ready", checkpointID)
 		}()
@@ -1013,6 +1062,11 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 			defer cancel()
 
 			rootfsKey, workspaceKey, err := s.manager.CreateCheckpoint(bgCtx, sandboxID, checkpointID.String(), s.checkpointStore, func() {})
+
+			// Signal sandbox usable
+			pending.err = err
+			close(pending.ready)
+
 			if err != nil {
 				log.Printf("api: async checkpoint %s failed: %v", checkpointID, err)
 				_ = s.store.SetCheckpointFailed(context.Background(), checkpointID, err.Error())
@@ -1022,6 +1076,7 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 			log.Printf("api: checkpoint %s ready", checkpointID)
 		}()
 	} else {
+		s.pendingCreates.Delete(sandboxID)
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
@@ -1302,6 +1357,7 @@ func (s *Server) createFromCheckpointCore(c echo.Context) (map[string]interface{
 			cfg.TemplateRootfsKey = *cp.RootfsS3Key
 			cfg.TemplateWorkspaceKey = *cp.WorkspaceS3Key
 			cfg.SandboxID = sandboxID
+			cfg.CheckpointID = checkpointID.String()
 
 			forkMgr, hasFork := s.manager.(interface {
 				ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error)

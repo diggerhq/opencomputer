@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io/fs"
 	"log"
 	"net/http"
@@ -101,6 +102,24 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.sandboxDomain = opts.SandboxDomain
 		s.cfClient = opts.CFClient
 		s.sandboxAPIProxy = opts.SandboxAPIProxy
+
+		// Wire up readiness waiting so the proxy blocks until async creates finish
+		if s.sandboxAPIProxy != nil {
+			s.sandboxAPIProxy.SetWaitForReady(func(ctx context.Context, sandboxID string) error {
+				val, ok := s.pendingCreates.Load(sandboxID)
+				if !ok {
+					return nil // not a pending create — proceed normally
+				}
+				pending := val.(*pendingCreate)
+				select {
+				case <-pending.ready:
+					s.pendingCreates.Delete(sandboxID)
+					return pending.err
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+		}
 	}
 
 	// Global middleware
@@ -226,6 +245,18 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	api.GET("/snapshots", s.listSnapshots)
 	api.GET("/snapshots/:name", s.getSnapshot)
 	api.DELETE("/snapshots/:name", s.deleteSnapshot)
+
+	// Secret stores
+	api.POST("/secret-stores", s.createSecretStore)
+	api.GET("/secret-stores", s.listSecretStores)
+	api.GET("/secret-stores/:id", s.getSecretStore)
+	api.PUT("/secret-stores/:id", s.updateSecretStore)
+	api.DELETE("/secret-stores/:id", s.deleteSecretStore)
+
+	// Secret store entries
+	api.PUT("/secret-stores/:id/secrets/:name", s.setSecretEntry)
+	api.DELETE("/secret-stores/:id/secrets/:name", s.deleteSecretEntry)
+	api.GET("/secret-stores/:id/secrets", s.listSecretEntries)
 
 	// Workers (server mode only — queries worker registry)
 	api.GET("/workers", s.listWorkers)

@@ -39,6 +39,12 @@ type SnapshotMeta struct {
 	Template      string            `json:"template"`
 	GuestPort     int               `json:"guestPort"`
 	SnapshotedAt  time.Time         `json:"snapshotedAt,omitempty"`
+	// SealedTokens maps sealed token → real value for re-registering the proxy session on wake.
+	SealedTokens  map[string]string `json:"sealedTokens,omitempty"`
+	// ProxyAllowlist and ProxyTokenHosts are persisted so the proxy session
+	// can be fully restored with the same restrictions after hibernate → wake.
+	ProxyAllowlist  []string            `json:"proxyAllowlist,omitempty"`
+	ProxyTokenHosts map[string][]string `json:"proxyTokenHosts,omitempty"`
 }
 
 // doHibernate pauses a running VM, creates a full memory snapshot, and kicks off
@@ -131,6 +137,12 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		GuestPort:     vm.GuestPort,
 		SnapshotedAt:  time.Now(),
 	}
+	// Persist sealed token map + proxy config so wake can fully restore the proxy session
+	if m.secretsProxy != nil && vm.network != nil {
+		meta.SealedTokens = m.secretsProxy.GetSessionTokens(vm.network.GuestIP)
+		meta.ProxyAllowlist = m.secretsProxy.GetSessionAllowlist(vm.network.GuestIP)
+		meta.ProxyTokenHosts = m.secretsProxy.GetSessionTokenHosts(vm.network.GuestIP)
+	}
 	metaJSON, err := json.Marshal(meta)
 	if err != nil {
 		return nil, fmt.Errorf("marshal snapshot meta: %w", err)
@@ -140,8 +152,12 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		return nil, fmt.Errorf("write snapshot meta: %w", err)
 	}
 
-	// Step 7: Clean up network (keep snapshot files on disk for local wake)
+	// Step 7: Clean up network and proxy session (keep snapshot files on disk for local wake)
+	if m.secretsProxy != nil && vm.network != nil {
+		m.secretsProxy.UnregisterSession(vm.network.GuestIP)
+	}
 	if vm.network != nil {
+		RemoveProxyRedirect(vm.network)
 		RemoveDNAT(vm.network)
 		DeleteTAP(vm.network.TAPName)
 		m.subnets.Release(vm.network.TAPName)
@@ -517,6 +533,14 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 	// Sync guest clock — frozen at snapshot time
 	if err := syncGuestClock(context.Background(), agentClient); err != nil {
 		log.Printf("firecracker: wake %s: clock sync failed: %v", sandboxID, err)
+	}
+
+	// Re-register secrets proxy session if token map was persisted
+	if m.secretsProxy != nil && len(meta.SealedTokens) > 0 {
+		m.secretsProxy.ReregisterSession(sandboxID, netCfg.GuestIP, meta.SealedTokens, meta.ProxyAllowlist, meta.ProxyTokenHosts)
+		if err := AddProxyRedirect(netCfg); err != nil {
+			log.Printf("firecracker: warning: proxy redirect failed for %s on wake: %v", sandboxID, err)
+		}
 	}
 
 	// Register VM
@@ -1767,10 +1791,23 @@ func (m *Manager) warmForkFromCheckpoint(ctx context.Context, checkpointID strin
 		log.Printf("firecracker: warmFork %s: clock sync failed: %v", newID, err)
 	}
 
+	// Secrets proxy integration: seal env vars and set up proxy redirect
+	envsToInject := cfg.Envs
+	if m.secretsProxy != nil && len(cfg.Envs) > 0 {
+		sealedEnvs := m.secretsProxy.CreateSealedEnvs(newID, netCfg.GuestIP, netCfg.HostIP, cfg.Envs, cfg.EgressAllowlist, cfg.SecretAllowedHosts)
+		if sealedEnvs != nil {
+			envsToInject = sealedEnvs
+			if err := AddProxyRedirect(netCfg); err != nil {
+				log.Printf("firecracker: warning: proxy redirect failed for %s: %v", newID, err)
+			}
+			m.injectCACert(ctx, agentClient, newID)
+		}
+	}
+
 	// Send sandbox-level env vars into the forked VM agent
-	if len(cfg.Envs) > 0 {
+	if len(envsToInject) > 0 {
 		envCtx, envCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := agentClient.SetEnvs(envCtx, cfg.Envs); err != nil {
+		if err := agentClient.SetEnvs(envCtx, envsToInject); err != nil {
 			envCancel()
 			log.Printf("firecracker: warning: SetEnvs failed for %s: %v", newID, err)
 		}
@@ -2085,11 +2122,97 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	return nil
 }
 
+// registerTemplateGoldenFromCache creates a per-checkpoint golden snapshot by reflink-copying
+// files from the checkpoint cache. Called after CreateCheckpoint when the checkpoint is for
+// an image/snapshot build. All copies are reflink (instant CoW) — no extra VM boot needed.
+func (m *Manager) RegisterTemplateGoldenFromCache(checkpointID string) {
+	m.goldenMu.RLock()
+	existing := m.templateGoldens[checkpointID]
+	m.goldenMu.RUnlock()
+	if existing != nil {
+		return
+	}
+
+	t0 := time.Now()
+	cacheDir := m.checkpointCacheDir(checkpointID)
+	goldenDir := filepath.Join(m.cfg.DataDir, "golden-snapshot", "template-"+checkpointID)
+
+	// Verify checkpoint cache has all required files
+	requiredFiles := []string{
+		filepath.Join(cacheDir, "rootfs.ext4"),
+		filepath.Join(cacheDir, "workspace.ext4"),
+		filepath.Join(cacheDir, "snapshot", "mem"),
+		filepath.Join(cacheDir, "snapshot", "vmstate"),
+		filepath.Join(cacheDir, "snapshot", "snapshot-meta.json"),
+	}
+	for _, f := range requiredFiles {
+		if !fileExists(f) {
+			log.Printf("firecracker: template golden %s: missing %s, skipping", checkpointID, f)
+			return
+		}
+	}
+
+	os.RemoveAll(goldenDir)
+	if err := os.MkdirAll(filepath.Join(goldenDir, "snapshot"), 0755); err != nil {
+		log.Printf("firecracker: template golden %s: mkdir failed: %v", checkpointID, err)
+		return
+	}
+
+	// Reflink-copy drives and snapshot files (~1ms total with CoW)
+	copies := [][2]string{
+		{filepath.Join(cacheDir, "rootfs.ext4"), filepath.Join(goldenDir, "rootfs.ext4")},
+		{filepath.Join(cacheDir, "workspace.ext4"), filepath.Join(goldenDir, "workspace.ext4")},
+		{filepath.Join(cacheDir, "snapshot", "mem"), filepath.Join(goldenDir, "snapshot", "mem")},
+		{filepath.Join(cacheDir, "snapshot", "vmstate"), filepath.Join(goldenDir, "snapshot", "vmstate")},
+	}
+	for _, cp := range copies {
+		if err := copyFileReflink(cp[0], cp[1]); err != nil {
+			log.Printf("firecracker: template golden %s: copy %s failed: %v", checkpointID, cp[0], err)
+			os.RemoveAll(goldenDir)
+			return
+		}
+	}
+
+	// Read the checkpoint's snapshot metadata and use it for the golden snapshot
+	metaBytes, err := os.ReadFile(filepath.Join(cacheDir, "snapshot", "snapshot-meta.json"))
+	if err != nil {
+		log.Printf("firecracker: template golden %s: read meta failed: %v", checkpointID, err)
+		os.RemoveAll(goldenDir)
+		return
+	}
+	var meta SnapshotMeta
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		log.Printf("firecracker: template golden %s: parse meta failed: %v", checkpointID, err)
+		os.RemoveAll(goldenDir)
+		return
+	}
+
+	// Write golden snapshot metadata (copy to golden dir)
+	_ = os.WriteFile(filepath.Join(goldenDir, "snapshot", "snapshot-meta.json"), metaBytes, 0644)
+
+	gs := &GoldenSnapshot{
+		Dir:   goldenDir,
+		Meta:  meta,
+		Ready: true,
+	}
+	m.goldenMu.Lock()
+	m.templateGoldens[checkpointID] = gs
+	m.goldenMu.Unlock()
+
+	log.Printf("firecracker: template golden snapshot ready for %s at %s (%dms)", checkpointID, goldenDir, time.Since(t0).Milliseconds())
+}
+
 // createFromGoldenSnapshot creates a new sandbox using the pre-booted golden snapshot.
 // Returns errNoGoldenSnapshot if no golden snapshot is available.
 func (m *Manager) createFromGoldenSnapshot(ctx context.Context, id string, cfg types.SandboxConfig) (*types.Sandbox, error) {
+	// Pick the right golden snapshot: per-template if CheckpointID is set, otherwise the default.
 	m.goldenMu.RLock()
-	gs := m.golden
+	var gs *GoldenSnapshot
+	if cfg.CheckpointID != "" {
+		gs = m.templateGoldens[cfg.CheckpointID]
+	} else {
+		gs = m.golden
+	}
 	m.goldenMu.RUnlock()
 
 	if gs == nil || !gs.Ready {
@@ -2248,10 +2371,23 @@ func (m *Manager) createFromGoldenSnapshot(ctx context.Context, id string, cfg t
 		log.Printf("firecracker: goldenCreate %s: clock sync failed: %v", id, err)
 	}
 
+	// Secrets proxy integration: seal env vars and set up proxy redirect
+	envsToInject := cfg.Envs
+	if m.secretsProxy != nil && len(cfg.Envs) > 0 {
+		sealedEnvs := m.secretsProxy.CreateSealedEnvs(id, netCfg.GuestIP, netCfg.HostIP, cfg.Envs, cfg.EgressAllowlist, cfg.SecretAllowedHosts)
+		if sealedEnvs != nil {
+			envsToInject = sealedEnvs
+			if err := AddProxyRedirect(netCfg); err != nil {
+				log.Printf("firecracker: warning: proxy redirect failed for %s: %v", id, err)
+			}
+			m.injectCACert(ctx, agentClient, id)
+		}
+	}
+
 	// Send sandbox-level env vars into the VM agent
-	if len(cfg.Envs) > 0 {
+	if len(envsToInject) > 0 {
 		envCtx, envCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := agentClient.SetEnvs(envCtx, cfg.Envs); err != nil {
+		if err := agentClient.SetEnvs(envCtx, envsToInject); err != nil {
 			envCancel()
 			log.Printf("firecracker: warning: SetEnvs failed for %s: %v", id, err)
 		}

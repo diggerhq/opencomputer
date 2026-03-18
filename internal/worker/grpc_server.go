@@ -15,7 +15,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opensandbox/opensandbox/internal/grpctls"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/sparse"
 	"github.com/opensandbox/opensandbox/internal/storage"
@@ -37,7 +41,29 @@ type GRPCServer struct {
 }
 
 // NewGRPCServer creates a new gRPC server wrapping the sandbox manager.
-func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, execMgr *sandbox.ExecSessionManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore, router *sandbox.SandboxRouter, store *db.Store) *GRPCServer {
+// If OPENSANDBOX_GRPC_TLS_* env vars are set, the server uses mTLS.
+func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, execMgr *sandbox.ExecSessionManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore, router *sandbox.SandboxRouter, builder interface{}, store *db.Store) *GRPCServer {
+	serverOpts := []grpc.ServerOption{
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    30 * time.Second,
+			Timeout: 10 * time.Second,
+		}),
+	}
+
+	// Enable mTLS if configured
+	if grpctls.Enabled() {
+		creds, err := grpctls.ServerCredentials()
+		if err != nil {
+			log.Fatalf("grpc: failed to load TLS credentials: %v", err)
+		}
+		serverOpts = append(serverOpts, grpc.Creds(creds))
+		log.Println("grpc: mTLS enabled for worker gRPC server")
+	}
+
 	s := &GRPCServer{
 		manager:            mgr,
 		router:             router,
@@ -46,16 +72,7 @@ func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, execMgr *san
 		sandboxDBs:         sandboxDBs,
 		checkpointStore:    checkpointStore,
 		store:              store,
-		server: grpc.NewServer(
-			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-				MinTime:             5 * time.Second,
-				PermitWithoutStream: true,
-			}),
-			grpc.KeepaliveParams(keepalive.ServerParameters{
-				Time:    30 * time.Second,
-				Timeout: 10 * time.Second,
-			}),
-		),
+		server:             grpc.NewServer(serverOpts...),
 	}
 	pb.RegisterSandboxWorkerServer(s.server, s)
 	return s
@@ -75,16 +92,38 @@ func (s *GRPCServer) Stop() {
 	s.server.GracefulStop()
 }
 
+// parseSecretAllowedHosts converts the proto map (env var → comma-separated hosts)
+// to the internal map (env var → host slice). Returns nil if input is empty.
+func parseSecretAllowedHosts(m map[string]string) map[string][]string {
+	if len(m) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(m))
+	for name, hosts := range m {
+		if hosts != "" {
+			result[name] = strings.Split(hosts, ",")
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxRequest) (*pb.CreateSandboxResponse, error) {
 	cfg := types.SandboxConfig{
-		Template:       req.Template,
-		Timeout:        int(req.Timeout),
-		Envs:           req.Envs,
-		MemoryMB:       int(req.MemoryMb),
-		CpuCount:       int(req.CpuCount),
-		NetworkEnabled: req.NetworkEnabled,
-		Port:           int(req.Port),
-		SandboxID:      req.SandboxId, // use server-assigned ID if provided
+		Template:           req.Template,
+		Timeout:            int(req.Timeout),
+		Envs:               req.Envs,
+		MemoryMB:           int(req.MemoryMb),
+		CpuCount:           int(req.CpuCount),
+		NetworkEnabled:     req.NetworkEnabled,
+		ImageRef:           req.ImageRef,
+		Port:               int(req.Port),
+		SandboxID:          req.SandboxId,    // use server-assigned ID if provided
+		CheckpointID:       req.CheckpointId, // for per-template golden snapshots
+		EgressAllowlist:    req.EgressAllowlist,
+		SecretAllowedHosts: parseSecretAllowedHosts(req.SecretAllowedHosts),
 	}
 
 	// Warm fork: if checkpoint_id is set, try snapshot-based fork first.
@@ -492,13 +531,28 @@ func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest
 	}, nil
 }
 
+func (s *GRPCServer) BuildTemplate(ctx context.Context, req *pb.BuildTemplateRequest) (*pb.BuildTemplateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "deprecated")
+}
+
+func (s *GRPCServer) SaveAsTemplate(ctx context.Context, req *pb.SaveAsTemplateRequest) (*pb.SaveAsTemplateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "deprecated")
+}
+
 func (s *GRPCServer) CreateCheckpoint(ctx context.Context, req *pb.CreateCheckpointRequest) (*pb.CreateCheckpointResponse, error) {
+	if s.checkpointStore == nil {
+		return nil, fmt.Errorf("checkpoint store not configured on this worker")
+	}
+
 	checkpointID := req.CheckpointId
 	if _, err := uuid.Parse(checkpointID); err != nil {
 		return nil, fmt.Errorf("invalid checkpoint ID: %w", err)
 	}
 
-	// The onReady callback marks the checkpoint as ready in the DB when the async S3 upload completes.
+	// The onReady callback fires after the async mem file move + S3 upload completes.
+	// If prepare_golden is set, it also creates a golden snapshot from the cache.
+	prepareGolden := req.PrepareGolden
+	mgr := s.manager
 	var onReady func()
 	if s.store != nil {
 		cpID, _ := uuid.Parse(checkpointID)
@@ -507,6 +561,24 @@ func (s *GRPCServer) CreateCheckpoint(ctx context.Context, req *pb.CreateCheckpo
 				log.Printf("grpc: CreateCheckpoint: failed to mark checkpoint %s ready: %v", checkpointID, err)
 			} else {
 				log.Printf("grpc: CreateCheckpoint: checkpoint %s is now ready", checkpointID)
+			}
+			// Create golden snapshot after mem file is in place
+			if prepareGolden {
+				type goldenPreparer interface {
+					RegisterTemplateGoldenFromCache(checkpointID string)
+				}
+				if gp, ok := mgr.(goldenPreparer); ok {
+					gp.RegisterTemplateGoldenFromCache(checkpointID)
+				}
+			}
+		}
+	} else if prepareGolden {
+		onReady = func() {
+			type goldenPreparer interface {
+				RegisterTemplateGoldenFromCache(checkpointID string)
+			}
+			if gp, ok := mgr.(goldenPreparer); ok {
+				gp.RegisterTemplateGoldenFromCache(checkpointID)
 			}
 		}
 	}
@@ -528,8 +600,38 @@ func (s *GRPCServer) RestoreCheckpoint(ctx context.Context, req *pb.RestoreCheck
 		return nil, fmt.Errorf("invalid checkpoint ID: %w", err)
 	}
 
-	// Try direct restore first (QEMU loadvm works on the running VM's qcow2 drives).
-	// Only fall back to file-based restore with S3 download if the direct approach fails.
+	// Check local cache first; if not available, download from S3
+	cachedRootfs := s.manager.CheckpointCachePath(checkpointID, "rootfs.ext4")
+	cachedWorkspace := s.manager.CheckpointCachePath(checkpointID, "workspace.ext4")
+	if cachedRootfs == "" || cachedWorkspace == "" {
+		// Need to download from S3
+		if s.checkpointStore == nil {
+			return nil, fmt.Errorf("checkpoint not cached locally and no S3 store configured")
+		}
+		log.Printf("grpc: RestoreCheckpoint %s: not cached locally, downloading from S3", checkpointID)
+		rootfsKey := fmt.Sprintf("checkpoints/%s/%s/rootfs.tar.zst", req.SandboxId, checkpointID)
+		workspaceKey := fmt.Sprintf("checkpoints/%s/%s/workspace.sparse.zst", req.SandboxId, checkpointID)
+
+		cacheDir := filepath.Join(s.manager.DataDir(), "checkpoints", checkpointID)
+		if err := os.MkdirAll(cacheDir, 0755); err != nil {
+			return nil, fmt.Errorf("create checkpoint cache dir: %w", err)
+		}
+
+		cachedRootfsPath := filepath.Join(cacheDir, "rootfs.ext4")
+		cachedWorkspacePath := filepath.Join(cacheDir, "workspace.ext4")
+
+		if err := downloadAndExtract(ctx, s.checkpointStore, rootfsKey, cacheDir, extractArchiveCmd); err != nil {
+			os.RemoveAll(cacheDir)
+			return nil, fmt.Errorf("download checkpoint rootfs: %w", err)
+		}
+		if err := downloadAndExtract(ctx, s.checkpointStore, workspaceKey, cachedWorkspacePath, extractSparseCmd); err != nil {
+			os.RemoveAll(cacheDir)
+			return nil, fmt.Errorf("download checkpoint workspace: %w", err)
+		}
+		log.Printf("grpc: RestoreCheckpoint %s: cached locally at %s", checkpointID, cacheDir)
+		_ = cachedRootfsPath // used implicitly by manager.CheckpointCachePath after download
+	}
+
 	if err := s.manager.RestoreFromCheckpoint(ctx, req.SandboxId, checkpointID); err != nil {
 		return nil, fmt.Errorf("restore from checkpoint failed: %w", err)
 	}
@@ -696,25 +798,6 @@ func downloadAndExtract(ctx context.Context, store *storage.CheckpointStore, s3K
 	data.Close()
 
 	return extract(tmpPath, dest)
-}
-
-func (s *GRPCServer) SetSandboxLimits(ctx context.Context, req *pb.SetSandboxLimitsRequest) (*pb.SetSandboxLimitsResponse, error) {
-	if err := s.manager.SetResourceLimits(ctx, req.SandboxId, req.MaxPids, req.MaxMemoryBytes, req.CpuMaxUsec, req.CpuPeriodUsec); err != nil {
-		return nil, fmt.Errorf("set sandbox limits failed: %w", err)
-	}
-
-	// Record scale event for billing
-	if s.store != nil && (req.MaxMemoryBytes > 0 || req.CpuMaxUsec > 0) {
-		memMB := int(req.MaxMemoryBytes / (1024 * 1024))
-		cpuPct := int(req.CpuMaxUsec / 1000) // 100000 usec = 100%
-		// Look up org from sandbox session
-		session, err := s.store.GetSandboxSession(ctx, req.SandboxId)
-		if err == nil {
-			_ = s.store.RecordScaleEvent(ctx, req.SandboxId, session.OrgID.String(), memMB, cpuPct)
-		}
-	}
-
-	return &pb.SetSandboxLimitsResponse{}, nil
 }
 
 func (s *GRPCServer) GetSandboxStats(ctx context.Context, req *pb.GetSandboxStatsRequest) (*pb.GetSandboxStatsResponse, error) {

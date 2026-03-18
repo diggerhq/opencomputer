@@ -10,7 +10,9 @@ npm install @opencomputer/sdk
 ```
 
 ```typescript
-import { Sandbox, Templates } from "@opencomputer/sdk";
+import { Sandbox } from "@opencomputer/sdk";
+import { Image } from "@opencomputer/sdk/dist/image.js";
+import { Snapshots } from "@opencomputer/sdk/dist/snapshot.js";
 ```
 
 ---
@@ -33,6 +35,9 @@ Create a new sandbox.
 | `metadata` | Record\<string, string\> | — | Arbitrary metadata |
 | `cpuCount` | number | — | CPU cores (max 4) |
 | `memoryMB` | number | — | Memory in MB (max 2048) |
+| `image` | Image | — | Declarative image definition (see [Image](#image)) |
+| `snapshot` | string | — | Name of a pre-built snapshot |
+| `onBuildLog` | `(log: string) => void` | — | Build log callback (when using `image`) |
 
 ```typescript
 const sandbox = await Sandbox.create({ template: "my-stack", timeout: 600 });
@@ -179,6 +184,9 @@ interface SandboxOpts {
   metadata?: Record<string, string>;
   cpuCount?: number;
   memoryMB?: number;
+  image?: Image;
+  snapshot?: string;
+  onBuildLog?: (log: string) => void;
 }
 ```
 
@@ -483,43 +491,286 @@ Create an interactive terminal session.
 
 ---
 
-## Templates
+## Image
+
+Fluent, immutable builder for declarative sandbox images. Each method returns a new `Image` instance.
+
+### `Image.base(): Image`
+
+Start from the default OpenSandbox environment (Ubuntu 22.04, Python, Node.js, build tools).
+
+```typescript
+import { Image } from "@opencomputer/sdk";
+
+const image = Image.base()
+  .aptInstall(['curl', 'jq'])
+  .pipInstall(['requests', 'pandas'])
+  .env({ PROJECT_ROOT: '/workspace' })
+  .workdir('/workspace');
+```
+
+### Builder Methods
+
+| Method | Parameters | Description |
+| --- | --- | --- |
+| `aptInstall(packages)` | `string[]` | Install system packages via apt-get |
+| `pipInstall(packages)` | `string[]` | Install Python packages via pip |
+| `runCommands(...cmds)` | `string[]` | Run shell commands during build |
+| `env(vars)` | `Record<string, string>` | Set environment variables |
+| `workdir(path)` | `string` | Set default working directory |
+| `addFile(remotePath, content)` | `string, string` | Embed a file with inline content |
+| `addLocalFile(localPath, remotePath)` | `string, string` | Read a local file into the image |
+| `addLocalDir(localPath, remotePath)` | `string, string` | Read a local directory into the image |
+
+### `image.toJSON(): ImageManifest`
+
+Returns the image manifest as a plain object.
+
+### `image.cacheKey(): string`
+
+Computes a deterministic SHA-256 hash of the manifest for cache lookups.
+
+---
+
+## Snapshots
 
 Standalone class — not a property on Sandbox.
 
-### `new Templates(apiUrl, apiKey)`
+### `new Snapshots(opts?)`
 
 ```typescript
-import { Templates } from "@opencomputer/sdk";
+import { Snapshots } from "@opencomputer/sdk";
 
-const templates = new Templates("https://app.opencomputer.dev", apiKey);
+const snapshots = new Snapshots();
+// or with explicit config:
+const snapshots = new Snapshots({ apiKey: "...", apiUrl: "..." });
 ```
 
-### `templates.build(name, dockerfile): Promise<TemplateInfo>`
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `apiKey` | string | API key (falls back to `OPENCOMPUTER_API_KEY` env var) |
+| `apiUrl` | string | API URL (falls back to `OPENCOMPUTER_API_URL` env var) |
 
-Build a template from a Dockerfile string.
+### `snapshots.create(opts): Promise<SnapshotInfo>`
 
-### `templates.list(): Promise<TemplateInfo[]>`
+Create a pre-built snapshot from a declarative image.
 
-List all templates.
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Unique snapshot name |
+| `image` | Image | Yes | Declarative image definition |
+| `onBuildLogs` | `(log: string) => void` | No | Build log streaming callback |
 
-### `templates.get(name): Promise<TemplateInfo>`
+### `snapshots.list(): Promise<SnapshotInfo[]>`
 
-Get a template by name.
+List all snapshots for the current organization.
 
-### `templates.delete(name): Promise<void>`
+### `snapshots.get(name): Promise<SnapshotInfo>`
 
-Delete a template.
+Get a snapshot by name.
+
+### `snapshots.delete(name): Promise<void>`
+
+Delete a snapshot. Existing sandboxes created from it are not affected.
 
 ### Types
 
-#### TemplateInfo
+#### SnapshotInfo
 
 ```typescript
-interface TemplateInfo {
-  templateID: string;
+interface SnapshotInfo {
+  id: string;
   name: string;
-  tag: string;
-  status: string;  // "ready" | "building" | "error"
+  status: string;       // "building" | "ready" | "failed"
+  contentHash: string;
+  checkpointId: string;
+  manifest: object;
+  createdAt: string;
+  lastUsedAt: string;
 }
 ```
+
+---
+
+## Secret Stores
+
+### `SecretStore.create(opts)`
+
+Create a new secret store.
+
+```typescript
+import { SecretStore } from '@opencomputer/sdk';
+
+const store = await SecretStore.create({
+  name: 'my-agent-secrets',
+  egressAllowlist: ['api.anthropic.com'],
+});
+```
+
+<ParamField body="opts" type="CreateSecretStoreOpts" required>
+  <Expandable title="properties">
+    <ParamField body="name" type="string" required>
+      Store name (unique per organization).
+    </ParamField>
+    <ParamField body="egressAllowlist" type="string[]" optional>
+      Allowed egress hosts (e.g. `["api.anthropic.com"]`).
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Returns:** `Promise<SecretStoreInfo>`
+
+### `SecretStore.list(opts?)`
+
+List all secret stores.
+
+```typescript
+const stores = await SecretStore.list();
+```
+
+**Returns:** `Promise<SecretStoreInfo[]>`
+
+### `SecretStore.get(storeId, opts?)`
+
+Get a secret store by ID.
+
+```typescript
+const store = await SecretStore.get('store-uuid');
+```
+
+<ParamField body="storeId" type="string" required>
+  UUID of the secret store.
+</ParamField>
+
+**Returns:** `Promise<SecretStoreInfo>`
+
+### `SecretStore.update(storeId, opts)`
+
+Partial updates — only the fields you pass are changed.
+
+```typescript
+const updated = await SecretStore.update('store-uuid', {
+  name: 'new-name',
+  egressAllowlist: ['api.anthropic.com', '*.openai.com'],
+});
+```
+
+<ParamField body="storeId" type="string" required>
+  UUID of the store to update.
+</ParamField>
+<ParamField body="opts" type="UpdateSecretStoreOpts" required>
+  <Expandable title="properties">
+    <ParamField body="name" type="string" optional>
+      New store name.
+    </ParamField>
+    <ParamField body="egressAllowlist" type="string[]" optional>
+      New allowed egress hosts.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Returns:** `Promise<SecretStoreInfo>`
+
+### `SecretStore.delete(storeId, opts?)`
+
+Deletes the store and all its secrets. Running sandboxes are not affected.
+
+```typescript
+await SecretStore.delete('store-uuid');
+```
+
+**Returns:** `Promise<void>`
+
+### `SecretStore.setSecret(storeId, name, value, opts?)`
+
+Set a secret in a store. Secrets are encrypted at rest. The value is never returned by the API.
+
+```typescript
+await SecretStore.setSecret('store-uuid', 'ANTHROPIC_API_KEY', 'sk-ant-...');
+```
+
+Optionally restrict which hosts can receive this secret:
+
+```typescript
+await SecretStore.setSecret('store-uuid', 'ANTHROPIC_API_KEY', 'sk-ant-...', {
+  allowedHosts: ['api.anthropic.com'],
+});
+```
+
+<ParamField body="storeId" type="string" required>
+  UUID of the secret store.
+</ParamField>
+<ParamField body="name" type="string" required>
+  Secret name (used as the env var name in sandboxes).
+</ParamField>
+<ParamField body="value" type="string" required>
+  Secret value (encrypted at rest, never returned by API).
+</ParamField>
+
+**Returns:** `Promise<void>`
+
+### `SecretStore.listSecrets(storeId, opts?)`
+
+Returns secret metadata only. Values are never exposed.
+
+```typescript
+const entries = await SecretStore.listSecrets('store-uuid');
+// [{ name: 'ANTHROPIC_API_KEY', allowedHosts: ['api.anthropic.com'], ... }, ...]
+```
+
+**Returns:** `Promise<SecretEntryInfo[]>`
+
+### `SecretStore.deleteSecret(storeId, name, opts?)`
+
+```typescript
+await SecretStore.deleteSecret('store-uuid', 'DATABASE_URL');
+```
+
+**Returns:** `Promise<void>`
+
+### Creating a Sandbox with a Secret Store
+
+Pass the `secretStore` option to `Sandbox.create()` to inject the store's secrets:
+
+```typescript
+import { Sandbox } from '@opencomputer/sdk';
+
+const sandbox = await Sandbox.create({
+  secretStore: 'my-agent-secrets',
+  timeout: 600,
+});
+
+// Secrets are available as sealed env vars
+const result = await sandbox.commands.run('echo $ANTHROPIC_API_KEY');
+// stdout: "osb_sealed_abc123..." (sealed, not the real key)
+
+// But outbound HTTPS requests get the real value substituted by the proxy
+const apiResult = await sandbox.commands.run(
+  'curl -s https://api.anthropic.com/v1/messages -H "x-api-key: $ANTHROPIC_API_KEY" ...'
+);
+// The proxy replaces the sealed token with the real key before it hits Anthropic
+```
+
+### Types
+
+#### SecretStoreInfo
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `id` | `string` | Store UUID |
+| `orgId` | `string` | Organization UUID |
+| `name` | `string` | Store name |
+| `egressAllowlist` | `string[]` | Allowed egress hosts |
+| `createdAt` | `string` | ISO 8601 timestamp |
+| `updatedAt` | `string` | ISO 8601 timestamp |
+
+#### SecretEntryInfo
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `id` | `string` | Entry UUID |
+| `storeId` | `string` | Parent store UUID |
+| `name` | `string` | Secret name (env var name) |
+| `allowedHosts` | `string[]` | Host restrictions for this secret |
+| `createdAt` | `string` | ISO 8601 timestamp |
+| `updatedAt` | `string` | ISO 8601 timestamp |

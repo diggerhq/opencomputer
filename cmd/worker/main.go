@@ -14,15 +14,15 @@ import (
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/config"
 	"github.com/opensandbox/opensandbox/internal/db"
-	fc "github.com/opensandbox/opensandbox/internal/firecracker"
-	qm "github.com/opensandbox/opensandbox/internal/qemu"
-	agentpb "github.com/opensandbox/opensandbox/proto/agent"
 	"github.com/opensandbox/opensandbox/internal/metrics"
 	"github.com/opensandbox/opensandbox/internal/proxy"
+	qm "github.com/opensandbox/opensandbox/internal/qemu"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/secretsproxy"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/internal/worker"
 	"github.com/opensandbox/opensandbox/pkg/types"
+	agentpb "github.com/opensandbox/opensandbox/proto/agent"
 )
 
 func main() {
@@ -46,91 +46,27 @@ func main() {
 	// Backend-specific graceful shutdown
 	var doGracefulShutdown func(checkpointStore *storage.CheckpointStore, store *db.Store)
 
-	switch cfg.VMBackend {
-	case "firecracker":
-		fcCfg := fc.Config{
-			DataDir:         cfg.DataDir,
-			KernelPath:      cfg.KernelPath,
-			ImagesDir:       cfg.ImagesDir,
-			FirecrackerBin:  cfg.FirecrackerBin,
-			DefaultMemoryMB: cfg.DefaultSandboxMemoryMB,
-			DefaultCPUs:     cfg.DefaultSandboxCPUs,
-			DefaultDiskMB:   cfg.DefaultSandboxDiskMB,
-		}
-
-		fcMgr, err := fc.NewManager(fcCfg)
+	// Initialize secrets proxy for MITM token substitution.
+	// Runs on :3128 — VMs route HTTPS through this to keep real secrets off-VM.
+	secretsCA, err := secretsproxy.LoadOrCreateCA(filepath.Join(cfg.DataDir, "proxy-ca"))
+	if err != nil {
+		log.Printf("opensandbox-worker: secrets proxy CA failed: %v (secrets proxy disabled)", err)
+	}
+	var secretsProxy *secretsproxy.SecretsProxy
+	if secretsCA != nil {
+		secretsProxy, err = secretsproxy.NewSecretsProxy(secretsCA, "0.0.0.0:3128")
 		if err != nil {
-			log.Fatalf("failed to initialize Firecracker manager: %v", err)
+			log.Printf("opensandbox-worker: secrets proxy listen failed: %v", err)
+		} else {
+			secretsProxy.Start()
+			defer secretsProxy.Stop()
+			log.Println("opensandbox-worker: secrets proxy started on :3128")
 		}
-		defer fcMgr.Close()
-		log.Println("opensandbox-worker: Firecracker VM manager initialized")
+	}
+	_ = secretsProxy // TODO: wire into QEMU manager lifecycle
 
-		fcMgr.CleanupOrphanedProcesses()
-
-		go func() {
-			if err := fcMgr.PrepareGoldenSnapshot(); err != nil {
-				log.Printf("opensandbox-worker: golden snapshot preparation failed: %v (cold boot fallback active)", err)
-			}
-		}()
-
-		mgr = fcMgr
-		autosaverSyncer = fcMgr
-
-		execSessionFactory = func(sandboxID string, req types.ExecSessionCreateRequest) (*sandbox.ExecSessionHandle, error) {
-			agent, err := fcMgr.GetAgent(sandboxID)
-			if err != nil {
-				return nil, fmt.Errorf("get agent for %s: %w", sandboxID, err)
-			}
-			return createExecSession(agent, sandboxID, req)
-		}
-
-		ptySessionFactory = func(sandboxID string, req types.PTYCreateRequest) (*sandbox.PTYSessionHandle, error) {
-			agent, err := fcMgr.GetAgent(sandboxID)
-			if err != nil {
-				return nil, fmt.Errorf("get agent for %s: %w", sandboxID, err)
-			}
-			vsockPath, err := fcMgr.GetVsockPath(sandboxID)
-			if err != nil {
-				return nil, fmt.Errorf("get vsock path for %s: %w", sandboxID, err)
-			}
-			return createPTYSessionFC(agent, vsockPath, sandboxID, req)
-		}
-
-		doGracefulShutdown = func(checkpointStore *storage.CheckpointStore, store *db.Store) {
-			if checkpointStore == nil {
-				return
-			}
-			vms, _ := mgr.List(context.Background())
-			if len(vms) == 0 {
-				return
-			}
-			log.Printf("opensandbox-worker: hibernating %d sandboxes...", len(vms))
-			shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			results := fcMgr.HibernateAll(shutCtx, checkpointStore)
-			cancel()
-			processHibernateResults(results, store, func(r interface{}) (string, string, error) {
-				hr := r.(fc.HibernateAllResult)
-				return hr.SandboxID, hr.HibernationKey, hr.Err
-			})
-			log.Println("opensandbox-worker: waiting for S3 uploads...")
-			fcMgr.WaitUploads(3 * time.Minute)
-			log.Println("opensandbox-worker: graceful shutdown complete")
-		}
-
-		// Local recovery for Firecracker
-		defer func() {
-			// Recovery is done below after DB connection
-		}()
-
-		// Wire up local recovery
-		if dbURL := getDBURL(cfg); dbURL != "" {
-			if store, err := db.NewStore(ctx, dbURL); err == nil {
-				defer store.Close()
-				recoverLocalFC(ctx, fcMgr, store, cfg)
-			}
-		}
-
-	case "qemu":
+	// QEMU backend
+	{
 		qmCfg := qm.Config{
 			DataDir:         cfg.DataDir,
 			KernelPath:      cfg.KernelPath,
@@ -214,8 +150,6 @@ func main() {
 			}
 		}
 
-	default:
-		log.Fatalf("unknown VM backend %q (expected 'firecracker' or 'qemu')", cfg.VMBackend)
 	}
 
 	// Initialize exec session manager
@@ -317,8 +251,8 @@ func main() {
 	defer metricsSrv.Close()
 	log.Println("opensandbox-worker: metrics server started on :9091")
 
-	// gRPC server
-	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, execMgr, sandboxDBMgr, checkpointStore, sbRouter, store)
+	// gRPC server (nil builder — template building via podman not needed for QEMU)
+	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, execMgr, sandboxDBMgr, checkpointStore, sbRouter, nil, store)
 	grpcAddr := ":9090"
 	log.Printf("opensandbox-worker: starting gRPC server on %s", grpcAddr)
 	go func() {
@@ -449,47 +383,6 @@ func getDBURL(cfg *config.Config) string {
 	return os.Getenv("DATABASE_URL")
 }
 
-// createExecSession creates an exec session using a Firecracker agent client.
-func createExecSession(agent *fc.AgentClient, sandboxID string, req types.ExecSessionCreateRequest) (*sandbox.ExecSessionHandle, error) {
-	agentPB := &agentpb.ExecSessionCreateRequest{
-		Command:               req.Command,
-		Args:                  req.Args,
-		Envs:                  req.Env,
-		Cwd:                   req.Cwd,
-		TimeoutSeconds:        int32(req.Timeout),
-		MaxRunAfterDisconnect: int32(req.MaxRunAfterDisconnect),
-	}
-
-	sessionID, err := agent.ExecSessionCreate(context.Background(), agentPB)
-	if err != nil {
-		return nil, fmt.Errorf("create exec session in VM: %w", err)
-	}
-
-	scrollback := sandbox.NewScrollbackBuffer(0)
-	done := make(chan struct{})
-	stdinR, stdinW := io.Pipe()
-
-	handle := &sandbox.ExecSessionHandle{
-		ID:          sessionID,
-		SandboxID:   sandboxID,
-		Command:     req.Command,
-		Args:        req.Args,
-		Running:     true,
-		StartedAt:   time.Now(),
-		Done:        done,
-		Scrollback:  scrollback,
-		StdinWriter: stdinW,
-		OnKill: func(signal int) error {
-			stdinW.Close()
-			return agent.ExecSessionKill(context.Background(), sessionID, int32(signal))
-		},
-	}
-
-	go runExecStream(agent, sessionID, stdinR, done, scrollback, handle)
-
-	return handle, nil
-}
-
 // createExecSessionQEMU creates an exec session using a QEMU agent client.
 func createExecSessionQEMU(agent *qm.AgentClient, sandboxID string, req types.ExecSessionCreateRequest) (*sandbox.ExecSessionHandle, error) {
 	agentPB := &agentpb.ExecSessionCreateRequest{
@@ -529,21 +422,6 @@ func createExecSessionQEMU(agent *qm.AgentClient, sandboxID string, req types.Ex
 	go runExecStreamQEMU(agent, sessionID, stdinR, done, scrollback, handle)
 
 	return handle, nil
-}
-
-// runExecStream attaches to an exec session stream (Firecracker backend).
-func runExecStream(agent *fc.AgentClient, sessionID string, stdinR *io.PipeReader, done chan struct{}, scrollback *sandbox.ScrollbackBuffer, handle *sandbox.ExecSessionHandle) {
-	defer close(done)
-	defer stdinR.Close()
-	stream, err := agent.ExecSessionAttach(context.Background())
-	if err != nil {
-		return
-	}
-	if err := stream.Send(&agentpb.ExecSessionInput{SessionId: sessionID}); err != nil {
-		return
-	}
-	go forwardStdin(stdinR, stream)
-	consumeExecOutput(stream, scrollback, handle)
 }
 
 // runExecStreamQEMU attaches to an exec session stream (QEMU backend).
@@ -602,37 +480,6 @@ func consumeExecOutput(stream agentpb.SandboxAgent_ExecSessionAttachClient, scro
 	}
 }
 
-// createPTYSessionFC creates a PTY session using Firecracker's vsock UDS protocol.
-func createPTYSessionFC(agent *fc.AgentClient, vsockPath, sandboxID string, req types.PTYCreateRequest) (*sandbox.PTYSessionHandle, error) {
-	cols := int32(req.Cols)
-	if cols <= 0 {
-		cols = 80
-	}
-	rows := int32(req.Rows)
-	if rows <= 0 {
-		rows = 24
-	}
-
-	sessionID, dataPort, err := agent.PTYCreate(context.Background(), cols, rows, req.Shell)
-	if err != nil {
-		return nil, fmt.Errorf("create PTY in VM: %w", err)
-	}
-
-	conn, err := agent.ConnectPTYData(vsockPath, dataPort)
-	if err != nil {
-		_ = agent.PTYKill(context.Background(), sessionID)
-		return nil, fmt.Errorf("connect PTY data: %w", err)
-	}
-
-	done := make(chan struct{})
-	return &sandbox.PTYSessionHandle{
-		ID:        sessionID,
-		SandboxID: sandboxID,
-		PTY:       conn,
-		Done:      done,
-	}, nil
-}
-
 // createPTYSessionQEMU creates a PTY session using AF_VSOCK (QEMU backend).
 func createPTYSessionQEMU(agent *qm.AgentClient, guestCID uint32, sandboxID string, req types.PTYCreateRequest) (*sandbox.PTYSessionHandle, error) {
 	cols := int32(req.Cols)
@@ -666,28 +513,7 @@ func createPTYSessionQEMU(agent *qm.AgentClient, guestCID uint32, sandboxID stri
 
 // processHibernateResults handles results from HibernateAll for both backends.
 func processHibernateResults(results interface{}, store *db.Store, extract func(interface{}) (string, string, error)) {
-	// This is intentionally generic — each backend calls it with its own result type
 	switch rs := results.(type) {
-	case []fc.HibernateAllResult:
-		for _, r := range rs {
-			if r.Err != nil {
-				log.Printf("opensandbox-worker: hibernate failed for %s: %v", r.SandboxID, r.Err)
-				if store != nil {
-					errMsg := "hibernate failed on shutdown: " + r.Err.Error()
-					_ = store.UpdateSandboxSessionStatus(context.Background(), r.SandboxID, "stopped", &errMsg)
-				}
-				continue
-			}
-			log.Printf("opensandbox-worker: hibernated %s (key=%s)", r.SandboxID, r.HibernationKey)
-			if store != nil {
-				session, err := store.GetSandboxSession(context.Background(), r.SandboxID)
-				if err == nil {
-					_, _ = store.CreateHibernation(context.Background(), r.SandboxID, session.OrgID,
-						r.HibernationKey, 0, session.Region, session.Template, session.Config)
-					_ = store.UpdateSandboxSessionStatus(context.Background(), r.SandboxID, "hibernated", nil)
-				}
-			}
-		}
 	case []qm.HibernateAllResult:
 		for _, r := range rs {
 			if r.Err != nil {
@@ -708,33 +534,6 @@ func processHibernateResults(results interface{}, store *db.Store, extract func(
 				}
 			}
 		}
-	}
-}
-
-// recoverLocalFC handles local NVMe recovery for Firecracker backend.
-func recoverLocalFC(ctx context.Context, fcMgr *fc.Manager, store *db.Store, cfg *config.Config) {
-	recoveries := fcMgr.RecoverLocalSandboxes()
-	if len(recoveries) == 0 {
-		return
-	}
-	snapshotCount, workspaceCount := 0, 0
-	for _, r := range recoveries {
-		session, err := store.GetSandboxSession(ctx, r.SandboxID)
-		if err != nil {
-			log.Printf("opensandbox-worker: no DB session for %s, skipping recovery", r.SandboxID)
-			continue
-		}
-		_, _ = store.CreateHibernation(ctx, r.SandboxID, session.OrgID,
-			"local://"+r.SandboxID, 0, session.Region, session.Template, session.Config)
-		_ = store.UpdateSandboxSessionStatus(ctx, r.SandboxID, "hibernated", nil)
-		if r.HasSnapshot {
-			snapshotCount++
-		} else {
-			workspaceCount++
-		}
-	}
-	if snapshotCount+workspaceCount > 0 {
-		log.Printf("opensandbox-worker: local recovery: %d with snapshot, %d workspace-only", snapshotCount, workspaceCount)
 	}
 }
 
