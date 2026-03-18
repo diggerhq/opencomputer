@@ -28,8 +28,11 @@ type Sandbox struct {
 	CpuCount   int               `json:"cpuCount"`
 	MemoryMB   int               `json:"memoryMB"`
 	MachineID  string            `json:"machineID,omitempty"`
-	ConnectURL string            `json:"connectURL,omitempty"` // Direct worker URL for SDK access
-	Token      string            `json:"token,omitempty"`      // Sandbox-scoped JWT for worker auth
+	// ConnectURL and Token are currently unused by SDKs. All data-plane traffic
+	// flows through the control plane's SandboxAPIProxy, which proxies to workers
+	// over the internal VPC network. Direct worker access support coming in a future release.
+	ConnectURL string            `json:"connectURL,omitempty"`
+	Token      string            `json:"token,omitempty"`
 	HostPort   int               `json:"hostPort,omitempty"`   // Mapped host port for the sandbox's container port
 }
 
@@ -44,10 +47,21 @@ type SandboxConfig struct {
 	Envs       map[string]string `json:"envs,omitempty"`
 	Port       int               `json:"port,omitempty"`       // container port to expose via subdomain (default 80)
 	NetworkEnabled bool          `json:"networkEnabled,omitempty"`
+	ImageRef       string        `json:"imageRef,omitempty"`       // resolved ECR URI for custom templates
 	// Sandbox snapshot template: S3 keys for rootfs and workspace drives.
 	// When set, the sandbox boots from these drives instead of the standard base image.
 	TemplateRootfsKey    string `json:"templateRootfsKey,omitempty"`
 	TemplateWorkspaceKey string `json:"templateWorkspaceKey,omitempty"`
+	// SecretStore name — resolves secrets from the named secret store.
+	SecretStore string `json:"secretStore,omitempty"`
+	// EgressAllowlist restricts outbound HTTPS from the sandbox to these hosts.
+	// Supports exact matches ("api.anthropic.com") and wildcards ("*.openai.com").
+	// Empty = all hosts allowed (no restriction).
+	EgressAllowlist []string `json:"egressAllowlist,omitempty"`
+	// SecretAllowedHosts maps env var name → allowed hosts for that secret.
+	// Secrets are only substituted in requests to matching hosts.
+	// Missing key or empty slice = substitute on all allowed hosts.
+	SecretAllowedHosts map[string][]string `json:"secretAllowedHosts,omitempty"`
 	// Declarative image manifest: when set, the server builds and caches
 	// the image as a checkpoint before creating the sandbox.
 	ImageManifest json.RawMessage `json:"image,omitempty"`
@@ -57,6 +71,9 @@ type SandboxConfig struct {
 	// SandboxID allows pre-determining the sandbox ID for async creation.
 	// If empty, a new ID is generated automatically.
 	SandboxID string `json:"-"`
+	// CheckpointID is the source checkpoint for template/snapshot creates.
+	// Used by the worker to key per-template golden snapshots.
+	CheckpointID string `json:"-"`
 }
 
 // SandboxListResponse is the response for listing sandboxes.

@@ -55,6 +55,10 @@ message CreateSandboxRequest {
   string checkpoint_id = 11;
   // Server-assigned sandbox ID. If non-empty, worker uses this instead of generating one.
   string sandbox_id = 12;
+  // Egress allowlist: if non-empty, only these hosts can be reached.
+  repeated string egress_allowlist = 13;
+  // Per-secret host restrictions for secrets proxy.
+  map<string, string> secret_allowed_hosts = 14;
 }
 
 message CreateSandboxResponse {
@@ -275,6 +279,7 @@ message GetSandboxStatsResponse {
 message CreateCheckpointRequest {
   string sandbox_id = 1;
   string checkpoint_id = 2;  // UUID assigned by control plane
+  bool prepare_golden = 3;   // If true, prepare a golden snapshot from this checkpoint
 }
 
 message CreateCheckpointResponse {
