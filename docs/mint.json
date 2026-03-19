@@ -81,6 +81,7 @@
         "sandboxes/overview",
         "sandboxes/running-commands",
         "sandboxes/working-with-files",
+        "sandboxes/signed-urls",
         "sandboxes/interactive-terminals",
         "sandboxes/checkpoints",
         "sandboxes/templates",

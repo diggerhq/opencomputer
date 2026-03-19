@@ -203,10 +203,6 @@ await sandbox.files.write_stream("/data/model.bin", file_chunks())
 
 </CodeGroup>
 
-<Note>
-  All file I/O — including signed URL uploads/downloads — is streamed through the full stack (SDK → control plane → worker → VM). There is no separate "large file mode" to enable.
-</Note>
-
 ## Examples
 
 ### Upload and Run a Script

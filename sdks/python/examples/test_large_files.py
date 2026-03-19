@@ -17,6 +17,8 @@ import hashlib
 import sys
 import time
 
+import httpx
+
 from opencomputer import Sandbox
 
 GREEN = "\033[32m"
@@ -121,8 +123,51 @@ async def main() -> None:
         check("SHA-256 matches after read", read_hash == hash100)
         print()
 
-        # ── Test 2: read_stream / write_stream (50MB) ────────────
-        bold("━━━ Test 2: read_stream / write_stream 50MB ━━━\n")
+        # ── Test 2: Download 100MB via signed URL ────────────────
+        bold("━━━ Test 2: Download 100MB via signed URL ━━━\n")
+
+        dl_url = await sandbox.download_url("/root/large100.bin", expires_in=300)
+        dim("Download URL generated")
+
+        t2 = time.time()
+        async with httpx.AsyncClient(timeout=120.0) as http:
+            dl_resp = await http.get(dl_url)
+        check("Signed URL returns 200", dl_resp.status_code == 200)
+
+        content_length = dl_resp.headers.get("content-length")
+        dim(f"Content-Length: {content_length}")
+        check("Content-Length is 100MB", content_length == str(len(data100)))
+
+        dl_data = dl_resp.content
+        dl_s = time.time() - t2
+        dim(f"Download took {dl_s:.1f}s ({100 / dl_s:.1f} MB/s)")
+
+        check("Downloaded size correct", len(dl_data) == len(data100))
+        dl_hash = sha256(dl_data)
+        check("SHA-256 matches via signed URL download", dl_hash == hash100)
+        print()
+
+        # ── Test 3: Upload 100MB via signed URL ──────────────────
+        bold("━━━ Test 3: Upload 100MB via signed URL ━━━\n")
+
+        up_url = await sandbox.upload_url("/root/uploaded100.bin")
+        dim("Upload URL generated")
+
+        t3 = time.time()
+        async with httpx.AsyncClient(timeout=120.0) as http:
+            up_resp = await http.put(up_url, content=data100)
+        up_s = time.time() - t3
+        dim(f"Upload took {up_s:.1f}s ({100 / up_s:.1f} MB/s)")
+        check("Upload returns 204", up_resp.status_code == 204)
+
+        up_read_back = await sandbox.files.read_bytes("/root/uploaded100.bin")
+        check("Uploaded file size correct", len(up_read_back) == len(data100))
+        up_hash = sha256(up_read_back)
+        check("SHA-256 matches after signed URL upload", up_hash == hash100)
+        print()
+
+        # ── Test 4: read_stream / write_stream (50MB) ────────────
+        bold("━━━ Test 4: read_stream / write_stream 50MB ━━━\n")
 
         data50 = generate_data(50)
         hash50 = sha256(data50)
