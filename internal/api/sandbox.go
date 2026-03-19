@@ -273,14 +273,12 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		})
 	}
 
-	// Resolve template image from DB (org-scoped lookup with public fallback)
-	var imageRef string
+	// Resolve template from DB (org-scoped lookup with public fallback)
 	var templateRootfsKey, templateWorkspaceKey string
 	var templateID *uuid.UUID
 	if s.store != nil && hasOrg {
 		tmpl, err := s.store.GetTemplateByName(ctx, orgID, cfg.Template)
 		if err == nil {
-			imageRef = tmpl.ImageRef
 			templateID = &tmpl.ID
 			log.Printf("sandbox: resolved template %q (type=%s, id=%s)", cfg.Template, tmpl.TemplateType, tmpl.ID)
 			// Sandbox-type templates provide S3 drive keys instead of ECR image refs
@@ -310,7 +308,6 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		MemoryMb:             int32(cfg.MemoryMB),
 		CpuCount:             int32(cfg.CpuCount),
 		NetworkEnabled:       cfg.NetworkEnabled,
-		ImageRef:             imageRef,
 		Port:                 int32(cfg.Port),
 		TemplateRootfsKey:    templateRootfsKey,
 		TemplateWorkspaceKey: templateWorkspaceKey,
@@ -608,6 +605,135 @@ func (s *Server) setTimeout(c echo.Context) error {
 	s.router.SetTimeout(id, time.Duration(req.Timeout)*time.Second)
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Server) setLimits(c echo.Context) error {
+	id := c.Param("id")
+	ctx := c.Request().Context()
+
+	var req struct {
+		MemoryMB   int `json:"memoryMB"`
+		CPUPercent int `json:"cpuPercent"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid request body: " + err.Error(),
+		})
+	}
+
+	// Auto-calculate CPU from memory: 1 vCPU per 1GB
+	if req.MemoryMB > 0 && req.CPUPercent == 0 {
+		req.CPUPercent = (req.MemoryMB * 100) / 1024
+		if req.CPUPercent < 100 {
+			req.CPUPercent = 100
+		}
+	}
+
+	// Convert to cgroup values
+	maxMemoryBytes := int64(req.MemoryMB) * 1024 * 1024
+	cpuMaxUsec := int64(req.CPUPercent) * 1000
+	cpuPeriodUsec := int64(100000)
+
+	// Server mode: dispatch to worker via gRPC
+	if s.workerRegistry != nil {
+		return s.setLimitsRemote(c, id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec)
+	}
+
+	// Combined mode: apply locally
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
+	if err := s.manager.SetResourceLimits(ctx, id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"sandboxID":  id,
+		"memoryMB":   req.MemoryMB,
+		"cpuPercent": req.CPUPercent,
+	})
+}
+
+// scaleSandbox is a simplified scaling endpoint: POST /sandboxes/:id/scale
+// Accepts {"memoryMB": 2048} and auto-calculates CPU (1 vCPU per 1GB).
+func (s *Server) scaleSandbox(c echo.Context) error {
+	id := c.Param("id")
+
+	var req struct {
+		MemoryMB int `json:"memoryMB"`
+	}
+	if err := c.Bind(&req); err != nil || req.MemoryMB <= 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "memoryMB is required and must be positive"})
+	}
+
+	// Auto-calculate: 1 vCPU per 1GB = 100% CPU per 1024MB
+	cpuPercent := (req.MemoryMB * 100) / 1024
+	if cpuPercent < 100 {
+		cpuPercent = 100
+	}
+	maxMemoryBytes := int64(req.MemoryMB) * 1024 * 1024
+	cpuMaxUsec := int64(cpuPercent) * 1000
+	cpuPeriodUsec := int64(100000)
+
+	if s.workerRegistry != nil {
+		return s.setLimitsRemote(c, id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec)
+	}
+	if s.manager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+	if err := s.manager.SetResourceLimits(c.Request().Context(), id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"sandboxID": id,
+		"memoryMB":  req.MemoryMB,
+		"cpuPercent": cpuPercent,
+	})
+}
+
+func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec int64) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+	}
+	if session.Status != "running" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox is not running"})
+	}
+
+	client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker unreachable"})
+	}
+
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 30*time.Second)
+	defer cancel()
+
+	_, err = client.SetSandboxLimits(grpcCtx, &pb.SetSandboxLimitsRequest{
+		SandboxId:      sandboxID,
+		MaxPids:        maxPids,
+		MaxMemoryBytes: maxMemoryBytes,
+		CpuMaxUsec:     cpuMaxUsec,
+		CpuPeriodUsec:  cpuPeriodUsec,
+	})
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "set limits failed: " + err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"sandboxID": sandboxID,
+		"ok":        true,
+	})
 }
 
 func (s *Server) hibernateSandbox(c echo.Context) error {

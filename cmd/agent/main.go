@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/opensandbox/opensandbox/internal/agent"
@@ -20,12 +19,9 @@ const version = "0.1.0"
 func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 
-	// Ensure /usr/local/bin and /usr/local/sbin are in PATH for exec.LookPath.
-	// The init script may not set a full PATH.
-	path := os.Getenv("PATH")
-	if !strings.Contains(path, "/usr/local/bin") {
-		os.Setenv("PATH", "/usr/local/bin:/usr/local/sbin:"+path)
-	}
+	// Set a complete PATH — when running as PID 1 (init), there's no shell
+	// profile to source, so PATH may be empty or minimal.
+	os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 
 	log.Printf("osb-agent %s starting", version)
 
@@ -36,16 +32,31 @@ func main() {
 	}
 
 	srv := agent.NewServer(version)
-	srv.ListenPort = listenPortForPTY
+	// Only set ListenPort for vsock-based backends (Firecracker).
+	// For virtio-serial (QEMU), PTY I/O flows over gRPC PTYAttach instead.
+	if _, isVirtioSerial := lis.(*virtioSerialListener); !isVirtioSerial {
+		srv.ListenPort = listenPortForPTY
+	}
 
-	// Graceful shutdown
+	// Signal handling:
+	// SIGTERM/SIGINT: clean shutdown (exit)
+	// SIGUSR1: hibernate prep — reset virtio-serial listener so Accept
+	//          will poll for a new connection after migration restore
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
 	go func() {
-		sig := <-sigCh
-		log.Printf("agent: received %v, shutting down", sig)
-		lis.Close()
-		os.Exit(0)
+		for sig := range sigCh {
+			if sig == syscall.SIGUSR1 {
+				log.Printf("agent: SIGUSR1 — preparing for hibernate")
+				if vsl, ok := lis.(*virtioSerialListener); ok {
+					vsl.PrepareHibernate()
+				}
+			} else {
+				log.Printf("agent: received %v, shutting down", sig)
+				lis.Close()
+				os.Exit(0)
+			}
+		}
 	}()
 
 	if err := srv.Serve(lis); err != nil {

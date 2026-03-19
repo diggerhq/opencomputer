@@ -51,6 +51,10 @@ type Server struct {
 	ptyMu       sync.Mutex
 	ptySessions map[string]*ptySession
 	nextPTYPort uint32
+
+	// gRPC server reference for hibernate GracefulStop
+	mu         sync.Mutex
+	grpcServer *grpc.Server
 }
 
 // NewServer creates a new agent server.
@@ -65,6 +69,8 @@ func NewServer(version string) *Server {
 }
 
 // Serve starts the gRPC server on the given listener.
+// It stores the gRPC server reference so GracefulStop can be called externally
+// (e.g., on SIGUSR1 to prepare for hibernate).
 func (s *Server) Serve(lis net.Listener) error {
 	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(64 * 1024 * 1024), // 64MB for file transfers
@@ -72,6 +78,21 @@ func (s *Server) Serve(lis net.Listener) error {
 	)
 	pb.RegisterSandboxAgentServer(grpcServer, s)
 
+	s.mu.Lock()
+	s.grpcServer = grpcServer
+	s.mu.Unlock()
+
 	log.Printf("agent: gRPC server listening")
 	return grpcServer.Serve(lis)
+}
+
+// GracefulStop stops the gRPC server gracefully, allowing in-flight RPCs to complete.
+// This causes Serve() to return, so the caller can re-enter Serve() for hibernate/wake.
+func (s *Server) GracefulStop() {
+	s.mu.Lock()
+	gs := s.grpcServer
+	s.mu.Unlock()
+	if gs != nil {
+		gs.GracefulStop()
+	}
 }
