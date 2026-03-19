@@ -227,6 +227,12 @@ bench "Scale up" '
     curl -s -X PUT "$API/api/sandboxes/$SB/limits" -H "Content-Type: application/json" -H "X-API-Key: $KEY" -d "{\"memoryMB\":2048}"
 '
 
+# ── Scale down (2GB → 1GB) ──
+h "Scale down (2GB → 1GB)"
+bench "Scale down" '
+    curl -s -X PUT "$API/api/sandboxes/$SB/limits" -H "Content-Type: application/json" -H "X-API-Key: $KEY" -d "{\"memoryMB\":1024}"
+'
+
 # ── Get sandbox ──
 h "Get sandbox"
 bench "Get sandbox" '
