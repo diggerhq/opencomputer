@@ -67,7 +67,7 @@ type SandboxMeta struct {
 }
 
 // SecretsProxyIntegration provides the interface for the secrets proxy to integrate
-// with VM lifecycle. Defined here (not imported from firecracker) to avoid circular deps.
+// with VM lifecycle.
 type SecretsProxyIntegration interface {
 	// CreateSealedEnvs generates sealed tokens for env vars, registers a proxy session,
 	// and returns the full env map (sealed tokens + proxy config vars) to inject into the VM.
@@ -130,10 +130,10 @@ func NewManager(cfg Config) (*Manager, error) {
 		return nil, fmt.Errorf("DataDir is required")
 	}
 	if cfg.KernelPath == "" {
-		cfg.KernelPath = filepath.Join(cfg.DataDir, "firecracker", "vmlinux-docker-5.10.bin")
+		cfg.KernelPath = filepath.Join(cfg.DataDir, "vmlinux")
 	}
 	if cfg.ImagesDir == "" {
-		cfg.ImagesDir = filepath.Join(cfg.DataDir, "firecracker", "images")
+		cfg.ImagesDir = filepath.Join(cfg.DataDir, "images")
 	}
 	if cfg.QEMUBin == "" {
 		cfg.QEMUBin = "qemu-system-x86_64"

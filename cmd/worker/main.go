@@ -32,7 +32,7 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	log.Printf("opensandbox-worker: starting (id=%s, region=%s, backend=%s)...", cfg.WorkerID, cfg.Region, cfg.VMBackend)
+	log.Printf("opensandbox-worker: starting (id=%s, region=%s, backend=qemu)...", cfg.WorkerID, cfg.Region)
 
 	ctx := context.Background()
 
