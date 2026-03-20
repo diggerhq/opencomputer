@@ -48,7 +48,7 @@ type signedURLResponse struct {
 func (s *Server) createSignedURL(c echo.Context, operation string) error {
 	secret, err := s.signedURLSecret()
 	if err != nil {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": err.Error()})
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 	}
 
 	sandboxID := c.Param("id")
@@ -115,7 +115,7 @@ func (s *Server) createSignedURL(c echo.Context, operation string) error {
 func (s *Server) signedDownload(c echo.Context) error {
 	secret, err := s.signedURLSecret()
 	if err != nil {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": err.Error()})
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 	}
 
 	sandboxID := c.Param("id")
@@ -163,7 +163,7 @@ func (s *Server) signedDownload(c echo.Context) error {
 func (s *Server) signedUpload(c echo.Context) error {
 	secret, err := s.signedURLSecret()
 	if err != nil {
-		return c.JSON(http.StatusNotImplemented, map[string]string{"error": err.Error()})
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 	}
 
 	sandboxID := c.Param("id")
