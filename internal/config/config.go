@@ -80,6 +80,14 @@ type Config struct {
 	EC2WorkerImage         string // Docker image for containerized workers
 	EC2IAMInstanceProfile  string // IAM instance profile for worker instances (Secrets Manager + S3)
 
+	// Azure compute pool (server mode — for auto-scaling worker VMs)
+	AzureSubscriptionID string // Azure subscription ID
+	AzureResourceGroup  string // Resource group for worker VMs
+	AzureVMSize         string // e.g. "Standard_D16s_v5"
+	AzureImageID        string // Custom image ID or URN
+	AzureSubnetID       string // Full resource ID of the VNet subnet
+	AzureSSHPublicKey   string // SSH public key for worker VMs
+
 	// Cloudflare (custom hostname for org sandbox domains)
 	CFAPIToken string // Cloudflare API token with Custom Hostnames permission
 	CFZoneID   string // Cloudflare zone ID for the shared zone (e.g. opencomputer.dev)
@@ -87,6 +95,7 @@ type Config struct {
 	// Autoscaler
 	ScaleCooldownSec    int // Cooldown between scale-up actions (seconds), default 300
 	MinWorkersPerRegion int // Minimum workers per region (for pre-provisioned capacity), default 1
+	MaxWorkersPerRegion int // Maximum workers per region (hard cap), default 10
 
 	// AWS Secrets Manager — if set, secrets are fetched at startup using IAM credentials.
 	// The secret should be a JSON object with keys matching env var names (e.g. OPENSANDBOX_JWT_SECRET).
@@ -160,11 +169,19 @@ func Load() (*Config, error) {
 		EC2WorkerImage:         envOrDefault("OPENSANDBOX_EC2_WORKER_IMAGE", "opensandbox-worker:latest"),
 		EC2IAMInstanceProfile:  os.Getenv("OPENSANDBOX_EC2_IAM_INSTANCE_PROFILE"),
 
+		AzureSubscriptionID: os.Getenv("OPENSANDBOX_AZURE_SUBSCRIPTION_ID"),
+		AzureResourceGroup:  os.Getenv("OPENSANDBOX_AZURE_RESOURCE_GROUP"),
+		AzureVMSize:         envOrDefault("OPENSANDBOX_AZURE_VM_SIZE", "Standard_D16s_v5"),
+		AzureImageID:        os.Getenv("OPENSANDBOX_AZURE_IMAGE_ID"),
+		AzureSubnetID:       os.Getenv("OPENSANDBOX_AZURE_SUBNET_ID"),
+		AzureSSHPublicKey:   os.Getenv("OPENSANDBOX_AZURE_SSH_PUBLIC_KEY"),
+
 		CFAPIToken: os.Getenv("OPENSANDBOX_CF_API_TOKEN"),
 		CFZoneID:   os.Getenv("OPENSANDBOX_CF_ZONE_ID"),
 
 		ScaleCooldownSec:    envOrDefaultInt("OPENSANDBOX_SCALE_COOLDOWN_SEC", 300),
 		MinWorkersPerRegion: envOrDefaultInt("OPENSANDBOX_MIN_WORKERS", 1),
+		MaxWorkersPerRegion: envOrDefaultInt("OPENSANDBOX_MAX_WORKERS", 10),
 
 		SecretsARN: os.Getenv("OPENSANDBOX_SECRETS_ARN"),
 

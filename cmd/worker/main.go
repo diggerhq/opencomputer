@@ -300,9 +300,15 @@ func main() {
 		if err != nil {
 			log.Printf("opensandbox-worker: Redis heartbeat not available: %v", err)
 		} else {
-			if machineID := worker.GetEC2InstanceID(); machineID != "" {
+			if envID := os.Getenv("OPENSANDBOX_MACHINE_ID"); envID != "" {
+				hb.SetMachineID(envID)
+				log.Printf("opensandbox-worker: machine ID (env): %s", envID)
+			} else if machineID := worker.GetEC2InstanceID(); machineID != "" {
 				hb.SetMachineID(machineID)
 				log.Printf("opensandbox-worker: instance ID: %s", machineID)
+			} else if hostname, _ := os.Hostname(); hostname != "" {
+				hb.SetMachineID(hostname)
+				log.Printf("opensandbox-worker: machine ID (hostname): %s", hostname)
 			}
 			hb.Start(func() (int, int, float64, float64) {
 				count, _ := mgr.Count(context.Background())
