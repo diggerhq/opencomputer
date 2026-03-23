@@ -26,6 +26,9 @@ import (
 	agentpb "github.com/opensandbox/opensandbox/proto/agent"
 )
 
+// AgentVersion is the expected agent version, set at build time via -ldflags.
+var AgentVersion = "dev"
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -71,6 +74,8 @@ func main() {
 			KernelPath:      cfg.KernelPath,
 			ImagesDir:       cfg.ImagesDir,
 			QEMUBin:         cfg.QEMUBin,
+			AgentBinaryPath: "/usr/local/bin/osb-agent",
+			AgentVersion:    AgentVersion,
 			DefaultMemoryMB: cfg.DefaultSandboxMemoryMB,
 			DefaultCPUs:     cfg.DefaultSandboxCPUs,
 			DefaultDiskMB:   cfg.DefaultSandboxDiskMB,

@@ -1,8 +1,8 @@
-// osb-agent is the sandbox agent that runs inside each Firecracker microVM.
-// It listens for gRPC connections over vsock and handles exec, file ops,
-// PTY sessions, and stats collection.
+// osb-agent is the sandbox agent that runs inside each VM.
+// It listens for gRPC connections over virtio-serial (QEMU) or vsock (Firecracker)
+// and handles exec, file ops, PTY sessions, and stats collection.
 //
-// Build: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o osb-agent ./cmd/agent
+// Build: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-X main.Version=$(git rev-parse --short HEAD)" -o osb-agent ./cmd/agent
 package main
 
 import (
@@ -14,7 +14,8 @@ import (
 	"github.com/opensandbox/opensandbox/internal/agent"
 )
 
-const version = "0.1.0"
+// Version is set at build time via -ldflags "-X main.Version=xxx".
+var Version = "dev"
 
 func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
@@ -23,7 +24,7 @@ func main() {
 	// profile to source, so PATH may be empty or minimal.
 	os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 
-	log.Printf("osb-agent %s starting", version)
+	log.Printf("osb-agent %s starting", Version)
 
 	// Listen on vsock port 1024 (inside Firecracker) or Unix socket (testing).
 	lis, err := listenVsock()
@@ -31,7 +32,7 @@ func main() {
 		log.Fatalf("agent: failed to listen: %v", err)
 	}
 
-	srv := agent.NewServer(version)
+	srv := agent.NewServer(Version)
 	// Only set ListenPort for vsock-based backends (Firecracker).
 	// For virtio-serial (QEMU), PTY I/O flows over gRPC PTYAttach instead.
 	if _, isVirtioSerial := lis.(*virtioSerialListener); !isVirtioSerial {

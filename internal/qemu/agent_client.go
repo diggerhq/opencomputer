@@ -259,6 +259,32 @@ func (c *AgentClient) SyncFS(ctx context.Context) error {
 	return err
 }
 
+// WriteFileBinary writes binary content to a path inside the VM.
+func (c *AgentClient) WriteFileBinary(ctx context.Context, path string, content []byte, mode uint32) error {
+	_, err := c.client.WriteFile(ctx, &pb.WriteFileRequest{
+		Path:    path,
+		Content: content,
+		Mode:    mode,
+	})
+	return err
+}
+
+// GetVersion returns the agent's build version.
+func (c *AgentClient) GetVersion(ctx context.Context) (string, error) {
+	resp, err := c.client.GetVersion(ctx, &pb.GetVersionRequest{})
+	if err != nil {
+		return "", err
+	}
+	return resp.Version, nil
+}
+
+// Upgrade tells the agent to replace its binary and re-exec.
+// The new binary must already be written to binaryPath inside the VM.
+func (c *AgentClient) Upgrade(ctx context.Context, binaryPath string) error {
+	_, err := c.client.Upgrade(ctx, &pb.UpgradeRequest{BinaryPath: binaryPath})
+	return err
+}
+
 // PTYCreate creates a new PTY session in the VM.
 func (c *AgentClient) PTYCreate(ctx context.Context, cols, rows int32, shell string) (sessionID string, dataPort uint32, err error) {
 	resp, err := c.client.PTYCreate(ctx, &pb.PTYCreateRequest{

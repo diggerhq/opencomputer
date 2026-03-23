@@ -210,7 +210,7 @@ INJECT_EOF
 
 # Build with Docker
 log "Building container image..."
-docker build -t "osb-rootfs-${IMAGE_NAME}:build" -f "$TMPDIR/Dockerfile" "$TMPDIR"
+docker build --no-cache -t "osb-rootfs-${IMAGE_NAME}:build" -f "$TMPDIR/Dockerfile" "$TMPDIR"
 
 # Create container and export filesystem
 log "Exporting filesystem..."
