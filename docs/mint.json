@@ -82,7 +82,7 @@
       ]
     },
     {
-      "group": "Sessions API",
+      "group": "Sessions API (Experimental)",
       "pages": [
         "sessions-api/overview",
         "sessions-api/sessions",
