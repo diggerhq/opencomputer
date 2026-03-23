@@ -42,6 +42,8 @@ const (
 	SandboxAgent_Shutdown_FullMethodName          = "/agent.SandboxAgent/Shutdown"
 	SandboxAgent_SyncFS_FullMethodName            = "/agent.SandboxAgent/SyncFS"
 	SandboxAgent_SetResourceLimits_FullMethodName = "/agent.SandboxAgent/SetResourceLimits"
+	SandboxAgent_GetVersion_FullMethodName        = "/agent.SandboxAgent/GetVersion"
+	SandboxAgent_Upgrade_FullMethodName           = "/agent.SandboxAgent/Upgrade"
 )
 
 // SandboxAgentClient is the client API for SandboxAgent service.
@@ -91,6 +93,11 @@ type SandboxAgentClient interface {
 	// SetResourceLimits adjusts sandbox cgroup limits at runtime.
 	// Used for elastic scaling — raise/lower memory, CPU, pids without restart.
 	SetResourceLimits(ctx context.Context, in *SetResourceLimitsRequest, opts ...grpc.CallOption) (*SetResourceLimitsResponse, error)
+	// GetVersion returns the agent's build version.
+	GetVersion(ctx context.Context, in *GetVersionRequest, opts ...grpc.CallOption) (*GetVersionResponse, error)
+	// Upgrade replaces the agent binary and re-execs (same PID 1, no process loss).
+	// The worker writes the new binary to binary_path before calling this.
+	Upgrade(ctx context.Context, in *UpgradeRequest, opts ...grpc.CallOption) (*UpgradeResponse, error)
 }
 
 type sandboxAgentClient struct {
@@ -346,6 +353,26 @@ func (c *sandboxAgentClient) SetResourceLimits(ctx context.Context, in *SetResou
 	return out, nil
 }
 
+func (c *sandboxAgentClient) GetVersion(ctx context.Context, in *GetVersionRequest, opts ...grpc.CallOption) (*GetVersionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetVersionResponse)
+	err := c.cc.Invoke(ctx, SandboxAgent_GetVersion_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sandboxAgentClient) Upgrade(ctx context.Context, in *UpgradeRequest, opts ...grpc.CallOption) (*UpgradeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpgradeResponse)
+	err := c.cc.Invoke(ctx, SandboxAgent_Upgrade_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SandboxAgentServer is the server API for SandboxAgent service.
 // All implementations must embed UnimplementedSandboxAgentServer
 // for forward compatibility.
@@ -393,6 +420,11 @@ type SandboxAgentServer interface {
 	// SetResourceLimits adjusts sandbox cgroup limits at runtime.
 	// Used for elastic scaling — raise/lower memory, CPU, pids without restart.
 	SetResourceLimits(context.Context, *SetResourceLimitsRequest) (*SetResourceLimitsResponse, error)
+	// GetVersion returns the agent's build version.
+	GetVersion(context.Context, *GetVersionRequest) (*GetVersionResponse, error)
+	// Upgrade replaces the agent binary and re-execs (same PID 1, no process loss).
+	// The worker writes the new binary to binary_path before calling this.
+	Upgrade(context.Context, *UpgradeRequest) (*UpgradeResponse, error)
 	mustEmbedUnimplementedSandboxAgentServer()
 }
 
@@ -471,6 +503,12 @@ func (UnimplementedSandboxAgentServer) SyncFS(context.Context, *SyncFSRequest) (
 }
 func (UnimplementedSandboxAgentServer) SetResourceLimits(context.Context, *SetResourceLimitsRequest) (*SetResourceLimitsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetResourceLimits not implemented")
+}
+func (UnimplementedSandboxAgentServer) GetVersion(context.Context, *GetVersionRequest) (*GetVersionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetVersion not implemented")
+}
+func (UnimplementedSandboxAgentServer) Upgrade(context.Context, *UpgradeRequest) (*UpgradeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Upgrade not implemented")
 }
 func (UnimplementedSandboxAgentServer) mustEmbedUnimplementedSandboxAgentServer() {}
 func (UnimplementedSandboxAgentServer) testEmbeddedByValue()                      {}
@@ -878,6 +916,42 @@ func _SandboxAgent_SetResourceLimits_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SandboxAgent_GetVersion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetVersionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxAgentServer).GetVersion(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxAgent_GetVersion_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxAgentServer).GetVersion(ctx, req.(*GetVersionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SandboxAgent_Upgrade_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpgradeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxAgentServer).Upgrade(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxAgent_Upgrade_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxAgentServer).Upgrade(ctx, req.(*UpgradeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SandboxAgent_ServiceDesc is the grpc.ServiceDesc for SandboxAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -964,6 +1038,14 @@ var SandboxAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetResourceLimits",
 			Handler:    _SandboxAgent_SetResourceLimits_Handler,
+		},
+		{
+			MethodName: "GetVersion",
+			Handler:    _SandboxAgent_GetVersion_Handler,
+		},
+		{
+			MethodName: "Upgrade",
+			Handler:    _SandboxAgent_Upgrade_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -57,16 +57,15 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		return nil, fmt.Errorf("mkdir snapshot dir: %w", err)
 	}
 
-	// Step 1: Sync filesystems, unmount workspace, quiesce agent.
-	// Send SIGUSR1 to PID 1 (agent) which calls PrepareHibernate() to reset
-	// the virtio-serial listener's active flag. This ensures savevm captures
-	// the agent in a clean "waiting for connection" state so loadvm on wake
-	// gets instant reconnection instead of waiting ~4s for gRPC timeout.
+	// Step 1: Sync filesystems and quiesce agent.
+	// Don't unmount /workspace — open FDs prevent clean unmount and cause ext4 corruption.
+	// Just sync to flush dirty pages. savevm captures a consistent snapshot.
+	// SIGUSR1 resets the virtio-serial listener for instant reconnection on wake.
 	if vm.agent != nil {
 		shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		_, _ = vm.agent.Exec(shutdownCtx, &pb.ExecRequest{
 			Command: "/bin/sh",
-			Args:    []string{"-c", "umount /workspace 2>/dev/null; sync; kill -USR1 1"},
+			Args:    []string{"-c", "sync; kill -USR1 1"},
 		})
 		cancel()
 		vm.agent.Close()
@@ -110,6 +109,8 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 			<-done
 		}
 	}
+	// Brief pause to ensure qcow2 file locks are released after QEMU exit
+	time.Sleep(200 * time.Millisecond)
 
 	// Step 4: Write snapshot metadata
 	meta := &SnapshotMeta{
@@ -286,6 +287,9 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		return nil, fmt.Errorf("workspace not found at %s", workspacePath)
 	}
 
+	// Pre-stage agent binary into rootfs before QEMU boots.
+	m.prestageAgentBinary(sandboxID, rootfsPath)
+
 	// Step 3: Set up network
 	netCfg, err := m.subnets.Allocate()
 	if err != nil {
@@ -360,7 +364,7 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 	logFile.Close()
 
 	// Step 5: Connect QMP, loadvm, cont — same as RestoreFromCheckpoint
-	qmpClient, err := waitForQMP(qmpSockPath, 10*time.Second)
+	qmpClient, err := waitForQMP(qmpSockPath, 30*time.Second)
 	if err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
@@ -454,7 +458,7 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		m.onSandboxReady(sandboxID, netCfg.GuestIP, vm.Template, vm.StartedAt)
 	}
 
-	log.Printf("qemu: woke VM %s (cold boot, port=%d, tap=%s)",
+	log.Printf("qemu: woke VM %s (port=%d, tap=%s)",
 		sandboxID, hostPort, netCfg.TAPName)
 	return vmToSandbox(vm), nil
 }
@@ -489,6 +493,9 @@ func (m *Manager) coldBootLocal(ctx context.Context, sandboxID string, timeout i
 		}
 		log.Printf("qemu: cold-boot-local %s: rootfs recreated from template %q", sandboxID, meta.Template)
 	}
+
+	// Pre-stage agent binary into rootfs before QEMU boots.
+	m.prestageAgentBinary(sandboxID, rootfsPath)
 
 	netCfg, err := m.subnets.Allocate()
 	if err != nil {

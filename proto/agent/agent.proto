@@ -58,6 +58,13 @@ service SandboxAgent {
   // SetResourceLimits adjusts sandbox cgroup limits at runtime.
   // Used for elastic scaling — raise/lower memory, CPU, pids without restart.
   rpc SetResourceLimits(SetResourceLimitsRequest) returns (SetResourceLimitsResponse);
+
+  // GetVersion returns the agent's build version.
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
+
+  // Upgrade replaces the agent binary and re-execs (same PID 1, no process loss).
+  // The worker writes the new binary to binary_path before calling this.
+  rpc Upgrade(UpgradeRequest) returns (UpgradeResponse);
 }
 
 // --- Exec ---
@@ -299,3 +306,19 @@ message SetResourceLimitsRequest {
 }
 
 message SetResourceLimitsResponse {}
+
+// --- Version + Upgrade ---
+
+message GetVersionRequest {}
+
+message GetVersionResponse {
+  string version = 1;  // build version (git SHA or build timestamp)
+}
+
+message UpgradeRequest {
+  string binary_path = 1;  // path to new agent binary inside the VM
+}
+
+message UpgradeResponse {
+  bool ok = 1;
+}

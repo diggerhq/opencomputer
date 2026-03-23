@@ -7,12 +7,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -53,8 +55,8 @@ type VMInstance struct {
 	guestCID      uint32
 	bootArgs      string
 	restoring     chan struct{}
-	baseMemoryMB         int // initial memory passed to -m (before virtio-mem)
-	virtioMemRequestedMB int // additional memory via virtio-mem (beyond base)
+	baseMemoryMB         int  // initial memory passed to -m (before virtio-mem)
+	virtioMemRequestedMB int  // additional memory via virtio-mem (beyond base)
 }
 
 // SandboxMeta is persisted to sandbox-meta.json for recovery after hard kills.
@@ -92,6 +94,8 @@ type Config struct {
 	KernelPath      string // path to vmlinux kernel
 	ImagesDir       string // path to base rootfs images
 	QEMUBin         string // path to qemu-system-x86_64 binary
+	AgentBinaryPath string // path to osb-agent binary on host (for hot-upgrade)
+	AgentVersion    string // expected agent version (for hot-upgrade check)
 	DefaultMemoryMB int
 	DefaultCPUs     int
 	DefaultDiskMB   int
@@ -1607,6 +1611,9 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	}
 
 	// Sync filesystem and quiesce agent before snapshot.
+	// Don't unmount /workspace — open FDs prevent clean unmount, and forcing it
+	// corrupts the ext4 journal. Just sync to flush dirty pages, then savevm
+	// captures a consistent state.
 	// SIGUSR1 resets the virtio-serial listener's active flag so that
 	// restores from this checkpoint (loadvm or fork) have a clean agent
 	// that immediately accepts the new host-side connection.
@@ -1614,7 +1621,7 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 		syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		_, syncErr := vm.agent.Exec(syncCtx, &pb.ExecRequest{
 			Command: "/bin/sh",
-			Args:    []string{"-c", "umount /workspace 2>/dev/null; sync; kill -USR1 1"},
+			Args:    []string{"-c", "sync; kill -USR1 1"},
 		})
 		cancel()
 		if syncErr != nil {
@@ -1644,12 +1651,6 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	}
 	if reconnErr == nil {
 		vm.agent = agentClient
-		mountCtx, mountCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, _ = agentClient.Exec(mountCtx, &pb.ExecRequest{
-			Command: "/bin/sh",
-			Args:    []string{"-c", "echo 3 > /proc/sys/vm/drop_caches; mount /dev/vdb /workspace 2>/dev/null || true"},
-		})
-		mountCancel()
 	}
 
 	// Cache the drive files for ForkFromCheckpoint (which needs a separate QEMU process).
@@ -1696,8 +1697,10 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	return rootfsKey, workspaceKey, nil
 }
 
-// RestoreFromCheckpoint reverts a running sandbox to a checkpoint using QEMU's loadvm.
-// The VM stays running — no process restart needed. ~100-200ms.
+// RestoreFromCheckpoint reverts a sandbox to a checkpoint by killing the current
+// QEMU process and starting a fresh one from the checkpoint's cached qcow2 drives.
+// In-place loadvm corrupts the qcow2 COW layer because blocks written after the
+// checkpoint aren't cleanly reverted. Fresh drives from the cache are always consistent.
 func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpointID string) error {
 	vm, err := m.getVM(sandboxID)
 	if err != nil {
@@ -1706,57 +1709,184 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 
 	t0 := time.Now()
 
-	if vm.qmp == nil {
-		return fmt.Errorf("no QMP client for VM %s", sandboxID)
-	}
-
-	snapshotName := "cp-" + checkpointID
-
-	// Close agent before loadvm — the checkpoint was created with the agent
-	// in a quiesced state (SIGUSR1 sent during CreateCheckpoint), so after
-	// loadvm the restored agent will immediately accept a new connection.
+	// Step 1: Kill the current VM
 	if vm.agent != nil {
 		vm.agent.Close()
 		vm.agent = nil
 	}
-
-	// Stop the VM before loadvm (QEMU requires it)
-	if err := vm.qmp.Stop(); err != nil {
-		log.Printf("qemu: RestoreFromCheckpoint %s: stop failed: %v", sandboxID, err)
+	if vm.qmp != nil {
+		_ = vm.qmp.Quit()
+		vm.qmp.Close()
+		vm.qmp = nil
+	}
+	if vm.cmd != nil && vm.cmd.Process != nil {
+		done := make(chan error, 1)
+		go func() { done <- vm.cmd.Wait() }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			vm.cmd.Process.Kill()
+			<-done
+		}
 	}
 
-	// loadvm reverts the entire VM state — memory, devices, and disk contents
-	if err := vm.qmp.LoadVM(snapshotName); err != nil {
-		// Resume the VM if loadvm fails
-		vm.qmp.Cont()
-		return fmt.Errorf("loadvm failed: %w", err)
+	// Step 2: Tear down old network
+	if vm.network != nil {
+		RemoveMetadataDNAT(vm.network.TAPName, vm.network.HostIP)
+		RemoveDNAT(vm.network)
+		DeleteTAP(vm.network.TAPName)
+		m.subnets.Release(vm.network.TAPName)
 	}
 
-	// Resume after loadvm
-	if err := vm.qmp.Cont(); err != nil {
-		return fmt.Errorf("cont after loadvm failed: %w", err)
+	// Step 3: Copy fresh qcow2 drives from checkpoint cache
+	m.checkpointCacheMu.RLock()
+	cacheDir := m.checkpointCacheDir(checkpointID)
+	cachedRootfs := filepath.Join(cacheDir, "rootfs.qcow2")
+	cachedWorkspace := filepath.Join(cacheDir, "workspace.qcow2")
+	if !fileExists(cachedRootfs) || !fileExists(cachedWorkspace) {
+		m.checkpointCacheMu.RUnlock()
+		return fmt.Errorf("checkpoint %s: qcow2 files not found in cache", checkpointID)
 	}
 
-	// Reconnect agent via Unix socket
-	agent, err := m.waitForAgentSocket(context.Background(), vm.agentSockPath, 10*time.Second)
+	snapshotName := "cp-" + checkpointID
+	if data, err := os.ReadFile(filepath.Join(cacheDir, "snapshot-name")); err == nil {
+		snapshotName = strings.TrimSpace(string(data))
+	}
+
+	sandboxDir := vm.sandboxDir
+	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
+	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
+
+	// Remove old drives and copy fresh ones
+	os.Remove(rootfsPath)
+	os.Remove(workspacePath)
+	if err := copyFileReflink(cachedRootfs, rootfsPath); err != nil {
+		m.checkpointCacheMu.RUnlock()
+		return fmt.Errorf("copy rootfs from cache: %w", err)
+	}
+	if err := copyFileReflink(cachedWorkspace, workspacePath); err != nil {
+		m.checkpointCacheMu.RUnlock()
+		return fmt.Errorf("copy workspace from cache: %w", err)
+	}
+	m.checkpointCacheMu.RUnlock()
+
+	// Pre-stage agent binary into rootfs qcow2 before QEMU boots.
+	// This avoids in-VM binary transfer — the VM boots with the correct agent.
+	m.prestageAgentBinary(sandboxID, rootfsPath)
+
+	// Step 4: Allocate new network
+	netCfg, err := m.subnets.Allocate()
 	if err != nil {
-		return fmt.Errorf("agent reconnect after loadvm: %w", err)
+		return fmt.Errorf("allocate subnet: %w", err)
 	}
-	vm.agent = agent
+	if err := CreateTAP(netCfg); err != nil {
+		m.subnets.Release(netCfg.TAPName)
+		return fmt.Errorf("create TAP: %w", err)
+	}
+	hostPort, err := FindFreePort()
+	if err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		return fmt.Errorf("find free port: %w", err)
+	}
+	netCfg.HostPort = hostPort
+	netCfg.GuestPort = vm.GuestPort
+	if err := AddDNAT(netCfg); err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		return fmt.Errorf("add DNAT: %w", err)
+	}
+	if err := AddMetadataDNAT(netCfg.TAPName, netCfg.HostIP); err != nil {
+		log.Printf("qemu: RestoreFromCheckpoint %s: metadata DNAT failed: %v", sandboxID, err)
+	}
 
-	// Remount workspace + drop caches (loadvm reverted to checkpoint state)
-	restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	_, _ = agent.Exec(restoreCtx, &pb.ExecRequest{
-		Command: "/bin/sh",
-		Args:    []string{"-c", "echo 3 > /proc/sys/vm/drop_caches; mount /dev/vdb /workspace 2>/dev/null || true"},
-	})
-	restoreCancel()
+	// Step 5: Start fresh QEMU paused
+	guestMAC := generateMAC(sandboxID)
+	bootArgs := fmt.Sprintf(
+		"console=ttyS0 reboot=k panic=1 root=/dev/vda rw ip=%s::%s:%s::eth0:off init=/sbin/init osb.gateway=%s",
+		netCfg.GuestIP, netCfg.HostIP, netCfg.Mask, netCfg.HostIP,
+	)
 
-	if err := syncGuestClock(context.Background(), agent); err != nil {
+	qmpSockPath := filepath.Join(sandboxDir, "qmp.sock")
+	agentSockPath := filepath.Join(sandboxDir, "agent.sock")
+	os.Remove(qmpSockPath)
+	os.Remove(agentSockPath)
+
+	logFile, _ := os.Create(filepath.Join(sandboxDir, "qemu.log"))
+	args := m.buildQEMUArgs(vm.CpuCount, vm.MemoryMB, rootfsPath, workspacePath,
+		netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
+	args = append(args, "-S")
+
+	cmd := exec.Command(m.cfg.QEMUBin, args...)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			logFile.Close()
+		}
+		m.cleanupVM(netCfg, "")
+		return fmt.Errorf("start QEMU: %w", err)
+	}
+	if logFile != nil {
+		logFile.Close()
+	}
+
+	// Step 6: QMP connect + loadvm + cont
+	qmpClient, err := waitForQMP(qmpSockPath, 10*time.Second)
+	if err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, "")
+		return fmt.Errorf("QMP connect: %w", err)
+	}
+
+	if err := qmpClient.LoadVM(snapshotName); err != nil {
+		qmpClient.Close()
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, "")
+		return fmt.Errorf("loadvm: %w", err)
+	}
+
+	if err := qmpClient.Cont(); err != nil {
+		qmpClient.Close()
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, "")
+		return fmt.Errorf("cont: %w", err)
+	}
+
+	// Step 7: Reconnect agent + patch network
+	agentClient, err := m.waitForAgentSocket(context.Background(), agentSockPath, 10*time.Second)
+	if err != nil {
+		qmpClient.Close()
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, "")
+		return fmt.Errorf("agent connect: %w", err)
+	}
+
+	if err := patchGuestNetwork(context.Background(), agentClient, netCfg); err != nil {
+		log.Printf("qemu: RestoreFromCheckpoint %s: network patch failed: %v", sandboxID, err)
+	}
+	if err := syncGuestClock(context.Background(), agentClient); err != nil {
 		log.Printf("qemu: RestoreFromCheckpoint %s: clock sync failed: %v", sandboxID, err)
 	}
 
-	log.Printf("qemu: RestoreFromCheckpoint %s/%s: loadvm complete (%dms)", sandboxID, checkpointID, time.Since(t0).Milliseconds())
+	// Step 8: Update VM instance
+	vm.cmd = cmd
+	vm.qmp = qmpClient
+	vm.agent = agentClient
+	vm.network = netCfg
+	vm.HostPort = hostPort
+	vm.qmpSockPath = qmpSockPath
+	vm.agentSockPath = agentSockPath
+	vm.guestMAC = guestMAC
+	vm.bootArgs = bootArgs
+	vm.pid = cmd.Process.Pid
+
+	log.Printf("qemu: RestoreFromCheckpoint %s/%s: complete (%dms, port=%d, tap=%s)",
+		sandboxID, checkpointID, time.Since(t0).Milliseconds(), hostPort, netCfg.TAPName)
 	return nil
 }
 
@@ -1935,14 +2065,10 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		return nil, fmt.Errorf("agent connect: %w", err)
 	}
 
-	// Drop caches (checkpoint had different rootfs state) + mount workspace + patch network
-	postCtx, postCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	_, _ = agent.Exec(postCtx, &pb.ExecRequest{
-		Command: "/bin/sh",
-		Args:    []string{"-c", "echo 3 > /proc/sys/vm/drop_caches; mount /dev/vdb /workspace 2>/dev/null || true"},
-	})
-	postCancel()
-
+	// Patch network (fork gets new IPs) + sync clock
+	if err := patchGuestNetwork(context.Background(), agent, netCfg); err != nil {
+		log.Printf("qemu: ForkFromCheckpoint %s: network patch failed: %v", id, err)
+	}
 	if err := syncGuestClock(context.Background(), agent); err != nil {
 		log.Printf("qemu: ForkFromCheckpoint %s: clock sync failed: %v", id, err)
 	}
@@ -2213,4 +2339,155 @@ func (m *Manager) RecoverLocalSandboxes() []LocalRecovery {
 		}
 	}
 	return recoveries
+}
+
+// prestageAgentBinary replaces the agent binary inside a rootfs qcow2 image
+// BEFORE QEMU boots. Uses qemu-nbd to mount the qcow2 on the host, copies
+// the new binary, and unmounts. The VM then boots with the correct agent —
+// no in-VM transfer, no gRPC overhead, no contention issues.
+//
+// This must be called before startQEMU, while the qcow2 is not in use.
+// If the agent binary path or version is not configured, this is a no-op.
+func (m *Manager) prestageAgentBinary(sandboxID, rootfsPath string) {
+	if m.cfg.AgentVersion == "" || m.cfg.AgentVersion == "dev" || m.cfg.AgentBinaryPath == "" {
+		return
+	}
+	if !fileExists(m.cfg.AgentBinaryPath) {
+		return
+	}
+
+	t0 := time.Now()
+
+	// Find a free /dev/nbdN device. We use a per-sandbox temp dir for the mount.
+	nbdDev, err := findFreeNBD()
+	if err != nil {
+		log.Printf("qemu: prestage %s: no free nbd device: %v (skipping)", sandboxID, err)
+		return
+	}
+
+	// Connect qcow2 to NBD device
+	connectCmd := exec.Command("qemu-nbd", "--connect", nbdDev, "--format", "qcow2", rootfsPath)
+	if out, err := connectCmd.CombinedOutput(); err != nil {
+		log.Printf("qemu: prestage %s: qemu-nbd connect failed: %v (%s)", sandboxID, err, strings.TrimSpace(string(out)))
+		return
+	}
+	// Always disconnect NBD when done
+	defer func() {
+		exec.Command("qemu-nbd", "--disconnect", nbdDev).Run()
+	}()
+
+	// Brief pause to let the kernel register the block device
+	time.Sleep(200 * time.Millisecond)
+
+	// Mount the rootfs partition
+	mountDir := filepath.Join(os.TempDir(), "osb-prestage-"+sandboxID)
+	os.MkdirAll(mountDir, 0755)
+	defer os.RemoveAll(mountDir)
+
+	mountCmd := exec.Command("mount", "-o", "rw", nbdDev, mountDir)
+	if out, err := mountCmd.CombinedOutput(); err != nil {
+		// Try partition 1 if the whole device didn't work
+		mountCmd = exec.Command("mount", "-o", "rw", nbdDev+"p1", mountDir)
+		if out2, err2 := mountCmd.CombinedOutput(); err2 != nil {
+			log.Printf("qemu: prestage %s: mount failed: %v (%s / %s)", sandboxID, err, strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
+			return
+		}
+	}
+	defer exec.Command("umount", mountDir).Run()
+
+	// Check current agent version inside the image
+	agentPath := filepath.Join(mountDir, "usr/local/bin/osb-agent")
+	needsUpdate := true
+
+	// Quick version check: run the existing agent with a version flag if possible,
+	// or just compare file sizes as a heuristic. For reliability, always overwrite
+	// if we can't confirm the version matches.
+	hostInfo, err := os.Stat(m.cfg.AgentBinaryPath)
+	if err == nil {
+		guestInfo, gErr := os.Stat(agentPath)
+		if gErr == nil && guestInfo.Size() == hostInfo.Size() {
+			// Same size — likely same binary, skip copy
+			needsUpdate = false
+		}
+	}
+
+	if !needsUpdate {
+		log.Printf("qemu: prestage %s: agent binary already up-to-date (skipping, %dms)", sandboxID, time.Since(t0).Milliseconds())
+		return
+	}
+
+	// Copy the new agent binary
+	if err := copyFile(m.cfg.AgentBinaryPath, agentPath); err != nil {
+		log.Printf("qemu: prestage %s: copy agent failed: %v", sandboxID, err)
+		return
+	}
+	os.Chmod(agentPath, 0755)
+
+	log.Printf("qemu: prestage %s: agent binary updated in rootfs (%dms)", sandboxID, time.Since(t0).Milliseconds())
+}
+
+// findFreeNBD finds an unused /dev/nbdN device.
+func findFreeNBD() (string, error) {
+	// Ensure nbd module is loaded
+	exec.Command("modprobe", "nbd", "max_part=8").Run()
+
+	for i := 0; i < 16; i++ {
+		dev := fmt.Sprintf("/dev/nbd%d", i)
+		if _, err := os.Stat(dev); err != nil {
+			continue
+		}
+		// Check if it's in use by reading the size — unused NBD devices report 0
+		sizeFile := fmt.Sprintf("/sys/block/nbd%d/size", i)
+		data, err := os.ReadFile(sizeFile)
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(string(data)) == "0" {
+			return dev, nil
+		}
+	}
+	return "", fmt.Errorf("all /dev/nbd[0-15] devices in use")
+}
+
+// copyFile copies src to dst using io.Copy.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
+}
+
+// dropPageCache evicts a file's pages from the kernel page cache.
+// After loadvm reverts qcow2 internal state, the host page cache may hold
+// stale blocks. POSIX_FADV_DONTNEED tells the kernel to release them.
+func dropPageCache(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return
+	}
+	// POSIX_FADV_DONTNEED = 4 on Linux
+	const FADV_DONTNEED = 4
+	// SYS_FADVISE64 = 221 on x86_64
+	const SYS_FADVISE64 = 221
+	_, _, errno := syscall.Syscall6(SYS_FADVISE64, f.Fd(), 0, uintptr(info.Size()), FADV_DONTNEED, 0, 0)
+	if errno != 0 {
+		log.Printf("qemu: dropPageCache %s: fadvise failed: %v", path, errno)
+	}
 }

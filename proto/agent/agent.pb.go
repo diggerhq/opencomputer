@@ -2485,6 +2485,174 @@ func (*SetResourceLimitsResponse) Descriptor() ([]byte, []int) {
 	return file_proto_agent_agent_proto_rawDescGZIP(), []int{46}
 }
 
+type GetVersionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetVersionRequest) Reset() {
+	*x = GetVersionRequest{}
+	mi := &file_proto_agent_agent_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetVersionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetVersionRequest) ProtoMessage() {}
+
+func (x *GetVersionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetVersionRequest.ProtoReflect.Descriptor instead.
+func (*GetVersionRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{47}
+}
+
+type GetVersionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Version       string                 `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"` // build version (git SHA or build timestamp)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetVersionResponse) Reset() {
+	*x = GetVersionResponse{}
+	mi := &file_proto_agent_agent_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetVersionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetVersionResponse) ProtoMessage() {}
+
+func (x *GetVersionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetVersionResponse.ProtoReflect.Descriptor instead.
+func (*GetVersionResponse) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *GetVersionResponse) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+type UpgradeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BinaryPath    string                 `protobuf:"bytes,1,opt,name=binary_path,json=binaryPath,proto3" json:"binary_path,omitempty"` // path to new agent binary inside the VM
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpgradeRequest) Reset() {
+	*x = UpgradeRequest{}
+	mi := &file_proto_agent_agent_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpgradeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpgradeRequest) ProtoMessage() {}
+
+func (x *UpgradeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpgradeRequest.ProtoReflect.Descriptor instead.
+func (*UpgradeRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *UpgradeRequest) GetBinaryPath() string {
+	if x != nil {
+		return x.BinaryPath
+	}
+	return ""
+}
+
+type UpgradeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpgradeResponse) Reset() {
+	*x = UpgradeResponse{}
+	mi := &file_proto_agent_agent_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpgradeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpgradeResponse) ProtoMessage() {}
+
+func (x *UpgradeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpgradeResponse.ProtoReflect.Descriptor instead.
+func (*UpgradeResponse) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *UpgradeResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
 var File_proto_agent_agent_proto protoreflect.FileDescriptor
 
 const file_proto_agent_agent_proto_rawDesc = "" +
@@ -2653,7 +2821,15 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\fcpu_max_usec\x18\x03 \x01(\x03R\n" +
 	"cpuMaxUsec\x12&\n" +
 	"\x0fcpu_period_usec\x18\x04 \x01(\x03R\rcpuPeriodUsec\"\x1b\n" +
-	"\x19SetResourceLimitsResponse2\xac\v\n" +
+	"\x19SetResourceLimitsResponse\"\x13\n" +
+	"\x11GetVersionRequest\".\n" +
+	"\x12GetVersionResponse\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\tR\aversion\"1\n" +
+	"\x0eUpgradeRequest\x12\x1f\n" +
+	"\vbinary_path\x18\x01 \x01(\tR\n" +
+	"binaryPath\"!\n" +
+	"\x0fUpgradeResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok2\xa9\f\n" +
 	"\fSandboxAgent\x12/\n" +
 	"\x04Exec\x12\x12.agent.ExecRequest\x1a\x13.agent.ExecResponse\x12:\n" +
 	"\n" +
@@ -2678,7 +2854,10 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\aSetEnvs\x12\x15.agent.SetEnvsRequest\x1a\x16.agent.SetEnvsResponse\x12;\n" +
 	"\bShutdown\x12\x16.agent.ShutdownRequest\x1a\x17.agent.ShutdownResponse\x125\n" +
 	"\x06SyncFS\x12\x14.agent.SyncFSRequest\x1a\x15.agent.SyncFSResponse\x12V\n" +
-	"\x11SetResourceLimits\x12\x1f.agent.SetResourceLimitsRequest\x1a .agent.SetResourceLimitsResponseB0Z.github.com/opensandbox/opensandbox/proto/agentb\x06proto3"
+	"\x11SetResourceLimits\x12\x1f.agent.SetResourceLimitsRequest\x1a .agent.SetResourceLimitsResponse\x12A\n" +
+	"\n" +
+	"GetVersion\x12\x18.agent.GetVersionRequest\x1a\x19.agent.GetVersionResponse\x128\n" +
+	"\aUpgrade\x12\x15.agent.UpgradeRequest\x1a\x16.agent.UpgradeResponseB0Z.github.com/opensandbox/opensandbox/proto/agentb\x06proto3"
 
 var (
 	file_proto_agent_agent_proto_rawDescOnce sync.Once
@@ -2693,7 +2872,7 @@ func file_proto_agent_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_agent_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_agent_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
+var file_proto_agent_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
 var file_proto_agent_agent_proto_goTypes = []any{
 	(ExecOutputChunk_Stream)(0),       // 0: agent.ExecOutputChunk.Stream
 	(ExecSessionOutput_Type)(0),       // 1: agent.ExecSessionOutput.Type
@@ -2744,18 +2923,22 @@ var file_proto_agent_agent_proto_goTypes = []any{
 	(*SyncFSResponse)(nil),            // 46: agent.SyncFSResponse
 	(*SetResourceLimitsRequest)(nil),  // 47: agent.SetResourceLimitsRequest
 	(*SetResourceLimitsResponse)(nil), // 48: agent.SetResourceLimitsResponse
-	nil,                               // 49: agent.ExecRequest.EnvsEntry
-	nil,                               // 50: agent.ExecSessionCreateRequest.EnvsEntry
-	nil,                               // 51: agent.SetEnvsRequest.EnvsEntry
+	(*GetVersionRequest)(nil),         // 49: agent.GetVersionRequest
+	(*GetVersionResponse)(nil),        // 50: agent.GetVersionResponse
+	(*UpgradeRequest)(nil),            // 51: agent.UpgradeRequest
+	(*UpgradeResponse)(nil),           // 52: agent.UpgradeResponse
+	nil,                               // 53: agent.ExecRequest.EnvsEntry
+	nil,                               // 54: agent.ExecSessionCreateRequest.EnvsEntry
+	nil,                               // 55: agent.SetEnvsRequest.EnvsEntry
 }
 var file_proto_agent_agent_proto_depIdxs = []int32{
-	49, // 0: agent.ExecRequest.envs:type_name -> agent.ExecRequest.EnvsEntry
+	53, // 0: agent.ExecRequest.envs:type_name -> agent.ExecRequest.EnvsEntry
 	0,  // 1: agent.ExecOutputChunk.stream:type_name -> agent.ExecOutputChunk.Stream
 	10, // 2: agent.ListDirResponse.entries:type_name -> agent.DirEntry
-	50, // 3: agent.ExecSessionCreateRequest.envs:type_name -> agent.ExecSessionCreateRequest.EnvsEntry
+	54, // 3: agent.ExecSessionCreateRequest.envs:type_name -> agent.ExecSessionCreateRequest.EnvsEntry
 	1,  // 4: agent.ExecSessionOutput.type:type_name -> agent.ExecSessionOutput.Type
 	38, // 5: agent.ExecSessionListResponse.sessions:type_name -> agent.ExecSessionInfo
-	51, // 6: agent.SetEnvsRequest.envs:type_name -> agent.SetEnvsRequest.EnvsEntry
+	55, // 6: agent.SetEnvsRequest.envs:type_name -> agent.SetEnvsRequest.EnvsEntry
 	2,  // 7: agent.SandboxAgent.Exec:input_type -> agent.ExecRequest
 	2,  // 8: agent.SandboxAgent.ExecStream:input_type -> agent.ExecRequest
 	5,  // 9: agent.SandboxAgent.ReadFile:input_type -> agent.ReadFileRequest
@@ -2779,31 +2962,35 @@ var file_proto_agent_agent_proto_depIdxs = []int32{
 	43, // 27: agent.SandboxAgent.Shutdown:input_type -> agent.ShutdownRequest
 	45, // 28: agent.SandboxAgent.SyncFS:input_type -> agent.SyncFSRequest
 	47, // 29: agent.SandboxAgent.SetResourceLimits:input_type -> agent.SetResourceLimitsRequest
-	3,  // 30: agent.SandboxAgent.Exec:output_type -> agent.ExecResponse
-	4,  // 31: agent.SandboxAgent.ExecStream:output_type -> agent.ExecOutputChunk
-	6,  // 32: agent.SandboxAgent.ReadFile:output_type -> agent.ReadFileResponse
-	8,  // 33: agent.SandboxAgent.WriteFile:output_type -> agent.WriteFileResponse
-	11, // 34: agent.SandboxAgent.ListDir:output_type -> agent.ListDirResponse
-	13, // 35: agent.SandboxAgent.MakeDir:output_type -> agent.MakeDirResponse
-	15, // 36: agent.SandboxAgent.Remove:output_type -> agent.RemoveResponse
-	17, // 37: agent.SandboxAgent.Exists:output_type -> agent.ExistsResponse
-	19, // 38: agent.SandboxAgent.Stat:output_type -> agent.StatResponse
-	21, // 39: agent.SandboxAgent.Stats:output_type -> agent.StatsResponse
-	23, // 40: agent.SandboxAgent.Ping:output_type -> agent.PingResponse
-	25, // 41: agent.SandboxAgent.PTYCreate:output_type -> agent.PTYCreateResponse
-	27, // 42: agent.SandboxAgent.PTYResize:output_type -> agent.PTYResizeResponse
-	29, // 43: agent.SandboxAgent.PTYKill:output_type -> agent.PTYKillResponse
-	31, // 44: agent.SandboxAgent.PTYAttach:output_type -> agent.PTYOutput
-	33, // 45: agent.SandboxAgent.ExecSessionCreate:output_type -> agent.ExecSessionCreateResponse
-	35, // 46: agent.SandboxAgent.ExecSessionAttach:output_type -> agent.ExecSessionOutput
-	37, // 47: agent.SandboxAgent.ExecSessionList:output_type -> agent.ExecSessionListResponse
-	40, // 48: agent.SandboxAgent.ExecSessionKill:output_type -> agent.ExecSessionKillResponse
-	42, // 49: agent.SandboxAgent.SetEnvs:output_type -> agent.SetEnvsResponse
-	44, // 50: agent.SandboxAgent.Shutdown:output_type -> agent.ShutdownResponse
-	46, // 51: agent.SandboxAgent.SyncFS:output_type -> agent.SyncFSResponse
-	48, // 52: agent.SandboxAgent.SetResourceLimits:output_type -> agent.SetResourceLimitsResponse
-	30, // [30:53] is the sub-list for method output_type
-	7,  // [7:30] is the sub-list for method input_type
+	49, // 30: agent.SandboxAgent.GetVersion:input_type -> agent.GetVersionRequest
+	51, // 31: agent.SandboxAgent.Upgrade:input_type -> agent.UpgradeRequest
+	3,  // 32: agent.SandboxAgent.Exec:output_type -> agent.ExecResponse
+	4,  // 33: agent.SandboxAgent.ExecStream:output_type -> agent.ExecOutputChunk
+	6,  // 34: agent.SandboxAgent.ReadFile:output_type -> agent.ReadFileResponse
+	8,  // 35: agent.SandboxAgent.WriteFile:output_type -> agent.WriteFileResponse
+	11, // 36: agent.SandboxAgent.ListDir:output_type -> agent.ListDirResponse
+	13, // 37: agent.SandboxAgent.MakeDir:output_type -> agent.MakeDirResponse
+	15, // 38: agent.SandboxAgent.Remove:output_type -> agent.RemoveResponse
+	17, // 39: agent.SandboxAgent.Exists:output_type -> agent.ExistsResponse
+	19, // 40: agent.SandboxAgent.Stat:output_type -> agent.StatResponse
+	21, // 41: agent.SandboxAgent.Stats:output_type -> agent.StatsResponse
+	23, // 42: agent.SandboxAgent.Ping:output_type -> agent.PingResponse
+	25, // 43: agent.SandboxAgent.PTYCreate:output_type -> agent.PTYCreateResponse
+	27, // 44: agent.SandboxAgent.PTYResize:output_type -> agent.PTYResizeResponse
+	29, // 45: agent.SandboxAgent.PTYKill:output_type -> agent.PTYKillResponse
+	31, // 46: agent.SandboxAgent.PTYAttach:output_type -> agent.PTYOutput
+	33, // 47: agent.SandboxAgent.ExecSessionCreate:output_type -> agent.ExecSessionCreateResponse
+	35, // 48: agent.SandboxAgent.ExecSessionAttach:output_type -> agent.ExecSessionOutput
+	37, // 49: agent.SandboxAgent.ExecSessionList:output_type -> agent.ExecSessionListResponse
+	40, // 50: agent.SandboxAgent.ExecSessionKill:output_type -> agent.ExecSessionKillResponse
+	42, // 51: agent.SandboxAgent.SetEnvs:output_type -> agent.SetEnvsResponse
+	44, // 52: agent.SandboxAgent.Shutdown:output_type -> agent.ShutdownResponse
+	46, // 53: agent.SandboxAgent.SyncFS:output_type -> agent.SyncFSResponse
+	48, // 54: agent.SandboxAgent.SetResourceLimits:output_type -> agent.SetResourceLimitsResponse
+	50, // 55: agent.SandboxAgent.GetVersion:output_type -> agent.GetVersionResponse
+	52, // 56: agent.SandboxAgent.Upgrade:output_type -> agent.UpgradeResponse
+	32, // [32:57] is the sub-list for method output_type
+	7,  // [7:32] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
 	7,  // [7:7] is the sub-list for extension extendee
 	0,  // [0:7] is the sub-list for field type_name
@@ -2820,7 +3007,7 @@ func file_proto_agent_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_agent_agent_proto_rawDesc), len(file_proto_agent_agent_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   50,
+			NumMessages:   54,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
