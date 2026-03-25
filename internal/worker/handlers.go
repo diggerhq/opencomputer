@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -366,11 +365,10 @@ func (s *HTTPServer) readFile(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "path query parameter is required"})
 	}
 
-	var reader io.ReadCloser
-	var totalSize int64
+	var content string
 	routeOp := func(ctx context.Context) error {
 		var err error
-		reader, totalSize, err = s.manager.ReadFileStream(ctx, id, path)
+		content, err = s.manager.ReadFile(ctx, id, path)
 		return err
 	}
 
@@ -383,16 +381,8 @@ func (s *HTTPServer) readFile(c echo.Context) error {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
 	}
-	defer reader.Close()
 
-	resp := c.Response()
-	resp.Header().Set("Content-Type", "application/octet-stream")
-	if totalSize > 0 {
-		resp.Header().Set("Content-Length", fmt.Sprintf("%d", totalSize))
-	}
-	resp.WriteHeader(http.StatusOK)
-	_, err := io.Copy(resp.Writer, reader)
-	return err
+	return c.Blob(http.StatusOK, "application/octet-stream", []byte(content))
 }
 
 func (s *HTTPServer) writeFile(c echo.Context) error {
@@ -402,9 +392,14 @@ func (s *HTTPServer) writeFile(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "path query parameter is required"})
 	}
 
+	// Read body — use streaming for large files, direct write for small/empty
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+	}
+
 	routeOp := func(ctx context.Context) error {
-		_, err := s.manager.WriteFileStream(ctx, id, path, 0644, c.Request().Body)
-		return err
+		return s.manager.WriteFile(ctx, id, path, string(body))
 	}
 
 	if s.router != nil {

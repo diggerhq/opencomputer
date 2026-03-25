@@ -126,6 +126,7 @@ type ExecRequest struct {
 	Envs           map[string]string      `protobuf:"bytes,3,rep,name=envs,proto3" json:"envs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Cwd            string                 `protobuf:"bytes,4,opt,name=cwd,proto3" json:"cwd,omitempty"`
 	TimeoutSeconds int32                  `protobuf:"varint,5,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"` // 0 = default (60s)
+	RunAsRoot      bool                   `protobuf:"varint,6,opt,name=run_as_root,json=runAsRoot,proto3" json:"run_as_root,omitempty"`              // if true, skip sandbox user credential (for internal/system ops)
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -193,6 +194,13 @@ func (x *ExecRequest) GetTimeoutSeconds() int32 {
 		return x.TimeoutSeconds
 	}
 	return 0
+}
+
+func (x *ExecRequest) GetRunAsRoot() bool {
+	if x != nil {
+		return x.RunAsRoot
+	}
+	return false
 }
 
 type ExecResponse struct {
@@ -2857,13 +2865,14 @@ var File_proto_agent_agent_proto protoreflect.FileDescriptor
 
 const file_proto_agent_agent_proto_rawDesc = "" +
 	"\n" +
-	"\x17proto/agent/agent.proto\x12\x05agent\"\xe1\x01\n" +
+	"\x17proto/agent/agent.proto\x12\x05agent\"\x81\x02\n" +
 	"\vExecRequest\x12\x18\n" +
 	"\acommand\x18\x01 \x01(\tR\acommand\x12\x12\n" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x120\n" +
 	"\x04envs\x18\x03 \x03(\v2\x1c.agent.ExecRequest.EnvsEntryR\x04envs\x12\x10\n" +
 	"\x03cwd\x18\x04 \x01(\tR\x03cwd\x12'\n" +
-	"\x0ftimeout_seconds\x18\x05 \x01(\x05R\x0etimeoutSeconds\x1a7\n" +
+	"\x0ftimeout_seconds\x18\x05 \x01(\x05R\x0etimeoutSeconds\x12\x1e\n" +
+	"\vrun_as_root\x18\x06 \x01(\bR\trunAsRoot\x1a7\n" +
 	"\tEnvsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"[\n" +

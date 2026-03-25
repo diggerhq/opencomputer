@@ -335,8 +335,9 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	// VMs can use virtio-mem for dynamic memory add/remove.
 	modCtx, modCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	modResp, modErr := agentClient.Exec(modCtx, &pb.ExecRequest{
-		Command: "/bin/sh",
-		Args:    []string{"-c", "insmod /lib/modules/$(uname -r)/kernel/drivers/virtio/virtio_mem.ko 2>/dev/null; grep -c virtio_mem /proc/modules"},
+		Command:   "/bin/sh",
+		Args:      []string{"-c", "insmod /lib/modules/$(uname -r)/kernel/drivers/virtio/virtio_mem.ko 2>/dev/null; grep -c virtio_mem /proc/modules"},
+		RunAsRoot: true,
 	})
 	modCancel()
 	if modErr != nil || (modResp != nil && modResp.ExitCode != 0) {
@@ -351,8 +352,9 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	// workspace.qcow2 that createFromGolden boots with.
 	umountCtx, umountCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	_, umountErr := agentClient.Exec(umountCtx, &pb.ExecRequest{
-		Command: "/bin/sh",
-		Args:    []string{"-c", "umount /workspace 2>/dev/null; sync"},
+		Command:   "/bin/sh",
+		Args:      []string{"-c", "umount /workspace 2>/dev/null; sync"},
+		RunAsRoot: true,
 	})
 	umountCancel()
 	if umountErr != nil {
@@ -668,6 +670,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 			"mount --bind /workspace/.home /home/sandbox",
 			"chown 1000:1000 /workspace /workspace/.home",
 		}, " && ")},
+		RunAsRoot: true,
 	})
 	mountCancel()
 	if mountErr != nil {
@@ -731,7 +734,8 @@ func patchGuestNetwork(ctx context.Context, agent *AgentClient, netCfg *NetworkC
 			"ip link set eth0 up && "+
 			"ip route add default via %s && "+
 			"echo 'nameserver 8.8.8.8' > /etc/resolv.conf && "+
-			"echo 'nameserver 1.1.1.1' >> /etc/resolv.conf",
+			"echo 'nameserver 1.1.1.1' >> /etc/resolv.conf && "+
+			"grep -q \"$(hostname)\" /etc/hosts || echo \"127.0.0.1 $(hostname)\" >> /etc/hosts",
 		netCfg.GuestIP, prefixLen, netCfg.HostIP,
 	)
 
@@ -742,6 +746,7 @@ func patchGuestNetwork(ctx context.Context, agent *AgentClient, netCfg *NetworkC
 		Command:        "/bin/sh",
 		Args:           []string{"-c", script},
 		TimeoutSeconds: 5,
+		RunAsRoot:      true,
 	})
 	if err != nil {
 		return fmt.Errorf("exec network patch: %w", err)
@@ -1688,8 +1693,9 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	if vm.agent != nil {
 		syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		_, syncErr := vm.agent.Exec(syncCtx, &pb.ExecRequest{
-			Command: "/bin/sh",
-			Args:    []string{"-c", "sync; kill -USR1 1"},
+			Command:   "/bin/sh",
+			Args:      []string{"-c", "sync; kill -USR1 1"},
+			RunAsRoot: true,
 		})
 		cancel()
 		if syncErr != nil {
@@ -2460,8 +2466,9 @@ func (m *Manager) upgradeAgentIfNeeded(ctx context.Context, vm *VMInstance) {
 			log.Printf("qemu: agent %s: upgrade aborted (chunk at %d): %v", vm.ID, offset, err)
 			cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			vm.agent.Exec(cleanCtx, &pb.ExecRequest{
-				Command: "/bin/sh",
-				Args:    []string{"-c", fmt.Sprintf("rm -f %s %s.chunk", tmpPath, tmpPath)},
+				Command:   "/bin/sh",
+				Args:      []string{"-c", fmt.Sprintf("rm -f %s %s.chunk", tmpPath, tmpPath)},
+				RunAsRoot: true,
 			})
 			cleanCancel()
 			return
@@ -2469,16 +2476,18 @@ func (m *Manager) upgradeAgentIfNeeded(ctx context.Context, vm *VMInstance) {
 
 		appendCtx, appendCancel := context.WithTimeout(ctx, 5*time.Second)
 		_, _ = vm.agent.Exec(appendCtx, &pb.ExecRequest{
-			Command: "/bin/sh",
-			Args:    []string{"-c", fmt.Sprintf("cat %s.chunk >> %s", tmpPath, tmpPath)},
+			Command:   "/bin/sh",
+			Args:      []string{"-c", fmt.Sprintf("cat %s.chunk >> %s", tmpPath, tmpPath)},
+			RunAsRoot: true,
 		})
 		appendCancel()
 	}
 
 	chmodCtx, chmodCancel := context.WithTimeout(ctx, 5*time.Second)
 	_, _ = vm.agent.Exec(chmodCtx, &pb.ExecRequest{
-		Command: "/bin/sh",
-		Args:    []string{"-c", fmt.Sprintf("chmod +x %s && rm -f %s.chunk", tmpPath, tmpPath)},
+		Command:   "/bin/sh",
+		Args:      []string{"-c", fmt.Sprintf("chmod +x %s && rm -f %s.chunk", tmpPath, tmpPath)},
+		RunAsRoot: true,
 	})
 	chmodCancel()
 

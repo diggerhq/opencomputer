@@ -94,10 +94,10 @@ func (s *Server) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.ExecRespons
 		cmd.Env = append(cmd.Env, mapToEnv(req.Envs)...)
 	}
 
-	// Run as sandbox user in its own process group
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid:    true,
-		Credential: sandboxCredential(),
+	// Run in its own process group; use sandbox user unless run_as_root is set
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if !req.RunAsRoot {
+		cmd.SysProcAttr.Credential = sandboxCredential()
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -179,9 +179,9 @@ func (s *Server) ExecStream(req *pb.ExecRequest, stream pb.SandboxAgent_ExecStre
 		cmd.Env = append(cmd.Env, mapToEnv(req.Envs)...)
 	}
 
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid:    true,
-		Credential: sandboxCredential(),
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if !req.RunAsRoot {
+		cmd.SysProcAttr.Credential = sandboxCredential()
 	}
 
 	stdoutPipe, err := cmd.StdoutPipe()

@@ -76,7 +76,7 @@ func (mc *MigrationCoordinator) MigrateToS3(ctx context.Context, sandboxID strin
 	// Sync guest filesystems before copying
 	if vm.agent != nil {
 		syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		_, _ = vm.agent.Exec(syncCtx, &pb.ExecRequest{Command: "sync"})
+		_, _ = vm.agent.Exec(syncCtx, &pb.ExecRequest{Command: "sync", RunAsRoot: true})
 		cancel()
 	}
 
