@@ -79,6 +79,7 @@ message ExecRequest {
   map<string, string> envs = 3;
   string cwd = 4;
   int32 timeout_seconds = 5; // 0 = default (60s)
+  bool run_as_root = 6;      // if true, skip sandbox user credential (for internal/system ops)
 }
 
 message ExecResponse {

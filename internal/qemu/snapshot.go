@@ -64,8 +64,9 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 	if vm.agent != nil {
 		shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		_, _ = vm.agent.Exec(shutdownCtx, &pb.ExecRequest{
-			Command: "/bin/sh",
-			Args:    []string{"-c", "sync; kill -USR1 1"},
+			Command:   "/bin/sh",
+			Args:      []string{"-c", "sync; kill -USR1 1"},
+			RunAsRoot: true,
 		})
 		cancel()
 		vm.agent.Close()
@@ -407,6 +408,7 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 			"mount --bind /workspace/.home /home/sandbox 2>/dev/null || true",
 			"chown 1000:1000 /workspace /workspace/.home",
 		}, " && ")},
+		RunAsRoot: true,
 	})
 	postCancel()
 
@@ -687,6 +689,7 @@ func syncGuestClock(ctx context.Context, agent *AgentClient) error {
 		Command:        "/bin/sh",
 		Args:           []string{"-c", cmd},
 		TimeoutSeconds: 5,
+		RunAsRoot:      true,
 	})
 	if err != nil {
 		return fmt.Errorf("exec clock sync: %w", err)

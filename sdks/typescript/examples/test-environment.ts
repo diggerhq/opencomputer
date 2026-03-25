@@ -83,7 +83,7 @@ async function main() {
     bold("━━━ Test 4: Package installation (apt) ━━━\n");
 
     const aptResult = await sandbox.commands.run(
-      "apt-get update -qq > /dev/null 2>&1 && apt-get install -y -qq cowsay > /dev/null 2>&1 && /usr/games/cowsay moo | head -1",
+      "sudo apt-get update -qq > /dev/null 2>&1 && sudo apt-get install -y -qq cowsay > /dev/null 2>&1 && /usr/games/cowsay moo | head -1",
       { timeout: 30 }
     );
     check("apt install works", aptResult.exitCode === 0,
