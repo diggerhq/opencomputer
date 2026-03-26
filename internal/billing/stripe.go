@@ -62,6 +62,9 @@ func (s *StripeClient) CreateCheckoutSession(customerID string, amountCents int6
 		PaymentIntentData: &stripe.CheckoutSessionPaymentIntentDataParams{
 			SetupFutureUsage: stripe.String(string(stripe.PaymentIntentSetupFutureUsageOffSession)),
 		},
+		InvoiceCreation: &stripe.CheckoutSessionInvoiceCreationParams{
+			Enabled: stripe.Bool(true),
+		},
 		SuccessURL: stripe.String(s.successURL),
 		CancelURL:  stripe.String(s.cancelURL),
 		Metadata: map[string]string{
