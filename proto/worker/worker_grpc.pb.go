@@ -41,6 +41,7 @@ const (
 	SandboxWorker_BuildTemplate_FullMethodName             = "/worker.SandboxWorker/BuildTemplate"
 	SandboxWorker_GetSandboxStats_FullMethodName           = "/worker.SandboxWorker/GetSandboxStats"
 	SandboxWorker_SetSandboxLimits_FullMethodName          = "/worker.SandboxWorker/SetSandboxLimits"
+	SandboxWorker_PreCopyDrives_FullMethodName             = "/worker.SandboxWorker/PreCopyDrives"
 	SandboxWorker_PrepareMigrationIncoming_FullMethodName  = "/worker.SandboxWorker/PrepareMigrationIncoming"
 	SandboxWorker_LiveMigrate_FullMethodName               = "/worker.SandboxWorker/LiveMigrate"
 	SandboxWorker_CompleteMigrationIncoming_FullMethodName = "/worker.SandboxWorker/CompleteMigrationIncoming"
@@ -73,6 +74,7 @@ type SandboxWorkerClient interface {
 	GetSandboxStats(ctx context.Context, in *GetSandboxStatsRequest, opts ...grpc.CallOption) (*GetSandboxStatsResponse, error)
 	SetSandboxLimits(ctx context.Context, in *SetSandboxLimitsRequest, opts ...grpc.CallOption) (*SetSandboxLimitsResponse, error)
 	// Live migration between workers
+	PreCopyDrives(ctx context.Context, in *PreCopyDrivesRequest, opts ...grpc.CallOption) (*PreCopyDrivesResponse, error)
 	PrepareMigrationIncoming(ctx context.Context, in *PrepareMigrationIncomingRequest, opts ...grpc.CallOption) (*PrepareMigrationIncomingResponse, error)
 	LiveMigrate(ctx context.Context, in *LiveMigrateRequest, opts ...grpc.CallOption) (*LiveMigrateResponse, error)
 	CompleteMigrationIncoming(ctx context.Context, in *CompleteMigrationIncomingRequest, opts ...grpc.CallOption) (*CompleteMigrationIncomingResponse, error)
@@ -318,6 +320,16 @@ func (c *sandboxWorkerClient) SetSandboxLimits(ctx context.Context, in *SetSandb
 	return out, nil
 }
 
+func (c *sandboxWorkerClient) PreCopyDrives(ctx context.Context, in *PreCopyDrivesRequest, opts ...grpc.CallOption) (*PreCopyDrivesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreCopyDrivesResponse)
+	err := c.cc.Invoke(ctx, SandboxWorker_PreCopyDrives_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *sandboxWorkerClient) PrepareMigrationIncoming(ctx context.Context, in *PrepareMigrationIncomingRequest, opts ...grpc.CallOption) (*PrepareMigrationIncomingResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PrepareMigrationIncomingResponse)
@@ -375,6 +387,7 @@ type SandboxWorkerServer interface {
 	GetSandboxStats(context.Context, *GetSandboxStatsRequest) (*GetSandboxStatsResponse, error)
 	SetSandboxLimits(context.Context, *SetSandboxLimitsRequest) (*SetSandboxLimitsResponse, error)
 	// Live migration between workers
+	PreCopyDrives(context.Context, *PreCopyDrivesRequest) (*PreCopyDrivesResponse, error)
 	PrepareMigrationIncoming(context.Context, *PrepareMigrationIncomingRequest) (*PrepareMigrationIncomingResponse, error)
 	LiveMigrate(context.Context, *LiveMigrateRequest) (*LiveMigrateResponse, error)
 	CompleteMigrationIncoming(context.Context, *CompleteMigrationIncomingRequest) (*CompleteMigrationIncomingResponse, error)
@@ -453,6 +466,9 @@ func (UnimplementedSandboxWorkerServer) GetSandboxStats(context.Context, *GetSan
 }
 func (UnimplementedSandboxWorkerServer) SetSandboxLimits(context.Context, *SetSandboxLimitsRequest) (*SetSandboxLimitsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetSandboxLimits not implemented")
+}
+func (UnimplementedSandboxWorkerServer) PreCopyDrives(context.Context, *PreCopyDrivesRequest) (*PreCopyDrivesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreCopyDrives not implemented")
 }
 func (UnimplementedSandboxWorkerServer) PrepareMigrationIncoming(context.Context, *PrepareMigrationIncomingRequest) (*PrepareMigrationIncomingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PrepareMigrationIncoming not implemented")
@@ -862,6 +878,24 @@ func _SandboxWorker_SetSandboxLimits_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SandboxWorker_PreCopyDrives_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreCopyDrivesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxWorkerServer).PreCopyDrives(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxWorker_PreCopyDrives_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxWorkerServer).PreCopyDrives(ctx, req.(*PreCopyDrivesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SandboxWorker_PrepareMigrationIncoming_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PrepareMigrationIncomingRequest)
 	if err := dec(in); err != nil {
@@ -1002,6 +1036,10 @@ var SandboxWorker_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetSandboxLimits",
 			Handler:    _SandboxWorker_SetSandboxLimits_Handler,
+		},
+		{
+			MethodName: "PreCopyDrives",
+			Handler:    _SandboxWorker_PreCopyDrives_Handler,
 		},
 		{
 			MethodName: "PrepareMigrationIncoming",
