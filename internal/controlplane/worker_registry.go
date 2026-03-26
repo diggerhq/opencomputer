@@ -2,11 +2,13 @@ package controlplane
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
 
 // WorkerInfo represents a registered worker.
@@ -204,6 +206,11 @@ func (r *WorkerRegistry) Regions() []string {
 		regions = append(regions, region)
 	}
 	return regions
+}
+
+// GetWorkerClient is not supported on the NATS-based registry (no gRPC pool).
+func (r *WorkerRegistry) GetWorkerClient(workerID string) (pb.SandboxWorkerClient, error) {
+	return nil, fmt.Errorf("GetWorkerClient not supported on NATS registry (worker %s)", workerID)
 }
 
 func (r *WorkerRegistry) handleHeartbeat(msg *nats.Msg) {

@@ -3,6 +3,7 @@ package qemu
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -357,6 +358,58 @@ func (m *Manager) CompleteIncomingMigration(ctx context.Context, sandboxID strin
 	log.Printf("qemu: incoming migration %s complete (port=%d, tap=%s)",
 		sandboxID, vm.HostPort, vm.network.TAPName)
 	return nil
+}
+
+// PreCopyDrives uploads a sandbox's drives to S3 for cross-worker migration.
+func (m *Manager) PreCopyDrives(ctx context.Context, sandboxID string, checkpointStore *storage.CheckpointStore) (rootfsKey, workspaceKey string, err error) {
+	mc := &MigrationCoordinator{
+		manager:         m,
+		checkpointStore: checkpointStore,
+		migrations:      make(map[string]*MigrationState),
+	}
+	return mc.MigrateToS3(ctx, sandboxID)
+}
+
+// PrepareIncomingMigrationWithS3 downloads drives from S3 then prepares incoming migration.
+func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID, rootfsS3Key, workspaceS3Key string, cpus, memMB, guestPort int, template string, checkpointStore *storage.CheckpointStore) (incomingAddr string, hostPort int, err error) {
+	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
+	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
+		return "", 0, fmt.Errorf("mkdir: %w", err)
+	}
+
+	// Download rootfs from S3
+	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
+	if err := downloadS3ToFile(ctx, checkpointStore, rootfsS3Key, rootfsPath); err != nil {
+		return "", 0, fmt.Errorf("download rootfs from S3: %w", err)
+	}
+
+	// Download workspace from S3
+	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
+	if err := downloadS3ToFile(ctx, checkpointStore, workspaceS3Key, workspacePath); err != nil {
+		return "", 0, fmt.Errorf("download workspace from S3: %w", err)
+	}
+
+	return m.PrepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template)
+}
+
+// downloadS3ToFile downloads an S3 object to a local file.
+func downloadS3ToFile(ctx context.Context, store *storage.CheckpointStore, key, localPath string) error {
+	rc, err := store.Download(ctx, key)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	f, err := os.Create(localPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, rc); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 // LiveMigrate on Manager delegates to a MigrationCoordinator.

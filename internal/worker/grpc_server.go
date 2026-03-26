@@ -31,6 +31,8 @@ import (
 // LiveMigrator is implemented by VM managers that support live migration (e.g. QEMU).
 type LiveMigrator interface {
 	PrepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string) (incomingAddr string, hostPort int, err error)
+	PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID, rootfsS3Key, workspaceS3Key string, cpus, memMB, guestPort int, template string, checkpointStore *storage.CheckpointStore) (incomingAddr string, hostPort int, err error)
+	PreCopyDrives(ctx context.Context, sandboxID string, checkpointStore *storage.CheckpointStore) (rootfsKey, workspaceKey string, err error)
 	CompleteIncomingMigration(ctx context.Context, sandboxID string) error
 	LiveMigrate(ctx context.Context, sandboxID, incomingAddr string) error
 }
@@ -837,13 +839,38 @@ func (s *GRPCServer) SetMigrator(m LiveMigrator) {
 	s.migrator = m
 }
 
+func (s *GRPCServer) PreCopyDrives(ctx context.Context, req *pb.PreCopyDrivesRequest) (*pb.PreCopyDrivesResponse, error) {
+	if s.migrator == nil {
+		return nil, fmt.Errorf("live migration not supported on this worker")
+	}
+	rootfsKey, workspaceKey, err := s.migrator.PreCopyDrives(ctx, req.SandboxId, s.checkpointStore)
+	if err != nil {
+		return nil, fmt.Errorf("pre-copy drives: %w", err)
+	}
+	return &pb.PreCopyDrivesResponse{
+		RootfsKey:    rootfsKey,
+		WorkspaceKey: workspaceKey,
+	}, nil
+}
+
 func (s *GRPCServer) PrepareMigrationIncoming(ctx context.Context, req *pb.PrepareMigrationIncomingRequest) (*pb.PrepareMigrationIncomingResponse, error) {
 	if s.migrator == nil {
 		return nil, fmt.Errorf("live migration not supported on this worker")
 	}
-	addr, hostPort, err := s.migrator.PrepareIncomingMigration(ctx,
-		req.SandboxId, req.RootfsPath, req.WorkspacePath,
-		int(req.CpuCount), int(req.MemoryMb), int(req.GuestPort), req.Template)
+	var (
+		addr     string
+		hostPort int
+		err      error
+	)
+	if req.RootfsS3Key != "" && req.WorkspaceS3Key != "" {
+		addr, hostPort, err = s.migrator.PrepareIncomingMigrationWithS3(ctx,
+			req.SandboxId, req.RootfsS3Key, req.WorkspaceS3Key,
+			int(req.CpuCount), int(req.MemoryMb), int(req.GuestPort), req.Template, s.checkpointStore)
+	} else {
+		addr, hostPort, err = s.migrator.PrepareIncomingMigration(ctx,
+			req.SandboxId, req.RootfsPath, req.WorkspacePath,
+			int(req.CpuCount), int(req.MemoryMb), int(req.GuestPort), req.Template)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("prepare incoming migration: %w", err)
 	}
