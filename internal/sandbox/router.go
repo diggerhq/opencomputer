@@ -15,10 +15,11 @@ import (
 type SandboxState int
 
 const (
-	StateRunning    SandboxState = iota
+	StateRunning     SandboxState = iota
 	StateHibernated
 	StateWaking
-	StateCreating // async creation in progress — commands wait until ready
+	StateHibernating // transitional: hibernate in progress, blocks new operations
+	StateCreating    // async creation in progress — commands wait until ready
 )
 
 func (s SandboxState) String() string {
@@ -29,6 +30,8 @@ func (s SandboxState) String() string {
 		return "hibernated"
 	case StateWaking:
 		return "waking"
+	case StateHibernating:
+		return "hibernating"
 	case StateCreating:
 		return "creating"
 	default:
@@ -345,7 +348,7 @@ func (r *SandboxRouter) ensureRunning(ctx context.Context, sandboxID string) err
 		entry.mu.Unlock()
 		return nil
 
-	case StateHibernated:
+	case StateHibernated, StateHibernating:
 		// Transition to waking, start wake, other requests will queue
 		entry.state = StateWaking
 		entry.wakeCh = make(chan struct{})
@@ -529,6 +532,9 @@ func (r *SandboxRouter) onTimeout(sandboxID string) {
 		entry.mu.Unlock()
 		return
 	}
+	// Set transitional state before releasing lock — prevents concurrent exec
+	// calls from routing to a VM that's about to be hibernated.
+	entry.state = StateHibernating
 	entry.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
