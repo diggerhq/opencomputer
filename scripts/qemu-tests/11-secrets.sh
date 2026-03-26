@@ -25,12 +25,7 @@ if [ -n "$STORE_ID" ] && [ "$STORE_ID" != "None" ]; then
     STORES+=("$STORE_ID")
     pass "Create secret store: $STORE_ID"
 else
-    # May fail if secret_stores table doesn't exist (migration not run)
-    if echo "$STORE_RESULT" | grep -qi 'secret_stores\|does not exist\|no such table\|relation.*does not exist'; then
-        skip "Secret stores: DB migration not run (secret_stores table missing)"
-    else
-        fail "Create secret store: $STORE_RESULT"
-    fi
+    fail "Create secret store: $STORE_RESULT"
     summary
 fi
 STORE_NAME=$(echo "$STORE_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('name',''))" 2>/dev/null)

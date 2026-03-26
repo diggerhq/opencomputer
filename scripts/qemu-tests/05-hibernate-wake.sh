@@ -27,9 +27,9 @@ OUT=$(exec_stdout "$SB" "cat" "/workspace/marker.txt")
 
 # Rootfs persistence (apt install)
 h "Rootfs Persistence"
-exec_run "$SB" "bash" "-c" "apt-get update -qq && apt-get install -y -qq cowsay 2>/dev/null" >/dev/null
+exec_run "$SB" "bash" "-c" "sudo apt-get update -qq && sudo apt-get install -y -qq cowsay 2>/dev/null" >/dev/null
 OUT=$(exec_stdout "$SB" "bash" "-c" "/usr/games/cowsay test 2>/dev/null | head -1")
-[ -n "$OUT" ] && pass "cowsay installed" || skip "cowsay install (apt cache unavailable)"
+[ -n "$OUT" ] && pass "cowsay installed" || fail "cowsay install"
 
 RESULT=$(api -X POST "$API_URL/api/sandboxes/$SB/hibernate")
 echo "$RESULT" | grep -q '"hibernated"' && pass "Hibernate (with cowsay)" || fail "Hibernate 2"
@@ -38,7 +38,7 @@ RESULT=$(api -X POST "$API_URL/api/sandboxes/$SB/wake" -d '{"timeout":3600}')
 echo "$RESULT" | grep -q '"running"' && pass "Wake (2nd)" || fail "Wake 2"
 
 OUT=$(exec_stdout "$SB" "bash" "-c" "/usr/games/cowsay survived 2>/dev/null | head -1")
-[ -n "$OUT" ] && pass "cowsay survived hibernate" || skip "cowsay after wake (apt not available)"
+[ -n "$OUT" ] && pass "cowsay survived hibernate" || fail "cowsay after wake"
 
 # Workspace large file with hash
 h "Large File Integrity"
