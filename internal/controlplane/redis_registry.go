@@ -249,6 +249,10 @@ func (r *RedisWorkerRegistry) dialWorkerLocked(workerID, grpcAddr string) {
 	}
 	conn, err := grpc.NewClient(grpcAddr,
 		grpc.WithTransportCredentials(creds),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(256*1024*1024),
+			grpc.MaxCallSendMsgSize(256*1024*1024),
+		),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                30 * time.Second,
 			Timeout:             10 * time.Second,

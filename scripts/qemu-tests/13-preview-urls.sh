@@ -24,8 +24,13 @@ HOSTNAME=$(echo "$PREVIEW" | python3 -c "import sys,json; print(json.load(sys.st
 
 # Verify content is served (HTTP only on dev — no TLS)
 if [ -n "$HOSTNAME" ]; then
-    CONTENT=$(curl -s --max-time 10 "http://$HOSTNAME" 2>/dev/null)
-    echo "$CONTENT" | grep -q "Preview Test" && pass "Preview serves content" || fail "Preview content: ${CONTENT:0:50}"
+    # Check if hostname resolves before trying to fetch
+    if host "$HOSTNAME" >/dev/null 2>&1; then
+        CONTENT=$(curl -s --max-time 10 "http://$HOSTNAME" 2>/dev/null)
+        echo "$CONTENT" | grep -q "Preview Test" && pass "Preview serves content" || fail "Preview content: ${CONTENT:0:50}"
+    else
+        skip "Preview content: DNS not configured for $HOSTNAME"
+    fi
 fi
 
 # List preview URLs
