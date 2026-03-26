@@ -335,13 +335,12 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	// VMs can use virtio-mem for dynamic memory add/remove.
 	modCtx, modCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	modResp, modErr := agentClient.Exec(modCtx, &pb.ExecRequest{
-		Command:   "/bin/sh",
-		Args:      []string{"-c", "insmod /lib/modules/$(uname -r)/kernel/drivers/virtio/virtio_mem.ko 2>/dev/null; grep -c virtio_mem /proc/modules"},
-		RunAsRoot: true,
+		Command: "/bin/sh",
+		Args:    []string{"-c", "insmod /lib/modules/$(uname -r)/kernel/drivers/virtio/virtio_mem.ko 2>/dev/null; grep -q virtio_mem /proc/modules"},
 	})
 	modCancel()
 	if modErr != nil || (modResp != nil && modResp.ExitCode != 0) {
-		log.Printf("qemu: golden: WARNING: virtio_mem module load failed (memory scaling may not work): err=%v", modErr)
+		log.Printf("qemu: golden: WARNING: virtio_mem module not loaded (memory scaling may not work): err=%v", modErr)
 	} else {
 		log.Printf("qemu: golden: virtio_mem module loaded")
 	}
@@ -353,7 +352,7 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	umountCtx, umountCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	_, umountErr := agentClient.Exec(umountCtx, &pb.ExecRequest{
 		Command:   "/bin/sh",
-		Args:      []string{"-c", "umount /workspace 2>/dev/null; sync"},
+		Args: []string{"-c", "umount -f /workspace 2>/dev/null; sync; echo 3 > /proc/sys/vm/drop_caches; echo 3 > /proc/sys/vm/drop_caches; blockdev --flushbufs /dev/vdb 2>/dev/null; true"},
 		RunAsRoot: true,
 	})
 	umountCancel()
@@ -657,6 +656,10 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 
 	// Mount /workspace — the golden snapshot was taken with /workspace unmounted
 	// to keep the vdb device state clean for fresh workspace qcow2 files.
+	// Drop caches first: the golden VM's kernel has cached ext4 metadata from the
+	// golden workspace. The new sandbox has a DIFFERENT workspace qcow2 on the same
+	// virtio-blk device. Without dropping caches, the kernel uses stale superblock/
+	// journal data → ext4 checksum errors ("Bad message").
 	// Then bind-mount /home/sandbox onto /workspace/.home so that user home writes
 	// (cargo install, rustup, pip --user, etc.) use the large workspace disk
 	// instead of the small ~1.7GB rootfs.
@@ -664,6 +667,8 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	_, mountErr := agentClient.Exec(mountCtx, &pb.ExecRequest{
 		Command: "/bin/sh",
 		Args: []string{"-c", strings.Join([]string{
+			"echo 3 > /proc/sys/vm/drop_caches",
+			"echo 3 > /proc/sys/vm/drop_caches",
 			"mount /dev/vdb /workspace 2>/dev/null || true",
 			"mkdir -p /workspace/.home",
 			"cp -a /home/sandbox/. /workspace/.home/ 2>/dev/null || true",
@@ -2059,11 +2064,14 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		log.Printf("qemu: warning: metadata DNAT failed for %s: %v", netCfg.TAPName, err)
 	}
 
-	cpus := cfg.CpuCount
+	// Use checkpoint's CPU/memory for loadvm topology match.
+	// savevm captures a fixed CPU topology — loadvm fails silently
+	// if the new QEMU has a different core count.
+	cpus := meta.CpuCount
 	if cpus <= 0 {
 		cpus = m.cfg.DefaultCPUs
 	}
-	memMB := cfg.MemoryMB
+	memMB := meta.BaseMemoryMB
 	if memMB <= 0 {
 		memMB = m.cfg.DefaultMemoryMB
 	}

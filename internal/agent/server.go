@@ -77,8 +77,8 @@ func NewServer(version string) *Server {
 // (e.g., on SIGUSR1 to prepare for hibernate).
 func (s *Server) Serve(lis net.Listener) error {
 	grpcServer := grpc.NewServer(
-		grpc.MaxRecvMsgSize(64 * 1024 * 1024), // 64MB for file transfers
-		grpc.MaxSendMsgSize(64 * 1024 * 1024),
+		grpc.MaxRecvMsgSize(256 * 1024 * 1024), // 256MB for large file transfers
+		grpc.MaxSendMsgSize(256 * 1024 * 1024),
 	)
 	pb.RegisterSandboxAgentServer(grpcServer, s)
 
