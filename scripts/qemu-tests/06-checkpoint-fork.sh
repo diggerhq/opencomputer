@@ -45,7 +45,7 @@ OUT=$(exec_stdout "$FORK_ID" "cat" "/workspace/check.txt")
 # Pre-scale checkpoint test
 h "Pre-Scale Checkpoint"
 api -X PUT "$API_URL/api/sandboxes/$SB/limits" \
-    -d '{"maxMemoryMB":4096,"cpuPercent":400,"maxPids":256}' >/dev/null
+    -d '{"memoryMB":4096,"cpuPercent":400}' >/dev/null
 sleep 1
 MEM_ORIG=$(exec_stdout "$SB" "free" "-m" | awk '/Mem:/{print $2}')
 pass "Original scaled to 4GB: ${MEM_ORIG}MB"

@@ -97,8 +97,10 @@ func wantsBrowserResponse(r *http.Request) bool {
 // (for browsers) or a JSON error (for API clients / curl).
 func serveUpstreamUnavailable(c echo.Context, sandboxID string, port int) error {
 	if wantsBrowserResponse(c.Request()) {
+		// Return 503 (not 502) — Cloudflare intercepts 502 and replaces the body
+		// with its own "Bad Gateway" page. 503 passes through to the browser.
 		html := fmt.Sprintf(placeholderHTML, port, port, sandboxID)
-		return c.HTML(http.StatusBadGateway, html)
+		return c.HTML(http.StatusServiceUnavailable, html)
 	}
 	return c.JSON(http.StatusBadGateway, map[string]string{
 		"error": fmt.Sprintf("sandbox %s: upstream unavailable", sandboxID),

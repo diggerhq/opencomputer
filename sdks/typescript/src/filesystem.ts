@@ -36,14 +36,20 @@ export class Filesystem {
     return new Uint8Array(await resp.arrayBuffer());
   }
 
-  async write(path: string, content: string | Uint8Array): Promise<void> {
+  async write(path: string, content: string | Uint8Array | ReadableStream<Uint8Array>): Promise<void> {
+    const opts: RequestInit & Record<string, unknown> = {
+      method: "PUT",
+      headers: this.headers,
+      body: content as BodyInit,
+    };
+    // duplex: "half" is required for ReadableStream bodies in Node.js fetch,
+    // but must NOT be set for Uint8Array/Buffer/string bodies.
+    if (content instanceof ReadableStream) {
+      opts.duplex = "half";
+    }
     const resp = await fetch(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/files?path=${encodeURIComponent(path)}`,
-      {
-        method: "PUT",
-        headers: this.headers,
-        body: content as BodyInit,
-      },
+      opts,
     );
     if (!resp.ok) throw new Error(`Failed to write ${path}: ${resp.status}`);
   }
@@ -72,42 +78,6 @@ export class Filesystem {
       { method: "DELETE", headers: this.headers },
     );
     if (!resp.ok) throw new Error(`Failed to remove ${path}: ${resp.status}`);
-  }
-
-  /**
-   * Returns the raw response body as a ReadableStream for large file downloads.
-   * Avoids buffering the entire file in memory.
-   */
-  async readStream(path: string): Promise<ReadableStream<Uint8Array>> {
-    const resp = await fetch(
-      `${this.apiUrl}/sandboxes/${this.sandboxId}/files?path=${encodeURIComponent(path)}`,
-      { headers: this.headers },
-    );
-    if (!resp.ok) throw new Error(`Failed to read ${path}: ${resp.status}`);
-    if (!resp.body) throw new Error(`No response body for ${path}`);
-    return resp.body;
-  }
-
-  /**
-   * Streams a ReadableStream or Uint8Array as the request body for large file uploads.
-   * Avoids buffering the entire file in memory when given a ReadableStream.
-   */
-  async writeStream(path: string, stream: ReadableStream<Uint8Array> | Uint8Array): Promise<void> {
-    const opts: RequestInit & Record<string, unknown> = {
-      method: "PUT",
-      headers: this.headers,
-      body: stream as BodyInit,
-    };
-    // duplex: "half" is required for ReadableStream bodies in Node.js fetch,
-    // but must NOT be set for Uint8Array/Buffer bodies.
-    if (stream instanceof ReadableStream) {
-      opts.duplex = "half";
-    }
-    const resp = await fetch(
-      `${this.apiUrl}/sandboxes/${this.sandboxId}/files?path=${encodeURIComponent(path)}`,
-      opts,
-    );
-    if (!resp.ok) throw new Error(`Failed to write ${path}: ${resp.status}`);
   }
 
   async exists(path: string): Promise<boolean> {

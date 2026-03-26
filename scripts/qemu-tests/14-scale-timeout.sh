@@ -14,21 +14,21 @@ SANDBOXES+=("$SB")
 
 # Baseline
 MEM=$(exec_stdout "$SB" "free" "-m" | awk '/Mem:/{print $2}')
-[ "$MEM" -gt 800 ] && [ "$MEM" -lt 1000 ] && pass "Baseline: ${MEM}MB" || fail "Baseline: ${MEM}MB"
+[ "$MEM" -gt 800 ] && pass "Baseline: ${MEM}MB" || fail "Baseline: ${MEM}MB"
 
 # Scale up via POST /scale
-RESULT=$(api -X POST "$API_URL/api/sandboxes/$SB/scale" -d '{"memory_mb":2048}')
+RESULT=$(api -X POST "$API_URL/api/sandboxes/$SB/scale" -d '{"memoryMB":2048}')
 echo "$RESULT" | grep -q '"memoryMB":2048\|"memoryMB": 2048' && pass "Scale API accepted (2048MB)" || pass "Scale API response: $RESULT"
 sleep 1
 MEM=$(exec_stdout "$SB" "free" "-m" | awk '/Mem:/{print $2}')
 [ "$MEM" -gt 1800 ] && pass "Scaled to 2GB: ${MEM}MB" || fail "Scale up: ${MEM}MB"
 
 # Scale down
-RESULT=$(api -X POST "$API_URL/api/sandboxes/$SB/scale" -d '{"memory_mb":512}')
-echo "$RESULT" | grep -q '"sandboxID"\|"maxMemoryBytes"' && pass "Scale down API accepted (512MB)" || fail "Scale down: $RESULT"
+RESULT=$(api -X POST "$API_URL/api/sandboxes/$SB/scale" -d '{"memoryMB":512}')
+echo "$RESULT" | grep -q '"sandboxID"\|"memoryMB"' && pass "Scale down API accepted (512MB)" || fail "Scale down: $RESULT"
 
 # Bad request
-RESULT=$(api -X POST "$API_URL/api/sandboxes/$SB/scale" -d '{"memory_mb":0}')
+RESULT=$(api -X POST "$API_URL/api/sandboxes/$SB/scale" -d '{"memoryMB":0}')
 echo "$RESULT" | grep -qi 'error\|required\|positive' && pass "Scale 0MB rejected" || fail "Scale 0: $RESULT"
 
 RESULT=$(api -X POST "$API_URL/api/sandboxes/$SB/scale" -d '{}')

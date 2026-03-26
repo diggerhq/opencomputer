@@ -72,7 +72,14 @@ func CreateWorkspaceRaw(path string, sizeMB int) error {
 
 // CreateWorkspace creates a qcow2 workspace disk with an ext4 filesystem.
 // First creates a raw ext4 image, then converts to qcow2 for snapshot support.
-func CreateWorkspace(path string, sizeMB int) error {
+// CreateWorkspace creates a fresh ext4 workspace as a qcow2 image.
+// If uuid is non-empty, the ext4 filesystem gets that UUID (required for golden
+// restore — the kernel caches ext4 metadata by UUID, so all workspaces must match
+// the golden snapshot's workspace UUID to avoid "Bad message" checksum errors).
+func CreateWorkspace(path string, sizeMB int, uuid ...string) error {
+	if sizeMB <= 0 {
+		sizeMB = 20480 // 20GB default workspace
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("mkdir for workspace: %w", err)
 	}
@@ -90,9 +97,12 @@ func CreateWorkspace(path string, sizeMB int) error {
 	}
 	f.Close()
 
-	mkfsCmd := exec.Command("mkfs.ext4", "-q", "-F",
-		"-L", "workspace",
-		rawPath)
+	mkfsArgs := []string{"-q", "-F", "-L", "workspace"}
+	if len(uuid) > 0 && uuid[0] != "" {
+		mkfsArgs = append(mkfsArgs, "-U", uuid[0])
+	}
+	mkfsArgs = append(mkfsArgs, rawPath)
+	mkfsCmd := exec.Command("mkfs.ext4", mkfsArgs...)
 	if out, err := mkfsCmd.CombinedOutput(); err != nil {
 		os.Remove(rawPath)
 		return fmt.Errorf("mkfs.ext4: %w (%s)", err, strings.TrimSpace(string(out)))

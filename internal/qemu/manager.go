@@ -56,6 +56,7 @@ type VMInstance struct {
 	bootArgs      string
 	restoring     chan struct{}
 	opMu          sync.Mutex   // serializes destructive VM ops (checkpoint, restore, hibernate)
+	archiveDone   chan struct{} // closed when async hibernate archive completes (nil if no archive in flight)
 	baseMemoryMB         int  // initial memory passed to -m (before virtio-mem)
 	virtioMemRequestedMB int  // additional memory via virtio-mem (beyond base)
 }
@@ -165,6 +166,18 @@ func NewManager(cfg Config) (*Manager, error) {
 
 	if err := EnableForwarding(); err != nil {
 		log.Printf("qemu: warning: could not enable IP forwarding: %v", err)
+	}
+
+	// Verify the data directory supports reflink copy (required for snapshot safety).
+	if err := checkReflinkSupport(cfg.DataDir); err != nil {
+		return nil, fmt.Errorf("data directory does not support reflink: %w (XFS with reflink=1 required)", err)
+	}
+
+	// Clean up stale archive-staging directories from previous crashes
+	staleStaging, _ := filepath.Glob(filepath.Join(cfg.DataDir, "sandboxes", "*", "archive-staging"))
+	for _, d := range staleStaging {
+		os.RemoveAll(d)
+		log.Printf("qemu: cleaned up stale archive-staging: %s", d)
 	}
 
 	return &Manager{
@@ -333,18 +346,17 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	// Load virtio_mem kernel module for memory scaling support.
 	// The module must be loaded before the golden snapshot so that restored
 	// VMs can use virtio-mem for dynamic memory add/remove.
-	modCtx, modCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Try modprobe first (handles signed modules + dependencies), fall back to insmod.
+	modCtx, modCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	modResp, modErr := agentClient.Exec(modCtx, &pb.ExecRequest{
-		Command:   "/bin/sh",
-		Args:      []string{"-c", "insmod /lib/modules/$(uname -r)/kernel/drivers/virtio/virtio_mem.ko 2>/dev/null; grep -c virtio_mem /proc/modules"},
-		RunAsRoot: true,
+		Command: "/bin/sh",
+		Args:    []string{"-c", "modprobe virtio_mem 2>/dev/null || insmod /lib/modules/$(uname -r)/kernel/drivers/virtio/virtio_mem.ko 2>/dev/null; grep -q virtio_mem /proc/modules"},
 	})
 	modCancel()
 	if modErr != nil || (modResp != nil && modResp.ExitCode != 0) {
-		log.Printf("qemu: golden: WARNING: virtio_mem module load failed (memory scaling may not work): err=%v", modErr)
-	} else {
-		log.Printf("qemu: golden: virtio_mem module loaded")
+		return fmt.Errorf("virtio_mem module failed to load (memory scaling will not work) — ensure the rootfs has kmod installed and virtio_mem.ko is present: %v", modErr)
 	}
+	log.Printf("qemu: golden: virtio_mem module loaded")
 
 	// Unmount /workspace and sync before snapshot — the golden migration state
 	// includes virtio-blk device state (ring buffers, pending I/O). If /workspace
@@ -353,7 +365,7 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	umountCtx, umountCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	_, umountErr := agentClient.Exec(umountCtx, &pb.ExecRequest{
 		Command:   "/bin/sh",
-		Args:      []string{"-c", "umount /workspace 2>/dev/null; sync"},
+		Args: []string{"-c", "umount -f /workspace 2>/dev/null; sync; echo 3 > /proc/sys/vm/drop_caches; echo 3 > /proc/sys/vm/drop_caches; blockdev --flushbufs /dev/vdb 2>/dev/null; true"},
 		RunAsRoot: true,
 	})
 	umountCancel()
@@ -657,6 +669,10 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 
 	// Mount /workspace — the golden snapshot was taken with /workspace unmounted
 	// to keep the vdb device state clean for fresh workspace qcow2 files.
+	// Drop caches first: the golden VM's kernel has cached ext4 metadata from the
+	// golden workspace. The new sandbox has a DIFFERENT workspace qcow2 on the same
+	// virtio-blk device. Without dropping caches, the kernel uses stale superblock/
+	// journal data → ext4 checksum errors ("Bad message").
 	// Then bind-mount /home/sandbox onto /workspace/.home so that user home writes
 	// (cargo install, rustup, pip --user, etc.) use the large workspace disk
 	// instead of the small ~1.7GB rootfs.
@@ -664,6 +680,8 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	_, mountErr := agentClient.Exec(mountCtx, &pb.ExecRequest{
 		Command: "/bin/sh",
 		Args: []string{"-c", strings.Join([]string{
+			"echo 3 > /proc/sys/vm/drop_caches",
+			"echo 3 > /proc/sys/vm/drop_caches",
 			"mount /dev/vdb /workspace 2>/dev/null || true",
 			"mkdir -p /workspace/.home",
 			"cp -a /home/sandbox/. /workspace/.home/ 2>/dev/null || true",
@@ -704,7 +722,9 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		GuestPort: guestPort,
 	}
 	if metaJSON, err := json.Marshal(sbMeta); err == nil {
-		_ = os.WriteFile(filepath.Join(sandboxDir, "sandbox-meta.json"), metaJSON, 0644)
+		if writeErr := os.WriteFile(filepath.Join(sandboxDir, "sandbox-meta.json"), metaJSON, 0644); writeErr != nil {
+			log.Printf("qemu: WARNING: failed to write sandbox-meta.json for %s: %v", sandboxDir, writeErr)
+		}
 	}
 
 	log.Printf("qemu: golden-create %s: DONE (%dms total, port=%d→%d, tap=%s, cid=%d)",
@@ -859,6 +879,11 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 
 // Create launches a new QEMU VM.
 func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.Sandbox, error) {
+	// Check disk space before creating — refuse if >95% to prevent ENOSPC corruption
+	if usage, err := diskUsagePercent(m.cfg.DataDir); err == nil && usage > 95 {
+		return nil, fmt.Errorf("disk usage at %d%%, refusing new sandbox (threshold: 95%%)", usage)
+	}
+
 	id := cfg.SandboxID
 	if id == "" {
 		id = "sb-" + uuid.New().String()[:8]
@@ -1079,7 +1104,9 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 		GuestPort: guestPort,
 	}
 	if metaJSON, err := json.Marshal(sbMeta); err == nil {
-		_ = os.WriteFile(filepath.Join(sandboxDir, "sandbox-meta.json"), metaJSON, 0644)
+		if writeErr := os.WriteFile(filepath.Join(sandboxDir, "sandbox-meta.json"), metaJSON, 0644); writeErr != nil {
+			log.Printf("qemu: WARNING: failed to write sandbox-meta.json for %s: %v", sandboxDir, writeErr)
+		}
 	}
 
 	log.Printf("qemu: created VM %s (template=%s, cpu=%d, mem=%dMB, port=%d→%d, tap=%s, mac=%s, cid=%d)",
@@ -1247,6 +1274,17 @@ func (m *Manager) destroyVM(vm *VMInstance) error {
 
 	if vm.qmpSockPath != "" {
 		os.Remove(vm.qmpSockPath)
+	}
+
+	// Wait for any in-flight hibernate archive to complete before deleting files.
+	// Without this, os.RemoveAll races with the archive goroutine reading from
+	// archive-staging/ inside sandboxDir.
+	if vm.archiveDone != nil {
+		select {
+		case <-vm.archiveDone:
+		case <-time.After(5 * time.Minute):
+			log.Printf("qemu: CRITICAL: destroy %s: archive goroutine stuck for 5min, force cleanup", vm.ID)
+		}
 	}
 
 	if vm.sandboxDir != "" {
@@ -1603,7 +1641,9 @@ func (m *Manager) Hibernate(ctx context.Context, sandboxID string, checkpointSto
 		return nil, err
 	}
 
-	vm.opMu.Lock()
+	if !vm.opMu.TryLock() {
+		return nil, fmt.Errorf("another operation is in progress on sandbox %s — try again shortly", sandboxID)
+	}
 	defer vm.opMu.Unlock()
 
 	// Check if agent needs upgrading before we hibernate.
@@ -1640,13 +1680,34 @@ func (m *Manager) Hibernate(ctx context.Context, sandboxID string, checkpointSto
 }
 
 // Wake restores a VM from a snapshot.
+// Guards against double-wake: if the sandbox is already running, returns it.
 func (m *Manager) Wake(ctx context.Context, sandboxID string, checkpointKey string, checkpointStore *storage.CheckpointStore, timeout int) (*types.Sandbox, error) {
+	// Prevent double wake — if sandbox is already running, return it
+	m.mu.RLock()
+	if existing, ok := m.vms[sandboxID]; ok {
+		m.mu.RUnlock()
+		log.Printf("qemu: wake %s: already running, returning existing VM", sandboxID)
+		return vmToSandbox(existing), nil
+	}
+	m.mu.RUnlock()
 	return m.doWake(ctx, sandboxID, checkpointKey, checkpointStore, timeout)
 }
 
 // TemplateCachePath returns "" — not implemented.
 func (m *Manager) TemplateCachePath(templateID, filename string) string {
 	return ""
+}
+
+// CleanCheckpointCache removes the local cache for a checkpoint.
+// Acquires checkpointCacheMu write lock to ensure no ForkFromCheckpoint is
+// reading from the cache concurrently.
+func (m *Manager) CleanCheckpointCache(checkpointID string) {
+	m.checkpointCacheMu.Lock()
+	defer m.checkpointCacheMu.Unlock()
+	cacheDir := m.checkpointCacheDir(checkpointID)
+	if err := os.RemoveAll(cacheDir); err != nil {
+		log.Printf("qemu: clean checkpoint cache %s: %v", checkpointID, err)
+	}
 }
 
 // checkpointCacheDir returns the local cache directory for a checkpoint's qcow2 files.
@@ -1674,7 +1735,12 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 		return "", "", err
 	}
 
-	vm.opMu.Lock()
+	// Reject if another destructive operation (checkpoint, hibernate, restore) is in progress.
+	// Without this, rapid-fire checkpoints queue up and the agent gets into a bad state
+	// from overlapping SIGUSR1/reconnect cycles.
+	if !vm.opMu.TryLock() {
+		return "", "", fmt.Errorf("another operation is in progress on sandbox %s — try again shortly", sandboxID)
+	}
 	defer vm.opMu.Unlock()
 
 	t0 := time.Now()
@@ -1728,6 +1794,19 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	}
 	if reconnErr == nil {
 		vm.agent = agentClient
+	} else {
+		// Agent reconnect failed — kill the VM to prevent an unmanageable orphan.
+		// The checkpoint itself is valid (savevm completed), so the user can fork from it.
+		log.Printf("qemu: CreateCheckpoint %s/%s: CRITICAL: agent reconnect failed, killing orphan VM", sandboxID, checkpointID)
+		if vm.qmp != nil {
+			_ = vm.qmp.Quit()
+			vm.qmp.Close()
+			vm.qmp = nil
+		}
+		// Remove from vms map so it's not considered running
+		m.mu.Lock()
+		delete(m.vms, sandboxID)
+		m.mu.Unlock()
 	}
 
 	// Cache the drive files for ForkFromCheckpoint (which needs a separate QEMU process).
@@ -1784,7 +1863,9 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 		return err
 	}
 
-	vm.opMu.Lock()
+	if !vm.opMu.TryLock() {
+		return fmt.Errorf("another operation is in progress on sandbox %s — try again shortly", sandboxID)
+	}
 	defer vm.opMu.Unlock()
 
 	t0 := time.Now()
@@ -2059,11 +2140,14 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		log.Printf("qemu: warning: metadata DNAT failed for %s: %v", netCfg.TAPName, err)
 	}
 
-	cpus := cfg.CpuCount
+	// Use checkpoint's CPU/memory for loadvm topology match.
+	// savevm captures a fixed CPU topology — loadvm fails silently
+	// if the new QEMU has a different core count.
+	cpus := meta.CpuCount
 	if cpus <= 0 {
 		cpus = m.cfg.DefaultCPUs
 	}
-	memMB := cfg.MemoryMB
+	memMB := meta.BaseMemoryMB
 	if memMB <= 0 {
 		memMB = m.cfg.DefaultMemoryMB
 	}

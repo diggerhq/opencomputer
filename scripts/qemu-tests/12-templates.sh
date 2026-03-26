@@ -5,7 +5,13 @@ source "$(dirname "$0")/common.sh"
 
 TIMEOUT=180
 SANDBOXES=()
-cleanup() { for sb in "${SANDBOXES[@]}"; do destroy_sandbox "$sb" 2>/dev/null; done; }
+SNAP_TO_DELETE=""
+cleanup() {
+    set +u
+    for sb in "${SANDBOXES[@]}"; do destroy_sandbox "$sb" 2>/dev/null; done
+    [ -n "$SNAP_TO_DELETE" ] && api -X DELETE "$API_URL/api/snapshots/$SNAP_TO_DELETE" >/dev/null 2>&1 || true
+    set -u
+}
 trap cleanup EXIT
 
 h "On-Demand Image Build"
@@ -79,7 +85,7 @@ h "Named Snapshots"
 
 # Create snapshot
 SNAP_RESULT=$(api -X POST "$API_URL/api/snapshots" -d '{
-  "name":"test-snap-'$$'",
+  "name":"test-snap-'$$'-'$RANDOM'",
   "image":{
     "base":"base",
     "steps":[
@@ -90,7 +96,12 @@ SNAP_RESULT=$(api -X POST "$API_URL/api/snapshots" -d '{
 }')
 SNAP_NAME=$(echo "$SNAP_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('name',''))" 2>/dev/null)
 SNAP_STATUS=$(echo "$SNAP_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
-[ "$SNAP_STATUS" = "ready" ] && pass "Snapshot created: $SNAP_NAME" || fail "Snapshot: status=$SNAP_STATUS ($SNAP_RESULT)"
+if [ "$SNAP_STATUS" = "ready" ]; then
+    SNAP_TO_DELETE="$SNAP_NAME"
+    pass "Snapshot created: $SNAP_NAME"
+else
+    fail "Snapshot: status=$SNAP_STATUS ($SNAP_RESULT)"
+fi
 
 # Create sandbox from snapshot
 START=$(date +%s)

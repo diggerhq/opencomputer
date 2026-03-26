@@ -43,9 +43,12 @@ class Filesystem:
         resp.raise_for_status()
         return resp.content
 
-    async def write(self, path: str, content: str | bytes) -> None:
-        """Write content to a file."""
-        data = content if isinstance(content, bytes) else content.encode()
+    async def write(self, path: str, content: str | bytes | AsyncIterator[bytes]) -> None:
+        """Write content to a file. Accepts str, bytes, or an async iterator of bytes for streaming."""
+        if isinstance(content, (str, bytes)):
+            data: str | bytes | AsyncIterator[bytes] = content if isinstance(content, bytes) else content.encode()
+        else:
+            data = content
         resp = await self._client.put(
             f"/sandboxes/{self._sandbox_id}/files",
             params={"path": path},
@@ -86,26 +89,6 @@ class Filesystem:
         resp = await self._client.delete(
             f"/sandboxes/{self._sandbox_id}/files",
             params={"path": path},
-        )
-        resp.raise_for_status()
-
-    async def read_stream(self, path: str) -> AsyncIterator[bytes]:
-        """Stream a file as async byte chunks. Avoids buffering the full file in memory."""
-        req = self._client.build_request(
-            "GET",
-            f"/sandboxes/{self._sandbox_id}/files",
-            params={"path": path},
-        )
-        resp = await self._client.send(req, stream=True)
-        resp.raise_for_status()
-        return resp.aiter_bytes()
-
-    async def write_stream(self, path: str, stream: AsyncIterator[bytes]) -> None:
-        """Stream content to a file from an async iterator. Avoids buffering the full file in memory."""
-        resp = await self._client.put(
-            f"/sandboxes/{self._sandbox_id}/files",
-            params={"path": path},
-            content=stream,
         )
         resp.raise_for_status()
 
