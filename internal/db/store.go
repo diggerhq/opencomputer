@@ -87,6 +87,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{13, "migrations/013_checkpoint_patches.up.sql"},
 		{14, "migrations/014_image_cache.up.sql"},
 		{15, "migrations/015_projects.up.sql"},
+		{16, "migrations/015_sandbox_usage.up.sql"},
+		{17, "migrations/015_secret_allowed_hosts.up.sql"},
+		{18, "migrations/017_stripe_billing.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -138,12 +141,20 @@ type Org struct {
 	VerificationTxtValue       *string `json:"verificationTxtValue,omitempty"`
 	SSLTxtName                 *string `json:"sslTxtName,omitempty"`
 	SSLTxtValue                *string `json:"sslTxtValue,omitempty"`
+
+	// Stripe billing fields
+	StripeCustomerID     *string    `json:"stripeCustomerId,omitempty"`
+	StripeSubscriptionID *string    `json:"stripeSubscriptionId,omitempty"`
+	CreditBalanceCents   int        `json:"creditBalanceCents"`
+	MonthlySpendCapCents *int       `json:"monthlySpendCapCents,omitempty"`
+	LastUsageReportedAt  time.Time  `json:"lastUsageReportedAt"`
 }
 
 // orgColumns is the list of columns returned by all Org queries.
 const orgColumns = `id, name, slug, plan, max_concurrent_sandboxes, max_sandbox_timeout_sec, created_at, updated_at,
 	custom_domain, cf_hostname_id, domain_verification_status, domain_ssl_status,
-	verification_txt_name, verification_txt_value, ssl_txt_name, ssl_txt_value`
+	verification_txt_name, verification_txt_value, ssl_txt_name, ssl_txt_value,
+	stripe_customer_id, stripe_subscription_id, credit_balance_cents, monthly_spend_cap_cents, last_usage_reported_at`
 
 // scanOrg scans a row into an Org struct.
 func scanOrg(row pgx.Row) (*Org, error) {
@@ -153,6 +164,7 @@ func scanOrg(row pgx.Row) (*Org, error) {
 		&org.MaxSandboxTimeoutSec, &org.CreatedAt, &org.UpdatedAt,
 		&org.CustomDomain, &org.CFHostnameID, &org.DomainVerificationStatus, &org.DomainSSLStatus,
 		&org.VerificationTxtName, &org.VerificationTxtValue, &org.SSLTxtName, &org.SSLTxtValue,
+		&org.StripeCustomerID, &org.StripeSubscriptionID, &org.CreditBalanceCents, &org.MonthlySpendCapCents, &org.LastUsageReportedAt,
 	)
 	return org, err
 }
