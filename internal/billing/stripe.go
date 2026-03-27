@@ -10,9 +10,11 @@ import (
 	"github.com/stripe/stripe-go/v82/billing/meterevent"
 	checkoutsession "github.com/stripe/stripe-go/v82/checkout/session"
 	"github.com/stripe/stripe-go/v82/customer"
+	"github.com/stripe/stripe-go/v82/customerbalancetransaction"
 	"github.com/stripe/stripe-go/v82/invoice"
 	"github.com/stripe/stripe-go/v82/price"
 	"github.com/stripe/stripe-go/v82/product"
+	"github.com/stripe/stripe-go/v82/promotioncode"
 	"github.com/stripe/stripe-go/v82/subscription"
 	"github.com/stripe/stripe-go/v82/webhook"
 )
@@ -289,6 +291,57 @@ func (s *StripeClient) GetUpcomingInvoice(customerID string) (*stripe.Invoice, e
 	return invoice.CreatePreview(&stripe.InvoiceCreatePreviewParams{
 		Customer: stripe.String(customerID),
 	})
+}
+
+// RedeemPromotionCode validates a promotion code and applies the credit to the customer's balance.
+// Returns the credit amount in cents.
+func (s *StripeClient) RedeemPromotionCode(customerID, code string) (int64, error) {
+	// Look up the promotion code
+	iter := promotioncode.List(&stripe.PromotionCodeListParams{
+		Code:   stripe.String(code),
+		Active: stripe.Bool(true),
+	})
+	if !iter.Next() {
+		return 0, fmt.Errorf("invalid or expired promotion code")
+	}
+	promo := iter.PromotionCode()
+
+	// Check redemption limits
+	if promo.MaxRedemptions > 0 && promo.TimesRedeemed >= promo.MaxRedemptions {
+		return 0, fmt.Errorf("promotion code has already been redeemed")
+	}
+
+	// Check if restricted to a specific customer
+	if promo.Customer != nil && promo.Customer.ID != customerID {
+		return 0, fmt.Errorf("promotion code is not valid for this account")
+	}
+
+	// Get credit amount from coupon
+	if promo.Coupon == nil || promo.Coupon.AmountOff == 0 {
+		return 0, fmt.Errorf("promotion code has no credit amount")
+	}
+	amountCents := promo.Coupon.AmountOff
+
+	// Add credit to customer balance (negative = credit in Stripe)
+	_, err := customerbalancetransaction.New(&stripe.CustomerBalanceTransactionParams{
+		Customer:    stripe.String(customerID),
+		Amount:      stripe.Int64(-amountCents),
+		Currency:    stripe.String("usd"),
+		Description: stripe.String(fmt.Sprintf("Promotion code: %s", code)),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("apply credit: %w", err)
+	}
+
+	// Deactivate the promotion code so it can't be reused
+	_, err = promotioncode.Update(promo.ID, &stripe.PromotionCodeParams{
+		Active: stripe.Bool(false),
+	})
+	if err != nil {
+		log.Printf("billing: warning: failed to deactivate promo code %s: %v", promo.ID, err)
+	}
+
+	return amountCents, nil
 }
 
 // VerifyWebhookSignature verifies a Stripe webhook event.
