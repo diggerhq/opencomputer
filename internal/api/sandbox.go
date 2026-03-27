@@ -1447,8 +1447,28 @@ func (s *Server) createFromCheckpointCore(c echo.Context) (map[string]interface{
 	if cp.OrgID != orgID {
 		return nil, http.StatusForbidden, fmt.Errorf("checkpoint does not belong to this organization")
 	}
+	// Poll for checkpoint readiness — checkpoints transition from "processing" to "ready"
+	// asynchronously. Wait up to 30s so SDK/CLI users don't have to poll manually.
 	if cp.Status != "ready" {
-		return nil, http.StatusBadRequest, fmt.Errorf("checkpoint is not ready (status: %s)", cp.Status)
+		if cp.Status == "failed" {
+			return nil, http.StatusBadRequest, fmt.Errorf("checkpoint failed")
+		}
+		for i := 0; i < 30; i++ {
+			time.Sleep(1 * time.Second)
+			cp, err = s.store.GetCheckpoint(ctx, checkpointID)
+			if err != nil {
+				return nil, http.StatusNotFound, fmt.Errorf("checkpoint not found")
+			}
+			if cp.Status == "ready" {
+				break
+			}
+			if cp.Status == "failed" {
+				return nil, http.StatusBadRequest, fmt.Errorf("checkpoint failed")
+			}
+		}
+		if cp.Status != "ready" {
+			return nil, http.StatusBadRequest, fmt.Errorf("checkpoint is not ready after 30s (status: %s)", cp.Status)
+		}
 	}
 
 	// Parse optional overrides from request body

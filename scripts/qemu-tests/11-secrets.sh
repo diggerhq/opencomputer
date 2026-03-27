@@ -7,10 +7,12 @@ TIMEOUT=30
 SANDBOXES=()
 STORES=()
 cleanup() {
+    set +u
     for sb in "${SANDBOXES[@]}"; do destroy_sandbox "$sb"; done
     for store_id in "${STORES[@]}"; do
         api -X DELETE "$API_URL/api/secret-stores/$store_id" >/dev/null 2>&1 || true
     done
+    set -u
 }
 trap cleanup EXIT
 

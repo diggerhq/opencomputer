@@ -43,14 +43,21 @@ func (a *SubnetAllocator) Allocate() (*NetworkConfig, error) {
 	defer a.mu.Unlock()
 
 	block := a.next
+	start := block
 	for a.used[block] {
 		block++
 		if block > 16383 {
-			return nil, fmt.Errorf("subnet pool exhausted")
+			block = 0 // wrap around to recycle released blocks
+		}
+		if block == start {
+			return nil, fmt.Errorf("subnet pool exhausted (%d in use)", len(a.used))
 		}
 	}
 	a.used[block] = true
 	a.next = block + 1
+	if a.next > 16383 {
+		a.next = 0
+	}
 
 	base := block * 4
 	b2 := byte(base >> 8)

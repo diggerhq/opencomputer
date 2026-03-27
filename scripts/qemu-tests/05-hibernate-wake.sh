@@ -27,7 +27,7 @@ OUT=$(exec_stdout "$SB" "cat" "/workspace/marker.txt")
 
 # Rootfs persistence (apt install)
 h "Rootfs Persistence"
-exec_run "$SB" "bash" "-c" "apt-get update -qq && apt-get install -y -qq cowsay 2>/dev/null" >/dev/null
+exec_run "$SB" "bash" "-c" "sudo apt-get update -qq && sudo apt-get install -y -qq cowsay 2>/dev/null" >/dev/null
 OUT=$(exec_stdout "$SB" "bash" "-c" "/usr/games/cowsay test 2>/dev/null | head -1")
 [ -n "$OUT" ] && pass "cowsay installed" || fail "cowsay install"
 
@@ -57,7 +57,7 @@ HASH_AFTER=$(exec_stdout "$SB" "bash" "-c" "sha256sum /workspace/big.bin | cut -
 # Scaled memory persists
 h "Memory Persists Across Hibernate"
 api -X PUT "$API_URL/api/sandboxes/$SB/limits" \
-    -d '{"maxMemoryMB":2048,"cpuPercent":200,"maxPids":256}' >/dev/null
+    -d '{"memoryMB":2048,"cpuPercent":200}' >/dev/null
 sleep 1
 MEM_BEFORE=$(exec_stdout "$SB" "free" "-m" | awk '/Mem:/{print $2}')
 pass "Scaled to 2GB: ${MEM_BEFORE}MB"

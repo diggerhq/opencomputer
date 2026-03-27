@@ -47,8 +47,8 @@ func NewAgentClient(guestCID uint32) (*AgentClient, error) {
 			return dialVsock(ctx, guestCID, 1024)
 		}),
 		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(64*1024*1024),
-			grpc.MaxCallSendMsgSize(64*1024*1024),
+			grpc.MaxCallRecvMsgSize(256*1024*1024),
+			grpc.MaxCallSendMsgSize(256*1024*1024),
 		),
 	)
 	if err != nil {
@@ -470,8 +470,8 @@ func NewAgentClientSocket(socketPath string) (*AgentClient, error) {
 			},
 		}),
 		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(64*1024*1024),
-			grpc.MaxCallSendMsgSize(64*1024*1024),
+			grpc.MaxCallRecvMsgSize(256*1024*1024),
+			grpc.MaxCallSendMsgSize(256*1024*1024),
 		),
 	)
 	if err != nil {
