@@ -237,3 +237,74 @@ func (s *Server) deleteSnapshot(c echo.Context) error {
 
 	return c.NoContent(http.StatusNoContent)
 }
+
+// resolveSnapshotCheckpoint resolves a snapshot name to its underlying checkpoint ID.
+func (s *Server) resolveSnapshotCheckpoint(c echo.Context) (uuid.UUID, error) {
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return uuid.Nil, fmt.Errorf("org context required")
+	}
+
+	name := c.Param("name")
+	snapshot, err := s.store.GetImageCacheByName(c.Request().Context(), orgID, name)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("snapshot %q not found", name)
+	}
+	if snapshot.CheckpointID == nil {
+		return uuid.Nil, fmt.Errorf("snapshot %q has no checkpoint", name)
+	}
+	return *snapshot.CheckpointID, nil
+}
+
+// createSnapshotPatch adds a patch to a snapshot's underlying checkpoint.
+// POST /api/snapshots/:name/patches
+func (s *Server) createSnapshotPatch(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+
+	checkpointID, err := s.resolveSnapshotCheckpoint(c)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+	}
+
+	// Delegate to the existing checkpoint patch handler by setting the param
+	c.SetParamNames("checkpointId")
+	c.SetParamValues(checkpointID.String())
+	return s.createCheckpointPatch(c)
+}
+
+// listSnapshotPatches lists patches for a snapshot's underlying checkpoint.
+// GET /api/snapshots/:name/patches
+func (s *Server) listSnapshotPatches(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+
+	checkpointID, err := s.resolveSnapshotCheckpoint(c)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+	}
+
+	c.SetParamNames("checkpointId")
+	c.SetParamValues(checkpointID.String())
+	return s.listCheckpointPatches(c)
+}
+
+// deleteSnapshotPatch deletes a patch from a snapshot's underlying checkpoint.
+// DELETE /api/snapshots/:name/patches/:patchId
+func (s *Server) deleteSnapshotPatch(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+
+	checkpointID, err := s.resolveSnapshotCheckpoint(c)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+	}
+
+	patchId := c.Param("patchId")
+	c.SetParamNames("checkpointId", "patchId")
+	c.SetParamValues(checkpointID.String(), patchId)
+	return s.deleteCheckpointPatch(c)
+}
