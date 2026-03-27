@@ -144,7 +144,7 @@ func (s *Store) SetStripeSubscriptionID(ctx context.Context, orgID uuid.UUID, su
 	return err
 }
 
-// UpdateOrgPlan changes the org plan (e.g. "free" → "pro").
+// UpdateOrgPlan changes the org plan (e.g. "free" -> "pro").
 func (s *Store) UpdateOrgPlan(ctx context.Context, orgID uuid.UUID, plan string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE orgs SET plan = $2, updated_at = now() WHERE id = $1`,
