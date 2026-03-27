@@ -1641,7 +1641,9 @@ func (m *Manager) Hibernate(ctx context.Context, sandboxID string, checkpointSto
 		return nil, err
 	}
 
-	vm.opMu.Lock()
+	if !vm.opMu.TryLock() {
+		return nil, fmt.Errorf("another operation is in progress on sandbox %s — try again shortly", sandboxID)
+	}
 	defer vm.opMu.Unlock()
 
 	// Check if agent needs upgrading before we hibernate.
@@ -1861,7 +1863,9 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 		return err
 	}
 
-	vm.opMu.Lock()
+	if !vm.opMu.TryLock() {
+		return fmt.Errorf("another operation is in progress on sandbox %s — try again shortly", sandboxID)
+	}
 	defer vm.opMu.Unlock()
 
 	t0 := time.Now()
