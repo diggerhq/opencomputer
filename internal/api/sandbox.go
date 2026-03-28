@@ -792,6 +792,17 @@ func (s *Server) setLimits(c echo.Context) error {
 		}
 	}
 
+	// Free tier: block scaling beyond 4GB / 1 vCPU
+	if orgID, hasOrg := auth.GetOrgID(c); hasOrg && s.store != nil {
+		if org, err := s.store.GetOrg(ctx, orgID); err == nil && org.Plan == "free" {
+			if req.MemoryMB > 4096 || req.CPUPercent > 100 {
+				return c.JSON(http.StatusPaymentRequired, map[string]string{
+					"error": "upgrade to pro for larger instances",
+				})
+			}
+		}
+	}
+
 	// Convert to cgroup values
 	maxMemoryBytes := int64(req.MemoryMB) * 1024 * 1024
 	cpuMaxUsec := int64(req.CPUPercent) * 1000
@@ -837,6 +848,18 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
+
+	// Free tier: block scaling beyond 4GB / 1 vCPU
+	if orgID, hasOrg := auth.GetOrgID(c); hasOrg && s.store != nil {
+		if org, err := s.store.GetOrg(c.Request().Context(), orgID); err == nil && org.Plan == "free" {
+			if req.MemoryMB > 4096 {
+				return c.JSON(http.StatusPaymentRequired, map[string]string{
+					"error": "upgrade to pro for larger instances",
+				})
+			}
+		}
+	}
+
 	cpuPercent := vcpus * 100
 	maxMemoryBytes := int64(req.MemoryMB) * 1024 * 1024
 	cpuMaxUsec := int64(cpuPercent) * 1000
@@ -1364,9 +1387,16 @@ func (s *Server) restoreCheckpoint(c echo.Context) error {
 	}
 
 	// Dispatch restore in background — return immediately.
-	// Commands will block until restore completes.
+	// Commands will block until restore completes (via pendingCreates + waitForReady).
 	pending := &pendingCreate{ready: make(chan struct{})}
 	s.pendingCreates.Store(sandboxID, pending)
+
+	// Invalidate the proxy route cache so subsequent requests go through
+	// the full ProxyHandler path and hit waitForReady. Without this, cached
+	// routes bypass the readiness check and hit the mid-restore VM.
+	if s.sandboxAPIProxy != nil {
+		s.sandboxAPIProxy.InvalidateRouteCache(sandboxID)
+	}
 
 	if s.workerRegistry != nil {
 		grpcClient, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
