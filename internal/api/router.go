@@ -262,6 +262,11 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	api.GET("/snapshots/:name", s.getSnapshot)
 	api.DELETE("/snapshots/:name", s.deleteSnapshot)
 
+	// Snapshot patches (resolve snapshot name → checkpoint, then delegate to checkpoint patch logic)
+	api.POST("/snapshots/:name/patches", s.createSnapshotPatch)
+	api.GET("/snapshots/:name/patches", s.listSnapshotPatches)
+	api.DELETE("/snapshots/:name/patches/:patchId", s.deleteSnapshotPatch)
+
 	// Secret stores
 	api.POST("/secret-stores", s.createSecretStore)
 	api.GET("/secret-stores", s.listSecretStores)
