@@ -1,196 +1,185 @@
-# Snapshot Corruption Stress Test — Design (v2)
+# Snapshot Corruption Stress Test — Design (v3)
 
-**Goal:** Prove (or disprove) that snapshot corruption is fixed by running sandboxes
-through corruption-prone lifecycles against production.
+**Goal:** Reproduce and disprove the customer's exact failure: "restore from snapshot →
+git segfaults → snapshot got corrupted." Run 1000 restores from freshly-created
+snapshots with zero corruption.
 
 **Target:** Production cluster (Azure East US 2)
 **Client:** TypeScript SDK
 **Concurrency limit:** 5 simultaneous sandboxes (API limit)
+**Estimated runtime:** ~55 minutes
 
 ---
 
-## What Can We Actually Test From the SDK?
+## Customer's Scenario
 
-The incident report identified 4 corruption vectors. Not all are testable from
-the SDK because corruption often lives in S3 artifacts, not local files.
+From the customer report:
+> "git segfaults happened 1st attempt at 10 run on the bench when recreating
+> from snapshot 1st time. looks like snapshot got corrupted."
+>
+> "what number would make sense? 1000 in a row and we can restore checkpoint
+> would really help"
 
-| Vector | What gets corrupted | SDK-testable? | Why / why not |
+The workflow:
+1. Stand up sandbox, install tools, configure environment
+2. Create snapshot/checkpoint from that sandbox
+3. Restore from snapshot → run benchmark (time to first token, write files, git commit)
+4. **On first restore, git segfaulted** — snapshot was corrupted
+
+## How Corruption Happens Here
+
+**Checkpoint creation does:**
+1. `savevm` via QMP — pauses VM briefly, writes memory+device state into qcow2
+2. VM resumes — QEMU starts modifying qcow2 again
+3. Copy qcow2 files to cache directory (for fast forking)
+4. Upload qcow2 to S3 (for cross-worker restores)
+
+**Race:** If the VM resumes (step 2) while the copy (step 3) is still running,
+the cached qcow2 has mixed blocks — some from the snapshot point-in-time, some
+from post-resume. This is the same pattern as Vector 1 (hibernate archive race)
+but applied to checkpoint creation.
+
+**Two corruption scenarios:**
+
+| Scenario | What's corrupted | Behavior | Intermittent? |
 |---|---|---|---|
-| #1 Hibernate archive race | S3 archive | **Statistically at scale** | Same-worker wake uses local files (always fine). Cross-worker wake downloads from S3 (where corruption lives). We can't force cross-worker wake, but at scale the scheduler naturally distributes — some wakes WILL download from S3. |
-| #2 Destroy during archive | S3 archive | **No** | Once destroyed, nobody downloads the corrupt archive. Internal consistency issue only. |
-| #3 Migration without lock | S3 upload | **No** | Migration is an internal operation the SDK can't trigger. |
-| #4 Checkpoint cache lifetime | Local cache dir | **Yes, deterministically** | We can race fork-from-checkpoint against checkpoint deletion. If cache is deleted mid-fork, the fork gets corrupted/partial files. |
+| A: Cache copy races with VM resume | Local checkpoint cache | Every restore from this checkpoint fails identically | No — deterministic per-snapshot. But snapshot creation is racy, so some snapshots are fine, some aren't. |
+| B: S3 upload corrupted, local cache fine | S3 archive | Restores on same worker (local cache) work. Restores on different worker (S3 download) fail. | Yes — depends on which worker handles the restore. |
 
-### How corruption actually works (Vector 1 example)
+The customer likely hit Scenario A: snapshot created with corrupted cache → first
+restore immediately segfaults.
 
-```
-1. Hibernate → QEMU saves state into qcow2 files, exits
-2. Archive goroutine starts tar-ing the qcow2 files (async, big files = slow)
-3. Hibernate API returns to caller (archive still running)
-4. Wake arrives immediately → new QEMU opens SAME qcow2 files, runs loadvm
-5. loadvm MODIFIES qcow2 while tar is mid-read
-6. tar produces corrupt archive (mix of pre/post-loadvm blocks)
-7. Corrupt archive uploaded to S3
-8. LOCAL files are fine — user's current session works perfectly
-9. LATER: sandbox migrates to another worker → downloads corrupt archive → broken
-```
+## Test Design (v3)
 
-The key: corruption doesn't manifest at the moment of the race. It manifests
-**later**, when another worker trusts the bad S3 archive.
+**Directly reproduce the customer's workflow at 1000x scale.**
 
-To deterministically test Vector 1, we'd need worker-level access to delete
-local qcow2 files between hibernate and wake, forcing the S3 download path.
-That's outside SDK scope.
-
----
-
-## Test Design (v2)
-
-Two focused phases instead of one lifecycle gauntlet.
-
-### Phase 1: Fork Blast — Deterministic (Vector 4)
-
-The strongest signal we can get from the SDK. Tests checkpoint cache integrity
-under concurrent fork + delete.
+### Structure: 5 rounds × 200 restores = 1000 total
 
 ```
-Setup:
-  1. Create sandbox
-  2. Write 5MB marker file, record SHA256
-  3. Checkpoint, wait for ready
+Round 1 (restores 1-200):
+  Setup:
+    1. Create sandbox
+    2. Write marker files + record SHA256
+    3. Run "git init && git add . && git commit" — establish git state
+    4. Create checkpoint, wait for ready
+    5. Destroy source sandbox (force restores to use cache/S3, not same VM)
 
-Fork blast:
-  4. Launch 5 forks from checkpoint simultaneously
-  5. While forks are still creating/booting, delete the checkpoint
-  6. Each fork: verify marker SHA256
-  7. Report: any mismatch = corruption
+  Restore loop (200 times, concurrency 5):
+    6. Create sandbox from checkpoint
+    7. Run "git status" — segfault = corruption
+    8. Run "git log --oneline" — verify git state
+    9. Verify marker file SHA256
+    10. Destroy
 
-Cleanup:
-  8. Kill all forks + original sandbox
+Round 2 (restores 201-400): same with fresh snapshot
+...
+Round 5 (restores 801-1000): same with fresh snapshot
 ```
 
-**Why this catches Vector 4:** `ForkFromCheckpoint` reads qcow2 files from the
-local cache under a read lock. `CleanCheckpointCache` (triggered by delete)
-needs the write lock. If the fix works, delete blocks until all forks finish
-copying. If it doesn't, the cache dir gets removed mid-copy → corrupted fork.
+### Why 5 rounds, not 1 round of 1000?
 
-Run this M times (default 5) with different sandboxes to increase coverage.
+- **Tests snapshot CREATION 5 times.** If the creation race exists, some of the
+  5 snapshots might be corrupted. A single snapshot could get lucky (no race) and
+  pass 1000 restores while the bug still exists.
+- **Each round creates a fresh checkpoint.** This exercises the qcow2 copy path
+  5 separate times, increasing the chance of hitting the creation race.
+- **200 restores per snapshot is enough** to detect both Scenario A (fails immediately)
+  and Scenario B (fails on cross-worker restores, intermittent).
 
-### Phase 2: Hibernate/Wake Soak — Statistical (Vector 1)
+### What each restore verifies
 
-High-cycle hibernate/wake across many sandboxes. Relies on natural cross-worker
-distribution to exercise the S3 archive path.
+1. **`git status`** — segfault = corrupted binary in qcow2 (the customer's exact failure)
+2. **`git log --oneline`** — verifies git object database is intact
+3. **Marker file SHA256** — verifies arbitrary file data survives checkpoint/restore
+4. **Exit codes** — any non-zero exit = something wrong
 
-```
-Per sandbox (N sandboxes, C concurrent):
-  1. Create sandbox
-  2. Write 5MB marker, record SHA256
-  3. Loop K times:
-     a. Hibernate (archive starts uploading async)
-     b. Wake immediately (no delay)
-     c. Verify marker SHA256
-  4. Destroy
-```
+### Why this catches the bug
 
-**Why this has a chance of catching Vector 1:** With N=20 sandboxes doing K=5
-hibernate/wake cycles each = 100 total cycles. The production cluster has
-multiple workers. Under load, the scheduler may reassign some sandboxes to
-different workers on wake, forcing S3 archive download. Each such cross-worker
-wake is a chance to detect a corrupt archive.
+If the checkpoint's qcow2 copy is corrupted (Scenario A):
+- **Every single restore** in that round fails — git segfaults, SHA256 mismatches
+- Detected immediately on restore #1
 
-At N=20: probabilistic, some cross-worker wakes likely.
-At N=1000: near-certain, hundreds of cross-worker wakes.
+If the S3 upload is corrupted but local cache is fine (Scenario B):
+- Restores on the same worker succeed (local cache)
+- Restores on different workers fail (S3 download)
+- With 200 restores at concurrency 5, some will land on different workers
+- Detected intermittently within the round
 
-**What a "pass" means:** Zero SHA256 mismatches across all cycles. This doesn't
-guarantee Vector 1 is fixed (we might have gotten lucky with same-worker wakes),
-but a failure IS definitive proof of corruption.
-
-**What a "fail" means:** At least one SHA256 mismatch after wake. This is
-unambiguous corruption — the file content changed through a hibernate/wake cycle.
+If nothing is corrupted:
+- All 1000 restores pass
+- Customer deliverable: "5 independently-created snapshots, 200 restores each,
+  1000 total, 0 corruption, 0 segfaults"
 
 ---
 
 ## CLI Interface
 
 ```
-npx tsx scripts/stress-snapshot-corruption.ts \
-  --count 20 \
+source .env && npx tsx scripts/stress-snapshot-corruption.ts \
+  --restores 1000 \
+  --rounds 5 \
   --concurrency 5 \
-  --cycles 5 \
   --marker-size 5 \
-  --fork-rounds 5 \
-  --api-key sk-... \
-  --api-url https://app.opencomputer.dev \
-  --output report.json
+  -o report.json
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `-n, --count` | 20 | Number of sandboxes for hibernate/wake soak |
-| `-c, --concurrency` | 5 | Max simultaneous sandboxes |
-| `--cycles` | 5 | Hibernate/wake cycles per sandbox |
+| `-n, --restores` | 1000 | Total number of restores across all rounds |
+| `-r, --rounds` | 5 | Number of independently-created snapshots |
+| `-c, --concurrency` | 5 | Max simultaneous sandbox restores |
 | `--marker-size` | 5 | Marker file size in MB |
-| `--fork-rounds` | 5 | Number of fork blast rounds (0 to skip) |
-| `--forks-per-round` | 5 | Concurrent forks per round |
 | `--api-key` | `$OPENCOMPUTER_API_KEY` | API key |
 | `--api-url` | `$OPENCOMPUTER_API_URL` | API URL |
 | `-o, --output` | — | Write JSON report to file |
+
+Restores are distributed evenly: `--restores 1000 --rounds 5` = 200 per round.
 
 ---
 
 ## Data Model
 
 ```typescript
-interface ForkBlastRound {
+interface RestoreResult {
+  index: number;            // 0-199 within the round
+  sandboxId: string;
+  gitStatusOk: boolean;     // git status exited 0, no segfault
+  gitLogOk: boolean;        // git log returned expected output
+  markerVerified: boolean;  // SHA256 match
+  markerActualSha256?: string;
+  createMs: number;
+  verifyMs: number;
+  error?: string;
+}
+
+interface RoundResult {
   round: number;
   sourceSandboxId: string;
   checkpointId: string;
   markerSha256: string;
-  forks: {
-    sandboxId: string;
-    markerVerified: boolean;
-    actualSha256?: string;
-    error?: string;
-  }[];
-  checkpointDeletedDuringForks: boolean;
-  corrupted: number;
-}
-
-interface HibernateWakeResult {
-  index: number;
-  sandboxId: string;
-  markerSha256: string;
-  cycles: {
-    cycle: number;
-    hibernateMs: number;
-    wakeMs: number;
-    verified: boolean;
-    actualSha256?: string;
-  }[];
-  corrupted: boolean;       // any cycle failed verification
-  corruptedAtCycle?: number; // first cycle where corruption detected
-  error?: string;
-  failedAt?: string;
+  setupMs: number;          // time to create source + checkpoint
+  restores: RestoreResult[];
+  totalRestores: number;
+  corrupted: number;        // git fail or SHA256 mismatch
+  errored: number;          // infra errors (timeout, 500)
 }
 
 interface TestReport {
   startedAt: string;
   completedAt: string;
-  config: { count: number; concurrency: number; cycles: number; forkRounds: number; markerSizeMB: number };
-  phase1_forkBlast: {
-    rounds: ForkBlastRound[];
-    totalForks: number;
-    totalCorrupted: number;
+  config: {
+    restores: number;
+    rounds: number;
+    concurrency: number;
+    markerSizeMB: number;
   };
-  phase2_hibernateWake: {
-    results: HibernateWakeResult[];
-    totalCycles: number;
+  rounds: RoundResult[];
+  summary: {
+    totalRestores: number;
     totalCorrupted: number;
     totalErrored: number;
-  };
-  summary: {
     totalDurationMs: number;
-    corruption: boolean;  // ANY corruption across both phases
+    corruption: boolean;
   };
 }
 ```
@@ -199,38 +188,49 @@ interface TestReport {
 
 ## Verification
 
-**Phase 1 (fork blast):**
-- Each fork reads marker file, computes SHA256, compares to original
-- Any mismatch = definitive corruption (Vector 4)
+**Per-restore checks:**
+1. `git status` exits 0 (no segfault, exit code 139 = SIGSEGV)
+2. `git log --oneline` returns expected commit message
+3. Marker file SHA256 matches original
 
-**Phase 2 (hibernate/wake soak):**
-- After each wake, read marker, compute SHA256, compare to original
-- Any mismatch = definitive corruption (likely Vector 1 via cross-worker wake)
+**Corruption = any of:**
+- git exits with signal 11 (SIGSEGV) → binary corrupted in qcow2
+- git output doesn't match expected → git object database corrupted
+- SHA256 mismatch → file data corrupted
 
 **Pass criteria:**
-- `phase1.totalCorrupted == 0` — checkpoint cache integrity holds under concurrent fork+delete
-- `phase2.totalCorrupted == 0` — no data loss across hibernate/wake cycles
-- Errors (timeouts, API failures) acceptable if <10% and not data-loss related
+- `totalCorrupted == 0` across all 1000 restores
+- `totalErrored < 10%` (infra errors like timeouts are tolerable)
 
 ---
 
-## Scaling to 1000
+## Timing Estimate
 
-Once 20 passes clean:
-1. Increase concurrency limit (or use multiple API keys)
-2. `--count 1000 --concurrency 50 --cycles 10`
-3. Total cycles = 10,000 hibernate/wake operations
-4. At this scale, hundreds of cross-worker wakes are near-certain
-5. Customer deliverable: "1000 sandboxes × 10 cycles = 10,000 hibernate/wake ops, 0 corruption"
+| Step | Time | Count |
+|---|---|---|
+| Create source sandbox | ~10s | 5 |
+| Write marker + git init/commit | ~5s | 5 |
+| Create checkpoint + wait ready | ~30s | 5 |
+| **Setup per round** | **~45s** | **5 rounds = ~4 min** |
+| Create from checkpoint | ~10s | 1000 |
+| Verify (git + SHA256) | ~3s | 1000 |
+| Destroy | ~1s | 1000 |
+| **Per restore** | **~14s** | |
+| **200 restores / 5 concurrent** | **~9 min per round** | |
+| **Total** | **~50 min** | |
 
 ---
 
-## Limitations (be honest with customer)
+## Limitations
 
-- **Vector 1 coverage is statistical, not deterministic.** We can't force the
-  S3 download path from the SDK. At N=1000 we're highly confident, at N=20
-  we have partial coverage. Zero corruption at N=20 is encouraging but not proof.
-- **Vectors 2 and 3 are not covered.** They require internal/worker-level access.
-  They were validated by the internal stress tests (48 iterations, see incident report).
-- **Vector 4 coverage IS deterministic.** The fork blast directly races the
-  exact operations that would expose cache lifetime bugs.
+- **Snapshot creation race is probabilistic.** 5 rounds gives 5 chances to hit
+  the race during creation. If the race window is very narrow, we might not
+  trigger it. The internal stress tests (which run on the worker) are better
+  suited to testing the creation path with precise timing.
+- **Cross-worker restores depend on scheduler.** At concurrency 5, most restores
+  likely hit the same worker (which has the local cache). Scenario B corruption
+  (bad S3, good cache) may not be detected at low concurrency. Higher concurrency
+  or a `forceS3` test flag would improve coverage.
+- **Git segfault is a symptom, not a root cause.** If git works but other
+  binaries are silently corrupted, we wouldn't detect it. The SHA256 marker
+  check covers arbitrary file data as a second verification layer.
