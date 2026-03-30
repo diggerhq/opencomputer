@@ -11,12 +11,12 @@
  * checkpoint deletion while forks verify.
  *
  * Usage:
- *   npx tsx examples/stress-snapshot-corruption.ts --count 20 --concurrency 5
- *   npx tsx examples/stress-snapshot-corruption.ts -n 5 -c 2 --fork-blast
- *   npx tsx examples/stress-snapshot-corruption.ts -n 20 -c 5 -o report.json
+ *   npx tsx scripts/stress-snapshot-corruption.ts --count 20 --concurrency 5
+ *   npx tsx scripts/stress-snapshot-corruption.ts -n 5 -c 2 --fork-blast
+ *   npx tsx scripts/stress-snapshot-corruption.ts -n 20 -c 5 -o report.json
  */
 
-import { Sandbox } from "../src/index";
+import { Sandbox } from "../sdks/typescript/src/index";
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -29,8 +29,8 @@ const { values: args } = parseArgs({
     concurrency: { type: "string", short: "c", default: "5" },
     "marker-size": { type: "string", default: "5" },
     snapshot: { type: "string", default: "" },
-    "api-key": { type: "string", default: process.env.OC_API_KEY ?? "" },
-    "api-url": { type: "string", default: process.env.OC_API_URL ?? "" },
+    "api-key": { type: "string", default: process.env.OPENCOMPUTER_API_KEY ?? "" },
+    "api-url": { type: "string", default: process.env.OPENCOMPUTER_API_URL ?? "" },
     "fork-blast": { type: "boolean", default: false },
     output: { type: "string", short: "o", default: "" },
     help: { type: "boolean", short: "h", default: false },
@@ -47,8 +47,8 @@ Options:
   -c, --concurrency <num>   Max simultaneous sandboxes (default: 5)
   --marker-size <mb>        Marker file size in MB (default: 5)
   --snapshot <name>         Pre-built snapshot name
-  --api-key <key>           API key (default: $OC_API_KEY)
-  --api-url <url>           API URL (default: $OC_API_URL)
+  --api-key <key>           API key (default: $OPENCOMPUTER_API_KEY)
+  --api-url <url>           API URL (default: $OPENCOMPUTER_API_URL)
   --fork-blast              Run fork blast phase after gauntlet
   -o, --output <file>       Write JSON report to file
   -h, --help                Show this help
@@ -66,7 +66,7 @@ const FORK_BLAST = args["fork-blast"]!;
 const OUTPUT = args.output || undefined;
 
 if (!API_KEY) {
-  console.error("Error: --api-key or $OC_API_KEY required");
+  console.error("Error: --api-key or $OPENCOMPUTER_API_KEY required");
   process.exit(1);
 }
 
