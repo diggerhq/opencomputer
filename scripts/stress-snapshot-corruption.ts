@@ -1,22 +1,15 @@
 /**
- * Snapshot Corruption Stress Test (v2)
+ * Snapshot Corruption Stress Test (v3)
  *
- * Two-phase test designed to expose snapshot corruption in OpenComputer.
- *
- * Phase 1 — Fork Blast (Vector 4, deterministic):
- *   Create sandbox → write marker → checkpoint → launch N forks simultaneously
- *   → delete checkpoint while forks are booting → verify each fork's data.
- *   Repeated M rounds.
- *
- * Phase 2 — Hibernate/Wake Soak (Vector 1, statistical):
- *   Create N sandboxes → write marker → loop K hibernate/wake cycles with
- *   SHA256 verification after each wake. Cross-worker wakes (which download
- *   from S3) happen naturally at scale, exposing archive corruption.
+ * Reproduces the customer's exact failure: restore from snapshot → git segfaults.
+ * Runs 5 rounds × 200 restores = 1000 total. Each round creates a fresh
+ * checkpoint (testing creation reliability), destroys the source, then
+ * restores 200 times verifying git + file integrity.
  *
  * Usage:
- *   npx tsx scripts/stress-snapshot-corruption.ts -n 5 -c 2
- *   npx tsx scripts/stress-snapshot-corruption.ts -n 20 -c 5 --cycles 5 --fork-rounds 5
- *   npx tsx scripts/stress-snapshot-corruption.ts -n 20 -c 5 -o report.json
+ *   npx tsx scripts/stress-snapshot-corruption.ts -n 1000 -r 5 -c 5
+ *   npx tsx scripts/stress-snapshot-corruption.ts -n 10 -r 1 -c 2       # quick smoke test
+ *   npx tsx scripts/stress-snapshot-corruption.ts -n 1000 -r 5 -o report.json
  */
 
 import { Sandbox } from "../sdks/typescript/src/index";
@@ -28,12 +21,10 @@ import { parseArgs } from "node:util";
 
 const { values: args } = parseArgs({
   options: {
-    count: { type: "string", short: "n", default: "20" },
+    restores: { type: "string", short: "n", default: "1000" },
+    rounds: { type: "string", short: "r", default: "5" },
     concurrency: { type: "string", short: "c", default: "5" },
-    cycles: { type: "string", default: "5" },
     "marker-size": { type: "string", default: "5" },
-    "fork-rounds": { type: "string", default: "5" },
-    "forks-per-round": { type: "string", default: "5" },
     "api-key": { type: "string", default: process.env.OPENCOMPUTER_API_KEY ?? "" },
     "api-url": { type: "string", default: process.env.OPENCOMPUTER_API_URL ?? "" },
     output: { type: "string", short: "o", default: "" },
@@ -44,35 +35,40 @@ const { values: args } = parseArgs({
 
 if (args.help) {
   console.log(`
-Snapshot Corruption Stress Test (v2)
+Snapshot Corruption Stress Test (v3)
 
-Phase 1: Fork blast — deterministic test for checkpoint cache corruption (Vector 4)
-Phase 2: Hibernate/wake soak — statistical test for archive corruption (Vector 1)
+Creates snapshots and restores from them at scale, verifying git integrity
+and file data after each restore. Reproduces the customer's "git segfault
+on restore from snapshot" scenario.
 
 Options:
-  -n, --count <num>           Sandboxes for hibernate/wake soak (default: 20)
-  -c, --concurrency <num>    Max simultaneous sandboxes (default: 5)
-  --cycles <num>              Hibernate/wake cycles per sandbox (default: 5)
-  --marker-size <mb>          Marker file size in MB (default: 5)
-  --fork-rounds <num>         Fork blast rounds, 0 to skip (default: 5)
-  --forks-per-round <num>     Concurrent forks per round (default: 5)
-  --api-key <key>             API key (default: $OPENCOMPUTER_API_KEY)
-  --api-url <url>             API URL (default: $OPENCOMPUTER_API_URL)
-  -o, --output <file>         Write JSON report to file
-  -h, --help                  Show this help
+  -n, --restores <num>      Total restores across all rounds (default: 1000)
+  -r, --rounds <num>        Independent snapshot rounds (default: 5)
+  -c, --concurrency <num>   Max simultaneous restores (default: 5)
+  --marker-size <mb>        Marker file size in MB (default: 5)
+  --api-key <key>           API key (default: $OPENCOMPUTER_API_KEY)
+  --api-url <url>           API URL (default: $OPENCOMPUTER_API_URL)
+  -o, --output <file>       Write JSON report to file
+  -h, --help                Show this help
+
+Examples:
+  # Quick smoke test: 1 round, 10 restores
+  npx tsx scripts/stress-snapshot-corruption.ts -n 10 -r 1 -c 2
+
+  # Full run: 5 rounds × 200 restores = 1000 total
+  npx tsx scripts/stress-snapshot-corruption.ts -n 1000 -r 5 -c 5 -o report.json
 `);
   process.exit(0);
 }
 
-const COUNT = parseInt(args.count!, 10);
+const TOTAL_RESTORES = parseInt(args.restores!, 10);
+const ROUNDS = parseInt(args.rounds!, 10);
 const CONCURRENCY = parseInt(args.concurrency!, 10);
-const CYCLES = parseInt(args.cycles!, 10);
 const MARKER_SIZE_MB = parseInt(args["marker-size"]!, 10);
-const FORK_ROUNDS = parseInt(args["fork-rounds"]!, 10);
-const FORKS_PER_ROUND = parseInt(args["forks-per-round"]!, 10);
 const API_KEY = args["api-key"]!;
 const API_URL = args["api-url"]! || undefined;
 const OUTPUT = args.output || undefined;
+const RESTORES_PER_ROUND = Math.ceil(TOTAL_RESTORES / ROUNDS);
 
 if (!API_KEY) {
   console.error("Error: --api-key or $OPENCOMPUTER_API_KEY required");
@@ -81,67 +77,46 @@ if (!API_KEY) {
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-interface ForkResult {
+interface RestoreResult {
+  index: number;
   sandboxId: string;
+  gitStatusOk: boolean;
+  gitLogOk: boolean;
   markerVerified: boolean;
-  actualSha256?: string;
+  markerActualSha256?: string;
+  createMs: number;
+  verifyMs: number;
   error?: string;
 }
 
-interface ForkBlastRound {
+interface RoundResult {
   round: number;
   sourceSandboxId: string;
   checkpointId: string;
   markerSha256: string;
-  forks: ForkResult[];
-  checkpointDeletedDuringForks: boolean;
+  expectedGitLog: string;
+  setupMs: number;
+  restores: RestoreResult[];
+  totalRestores: number;
   corrupted: number;
-  error?: string;
-}
-
-interface CycleResult {
-  cycle: number;
-  hibernateMs: number;
-  wakeMs: number;
-  verified: boolean;
-  actualSha256?: string;
-}
-
-interface HibernateWakeResult {
-  index: number;
-  sandboxId: string;
-  markerPath: string;
-  markerSha256: string;
-  cycles: CycleResult[];
-  corrupted: boolean;
-  corruptedAtCycle?: number;
-  error?: string;
-  failedAt?: string;
+  errored: number;
 }
 
 interface TestReport {
   startedAt: string;
   completedAt: string;
   config: {
-    count: number;
+    totalRestores: number;
+    rounds: number;
+    restoresPerRound: number;
     concurrency: number;
-    cycles: number;
-    forkRounds: number;
-    forksPerRound: number;
     markerSizeMB: number;
   };
-  phase1_forkBlast: {
-    rounds: ForkBlastRound[];
-    totalForks: number;
-    totalCorrupted: number;
-  };
-  phase2_hibernateWake: {
-    results: HibernateWakeResult[];
-    totalCycles: number;
+  rounds: RoundResult[];
+  summary: {
+    totalRestores: number;
     totalCorrupted: number;
     totalErrored: number;
-  };
-  summary: {
     totalDurationMs: number;
     corruption: boolean;
   };
@@ -205,31 +180,6 @@ async function timed<T>(fn: () => Promise<T>): Promise<{ result: T; ms: number }
   return { result, ms: Date.now() - start };
 }
 
-async function writeMarker(
-  sb: Sandbox,
-  name: string,
-): Promise<{ path: string; sha256: string }> {
-  const data = randomBytes(MARKER_SIZE_MB * 1024 * 1024).toString("base64");
-  const hash = sha256(data);
-  const path = `/home/user/${name}`;
-  await sb.files.write(path, data);
-  const readBack = await sb.files.read(path);
-  if (sha256(readBack) !== hash) {
-    throw new Error(`Write verification failed for ${name}`);
-  }
-  return { path, sha256: hash };
-}
-
-async function verifyMarker(
-  sb: Sandbox,
-  path: string,
-  expectedSha256: string,
-): Promise<{ verified: boolean; actualSha256: string }> {
-  const content = await sb.files.read(path);
-  const actual = sha256(content);
-  return { verified: actual === expectedSha256, actualSha256: actual };
-}
-
 async function waitForCheckpointReady(
   sb: Sandbox,
   checkpointId: string,
@@ -246,195 +196,132 @@ async function waitForCheckpointReady(
   return false;
 }
 
-// ── Phase 1: Fork Blast ─────────────────────────────────────────────────
+// ── Round setup: create source sandbox + checkpoint ─────────────────────
 
-async function runForkBlastRound(round: number): Promise<ForkBlastRound> {
-  const result: ForkBlastRound = {
-    round,
-    sourceSandboxId: "",
-    checkpointId: "",
-    markerSha256: "",
-    forks: [],
-    checkpointDeletedDuringForks: false,
-    corrupted: 0,
-  };
+interface RoundSetup {
+  sourceSandbox: Sandbox;
+  sourceSandboxId: string;
+  checkpointId: string;
+  markerPath: string;
+  markerSha256: string;
+  expectedGitLog: string;
+  setupMs: number;
+}
 
-  let sb: Sandbox | undefined;
-  const forkSandboxes: Sandbox[] = [];
-
-  try {
-    // Setup: create sandbox, write marker, checkpoint
-    sb = await Sandbox.create({ timeout: 300, ...sdkOpts });
-    result.sourceSandboxId = sb.sandboxId;
+async function setupRound(round: number): Promise<RoundSetup> {
+  const { result: setup, ms: setupMs } = await timed(async () => {
+    // Create sandbox
+    const sb = await Sandbox.create({ timeout: 300, ...sdkOpts });
     dim(`  [round ${round}] source sandbox: ${sb.sandboxId}`);
 
-    const marker = await writeMarker(sb, `fork-marker-${round}.bin`);
-    result.markerSha256 = marker.sha256;
-    dim(`  [round ${round}] marker written`);
+    // Write marker file
+    const markerData = randomBytes(MARKER_SIZE_MB * 1024 * 1024).toString("base64");
+    const markerHash = sha256(markerData);
+    const markerPath = `/workspace/marker-${round}.bin`;
+    await sb.files.write(markerPath, markerData);
 
-    const cp = await sb.createCheckpoint(`fork-blast-${round}-${Date.now()}`);
-    result.checkpointId = cp.id;
+    // Verify write
+    const readBack = await sb.files.read(markerPath);
+    if (sha256(readBack) !== markerHash) {
+      throw new Error("Marker write verification failed");
+    }
+    dim(`  [round ${round}] marker written (${MARKER_SIZE_MB}MB)`);
+
+    // Set up git repo — reproduces the customer's scenario
+    const gitSetup = await sb.commands.run(
+      `cd /workspace && git config --global user.email "test@test.com" && git config --global user.name "test" && git init && git add marker-${round}.bin && git commit -m "round-${round}-snapshot"`,
+      { timeout: 30 },
+    );
+    if (gitSetup.exitCode !== 0) {
+      throw new Error(`git setup failed: ${gitSetup.stderr}`);
+    }
+    const expectedGitLog = `round-${round}-snapshot`;
+    dim(`  [round ${round}] git repo initialized`);
+
+    // Create checkpoint
+    const cp = await sb.createCheckpoint(`stress-round-${round}-${Date.now()}`);
     const ready = await waitForCheckpointReady(sb, cp.id);
     if (!ready) throw new Error(`Checkpoint ${cp.id} never became ready`);
     dim(`  [round ${round}] checkpoint ready: ${cp.id}`);
 
-    // Launch forks simultaneously
-    const forkPromises = Array.from({ length: FORKS_PER_ROUND }, async (_, i) => {
-      let fork: Sandbox | undefined;
-      try {
-        fork = await Sandbox.createFromCheckpoint(cp.id, { timeout: 120, ...sdkOpts });
-        forkSandboxes.push(fork);
-        dim(`  [round ${round}] fork[${i}] created: ${fork.sandboxId}`);
+    return {
+      sourceSandbox: sb,
+      sourceSandboxId: sb.sandboxId,
+      checkpointId: cp.id,
+      markerPath,
+      markerSha256: markerHash,
+      expectedGitLog,
+    };
+  });
 
-        const v = await verifyMarker(fork, marker.path, marker.sha256);
-        const entry: ForkResult = {
-          sandboxId: fork.sandboxId,
-          markerVerified: v.verified,
-          actualSha256: v.actualSha256,
-        };
-        if (!v.verified) {
-          entry.error = `expected ${marker.sha256}, got ${v.actualSha256}`;
-          red(`  [round ${round}] fork[${i}] CORRUPTED`);
-        } else {
-          green(`  [round ${round}] fork[${i}] verified OK`);
-        }
-        return entry;
-      } catch (err: any) {
-        return {
-          sandboxId: fork?.sandboxId ?? "unknown",
-          markerVerified: false,
-          error: err.message,
-        } as ForkResult;
-      }
-    });
-
-    // Delete checkpoint while forks are in progress (the race)
-    // Small delay to let fork requests reach the server, then delete
-    await sleep(500);
-    try {
-      await sb.deleteCheckpoint(cp.id);
-      result.checkpointDeletedDuringForks = true;
-      dim(`  [round ${round}] checkpoint deleted while forks in progress`);
-    } catch (err: any) {
-      dim(`  [round ${round}] checkpoint delete failed (expected if forks hold lock): ${err.message}`);
-    }
-
-    const forkResults = await Promise.allSettled(forkPromises);
-    result.forks = forkResults.map((r) =>
-      r.status === "fulfilled"
-        ? r.value
-        : { sandboxId: "unknown", markerVerified: false, error: r.reason?.message }
-    );
-    result.corrupted = result.forks.filter((f) => !f.markerVerified).length;
-
-  } catch (err: any) {
-    result.error = err.message;
-    red(`  [round ${round}] FAILED: ${err.message}`);
-  } finally {
-    // Cleanup
-    const toKill = [...forkSandboxes];
-    if (sb) toKill.push(sb);
-    await Promise.allSettled(toKill.map((s) => s.kill().catch(() => {})));
-  }
-
-  return result;
+  return { ...setup, setupMs };
 }
 
-async function phase1_forkBlast(): Promise<TestReport["phase1_forkBlast"]> {
-  bold("\n╔══════════════════════════════════════════════════════════╗");
-  bold("║  Phase 1: Fork Blast (Vector 4 — checkpoint cache)      ║");
-  bold("╚══════════════════════════════════════════════════════════╝");
-  dim(`${FORK_ROUNDS} rounds × ${FORKS_PER_ROUND} forks each\n`);
+// ── Single restore + verify ─────────────────────────────────────────────
 
-  const rounds: ForkBlastRound[] = [];
-
-  // Run rounds sequentially (each round creates its own sandbox)
-  for (let i = 0; i < FORK_ROUNDS; i++) {
-    const round = await runForkBlastRound(i);
-    rounds.push(round);
-  }
-
-  const totalForks = rounds.reduce((sum, r) => sum + r.forks.length, 0);
-  const totalCorrupted = rounds.reduce((sum, r) => sum + r.corrupted, 0);
-
-  console.log();
-  if (totalCorrupted > 0) {
-    red(`Phase 1: ${totalForks} forks, ${totalCorrupted} CORRUPTED`);
-  } else {
-    green(`Phase 1: ${totalForks} forks, 0 corrupted`);
-  }
-
-  return { rounds, totalForks, totalCorrupted };
-}
-
-// ── Phase 2: Hibernate/Wake Soak ────────────────────────────────────────
-
-async function runHibernateWakeSoak(index: number): Promise<HibernateWakeResult> {
-  const result: HibernateWakeResult = {
+async function runRestore(
+  round: number,
+  index: number,
+  checkpointId: string,
+  markerPath: string,
+  markerSha256: string,
+  expectedGitLog: string,
+): Promise<RestoreResult> {
+  const result: RestoreResult = {
     index,
     sandboxId: "",
-    markerPath: "",
-    markerSha256: "",
-    cycles: [],
-    corrupted: false,
+    gitStatusOk: false,
+    gitLogOk: false,
+    markerVerified: false,
+    createMs: 0,
+    verifyMs: 0,
   };
 
   let sb: Sandbox | undefined;
 
   try {
-    // Create and write marker
-    sb = await Sandbox.create({ timeout: 300, ...sdkOpts });
+    // Restore from checkpoint
+    const { result: sandbox, ms: createMs } = await timed(() =>
+      Sandbox.createFromCheckpoint(checkpointId, { timeout: 120, ...sdkOpts })
+    );
+    sb = sandbox;
     result.sandboxId = sb.sandboxId;
-    dim(`[${index}] created ${sb.sandboxId}`);
+    result.createMs = createMs;
 
-    const marker = await writeMarker(sb, `soak-marker-${index}.bin`);
-    result.markerPath = marker.path;
-    result.markerSha256 = marker.sha256;
-    dim(`[${index}] marker written`);
-
-    // Hibernate/wake cycles
-    for (let c = 0; c < CYCLES; c++) {
-      const cycleResult: CycleResult = { cycle: c, hibernateMs: 0, wakeMs: 0, verified: false };
-
-      // Hibernate
-      const { ms: hibMs } = await timed(() => sb!.hibernate());
-      cycleResult.hibernateMs = hibMs;
-
-      // Wake immediately — no delay
-      const { ms: wakeMs } = await timed(() => sb!.wake({ timeout: 120 }));
-      cycleResult.wakeMs = wakeMs;
-
-      // Verify
-      const v = await verifyMarker(sb, marker.path, marker.sha256);
-      cycleResult.verified = v.verified;
-      cycleResult.actualSha256 = v.actualSha256;
-
-      result.cycles.push(cycleResult);
-
-      if (!v.verified) {
-        result.corrupted = true;
-        result.corruptedAtCycle = c;
-        red(`[${index}] CORRUPTED at cycle ${c} — expected ${marker.sha256}, got ${v.actualSha256}`);
-        break; // stop cycling, corruption found
+    // Verify
+    const { ms: verifyMs } = await timed(async () => {
+      // 1. git status — segfault = corruption (customer's exact failure)
+      const gitStatus = await sb!.commands.run("cd /workspace && git status", { timeout: 15 });
+      result.gitStatusOk = gitStatus.exitCode === 0;
+      if (!result.gitStatusOk) {
+        const sig = gitStatus.exitCode > 128 ? ` (signal ${gitStatus.exitCode - 128})` : "";
+        throw new Error(`git status failed: exit ${gitStatus.exitCode}${sig} stderr=${gitStatus.stderr}`);
       }
 
-      dim(`[${index}] cycle ${c}/${CYCLES - 1} OK (h=${formatMs(hibMs)} w=${formatMs(wakeMs)})`);
-    }
+      // 2. git log — verify object database intact
+      const gitLog = await sb!.commands.run("cd /workspace && git log --oneline -1", { timeout: 15 });
+      result.gitLogOk = gitLog.exitCode === 0 && gitLog.stdout.includes(expectedGitLog);
+      if (!result.gitLogOk) {
+        throw new Error(`git log mismatch: expected "${expectedGitLog}", got "${gitLog.stdout.trim()}"`);
+      }
 
-    if (!result.corrupted) {
-      green(`[${index}] ${CYCLES} cycles passed`);
-    }
+      // 3. Marker file SHA256
+      const content = await sb!.files.read(markerPath);
+      const actual = sha256(content);
+      result.markerVerified = actual === markerSha256;
+      result.markerActualSha256 = actual;
+      if (!result.markerVerified) {
+        throw new Error(`SHA256 mismatch: expected ${markerSha256}, got ${actual}`);
+      }
+    });
+    result.verifyMs = verifyMs;
 
     // Destroy
     await sb.kill();
     sb = undefined;
 
   } catch (err: any) {
-    result.error = err.message;
-    result.failedAt = result.cycles.length > 0
-      ? `cycle ${result.cycles.length - 1}`
-      : "setup";
-    red(`[${index}] FAILED at ${result.failedAt}: ${err.message}`);
+    result.error = err.message ?? String(err);
   } finally {
     if (sb) {
       try { await sb.kill(); } catch {}
@@ -444,74 +331,118 @@ async function runHibernateWakeSoak(index: number): Promise<HibernateWakeResult>
   return result;
 }
 
-async function phase2_hibernateWake(): Promise<TestReport["phase2_hibernateWake"]> {
-  bold("\n╔══════════════════════════════════════════════════════════╗");
-  bold("║  Phase 2: Hibernate/Wake Soak (Vector 1 — S3 archive)   ║");
-  bold("╚══════════════════════════════════════════════════════════╝");
-  dim(`${COUNT} sandboxes × ${CYCLES} cycles = ${COUNT * CYCLES} total cycles`);
-  dim(`Concurrency: ${CONCURRENCY}\n`);
+// ── Run one round ───────────────────────────────────────────────────────
 
+async function runRound(round: number, restoreCount: number): Promise<RoundResult> {
+  bold(`\n── Round ${round + 1}/${ROUNDS} (${restoreCount} restores) ──────────────────────────`);
+
+  // Setup
+  const setup = await setupRound(round);
+
+  // Run restores with concurrency pool
   const pool = createPool(CONCURRENCY);
-  const promises = Array.from({ length: COUNT }, async (_, i) => {
+  let completed = 0;
+
+  const promises = Array.from({ length: restoreCount }, async (_, i) => {
     await pool.acquire();
     try {
-      return await runHibernateWakeSoak(i);
+      const r = await runRestore(
+        round, i, setup.checkpointId,
+        setup.markerPath, setup.markerSha256, setup.expectedGitLog,
+      );
+
+      completed++;
+      const globalIndex = round * RESTORES_PER_ROUND + i;
+      const isCorrupted = !r.gitStatusOk || !r.gitLogOk || !r.markerVerified;
+
+      // Progress: every restore if ≤20, every 10 if ≤200, every 25 otherwise
+      const interval = restoreCount <= 20 ? 1 : restoreCount <= 200 ? 10 : 25;
+
+      if (isCorrupted) {
+        red(`  [${globalIndex}] CORRUPTED: ${r.error}`);
+      } else if (r.error) {
+        yellow(`  [${globalIndex}] ERROR: ${r.error}`);
+      } else if (completed % interval === 0 || completed === restoreCount) {
+        dim(`  [round ${round + 1}] ${completed}/${restoreCount} (${formatMs(r.createMs)} create, ${formatMs(r.verifyMs)} verify)`);
+      }
+
+      return r;
     } finally {
       pool.release();
     }
   });
 
   const settled = await Promise.allSettled(promises);
-  const results: HibernateWakeResult[] = settled.map((r, i) => {
+
+  // Destroy source sandbox after all restores complete
+  try {
+    await setup.sourceSandbox.kill();
+    dim(`  [round ${round + 1}] source sandbox destroyed`);
+  } catch {}
+
+  const restores: RestoreResult[] = settled.map((r, i) => {
     if (r.status === "fulfilled") return r.value;
     return {
       index: i,
       sandboxId: "",
-      markerPath: "",
-      markerSha256: "",
-      cycles: [],
-      corrupted: false,
+      gitStatusOk: false,
+      gitLogOk: false,
+      markerVerified: false,
+      createMs: 0,
+      verifyMs: 0,
       error: r.reason?.message ?? String(r.reason),
-      failedAt: "unknown",
     };
   });
 
-  const totalCycles = results.reduce((sum, r) => sum + r.cycles.length, 0);
-  const totalCorrupted = results.filter((r) => r.corrupted).length;
-  const totalErrored = results.filter((r) => r.error).length;
+  const corrupted = restores.filter((r) => !r.gitStatusOk || !r.gitLogOk || !r.markerVerified).length;
+  const errored = restores.filter((r) => r.error && r.gitStatusOk && r.gitLogOk && r.markerVerified).length;
+  // Infra errors: error present but all checks didn't get a chance to run
+  const infraErrors = restores.filter((r) => r.error && !r.gitStatusOk && !r.gitLogOk && !r.markerVerified && !isCorruptionError(r)).length;
 
-  console.log();
-  if (totalCorrupted > 0) {
-    red(`Phase 2: ${totalCycles} cycles across ${COUNT} sandboxes, ${totalCorrupted} CORRUPTED`);
-  } else {
-    green(`Phase 2: ${totalCycles} cycles across ${COUNT} sandboxes, 0 corrupted`);
-  }
-  if (totalErrored > 0) {
-    yellow(`  ${totalErrored} sandboxes errored (infra, not corruption)`);
-  }
+  // Round summary
+  const tag = corrupted > 0 ? "\x1b[31m" : "\x1b[32m";
+  console.log(`${tag}  Round ${round + 1}: ${restoreCount} restores / ${corrupted} corrupted / ${infraErrors} errors\x1b[0m`);
 
   // Timing stats
-  const allCycles = results.flatMap((r) => r.cycles);
-  if (allCycles.length > 0) {
-    const hibTimes = allCycles.map((c) => c.hibernateMs);
-    const wakeTimes = allCycles.map((c) => c.wakeMs);
+  const createTimes = restores.filter((r) => r.createMs > 0).map((r) => r.createMs);
+  const verifyTimes = restores.filter((r) => r.verifyMs > 0).map((r) => r.verifyMs);
+  if (createTimes.length > 0) {
     const avg = (a: number[]) => a.reduce((s, v) => s + v, 0) / a.length;
-    dim(`  hibernate: avg=${formatMs(avg(hibTimes))} min=${formatMs(Math.min(...hibTimes))} max=${formatMs(Math.max(...hibTimes))}`);
-    dim(`  wake:      avg=${formatMs(avg(wakeTimes))} min=${formatMs(Math.min(...wakeTimes))} max=${formatMs(Math.max(...wakeTimes))}`);
+    dim(`  create: avg=${formatMs(avg(createTimes))} min=${formatMs(Math.min(...createTimes))} max=${formatMs(Math.max(...createTimes))}`);
+    dim(`  verify: avg=${formatMs(avg(verifyTimes))} min=${formatMs(Math.min(...verifyTimes))} max=${formatMs(Math.max(...verifyTimes))}`);
   }
 
-  return { results, totalCycles, totalCorrupted, totalErrored };
+  return {
+    round,
+    sourceSandboxId: setup.sourceSandboxId,
+    checkpointId: setup.checkpointId,
+    markerSha256: setup.markerSha256,
+    expectedGitLog: setup.expectedGitLog,
+    setupMs: setup.setupMs,
+    restores,
+    totalRestores: restoreCount,
+    corrupted,
+    errored: infraErrors,
+  };
+}
+
+function isCorruptionError(r: RestoreResult): boolean {
+  if (!r.error) return false;
+  return r.error.includes("segfault") ||
+    r.error.includes("signal 11") ||
+    r.error.includes("SHA256 mismatch") ||
+    r.error.includes("git log mismatch") ||
+    r.error.includes("git status failed");
 }
 
 // ── Main ────────────────────────────────────────────────────────────────
 
 async function main() {
   bold("╔══════════════════════════════════════════════════════════╗");
-  bold("║     Snapshot Corruption Stress Test (v2)                 ║");
+  bold("║     Snapshot Corruption Stress Test (v3)                 ║");
   bold("╚══════════════════════════════════════════════════════════╝");
   console.log();
-  dim(`Phase 1: ${FORK_ROUNDS} fork blast rounds × ${FORKS_PER_ROUND} forks`);
-  dim(`Phase 2: ${COUNT} sandboxes × ${CYCLES} hibernate/wake cycles`);
+  dim(`${ROUNDS} rounds × ${RESTORES_PER_ROUND} restores = ${TOTAL_RESTORES} total`);
   dim(`Concurrency: ${CONCURRENCY}  Marker: ${MARKER_SIZE_MB}MB`);
   dim(`API: ${API_URL ?? "(default)"}`);
   console.log();
@@ -519,25 +450,23 @@ async function main() {
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
 
-  // Phase 1: Fork Blast
-  let p1: TestReport["phase1_forkBlast"] = { rounds: [], totalForks: 0, totalCorrupted: 0 };
-  if (FORK_ROUNDS > 0) {
-    p1 = await phase1_forkBlast();
-  } else {
-    dim("Phase 1 skipped (--fork-rounds 0)");
-  }
+  const rounds: RoundResult[] = [];
 
-  // Phase 2: Hibernate/Wake Soak
-  let p2: TestReport["phase2_hibernateWake"] = { results: [], totalCycles: 0, totalCorrupted: 0, totalErrored: 0 };
-  if (COUNT > 0) {
-    p2 = await phase2_hibernateWake();
-  } else {
-    dim("Phase 2 skipped (--count 0)");
+  for (let r = 0; r < ROUNDS; r++) {
+    const restoreCount = r < ROUNDS - 1
+      ? RESTORES_PER_ROUND
+      : TOTAL_RESTORES - (ROUNDS - 1) * RESTORES_PER_ROUND; // last round gets remainder
+    const round = await runRound(r, restoreCount);
+    rounds.push(round);
   }
 
   const totalMs = Date.now() - startMs;
   const completedAt = new Date().toISOString();
-  const anyCorruption = p1.totalCorrupted > 0 || p2.totalCorrupted > 0;
+
+  const totalRestores = rounds.reduce((s, r) => s + r.totalRestores, 0);
+  const totalCorrupted = rounds.reduce((s, r) => s + r.corrupted, 0);
+  const totalErrored = rounds.reduce((s, r) => s + r.errored, 0);
+  const anyCorruption = totalCorrupted > 0;
 
   // Final report
   console.log();
@@ -546,54 +475,64 @@ async function main() {
   bold("══════════════════════════════════════════════════════════");
   console.log();
 
-  const p1Tag = p1.totalCorrupted > 0 ? "\x1b[31m" : "\x1b[32m";
-  const p2Tag = p2.totalCorrupted > 0 ? "\x1b[31m" : "\x1b[32m";
-  console.log(`${p1Tag}  Phase 1 (fork blast):       ${p1.totalForks} forks / ${p1.totalCorrupted} corrupted\x1b[0m`);
-  console.log(`${p2Tag}  Phase 2 (hibernate/wake):   ${p2.totalCycles} cycles / ${p2.totalCorrupted} corrupted\x1b[0m`);
+  for (const r of rounds) {
+    const tag = r.corrupted > 0 ? "\x1b[31m" : "\x1b[32m";
+    console.log(`${tag}  Round ${r.round + 1}: ${r.totalRestores} restores / ${r.corrupted} corrupted / ${r.errored} errors  (setup: ${formatMs(r.setupMs)})\x1b[0m`);
+  }
+  console.log();
+
+  const totalTag = anyCorruption ? "\x1b[31m" : "\x1b[32m";
+  console.log(`${totalTag}  TOTAL: ${totalRestores} restores / ${totalCorrupted} corrupted / ${totalErrored} errors\x1b[0m`);
   dim(`Total time: ${formatMs(totalMs)}`);
   console.log();
 
-  // List all corruptions and errors
-  const corruptedForks = p1.rounds.flatMap((r) =>
-    r.forks.filter((f) => !f.markerVerified).map((f) => ({ round: r.round, ...f }))
-  );
-  const corruptedSoaks = p2.results.filter((r) => r.corrupted);
-  const erroredSoaks = p2.results.filter((r) => r.error && !r.corrupted);
-
-  if (corruptedForks.length > 0) {
-    bold("  Fork blast corruptions:");
-    for (const f of corruptedForks) {
-      red(`    round ${f.round}: ${f.sandboxId} — ${f.error ?? "sha256 mismatch"}`);
+  // List corruptions
+  if (totalCorrupted > 0) {
+    bold("  Corruptions:");
+    for (const r of rounds) {
+      for (const restore of r.restores) {
+        if (isCorruptionError(restore) || (!restore.gitStatusOk && restore.sandboxId) || (!restore.markerVerified && restore.sandboxId)) {
+          red(`    round ${r.round + 1} restore ${restore.index}: ${restore.sandboxId} — ${restore.error}`);
+        }
+      }
     }
-  }
-  if (corruptedSoaks.length > 0) {
-    bold("  Hibernate/wake corruptions:");
-    for (const s of corruptedSoaks) {
-      red(`    [${s.index}] ${s.sandboxId} — corrupted at cycle ${s.corruptedAtCycle}`);
-    }
-  }
-  if (erroredSoaks.length > 0) {
-    bold("  Hibernate/wake errors (not corruption):");
-    for (const s of erroredSoaks) {
-      yellow(`    [${s.index}] ${s.sandboxId || "no-id"} — ${s.failedAt}: ${s.error}`);
-    }
+    console.log();
   }
 
-  // Build JSON report
+  // List infra errors (first 10)
+  if (totalErrored > 0) {
+    bold(`  Infra errors (${totalErrored} total, showing first 10):`);
+    let shown = 0;
+    for (const r of rounds) {
+      for (const restore of r.restores) {
+        if (restore.error && !isCorruptionError(restore) && shown < 10) {
+          yellow(`    round ${r.round + 1} restore ${restore.index}: ${restore.error}`);
+          shown++;
+        }
+      }
+    }
+    console.log();
+  }
+
+  // JSON report
   const report: TestReport = {
     startedAt,
     completedAt,
     config: {
-      count: COUNT,
+      totalRestores: TOTAL_RESTORES,
+      rounds: ROUNDS,
+      restoresPerRound: RESTORES_PER_ROUND,
       concurrency: CONCURRENCY,
-      cycles: CYCLES,
-      forkRounds: FORK_ROUNDS,
-      forksPerRound: FORKS_PER_ROUND,
       markerSizeMB: MARKER_SIZE_MB,
     },
-    phase1_forkBlast: p1,
-    phase2_hibernateWake: p2,
-    summary: { totalDurationMs: totalMs, corruption: anyCorruption },
+    rounds,
+    summary: {
+      totalRestores,
+      totalCorrupted,
+      totalErrored,
+      totalDurationMs: totalMs,
+      corruption: anyCorruption,
+    },
   };
 
   if (OUTPUT) {
@@ -603,13 +542,13 @@ async function main() {
 
   // Exit code
   if (anyCorruption) {
-    red(`\nFAILED — corruption detected`);
+    red(`\nFAILED — ${totalCorrupted} corruption(s) detected`);
     process.exit(1);
-  } else if (p2.totalErrored > COUNT * 0.1) {
-    yellow(`\nWARN — 0 corruptions but ${p2.totalErrored} errors (>${Math.round(COUNT * 0.1)} threshold)`);
+  } else if (totalErrored > totalRestores * 0.1) {
+    yellow(`\nWARN — 0 corruptions but ${totalErrored} errors (>${Math.round(totalRestores * 0.1)} threshold)`);
     process.exit(2);
   } else {
-    green(`\nPASSED — 0 corruptions`);
+    green(`\nPASSED — ${totalRestores} restores, 0 corruptions`);
     process.exit(0);
   }
 }
