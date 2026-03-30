@@ -317,11 +317,9 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	}
 
 	// Dispatch via persistent gRPC connection.
-	// Template-based creation needs more time for S3 download + decompression of drives.
-	grpcTimeout := 30 * time.Second
-	if templateRootfsKey != "" {
-		grpcTimeout = 120 * time.Second
-	}
+	// Worker uses local cache for checkpoint forks (300ms) and downloads from S3
+	// only on cold starts (~30s). 60s is enough for both paths.
+	grpcTimeout := 60 * time.Second
 	grpcCtx, cancel := context.WithTimeout(ctx, grpcTimeout)
 	defer cancel()
 
@@ -1586,7 +1584,7 @@ func (s *Server) createFromCheckpointCore(c echo.Context) (map[string]interface{
 
 	// Boot VM in background
 	go func() {
-		createCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		createCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		var createErr error
