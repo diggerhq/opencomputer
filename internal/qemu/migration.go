@@ -74,10 +74,12 @@ func (mc *MigrationCoordinator) MigrateToS3(ctx context.Context, sandboxID strin
 		return "", "", fmt.Errorf("vm not found: %w", err)
 	}
 
-	// Sync guest filesystems before copying
+	// Sync guest + reflink-copy drives under opMu to prevent concurrent
+	// checkpoint/destroy from modifying files during the copy.
+	vm.opMu.Lock()
 	if vm.agent != nil {
 		syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		_, _ = vm.agent.Exec(syncCtx, &pb.ExecRequest{Command: "sync", RunAsRoot: true})
+		_, _ = vm.agent.Exec(syncCtx, &pb.ExecRequest{Command: "sync"})
 		cancel()
 	}
 
@@ -85,21 +87,41 @@ func (mc *MigrationCoordinator) MigrateToS3(ctx context.Context, sandboxID strin
 	rootfsPath := detectDrivePath(sandboxDir, "rootfs")
 	workspacePath := detectDrivePath(sandboxDir, "workspace")
 
+	stagingDir, stageErr := os.MkdirTemp(mc.manager.cfg.DataDir, "migration-staging-")
+	if stageErr != nil {
+		vm.opMu.Unlock()
+		return "", "", fmt.Errorf("create staging dir: %w", stageErr)
+	}
+
+	stagedRootfs := filepath.Join(stagingDir, filepath.Base(rootfsPath))
+	stagedWorkspace := filepath.Join(stagingDir, filepath.Base(workspacePath))
+	if cpErr := copyFileReflink(rootfsPath, stagedRootfs); cpErr != nil {
+		vm.opMu.Unlock()
+		os.RemoveAll(stagingDir)
+		return "", "", fmt.Errorf("stage rootfs: %w", cpErr)
+	}
+	if cpErr := copyFileReflink(workspacePath, stagedWorkspace); cpErr != nil {
+		vm.opMu.Unlock()
+		os.RemoveAll(stagingDir)
+		return "", "", fmt.Errorf("stage workspace: %w", cpErr)
+	}
+	vm.opMu.Unlock() // release — uploads read from staging copies, not originals
+	defer os.RemoveAll(stagingDir)
+
 	rootfsKey = fmt.Sprintf("migrations/%s/rootfs.qcow2", sandboxID)
 	workspaceKey = fmt.Sprintf("migrations/%s/workspace.qcow2", sandboxID)
 
 	t0 := time.Now()
 
-	// Upload rootfs
+	// Upload from staged copies — QEMU can continue running on originals
 	state.Phase = "upload-rootfs"
-	rootfsSize, err := mc.uploadFile(ctx, rootfsPath, rootfsKey)
+	rootfsSize, err := mc.uploadFile(ctx, stagedRootfs, rootfsKey)
 	if err != nil {
 		return "", "", fmt.Errorf("upload rootfs: %w", err)
 	}
 
-	// Upload workspace
 	state.Phase = "upload-workspace"
-	wsSize, err := mc.uploadFile(ctx, workspacePath, workspaceKey)
+	wsSize, err := mc.uploadFile(ctx, stagedWorkspace, workspaceKey)
 	if err != nil {
 		return "", "", fmt.Errorf("upload workspace: %w", err)
 	}

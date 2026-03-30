@@ -9,32 +9,32 @@ trap "destroy_sandbox $SB" EXIT
 
 # Baseline
 MEM=$(exec_stdout "$SB" "free" "-m" | awk '/Mem:/{print $2}')
-[ "$MEM" -gt 800 ] && [ "$MEM" -lt 1000 ] && pass "Baseline: ${MEM}MB (~1GB)" || fail "Baseline: ${MEM}MB"
+[ "$MEM" -gt 800 ] && pass "Baseline: ${MEM}MB" || fail "Baseline: ${MEM}MB"
 
 # Scale to 2GB via external API
 api -X PUT "$API_URL/api/sandboxes/$SB/limits" \
-    -d '{"maxMemoryMB":2048,"cpuPercent":200,"maxPids":256}' >/dev/null
+    -d '{"memoryMB":2048,"cpuPercent":200}' >/dev/null
 sleep 1
 MEM=$(exec_stdout "$SB" "free" "-m" | awk '/Mem:/{print $2}')
 [ "$MEM" -gt 1800 ] && [ "$MEM" -lt 2100 ] && pass "Scale 2GB (external): ${MEM}MB" || fail "Scale 2GB: ${MEM}MB"
 
 # Scale to 4GB via external API
 api -X PUT "$API_URL/api/sandboxes/$SB/limits" \
-    -d '{"maxMemoryMB":4096,"cpuPercent":400,"maxPids":256}' >/dev/null
+    -d '{"memoryMB":4096,"cpuPercent":400}' >/dev/null
 sleep 1
 MEM=$(exec_stdout "$SB" "free" "-m" | awk '/Mem:/{print $2}')
 [ "$MEM" -gt 3800 ] && [ "$MEM" -lt 4200 ] && pass "Scale 4GB: ${MEM}MB" || fail "Scale 4GB: ${MEM}MB"
 
 # Scale to 8GB and allocate 7GB
 api -X PUT "$API_URL/api/sandboxes/$SB/limits" \
-    -d '{"maxMemoryMB":8192,"cpuPercent":800,"maxPids":256}' >/dev/null
+    -d '{"memoryMB":8192,"cpuPercent":800}' >/dev/null
 sleep 1
 OUT=$(exec_stdout "$SB" "python3" "-c" "x=bytearray(7*1024*1024*1024); print(len(x))")
 [ "$OUT" = "7516192768" ] && pass "8GB: 7GB allocation OK" || fail "8GB allocation: '$OUT'"
 
 # Scale down to 1GB (cgroup enforced, physical stays)
 api -X PUT "$API_URL/api/sandboxes/$SB/limits" \
-    -d '{"maxMemoryMB":1024,"cpuPercent":100,"maxPids":128}' >/dev/null
+    -d '{"memoryMB":1024,"cpuPercent":100}' >/dev/null
 sleep 1
 CGROUP_MAX=$(exec_stdout "$SB" "cat" "/sys/fs/cgroup/sandbox/memory.max")
 # Should be ~1GB in bytes

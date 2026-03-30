@@ -47,8 +47,8 @@ func NewAgentClient(guestCID uint32) (*AgentClient, error) {
 			return dialVsock(ctx, guestCID, 1024)
 		}),
 		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(64*1024*1024),
-			grpc.MaxCallSendMsgSize(64*1024*1024),
+			grpc.MaxCallRecvMsgSize(256*1024*1024),
+			grpc.MaxCallSendMsgSize(256*1024*1024),
 		),
 	)
 	if err != nil {
@@ -409,26 +409,38 @@ func (c *AgentClient) WriteFileStream(ctx context.Context, path string, mode uin
 		return 0, err
 	}
 
+	// Always send the first message with path + mode, even for empty files.
+	// Without this, an empty body sends no gRPC messages and the agent gets EOF.
 	buf := make([]byte, streamChunkSize)
-	first := true
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			msg := &pb.WriteFileStreamRequest{Data: buf[:n]}
-			if first {
-				msg.Path = path
-				msg.Mode = mode
-				first = false
+	n, readErr := r.Read(buf)
+	firstMsg := &pb.WriteFileStreamRequest{
+		Path: path,
+		Mode: mode,
+		Data: buf[:n],
+	}
+	if sendErr := stream.Send(firstMsg); sendErr != nil {
+		return 0, fmt.Errorf("send first chunk: %w", sendErr)
+	}
+
+	if readErr != nil && readErr != io.EOF {
+		return 0, fmt.Errorf("read source: %w", readErr)
+	}
+
+	// Send remaining chunks
+	if readErr != io.EOF {
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				if sendErr := stream.Send(&pb.WriteFileStreamRequest{Data: buf[:n]}); sendErr != nil {
+					return 0, fmt.Errorf("send chunk: %w", sendErr)
+				}
 			}
-			if sendErr := stream.Send(msg); sendErr != nil {
-				return 0, fmt.Errorf("send chunk: %w", sendErr)
+			if err == io.EOF {
+				break
 			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return 0, fmt.Errorf("read source: %w", err)
+			if err != nil {
+				return 0, fmt.Errorf("read source: %w", err)
+			}
 		}
 	}
 
@@ -470,8 +482,8 @@ func NewAgentClientSocket(socketPath string) (*AgentClient, error) {
 			},
 		}),
 		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(64*1024*1024),
-			grpc.MaxCallSendMsgSize(64*1024*1024),
+			grpc.MaxCallRecvMsgSize(256*1024*1024),
+			grpc.MaxCallSendMsgSize(256*1024*1024),
 		),
 	)
 	if err != nil {

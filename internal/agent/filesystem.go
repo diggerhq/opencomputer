@@ -10,11 +10,19 @@ import (
 	pb "github.com/opensandbox/opensandbox/proto/agent"
 )
 
-const streamChunkSize = 256 * 1024 // 256KB per gRPC chunk
+const streamChunkSize = 256 * 1024       // 256KB per gRPC chunk
+const maxFileSize     = 2 * 1024 * 1024 * 1024 // 2GB max file transfer
 
 // ReadFile reads a file from the VM filesystem.
 func (s *Server) ReadFile(ctx context.Context, req *pb.ReadFileRequest) (*pb.ReadFileResponse, error) {
 	path := resolvePath(req.Path)
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Size() > maxFileSize {
+		return nil, fmt.Errorf("file %s is %d bytes, exceeds 2GB limit", path, info.Size())
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
@@ -122,6 +130,9 @@ func (s *Server) ReadFileStream(req *pb.ReadFileStreamRequest, stream pb.Sandbox
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
+	if info.Size() > maxFileSize {
+		return fmt.Errorf("file %s is %d bytes, exceeds 2GB limit", path, info.Size())
+	}
 
 	buf := make([]byte, streamChunkSize)
 	first := true
@@ -197,6 +208,11 @@ func (s *Server) WriteFileStream(stream pb.SandboxAgent_WriteFileStreamServer) e
 				return fmt.Errorf("write %s: %w", path, err)
 			}
 			total += int64(n)
+			if total > maxFileSize {
+				f.Close()
+				os.Remove(path)
+				return fmt.Errorf("upload to %s exceeds 2GB limit (%d bytes written)", path, total)
+			}
 		}
 	}
 

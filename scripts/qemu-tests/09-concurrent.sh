@@ -14,15 +14,15 @@ SB2=$(create_sandbox); SANDBOXES+=("$SB2")
 SB3=$(create_sandbox); SANDBOXES+=("$SB3")
 pass "Created 3 sandboxes"
 
-api -X PUT "$API_URL/api/sandboxes/$SB2/limits" -d '{"maxMemoryMB":2048,"cpuPercent":200,"maxPids":256}' >/dev/null
-api -X PUT "$API_URL/api/sandboxes/$SB3/limits" -d '{"maxMemoryMB":4096,"cpuPercent":400,"maxPids":256}' >/dev/null
+api -X PUT "$API_URL/api/sandboxes/$SB2/limits" -d '{"memoryMB":2048,"cpuPercent":200}' >/dev/null
+api -X PUT "$API_URL/api/sandboxes/$SB3/limits" -d '{"memoryMB":4096,"cpuPercent":400}' >/dev/null
 sleep 1
 
 MEM1=$(exec_stdout "$SB1" "free" "-m" | awk '/Mem:/{print $2}')
 MEM2=$(exec_stdout "$SB2" "free" "-m" | awk '/Mem:/{print $2}')
 MEM3=$(exec_stdout "$SB3" "free" "-m" | awk '/Mem:/{print $2}')
 
-[ "$MEM1" -lt 1000 ] && pass "SB1 (1GB): ${MEM1}MB" || fail "SB1: ${MEM1}MB"
+[ "$MEM1" -gt 800 ] && pass "SB1 (baseline): ${MEM1}MB" || fail "SB1: ${MEM1}MB"
 [ "$MEM2" -gt 1800 ] && pass "SB2 (2GB): ${MEM2}MB" || fail "SB2: ${MEM2}MB"
 [ "$MEM3" -gt 3800 ] && pass "SB3 (4GB): ${MEM3}MB" || fail "SB3: ${MEM3}MB"
 

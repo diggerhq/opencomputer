@@ -15,10 +15,11 @@ import (
 type SandboxState int
 
 const (
-	StateRunning    SandboxState = iota
+	StateRunning     SandboxState = iota
 	StateHibernated
 	StateWaking
-	StateCreating // async creation in progress — commands wait until ready
+	StateHibernating // transitional: hibernate in progress, blocks new operations
+	StateCreating    // async creation in progress — commands wait until ready
 )
 
 func (s SandboxState) String() string {
@@ -29,6 +30,8 @@ func (s SandboxState) String() string {
 		return "hibernated"
 	case StateWaking:
 		return "waking"
+	case StateHibernating:
+		return "hibernating"
 	case StateCreating:
 		return "creating"
 	default:
@@ -85,9 +88,7 @@ type SandboxRouter struct {
 // NewSandboxRouter creates a new sandbox router.
 func NewSandboxRouter(cfg RouterConfig) *SandboxRouter {
 	dt := cfg.DefaultTimeout
-	if dt == 0 {
-		dt = 300 * time.Second
-	}
+	// 0 = no auto-timeout (sandboxes run until explicitly killed/hibernated)
 	return &SandboxRouter{
 		manager:         cfg.Manager,
 		checkpointStore: cfg.CheckpointStore,
@@ -129,16 +130,18 @@ func (r *SandboxRouter) Register(sandboxID string, timeout time.Duration) {
 		state:   StateRunning,
 		timeout: timeout,
 	}
-	entry.timer = time.AfterFunc(timeout, func() {
-		r.onTimeout(sandboxID)
-	})
+	if timeout > 0 {
+		entry.timer = time.AfterFunc(timeout, func() {
+			r.onTimeout(sandboxID)
+		})
+	}
 	r.sandboxes[sandboxID] = entry
 }
 
 // RegisterCreating registers a sandbox that is being created asynchronously.
 // Commands routed to this sandbox will block until MarkCreated is called.
 func (r *SandboxRouter) RegisterCreating(sandboxID string, timeout time.Duration) {
-	if timeout <= 0 {
+	if timeout <= 0 && r.defaultTimeout > 0 {
 		timeout = r.defaultTimeout
 	}
 
@@ -175,9 +178,11 @@ func (r *SandboxRouter) MarkCreated(sandboxID string, err error) {
 		entry.state = StateHibernated // mark as failed
 	} else {
 		entry.state = StateRunning
-		entry.timer = time.AfterFunc(entry.timeout, func() {
-			r.onTimeout(sandboxID)
-		})
+		if entry.timeout > 0 {
+			entry.timer = time.AfterFunc(entry.timeout, func() {
+				r.onTimeout(sandboxID)
+			})
+		}
 	}
 	close(entry.wakeCh)
 }
@@ -282,8 +287,9 @@ func (r *SandboxRouter) SetTimeout(sandboxID string, timeout time.Duration) {
 	entry.timeout = timeout
 	if entry.timer != nil {
 		entry.timer.Stop()
+		entry.timer = nil
 	}
-	if entry.state == StateRunning {
+	if entry.state == StateRunning && timeout > 0 {
 		entry.timer = time.AfterFunc(timeout, func() {
 			r.onTimeout(sandboxID)
 		})
@@ -342,7 +348,7 @@ func (r *SandboxRouter) ensureRunning(ctx context.Context, sandboxID string) err
 		entry.mu.Unlock()
 		return nil
 
-	case StateHibernated:
+	case StateHibernated, StateHibernating:
 		// Transition to waking, start wake, other requests will queue
 		entry.state = StateWaking
 		entry.wakeCh = make(chan struct{})
@@ -475,9 +481,11 @@ func (r *SandboxRouter) doWake(ctx context.Context, sandboxID string, entry *san
 	// Transition to running and start rolling timeout
 	entry.mu.Lock()
 	entry.state = StateRunning
-	entry.timer = time.AfterFunc(entry.timeout, func() {
-		r.onTimeout(sandboxID)
-	})
+	if entry.timeout > 0 {
+		entry.timer = time.AfterFunc(entry.timeout, func() {
+			r.onTimeout(sandboxID)
+		})
+	}
 	entry.mu.Unlock()
 }
 
@@ -501,6 +509,9 @@ func (r *SandboxRouter) resetTimeout(sandboxID string) {
 	if entry.timer != nil {
 		entry.timer.Stop()
 	}
+	if entry.timeout <= 0 {
+		return
+	}
 	entry.timer = time.AfterFunc(entry.timeout, func() {
 		r.onTimeout(sandboxID)
 	})
@@ -521,6 +532,9 @@ func (r *SandboxRouter) onTimeout(sandboxID string) {
 		entry.mu.Unlock()
 		return
 	}
+	// Set transitional state before releasing lock — prevents concurrent exec
+	// calls from routing to a VM that's about to be hibernated.
+	entry.state = StateHibernating
 	entry.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

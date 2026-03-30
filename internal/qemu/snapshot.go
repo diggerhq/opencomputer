@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/opensandbox/opensandbox/internal/sandbox"
@@ -65,7 +66,7 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		_, _ = vm.agent.Exec(shutdownCtx, &pb.ExecRequest{
 			Command:   "/bin/sh",
-			Args:      []string{"-c", "sync; kill -USR1 1"},
+			Args:      []string{"-c", "sync; blockdev --flushbufs /dev/vda 2>/dev/null; blockdev --flushbufs /dev/vdb 2>/dev/null; sync; kill -USR1 1"},
 			RunAsRoot: true,
 		})
 		cancel()
@@ -134,8 +135,13 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		return nil, fmt.Errorf("marshal snapshot meta: %w", err)
 	}
 	metaPath := filepath.Join(snapshotDir, "snapshot-meta.json")
-	if err := os.WriteFile(metaPath, metaJSON, 0644); err != nil {
+	// Atomic write: write to temp file then rename to avoid partial JSON on crash
+	tmpMetaPath := metaPath + ".tmp"
+	if err := os.WriteFile(tmpMetaPath, metaJSON, 0644); err != nil {
 		return nil, fmt.Errorf("write snapshot meta: %w", err)
+	}
+	if err := os.Rename(tmpMetaPath, metaPath); err != nil {
+		return nil, fmt.Errorf("rename snapshot meta: %w", err)
 	}
 
 	// Step 5: Clean up network
@@ -156,20 +162,50 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		vm.ID, localElapsed.Milliseconds())
 
 	// Step 9: Archive + upload to S3 in the background.
+	// Reflink-copy the qcow2 drives so the archive reads from stable copies
+	// while wake can freely open the originals. Without this, wake starts QEMU
+	// which modifies the qcow2 files while tar is still reading them →
+	// "file changed as we read it" → corrupted archive → data loss on next wake.
 	sandboxDir := vm.sandboxDir
 	sandboxID := vm.ID
-	// Determine drive filenames for archiving (rootfs + workspace)
 	workspaceFile := filepath.Base(detectDrivePath(sandboxDir, "workspace"))
 	rootfsFile := filepath.Base(detectDrivePath(sandboxDir, "rootfs"))
+
+	archiveDir := filepath.Join(sandboxDir, "archive-staging")
+	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+		return nil, fmt.Errorf("mkdir archive-staging: %w", err)
+	}
+	// Copy metadata
+	snapshotStaging := filepath.Join(archiveDir, "snapshot")
+	os.MkdirAll(snapshotStaging, 0755)
+	copyFileReflink(metaPath, filepath.Join(snapshotStaging, "snapshot-meta.json"))
+
+	// Reflink-copy drives (COW — fast, no extra disk until divergence).
+	// cp --reflink=auto falls back to regular copy if reflink not supported.
+	for _, driveFile := range []string{rootfsFile, workspaceFile} {
+		src := filepath.Join(sandboxDir, driveFile)
+		dst := filepath.Join(archiveDir, driveFile)
+		if err := copyFileReflink(src, dst); err != nil {
+			os.RemoveAll(archiveDir)
+			return nil, fmt.Errorf("copy %s for archive staging: %w", driveFile, err)
+		}
+	}
+	log.Printf("qemu: hibernate %s: archive staging ready (reflink copies)", sandboxID)
+
+	// Signal channel so destroyVM can wait for archive completion before deleting files.
+	archiveDone := make(chan struct{})
+	vm.archiveDone = archiveDone
+
 	m.uploadWg.Add(1)
 	go func() {
 		defer m.uploadWg.Done()
+		defer close(archiveDone)
+		defer os.RemoveAll(archiveDir) // clean up staging copies when done
 		t1 := time.Now()
 		archivePath := filepath.Join(sandboxDir, "checkpoint.tar.zst")
 
-		// savevm stores snapshot inside the qcow2 files — no separate mem file needed.
-		// Archive just the metadata + drives.
-		if err := createArchive(archivePath, sandboxDir, []string{
+		// Archive from the staging copies — originals are free for wake/QEMU.
+		if err := createArchive(archivePath, archiveDir, []string{
 			"snapshot/snapshot-meta.json",
 			rootfsFile,
 			workspaceFile,
@@ -189,7 +225,8 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		uploadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		if _, err := checkpointStore.Upload(uploadCtx, checkpointKey, archivePath); err != nil {
-			log.Printf("qemu: async S3 upload failed for %s: %v (keeping local archive for retry)", sandboxID, err)
+			log.Printf("qemu: async S3 upload failed for %s: %v", sandboxID, err)
+			os.Remove(archivePath) // clean up — local qcow2 files are the source of truth for same-worker wake
 			return
 		}
 		log.Printf("qemu: hibernate %s: S3 upload complete (%dms, key=%s)",
@@ -222,6 +259,26 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
 	snapshotDir := filepath.Join(sandboxDir, "snapshot")
 	metaPath := filepath.Join(snapshotDir, "snapshot-meta.json")
+
+	// Wait for any in-flight hibernate archive to finish before proceeding.
+	// Same-worker wake: archive reads from staging copies (safe), but we need
+	// archive-staging/ cleaned up before starting QEMU to avoid disk waste.
+	// Cross-worker wake: S3 upload must complete before download can succeed.
+	archiveStagingDir := filepath.Join(sandboxDir, "archive-staging")
+	if fileExists(archiveStagingDir) {
+		log.Printf("qemu: wake %s: waiting for in-flight archive to complete", sandboxID)
+		for i := 0; i < 60; i++ { // up to 30 seconds
+			if !fileExists(archiveStagingDir) {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		if fileExists(archiveStagingDir) {
+			// Don't force-remove — the archive goroutine's defer will clean up.
+			// Removing while tar is mid-read corrupts the S3 archive.
+			log.Printf("qemu: wake %s: archive staging still present after 30s, proceeding (goroutine will clean up)", sandboxID)
+		}
+	}
 
 	// Step 1: Ensure qcow2 files are local
 	t0 := time.Now()
@@ -670,6 +727,42 @@ func extractArchive(archivePath, destDir string) error {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// checkReflinkSupport verifies the filesystem supports reflink by creating a test file
+// and reflink-copying it. Returns nil if reflink works, error otherwise.
+func checkReflinkSupport(dir string) error {
+	testFile := filepath.Join(dir, ".reflink-test")
+	testCopy := filepath.Join(dir, ".reflink-test-copy")
+	defer os.Remove(testFile)
+	defer os.Remove(testCopy)
+
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(testFile, []byte("reflink-test"), 0644); err != nil {
+		return err
+	}
+	cmd := exec.Command("cp", "--reflink=always", testFile, testCopy)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("reflink test failed: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// diskUsagePercent returns the disk usage percentage for the given path.
+func diskUsagePercent(path string) (int, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	total := stat.Blocks * uint64(stat.Bsize)
+	free := stat.Bfree * uint64(stat.Bsize)
+	if total == 0 {
+		return 0, nil
+	}
+	used := total - free
+	return int(used * 100 / total), nil
 }
 
 // copyFileReflink copies a file using cp --reflink=auto.

@@ -54,6 +54,8 @@ type GRPCServer struct {
 // If OPENSANDBOX_GRPC_TLS_* env vars are set, the server uses mTLS.
 func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, execMgr *sandbox.ExecSessionManager, sandboxDBs *sandbox.SandboxDBManager, checkpointStore *storage.CheckpointStore, router *sandbox.SandboxRouter, builder interface{}, store *db.Store) *GRPCServer {
 	serverOpts := []grpc.ServerOption{
+		grpc.MaxRecvMsgSize(256 * 1024 * 1024), // 256MB for large file transfers
+		grpc.MaxSendMsgSize(256 * 1024 * 1024),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             5 * time.Second,
 			PermitWithoutStream: true,

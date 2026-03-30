@@ -26,36 +26,41 @@ func (s *Server) createSandbox(c echo.Context) error {
 		})
 	}
 
-	// Validate and clamp CPU/memory limits
-	if cfg.CpuCount < 0 {
-		cfg.CpuCount = 0
-	}
-	if cfg.CpuCount > 16 {
+	// Validate CPU/memory against allowed tiers.
+	// Allowed tiers (memoryMB → vCPU): 4096→1, 8192→2, 16384→4, 32768→8, 65536→16.
+	if err := types.ValidateResourceTier(&cfg); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "cpuCount must not exceed 16",
+			"error": err.Error(),
 		})
-	}
-	if cfg.MemoryMB > 16384 {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "memoryMB must not exceed 16384",
-		})
-	}
-	if cfg.MemoryMB < 0 {
-		cfg.MemoryMB = 0
 	}
 
 	ctx := c.Request().Context()
 
-	// Check org quota if PG is available
+	// Check org quota and plan enforcement
 	orgID, hasOrg := auth.GetOrgID(c)
 	if hasOrg && s.store != nil {
 		org, err := s.store.GetOrg(ctx, orgID)
 		if err == nil {
+			// Concurrent sandbox limit
 			count, err := s.store.CountActiveSandboxes(ctx, orgID)
 			if err == nil && count >= org.MaxConcurrentSandboxes {
 				return c.JSON(http.StatusTooManyRequests, map[string]string{
 					"error": "concurrent sandbox limit reached",
 				})
+			}
+
+			// Free tier: 4GB / 1 vCPU only
+			if org.Plan == "free" {
+				if cfg.MemoryMB > 4096 || cfg.CpuCount > 1 {
+					return c.JSON(http.StatusPaymentRequired, map[string]string{
+						"error": "upgrade to pro for larger instances",
+					})
+				}
+				// Force 4GB/1vCPU if not specified
+				if cfg.MemoryMB == 0 {
+					cfg.MemoryMB = 4096
+					cfg.CpuCount = 1
+				}
 			}
 		}
 	}
@@ -776,11 +781,25 @@ func (s *Server) setLimits(c echo.Context) error {
 		})
 	}
 
-	// Auto-calculate CPU from memory: 1 vCPU per 4GB
-	if req.MemoryMB > 0 && req.CPUPercent == 0 {
-		req.CPUPercent = (req.MemoryMB * 100) / 4096
-		if req.CPUPercent < 100 {
-			req.CPUPercent = 100
+	// Validate memory against allowed tiers
+	if req.MemoryMB > 0 {
+		vcpus, err := types.ValidateMemoryMB(req.MemoryMB)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		if req.CPUPercent == 0 {
+			req.CPUPercent = vcpus * 100
+		}
+	}
+
+	// Free tier: block scaling beyond 4GB / 1 vCPU
+	if orgID, hasOrg := auth.GetOrgID(c); hasOrg && s.store != nil {
+		if org, err := s.store.GetOrg(ctx, orgID); err == nil && org.Plan == "free" {
+			if req.MemoryMB > 4096 || req.CPUPercent > 100 {
+				return c.JSON(http.StatusPaymentRequired, map[string]string{
+					"error": "upgrade to pro for larger instances",
+				})
+			}
 		}
 	}
 
@@ -824,11 +843,24 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "memoryMB is required and must be positive"})
 	}
 
-	// Auto-calculate: 1 vCPU per 4GB = 100% CPU per 4096MB
-	cpuPercent := (req.MemoryMB * 100) / 4096
-	if cpuPercent < 100 {
-		cpuPercent = 100
+	// Validate memory against allowed tiers
+	vcpus, err := types.ValidateMemoryMB(req.MemoryMB)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
+
+	// Free tier: block scaling beyond 4GB / 1 vCPU
+	if orgID, hasOrg := auth.GetOrgID(c); hasOrg && s.store != nil {
+		if org, err := s.store.GetOrg(c.Request().Context(), orgID); err == nil && org.Plan == "free" {
+			if req.MemoryMB > 4096 {
+				return c.JSON(http.StatusPaymentRequired, map[string]string{
+					"error": "upgrade to pro for larger instances",
+				})
+			}
+		}
+	}
+
+	cpuPercent := vcpus * 100
 	maxMemoryBytes := int64(req.MemoryMB) * 1024 * 1024
 	cpuMaxUsec := int64(cpuPercent) * 1000
 	cpuPeriodUsec := int64(100000)
@@ -1355,9 +1387,16 @@ func (s *Server) restoreCheckpoint(c echo.Context) error {
 	}
 
 	// Dispatch restore in background — return immediately.
-	// Commands will block until restore completes.
+	// Commands will block until restore completes (via pendingCreates + waitForReady).
 	pending := &pendingCreate{ready: make(chan struct{})}
 	s.pendingCreates.Store(sandboxID, pending)
+
+	// Invalidate the proxy route cache so subsequent requests go through
+	// the full ProxyHandler path and hit waitForReady. Without this, cached
+	// routes bypass the readiness check and hit the mid-restore VM.
+	if s.sandboxAPIProxy != nil {
+		s.sandboxAPIProxy.InvalidateRouteCache(sandboxID)
+	}
 
 	if s.workerRegistry != nil {
 		grpcClient, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
@@ -1438,8 +1477,28 @@ func (s *Server) createFromCheckpointCore(c echo.Context) (map[string]interface{
 	if cp.OrgID != orgID {
 		return nil, http.StatusForbidden, fmt.Errorf("checkpoint does not belong to this organization")
 	}
+	// Poll for checkpoint readiness — checkpoints transition from "processing" to "ready"
+	// asynchronously. Wait up to 30s so SDK/CLI users don't have to poll manually.
 	if cp.Status != "ready" {
-		return nil, http.StatusBadRequest, fmt.Errorf("checkpoint is not ready (status: %s)", cp.Status)
+		if cp.Status == "failed" {
+			return nil, http.StatusBadRequest, fmt.Errorf("checkpoint failed")
+		}
+		for i := 0; i < 30; i++ {
+			time.Sleep(1 * time.Second)
+			cp, err = s.store.GetCheckpoint(ctx, checkpointID)
+			if err != nil {
+				return nil, http.StatusNotFound, fmt.Errorf("checkpoint not found")
+			}
+			if cp.Status == "ready" {
+				break
+			}
+			if cp.Status == "failed" {
+				return nil, http.StatusBadRequest, fmt.Errorf("checkpoint failed")
+			}
+		}
+		if cp.Status != "ready" {
+			return nil, http.StatusBadRequest, fmt.Errorf("checkpoint is not ready after 30s (status: %s)", cp.Status)
+		}
 	}
 
 	// Parse optional overrides from request body

@@ -36,7 +36,7 @@ export async function logout(): Promise<void> {
 }
 
 // API functions
-export const getMe = () => apiFetch<{ id: string; email: string; orgId: string }>('/me')
+export const getMe = () => apiFetch<MeResponse>('/me')
 
 export const getSessions = (status?: string) =>
   apiFetch<Session[]>(`/sessions${status ? `?status=${status}` : ''}`)
@@ -202,4 +202,118 @@ export interface Org {
   verificationTxtValue?: string
   sslTxtName?: string
   sslTxtValue?: string
+  workosOrgId?: string
+  isPersonal: boolean
+  creditBalanceCents: number
 }
+
+export interface MeResponse {
+  id: string
+  email: string
+  orgId: string
+  orgs?: OrgInfo[]
+}
+
+export interface OrgInfo {
+  id: string
+  name: string
+  isPersonal: boolean
+  isActive: boolean
+}
+
+export interface OrgMember {
+  membershipId?: string
+  workosUserId?: string
+  id?: string
+  email: string
+  name: string
+  role: string
+  status?: string
+}
+
+export interface OrgInvitation {
+  id: string
+  email: string
+  state: string
+  role?: string
+  expiresAt: string
+  createdAt: string
+}
+
+export interface Credits {
+  balanceCents: number
+  isPersonal: boolean
+}
+
+// Organization members
+export const getOrgMembers = () => apiFetch<OrgMember[]>('/org/members')
+
+export const removeMember = (membershipId: string) =>
+  apiFetch<void>(`/org/members/${membershipId}`, { method: 'DELETE' })
+
+// Invitations
+export const sendInvitation = (email: string, role = 'member') =>
+  apiFetch<OrgInvitation>('/org/invitations', {
+    method: 'POST',
+    body: JSON.stringify({ email, role }),
+  })
+
+export const getInvitations = () => apiFetch<OrgInvitation[]>('/org/invitations')
+
+export const revokeInvitation = (id: string) =>
+  apiFetch<void>(`/org/invitations/${id}`, { method: 'DELETE' })
+
+// Org switching
+export const listOrgs = () => apiFetch<OrgInfo[]>('/orgs')
+
+export const switchOrg = (orgId: string) =>
+  apiFetch<Org>('/org/switch', { method: 'POST', body: JSON.stringify({ orgId }) })
+
+// Credits
+export const getCredits = () => apiFetch<Credits>('/org/credits')
+
+// Billing types
+export interface BillingTierUsage {
+  memoryMB: number
+  vcpus: number
+  totalSeconds: number
+  costCents: number
+}
+
+export interface BillingState {
+  plan: string
+  stripeCreditCents: number
+  maxConcurrentSandboxes: number
+  hasPaymentMethod: boolean
+  currentUsage: {
+    tiers: BillingTierUsage[]
+    totalCostCents: number
+  }
+}
+
+export interface StripeInvoice {
+  id: string
+  number: string
+  status: string
+  amountDue: number
+  amountPaid: number
+  currency: string
+  created: number
+  hostedUrl: string
+  pdfUrl: string
+}
+
+// Billing API
+export const getBilling = () => apiFetch<BillingState>('/billing')
+
+export const billingSetup = () =>
+  apiFetch<{ url: string }>('/billing/setup', { method: 'POST' })
+
+export const getBillingInvoices = (limit = 10) =>
+  apiFetch<{ invoices: StripeInvoice[] }>(`/billing/invoices?limit=${limit}`)
+
+export const redeemPromoCode = (code: string) =>
+  apiFetch<{ creditAppliedCents: number }>('/billing/redeem', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  })

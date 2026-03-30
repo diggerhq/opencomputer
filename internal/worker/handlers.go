@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -35,9 +36,9 @@ func (s *HTTPServer) setTimeout(c echo.Context) error {
 		})
 	}
 
-	if req.Timeout <= 0 {
+	if req.Timeout < 0 {
 		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "timeout must be positive",
+			"error": "timeout must be non-negative (0 = no timeout)",
 		})
 	}
 
@@ -365,10 +366,13 @@ func (s *HTTPServer) readFile(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "path query parameter is required"})
 	}
 
-	var content string
+	// Use streaming read — receives file data in 256KB chunks from the agent
+	// via gRPC streaming. Streams directly to the HTTP response without buffering.
+	var reader io.ReadCloser
+	var size int64
 	routeOp := func(ctx context.Context) error {
 		var err error
-		content, err = s.manager.ReadFile(ctx, id, path)
+		reader, size, err = s.manager.ReadFileStream(ctx, id, path)
 		return err
 	}
 
@@ -381,8 +385,15 @@ func (s *HTTPServer) readFile(c echo.Context) error {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
 	}
+	defer reader.Close()
 
-	return c.Blob(http.StatusOK, "application/octet-stream", []byte(content))
+	c.Response().Header().Set("Content-Type", "application/octet-stream")
+	if size > 0 {
+		c.Response().Header().Set("Content-Length", fmt.Sprintf("%d", size))
+	}
+	c.Response().WriteHeader(http.StatusOK)
+	_, err := io.Copy(c.Response(), reader)
+	return err
 }
 
 func (s *HTTPServer) writeFile(c echo.Context) error {
@@ -392,14 +403,14 @@ func (s *HTTPServer) writeFile(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "path query parameter is required"})
 	}
 
-	// Read body — use streaming for large files, direct write for small/empty
-	body, err := io.ReadAll(c.Request().Body)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read body"})
-	}
+	// Use streaming write — sends the request body to the agent in 256KB chunks
+	// via gRPC streaming. No buffering, no message size limit.
+	body := c.Request().Body
+	defer body.Close()
 
 	routeOp := func(ctx context.Context) error {
-		return s.manager.WriteFile(ctx, id, path, string(body))
+		_, err := s.manager.WriteFileStream(ctx, id, path, 0644, body)
+		return err
 	}
 
 	if s.router != nil {
