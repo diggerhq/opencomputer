@@ -22,6 +22,7 @@ import (
 type ImageManifest struct {
 	Base  string      `json:"base"`
 	Steps []ImageStep `json:"steps"`
+	Name  string      `json:"name,omitempty"` // optional — makes image addressable as a snapshot (for patches, etc.)
 }
 
 // ImageStep is a single build step in an image manifest.
@@ -44,9 +45,14 @@ type imageBuild struct {
 }
 
 // computeManifestHash returns a deterministic SHA-256 hash for the manifest.
+// The Name field is excluded so that naming an image doesn't change its cache key.
 func computeManifestHash(manifest *ImageManifest) string {
-	// Canonical JSON: marshal with sorted keys (Go's encoding/json sorts map keys)
-	data, _ := json.Marshal(manifest)
+	// Hash only the build-relevant fields (base + steps), not the name
+	hashInput := struct {
+		Base  string      `json:"base"`
+		Steps []ImageStep `json:"steps"`
+	}{Base: manifest.Base, Steps: manifest.Steps}
+	data, _ := json.Marshal(hashInput)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -215,6 +221,14 @@ func (s *Server) resolveImageManifest(ctx context.Context, orgID uuid.UUID, mani
 		if err == nil && cached.Status == "ready" && cached.CheckpointID != nil {
 			// Cache hit — update last_used_at and return
 			_ = s.store.TouchImageCacheUsage(ctx, cached.ID)
+			// If manifest includes a name, assign it to the cached entry (makes it addressable as a snapshot)
+			if manifest.Name != "" && (cached.Name == nil || *cached.Name != manifest.Name) {
+				if err := s.store.SetImageCacheName(ctx, cached.ID, orgID, manifest.Name); err != nil {
+					log.Printf("image-builder: failed to set name %q on cache entry: %v", manifest.Name, err)
+				} else {
+					log.Printf("image-builder: named cache entry %s as %q", cached.ID, manifest.Name)
+				}
+			}
 			log.Printf("image-builder: cache hit for hash %s (checkpoint=%s)", contentHash[:12], cached.CheckpointID)
 			if logFn != nil {
 				logFn(0, "cache_hit", fmt.Sprintf("Image found in cache (hash=%s)", contentHash[:12]))
@@ -268,10 +282,15 @@ func (s *Server) resolveImageManifest(ctx context.Context, orgID uuid.UUID, mani
 	// Create DB record
 	cacheID := uuid.New()
 	if s.store != nil {
+		var namePtrForCache *string
+		if manifest.Name != "" {
+			namePtrForCache = &manifest.Name
+		}
 		ic := &db.ImageCache{
 			ID:          cacheID,
 			OrgID:       orgID,
 			ContentHash: contentHash,
+			Name:        namePtrForCache,
 			Manifest:    manifestJSON,
 			Status:      "building",
 		}

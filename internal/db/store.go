@@ -1354,6 +1354,20 @@ type ImageCache struct {
 	LastUsedAt   time.Time       `json:"lastUsedAt"`
 }
 
+// GetImageCacheByID looks up an image cache entry by ID (org-scoped).
+func (s *Store) GetImageCacheByID(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*ImageCache, error) {
+	ic := &ImageCache{}
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, org_id, content_hash, checkpoint_id, name, manifest, status, created_at, last_used_at
+		 FROM image_cache WHERE org_id = $1 AND id = $2`,
+		orgID, id,
+	).Scan(&ic.ID, &ic.OrgID, &ic.ContentHash, &ic.CheckpointID, &ic.Name, &ic.Manifest, &ic.Status, &ic.CreatedAt, &ic.LastUsedAt)
+	if err != nil {
+		return nil, fmt.Errorf("image not found: %w", err)
+	}
+	return ic, nil
+}
+
 // GetImageCacheByHash looks up a cached image by org + content hash.
 func (s *Store) GetImageCacheByHash(ctx context.Context, orgID uuid.UUID, contentHash string) (*ImageCache, error) {
 	ic := &ImageCache{}
@@ -1404,6 +1418,19 @@ func (s *Store) SetImageCacheReady(ctx context.Context, id uuid.UUID, checkpoint
 func (s *Store) SetImageCacheFailed(ctx context.Context, id uuid.UUID) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE image_cache SET status = 'failed' WHERE id = $1`, id)
+	return err
+}
+
+// SetImageCacheName assigns a name to an image cache entry, making it addressable as a snapshot.
+// Uses ON CONFLICT to handle the case where another entry already has this name for the org.
+func (s *Store) SetImageCacheName(ctx context.Context, id uuid.UUID, orgID uuid.UUID, name string) error {
+	// First clear the name from any other entry in the same org (move the name)
+	_, _ = s.pool.Exec(ctx,
+		`UPDATE image_cache SET name = NULL WHERE org_id = $1 AND name = $2 AND id != $3`,
+		orgID, name, id)
+	_, err := s.pool.Exec(ctx,
+		`UPDATE image_cache SET name = $2 WHERE id = $1`,
+		id, name)
 	return err
 }
 
