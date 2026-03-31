@@ -156,7 +156,14 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 				Status:    string(sb.Status),
 			}, nil
 		}
-		log.Printf("grpc: ForkFromCheckpoint %s failed: %v, falling back to standard Create", req.CheckpointId, err)
+		// Only fall back to S3 download if the checkpoint isn't cached locally
+		// (cross-worker restore). If the fork failed for other reasons (agent
+		// timeout, QMP error), retrying via S3 won't help and the blob may
+		// not even exist.
+		if !strings.Contains(err.Error(), "not found in cache") {
+			return nil, fmt.Errorf("fork from checkpoint %s: %w", req.CheckpointId, err)
+		}
+		log.Printf("grpc: ForkFromCheckpoint %s: not in local cache, falling back to S3 download", req.CheckpointId)
 	}
 
 	// Handle sandbox snapshot template: resolve S3 keys to local paths.

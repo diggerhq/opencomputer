@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -645,7 +646,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 
 	// Connect to agent via Unix socket
 	var agentClient *AgentClient
-	agentClient, err = m.waitForAgentSocket(context.Background(), agentSockPath, 10*time.Second)
+	agentClient, err = m.waitForAgentSocket(context.Background(), agentSockPath, 30*time.Second)
 	if err != nil {
 		log.Printf("qemu: golden-create %s: agent not ready, falling back to cold boot: %v", id, err)
 		qmpClient.Close()
@@ -1174,6 +1175,7 @@ func (m *Manager) waitForAgentSocket(ctx context.Context, socketPath string, tim
 	deadline := t0.Add(timeout)
 	var lastErr error
 	attempts := 0
+	pingFailures := 0
 
 	for time.Now().Before(deadline) {
 		attempts++
@@ -1181,6 +1183,7 @@ func (m *Manager) waitForAgentSocket(ctx context.Context, socketPath string, tim
 		client, err := NewAgentClientSocket(socketPath)
 		if err != nil {
 			lastErr = err
+			pingFailures = 0
 			if attempts <= 3 || attempts%10 == 0 {
 				log.Printf("qemu: waitForAgentSocket: attempt %d dial %s failed (%dms): %v",
 					attempts, socketPath, time.Since(tAttempt).Milliseconds(), err)
@@ -1193,9 +1196,20 @@ func (m *Manager) waitForAgentSocket(ctx context.Context, socketPath string, tim
 		_, err = client.Ping(pingCtx)
 		cancel()
 		if err != nil {
-			client.Close()
+			pingFailures++
 			lastErr = err
-			time.Sleep(50 * time.Millisecond)
+			client.Close()
+			if pingFailures <= 3 || pingFailures%5 == 0 {
+				log.Printf("qemu: waitForAgentSocket: attempt %d ping %s failed (%dms, streak=%d): %v",
+					attempts, socketPath, time.Since(tAttempt).Milliseconds(), pingFailures, err)
+			}
+			// After several ping failures, back off longer to give the guest
+			// agent time to fully resume after loadvm.
+			if pingFailures >= 5 {
+				time.Sleep(500 * time.Millisecond)
+			} else {
+				time.Sleep(100 * time.Millisecond)
+			}
 			continue
 		}
 
@@ -1204,7 +1218,7 @@ func (m *Manager) waitForAgentSocket(ctx context.Context, socketPath string, tim
 		return client, nil
 	}
 
-	return nil, fmt.Errorf("agent not ready after %v (%d attempts): %v", timeout, attempts, lastErr)
+	return nil, fmt.Errorf("agent not ready after %v (%d attempts, %d ping failures): %v", timeout, attempts, pingFailures, lastErr)
 }
 
 // Get returns sandbox info by ID.
@@ -1812,22 +1826,25 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	// Cache the drive files for ForkFromCheckpoint (which needs a separate QEMU process).
 	// Synchronous: reflink copy is instant (~1ms), and the image builder destroys the
 	// build sandbox immediately after checkpoint — async would race with destruction.
-	m.checkpointCacheMu.Lock()
-	defer m.checkpointCacheMu.Unlock()
+	// Cache the checkpoint drives for ForkFromCheckpoint.
+	// Copy to a temp dir OUTSIDE the lock (disk I/O can take seconds), then
+	// atomically rename into the cache under the write lock (<1ms).
+	// This prevents concurrent ForkFromCheckpoint reads from blocking on disk I/O.
 	cacheDir := m.checkpointCacheDir(checkpointID)
+	stagingDir := cacheDir + ".staging"
 	rootfsKey = fmt.Sprintf("checkpoints/%s/%s/rootfs.tar.zst", sandboxID, checkpointID)
 	workspaceKey = fmt.Sprintf("checkpoints/%s/%s/workspace.tar.zst", sandboxID, checkpointID)
 
-	if mkErr := os.MkdirAll(filepath.Join(cacheDir, "snapshot"), 0755); mkErr != nil {
-		log.Printf("qemu: checkpoint %s: mkdir cache failed: %v", checkpointID, mkErr)
+	if mkErr := os.MkdirAll(filepath.Join(stagingDir, "snapshot"), 0755); mkErr != nil {
+		log.Printf("qemu: checkpoint %s: mkdir staging failed: %v", checkpointID, mkErr)
 	} else {
-		// Copy qcow2 drives (they contain the snapshot data)
+		// Copy qcow2 drives to staging (slow, no lock held)
 		srcRootfs := filepath.Join(vm.sandboxDir, "rootfs.qcow2")
 		srcWorkspace := filepath.Join(vm.sandboxDir, "workspace.qcow2")
-		_ = copyFileReflink(srcRootfs, filepath.Join(cacheDir, "rootfs.qcow2"))
-		_ = copyFileReflink(srcWorkspace, filepath.Join(cacheDir, "workspace.qcow2"))
+		_ = copyFileReflink(srcRootfs, filepath.Join(stagingDir, "rootfs.qcow2"))
+		_ = copyFileReflink(srcWorkspace, filepath.Join(stagingDir, "workspace.qcow2"))
 
-		// Write metadata
+		// Write metadata to staging
 		meta := &SnapshotMeta{
 			SandboxID:    vm.ID,
 			Network:      vm.network,
@@ -1836,13 +1853,22 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 			BootArgs:     vm.bootArgs,
 			CpuCount:     vm.CpuCount,
 			MemoryMB:     vm.MemoryMB,
+			BaseMemoryMB: vm.baseMemoryMB,
 			Template:     vm.Template,
 			GuestPort:    vm.GuestPort,
 			SnapshotedAt: time.Now(),
 		}
 		metaJSON, _ := json.Marshal(meta)
-		_ = os.WriteFile(filepath.Join(cacheDir, "snapshot", "snapshot-meta.json"), metaJSON, 0644)
-		_ = os.WriteFile(filepath.Join(cacheDir, "snapshot-name"), []byte(snapshotName), 0644)
+		_ = os.WriteFile(filepath.Join(stagingDir, "snapshot", "snapshot-meta.json"), metaJSON, 0644)
+		_ = os.WriteFile(filepath.Join(stagingDir, "snapshot-name"), []byte(snapshotName), 0644)
+
+		// Atomic rename into cache under write lock (<1ms)
+		m.checkpointCacheMu.Lock()
+		os.RemoveAll(cacheDir) // remove stale cache if exists
+		if renameErr := os.Rename(stagingDir, cacheDir); renameErr != nil {
+			log.Printf("qemu: checkpoint %s: rename staging to cache failed: %v", checkpointID, renameErr)
+		}
+		m.checkpointCacheMu.Unlock()
 
 		log.Printf("qemu: checkpoint %s: cache saved (%dms)", checkpointID, time.Since(t0).Milliseconds())
 	}
@@ -2242,6 +2268,8 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	}
 	logFile.Close()
 
+	log.Printf("qemu: ForkFromCheckpoint %s → %s: QEMU started (pid=%d), connecting QMP...", checkpointID, id, cmd.Process.Pid)
+
 	qmpClient, err := waitForQMP(qmpSockPath, 10*time.Second)
 	if err != nil {
 		cmd.Process.Kill()
@@ -2249,6 +2277,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		m.cleanupVM(netCfg, sandboxDir)
 		return nil, fmt.Errorf("QMP connect: %w", err)
 	}
+	log.Printf("qemu: ForkFromCheckpoint %s → %s: QMP connected, loading snapshot %s...", checkpointID, id, snapshotName)
 
 	// loadvm restores from the internal snapshot in the qcow2 drives
 	if err := qmpClient.LoadVM(snapshotName); err != nil {
@@ -2258,6 +2287,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		m.cleanupVM(netCfg, sandboxDir)
 		return nil, fmt.Errorf("loadvm: %w", err)
 	}
+	log.Printf("qemu: ForkFromCheckpoint %s → %s: loadvm done, resuming...", checkpointID, id)
 
 	if err := qmpClient.Cont(); err != nil {
 		qmpClient.Close()
@@ -2266,12 +2296,53 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		m.cleanupVM(netCfg, sandboxDir)
 		return nil, fmt.Errorf("QMP cont: %w", err)
 	}
-	log.Printf("qemu: ForkFromCheckpoint %s → %s: VM resumed (%dms)", checkpointID, id, time.Since(t0).Milliseconds())
+	log.Printf("qemu: ForkFromCheckpoint %s → %s: VM resumed (%dms), checking agent socket exists...",
+		checkpointID, id, time.Since(t0).Milliseconds())
+
+	// Check if the agent socket file exists before trying gRPC dial
+	if _, statErr := os.Stat(agentSockPath); statErr != nil {
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: WARNING agent socket not found: %v", checkpointID, id, statErr)
+	} else {
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: agent socket exists, dialing...", checkpointID, id)
+	}
+
+	// Check QEMU process is alive
+	if cmd.Process != nil {
+		if procErr := cmd.Process.Signal(syscall.Signal(0)); procErr != nil {
+			log.Printf("qemu: ForkFromCheckpoint %s → %s: WARNING QEMU process not alive: %v", checkpointID, id, procErr)
+		}
+	}
 
 	// Connect agent via Unix socket
 	var agent *AgentClient
-	agent, err = m.waitForAgentSocket(context.Background(), agentSockPath, 10*time.Second)
+	agent, err = m.waitForAgentSocket(context.Background(), agentSockPath, 30*time.Second)
 	if err != nil {
+		// Log QEMU process state on failure
+		procAlive := "unknown"
+		if cmd.Process != nil {
+			if procErr := cmd.Process.Signal(syscall.Signal(0)); procErr != nil {
+				procAlive = fmt.Sprintf("dead: %v", procErr)
+			} else {
+				procAlive = "alive"
+			}
+		}
+		// Check socket exists
+		sockExists := "no"
+		if fi, statErr := os.Stat(agentSockPath); statErr == nil {
+			sockExists = fmt.Sprintf("yes (mode=%s)", fi.Mode())
+		}
+		// Try raw unix dial to see if socket accepts connections
+		rawConn, rawErr := net.DialTimeout("unix", agentSockPath, 2*time.Second)
+		rawDial := "failed"
+		if rawErr == nil {
+			rawDial = "ok"
+			rawConn.Close()
+		} else {
+			rawDial = fmt.Sprintf("failed: %v", rawErr)
+		}
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: agent connect FAILED — qemu=%s, socket=%s, rawDial=%s, err=%v",
+			checkpointID, id, procAlive, sockExists, rawDial, err)
+
 		qmpClient.Close()
 		cmd.Process.Kill()
 		cmd.Wait()
@@ -2279,16 +2350,14 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		return nil, fmt.Errorf("agent connect: %w", err)
 	}
 
+	log.Printf("qemu: ForkFromCheckpoint %s → %s: agent connected, patching network...", checkpointID, id)
+
 	// Patch network (fork gets new IPs) + sync clock
 	if err := patchGuestNetwork(context.Background(), agent, netCfg); err != nil {
 		log.Printf("qemu: ForkFromCheckpoint %s: network patch failed: %v", id, err)
 	}
 	if err := syncGuestClock(context.Background(), agent); err != nil {
 		log.Printf("qemu: ForkFromCheckpoint %s: clock sync failed: %v", id, err)
-	}
-
-	if err := patchGuestNetwork(context.Background(), agent, netCfg); err != nil {
-		log.Printf("qemu: ForkFromCheckpoint %s: network patch failed: %v", id, err)
 	}
 
 	// Set env vars

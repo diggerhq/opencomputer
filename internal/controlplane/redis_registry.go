@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -37,10 +38,12 @@ type WorkerEntry struct {
 type RedisWorkerRegistry struct {
 	rdb     *redis.Client
 	mu      sync.RWMutex
-	workers map[string]*WorkerEntry       // in-memory hot cache
-	conns   map[string]*grpc.ClientConn   // persistent gRPC connections
-	clients map[string]pb.SandboxWorkerClient // cached gRPC clients
-	stop    chan struct{}
+	workers     map[string]*WorkerEntry            // in-memory hot cache
+	conns       map[string]*grpc.ClientConn        // persistent gRPC connections
+	clients     map[string]pb.SandboxWorkerClient  // cached gRPC clients (primary)
+	clientPools map[string][]pb.SandboxWorkerClient // connection pool per worker
+	poolCounter uint64                              // round-robin counter
+	stop        chan struct{}
 }
 
 // NewRedisWorkerRegistry connects to Redis and returns a new registry.
@@ -61,10 +64,11 @@ func NewRedisWorkerRegistry(redisURL string) (*RedisWorkerRegistry, error) {
 
 	return &RedisWorkerRegistry{
 		rdb:     rdb,
-		workers: make(map[string]*WorkerEntry),
-		conns:   make(map[string]*grpc.ClientConn),
-		clients: make(map[string]pb.SandboxWorkerClient),
-		stop:    make(chan struct{}),
+		workers:     make(map[string]*WorkerEntry),
+		conns:       make(map[string]*grpc.ClientConn),
+		clients:     make(map[string]pb.SandboxWorkerClient),
+		clientPools: make(map[string][]pb.SandboxWorkerClient),
+		stop:        make(chan struct{}),
 	}, nil
 }
 
@@ -268,8 +272,47 @@ func (r *RedisWorkerRegistry) dialWorkerLocked(workerID, grpcAddr string) {
 	// which means keepalive can't detect a dead connection.
 	conn.Connect()
 	r.conns[workerID] = conn
-	r.clients[workerID] = pb.NewSandboxWorkerClient(conn)
-	log.Printf("redis_registry: gRPC connection initiated to worker %s at %s", workerID, grpcAddr)
+
+	// Create a pool of gRPC clients over multiple connections to avoid
+	// HTTP/2 head-of-line blocking under concurrent load. A single HTTP/2
+	// connection with 64KB send window becomes a bottleneck when 100+
+	// concurrent RPCs share it.
+	// Scale pool size by worker capacity: 1 connection per 25 sandboxes, min 4, max 16.
+	poolSize := 8 // default
+	if w, ok := r.workers[workerID]; ok && w.Capacity > 0 {
+		poolSize = w.Capacity / 25
+	}
+	if poolSize < 8 {
+		poolSize = 8
+	}
+	if poolSize > 16 {
+		poolSize = 16
+	}
+	clients := make([]pb.SandboxWorkerClient, poolSize)
+	clients[0] = pb.NewSandboxWorkerClient(conn)
+	for i := 1; i < poolSize; i++ {
+		extraConn, err := grpc.NewClient(grpcAddr,
+			grpc.WithTransportCredentials(creds),
+			grpc.WithDefaultCallOptions(
+				grpc.MaxCallRecvMsgSize(256*1024*1024),
+				grpc.MaxCallSendMsgSize(256*1024*1024),
+			),
+			grpc.WithKeepaliveParams(keepalive.ClientParameters{
+				Time:                30 * time.Second,
+				Timeout:             10 * time.Second,
+				PermitWithoutStream: true,
+			}),
+		)
+		if err != nil {
+			log.Printf("redis_registry: failed to create pool connection %d for worker %s: %v", i, workerID, err)
+			break
+		}
+		extraConn.Connect()
+		clients[i] = pb.NewSandboxWorkerClient(extraConn)
+	}
+	r.clients[workerID] = clients[0] // default client for GetWorkerClient
+	r.clientPools[workerID] = clients
+	log.Printf("redis_registry: gRPC connection pool (%d) initiated to worker %s at %s", len(clients), workerID, grpcAddr)
 }
 
 // GetLeastLoadedWorker returns the worker with the best combination of remaining capacity
@@ -340,6 +383,13 @@ func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry,
 func (r *RedisWorkerRegistry) GetWorkerClient(workerID string) (pb.SandboxWorkerClient, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Round-robin across connection pool to avoid HTTP/2 head-of-line blocking
+	pool, ok := r.clientPools[workerID]
+	if ok && len(pool) > 0 {
+		idx := atomic.AddUint64(&r.poolCounter, 1) % uint64(len(pool))
+		return pool[idx], nil
+	}
 
 	client, ok := r.clients[workerID]
 	if !ok {
