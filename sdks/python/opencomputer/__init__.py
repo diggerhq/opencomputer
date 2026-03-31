@@ -1,6 +1,7 @@
 """OpenComputer Python SDK - cloud sandbox platform."""
 
 from opencomputer.sandbox import Sandbox
+from opencomputer.desktop import Desktop
 from opencomputer.agent import Agent, AgentEvent, AgentSession, AgentSessionInfo
 from opencomputer.filesystem import Filesystem
 from opencomputer.exec import Exec, ProcessResult, ExecSessionInfo
@@ -12,6 +13,7 @@ from opencomputer.snapshot import Snapshots
 
 __all__ = [
     "Sandbox",
+    "Desktop",
     "Agent",
     "AgentEvent",
     "AgentSession",

@@ -1,0 +1,212 @@
+# Desktop rootfs for OpenSandbox VMs
+# Includes Xvfb, x11vnc, noVNC, Google Chrome, and xdotool for AI computer-use agents.
+# Build: scripts/build-rootfs.sh desktop
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── System packages ──────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Shell & core
+    bash \
+    busybox \
+    ca-certificates \
+    kmod \
+    locales \
+    sudo \
+    # Editors
+    nano \
+    vim-tiny \
+    # Networking
+    curl \
+    wget \
+    openssh-client \
+    iproute2 \
+    iputils-ping \
+    net-tools \
+    dnsutils \
+    # Version control
+    git \
+    # Archive / compression
+    tar \
+    gzip \
+    unzip \
+    # Build tools (minimal — desktop image doesn't need full build-essential)
+    pkg-config \
+    # JSON / text
+    jq \
+    less \
+    # Process tools
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Display server & desktop environment ─────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Virtual framebuffer
+    xvfb \
+    # X11 utilities
+    x11-utils \
+    x11-xserver-utils \
+    xauth \
+    # Window manager (lightweight)
+    openbox \
+    # VNC server
+    x11vnc \
+    # Desktop utilities
+    xdg-utils \
+    dbus-x11 \
+    xclip \
+    # Programmatic input/screenshots for AI agents
+    xdotool \
+    scrot \
+    # Screen info
+    x11-apps \
+    # Fonts (needed for readable text in browser/desktop)
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── noVNC + websockify (VNC-over-WebSocket) ──────────────────────────────────
+RUN git clone --depth 1 https://github.com/novnc/noVNC.git /opt/noVNC \
+    && git clone --depth 1 --branch v0.12.0 https://github.com/novnc/websockify.git /opt/noVNC/utils/websockify \
+    && ln -sf /opt/noVNC/vnc.html /opt/noVNC/index.html \
+    && rm -rf /opt/noVNC/.git /opt/noVNC/utils/websockify/.git
+
+# ── Google Chrome (Ubuntu 22.04 chromium-browser is a snap stub) ─────────────
+RUN wget -qO /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+    && apt-get update && apt-get install -y --no-install-recommends /tmp/google-chrome.deb \
+    && rm -f /tmp/google-chrome.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python 3 (for agent SDKs) ───────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+# ── Node.js 20 LTS (for agent SDKs) ─────────────────────────────────────────
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g npm@latest
+
+# ── Desktop start script ────────────────────────────────────────────────────
+# Launches Xvfb + openbox. VNC streaming is started on-demand via the SDK.
+COPY --chmod=755 <<'DESKTOP_START' /usr/local/bin/start-desktop
+#!/bin/bash
+# start-desktop — Launches the desktop environment inside the sandbox VM.
+# Called on sandbox creation for desktop template.
+# VNC/noVNC streaming is separate — started on-demand via stream.start().
+
+set -euo pipefail
+
+DISPLAY="${DISPLAY:-:99}"
+export DISPLAY
+SCREEN_WIDTH="${SCREEN_WIDTH:-1024}"
+SCREEN_HEIGHT="${SCREEN_HEIGHT:-768}"
+SCREEN_DEPTH="${SCREEN_DEPTH:-24}"
+SCREEN_DPI="${SCREEN_DPI:-96}"
+
+# Start Xvfb
+Xvfb "$DISPLAY" -ac -screen 0 "${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}" \
+    -retro -dpi "$SCREEN_DPI" -nolisten tcp -nolisten unix &
+XVFB_PID=$!
+
+# Wait for X to be ready
+for i in $(seq 1 50); do
+    if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 0.1
+done
+
+# Start openbox window manager
+openbox &
+
+echo "desktop: Xvfb + openbox running on $DISPLAY (${SCREEN_WIDTH}x${SCREEN_HEIGHT})"
+
+# Keep running (wait for Xvfb)
+wait $XVFB_PID
+DESKTOP_START
+
+# ── VNC stream start script ─────────────────────────────────────────────────
+# Called on-demand when SDK calls stream.start()
+COPY --chmod=755 <<'VNC_START' /usr/local/bin/start-vnc
+#!/bin/bash
+# start-vnc — Starts x11vnc + noVNC for WebSocket-based VNC streaming.
+# Usage: start-vnc [--password PASSWORD] [--vnc-port PORT] [--novnc-port PORT] [--window-id ID]
+
+set -euo pipefail
+
+DISPLAY="${DISPLAY:-:99}"
+export DISPLAY
+VNC_PORT="${VNC_PORT:-5900}"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
+PASSWORD=""
+WINDOW_ID=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --password) PASSWORD="$2"; shift 2 ;;
+        --vnc-port) VNC_PORT="$2"; shift 2 ;;
+        --novnc-port) NOVNC_PORT="$2"; shift 2 ;;
+        --window-id) WINDOW_ID="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+
+# Configure auth
+PWD_FLAG="-nopw"
+if [ -n "$PASSWORD" ]; then
+    mkdir -p ~/.vnc
+    x11vnc -storepasswd "$PASSWORD" ~/.vnc/passwd
+    PWD_FLAG="-usepw"
+fi
+
+# Window targeting
+WINDOW_FLAG=""
+if [ -n "$WINDOW_ID" ]; then
+    WINDOW_FLAG="-id $WINDOW_ID"
+fi
+
+# Start x11vnc
+x11vnc -bg -display "$DISPLAY" -forever -wait 50 -shared \
+    -rfbport "$VNC_PORT" $PWD_FLAG $WINDOW_FLAG 2>/tmp/x11vnc_stderr.log
+
+# Start noVNC proxy (backgrounded so the script returns immediately)
+cd /opt/noVNC/utils
+nohup ./novnc_proxy --vnc "127.0.0.1:${VNC_PORT}" \
+    --listen "$NOVNC_PORT" --web /opt/noVNC > /tmp/novnc.log 2>&1 &
+
+# Wait for noVNC to be listening
+for i in $(seq 1 20); do
+    netstat -tuln 2>/dev/null | grep -q ":${NOVNC_PORT} " && exit 0
+    sleep 0.5
+done
+echo "WARNING: noVNC may not have started" >&2
+VNC_START
+
+# ── Stop VNC script ─────────────────────────────────────────────────────────
+COPY --chmod=755 <<'VNC_STOP' /usr/local/bin/stop-vnc
+#!/bin/bash
+# stop-vnc — Stops x11vnc and noVNC processes.
+pkill x11vnc 2>/dev/null || true
+pkill -f novnc_proxy 2>/dev/null || true
+VNC_STOP
+
+# ── Locale ───────────────────────────────────────────────────────────────────
+RUN locale-gen en_US.UTF-8
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+# ── Sandbox user (non-root with passwordless sudo) ───────────────────────────
+RUN useradd -m -s /bin/bash -G sudo,audio,video sandbox \
+    && echo "sandbox ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/sandbox \
+    && chmod 440 /etc/sudoers.d/sandbox
+
+# ── Overlay mount points ────────────────────────────────────────────────────
+RUN mkdir -p /mnt/data /mnt/overlay
+WORKDIR /home/sandbox
