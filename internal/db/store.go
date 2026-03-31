@@ -720,49 +720,6 @@ func (s *Store) SetOrgOwner(ctx context.Context, orgID, userID uuid.UUID) error 
 	return err
 }
 
-// UpdateOrgWorkOSID sets the WorkOS org ID on an existing org (used for backfill).
-func (s *Store) UpdateOrgWorkOSID(ctx context.Context, orgID uuid.UUID, workosOrgID string) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE orgs SET workos_org_id = $1, updated_at = now() WHERE id = $2`,
-		workosOrgID, orgID)
-	return err
-}
-
-// UpdateUserWorkOSID sets the WorkOS user ID on an existing user (used for backfill).
-func (s *Store) UpdateUserWorkOSID(ctx context.Context, userID uuid.UUID, workosUserID string) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE users SET workos_user_id = $1 WHERE id = $2`,
-		workosUserID, userID)
-	return err
-}
-
-// ListOrgsWithoutWorkOS returns orgs that have no WorkOS org ID (for backfill).
-func (s *Store) ListOrgsWithoutWorkOS(ctx context.Context) ([]*Org, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT `+orgColumns+` FROM orgs WHERE workos_org_id IS NULL ORDER BY created_at`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var orgs []*Org
-	for rows.Next() {
-		org := &Org{}
-		err := rows.Scan(
-			&org.ID, &org.Name, &org.Slug, &org.Plan, &org.MaxConcurrentSandboxes,
-			&org.MaxSandboxTimeoutSec, &org.CreatedAt, &org.UpdatedAt,
-			&org.CustomDomain, &org.CFHostnameID, &org.DomainVerificationStatus, &org.DomainSSLStatus,
-			&org.VerificationTxtName, &org.VerificationTxtValue, &org.SSLTxtName, &org.SSLTxtValue,
-			&org.WorkOSOrgID, &org.IsPersonal, &org.OwnerUserID, &org.CreditBalanceCents,
-		)
-		if err != nil {
-			return nil, err
-		}
-		orgs = append(orgs, org)
-	}
-	return orgs, nil
-}
-
 // GetUserByWorkOSID looks up a user by their WorkOS user ID.
 func (s *Store) GetUserByWorkOSID(ctx context.Context, workosUserID string) (*User, error) {
 	user, err := scanUser(s.pool.QueryRow(ctx,
