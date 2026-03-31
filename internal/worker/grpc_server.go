@@ -136,16 +136,11 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		SecretAllowedHosts: parseSecretAllowedHosts(req.SecretAllowedHosts),
 	}
 
-	// Warm fork: if checkpoint_id is set, try snapshot-based fork first.
-	// ForkFromCheckpoint handles warm fork with cold boot fallback internally.
+	// Warm fork: if checkpoint_id is set, fork from the local checkpoint cache.
+	// ForkFromCheckpoint uses the local cache directly — no S3 needed.
+	// Skip resolveTemplateDrives here: it tries S3 first which can hang on DNS
+	// failures, and ForkFromCheckpoint already handles cache lookup internally.
 	if req.CheckpointId != "" {
-		// Ensure checkpoint drives are cached locally (download from S3 if needed)
-		if req.TemplateRootfsKey != "" && req.TemplateWorkspaceKey != "" {
-			if _, _, err := s.resolveTemplateDrives(ctx, req.TemplateRootfsKey, req.TemplateWorkspaceKey); err != nil {
-				log.Printf("grpc: warm fork %s: resolve drives failed: %v, continuing with ForkFromCheckpoint", req.CheckpointId, err)
-			}
-		}
-
 		sb, err := s.manager.ForkFromCheckpoint(ctx, req.CheckpointId, cfg)
 		if err == nil {
 			// Register with sandbox router for rolling timeout tracking
@@ -161,7 +156,14 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 				Status:    string(sb.Status),
 			}, nil
 		}
-		log.Printf("grpc: ForkFromCheckpoint %s failed: %v, falling back to standard Create", req.CheckpointId, err)
+		// Only fall back to S3 download if the checkpoint isn't cached locally
+		// (cross-worker restore). If the fork failed for other reasons (agent
+		// timeout, QMP error), retrying via S3 won't help and the blob may
+		// not even exist.
+		if !strings.Contains(err.Error(), "not found in cache") {
+			return nil, fmt.Errorf("fork from checkpoint %s: %w", req.CheckpointId, err)
+		}
+		log.Printf("grpc: ForkFromCheckpoint %s: not in local cache, falling back to S3 download", req.CheckpointId)
 	}
 
 	// Handle sandbox snapshot template: resolve S3 keys to local paths.

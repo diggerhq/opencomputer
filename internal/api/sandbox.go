@@ -317,11 +317,9 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	}
 
 	// Dispatch via persistent gRPC connection.
-	// Template-based creation needs more time for S3 download + decompression of drives.
-	grpcTimeout := 30 * time.Second
-	if templateRootfsKey != "" {
-		grpcTimeout = 120 * time.Second
-	}
+	// Worker uses local cache for checkpoint forks (300ms) and downloads from S3
+	// only on cold starts (~30s). 60s is enough for both paths.
+	grpcTimeout := 60 * time.Second
 	grpcCtx, cancel := context.WithTimeout(ctx, grpcTimeout)
 	defer cancel()
 
@@ -519,6 +517,12 @@ func (s *Server) killSandbox(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
+	// Mark stopped immediately so it no longer counts toward concurrency limits.
+	if s.store != nil {
+		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), id, "stopped", nil)
+		s.cleanupPreviewURLs(c.Request().Context(), id)
+	}
+
 	if err := s.manager.Kill(c.Request().Context(), id); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
@@ -528,11 +532,6 @@ func (s *Server) killSandbox(c echo.Context) error {
 	// Unregister from sandbox router
 	if s.router != nil {
 		s.router.Unregister(id)
-	}
-
-	if s.store != nil {
-		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), id, "stopped", nil)
-		s.cleanupPreviewURLs(c.Request().Context(), id)
 	}
 
 	if s.sandboxDBs != nil {
@@ -557,13 +556,15 @@ func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
 		})
 	}
 
+	// Mark stopped immediately so it no longer counts toward concurrency limits.
+	// The actual VM teardown below is best-effort.
+	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", nil)
+	s.cleanupPreviewURLs(c.Request().Context(), sandboxID)
+
 	// Attempt gRPC destroy (best-effort)
 	client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
 	if err != nil {
-		// Worker is unreachable — mark as error in PG
 		log.Printf("sandbox: worker %s unreachable for destroy: %v", session.WorkerID, err)
-		errMsg := "worker unreachable"
-		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "error", &errMsg)
 		return c.NoContent(http.StatusNoContent)
 	}
 
@@ -573,9 +574,6 @@ func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
 	if _, err := client.DestroySandbox(grpcCtx, &pb.DestroySandboxRequest{SandboxId: sandboxID}); err != nil {
 		log.Printf("sandbox: gRPC destroy failed for %s: %v", sandboxID, err)
 	}
-
-	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", nil)
-	s.cleanupPreviewURLs(c.Request().Context(), sandboxID)
 
 	return c.NoContent(http.StatusNoContent)
 }
@@ -1586,14 +1584,14 @@ func (s *Server) createFromCheckpointCore(c echo.Context) (map[string]interface{
 
 	// Boot VM in background
 	go func() {
-		createCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		defer cancel()
-
 		var createErr error
 
 		if grpcClient != nil {
-			// Server mode: dispatch to worker via gRPC
-			_, createErr = grpcClient.CreateSandbox(createCtx, &pb.CreateSandboxRequest{
+			// Use background context — the fork has its own internal timeouts
+			// (30s agent connect, 10s QMP, 5s network patch). An external deadline
+			// here causes orphaned VMs: the gRPC layer returns DeadlineExceeded
+			// while the worker finishes creating the VM, leaving it untracked.
+			_, createErr = grpcClient.CreateSandbox(context.Background(), &pb.CreateSandboxRequest{
 				Template:             originalCfg.Template,
 				Timeout:              int32(timeout),
 				Envs:                 originalCfg.Envs,
@@ -1607,7 +1605,7 @@ func (s *Server) createFromCheckpointCore(c echo.Context) (map[string]interface{
 				SandboxId:            sandboxID,
 			})
 		} else {
-			// Combined mode: create locally
+			// Combined mode: create locally — no external timeout, same reasoning as above
 			cfg := originalCfg
 			cfg.Timeout = timeout
 			cfg.TemplateRootfsKey = *cp.RootfsS3Key
@@ -1619,9 +1617,9 @@ func (s *Server) createFromCheckpointCore(c echo.Context) (map[string]interface{
 				ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error)
 			})
 			if hasFork {
-				_, createErr = forkMgr.ForkFromCheckpoint(createCtx, checkpointID.String(), cfg)
+				_, createErr = forkMgr.ForkFromCheckpoint(context.Background(), checkpointID.String(), cfg)
 			} else {
-				_, createErr = s.manager.Create(createCtx, cfg)
+				_, createErr = s.manager.Create(context.Background(), cfg)
 			}
 		}
 

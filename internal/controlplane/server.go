@@ -273,15 +273,17 @@ func (s *Server) destroySandbox(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
 	}
 
+	// Mark stopped immediately so it no longer counts toward concurrency limits.
+	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", nil)
+
 	// Get worker gRPC address
 	worker := s.registry.GetWorker(session.WorkerID)
 	if worker == nil {
-		// Worker is down, just mark as error
-		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "error", strPtr("worker unreachable"))
+		log.Printf("controlplane: worker %s unreachable for destroy of %s", session.WorkerID, sandboxID)
 		return c.NoContent(http.StatusNoContent)
 	}
 
-	// Call gRPC DestroySandbox
+	// Call gRPC DestroySandbox (best-effort — sandbox already marked stopped)
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 10*time.Second)
 	defer cancel()
 
@@ -299,8 +301,6 @@ func (s *Server) destroySandbox(c echo.Context) error {
 	if _, err := client.DestroySandbox(ctx, &pb.DestroySandboxRequest{SandboxId: sandboxID}); err != nil {
 		log.Printf("controlplane: gRPC destroy failed: %v", err)
 	}
-
-	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", nil)
 
 	return c.NoContent(http.StatusNoContent)
 }
