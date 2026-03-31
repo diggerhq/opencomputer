@@ -266,6 +266,15 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		return fmt.Errorf("create golden workspace: %w", err)
 	}
 
+	// Save the workspace ext4 UUID so createFromGolden can stamp new workspaces
+	// with the same UUID. The golden kernel caches ext4 metadata (superblock,
+	// journal) by UUID — a new workspace with a different UUID triggers checksum
+	// errors ("Bad message" / EBADMSG) because the cached metadata doesn't match.
+	if wsUUID, uuidErr := getWorkspaceUUID(workspaceFile); uuidErr == nil {
+		os.WriteFile(filepath.Join(goldenDir, "workspace_uuid"), []byte(wsUUID), 0644)
+		log.Printf("qemu: golden: workspace UUID=%s", wsUUID)
+	}
+
 	// Allocate a temporary network for golden boot
 	netCfg, err := m.subnets.Allocate()
 	if err != nil {
@@ -476,10 +485,16 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		return nil, fmt.Errorf("copy golden rootfs: %w", err)
 	}
 
-	// Create fresh workspace as qcow2 (matching golden snapshot format)
+	// Create fresh workspace as qcow2 with the golden's ext4 UUID.
+	// The golden kernel caches ext4 metadata by UUID — mismatched UUIDs cause
+	// "Bad message" (EBADMSG) checksum errors on the restored workspace.
 	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
 	diskMB := m.cfg.DefaultDiskMB
-	if err := CreateWorkspace(workspacePath, diskMB); err != nil {
+	var goldenWSUUID string
+	if data, readErr := os.ReadFile(filepath.Join(m.goldenDir, "workspace_uuid")); readErr == nil {
+		goldenWSUUID = strings.TrimSpace(string(data))
+	}
+	if err := CreateWorkspace(workspacePath, diskMB, goldenWSUUID); err != nil {
 		os.RemoveAll(sandboxDir)
 		return nil, fmt.Errorf("create workspace: %w", err)
 	}
