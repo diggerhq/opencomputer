@@ -100,19 +100,6 @@ func (s *Server) GracefulStop() {
 		gs.GracefulStop()
 	}
 }
-
-// ForceStop immediately stops the gRPC server, closing all connections.
-// Used before savevm to ensure the active virtio-serial connection is torn down
-// synchronously, so onClose fires and active=false before the snapshot.
-func (s *Server) ForceStop() {
-	s.mu.Lock()
-	gs := s.grpcServer
-	s.mu.Unlock()
-	if gs != nil {
-		gs.Stop()
-	}
-}
-
 // GetVersion returns the agent's build version.
 func (s *Server) GetVersion(ctx context.Context, req *pb.GetVersionRequest) (*pb.GetVersionResponse, error) {
 	return &pb.GetVersionResponse{Version: s.version}, nil
