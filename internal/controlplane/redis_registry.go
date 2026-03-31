@@ -277,7 +277,7 @@ func (r *RedisWorkerRegistry) dialWorkerLocked(workerID, grpcAddr string) {
 	// HTTP/2 head-of-line blocking under concurrent load. A single HTTP/2
 	// connection with 64KB send window becomes a bottleneck when 100+
 	// concurrent RPCs share it.
-	// Scale pool size by worker capacity: 1 connection per 25 sandboxes, min 4, max 16.
+	// Scale pool size by worker capacity: 1 connection per 25 sandboxes, min 8, max 16.
 	poolSize := 8 // default
 	if w, ok := r.workers[workerID]; ok && w.Capacity > 0 {
 		poolSize = w.Capacity / 25
