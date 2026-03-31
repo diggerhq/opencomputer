@@ -253,6 +253,7 @@ func main() {
 			scaler := controlplane.NewScaler(controlplane.ScalerConfig{
 				Pool:        pool,
 				Registry:    redisRegistry,
+				Store:       opts.Store,
 				WorkerImage: cfg.EC2WorkerImage,
 				Cooldown:    time.Duration(cfg.ScaleCooldownSec) * time.Second,
 				MinWorkers:  cfg.MinWorkersPerRegion,

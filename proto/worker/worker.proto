@@ -39,9 +39,13 @@ service SandboxWorker {
   rpc SetSandboxLimits(SetSandboxLimitsRequest) returns (SetSandboxLimitsResponse);
 
   // Live migration between workers
+  rpc PreCopyDrives(PreCopyDrivesRequest) returns (PreCopyDrivesResponse);
   rpc PrepareMigrationIncoming(PrepareMigrationIncomingRequest) returns (PrepareMigrationIncomingResponse);
   rpc LiveMigrate(LiveMigrateRequest) returns (LiveMigrateResponse);
   rpc CompleteMigrationIncoming(CompleteMigrationIncomingRequest) returns (CompleteMigrationIncomingResponse);
+
+  // Golden snapshot management
+  rpc RebuildGoldenSnapshot(RebuildGoldenSnapshotRequest) returns (RebuildGoldenSnapshotResponse);
 }
 
 message CreateSandboxRequest {
@@ -312,6 +316,17 @@ message SetSandboxLimitsRequest {
 message SetSandboxLimitsResponse {}
 
 // Live migration messages
+message PreCopyDrivesRequest {
+  string sandbox_id = 1;
+  bool flatten_rootfs = 2;   // if true, flatten qcow2 overlay before upload (cross-golden-version)
+}
+
+message PreCopyDrivesResponse {
+  string rootfs_key = 1;       // S3 key for rootfs qcow2
+  string workspace_key = 2;    // S3 key for workspace qcow2
+  string golden_version = 3;   // golden version the sandbox was created from
+}
+
 message PrepareMigrationIncomingRequest {
   string sandbox_id = 1;
   string rootfs_path = 2;    // local path to rootfs on target (pre-copied)
@@ -320,6 +335,9 @@ message PrepareMigrationIncomingRequest {
   int32 memory_mb = 5;
   int32 guest_port = 6;
   string template = 7;
+  string rootfs_s3_key = 8;     // if set, download from S3 instead of using local rootfs_path
+  string workspace_s3_key = 9;  // if set, download from S3 instead of using local workspace_path
+  bool overlay_mode = 10;       // if true, rootfs is thin overlay — rebase to local golden on target
 }
 
 message PrepareMigrationIncomingResponse {
@@ -339,3 +357,11 @@ message CompleteMigrationIncomingRequest {
 }
 
 message CompleteMigrationIncomingResponse {}
+
+// Golden snapshot management
+message RebuildGoldenSnapshotRequest {}
+
+message RebuildGoldenSnapshotResponse {
+  string old_version = 1;    // previous golden version (empty if none)
+  string new_version = 2;    // new golden version after rebuild
+}
