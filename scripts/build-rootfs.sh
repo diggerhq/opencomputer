@@ -246,7 +246,7 @@ INJECT_EOF
     tar xf "$tmpdir/rootfs.tar" -C "$mnt_dir"
 
     # Ensure key directories
-    for dir in proc sys dev dev/pts dev/shm tmp workspace run; do
+    for dir in proc sys dev dev/pts dev/shm tmp run; do
         mkdir -p "$mnt_dir/$dir"
     done
 
