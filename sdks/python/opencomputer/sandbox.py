@@ -70,7 +70,9 @@ class Sandbox:
         if key:
             headers["X-API-Key"] = key
 
-        use_sse = on_build_log is not None and (image is not None or snapshot is not None)
+        # Always use SSE for image/snapshot creation to keep the connection alive
+        # through proxies (Cloudflare has a 100s idle timeout).
+        use_sse = image is not None or snapshot is not None
         if use_sse:
             headers["Accept"] = "text/event-stream"
 

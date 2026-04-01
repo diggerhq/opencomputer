@@ -148,7 +148,9 @@ export class Sandbox {
     if (opts.image) body.image = opts.image.toJSON();
     if (opts.snapshot) body.snapshot = opts.snapshot;
 
-    const useSSE = opts.onBuildLog && (opts.image || opts.snapshot);
+    // Always use SSE for image/snapshot creation to keep the connection alive
+    // through proxies (Cloudflare has a 100s idle timeout).
+    const useSSE = !!(opts.image || opts.snapshot);
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -170,7 +172,8 @@ export class Sandbox {
     }
 
     if (useSSE && resp.headers.get("content-type")?.includes("text/event-stream")) {
-      const data = await parseSSEStream<SandboxData>(resp, opts.onBuildLog!);
+      const onLog = opts.onBuildLog ?? (() => {});
+      const data = await parseSSEStream<SandboxData>(resp, onLog);
       return new Sandbox(data, apiUrl, apiKey);
     }
 
