@@ -94,12 +94,14 @@ else
     done
 fi
 
-# ── Mount workspace: data disk at /workspace (persistent user data) ──
-mkdir -p /workspace
-if mount /dev/vdb /workspace 2>/dev/null || mount /dev/vdb1 /workspace 2>/dev/null; then
-    echo "init: workspace mounted (/dev/vdb -> /workspace)"
+# ── Mount workspace: data disk at /home/sandbox (persistent user data) ──
+# /workspace is a symlink to /home/sandbox, so mount the real path.
+mkdir -p /home/sandbox
+if mount /dev/vdb /home/sandbox 2>/dev/null || mount /dev/vdb1 /home/sandbox 2>/dev/null; then
+    chown sandbox:sandbox /home/sandbox 2>/dev/null
+    echo "init: workspace mounted (/dev/vdb -> /home/sandbox)"
 else
-    echo "init: warning: no data disk found, /workspace is ephemeral"
+    echo "init: warning: no data disk found, /home/sandbox is ephemeral"
 fi
 
 # ── Mount virtual filesystems (in the final root) ──
@@ -236,8 +238,8 @@ mount -o loop "$EXT4_PATH" "$MNT_DIR"
 
 tar xf "$TMPDIR/rootfs.tar" -C "$MNT_DIR"
 
-# Ensure key directories exist
-for dir in proc sys dev dev/pts dev/shm tmp workspace run; do
+# Ensure key directories exist (workspace is created by Dockerfile)
+for dir in proc sys dev dev/pts dev/shm tmp run; do
     mkdir -p "$MNT_DIR/$dir"
 done
 
