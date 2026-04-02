@@ -27,7 +27,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 	}
 
 	// Validate CPU/memory against allowed tiers.
-	// Allowed tiers (memoryMB → vCPU): 4096→1, 8192→2, 16384→4, 32768→8, 65536→16.
+	// Allowed tiers (memoryMB → vCPU): 1024→1, 4096→1, 8192→2, 16384→4, 32768→8, 65536→16.
 	if err := types.ValidateResourceTier(&cfg); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": err.Error(),

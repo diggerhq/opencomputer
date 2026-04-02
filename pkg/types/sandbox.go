@@ -85,6 +85,7 @@ type ResourceTier struct {
 
 // AllowedResourceTiers lists the valid memory→vCPU combinations.
 var AllowedResourceTiers = []ResourceTier{
+	{MemoryMB: 1024, VCPUs: 1},
 	{MemoryMB: 4096, VCPUs: 1},
 	{MemoryMB: 8192, VCPUs: 2},
 	{MemoryMB: 16384, VCPUs: 4},
@@ -103,7 +104,7 @@ func ValidateMemoryMB(memoryMB int) (vcpus int, err error) {
 			return t.VCPUs, nil
 		}
 	}
-	return 0, fmt.Errorf("memoryMB must be one of: 4096, 8192, 16384, 32768, 65536 (got %d)", memoryMB)
+	return 0, fmt.Errorf("memoryMB must be one of: 1024, 4096, 8192, 16384, 32768, 65536 (got %d)", memoryMB)
 }
 
 // ValidateCPUCount checks that cpuCount matches an allowed tier and returns the corresponding memoryMB.
@@ -148,7 +149,7 @@ func ValidateResourceTier(cfg *SandboxConfig) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("cpuCount %d and memoryMB %d do not match an allowed tier; valid combinations: 1/4096, 2/8192, 4/16384, 8/32768, 16/65536", cfg.CpuCount, cfg.MemoryMB)
+	return fmt.Errorf("cpuCount %d and memoryMB %d do not match an allowed tier; valid combinations: 1/1024, 1/4096, 2/8192, 4/16384, 8/32768, 16/65536", cfg.CpuCount, cfg.MemoryMB)
 }
 
 // SandboxListResponse is the response for listing sandboxes.
