@@ -97,7 +97,7 @@
     },
     {
       "group": "Guides",
-      "pages": ["guides/build-a-lovable-clone", "guides/agent-skill"]
+      "pages": ["guides/build-a-lovable-clone", "guides/agent-skill", "guides/deploy-openclaw"]
     },
     {
       "group": "TypeScript SDK",
