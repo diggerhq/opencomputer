@@ -70,7 +70,7 @@ export default function Billing() {
                 <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
                   {isPro
                     ? `${billing?.maxConcurrentSandboxes ?? 5} concurrent sandboxes, all tiers`
-                    : `${billing?.maxConcurrentSandboxes ?? 5} concurrent sandboxes, 1GB / 1 vCPU`}
+                    : `${billing?.maxConcurrentSandboxes ?? 5} concurrent sandboxes, up to 4GB / 1 vCPU`}
                 </span>
               </div>
 
