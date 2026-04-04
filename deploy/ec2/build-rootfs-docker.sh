@@ -268,9 +268,11 @@ fi
 sync
 umount "$MNT_DIR"
 
-# Shrink to minimum size
-log "Shrinking ext4 image..."
-resize2fs -M "$EXT4_PATH" 2>/dev/null || log "resize2fs -M failed (non-fatal)"
+# Shrink to a usable floor — leave room for apt install, Docker, kernel modules etc.
+# The ext4 is inside a qcow2 COW overlay, so unused space costs nothing on disk.
+ROOTFS_MIN_MB="${ROOTFS_MIN_MB:-4096}"
+log "Resizing ext4 to ${ROOTFS_MIN_MB}MB floor (sparse — actual disk usage stays low)..."
+resize2fs "$EXT4_PATH" "${ROOTFS_MIN_MB}M" 2>/dev/null || log "resize2fs failed (non-fatal)"
 
 # Place in output directory
 mkdir -p "$IMAGES_DIR"
