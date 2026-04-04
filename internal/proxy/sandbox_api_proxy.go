@@ -39,7 +39,7 @@ type routeCacheEntry struct {
 	expiresAt time.Time
 }
 
-const routeCacheTTL = 10 * time.Second
+const routeCacheTTL = 3 * time.Second
 
 func newProxyRouteCache() *proxyRouteCache {
 	return &proxyRouteCache{entries: make(map[string]*routeCacheEntry)}

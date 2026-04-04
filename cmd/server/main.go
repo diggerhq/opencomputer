@@ -285,17 +285,32 @@ func main() {
 		}
 	}
 
-	// Stale migration recovery — reset sandboxes stuck in 'migrating' state
-	if opts.Store != nil {
+	// Background maintenance tasks
+	if opts.Store != nil && redisRegistry != nil {
 		go func() {
 			ticker := time.NewTicker(60 * time.Second)
 			defer ticker.Stop()
 			for range ticker.C {
-				recovered, err := opts.Store.RecoverStaleMigrations(context.Background(), 10*time.Minute)
+				ctx := context.Background()
+
+				// Stale migration recovery
+				recovered, err := opts.Store.RecoverStaleMigrations(ctx, 60*time.Second)
 				if err != nil {
-					log.Printf("stale-migration-recovery: error: %v", err)
+					log.Printf("maintenance: stale migration recovery error: %v", err)
 				} else if recovered > 0 {
-					log.Printf("stale-migration-recovery: reverted %d stale migrations", recovered)
+					log.Printf("maintenance: reverted %d stale migrations", recovered)
+				}
+
+				// DB/worker reconciliation: mark sandboxes on dead workers as error
+				liveWorkers := make(map[string]bool)
+				for _, w := range redisRegistry.GetAllWorkers() {
+					liveWorkers[w.ID] = true
+				}
+				orphaned, err := opts.Store.MarkOrphanedSandboxes(ctx, liveWorkers)
+				if err != nil {
+					log.Printf("maintenance: orphan reconciliation error: %v", err)
+				} else if orphaned > 0 {
+					log.Printf("maintenance: marked %d sandboxes as error (worker lost)", orphaned)
 				}
 			}
 		}()

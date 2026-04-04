@@ -578,6 +578,10 @@ func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
 	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", nil)
 	s.cleanupPreviewURLs(c.Request().Context(), sandboxID)
 
+	if s.sandboxAPIProxy != nil {
+		s.sandboxAPIProxy.InvalidateRouteCache(sandboxID)
+	}
+
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -1262,6 +1266,10 @@ func (s *Server) hibernateSandboxRemote(c echo.Context, sandboxID string) error 
 		grpcResp.CheckpointKey, grpcResp.SizeBytes,
 		session.Region, session.Template, session.Config)
 	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "hibernated", nil)
+
+	if s.sandboxAPIProxy != nil {
+		s.sandboxAPIProxy.InvalidateRouteCache(sandboxID)
+	}
 
 	resp := map[string]interface{}{
 		"sandboxID":      sandboxID,

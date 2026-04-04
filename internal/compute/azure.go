@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -186,10 +187,28 @@ func (p *AzurePool) CreateMachine(ctx context.Context, opts MachineOpts) (*Machi
 	}, nil)
 	if err != nil {
 		log.Printf("azure: VM %s BeginCreateOrUpdate error detail: %+v", vmName, err)
+		// Clean up orphaned NIC
+		go func() {
+			cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if delPoller, delErr := p.nicClient.BeginDelete(cleanCtx, p.cfg.ResourceGroup, nicName, nil); delErr == nil {
+				delPoller.PollUntilDone(cleanCtx, nil)
+				log.Printf("azure: cleaned up orphaned NIC %s", nicName)
+			}
+		}()
 		return nil, fmt.Errorf("azure: create VM %s failed: %w", vmName, err)
 	}
 	vmResp, err := vmPoller.PollUntilDone(ctx, nil)
 	if err != nil {
+		// Clean up orphaned NIC on poll failure too
+		go func() {
+			cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if delPoller, delErr := p.nicClient.BeginDelete(cleanCtx, p.cfg.ResourceGroup, nicName, nil); delErr == nil {
+				delPoller.PollUntilDone(cleanCtx, nil)
+				log.Printf("azure: cleaned up orphaned NIC %s after poll failure", nicName)
+			}
+		}()
 		return nil, fmt.Errorf("azure: VM %s poll failed: %w", vmName, err)
 	}
 	log.Printf("azure: VM %s created successfully", vmName)

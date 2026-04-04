@@ -533,6 +533,37 @@ func (s *Store) RecoverStaleMigrations(ctx context.Context, maxAge time.Duration
 	return int(tag.RowsAffected()), nil
 }
 
+// MarkOrphanedSandboxes marks running sandboxes on dead workers as error.
+// liveWorkers is the set of worker IDs currently registered.
+func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[string]bool) (int, error) {
+	// Get all distinct worker_ids with running sandboxes
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT worker_id FROM sandbox_sessions WHERE status = 'running'`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	total := 0
+	for rows.Next() {
+		var workerID string
+		if err := rows.Scan(&workerID); err != nil {
+			continue
+		}
+		if liveWorkers[workerID] {
+			continue
+		}
+		// Worker not in registry — mark its sandboxes as error
+		tag, err := s.pool.Exec(ctx,
+			`UPDATE sandbox_sessions SET status = 'error', error_msg = 'worker lost', stopped_at = now()
+			 WHERE worker_id = $1 AND status = 'running'`, workerID)
+		if err == nil {
+			total += int(tag.RowsAffected())
+		}
+	}
+	return total, nil
+}
+
 func (s *Store) GetSandboxSession(ctx context.Context, sandboxID string) (*SandboxSession, error) {
 	session := &SandboxSession{}
 	err := s.pool.QueryRow(ctx,

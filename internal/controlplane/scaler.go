@@ -778,13 +778,20 @@ func (s *Scaler) checkDrainingWorkers(ctx context.Context, region string) {
 			continue
 		}
 
-		// Check if drain timed out — do NOT hibernate or destroy.
-		// Sandboxes must be preserved. Cancel the drain and let the worker
-		// keep running. The sandboxes will naturally expire or be manually cleaned up.
+		// Check if drain timed out
 		if time.Since(state.startedAt) > drainTimeout {
-			log.Printf("scaler: drain timeout for worker %s (machine=%s) after %s — cancelling drain, keeping worker alive with %d sandboxes",
-				state.workerID, machineID, drainTimeout, s.getDrainingWorkerSandboxCount(state.workerID))
-			delete(s.draining, machineID)
+			sandboxCount := s.getDrainingWorkerSandboxCount(state.workerID)
+			if sandboxCount == 0 {
+				// Sandboxes expired naturally — safe to destroy
+				log.Printf("scaler: drain timeout for worker %s but 0 sandboxes remain, destroying", state.workerID)
+				s.destroyDrainedMachine(machineID)
+				delete(s.draining, machineID)
+			} else {
+				// Still has sandboxes — cancel drain, keep worker alive
+				log.Printf("scaler: drain timeout for worker %s (machine=%s) with %d sandboxes — cancelling drain, keeping alive",
+					state.workerID, machineID, sandboxCount)
+				delete(s.draining, machineID)
+			}
 			continue
 		}
 
