@@ -53,6 +53,7 @@ type Server struct {
 	sandboxAPIProxy *proxy.SandboxAPIProxy            // nil except in server mode (proxies data-plane to workers)
 	stripeClient    *billing.StripeClient              // nil if Stripe not configured
 	redisClient     *redis.Client                     // nil if Redis not configured (for health checks)
+	adminEvents     *AdminEventBus                    // real-time event bus for admin dashboard
 	ready           int32                             // atomic: 1 = ready, 0 = not ready
 }
 
@@ -114,6 +115,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.sandboxAPIProxy = opts.SandboxAPIProxy
 		s.stripeClient = opts.StripeClient
 		s.redisClient = opts.RedisClient
+		s.adminEvents = NewAdminEventBus()
 
 		// Wire up readiness waiting so the proxy blocks until async creates finish
 		if s.sandboxAPIProxy != nil {
@@ -156,6 +158,23 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		return c.JSON(http.StatusOK, map[string]string{"status": "alive"})
 	})
 	e.GET("/readyz", s.readinessCheck)
+	// Admin routes — accept API key via header or ?key= query param
+	admin := e.Group("/admin", func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			key := c.Request().Header.Get("X-API-Key")
+			if key == "" {
+				key = c.QueryParam("key")
+			}
+			if key == "" || key != apiKey {
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid API key"})
+			}
+			return next(c)
+		}
+	})
+	admin.GET("/status", s.adminStatusPage)
+	admin.GET("/events", s.adminEventsSSE)
+	admin.GET("/events/history", s.adminEventsHistory)
+	admin.GET("/report", s.adminReport)
 
 	// Signed URL endpoints (self-authenticated via HMAC, no API key required)
 	e.GET("/api/sandboxes/:id/files/download", s.signedDownload)

@@ -146,6 +146,7 @@ func main() {
 		redisRegistry.Start()
 		defer redisRegistry.Stop()
 		opts.WorkerRegistry = redisRegistry
+		redisRegistry.SetIdleReserve(cfg.IdleReserveWorkers)
 		opts.RedisClient = redisRegistry.RedisClient()
 		log.Println("opensandbox: Redis worker registry started")
 

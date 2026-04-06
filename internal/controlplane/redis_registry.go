@@ -40,12 +40,20 @@ type WorkerEntry struct {
 // backed by Redis pub/sub for real-time updates and periodic SCAN for reconciliation.
 // It also maintains a persistent gRPC connection pool to workers.
 type RedisWorkerRegistry struct {
-	rdb     *redis.Client
-	mu      sync.RWMutex
-	workers map[string]*WorkerEntry       // in-memory hot cache
-	conns   map[string]*grpc.ClientConn   // persistent gRPC connections
-	clients map[string]pb.SandboxWorkerClient // cached gRPC clients
-	stop    chan struct{}
+	rdb          *redis.Client
+	mu           sync.RWMutex
+	workers      map[string]*WorkerEntry       // in-memory hot cache
+	conns        map[string]*grpc.ClientConn   // persistent gRPC connections
+	clients      map[string]pb.SandboxWorkerClient // cached gRPC clients
+	idleReserve  int                           // target idle workers to protect from routing
+	stop         chan struct{}
+}
+
+// SetIdleReserve configures how many idle workers to protect from normal routing.
+func (r *RedisWorkerRegistry) SetIdleReserve(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.idleReserve = n
 }
 
 // RedisClient returns the underlying Redis client (for health checks, shared state, etc.).
@@ -314,14 +322,28 @@ func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry,
 	var best *WorkerEntry
 	bestScore := -1.0
 
-	// Bin-pack strategy: fill active workers before touching idle reserves.
-	// This keeps idle workers as headroom for burst absorption and avoids
-	// thrashing between scale-up (headroom) and scale-down (low utilization).
+	// Count idle workers to decide whether to protect reserves
+	idleCount := 0
+	for _, w := range r.workers {
+		if (region == "" || w.Region == region) && w.Current == 0 {
+			idleCount++
+		}
+	}
+	protectReserves := idleCount <= r.idleReserve
+
+	// Bin-pack strategy: fill active workers to capacity, then overflow active
+	// workers (if reserves need protection), then use idle reserves, then
+	// over-provision across all workers.
 	//
-	// Priority order:
-	//   1. Most-loaded worker that still has capacity (pack tightly)
-	//   2. Idle worker (dip into reserve only when active workers are full)
-	//   3. Over-capacity worker (absorb overflow while new workers boot)
+	// Priority (when reserves are protected):
+	//   1. Active worker with capacity → score 100+
+	//   2. Over-capacity active worker → score 1-10
+	//   3. Idle reserve worker → score 0.1 (only when no active option)
+	//
+	// Priority (when surplus idle workers exist):
+	//   1. Active worker with capacity → score 100+
+	//   2. Idle worker (surplus, safe to use) → score 50
+	//   3. Over-capacity active worker → score 1-10
 	scoreWorker := func(w *WorkerEntry) float64 {
 		if w.CPUPct > 90 || w.MemPct > 90 || w.DiskPct > 90 {
 			return -1 // skip
@@ -330,18 +352,29 @@ func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry,
 		resourceScore := (100.0 - w.CPUPct) / 100.0 * (100.0 - w.MemPct) / 100.0 * (100.0 - w.DiskPct) / 100.0
 
 		if remaining <= 0 {
-			// Over capacity: last resort
-			return 0.01 * resourceScore
+			if w.Current == 0 {
+				return -1 // shouldn't happen but guard
+			}
+			// Over capacity: spread evenly among overloaded workers
+			overBy := float64(w.Current - w.Capacity)
+			if protectReserves {
+				// Score 1-10: above idle reserves (0.1) so we overflow active
+				// workers before touching reserves
+				return 10.0 * resourceScore / (1.0 + overBy)
+			}
+			return 0.01 * resourceScore / (1.0 + overBy)
 		}
 		if w.Current == 0 {
-			// Idle/reserve: prefer active workers over idle ones.
-			// Score between 0.1 and 1.0 so it ranks below any active worker.
-			return 0.1 * resourceScore
+			if protectReserves {
+				// Reserves protected: score very low so active workers (including
+				// over-capacity) get used first. Only used as absolute last resort.
+				return 0.001 * resourceScore
+			}
+			// Surplus idle workers: safe to use, score below active but above over-capacity
+			return 50.0 * resourceScore
 		}
-		// Active with capacity: higher current = higher score (bin-pack).
-		// Add remaining as a tiebreaker so we don't overflow a nearly-full worker
-		// when another active worker has more room.
-		return float64(w.Current)*10.0 + float64(remaining)*resourceScore
+		// Active with capacity: highest priority (bin-pack).
+		return 100.0 + float64(w.Current)*10.0 + float64(remaining)*resourceScore
 	}
 
 	// First pass: try workers in the requested region

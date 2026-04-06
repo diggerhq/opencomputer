@@ -942,10 +942,12 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 	// Memory layout: base memory + virtio-mem pool for hotplug scaling.
 	// The virtio-mem backend allocates lazily (only requested-size is committed),
 	// but maxmem must exceed base+pool for QEMU to accept the device.
-	// Pool size = 15GB covers scaling from 1GB base up to 16GB total.
-	// For migrations requesting >16GB, we use the full requested amount as base
-	// (no virtio-mem needed since the source already has the memory hotplugged).
-	virtioMemPoolMB := 15360 // 15GB — enough for 1GB->16GB scaling
+	// Pool = 16GB - base, so any sandbox can scale up to 16GB total regardless of base.
+	// Round up to 128MB block alignment.
+	virtioMemPoolMB := ((16384 - memMB + 127) / 128) * 128
+	if virtioMemPoolMB < 1024 {
+		virtioMemPoolMB = 1024 // minimum 1GB pool
+	}
 	maxMemMB := memMB + virtioMemPoolMB
 
 	return []string{

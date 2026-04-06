@@ -419,6 +419,8 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		}
 	}
 
+	s.emitEvent("create", grpcResp.SandboxId, worker.ID, fmt.Sprintf("created on %s", worker.ID[len(worker.ID)-8:]))
+
 	resp := map[string]interface{}{
 		"sandboxID": grpcResp.SandboxId,
 		"token":     token,
@@ -598,6 +600,8 @@ func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
 	if s.sandboxAPIProxy != nil {
 		s.sandboxAPIProxy.InvalidateRouteCache(sandboxID)
 	}
+
+	s.emitEvent("destroy", sandboxID, session.WorkerID, "destroyed")
 
 	return c.NoContent(http.StatusNoContent)
 }
@@ -815,6 +819,7 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 
 	elapsed := time.Since(t0).Milliseconds()
 	log.Printf("migrate %s: complete in %dms (source=%s target=%s)", id, elapsed, session.WorkerID, req.TargetWorker)
+	s.emitEvent("migrate", id, req.TargetWorker, fmt.Sprintf("migrated from %s in %dms", session.WorkerID[len(session.WorkerID)-8:], elapsed))
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"sandboxID":    id,
@@ -1066,6 +1071,11 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 		})
 	}
 
+	if migrated {
+		s.emitEvent("migrate", sandboxID, workerID, fmt.Sprintf("auto-migrated for scale to %dMB", requestedMemMB))
+	}
+	s.emitEvent("scale", sandboxID, workerID, fmt.Sprintf("scaled to %dMB (migrated=%v)", requestedMemMB, migrated))
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"sandboxID":  sandboxID,
 		"workerID":   workerID,
@@ -1087,15 +1097,17 @@ func (s *Server) findScaleMigrationTarget(sourceWorkerID string, requestedMemMB 
 		if w.ID == sourceWorkerID {
 			continue
 		}
-		if w.CPUPct > 80 || w.MemPct > 60 {
-			continue // need plenty of headroom for a big sandbox
+		if w.CPUPct > 90 || w.MemPct > 85 {
+			continue // worker under heavy pressure
 		}
-		remaining := w.Capacity - w.Current
-		if remaining <= 0 {
-			continue // worker is full, can't take a migrated sandbox
+		// Check committed memory — the target needs enough room for the requested size.
+		reserveMB := w.TotalMemoryMB / 5 // 20% for OS
+		availableMB := w.TotalMemoryMB - w.CommittedMemoryMB - reserveMB
+		if availableMB < requestedMemMB {
+			continue
 		}
-		// Score: prefer emptier workers (more room for the big sandbox)
-		score := float64(remaining) * (100.0 - w.MemPct) / 100.0
+		// Score: more available memory = better target
+		score := float64(availableMB - requestedMemMB)
 		if score > bestScore {
 			best = w
 			bestScore = score
