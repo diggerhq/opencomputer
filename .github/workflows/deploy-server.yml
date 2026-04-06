@@ -48,10 +48,15 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy.pem
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy.pem
           chmod 600 ~/.ssh/deploy.pem
           ssh-keyscan -H ${{ secrets.CP1_IP }} >> ~/.ssh/known_hosts 2>/dev/null
           ssh-keyscan -H ${{ secrets.CP2_IP }} >> ~/.ssh/known_hosts 2>/dev/null
+          echo "Host *" >> ~/.ssh/config
+          echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+          echo "  UserKnownHostsFile /dev/null" >> ~/.ssh/config
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Deploy to CP2 (follower first)
         run: |
