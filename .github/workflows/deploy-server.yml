@@ -48,17 +48,16 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy.pem
+          echo "$SSH_KEY" | base64 -d > ~/.ssh/deploy.pem
           chmod 600 ~/.ssh/deploy.pem
           head -1 ~/.ssh/deploy.pem
           wc -l < ~/.ssh/deploy.pem
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy.pem -o BatchMode=yes ${{ env.SSH_USER }}@${{ secrets.CP2_IP }} "echo SSH_OK" || echo "SSH test failed"
           ssh-keyscan -H ${{ secrets.CP1_IP }} >> ~/.ssh/known_hosts 2>/dev/null
           ssh-keyscan -H ${{ secrets.CP2_IP }} >> ~/.ssh/known_hosts 2>/dev/null
-          echo "Host *" >> ~/.ssh/config
-          echo "  StrictHostKeyChecking no" >> ~/.ssh/config
-          echo "  UserKnownHostsFile /dev/null" >> ~/.ssh/config
+          echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null" >> ~/.ssh/config
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY_B64 }}
 
       - name: Deploy to CP2 (follower first)
         run: |
