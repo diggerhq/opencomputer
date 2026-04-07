@@ -126,8 +126,8 @@ func NewScaler(cfg ScalerConfig) *Scaler {
 		maxWorkers = maxWorkersPerRegion
 	}
 	idleReserve := cfg.IdleReserve
-	if idleReserve <= 0 {
-		idleReserve = 1
+	if idleReserve < 0 {
+		idleReserve = 0
 	}
 	stateStore := cfg.StateStore
 	if stateStore == nil {
