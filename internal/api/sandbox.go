@@ -65,39 +65,16 @@ func (s *Server) createSandbox(c echo.Context) error {
 		}
 	}
 
-	// Resolve secret store: decrypt secrets + inherit egress config
-	if cfg.SecretStore != "" && s.store != nil && hasOrg {
-		store, err := s.store.GetSecretStoreByName(ctx, orgID, cfg.SecretStore)
+	// Resolve secret store: decrypt secrets + inherit egress config.
+	// secretEnvKeys tracks which env vars came from the store so we can strip
+	// only those (not user-supplied envs) before persisting cfg into PG.
+	var secretEnvKeys map[string]struct{}
+	if cfg.SecretStore != "" && hasOrg {
+		var err error
+		secretEnvKeys, err = s.resolveSecretStoreInto(ctx, orgID, &cfg)
 		if err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error": "secret store not found: " + cfg.SecretStore,
-			})
-		}
-
-		cfg.EgressAllowlist = store.EgressAllowlist
-
-		secrets, err := s.store.DecryptSecretEntries(ctx, store.ID)
-		if err != nil {
-			log.Printf("api: decrypt secrets failed for store %s: %v", cfg.SecretStore, err)
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": "failed to decrypt secrets",
-			})
-		}
-		if len(secrets) > 0 {
-			if cfg.Envs == nil {
-				cfg.Envs = make(map[string]string)
-			}
-			for _, secret := range secrets {
-				if _, exists := cfg.Envs[secret.Name]; !exists {
-					cfg.Envs[secret.Name] = secret.Value
-				}
-				if len(secret.AllowedHosts) > 0 {
-					if cfg.SecretAllowedHosts == nil {
-						cfg.SecretAllowedHosts = make(map[string][]string)
-					}
-					cfg.SecretAllowedHosts[secret.Name] = secret.AllowedHosts
-				}
-			}
+			log.Printf("api: %v", err)
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
 	}
 
@@ -134,7 +111,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 
 	// Server mode with worker registry: dispatch to remote worker via gRPC
 	if s.workerRegistry != nil {
-		return s.createSandboxRemote(c, ctx, cfg, orgID, hasOrg)
+		return s.createSandboxRemote(c, ctx, cfg, orgID, hasOrg, secretEnvKeys)
 	}
 
 	// Combined/worker mode: create locally
@@ -179,7 +156,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 
 	// Write session record to PG if available
 	if s.store != nil && hasOrg {
-		cfgJSON, _ := json.Marshal(cfg)
+		cfgJSON, _ := json.Marshal(cfgForPersistence(cfg, secretEnvKeys))
 		metadataJSON, _ := json.Marshal(cfg.Metadata)
 		region := s.region
 		if region == "" {
@@ -279,8 +256,122 @@ func (s *Server) createSandboxWithSSE(c echo.Context, ctx context.Context, orgID
 	return nil
 }
 
+// resolveSecretStoreInto looks up the named secret store, decrypts its
+// entries, and writes Envs / SecretAllowedHosts / EgressAllowlist into cfg in
+// place. Existing Envs entries with the same key are NOT overwritten — they
+// were set explicitly by the caller and win over store-derived defaults.
+//
+// Returns the set of env var names that were populated from the store, so the
+// caller can strip exactly those (and their per-secret allowedHosts entries)
+// before persisting cfg into PG. User-supplied envs are preserved.
+//
+// This helper is the single place where secret store name → resolved values
+// happens, so the same logic runs on both fresh creates and on
+// fork-from-checkpoint inheritance. If the user updates a secret between
+// snapshot and fork, the fork sees the new value.
+func (s *Server) resolveSecretStoreInto(ctx context.Context, orgID [16]byte, cfg *types.SandboxConfig) (addedKeys map[string]struct{}, err error) {
+	addedKeys = map[string]struct{}{}
+	if cfg.SecretStore == "" || s.store == nil {
+		return addedKeys, nil
+	}
+	store, err := s.store.GetSecretStoreByName(ctx, orgID, cfg.SecretStore)
+	if err != nil {
+		return addedKeys, fmt.Errorf("secret store not found: %s", cfg.SecretStore)
+	}
+
+	cfg.EgressAllowlist = store.EgressAllowlist
+
+	secrets, err := s.store.DecryptSecretEntries(ctx, store.ID)
+	if err != nil {
+		return addedKeys, fmt.Errorf("failed to decrypt secrets for store %s: %w", cfg.SecretStore, err)
+	}
+	if len(secrets) == 0 {
+		return addedKeys, nil
+	}
+	if cfg.Envs == nil {
+		cfg.Envs = make(map[string]string, len(secrets))
+	}
+	for _, secret := range secrets {
+		if _, exists := cfg.Envs[secret.Name]; !exists {
+			cfg.Envs[secret.Name] = secret.Value
+			addedKeys[secret.Name] = struct{}{}
+		}
+		if len(secret.AllowedHosts) > 0 {
+			if cfg.SecretAllowedHosts == nil {
+				cfg.SecretAllowedHosts = make(map[string][]string)
+			}
+			cfg.SecretAllowedHosts[secret.Name] = secret.AllowedHosts
+		}
+	}
+	return addedKeys, nil
+}
+
+// cfgForPersistence returns a copy of cfg suitable for marshaling into PG
+// (cp.SandboxConfig / sandbox_sessions.config_json) with secret-store-derived
+// values stripped. User-supplied envs are preserved.
+//
+//   - secret VALUES (for keys in resolvedKeys) are removed from Envs
+//   - SecretAllowedHosts entries for those same keys are removed
+//   - store-level EgressAllowlist is cleared (it's a property of the store,
+//     re-derived on fork)
+//
+// Only the store NAME is kept on the persisted config. Forks re-resolve fresh
+// against the DB on load, so plaintext secrets never sit at rest in PG.
+func cfgForPersistence(cfg types.SandboxConfig, resolvedKeys map[string]struct{}) types.SandboxConfig {
+	if cfg.SecretStore == "" || len(resolvedKeys) == 0 {
+		return cfg
+	}
+	if len(cfg.Envs) > 0 {
+		stripped := make(map[string]string, len(cfg.Envs))
+		for k, v := range cfg.Envs {
+			if _, isSecret := resolvedKeys[k]; !isSecret {
+				stripped[k] = v
+			}
+		}
+		if len(stripped) == 0 {
+			cfg.Envs = nil
+		} else {
+			cfg.Envs = stripped
+		}
+	}
+	if len(cfg.SecretAllowedHosts) > 0 {
+		strippedHosts := make(map[string][]string, len(cfg.SecretAllowedHosts))
+		for k, v := range cfg.SecretAllowedHosts {
+			if _, isSecret := resolvedKeys[k]; !isSecret {
+				strippedHosts[k] = v
+			}
+		}
+		if len(strippedHosts) == 0 {
+			cfg.SecretAllowedHosts = nil
+		} else {
+			cfg.SecretAllowedHosts = strippedHosts
+		}
+	}
+	cfg.EgressAllowlist = nil
+	return cfg
+}
+
+// flattenSecretAllowedHosts converts the internal per-secret allowed-hosts map
+// (env var → host slice) into the proto wire shape (env var → comma-joined string).
+// Mirror of parseSecretAllowedHosts in internal/worker/grpc_server.go.
+func flattenSecretAllowedHosts(m map[string][]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for name, hosts := range m {
+		if len(hosts) > 0 {
+			out[name] = strings.Join(hosts, ",")
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // createSandboxRemote dispatches sandbox creation to a remote worker via gRPC.
-func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg types.SandboxConfig, orgID [16]byte, hasOrg bool) error {
+func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg types.SandboxConfig, orgID [16]byte, hasOrg bool, secretEnvKeys map[string]struct{}) error {
 	// Select region (explicit header, or default to server's region)
 	region := c.Request().Header.Get("Fly-Region")
 	if region == "" {
@@ -336,6 +427,8 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		Port:                 int32(cfg.Port),
 		TemplateRootfsKey:    templateRootfsKey,
 		TemplateWorkspaceKey: templateWorkspaceKey,
+		EgressAllowlist:      cfg.EgressAllowlist,
+		SecretAllowedHosts:   flattenSecretAllowedHosts(cfg.SecretAllowedHosts),
 	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
@@ -391,7 +484,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		if template == "" {
 			template = "default"
 		}
-		cfgJSON, _ := json.Marshal(cfg)
+		cfgJSON, _ := json.Marshal(cfgForPersistence(cfg, secretEnvKeys))
 		metadataJSON, _ := json.Marshal(cfg.Metadata)
 		_, _ = s.store.CreateSandboxSession(ctx, grpcResp.SandboxId, orgID, nil, template, region, worker.ID, cfgJSON, metadataJSON)
 		if templateID != nil {
@@ -1449,6 +1542,12 @@ func (s *Server) createFromCheckpoint(c echo.Context) error {
 
 // createFromCheckpointCore contains the core logic for creating a sandbox from a checkpoint.
 // Returns the result map, HTTP status, or an error.
+//
+// Secret store inheritance: if the original sandbox was created with a
+// secretStore, that store NAME is persisted in cp.SandboxConfig and the fork
+// re-resolves it fresh against the DB at this point. So if the user updated a
+// secret in the store between snapshot and fork, the fork sees the new value.
+// The fork itself does NOT support overriding the secret store — it inherits.
 func (s *Server) createFromCheckpointCore(c echo.Context) (map[string]interface{}, int, error) {
 	checkpointIDStr := c.Param("checkpointId")
 	ctx := c.Request().Context()
@@ -1514,6 +1613,20 @@ func (s *Server) createFromCheckpointCore(c echo.Context) (map[string]interface{
 	var originalCfg types.SandboxConfig
 	_ = json.Unmarshal(cp.SandboxConfig, &originalCfg)
 
+	// Re-resolve the inherited secret store fresh against the DB. The
+	// checkpoint persists the store NAME (not the decrypted values) so this
+	// picks up any secret changes the user made between snapshot and fork.
+	// User-supplied envs that were on the original config are preserved by
+	// resolveSecretStoreInto (it never overwrites existing keys).
+	var secretEnvKeys map[string]struct{}
+	if originalCfg.SecretStore != "" {
+		var err error
+		secretEnvKeys, err = s.resolveSecretStoreInto(ctx, orgID, &originalCfg)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+	}
+
 	timeout := req.Timeout
 	if timeout <= 0 {
 		timeout = originalCfg.Timeout
@@ -1575,7 +1688,7 @@ func (s *Server) createFromCheckpointCore(c echo.Context) (map[string]interface{
 		if template == "" {
 			template = "default"
 		}
-		cfgJSON, _ := json.Marshal(originalCfg)
+		cfgJSON, _ := json.Marshal(cfgForPersistence(originalCfg, secretEnvKeys))
 		metadataJSON, _ := json.Marshal(originalCfg.Metadata)
 		_, _ = s.store.CreateSandboxSession(ctx, sandboxID, orgID, nil, template, region, workerID, cfgJSON, metadataJSON)
 		// Track checkpoint lineage for patch system
@@ -1603,6 +1716,8 @@ func (s *Server) createFromCheckpointCore(c echo.Context) (map[string]interface{
 				TemplateWorkspaceKey: *cp.WorkspaceS3Key,
 				CheckpointId:         checkpointID.String(),
 				SandboxId:            sandboxID,
+				EgressAllowlist:      originalCfg.EgressAllowlist,
+				SecretAllowedHosts:   flattenSecretAllowedHosts(originalCfg.SecretAllowedHosts),
 			})
 		} else {
 			// Combined mode: create locally — no external timeout, same reasoning as above

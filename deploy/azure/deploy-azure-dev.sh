@@ -15,6 +15,7 @@ AZURE_IMAGE="${AZURE_IMAGE:-Canonical:ubuntu-24_04-lts:server:latest}"
 AZURE_ADMIN_USER="${AZURE_ADMIN_USER:-ubuntu}"
 AZURE_DATA_DISK_GB="${AZURE_DATA_DISK_GB:-500}"
 OPENSANDBOX_API_KEY="${OPENSANDBOX_API_KEY:-opensandbox-dev}"
+OPENSANDBOX_SECRET_ENCRYPTION_KEY="${OPENSANDBOX_SECRET_ENCRYPTION_KEY:-}"
 SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.ssh/id_rsa}"
 
 STATE_DIR="$SCRIPT_DIR"
@@ -149,6 +150,16 @@ cmd_deploy() {
 
     log "Deploying to $VM_PUBLIC_IP..."
 
+    # Persist a stable secret-store encryption key per environment.
+    # Without this, OPENSANDBOX_SECRET_ENCRYPTION_KEY is unset and SecretStore.setSecret
+    # fails with HTTP 500 ("encryption not configured"). Reuse across redeploys so
+    # secrets stored before a redeploy remain decryptable.
+    if [ -z "${OPENSANDBOX_SECRET_ENCRYPTION_KEY:-}" ]; then
+        OPENSANDBOX_SECRET_ENCRYPTION_KEY=$(openssl rand -hex 32)
+        save_state "OPENSANDBOX_SECRET_ENCRYPTION_KEY" "$OPENSANDBOX_SECRET_ENCRYPTION_KEY"
+        log "Generated new secret encryption key (persisted to state file)"
+    fi
+
     # Sync code
     log "Syncing code..."
     rsync -az --progress \
@@ -244,6 +255,7 @@ OPENSANDBOX_NATS_URL=
 OPENSANDBOX_PORT=8081
 OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB=1024
 OPENSANDBOX_DEFAULT_SANDBOX_CPUS=2
+OPENSANDBOX_SECRET_ENCRYPTION_KEY=${OPENSANDBOX_SECRET_ENCRYPTION_KEY}
 EOF
 
 # Server env
@@ -256,6 +268,7 @@ OPENSANDBOX_REDIS_URL=redis://localhost:6379
 OPENSANDBOX_SANDBOX_DOMAIN=${SANDBOX_DOMAIN}
 OPENSANDBOX_PORT=8080
 OPENSANDBOX_REGION=azure-${AZURE_LOCATION}
+OPENSANDBOX_SECRET_ENCRYPTION_KEY=${OPENSANDBOX_SECRET_ENCRYPTION_KEY}
 EOF
 ENVSETUP
 
