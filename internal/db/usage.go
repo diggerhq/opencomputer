@@ -69,6 +69,28 @@ func (s *Store) GetSandboxOrgID(ctx context.Context, sandboxID string) (string, 
 	return orgID.String(), nil
 }
 
+// GetSandboxOwner returns the org_id and user_email for a sandbox. user_email
+// may be empty if the session has no associated user (e.g. created with an
+// org-level API key that isn't tied to a user).
+func (s *Store) GetSandboxOwner(ctx context.Context, sandboxID string) (orgID, userEmail string, err error) {
+	var orgUUID uuid.UUID
+	var email *string
+	err = s.pool.QueryRow(ctx,
+		`SELECT s.org_id, u.email
+		   FROM sandbox_sessions s
+		   LEFT JOIN users u ON u.id = s.user_id
+		  WHERE s.sandbox_id = $1
+		  ORDER BY s.started_at DESC LIMIT 1`,
+		sandboxID).Scan(&orgUUID, &email)
+	if err != nil {
+		return "", "", err
+	}
+	if email != nil {
+		userEmail = *email
+	}
+	return orgUUID.String(), userEmail, nil
+}
+
 // EndScaleEvent marks the current scale event as ended (sandbox stopped/hibernated).
 func (s *Store) EndScaleEvent(ctx context.Context, sandboxID string) error {
 	_, err := s.pool.Exec(ctx,

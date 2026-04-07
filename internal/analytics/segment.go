@@ -26,19 +26,25 @@ func New(writeKey string) *Client {
 }
 
 // TrackGBSeconds enqueues a "Sandbox Memory Usage" event with GB-seconds for
-// the given org. sandboxID is included as an event property for debugging but
-// the metric of record is gb_seconds bucketed by org.
-func (c *Client) TrackGBSeconds(orgID, sandboxID string, gbSeconds float64) {
+// the given org. sandboxID and userEmail are included as properties for
+// downstream filtering; the metric of record is gb_seconds bucketed by org.
+// userEmail may be empty (sandboxes created with org-level API keys have no
+// associated user).
+func (c *Client) TrackGBSeconds(orgID, userEmail, sandboxID string, gbSeconds float64) {
 	if c == nil || c.c == nil || orgID == "" || gbSeconds <= 0 {
 		return
 	}
+	props := analytics.NewProperties().
+		Set("gb_seconds", gbSeconds).
+		Set("sandbox_id", sandboxID).
+		Set("org_id", orgID)
+	if userEmail != "" {
+		props = props.Set("user_email", userEmail)
+	}
 	if err := c.c.Enqueue(analytics.Track{
-		UserId: orgID,
-		Event:  "Sandbox Memory Usage",
-		Properties: analytics.NewProperties().
-			Set("gb_seconds", gbSeconds).
-			Set("sandbox_id", sandboxID).
-			Set("org_id", orgID),
+		UserId:     orgID,
+		Event:      "Sandbox Memory Usage",
+		Properties: props,
 	}); err != nil {
 		log.Printf("segment: enqueue failed: %v", err)
 	}
