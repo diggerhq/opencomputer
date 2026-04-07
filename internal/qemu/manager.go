@@ -205,6 +205,36 @@ func (m *Manager) SetSecretsProxy(sp SecretsProxyIntegration) {
 	m.secretsProxy = sp
 }
 
+// sealSandboxEnvs runs cfg.Envs through the secrets proxy to swap real values
+// for sealed tokens, registers a proxy session for the guest IP, and writes the
+// proxy CA cert into the guest trust store. Returns the env map that should be
+// injected into the VM (sealed tokens + HTTP_PROXY/CA env vars), or cfg.Envs
+// unchanged if the secrets proxy is not configured.
+//
+// IMPORTANT: This is the QEMU equivalent of internal/firecracker/manager.go:451.
+// The QEMU manager originally shipped without this call, so secrets were
+// injected into the guest as plaintext — see git history for f2e64e3.
+func (m *Manager) sealSandboxEnvs(ctx context.Context, sandboxID string, netCfg *NetworkConfig, agent *AgentClient, cfg types.SandboxConfig) map[string]string {
+	if m.secretsProxy == nil || len(cfg.Envs) == 0 {
+		return cfg.Envs
+	}
+	sealed := m.secretsProxy.CreateSealedEnvs(sandboxID, netCfg.GuestIP, netCfg.HostIP, cfg.Envs, cfg.EgressAllowlist, cfg.SecretAllowedHosts)
+	if sealed == nil {
+		return cfg.Envs
+	}
+	// Inject the proxy CA cert so HTTPS apps inside the VM trust the MITM proxy.
+	// CreateSealedEnvs already populates NODE_EXTRA_CA_CERTS / REQUESTS_CA_BUNDLE /
+	// SSL_CERT_FILE pointing at this path; without the file the env vars are dead.
+	if certPEM := m.secretsProxy.CACertPEM(); len(certPEM) > 0 {
+		writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := agent.WriteFile(writeCtx, "/usr/local/share/ca-certificates/opensandbox-proxy.crt", certPEM); err != nil {
+			log.Printf("qemu: warning: write proxy CA cert failed for %s: %v", sandboxID, err)
+		}
+		cancel()
+	}
+	return sealed
+}
+
 // PrepareGoldenSnapshot boots a temporary VM, waits for the agent, then
 // hibernates it to create a reusable snapshot. Subsequent Create() calls
 // restore from this snapshot instead of cold-booting, cutting start time
@@ -705,9 +735,10 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	}
 	log.Printf("qemu: golden-create %s: network patched (%dms)", id, time.Since(t0).Milliseconds())
 
-	if len(cfg.Envs) > 0 {
+	envsToInject := m.sealSandboxEnvs(context.Background(), id, netCfg, agentClient, cfg)
+	if len(envsToInject) > 0 {
 		envCtx, envCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := agentClient.SetEnvs(envCtx, cfg.Envs); err != nil {
+		if err := agentClient.SetEnvs(envCtx, envsToInject); err != nil {
 			envCancel()
 			log.Printf("qemu: warning: SetEnvs failed for %s: %v", id, err)
 		}
@@ -1087,9 +1118,10 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 	}
 	vm.agent = agentClient
 
-	if len(cfg.Envs) > 0 {
+	envsToInject := m.sealSandboxEnvs(context.Background(), id, netCfg, agentClient, cfg)
+	if len(envsToInject) > 0 {
 		envCtx, envCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := agentClient.SetEnvs(envCtx, cfg.Envs); err != nil {
+		if err := agentClient.SetEnvs(envCtx, envsToInject); err != nil {
 			envCancel()
 			log.Printf("qemu: warning: SetEnvs failed for %s: %v", id, err)
 		}
@@ -2381,10 +2413,11 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		log.Printf("qemu: ForkFromCheckpoint %s: clock sync failed: %v", id, err)
 	}
 
-	// Set env vars
-	if len(cfg.Envs) > 0 {
+	// Set env vars (sealed via secrets proxy if configured)
+	envsToInject := m.sealSandboxEnvs(context.Background(), id, netCfg, agent, cfg)
+	if len(envsToInject) > 0 {
 		envCtx, envCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		agent.SetEnvs(envCtx, cfg.Envs)
+		agent.SetEnvs(envCtx, envsToInject)
 		envCancel()
 	}
 
