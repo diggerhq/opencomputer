@@ -40,20 +40,12 @@ type WorkerEntry struct {
 // backed by Redis pub/sub for real-time updates and periodic SCAN for reconciliation.
 // It also maintains a persistent gRPC connection pool to workers.
 type RedisWorkerRegistry struct {
-	rdb          *redis.Client
-	mu           sync.RWMutex
-	workers      map[string]*WorkerEntry       // in-memory hot cache
-	conns        map[string]*grpc.ClientConn   // persistent gRPC connections
-	clients      map[string]pb.SandboxWorkerClient // cached gRPC clients
-	idleReserve  int                           // target idle workers to protect from routing
-	stop         chan struct{}
-}
-
-// SetIdleReserve configures how many idle workers to protect from normal routing.
-func (r *RedisWorkerRegistry) SetIdleReserve(n int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.idleReserve = n
+	rdb     *redis.Client
+	mu      sync.RWMutex
+	workers map[string]*WorkerEntry       // in-memory hot cache
+	conns   map[string]*grpc.ClientConn   // persistent gRPC connections
+	clients map[string]pb.SandboxWorkerClient // cached gRPC clients
+	stop    chan struct{}
 }
 
 // RedisClient returns the underlying Redis client (for health checks, shared state, etc.).
@@ -322,59 +314,47 @@ func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry,
 	var best *WorkerEntry
 	bestScore := -1.0
 
-	// Count idle workers to decide whether to protect reserves
-	idleCount := 0
-	for _, w := range r.workers {
-		if (region == "" || w.Region == region) && w.Current == 0 {
-			idleCount++
-		}
-	}
-	protectReserves := idleCount <= r.idleReserve
-
-	// Bin-pack strategy: fill active workers to capacity, then overflow active
-	// workers (if reserves need protection), then use idle reserves, then
-	// over-provision across all workers.
+	// Bin-pack strategy using committed memory:
+	//   1. Active workers with memory headroom → fill the most-loaded first
+	//   2. Idle workers → use for burst (scaler replaces idle reserves in background)
+	//   3. Workers with no headroom data → fall back to sandbox count
 	//
-	// Priority (when reserves are protected):
-	//   1. Active worker with capacity → score 100+
-	//   2. Over-capacity active worker → score 1-10
-	//   3. Idle reserve worker → score 0.1 (only when no active option)
-	//
-	// Priority (when surplus idle workers exist):
-	//   1. Active worker with capacity → score 100+
-	//   2. Idle worker (surplus, safe to use) → score 50
-	//   3. Over-capacity active worker → score 1-10
+	// Idle reserves are NOT protected from routing — they exist for burst absorption.
+	// The scaler will notice the idle count dropped and launch replacements.
 	scoreWorker := func(w *WorkerEntry) float64 {
 		if w.CPUPct > 90 || w.MemPct > 90 || w.DiskPct > 90 {
-			return -1 // skip
+			return -1 // skip — under heavy pressure
 		}
-		remaining := w.Capacity - w.Current
-		resourceScore := (100.0 - w.CPUPct) / 100.0 * (100.0 - w.MemPct) / 100.0 * (100.0 - w.DiskPct) / 100.0
 
-		if remaining <= 0 {
+		// Use committed memory if available (preferred — reflects real capacity)
+		if w.TotalMemoryMB > 0 {
+			reserveMB := w.TotalMemoryMB / 5 // 20% for OS
+			usableMB := w.TotalMemoryMB - reserveMB
+			committedPct := float64(w.CommittedMemoryMB) / float64(usableMB) // 0.0 to 1.0+
+
+			if committedPct >= 1.0 {
+				// No headroom — last resort, spread by how far over
+				return 0.01 / (1.0 + committedPct)
+			}
 			if w.Current == 0 {
-				return -1 // shouldn't happen but guard
+				// Idle worker — available for burst. Score below active workers
+				// so we fill active ones first, but don't block routing here.
+				return 10.0 * (1.0 - committedPct)
 			}
-			// Over capacity: spread evenly among overloaded workers
-			overBy := float64(w.Current - w.Capacity)
-			if protectReserves {
-				// Score 1-10: above idle reserves (0.1) so we overflow active
-				// workers before touching reserves
-				return 10.0 * resourceScore / (1.0 + overBy)
-			}
-			return 0.01 * resourceScore / (1.0 + overBy)
+			// Active with headroom: higher committed% = higher score (bin-pack).
+			// This fills workers proportionally to their memory, not sandbox count.
+			return 100.0 + committedPct*50.0
+		}
+
+		// Fallback: no committed memory data — use sandbox count heuristic
+		remaining := w.Capacity - w.Current
+		if remaining <= 0 {
+			return 0.01 / float64(1+w.Current)
 		}
 		if w.Current == 0 {
-			if protectReserves {
-				// Reserves protected: score very low so active workers (including
-				// over-capacity) get used first. Only used as absolute last resort.
-				return 0.001 * resourceScore
-			}
-			// Surplus idle workers: safe to use, score below active but above over-capacity
-			return 50.0 * resourceScore
+			return 10.0
 		}
-		// Active with capacity: highest priority (bin-pack).
-		return 100.0 + float64(w.Current)*10.0 + float64(remaining)*resourceScore
+		return 100.0 + float64(w.Current)*10.0
 	}
 
 	// First pass: try workers in the requested region

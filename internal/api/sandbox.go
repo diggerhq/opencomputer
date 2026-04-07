@@ -57,11 +57,12 @@ func (s *Server) createSandbox(c echo.Context) error {
 						"error": "upgrade to pro for larger instances",
 					})
 				}
-				// Force 4GB/1vCPU if not specified
-				if cfg.MemoryMB == 0 {
-					cfg.MemoryMB = 4096
-					cfg.CpuCount = 1
-				}
+			}
+
+			// Default to 4GB/1vCPU if not specified (all plans)
+			if cfg.MemoryMB == 0 {
+				cfg.MemoryMB = 4096
+				cfg.CpuCount = 1
 			}
 		}
 	}
