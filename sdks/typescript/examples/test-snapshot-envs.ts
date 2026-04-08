@@ -137,6 +137,51 @@ async function main() {
       `store-derived env should be tokenized by secrets proxy, got ${JSON.stringify(storeVal)}`);
     console.log();
 
+    // ── Test 4: secretStore + snapshot must NOT silently leak secrets ──
+    // Regression guard. The combination used to silently drop the user's
+    // secret store on fork; the bug-#1 fix turned that silent drop into a
+    // silent plaintext leak (the parent handler eagerly resolved the store
+    // into cfg.Envs, which the fix then merged into the fork — but the
+    // seal-set is computed from the snapshot's *original* store, so the
+    // smuggled values reached the guest unsealed).
+    //
+    // The supported semantics are: a fork inherits the snapshot's secret
+    // store and cannot override it. The API must reject the combination
+    // explicitly so users can't trip the leak by accident.
+    bold("━━━ Test 4: secretStore + snapshot is rejected (no leak) ━━━\n");
+
+    let rejected = false;
+    let leaked = false;
+    let leakedValue = "";
+    let d: Sandbox | null = null;
+    try {
+      d = await Sandbox.create({
+        snapshot: SNAPSHOT_NAME,
+        timeout: 60,
+        secretStore: STORE_NAME,
+      });
+      // Reached this point: API accepted the combo. Verify it didn't leak.
+      sandboxes.push(d);
+      leakedValue = await readVar(d, "STORE_VAR");
+      leaked = leakedValue === SECRET_VALUE;
+    } catch (err: any) {
+      rejected = true;
+      dim(`API rejected combo: ${err.message}`);
+    }
+    check(
+      "secretStore + snapshot is rejected at the API edge",
+      rejected,
+      leaked
+        ? `LEAK: STORE_VAR reached the guest as plaintext (${JSON.stringify(leakedValue)})`
+        : "API accepted the combo without leaking, but the supported contract is rejection",
+    );
+    check(
+      "secretStore + snapshot does not leak plaintext into the guest",
+      !leaked,
+      `STORE_VAR=${JSON.stringify(leakedValue)} — secret-store value reached the guest unsealed`,
+    );
+    console.log();
+
   } catch (err: any) {
     red(`Fatal error: ${err.message}`);
     if (err.stack) dim(err.stack);

@@ -73,15 +73,12 @@ type SandboxMeta struct {
 // SecretsProxyIntegration provides the interface for the secrets proxy to integrate
 // with VM lifecycle.
 type SecretsProxyIntegration interface {
-	// CreateSealedEnvs generates sealed tokens for env vars whose names appear
-	// in sealedKeys (typically only those sourced from a SecretStore), registers
-	// a proxy session for those tokens, and returns the full env map to inject
-	// into the VM: sealed entries replaced with tokens + non-sealed entries
-	// passed through as plaintext + proxy config vars (HTTP_PROXY, CA cert).
-	// If sealedKeys is empty, no entries are tokenized and no proxy session is
-	// registered, but the proxy config vars are still added so the worker's
-	// egress allowlist is enforced consistently.
-	CreateSealedEnvs(sandboxID, guestIP, gatewayIP string, envVars map[string]string, sealedKeys map[string]struct{}, allowlist []string, secretAllowedHosts map[string][]string) map[string]string
+	// CreateSealedEnvs tokenizes every entry in secretEnvs, copies plaintextEnvs
+	// through verbatim, and returns the full env map to inject into the VM
+	// (sealed + plaintext + proxy config vars HTTP_PROXY/CA cert). plaintextEnvs
+	// wins on collision (matches the API-layer rule that user envs override
+	// store-derived values of the same name).
+	CreateSealedEnvs(sandboxID, guestIP, gatewayIP string, plaintextEnvs, secretEnvs map[string]string, allowlist []string, secretAllowedHosts map[string][]string) map[string]string
 	// UnregisterSession removes the proxy session for the given guest IP.
 	UnregisterSession(guestIP string)
 	// GetSessionTokens returns the sealed token → real value map for persisting during hibernate.
@@ -221,19 +218,26 @@ func (m *Manager) SetSecretsProxy(sp SecretsProxyIntegration) {
 // The QEMU manager originally shipped without this call, so secrets were
 // injected into the guest as plaintext — see git history for f2e64e3.
 func (m *Manager) sealSandboxEnvs(ctx context.Context, sandboxID string, netCfg *NetworkConfig, agent *AgentClient, cfg types.SandboxConfig) map[string]string {
-	if m.secretsProxy == nil || len(cfg.Envs) == 0 {
+	// If the secrets proxy is not configured, just merge the two maps with
+	// user (Envs) winning. This keeps non-prod environments working without
+	// the proxy registered while preserving the user-wins precedence rule.
+	if m.secretsProxy == nil {
+		if len(cfg.SecretEnvs) == 0 {
+			return cfg.Envs
+		}
+		merged := make(map[string]string, len(cfg.Envs)+len(cfg.SecretEnvs))
+		for k, v := range cfg.SecretEnvs {
+			merged[k] = v
+		}
+		for k, v := range cfg.Envs {
+			merged[k] = v
+		}
+		return merged
+	}
+	if len(cfg.Envs) == 0 && len(cfg.SecretEnvs) == 0 {
 		return cfg.Envs
 	}
-	// Build the seal-set: only env vars whose names came from a SecretStore
-	// are tokenized. User-supplied envs (from Sandbox.create({envs: ...}))
-	// must reach the guest as plaintext — sealing them would break every
-	// non-HTTP use of the variable (echo, file write, subprocess) and gives
-	// no protection since the user already handed the value to the API.
-	sealedKeys := make(map[string]struct{}, len(cfg.SealedEnvKeys))
-	for _, k := range cfg.SealedEnvKeys {
-		sealedKeys[k] = struct{}{}
-	}
-	sealed := m.secretsProxy.CreateSealedEnvs(sandboxID, netCfg.GuestIP, netCfg.HostIP, cfg.Envs, sealedKeys, cfg.EgressAllowlist, cfg.SecretAllowedHosts)
+	sealed := m.secretsProxy.CreateSealedEnvs(sandboxID, netCfg.GuestIP, netCfg.HostIP, cfg.Envs, cfg.SecretEnvs, cfg.EgressAllowlist, cfg.SecretAllowedHosts)
 	if sealed == nil {
 		return cfg.Envs
 	}
