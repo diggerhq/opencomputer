@@ -37,6 +37,12 @@ type LiveMigrator interface {
 	LiveMigrate(ctx context.Context, sandboxID, incomingAddr string) error
 }
 
+// CapacityChecker is implemented by VM managers that can report memory capacity.
+type CapacityChecker interface {
+	TotalCommittedMemoryMB() int
+	HostMemoryMB() int
+}
+
 // GoldenRebuilder is implemented by VM managers that support golden snapshot rebuild.
 type GoldenRebuilder interface {
 	RebuildGoldenSnapshot() (oldVersion, newVersion string, err error)
@@ -872,6 +878,22 @@ func (s *GRPCServer) PrepareMigrationIncoming(ctx context.Context, req *pb.Prepa
 	if s.migrator == nil {
 		return nil, fmt.Errorf("live migration not supported on this worker")
 	}
+
+	// If target_memory_mb is set, check capacity before creating the target QEMU.
+	// This prevents multiple concurrent migrations from overcommitting this worker.
+	if req.TargetMemoryMb > 0 {
+		if cc, ok := s.manager.(CapacityChecker); ok {
+			committedMB := cc.TotalCommittedMemoryMB()
+			hostTotalMB := cc.HostMemoryMB()
+			reserveMB := hostTotalMB / 5
+			availableMB := hostTotalMB - committedMB - reserveMB
+			if int(req.TargetMemoryMb) > availableMB {
+				return nil, fmt.Errorf("insufficient_capacity: migration target needs %dMB but only %dMB available (committed=%dMB/%dMB)",
+					req.TargetMemoryMb, availableMB, committedMB, hostTotalMB)
+			}
+		}
+	}
+
 	var (
 		addr     string
 		hostPort int

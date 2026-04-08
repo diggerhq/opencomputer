@@ -1002,43 +1002,40 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 	if err != nil && strings.Contains(err.Error(), "insufficient_capacity") {
 		log.Printf("scale-migrate %s: worker %s can't fit %dMB, finding migration target", sandboxID, workerID, requestedMemMB)
 
-		target := s.findScaleMigrationTarget(workerID, requestedMemMB)
-		if target == nil {
+		targets := s.findScaleMigrationTargets(workerID, requestedMemMB)
+		if len(targets) == 0 {
 			return c.JSON(http.StatusServiceUnavailable, map[string]string{
 				"error": "insufficient capacity on current worker and no migration target available",
 			})
 		}
 
-		// Verify target is reachable before attempting expensive migration
-		targetClient, connErr := s.workerRegistry.GetWorkerClient(target.ID)
-		if connErr != nil {
-			log.Printf("scale-migrate %s: target %s unreachable, skipping", sandboxID, target.ID)
-			return c.JSON(http.StatusServiceUnavailable, map[string]string{
-				"error": "migration target unreachable, retry later",
-			})
-		}
-		// Quick health check — ping the target
-		pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
-		_, pingErr := targetClient.ListSandboxes(pingCtx, &pb.ListSandboxesRequest{})
-		pingCancel()
-		if pingErr != nil {
-			log.Printf("scale-migrate %s: target %s failed health check: %v", sandboxID, target.ID, pingErr)
-			return c.JSON(http.StatusServiceUnavailable, map[string]string{
-				"error": "migration target failed health check, retry later",
-			})
-		}
+		var migrateErr error
+		var target *controlplane.WorkerEntry
+		for _, candidate := range targets {
+			// Mark as migrating before starting
+			if s.store != nil {
+				s.store.SetMigrating(ctx, sandboxID, candidate.ID)
+			}
 
-		// Mark as migrating before starting
-		if s.store != nil {
-			s.store.SetMigrating(ctx, sandboxID, target.ID)
-		}
-
-		if migrateErr := s.migrateForScale(ctx, sandboxID, session, target, requestedMemMB, requestedCPUs); migrateErr != nil {
+			migrateErr = s.migrateForScale(ctx, sandboxID, session, candidate, requestedMemMB, requestedCPUs)
+			if migrateErr == nil {
+				target = candidate
+				break
+			}
+			log.Printf("scale-migrate %s: target %s failed: %v, trying next", sandboxID, candidate.ID, migrateErr)
 			if s.store != nil {
 				s.store.FailMigration(ctx, sandboxID)
 			}
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": "scale migration failed: " + migrateErr.Error(),
+			// If prep rejected due to capacity, try next candidate
+			if strings.Contains(migrateErr.Error(), "insufficient_capacity") {
+				continue
+			}
+			break // non-capacity error, don't retry
+		}
+
+		if target == nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{
+				"error": "scale migration failed on all candidates: " + migrateErr.Error(),
 			})
 		}
 
@@ -1100,34 +1097,47 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 	})
 }
 
-// findScaleMigrationTarget finds a worker with enough memory headroom for a scaled-up sandbox.
-// Prefers workers with more free capacity. Skips the source worker.
-func (s *Server) findScaleMigrationTarget(sourceWorkerID string, requestedMemMB int) *controlplane.WorkerEntry {
+// findScaleMigrationTargets finds workers with enough memory headroom for a scaled-up sandbox.
+// Returns candidates sorted by most available memory first. Skips the source worker.
+// Uses heartbeat data as a pre-filter — the actual capacity check happens on the worker
+// during PrepareMigrationIncoming (which atomically checks and reserves).
+func (s *Server) findScaleMigrationTargets(sourceWorkerID string, requestedMemMB int) []*controlplane.WorkerEntry {
 	workers := s.workerRegistry.GetAllWorkers()
-	var best *controlplane.WorkerEntry
-	bestScore := -1.0
+	type candidate struct {
+		w         *controlplane.WorkerEntry
+		available int
+	}
+	var candidates []candidate
 
 	for _, w := range workers {
 		if w.ID == sourceWorkerID {
 			continue
 		}
 		if w.CPUPct > 90 || w.MemPct > 85 {
-			continue // worker under heavy pressure
+			continue
 		}
-		// Check committed memory — the target needs enough room for the requested size.
-		reserveMB := w.TotalMemoryMB / 5 // 20% for OS
+		reserveMB := w.TotalMemoryMB / 5
 		availableMB := w.TotalMemoryMB - w.CommittedMemoryMB - reserveMB
 		if availableMB < requestedMemMB {
 			continue
 		}
-		// Score: more available memory = better target
-		score := float64(availableMB - requestedMemMB)
-		if score > bestScore {
-			best = w
-			bestScore = score
+		candidates = append(candidates, candidate{w, availableMB})
+	}
+
+	// Sort by most available first
+	for i := 0; i < len(candidates); i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			if candidates[j].available > candidates[i].available {
+				candidates[i], candidates[j] = candidates[j], candidates[i]
+			}
 		}
 	}
-	return best
+
+	result := make([]*controlplane.WorkerEntry, len(candidates))
+	for i, c := range candidates {
+		result[i] = c.w
+	}
+	return result
 }
 
 // migrateForScale performs a live migration to accommodate a resource scale-up.
@@ -1159,11 +1169,12 @@ func (s *Server) migrateForScale(ctx context.Context, sandboxID string, session 
 	prepCtx, prepCancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer prepCancel()
 	prepResp, err := targetClient.PrepareMigrationIncoming(prepCtx, &pb.PrepareMigrationIncomingRequest{
-		SandboxId: sandboxID,
-		CpuCount:  int32(baseCPU),
-		MemoryMb:  int32(baseMem),
-		GuestPort: 80,
-		Template:  template,
+		SandboxId:      sandboxID,
+		CpuCount:       int32(baseCPU),
+		MemoryMb:       int32(baseMem),
+		GuestPort:      80,
+		Template:       template,
+		TargetMemoryMb: int32(memoryMB),
 	})
 	if err != nil {
 		log.Printf("scale-migrate %s: prepare target failed: %v", sandboxID, err)

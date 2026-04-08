@@ -338,6 +338,7 @@ message PrepareMigrationIncomingRequest {
   string rootfs_s3_key = 8;     // if set, download from S3 instead of using local rootfs_path
   string workspace_s3_key = 9;  // if set, download from S3 instead of using local workspace_path
   bool overlay_mode = 10;       // if true, rootfs is thin overlay — rebase to local golden on target
+  int32 target_memory_mb = 11;  // final memory after scale — worker checks capacity and reserves atomically
 }
 
 message PrepareMigrationIncomingResponse {
