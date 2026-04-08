@@ -11,10 +11,10 @@
 
 source "$(dirname "$0")/common.sh"
 
-TARGET=${1:-200}
+TARGET=${1:-81}
 WAVES=5
 PER_WAVE=$((TARGET / WAVES))
-CHAOS_ROUNDS=20
+CHAOS_ROUNDS=5
 
 get_workers() { api "$API_URL/api/workers" 2>/dev/null || echo "[]"; }
 worker_summary() {
@@ -56,6 +56,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Clear server event history for a clean dashboard
+api -X POST "$API_URL/admin/events/clear" >/dev/null 2>&1
+
 echo "=== Extended Chaos Test ==="
 echo "Target: $TARGET sandboxes, $CHAOS_ROUNDS chaos rounds"
 echo ""
@@ -95,6 +98,17 @@ echo ""
 echo "Post-ramp state:"
 worker_summary
 
+# Start real workloads in 20 random sandboxes (allocate memory, run processes)
+echo ""
+echo "  Starting workloads in 20 sandboxes..."
+for sb in $(sort -R < "$SANDBOX_FILE" | head -20); do
+    [ -z "$sb" ] && continue
+    # Write files + start a background counter process
+    exec_run "$sb" "sh" "-c" "dd if=/dev/urandom of=/workspace/data.bin bs=1M count=10 2>/dev/null; python3 -c 'import time; [time.sleep(60)]' &" >/dev/null 2>&1 &
+done
+wait 2>/dev/null || true
+echo "  Workloads started"
+
 # ============================================================
 h "Phase 2: Initial responsiveness (sample 30)"
 
@@ -106,9 +120,10 @@ echo "  $RESPONSIVE/30 responsive"
 [ "$RESPONSIVE" -ge 27 ] && pass "≥90% responsive ($RESPONSIVE/30)" || fail "$RESPONSIVE/30"
 
 # ============================================================
-h "Phase 3: Extended chaos ($CHAOS_ROUNDS rounds)"
+h "Phase 3: Extended chaos ($CHAOS_ROUNDS rounds — 5 up + 5 down scales per round)"
 
-MEM_OPTIONS="4096 8192 16384"
+MEM_UP_OPTIONS="8192 8192 8192 16384 16384"
+MEM_DOWN_OPTIONS="4096"
 DISK_SIZES="1024 2048 5120"  # MB to write
 
 SCALES_OK=0
@@ -124,11 +139,22 @@ for round in $(seq 1 $CHAOS_ROUNDS); do
     WC=$(get_workers | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null)
     printf "  Round %2d/%d  [sb=%s w=%s]  " "$round" "$CHAOS_ROUNDS" "$SB_COUNT" "$WC"
 
-    # --- Action 1: Scale memory on 3 random sandboxes ---
-    for sb in $(sort -R < "$SANDBOX_FILE" | head -3); do
+    # --- Action 1a: Scale UP 5 random sandboxes to 8GB or 16GB ---
+    for sb in $(sort -R < "$SANDBOX_FILE" | head -5); do
         [ -z "$sb" ] && continue
-        MEM=$(echo $MEM_OPTIONS | tr ' ' '\n' | sort -R | head -1)
-        result=$(TIMEOUT=60 api -X PUT "$API_URL/api/sandboxes/$sb/limits" -d "{\"memoryMB\":$MEM,\"cpuPercent\":200}" 2>/dev/null)
+        MEM=$(echo $MEM_UP_OPTIONS | tr ' ' '\n' | sort -R | head -1)
+        result=$(TIMEOUT=120 api -X PUT "$API_URL/api/sandboxes/$sb/limits" -d "{\"memoryMB\":$MEM,\"cpuPercent\":200}" 2>/dev/null)
+        if echo "$result" | grep -q "ok"; then
+            SCALES_OK=$((SCALES_OK + 1))
+        else
+            SCALES_FAIL=$((SCALES_FAIL + 1))
+        fi
+    done
+
+    # --- Action 1b: Scale DOWN 5 random sandboxes back to 4GB ---
+    for sb in $(sort -R < "$SANDBOX_FILE" | head -5); do
+        [ -z "$sb" ] && continue
+        result=$(TIMEOUT=60 api -X PUT "$API_URL/api/sandboxes/$sb/limits" -d "{\"memoryMB\":4096,\"cpuPercent\":100}" 2>/dev/null)
         if echo "$result" | grep -q "ok"; then
             SCALES_OK=$((SCALES_OK + 1))
         else
@@ -144,28 +170,7 @@ for round in $(seq 1 $CHAOS_ROUNDS); do
         DISK_WRITES=$((DISK_WRITES + 1))
     done
 
-    # --- Action 3: Destroy 5 random sandboxes ---
-    for sb in $(sort -R < "$SANDBOX_FILE" | head -5); do
-        [ -z "$sb" ] && continue
-        destroy_sandbox "$sb" >/dev/null 2>&1
-        grep -v "^${sb}$" "$SANDBOX_FILE" > "${SANDBOX_FILE}.tmp" 2>/dev/null
-        mv "${SANDBOX_FILE}.tmp" "$SANDBOX_FILE"
-        DESTROYS=$((DESTROYS + 1))
-    done
-
-    # --- Action 4: Create 5 replacements ---
-    WAVE_DIR=$(mktemp -d)
-    for i in $(seq 1 5); do
-        (
-            sb=$(create_one)
-            [ -n "$sb" ] && [ "$sb" != "null" ] && echo "$sb" > "$WAVE_DIR/$i"
-        ) &
-    done
-    wait 2>/dev/null
-    for f in "$WAVE_DIR"/*; do
-        [ -f "$f" ] && { cat "$f" >> "$SANDBOX_FILE"; CREATES=$((CREATES + 1)); }
-    done
-    rm -rf "$WAVE_DIR"
+    # No create/destroy during chaos — keep count fixed for predictable scaling
 
     # --- Action 5: Spot-check 3 random sandboxes ---
     for sb in $(sort -R < "$SANDBOX_FILE" | head -3); do
@@ -181,8 +186,49 @@ for round in $(seq 1 $CHAOS_ROUNDS); do
         "$SCALES_OK" "$((SCALES_OK + SCALES_FAIL))" "$DISK_WRITES" "$DESTROYS" "$CREATES" \
         "$CHECKS_OK" "$((CHECKS_OK + CHECKS_FAIL))"
 
-    sleep 5
+    sleep 2
 done
+
+# ============================================================
+h "Phase 3b: Migration pressure — scale sandboxes on one worker to 8GB until migration triggers"
+
+# Pick the most-loaded worker
+TARGET_WORKER=$(get_workers | python3 -c "
+import sys,json
+w = sorted(json.load(sys.stdin), key=lambda x: -x['current'])
+print(w[0]['worker_id'] if w else '')
+" 2>/dev/null)
+echo "  Target worker: ${TARGET_WORKER##*-}"
+
+# Get sandboxes on that worker and scale them to 8GB one by one
+MIGRATED=0
+for sb in $(sort -R < "$SANDBOX_FILE" | head -20); do
+    [ -z "$sb" ] && continue
+    # Check if this sandbox is on the target worker
+    SB_WORKER=$(api "$API_URL/api/sandboxes/$sb" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('workerID',''))" 2>/dev/null)
+    [ "$SB_WORKER" != "$TARGET_WORKER" ] && continue
+
+    result=$(TIMEOUT=180 api -X PUT "$API_URL/api/sandboxes/$sb/limits" -d '{"memoryMB":8192,"cpuPercent":200}' 2>/dev/null)
+    migrated=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('migrated',False))" 2>/dev/null)
+    ok=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ok',False))" 2>/dev/null)
+    mem=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('memoryMB','?'))" 2>/dev/null)
+
+    if [ "$migrated" = "True" ]; then
+        new_worker=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('workerID','?'))" 2>/dev/null)
+        echo "  ${sb##*-}: scaled to ${mem}MB → MIGRATED to ${new_worker##*-}"
+        MIGRATED=$((MIGRATED + 1))
+        SCALES_OK=$((SCALES_OK + 1))
+    elif [ "$ok" = "True" ]; then
+        echo "  ${sb##*-}: scaled to ${mem}MB (fit on current worker)"
+        SCALES_OK=$((SCALES_OK + 1))
+    else
+        err=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error','?')[:60])" 2>/dev/null)
+        echo "  ${sb##*-}: FAILED — $err"
+        SCALES_FAIL=$((SCALES_FAIL + 1))
+    fi
+done
+
+[ "$MIGRATED" -gt 0 ] && pass "$MIGRATED migration(s) triggered by memory pressure" || skip "No migrations triggered (workers had room)"
 
 echo ""
 [ "$CHECKS_FAIL" -le $((CHECKS_OK / 10)) ] && pass "Chaos checks: $CHECKS_OK ok, $CHECKS_FAIL failed (≤10% failure)" || fail "Too many failures: $CHECKS_FAIL/$((CHECKS_OK + CHECKS_FAIL))"

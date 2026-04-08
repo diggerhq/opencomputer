@@ -40,12 +40,13 @@ type WorkerEntry struct {
 // backed by Redis pub/sub for real-time updates and periodic SCAN for reconciliation.
 // It also maintains a persistent gRPC connection pool to workers.
 type RedisWorkerRegistry struct {
-	rdb     *redis.Client
-	mu      sync.RWMutex
-	workers map[string]*WorkerEntry       // in-memory hot cache
-	conns   map[string]*grpc.ClientConn   // persistent gRPC connections
-	clients map[string]pb.SandboxWorkerClient // cached gRPC clients
-	stop    chan struct{}
+	rdb        *redis.Client
+	mu         sync.RWMutex
+	workers    map[string]*WorkerEntry       // in-memory hot cache
+	conns      map[string]*grpc.ClientConn   // persistent gRPC connections
+	clients    map[string]pb.SandboxWorkerClient // cached gRPC clients
+	rrCounter  uint64                        // round-robin counter for tie-breaking
+	stop       chan struct{}
 }
 
 // RedisClient returns the underlying Redis client (for health checks, shared state, etc.).
@@ -313,93 +314,75 @@ func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry,
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	var best *WorkerEntry
-	bestScore := -1.0
+	// Simple strategy: pick the worker with fewest sandboxes.
+	// Skip workers under heavy resource pressure.
+	// Skip idle reserves unless all active workers are above 60% committed.
+	// Read Redis routing counters to get real-time sandbox counts across both CPs
+	routingCtx, routingCancel := context.WithTimeout(context.Background(), time.Second)
+	defer routingCancel()
 
-	// Bin-pack strategy using committed memory:
-	//   1. Active workers with memory headroom → fill the most-loaded first
-	//   2. Idle workers → use for burst (scaler replaces idle reserves in background)
-	//   3. Workers with no headroom data → fall back to sandbox count
-	//
-	// Idle reserves are NOT protected from routing — they exist for burst absorption.
-	// The scaler will notice the idle count dropped and launch replacements.
-	scoreWorker := func(w *WorkerEntry) float64 {
-		if w.CPUPct > 90 || w.MemPct > 90 || w.DiskPct > 90 {
-			return -1 // skip — under heavy pressure
-		}
-
-		// Use committed memory if available (preferred — reflects real capacity)
-		if w.TotalMemoryMB > 0 {
-			reserveMB := w.TotalMemoryMB / 5 // 20% for OS
-			usableMB := w.TotalMemoryMB - reserveMB
-			committedPct := float64(w.CommittedMemoryMB) / float64(usableMB) // 0.0 to 1.0+
-
-			if committedPct >= 1.0 {
-				// No headroom — last resort, spread by how far over
-				return 0.01 / (1.0 + committedPct)
-			}
-			if w.Current == 0 {
-				// Idle worker — available for burst. Score below active workers
-				// so we fill active ones first, but don't block routing here.
-				return 10.0 * (1.0 - committedPct)
-			}
-			// Active with headroom: higher committed% = higher score (bin-pack).
-			// This fills workers proportionally to their memory, not sandbox count.
-			return 100.0 + committedPct*50.0
-		}
-
-		// Fallback: no committed memory data — use sandbox count heuristic
-		remaining := w.Capacity - w.Current
-		if remaining <= 0 {
-			return 0.01 / float64(1+w.Current)
-		}
-		if w.Current == 0 {
-			return 10.0
-		}
-		return 100.0 + float64(w.Current)*10.0
-	}
-
-	// First pass: try workers in the requested region
+	var eligible []*WorkerEntry
 	for _, w := range r.workers {
 		if region != "" && w.Region != region {
 			continue
 		}
-		score := scoreWorker(w)
-		if score < 0 {
+		if w.CPUPct > 90 || w.MemPct > 90 || w.DiskPct > 90 {
 			continue
 		}
-		if score > bestScore {
-			best = w
-			bestScore = score
+		// Use Redis routing counter if higher than heartbeat count
+		rCount, err := r.rdb.Get(routingCtx, "routing:count:"+w.ID).Int()
+		if err == nil && rCount > w.Current {
+			w.Current = rCount
 		}
+		eligible = append(eligible, w)
 	}
 
 	// Fallback: try any region
-	if best == nil && region != "" {
+	if len(eligible) == 0 && region != "" {
 		for _, w := range r.workers {
-			score := scoreWorker(w)
-			if score < 0 {
+			if w.CPUPct > 90 || w.MemPct > 90 || w.DiskPct > 90 {
 				continue
 			}
-			if score > bestScore {
-				best = w
-				bestScore = score
-			}
+			eligible = append(eligible, w)
 		}
 	}
 
-	if best == nil {
+	if len(eligible) == 0 {
 		return nil, nil, fmt.Errorf("no workers available")
 	}
+
+	// Find workers tied for fewest sandboxes, round-robin among them
+	minCount := eligible[0].Current
+	for _, w := range eligible[1:] {
+		if w.Current < minCount {
+			minCount = w.Current
+		}
+	}
+	var tied []*WorkerEntry
+	for _, w := range eligible {
+		if w.Current <= minCount+1 { // within 1 of the minimum
+			tied = append(tied, w)
+		}
+	}
+
+	// Use Redis-based round-robin counter so both CPs spread evenly
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	rr, _ := r.rdb.Incr(ctx, "routing:rr").Result()
+	cancel()
+	best := tied[rr%int64(len(tied))]
 
 	client, ok := r.clients[best.ID]
 	if !ok {
 		return nil, nil, fmt.Errorf("no gRPC connection to worker %s", best.ID)
 	}
 
-	// Optimistically increment Current so the next call spreads load.
-	// The heartbeat will correct this within 10s if the create fails.
-	best.Current++
+	// Atomically increment sandbox count in Redis so BOTH CPs see it instantly.
+	// The heartbeat will correct to the real count within 10s.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	r.rdb.Incr(ctx2, "routing:count:"+best.ID)
+	r.rdb.Expire(ctx2, "routing:count:"+best.ID, 15*time.Second)
+	cancel2()
+	best.Current++ // also update local for this CP
 
 	return best, client, nil
 }

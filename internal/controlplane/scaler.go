@@ -1021,15 +1021,17 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 	log.Printf("scaler: migrate %s: drives pre-copied to S3 (%dms, mode=%s)", sandboxID, time.Since(t0).Milliseconds(), migrationMode)
 
 	// Step 2: Prepare target (downloads from S3, starts QEMU -incoming)
-	// Get sandbox config from DB for CPU/memory/port
-	cpuCount, memoryMB, guestPort, template := int32(1), int32(1024), int32(80), "base"
+	// IMPORTANT: Use the BASE memory (from creation), not the scaled total.
+	// QEMU migration requires matching memory layout: -m <base> + virtio-mem pool.
+	// The hotplugged virtio-mem state transfers as part of the migration stream.
+	cpuCount, memoryMB, guestPort, template := int32(1), int32(256), int32(80), "default"
 	if s.store != nil {
 		session, err := s.store.GetSandboxSession(ctx, sandboxID)
 		if err == nil && session != nil {
 			if session.Template != "" {
 				template = session.Template
 			}
-			// Parse CPU/memory from session config JSON
+			// Parse base CPU/memory from session config JSON
 			var cfg struct {
 				CPUCount int32 `json:"cpu_count"`
 				MemoryMB int32 `json:"memory_mb"`
@@ -1039,6 +1041,8 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 				if cfg.CPUCount > 0 {
 					cpuCount = cfg.CPUCount
 				}
+				// Use base memory from config — this is the QEMU boot memory,
+				// not the total after virtio-mem scaling.
 				if cfg.MemoryMB > 0 {
 					memoryMB = cfg.MemoryMB
 				}

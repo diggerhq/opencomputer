@@ -764,9 +764,10 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 		CpuCount int `json:"cpuCount"`
 	}
 	_ = json.Unmarshal(session.Config, &sbCfg)
-	if sbCfg.MemoryMB <= 0 {
-		sbCfg.MemoryMB = 256 // default from golden snapshot
-	}
+	// IMPORTANT: Use the QEMU base memory (from golden snapshot), not the API-requested total.
+	// Virtio-mem hotplug state transfers during migration — the target QEMU must start
+	// with the same base memory as the source for the memory layout to match.
+	sbCfg.MemoryMB = 256
 	if sbCfg.CpuCount <= 0 {
 		sbCfg.CpuCount = 1
 	}
@@ -1075,7 +1076,10 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 	if migrated {
 		s.emitEvent("migrate", sandboxID, workerID, fmt.Sprintf("auto-migrated for scale to %dMB", requestedMemMB))
 	}
-	s.emitEvent("scale", sandboxID, workerID, fmt.Sprintf("scaled to %dMB (migrated=%v)", requestedMemMB, migrated))
+	// Only emit scale events for non-default sizes (4096MB is the creation default)
+	if requestedMemMB != 4096 || migrated {
+		s.emitEvent("scale", sandboxID, workerID, fmt.Sprintf("scaled to %dMB (migrated=%v)", requestedMemMB, migrated))
+	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"sandboxID":  sandboxID,

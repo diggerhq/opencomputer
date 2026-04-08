@@ -135,6 +135,16 @@ func (s *Server) adminEventsHistory(c echo.Context) error {
 	return c.JSON(http.StatusOK, s.adminEvents.History())
 }
 
+// adminClearEvents clears the event history.
+func (s *Server) adminClearEvents(c echo.Context) error {
+	if s.adminEvents != nil {
+		s.adminEvents.mu.Lock()
+		s.adminEvents.history = nil
+		s.adminEvents.mu.Unlock()
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "cleared"})
+}
+
 // emitEvent publishes an event to the admin dashboard if the event bus is initialized.
 func (s *Server) emitEvent(eventType, sandboxID, workerID, detail string) {
 	if s.adminEvents != nil {
