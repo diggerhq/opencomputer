@@ -73,9 +73,12 @@ type SandboxMeta struct {
 // SecretsProxyIntegration provides the interface for the secrets proxy to integrate
 // with VM lifecycle.
 type SecretsProxyIntegration interface {
-	// CreateSealedEnvs generates sealed tokens for env vars, registers a proxy session,
-	// and returns the full env map (sealed tokens + proxy config vars) to inject into the VM.
-	CreateSealedEnvs(sandboxID, guestIP, gatewayIP string, envVars map[string]string, allowlist []string, secretAllowedHosts map[string][]string) map[string]string
+	// CreateSealedEnvs tokenizes every entry in secretEnvs, copies plaintextEnvs
+	// through verbatim, and returns the full env map to inject into the VM
+	// (sealed + plaintext + proxy config vars HTTP_PROXY/CA cert). plaintextEnvs
+	// wins on collision (matches the API-layer rule that user envs override
+	// store-derived values of the same name).
+	CreateSealedEnvs(sandboxID, guestIP, gatewayIP string, plaintextEnvs, secretEnvs map[string]string, allowlist []string, secretAllowedHosts map[string][]string) map[string]string
 	// UnregisterSession removes the proxy session for the given guest IP.
 	UnregisterSession(guestIP string)
 	// GetSessionTokens returns the sealed token → real value map for persisting during hibernate.
@@ -215,10 +218,26 @@ func (m *Manager) SetSecretsProxy(sp SecretsProxyIntegration) {
 // The QEMU manager originally shipped without this call, so secrets were
 // injected into the guest as plaintext — see git history for f2e64e3.
 func (m *Manager) sealSandboxEnvs(ctx context.Context, sandboxID string, netCfg *NetworkConfig, agent *AgentClient, cfg types.SandboxConfig) map[string]string {
-	if m.secretsProxy == nil || len(cfg.Envs) == 0 {
+	// If the secrets proxy is not configured, just merge the two maps with
+	// user (Envs) winning. This keeps non-prod environments working without
+	// the proxy registered while preserving the user-wins precedence rule.
+	if m.secretsProxy == nil {
+		if len(cfg.SecretEnvs) == 0 {
+			return cfg.Envs
+		}
+		merged := make(map[string]string, len(cfg.Envs)+len(cfg.SecretEnvs))
+		for k, v := range cfg.SecretEnvs {
+			merged[k] = v
+		}
+		for k, v := range cfg.Envs {
+			merged[k] = v
+		}
+		return merged
+	}
+	if len(cfg.Envs) == 0 && len(cfg.SecretEnvs) == 0 {
 		return cfg.Envs
 	}
-	sealed := m.secretsProxy.CreateSealedEnvs(sandboxID, netCfg.GuestIP, netCfg.HostIP, cfg.Envs, cfg.EgressAllowlist, cfg.SecretAllowedHosts)
+	sealed := m.secretsProxy.CreateSealedEnvs(sandboxID, netCfg.GuestIP, netCfg.HostIP, cfg.Envs, cfg.SecretEnvs, cfg.EgressAllowlist, cfg.SecretAllowedHosts)
 	if sealed == nil {
 		return cfg.Envs
 	}
