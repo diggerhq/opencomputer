@@ -74,12 +74,12 @@
       ]
     },
     {
-      "group": "Sessions API (Experimental)",
+      "group": "Agents API",
       "pages": [
-        "sessions-api/overview",
-        "sessions-api/sessions",
-        "sessions-api/messages",
-        "sessions-api/events"
+        "agents-api/overview",
+        "agents-api/agents",
+        "agents-api/instances",
+        "agents-api/sessions"
       ]
     },
     {
