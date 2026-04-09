@@ -60,9 +60,9 @@ func (c *Client) TrackGBSeconds(evt UsageEvent) {
 		props = props.Set("workos_org_id", evt.WorkosOrgID)
 	}
 	// Use email as the Segment identity when available, fall back to org ID.
-	segmentUserID := orgID
-	if userEmail != "" {
-		segmentUserID = userEmail
+	segmentUserID := evt.OrgID
+	if evt.UserEmail != "" {
+		segmentUserID = evt.UserEmail
 	}
 	if err := c.c.Enqueue(analytics.Track{
 		UserId:     segmentUserID,
