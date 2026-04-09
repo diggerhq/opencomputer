@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -48,6 +47,7 @@ type ScalerRegistry interface {
 	RegionUtilization(region string) float64
 	RegionResourcePressure(region string) (maxCPU, maxMem, maxDisk float64)
 	GetWorkerClient(workerID string) (pb.SandboxWorkerClient, error)
+	SetDraining(workerID string, draining bool)
 }
 
 // AMIRefresher is an optional interface a Pool can implement to support dynamic AMI updates.
@@ -745,17 +745,26 @@ func (s *Scaler) rollingReplace(ctx context.Context, region string, workers []*W
 	go s.drainWorker(target.ID, target.MachineID, region)
 }
 
-// drainWorker live-migrates all sandboxes off a worker, then signals completion
-// via the draining map (checkDrainingWorkers will destroy the machine).
+// drainWorker attempts to live-migrate sandboxes off a worker. If migration fails
+// (e.g., S3 auth, no targets), falls back to waiting for natural expiry —
+// sandboxes will timeout or be destroyed by users. No new sandboxes are routed
+// to draining workers.
 func (s *Scaler) drainWorker(workerID, machineID, region string) {
 	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
 
+	// Mark worker as draining so routing skips it
+	s.registry.SetDraining(workerID, true)
+
 	sourceClient, err := s.registry.GetWorkerClient(workerID)
 	if err != nil {
-		log.Printf("scaler: drain: no gRPC client for %s, will force-destroy on timeout", workerID)
+		log.Printf("scaler: drain: no gRPC client for %s, waiting for natural expiry", workerID)
+		s.waitForNaturalDrain(ctx, workerID)
 		return
 	}
+
+	migrationFailures := 0
+	const maxMigrationFailures = 3 // after 3 failed attempts, stop trying migration
 
 	for {
 		select {
@@ -767,7 +776,8 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 
 		listResp, err := sourceClient.ListSandboxes(ctx, &pb.ListSandboxesRequest{})
 		if err != nil {
-			log.Printf("scaler: drain: ListSandboxes failed for %s: %v", workerID, err)
+			log.Printf("scaler: drain: ListSandboxes failed for %s: %v, waiting for natural expiry", workerID, err)
+			s.waitForNaturalDrain(ctx, workerID)
 			return
 		}
 
@@ -783,12 +793,20 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 			return
 		}
 
+		// If too many migration failures, fall back to natural expiry
+		if migrationFailures >= maxMigrationFailures {
+			log.Printf("scaler: drain: %d migration failures on %s, waiting for %d sandboxes to expire naturally",
+				migrationFailures, workerID, len(running))
+			s.waitForNaturalDrain(ctx, workerID)
+			return
+		}
+
 		// Find target for this batch
 		target := s.findMigrationTarget(region, workerID)
 		if target == nil {
-			log.Printf("scaler: drain: no migration target for %s, waiting...", workerID)
-			time.Sleep(10 * time.Second)
-			continue
+			log.Printf("scaler: drain: no migration target for %s (%d sandboxes), waiting for natural expiry", workerID, len(running))
+			s.waitForNaturalDrain(ctx, workerID)
+			return
 		}
 
 		// Migrate a batch
@@ -797,15 +815,40 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 			batch = batch[:evacuationBatchSize]
 		}
 
+		batchFailed := false
 		for _, sandboxID := range batch {
 			if err := s.liveMigrateSandbox(ctx, sandboxID, workerID, target.ID); err != nil {
-				log.Printf("scaler: drain: migrate %s to %s failed: %v, will retry next cycle", sandboxID, target.ID, err)
-				// Don't abort — try remaining sandboxes and retry failed ones next cycle
+				log.Printf("scaler: drain: migrate %s to %s failed: %v", sandboxID, target.ID, err)
+				migrationFailures++
+				batchFailed = true
 			}
 		}
 
-		// Brief pause between batches
-		time.Sleep(2 * time.Second)
+		if batchFailed {
+			time.Sleep(5 * time.Second)
+		} else {
+			time.Sleep(2 * time.Second)
+		}
+	}
+}
+
+// waitForNaturalDrain polls until the worker has 0 sandboxes or the context expires.
+// Sandboxes expire via timeout or user-initiated destroy.
+func (s *Scaler) waitForNaturalDrain(ctx context.Context, workerID string) {
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("scaler: natural drain: timeout for %s", workerID)
+			return
+		case <-time.After(30 * time.Second):
+		}
+
+		count := s.getDrainingWorkerSandboxCount(workerID)
+		if count <= 0 {
+			log.Printf("scaler: natural drain: worker %s is empty", workerID)
+			return
+		}
+		log.Printf("scaler: natural drain: worker %s still has %d sandboxes, waiting...", workerID, count)
 	}
 }
 
@@ -1024,31 +1067,15 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 	// IMPORTANT: Use the BASE memory (from creation), not the scaled total.
 	// QEMU migration requires matching memory layout: -m <base> + virtio-mem pool.
 	// The hotplugged virtio-mem state transfers as part of the migration stream.
+	// IMPORTANT: Use the QEMU base memory (256MB from golden snapshot), not the
+	// API-requested total. Virtio-mem hotplug state transfers during migration —
+	// the target QEMU must start with the same base memory as the source.
 	cpuCount, memoryMB, guestPort, template := int32(1), int32(256), int32(80), "default"
 	if s.store != nil {
 		session, err := s.store.GetSandboxSession(ctx, sandboxID)
 		if err == nil && session != nil {
 			if session.Template != "" {
 				template = session.Template
-			}
-			// Parse base CPU/memory from session config JSON
-			var cfg struct {
-				CPUCount int32 `json:"cpu_count"`
-				MemoryMB int32 `json:"memory_mb"`
-				Port     int32 `json:"port"`
-			}
-			if json.Unmarshal(session.Config, &cfg) == nil {
-				if cfg.CPUCount > 0 {
-					cpuCount = cfg.CPUCount
-				}
-				// Use base memory from config — this is the QEMU boot memory,
-				// not the total after virtio-mem scaling.
-				if cfg.MemoryMB > 0 {
-					memoryMB = cfg.MemoryMB
-				}
-				if cfg.Port > 0 {
-					guestPort = cfg.Port
-				}
 			}
 		}
 	}
@@ -1064,6 +1091,7 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 		RootfsS3Key:    preCopyResp.RootfsKey,
 		WorkspaceS3Key: preCopyResp.WorkspaceKey,
 		OverlayMode:    sameGolden,
+		TargetMemoryMb: 4096, // default tier — worker checks real capacity atomically
 	})
 	if err != nil {
 		return fmt.Errorf("prepare target: %w", err)

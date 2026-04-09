@@ -34,6 +34,7 @@ type WorkerEntry struct {
 	CommittedMemoryMB int     `json:"committed_memory_mb,omitempty"`
 	GoldenVersion     string  `json:"golden_version,omitempty"`
 	WorkerVersion     string  `json:"worker_version,omitempty"`
+	Draining          bool    `json:"draining,omitempty"`
 }
 
 // RedisWorkerRegistry maintains an in-memory cache of worker state
@@ -326,6 +327,9 @@ func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry,
 		if region != "" && w.Region != region {
 			continue
 		}
+		if w.Draining {
+			continue
+		}
 		if w.CPUPct > 90 || w.MemPct > 90 || w.DiskPct > 90 {
 			continue
 		}
@@ -416,6 +420,15 @@ func (r *RedisWorkerRegistry) GetAllWorkers() []*WorkerEntry {
 		result = append(result, w)
 	}
 	return result
+}
+
+// SetDraining marks a worker as draining — it will not receive new sandboxes.
+func (r *RedisWorkerRegistry) SetDraining(workerID string, draining bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if w, ok := r.workers[workerID]; ok {
+		w.Draining = draining
+	}
 }
 
 // Stop closes the Redis client and all gRPC connections.

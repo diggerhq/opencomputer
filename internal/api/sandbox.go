@@ -1113,6 +1113,9 @@ func (s *Server) findScaleMigrationTargets(sourceWorkerID string, requestedMemMB
 		if w.ID == sourceWorkerID {
 			continue
 		}
+		if w.Draining {
+			continue
+		}
 		if w.CPUPct > 90 || w.MemPct > 85 {
 			continue
 		}

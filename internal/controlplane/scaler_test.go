@@ -122,6 +122,8 @@ func (r *mockRegistry) GetWorkerClient(workerID string) (pb.SandboxWorkerClient,
 	return nil, fmt.Errorf("mock: no gRPC client for %s", workerID)
 }
 
+func (r *mockRegistry) SetDraining(workerID string, draining bool) {}
+
 // --- Mock compute.Pool ---
 
 type mockPool struct {
