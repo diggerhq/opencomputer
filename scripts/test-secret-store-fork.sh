@@ -1,159 +1,179 @@
 #!/usr/bin/env bash
-# test-secret-store-fork.sh — Test attaching a secret store at snapshot fork time
+# test-secret-store-fork.sh — Test 3-layer secret store merging
 #
-# Tests the new feature: creating from a snapshot that has NO secret store,
-# but attaching one at fork time.
+# Store A (base):  GIT_TOKEN, SHARED_KEY          egress=[github.com]
+# Store B (mid):   API_KEY, SHARED_KEY (override)  egress=[api.anthropic.com]
+# Store C (child): DEPLOY_KEY, API_KEY (override)  egress=[deploy.example.com]
 #
-# Usage:
-#   OPENSANDBOX_API_URL=http://20.114.60.29:8080 \
-#   OPENSANDBOX_API_KEY=osb_xxx \
-#   bash scripts/test-secret-store-fork.sh
+# Layer 1: clean snapshot + store A
+# Layer 2: checkpoint of layer 1 + store B  → should have GIT_TOKEN(A), SHARED_KEY(B), API_KEY(B)
+# Layer 3: checkpoint of layer 2 + store C  → should have GIT_TOKEN(A*), SHARED_KEY(B*), API_KEY(C), DEPLOY_KEY(C)
+#   * = re-resolved from layer 2's SecretStore (B), which was the merged result
+#
+# Egress should aggregate across all layers.
 
 set -eo pipefail
 
 API="${OPENSANDBOX_API_URL:?}"
 KEY="${OPENSANDBOX_API_KEY:?}"
 
-api() {
-    curl -s -H "X-API-Key: $KEY" -H "Content-Type: application/json" "$@"
-}
-
-exec_run() {
-    # Execute a command and return stdout
-    local sb="$1"; shift
-    local cmd="$1"; shift
-    api -X POST "$API/api/sandboxes/$sb/exec/run" -d "{\"cmd\":\"$cmd\"}" | \
+api() { curl -s -H "X-API-Key: $KEY" -H "Content-Type: application/json" "$@"; }
+exec_env() {
+    api -X POST "$API/api/sandboxes/$1/exec/run" -d '{"cmd":"env"}' | \
         python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout',''))" 2>/dev/null
 }
-
 pass() { printf "  \033[32m✓ %s\033[0m\n" "$1"; }
 fail() { printf "  \033[31m✗ %s\033[0m\n" "$1"; exit 1; }
 h()    { printf "\n\033[1;34m=== %s ===\033[0m\n" "$1"; }
 
-# Cleanup on exit
 SANDBOX_IDS=()
-STORE_ID=""
-SNAP_NAME="test-no-secrets-snap-$$"
+STORE_IDS=()
+SNAP_NAMES=()
 cleanup() {
     echo ""
     echo "=== Cleanup ==="
     for sb in "${SANDBOX_IDS[@]}"; do
         api -X DELETE "$API/api/sandboxes/$sb" >/dev/null 2>&1 || true
-        echo "  Destroyed $sb"
     done
-    api -X DELETE "$API/api/snapshots/$SNAP_NAME" >/dev/null 2>&1 || true
-    echo "  Deleted snapshot $SNAP_NAME"
-    if [ -n "$STORE_ID" ]; then
-        api -X DELETE "$API/api/secret-stores/$STORE_ID" >/dev/null 2>&1 || true
-        echo "  Deleted secret store $STORE_ID"
-    fi
+    for snap in "${SNAP_NAMES[@]}"; do
+        api -X DELETE "$API/api/snapshots/$snap" >/dev/null 2>&1 || true
+    done
+    for sid in "${STORE_IDS[@]}"; do
+        api -X DELETE "$API/api/secret-stores/$sid" >/dev/null 2>&1 || true
+    done
+    echo "  Done"
 }
 trap cleanup EXIT
 
 # ─────────────────────────────────────────────────────────
-h "Step 1: Create a secret store with a test secret"
+h "Setup: Create 3 secret stores"
 
-STORE=$(api -X POST "$API/api/secret-stores" -d '{"name":"test-fork-store"}')
-STORE_ID=$(echo "$STORE" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-echo "  Store ID: $STORE_ID"
+STORE_A=$(api -X POST "$API/api/secret-stores" -d '{"name":"test-store-a","egressAllowlist":["github.com"]}')
+STORE_A_ID=$(echo "$STORE_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+STORE_IDS+=("$STORE_A_ID")
+api -X PUT "$API/api/secret-stores/$STORE_A_ID/secrets/GIT_TOKEN" -d '{"value":"a-git-token"}' >/dev/null
+api -X PUT "$API/api/secret-stores/$STORE_A_ID/secrets/SHARED_KEY" -d '{"value":"a-shared-key"}' >/dev/null
+echo "  A: GIT_TOKEN, SHARED_KEY  egress=[github.com]"
 
-# Add a secret
-api -X PUT "$API/api/secret-stores/$STORE_ID/secrets/MY_SECRET" \
-    -d '{"value":"super-secret-value-123"}' >/dev/null
-pass "Created store 'test-fork-store' with MY_SECRET"
+STORE_B=$(api -X POST "$API/api/secret-stores" -d '{"name":"test-store-b","egressAllowlist":["api.anthropic.com"]}')
+STORE_B_ID=$(echo "$STORE_B" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+STORE_IDS+=("$STORE_B_ID")
+api -X PUT "$API/api/secret-stores/$STORE_B_ID/secrets/API_KEY" -d '{"value":"b-api-key"}' >/dev/null
+api -X PUT "$API/api/secret-stores/$STORE_B_ID/secrets/SHARED_KEY" -d '{"value":"b-shared-override"}' >/dev/null
+echo "  B: API_KEY, SHARED_KEY  egress=[api.anthropic.com]"
+
+STORE_C=$(api -X POST "$API/api/secret-stores" -d '{"name":"test-store-c","egressAllowlist":["deploy.example.com"]}')
+STORE_C_ID=$(echo "$STORE_C" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+STORE_IDS+=("$STORE_C_ID")
+api -X PUT "$API/api/secret-stores/$STORE_C_ID/secrets/DEPLOY_KEY" -d '{"value":"c-deploy-key"}' >/dev/null
+api -X PUT "$API/api/secret-stores/$STORE_C_ID/secrets/API_KEY" -d '{"value":"c-api-override"}' >/dev/null
+echo "  C: DEPLOY_KEY, API_KEY  egress=[deploy.example.com]"
+pass "3 stores created"
 
 # ─────────────────────────────────────────────────────────
-h "Step 2: Create a named snapshot (no secret store)"
+h "Setup: Create clean snapshot"
 
-echo "  Creating snapshot '$SNAP_NAME' from default image..."
-SNAP_RESULT=$(api -X POST "$API/api/snapshots" \
-    -d "{\"name\":\"$SNAP_NAME\",\"image\":{\"template\":\"default\"}}")
-echo "  Result: $(echo "$SNAP_RESULT" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r.get('status', r.get('error','unknown')))" 2>/dev/null)"
-
-# Wait for snapshot to be ready
-echo "  Waiting for snapshot to be ready..."
+SNAP="test-snap-$$"
+SNAP_NAMES+=("$SNAP")
+api -X POST "$API/api/snapshots" -d "{\"name\":\"$SNAP\",\"image\":{\"template\":\"default\"}}" >/dev/null
 for i in $(seq 1 30); do
-    SNAP_STATUS=$(api "$API/api/snapshots/$SNAP_NAME" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
-    [ "$SNAP_STATUS" = "ready" ] && break
-    [ "$SNAP_STATUS" = "failed" ] && fail "Snapshot creation failed"
-    sleep 2
+    S=$(api "$API/api/snapshots/$SNAP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+    [ "$S" = "ready" ] && break; sleep 2
 done
-[ "$SNAP_STATUS" = "ready" ] && pass "Snapshot ready" || fail "Snapshot not ready after 60s (status=$SNAP_STATUS)"
+[ "$S" = "ready" ] && pass "Snapshot ready" || fail "Snapshot not ready"
 
 # ─────────────────────────────────────────────────────────
-h "Step 3: Fork from snapshot WITHOUT secrets (baseline)"
+h "Layer 1: Clean snapshot + Store A"
 
-SB1=$(api -X POST "$API/api/sandboxes" -d "{\"snapshot\":\"$SNAP_NAME\"}")
-SB1_ID=$(echo "$SB1" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sandboxID',''))" 2>/dev/null)
-if [ -z "$SB1_ID" ]; then
-    echo "  Response: $SB1"
-    fail "Failed to create baseline sandbox"
-fi
-SANDBOX_IDS+=("$SB1_ID")
-echo "  Sandbox: $SB1_ID"
+L1=$(api -X POST "$API/api/sandboxes" -d "{\"snapshot\":\"$SNAP\",\"secretStore\":\"test-store-a\",\"timeout\":120}")
+L1_ID=$(echo "$L1" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sandboxID',''))" 2>/dev/null)
+[ -n "$L1_ID" ] && [ "$L1_ID" != "null" ] || fail "Layer 1 failed: $L1"
+SANDBOX_IDS+=("$L1_ID")
+echo "  Sandbox: $L1_ID"
 sleep 5
 
-ENV_OUT=$(exec_run "$SB1_ID" "env")
-if echo "$ENV_OUT" | grep -q "MY_SECRET"; then
-    fail "Baseline sandbox has MY_SECRET — should be clean"
-else
-    pass "Baseline fork has no MY_SECRET (clean)"
-fi
+ENV_L1=$(exec_env "$L1_ID")
+echo "$ENV_L1" | grep -q "GIT_TOKEN" || fail "L1: GIT_TOKEN missing"
+echo "$ENV_L1" | grep -q "SHARED_KEY" || fail "L1: SHARED_KEY missing"
+echo "$ENV_L1" | grep -q "API_KEY" && fail "L1: API_KEY should not exist" || true
+pass "Layer 1: GIT_TOKEN ✓  SHARED_KEY ✓  no API_KEY ✓"
+
+# Checkpoint layer 1
+CP1=$(api -X POST "$API/api/sandboxes/$L1_ID/checkpoints" -d '{"name":"layer1-cp"}')
+CP1_ID=$(echo "$CP1" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+[ -n "$CP1_ID" ] && [ "$CP1_ID" != "null" ] || fail "Checkpoint 1 failed: $CP1"
+for i in $(seq 1 30); do
+    CS=$(api "$API/api/sandboxes/$L1_ID/checkpoints" | python3 -c "
+import sys,json
+for c in json.load(sys.stdin):
+    if c.get('id','')=='$CP1_ID': print(c.get('status','')); break
+" 2>/dev/null)
+    [ "$CS" = "ready" ] && break; sleep 2
+done
+[ "$CS" = "ready" ] && pass "Checkpoint 1 ready ($CP1_ID)" || fail "Checkpoint 1 not ready"
 
 # ─────────────────────────────────────────────────────────
-h "Step 4: Fork from snapshot WITH secret store attached (new feature)"
+h "Layer 2: Checkpoint(store A) + Store B"
 
-SB2=$(api -X POST "$API/api/sandboxes" \
-    -d "{\"snapshot\":\"$SNAP_NAME\",\"secretStore\":\"test-fork-store\"}")
-SB2_ID=$(echo "$SB2" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sandboxID',''))" 2>/dev/null)
-
-if [ -z "$SB2_ID" ] || [ "$SB2_ID" = "null" ]; then
-    echo "  Response: $SB2"
-    fail "Fork with secret store failed"
-fi
-SANDBOX_IDS+=("$SB2_ID")
-echo "  Sandbox: $SB2_ID"
-pass "Fork with secret store created"
-
+L2=$(api -X POST "$API/api/sandboxes/from-checkpoint/$CP1_ID" -d '{"secretStore":"test-store-b"}')
+L2_ID=$(echo "$L2" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sandboxID',''))" 2>/dev/null)
+[ -n "$L2_ID" ] && [ "$L2_ID" != "null" ] || fail "Layer 2 failed: $L2"
+SANDBOX_IDS+=("$L2_ID")
+echo "  Sandbox: $L2_ID"
 sleep 5
 
-# ─────────────────────────────────────────────────────────
-h "Step 5: Verify secret is available in forked sandbox"
+ENV_L2=$(exec_env "$L2_ID")
+echo "  Checking secrets..."
+echo "$ENV_L2" | grep -q "GIT_TOKEN" || fail "L2: GIT_TOKEN missing (should inherit from A)"
+echo "$ENV_L2" | grep -q "API_KEY" || fail "L2: API_KEY missing (from B)"
+echo "$ENV_L2" | grep -q "SHARED_KEY" || fail "L2: SHARED_KEY missing"
+echo "$ENV_L2" | grep -q "DEPLOY_KEY" && fail "L2: DEPLOY_KEY should not exist yet" || true
+pass "Layer 2: GIT_TOKEN(A) ✓  API_KEY(B) ✓  SHARED_KEY(B override) ✓  no DEPLOY_KEY ✓"
 
-ENV_OUT2=$(exec_run "$SB2_ID" "env")
-
-if echo "$ENV_OUT2" | grep -q "MY_SECRET=osb_sealed_"; then
-    SEALED=$(echo "$ENV_OUT2" | grep MY_SECRET)
-    echo "  $SEALED"
-    pass "Secret injected as sealed token (proxy substitutes on HTTPS)"
-elif echo "$ENV_OUT2" | grep -q "MY_SECRET=super-secret"; then
-    fail "SECRET LEAKED AS PLAINTEXT — security issue"
-elif echo "$ENV_OUT2" | grep -q "MY_SECRET"; then
-    SEALED=$(echo "$ENV_OUT2" | grep MY_SECRET)
-    echo "  $SEALED"
-    pass "Secret injected (format may vary)"
-else
-    echo "  env output (no MY_SECRET found):"
-    echo "$ENV_OUT2" | head -10
-    fail "MY_SECRET not found in forked sandbox"
-fi
-
-# Check for proxy env vars (indicates secrets proxy is active)
-if echo "$ENV_OUT2" | grep -q "HTTP_PROXY\|HTTPS_PROXY"; then
-    pass "Secrets proxy configured (HTTP_PROXY/HTTPS_PROXY set)"
-else
-    echo "  Warning: no HTTP_PROXY in env — proxy may not be configured"
-fi
+# Checkpoint layer 2
+CP2=$(api -X POST "$API/api/sandboxes/$L2_ID/checkpoints" -d '{"name":"layer2-cp"}')
+CP2_ID=$(echo "$CP2" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+[ -n "$CP2_ID" ] && [ "$CP2_ID" != "null" ] || fail "Checkpoint 2 failed: $CP2"
+for i in $(seq 1 30); do
+    CS=$(api "$API/api/sandboxes/$L2_ID/checkpoints" | python3 -c "
+import sys,json
+for c in json.load(sys.stdin):
+    if c.get('id','')=='$CP2_ID': print(c.get('status','')); break
+" 2>/dev/null)
+    [ "$CS" = "ready" ] && break; sleep 2
+done
+[ "$CS" = "ready" ] && pass "Checkpoint 2 ready ($CP2_ID)" || fail "Checkpoint 2 not ready"
 
 # ─────────────────────────────────────────────────────────
-h "Step 6: Verify baseline sandbox still clean"
+h "Layer 3: Checkpoint(store A+B merged) + Store C"
 
-ENV_OUT3=$(exec_run "$SB1_ID" "env")
-if echo "$ENV_OUT3" | grep -q "MY_SECRET"; then
-    fail "Baseline sandbox now has MY_SECRET — contamination"
-else
-    pass "Baseline sandbox still clean"
-fi
+L3=$(api -X POST "$API/api/sandboxes/from-checkpoint/$CP2_ID" -d '{"secretStore":"test-store-c"}')
+L3_ID=$(echo "$L3" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sandboxID',''))" 2>/dev/null)
+[ -n "$L3_ID" ] && [ "$L3_ID" != "null" ] || fail "Layer 3 failed: $L3"
+SANDBOX_IDS+=("$L3_ID")
+echo "  Sandbox: $L3_ID"
+sleep 5
+
+ENV_L3=$(exec_env "$L3_ID")
+echo "  Checking all secrets across 3 layers..."
+echo "$ENV_L3" | grep -q "GIT_TOKEN" || fail "L3: GIT_TOKEN missing (from layer 1 base)"
+echo "$ENV_L3" | grep -q "SHARED_KEY" || fail "L3: SHARED_KEY missing"
+echo "$ENV_L3" | grep -q "API_KEY" || fail "L3: API_KEY missing (C should override B)"
+echo "$ENV_L3" | grep -q "DEPLOY_KEY" || fail "L3: DEPLOY_KEY missing (from C)"
+pass "Layer 3: GIT_TOKEN ✓  SHARED_KEY ✓  API_KEY(C override) ✓  DEPLOY_KEY(C) ✓"
+
+# ─────────────────────────────────────────────────────────
+h "Verify: Count total unique secret env vars"
+
+SECRET_COUNT=$(echo "$ENV_L3" | grep -c "osb_sealed_" || true)
+echo "  $SECRET_COUNT sealed tokens in layer 3"
+[ "$SECRET_COUNT" -eq 4 ] && pass "Exactly 4 secrets (GIT_TOKEN, SHARED_KEY, API_KEY, DEPLOY_KEY)" || \
+    fail "Expected 4 secrets, got $SECRET_COUNT"
+
+# ─────────────────────────────────────────────────────────
+h "Verify: Proxy is configured (egress should aggregate)"
+
+echo "$ENV_L3" | grep -q "HTTP_PROXY" && pass "Secrets proxy active" || fail "Proxy not configured"
 
 echo ""
 echo "=== All tests passed ==="

@@ -1518,10 +1518,11 @@ func (s *Server) createFromCheckpoint(c echo.Context) error {
 	// envs override is currently supported on the fork path; everything else
 	// is inherited from the checkpoint's stored config.
 	var body struct {
-		Envs map[string]string `json:"envs"`
+		Envs        map[string]string `json:"envs"`
+		SecretStore string            `json:"secretStore"`
 	}
 	_ = c.Bind(&body)
-	result, httpStatus, err := s.createFromCheckpointCore(c, body.Envs, "")
+	result, httpStatus, err := s.createFromCheckpointCore(c, body.Envs, body.SecretStore)
 	if err != nil {
 		return c.JSON(httpStatus, map[string]string{"error": err.Error()})
 	}
@@ -1608,38 +1609,54 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 	_ = json.Unmarshal(cp.SandboxConfig, &originalCfg)
 
 	// Secret store resolution — supports layering:
-	// Resolve the checkpoint's store first (base), then the user's store on top (child).
-	// Child secrets win on name collision. Egress allowlists aggregate (union).
-	// On a fork-of-fork, the checkpoint's SecretStore already represents its
-	// full merged ancestry — just treat it as the base.
-	baseStore := originalCfg.SecretStore
-	if baseStore != "" {
-		if err := s.resolveSecretStoreInto(ctx, orgID, &originalCfg); err != nil {
-			return nil, http.StatusBadRequest, err
+	// Resolve stores in order: BaseSecretStore → SecretStore → user's store.
+	// Each layer's secrets merge on top (later wins on collision).
+	// Egress allowlists aggregate (union of all layers).
+	// We collect all unique store names, resolve them in order, then persist
+	// the last two as SecretStore (child) and BaseSecretStore (parent).
+	var stores []string
+	if originalCfg.BaseSecretStore != "" {
+		stores = append(stores, originalCfg.BaseSecretStore)
+	}
+	if originalCfg.SecretStore != "" {
+		stores = append(stores, originalCfg.SecretStore)
+	}
+	if userSecretStore != "" {
+		stores = append(stores, userSecretStore)
+	}
+	// Deduplicate preserving order
+	seen := make(map[string]bool)
+	var uniqueStores []string
+	for _, name := range stores {
+		if !seen[name] {
+			seen[name] = true
+			uniqueStores = append(uniqueStores, name)
 		}
 	}
-	if userSecretStore != "" && userSecretStore != baseStore {
-		baseEgress := originalCfg.EgressAllowlist
-		originalCfg.SecretStore = userSecretStore
-		if err := s.resolveSecretStoreInto(ctx, orgID, &originalCfg); err != nil {
-			return nil, http.StatusBadRequest, err
+	if len(uniqueStores) > 0 {
+		var allEgress []string
+		for _, storeName := range uniqueStores {
+			originalCfg.SecretStore = storeName
+			if err := s.resolveSecretStoreInto(ctx, orgID, &originalCfg); err != nil {
+				return nil, http.StatusBadRequest, err
+			}
+			allEgress = append(allEgress, originalCfg.EgressAllowlist...)
 		}
-		// Aggregate egress: union of base + child
-		seen := make(map[string]bool, len(originalCfg.EgressAllowlist))
-		for _, h := range originalCfg.EgressAllowlist {
-			seen[h] = true
-		}
-		for _, h := range baseEgress {
-			if !seen[h] {
-				originalCfg.EgressAllowlist = append(originalCfg.EgressAllowlist, h)
+		// Deduplicate egress
+		egressSeen := make(map[string]bool)
+		var merged []string
+		for _, h := range allEgress {
+			if !egressSeen[h] {
+				egressSeen[h] = true
+				merged = append(merged, h)
 			}
 		}
-		// Persist: child becomes SecretStore, base recorded for lineage
-		originalCfg.BaseSecretStore = baseStore
-	} else if userSecretStore != "" {
-		// Same store — just re-resolve fresh
-		if err := s.resolveSecretStoreInto(ctx, orgID, &originalCfg); err != nil {
-			return nil, http.StatusBadRequest, err
+		originalCfg.EgressAllowlist = merged
+		// Persist: last store = SecretStore, second-to-last = BaseSecretStore
+		originalCfg.SecretStore = uniqueStores[len(uniqueStores)-1]
+		originalCfg.BaseSecretStore = ""
+		if len(uniqueStores) > 1 {
+			originalCfg.BaseSecretStore = uniqueStores[len(uniqueStores)-2]
 		}
 	}
 
