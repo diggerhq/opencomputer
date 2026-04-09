@@ -70,15 +70,6 @@ func (s *Server) createSandbox(c echo.Context) error {
 		if !hasOrg {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required for image/snapshot creation"})
 		}
-		// A fork inherits the snapshot's secret store and cannot override it.
-		// Reject the combination explicitly so users can't trip a silent leak
-		// by mixing a fresh secret store with a snapshot/image fork.
-		if cfg.SecretStore != "" {
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error": "secretStore cannot be combined with snapshot or image — the fork inherits the snapshot's secret store",
-			})
-		}
-
 		// Check if the client wants build log streaming (SSE)
 		wantsSSE := c.Request().Header.Get("Accept") == "text/event-stream"
 
@@ -101,11 +92,11 @@ func (s *Server) createSandbox(c echo.Context) error {
 
 		c.SetParamNames("checkpointId")
 		c.SetParamValues(checkpointID.String())
-		// Forward user-supplied envs so they override the checkpoint's stored
-		// envs on a fork. Without this, Sandbox.create({snapshot, envs}) silently
-		// drops the envs because the core path uses originalCfg.Envs from
-		// cp.SandboxConfig (the envs the snapshot was originally built with).
-		result, status, cpErr := s.createFromCheckpointCore(c, cfg.Envs)
+		// Forward user-supplied envs and secret store so they can be applied
+		// on the fork. User envs override checkpoint's stored envs.
+		// Secret store: if checkpoint has none, user can attach one at fork time.
+		// If checkpoint already has one, user cannot override it.
+		result, status, cpErr := s.createFromCheckpointCore(c, cfg.Envs, cfg.SecretStore)
 		if cpErr != nil {
 			return c.JSON(status, map[string]string{"error": cpErr.Error()})
 		}
@@ -259,7 +250,7 @@ func (s *Server) createSandboxWithSSE(c echo.Context, ctx context.Context, orgID
 
 	c.SetParamNames("checkpointId")
 	c.SetParamValues(checkpointID.String())
-	result, _, cpErr := s.createFromCheckpointCore(c, cfg.Envs)
+	result, _, cpErr := s.createFromCheckpointCore(c, cfg.Envs, cfg.SecretStore)
 	if cpErr != nil {
 		emit("error", map[string]string{"error": cpErr.Error()})
 		return nil
@@ -1530,7 +1521,7 @@ func (s *Server) createFromCheckpoint(c echo.Context) error {
 		Envs map[string]string `json:"envs"`
 	}
 	_ = c.Bind(&body)
-	result, httpStatus, err := s.createFromCheckpointCore(c, body.Envs)
+	result, httpStatus, err := s.createFromCheckpointCore(c, body.Envs, "")
 	if err != nil {
 		return c.JSON(httpStatus, map[string]string{"error": err.Error()})
 	}
@@ -1540,15 +1531,18 @@ func (s *Server) createFromCheckpoint(c echo.Context) error {
 // createFromCheckpointCore contains the core logic for creating a sandbox from a checkpoint.
 // Returns the result map, HTTP status, or an error.
 //
-// Secret store inheritance: if the original sandbox was created with a
-// secretStore, that store NAME is persisted in cp.SandboxConfig and the fork
-// re-resolves it fresh against the DB at this point. So if the user updated a
-// secret in the store between snapshot and fork, the fork sees the new value.
-// The fork itself does NOT support overriding the secret store — it inherits.
+// Secret store handling:
+//   - If the checkpoint was created WITH a secret store, the store NAME is persisted
+//     in cp.SandboxConfig and the fork re-resolves it fresh against the DB. If the
+//     user updated a secret between snapshot and fork, the fork sees the new value.
+//     The user cannot override the inherited store (prevents accidental leaks).
+//   - If the checkpoint was created WITHOUT a secret store, the user can attach one
+//     at fork time via userSecretStore. This is safe because there are no pre-existing
+//     sealed tokens or proxy sessions to conflict with.
+//
 // userEnvs (may be nil) overrides the envs from the checkpoint's stored config.
-// User keys win over keys re-resolved from the inherited secret store, matching
-// the precedence used on the fresh-create path in resolveSecretStoreInto.
-func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]string) (map[string]interface{}, int, error) {
+// User keys win over keys re-resolved from the secret store.
+func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]string, userSecretStore string) (map[string]interface{}, int, error) {
 	checkpointIDStr := c.Param("checkpointId")
 	ctx := c.Request().Context()
 
@@ -1613,12 +1607,17 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 	var originalCfg types.SandboxConfig
 	_ = json.Unmarshal(cp.SandboxConfig, &originalCfg)
 
-	// Re-resolve the inherited secret store fresh against the DB. The
-	// checkpoint persists the store NAME (not the decrypted values) so this
-	// picks up any secret changes the user made between snapshot and fork.
-	// Resolved values land in originalCfg.SecretEnvs; originalCfg.Envs is
-	// untouched, so the user-envs merge below cannot collide with them in a
-	// way that smuggles secrets to the guest as plaintext.
+	// Secret store resolution:
+	// 1. Checkpoint already has a store → re-resolve fresh (picks up updated secrets).
+	//    User cannot override it (reject if they try).
+	// 2. Checkpoint has no store + user supplies one → attach it (fresh secrets on a clean fork).
+	// 3. Neither → no secrets.
+	if originalCfg.SecretStore != "" && userSecretStore != "" && originalCfg.SecretStore != userSecretStore {
+		return nil, http.StatusBadRequest, fmt.Errorf("cannot override inherited secret store %q — fork inherits the snapshot's store", originalCfg.SecretStore)
+	}
+	if userSecretStore != "" && originalCfg.SecretStore == "" {
+		originalCfg.SecretStore = userSecretStore
+	}
 	if originalCfg.SecretStore != "" {
 		if err := s.resolveSecretStoreInto(ctx, orgID, &originalCfg); err != nil {
 			return nil, http.StatusBadRequest, err
