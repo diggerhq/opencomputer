@@ -1957,6 +1957,33 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 
 	log.Printf("qemu: checkpoint %s: cache saved (%dms)", checkpointID, time.Since(t0).Milliseconds())
 
+	// Upload checkpoint to S3 synchronously so cross-worker forks can download it.
+	// Without this, forks routed to a different worker fail with "checkpoint not found in S3".
+	if checkpointStore != nil {
+		t1 := time.Now()
+		for _, upload := range []struct {
+			key  string
+			file string
+		}{
+			{rootfsKey, filepath.Join(cacheDir, "rootfs.qcow2")},
+			{workspaceKey, filepath.Join(cacheDir, "workspace.qcow2")},
+		} {
+			// Create tar.zst archive of the single file
+			archivePath := upload.file + ".tar.zst"
+			if err := createArchive(archivePath, cacheDir, []string{filepath.Base(upload.file)}); err != nil {
+				log.Printf("qemu: checkpoint %s: archive %s failed: %v", checkpointID, filepath.Base(upload.file), err)
+				continue
+			}
+			uploadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			if _, err := checkpointStore.Upload(uploadCtx, upload.key, archivePath); err != nil {
+				log.Printf("qemu: checkpoint %s: S3 upload %s failed: %v", checkpointID, upload.key, err)
+			}
+			cancel()
+			os.Remove(archivePath)
+		}
+		log.Printf("qemu: checkpoint %s: S3 upload complete (%dms)", checkpointID, time.Since(t1).Milliseconds())
+	}
+
 	if onReady != nil {
 		onReady()
 	}

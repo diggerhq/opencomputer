@@ -187,9 +187,8 @@ class Sandbox:
 
     @property
     def _ops_client(self) -> httpx.AsyncClient:
-        """Return the client for data operations (direct worker if available, else CP)."""
-        if self._data_client is not None:
-            return self._data_client
+        """Return the client for data operations. Always goes through the CP,
+        which handles readiness waiting and proxies to workers."""
         return self._client
 
     async def kill(self) -> None:
