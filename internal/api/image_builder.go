@@ -518,6 +518,14 @@ func (s *Server) buildImage(ctx context.Context, orgID uuid.UUID, manifest *Imag
 			return uuid.Nil, fmt.Errorf("failed to checkpoint build sandbox: %w", err)
 		}
 
+		// Wait for S3 upload to complete before the fork (which may land on another worker)
+		type uploader interface {
+			WaitUploads(timeout time.Duration)
+		}
+		if u, ok := s.manager.(uploader); ok {
+			u.WaitUploads(5 * time.Minute)
+		}
+
 		if s.store != nil {
 			_ = s.store.SetCheckpointReady(ctx, checkpointID, rootfsKey, workspaceKey, 0)
 		}
