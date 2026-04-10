@@ -657,23 +657,23 @@ func (s *GRPCServer) CreateCheckpoint(ctx context.Context, req *pb.CreateCheckpo
 		}
 	}
 
-	rootfsKey, workspaceKey, err := s.manager.CreateCheckpoint(ctx, req.SandboxId, checkpointID, s.checkpointStore, onReady)
+	// Don't fire onReady until S3 upload completes. Otherwise the CP sees
+	// "ready" and dispatches a fork before the upload finishes — cross-worker
+	// forks fail because S3 doesn't have the data yet.
+	rootfsKey, workspaceKey, err := s.manager.CreateCheckpoint(ctx, req.SandboxId, checkpointID, s.checkpointStore, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create checkpoint failed: %w", err)
 	}
 
-	// If this checkpoint is for an image build (PrepareGolden), wait for the
-	// S3 upload to complete before returning. The image builder will immediately
-	// fork from this checkpoint, possibly on a different worker that needs S3.
-	// Regular checkpoints upload in the background — same-worker restore uses
-	// local cache and doesn't need S3.
-	if req.PrepareGolden {
-		type uploader interface {
-			WaitUploads(timeout time.Duration)
-		}
-		if u, ok := s.manager.(uploader); ok {
-			u.WaitUploads(5 * time.Minute)
-		}
+	// Wait for S3 upload to complete, THEN signal ready.
+	type uploader interface {
+		WaitUploads(timeout time.Duration)
+	}
+	if u, ok := s.manager.(uploader); ok {
+		u.WaitUploads(5 * time.Minute)
+	}
+	if onReady != nil {
+		onReady()
 	}
 
 	return &pb.CreateCheckpointResponse{
