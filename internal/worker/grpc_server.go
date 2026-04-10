@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -139,12 +140,9 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 
 	// Warm fork: if checkpoint_id is set, fork from the local checkpoint cache.
 	// ForkFromCheckpoint uses the local cache directly — no S3 needed.
-	// Skip resolveTemplateDrives here: it tries S3 first which can hang on DNS
-	// failures, and ForkFromCheckpoint already handles cache lookup internally.
 	if req.CheckpointId != "" {
 		sb, err := s.manager.ForkFromCheckpoint(ctx, req.CheckpointId, cfg)
 		if err == nil {
-			// Register with sandbox router for rolling timeout tracking
 			if s.router != nil {
 				timeout := cfg.Timeout
 				if timeout <= 0 {
@@ -157,14 +155,33 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 				Status:    string(sb.Status),
 			}, nil
 		}
-		// Only fall back to S3 download if the checkpoint isn't cached locally
-		// (cross-worker restore). If the fork failed for other reasons (agent
-		// timeout, QMP error), retrying via S3 won't help and the blob may
-		// not even exist.
-		if !strings.Contains(err.Error(), "not found in cache") {
+		// If not in local cache, download the full checkpoint from S3 and retry.
+		// The archive includes drives + memory dump — everything needed for restore.
+		if strings.Contains(err.Error(), "not found in cache") && req.TemplateRootfsKey != "" && s.checkpointStore != nil {
+			log.Printf("grpc: warm fork %s: not in local cache, downloading from S3", req.CheckpointId)
+			if dlErr := s.downloadFullCheckpoint(ctx, req.CheckpointId, req.TemplateRootfsKey); dlErr != nil {
+				log.Printf("grpc: warm fork %s: S3 download failed: %v, falling back to template create", req.CheckpointId, dlErr)
+			} else {
+				sb, err = s.manager.ForkFromCheckpoint(ctx, req.CheckpointId, cfg)
+				if err == nil {
+					if s.router != nil {
+						timeout := cfg.Timeout
+						if timeout <= 0 {
+							timeout = 300
+						}
+						s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
+					}
+					return &pb.CreateSandboxResponse{
+						SandboxId: sb.ID,
+						Status:    string(sb.Status),
+					}, nil
+				}
+				log.Printf("grpc: warm fork %s: retry after S3 download failed: %v, falling back to template create", req.CheckpointId, err)
+			}
+		} else if !strings.Contains(err.Error(), "not found in cache") {
 			return nil, fmt.Errorf("fork from checkpoint %s: %w", req.CheckpointId, err)
 		}
-		log.Printf("grpc: ForkFromCheckpoint %s: not in local cache, falling back to S3 download", req.CheckpointId)
+		log.Printf("grpc: warm fork %s: resolve drives failed: %v, continuing with ForkFromCheckpoint", req.CheckpointId, err)
 	}
 
 	// Handle sandbox snapshot template: resolve S3 keys to local paths.
@@ -640,23 +657,23 @@ func (s *GRPCServer) CreateCheckpoint(ctx context.Context, req *pb.CreateCheckpo
 		}
 	}
 
-	rootfsKey, workspaceKey, err := s.manager.CreateCheckpoint(ctx, req.SandboxId, checkpointID, s.checkpointStore, onReady)
+	// Don't fire onReady until S3 upload completes. Otherwise the CP sees
+	// "ready" and dispatches a fork before the upload finishes — cross-worker
+	// forks fail because S3 doesn't have the data yet.
+	rootfsKey, workspaceKey, err := s.manager.CreateCheckpoint(ctx, req.SandboxId, checkpointID, s.checkpointStore, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create checkpoint failed: %w", err)
 	}
 
-	// If this checkpoint is for an image build (PrepareGolden), wait for the
-	// S3 upload to complete before returning. The image builder will immediately
-	// fork from this checkpoint, possibly on a different worker that needs S3.
-	// Regular checkpoints upload in the background — same-worker restore uses
-	// local cache and doesn't need S3.
-	if req.PrepareGolden {
-		type uploader interface {
-			WaitUploads(timeout time.Duration)
-		}
-		if u, ok := s.manager.(uploader); ok {
-			u.WaitUploads(5 * time.Minute)
-		}
+	// Wait for S3 upload to complete, THEN signal ready.
+	type uploader interface {
+		WaitUploads(timeout time.Duration)
+	}
+	if u, ok := s.manager.(uploader); ok {
+		u.WaitUploads(5 * time.Minute)
+	}
+	if onReady != nil {
+		onReady()
 	}
 
 	return &pb.CreateCheckpointResponse{
@@ -811,6 +828,49 @@ func (s *GRPCServer) downloadAndCacheCheckpointDrives(ctx context.Context, check
 type extractFunc func(archivePath, destPath string) error
 
 // extractArchiveCmd extracts a tar.zst archive to a directory.
+// downloadFullCheckpoint downloads a full checkpoint archive (drives + memory + metadata)
+// from S3 and extracts it into the checkpoint cache directory for ForkFromCheckpoint.
+func (s *GRPCServer) downloadFullCheckpoint(ctx context.Context, checkpointID, s3Key string) error {
+	if s.checkpointStore == nil {
+		return fmt.Errorf("checkpoint store not configured")
+	}
+
+	cacheDir := filepath.Join(s.manager.DataDir(), "checkpoint-snapshots", checkpointID)
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return fmt.Errorf("create cache dir: %w", err)
+	}
+
+	// Download archive
+	archivePath := filepath.Join(cacheDir, "checkpoint-download.tar.zst")
+	rc, err := s.checkpointStore.Download(ctx, s3Key)
+	if err != nil {
+		return fmt.Errorf("download %s: %w", s3Key, err)
+	}
+	f, err := os.Create(archivePath)
+	if err != nil {
+		rc.Close()
+		return fmt.Errorf("create archive file: %w", err)
+	}
+	if _, err := io.Copy(f, rc); err != nil {
+		f.Close()
+		rc.Close()
+		os.Remove(archivePath)
+		return fmt.Errorf("write archive: %w", err)
+	}
+	f.Close()
+	rc.Close()
+
+	// Extract (tar.zst)
+	if err := extractArchiveCmd(archivePath, cacheDir); err != nil {
+		os.Remove(archivePath)
+		return fmt.Errorf("extract archive: %w", err)
+	}
+	os.Remove(archivePath)
+
+	log.Printf("grpc: checkpoint %s: downloaded and cached from S3", checkpointID)
+	return nil
+}
+
 func extractArchiveCmd(archivePath, destDir string) error {
 	cmd := exec.Command("tar", "--zstd", "-xf", archivePath, "-C", destDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
