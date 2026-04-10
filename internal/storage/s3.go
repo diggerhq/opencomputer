@@ -97,6 +97,15 @@ func (s *CheckpointStore) CacheHit(key string) bool {
 
 // Upload uploads a checkpoint archive from a local file to S3.
 // If caching is enabled, the file is also copied into the local NVMe cache.
+// Exists checks whether an object exists in S3/blob storage.
+func (s *CheckpointStore) Exists(ctx context.Context, key string) (bool, error) {
+	_, err := s.blob.Head(ctx, s.bucket, key)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *CheckpointStore) Upload(ctx context.Context, key, localPath string) (int64, error) {
 	f, err := os.Open(localPath)
 	if err != nil {
