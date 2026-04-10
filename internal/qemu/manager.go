@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
+	"github.com/opensandbox/opensandbox/internal/sparse"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/agent"
@@ -1957,31 +1958,46 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 
 	log.Printf("qemu: checkpoint %s: cache saved (%dms)", checkpointID, time.Since(t0).Milliseconds())
 
-	// Upload checkpoint to S3 synchronously so cross-worker forks can download it.
-	// Without this, forks routed to a different worker fail with "checkpoint not found in S3".
+	// Upload checkpoint to S3 in the background so cross-worker forks can download it.
+	// Returns a channel that closes when the upload completes — callers that need
+	// the upload to finish (e.g. image builder) can wait on it.
+	// Rootfs: tar.zst archive (download path uses extractArchiveCmd)
+	// Workspace: sparse.zst archive (download path uses extractSparseCmd / OSBSPAR1 format)
 	if checkpointStore != nil {
-		t1 := time.Now()
-		for _, upload := range []struct {
-			key  string
-			file string
-		}{
-			{rootfsKey, filepath.Join(cacheDir, "rootfs.qcow2")},
-			{workspaceKey, filepath.Join(cacheDir, "workspace.qcow2")},
-		} {
-			// Create tar.zst archive of the single file
-			archivePath := upload.file + ".tar.zst"
-			if err := createArchive(archivePath, cacheDir, []string{filepath.Base(upload.file)}); err != nil {
-				log.Printf("qemu: checkpoint %s: archive %s failed: %v", checkpointID, filepath.Base(upload.file), err)
-				continue
+		m.uploadWg.Add(1)
+		go func() {
+			defer m.uploadWg.Done()
+			t1 := time.Now()
+
+			// Rootfs → tar.zst
+			rootfsArchive := filepath.Join(cacheDir, "rootfs.tar.zst")
+			if err := createArchive(rootfsArchive, cacheDir, []string{"rootfs.qcow2"}); err != nil {
+				log.Printf("qemu: checkpoint %s: rootfs archive failed: %v", checkpointID, err)
+			} else {
+				uploadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				if _, err := checkpointStore.Upload(uploadCtx, rootfsKey, rootfsArchive); err != nil {
+					log.Printf("qemu: checkpoint %s: rootfs S3 upload failed: %v", checkpointID, err)
+				}
+				cancel()
+				os.Remove(rootfsArchive)
 			}
-			uploadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			if _, err := checkpointStore.Upload(uploadCtx, upload.key, archivePath); err != nil {
-				log.Printf("qemu: checkpoint %s: S3 upload %s failed: %v", checkpointID, upload.key, err)
+
+			// Workspace → sparse.zst (OSBSPAR1 format)
+			workspaceSrc := filepath.Join(cacheDir, "workspace.qcow2")
+			workspaceArchive := filepath.Join(cacheDir, "workspace.sparse.zst")
+			if _, err := sparse.Create(workspaceSrc, workspaceArchive); err != nil {
+				log.Printf("qemu: checkpoint %s: workspace sparse archive failed: %v", checkpointID, err)
+			} else {
+				uploadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				if _, err := checkpointStore.Upload(uploadCtx, workspaceKey, workspaceArchive); err != nil {
+					log.Printf("qemu: checkpoint %s: workspace S3 upload failed: %v", checkpointID, err)
+				}
+				cancel()
+				os.Remove(workspaceArchive)
 			}
-			cancel()
-			os.Remove(archivePath)
-		}
-		log.Printf("qemu: checkpoint %s: S3 upload complete (%dms)", checkpointID, time.Since(t1).Milliseconds())
+
+			log.Printf("qemu: checkpoint %s: S3 upload complete (%dms)", checkpointID, time.Since(t1).Milliseconds())
+		}()
 	}
 
 	if onReady != nil {
