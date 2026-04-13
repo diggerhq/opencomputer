@@ -1727,7 +1727,67 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 		}
 	}
 
-	// Record session immediately
+	// Boot VM synchronously so the worker's in-memory sandbox map is populated
+	// before we respond or record the session. Previously this ran in a goroutine
+	// with the session row written first as status=running, which allowed
+	// immediate hibernate/restore/etc. to route to a worker whose m.vms[id] was
+	// not yet populated and 500 with "sandbox not found".
+	var createErr error
+	if grpcClient != nil {
+		// Use background context — the fork has its own internal timeouts
+		// (30s agent connect, 10s QMP, 5s network patch). An external deadline
+		// here causes orphaned VMs: the gRPC layer returns DeadlineExceeded
+		// while the worker finishes creating the VM, leaving it untracked.
+		_, createErr = grpcClient.CreateSandbox(context.Background(), &pb.CreateSandboxRequest{
+			Template:             originalCfg.Template,
+			Timeout:              int32(timeout),
+			Envs:                 originalCfg.Envs,
+			MemoryMb:             int32(originalCfg.MemoryMB),
+			CpuCount:             int32(originalCfg.CpuCount),
+			NetworkEnabled:       originalCfg.NetworkEnabled,
+			Port:                 int32(originalCfg.Port),
+			TemplateRootfsKey:    *cp.RootfsS3Key,
+			TemplateWorkspaceKey: *cp.WorkspaceS3Key,
+			CheckpointId:         checkpointID.String(),
+			SandboxId:            sandboxID,
+			EgressAllowlist:      originalCfg.EgressAllowlist,
+			SecretAllowedHosts:   flattenSecretAllowedHosts(originalCfg.SecretAllowedHosts),
+			SecretEnvs:           originalCfg.SecretEnvs,
+		})
+	} else {
+		// Combined mode: create locally — no external timeout, same reasoning as above
+		cfg := originalCfg
+		cfg.Timeout = timeout
+		cfg.TemplateRootfsKey = *cp.RootfsS3Key
+		cfg.TemplateWorkspaceKey = *cp.WorkspaceS3Key
+		cfg.SandboxID = sandboxID
+		cfg.CheckpointID = checkpointID.String()
+
+		forkMgr, hasFork := s.manager.(interface {
+			ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error)
+		})
+		if hasFork {
+			_, createErr = forkMgr.ForkFromCheckpoint(context.Background(), checkpointID.String(), cfg)
+		} else {
+			_, createErr = s.manager.Create(context.Background(), cfg)
+		}
+	}
+
+	// Unblock any callers waiting on this pendingCreate entry with the outcome.
+	pending.err = createErr
+	close(pending.ready)
+	if s.router != nil {
+		s.router.MarkCreated(sandboxID, createErr)
+	}
+
+	if createErr != nil {
+		s.pendingCreates.Delete(sandboxID)
+		log.Printf("api: fork %s failed: %v", sandboxID, createErr)
+		return nil, http.StatusInternalServerError, fmt.Errorf("fork from checkpoint: %w", createErr)
+	}
+
+	// Record session only after the worker has the VM registered so the session
+	// row never points at a worker that does not yet own the VM.
 	if s.store != nil {
 		template := originalCfg.Template
 		if template == "" {
@@ -1740,72 +1800,11 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 		_ = s.store.SetSandboxCheckpointID(ctx, sandboxID, checkpointID)
 	}
 
-	// Boot VM in background
-	go func() {
-		var createErr error
-
-		if grpcClient != nil {
-			// Use background context — the fork has its own internal timeouts
-			// (30s agent connect, 10s QMP, 5s network patch). An external deadline
-			// here causes orphaned VMs: the gRPC layer returns DeadlineExceeded
-			// while the worker finishes creating the VM, leaving it untracked.
-			_, createErr = grpcClient.CreateSandbox(context.Background(), &pb.CreateSandboxRequest{
-				Template:             originalCfg.Template,
-				Timeout:              int32(timeout),
-				Envs:                 originalCfg.Envs,
-				MemoryMb:             int32(originalCfg.MemoryMB),
-				CpuCount:             int32(originalCfg.CpuCount),
-				NetworkEnabled:       originalCfg.NetworkEnabled,
-				Port:                 int32(originalCfg.Port),
-				TemplateRootfsKey:    *cp.RootfsS3Key,
-				TemplateWorkspaceKey: *cp.WorkspaceS3Key,
-				CheckpointId:         checkpointID.String(),
-				SandboxId:            sandboxID,
-				EgressAllowlist:      originalCfg.EgressAllowlist,
-				SecretAllowedHosts:   flattenSecretAllowedHosts(originalCfg.SecretAllowedHosts),
-				SecretEnvs:           originalCfg.SecretEnvs,
-			})
-		} else {
-			// Combined mode: create locally — no external timeout, same reasoning as above
-			cfg := originalCfg
-			cfg.Timeout = timeout
-			cfg.TemplateRootfsKey = *cp.RootfsS3Key
-			cfg.TemplateWorkspaceKey = *cp.WorkspaceS3Key
-			cfg.SandboxID = sandboxID
-			cfg.CheckpointID = checkpointID.String()
-
-			forkMgr, hasFork := s.manager.(interface {
-				ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error)
-			})
-			if hasFork {
-				_, createErr = forkMgr.ForkFromCheckpoint(context.Background(), checkpointID.String(), cfg)
-			} else {
-				_, createErr = s.manager.Create(context.Background(), cfg)
-			}
-		}
-
-		if createErr != nil {
-			log.Printf("api: async fork %s failed: %v", sandboxID, createErr)
-		}
-
-		// Signal completion
-		pending.err = createErr
-		close(pending.ready)
-
-		// Also signal router if available (combined mode)
-		if s.router != nil {
-			s.router.MarkCreated(sandboxID, createErr)
-		}
-
-		// Apply any existing patches for this checkpoint after boot
-		if createErr == nil {
-			s.applyPendingPatches(sandboxID, workerID)
-		}
-	}()
+	s.applyPendingPatches(sandboxID, workerID)
 
 	result := map[string]interface{}{
 		"sandboxID":        sandboxID,
-		"status":           "creating",
+		"status":           "running",
 		"token":            token,
 		"region":           region,
 		"workerID":         workerID,
