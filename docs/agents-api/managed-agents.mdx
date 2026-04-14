@@ -1,0 +1,95 @@
+---
+title: "Managed Agents"
+description: "Cores, channels, and packages — the building blocks of a managed agent"
+---
+
+A managed agent is an agent with a **core** — a blessed runtime that OpenComputer knows how to configure, connect, and extend. Instead of managing snapshots and entrypoints yourself, you pick a core and build up from there.
+
+```
+ManagedAgent = Core + Channels + Packages + Secrets
+```
+
+## Cores
+
+A core is the AI runtime that powers your agent. When you create a managed agent with `--core`, OpenComputer boots a sandbox with that runtime pre-installed, an LLM key configured, and a gateway ready to accept channels.
+
+```bash
+oc agent create my-agent --core hermes
+```
+
+| Core | Runtime | What you get |
+|------|---------|-------------|
+| `hermes` | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Self-improving AI agent with skill creation, memory, multi-channel gateway, browser, code execution |
+
+Without `--core`, the agent uses the raw sandbox path — you provide your own `snapshot` and `entrypoint` via the API. Managed and raw agents coexist on the same platform.
+
+## Channels
+
+A channel is a messaging platform connected to your agent. You **connect** and **disconnect** channels.
+
+```bash
+oc agent connect my-agent telegram --bot-token <token>
+oc agent disconnect my-agent telegram
+```
+
+| Channel | How it works |
+|---------|-------------|
+| `telegram` | Registers a webhook with Telegram. Messages flow through the OpenComputer gateway to your agent's sandbox. The agent replies directly to Telegram. |
+
+Channels are stateless — disconnecting removes the webhook and config. Nothing to clean up.
+
+When you connect a channel, the platform:
+
+1. Stores the channel secret (bot token) in the agent's secret store
+2. Registers the webhook with the channel provider
+3. Configures the core for webhook mode
+4. Restarts the gateway
+
+## Packages
+
+A package extends what the agent can do beyond its core. You **install** and **uninstall** packages.
+
+```bash
+oc agent install my-agent gbrain
+oc agent uninstall my-agent gbrain
+```
+
+| Package | What it adds |
+|---------|-------------|
+| `gbrain` | Personal knowledge system — 34 MCP tools for pages, vector search, graph links, timeline, files. Backed by a managed Postgres database. |
+
+Packages can be **stateful**. When you install gbrain, OpenComputer creates a managed Postgres database for that agent. The database lives outside the sandbox and survives instance restarts, uninstall/reinstall cycles, and even agent recreation.
+
+Uninstalling a package removes the wiring (MCP config) but preserves the data by default.
+
+## Putting it together
+
+Three commands to a personal AI agent on Telegram with persistent memory:
+
+```bash
+# Boot a Hermes agent
+oc agent create my-hermes --core hermes
+
+# Connect Telegram (create a bot via @BotFather first)
+oc agent connect my-hermes telegram --bot-token <token>
+
+# Install persistent memory
+oc agent install my-hermes gbrain
+```
+
+See the [Create a Hermes Agent](/guides/create-hermes-agent) guide for a step-by-step walkthrough, and the [gbrain package](/agents-api/gbrain) page for details on persistent memory.
+
+## The manual path
+
+Managed agents are sugar over OpenComputer sandboxes. You can always drop to the sandbox level:
+
+```bash
+# Shell into any agent's sandbox
+oc shell my-hermes
+
+# From there: edit config, install software, debug, run native commands
+cat ~/.hermes/config.yaml
+hermes skill list
+```
+
+The managed path and the manual path coexist. Channels and packages that you wire manually (via `oc shell`) won't appear in the managed state, but they work fine.
