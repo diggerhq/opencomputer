@@ -78,6 +78,8 @@
       "group": "Agents API",
       "pages": [
         "agents-api/overview",
+        "agents-api/managed-agents",
+        "agents-api/gbrain",
         "agents-api/agents",
         "agents-api/instances",
         "agents-api/sessions"
