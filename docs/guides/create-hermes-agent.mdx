@@ -28,12 +28,9 @@ oc config set api-key YOUR_API_KEY
 oc agent create my-hermes --core hermes
 ```
 
-This does three things behind the scenes:
-1. Creates an agent record with the `hermes` managed core
-2. Boots a sandbox from the Hermes checkpoint (pre-built image with Hermes, Python, Bun)
-3. Injects an LLM API key and starts the Hermes gateway process
+This creates the agent, provisions its environment, configures the LLM provider, and starts the Hermes gateway.
 
-Check that the instance is running:
+Check that the agent is running:
 
 ```bash
 oc agent get my-hermes
@@ -48,7 +45,7 @@ Packages:  -
 Instance:  inst_... (running)
 ```
 
-Wait for the status to show `running` before proceeding. Checkpoint restore typically takes 20–30 seconds.
+Wait for the status to show `running` before proceeding. Provisioning typically takes 20–30 seconds.
 
 ---
 
