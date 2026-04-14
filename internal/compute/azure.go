@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v6"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork"
+	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
 )
 
 const (
@@ -31,6 +34,7 @@ type AzurePoolConfig struct {
 	SSHPublicKey       string // SSH public key content
 	DataDiskSizeGB     int    // data disk size (default: 256)
 	WorkerEnvBase64 string // base64-encoded worker.env content (injected via cloud-init)
+	KeyVaultName    string // Azure Key Vault name for dynamic image ID refresh (e.g. "opensandbox-prod")
 }
 
 // AzurePool implements compute.Pool using Azure VMs.
@@ -38,7 +42,9 @@ type AzurePool struct {
 	vmClient   *armcompute.VirtualMachinesClient
 	diskClient *armcompute.DisksClient
 	nicClient  *armnetwork.InterfacesClient
+	mu         sync.RWMutex // protects cfg.ImageID
 	cfg        AzurePoolConfig
+	kvClient   *azsecrets.Client // Key Vault client for dynamic image refresh (nil if not configured)
 }
 
 // NewAzurePool creates an Azure compute pool using default credentials (managed identity, CLI, env vars).
@@ -70,12 +76,26 @@ func NewAzurePool(cfg AzurePoolConfig) (*AzurePool, error) {
 		cfg.DataDiskSizeGB = 256
 	}
 
-	return &AzurePool{
+	pool := &AzurePool{
 		vmClient:   vmClient,
 		diskClient: diskClient,
 		nicClient:  nicClient,
 		cfg:        cfg,
-	}, nil
+	}
+
+	// Initialize Key Vault client for dynamic image refresh
+	if cfg.KeyVaultName != "" {
+		vaultURL := fmt.Sprintf("https://%s.vault.azure.net/", cfg.KeyVaultName)
+		kvClient, err := azsecrets.NewClient(vaultURL, cred, nil)
+		if err != nil {
+			log.Printf("azure: Key Vault client failed (image refresh disabled): %v", err)
+		} else {
+			pool.kvClient = kvClient
+			log.Printf("azure: Key Vault image refresh enabled (vault=%s)", cfg.KeyVaultName)
+		}
+	}
+
+	return pool, nil
 }
 
 func (p *AzurePool) CreateMachine(ctx context.Context, opts MachineOpts) (*Machine, error) {
@@ -119,8 +139,13 @@ func (p *AzurePool) CreateMachine(ctx context.Context, opts MachineOpts) (*Machi
 	userData := p.buildUserData(opts)
 	userDataB64 := base64.StdEncoding.EncodeToString([]byte(userData))
 
+	// Read current image ID (may be updated by RefreshAMI)
+	p.mu.RLock()
+	imageID := p.cfg.ImageID
+	p.mu.RUnlock()
+
 	// Create VM
-	log.Printf("azure: creating VM %s (size=%s, image=%s)", vmName, vmSize, p.cfg.ImageID)
+	log.Printf("azure: creating VM %s (size=%s, image=%s)", vmName, vmSize, imageID)
 	vmPoller, err := p.vmClient.BeginCreateOrUpdate(ctx, p.cfg.ResourceGroup, vmName, armcompute.VirtualMachine{
 		Location: to.Ptr(p.cfg.Region),
 		Tags: map[string]*string{
@@ -131,7 +156,7 @@ func (p *AzurePool) CreateMachine(ctx context.Context, opts MachineOpts) (*Machi
 			HardwareProfile: &armcompute.HardwareProfile{
 				VMSize: to.Ptr(armcompute.VirtualMachineSizeTypes(vmSize)),
 			},
-			StorageProfile: p.buildStorageProfile(),
+			StorageProfile: p.buildStorageProfile(imageID),
 			OSProfile: &armcompute.OSProfile{
 				ComputerName:  to.Ptr(vmName),
 				AdminUsername: to.Ptr(p.cfg.AdminUsername),
@@ -162,10 +187,28 @@ func (p *AzurePool) CreateMachine(ctx context.Context, opts MachineOpts) (*Machi
 	}, nil)
 	if err != nil {
 		log.Printf("azure: VM %s BeginCreateOrUpdate error detail: %+v", vmName, err)
+		// Clean up orphaned NIC
+		go func() {
+			cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if delPoller, delErr := p.nicClient.BeginDelete(cleanCtx, p.cfg.ResourceGroup, nicName, nil); delErr == nil {
+				delPoller.PollUntilDone(cleanCtx, nil)
+				log.Printf("azure: cleaned up orphaned NIC %s", nicName)
+			}
+		}()
 		return nil, fmt.Errorf("azure: create VM %s failed: %w", vmName, err)
 	}
 	vmResp, err := vmPoller.PollUntilDone(ctx, nil)
 	if err != nil {
+		// Clean up orphaned NIC on poll failure too
+		go func() {
+			cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if delPoller, delErr := p.nicClient.BeginDelete(cleanCtx, p.cfg.ResourceGroup, nicName, nil); delErr == nil {
+				delPoller.PollUntilDone(cleanCtx, nil)
+				log.Printf("azure: cleaned up orphaned NIC %s after poll failure", nicName)
+			}
+		}()
 		return nil, fmt.Errorf("azure: VM %s poll failed: %w", vmName, err)
 	}
 	log.Printf("azure: VM %s created successfully", vmName)
@@ -300,13 +343,85 @@ func (p *AzurePool) DrainMachine(ctx context.Context, machineID string) error {
 	return err
 }
 
+// CleanupOrphanedResources finds and deletes NICs not attached to any VM.
+// These accumulate when VM creation fails partway through.
+func (p *AzurePool) CleanupOrphanedResources(ctx context.Context) (int, error) {
+	cleaned := 0
+	pager := p.nicClient.NewListPager(p.cfg.ResourceGroup, nil)
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return cleaned, fmt.Errorf("azure: list NICs: %w", err)
+		}
+		for _, nic := range page.Value {
+			if nic.Properties == nil || nic.Properties.VirtualMachine != nil {
+				continue // attached to a VM, skip
+			}
+			name := ""
+			if nic.Name != nil {
+				name = *nic.Name
+			}
+			if !strings.HasPrefix(name, "osb-worker-") {
+				continue // not ours
+			}
+			log.Printf("azure: cleaning orphaned NIC %s", name)
+			poller, err := p.nicClient.BeginDelete(ctx, p.cfg.ResourceGroup, name, nil)
+			if err != nil {
+				log.Printf("azure: failed to delete orphaned NIC %s: %v", name, err)
+				continue
+			}
+			if _, err := poller.PollUntilDone(ctx, nil); err != nil {
+				log.Printf("azure: orphaned NIC %s delete poll failed: %v", name, err)
+			} else {
+				cleaned++
+			}
+		}
+	}
+	return cleaned, nil
+}
+
+// RefreshAMI checks Azure Key Vault for a new worker image ID and version.
+// Satisfies the controlplane.AMIRefresher interface.
+// If Key Vault is not configured, returns the static image ID with no error.
+func (p *AzurePool) RefreshAMI(ctx context.Context) (imageID string, version string, err error) {
+	if p.kvClient == nil {
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		return p.cfg.ImageID, "", nil
+	}
+
+	// Fetch image ID from Key Vault
+	resp, err := p.kvClient.GetSecret(ctx, "worker-image-id", "", nil)
+	if err != nil {
+		return "", "", fmt.Errorf("azure: Key Vault get worker-image-id: %w", err)
+	}
+	if resp.Value == nil || *resp.Value == "" {
+		return "", "", fmt.Errorf("azure: Key Vault worker-image-id is empty")
+	}
+	newImageID := *resp.Value
+
+	// Fetch version
+	if vResp, vErr := p.kvClient.GetSecret(ctx, "worker-image-version", "", nil); vErr == nil && vResp.Value != nil {
+		version = *vResp.Value
+	}
+
+	p.mu.Lock()
+	if newImageID != p.cfg.ImageID {
+		log.Printf("azure: image updated via Key Vault: %s -> %s (version=%s)", p.cfg.ImageID, newImageID, version)
+		p.cfg.ImageID = newImageID
+	}
+	p.mu.Unlock()
+
+	return newImageID, version, nil
+}
+
 // buildStorageProfile creates the storage profile, handling the difference between
 // custom images (which already define OS disk) and marketplace images (which need explicit OS disk config).
-func (p *AzurePool) buildStorageProfile() *armcompute.StorageProfile {
-	isCustomImage := strings.HasPrefix(p.cfg.ImageID, "/")
+func (p *AzurePool) buildStorageProfile(imageID string) *armcompute.StorageProfile {
+	isCustomImage := strings.HasPrefix(imageID, "/")
 
 	profile := &armcompute.StorageProfile{
-		ImageReference: p.parseImageRef(),
+		ImageReference: p.parseImageRef(imageID),
 	}
 
 	// Custom images already define OS disk and may include data disks.
@@ -337,8 +452,7 @@ func (p *AzurePool) buildStorageProfile() *armcompute.StorageProfile {
 // parseImageRef parses the image reference. Supports:
 //   - Full resource ID: /subscriptions/.../images/my-image
 //   - URN: Publisher:Offer:SKU:Version (e.g. Canonical:ubuntu-24_04-lts:server:latest)
-func (p *AzurePool) parseImageRef() *armcompute.ImageReference {
-	img := p.cfg.ImageID
+func (p *AzurePool) parseImageRef(img string) *armcompute.ImageReference {
 	if strings.HasPrefix(img, "/") {
 		return &armcompute.ImageReference{ID: to.Ptr(img)}
 	}
@@ -399,21 +513,34 @@ func (p *AzurePool) buildUserData(opts MachineOpts) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\nset -euo pipefail\n\n")
 
-	// Mount data disk — try already-formatted first, then format if new
-	sb.WriteString("# Mount data disk\n")
+	// Mount data/temp disk as XFS with reflink (required for QEMU snapshot copies)
+	// v6 VMs use NVMe paths, v5 uses SCSI paths. Try both.
+	sb.WriteString("# Mount data disk (XFS with reflink)\n")
 	sb.WriteString("if ! mountpoint -q /data 2>/dev/null; then\n")
 	sb.WriteString("  mkdir -p /data\n")
-	sb.WriteString("  # Find data disk (not sda=OS, not sdb=temp)\n")
-	sb.WriteString("  for d in /dev/sdc /dev/sdd; do\n")
+	sb.WriteString("  DISK=\"\"\n")
+	sb.WriteString("  # Try NVMe temp disks (v6 VMs), then SCSI data disks (v5 VMs), then SCSI temp disk\n")
+	sb.WriteString("  for d in /dev/nvme1n1 /dev/nvme2n1 /dev/nvme0n1 /dev/sdc /dev/sdd /dev/sdb; do\n")
 	sb.WriteString("    [ -b \"$d\" ] || continue\n")
-	sb.WriteString("    if blkid \"$d\" | grep -q xfs; then\n")
-	sb.WriteString("      mount \"$d\" /data && break\n")
-	sb.WriteString("    elif ! blkid \"$d\" &>/dev/null; then\n")
-	sb.WriteString("      mkfs.xfs -m reflink=1 \"$d\" && mount \"$d\" /data && break\n")
-	sb.WriteString("    fi\n")
+	sb.WriteString("    # Skip the OS disk\n")
+	sb.WriteString("    ROOT_DEV=$(lsblk -no PKNAME $(findmnt -n -o SOURCE /) 2>/dev/null | head -1)\n")
+	sb.WriteString("    [ \"$(basename $d)\" = \"$ROOT_DEV\" ] && continue\n")
+	sb.WriteString("    DISK=\"$d\"; break\n")
 	sb.WriteString("  done\n")
+	sb.WriteString("  if [ -n \"$DISK\" ]; then\n")
+	sb.WriteString("    if blkid \"$DISK\" 2>/dev/null | grep -q xfs; then\n")
+	sb.WriteString("      mount \"$DISK\" /data\n")
+	sb.WriteString("    else\n")
+	sb.WriteString("      mkfs.xfs -f -m reflink=1 \"$DISK\" && mount \"$DISK\" /data\n")
+	sb.WriteString("    fi\n")
+	sb.WriteString("  fi\n")
 	sb.WriteString("fi\n")
-	sb.WriteString("mkdir -p /data/sandboxes /data/firecracker/images\n\n")
+	sb.WriteString("mkdir -p /data/sandboxes /data/firecracker/images\n")
+	sb.WriteString("# Copy rootfs images from OS disk to data disk (NVMe mount may overlay /data)\n")
+	sb.WriteString("if [ -d /opt/opensandbox/images ] && [ ! -f /data/firecracker/images/default.ext4 ]; then\n")
+	sb.WriteString("  cp /opt/opensandbox/images/*.ext4 /data/firecracker/images/ 2>/dev/null || true\n")
+	sb.WriteString("  echo 'Copied rootfs images from /opt/opensandbox/images to /data/firecracker/images'\n")
+	sb.WriteString("fi\n\n")
 
 	// Write worker env file from base64-encoded config
 	if p.cfg.WorkerEnvBase64 != "" {

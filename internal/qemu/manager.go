@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
+	"strconv"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -57,8 +59,9 @@ type VMInstance struct {
 	restoring     chan struct{}
 	opMu          sync.Mutex   // serializes destructive VM ops (checkpoint, restore, hibernate)
 	archiveDone   chan struct{} // closed when async hibernate archive completes (nil if no archive in flight)
-	baseMemoryMB         int  // initial memory passed to -m (before virtio-mem)
-	virtioMemRequestedMB int  // additional memory via virtio-mem (beyond base)
+	baseMemoryMB         int    // initial memory passed to -m (before virtio-mem)
+	virtioMemRequestedMB int    // additional memory via virtio-mem (beyond base)
+	goldenVersion        string // golden version this sandbox was created from (empty if cold-booted)
 }
 
 // SandboxMeta is persisted to sandbox-meta.json for recovery after hard kills.
@@ -125,6 +128,7 @@ type Manager struct {
 	goldenCID     uint32 // CID used when the golden snapshot was created
 	goldenGuestIP string // guest IP baked into the golden snapshot
 	goldenHostIP  string // host IP of the golden subnet (for temp addr on TAP)
+	goldenVersion string // hash of base image — used for overlay-based migration
 
 	// Metadata service callbacks (set via SetMetadataCallbacks)
 	onSandboxReady   func(sandboxID, guestIP, template string, startedAt time.Time)
@@ -208,19 +212,18 @@ func (m *Manager) SetSecretsProxy(sp SecretsProxyIntegration) {
 	m.secretsProxy = sp
 }
 
+// GoldenVersion returns the hash identifying this worker's golden snapshot base image.
+// Empty string means no golden snapshot is available.
+func (m *Manager) GoldenVersion() string {
+	return m.goldenVersion
+}
+
 // sealSandboxEnvs runs cfg.Envs through the secrets proxy to swap real values
 // for sealed tokens, registers a proxy session for the guest IP, and writes the
 // proxy CA cert into the guest trust store. Returns the env map that should be
 // injected into the VM (sealed tokens + HTTP_PROXY/CA env vars), or cfg.Envs
 // unchanged if the secrets proxy is not configured.
-//
-// IMPORTANT: This is the QEMU equivalent of internal/firecracker/manager.go:451.
-// The QEMU manager originally shipped without this call, so secrets were
-// injected into the guest as plaintext — see git history for f2e64e3.
 func (m *Manager) sealSandboxEnvs(ctx context.Context, sandboxID string, netCfg *NetworkConfig, agent *AgentClient, cfg types.SandboxConfig) map[string]string {
-	// If the secrets proxy is not configured, just merge the two maps with
-	// user (Envs) winning. This keeps non-prod environments working without
-	// the proxy registered while preserving the user-wins precedence rule.
 	if m.secretsProxy == nil {
 		if len(cfg.SecretEnvs) == 0 {
 			return cfg.Envs
@@ -241,9 +244,6 @@ func (m *Manager) sealSandboxEnvs(ctx context.Context, sandboxID string, netCfg 
 	if sealed == nil {
 		return cfg.Envs
 	}
-	// Inject the proxy CA cert so HTTPS apps inside the VM trust the MITM proxy.
-	// CreateSealedEnvs already populates NODE_EXTRA_CA_CERTS / REQUESTS_CA_BUNDLE /
-	// SSL_CERT_FILE pointing at this path; without the file the env vars are dead.
 	if certPEM := m.secretsProxy.CACertPEM(); len(certPEM) > 0 {
 		writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := agent.WriteFile(writeCtx, "/usr/local/share/ca-certificates/opensandbox-proxy.crt", certPEM); err != nil {
@@ -270,21 +270,49 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		os.RemoveAll(goldenDir)
 	}
 
-	// If golden snapshot already exists, just use it
+	// If golden snapshot already exists, check if the base image has changed
 	if (fileExists(memFile) || fileExists(memFile+".zst")) && (fileExists(rootfsFile) || fileExists(filepath.Join(goldenDir, "rootfs.ext4"))) {
-		m.goldenDir = goldenDir
-		// Read saved golden CID + guest IP
-		if cidBytes, err := os.ReadFile(filepath.Join(goldenDir, "cid")); err == nil {
-			fmt.Sscanf(string(cidBytes), "%d", &m.goldenCID)
+		// Load stored golden version
+		versionFile := filepath.Join(goldenDir, "version")
+		var storedVersion string
+		if vBytes, err := os.ReadFile(versionFile); err == nil {
+			storedVersion = string(vBytes)
 		}
-		if ipBytes, err := os.ReadFile(filepath.Join(goldenDir, "guest_ip")); err == nil {
-			m.goldenGuestIP = string(ipBytes)
+
+		// Check if the base image on disk matches the golden snapshot
+		stale := false
+		baseImage, _ := ResolveBaseImage(m.cfg.ImagesDir, "default")
+		if baseImage != "" && storedVersion != "" {
+			if currentHash, err := computeGoldenVersion(baseImage); err == nil && currentHash != storedVersion {
+				log.Printf("qemu: base image changed (golden=%s, disk=%s), rebuilding golden snapshot", storedVersion, currentHash)
+				stale = true
+			}
 		}
-		if ipBytes, err := os.ReadFile(filepath.Join(goldenDir, "host_ip")); err == nil {
-			m.goldenHostIP = string(ipBytes)
+
+		if !stale {
+			m.goldenDir = goldenDir
+			m.goldenVersion = storedVersion
+			if cidBytes, err := os.ReadFile(filepath.Join(goldenDir, "cid")); err == nil {
+				fmt.Sscanf(string(cidBytes), "%d", &m.goldenCID)
+			}
+			if ipBytes, err := os.ReadFile(filepath.Join(goldenDir, "guest_ip")); err == nil {
+				m.goldenGuestIP = string(ipBytes)
+			}
+			if ipBytes, err := os.ReadFile(filepath.Join(goldenDir, "host_ip")); err == nil {
+				m.goldenHostIP = string(ipBytes)
+			}
+			if storedVersion == "" && baseImage != "" {
+				if v, err := computeGoldenVersion(baseImage); err == nil {
+					m.goldenVersion = v
+					_ = os.WriteFile(versionFile, []byte(v), 0644)
+				}
+			}
+			log.Printf("qemu: golden snapshot already exists at %s (CID=%d, guestIP=%s, version=%s)", goldenDir, m.goldenCID, m.goldenGuestIP, m.goldenVersion)
+			return nil
 		}
-		log.Printf("qemu: golden snapshot already exists at %s (CID=%d, guestIP=%s)", goldenDir, m.goldenCID, m.goldenGuestIP)
-		return nil
+
+		// Stale — remove old golden and fall through to rebuild
+		os.RemoveAll(goldenDir)
 	}
 
 	log.Printf("qemu: preparing golden snapshot...")
@@ -495,6 +523,12 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		log.Printf("qemu: golden mem compressed with zstd")
 	}
 
+	// Compute and persist golden version hash
+	if v, err := computeGoldenVersion(baseImage); err == nil {
+		m.goldenVersion = v
+		_ = os.WriteFile(filepath.Join(goldenDir, "version"), []byte(v), 0644)
+	}
+
 	// Remove preparing marker — golden snapshot is complete
 	os.Remove(preparingMarker)
 
@@ -505,9 +539,53 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	_ = os.WriteFile(filepath.Join(goldenDir, "cid"), []byte(fmt.Sprintf("%d", goldenCID)), 0644)
 	_ = os.WriteFile(filepath.Join(goldenDir, "guest_ip"), []byte(netCfg.GuestIP), 0644)
 	_ = os.WriteFile(filepath.Join(goldenDir, "host_ip"), []byte(netCfg.HostIP), 0644)
-	log.Printf("qemu: golden snapshot ready (%dms total, mem=%s, CID=%d, guestIP=%s)",
-		time.Since(t0).Milliseconds(), memFile, goldenCID, netCfg.GuestIP)
+	log.Printf("qemu: golden snapshot ready (%dms total, mem=%s, CID=%d, guestIP=%s, version=%s)",
+		time.Since(t0).Milliseconds(), memFile, goldenCID, netCfg.GuestIP, m.goldenVersion)
 	return nil
+}
+
+// RebuildGoldenSnapshot builds a new golden snapshot alongside the old one,
+// then atomically swaps to it. Existing sandboxes keep running on their
+// independent reflink copies — only new sandboxes use the new golden.
+// Returns the old and new golden version strings.
+func (m *Manager) RebuildGoldenSnapshot() (oldVersion, newVersion string, err error) {
+	oldVersion = m.goldenVersion
+	goldenDir := filepath.Join(m.cfg.DataDir, "golden")
+
+	// Build new golden in a staging directory
+	stagingDir := filepath.Join(m.cfg.DataDir, "golden-staging")
+	os.RemoveAll(stagingDir) // clean up any prior failed attempt
+
+	// Temporarily point goldenDir to staging so PrepareGoldenSnapshot builds there
+	oldGoldenDir := m.goldenDir
+	m.goldenDir = ""
+
+	// Rename current golden out of the way so PrepareGoldenSnapshot sees no existing snapshot
+	backupDir := filepath.Join(m.cfg.DataDir, "golden-old")
+	os.RemoveAll(backupDir)
+	if err := os.Rename(goldenDir, backupDir); err != nil && !os.IsNotExist(err) {
+		m.goldenDir = oldGoldenDir
+		return oldVersion, "", fmt.Errorf("backup old golden: %w", err)
+	}
+
+	// Build fresh golden snapshot
+	if err := m.PrepareGoldenSnapshot(); err != nil {
+		// Restore old golden on failure
+		os.RemoveAll(goldenDir)
+		if backupErr := os.Rename(backupDir, goldenDir); backupErr == nil {
+			m.goldenDir = oldGoldenDir
+			m.goldenVersion = oldVersion
+		}
+		return oldVersion, "", fmt.Errorf("rebuild golden: %w", err)
+	}
+
+	newVersion = m.goldenVersion
+
+	// Clean up old golden — sandboxes created from it have independent reflink copies
+	os.RemoveAll(backupDir)
+
+	log.Printf("qemu: golden snapshot rebuilt (old=%s, new=%s)", oldVersion, newVersion)
+	return oldVersion, newVersion, nil
 }
 
 // createFromGolden creates a new VM by restoring from the golden snapshot.
@@ -718,6 +796,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		guestMAC:      guestMAC,
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
+		goldenVersion: m.goldenVersion,
 	}
 
 	// Connect to agent via Unix socket
@@ -950,13 +1029,23 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 	if strings.HasSuffix(workspacePath, ".ext4") {
 		wsFmt = "raw"
 	}
+	// Memory layout: base memory + virtio-mem pool for hotplug scaling.
+	// The virtio-mem backend allocates lazily (only requested-size is committed),
+	// but maxmem must exceed base+pool for QEMU to accept the device.
+	// Pool = 16GB - base, so any sandbox can scale up to 16GB total regardless of base.
+	// Round up to 128MB block alignment.
+	virtioMemPoolMB := ((16384 - memMB + 127) / 128) * 128
+	if virtioMemPoolMB < 1024 {
+		virtioMemPoolMB = 1024 // minimum 1GB pool
+	}
+	maxMemMB := memMB + virtioMemPoolMB
+
 	return []string{
 		"-machine", "q35,accel=kvm",
 		"-cpu", "host",
-		"-m", fmt.Sprintf("%dM,maxmem=16G", memMB),
+		"-m", fmt.Sprintf("%dM,slots=1,maxmem=%dM", memMB, maxMemMB),
 		// virtio-mem: pluggable memory pool. Scale via QMP qom-set requested-size.
-		// 15GB max + base gives 16GB ceiling. Block size 128MB for granularity.
-		"-object", "memory-backend-ram,id=vmem0,size=15360M",
+		"-object", fmt.Sprintf("memory-backend-ram,id=vmem0,size=%dM", virtioMemPoolMB),
 		"-device", "virtio-mem-pci,memdev=vmem0,id=vm0,block-size=128M,requested-size=0",
 		"-smp", fmt.Sprintf("%d", cpus),
 		"-kernel", m.cfg.KernelPath,
@@ -1683,12 +1772,28 @@ func (m *Manager) SetResourceLimits(ctx context.Context, sandboxID string, maxPi
 		}
 		// Round up to 128MB block size
 		additionalMB = ((additionalMB + 127) / 128) * 128
+
+		// Check committed memory across all VMs before attempting hotplug.
+		// Reserve 20% of host RAM for OS, QEMU overhead, page cache, etc.
+		if additionalMB > vm.virtioMemRequestedMB {
+			deltaMB := additionalMB - vm.virtioMemRequestedMB
+			committedMB := m.totalCommittedMemoryMB()
+			hostTotalMB := m.hostMemoryMB()
+			reserveMB := hostTotalMB / 5 // 20% safety margin
+			availableMB := hostTotalMB - committedMB - reserveMB
+
+			if deltaMB > availableMB {
+				log.Printf("qemu: virtio-mem %s: need %dMB but only %dMB available (committed=%dMB, host=%dMB, reserve=%dMB)",
+					sandboxID, deltaMB, availableMB, committedMB, hostTotalMB, reserveMB)
+				return fmt.Errorf("insufficient_capacity: need %dMB additional but only %dMB available on this worker (committed=%dMB/%dMB)",
+					deltaMB, availableMB, committedMB, hostTotalMB)
+			}
+		}
+
 		if additionalMB != vm.virtioMemRequestedMB {
 			if err := vm.qmp.SetVirtioMemSize(additionalMB); err != nil {
-				log.Printf("qemu: virtio-mem %s: set %dMB failed: %v — capping cgroup to current VM memory", sandboxID, additionalMB, err)
-				// Cap cgroup memory limit to actual VM memory so we don't set
-				// cgroup higher than the physical RAM available to the guest.
-				maxMemoryBytes = int64(vm.MemoryMB) * 1024 * 1024
+				log.Printf("qemu: virtio-mem %s: set %dMB failed: %v — returning insufficient capacity error", sandboxID, additionalMB, err)
+				return fmt.Errorf("insufficient_capacity: cannot hotplug %dMB on this worker: %w", additionalMB, err)
 			} else {
 				vm.virtioMemRequestedMB = additionalMB
 				vm.MemoryMB = vm.baseMemoryMB + additionalMB
@@ -1698,6 +1803,65 @@ func (m *Manager) SetResourceLimits(ctx context.Context, sandboxID string, maxPi
 	}
 
 	return vm.agent.SetResourceLimits(ctx, maxPids, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec)
+}
+
+// TotalCommittedMemoryMB returns the sum of MemoryMB (base + virtio-mem) across all running VMs.
+// This represents the maximum host memory that could be consumed if all VMs use their full allocation.
+func (m *Manager) TotalCommittedMemoryMB() int {
+	return m.totalCommittedMemoryMB()
+}
+
+// HostMemoryMB returns the host's total physical memory in MB.
+func (m *Manager) HostMemoryMB() int {
+	return m.hostMemoryMB()
+}
+
+func (m *Manager) totalCommittedMemoryMB() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	total := 0
+	for _, vm := range m.vms {
+		total += vm.MemoryMB
+	}
+	return total
+}
+
+// hostMemoryMB returns the host's total physical memory in MB.
+// getWorkerIP returns the worker's VNet-routable IP address for inter-worker communication.
+// Uses OPENSANDBOX_GRPC_ADVERTISE (host:port) if set, otherwise detects from the default route.
+func (m *Manager) getWorkerIP() string {
+	if addr := os.Getenv("OPENSANDBOX_GRPC_ADVERTISE"); addr != "" {
+		// Format: "10.100.1.5:9090" — extract just the IP
+		if host, _, err := net.SplitHostPort(addr); err == nil {
+			return host
+		}
+		return addr
+	}
+	// Fallback: detect from default route interface
+	if conn, err := net.Dial("udp", "8.8.8.8:80"); err == nil {
+		defer conn.Close()
+		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+			return addr.IP.String()
+		}
+	}
+	return "127.0.0.1"
+}
+
+func (m *Manager) hostMemoryMB() int {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 64 * 1024 // fallback: assume 64GB
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "MemTotal:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				kb, _ := strconv.Atoi(fields[1])
+				return kb / 1024
+			}
+		}
+	}
+	return 64 * 1024
 }
 
 // Stats returns live resource usage from the VM.

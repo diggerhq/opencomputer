@@ -21,6 +21,11 @@ type redisHeartbeatPayload struct {
 	Current   int     `json:"current"`
 	CPUPct    float64 `json:"cpu_pct"`
 	MemPct    float64 `json:"mem_pct"`
+	DiskPct           float64 `json:"disk_pct"`
+	TotalMemoryMB     int     `json:"total_memory_mb,omitempty"`
+	CommittedMemoryMB int     `json:"committed_memory_mb,omitempty"`
+	GoldenVersion     string  `json:"golden_version,omitempty"`
+	WorkerVersion     string  `json:"worker_version,omitempty"`
 }
 
 // RedisHeartbeat publishes periodic heartbeats to Redis for worker discovery.
@@ -34,8 +39,13 @@ type RedisHeartbeat struct {
 	region    string
 	grpcAddr  string
 	httpAddr  string
-	getStats  func() (capacity, current int, cpuPct, memPct float64)
-	stop      chan struct{}
+	getStats      func() (capacity, current int, cpuPct, memPct, diskPct float64)
+	getMemoryInfo func() (totalMB, committedMB int) // optional: committed memory for dynamic capacity
+	onReconnect   func() // called when heartbeat succeeds after a previous failure
+	goldenVersion string
+	workerVersion string
+	wasDown       bool   // true if the last publish failed (used to detect reconnect)
+	stop          chan struct{}
 }
 
 // NewRedisHeartbeat creates a new heartbeat publisher.
@@ -69,8 +79,30 @@ func (h *RedisHeartbeat) SetMachineID(id string) {
 	h.machineID = id
 }
 
+// SetGoldenVersion sets the golden snapshot version hash for the heartbeat.
+func (h *RedisHeartbeat) SetGoldenVersion(v string) {
+	h.goldenVersion = v
+}
+
+// SetWorkerVersion sets the worker binary version (git SHA) for the heartbeat.
+func (h *RedisHeartbeat) SetWorkerVersion(v string) {
+	h.workerVersion = v
+}
+
+// SetMemoryInfoFunc sets a callback that returns host total and committed memory in MB.
+// Used for dynamic capacity reporting.
+func (h *RedisHeartbeat) SetMemoryInfoFunc(fn func() (totalMB, committedMB int)) {
+	h.getMemoryInfo = fn
+}
+
+// OnReconnect sets a callback that fires when heartbeat succeeds after a failure.
+// Used to reconcile sandbox state after a network outage.
+func (h *RedisHeartbeat) OnReconnect(fn func()) {
+	h.onReconnect = fn
+}
+
 // Start begins publishing heartbeats every 10 seconds.
-func (h *RedisHeartbeat) Start(getStats func() (int, int, float64, float64)) {
+func (h *RedisHeartbeat) Start(getStats func() (int, int, float64, float64, float64)) {
 	h.getStats = getStats
 
 	go func() {
@@ -92,7 +124,7 @@ func (h *RedisHeartbeat) Start(getStats func() (int, int, float64, float64)) {
 }
 
 func (h *RedisHeartbeat) publish() {
-	capacity, current, cpuPct, memPct := h.getStats()
+	capacity, current, cpuPct, memPct, diskPct := h.getStats()
 
 	payload := redisHeartbeatPayload{
 		WorkerID:  h.workerID,
@@ -104,6 +136,16 @@ func (h *RedisHeartbeat) publish() {
 		Current:   current,
 		CPUPct:    cpuPct,
 		MemPct:    memPct,
+		DiskPct:       diskPct,
+		GoldenVersion: h.goldenVersion,
+		WorkerVersion: h.workerVersion,
+	}
+
+	// Add committed memory info for dynamic capacity
+	if h.getMemoryInfo != nil {
+		totalMB, committedMB := h.getMemoryInfo()
+		payload.TotalMemoryMB = totalMB
+		payload.CommittedMemoryMB = committedMB
 	}
 
 	data, err := json.Marshal(payload)
@@ -117,8 +159,17 @@ func (h *RedisHeartbeat) publish() {
 
 	// SET with 30s TTL — key auto-expires if worker dies
 	key := "worker:" + h.workerID
-	if err := h.rdb.Set(ctx, key, data, 30*time.Second).Err(); err != nil {
-		log.Printf("redis_heartbeat: SET failed: %v", err)
+	setErr := h.rdb.Set(ctx, key, data, 30*time.Second).Err()
+	if setErr != nil {
+		log.Printf("redis_heartbeat: SET failed: %v", setErr)
+		h.wasDown = true
+	} else if h.wasDown {
+		// Heartbeat succeeded after previous failure — we reconnected
+		h.wasDown = false
+		log.Printf("redis_heartbeat: reconnected after outage, triggering reconciliation")
+		if h.onReconnect != nil {
+			go h.onReconnect()
+		}
 	}
 
 	// PUBLISH for real-time notification

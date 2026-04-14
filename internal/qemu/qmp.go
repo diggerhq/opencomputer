@@ -47,7 +47,8 @@ type QMPStatus struct {
 
 // QMPMigrateStatus represents the response from query-migrate.
 type QMPMigrateStatus struct {
-	Status string `json:"status"`
+	Status    string `json:"status"`
+	ErrorDesc string `json:"error-desc,omitempty"`
 }
 
 // ConnectQMP connects to the QMP socket and completes the handshake:
@@ -300,6 +301,27 @@ func (q *QMPClient) SetVirtioMemSize(sizeMB int) error {
 		"property": "requested-size",
 		"value":    sizeBytes,
 	})
+}
+
+// GetVirtioMemSize returns the current requested-size of the virtio-mem device in MB.
+// Returns 0 if the device doesn't exist or the query fails.
+func (q *QMPClient) GetVirtioMemSize() int {
+	cmd := qmpCommand{
+		Execute: "qom-get",
+		Arguments: map[string]interface{}{
+			"path":     "/machine/peripheral/vm0",
+			"property": "requested-size",
+		},
+	}
+	resp, err := q.execute(cmd, 5*time.Second)
+	if err != nil || resp == nil || resp.Return == nil {
+		return 0
+	}
+	var sizeBytes int64
+	if err := json.Unmarshal(resp.Return, &sizeBytes); err != nil {
+		return 0
+	}
+	return int(sizeBytes / (1024 * 1024))
 }
 
 // SendFd passes an open file descriptor to QEMU via the QMP getfd command.

@@ -146,6 +146,7 @@ func main() {
 		redisRegistry.Start()
 		defer redisRegistry.Stop()
 		opts.WorkerRegistry = redisRegistry
+		opts.RedisClient = redisRegistry.RedisClient()
 		log.Println("opensandbox: Redis worker registry started")
 
 		// Create sandbox API proxy for routing data-plane requests to workers
@@ -160,7 +161,7 @@ func main() {
 		var pool compute.Pool
 		var poolName string
 
-		if cfg.AzureSubscriptionID != "" && cfg.AzureImageID != "" {
+		if cfg.AzureSubscriptionID != "" && (cfg.AzureImageID != "" || cfg.AzureKeyVaultName != "") {
 			// Build worker env template — new VMs get this via cloud-init.
 			// GRPC_ADVERTISE, HTTP_ADDR, and WORKER_ID are patched by cloud-init
 			// with the VM's actual private IP and hostname.
@@ -188,7 +189,7 @@ func main() {
 					"OPENSANDBOX_JWT_SECRET=%s\n"+
 					"OPENSANDBOX_WORKER_ID=PLACEHOLDER\n"+
 					"OPENSANDBOX_REGION=%s\n"+
-					"OPENSANDBOX_MAX_CAPACITY=100\n"+
+					"OPENSANDBOX_MAX_CAPACITY=%d\n"+
 					"OPENSANDBOX_PORT=8081\n"+
 					"OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB=%d\n"+
 					"OPENSANDBOX_DEFAULT_SANDBOX_CPUS=%d\n"+
@@ -198,9 +199,11 @@ func main() {
 					"OPENSANDBOX_S3_REGION=%s\n"+
 					"OPENSANDBOX_S3_ENDPOINT=%s\n"+
 					"OPENSANDBOX_S3_ACCESS_KEY_ID=%s\n"+
-					"OPENSANDBOX_S3_SECRET_ACCESS_KEY=%s\n",
+					"OPENSANDBOX_S3_SECRET_ACCESS_KEY=%s\n"+
+					"OPENSANDBOX_S3_FORCE_PATH_STYLE=%v\n",
 				cfg.JWTSecret,
 				cfg.Region,
+				cfg.MaxCapacity,
 				cfg.DefaultSandboxMemoryMB,
 				cfg.DefaultSandboxCPUs,
 				workerDBURL,
@@ -210,6 +213,7 @@ func main() {
 				cfg.S3Endpoint,
 				cfg.S3AccessKeyID,
 				cfg.S3SecretAccessKey,
+				cfg.S3ForcePathStyle,
 			)
 			workerEnvB64 := base64.StdEncoding.EncodeToString([]byte(workerEnv))
 
@@ -221,15 +225,24 @@ func main() {
 				ImageID:         cfg.AzureImageID,
 				SubnetID:        cfg.AzureSubnetID,
 				SSHPublicKey:    cfg.AzureSSHPublicKey,
+				KeyVaultName:    cfg.AzureKeyVaultName,
 				WorkerEnvBase64: workerEnvB64,
 			})
 			if err != nil {
 				log.Fatalf("opensandbox: failed to create Azure pool: %v", err)
 			}
+			// If image not set statically but Key Vault is configured, fetch initial image
+			if cfg.AzureImageID == "" && cfg.AzureKeyVaultName != "" {
+				imgID, version, kvErr := azPool.RefreshAMI(context.Background())
+				if kvErr != nil {
+					log.Fatalf("opensandbox: Azure image not set and Key Vault fetch failed: %v", kvErr)
+				}
+				log.Printf("opensandbox: Azure image from Key Vault: %s (version=%s)", imgID, version)
+			}
 			pool = azPool
-			poolName = fmt.Sprintf("Azure (size=%s, image=%s)", cfg.AzureVMSize, cfg.AzureImageID)
-		} else if cfg.EC2AMI != "" {
-			// AWS EC2 compute pool
+			poolName = fmt.Sprintf("Azure (size=%s, image=%s, keyvault=%s)", cfg.AzureVMSize, cfg.AzureImageID, cfg.AzureKeyVaultName)
+		} else if cfg.EC2AMI != "" || cfg.EC2SSMParameterName != "" {
+			// AWS EC2 compute pool (AMI from config or dynamically from SSM)
 			ec2Pool, err := compute.NewEC2Pool(compute.EC2PoolConfig{
 				Region:             cfg.S3Region,
 				AccessKeyID:        cfg.S3AccessKeyID,
@@ -241,27 +254,83 @@ func main() {
 				KeyName:            cfg.EC2KeyName,
 				IAMInstanceProfile: cfg.EC2IAMInstanceProfile,
 				SecretsARN:         cfg.SecretsARN,
+				SSMParameterName:   cfg.EC2SSMParameterName,
 			})
 			if err != nil {
 				log.Fatalf("opensandbox: failed to create EC2 pool: %v", err)
 			}
+			// If AMI not set statically but SSM is configured, fetch initial AMI from SSM
+			if cfg.EC2AMI == "" && cfg.EC2SSMParameterName != "" {
+				amiID, version, ssmErr := ec2Pool.RefreshAMI(context.Background())
+				if ssmErr != nil {
+					log.Fatalf("opensandbox: EC2 AMI not set and SSM fetch failed: %v", ssmErr)
+				}
+				log.Printf("opensandbox: EC2 AMI from SSM: %s (version=%s)", amiID, version)
+			}
 			pool = ec2Pool
-			poolName = fmt.Sprintf("EC2 (ami=%s, type=%s)", cfg.EC2AMI, cfg.EC2InstanceType)
+			poolName = fmt.Sprintf("EC2 (ami=%s, type=%s, ssm=%s)", cfg.EC2AMI, cfg.EC2InstanceType, cfg.EC2SSMParameterName)
 		}
 
 		if pool != nil {
+			scalerState := controlplane.NewRedisScalerState(redisRegistry.RedisClient())
 			scaler := controlplane.NewScaler(controlplane.ScalerConfig{
 				Pool:        pool,
 				Registry:    redisRegistry,
+				Store:       opts.Store,
+				StateStore:  scalerState,
 				WorkerImage: cfg.EC2WorkerImage,
 				Cooldown:    time.Duration(cfg.ScaleCooldownSec) * time.Second,
 				MinWorkers:  cfg.MinWorkersPerRegion,
 				MaxWorkers:  cfg.MaxWorkersPerRegion,
+				IdleReserve: cfg.IdleReserveWorkers,
 			})
-			scaler.Start()
 			defer scaler.Stop()
-			log.Printf("opensandbox: autoscaler started (%s)", poolName)
+
+			// Leader election: only the leader runs the scaler
+			elector := controlplane.NewLeaderElector(redisRegistry.RedisClient(), cfg.WorkerID)
+			elector.OnBecomeLeader(func() {
+				scaler.Start()
+				log.Printf("opensandbox: became leader, autoscaler started (%s)", poolName)
+			})
+			elector.OnLoseLeadership(func() {
+				scaler.Stop()
+				log.Println("opensandbox: lost leadership, autoscaler stopped")
+			})
+			elector.Start()
+			defer elector.Stop()
+			log.Printf("opensandbox: leader election started (instance=%s)", elector.InstanceID())
 		}
+	}
+
+	// Background maintenance tasks
+	if opts.Store != nil && redisRegistry != nil {
+		go func() {
+			ticker := time.NewTicker(60 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				ctx := context.Background()
+
+				// Stale migration recovery
+				recovered, err := opts.Store.RecoverStaleMigrations(ctx, 60*time.Second)
+				if err != nil {
+					log.Printf("maintenance: stale migration recovery error: %v", err)
+				} else if recovered > 0 {
+					log.Printf("maintenance: reverted %d stale migrations", recovered)
+				}
+
+				// DB/worker reconciliation: mark sandboxes on dead workers as error
+				liveWorkers := make(map[string]bool)
+				for _, w := range redisRegistry.GetAllWorkers() {
+					liveWorkers[w.ID] = true
+				}
+				orphaned, err := opts.Store.MarkOrphanedSandboxes(ctx, liveWorkers)
+				if err != nil {
+					log.Printf("maintenance: orphan reconciliation error: %v", err)
+				} else if orphaned > 0 {
+					log.Printf("maintenance: marked %d sandboxes as error (worker lost)", orphaned)
+				}
+			}
+		}()
 	}
 
 	// Initialize control plane subdomain proxy (server mode only).
@@ -330,9 +399,24 @@ func main() {
 		}
 	}()
 
+	// Mark server as ready to accept traffic
+	server.SetReady()
+	log.Println("opensandbox: server ready")
+
 	<-quit
 	log.Println("opensandbox: shutting down...")
-	if err := server.Close(); err != nil {
-		log.Printf("error closing server: %v", err)
+
+	// Phase 1: Mark not ready so load balancer stops sending traffic
+	server.SetNotReady()
+	log.Println("opensandbox: readiness set to false, waiting 5s for LB to detect...")
+	time.Sleep(5 * time.Second)
+
+	// Phase 2: Drain in-flight HTTP requests (25s timeout)
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer drainCancel()
+	if err := server.Shutdown(drainCtx); err != nil {
+		log.Printf("opensandbox: graceful shutdown error: %v, forcing close", err)
+		server.Close()
 	}
+	log.Println("opensandbox: server stopped")
 }

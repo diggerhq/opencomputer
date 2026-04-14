@@ -3,10 +3,12 @@ package qemu
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,6 +136,97 @@ func (mc *MigrationCoordinator) MigrateToS3(ctx context.Context, sandboxID strin
 	return rootfsKey, workspaceKey, nil
 }
 
+// MigrateToS3Flatten is like MigrateToS3 but flattens the rootfs qcow2 overlay
+// before uploading, merging the backing file (base ext4 image) into the qcow2.
+// This makes the uploaded rootfs self-contained for cross-golden-version migration.
+// Uses `qemu-img rebase -b ""` which preserves internal snapshots.
+func (mc *MigrationCoordinator) MigrateToS3Flatten(ctx context.Context, sandboxID string) (rootfsKey, workspaceKey string, err error) {
+	mc.mu.Lock()
+	state := &MigrationState{
+		SandboxID: sandboxID,
+		Phase:     "pre-copy-flatten",
+		StartedAt: time.Now(),
+	}
+	mc.migrations[sandboxID] = state
+	mc.mu.Unlock()
+
+	defer func() {
+		mc.mu.Lock()
+		delete(mc.migrations, sandboxID)
+		mc.mu.Unlock()
+	}()
+
+	vm, err := mc.manager.getVM(sandboxID)
+	if err != nil {
+		return "", "", fmt.Errorf("vm not found: %w", err)
+	}
+
+	// Sync guest + reflink-copy drives under opMu
+	vm.opMu.Lock()
+	if vm.agent != nil {
+		syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_, _ = vm.agent.Exec(syncCtx, &pb.ExecRequest{Command: "sync", RunAsRoot: true})
+		cancel()
+	}
+
+	sandboxDir := vm.sandboxDir
+	rootfsPath := detectDrivePath(sandboxDir, "rootfs")
+	workspacePath := detectDrivePath(sandboxDir, "workspace")
+
+	stagingDir, stageErr := os.MkdirTemp(mc.manager.cfg.DataDir, "migration-staging-")
+	if stageErr != nil {
+		vm.opMu.Unlock()
+		return "", "", fmt.Errorf("create staging dir: %w", stageErr)
+	}
+
+	stagedRootfs := filepath.Join(stagingDir, filepath.Base(rootfsPath))
+	stagedWorkspace := filepath.Join(stagingDir, filepath.Base(workspacePath))
+	if cpErr := copyFileReflink(rootfsPath, stagedRootfs); cpErr != nil {
+		vm.opMu.Unlock()
+		os.RemoveAll(stagingDir)
+		return "", "", fmt.Errorf("stage rootfs: %w", cpErr)
+	}
+	if cpErr := copyFileReflink(workspacePath, stagedWorkspace); cpErr != nil {
+		vm.opMu.Unlock()
+		os.RemoveAll(stagingDir)
+		return "", "", fmt.Errorf("stage workspace: %w", cpErr)
+	}
+	vm.opMu.Unlock()
+	defer os.RemoveAll(stagingDir)
+
+	// Flatten rootfs: merge backing file into overlay so it's self-contained.
+	// `rebase -b ""` preserves internal savevm snapshots unlike `convert`.
+	rebaseCmd := exec.Command("qemu-img", "rebase", "-b", "", stagedRootfs)
+	if out, err := rebaseCmd.CombinedOutput(); err != nil {
+		return "", "", fmt.Errorf("flatten rootfs: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	rootfsKey = fmt.Sprintf("migrations/%s/rootfs.qcow2", sandboxID)
+	workspaceKey = fmt.Sprintf("migrations/%s/workspace.qcow2", sandboxID)
+
+	t0 := time.Now()
+
+	state.Phase = "upload-rootfs-flat"
+	rootfsSize, err := mc.uploadFile(ctx, stagedRootfs, rootfsKey)
+	if err != nil {
+		return "", "", fmt.Errorf("upload rootfs: %w", err)
+	}
+
+	state.Phase = "upload-workspace"
+	wsSize, err := mc.uploadFile(ctx, stagedWorkspace, workspaceKey)
+	if err != nil {
+		return "", "", fmt.Errorf("upload workspace: %w", err)
+	}
+
+	log.Printf("qemu: migration pre-copy-flatten %s: rootfs=%.1fMB workspace=%.1fMB (%dms)",
+		sandboxID,
+		float64(rootfsSize)/(1024*1024),
+		float64(wsSize)/(1024*1024),
+		time.Since(t0).Milliseconds())
+
+	return rootfsKey, workspaceKey, nil
+}
+
 // LiveMigrate performs a full QEMU live migration to a target worker.
 // Prerequisites: target worker has called PrepareIncomingMigration and returned the incoming address.
 func (mc *MigrationCoordinator) LiveMigrate(ctx context.Context, sandboxID, incomingAddr string) error {
@@ -172,12 +265,18 @@ func (mc *MigrationCoordinator) LiveMigrate(ctx context.Context, sandboxID, inco
 
 	// Start live migration
 	state.Phase = "migrating"
+	log.Printf("qemu: live migration %s: sending migrate tcp:%s", sandboxID, incomingAddr)
 	if err := vm.qmp.Migrate("tcp:" + incomingAddr); err != nil {
 		return fmt.Errorf("QMP migrate: %w", err)
 	}
 
 	// Wait for migration to complete
 	if err := vm.qmp.WaitMigration(5 * time.Minute); err != nil {
+		// Query detailed status for debugging
+		status, qErr := vm.qmp.QueryMigrate()
+		if qErr == nil {
+			log.Printf("qemu: live migration %s FAILED: status=%s error=%s", sandboxID, status.Status, status.ErrorDesc)
+		}
 		return fmt.Errorf("migration wait: %w", err)
 	}
 
@@ -227,6 +326,29 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
 	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
 		return "", 0, fmt.Errorf("mkdir: %w", err)
+	}
+
+	// Resolve rootfs from template if not provided
+	if rootfsPath == "" {
+		if template == "" {
+			template = "default"
+		}
+		baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, template)
+		if err != nil {
+			return "", 0, fmt.Errorf("resolve base image for template %q: %w", template, err)
+		}
+		rootfsPath = filepath.Join(sandboxDir, "rootfs.qcow2")
+		if err := PrepareRootfs(baseImage, rootfsPath); err != nil {
+			return "", 0, fmt.Errorf("prepare rootfs: %w", err)
+		}
+		log.Printf("qemu: migration %s: prepared rootfs from template %q: %s", sandboxID, template, rootfsPath)
+	}
+	// Create workspace if not provided
+	if workspacePath == "" {
+		workspacePath = filepath.Join(sandboxDir, "workspace.ext4")
+		if err := CreateWorkspace(workspacePath, 4096); err != nil {
+			return "", 0, fmt.Errorf("create workspace: %w", err)
+		}
 	}
 
 	netCfg, err := m.subnets.Allocate()
@@ -294,19 +416,38 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 		netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
 	args = append(args, "-incoming", fmt.Sprintf("tcp:0:%d", migrationPort))
 
+	// Migration targets must have the exact same device configuration as the source.
+	// Keep -serial stdio but redirect stdout to /dev/null to avoid blocking.
+
+	log.Printf("qemu: migration-prepare %s: starting QEMU (mem=%dMB, cpu=%d, rootfs=%s, workspace=%s, qmp=%s)",
+		sandboxID, memMB, cpus, rootfsPath, workspacePath, qmpSockPath)
+
 	cmd := exec.Command(m.cfg.QEMUBin, args...)
-	cmd.Stdout = logFile
+	// For migration targets: send stderr to log, but stdout to /dev/null.
+	// -serial stdio outputs kernel console to stdout which can block if piped to a file.
+	devNull, _ := os.Open(os.DevNull)
+	cmd.Stdout = devNull
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
+		if devNull != nil { devNull.Close() }
 		m.cleanupVM(netCfg, sandboxDir)
 		return "", 0, fmt.Errorf("start qemu: %w", err)
 	}
 	logFile.Close()
+	if devNull != nil { devNull.Close() }
+	log.Printf("qemu: migration-prepare %s: QEMU started (pid=%d), waiting for QMP", sandboxID, cmd.Process.Pid)
 
-	// Connect QMP
-	qmpClient, err := waitForQMP(qmpSockPath, 10*time.Second)
+	// Connect QMP — allow up to 60s for large-memory VMs (virtio-mem init takes time)
+	qmpClient, err := waitForQMP(qmpSockPath, 60*time.Second)
 	if err != nil {
+		// Check if QEMU exited
+		var exitErr string
+		if cmd.ProcessState != nil {
+			exitErr = cmd.ProcessState.String()
+		}
+		qemuLog, _ := os.ReadFile(filepath.Join(sandboxDir, "qemu.log"))
+		log.Printf("qemu: migration-prepare %s: QMP failed — exit=%s, log tail: %s", sandboxID, exitErr, string(qemuLog[max(0, len(qemuLog)-500):]))
 		cmd.Process.Kill()
 		cmd.Wait()
 		m.cleanupVM(netCfg, sandboxDir)
@@ -342,9 +483,12 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 	m.vms[sandboxID] = vm
 	m.mu.Unlock()
 
-	// Return the private IP + port for the source to connect
-	// The source will call: migrate tcp:PRIVATE_IP:PORT
-	return fmt.Sprintf("%s:%d", netCfg.HostIP, migrationPort), hp, nil
+	// Return the worker's VNet IP + migration port for the source to connect.
+	// We use the advertise address (from OPENSANDBOX_GRPC_ADVERTISE) which is the
+	// worker's private IP on the VNet — reachable from other workers.
+	// netCfg.HostIP is the TAP host IP (172.16.x.x) which is NOT routable between workers.
+	workerIP := m.getWorkerIP()
+	return fmt.Sprintf("%s:%d", workerIP, migrationPort), hp, nil
 }
 
 // CompleteIncomingMigration is called after QMP migration finishes on the target.
@@ -353,6 +497,15 @@ func (m *Manager) CompleteIncomingMigration(ctx context.Context, sandboxID strin
 	vm, err := m.getVM(sandboxID)
 	if err != nil {
 		return err
+	}
+
+	// Resume the VM — after live migration the target is paused
+	if vm.qmp != nil {
+		if err := vm.qmp.Cont(); err != nil {
+			log.Printf("qemu: migration %s: QMP continue failed: %v", sandboxID, err)
+		} else {
+			log.Printf("qemu: migration %s: VM resumed", sandboxID)
+		}
 	}
 
 	// Wait for agent via virtio-serial
@@ -371,6 +524,19 @@ func (m *Manager) CompleteIncomingMigration(ctx context.Context, sandboxID strin
 		log.Printf("qemu: migration %s: clock sync failed: %v", sandboxID, err)
 	}
 
+	// Sync VM memory tracking with actual QEMU state.
+	// After migration, the QEMU process has the source's virtio-mem hotplugged memory,
+	// but the Go struct still has the prep values (virtioMemRequestedMB=0, MemoryMB=baseMem).
+	// This causes totalCommittedMemoryMB() to underreport, leading to overcommit.
+	if vm.qmp != nil {
+		if actualVirtioMB := vm.qmp.GetVirtioMemSize(); actualVirtioMB > 0 {
+			vm.virtioMemRequestedMB = actualVirtioMB
+			vm.MemoryMB = vm.baseMemoryMB + actualVirtioMB
+			log.Printf("qemu: migration %s: synced memory tracking: virtio-mem=%dMB, total=%dMB",
+				sandboxID, actualVirtioMB, vm.MemoryMB)
+		}
+	}
+
 	// Notify metadata server
 	if m.onSandboxReady != nil {
 		m.onSandboxReady(sandboxID, vm.network.GuestIP, vm.Template, vm.StartedAt)
@@ -379,6 +545,93 @@ func (m *Manager) CompleteIncomingMigration(ctx context.Context, sandboxID strin
 	log.Printf("qemu: incoming migration %s complete (port=%d, tap=%s)",
 		sandboxID, vm.HostPort, vm.network.TAPName)
 	return nil
+}
+
+// PreCopyDrives uploads a sandbox's drives to S3 for cross-worker migration.
+// If flatten is true, the rootfs qcow2 overlay is flattened (backing file merged)
+// before upload, making it self-contained for cross-golden-version migration.
+// Returns the S3 keys and the sandbox's golden version.
+func (m *Manager) PreCopyDrives(ctx context.Context, sandboxID string, checkpointStore *storage.CheckpointStore, flatten bool) (rootfsKey, workspaceKey, goldenVer string, err error) {
+	// Look up golden version from the VM
+	m.mu.RLock()
+	vm, exists := m.vms[sandboxID]
+	if exists {
+		goldenVer = vm.goldenVersion
+	}
+	m.mu.RUnlock()
+
+	mc := &MigrationCoordinator{
+		manager:         m,
+		checkpointStore: checkpointStore,
+		migrations:      make(map[string]*MigrationState),
+	}
+
+	if flatten && goldenVer != "" {
+		// Flatten the rootfs before upload — merge backing file into overlay
+		rootfsKey, workspaceKey, err = mc.MigrateToS3Flatten(ctx, sandboxID)
+	} else {
+		rootfsKey, workspaceKey, err = mc.MigrateToS3(ctx, sandboxID)
+	}
+	return rootfsKey, workspaceKey, goldenVer, err
+}
+
+// PrepareIncomingMigrationWithS3 downloads drives from S3 then prepares incoming migration.
+// If overlayMode is true, the rootfs is a thin qcow2 overlay — rebase it to point to
+// the local base image instead of downloading a flattened file.
+func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID, rootfsS3Key, workspaceS3Key string, cpus, memMB, guestPort int, template string, checkpointStore *storage.CheckpointStore, overlayMode bool) (incomingAddr string, hostPort int, err error) {
+	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
+	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
+		return "", 0, fmt.Errorf("mkdir: %w", err)
+	}
+
+	// Download rootfs from S3
+	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
+	if err := downloadS3ToFile(ctx, checkpointStore, rootfsS3Key, rootfsPath); err != nil {
+		return "", 0, fmt.Errorf("download rootfs from S3: %w", err)
+	}
+
+	// In overlay mode, the rootfs is a thin overlay backed by the base ext4 image.
+	// Rebase it to point to this worker's local base image path.
+	if overlayMode {
+		baseImage, resolveErr := ResolveBaseImage(m.cfg.ImagesDir, "default")
+		if resolveErr != nil {
+			return "", 0, fmt.Errorf("resolve base image for overlay rebase: %w", resolveErr)
+		}
+		absBase, _ := filepath.Abs(baseImage)
+		rebaseCmd := exec.Command("qemu-img", "rebase", "-u", "-b", absBase, "-F", "raw", rootfsPath)
+		if out, err := rebaseCmd.CombinedOutput(); err != nil {
+			return "", 0, fmt.Errorf("rebase rootfs to local base: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		log.Printf("qemu: migration %s: rootfs rebased to local base image (overlay mode)", sandboxID)
+	}
+
+	// Download workspace from S3
+	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
+	if err := downloadS3ToFile(ctx, checkpointStore, workspaceS3Key, workspacePath); err != nil {
+		return "", 0, fmt.Errorf("download workspace from S3: %w", err)
+	}
+
+	return m.PrepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template)
+}
+
+// downloadS3ToFile downloads an S3 object to a local file.
+func downloadS3ToFile(ctx context.Context, store *storage.CheckpointStore, key, localPath string) error {
+	rc, err := store.Download(ctx, key)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	f, err := os.Create(localPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, rc); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 // LiveMigrate on Manager delegates to a MigrationCoordinator.
