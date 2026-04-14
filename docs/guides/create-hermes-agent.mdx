@@ -104,7 +104,7 @@ You can shell into the agent's sandbox at any time:
 oc shell my-hermes
 ```
 
-This opens an interactive terminal inside the running sandbox — inspect logs, edit config, install packages. The agent keeps running while you're in the shell.
+This opens an interactive terminal inside the agent's environment. You have full access — inspect logs, edit Hermes config, install tools, change the model, add skills. Anything you can do with Hermes locally, you can do here. See the [Hermes docs](https://hermes-agent.nousresearch.com/docs/) for what's possible.
 
 ---
 
@@ -126,3 +126,4 @@ Disconnecting deregisters the Telegram webhook and removes the channel config fr
 - **Install gbrain** for persistent memory: `oc agent install my-hermes gbrain` (coming soon)
 - **Connect Slack** instead of Telegram (planned)
 - **Custom cores** — bring your own agent runtime with `oc shell` and the raw sandbox API
+- **Hermes docs** — see the full [Hermes documentation](https://hermes-agent.nousresearch.com/docs/) for skills, cron jobs, voice, browser tools, and more
