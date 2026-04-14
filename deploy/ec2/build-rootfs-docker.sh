@@ -230,7 +230,20 @@ docker rm -f osb-rootfs-tmp
 log "Converting to ext4 (${EXT4_SIZE_MB}MB sparse)..."
 EXT4_PATH="$TMPDIR/rootfs.ext4"
 truncate -s "${EXT4_SIZE_MB}M" "$EXT4_PATH"
-mkfs.ext4 -q -F -L rootfs "$EXT4_PATH"
+# Pin UUID, directory-hash seed, and creation time so mkfs.ext4 produces a
+# byte-identical default.ext4 on every worker. This lets qcow2 overlays that
+# reference this file as their backing remain portable across workers — without
+# it, each worker's default.ext4 has a random UUID + inode layout, so overlays
+# resolve unchanged clusters through different bytes on different workers and
+# the guest's restored ext4 metadata fails checksum verification (EBADMSG).
+#
+# The companion change in manager.go flattens rootfs.qcow2 on upload as a
+# safety net; the fixed UUID here keeps that safety net from being required
+# in the common case and keeps archives small.
+mkfs.ext4 -q -F -L rootfs \
+    -U 00000000-0000-4000-8000-000000000001 \
+    -E "hash_seed=00000000-0000-4000-8000-000000000002,mkfs_time=0" \
+    "$EXT4_PATH"
 
 MNT_DIR="$TMPDIR/mnt"
 mkdir -p "$MNT_DIR"
