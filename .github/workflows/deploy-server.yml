@@ -107,6 +107,13 @@ jobs:
               sudo mkdir -p /opt/opensandbox/web
               sudo tar xzf /tmp/web-dist.tar.gz -C /opt/opensandbox/web
               rm -f /tmp/opensandbox-server /tmp/web-dist.tar.gz
+
+              # Ensure WorkingDirectory is set so the server finds web/dist/
+              if ! grep -q "WorkingDirectory=" /etc/systemd/system/opensandbox-server.service; then
+                sudo sed -i "/^ExecStart=/i WorkingDirectory=/opt/opensandbox" /etc/systemd/system/opensandbox-server.service
+                sudo systemctl daemon-reload
+              fi
+
               sudo systemctl start opensandbox-server
             '
 
