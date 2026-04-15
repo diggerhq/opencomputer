@@ -187,6 +187,9 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	api := e.Group("/api")
 	api.Use(auth.PGAPIKeyMiddleware(s.store, apiKey))
 
+	// Identity
+	api.GET("/me", s.getMe)
+
 	// Sandbox lifecycle
 	api.POST("/sandboxes", s.createSandbox)
 	api.GET("/sandboxes", s.listSandboxes)
