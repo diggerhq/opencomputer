@@ -78,6 +78,7 @@ jobs:
         run: |
           CPS=$(az vm list \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --show-details \
             --query "[?contains(name,'controlplane') && powerState=='VM running'].name" \
             -o tsv 2>/dev/null | tr '\n' ',' | sed 's/,$//')
           echo "Discovered CPs: $CPS"
