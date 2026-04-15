@@ -31,13 +31,22 @@ var TierMeterKey = map[int]string{
 // changes for that tier: Stripe Prices are immutable, so a new key forces
 // EnsureProducts to create a fresh Price at the new rate. Existing subscriptions
 // must then be migrated to the new Price via cmd/migrate-prices.
+//
+// The suffixes were bumped one step (1gb→_v2, 4gb→_v2, 8gb_v2→_v3, 16gb→_v2,
+// 32gb→_v2, 64gb→_v2) to force EnsureProducts to recreate every memory-tier
+// Stripe Price at the documented per-second rate. The previously-deployed
+// Prices were calibrated off a stale rate map and were under-billing
+// subscribers by 60× (per-minute economics instead of per-second). Run
+// `migrate-prices --tier=<X> --live` for every tier after deploy to move all
+// existing subscriptions onto the corrected Prices — this is a correction,
+// not a price change, so no grandfathering.
 var TierPriceKey = map[int]string{
-	1024:  "sandbox_1gb",
-	4096:  "sandbox_4gb",
-	8192:  "sandbox_8gb_v2",
-	16384: "sandbox_16gb",
-	32768: "sandbox_32gb",
-	65536: "sandbox_64gb",
+	1024:  "sandbox_1gb_v2",
+	4096:  "sandbox_4gb_v2",
+	8192:  "sandbox_8gb_v3",
+	16384: "sandbox_16gb_v2",
+	32768: "sandbox_32gb_v2",
+	65536: "sandbox_64gb_v2",
 }
 
 // Disk overage billing — every GB above DiskFreeAllowanceMB is metered for the
