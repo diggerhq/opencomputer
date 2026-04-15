@@ -32,14 +32,29 @@ import (
 // LiveMigrator is implemented by VM managers that support live migration (e.g. QEMU).
 type LiveMigrator interface {
 	PrepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string) (incomingAddr string, hostPort int, err error)
+	PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID, rootfsS3Key, workspaceS3Key string, cpus, memMB, guestPort int, template string, checkpointStore *storage.CheckpointStore, overlayMode bool) (incomingAddr string, hostPort int, err error)
+	PreCopyDrives(ctx context.Context, sandboxID string, checkpointStore *storage.CheckpointStore, flatten bool) (rootfsKey, workspaceKey, goldenVersion string, err error)
 	CompleteIncomingMigration(ctx context.Context, sandboxID string) error
 	LiveMigrate(ctx context.Context, sandboxID, incomingAddr string) error
+}
+
+// CapacityChecker is implemented by VM managers that can report memory capacity.
+type CapacityChecker interface {
+	TotalCommittedMemoryMB() int
+	HostMemoryMB() int
+}
+
+// GoldenRebuilder is implemented by VM managers that support golden snapshot rebuild.
+type GoldenRebuilder interface {
+	RebuildGoldenSnapshot() (oldVersion, newVersion string, err error)
+	GoldenVersion() string
 }
 
 type GRPCServer struct {
 	pb.UnimplementedSandboxWorkerServer
 	manager            sandbox.Manager
-	migrator           LiveMigrator // optional, set if manager supports live migration
+	migrator           LiveMigrator      // optional, set if manager supports live migration
+	goldenRebuilder    GoldenRebuilder   // optional, set if manager supports golden rebuild
 	router             *sandbox.SandboxRouter
 	ptyManager         *sandbox.PTYManager
 	execSessionManager *sandbox.ExecSessionManager
@@ -136,6 +151,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		EgressAllowlist:    req.EgressAllowlist,
 		SecretAllowedHosts: parseSecretAllowedHosts(req.SecretAllowedHosts),
 		SecretEnvs:         req.SecretEnvs,
+		DiskMB:             int(req.DiskMb),
 	}
 
 	// Warm fork: if checkpoint_id is set, fork from the local checkpoint cache.
@@ -144,9 +160,10 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		sb, err := s.manager.ForkFromCheckpoint(ctx, req.CheckpointId, cfg)
 		if err == nil {
 			if s.router != nil {
+				// timeout == 0 means "persistent" (no auto-hibernate).
 				timeout := cfg.Timeout
-				if timeout <= 0 {
-					timeout = 300
+				if timeout < 0 {
+					timeout = 0
 				}
 				s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
 			}
@@ -165,9 +182,10 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 				sb, err = s.manager.ForkFromCheckpoint(ctx, req.CheckpointId, cfg)
 				if err == nil {
 					if s.router != nil {
+						// timeout == 0 means "persistent" (no auto-hibernate).
 						timeout := cfg.Timeout
-						if timeout <= 0 {
-							timeout = 300
+						if timeout < 0 {
+							timeout = 0
 						}
 						s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
 					}
@@ -199,11 +217,12 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		return nil, fmt.Errorf("failed to create sandbox: %w", err)
 	}
 
-	// Register with sandbox router for rolling timeout tracking
+	// Register with sandbox router for rolling timeout tracking.
+	// timeout == 0 means "persistent" (no auto-hibernate).
 	if s.router != nil {
 		timeout := cfg.Timeout
-		if timeout <= 0 {
-			timeout = 300
+		if timeout < 0 {
+			timeout = 0
 		}
 		s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
 	}
@@ -229,9 +248,13 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		if cpuPct < 100 {
 			cpuPct = 100
 		}
+		diskMB := cfg.DiskMB
+		if diskMB <= 0 {
+			diskMB = 20480
+		}
 		orgID, _ := s.store.GetSandboxOrgID(ctx, sb.ID)
 		if orgID != "" {
-			if err := s.store.RecordScaleEvent(ctx, sb.ID, orgID, memMB, cpuPct); err != nil {
+			if err := s.store.RecordScaleEvent(ctx, sb.ID, orgID, memMB, cpuPct, diskMB); err != nil {
 				log.Printf("grpc: failed to record initial scale event for %s: %v", sb.ID, err)
 			}
 		}
@@ -568,11 +591,12 @@ func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest
 		return nil, fmt.Errorf("failed to wake sandbox: %w", err)
 	}
 
-	// Register with sandbox router after explicit wake
+	// Register with sandbox router after explicit wake.
+	// timeout == 0 means "persistent" (no auto-hibernate).
 	if s.router != nil {
 		timeout := int(req.Timeout)
-		if timeout <= 0 {
-			timeout = 300
+		if timeout < 0 {
+			timeout = 0
 		}
 		s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
 	}
@@ -587,13 +611,14 @@ func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest
 		}
 	}
 
-	// Resume billing scale event after wake
+	// Resume billing scale event after wake. Disk size is preserved across wake —
+	// pass 0 so RecordScaleEvent inherits disk_mb from the prior event.
 	if s.store != nil {
 		memMB := 1024 // TODO: get actual memory from sandbox state
 		cpuPct := 100
 		orgID, _ := s.store.GetSandboxOrgID(ctx, sb.ID)
 		if orgID != "" {
-			if err := s.store.RecordScaleEvent(ctx, sb.ID, orgID, memMB, cpuPct); err != nil {
+			if err := s.store.RecordScaleEvent(ctx, sb.ID, orgID, memMB, cpuPct, 0); err != nil {
 				log.Printf("grpc: failed to record scale event on wake for %s: %v", sb.ID, err)
 			}
 		}
@@ -657,23 +682,14 @@ func (s *GRPCServer) CreateCheckpoint(ctx context.Context, req *pb.CreateCheckpo
 		}
 	}
 
-	// Don't fire onReady until S3 upload completes. Otherwise the CP sees
-	// "ready" and dispatches a fork before the upload finishes — cross-worker
-	// forks fail because S3 doesn't have the data yet.
-	rootfsKey, workspaceKey, err := s.manager.CreateCheckpoint(ctx, req.SandboxId, checkpointID, s.checkpointStore, nil)
+	// onReady is called by CreateCheckpoint AFTER S3 upload completes (inside
+	// the upload goroutine). This ensures the checkpoint data is in S3 before
+	// it's marked "ready" — forks poll for "ready" before downloading.
+	// The gRPC call returns immediately with the S3 keys — the CP's fork path
+	// polls for checkpoint readiness and blocks until onReady fires.
+	rootfsKey, workspaceKey, err := s.manager.CreateCheckpoint(ctx, req.SandboxId, checkpointID, s.checkpointStore, onReady)
 	if err != nil {
 		return nil, fmt.Errorf("create checkpoint failed: %w", err)
-	}
-
-	// Wait for S3 upload to complete, THEN signal ready.
-	type uploader interface {
-		WaitUploads(timeout time.Duration)
-	}
-	if u, ok := s.manager.(uploader); ok {
-		u.WaitUploads(5 * time.Minute)
-	}
-	if onReady != nil {
-		onReady()
 	}
 
 	return &pb.CreateCheckpointResponse{
@@ -917,13 +933,14 @@ func (s *GRPCServer) SetSandboxLimits(ctx context.Context, req *pb.SetSandboxLim
 		return nil, fmt.Errorf("set resource limits: %w", err)
 	}
 
-	// Record scale event for billing
+	// Record scale event for billing. Disk size is not affected by SetSandboxLimits;
+	// pass 0 so RecordScaleEvent inherits disk_mb from the prior event.
 	if s.store != nil && req.MaxMemoryBytes > 0 {
 		memMB := int(req.MaxMemoryBytes / (1024 * 1024))
 		cpuPct := int(req.CpuMaxUsec / 1000) // 100000us → 100%
 		orgID, _ := s.store.GetSandboxOrgID(ctx, req.SandboxId)
 		if orgID != "" {
-			if err := s.store.RecordScaleEvent(ctx, req.SandboxId, orgID, memMB, cpuPct); err != nil {
+			if err := s.store.RecordScaleEvent(ctx, req.SandboxId, orgID, memMB, cpuPct, 0); err != nil {
 				log.Printf("grpc: failed to record scale event for %s: %v", req.SandboxId, err)
 			}
 		}
@@ -937,13 +954,60 @@ func (s *GRPCServer) SetMigrator(m LiveMigrator) {
 	s.migrator = m
 }
 
+// SetGoldenRebuilder sets the golden snapshot rebuild handler.
+func (s *GRPCServer) SetGoldenRebuilder(r GoldenRebuilder) {
+	s.goldenRebuilder = r
+}
+
+func (s *GRPCServer) PreCopyDrives(ctx context.Context, req *pb.PreCopyDrivesRequest) (*pb.PreCopyDrivesResponse, error) {
+	if s.migrator == nil {
+		return nil, fmt.Errorf("live migration not supported on this worker")
+	}
+	rootfsKey, workspaceKey, goldenVersion, err := s.migrator.PreCopyDrives(ctx, req.SandboxId, s.checkpointStore, req.FlattenRootfs)
+	if err != nil {
+		return nil, fmt.Errorf("pre-copy drives: %w", err)
+	}
+	return &pb.PreCopyDrivesResponse{
+		RootfsKey:     rootfsKey,
+		WorkspaceKey:  workspaceKey,
+		GoldenVersion: goldenVersion,
+	}, nil
+}
+
 func (s *GRPCServer) PrepareMigrationIncoming(ctx context.Context, req *pb.PrepareMigrationIncomingRequest) (*pb.PrepareMigrationIncomingResponse, error) {
 	if s.migrator == nil {
 		return nil, fmt.Errorf("live migration not supported on this worker")
 	}
-	addr, hostPort, err := s.migrator.PrepareIncomingMigration(ctx,
-		req.SandboxId, req.RootfsPath, req.WorkspacePath,
-		int(req.CpuCount), int(req.MemoryMb), int(req.GuestPort), req.Template)
+
+	// If target_memory_mb is set, check capacity before creating the target QEMU.
+	// This prevents multiple concurrent migrations from overcommitting this worker.
+	if req.TargetMemoryMb > 0 {
+		if cc, ok := s.manager.(CapacityChecker); ok {
+			committedMB := cc.TotalCommittedMemoryMB()
+			hostTotalMB := cc.HostMemoryMB()
+			reserveMB := hostTotalMB / 5
+			availableMB := hostTotalMB - committedMB - reserveMB
+			if int(req.TargetMemoryMb) > availableMB {
+				return nil, fmt.Errorf("insufficient_capacity: migration target needs %dMB but only %dMB available (committed=%dMB/%dMB)",
+					req.TargetMemoryMb, availableMB, committedMB, hostTotalMB)
+			}
+		}
+	}
+
+	var (
+		addr     string
+		hostPort int
+		err      error
+	)
+	if req.RootfsS3Key != "" && req.WorkspaceS3Key != "" {
+		addr, hostPort, err = s.migrator.PrepareIncomingMigrationWithS3(ctx,
+			req.SandboxId, req.RootfsS3Key, req.WorkspaceS3Key,
+			int(req.CpuCount), int(req.MemoryMb), int(req.GuestPort), req.Template, s.checkpointStore, req.OverlayMode)
+	} else {
+		addr, hostPort, err = s.migrator.PrepareIncomingMigration(ctx,
+			req.SandboxId, req.RootfsPath, req.WorkspacePath,
+			int(req.CpuCount), int(req.MemoryMb), int(req.GuestPort), req.Template)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("prepare incoming migration: %w", err)
 	}
@@ -971,6 +1035,20 @@ func (s *GRPCServer) CompleteMigrationIncoming(ctx context.Context, req *pb.Comp
 		return nil, fmt.Errorf("complete incoming migration: %w", err)
 	}
 	return &pb.CompleteMigrationIncomingResponse{}, nil
+}
+
+func (s *GRPCServer) RebuildGoldenSnapshot(ctx context.Context, req *pb.RebuildGoldenSnapshotRequest) (*pb.RebuildGoldenSnapshotResponse, error) {
+	if s.goldenRebuilder == nil {
+		return nil, fmt.Errorf("golden snapshot rebuild not supported on this worker")
+	}
+	oldVersion, newVersion, err := s.goldenRebuilder.RebuildGoldenSnapshot()
+	if err != nil {
+		return nil, fmt.Errorf("rebuild golden snapshot: %w", err)
+	}
+	return &pb.RebuildGoldenSnapshotResponse{
+		OldVersion: oldVersion,
+		NewVersion: newVersion,
+	}, nil
 }
 
 func (s *GRPCServer) GetSandboxStats(ctx context.Context, req *pb.GetSandboxStatsRequest) (*pb.GetSandboxStatsResponse, error) {

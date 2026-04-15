@@ -30,6 +30,9 @@ import (
 // AgentVersion is the expected agent version, set at build time via -ldflags.
 var AgentVersion = "dev"
 
+// WorkerVersion is the worker binary version (git SHA), set at build time via -ldflags.
+var WorkerVersion = "dev"
+
 func main() {
 	// Load secrets from Azure Key Vault if configured (before config.Load reads env vars).
 	if err := config.LoadSecretsFromKeyVault(); err != nil {
@@ -41,7 +44,7 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	log.Printf("opensandbox-worker: starting (id=%s, region=%s, backend=qemu)...", cfg.WorkerID, cfg.Region)
+	log.Printf("opensandbox-worker: starting (id=%s, region=%s, version=%s, backend=qemu)...", cfg.WorkerID, cfg.Region, WorkerVersion)
 
 	ctx := context.Background()
 
@@ -248,7 +251,8 @@ func main() {
 					if err != nil || orgID == "" {
 						return
 					}
-					_ = st.RecordScaleEvent(context.Background(), sandboxID, orgID, memoryMB, cpuPercent)
+					// Disk doesn't change on memory scale; pass 0 to inherit disk_mb from the prior event.
+					_ = st.RecordScaleEvent(context.Background(), sandboxID, orgID, memoryMB, cpuPercent, 0)
 				})
 			}
 		}
@@ -302,6 +306,10 @@ func main() {
 		grpcServer.SetMigrator(migrator)
 		log.Println("opensandbox-worker: live migration enabled")
 	}
+	if rebuilder, ok := mgr.(worker.GoldenRebuilder); ok {
+		grpcServer.SetGoldenRebuilder(rebuilder)
+		log.Println("opensandbox-worker: golden snapshot rebuild enabled")
+	}
 	grpcAddr := ":9090"
 	log.Printf("opensandbox-worker: starting gRPC server on %s", grpcAddr)
 	go func() {
@@ -338,6 +346,10 @@ func main() {
 		if err != nil {
 			log.Printf("opensandbox-worker: Redis heartbeat not available: %v", err)
 		} else {
+			hb.SetWorkerVersion(WorkerVersion)
+			if qemuMgr != nil {
+				hb.SetGoldenVersion(qemuMgr.GoldenVersion())
+			}
 			if envID := os.Getenv("OPENSANDBOX_MACHINE_ID"); envID != "" {
 				hb.SetMachineID(envID)
 				log.Printf("opensandbox-worker: machine ID (env): %s", envID)
@@ -348,11 +360,41 @@ func main() {
 				hb.SetMachineID(hostname)
 				log.Printf("opensandbox-worker: machine ID (hostname): %s", hostname)
 			}
-			hb.Start(func() (int, int, float64, float64) {
+			hb.Start(func() (int, int, float64, float64, float64) {
 				count, _ := mgr.Count(context.Background())
-				cpuPct, memPct := worker.SystemStats()
-				return cfg.MaxCapacity, count, cpuPct, memPct
+				cpuPct, memPct, diskPct := worker.SystemStats()
+				return cfg.MaxCapacity, count, cpuPct, memPct, diskPct
 			})
+			if qemuMgr != nil {
+				hb.SetMemoryInfoFunc(func() (int, int) {
+					return qemuMgr.HostMemoryMB(), qemuMgr.TotalCommittedMemoryMB()
+				})
+			}
+			// On reconnect after outage, reconcile sandbox state with DB
+			if store != nil {
+				hb.OnReconnect(func() {
+					sandboxes, err := mgr.List(context.Background())
+					if err != nil {
+						log.Printf("opensandbox-worker: reconnect reconciliation failed (list): %v", err)
+						return
+					}
+					var runningIDs []string
+					for _, sb := range sandboxes {
+						if sb.Status == "running" {
+							runningIDs = append(runningIDs, sb.ID)
+						}
+					}
+					if len(runningIDs) == 0 {
+						return
+					}
+					fixed, err := store.ReconcileWorkerReconnect(context.Background(), cfg.WorkerID, runningIDs)
+					if err != nil {
+						log.Printf("opensandbox-worker: reconnect reconciliation failed: %v", err)
+					} else if fixed > 0 {
+						log.Printf("opensandbox-worker: reconnect reconciliation: %d sessions restored to running", fixed)
+					}
+				})
+			}
 			defer hb.Stop()
 			log.Println("opensandbox-worker: Redis heartbeat started")
 		}
@@ -365,10 +407,13 @@ func main() {
 			log.Printf("opensandbox-worker: NATS not available: %v (continuing without event sync)", err)
 		} else {
 			pub.Start()
-			pub.StartHeartbeat(func() (int, int, float64, float64) {
+			if qemuMgr != nil {
+				pub.SetGoldenVersion(qemuMgr.GoldenVersion())
+			}
+			pub.StartHeartbeat(func() (int, int, float64, float64, float64) {
 				count, _ := mgr.Count(context.Background())
-				cpuPct, memPct := worker.SystemStats()
-				return cfg.MaxCapacity, count, cpuPct, memPct
+				cpuPct, memPct, diskPct := worker.SystemStats()
+				return cfg.MaxCapacity, count, cpuPct, memPct, diskPct
 			})
 			defer pub.Stop()
 			log.Println("opensandbox-worker: NATS event publisher started")
@@ -694,3 +739,5 @@ func recoverLocalQEMU(ctx context.Context, qmMgr *qm.Manager, store *db.Store, c
 	}
 }
 
+// build trigger 1775519665
+// rolling replace test 1775598764

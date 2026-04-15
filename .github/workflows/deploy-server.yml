@@ -2,7 +2,7 @@ name: Deploy Control Plane
 
 on:
   push:
-    branches: [main]
+    branches: [main, autoscaling-etc]
     paths:
       - 'cmd/server/**'
       - 'internal/**'
@@ -18,8 +18,11 @@ env:
 
 jobs:
   deploy:
-    name: Build & Deploy Server
+    name: Blue-Green Deploy
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -32,7 +35,12 @@ jobs:
           node-version: '20'
 
       - name: Build server binary
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ env.GOARCH }} go build -o bin/opensandbox-server ./cmd/server/
+        run: |
+          VERSION=$(git rev-parse --short HEAD)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ env.GOARCH }} go build \
+            -ldflags "-X main.Version=$VERSION" \
+            -o bin/opensandbox-server ./cmd/server/
 
       - name: Build web dashboard
         run: cd web && npm ci && npm run build
@@ -43,28 +51,140 @@ jobs:
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy.pem
+          echo "$SSH_KEY" | base64 -d > ~/.ssh/deploy.pem
           chmod 600 ~/.ssh/deploy.pem
-          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+          echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null" >> ~/.ssh/config
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY_B64 }}
 
-      - name: Upload artifacts
-        run: |
-          scp -i ~/.ssh/deploy.pem bin/opensandbox-server ${{ env.SSH_USER }}@${{ secrets.SERVER_IP }}:/tmp/opensandbox-server
-          scp -i ~/.ssh/deploy.pem bin/web-dist.tar.gz ${{ env.SSH_USER }}@${{ secrets.SERVER_IP }}:/tmp/web-dist.tar.gz
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Install and restart
+      - name: Discover control planes
         run: |
-          ssh -i ~/.ssh/deploy.pem ${{ env.SSH_USER }}@${{ secrets.SERVER_IP }} '
-            sudo mv /tmp/opensandbox-server /usr/local/bin/opensandbox-server
-            sudo chmod +x /usr/local/bin/opensandbox-server
-            sudo mkdir -p /opt/opensandbox/web
-            sudo tar xzf /tmp/web-dist.tar.gz -C /opt/opensandbox/web
-            rm /tmp/web-dist.tar.gz
-            sudo systemctl restart opensandbox-server
-          '
+          CPS=$(az vm list \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --show-details \
+            --query "[?contains(name,'controlplane')].publicIps" \
+            -o tsv 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+          echo "Discovered CPs: $CPS"
+          echo "CP_IPS=$CPS" >> $GITHUB_ENV
 
-      - name: Verify deployment
+          if [ -z "$CPS" ]; then
+            echo "ERROR: No control plane VMs found"
+            exit 1
+          fi
+
+      - name: Deploy to all control planes
         run: |
-          sleep 3
-          ssh -i ~/.ssh/deploy.pem ${{ env.SSH_USER }}@${{ secrets.SERVER_IP }} 'sudo systemctl is-active opensandbox-server'
-          echo "Server deployed successfully!"
+          # CP_IPS discovered from Azure — comma-separated list
+          IFS=',' read -ra CPS <<< "$CP_IPS"
+
+          if [ ${#CPS[@]} -eq 0 ]; then
+            echo "ERROR: No control planes found"
+            exit 1
+          fi
+
+          deploy_one() {
+            local IP=$1
+            local LABEL=$2
+            echo ""
+            echo "=== Deploying to $LABEL ($IP) ==="
+
+            scp -i ~/.ssh/deploy.pem bin/opensandbox-server bin/web-dist.tar.gz \
+              ${{ env.SSH_USER }}@${IP}:/tmp/
+
+            ssh -i ~/.ssh/deploy.pem ${{ env.SSH_USER }}@${IP} '
+              sudo systemctl stop opensandbox-server
+              sleep 1
+              sudo rm -f /usr/local/bin/opensandbox-server
+              sudo cp /tmp/opensandbox-server /usr/local/bin/opensandbox-server
+              sudo chmod +x /usr/local/bin/opensandbox-server
+              sudo mkdir -p /opt/opensandbox/web
+              sudo tar xzf /tmp/web-dist.tar.gz -C /opt/opensandbox/web
+              rm -f /tmp/opensandbox-server /tmp/web-dist.tar.gz
+              sudo systemctl start opensandbox-server
+            '
+
+            echo "Waiting for $LABEL to be ready..."
+            for i in $(seq 1 20); do
+              STATUS=$(curl -sf --max-time 3 http://${IP}:8080/readyz 2>/dev/null | jq -r .status 2>/dev/null)
+              if [ "$STATUS" = "ready" ]; then
+                echo "$LABEL ready"
+                return 0
+              fi
+              sleep 3
+            done
+            echo "WARNING: $LABEL not ready after 60s"
+            return 1
+          }
+
+          # Deploy followers first (all except the first IP)
+          for i in $(seq $((${#CPS[@]}-1)) -1 1); do
+            deploy_one "${CPS[$i]}" "CP$((i+1))"
+          done
+
+          # Deploy leader last (first IP)
+          deploy_one "${CPS[0]}" "CP1"
+
+      - name: Smoke test
+        run: |
+          IFS=',' read -ra CPS <<< "$CP_IPS"
+          LEADER="${CPS[0]}"
+          # Pick a follower for cross-CP test (or use leader if only 1 CP)
+          if [ ${#CPS[@]} -gt 1 ]; then
+            FOLLOWER="${CPS[1]}"
+          else
+            FOLLOWER="$LEADER"
+          fi
+
+          # Create sandbox via leader
+          SB=$(curl -sf --max-time 30 \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ${{ secrets.API_KEY }}" \
+            -X POST "http://${LEADER}:8080/api/sandboxes" \
+            -d '{"timeout":60}' | jq -r .sandboxID)
+
+          if [ -z "$SB" ] || [ "$SB" = "null" ]; then
+            echo "Smoke test FAILED: could not create sandbox"
+            exit 1
+          fi
+          echo "Created sandbox: $SB"
+
+          # Exec via follower with retry
+          RESULT=""
+          for attempt in 1 2 3; do
+            sleep 5
+            RESULT=$(curl -sf --max-time 15 \
+              -H "Content-Type: application/json" \
+              -H "X-API-Key: ${{ secrets.API_KEY }}" \
+              -X POST "http://${FOLLOWER}:8080/api/sandboxes/$SB/exec/run" \
+              -d '{"cmd":"echo","args":["deploy-ok"],"timeout":10}' | jq -r .stdout 2>/dev/null || echo "")
+            echo "Attempt $attempt: '$RESULT'"
+            echo "$RESULT" | grep -q "deploy-ok" && break
+          done
+
+          curl -sf --max-time 10 \
+            -H "X-API-Key: ${{ secrets.API_KEY }}" \
+            -X DELETE "http://${LEADER}:8080/api/sandboxes/$SB" || true
+
+          if echo "$RESULT" | grep -q "deploy-ok"; then
+            echo "Smoke test PASSED (create on $LEADER, exec on $FOLLOWER)"
+          else
+            echo "Smoke test FAILED: exec returned '$RESULT'"
+            exit 1
+          fi
+
+      - name: Summary
+        run: |
+          IFS=',' read -ra CPS <<< "$CP_IPS"
+          echo "## Control Plane Deploy Complete" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** $VERSION" >> $GITHUB_STEP_SUMMARY
+          for i in "${!CPS[@]}"; do
+            echo "- **CP$((i+1)):** ${CPS[$i]} ✅" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "- **Smoke test:** Passed" >> $GITHUB_STEP_SUMMARY

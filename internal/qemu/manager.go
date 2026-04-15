@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
+	"strconv"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -57,8 +59,9 @@ type VMInstance struct {
 	restoring     chan struct{}
 	opMu          sync.Mutex   // serializes destructive VM ops (checkpoint, restore, hibernate)
 	archiveDone   chan struct{} // closed when async hibernate archive completes (nil if no archive in flight)
-	baseMemoryMB         int  // initial memory passed to -m (before virtio-mem)
-	virtioMemRequestedMB int  // additional memory via virtio-mem (beyond base)
+	baseMemoryMB         int    // initial memory passed to -m (before virtio-mem)
+	virtioMemRequestedMB int    // additional memory via virtio-mem (beyond base)
+	goldenVersion        string // golden version this sandbox was created from (empty if cold-booted)
 }
 
 // SandboxMeta is persisted to sandbox-meta.json for recovery after hard kills.
@@ -125,6 +128,7 @@ type Manager struct {
 	goldenCID     uint32 // CID used when the golden snapshot was created
 	goldenGuestIP string // guest IP baked into the golden snapshot
 	goldenHostIP  string // host IP of the golden subnet (for temp addr on TAP)
+	goldenVersion string // hash of base image — used for overlay-based migration
 
 	// Metadata service callbacks (set via SetMetadataCallbacks)
 	onSandboxReady   func(sandboxID, guestIP, template string, startedAt time.Time)
@@ -208,19 +212,18 @@ func (m *Manager) SetSecretsProxy(sp SecretsProxyIntegration) {
 	m.secretsProxy = sp
 }
 
+// GoldenVersion returns the hash identifying this worker's golden snapshot base image.
+// Empty string means no golden snapshot is available.
+func (m *Manager) GoldenVersion() string {
+	return m.goldenVersion
+}
+
 // sealSandboxEnvs runs cfg.Envs through the secrets proxy to swap real values
 // for sealed tokens, registers a proxy session for the guest IP, and writes the
 // proxy CA cert into the guest trust store. Returns the env map that should be
 // injected into the VM (sealed tokens + HTTP_PROXY/CA env vars), or cfg.Envs
 // unchanged if the secrets proxy is not configured.
-//
-// IMPORTANT: This is the QEMU equivalent of internal/firecracker/manager.go:451.
-// The QEMU manager originally shipped without this call, so secrets were
-// injected into the guest as plaintext — see git history for f2e64e3.
 func (m *Manager) sealSandboxEnvs(ctx context.Context, sandboxID string, netCfg *NetworkConfig, agent *AgentClient, cfg types.SandboxConfig) map[string]string {
-	// If the secrets proxy is not configured, just merge the two maps with
-	// user (Envs) winning. This keeps non-prod environments working without
-	// the proxy registered while preserving the user-wins precedence rule.
 	if m.secretsProxy == nil {
 		if len(cfg.SecretEnvs) == 0 {
 			return cfg.Envs
@@ -241,9 +244,6 @@ func (m *Manager) sealSandboxEnvs(ctx context.Context, sandboxID string, netCfg 
 	if sealed == nil {
 		return cfg.Envs
 	}
-	// Inject the proxy CA cert so HTTPS apps inside the VM trust the MITM proxy.
-	// CreateSealedEnvs already populates NODE_EXTRA_CA_CERTS / REQUESTS_CA_BUNDLE /
-	// SSL_CERT_FILE pointing at this path; without the file the env vars are dead.
 	if certPEM := m.secretsProxy.CACertPEM(); len(certPEM) > 0 {
 		writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := agent.WriteFile(writeCtx, "/usr/local/share/ca-certificates/opensandbox-proxy.crt", certPEM); err != nil {
@@ -270,21 +270,49 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		os.RemoveAll(goldenDir)
 	}
 
-	// If golden snapshot already exists, just use it
+	// If golden snapshot already exists, check if the base image has changed
 	if (fileExists(memFile) || fileExists(memFile+".zst")) && (fileExists(rootfsFile) || fileExists(filepath.Join(goldenDir, "rootfs.ext4"))) {
-		m.goldenDir = goldenDir
-		// Read saved golden CID + guest IP
-		if cidBytes, err := os.ReadFile(filepath.Join(goldenDir, "cid")); err == nil {
-			fmt.Sscanf(string(cidBytes), "%d", &m.goldenCID)
+		// Load stored golden version
+		versionFile := filepath.Join(goldenDir, "version")
+		var storedVersion string
+		if vBytes, err := os.ReadFile(versionFile); err == nil {
+			storedVersion = string(vBytes)
 		}
-		if ipBytes, err := os.ReadFile(filepath.Join(goldenDir, "guest_ip")); err == nil {
-			m.goldenGuestIP = string(ipBytes)
+
+		// Check if the base image on disk matches the golden snapshot
+		stale := false
+		baseImage, _ := ResolveBaseImage(m.cfg.ImagesDir, "default")
+		if baseImage != "" && storedVersion != "" {
+			if currentHash, err := computeGoldenVersion(baseImage); err == nil && currentHash != storedVersion {
+				log.Printf("qemu: base image changed (golden=%s, disk=%s), rebuilding golden snapshot", storedVersion, currentHash)
+				stale = true
+			}
 		}
-		if ipBytes, err := os.ReadFile(filepath.Join(goldenDir, "host_ip")); err == nil {
-			m.goldenHostIP = string(ipBytes)
+
+		if !stale {
+			m.goldenDir = goldenDir
+			m.goldenVersion = storedVersion
+			if cidBytes, err := os.ReadFile(filepath.Join(goldenDir, "cid")); err == nil {
+				fmt.Sscanf(string(cidBytes), "%d", &m.goldenCID)
+			}
+			if ipBytes, err := os.ReadFile(filepath.Join(goldenDir, "guest_ip")); err == nil {
+				m.goldenGuestIP = string(ipBytes)
+			}
+			if ipBytes, err := os.ReadFile(filepath.Join(goldenDir, "host_ip")); err == nil {
+				m.goldenHostIP = string(ipBytes)
+			}
+			if storedVersion == "" && baseImage != "" {
+				if v, err := computeGoldenVersion(baseImage); err == nil {
+					m.goldenVersion = v
+					_ = os.WriteFile(versionFile, []byte(v), 0644)
+				}
+			}
+			log.Printf("qemu: golden snapshot already exists at %s (CID=%d, guestIP=%s, version=%s)", goldenDir, m.goldenCID, m.goldenGuestIP, m.goldenVersion)
+			return nil
 		}
-		log.Printf("qemu: golden snapshot already exists at %s (CID=%d, guestIP=%s)", goldenDir, m.goldenCID, m.goldenGuestIP)
-		return nil
+
+		// Stale — remove old golden and fall through to rebuild
+		os.RemoveAll(goldenDir)
 	}
 
 	log.Printf("qemu: preparing golden snapshot...")
@@ -495,6 +523,12 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		log.Printf("qemu: golden mem compressed with zstd")
 	}
 
+	// Compute and persist golden version hash
+	if v, err := computeGoldenVersion(baseImage); err == nil {
+		m.goldenVersion = v
+		_ = os.WriteFile(filepath.Join(goldenDir, "version"), []byte(v), 0644)
+	}
+
 	// Remove preparing marker — golden snapshot is complete
 	os.Remove(preparingMarker)
 
@@ -505,9 +539,53 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	_ = os.WriteFile(filepath.Join(goldenDir, "cid"), []byte(fmt.Sprintf("%d", goldenCID)), 0644)
 	_ = os.WriteFile(filepath.Join(goldenDir, "guest_ip"), []byte(netCfg.GuestIP), 0644)
 	_ = os.WriteFile(filepath.Join(goldenDir, "host_ip"), []byte(netCfg.HostIP), 0644)
-	log.Printf("qemu: golden snapshot ready (%dms total, mem=%s, CID=%d, guestIP=%s)",
-		time.Since(t0).Milliseconds(), memFile, goldenCID, netCfg.GuestIP)
+	log.Printf("qemu: golden snapshot ready (%dms total, mem=%s, CID=%d, guestIP=%s, version=%s)",
+		time.Since(t0).Milliseconds(), memFile, goldenCID, netCfg.GuestIP, m.goldenVersion)
 	return nil
+}
+
+// RebuildGoldenSnapshot builds a new golden snapshot alongside the old one,
+// then atomically swaps to it. Existing sandboxes keep running on their
+// independent reflink copies — only new sandboxes use the new golden.
+// Returns the old and new golden version strings.
+func (m *Manager) RebuildGoldenSnapshot() (oldVersion, newVersion string, err error) {
+	oldVersion = m.goldenVersion
+	goldenDir := filepath.Join(m.cfg.DataDir, "golden")
+
+	// Build new golden in a staging directory
+	stagingDir := filepath.Join(m.cfg.DataDir, "golden-staging")
+	os.RemoveAll(stagingDir) // clean up any prior failed attempt
+
+	// Temporarily point goldenDir to staging so PrepareGoldenSnapshot builds there
+	oldGoldenDir := m.goldenDir
+	m.goldenDir = ""
+
+	// Rename current golden out of the way so PrepareGoldenSnapshot sees no existing snapshot
+	backupDir := filepath.Join(m.cfg.DataDir, "golden-old")
+	os.RemoveAll(backupDir)
+	if err := os.Rename(goldenDir, backupDir); err != nil && !os.IsNotExist(err) {
+		m.goldenDir = oldGoldenDir
+		return oldVersion, "", fmt.Errorf("backup old golden: %w", err)
+	}
+
+	// Build fresh golden snapshot
+	if err := m.PrepareGoldenSnapshot(); err != nil {
+		// Restore old golden on failure
+		os.RemoveAll(goldenDir)
+		if backupErr := os.Rename(backupDir, goldenDir); backupErr == nil {
+			m.goldenDir = oldGoldenDir
+			m.goldenVersion = oldVersion
+		}
+		return oldVersion, "", fmt.Errorf("rebuild golden: %w", err)
+	}
+
+	newVersion = m.goldenVersion
+
+	// Clean up old golden — sandboxes created from it have independent reflink copies
+	os.RemoveAll(backupDir)
+
+	log.Printf("qemu: golden snapshot rebuilt (old=%s, new=%s)", oldVersion, newVersion)
+	return oldVersion, newVersion, nil
 }
 
 // createFromGolden creates a new VM by restoring from the golden snapshot.
@@ -547,6 +625,19 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		os.RemoveAll(sandboxDir)
 		return nil, fmt.Errorf("create workspace: %w", err)
 	}
+
+	// Resize workspace if requested size exceeds default (golden geometry)
+	requestedDiskMB := cfg.DiskMB
+	if requestedDiskMB <= 0 {
+		requestedDiskMB = m.cfg.DefaultDiskMB
+	}
+	if requestedDiskMB > diskMB {
+		if err := ResizeWorkspace(workspacePath, requestedDiskMB); err != nil {
+			os.RemoveAll(sandboxDir)
+			return nil, fmt.Errorf("resize workspace: %w", err)
+		}
+	}
+
 	log.Printf("qemu: golden-create %s: rootfs+workspace ready (%dms)", id, time.Since(t0).Milliseconds())
 
 	// Allocate network
@@ -705,6 +796,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		guestMAC:      guestMAC,
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
+		goldenVersion: m.goldenVersion,
 	}
 
 	// Connect to agent via Unix socket
@@ -720,6 +812,33 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	}
 	vm.agent = agentClient
 	log.Printf("qemu: golden-create %s: agent connected (%dms)", id, time.Since(t0).Milliseconds())
+
+	// If we resized the workspace qcow2 before launch, notify QEMU via QMP
+	// block_resize so virtio-blk fires a capacity-change event to the guest.
+	// Without this, the guest kernel still sees the golden-snapshot-captured
+	// 20GB geometry even though the backing file is larger.
+	if requestedDiskMB > diskMB {
+		newSizeBytes := int64(requestedDiskMB) * 1024 * 1024
+		devs, qbErr := qmpClient.QueryBlock()
+		if qbErr != nil {
+			log.Printf("qemu: golden-create %s: query-block failed: %v", id, qbErr)
+		} else {
+			var devID string
+			for _, d := range devs {
+				if d.Inserted.File == workspacePath {
+					devID = d.Device
+					break
+				}
+			}
+			if devID == "" {
+				log.Printf("qemu: golden-create %s: workspace device not found in query-block", id)
+			} else if err := qmpClient.BlockResize(devID, newSizeBytes); err != nil {
+				log.Printf("qemu: golden-create %s: block_resize failed: %v", id, err)
+			} else {
+				log.Printf("qemu: golden-create %s: block_resize %s → %dMB", id, devID, requestedDiskMB)
+			}
+		}
+	}
 
 	// Patch network inside the guest — the snapshot had the golden VM's IP
 	if err := patchGuestNetwork(context.Background(), agentClient, netCfg); err != nil {
@@ -744,6 +863,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 			"echo 3 > /proc/sys/vm/drop_caches",
 			"echo 3 > /proc/sys/vm/drop_caches",
 			"mount /dev/vdb /home/sandbox 2>/dev/null || true",
+			"resize2fs /dev/vdb 2>/dev/null || true",
 			"chown 1000:1000 /home/sandbox",
 		}, " && ")},
 		RunAsRoot: true,
@@ -909,13 +1029,23 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 	if strings.HasSuffix(workspacePath, ".ext4") {
 		wsFmt = "raw"
 	}
+	// Memory layout: base memory + virtio-mem pool for hotplug scaling.
+	// The virtio-mem backend allocates lazily (only requested-size is committed),
+	// but maxmem must exceed base+pool for QEMU to accept the device.
+	// Pool = 16GB - base, so any sandbox can scale up to 16GB total regardless of base.
+	// Round up to 128MB block alignment.
+	virtioMemPoolMB := ((16384 - memMB + 127) / 128) * 128
+	if virtioMemPoolMB < 1024 {
+		virtioMemPoolMB = 1024 // minimum 1GB pool
+	}
+	maxMemMB := memMB + virtioMemPoolMB
+
 	return []string{
 		"-machine", "q35,accel=kvm",
 		"-cpu", "host",
-		"-m", fmt.Sprintf("%dM,maxmem=16G", memMB),
+		"-m", fmt.Sprintf("%dM,slots=1,maxmem=%dM", memMB, maxMemMB),
 		// virtio-mem: pluggable memory pool. Scale via QMP qom-set requested-size.
-		// 15GB max + base gives 16GB ceiling. Block size 128MB for granularity.
-		"-object", "memory-backend-ram,id=vmem0,size=15360M",
+		"-object", fmt.Sprintf("memory-backend-ram,id=vmem0,size=%dM", virtioMemPoolMB),
 		"-device", "virtio-mem-pci,memdev=vmem0,id=vm0,block-size=128M,requested-size=0",
 		"-smp", fmt.Sprintf("%d", cpus),
 		"-kernel", m.cfg.KernelPath,
@@ -994,7 +1124,10 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (*types.S
 			return nil, fmt.Errorf("prepare rootfs: %w", err)
 		}
 
-		diskMB := m.cfg.DefaultDiskMB
+		diskMB := cfg.DiskMB
+		if diskMB <= 0 {
+			diskMB = m.cfg.DefaultDiskMB
+		}
 		if err := CreateWorkspace(workspacePath, diskMB); err != nil {
 			os.RemoveAll(sandboxDir)
 			return nil, fmt.Errorf("create workspace: %w", err)
@@ -1639,12 +1772,28 @@ func (m *Manager) SetResourceLimits(ctx context.Context, sandboxID string, maxPi
 		}
 		// Round up to 128MB block size
 		additionalMB = ((additionalMB + 127) / 128) * 128
+
+		// Check committed memory across all VMs before attempting hotplug.
+		// Reserve 20% of host RAM for OS, QEMU overhead, page cache, etc.
+		if additionalMB > vm.virtioMemRequestedMB {
+			deltaMB := additionalMB - vm.virtioMemRequestedMB
+			committedMB := m.totalCommittedMemoryMB()
+			hostTotalMB := m.hostMemoryMB()
+			reserveMB := hostTotalMB / 5 // 20% safety margin
+			availableMB := hostTotalMB - committedMB - reserveMB
+
+			if deltaMB > availableMB {
+				log.Printf("qemu: virtio-mem %s: need %dMB but only %dMB available (committed=%dMB, host=%dMB, reserve=%dMB)",
+					sandboxID, deltaMB, availableMB, committedMB, hostTotalMB, reserveMB)
+				return fmt.Errorf("insufficient_capacity: need %dMB additional but only %dMB available on this worker (committed=%dMB/%dMB)",
+					deltaMB, availableMB, committedMB, hostTotalMB)
+			}
+		}
+
 		if additionalMB != vm.virtioMemRequestedMB {
 			if err := vm.qmp.SetVirtioMemSize(additionalMB); err != nil {
-				log.Printf("qemu: virtio-mem %s: set %dMB failed: %v — capping cgroup to current VM memory", sandboxID, additionalMB, err)
-				// Cap cgroup memory limit to actual VM memory so we don't set
-				// cgroup higher than the physical RAM available to the guest.
-				maxMemoryBytes = int64(vm.MemoryMB) * 1024 * 1024
+				log.Printf("qemu: virtio-mem %s: set %dMB failed: %v — returning insufficient capacity error", sandboxID, additionalMB, err)
+				return fmt.Errorf("insufficient_capacity: cannot hotplug %dMB on this worker: %w", additionalMB, err)
 			} else {
 				vm.virtioMemRequestedMB = additionalMB
 				vm.MemoryMB = vm.baseMemoryMB + additionalMB
@@ -1654,6 +1803,65 @@ func (m *Manager) SetResourceLimits(ctx context.Context, sandboxID string, maxPi
 	}
 
 	return vm.agent.SetResourceLimits(ctx, maxPids, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec)
+}
+
+// TotalCommittedMemoryMB returns the sum of MemoryMB (base + virtio-mem) across all running VMs.
+// This represents the maximum host memory that could be consumed if all VMs use their full allocation.
+func (m *Manager) TotalCommittedMemoryMB() int {
+	return m.totalCommittedMemoryMB()
+}
+
+// HostMemoryMB returns the host's total physical memory in MB.
+func (m *Manager) HostMemoryMB() int {
+	return m.hostMemoryMB()
+}
+
+func (m *Manager) totalCommittedMemoryMB() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	total := 0
+	for _, vm := range m.vms {
+		total += vm.MemoryMB
+	}
+	return total
+}
+
+// hostMemoryMB returns the host's total physical memory in MB.
+// getWorkerIP returns the worker's VNet-routable IP address for inter-worker communication.
+// Uses OPENSANDBOX_GRPC_ADVERTISE (host:port) if set, otherwise detects from the default route.
+func (m *Manager) getWorkerIP() string {
+	if addr := os.Getenv("OPENSANDBOX_GRPC_ADVERTISE"); addr != "" {
+		// Format: "10.100.1.5:9090" — extract just the IP
+		if host, _, err := net.SplitHostPort(addr); err == nil {
+			return host
+		}
+		return addr
+	}
+	// Fallback: detect from default route interface
+	if conn, err := net.Dial("udp", "8.8.8.8:80"); err == nil {
+		defer conn.Close()
+		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+			return addr.IP.String()
+		}
+	}
+	return "127.0.0.1"
+}
+
+func (m *Manager) hostMemoryMB() int {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 64 * 1024 // fallback: assume 64GB
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "MemTotal:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				kb, _ := strconv.Atoi(fields[1])
+				return kb / 1024
+			}
+		}
+	}
+	return 64 * 1024
 }
 
 // Stats returns live resource usage from the VM.
@@ -1839,69 +2047,71 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 		// resets the virtio-serial listener so forks start with a clean Accept state.
 		vm.agent.Close()
 		vm.agent = nil
-		time.Sleep(500 * time.Millisecond) // let guest process SIGUSR1
+		// Give the guest time to fully quiesce virtio-serial state. 500ms was
+		// observed to leave a small residual rate of "agent not ready" failures
+		// on fork after loadvm (post-loadvm virtio-serial comes up but Accept
+		// doesn't land cleanly). 1s should give the guest enough time without
+		// noticeably adding to checkpoint latency.
+		time.Sleep(1 * time.Second)
 	}
 
-	// Migration-based checkpoint: pause the VM, dump memory + device state to a
-	// file, copy the quiesced drives, then resume. This avoids savevm/loadvm which
-	// has a ~0.5% virtio-serial state corruption issue after loadvm.
+	// Savevm-based checkpoint: pack memory + device state + disk deltas into
+	// the qcow2 drive files as an internal snapshot, atomically. This matches
+	// doHibernate's proven approach and avoids the migrate-based checkpoint's
+	// consistency hazards (migrate marks source drives read-only after
+	// "completed", so we can't use QMP drive-backup post-migrate; and the
+	// previous external cp --reflink of drives post-migrate produced ~30%
+	// fork corruption because QEMU may still have virtio-blk writes pending
+	// when the reflink copy is taken).
+	//
+	// Prior concern: a comment claimed savevm/loadvm had a ~0.5% virtio-serial
+	// corruption rate. That is not re-observed today — doHibernate uses the
+	// same savevm/loadvm path and is reliable. The existing mitigation
+	// (close agent + let SIGUSR1 reset the virtio-serial listener before
+	// savevm) is preserved above.
 	if vm.qmp == nil {
 		return "", "", fmt.Errorf("QMP connection not available for %s", sandboxID)
 	}
 
-	// Pause the VM — all I/O stops, drives are quiesced.
-	if err := vm.qmp.Stop(); err != nil {
-		return "", "", fmt.Errorf("stop VM: %w", err)
-	}
-
-	// Set up the cache staging directory before migration so we can dump directly there.
 	cacheDir := m.checkpointCacheDir(checkpointID)
 	stagingDir := cacheDir + ".staging"
 	if mkErr := os.MkdirAll(filepath.Join(stagingDir, "snapshot"), 0755); mkErr != nil {
-		_ = vm.qmp.Cont() // resume on failure
 		return "", "", fmt.Errorf("mkdir staging: %w", mkErr)
 	}
 
-	// Dump memory + device state via QEMU migration protocol.
-	// The migrate command writes the full VM state (RAM, device registers, virtio
-	// queue state) to the file. Unlike savevm, this produces a standalone file
-	// decoupled from the qcow2 drives.
-	memFile := filepath.Join(stagingDir, "mem")
-	migrateURI := fmt.Sprintf("exec:cat > %s", memFile)
-	if err := vm.qmp.Migrate(migrateURI); err != nil {
-		_ = vm.qmp.Cont()
+	// savevm pauses the VM, writes memory+device+disk-delta into every qcow2
+	// drive as an internal snapshot, then resumes. The qcow2 files now carry
+	// the full VM state; no external memory file is needed.
+	snapshotName := "cp-" + checkpointID
+	if err := vm.qmp.SaveVM(snapshotName); err != nil {
 		os.RemoveAll(stagingDir)
-		return "", "", fmt.Errorf("migrate: %w", err)
+		return "", "", fmt.Errorf("savevm: %w", err)
 	}
-	if err := vm.qmp.WaitMigration(5 * time.Minute); err != nil {
-		_ = vm.qmp.Cont()
-		os.RemoveAll(stagingDir)
-		return "", "", fmt.Errorf("wait migration: %w", err)
-	}
+	log.Printf("qemu: CreateCheckpoint %s/%s: savevm complete (%dms)", sandboxID, checkpointID, time.Since(t0).Milliseconds())
 
-	// Copy drives while VM is still paused — guaranteed consistent.
+	// Copy the qcow2 files (now containing the internal snapshot) into the
+	// checkpoint cache staging dir. The VM has already been resumed by savevm,
+	// but qcow2 internal snapshots are immutable once written, so the reflink
+	// copy captures exactly the snapshot bytes regardless of any new writes.
 	srcRootfs := filepath.Join(vm.sandboxDir, "rootfs.qcow2")
 	srcWorkspace := filepath.Join(vm.sandboxDir, "workspace.qcow2")
-	_ = copyFileReflink(srcRootfs, filepath.Join(stagingDir, "rootfs.qcow2"))
-	_ = copyFileReflink(srcWorkspace, filepath.Join(stagingDir, "workspace.qcow2"))
-
-	// Compress the memory dump for faster fork I/O.
-	memZst := memFile + ".zst"
-	compressCmd := exec.Command("zstd", "-3", "--rm", "-q", memFile, "-o", memZst)
-	if compErr := compressCmd.Run(); compErr != nil {
-		log.Printf("qemu: CreateCheckpoint %s/%s: zstd compress failed: %v (using uncompressed)", sandboxID, checkpointID, compErr)
-		// Fall back to uncompressed — memFile still exists if zstd failed
+	if err := copyFileReflink(srcRootfs, filepath.Join(stagingDir, "rootfs.qcow2")); err != nil {
+		os.RemoveAll(stagingDir)
+		return "", "", fmt.Errorf("copy rootfs: %w", err)
 	}
-
-	log.Printf("qemu: CreateCheckpoint %s/%s: migration + drive copy complete (%dms)",
-		sandboxID, checkpointID, time.Since(t0).Milliseconds())
-
-	// Resume the source VM.
-	if err := vm.qmp.Cont(); err != nil {
-		log.Printf("qemu: CreateCheckpoint %s/%s: WARNING: cont failed after migration: %v", sandboxID, checkpointID, err)
+	if err := copyFileReflink(srcWorkspace, filepath.Join(stagingDir, "workspace.qcow2")); err != nil {
+		os.RemoveAll(stagingDir)
+		return "", "", fmt.Errorf("copy workspace: %w", err)
 	}
+	// Record the savevm snapshot name so ForkFromCheckpoint / RestoreFromCheckpoint
+	// know which internal snapshot to loadvm.
+	_ = os.WriteFile(filepath.Join(stagingDir, "snapshot-name"), []byte(snapshotName), 0644)
 
-	// Reconnect agent (connection was closed before migration).
+	log.Printf("qemu: CreateCheckpoint %s/%s: qcow2 copied (%dms total)", sandboxID, checkpointID, time.Since(t0).Milliseconds())
+
+	// Reconnect agent — savevm auto-resumed the VM, but the agent connection
+	// was closed above and the guest's SIGUSR1 handler reset the virtio-serial
+	// listener, so we need a fresh Accept.
 	agentClient, reconnErr := m.waitForAgentSocket(context.Background(), vm.agentSockPath, 10*time.Second)
 	if reconnErr != nil {
 		log.Printf("qemu: CreateCheckpoint %s/%s: agent reconnect failed (attempt 1): %v, retrying", sandboxID, checkpointID, reconnErr)
@@ -1961,9 +2171,14 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	// The archive includes drives + memory dump + metadata — everything ForkFromCheckpoint needs.
 	// Image builder waits for upload to finish (via WaitUploads) before forking.
 	if checkpointStore != nil {
-		// Build list of files to archive
+		// Build list of files to archive. Savevm-based checkpoints store the VM
+		// state inside the qcow2 drives and record the snapshot name; migrate-
+		// based legacy checkpoints (from older builds) also include a mem file.
 		var archiveFiles []string
 		archiveFiles = append(archiveFiles, "rootfs.qcow2", "workspace.qcow2")
+		if fileExists(filepath.Join(cacheDir, "snapshot-name")) {
+			archiveFiles = append(archiveFiles, "snapshot-name")
+		}
 		if fileExists(filepath.Join(cacheDir, "mem.zst")) {
 			archiveFiles = append(archiveFiles, "mem.zst")
 		} else if fileExists(filepath.Join(cacheDir, "mem")) {
@@ -1973,28 +2188,21 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 			archiveFiles = append(archiveFiles, filepath.Join("snapshot", "snapshot-meta.json"))
 		}
 
-		m.uploadWg.Add(1)
-		go func() {
-			defer m.uploadWg.Done()
-			t1 := time.Now()
-
-			archivePath := filepath.Join(cacheDir, "checkpoint.tar.zst")
-			if err := createArchive(archivePath, cacheDir, archiveFiles); err != nil {
-				log.Printf("qemu: checkpoint %s: archive failed: %v", checkpointID, err)
-				return
-			}
-			defer os.Remove(archivePath)
-
+		t1 := time.Now()
+		archivePath := filepath.Join(cacheDir, "checkpoint.tar.zst")
+		if err := createArchive(archivePath, cacheDir, archiveFiles); err != nil {
+			log.Printf("qemu: checkpoint %s: archive failed: %v", checkpointID, err)
+		} else {
 			uploadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-			if _, err := checkpointStore.Upload(uploadCtx, rootfsKey, archivePath); err != nil {
-				log.Printf("qemu: checkpoint %s: S3 upload failed: %v", checkpointID, err)
-				return
+			if _, uerr := checkpointStore.Upload(uploadCtx, rootfsKey, archivePath); uerr != nil {
+				log.Printf("qemu: checkpoint %s: S3 upload failed: %v", checkpointID, uerr)
+			} else {
+				log.Printf("qemu: checkpoint %s: S3 upload complete (%dms, files=%v)",
+					checkpointID, time.Since(t1).Milliseconds(), archiveFiles)
 			}
-
-			log.Printf("qemu: checkpoint %s: S3 upload complete (%dms, files=%v)",
-				checkpointID, time.Since(t1).Milliseconds(), archiveFiles)
-		}()
+			cancel()
+			os.Remove(archivePath)
+		}
 	}
 
 	if onReady != nil {
@@ -2409,96 +2617,108 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		incomingURI = ""
 	}
 
-	os.Remove(qmpSockPath)
-	os.Remove(agentSockPath)
+	// Boot QEMU, load the checkpoint (migration or loadvm), and connect the
+	// agent inside. Post-loadvm virtio-serial occasionally comes up with the
+	// Accept side not ready (the guest resumes, the kernel brings up the
+	// virtio-serial port, but the agent's accept() doesn't land in time).
+	// That's a transient flake — retrying a fresh boot from the same checkpoint
+	// usually recovers. Wrap boot-to-agent-connect in one retry.
+	bootAndRestore := func() (*exec.Cmd, *QMPClient, *AgentClient, error) {
+		os.Remove(qmpSockPath)
+		os.Remove(agentSockPath)
 
-	logPath := filepath.Join(sandboxDir, "qemu.log")
-	logFile, err := os.Create(logPath)
-	if err != nil {
-		m.cleanupVM(netCfg, sandboxDir)
-		return nil, fmt.Errorf("create log file: %w", err)
-	}
+		logPath := filepath.Join(sandboxDir, "qemu.log")
+		logFile, err := os.Create(logPath)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("create log file: %w", err)
+		}
 
-	args := m.buildQEMUArgs(cpus, memMB, rootfsPath, workspacePath,
-		netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
+		args := m.buildQEMUArgs(cpus, memMB, rootfsPath, workspacePath,
+			netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
+		if incomingURI != "" {
+			args = append(args, "-incoming", incomingURI)
+		} else {
+			args = append(args, "-S")
+		}
 
-	if incomingURI != "" {
-		// Migration-based restore: QEMU loads state from the mem dump file.
-		args = append(args, "-incoming", incomingURI)
-	} else {
-		// Savevm-based fallback: start paused, then loadvm.
-		args = append(args, "-S")
-	}
-
-	cmd := exec.Command(m.cfg.QEMUBin, args...)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	if err := cmd.Start(); err != nil {
+		cmd := exec.Command(m.cfg.QEMUBin, args...)
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		if err := cmd.Start(); err != nil {
+			logFile.Close()
+			return nil, nil, nil, fmt.Errorf("start qemu for fork: %w", err)
+		}
 		logFile.Close()
-		m.cleanupVM(netCfg, sandboxDir)
-		return nil, fmt.Errorf("start qemu for fork: %w", err)
-	}
-	logFile.Close()
 
-	log.Printf("qemu: ForkFromCheckpoint %s → %s: QEMU started (pid=%d, migration=%v)",
-		checkpointID, id, cmd.Process.Pid, incomingURI != "")
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: QEMU started (pid=%d, migration=%v)",
+			checkpointID, id, cmd.Process.Pid, incomingURI != "")
 
-	qmpClient, err := waitForQMP(qmpSockPath, 10*time.Second)
-	if err != nil {
-		cmd.Process.Kill()
-		cmd.Wait()
-		m.cleanupVM(netCfg, sandboxDir)
-		return nil, fmt.Errorf("QMP connect: %w", err)
-	}
+		qmpClient, err := waitForQMP(qmpSockPath, 10*time.Second)
+		if err != nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+			return nil, nil, nil, fmt.Errorf("QMP connect: %w", err)
+		}
 
-	if incomingURI != "" {
-		// Migration-based: wait for incoming migration to finish loading, then resume.
-		if err := m.waitForMigrationReady(qmpClient, 30*time.Second); err != nil {
+		if incomingURI != "" {
+			if err := m.waitForMigrationReady(qmpClient, 30*time.Second); err != nil {
+				qmpClient.Close()
+				cmd.Process.Kill()
+				cmd.Wait()
+				return nil, nil, nil, fmt.Errorf("migration load: %w", err)
+			}
+		} else {
+			snapshotName := "cp-" + checkpointID
+			if data, readErr := os.ReadFile(filepath.Join(cacheDir, "snapshot-name")); readErr == nil {
+				snapshotName = strings.TrimSpace(string(data))
+			}
+			if err := qmpClient.LoadVM(snapshotName); err != nil {
+				qmpClient.Close()
+				cmd.Process.Kill()
+				cmd.Wait()
+				return nil, nil, nil, fmt.Errorf("loadvm: %w", err)
+			}
+		}
+
+		if err := qmpClient.Cont(); err != nil {
 			qmpClient.Close()
 			cmd.Process.Kill()
 			cmd.Wait()
-			m.cleanupVM(netCfg, sandboxDir)
-			return nil, fmt.Errorf("migration load: %w", err)
+			return nil, nil, nil, fmt.Errorf("QMP cont: %w", err)
 		}
-	} else {
-		// Savevm fallback: load the internal snapshot.
-		snapshotName := "cp-" + checkpointID
-		if data, readErr := os.ReadFile(filepath.Join(cacheDir, "snapshot-name")); readErr == nil {
-			snapshotName = strings.TrimSpace(string(data))
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: VM resumed (%dms), connecting agent...",
+			checkpointID, id, time.Since(t0).Milliseconds())
+
+		agentTimeout := 30 * time.Second
+		if incomingURI != "" {
+			agentTimeout = 10 * time.Second
 		}
-		if err := qmpClient.LoadVM(snapshotName); err != nil {
+		agent, err := m.waitForAgentSocket(context.Background(), agentSockPath, agentTimeout)
+		if err != nil {
 			qmpClient.Close()
 			cmd.Process.Kill()
 			cmd.Wait()
-			m.cleanupVM(netCfg, sandboxDir)
-			return nil, fmt.Errorf("loadvm: %w", err)
+			return nil, nil, nil, fmt.Errorf("agent connect: %w", err)
 		}
+		return cmd, qmpClient, agent, nil
 	}
 
-	if err := qmpClient.Cont(); err != nil {
-		qmpClient.Close()
-		cmd.Process.Kill()
-		cmd.Wait()
-		m.cleanupVM(netCfg, sandboxDir)
-		return nil, fmt.Errorf("QMP cont: %w", err)
-	}
-	log.Printf("qemu: ForkFromCheckpoint %s → %s: VM resumed (%dms), connecting agent...",
-		checkpointID, id, time.Since(t0).Milliseconds())
-
-	// Connect agent — migration-based restores are reliable (no virtio-serial
-	// state issues), so use a shorter timeout.
-	agentTimeout := 30 * time.Second
-	if incomingURI != "" {
-		agentTimeout = 10 * time.Second
-	}
+	var cmd *exec.Cmd
+	var qmpClient *QMPClient
 	var agent *AgentClient
-	agent, err = m.waitForAgentSocket(context.Background(), agentSockPath, agentTimeout)
-	if err != nil {
-		qmpClient.Close()
-		cmd.Process.Kill()
-		cmd.Wait()
-		m.cleanupVM(netCfg, sandboxDir)
-		return nil, fmt.Errorf("agent connect: %w", err)
+	for attempt := 1; attempt <= 2; attempt++ {
+		c, q, a, bErr := bootAndRestore()
+		if bErr == nil {
+			cmd, qmpClient, agent = c, q, a
+			break
+		}
+		retriable := attempt == 1 && strings.Contains(bErr.Error(), "agent connect")
+		if !retriable {
+			m.cleanupVM(netCfg, sandboxDir)
+			return nil, bErr
+		}
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: transient virtio-serial flake on attempt %d, retrying: %v",
+			checkpointID, id, attempt, bErr)
 	}
 
 	log.Printf("qemu: ForkFromCheckpoint %s → %s: agent connected, patching network...", checkpointID, id)

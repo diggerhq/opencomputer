@@ -51,6 +51,11 @@ func NewStore(ctx context.Context, databaseURL string) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
+// Ping verifies the database connection is alive.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 // Close closes the connection pool.
 func (s *Store) Close() {
 	s.pool.Close()
@@ -96,11 +101,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{14, "migrations/014_image_cache.up.sql"},
 		{15, "migrations/015_projects.up.sql"},
 		{16, "migrations/016_orgs_workos.up.sql"},
-		{17, "migrations/017_sandbox_usage.up.sql"},
-		{18, "migrations/018_secret_allowed_hosts.up.sql"},
-		{19, "migrations/019_stripe_billing.up.sql"},
-		{20, "migrations/020_drop_spend_cap.up.sql"},
-		{21, "migrations/021_patch_error_tracking.up.sql"},
+		{17, "migrations/015_sandbox_usage.up.sql"},
+		{18, "migrations/015_secret_allowed_hosts.up.sql"},
+		{19, "migrations/017_stripe_billing.up.sql"},
+		{20, "migrations/018_drop_spend_cap.up.sql"},
+		{21, "migrations/019_org_max_disk_mb.up.sql"},
+		{22, "migrations/020_scale_events_disk_mb.up.sql"},
+		{23, "migrations/021_migration_state.up.sql"},
+		{24, "migrations/022_patch_error_tracking.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -140,6 +148,7 @@ type Org struct {
 	Plan                   string    `json:"plan"`
 	MaxConcurrentSandboxes int       `json:"maxConcurrentSandboxes"`
 	MaxSandboxTimeoutSec   int       `json:"maxSandboxTimeoutSec"`
+	MaxDiskMB              int       `json:"maxDiskMB"`
 	CreatedAt              time.Time `json:"createdAt"`
 	UpdatedAt              time.Time `json:"updatedAt"`
 
@@ -166,7 +175,7 @@ type Org struct {
 }
 
 // orgColumns is the list of columns returned by all Org queries.
-const orgColumns = `id, name, slug, plan, max_concurrent_sandboxes, max_sandbox_timeout_sec, created_at, updated_at,
+const orgColumns = `id, name, slug, plan, max_concurrent_sandboxes, max_sandbox_timeout_sec, max_disk_mb, created_at, updated_at,
 	custom_domain, cf_hostname_id, domain_verification_status, domain_ssl_status,
 	verification_txt_name, verification_txt_value, ssl_txt_name, ssl_txt_value,
 	workos_org_id, is_personal, owner_user_id, credit_balance_cents,
@@ -177,7 +186,7 @@ func scanOrg(row pgx.Row) (*Org, error) {
 	org := &Org{}
 	err := row.Scan(
 		&org.ID, &org.Name, &org.Slug, &org.Plan, &org.MaxConcurrentSandboxes,
-		&org.MaxSandboxTimeoutSec, &org.CreatedAt, &org.UpdatedAt,
+		&org.MaxSandboxTimeoutSec, &org.MaxDiskMB, &org.CreatedAt, &org.UpdatedAt,
 		&org.CustomDomain, &org.CFHostnameID, &org.DomainVerificationStatus, &org.DomainSSLStatus,
 		&org.VerificationTxtName, &org.VerificationTxtValue, &org.SSLTxtName, &org.SSLTxtValue,
 		&org.WorkOSOrgID, &org.IsPersonal, &org.OwnerUserID, &org.CreditBalanceCents,
@@ -457,6 +466,7 @@ type SandboxSession struct {
 	BasedOnCheckpointID  *uuid.UUID      `json:"basedOnCheckpointId,omitempty"`
 	LastPatchSequence    int             `json:"lastPatchSequence"`
 	PatchError           *string         `json:"patchError,omitempty"`
+	MigratingToWorker    string          `json:"migratingToWorker,omitempty"`
 }
 
 func (s *Store) CreateSandboxSession(ctx context.Context, sandboxID string, orgID uuid.UUID, userID *uuid.UUID, template, region, workerID string, config, metadata json.RawMessage) (*SandboxSession, error) {
@@ -489,11 +499,101 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 		query = `UPDATE sandbox_sessions SET status = $1 WHERE sandbox_id = $2 AND status = 'running'`
 		args = []interface{}{status, sandboxID}
 	}
-	_, err := s.pool.Exec(ctx, query, args...)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to update sandbox session: %w", err)
 	}
-	return nil
+
+	// Close any open scale_events when the session actually transitioned to a
+	// non-billable state. Tied to the same tx as the session update so the
+	// usage reporter can never observe a stopped/hibernated session with an
+	// ended_at IS NULL scale_event (which would keep billing the window).
+	if tag.RowsAffected() > 0 && (status == "stopped" || status == "hibernated" || status == "error") {
+		if _, err := tx.Exec(ctx,
+			`UPDATE sandbox_scale_events SET ended_at = now()
+			 WHERE sandbox_id = $1 AND ended_at IS NULL`, sandboxID); err != nil {
+			return fmt.Errorf("failed to close scale events: %w", err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// SetMigrating marks a sandbox as migrating to a target worker.
+// Only transitions from running → migrating.
+func (s *Store) SetMigrating(ctx context.Context, sandboxID, targetWorkerID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET status = 'migrating', migrating_to_worker = $1
+		 WHERE sandbox_id = $2 AND status = 'running'`,
+		targetWorkerID, sandboxID)
+	return err
+}
+
+// CompleteMigration marks a sandbox as running on the new worker after successful migration.
+func (s *Store) CompleteMigration(ctx context.Context, sandboxID, newWorkerID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET status = 'running', worker_id = $1, migrating_to_worker = ''
+		 WHERE sandbox_id = $2 AND status = 'migrating'`,
+		newWorkerID, sandboxID)
+	return err
+}
+
+// FailMigration reverts a sandbox to running on its original worker after a failed migration.
+func (s *Store) FailMigration(ctx context.Context, sandboxID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET status = 'running', migrating_to_worker = ''
+		 WHERE sandbox_id = $1 AND status = 'migrating'`,
+		sandboxID)
+	return err
+}
+
+// RecoverStaleMigrations resets any sandbox stuck in 'migrating' status for more than the given duration.
+func (s *Store) RecoverStaleMigrations(ctx context.Context, maxAge time.Duration) (int, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET status = 'running', migrating_to_worker = ''
+		 WHERE status = 'migrating' AND started_at < now() - $1::interval`,
+		maxAge.String())
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// MarkOrphanedSandboxes marks running sandboxes on dead workers as error.
+// liveWorkers is the set of worker IDs currently registered.
+func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[string]bool) (int, error) {
+	// Get all distinct worker_ids with running sandboxes
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT worker_id FROM sandbox_sessions WHERE status = 'running'`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	total := 0
+	for rows.Next() {
+		var workerID string
+		if err := rows.Scan(&workerID); err != nil {
+			continue
+		}
+		if liveWorkers[workerID] {
+			continue
+		}
+		// Worker not in registry — mark its sandboxes as error
+		tag, err := s.pool.Exec(ctx,
+			`UPDATE sandbox_sessions SET status = 'error', error_msg = 'worker lost', stopped_at = now()
+			 WHERE worker_id = $1 AND status = 'running'`, workerID)
+		if err == nil {
+			total += int(tag.RowsAffected())
+		}
+	}
+	return total, nil
 }
 
 func (s *Store) GetSandboxSession(ctx context.Context, sandboxID string) (*SandboxSession, error) {
@@ -832,8 +932,14 @@ func (s *Store) UpdateSandboxSessionForWake(ctx context.Context, sandboxID, newW
 // Sessions without a checkpoint are set to "stopped" (VM is gone, no recovery possible).
 // Returns the count of sessions transitioned to each state.
 func (s *Store) ReconcileWorkerSessions(ctx context.Context, workerID string) (hibernated, stopped int, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	// First: mark sessions that have an active hibernation as "hibernated"
-	res1, err := s.pool.Exec(ctx,
+	res1, err := tx.Exec(ctx,
 		`UPDATE sandbox_sessions SET status = 'hibernated'
 		 WHERE worker_id = $1 AND status = 'running'
 		 AND sandbox_id IN (
@@ -845,7 +951,7 @@ func (s *Store) ReconcileWorkerSessions(ctx context.Context, workerID string) (h
 	}
 
 	// Second: mark remaining "running" sessions as "stopped"
-	res2, err := s.pool.Exec(ctx,
+	res2, err := tx.Exec(ctx,
 		`UPDATE sandbox_sessions SET status = 'stopped', stopped_at = now(),
 		 error_msg = 'worker restarted'
 		 WHERE worker_id = $1 AND status = 'running'`, workerID)
@@ -853,7 +959,39 @@ func (s *Store) ReconcileWorkerSessions(ctx context.Context, workerID string) (h
 		return int(res1.RowsAffected()), 0, fmt.Errorf("failed to reconcile stopped sessions: %w", err)
 	}
 
+	// Close any open scale_events for sessions we just transitioned off running
+	// on this worker, so billing stops at reconciliation time.
+	if _, err := tx.Exec(ctx,
+		`UPDATE sandbox_scale_events se SET ended_at = now()
+		 WHERE se.ended_at IS NULL
+		   AND se.sandbox_id IN (
+		       SELECT sandbox_id FROM sandbox_sessions
+		       WHERE worker_id = $1 AND status IN ('hibernated', 'stopped')
+		   )`, workerID); err != nil {
+		return int(res1.RowsAffected()), int(res2.RowsAffected()), fmt.Errorf("failed to close scale events: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, fmt.Errorf("failed to commit reconcile tx: %w", err)
+	}
 	return int(res1.RowsAffected()), int(res2.RowsAffected()), nil
+}
+
+// ReconcileWorkerReconnect fixes sandbox sessions after a worker reconnects from
+// a network outage. Sandboxes that are actually running locally but marked as
+// "error" in the DB are reset to "running". Returns the number of sessions fixed.
+func (s *Store) ReconcileWorkerReconnect(ctx context.Context, workerID string, runningSandboxIDs []string) (fixed int, err error) {
+	if len(runningSandboxIDs) == 0 {
+		return 0, nil
+	}
+	res, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions SET status = 'running', error_msg = NULL
+		 WHERE worker_id = $1 AND status = 'error'
+		 AND sandbox_id = ANY($2)`, workerID, runningSandboxIDs)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile worker reconnect: %w", err)
+	}
+	return int(res.RowsAffected()), nil
 }
 
 // UpsertWorkspaceBackup creates or updates a workspace-only backup record for a sandbox.
@@ -909,6 +1047,14 @@ func (s *Store) SetCheckpointReady(ctx context.Context, checkpointID uuid.UUID, 
 		`UPDATE sandbox_checkpoints SET status = 'ready', rootfs_s3_key = $2, workspace_s3_key = $3, size_bytes = $4
 		 WHERE id = $1`,
 		checkpointID, rootfsKey, workspaceKey, sizeBytes)
+	return err
+}
+
+// UpdateCheckpointS3Keys sets the S3 keys without changing the checkpoint status.
+func (s *Store) UpdateCheckpointS3Keys(ctx context.Context, checkpointID uuid.UUID, rootfsKey, workspaceKey string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_checkpoints SET rootfs_s3_key = $2, workspace_s3_key = $3 WHERE id = $1`,
+		checkpointID, rootfsKey, workspaceKey)
 	return err
 }
 

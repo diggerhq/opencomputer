@@ -32,10 +32,11 @@ type SnapshotMeta struct {
 	MemoryMB      int            `json:"memoryMB"`
 	BaseMemoryMB  int            `json:"baseMemoryMB,omitempty"`
 	Template      string         `json:"template"`
-	GuestPort        int                `json:"guestPort"`
-	SnapshotedAt     time.Time          `json:"snapshotedAt,omitempty"`
-	SealedTokens     map[string]string  `json:"sealedTokens,omitempty"`
-	EgressAllowlist  []string           `json:"egressAllowlist,omitempty"`
+	GuestPort        int                 `json:"guestPort"`
+	GoldenVersion    string              `json:"goldenVersion,omitempty"`
+	SnapshotedAt     time.Time           `json:"snapshotedAt,omitempty"`
+	SealedTokens     map[string]string   `json:"sealedTokens,omitempty"`
+	EgressAllowlist  []string            `json:"egressAllowlist,omitempty"`
 	TokenHosts       map[string][]string `json:"tokenHosts,omitempty"`
 }
 
@@ -131,6 +132,7 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		BaseMemoryMB:  vm.baseMemoryMB,
 		Template:      vm.Template,
 		GuestPort:     vm.GuestPort,
+		GoldenVersion: vm.goldenVersion,
 		SnapshotedAt:  time.Now(),
 	}
 
@@ -200,7 +202,17 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 			return nil, fmt.Errorf("copy %s for archive staging: %w", driveFile, err)
 		}
 	}
-	log.Printf("qemu: hibernate %s: archive staging ready (reflink copies)", sandboxID)
+	// Flatten staged rootfs for S3 portability — the qcow2 overlay references a
+	// local backing file (base ext4 image) that won't exist on other workers.
+	// `qemu-img rebase -b ""` merges backing file data into the overlay, making it
+	// self-contained while preserving internal savevm snapshots (unlike qemu-img convert).
+	stagedRootfs := filepath.Join(archiveDir, rootfsFile)
+	rebaseCmd := exec.Command("qemu-img", "rebase", "-b", "", stagedRootfs)
+	if out, err := rebaseCmd.CombinedOutput(); err != nil {
+		log.Printf("qemu: hibernate %s: rootfs rebase failed (archive may not be portable): %v (%s)",
+			sandboxID, err, strings.TrimSpace(string(out)))
+	}
+	log.Printf("qemu: hibernate %s: archive staging ready", sandboxID)
 
 	// Signal channel so destroyVM can wait for archive completion before deleting files.
 	archiveDone := make(chan struct{})
@@ -465,17 +477,15 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		return nil, fmt.Errorf("agent not ready: %w", err)
 	}
 
-	// Mount /home/sandbox (data disk, was unmounted before savevm)
-	postCtx, postCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	_, _ = agentClient.Exec(postCtx, &pb.ExecRequest{
-		Command: "/bin/sh",
-		Args: []string{"-c", strings.Join([]string{
-			"mount /dev/vdb /home/sandbox 2>/dev/null || true",
-			"chown 1000:1000 /home/sandbox",
-		}, " && ")},
-		RunAsRoot: true,
-	})
-	postCancel()
+	// Hibernate captured the guest with its mount state intact (we never
+	// unmount before savevm), so loadvm restores the correct mount layout
+	// automatically. Do NOT blindly mount /dev/vdb on /home/sandbox here:
+	// cold-booted VMs have their workspace disk mounted at /workspace per the
+	// guest's fstab, with /home/sandbox being a regular directory on the
+	// rootfs. If we force-mount /dev/vdb over /home/sandbox post-wake, we
+	// shadow any files the user wrote to /home/sandbox (which live on the
+	// rootfs qcow2) with the empty workspace qcow2 view, silently losing
+	// their data.
 
 	if err := patchGuestNetwork(context.Background(), agentClient, netCfg); err != nil {
 		log.Printf("qemu: wake %s: network patch failed: %v", sandboxID, err)

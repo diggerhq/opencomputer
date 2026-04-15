@@ -29,6 +29,10 @@ type StripeClient struct {
 	PriceIDs map[int]string
 	// Maps memoryMB → meter event_name (e.g. "sandbox_compute_4gb")
 	MeterEventNames map[int]string
+
+	// Disk overage meter / price (single dimension: GB-seconds above 20GB).
+	DiskOveragePriceID       string
+	DiskOverageMeterEventName string
 }
 
 // NewStripeClient creates a new Stripe client.
@@ -57,8 +61,8 @@ func (s *StripeClient) EnsureProducts() error {
 		existingMeters[m.EventName] = m
 	}
 
-	for memMB, metaKey := range TierMetadataKey {
-		eventName := "sandbox_compute_" + metaKey
+	for memMB, meterKey := range TierMeterKey {
+		eventName := "sandbox_compute_" + meterKey
 		s.MeterEventNames[memMB] = eventName
 
 		if m, ok := existingMeters[eventName]; ok {
@@ -68,7 +72,7 @@ func (s *StripeClient) EnsureProducts() error {
 		}
 
 		m, err := meter.New(&stripe.BillingMeterParams{
-			DisplayName: stripe.String(fmt.Sprintf("Sandbox Compute %s", metaKey)),
+			DisplayName: stripe.String(fmt.Sprintf("Sandbox Compute %s", meterKey)),
 			EventName:   stripe.String(eventName),
 			DefaultAggregation: &stripe.BillingMeterDefaultAggregationParams{
 				Formula: stripe.String(string(stripe.BillingMeterDefaultAggregationFormulaSum)),
@@ -122,10 +126,10 @@ func (s *StripeClient) EnsureProducts() error {
 		}
 	}
 
-	for memMB, metaKey := range TierMetadataKey {
-		if id, ok := existingPrices[metaKey]; ok {
+	for memMB, priceKey := range TierPriceKey {
+		if id, ok := existingPrices[priceKey]; ok {
 			s.PriceIDs[memMB] = id
-			log.Printf("billing: found existing price for %s (id=%s)", metaKey, id)
+			log.Printf("billing: found existing price for %s (id=%s)", priceKey, id)
 			continue
 		}
 
@@ -145,16 +149,76 @@ func (s *StripeClient) EnsureProducts() error {
 				Meter:     stripe.String(meterID),
 			},
 			Metadata: map[string]string{
-				"tier":        metaKey,
+				"tier":        priceKey,
 				"memory_mb":   fmt.Sprintf("%d", memMB),
 				"opensandbox": "compute",
 			},
 		})
 		if err != nil {
-			return fmt.Errorf("create price for %s: %w", metaKey, err)
+			return fmt.Errorf("create price for %s: %w", priceKey, err)
 		}
 		s.PriceIDs[memMB] = p.ID
-		log.Printf("billing: created price for %s (id=%s)", metaKey, p.ID)
+		log.Printf("billing: created price for %s (id=%s)", priceKey, p.ID)
+	}
+
+	// 4. Disk overage meter + price (single dimension, billed per GB-second above 20GB).
+	diskEventName := "sandbox_compute_" + DiskOverageMetadataKey
+	s.DiskOverageMeterEventName = diskEventName
+
+	var diskMeterID string
+	if m, ok := existingMeters[diskEventName]; ok {
+		diskMeterID = m.ID
+		log.Printf("billing: found existing disk overage meter %s (id=%s)", diskEventName, diskMeterID)
+	} else {
+		m, err := meter.New(&stripe.BillingMeterParams{
+			DisplayName: stripe.String("Sandbox Disk Overage (GB-seconds)"),
+			EventName:   stripe.String(diskEventName),
+			DefaultAggregation: &stripe.BillingMeterDefaultAggregationParams{
+				Formula: stripe.String(string(stripe.BillingMeterDefaultAggregationFormulaSum)),
+			},
+			CustomerMapping: &stripe.BillingMeterCustomerMappingParams{
+				EventPayloadKey: stripe.String("stripe_customer_id"),
+				Type:            stripe.String(string(stripe.BillingMeterCustomerMappingTypeByID)),
+			},
+			ValueSettings: &stripe.BillingMeterValueSettingsParams{
+				EventPayloadKey: stripe.String("value"),
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("create disk overage meter: %w", err)
+		}
+		diskMeterID = m.ID
+		log.Printf("billing: created disk overage meter %s (id=%s)", diskEventName, diskMeterID)
+	}
+
+	if id, ok := existingPrices[DiskOverageMetadataKey]; ok {
+		s.DiskOveragePriceID = id
+		log.Printf("billing: found existing disk overage price (id=%s)", id)
+	} else {
+		ratePerGBPerSecondCents := DiskOveragePricePerGBPerSecond * 100
+		truncated := math.Floor(ratePerGBPerSecondCents*1e12) / 1e12
+
+		p, err := price.New(&stripe.PriceParams{
+			Product:           stripe.String(productID),
+			Currency:          stripe.String("usd"),
+			UnitAmountDecimal: stripe.Float64(truncated),
+			BillingScheme:     stripe.String(string(stripe.PriceBillingSchemePerUnit)),
+			Recurring: &stripe.PriceRecurringParams{
+				Interval:  stripe.String(string(stripe.PriceRecurringIntervalMonth)),
+				UsageType: stripe.String(string(stripe.PriceRecurringUsageTypeMetered)),
+				Meter:     stripe.String(diskMeterID),
+			},
+			Metadata: map[string]string{
+				"tier":        DiskOverageMetadataKey,
+				"opensandbox": "compute",
+				"unit":        "gb_second_above_20gb",
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("create disk overage price: %w", err)
+		}
+		s.DiskOveragePriceID = p.ID
+		log.Printf("billing: created disk overage price (id=%s)", p.ID)
 	}
 
 	return nil
@@ -202,6 +266,11 @@ func (s *StripeClient) CreateSubscription(customerID string) (string, map[int]st
 	for _, priceID := range s.PriceIDs {
 		items = append(items, &stripe.SubscriptionItemsParams{
 			Price: stripe.String(priceID),
+		})
+	}
+	if s.DiskOveragePriceID != "" {
+		items = append(items, &stripe.SubscriptionItemsParams{
+			Price: stripe.String(s.DiskOveragePriceID),
 		})
 	}
 
@@ -258,6 +327,26 @@ func (s *StripeClient) ReportUsage(customerID string, memoryMB int, seconds int6
 	})
 	if err != nil {
 		return fmt.Errorf("report usage for %s: %w", eventName, err)
+	}
+	return nil
+}
+
+// ReportDiskOverageUsage sends a meter event for disk overage GB-seconds
+// (provisioned disk above 20GB, integrated over time).
+func (s *StripeClient) ReportDiskOverageUsage(customerID string, gbSeconds int64, timestamp int64) error {
+	if s.DiskOverageMeterEventName == "" {
+		return fmt.Errorf("disk overage meter not provisioned")
+	}
+	_, err := meterevent.New(&stripe.BillingMeterEventParams{
+		EventName: stripe.String(s.DiskOverageMeterEventName),
+		Timestamp: stripe.Int64(timestamp),
+		Payload: map[string]string{
+			"stripe_customer_id": customerID,
+			"value":              fmt.Sprintf("%d", gbSeconds),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("report disk overage: %w", err)
 	}
 	return nil
 }

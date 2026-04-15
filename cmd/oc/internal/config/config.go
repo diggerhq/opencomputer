@@ -9,15 +9,17 @@ import (
 )
 
 const (
-	DefaultAPIURL = "https://app.opencomputer.dev"
-	configDir     = ".oc"
-	configFile    = "config.json"
+	DefaultAPIURL         = "https://app.opencomputer.dev"
+	DefaultSessionsAPIURL = "https://api.opencomputer.dev"
+	configDir             = ".oc"
+	configFile            = "config.json"
 )
 
 // Config holds the resolved CLI configuration.
 type Config struct {
-	APIURL string `json:"api_url,omitempty"`
-	APIKey string `json:"api_key,omitempty"`
+	APIURL         string `json:"api_url,omitempty"`
+	APIKey         string `json:"api_key,omitempty"`
+	SessionsAPIURL string `json:"sessions_api_url,omitempty"`
 }
 
 // Load resolves configuration from flags > env > config file > defaults.
@@ -36,6 +38,12 @@ func Load(cmd *cobra.Command) Config {
 	if v := os.Getenv("OPENCOMPUTER_API_KEY"); v != "" {
 		cfg.APIKey = v
 	}
+	if cfg.SessionsAPIURL == "" {
+		cfg.SessionsAPIURL = DefaultSessionsAPIURL
+	}
+	if v := os.Getenv("SESSIONS_API_URL"); v != "" {
+		cfg.SessionsAPIURL = v
+	}
 
 	// Flags override env
 	if cmd != nil {
@@ -44,6 +52,9 @@ func Load(cmd *cobra.Command) Config {
 		}
 		if v, _ := cmd.Flags().GetString("api-key"); v != "" {
 			cfg.APIKey = v
+		}
+		if v, _ := cmd.Flags().GetString("sessions-api-url"); v != "" {
+			cfg.SessionsAPIURL = v
 		}
 	}
 
