@@ -1,8 +1,6 @@
 package commands
 
-// Channel lifecycle: connect, disconnect, list. The Telegram case prompts
-// interactively for a bot token since there's no --bot-token flag yet
-// (tracked as a launch-prep item).
+// Channel lifecycle: connect, disconnect, list.
 
 import (
 	"bufio"
@@ -16,8 +14,10 @@ import (
 var agentConnectCmd = &cobra.Command{
 	Use:   "connect <id> <channel>",
 	Short: "Connect a channel to an agent",
-	Long:  "Connect a messaging channel (e.g. telegram) to a managed agent.",
-	Args:  cobra.ExactArgs(2),
+	Long: "Connect a messaging channel to a managed agent.\n\n" +
+		"Supported channels:\n" +
+		"  telegram   requires --bot-token (or interactive prompt if TTY)",
+	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sc, err := sessionsClient(cmd)
 		if err != nil {
@@ -30,16 +30,25 @@ var agentConnectCmd = &cobra.Command{
 		body := map[string]interface{}{}
 
 		if channel == "telegram" {
-			fmt.Println("To connect Telegram:")
-			fmt.Println("  1. Open Telegram and message @BotFather")
-			fmt.Println("  2. Send /newbot, choose a name and username")
-			fmt.Println("  3. Copy the bot token")
-			fmt.Println()
-			fmt.Print("Paste bot token: ")
+			token, _ := cmd.Flags().GetString("bot-token")
+			if token == "" {
+				if !stdinIsTTY() {
+					return fmt.Errorf("--bot-token is required when stdin is not a terminal")
+				}
+				fmt.Println("To connect Telegram:")
+				fmt.Println("  1. Open Telegram and message @BotFather")
+				fmt.Println("  2. Send /newbot, choose a name and username")
+				fmt.Println("  3. Copy the bot token")
+				fmt.Println()
+				fmt.Print("Paste bot token: ")
 
-			reader := bufio.NewReader(os.Stdin)
-			token, _ := reader.ReadString('\n')
-			token = strings.TrimSpace(token)
+				reader := bufio.NewReader(os.Stdin)
+				line, err := reader.ReadString('\n')
+				if err != nil && line == "" {
+					return fmt.Errorf("reading bot token: %w", err)
+				}
+				token = strings.TrimSpace(line)
+			}
 			if token == "" {
 				return fmt.Errorf("bot token is required")
 			}
@@ -51,7 +60,7 @@ var agentConnectCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("Telegram connected to %s.\n", agentID)
+		fmt.Printf("%s connected to %s.\n", channel, agentID)
 		if channel == "telegram" {
 			fmt.Println("Message your bot on Telegram to start chatting.")
 		}

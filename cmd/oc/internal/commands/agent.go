@@ -10,12 +10,24 @@ package commands
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
 	"github.com/spf13/cobra"
 )
+
+// stdinIsTTY reports whether stdin is attached to a terminal. Used to gate
+// interactive prompts: if stdin isn't a TTY we refuse to prompt, since the
+// caller is a script or agent that can't respond.
+func stdinIsTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
 
 // sessionsClient returns the sessions-api client from context, or errors if not configured.
 func sessionsClient(cmd *cobra.Command) (*client.Client, error) {
@@ -104,6 +116,8 @@ func init() {
 	_ = agentCreateCmd.MarkFlagRequired("core")
 	agentCreateCmd.Flags().StringSlice("secret", nil, "Secrets (KEY=VALUE)")
 	agentCreateCmd.Flags().Bool("no-wait", false, "Don't wait for instance provisioning; exit after agent record is created")
+
+	agentConnectCmd.Flags().String("bot-token", "", "Telegram bot token (required for channel=telegram when stdin is not a TTY)")
 
 	agentInstallCmd.Flags().Bool("no-wait", false, "Don't wait for install orchestration to finish")
 
