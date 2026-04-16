@@ -69,6 +69,10 @@ var agentUninstallCmd = &cobra.Command{
 			return err
 		}
 
+		if err := confirmDestructive(cmd, fmt.Sprintf("Uninstall %s from %s", args[1], args[0])); err != nil {
+			return err
+		}
+
 		if err := sc.Delete(cmd.Context(), "/v1/agents/"+args[0]+"/packages/"+args[1]); err != nil {
 			return err
 		}
