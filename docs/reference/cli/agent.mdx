@@ -1,0 +1,125 @@
+---
+title: "oc agent"
+description: "Manage agents, channels, and packages"
+---
+
+## `oc agent create <id>`
+
+Create a new agent. [HTTP API →](/api-reference/agents/create)
+
+<ParamField query="--core" type="string">
+  Managed core to use (e.g. `hermes`, `openclaw`). Without this flag, creates a raw agent.
+</ParamField>
+
+<ParamField query="--secret" type="string">
+  Secret `KEY=VALUE` (repeatable). Secrets are stored encrypted and injected at sandbox creation.
+</ParamField>
+
+```bash
+oc agent create my-hermes --core hermes
+oc agent create my-hermes --core hermes --secret OPENAI_API_KEY=sk-...
+```
+
+---
+
+## `oc agent list`
+
+List all agents. **Alias:** `oc agent ls`
+
+[HTTP API →](/api-reference/agents/list)
+
+Output columns: `ID`, `CORE`, `CHANNELS`, `PACKAGES`, `CREATED`
+
+```bash
+oc agent ls
+oc agent ls --json
+```
+
+---
+
+## `oc agent get <id>`
+
+Show detailed information for an agent, including instance status. [HTTP API →](/api-reference/agents/get)
+
+Output: ID, Name, Core, Channels, Packages, Created, Instance (ID + status).
+
+```bash
+oc agent get my-hermes
+```
+
+---
+
+## `oc agent delete <id>`
+
+Delete an agent. Cascades to instances and sessions — the sandbox is destroyed. [HTTP API →](/api-reference/agents/delete)
+
+```bash
+oc agent delete my-hermes
+```
+
+---
+
+## `oc agent connect <id> <channel>`
+
+Connect a messaging channel to an agent. [HTTP API →](/api-reference/agents/connect-channel)
+
+For Telegram, prompts interactively for the bot token if `--bot-token` is not provided.
+
+<ParamField query="--bot-token" type="string">
+  Telegram bot token (Telegram channel only). If omitted, prompts interactively.
+</ParamField>
+
+```bash
+oc agent connect my-hermes telegram
+oc agent connect my-hermes telegram --bot-token 123:ABC
+```
+
+---
+
+## `oc agent disconnect <id> <channel>`
+
+Disconnect a channel from an agent. Removes webhook registration and config. [HTTP API →](/api-reference/agents/disconnect-channel)
+
+```bash
+oc agent disconnect my-hermes telegram
+```
+
+---
+
+## `oc agent channels <id>`
+
+List channels connected to an agent. [HTTP API →](/api-reference/agents/list-channels)
+
+```bash
+oc agent channels my-hermes
+```
+
+---
+
+## `oc agent install <id> <package>`
+
+Install a package on an agent. [HTTP API →](/api-reference/agents/install-package)
+
+```bash
+oc agent install my-hermes gbrain
+```
+
+---
+
+## `oc agent uninstall <id> <package>`
+
+Uninstall a package from an agent. Data is preserved by default. [HTTP API →](/api-reference/agents/uninstall-package)
+
+```bash
+oc agent uninstall my-hermes gbrain
+```
+
+---
+
+## `oc agent packages <id>`
+
+List packages installed on an agent. [HTTP API →](/api-reference/agents/list-packages)
+
+```bash
+oc agent packages my-hermes
+```

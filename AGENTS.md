@@ -46,6 +46,9 @@ Managed-agent product behavior is mostly **not** implemented here:
 `git push --force-with-lease` are forbidden. No exceptions. Make a new commit
 instead.
 
+**NEVER push to main.** Always create a feature branch and open a pull request.
+Direct pushes to `main` are not allowed in this repo.
+
 ## Repo scope
 
 This repo owns the **sandbox platform**:
