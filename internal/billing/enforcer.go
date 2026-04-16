@@ -19,10 +19,12 @@ type WorkerClientSource interface {
 	GetWorkerClient(workerID string) (pb.SandboxWorkerClient, error)
 }
 
-// sessionLister is the subset of *db.Store the enforcer depends on. Kept
+// enforcerStore is the subset of *db.Store the enforcer depends on. Kept
 // narrow for testability.
-type sessionLister interface {
+type enforcerStore interface {
 	ListSandboxSessions(ctx context.Context, orgID uuid.UUID, status string, limit, offset int) ([]db.SandboxSession, error)
+	UpdateSandboxSessionStatus(ctx context.Context, sandboxID, status string, errorMsg *string) error
+	EndScaleEvent(ctx context.Context, sandboxID string) error
 }
 
 // EnforceCreditExhaustion force-hibernates every running sandbox belonging to
@@ -34,7 +36,7 @@ type sessionLister interface {
 // returns a non-positive balance.
 func EnforceCreditExhaustion(
 	ctx context.Context,
-	store sessionLister,
+	store enforcerStore,
 	workers WorkerClientSource,
 	orgID uuid.UUID,
 ) (hibernated int, err error) {
@@ -71,6 +73,15 @@ func EnforceCreditExhaustion(
 			log.Printf("enforcer: org %s sandbox %s hibernate failed: %v",
 				orgID, sess.SandboxID, err)
 			continue
+		}
+		// Update PG directly — the control plane initiated this hibernation,
+		// so we can't rely on worker-side callbacks or async sync to propagate
+		// the status change back to PG.
+		if err := store.EndScaleEvent(ctx, sess.SandboxID); err != nil {
+			log.Printf("enforcer: org %s sandbox %s: EndScaleEvent failed: %v", orgID, sess.SandboxID, err)
+		}
+		if err := store.UpdateSandboxSessionStatus(ctx, sess.SandboxID, "hibernated", nil); err != nil {
+			log.Printf("enforcer: org %s sandbox %s: status update failed: %v", orgID, sess.SandboxID, err)
 		}
 		hibernated++
 	}

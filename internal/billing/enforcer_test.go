@@ -14,12 +14,24 @@ import (
 // --- Test doubles ---
 
 type fakeLister struct {
-	sessions []db.SandboxSession
-	err      error
+	sessions           []db.SandboxSession
+	err                error
+	hibernatedStatuses []string
+	endedScaleEvents   []string
 }
 
 func (f *fakeLister) ListSandboxSessions(_ context.Context, _ uuid.UUID, _ string, _, _ int) ([]db.SandboxSession, error) {
 	return f.sessions, f.err
+}
+
+func (f *fakeLister) UpdateSandboxSessionStatus(_ context.Context, sandboxID, status string, _ *string) error {
+	f.hibernatedStatuses = append(f.hibernatedStatuses, sandboxID+"="+status)
+	return nil
+}
+
+func (f *fakeLister) EndScaleEvent(_ context.Context, sandboxID string) error {
+	f.endedScaleEvents = append(f.endedScaleEvents, sandboxID)
+	return nil
 }
 
 type fakeWorkerClient struct {
