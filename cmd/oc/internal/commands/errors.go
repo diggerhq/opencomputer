@@ -47,6 +47,12 @@ var codeCatalog = map[string]struct {
 			"Contact an admin to share it, or use an API key from the owning org.",
 		docs: "https://docs.opencomputer.dev/errors/checkpoint-org",
 	},
+	"checkpoint_not_found": {
+		class: classUpstream4xx,
+		suggestion: "The checkpoint configured for this core no longer exists on OC.\n" +
+			"It may have been deleted or replaced. Contact the operator to\n" +
+			"rebuild the checkpoint and update the sessions-api config.",
+	},
 	"telegram_unauthorized": {
 		class:      classUpstream4xx,
 		suggestion: "Telegram rejected the bot token. Verify the token at https://t.me/BotFather.",
@@ -100,7 +106,10 @@ func RenderLastError(w io.Writer, le *LastError) {
 	fmt.Fprintf(w, "%s:\n", title)
 	fmt.Fprintf(w, "  Phase:  %s\n", le.Phase)
 
-	reason := le.Message
+	// Upstream response bodies frequently carry trailing whitespace / newlines
+	// that survive the round-trip. Normalize before appending the upstream
+	// status so the block renders on one clean line.
+	reason := strings.TrimSpace(le.Message)
 	if le.UpstreamStatus != 0 {
 		reason = fmt.Sprintf("%s (%d from upstream)", reason, le.UpstreamStatus)
 	}

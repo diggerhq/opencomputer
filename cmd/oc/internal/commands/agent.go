@@ -127,7 +127,7 @@ var agentCreateCmd = &cobra.Command{
 			return nil
 		}
 
-		return pollUntilTerminal(cmd, sc, id, "instance")
+		return pollUntilTerminal(cmd, sc, id, "Instance creation")
 	},
 }
 
@@ -365,7 +365,7 @@ var agentInstallCmd = &cobra.Command{
 			renderAsyncFallback(os.Stdout, jsonOutput, agentID, "Package install", postErr.Error())
 			return nil
 		}
-		return renderAgentError(cmd, sc, agentID, "install")
+		return renderAgentError(cmd, sc, agentID, "Install")
 	},
 }
 
@@ -459,7 +459,7 @@ func pollUntilTerminal(cmd *cobra.Command, sc *client.Client, agentID, op string
 				// Poll lost connection; Mode 3 fallback. Work may still be
 				// running in sessions-api — the user just can't observe it
 				// from here.
-				renderAsyncFallback(os.Stdout, jsonOutput, agentID, capitalize(op)+" still in progress", "")
+				renderAsyncFallback(os.Stdout, jsonOutput, agentID, op+" still in progress", "")
 				return nil
 			}
 			continue
@@ -484,7 +484,7 @@ func pollUntilTerminal(cmd *cobra.Command, sc *client.Client, agentID, op string
 			// Mode 2 — failure. Render the error block and exit with the
 			// class-mapped code.
 			if !jsonOutput {
-				fmt.Fprintln(os.Stderr, "  ✗ "+capitalize(op)+" failed")
+				fmt.Fprintln(os.Stderr, "  ✗ "+op+" failed")
 				fmt.Fprintln(os.Stderr)
 				RenderLastError(os.Stderr, agent.LastError)
 			} else {
@@ -505,7 +505,7 @@ func pollUntilTerminal(cmd *cobra.Command, sc *client.Client, agentID, op string
 	}
 
 	// Mode 3 — poll hit the cap. Work is likely still running.
-	renderAsyncFallback(os.Stdout, jsonOutput, agentID, capitalize(op)+" still in progress", "")
+	renderAsyncFallback(os.Stdout, jsonOutput, agentID, op+" still in progress", "")
 	return nil
 }
 
@@ -525,20 +525,13 @@ func renderAgentError(cmd *cobra.Command, sc *client.Client, agentID, op string)
 		return fmt.Errorf("%s failed (no error detail available — check server logs)", op)
 	}
 	if !jsonOutput {
-		fmt.Fprintln(os.Stderr, "  ✗ "+capitalize(op)+" failed")
+		fmt.Fprintln(os.Stderr, "  ✗ "+op+" failed")
 		fmt.Fprintln(os.Stderr)
 		RenderLastError(os.Stderr, agent.LastError)
 	} else {
 		printer.Print(agent, func() {})
 	}
 	return &ExitError{Code: ExitCodeFor(agent.LastError)}
-}
-
-func capitalize(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // ── Helpers ──
