@@ -1,5 +1,13 @@
 package commands
 
+// Error-rendering helpers for agent commands: LastError / ExitError types,
+// the code→class catalog (mirrored from sessions-api/src/lib/error-codes.ts),
+// and the two renderers used by `agent get`, `agent create`, and
+// `agent install` (RenderLastError + renderAsyncFallback).
+//
+// Scope: agent commands only. If another command family ever needs to render
+// classified errors, lift this into a shared package.
+
 import (
 	"encoding/json"
 	"fmt"
@@ -130,11 +138,11 @@ func RenderLastError(w io.Writer, le *LastError) {
 // poll timeout, poll network error). Scripts branch on the `async` boolean
 // to decide whether to poll.
 type asyncFallback struct {
-	ID         string `json:"id"`
-	Status     string `json:"status"`
-	Async      bool   `json:"async"`
-	CheckWith  string `json:"check_with"`
-	Note       string `json:"note,omitempty"`
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	Async     bool   `json:"async"`
+	CheckWith string `json:"check_with"`
+	Note      string `json:"note,omitempty"`
 }
 
 // renderAsyncFallback prints the "work is continuing in background" message
