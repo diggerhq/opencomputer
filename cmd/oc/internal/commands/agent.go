@@ -9,6 +9,7 @@ package commands
 // renderAsyncFallback) live in agent_errors.go.
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strings"
@@ -27,6 +28,27 @@ func stdinIsTTY() bool {
 		return false
 	}
 	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// confirmDestructive gates delete/disconnect/uninstall on explicit consent.
+// With --yes: proceed. Without --yes and a TTY: prompt. Without --yes and
+// no TTY: refuse — scripts and agents must pass --yes so accidental
+// invocation can't quietly destroy state.
+func confirmDestructive(cmd *cobra.Command, action string) error {
+	if yes, _ := cmd.Flags().GetBool("yes"); yes {
+		return nil
+	}
+	if !stdinIsTTY() {
+		return fmt.Errorf("refusing to %s without --yes (stdin is not a terminal)", action)
+	}
+	fmt.Fprintf(os.Stderr, "%s? [y/N] ", action)
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return nil
+	default:
+		return fmt.Errorf("aborted")
+	}
 }
 
 // sessionsClient returns the sessions-api client from context, or errors if not configured.
@@ -120,6 +142,11 @@ func init() {
 	agentConnectCmd.Flags().String("bot-token", "", "Telegram bot token (required for channel=telegram when stdin is not a TTY)")
 
 	agentInstallCmd.Flags().Bool("no-wait", false, "Don't wait for install orchestration to finish")
+
+	// Destructive ops — require explicit --yes in non-TTY callers.
+	agentDeleteCmd.Flags().Bool("yes", false, "Skip confirmation (required for non-interactive callers)")
+	agentDisconnectCmd.Flags().Bool("yes", false, "Skip confirmation (required for non-interactive callers)")
+	agentUninstallCmd.Flags().Bool("yes", false, "Skip confirmation (required for non-interactive callers)")
 
 	agentEventsCmd.Flags().Int("limit", 0, "Max events to return (1-200, default 50)")
 	agentEventsCmd.Flags().String("before", "", "Return events before this ISO timestamp (for pagination)")

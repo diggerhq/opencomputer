@@ -16,6 +16,10 @@ var agentDeleteCmd = &cobra.Command{
 			return err
 		}
 
+		if err := confirmDestructive(cmd, fmt.Sprintf("Delete agent %s", args[0])); err != nil {
+			return err
+		}
+
 		if err := sc.Delete(cmd.Context(), "/v1/agents/"+args[0]); err != nil {
 			return err
 		}
