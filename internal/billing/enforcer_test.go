@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -18,6 +19,7 @@ type fakeLister struct {
 	err                error
 	hibernatedStatuses []string
 	endedScaleEvents   []string
+	hibernations       []string
 }
 
 func (f *fakeLister) ListSandboxSessions(_ context.Context, _ uuid.UUID, _ string, _, _ int) ([]db.SandboxSession, error) {
@@ -34,6 +36,11 @@ func (f *fakeLister) EndScaleEvent(_ context.Context, sandboxID string) error {
 	return nil
 }
 
+func (f *fakeLister) CreateHibernation(_ context.Context, sandboxID string, _ uuid.UUID, key string, _ int64, _, _ string, _ json.RawMessage) (*db.SandboxHibernation, error) {
+	f.hibernations = append(f.hibernations, sandboxID+"="+key)
+	return &db.SandboxHibernation{SandboxID: sandboxID, HibernationKey: key}, nil
+}
+
 type fakeWorkerClient struct {
 	pb.SandboxWorkerClient
 	hibernated []string
@@ -45,7 +52,11 @@ func (c *fakeWorkerClient) HibernateSandbox(_ context.Context, req *pb.Hibernate
 		return nil, c.hibernateErr
 	}
 	c.hibernated = append(c.hibernated, req.SandboxId)
-	return &pb.HibernateSandboxResponse{SandboxId: req.SandboxId}, nil
+	return &pb.HibernateSandboxResponse{
+		SandboxId:     req.SandboxId,
+		CheckpointKey: "ckpt-" + req.SandboxId,
+		SizeBytes:     1024,
+	}, nil
 }
 
 type fakeWorkerSource struct {
