@@ -2,12 +2,9 @@ package commands
 
 import (
 	"fmt"
+	"github.com/spf13/cobra"
 	"os"
 	"strings"
-	"time"
-
-	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
-	"github.com/spf13/cobra"
 )
 
 var agentCreateCmd = &cobra.Command{
@@ -64,104 +61,28 @@ var agentCreateCmd = &cobra.Command{
 		// --no-wait short-circuits into Mode 3 (async fallback). Scripts
 		// that don't want to block use this path.
 		if noWait {
-			renderAsyncFallback(os.Stdout, jsonOutput, id, "Instance provisioning", "")
+			note := ""
+			if agent.CurrentOperation != nil {
+				note = "Operation: " + agent.CurrentOperation.ID
+			}
+			renderAsyncFallback(os.Stdout, jsonOutput, id, "Instance provisioning", note)
 			return nil
 		}
 
-		return pollUntilTerminal(cmd, sc, id, "Instance creation")
-	},
-}
-
-// ── Polling ──
-
-// Poll cadence for async operations. 2s is fast enough that humans don't
-// notice, slow enough not to hammer the API. The 180s cap is a generous
-// bound on "it's almost certainly still working" before falling back to
-// the async message.
-const (
-	pollInterval = 2 * time.Second
-	pollTimeout  = 180 * time.Second
-)
-
-// pollUntilTerminal polls GET /v1/agents/:id until status reaches a terminal
-// state (running / error), the deadline hits, or a persistent network error
-// occurs. One of three Mode outcomes results:
-//   - Mode 1 (running):       success block, exit 0
-//   - Mode 2 (error):         error block, ExitError with class-based code
-//   - Mode 3 (timeout / err): async-fallback message, exit 0
-//
-// See ws-gstack/work/agent-error-visibility.md — "Three outcome modes".
-func pollUntilTerminal(cmd *cobra.Command, sc *client.Client, agentID, op string) error {
-	deadline := time.Now().Add(pollTimeout)
-
-	// Print phase progress only in text mode. JSON mode suppresses stderr
-	// progress so consumers get exactly one object on stdout.
-	printProgress := func(phase string) {
-		if !jsonOutput {
-			fmt.Fprintf(os.Stderr, "  ⋯ %s\n", phase)
-		}
-	}
-
-	lastPhase := ""
-	consecutiveErrors := 0
-	const errorThreshold = 3 // tolerate transient blips before declaring the poll dead
-
-	for time.Now().Before(deadline) {
-		time.Sleep(pollInterval)
-
-		var agent agentResponse
-		if err := sc.Get(cmd.Context(), "/v1/agents/"+agentID, &agent); err != nil {
-			consecutiveErrors++
-			if consecutiveErrors >= errorThreshold {
-				// Poll lost connection; Mode 3 fallback. Work may still be
-				// running in sessions-api — the user just can't observe it
-				// from here.
-				renderAsyncFallback(os.Stdout, jsonOutput, agentID, op+" still in progress", "")
-				return nil
-			}
-			continue
-		}
-		consecutiveErrors = 0
-
-		status := ""
-		if agent.Status != nil {
-			status = *agent.Status
-		}
-
-		switch status {
-		case "running":
-			// Mode 1 — success.
-			if !jsonOutput {
-				fmt.Fprintln(os.Stderr, "  ✓ Ready")
-			}
+		if agent.CurrentOperation == nil {
 			printer.Print(agent, func() {})
 			return nil
-
-		case "error":
-			// Mode 2 — failure. Render the error block and exit with the
-			// class-mapped code.
-			if !jsonOutput {
-				fmt.Fprintln(os.Stderr, "  ✗ "+op+" failed")
-				fmt.Fprintln(os.Stderr)
-				RenderLastError(os.Stderr, agent.LastError)
-			} else {
-				printer.Print(agent, func() {})
-			}
-			return &ExitError{Code: ExitCodeFor(agent.LastError)}
-
-		case "creating", "":
-			// Still working. Report phase progress from packageStatus /
-			// channelStatus in a future pass; for now the instance status
-			// alone is enough to reassure the user something's happening.
-			phase := "Provisioning instance"
-			if phase != lastPhase {
-				printProgress(phase)
-				lastPhase = phase
-			}
 		}
-	}
 
-	// Mode 3 — poll hit the cap. Work is likely still running.
-	renderAsyncFallback(os.Stdout, jsonOutput, agentID, op+" still in progress", "")
-	return nil
+		finalAgent, err := waitForOperation(cmd, sc, id, agent.CurrentOperation, "Instance creation")
+		if err != nil {
+			return err
+		}
+		if finalAgent == nil {
+			return nil
+		}
+
+		printer.Print(finalAgent, func() {})
+		return nil
+	},
 }

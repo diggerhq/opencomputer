@@ -65,6 +65,32 @@ var codeCatalog = map[string]struct {
 		class:      classUpstream4xx,
 		suggestion: "Telegram rejected the bot token. Verify the token at https://t.me/BotFather.",
 	},
+	"webhook_register_failed": {
+		class: classGeneral,
+		suggestion: "Telegram webhook registration failed.\n" +
+			"Verify the bot token and retry. If it persists, inspect agent events\n" +
+			"for the upstream Telegram response.",
+	},
+	"secret_store_failed": {
+		class: classGeneral,
+		suggestion: "The platform could not write channel or package secrets to OC.\n" +
+			"Retry once. If it persists, inspect OC secret-store health and permissions.",
+	},
+	"core_not_ready": {
+		class: classTransient,
+		suggestion: "The managed core did not become healthy in time.\n" +
+			"Retry once the agent is healthy, or inspect `oc agent get <id>` for readiness details.",
+	},
+	"channel_not_ready": {
+		class: classTransient,
+		suggestion: "The channel listener did not become ready in time.\n" +
+			"Retry once the agent is healthy, or inspect `oc agent get <id>` for channel readiness.",
+	},
+	"package_verify_failed": {
+		class: classGeneral,
+		suggestion: "The package did not pass its verification step.\n" +
+			"Inspect the package phase in agent events and retry after fixing the underlying issue.",
+	},
 	"sandbox_provision_timeout": {
 		class: classTransient,
 		suggestion: "Sandbox provisioning timed out. The OC worker may be unhealthy.\n" +
@@ -154,7 +180,7 @@ func renderAsyncFallback(stdoutW io.Writer, jsonOut bool, id, op, note string) {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(asyncFallback{
 			ID:        id,
-			Status:    "creating",
+			Status:    "starting",
 			Async:     true,
 			CheckWith: "oc agent get " + id,
 			Note:      note,
@@ -162,7 +188,7 @@ func renderAsyncFallback(stdoutW io.Writer, jsonOut bool, id, op, note string) {
 		return
 	}
 
-	fmt.Fprintf(stdoutW, "  ⋯ %s in background (typically 30-60s).\n", op)
+	fmt.Fprintf(stdoutW, "  ⋯ %s in background.\n", op)
 	if note != "" {
 		fmt.Fprintf(stdoutW, "    %s\n", note)
 	}

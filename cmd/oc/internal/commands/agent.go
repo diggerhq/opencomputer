@@ -70,6 +70,7 @@ type agentResponse struct {
 	ID          string      `json:"id"`
 	DisplayName string      `json:"display_name"`
 	Core        *string     `json:"core"`
+	Model       *string     `json:"model,omitempty"`
 	Channels    interface{} `json:"channels"`
 	Packages    interface{} `json:"packages"`
 	SecretStore *string     `json:"secret_store"`
@@ -79,13 +80,53 @@ type agentResponse struct {
 
 	// Populated by GET /v1/agents/:id (enriched response); omitted by
 	// POST /v1/agents and the list endpoint.
-	Status     *string    `json:"status,omitempty"`
-	InstanceID *string    `json:"instance_id,omitempty"`
-	LastError  *LastError `json:"last_error,omitempty"`
+	Status           *string                   `json:"status,omitempty"`
+	InstanceID       *string                   `json:"instance_id,omitempty"`
+	InstanceStatus   *string                   `json:"instance_status,omitempty"`
+	CoreStatus       map[string]interface{}    `json:"core_status,omitempty"`
+	ChannelStatus    map[string]map[string]any `json:"channel_status,omitempty"`
+	PackageStatus    map[string]map[string]any `json:"package_status,omitempty"`
+	CurrentOperation *AgentOperation           `json:"current_operation,omitempty"`
+	Conditions       []AgentCondition          `json:"conditions,omitempty"`
+	LastError        *LastError                `json:"last_error,omitempty"`
 }
 
 type agentListResponse struct {
 	Agents []agentResponse `json:"agents"`
+}
+
+type AgentOperation struct {
+	ID          string  `json:"id"`
+	AgentID     string  `json:"agent_id"`
+	InstanceID  *string `json:"instance_id,omitempty"`
+	Kind        string  `json:"kind"`
+	TargetType  *string `json:"target_type,omitempty"`
+	TargetKey   *string `json:"target_key,omitempty"`
+	Status      string  `json:"status"`
+	Phase       *string `json:"phase,omitempty"`
+	Code        *string `json:"code,omitempty"`
+	Message     *string `json:"message,omitempty"`
+	CreatedBy   *string `json:"created_by,omitempty"`
+	StartedAt   *string `json:"started_at,omitempty"`
+	CompletedAt *string `json:"completed_at,omitempty"`
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
+}
+
+type AgentCondition struct {
+	Type    string `json:"type"`
+	Subject string `json:"subject,omitempty"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	Message string `json:"message,omitempty"`
+}
+
+type operationSubmissionResponse struct {
+	AgentID   string          `json:"agent_id"`
+	Status    string          `json:"status"`
+	Channel   string          `json:"channel,omitempty"`
+	Package   string          `json:"package,omitempty"`
+	Operation *AgentOperation `json:"operation,omitempty"`
 }
 
 // ── Parent command ──
@@ -150,6 +191,7 @@ func init() {
 	agentCreateCmd.Flags().Bool("no-wait", false, "Don't wait for instance provisioning; exit after agent record is created")
 
 	agentConnectCmd.Flags().String("bot-token", "", "Telegram bot token (required for channel=telegram when stdin is not a TTY)")
+	agentConnectCmd.Flags().Bool("no-wait", false, "Don't wait for channel orchestration to finish")
 
 	agentInstallCmd.Flags().Bool("no-wait", false, "Don't wait for install orchestration to finish")
 
