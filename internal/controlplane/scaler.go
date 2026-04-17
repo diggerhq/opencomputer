@@ -1067,10 +1067,11 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 	// IMPORTANT: Use the BASE memory (from creation), not the scaled total.
 	// QEMU migration requires matching memory layout: -m <base> + virtio-mem pool.
 	// The hotplugged virtio-mem state transfers as part of the migration stream.
-	// IMPORTANT: Use the QEMU base memory (256MB from golden snapshot), not the
-	// API-requested total. Virtio-mem hotplug state transfers during migration —
-	// the target QEMU must start with the same base memory as the source.
-	cpuCount, memoryMB, guestPort, template := int32(1), int32(256), int32(80), "default"
+	// The golden snapshot is created with OPENSANDBOX_DEFAULT_SANDBOX_CPUS (2) and
+	// OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB (1024). QEMU migration requires exact
+	// match of -smp and -m between source and target.
+	// TODO: read base cpus/memory from source worker heartbeat instead of hardcoding.
+	cpuCount, memoryMB, guestPort, template := int32(2), int32(1024), int32(80), "default"
 	if s.store != nil {
 		session, err := s.store.GetSandboxSession(ctx, sandboxID)
 		if err == nil && session != nil {
