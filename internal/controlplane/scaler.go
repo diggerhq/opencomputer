@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/opensandbox/opensandbox/internal/compute"
@@ -36,7 +37,7 @@ const (
 	emergencyDiskThreshold = 90.0
 	evacuationBatchSize    = 3                  // sandboxes to migrate per eval cycle per worker
 	evacuationCooldown     = 60 * time.Second   // per-worker cooldown between evacuation batches
-	drainTimeout           = 15 * time.Minute   // max time to drain a worker via live migration
+	drainTimeout           = 45 * time.Minute   // max time to drain a worker via live migration (allows 30 sandboxes × 10min each in batches of 3)
 )
 
 // ScalerRegistry is the interface the Scaler uses to query worker state.
@@ -809,19 +810,30 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 			return
 		}
 
-		// Migrate a batch
+		// Migrate a batch — bounded parallelism to avoid overwhelming
+		// network/disk on source and target workers.
 		batch := running
 		if len(batch) > evacuationBatchSize {
 			batch = batch[:evacuationBatchSize]
 		}
 
 		batchFailed := false
+		var wg sync.WaitGroup
+		var failCount int64
 		for _, sandboxID := range batch {
-			if err := s.liveMigrateSandbox(ctx, sandboxID, workerID, target.ID); err != nil {
-				log.Printf("scaler: drain: migrate %s to %s failed: %v", sandboxID, target.ID, err)
-				migrationFailures++
-				batchFailed = true
-			}
+			wg.Add(1)
+			go func(sbID string) {
+				defer wg.Done()
+				if err := s.liveMigrateSandbox(ctx, sbID, workerID, target.ID); err != nil {
+					log.Printf("scaler: drain: migrate %s to %s failed: %v", sbID, target.ID, err)
+					atomic.AddInt64(&failCount, 1)
+				}
+			}(sandboxID)
+		}
+		wg.Wait()
+		if failCount > 0 {
+			migrationFailures += int(failCount)
+			batchFailed = true
 		}
 
 		if batchFailed {
@@ -1039,7 +1051,7 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 
 	// Step 1: Pre-copy drives to S3 (source uploads thin overlay — never flattens).
 	// Target worker rebases to its own base if golden versions differ.
-	preCopyCtx, preCopyCancel := context.WithTimeout(ctx, 3*time.Minute)
+	preCopyCtx, preCopyCancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer preCopyCancel()
 	preCopyResp, err := sourceClient.PreCopyDrives(preCopyCtx, &pb.PreCopyDrivesRequest{
 		SandboxId: sandboxID,
@@ -1076,7 +1088,7 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 		}
 	}
 
-	prepCtx, prepCancel := context.WithTimeout(ctx, 3*time.Minute)
+	prepCtx, prepCancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer prepCancel()
 	prepResp, err := targetClient.PrepareMigrationIncoming(prepCtx, &pb.PrepareMigrationIncomingRequest{
 		SandboxId:           sandboxID,
@@ -1119,9 +1131,14 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 		return fmt.Errorf("complete migration: %w", err)
 	}
 
-	// Step 5: Complete migration — update DB status and worker_id atomically
+	// Step 5: Complete migration — update DB status and worker_id atomically.
+	// Use background context in case the drain context is close to expiry.
 	if s.store != nil {
-		s.store.CompleteMigration(ctx, sandboxID, targetWorkerID)
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := s.store.CompleteMigration(dbCtx, sandboxID, targetWorkerID); err != nil {
+			log.Printf("scaler: migrate %s: WARNING: CompleteMigration DB update failed: %v", sandboxID, err)
+		}
+		dbCancel()
 	}
 	migrationCompleted = true
 

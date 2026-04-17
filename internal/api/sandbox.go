@@ -867,7 +867,7 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 	t0 := time.Now()
 
 	// Step 1: Pre-copy drives to S3 (thin overlay, never flatten).
-	preCopyCtx, preCopyCancel := context.WithTimeout(ctx, 3*time.Minute)
+	preCopyCtx, preCopyCancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer preCopyCancel()
 	preCopyResp, err := sourceClient.PreCopyDrives(preCopyCtx, &pb.PreCopyDrivesRequest{
 		SandboxId: id,
@@ -893,7 +893,7 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 		memoryMB = 1024
 	}
 
-	prepCtx, prepCancel := context.WithTimeout(ctx, 3*time.Minute)
+	prepCtx, prepCancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer prepCancel()
 	prepResp, err := targetClient.PrepareMigrationIncoming(prepCtx, &pb.PrepareMigrationIncomingRequest{
 		SandboxId:           id,
@@ -943,9 +943,14 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "complete migration: " + err.Error()})
 	}
 
-	// Step 5: Complete migration — update DB status and worker_id atomically
+	// Step 5: Complete migration — update DB status and worker_id atomically.
+	// Use background context — the request context may be close to expiry for large migrations.
 	if s.store != nil {
-		s.store.CompleteMigration(ctx, id, req.TargetWorker)
+		completeDBCtx, completeDBCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := s.store.CompleteMigration(completeDBCtx, id, req.TargetWorker); err != nil {
+			log.Printf("migrate %s: WARNING: CompleteMigration DB update failed: %v", id, err)
+		}
+		completeDBCancel()
 	}
 	migrationDone = true
 
@@ -1166,9 +1171,14 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 			})
 		}
 
-		// Migration succeeded — update state
+		// Migration succeeded — update state.
+		// Use background context in case the request context is close to expiry.
 		if s.store != nil {
-			s.store.CompleteMigration(ctx, sandboxID, target.ID)
+			dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := s.store.CompleteMigration(dbCtx, sandboxID, target.ID); err != nil {
+				log.Printf("scale-migrate %s: WARNING: CompleteMigration DB update failed: %v", sandboxID, err)
+			}
+			dbCancel()
 		}
 		if s.sandboxAPIProxy != nil {
 			s.sandboxAPIProxy.InvalidateRouteCache(sandboxID)
@@ -1288,7 +1298,7 @@ func (s *Server) migrateForScale(ctx context.Context, sandboxID string, session 
 	}
 
 	// Step 1: Pre-copy drives to S3 (thin overlay).
-	preCopyCtx, preCopyCancel := context.WithTimeout(ctx, 3*time.Minute)
+	preCopyCtx, preCopyCancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer preCopyCancel()
 	preCopyResp, err := sourceClient.PreCopyDrives(preCopyCtx, &pb.PreCopyDrivesRequest{
 		SandboxId: sandboxID,
@@ -1311,7 +1321,7 @@ func (s *Server) migrateForScale(ctx context.Context, sandboxID string, session 
 		sandboxID, time.Since(t0).Milliseconds(), target.ID, baseMem, memoryMB, baseCPU)
 
 	// Step 2: Prepare target with the SOURCE's base memory (must match for migration)
-	prepCtx, prepCancel := context.WithTimeout(ctx, 3*time.Minute)
+	prepCtx, prepCancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer prepCancel()
 	prepResp, err := targetClient.PrepareMigrationIncoming(prepCtx, &pb.PrepareMigrationIncomingRequest{
 		SandboxId:           sandboxID,
