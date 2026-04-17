@@ -1930,12 +1930,15 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 		return nil, http.StatusBadRequest, fmt.Errorf("invalid checkpoint ID")
 	}
 
-	// Verify checkpoint exists, belongs to org, and is ready
+	// Verify checkpoint exists, is accessible, and is ready.
+	// Fork is the only checkpoint op relaxed for public checkpoints — patch,
+	// list-patches, delete-patch, and delete-checkpoint remain owner-only.
+	// See ws-gstack design 009 (publishable checkpoints).
 	cp, err := s.store.GetCheckpoint(ctx, checkpointID)
 	if err != nil {
 		return nil, http.StatusNotFound, fmt.Errorf("checkpoint not found")
 	}
-	if cp.OrgID != orgID {
+	if cp.OrgID != orgID && !cp.IsPublic {
 		return nil, http.StatusForbidden, fmt.Errorf("checkpoint does not belong to this organization")
 	}
 	// Poll for checkpoint readiness — checkpoints transition from "processing" to "ready"
@@ -2460,6 +2463,53 @@ func (s *Server) deleteCheckpointPatch(c echo.Context) error {
 	}
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+// publishCheckpoint marks a checkpoint as publicly forkable. Owner-org only.
+// Idempotent — publishing an already-public checkpoint is a no-op 200.
+// See ws-gstack design 009.
+func (s *Server) publishCheckpoint(c echo.Context) error {
+	return s.setCheckpointPublic(c, true)
+}
+
+// unpublishCheckpoint flips is_public back to false. Owner-org only, idempotent.
+// In-flight forks that already passed the auth check continue; new forks 403.
+func (s *Server) unpublishCheckpoint(c echo.Context) error {
+	return s.setCheckpointPublic(c, false)
+}
+
+func (s *Server) setCheckpointPublic(c echo.Context, isPublic bool) error {
+	checkpointIDStr := c.Param("checkpointId")
+	ctx := c.Request().Context()
+
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+
+	checkpointID, err := uuid.Parse(checkpointIDStr)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid checkpoint ID"})
+	}
+
+	cp, err := s.store.GetCheckpoint(ctx, checkpointID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "checkpoint not found"})
+	}
+	if cp.OrgID != orgID {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "checkpoint does not belong to this organization"})
+	}
+
+	if err := s.store.SetCheckpointPublic(ctx, checkpointID, orgID, isPublic); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	cp.IsPublic = isPublic
+	return c.JSON(http.StatusOK, cp)
 }
 
 // listSessions returns session history from PostgreSQL.
