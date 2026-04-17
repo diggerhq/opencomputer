@@ -26,6 +26,7 @@ var agentConnectCmd = &cobra.Command{
 
 		agentID := args[0]
 		channel := args[1]
+		noWait, _ := cmd.Flags().GetBool("no-wait")
 
 		body := map[string]interface{}{}
 
@@ -55,9 +56,35 @@ var agentConnectCmd = &cobra.Command{
 			body["bot_token"] = token
 		}
 
-		var result map[string]interface{}
+		if !jsonOutput {
+			fmt.Fprintf(os.Stderr, "Connecting %s to %s\n", channel, agentID)
+		}
+
+		var result operationSubmissionResponse
 		if err := sc.Post(cmd.Context(), "/v1/agents/"+agentID+"/channels/"+channel, body, &result); err != nil {
 			return err
+		}
+
+		if noWait || result.Operation == nil {
+			note := ""
+			if result.Operation != nil {
+				note = "Operation: " + result.Operation.ID
+			}
+			renderAsyncFallback(os.Stdout, jsonOutput, agentID, channel+" connect", note)
+			return nil
+		}
+
+		agent, err := waitForOperation(cmd, sc, agentID, result.Operation, channel+" connect")
+		if err != nil {
+			return err
+		}
+		if agent == nil {
+			return nil
+		}
+
+		if jsonOutput {
+			printer.Print(agent, func() {})
+			return nil
 		}
 
 		fmt.Printf("%s connected to %s.\n", channel, agentID)
