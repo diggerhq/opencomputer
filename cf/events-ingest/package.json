@@ -1,0 +1,19 @@
+{
+  "name": "opencomputer-events-ingest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenComputer events-ingest Cloudflare Worker — receives HMAC-signed batches from regional CPs and fans out to D1, R2, KV.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.5.0",
+    "@cloudflare/workers-types": "^4.20240925.0",
+    "typescript": "^5.5.0",
+    "vitest": "2.1.9",
+    "wrangler": "^3.80.0"
+  }
+}

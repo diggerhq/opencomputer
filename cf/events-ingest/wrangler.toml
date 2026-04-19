@@ -1,0 +1,49 @@
+name = "opencomputer-events-ingest"
+main = "src/index.ts"
+compatibility_date = "2024-09-25"
+compatibility_flags = ["nodejs_compat"]
+
+# Fill in after running:
+#   wrangler d1 create opencomputer
+#   wrangler kv namespace create SESSIONS_KV
+#   wrangler r2 bucket create opencomputer-events-archive
+# then paste IDs below (see cf/README.md).
+
+[[d1_databases]]
+binding = "OPENCOMPUTER_DB"
+database_name = "opencomputer"
+database_id = "REPLACE_WITH_D1_ID"
+
+[[kv_namespaces]]
+binding = "SESSIONS_KV"
+id = "REPLACE_WITH_KV_ID"
+
+[[r2_buckets]]
+binding = "EVENTS_ARCHIVE"
+bucket_name = "opencomputer-events-archive"
+
+# CreditAccount Durable Object. Registered here; api-edge binds to it via
+# script_name so both Workers share the same per-org instances.
+[[durable_objects.bindings]]
+name = "CREDIT_ACCOUNT"
+class_name = "CreditAccount"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CreditAccount"]
+
+# Vars — non-secret. CELL_ENDPOINTS is a comma-separated list of
+# cell_id=admin_url pairs used by the DO's halt/resume dispatch in lieu of
+# a proper D1-backed cell registry. Example:
+#   CELL_ENDPOINTS = "dev-cell-a=http://host.docker.internal:8080"
+[vars]
+CELL_ENDPOINTS = ""
+
+# Secrets (set via `wrangler secret put <NAME>`):
+# - EVENT_SECRET: HMAC-SHA256 key shared with every regional CP's event forwarder.
+#   Matches OPENSANDBOX_CF_EVENT_SECRET on the Go side.
+# - CF_ADMIN_SECRET: HMAC-SHA256 key the DO uses to authenticate /admin/halt-org
+#   and /admin/resume-org calls to CPs. Matches OPENSANDBOX_CF_ADMIN_SECRET.
+
+[observability]
+enabled = true

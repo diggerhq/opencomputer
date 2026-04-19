@@ -1,0 +1,28 @@
+name = "opencomputer-api-edge"
+main = "src/index.ts"
+compatibility_date = "2024-09-25"
+compatibility_flags = ["nodejs_compat"]
+
+# Shared with events-ingest Worker. After `wrangler d1 create opencomputer`
+# paste the same database_id here.
+[[d1_databases]]
+binding = "OPENCOMPUTER_DB"
+database_name = "opencomputer"
+database_id = "REPLACE_WITH_D1_ID"
+
+# Bind to the CreditAccount DO registered by the events-ingest Worker.
+# script_name is the events-ingest Worker's `name` from its wrangler.toml.
+[[durable_objects.bindings]]
+name = "CREDIT_ACCOUNT"
+class_name = "CreditAccount"
+script_name = "opencomputer-events-ingest"
+
+# Secrets (set via `wrangler secret put <NAME>`):
+# - STRIPE_WEBHOOK_SECRET: the Stripe CLI webhook signing secret for /webhooks/stripe.
+# - CF_ADMIN_SECRET: HMAC-SHA256 shared with every regional CP (same value as
+#   events-ingest's CF_ADMIN_SECRET, matches OPENSANDBOX_CF_ADMIN_SECRET on
+#   the Go side). Used to auth /internal/halt-list calls from the CP
+#   reconciler.
+
+[observability]
+enabled = true
