@@ -149,8 +149,11 @@ func (s *Server) createSandbox(c echo.Context) error {
 	// Fresh-create path: resolve the secret store (if any) into cfg.SecretEnvs.
 	// This is intentionally below the snapshot/image branch so the snapshot
 	// path never resolves a user-supplied store — forks inherit only.
+	var secretStoreID *uuid.UUID
 	if cfg.SecretStore != "" && hasOrg {
-		if err := s.resolveSecretStoreInto(ctx, orgID, &cfg); err != nil {
+		var err error
+		secretStoreID, err = s.resolveSecretStoreInto(ctx, orgID, &cfg)
+		if err != nil {
 			log.Printf("api: %v", err)
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
@@ -158,7 +161,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 
 	// Server mode with worker registry: dispatch to remote worker via gRPC
 	if s.workerRegistry != nil {
-		return s.createSandboxRemote(c, ctx, cfg, orgID, hasOrg)
+		return s.createSandboxRemote(c, ctx, cfg, orgID, hasOrg, secretStoreID)
 	}
 
 	// Combined/worker mode: create locally
@@ -219,7 +222,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 		if template == "" {
 			template = "default"
 		}
-		_, _ = s.store.CreateSandboxSession(ctx, sb.ID, orgID, auth.GetUserID(c), template, region, workerID, cfgJSON, metadataJSON)
+		_, _ = s.store.CreateSandboxSession(ctx, sb.ID, orgID, auth.GetUserID(c), template, region, workerID, cfgJSON, metadataJSON, secretStoreID)
 	}
 
 	return c.JSON(http.StatusCreated, sb)
@@ -315,23 +318,28 @@ func (s *Server) createSandboxWithSSE(c echo.Context, ctx context.Context, orgID
 // happens, so the same logic runs on both fresh creates and on
 // fork-from-checkpoint inheritance. If the user updates a secret between
 // snapshot and fork, the fork sees the new value.
-func (s *Server) resolveSecretStoreInto(ctx context.Context, orgID [16]byte, cfg *types.SandboxConfig) error {
+// resolveSecretStoreInto looks up the named secret store, decrypts entries
+// into cfg, and returns the store's UUID (or nil if no store was bound).
+// The UUID is plumbed back to CreateSandboxSession so sandbox_sessions.
+// secret_store_id gets populated — required for the secret-refresh fanout
+// (ListRunningSandboxesByStore filters on this column).
+func (s *Server) resolveSecretStoreInto(ctx context.Context, orgID [16]byte, cfg *types.SandboxConfig) (*uuid.UUID, error) {
 	if cfg.SecretStore == "" || s.store == nil {
-		return nil
+		return nil, nil
 	}
 	store, err := s.store.GetSecretStoreByName(ctx, orgID, cfg.SecretStore)
 	if err != nil {
-		return fmt.Errorf("secret store not found: %s", cfg.SecretStore)
+		return nil, fmt.Errorf("secret store not found: %s", cfg.SecretStore)
 	}
 
 	cfg.EgressAllowlist = store.EgressAllowlist
 
 	secrets, err := s.store.DecryptSecretEntries(ctx, store.ID)
 	if err != nil {
-		return fmt.Errorf("failed to decrypt secrets for store %s: %w", cfg.SecretStore, err)
+		return nil, fmt.Errorf("failed to decrypt secrets for store %s: %w", cfg.SecretStore, err)
 	}
 	if len(secrets) == 0 {
-		return nil
+		return &store.ID, nil
 	}
 	if cfg.SecretEnvs == nil {
 		cfg.SecretEnvs = make(map[string]string, len(secrets))
@@ -345,7 +353,7 @@ func (s *Server) resolveSecretStoreInto(ctx context.Context, orgID [16]byte, cfg
 			cfg.SecretAllowedHosts[secret.Name] = secret.AllowedHosts
 		}
 	}
-	return nil
+	return &store.ID, nil
 }
 
 // cfgForPersistence returns a copy of cfg suitable for marshaling into PG
@@ -396,7 +404,10 @@ func flattenSecretAllowedHosts(m map[string][]string) map[string]string {
 }
 
 // createSandboxRemote dispatches sandbox creation to a remote worker via gRPC.
-func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg types.SandboxConfig, orgID [16]byte, hasOrg bool) error {
+// secretStoreID is the resolved store UUID (or nil) from resolveSecretStoreInto;
+// passed straight to CreateSandboxSessionWithStatus so the row's secret_store_id
+// column is populated and the secret-refresh fanout can find this sandbox.
+func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg types.SandboxConfig, orgID [16]byte, hasOrg bool, secretStoreID *uuid.UUID) error {
 	// Select region (explicit header, or default to server's region)
 	region := c.Request().Header.Get("Fly-Region")
 	if region == "" {
@@ -451,8 +462,13 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 
 	// Dispatch via persistent gRPC connection.
 	// Worker uses local cache for checkpoint forks (300ms) and downloads from S3
-	// only on cold starts (~30s). 60s is enough for both paths.
-	grpcTimeout := 60 * time.Second
+	// only on cold starts. The pre-fix 60s budget was tight for cold forks of
+	// multi-GB checkpoints — under any blob-side contention or rebase work,
+	// the call could time out before the worker finished. Bumped to a generous
+	// flat 5min so cold forks of large checkpoints land cleanly. The happy
+	// path is unchanged: this RPC returns as soon as the VM is up, so warm
+	// forks still complete in well under a second.
+	grpcTimeout := 5 * time.Minute
 	grpcCtx, cancel := context.WithTimeout(ctx, grpcTimeout)
 	defer cancel()
 
@@ -474,7 +490,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		}
 		cfgJSON, _ := json.Marshal(cfgForPersistence(cfg))
 		metadataJSON, _ := json.Marshal(cfg.Metadata)
-		_, _ = s.store.CreateSandboxSessionWithStatus(ctx, sandboxID, orgID, auth.GetUserID(c), template, region, worker.ID, cfgJSON, metadataJSON, "pending")
+		_, _ = s.store.CreateSandboxSessionWithStatus(ctx, sandboxID, orgID, auth.GetUserID(c), template, region, worker.ID, cfgJSON, metadataJSON, "pending", secretStoreID)
 		if worker.GoldenVersion != "" {
 			_ = s.store.SetSandboxGoldenVersion(ctx, sandboxID, worker.GoldenVersion)
 		}
@@ -968,6 +984,7 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 		SealedTokens:    preCopyResp.SealedTokens,
 		EgressAllowlist: preCopyResp.EgressAllowlist,
 		TokenHosts:      preCopyResp.TokenHosts,
+		SealedNames:     preCopyResp.SealedNames,
 	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "prepare target: " + err.Error()})
@@ -1449,6 +1466,7 @@ func (s *Server) migrateForScale(ctx context.Context, sandboxID string, session 
 		SealedTokens:    preCopyResp.SealedTokens,
 		EgressAllowlist: preCopyResp.EgressAllowlist,
 		TokenHosts:      preCopyResp.TokenHosts,
+		SealedNames:     preCopyResp.SealedNames,
 	})
 	if err != nil {
 		log.Printf("scale-migrate %s: prepare target failed: %v", sandboxID, err)
@@ -2011,7 +2029,13 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 		}
 
 		go func() {
-			grpcCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			// 20-min budget for the full create+archive+upload chain. Pre-fix
+			// this was 5 min — too tight for >3 GB compressed archives under
+			// any blob-side contention. Customer hit this on a 7–9 GB sandbox
+			// (status processing for ~280 s → failed, no detail). The worker
+			// internal upload is bounded at 15 min; the extra 5 min here gives
+			// headroom for archive build + worker-side tar + transit.
+			grpcCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
 
 			grpcResp, err := grpcClient.CreateCheckpoint(grpcCtx, &pb.CreateCheckpointRequest{
@@ -2026,20 +2050,23 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 
 			if err != nil {
 				log.Printf("api: async checkpoint %s failed: %v", checkpointID, err)
+				// SetCheckpointFailed now persists the reason via the
+				// error_msg/failed_at columns added in migration 039.
+				// Pre-fix the reason was silently discarded.
 				_ = s.store.SetCheckpointFailed(context.Background(), checkpointID, err.Error())
 				return
 			}
-			// Mark ready immediately — S3 upload continues async inside CreateCheckpoint
-			// but the checkpoint is locally usable now.
-			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key, 0)
-			log.Printf("api: checkpoint %s ready", checkpointID)
+			// Persist the actual archive size from the worker's response.
+			// Pre-fix this was hardcoded to 0, leaving size_bytes meaningless.
+			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key, grpcResp.SizeBytes)
+			log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, grpcResp.SizeBytes)
 		}()
 	} else if s.manager != nil {
 		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			bgCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
 
-			rootfsKey, workspaceKey, err := s.manager.CreateCheckpoint(bgCtx, sandboxID, checkpointID.String(), s.checkpointStore, func() {})
+			rootfsKey, workspaceKey, sizeBytes, err := s.manager.CreateCheckpoint(bgCtx, sandboxID, checkpointID.String(), s.checkpointStore, func() {})
 
 			// Signal sandbox usable
 			pending.err = err
@@ -2050,8 +2077,8 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				_ = s.store.SetCheckpointFailed(context.Background(), checkpointID, err.Error())
 				return
 			}
-			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, rootfsKey, workspaceKey, 0)
-			log.Printf("api: checkpoint %s ready", checkpointID)
+			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, rootfsKey, workspaceKey, sizeBytes)
+			log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, sizeBytes)
 		}()
 	} else {
 		s.pendingCreates.Delete(sandboxID)
@@ -2326,12 +2353,22 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 			uniqueStores = append(uniqueStores, name)
 		}
 	}
+	// secretStoreID tracks the resolved store of the LAST (winning) layer in
+	// uniqueStores — that's the one we want recorded on the sandbox row, since
+	// later layers shadow earlier ones for env collisions. Plumbed back to
+	// CreateSandboxSessionWithStatus below so secret_store_id is populated for
+	// the refresh fanout.
+	var secretStoreID *uuid.UUID
 	if len(uniqueStores) > 0 {
 		var allEgress []string
 		for _, storeName := range uniqueStores {
 			originalCfg.SecretStore = storeName
-			if err := s.resolveSecretStoreInto(ctx, orgID, &originalCfg); err != nil {
+			storeID, err := s.resolveSecretStoreInto(ctx, orgID, &originalCfg)
+			if err != nil {
 				return nil, http.StatusBadRequest, err
+			}
+			if storeID != nil {
+				secretStoreID = storeID
 			}
 			allEgress = append(allEgress, originalCfg.EgressAllowlist...)
 		}
@@ -2446,7 +2483,7 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 	if s.store != nil {
 		cfgJSON, _ := json.Marshal(cfgForPersistence(originalCfg))
 		metadataJSON, _ := json.Marshal(mergedMeta)
-		_, _ = s.store.CreateSandboxSessionWithStatus(ctx, sandboxID, orgID, auth.GetUserID(c), template, region, workerID, cfgJSON, metadataJSON, "pending")
+		_, _ = s.store.CreateSandboxSessionWithStatus(ctx, sandboxID, orgID, auth.GetUserID(c), template, region, workerID, cfgJSON, metadataJSON, "pending", secretStoreID)
 	}
 
 	// Boot VM synchronously so the worker's in-memory sandbox map is populated
