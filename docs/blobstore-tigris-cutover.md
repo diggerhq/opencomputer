@@ -1,173 +1,218 @@
 # Tigris cutover runbook
 
-Zero-downtime migration of all object storage (checkpoints, hibernation archives,
-templates, goldens) from Azure Blob to Tigris using Tigris **shadow buckets** for
-read-through fallback. No bulk pre-copy required; lazy migration handles cold
-data over time. No code-level fallback wrapper required; Tigris does the
-fallback server-side.
+Zero-downtime migration of all worker object storage (checkpoints,
+hibernation archives, templates, goldens) from Azure Blob to Tigris using
+`internal/blobstore.FallbackStore` in migration mode as the safety net during
+the soak window.
+
+> **Why not Tigris shadow buckets?** Tigris shadow buckets require an
+> S3-compatible source endpoint. Azure Blob has no native S3 API, so shadow
+> buckets don't apply without a separate S3↔Azure gateway. `FallbackStore`
+> accomplishes the same goal (transparent fallback on cold reads) entirely
+> in-process — no extra infrastructure.
 
 ## What this covers
 
-| Data | Path | Current backend | Migration strategy |
-|---|---|---|---|
-| Checkpoints | `checkpoints/<sandbox>/<cp>/...` | Azure Blob | Endpoint flip; shadow reads |
-| Hibernation archives | Same path tree | Azure Blob | Endpoint flip; shadow reads |
-| Templates | `templates/<id>/...` | Azure Blob | Endpoint flip; shadow reads |
-| Goldens | `bases/<version>/default.ext4` | Azure Blob (ad-hoc) | New `internal/blobstore` abstraction + endpoint flip |
-| pg-backups | `pg-backups/...` | Azure Blob | Separate decision (out of scope) |
+| Data | Old backend | Cutover mechanism |
+|---|---|---|
+| Checkpoints / hibernation archives / templates | Azure Blob | rclone bulk copy + FallbackStore in migration mode |
+| Goldens (`bases/<version>/default.ext4`) | Azure Blob | same |
+| pg-backups / pg-wal | Azure Blob | Out of scope (managed by separate path) |
 
-Existing `internal/storage/` already auto-detects Azure vs S3 from the endpoint
-(see `internal/storage/blob.go`); pointing at Tigris is just an env rotation.
+All worker-managed paths flow through `internal/blobstore.Store`, so a
+single set of env-var changes switches them all.
 
-New `internal/blobstore/` is a small S3-compatible abstraction added in this PR
-specifically for the global goldens path, which wasn't previously abstracted.
+## How worker.env is sourced
 
-## Pre-flight inventory
+Worker `/etc/opensandbox/worker.env` is **not** baked into the AMI. The
+control plane generates it per-VM at spawn time from its own `cfg`
+(loaded from `/etc/opensandbox/server.env` on the CP):
 
-At time of writing:
-- `checkpoints` container: ~1,834 blobs, ~2 TB
-- `pg-backups` container: 6 blobs, 0.25 GB
-- Estimated one-time Azure egress cost during drain: ~$180
+```
+server.env on CP  →  CP cfg  →  workerEnv template  →  cloud-init userdata  →  worker.env on each VM
+```
 
-Lazy migration via shadow bucket avoids paying egress on cold objects that are
-never accessed.
+Practical consequence: **for env-var-only changes, you edit `server.env`
+on the CP and cycle workers. No AMI rebake needed.** AMI rebakes are only
+required for binary or system-level changes.
 
-## Phase 0 — Pre-flight (zero prod impact)
+> The `workerEnv` template lives in `cmd/server/main.go`. If you add new
+> env vars that workers need, the template must be updated to propagate
+> them. This PR added `OPENSANDBOX_S3_FALLBACK_*` and
+> `OPENSANDBOX_BLOB_MIGRATION_MODE` to the template.
 
-1. **Provision Tigris buckets** matching the Azure layout:
+## Pre-flight inventory (prod, opencomputer-prod RG, eastus2)
+
+- Storage account: `occkpt3ccf3c31`
+- `checkpoints` container: ~1,854 blobs, ~2.08 TB (includes goldens in
+  `bases/<hash>/default.ext4`)
+- `pg-backups` / `pg-wal`: managed by postgres infra, not part of this cutover
+
+## Tigris target
+
+- Bucket: `opencomputer-prod` (Region Earth or `iad`, snapshots enabled)
+- Layout: identical to Azure — rclone copies keys verbatim; no key
+  rewriting required
+- Per-backend bucket override is available: primary uses Tigris bucket
+  `opencomputer-prod`, fallback uses Azure container `checkpoints`,
+  configured via `OPENSANDBOX_S3_FALLBACK_BUCKET`
+
+## Phase 1 — Ship the new binary (one AMI bake)
+
+**Goal**: get the new code into the worker pool. No behavior change yet
+(`OPENSANDBOX_S3_FALLBACK_*` unset means workers log "no fallback" and
+behave identically to before).
+
+1. Merge the PR.
+2. CI builds a new worker AMI (`.github/workflows/build-worker-ami.yml`)
+   and bumps KV `worker-image-version`.
+3. Scaler does its normal rolling-replace.
+4. Verify all workers report the new version via `GET /api/workers`.
+5. Smoke test: create / hibernate / wake. Behavior identical.
+
+**Rollback**: bump KV `worker-image-version` back. Scaler rolls back.
+
+## Phase 2 — Bulk rclone Azure → Tigris
+
+**Goal**: get ~all checkpoint data into Tigris before flipping. Workers
+still on Azure — zero production impact.
+
+1. Run `scripts/rclone-azure-to-tigris.sh` from a bastion VM in eastus2.
+   - ~2 TB, ~1-3 hours on D4-class network (depends on bastion size)
+2. Required rclone flags (already in the script):
+   - `--s3-storage-class STANDARD` — Tigris rejects Azure's `Hot`/`Cool`
+     tier names; force STANDARD or every PUT fails with 400 InvalidStorageClass
+   - `--metadata=false` — skip Azure-specific metadata to avoid edge-case
+     translation issues
+3. Parity check when done:
    ```
-   tigris buckets create opencomputer-checkpoints
-   tigris buckets create opencomputer-goldens
-   tigris buckets create opencomputer-templates    # if separate from checkpoints
+   rclone size az:checkpoints
+   rclone size tigris:opencomputer-prod
    ```
-2. **Configure shadow source** on each Tigris bucket, pointing at the
-   corresponding Azure container. Use `--write-through` so any writes to
-   Tigris during cutover also land in Azure (safety net):
+   Sizes should match within a small delta (new writes during the run).
+
+**Rollback**: nothing to undo. Abandon Tigris copy; costs nothing.
+
+## Phase 3 — Atomic flip (server.env + CP restart + worker cycle)
+
+**Goal**: workers start writing to Tigris and reading Tigris-then-Azure.
+
+1. **Delta rclone sync** — run again right before the next step. Picks
+   up anything written to Azure since Phase 2. Should be fast (minutes).
+
+2. **Edit `/etc/opensandbox/server.env`** on the control plane to add the
+   Tigris primary, Azure fallback, and migration-mode flag:
    ```
-   tigris buckets set-migration opencomputer-checkpoints \
-     --bucket checkpoints \
-     --endpoint https://occkpt3ccf3c31.blob.core.windows.net \
-     --region eastus2 \
-     --access-key "$AZURE_STORAGE_ACCOUNT_NAME" \
-     --secret-key "$AZURE_STORAGE_KEY" \
-     --write-through
+   # Primary: Tigris
+   OPENSANDBOX_S3_ENDPOINT=https://t3.storage.dev
+   OPENSANDBOX_S3_BUCKET=opencomputer-prod
+   OPENSANDBOX_S3_REGION=auto
+   OPENSANDBOX_S3_FORCE_PATH_STYLE=true
+   OPENSANDBOX_S3_ACCESS_KEY_ID=<tigris key>
+   OPENSANDBOX_S3_SECRET_ACCESS_KEY=<tigris secret>
+
+   # Fallback: Azure
+   OPENSANDBOX_S3_FALLBACK_ENDPOINT=https://occkpt3ccf3c31.blob.core.windows.net
+   OPENSANDBOX_S3_FALLBACK_REGION=eastus2
+   OPENSANDBOX_S3_FALLBACK_ACCESS_KEY_ID=occkpt3ccf3c31
+   OPENSANDBOX_S3_FALLBACK_SECRET_ACCESS_KEY=<azure key>
+   OPENSANDBOX_S3_FALLBACK_BUCKET=checkpoints
+
+   # Lazy-migration: Tigris-miss falls through to Azure
+   OPENSANDBOX_BLOB_MIGRATION_MODE=true
    ```
-   Repeat for `opencomputer-goldens`, etc.
-3. **Stash Tigris credentials in prod KV** under the existing and new env-var
-   names (workers don't read them yet):
-   - Existing path (checkpoints/hibernation/templates):
-     - `OPENSANDBOX_S3_ENDPOINT` → `https://t3.storage.dev`
-     - `OPENSANDBOX_S3_ACCESS_KEY_ID`, `OPENSANDBOX_S3_SECRET_ACCESS_KEY` → Tigris values
-     - `OPENSANDBOX_S3_REGION` → `auto`
-     - `OPENSANDBOX_S3_FORCE_PATH_STYLE` → `true`
-     - `OPENSANDBOX_S3_BUCKET` → `opencomputer-checkpoints`
-   - New path (goldens, this PR):
-     - `OPENSANDBOX_GLOBAL_BLOB_NAME` → `tigris`
-     - `OPENSANDBOX_GLOBAL_BLOB_ENDPOINT` → `https://t3.storage.dev`
-     - `OPENSANDBOX_GLOBAL_BLOB_REGION` → `auto`
-     - `OPENSANDBOX_GLOBAL_BLOB_ACCESS_KEY_ID`, `OPENSANDBOX_GLOBAL_BLOB_SECRET_ACCESS_KEY` → Tigris values
-     - `OPENSANDBOX_GLOBAL_BLOB_USE_PATH_STYLE` → `true`
-     - `OPENSANDBOX_GLOBAL_BLOB_GOLDENS_BUCKET` → `opencomputer-goldens`
 
-## Phase 1 — Merge + deploy (additive, no behavior change)
+3. **Restart the control plane**:
+   ```
+   systemctl restart opensandbox-server
+   ```
+   Re-reads `server.env`. From now on, every new worker spawned by the
+   scaler is templated with the new env via cloud-init.
 
-1. Merge this PR.
-2. Bake new worker AMI containing the `internal/blobstore` code.
-3. Roll out via existing rolling-replace process.
+4. **Cycle workers** — two options:
+   - **Soft (gradual)**: do nothing. Existing workers keep their old env
+     until the scaler cycles them (could be hours/days). Mixed pool during
+     the window is fine — cross-worker ops still work because the
+     new-config workers can fallback-read whatever the old-config workers
+     wrote. The reverse direction (new writes Tigris, old needs to read)
+     is avoided by the scaler's drain semantics — old workers are drained,
+     not given new placements.
+   - **Aggressive (forced)**: delete workers one at a time via
+     `az vm delete -g opencomputer-prod -n osb-worker-<id>`. Scaler
+     replaces each with a new VM that gets the new env. Whole pool
+     flipped in minutes.
 
-After this phase, workers contain the blobstore code but still read/write Azure
-because the new env vars and `OPENSANDBOX_S3_*` haven't been rotated yet. Zero
-behavior change.
+5. **Verify** as each worker cycles, log line:
+   ```
+   checkpoint store: tigris primary, azure-blob-fallback fallback (migration=true)
+   ```
 
-## Phase 2 — Seed goldens (optional, makes Phase 3 instant for new cells)
+**Rollback**: revert `server.env`, restart CP, cycle workers. Data
+already in Tigris stays there (passive replica); Azure remains
+authoritative throughout the soak window.
 
-Use the new `golden-upload` subcommand to push the canonical `default.ext4`
-into the goldens bucket (via the Tigris shadow which will also cache it):
+## Phase 4 — Soak (1–2 weeks)
 
-```
-# On any worker with the env vars set:
-opensandbox-worker golden-upload /data/firecracker/images/default.ext4
-```
+Monitor:
+- Worker logs for `blobstore: primary tigris failed (...); trying fallback azure-blob` — expected near-zero and trending down as the warm working set lands in Tigris.
+- Tigris dashboard: error rate, latency, ingress volume.
+- Synthetic daily test: create / checkpoint / fork on another worker / hibernate / wake.
 
-This puts the bytes at `opencomputer-goldens/default.ext4` AND
-`opencomputer-goldens/bases/<hash>/default.ext4`. Skip if you're fine with
-the first new cell to come up paying a one-time fetch latency.
+If fallback hit rate stays elevated, run another delta rclone sync to
+warm cold keys into Tigris proactively.
 
-## Phase 3 — Atomic flip (no downtime)
+## Phase 5 — Disable fallback (commit to Tigris)
 
-1. Rotate prod KV: secrets we stashed in Phase 0 become active.
-2. Trigger rolling-replace of workers (existing process). Each worker that
-   cycles starts using Tigris for new writes; reads of cold keys
-   transparently fetch from Azure via Tigris shadow (and warm Tigris in the
-   process).
-3. Monitor worker logs for the line
-   `storage: using S3-compat backend (endpoint=https://t3.storage.dev, bucket=opencomputer-checkpoints)`
-   to confirm the new endpoint is in effect.
-4. Smoke-check: create a sandbox, take a checkpoint, fork it on a different
-   worker. Both writes (checkpoint upload) and reads (fork download) exercise
-   the Tigris path.
+1. Edit `server.env`: remove the `OPENSANDBOX_S3_FALLBACK_*` block and
+   `OPENSANDBOX_BLOB_MIGRATION_MODE`.
+2. Restart CP.
+3. Cycle workers (same options as Phase 3 step 4).
+4. Verify log: `checkpoint store: tigris primary (no fallback)`.
 
-No downtime because:
-- Existing checkpoints are still readable via Tigris's shadow fallback to Azure
-- New checkpoints land in Tigris directly
-- Goldens fetch from Tigris (and shadow-fall-back if cold)
+**Rollback past this point** is harder. Re-adding the fallback re-enables
+the safety net, but any keys written to Tigris during the no-fallback
+window don't exist in Azure. If Azure must become authoritative again,
+run a reverse rclone (Tigris → Azure). Don't enter this phase until
+Phase 4 has been clean for at least a week.
 
-## Phase 4 — Drain (background, optional)
+## Phase 6 — Decommission Azure
 
-Optionally pull all remaining Azure data into Tigris so the shadow can be
-disabled cleanly:
+After ~30 days of zero observed reads on the Azure side (verify via Azure
+storage metrics):
 
-```
-tigris buckets drain opencomputer-checkpoints
-tigris buckets drain opencomputer-goldens
-```
+1. Snapshot the `checkpoints` container to a different storage account
+   as a one-time backup (optional).
+2. `az storage container delete --account-name occkpt3ccf3c31 -n checkpoints`
+3. Eventually delete the storage account.
 
-This runs in the Tigris control plane; no impact on serving traffic. Can be
-left running for days. Skip this if you're fine with lazy migration (only
-accessed keys ever move to Tigris).
+## Operational rules
 
-## Phase 5 — Soak
+- **Never `systemctl restart opensandbox-worker` by hand in prod.** The
+  scaler treats the heartbeat gap as "worker unhealthy" and replaces the
+  VM from the current AMI — losing any local state. We hit this during
+  dev validation. Always cycle workers by deleting them so the scaler
+  replaces them cleanly.
 
-Run with Tigris primary + Azure shadow for **1-2 weeks**. Monitor:
-- Tigris dashboard: cold-fetch rate (shadow reads). Should trend down over time
-  as the working set warms.
-- Worker logs: no `blob: object not found` errors from the checkpoint store.
-- Latency: cold-fetch first-byte > Tigris-native, but should remain within
-  acceptable bounds.
+- **Don't hold the leader lock in prod.** Holding
+  `controlplane:leader = MAINTENANCE-HOLD` pauses the scaler — including
+  the rolling-replace that the cutover relies on. The lock trick is for
+  one-off dev hot-swaps only.
 
-## Phase 6 — Cut shadow
+- **Live migration during the rolling window works** because the new
+  workers are in migration mode. Drain direction is OLD → NEW: old
+  worker writes drives to Azure, new worker reads Tigris (miss) →
+  fallback to Azure (hit) → migration succeeds. The reverse direction
+  (NEW writes, OLD reads) doesn't happen — old workers are being
+  drained, not receiving new placements.
 
-Once drained (or after sufficient soak with lazy migration):
+## Code surface
 
-```
-tigris buckets set-migration opencomputer-checkpoints --disable
-# repeat for other buckets
-```
-
-Workers now read/write Tigris-only.
-
-## Phase 7 — Decom Azure
-
-After the retention window (suggest 30 days) and zero observed reads from
-Azure side:
-
-```
-az storage container delete --account-name occkpt3ccf3c31 -n checkpoints
-az storage account delete -g opencomputer-prod -n occkpt3ccf3c31
-```
-
-## Rollback
-
-At any point through Phase 5, rollback is one env rotation back to Azure
-endpoints + roll workers. Data is dual-written (write-through) so neither
-side falls behind. Past Phase 6 (shadow disabled), rolling back means
-either:
-- Re-enabling shadow (Tigris keeps the writes; Azure is stale; would need a
-  reverse copy to make Azure authoritative again)
-- Living with Tigris
-
-## Open question
-
-`pg-backups` (250 MB, 6 blobs) is outside the checkpoint store code path.
-Whether to migrate it is a separate operational decision — it doesn't block
-the rest of the cutover.
+- `internal/blobstore/store.go` — `Store` interface (Get / GetRange / Put / Head / Exists / Delete / Name)
+- `internal/blobstore/s3.go` — S3-compatible backend (Tigris, R2, AWS S3, MinIO); supports per-backend `Bucket` override
+- `internal/blobstore/azure.go` — Azure Blob backend; same `Bucket` override pattern
+- `internal/blobstore/fallback.go` — `FallbackStore` with `NewFallback` (HA mode) and `NewMigrationFallback` (lazy-migration mode)
+- `internal/storage/s3.go` — `CheckpointStore` higher-level type, built on top of `blobstore.Store`
+- `cmd/server/main.go` — `workerEnv` template propagates `OPENSANDBOX_S3_FALLBACK_*` and `OPENSANDBOX_BLOB_MIGRATION_MODE` to each spawned worker
+- `cmd/worker/main.go` — `buildCheckpointBackend` helper; combines primary + fallback for the checkpoint path
+- `internal/config/config.go` — env-var parsing for the new vars
+- `scripts/rclone-azure-to-tigris.sh` — bulk + delta rclone driver (with `--s3-storage-class STANDARD --metadata=false`)

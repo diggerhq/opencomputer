@@ -190,8 +190,12 @@ func main() {
 		var globalBlob blobstore.Store
 		if blobPrimary != nil {
 			if blobFallback != nil {
-				globalBlob, _ = blobstore.NewFallback(blobPrimary, blobFallback)
-				log.Printf("opensandbox-worker: global blob store: %s primary, %s fallback", blobPrimary.Name(), blobFallback.Name())
+				if cfg.BlobMigrationMode {
+					globalBlob, _ = blobstore.NewMigrationFallback(blobPrimary, blobFallback)
+				} else {
+					globalBlob, _ = blobstore.NewFallback(blobPrimary, blobFallback)
+				}
+				log.Printf("opensandbox-worker: global blob store: %s primary, %s fallback (migration=%v)", blobPrimary.Name(), blobFallback.Name(), cfg.BlobMigrationMode)
 			} else {
 				globalBlob = blobPrimary
 				log.Printf("opensandbox-worker: global blob store: %s (no fallback)", blobPrimary.Name())
@@ -327,22 +331,42 @@ func main() {
 	}
 	jwtIssuer := auth.NewJWTIssuer(cfg.JWTSecret)
 
-	// S3 checkpoint store
+	// Checkpoint store — built on top of a blobstore.Store. The primary
+	// endpoint is OPENSANDBOX_S3_*; an optional secondary OPENSANDBOX_S3_FALLBACK_*
+	// provides HA / lazy-migration fallback. Migration semantics (NotFound
+	// cascades to fallback) are gated on cfg.BlobMigrationMode.
 	var checkpointStore *storage.CheckpointStore
 	if cfg.S3Bucket != "" {
-		var err error
-		checkpointStore, err = storage.NewCheckpointStore(storage.S3Config{
-			Endpoint:        cfg.S3Endpoint,
-			Bucket:          cfg.S3Bucket,
-			Region:          cfg.S3Region,
-			AccessKeyID:     cfg.S3AccessKeyID,
-			SecretAccessKey: cfg.S3SecretAccessKey,
-			ForcePathStyle:  cfg.S3ForcePathStyle,
-		})
+		// Primary: no bucket override (CheckpointStore passes cfg.S3Bucket per call).
+		cpPrimary, err := buildCheckpointBackend("primary", cfg.S3Endpoint, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, "", cfg.S3ForcePathStyle)
 		if err != nil {
-			log.Fatalf("failed to initialize checkpoint store: %v", err)
+			log.Fatalf("failed to build checkpoint store primary: %v", err)
 		}
-		log.Printf("opensandbox-worker: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
+		if cpPrimary == nil {
+			log.Fatalf("OPENSANDBOX_S3_BUCKET set but primary backend has no credentials")
+		}
+		// Fallback: if S3FallbackBucket is set, the fallback uses its own
+		// bucket name (e.g. Azure container "checkpoints") regardless of
+		// what bucket the primary uses (e.g. Tigris bucket "opencomputer-prod").
+		cpFallback, err := buildCheckpointBackend("fallback", cfg.S3FallbackEndpoint, cfg.S3FallbackRegion, cfg.S3FallbackAccessKeyID, cfg.S3FallbackSecretAccessKey, cfg.S3FallbackBucket, cfg.S3FallbackForcePathStyle)
+		if err != nil {
+			log.Fatalf("failed to build checkpoint store fallback: %v", err)
+		}
+
+		var cpStore blobstore.Store = cpPrimary
+		if cpFallback != nil {
+			if cfg.BlobMigrationMode {
+				cpStore, _ = blobstore.NewMigrationFallback(cpPrimary, cpFallback)
+			} else {
+				cpStore, _ = blobstore.NewFallback(cpPrimary, cpFallback)
+			}
+			log.Printf("opensandbox-worker: checkpoint store: %s primary, %s fallback (migration=%v)", cpPrimary.Name(), cpFallback.Name(), cfg.BlobMigrationMode)
+		} else {
+			log.Printf("opensandbox-worker: checkpoint store: %s (no fallback)", cpPrimary.Name())
+		}
+
+		checkpointStore = storage.NewCheckpointStoreFromStore(cpStore, cfg.S3Bucket)
+		log.Printf("opensandbox-worker: checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
 
 		if cfg.DataDir != "" {
 			cacheDir := filepath.Join(cfg.DataDir, "checkpoints")
@@ -672,6 +696,39 @@ func getDBURL(cfg *config.Config) string {
 		return cfg.DatabaseURL
 	}
 	return os.Getenv("DATABASE_URL")
+}
+
+// buildCheckpointBackend constructs a blobstore.Store for the checkpoint
+// path, picking Azure or S3-compat based on endpoint shape. Returns (nil, nil)
+// if no credentials are configured for this slot (caller treats nil as
+// "fallback disabled"). The auto-detect preserves the historical behavior of
+// storage.NewCheckpointStore.
+//
+// bucketOverride, if non-empty, tells the backend to use that bucket name
+// regardless of what bucket the caller passes at runtime. Empty means the
+// backend honors the caller's bucket (which the CheckpointStore sets to
+// cfg.S3Bucket).
+func buildCheckpointBackend(label, endpoint, region, accessKeyID, secretAccessKey, bucketOverride string, forcePathStyle bool) (blobstore.Store, error) {
+	if endpoint == "" && accessKeyID == "" && secretAccessKey == "" {
+		return nil, nil
+	}
+	if strings.Contains(endpoint, ".blob.core.windows.net") {
+		return blobstore.NewAzure(blobstore.AzureConfig{
+			Name:        "azure-blob-" + label,
+			AccountName: accessKeyID,
+			AccountKey:  secretAccessKey,
+			Bucket:      bucketOverride,
+		})
+	}
+	return blobstore.NewS3(blobstore.S3Config{
+		Name:            "s3-" + label,
+		Endpoint:        endpoint,
+		Region:          region,
+		AccessKeyID:     accessKeyID,
+		SecretAccessKey: secretAccessKey,
+		UsePathStyle:    forcePathStyle || strings.Contains(endpoint, ".blob.core.windows.net"),
+		Bucket:          bucketOverride,
+	})
 }
 
 // createExecSessionQEMU creates an exec session using a QEMU agent client.

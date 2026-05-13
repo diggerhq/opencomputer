@@ -61,6 +61,26 @@ type Config struct {
 	S3SecretAccessKey string
 	S3ForcePathStyle  bool // true for R2/MinIO
 
+	// Fallback backend for the checkpoint store. When set, primary reads that
+	// fail (or, in migration mode, return NotFound) cascade here. Writes go
+	// only to primary. Intended for the Tigris-cutover soak window — flip
+	// BlobMigrationMode off and unset once the soak finishes.
+	S3FallbackEndpoint        string
+	S3FallbackRegion          string
+	S3FallbackAccessKeyID     string
+	S3FallbackSecretAccessKey string
+	S3FallbackForcePathStyle  bool
+	// S3FallbackBucket lets the fallback backend use a different bucket /
+	// Azure container name than the primary. Example: primary points at
+	// Tigris bucket "opencomputer-prod"; fallback points at Azure container
+	// "checkpoints". When empty, the fallback reuses S3Bucket.
+	S3FallbackBucket string
+
+	// BlobMigrationMode flips FallbackStore semantics so primary NotFound
+	// cascades to fallbacks (lazy-migration behavior). Applies to both the
+	// checkpoint-store fallback and the global blob fallback.
+	BlobMigrationMode bool
+
 	// Sandbox resource defaults (overridable per-sandbox via API)
 	DefaultSandboxMemoryMB int // default RAM per sandbox (MB), default 1024
 	DefaultSandboxCPUs     int // default vCPUs per sandbox, default 1
@@ -221,6 +241,15 @@ func Load() (*Config, error) {
 		S3AccessKeyID:     os.Getenv("OPENSANDBOX_S3_ACCESS_KEY_ID"),
 		S3SecretAccessKey: os.Getenv("OPENSANDBOX_S3_SECRET_ACCESS_KEY"),
 		S3ForcePathStyle:  os.Getenv("OPENSANDBOX_S3_FORCE_PATH_STYLE") == "true",
+
+		S3FallbackEndpoint:        os.Getenv("OPENSANDBOX_S3_FALLBACK_ENDPOINT"),
+		S3FallbackRegion:          os.Getenv("OPENSANDBOX_S3_FALLBACK_REGION"),
+		S3FallbackAccessKeyID:     os.Getenv("OPENSANDBOX_S3_FALLBACK_ACCESS_KEY_ID"),
+		S3FallbackSecretAccessKey: os.Getenv("OPENSANDBOX_S3_FALLBACK_SECRET_ACCESS_KEY"),
+		S3FallbackForcePathStyle:  os.Getenv("OPENSANDBOX_S3_FALLBACK_FORCE_PATH_STYLE") == "true",
+		S3FallbackBucket:          os.Getenv("OPENSANDBOX_S3_FALLBACK_BUCKET"),
+
+		BlobMigrationMode: os.Getenv("OPENSANDBOX_BLOB_MIGRATION_MODE") == "true",
 
 		DefaultSandboxMemoryMB: envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB", 256),
 		DefaultSandboxCPUs:     envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_CPUS", 1),
