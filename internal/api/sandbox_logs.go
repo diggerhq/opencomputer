@@ -127,6 +127,11 @@ func (s *Server) getSandboxLogs(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
+	// Non-running sandboxes (stopped / error / hibernated): no new events
+	// will arrive post-stop, so tail mode is wasted polling. Cap the window
+	// at stoppedAt+grace too — the shipper finishes flushing within a few
+	// seconds of process exit; 30s covers ingest latency comfortably.
+	q = applySessionState(q, session.Status, session.StoppedAt)
 
 	// SSE headers + immediate flush so the browser knows the stream is open.
 	c.Response().Header().Set("Content-Type", "text/event-stream")
@@ -224,6 +229,27 @@ type logQuery struct {
 	sources   []string // already-validated against allowedSources
 	limit     int
 	tail      bool
+}
+
+// applySessionState narrows a parsed query based on the sandbox's
+// lifecycle. For stopped/error/hibernated sandboxes:
+//   - tail is forced false (no new events will arrive)
+//   - until is capped at stoppedAt + 30s grace (avoid polling into a void
+//     of empty Axiom windows)
+//
+// Pure function (no DB dep) so the lifecycle behaviour is unit-testable.
+func applySessionState(q logQuery, status string, stoppedAt *time.Time) logQuery {
+	if status == "running" {
+		return q
+	}
+	q.tail = false
+	if stoppedAt != nil {
+		bound := stoppedAt.Add(30 * time.Second)
+		if q.until.IsZero() || q.until.After(bound) {
+			q.until = bound
+		}
+	}
+	return q
 }
 
 func parseLogQuery(sandboxID string, sandboxStarted time.Time, qs url.Values) (logQuery, error) {

@@ -213,3 +213,69 @@ func TestApplyClientFilters_TextAndSourceComposed(t *testing.T) {
 		t.Errorf("got %v, want only 'error in foo'", got)
 	}
 }
+
+// TestApplySessionState_RunningPassthrough: a running sandbox keeps the
+// query exactly as parsed — no narrowing.
+func TestApplySessionState_RunningPassthrough(t *testing.T) {
+	q := logQuery{tail: true, until: time.Time{}}
+	got := applySessionState(q, "running", nil)
+	if !got.tail {
+		t.Errorf("running sandbox: tail = false, want true (caller-set default)")
+	}
+	if !got.until.IsZero() {
+		t.Errorf("running sandbox: until set to %v, want zero", got.until)
+	}
+}
+
+// TestApplySessionState_StoppedForcesHistorical: any non-running status
+// flips tail off. New events can't arrive once the sandbox is gone.
+func TestApplySessionState_StoppedForcesHistorical(t *testing.T) {
+	for _, status := range []string{"stopped", "error", "hibernated", "migrating"} {
+		t.Run(status, func(t *testing.T) {
+			q := logQuery{tail: true}
+			got := applySessionState(q, status, nil)
+			if got.tail {
+				t.Errorf("status=%s: tail = true, want false", status)
+			}
+		})
+	}
+}
+
+// TestApplySessionState_CapsUntilAtStoppedAtGrace: non-running sandboxes
+// with a stoppedAt timestamp get `until` bounded to stoppedAt + 30s. If
+// the caller already passed a tighter `until`, theirs wins.
+func TestApplySessionState_CapsUntilAtStoppedAtGrace(t *testing.T) {
+	stopped := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	t.Run("unset until gets capped", func(t *testing.T) {
+		q := logQuery{tail: true}
+		got := applySessionState(q, "stopped", &stopped)
+		want := stopped.Add(30 * time.Second)
+		if !got.until.Equal(want) {
+			t.Errorf("until = %v, want %v", got.until, want)
+		}
+	})
+	t.Run("tighter until kept", func(t *testing.T) {
+		tighter := stopped.Add(-1 * time.Hour)
+		q := logQuery{tail: true, until: tighter}
+		got := applySessionState(q, "stopped", &stopped)
+		if !got.until.Equal(tighter) {
+			t.Errorf("until = %v, want caller-set %v", got.until, tighter)
+		}
+	})
+	t.Run("until in future gets clamped", func(t *testing.T) {
+		future := stopped.Add(1 * time.Hour)
+		q := logQuery{tail: true, until: future}
+		got := applySessionState(q, "stopped", &stopped)
+		want := stopped.Add(30 * time.Second)
+		if !got.until.Equal(want) {
+			t.Errorf("until = %v, want %v (capped at stoppedAt+30s)", got.until, want)
+		}
+	})
+	t.Run("no stoppedAt → no until set", func(t *testing.T) {
+		q := logQuery{tail: true}
+		got := applySessionState(q, "error", nil)
+		if !got.until.IsZero() {
+			t.Errorf("error+no-stoppedAt: until = %v, want zero", got.until)
+		}
+	})
+}
