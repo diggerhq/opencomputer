@@ -213,3 +213,80 @@ func TestApplyClientFilters_TextAndSourceComposed(t *testing.T) {
 		t.Errorf("got %v, want only 'error in foo'", got)
 	}
 }
+
+// TestApplySessionState_RunningPassthrough: a running sandbox keeps the
+// query exactly as parsed — no narrowing.
+func TestApplySessionState_RunningPassthrough(t *testing.T) {
+	q := logQuery{tail: true, until: time.Time{}}
+	got := applySessionState(q, "running", nil)
+	if !got.tail {
+		t.Errorf("running sandbox: tail = false, want true (caller-set default)")
+	}
+	if !got.until.IsZero() {
+		t.Errorf("running sandbox: until set to %v, want zero", got.until)
+	}
+}
+
+// TestApplySessionState_PreservesTail: q.tail reflects the client's
+// explicit intent (CLI --no-tail or URL ?tail=false) and is NOT
+// rewritten by applySessionState. The handler reads session.Status
+// separately to decide whether to actually poll Axiom; the tail flag
+// only governs whether the SSE connection stays open.
+//
+// History: an earlier version flipped tail=false for non-running
+// sandboxes. That caused the server to close the SSE stream after
+// the historical batch, the browser EventSource auto-reconnected,
+// and events visibly duplicated in the UI (one copy per reconnect).
+// Reverted to preserve client intent.
+func TestApplySessionState_PreservesTail(t *testing.T) {
+	for _, status := range []string{"running", "stopped", "error", "hibernated", "migrating"} {
+		t.Run(status, func(t *testing.T) {
+			for _, clientTail := range []bool{true, false} {
+				q := logQuery{tail: clientTail}
+				got := applySessionState(q, status, nil)
+				if got.tail != clientTail {
+					t.Errorf("status=%s clientTail=%v: tail = %v, want preserved", status, clientTail, got.tail)
+				}
+			}
+		})
+	}
+}
+
+// TestApplySessionState_CapsUntilAtStoppedAtGrace: non-running sandboxes
+// with a stoppedAt timestamp get `until` bounded to stoppedAt + 30s. If
+// the caller already passed a tighter `until`, theirs wins.
+func TestApplySessionState_CapsUntilAtStoppedAtGrace(t *testing.T) {
+	stopped := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	t.Run("unset until gets capped", func(t *testing.T) {
+		q := logQuery{tail: true}
+		got := applySessionState(q, "stopped", &stopped)
+		want := stopped.Add(30 * time.Second)
+		if !got.until.Equal(want) {
+			t.Errorf("until = %v, want %v", got.until, want)
+		}
+	})
+	t.Run("tighter until kept", func(t *testing.T) {
+		tighter := stopped.Add(-1 * time.Hour)
+		q := logQuery{tail: true, until: tighter}
+		got := applySessionState(q, "stopped", &stopped)
+		if !got.until.Equal(tighter) {
+			t.Errorf("until = %v, want caller-set %v", got.until, tighter)
+		}
+	})
+	t.Run("until in future gets clamped", func(t *testing.T) {
+		future := stopped.Add(1 * time.Hour)
+		q := logQuery{tail: true, until: future}
+		got := applySessionState(q, "stopped", &stopped)
+		want := stopped.Add(30 * time.Second)
+		if !got.until.Equal(want) {
+			t.Errorf("until = %v, want %v (capped at stoppedAt+30s)", got.until, want)
+		}
+	})
+	t.Run("no stoppedAt → no until set", func(t *testing.T) {
+		q := logQuery{tail: true}
+		got := applySessionState(q, "error", nil)
+		if !got.until.IsZero() {
+			t.Errorf("error+no-stoppedAt: until = %v, want zero", got.until)
+		}
+	})
+}

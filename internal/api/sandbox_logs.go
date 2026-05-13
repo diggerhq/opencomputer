@@ -127,6 +127,11 @@ func (s *Server) getSandboxLogs(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
+	// Non-running sandboxes (stopped / error / hibernated): no new events
+	// will arrive post-stop, so tail mode is wasted polling. Cap the window
+	// at stoppedAt+grace too — the shipper finishes flushing within a few
+	// seconds of process exit; 30s covers ingest latency comfortably.
+	q = applySessionState(q, session.Status, session.StoppedAt)
 
 	// SSE headers + immediate flush so the browser knows the stream is open.
 	c.Response().Header().Set("Content-Type", "text/event-stream")
@@ -152,6 +157,25 @@ func (s *Server) getSandboxLogs(c echo.Context) error {
 
 	if !q.tail {
 		return nil
+	}
+
+	// If the sandbox is not running, no new events will arrive — skip the
+	// Axiom poll loop entirely. But keep the SSE connection open with
+	// keepalive comments so the browser EventSource doesn't interpret a
+	// server-side close as a disconnect and auto-reconnect, which would
+	// re-fetch the historical batch and visibly duplicate events.
+	if session.Status != "running" {
+		keepalive := time.NewTicker(15 * time.Second)
+		defer keepalive.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-keepalive.C:
+				writeSSEComment(c.Response(), "keepalive")
+				c.Response().Flush()
+			}
+		}
 	}
 
 	// Live tail. Cursor starts at the last historical event's _time.
@@ -224,6 +248,32 @@ type logQuery struct {
 	sources   []string // already-validated against allowedSources
 	limit     int
 	tail      bool
+}
+
+// applySessionState narrows a parsed query based on the sandbox's
+// lifecycle. For stopped/error/hibernated sandboxes:
+//   - until is capped at stoppedAt + 30s grace (avoid polling into a void
+//     of empty Axiom windows; the in-VM shipper finishes flushing within
+//     a few seconds of process exit, 30s covers ingest latency)
+//
+// q.tail is NOT changed — the handler reads session.Status separately to
+// decide whether to actually poll Axiom. Leaving q.tail alone preserves
+// the client's explicit intent: a tail=true request on a dead sandbox
+// keeps the SSE connection open (with keepalives only) so the browser
+// EventSource doesn't auto-reconnect and re-fetch the historical batch.
+//
+// Pure function (no DB dep) so the lifecycle behaviour is unit-testable.
+func applySessionState(q logQuery, status string, stoppedAt *time.Time) logQuery {
+	if status == "running" {
+		return q
+	}
+	if stoppedAt != nil {
+		bound := stoppedAt.Add(30 * time.Second)
+		if q.until.IsZero() || q.until.After(bound) {
+			q.until = bound
+		}
+	}
+	return q
 }
 
 func parseLogQuery(sandboxID string, sandboxStarted time.Time, qs url.Values) (logQuery, error) {
