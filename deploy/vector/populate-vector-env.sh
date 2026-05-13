@@ -7,8 +7,10 @@
 # vector.service. Idempotent on every boot.
 #
 # Required env (sourced from /etc/opensandbox/worker.env or server.env by
-# the systemd unit's EnvironmentFile=):
-#   SECRETS_VAULT_NAME       Key Vault name (e.g. opencomputer-prod-kv)
+# the systemd unit's EnvironmentFile=). This is the same var the
+# autoscaler bakes into prod worker.env at VM-create time, so the
+# populator picks it up automatically without any extra plumbing.
+#   OPENSANDBOX_AZURE_KEY_VAULT_NAME   Key Vault name (e.g. opencomputer-prod-kv)
 #
 # Optional env (used to enrich Vector's host envelope for non-JSON lines):
 #   OPENCOMPUTER_CELL_ID     e.g. eastus2-default
@@ -24,7 +26,7 @@
 # (don't break the worker boot path over a missing logging credential).
 set -euo pipefail
 
-VAULT_NAME="${SECRETS_VAULT_NAME:-}"
+VAULT_NAME="${OPENSANDBOX_AZURE_KEY_VAULT_NAME:-}"
 ENV_FILE=/etc/opensandbox/vector.env
 TOKEN_SECRET=shared-axiom-platform-ingest-token
 DATASET_SECRET=shared-axiom-platform-dataset
@@ -32,7 +34,7 @@ DATASET_SECRET=shared-axiom-platform-dataset
 log() { logger -t populate-vector-env "$*"; echo "$*"; }
 
 if [ -z "$VAULT_NAME" ]; then
-    log "SECRETS_VAULT_NAME not set — skipping (Vector will start without a token)"
+    log "OPENSANDBOX_AZURE_KEY_VAULT_NAME not set — skipping (Vector will start without a token)"
     exit 0
 fi
 
