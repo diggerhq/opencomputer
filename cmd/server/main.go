@@ -245,6 +245,13 @@ func main() {
 					"OPENSANDBOX_S3_ACCESS_KEY_ID=%s\n"+
 					"OPENSANDBOX_S3_SECRET_ACCESS_KEY=%s\n"+
 					"OPENSANDBOX_S3_FORCE_PATH_STYLE=%v\n"+
+					"OPENSANDBOX_S3_FALLBACK_ENDPOINT=%s\n"+
+					"OPENSANDBOX_S3_FALLBACK_REGION=%s\n"+
+					"OPENSANDBOX_S3_FALLBACK_ACCESS_KEY_ID=%s\n"+
+					"OPENSANDBOX_S3_FALLBACK_SECRET_ACCESS_KEY=%s\n"+
+					"OPENSANDBOX_S3_FALLBACK_FORCE_PATH_STYLE=%v\n"+
+					"OPENSANDBOX_S3_FALLBACK_BUCKET=%s\n"+
+					"OPENSANDBOX_BLOB_MIGRATION_MODE=%v\n"+
 					"OPENSANDBOX_SANDBOX_DOMAIN=%s\n"+
 					"OPENSANDBOX_DEFAULT_SANDBOX_DISK_MB=%d\n"+
 					"OPENSANDBOX_AZURE_KEY_VAULT_NAME=%s\n"+
@@ -264,6 +271,13 @@ func main() {
 				cfg.S3AccessKeyID,
 				cfg.S3SecretAccessKey,
 				cfg.S3ForcePathStyle,
+				cfg.S3FallbackEndpoint,
+				cfg.S3FallbackRegion,
+				cfg.S3FallbackAccessKeyID,
+				cfg.S3FallbackSecretAccessKey,
+				cfg.S3FallbackForcePathStyle,
+				cfg.S3FallbackBucket,
+				cfg.BlobMigrationMode,
 				cfg.SandboxDomain,
 				cfg.DefaultSandboxDiskMB,
 				cfg.AzureKeyVaultName,

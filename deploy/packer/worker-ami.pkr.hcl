@@ -115,6 +115,44 @@ variable "prev_golden_version" {
   description = "Previous AMI's golden version. When set, Packer downloads bases/{prev}/default.ext4 from blob storage and bakes it into the AMI at /opt/opensandbox/images/bases/{prev}/default.ext4 so forks of checkpoints pinned to the previous golden don't need a runtime blob download."
 }
 
+# Tigris dual-write: during the Azure→Tigris migration window, the AMI bake
+# uploads each new golden to BOTH Azure (via the legacy Python step) AND
+# Tigris (via opensandbox-worker golden-upload). Leave these empty to skip
+# the Tigris upload — falls back to Azure-only behavior. Drop the Python
+# Azure upload entirely once the cutover is complete (Phase 5+).
+
+variable "tigris_endpoint" {
+  type        = string
+  default     = ""
+  description = "Tigris (or any S3-compat) endpoint for the goldens dual-write. Empty skips."
+}
+
+variable "tigris_access_key_id" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Tigris access key. Paired with tigris_endpoint."
+}
+
+variable "tigris_secret_access_key" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Tigris secret key. Paired with tigris_endpoint."
+}
+
+variable "tigris_goldens_bucket" {
+  type        = string
+  default     = ""
+  description = "Tigris bucket where goldens land (e.g. opencomputer-prod). Empty skips."
+}
+
+variable "tigris_region" {
+  type        = string
+  default     = "auto"
+  description = "Tigris region. 'auto' works for Tigris/R2; AWS would need a real region."
+}
+
 # ---------------------------------------------------------------------
 # Source: Ubuntu 24.04 x86_64 on Azure
 # ---------------------------------------------------------------------
@@ -421,6 +459,33 @@ build {
       "        print(resp.read().decode())",
       "        sys.exit(1)",
       "PYEOF",
+    ]
+  }
+
+  # 4b'. Dual-write the new golden to Tigris via the worker's golden-upload
+  #      subcommand. Runs only when tigris_endpoint + creds + bucket are set.
+  #      Uses the same blobstore.S3 backend the worker uses at runtime — no
+  #      separate Tigris client code in the AMI bake. Skips cleanly (exit 0)
+  #      when any required var is unset, so this step is safe to leave in
+  #      the pipeline once we drop the Azure upload entirely (Phase 5+).
+  provisioner "shell" {
+    execute_command = "chmod +x {{ .Path }}; {{ .Vars }} sudo -E bash '{{ .Path }}'"
+    environment_vars = [
+      "OPENSANDBOX_GLOBAL_BLOB_ENDPOINT=${var.tigris_endpoint}",
+      "OPENSANDBOX_GLOBAL_BLOB_REGION=${var.tigris_region}",
+      "OPENSANDBOX_GLOBAL_BLOB_ACCESS_KEY_ID=${var.tigris_access_key_id}",
+      "OPENSANDBOX_GLOBAL_BLOB_SECRET_ACCESS_KEY=${var.tigris_secret_access_key}",
+      "OPENSANDBOX_GLOBAL_BLOB_USE_PATH_STYLE=true",
+      "OPENSANDBOX_GLOBAL_BLOB_GOLDENS_BUCKET=${var.tigris_goldens_bucket}",
+      "OPENSANDBOX_GLOBAL_BLOB_NAME=tigris",
+    ]
+    inline = [
+      "if [ -z \"$OPENSANDBOX_GLOBAL_BLOB_ENDPOINT\" ] || [ -z \"$OPENSANDBOX_GLOBAL_BLOB_ACCESS_KEY_ID\" ] || [ -z \"$OPENSANDBOX_GLOBAL_BLOB_GOLDENS_BUCKET\" ]; then",
+      "  echo 'Tigris dual-write: env vars not set, skipping'",
+      "  exit 0",
+      "fi",
+      "echo 'Tigris dual-write: uploading /opt/opensandbox/images/default.ext4 via golden-upload subcommand'",
+      "/usr/local/bin/opensandbox-worker golden-upload /opt/opensandbox/images/default.ext4",
     ]
   }
 

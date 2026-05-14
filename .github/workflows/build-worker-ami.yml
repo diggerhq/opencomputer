@@ -151,6 +151,10 @@ jobs:
             -var "base_archive_account=${{ secrets.AZURE_STORAGE_ACCOUNT }}" \
             -var "base_archive_key=${{ secrets.AZURE_STORAGE_KEY }}" \
             -var "prev_golden_version=${{ steps.prev-golden.outputs.prev }}" \
+            -var "tigris_endpoint=${{ secrets.TIGRIS_ENDPOINT }}" \
+            -var "tigris_access_key_id=${{ secrets.TIGRIS_ACCESS_KEY_ID }}" \
+            -var "tigris_secret_access_key=${{ secrets.TIGRIS_SECRET_ACCESS_KEY }}" \
+            -var "tigris_goldens_bucket=${{ secrets.TIGRIS_GOLDENS_BUCKET }}" \
             deploy/packer/worker-ami.pkr.hcl | tee /tmp/packer-output.txt
 
           # Use the gallery image ID (NVMe-compatible for v7 VMs)

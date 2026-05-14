@@ -16,6 +16,7 @@ import (
 
 	"github.com/opensandbox/opensandbox/internal/analytics"
 	"github.com/opensandbox/opensandbox/internal/auth"
+	"github.com/opensandbox/opensandbox/internal/blobstore"
 	"github.com/opensandbox/opensandbox/internal/config"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/metrics"
@@ -55,6 +56,25 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(ver)
+		return
+	}
+
+	// "golden-upload <path-to-default.ext4>" pushes the file to the global
+	// blob store at {GoldensBucket}/default.ext4 AND {GoldensBucket}/bases/{hash}/default.ext4.
+	// One-shot bootstrap path: a fresh dev cell whose AMI baked an ext4 can
+	// upload it so other cells (especially in different clouds) can pull
+	// the same canonical bytes on cache miss. Future Packer pipelines can
+	// run this at AMI-build time. Reads OPENSANDBOX_GLOBAL_BLOB_* env vars
+	// for the destination.
+	if len(os.Args) >= 2 && os.Args[1] == "golden-upload" {
+		if len(os.Args) != 3 {
+			fmt.Fprintln(os.Stderr, "usage: opensandbox-worker golden-upload <path-to-default.ext4>")
+			os.Exit(2)
+		}
+		if err := uploadGolden(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -159,17 +179,62 @@ func main() {
 	}
 	// QEMU backend
 	{
+		// Construct global blob store (Tigris primary + optional fallback).
+		// Returns nil if endpoint+access-key are unset → manager runs in
+		// local-only mode, no cache-miss fetch.
+		blobPrimary, blobErr := blobstore.NewS3(blobstore.S3Config{
+			Name:            cfg.GlobalBlobName,
+			Endpoint:        cfg.GlobalBlobEndpoint,
+			Region:          cfg.GlobalBlobRegion,
+			AccessKeyID:     cfg.GlobalBlobAccessKeyID,
+			SecretAccessKey: cfg.GlobalBlobSecretAccessKey,
+			UsePathStyle:    cfg.GlobalBlobUsePathStyle,
+		})
+		if blobErr != nil {
+			log.Fatalf("opensandbox-worker: global blob store init failed: %v", blobErr)
+		}
+		blobFallback, fbErr := blobstore.NewS3(blobstore.S3Config{
+			Name:            cfg.GlobalBlobFallbackName,
+			Endpoint:        cfg.GlobalBlobFallbackEndpoint,
+			Region:          cfg.GlobalBlobFallbackRegion,
+			AccessKeyID:     cfg.GlobalBlobFallbackAccessKeyID,
+			SecretAccessKey: cfg.GlobalBlobFallbackSecretAccessKey,
+			UsePathStyle:    cfg.GlobalBlobFallbackUsePathStyle,
+		})
+		if fbErr != nil {
+			log.Fatalf("opensandbox-worker: global blob fallback init failed: %v", fbErr)
+		}
+		var globalBlob blobstore.Store
+		if blobPrimary != nil {
+			if blobFallback != nil {
+				if cfg.BlobMigrationMode {
+					globalBlob, _ = blobstore.NewMigrationFallback(blobPrimary, blobFallback)
+				} else {
+					globalBlob, _ = blobstore.NewFallback(blobPrimary, blobFallback)
+				}
+				log.Printf("opensandbox-worker: global blob store: %s primary, %s fallback (migration=%v)", blobPrimary.Name(), blobFallback.Name(), cfg.BlobMigrationMode)
+			} else {
+				globalBlob = blobPrimary
+				log.Printf("opensandbox-worker: global blob store: %s (no fallback)", blobPrimary.Name())
+			}
+		} else {
+			log.Println("opensandbox-worker: global blob store disabled (endpoint unset) — local-only goldens")
+		}
+
 		qmCfg := qm.Config{
-			DataDir:         cfg.DataDir,
-			KernelPath:      cfg.KernelPath,
-			ImagesDir:       cfg.ImagesDir,
-			QEMUBin:         cfg.QEMUBin,
-			AgentBinaryPath: "/usr/local/bin/osb-agent",
-			AgentVersion:    AgentVersion,
-			Region:          cfg.Region,
-			DefaultMemoryMB: cfg.DefaultSandboxMemoryMB,
-			DefaultCPUs:     cfg.DefaultSandboxCPUs,
-			DefaultDiskMB:   cfg.DefaultSandboxDiskMB,
+			DataDir:                 cfg.DataDir,
+			KernelPath:              cfg.KernelPath,
+			ImagesDir:               cfg.ImagesDir,
+			QEMUBin:                 cfg.QEMUBin,
+			AgentBinaryPath:         "/usr/local/bin/osb-agent",
+			AgentVersion:            AgentVersion,
+			Region:                  cfg.Region,
+			DefaultMemoryMB:         cfg.DefaultSandboxMemoryMB,
+			DefaultCPUs:             cfg.DefaultSandboxCPUs,
+			DefaultDiskMB:           cfg.DefaultSandboxDiskMB,
+			GlobalBlob:              globalBlob,
+			GlobalBlobGoldensBucket: cfg.GlobalBlobGoldensBucket,
+			GlobalBlobGoldenKey:     "default.ext4",
 		}
 
 		qmMgr, err := qm.NewManager(qmCfg)
@@ -284,22 +349,42 @@ func main() {
 	}
 	jwtIssuer := auth.NewJWTIssuer(cfg.JWTSecret)
 
-	// S3 checkpoint store
+	// Checkpoint store — built on top of a blobstore.Store. The primary
+	// endpoint is OPENSANDBOX_S3_*; an optional secondary OPENSANDBOX_S3_FALLBACK_*
+	// provides HA / lazy-migration fallback. Migration semantics (NotFound
+	// cascades to fallback) are gated on cfg.BlobMigrationMode.
 	var checkpointStore *storage.CheckpointStore
 	if cfg.S3Bucket != "" {
-		var err error
-		checkpointStore, err = storage.NewCheckpointStore(storage.S3Config{
-			Endpoint:        cfg.S3Endpoint,
-			Bucket:          cfg.S3Bucket,
-			Region:          cfg.S3Region,
-			AccessKeyID:     cfg.S3AccessKeyID,
-			SecretAccessKey: cfg.S3SecretAccessKey,
-			ForcePathStyle:  cfg.S3ForcePathStyle,
-		})
+		// Primary: no bucket override (CheckpointStore passes cfg.S3Bucket per call).
+		cpPrimary, err := buildCheckpointBackend("primary", cfg.S3Endpoint, cfg.S3Region, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, "", cfg.S3ForcePathStyle)
 		if err != nil {
-			log.Fatalf("failed to initialize checkpoint store: %v", err)
+			log.Fatalf("failed to build checkpoint store primary: %v", err)
 		}
-		log.Printf("opensandbox-worker: S3 checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
+		if cpPrimary == nil {
+			log.Fatalf("OPENSANDBOX_S3_BUCKET set but primary backend has no credentials")
+		}
+		// Fallback: if S3FallbackBucket is set, the fallback uses its own
+		// bucket name (e.g. Azure container "checkpoints") regardless of
+		// what bucket the primary uses (e.g. Tigris bucket "opencomputer-prod").
+		cpFallback, err := buildCheckpointBackend("fallback", cfg.S3FallbackEndpoint, cfg.S3FallbackRegion, cfg.S3FallbackAccessKeyID, cfg.S3FallbackSecretAccessKey, cfg.S3FallbackBucket, cfg.S3FallbackForcePathStyle)
+		if err != nil {
+			log.Fatalf("failed to build checkpoint store fallback: %v", err)
+		}
+
+		var cpStore blobstore.Store = cpPrimary
+		if cpFallback != nil {
+			if cfg.BlobMigrationMode {
+				cpStore, _ = blobstore.NewMigrationFallback(cpPrimary, cpFallback)
+			} else {
+				cpStore, _ = blobstore.NewFallback(cpPrimary, cpFallback)
+			}
+			log.Printf("opensandbox-worker: checkpoint store: %s primary, %s fallback (migration=%v)", cpPrimary.Name(), cpFallback.Name(), cfg.BlobMigrationMode)
+		} else {
+			log.Printf("opensandbox-worker: checkpoint store: %s (no fallback)", cpPrimary.Name())
+		}
+
+		checkpointStore = storage.NewCheckpointStoreFromStore(cpStore, cfg.S3Bucket)
+		log.Printf("opensandbox-worker: checkpoint store configured (bucket=%s, region=%s)", cfg.S3Bucket, cfg.S3Region)
 
 		if cfg.DataDir != "" {
 			cacheDir := filepath.Join(cfg.DataDir, "checkpoints")
@@ -641,6 +726,39 @@ func getDBURL(cfg *config.Config) string {
 		return cfg.DatabaseURL
 	}
 	return os.Getenv("DATABASE_URL")
+}
+
+// buildCheckpointBackend constructs a blobstore.Store for the checkpoint
+// path, picking Azure or S3-compat based on endpoint shape. Returns (nil, nil)
+// if no credentials are configured for this slot (caller treats nil as
+// "fallback disabled"). The auto-detect preserves the historical behavior of
+// storage.NewCheckpointStore.
+//
+// bucketOverride, if non-empty, tells the backend to use that bucket name
+// regardless of what bucket the caller passes at runtime. Empty means the
+// backend honors the caller's bucket (which the CheckpointStore sets to
+// cfg.S3Bucket).
+func buildCheckpointBackend(label, endpoint, region, accessKeyID, secretAccessKey, bucketOverride string, forcePathStyle bool) (blobstore.Store, error) {
+	if endpoint == "" && accessKeyID == "" && secretAccessKey == "" {
+		return nil, nil
+	}
+	if strings.Contains(endpoint, ".blob.core.windows.net") {
+		return blobstore.NewAzure(blobstore.AzureConfig{
+			Name:        "azure-blob-" + label,
+			AccountName: accessKeyID,
+			AccountKey:  secretAccessKey,
+			Bucket:      bucketOverride,
+		})
+	}
+	return blobstore.NewS3(blobstore.S3Config{
+		Name:            "s3-" + label,
+		Endpoint:        endpoint,
+		Region:          region,
+		AccessKeyID:     accessKeyID,
+		SecretAccessKey: secretAccessKey,
+		UsePathStyle:    forcePathStyle || strings.Contains(endpoint, ".blob.core.windows.net"),
+		Bucket:          bucketOverride,
+	})
 }
 
 // createExecSessionQEMU creates an exec session using a QEMU agent client.
