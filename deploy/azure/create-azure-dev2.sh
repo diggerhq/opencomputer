@@ -340,49 +340,78 @@ fi
 sudo bash /tmp/setup-azure-host.sh
 WKSETUP
 
-    # ── Push cell config + secrets to Key Vault ──
-    # Everything that isn't bootstrap (mode + vault pointer + paths + per-VM
-    # identity) lives in KV. The kvMapping in internal/config/keyvault.go is
-    # the allowlist — secrets not in that map are silently ignored, so it's
-    # safe to push extra entries here without affecting the running services.
-    log "Populating Key Vault with cell config + secrets..."
-    set_kv() { az keyvault secret set --vault-name "$KV_NAME" --name "$1" --value "$2" --output none; }
+    # ── Push cell config + secrets to Infisical ──
+    # Infisical is the single source of truth for all secrets across all
+    # cells; the Azure KV provisioned above is just a cell-local read cache
+    # populated by the Infisical Secret Sync (set up once per project).
+    #
+    # Prerequisites the operator must have completed BEFORE running this:
+    #   1. Infisical project + `dev` env exist
+    #   2. Folders `/shared` and `/cells/${CELL_ID}` exist in that env
+    #   3. INFISICAL_TOKEN env var is set with write access to those folders
+    #      (machine identity created in Infisical UI; one-time setup)
+    #   4. App Connection from Infisical to Azure has secret-officer scope on
+    #      this RG's KV (set up after the KV exists — see README)
+    #   5. Secret Syncs configured in Infisical UI:
+    #        /shared              → osb-dev2-* KV
+    #        /cells/${CELL_ID}   → osb-dev2-* KV
+    #      Both with "Disable Secret Deletion = ON" (two syncs to one dest).
+    #
+    # This step writes the generated secrets to Infisical; the existing
+    # Sync propagates Infisical → KV within ~10s. VM bootstrap reads the KV
+    # at boot via Managed Identity. Editing a secret in Infisical later
+    # propagates everywhere automatically.
+    if [ -z "${INFISICAL_TOKEN:-}" ]; then
+        err "INFISICAL_TOKEN not set — won't seed Infisical. Either export it"
+        err "before re-running, or push these secrets manually after the fact:"
+        err "  jwt-secret api-key session-jwt-secret cf-event-secret cf-admin-secret"
+        err "  pg-password + cell-scoped DB/Redis URLs, region, sandbox-domain, ..."
+        exit 1
+    fi
+    INF_PROJ="${INFISICAL_PROJECT_ID:-6f7fb48e-90bb-4fac-b9a2-c55f06ed00e7}"
+    INF_ENV="${INFISICAL_ENV:-dev}"
+    log "Seeding Infisical project=$INF_PROJ env=$INF_ENV (sync will fan out to KV)..."
+    inf() { infisical secrets set --projectId="$INF_PROJ" --env="$INF_ENV" --path="$1" --silent "$2=$3" >/dev/null; }
 
-    # Server-side bundle (server-* prefix; loaded only when MODE=server)
-    set_kv server-database-url       "postgres://opensandbox:$PG_PASSWORD@localhost:5432/opensandbox?sslmode=disable"
-    set_kv server-redis-url          "redis://localhost:6379"
-    set_kv server-jwt-secret         "$JWT_SECRET"
-    set_kv server-api-key            "$API_KEY"
-    set_kv server-region             "$CELL_REGION"
-    set_kv server-sandbox-domain     "$DOMAIN"
-    set_kv server-cell-id            "$CELL_ID"
-    set_kv server-cf-event-endpoint  "$CF_EVENT_ENDPOINT"
-    set_kv server-cf-event-secret    "$CF_EVENT_SECRET"
-    set_kv server-cf-admin-secret    "$CF_ADMIN_SECRET"
-    set_kv server-session-jwt-secret "$SESSION_JWT_SECRET"
+    # Per-cell values (different per cell — DB/Redis URLs, region, S3 endpoint).
+    CELL="/cells/$CELL_ID"
+    inf "$CELL" server-database-url       "postgres://opensandbox:$PG_PASSWORD@localhost:5432/opensandbox?sslmode=disable"
+    inf "$CELL" server-redis-url          "redis://localhost:6379"
+    inf "$CELL" server-region             "$CELL_REGION"
+    inf "$CELL" server-sandbox-domain     "$DOMAIN"
+    inf "$CELL" server-cell-id            "$CELL_ID"
+    inf "$CELL" worker-database-url       "postgres://opensandbox:$PG_PASSWORD@$CP_PRIVATE_IP:5432/opensandbox?sslmode=disable"
+    inf "$CELL" worker-redis-url          "redis://$CP_PRIVATE_IP:6379"
+    inf "$CELL" worker-region             "$CELL_REGION"
+    inf "$CELL" worker-cell-id            "$CELL_ID"
+    inf "$CELL" worker-sandbox-domain     "$DOMAIN"
+    inf "$CELL" worker-max-capacity       "10"
+    inf "$CELL" worker-default-sandbox-memory-mb "1024"
+    inf "$CELL" worker-default-sandbox-cpus      "2"
+    inf "$CELL" worker-s3-bucket          "$STORAGE_CONTAINER"
+    inf "$CELL" worker-s3-region          "$REGION"
+    inf "$CELL" worker-s3-endpoint        "https://$STORAGE_ACCOUNT_NAME.blob.core.windows.net"
+    inf "$CELL" worker-s3-access-key      "$STORAGE_ACCOUNT_NAME"
+    inf "$CELL" worker-s3-secret-key      "$STORAGE_KEY"
+    inf "$CELL" pg-password               "$PG_PASSWORD"
 
-    # Worker-side bundle (worker-* prefix; loaded only when MODE=worker)
-    set_kv worker-jwt-secret             "$JWT_SECRET"
-    set_kv worker-database-url           "postgres://opensandbox:$PG_PASSWORD@$CP_PRIVATE_IP:5432/opensandbox?sslmode=disable"
-    set_kv worker-redis-url              "redis://$CP_PRIVATE_IP:6379"
-    set_kv worker-region                 "$CELL_REGION"
-    set_kv worker-cell-id                "$CELL_ID"
-    set_kv worker-max-capacity           "10"
-    set_kv worker-default-sandbox-memory-mb "1024"
-    set_kv worker-default-sandbox-cpus   "2"
-    set_kv worker-sandbox-domain         "$DOMAIN"
-    set_kv worker-s3-bucket              "$STORAGE_CONTAINER"
-    set_kv worker-s3-region              "$REGION"
-    set_kv worker-s3-endpoint            "https://$STORAGE_ACCOUNT_NAME.blob.core.windows.net"
-    set_kv worker-s3-access-key          "$STORAGE_ACCOUNT_NAME"
-    set_kv worker-s3-secret-key          "$STORAGE_KEY"
-    set_kv worker-cf-event-endpoint      "$CF_EVENT_ENDPOINT"
-    set_kv worker-cf-event-secret        "$CF_EVENT_SECRET"
-    set_kv worker-cf-admin-secret        "$CF_ADMIN_SECRET"
-    set_kv worker-session-jwt-secret     "$SESSION_JWT_SECRET"
-
-    # Shared (loaded for any mode via the pg-* prefix bypass in keyvault.go)
-    set_kv pg-password "$PG_PASSWORD"
+    # Shared values — only push from a NEW cell if the operator wants to (re)set
+    # them globally. By default we skip; the values already exist in Infisical
+    # /shared from the first cell's setup. Override with SEED_SHARED=1.
+    if [ "${SEED_SHARED:-0}" = "1" ]; then
+        log "  also seeding /shared (SEED_SHARED=1)..."
+        inf "/shared" server-jwt-secret         "$JWT_SECRET"
+        inf "/shared" worker-jwt-secret         "$JWT_SECRET"
+        inf "/shared" server-api-key            "$API_KEY"
+        inf "/shared" server-cf-event-endpoint  "$CF_EVENT_ENDPOINT"
+        inf "/shared" worker-cf-event-endpoint  "$CF_EVENT_ENDPOINT"
+        inf "/shared" server-cf-event-secret    "$CF_EVENT_SECRET"
+        inf "/shared" worker-cf-event-secret    "$CF_EVENT_SECRET"
+        inf "/shared" server-cf-admin-secret    "$CF_ADMIN_SECRET"
+        inf "/shared" worker-cf-admin-secret    "$CF_ADMIN_SECRET"
+        inf "/shared" server-session-jwt-secret "$SESSION_JWT_SECRET"
+        inf "/shared" worker-session-jwt-secret "$SESSION_JWT_SECRET"
+    fi
 
     # ── Write bootstrap env files ──
     # Only what the binary needs to find the KV: mode + vault pointer + paths

@@ -178,6 +178,45 @@ cmd_create() {
         $([ "$REGION" != "us-east-1" ] && echo "--create-bucket-configuration LocationConstraint=$REGION") >/dev/null
     save_state "BUCKET" "$BUCKET"
 
+    # ── IAM role + instance profile for EC2 (reads SM + writes checkpoint S3) ──
+    # The role lets dev3 VMs pull bootstrap secrets from AWS Secrets Manager via
+    # the default credential chain (no static keys on the VM), and write
+    # checkpoints to their cell's S3 bucket. Idempotent — create-role fails
+    # gracefully if it already exists from a prior run.
+    ROLE_NAME="opensandbox-dev3-reader"
+    log "Creating IAM role $ROLE_NAME + instance profile..."
+    aws iam create-role --role-name "$ROLE_NAME" --assume-role-policy-document "$(cat <<'TRUST'
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}
+TRUST
+)" >/dev/null 2>&1 || true
+    aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name ReadSecrets --policy-document "$(cat <<'P1'
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:GetSecretValue","secretsmanager:BatchGetSecretValue","secretsmanager:DescribeSecret","secretsmanager:ListSecrets"],"Resource":"*"}]}
+P1
+)" >/dev/null
+    aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name CheckpointBucket --policy-document "$(cat <<EOF
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":"arn:aws:s3:::${BUCKET}"},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:HeadObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":"arn:aws:s3:::${BUCKET}/*"}]}
+EOF
+)" >/dev/null
+    aws iam create-instance-profile --instance-profile-name "$ROLE_NAME" >/dev/null 2>&1 || true
+    aws iam add-role-to-instance-profile --instance-profile-name "$ROLE_NAME" --role-name "$ROLE_NAME" >/dev/null 2>&1 || true
+    save_state "ROLE_NAME" "$ROLE_NAME"
+
+    # ── AWS Secrets Manager: pre-create the cell's secrets so Infisical sync
+    # has a target. The actual values land via Infisical → AWS sync; this just
+    # provisions empty placeholders + an IAM user for Infisical to write with.
+    # NB: Infisical's AWS SM sync creates one SM secret per Infisical secret
+    # (per-key mode), so we don't pre-create individual entries — Infisical
+    # does that. We only create the IAM user it needs.
+    INF_IAM_USER="infisical-secret-sync-dev"
+    log "Creating IAM user $INF_IAM_USER for Infisical → SM sync..."
+    aws iam create-user --user-name "$INF_IAM_USER" >/dev/null 2>&1 || true
+    aws iam put-user-policy --user-name "$INF_IAM_USER" --policy-name InfisicalSecretSync --policy-document "$(cat <<'P2'
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:DescribeSecret","secretsmanager:GetSecretValue","secretsmanager:BatchGetSecretValue","secretsmanager:PutSecretValue","secretsmanager:UpdateSecret","secretsmanager:CreateSecret","secretsmanager:DeleteSecret","secretsmanager:RestoreSecret","secretsmanager:TagResource","secretsmanager:UntagResource","secretsmanager:ListSecrets","secretsmanager:ListSecretVersionIds"],"Resource":"*"}]}
+P2
+)" >/dev/null
+    log "  → if this is the first cell using Infisical, create an access key for $INF_IAM_USER"
+    log "    via the AWS Console and paste it into Infisical's AWS App Connection."
+
     # ── Control Plane EC2 ──
     log "Launching control plane ($CP_TYPE)..."
     CP_USERDATA=$(cat <<'CPUD'
@@ -195,6 +234,7 @@ CPUD
         --key-name "$NAME_PREFIX" --subnet-id "$SUBNET_ID" \
         --security-group-ids "$SG_CP" \
         --associate-public-ip-address \
+        --iam-instance-profile "Name=$ROLE_NAME" \
         --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$CP_NAME},{Key=opensandbox:role,Value=controlplane}]" \
         --user-data "$CP_USERDATA" \
         --query 'Instances[0].InstanceId' --output text)
@@ -216,6 +256,7 @@ CPUD
         --key-name "$NAME_PREFIX" --subnet-id "$SUBNET_ID" \
         --security-group-ids "$SG_WK" \
         --associate-public-ip-address \
+        --iam-instance-profile "Name=$ROLE_NAME" \
         --block-device-mappings "DeviceName=/dev/sdb,Ebs={VolumeSize=$WK_DATA_GB,VolumeType=gp3,DeleteOnTermination=true}" \
         --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$WK_NAME},{Key=opensandbox:role,Value=worker}]" \
         --query 'Instances[0].InstanceId' --output text)
@@ -295,27 +336,76 @@ fi
 sudo bash /tmp/setup-host.sh
 WKSETUP
 
-    # ── Env files ──
-    log "Writing environment files..."
+    # ── Push cell config + secrets to Infisical ──
+    # Infisical is the single source of truth; its AWS Secrets Manager sync
+    # propagates each entry to a per-key SM secret which the EC2 IAM role
+    # above reads at boot. See create-azure-dev2.sh for the full prerequisite
+    # list — same model, different cloud.
+    if [ -z "${INFISICAL_TOKEN:-}" ]; then
+        err "INFISICAL_TOKEN not set — can't seed Infisical. Export it and re-run,"
+        err "or push these secrets manually after the fact."
+        exit 1
+    fi
+    INF_PROJ="${INFISICAL_PROJECT_ID:-6f7fb48e-90bb-4fac-b9a2-c55f06ed00e7}"
+    INF_ENV="${INFISICAL_ENV:-dev}"
+    log "Seeding Infisical project=$INF_PROJ env=$INF_ENV (AWS SM sync will fan out per key)..."
+    inf() { infisical secrets set --projectId="$INF_PROJ" --env="$INF_ENV" --path="$1" --silent "$2=$3" >/dev/null; }
+
+    CELL="/cells/$CELL_ID"
+    inf "$CELL" server-database-url       "postgres://opensandbox:$PG_PASSWORD@localhost:5432/opensandbox?sslmode=disable"
+    inf "$CELL" server-redis-url          "redis://localhost:6379"
+    inf "$CELL" server-region             "$REGION"
+    inf "$CELL" server-sandbox-domain     "$DOMAIN"
+    inf "$CELL" server-cell-id            "$CELL_ID"
+    inf "$CELL" worker-database-url       "postgres://opensandbox:$PG_PASSWORD@$CP_PRIVATE_IP:5432/opensandbox?sslmode=disable"
+    inf "$CELL" worker-redis-url          "redis://$CP_PRIVATE_IP:6379"
+    inf "$CELL" worker-region             "$REGION"
+    inf "$CELL" worker-cell-id            "$CELL_ID"
+    inf "$CELL" worker-sandbox-domain     "$DOMAIN"
+    inf "$CELL" worker-max-capacity       "10"
+    inf "$CELL" worker-default-sandbox-memory-mb "1024"
+    inf "$CELL" worker-default-sandbox-cpus      "2"
+    inf "$CELL" worker-s3-bucket          "$BUCKET"
+    inf "$CELL" worker-s3-region          "$REGION"
+    inf "$CELL" pg-password               "$PG_PASSWORD"
+    # No worker-s3-access-key/secret-key — AWS workers use the EC2 IAM role
+    # for S3 (the CheckpointBucket policy above), so the AWS SDK falls back
+    # to instance creds when env keys are empty.
+
+    if [ "${SEED_SHARED:-0}" = "1" ]; then
+        log "  also seeding /shared (SEED_SHARED=1)..."
+        inf "/shared" server-jwt-secret         "$JWT_SECRET"
+        inf "/shared" worker-jwt-secret         "$JWT_SECRET"
+        inf "/shared" server-api-key            "$API_KEY"
+        inf "/shared" server-cf-event-endpoint  "$CF_EVENT_ENDPOINT"
+        inf "/shared" worker-cf-event-endpoint  "$CF_EVENT_ENDPOINT"
+        inf "/shared" server-cf-event-secret    "$CF_EVENT_SECRET"
+        inf "/shared" worker-cf-event-secret    "$CF_EVENT_SECRET"
+        inf "/shared" server-cf-admin-secret    "$CF_ADMIN_SECRET"
+        inf "/shared" worker-cf-admin-secret    "$CF_ADMIN_SECRET"
+        inf "/shared" server-session-jwt-secret "$SESSION_JWT_SECRET"
+        inf "/shared" worker-session-jwt-secret "$SESSION_JWT_SECRET"
+    fi
+
+    # ── Write bootstrap env files ──
+    # OPENSANDBOX_SECRETS_AWS_REGION triggers per-key SM bootstrap in Go
+    # (internal/config/secretsmanager.go). AWS_REGION is the standard SDK var
+    # so the IAM role's default credential chain works without extra config.
+    log "Writing bootstrap env files..."
     ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$ADMIN_USER@$CP_PUBLIC_IP" "sudo tee /etc/opensandbox/server.env > /dev/null" <<CPENV
+# Bootstrap-only — secrets + cell config live in AWS Secrets Manager (synced from Infisical).
 OPENSANDBOX_MODE=server
+OPENSANDBOX_SECRETS_AWS_REGION=$REGION
+AWS_REGION=$REGION
 OPENSANDBOX_PORT=8080
-OPENSANDBOX_DATABASE_URL=postgres://opensandbox:$PG_PASSWORD@localhost:5432/opensandbox?sslmode=disable
-OPENSANDBOX_REDIS_URL=redis://localhost:6379
-OPENSANDBOX_JWT_SECRET=$JWT_SECRET
-OPENSANDBOX_API_KEY=$API_KEY
-OPENSANDBOX_REGION=$REGION
-OPENSANDBOX_SANDBOX_DOMAIN=$DOMAIN
-OPENSANDBOX_CELL_ID=$CELL_ID
-OPENSANDBOX_CF_EVENT_ENDPOINT=$CF_EVENT_ENDPOINT
-OPENSANDBOX_CF_EVENT_SECRET=$CF_EVENT_SECRET
-OPENSANDBOX_CF_ADMIN_SECRET=$CF_ADMIN_SECRET
-OPENSANDBOX_SESSION_JWT_SECRET=$SESSION_JWT_SECRET
 OPENSANDBOX_COMPUTE_PROVIDER=aws
 CPENV
 
     ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$ADMIN_USER@$WK_PUBLIC_IP" "sudo tee /etc/opensandbox/worker.env > /dev/null" <<WKENV
+# Bootstrap-only — secrets + cell config live in AWS Secrets Manager (synced from Infisical).
 OPENSANDBOX_MODE=worker
+OPENSANDBOX_SECRETS_AWS_REGION=$REGION
+AWS_REGION=$REGION
 OPENSANDBOX_VM_BACKEND=qemu
 OPENSANDBOX_QEMU_BIN=qemu-system-x86_64
 OPENSANDBOX_DATA_DIR=/data/sandboxes
@@ -323,18 +413,8 @@ OPENSANDBOX_KERNEL_PATH=/opt/opensandbox/vmlinux
 OPENSANDBOX_IMAGES_DIR=/data/firecracker/images
 OPENSANDBOX_GRPC_ADVERTISE=$WK_PRIVATE_IP:9090
 OPENSANDBOX_HTTP_ADDR=http://$WK_PRIVATE_IP:8081
-OPENSANDBOX_JWT_SECRET=$JWT_SECRET
 OPENSANDBOX_WORKER_ID=w-aws-${REGION}-dev3-1
-OPENSANDBOX_REGION=$REGION
-OPENSANDBOX_MAX_CAPACITY=10
 OPENSANDBOX_PORT=8081
-OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB=1024
-OPENSANDBOX_DEFAULT_SANDBOX_CPUS=2
-OPENSANDBOX_DATABASE_URL=postgres://opensandbox:$PG_PASSWORD@$CP_PRIVATE_IP:5432/opensandbox?sslmode=disable
-OPENSANDBOX_REDIS_URL=redis://$CP_PRIVATE_IP:6379
-OPENSANDBOX_S3_BUCKET=$BUCKET
-OPENSANDBOX_S3_REGION=$REGION
-OPENSANDBOX_CELL_ID=$CELL_ID
 WKENV
 
     # Postgres VPC access

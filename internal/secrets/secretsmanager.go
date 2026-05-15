@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -24,6 +25,17 @@ import (
 type SecretsManagerBackend struct {
 	client     *secretsmanager.Client
 	bundledARN string // optional: JSON bundle keyed by secret name
+
+	// NameMap translates bundle key → env var name. Mirrors KeyVaultBackend.NameMap
+	// so the same kvMapping in internal/config can drive both Azure KV and AWS SM
+	// bootstrap. Nil/empty = LoadAllToEnv writes bundle keys verbatim as env vars
+	// (legacy behavior; only safe if the bundle already uses SCREAMING_SNAKE).
+	NameMap map[string]string
+
+	// ModePrefixFilter restricts LoadAllToEnv to bundle keys whose name starts
+	// with "{ModePrefixFilter}-" (plus shared "pg-*"). Empty = no filter.
+	// Typical: "server" or "worker". Same semantics as KeyVaultBackend.
+	ModePrefixFilter string
 }
 
 // NewSecretsManagerBackend constructs a backend using the default AWS
@@ -69,16 +81,25 @@ func (b *SecretsManagerBackend) Get(ctx context.Context, key string) (string, er
 	return v, nil
 }
 
-// LoadAllToEnv satisfies BulkLoader. SecretsManager's bootstrap pattern
-// is "one secret holds JSON; expand to env vars by key name." Reads
-// BundledARN and Setenv each KEY=value pair from the JSON object,
-// skipping any that are already present in the env (local overrides win).
+// LoadAllToEnv satisfies BulkLoader. SecretsManager's bootstrap pattern is
+// "one secret holds JSON; expand to env vars by key name." Reads BundledARN
+// and Setenv each KEY=value pair from the JSON object, skipping any that are
+// already present in the env (local overrides win).
 //
-// Returns (loaded, 0, err) — SecretsManager doesn't track skipped because
-// the bundle keys are arbitrary, not enumerated through a name map.
+// If NameMap is non-empty, bundle keys are translated to env var names via
+// the map AND restricted to keys present in the map (allowlist). This mirrors
+// KeyVaultBackend.LoadAllToEnv so a single kvMapping drives both backends —
+// the Infisical sync writes bundle keys as kebab-case (server-jwt-secret,
+// worker-cell-id, ...) and the map turns them into OPENSANDBOX_* env vars.
+//
+// If NameMap is empty, bundle keys are written verbatim (legacy path —
+// caller responsible for bundle keys already being env-var-shaped).
+//
+// ModePrefixFilter additionally restricts to keys with "{mode}-" or "pg-"
+// prefix, same as KeyVaultBackend.
 func (b *SecretsManagerBackend) LoadAllToEnv(ctx context.Context) (loaded, skipped int, err error) {
 	if b.bundledARN == "" {
-		return 0, 0, nil // nothing to bulk-load
+		return 0, 0, nil
 	}
 	bundleStr, err := b.getRaw(ctx, b.bundledARN)
 	if err != nil {
@@ -89,13 +110,98 @@ func (b *SecretsManagerBackend) LoadAllToEnv(ctx context.Context) (loaded, skipp
 		return 0, 0, err
 	}
 	for k, v := range pairs {
-		if os.Getenv(k) != "" {
+		envVar := k
+		if len(b.NameMap) > 0 {
+			mapped, ok := b.NameMap[k]
+			if !ok {
+				continue // not in allowlist — silently skip
+			}
+			envVar = mapped
+		}
+		if b.ModePrefixFilter != "" &&
+			!strings.HasPrefix(k, b.ModePrefixFilter+"-") &&
+			!strings.HasPrefix(k, "pg-") {
+			continue
+		}
+		if os.Getenv(envVar) != "" {
 			skipped++
 			continue
 		}
-		os.Setenv(k, v)
+		os.Setenv(envVar, v)
 		loaded++
 	}
+	if len(b.NameMap) > 0 {
+		log.Printf("secretsmanager: loaded %d secrets from bundle %s (%d skipped, already set)", loaded, b.bundledARN, skipped)
+	}
+	return loaded, skipped, nil
+}
+
+// LoadAllByNameList is the per-key counterpart to LoadAllToEnv: instead of
+// pulling one bundled JSON secret, it fetches N individual SM secrets by
+// name (one BatchGetSecretValue round-trip when N <= 20, paginated otherwise)
+// and applies NameMap + ModePrefixFilter the same way KeyVaultBackend does.
+//
+// Use this when the secrets are stored as separate SM resources (which is
+// what Infisical's AWS Secrets Manager sync writes by default — each
+// Infisical secret becomes its own SM secret, named verbatim or with a
+// configurable prefix).
+//
+// `names` is the list of SM secret names to fetch. The caller is expected
+// to pass the kebab-case names from kvMapping; unknown names in SM are
+// ignored and missing names in SM produce log warnings (not fatal).
+func (b *SecretsManagerBackend) LoadAllByNameList(ctx context.Context, names []string) (loaded, skipped int, err error) {
+	if len(names) == 0 {
+		return 0, 0, nil
+	}
+	// BatchGetSecretValue caps at 20 names per call; chunk if needed.
+	const batchSize = 20
+	for i := 0; i < len(names); i += batchSize {
+		end := i + batchSize
+		if end > len(names) {
+			end = len(names)
+		}
+		chunk := names[i:end]
+		out, callErr := b.client.BatchGetSecretValue(ctx, &secretsmanager.BatchGetSecretValueInput{
+			SecretIdList: chunk,
+		})
+		if callErr != nil {
+			return loaded, skipped, fmt.Errorf("secretsmanager: BatchGetSecretValue: %w", callErr)
+		}
+		for _, sv := range out.SecretValues {
+			if sv.Name == nil || sv.SecretString == nil {
+				continue
+			}
+			name := *sv.Name
+			val := *sv.SecretString
+			envVar := name
+			if len(b.NameMap) > 0 {
+				mapped, ok := b.NameMap[name]
+				if !ok {
+					continue // not in allowlist
+				}
+				envVar = mapped
+			}
+			if b.ModePrefixFilter != "" &&
+				!strings.HasPrefix(name, b.ModePrefixFilter+"-") &&
+				!strings.HasPrefix(name, "pg-") {
+				continue
+			}
+			if os.Getenv(envVar) != "" {
+				skipped++
+				continue
+			}
+			os.Setenv(envVar, val)
+			loaded++
+		}
+		// out.Errors contains names that failed individually (e.g. not found).
+		// Log but don't fail — missing entries are expected during partial migrations.
+		for _, e := range out.Errors {
+			if e.SecretId != nil && e.Message != nil {
+				log.Printf("secretsmanager: %s: %s (skipping)", *e.SecretId, *e.Message)
+			}
+		}
+	}
+	log.Printf("secretsmanager: loaded %d secrets via batch list (%d skipped, already set)", loaded, skipped)
 	return loaded, skipped, nil
 }
 

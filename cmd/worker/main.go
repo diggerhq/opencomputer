@@ -76,9 +76,16 @@ func main() {
 		return
 	}
 
-	// Load secrets from Azure Key Vault if configured (before config.Load reads env vars).
+	// Load secrets from the appropriate cloud vault (before config.Load reads
+	// env vars). Each loader is a no-op if its env trigger is unset:
+	//   SECRETS_VAULT_NAME       → Azure Key Vault (Azure cells)
+	//   OPENSANDBOX_SECRETS_ARN  → AWS Secrets Manager (AWS cells)
+	// One or the other should be set at a time; neither = env file authoritative.
 	if err := config.LoadSecretsFromKeyVault(); err != nil {
 		log.Fatalf("failed to load secrets from Key Vault: %v", err)
+	}
+	if err := config.LoadSecretsFromSecretsManager(); err != nil {
+		log.Fatalf("failed to load secrets from Secrets Manager: %v", err)
 	}
 
 	cfg, err := config.Load()

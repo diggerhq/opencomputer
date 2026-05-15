@@ -15,10 +15,29 @@ compatibility_date = "2026-04-28"
 compatibility_flags = ["nodejs_compat"]
 account_id = "1241f114453e32d292197e3fb36210b2"
 
-# Route the Worker at app.dev.opensandbox.ai once the zone goes live.
-# Until then, accessible at opensandbox-edge-dev.brian-124.workers.dev.
+# Routes (production binding — left off until cert strategy is settled):
+#
+#   Sandbox preview URLs match by hostname (sb-{id}-p{port}.<host>) in Worker
+#   code regardless of how the request reaches us, so the smoke test works
+#   today via Host-header override against the workers.dev URL. For real
+#   public traffic, we need a route binding + matching wildcard DNS + cert.
+#
+#   CF Workers routes only allow `*` at the START of the hostname, so
+#   `sb-*.opensandbox.ai/*` is invalid. Options for production:
+#     (a) "*.opensandbox.ai/*" with code that 404s non-sb-prefix hosts —
+#         would also intercept cp-dev2.opensandbox.ai (the tunnels), which
+#         breaks the edge→cell path. Don't do this.
+#     (b) Dedicated subdomain "*.sb.opensandbox.ai/*" — clean separation
+#         from cp-*, app, events. But two-level wildcard isn't covered by
+#         Cloudflare Universal SSL — needs Advanced Certificate Manager
+#         (~$10/mo) OR a self-uploaded wildcard cert.
+#     (c) Separate zone for previews (e.g. opensandbox.run) — clean but
+#         requires owning + provisioning another domain.
+#
+# Recommended end state: option (b) with Advanced Cert Manager. Until then
+# preview URLs work through code, not DNS — fine for dev validation.
 # routes = [
-#   { pattern = "app.dev.opensandbox.ai/*", zone_name = "opensandbox.ai" }
+#   { pattern = "*.sb.opensandbox.ai/*", zone_name = "opensandbox.ai" },
 # ]
 
 [[d1_databases]]

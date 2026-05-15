@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -159,6 +160,42 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	}
 	if opts != nil && opts.ControlPlaneProxy != nil {
 		e.Use(opts.ControlPlaneProxy.Middleware())
+
+		// Edge-forwarded preview URL traffic. The api-edge Worker resolves
+		// the public preview hostname (sb-{id}-p{port}.opensandbox.ai) to a
+		// cell via D1, then forwards via this cell's Tunnel here. We:
+		//
+		//   1. strip the /internal/preview/{id}/{port} prefix so the inner
+		//      URL path matches what the user originally requested
+		//   2. synthesize the Host header the downstream worker proxy
+		//      expects (sb-{id}-p{port}.{sandbox_domain}) so the worker's
+		//      SandboxProxy.Middleware parses it correctly
+		//   3. delegate to ControlPlaneProxy.HandleSandboxRequest, which
+		//      reuses the same doProxy logic used by the host-header path —
+		//      hibernation wake, worker-loss recovery, all of it.
+		//
+		// No cap-token auth on this route: it's public-internet sandbox
+		// traffic that the edge has already validated (via D1 lookup +
+		// sandbox-running check). The auth model is "edge gate, cell
+		// trust" — same as POST /internal/sandboxes/create.
+		cp := opts.ControlPlaneProxy
+		sandboxDomain := opts.SandboxDomain
+		e.Any("/internal/preview/:id/:port/*", func(c echo.Context) error {
+			id := c.Param("id")
+			portStr := c.Param("port")
+			port, err := strconv.Atoi(portStr)
+			if err != nil || port < 1 || port > 65535 {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid port"})
+			}
+			prefix := "/internal/preview/" + id + "/" + portStr
+			rest := strings.TrimPrefix(c.Request().URL.Path, prefix)
+			if rest == "" {
+				rest = "/"
+			}
+			c.Request().URL.Path = rest
+			c.Request().Host = id + "-p" + portStr + "." + sandboxDomain
+			return cp.HandleSandboxRequest(c, id, port)
+		})
 	}
 
 	// Health checks (no auth)

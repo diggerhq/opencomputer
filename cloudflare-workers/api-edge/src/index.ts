@@ -231,6 +231,74 @@ async function pickCell(
   return healthy[0] ?? null;
 }
 
+// ── preview URL dispatch ─────────────────────────────────────────────────
+
+// parsePreviewHost detects whether the request's hostname is a sandbox
+// preview URL of the form `sb-{id}-p{port}.{anything}` and pulls out the
+// sandbox_id + port. Returns null for anything else (the request falls
+// through to the regular /api routes / /health / etc).
+//
+// The sandbox_id itself may contain hyphens (it's "sb-" + 8 hex chars in
+// practice, but we don't lock the format here — only the trailing -p<port>
+// shape matters), so the regex anchors `-p<digits>` at the END of the first
+// subdomain label and grabs everything before it as the id.
+function parsePreviewHost(hostname: string): { sandboxID: string; port: number } | null {
+  const firstLabel = hostname.split(".", 1)[0];
+  if (!firstLabel.startsWith("sb-")) return null;
+  const m = firstLabel.match(/^(sb-.+)-p(\d+)$/);
+  if (!m) return null;
+  const port = Number.parseInt(m[2], 10);
+  if (!Number.isFinite(port) || port < 1 || port > 65535) return null;
+  return { sandboxID: m[1], port };
+}
+
+// handlePreviewURL is the edge-routed equivalent of the cell-local
+// ControlPlaneProxy.Middleware: resolve the sandbox to its owning cell via
+// D1, then forward the request through that cell's Tunnel to its CP's
+// /internal/preview/{id}/{port}/* route. The CP synthesizes the Host
+// header the worker's SandboxProxy expects, then routes to the worker.
+//
+// Cross-cell migration becomes invisible from this design — moving a
+// sandbox from cell A to cell B updates sandboxes_index.cell_id, and the
+// next request resolves to the new cell. No DNS or hostname changes.
+async function handlePreviewURL(
+  req: Request,
+  env: Env,
+  m: { sandboxID: string; port: number },
+): Promise<Response> {
+  const row = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT s.cell_id, s.status, c.base_url
+       FROM sandboxes_index s
+       JOIN cells c ON s.cell_id = c.cell_id
+      WHERE s.id = ?1`,
+  )
+    .bind(m.sandboxID)
+    .first<{ cell_id: string; status: string; base_url: string }>();
+
+  if (!row) return new Response(`sandbox ${m.sandboxID} not found`, { status: 404 });
+  if (row.status === "stopped" || row.status === "error") {
+    return new Response(`sandbox ${m.sandboxID} is ${row.status}`, { status: 410 });
+  }
+  // status="hibernated" is fine — CP's doProxy will wake-on-request.
+
+  const url = new URL(req.url);
+  const base = row.base_url.replace(/\/$/, "");
+  const target = `${base}/internal/preview/${m.sandboxID}/${m.port}${url.pathname}${url.search}`;
+
+  try {
+    // Forward the request as-is via the Request copy-constructor — preserves
+    // method, body (including streamed/large bodies), headers, AND the
+    // Upgrade: websocket handshake. Cloudflare's fetch propagates WebSocket
+    // pairs transparently when both ends speak it.
+    return await fetch(new Request(target, req));
+  } catch (e) {
+    return new Response(
+      `cell ${row.cell_id} unreachable: ${(e as Error).message}`,
+      { status: 502 },
+    );
+  }
+}
+
 // ── route handlers ───────────────────────────────────────────────────────
 
 async function createSandbox(req: Request, env: Env): Promise<Response> {
@@ -354,6 +422,14 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
+
+    // Sandbox preview URL dispatch — matched by HOSTNAME, not path. Has to
+    // run before the path-based routes below so that a sandbox app serving
+    // its own /health or /api/* doesn't get shadowed by ours.
+    const preview = parsePreviewHost(url.hostname);
+    if (preview) {
+      return handlePreviewURL(req, env, preview);
+    }
 
     if (path === "/health") {
       return json({ ok: true, env: env.WORKER_ENV, cells: env.CELLS.split(",") });
