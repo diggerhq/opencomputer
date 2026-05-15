@@ -499,6 +499,13 @@ func main() {
 	defer metricsSrv.Close()
 	log.Println("opensandbox-worker: metrics server started on :9091")
 
+	// Pre-warm the checkpoint-failures counter with a synthetic
+	// (region, "all", "none") row so the dashboard panel renders 0 instead of
+	// "field not found" before any failure has occurred. Real failures use the
+	// actual template + classified reason — the heartbeat row is independent
+	// and stays at 0 forever.
+	metrics.CheckpointFailuresTotal.WithLabelValues(cfg.Region, "all", "none").Add(0)
+
 	// Periodic resource-stats sampler: disk bytes (used/avail/total on the
 	// data mount), memory bytes (total/avail from /proc/meminfo), allocated
 	// memory (sum of MemoryMB across running VMs), CPU pressure (PSI 'some'

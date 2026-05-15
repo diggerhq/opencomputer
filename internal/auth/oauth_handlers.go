@@ -27,7 +27,14 @@ type OAuthHandlers struct {
 }
 
 // NewOAuthHandlers creates new OAuth handlers.
+//
+// Pre-warms the auth_attempts_total counter for both known result values so
+// the dashboard panel renders 0 instead of "field not found" before any login
+// has happened. Add(0) materializes the time series at zero without affecting
+// the count once real attempts arrive.
 func NewOAuthHandlers(workos *WorkOSMiddleware) *OAuthHandlers {
+	metrics.AuthAttemptsTotal.WithLabelValues(authTypeWorkOS, "success").Add(0)
+	metrics.AuthAttemptsTotal.WithLabelValues(authTypeWorkOS, "failure").Add(0)
 	return &OAuthHandlers{workos: workos}
 }
 
