@@ -1,58 +1,114 @@
+// Package config — AWS Secrets Manager implementation of SecretsProvider.
+//
+// Authentication uses the AWS Default Credential chain (EC2 IAM role on
+// instances, AWS_PROFILE / SSO / env locally). The trigger env var is
+// OPENSANDBOX_AWS_SECRETS_PREFIX; LoadSecrets() in secrets.go selects this
+// provider when it is set.
+//
+// Layout: secrets are stored under a flat per-cell prefix, e.g.
+//
+//	opencomputer/aws-us-east-2-poc/worker-jwt-secret
+//	opencomputer/aws-us-east-2-poc/worker-redis-url
+//	opencomputer/aws-us-east-2-poc/shared-axiom-ingest-token
+//
+// The provider lists everything under the prefix, strips it, looks up the
+// remaining logical name in secretMapping (cloud-agnostic, defined in
+// secrets.go), and sets the matching env var if not already populated.
+
 package config
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"os"
-	"time"
+	"strings"
 
-	"github.com/opensandbox/opensandbox/internal/secrets"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 )
 
-// LoadSecretsFromSecretsManager is the AWS analogue of LoadSecretsFromKeyVault.
-// Maps every kebab-case key from kvMapping into the process environment via
-// the same translation Azure KV uses (server-jwt-secret → OPENSANDBOX_JWT_SECRET).
-//
-// Two trigger env vars, picked one at a time:
-//
-//   - OPENSANDBOX_SECRETS_ARN: single bundled SM secret with JSON SecretString.
-//     One GetSecretValue, one IAM scope. Cheap ($0.40/mo) but requires the
-//     producer (Infisical or otherwise) to write a JSON bundle.
-//
-//   - OPENSANDBOX_SECRETS_AWS_REGION: per-key mode. Each kvMapping key is its
-//     own SM secret. BatchGetSecretValue fetches them in chunks of 20. This
-//     is what Infisical's "Sync each secret to its own secret" mode produces.
-//     Costs $0.40/mo per secret but matches Infisical's default sync shape.
-//
-// Existing env vars take precedence (emergency override path).
-//
-// Does nothing if neither trigger is set.
-func LoadSecretsFromSecretsManager() error {
-	bundleARN := os.Getenv("OPENSANDBOX_SECRETS_ARN")
-	listRegion := os.Getenv("OPENSANDBOX_SECRETS_AWS_REGION")
-	if bundleARN == "" && listRegion == "" {
-		return nil // not configured; defer to env file / Azure KV / combined mode
-	}
-	mode := os.Getenv("OPENSANDBOX_MODE")
+// awsSecretsManagerProvider fetches secrets by listing the cell's prefix and
+// dereferencing every name that matches secretMapping for the current mode.
+type awsSecretsManagerProvider struct {
+	prefix string
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+func (p *awsSecretsManagerProvider) Name() string { return "aws-secretsmanager" }
 
-	be, err := secrets.NewSecretsManagerBackend(ctx, listRegion, bundleARN)
+func (p *awsSecretsManagerProvider) Load(ctx context.Context, mode string) (int, int, error) {
+	cfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
-		return err
+		return 0, 0, fmt.Errorf("secretsmanager: load aws config: %w", err)
 	}
-	be.NameMap = kvMapping
-	be.ModePrefixFilter = mode
+	client := secretsmanager.NewFromConfig(cfg)
 
-	if bundleARN != "" {
-		_, _, err = be.LoadAllToEnv(ctx)
-		return err
+	loaded, skipped := 0, 0
+
+	var nextToken *string
+	for {
+		out, err := client.ListSecrets(ctx, &secretsmanager.ListSecretsInput{
+			MaxResults: aws.Int32(100),
+			NextToken:  nextToken,
+			Filters: []types.Filter{
+				{
+					Key:    types.FilterNameStringTypeName,
+					Values: []string{p.prefix},
+				},
+			},
+		})
+		if err != nil {
+			return loaded, skipped, fmt.Errorf("secretsmanager: list: %w", err)
+		}
+
+		for _, entry := range out.SecretList {
+			if entry.Name == nil {
+				continue
+			}
+			fullName := *entry.Name
+			// `name` filter is a prefix-match; defensively strip and skip if not ours.
+			if !strings.HasPrefix(fullName, p.prefix) {
+				continue
+			}
+			logicalName := strings.TrimPrefix(fullName, p.prefix)
+
+			envVar, mapped := secretMapping[logicalName]
+			if !mapped {
+				continue
+			}
+			if !shouldLoadForMode(logicalName, mode) {
+				continue
+			}
+			if os.Getenv(envVar) != "" {
+				skipped++
+				continue
+			}
+
+			val, err := client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
+				SecretId: aws.String(fullName),
+			})
+			if err != nil {
+				log.Printf("secretsmanager: failed to get secret %s: %v (skipping)", logicalName, err)
+				continue
+			}
+			if val.SecretString == nil {
+				continue
+			}
+
+			if setIfUnset(envVar, *val.SecretString) {
+				loaded++
+			} else {
+				skipped++
+			}
+		}
+
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
 	}
-	// list/per-key mode — fetch each kvMapping key as its own SM secret
-	names := make([]string, 0, len(kvMapping))
-	for k := range kvMapping {
-		names = append(names, k)
-	}
-	_, _, err = be.LoadAllByNameList(ctx, names)
-	return err
+
+	return loaded, skipped, nil
 }
