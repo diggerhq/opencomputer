@@ -1262,8 +1262,14 @@ func (s *Server) dashboardDeleteCheckpoint(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid checkpoint ID"})
 	}
 
+	// Read the row first so we can include sandbox_id in the deletion event
+	// — events-ingest needs both to scope the D1 update.
+	cp, getErr := s.store.GetCheckpoint(c.Request().Context(), cpID)
 	if err := s.store.DeleteCheckpoint(c.Request().Context(), orgID, cpID); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if getErr == nil && cp != nil {
+		s.publishCheckpointEvent(c.Request().Context(), "checkpoint_deleted", cpID, cp.SandboxID, orgID, "", nil)
 	}
 
 	return c.NoContent(http.StatusNoContent)

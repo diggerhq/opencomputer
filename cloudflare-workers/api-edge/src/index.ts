@@ -1034,6 +1034,26 @@ export default {
       return haltList(req, env);
     }
 
+    // /internal/admin/do-mark-free — operator-only escape hatch to flip a
+    // CreditAccount DO's internal plan from "pro" back to "free" without
+    // running a real Stripe subscription.deleted webhook. HMAC-auth'd with
+    // the shared CF_ADMIN_SECRET. Body: { org_id }. Used by halt-flow tests
+    // and incident recovery when Stripe webhooks are missed; not exposed
+    // through any UI.
+    if (path === "/internal/admin/do-mark-free" && req.method === "POST") {
+      const ts = req.headers.get("X-Timestamp") ?? "";
+      const sig = req.headers.get("X-Signature") ?? "";
+      const body = await req.text();
+      const expected = await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`);
+      if (!constantTimeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+      if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
+      const parsed = JSON.parse(body) as { org_id?: string };
+      if (!parsed.org_id) return json({ error: "org_id required" }, 400);
+      const stub = env.CREDIT_ACCOUNT.get(env.CREDIT_ACCOUNT.idFromName(parsed.org_id));
+      const r = await stub.fetch(`https://do/mark-free?org_id=${encodeURIComponent(parsed.org_id)}`, { method: "POST" });
+      return new Response(await r.text(), { status: r.status, headers: { "content-type": "application/json" } });
+    }
+
     // /internal/secret-stores/:id — HMAC-auth'd, called by CP at sandbox-create
     // time to materialize the encrypted entry list. CP decrypts with the
     // shared SECRET_ENCRYPTION_KEY before injecting into worker env.
@@ -1126,6 +1146,38 @@ export default {
       if (req.method === "GET") return listSandboxes(req, env);
       return json({ error: "method not allowed" }, 405);
     }
+
+    // /api/sandboxes/from-checkpoint/{checkpointID} — spawn a new sandbox
+    // from a checkpoint. Routing differs from regular sandbox-scoped ops
+    // because the URL has no sandbox_id; we look up the cell from
+    // checkpoints_index via the checkpoint UUID. The CP-side handler
+    // (createFromCheckpoint) then pulls the checkpoint disks from Tigris
+    // and boots a sandbox in the owning cell.
+    {
+      const fc = path.match(/^\/api\/sandboxes\/from-checkpoint\/([^/]+)$/);
+      if (fc && req.method === "POST") {
+        const caller = await authenticate(req, env);
+        if (!caller) return json({ error: "missing or invalid API key" }, 401);
+        const cpID = fc[1];
+        const cpRow = await env.OPENCOMPUTER_DB.prepare(
+          `SELECT owner_cell_id, org_id FROM checkpoints_index WHERE id = ?1`,
+        )
+          .bind(cpID)
+          .first<{ owner_cell_id: string; org_id: string }>();
+        if (!cpRow) return json({ error: "checkpoint not found" }, 404);
+        if (cpRow.org_id !== caller.orgID) return json({ error: "checkpoint not in your org" }, 403);
+        const cell = await lookupCell(env, cpRow.owner_cell_id);
+        if (!cell) return json({ error: `cell ${cpRow.owner_cell_id} not registered` }, 503);
+        const orgRow = await env.OPENCOMPUTER_DB.prepare("SELECT plan FROM orgs WHERE id = ?1")
+          .bind(caller.orgID).first<{ plan: string }>();
+        const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cpRow.owner_cell_id, orgRow?.plan ?? "free", caller.userID);
+        const fwd = new Request(cell.base_url.replace(/\/$/, "") + path, req);
+        fwd.headers.set("authorization", "Bearer " + token);
+        fwd.headers.delete("x-api-key");
+        return await fetch(fwd);
+      }
+    }
+
     const m = path.match(/^\/api\/sandboxes\/([^/]+)(\/.*)?$/);
     if (m) {
       const id = m[1];

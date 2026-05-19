@@ -1001,5 +1001,200 @@ export async function handleDashboard(
     });
   }
 
+  // ── Stripe-backed billing ops ───────────────────────────────────────
+  //
+  // The legacy CP had these as dashboard_billing.go handlers. Edge equivalents
+  // call Stripe's REST API directly with STRIPE_API_KEY. Customer state lives
+  // in D1 orgs (stripe_customer_id, stripe_subscription_id) populated by the
+  // stripe webhook handler.
+  if (sub === "/billing/portal" && method === "POST") {
+    return handleBillingPortal(req, env, caller);
+  }
+  if (sub === "/billing/setup" && method === "POST") {
+    return handleBillingSetup(req, env, caller);
+  }
+  if (sub === "/billing/redeem" && method === "POST") {
+    return handleBillingRedeem(req, env, caller);
+  }
+  if (sub === "/billing/invoices" && method === "GET") {
+    return handleBillingInvoices(req, env, caller);
+  }
+
   return json({ error: `not found: ${method} ${sub}` }, 404);
+}
+
+// ── Stripe helpers ─────────────────────────────────────────────────────
+
+// stripeApi POSTs form-urlencoded to Stripe's REST API. GET is supported via
+// the `method` arg; body is ignored for GET. Returns parsed JSON or throws.
+async function stripeApi(env: DashboardEnv, path: string, body: Record<string, string> | null, method: "GET" | "POST" = "POST"): Promise<any> {
+  const url = `https://api.stripe.com${path}`;
+  const init: RequestInit = {
+    method,
+    headers: {
+      authorization: "Bearer " + env.STRIPE_API_KEY,
+      "stripe-version": "2024-06-20",
+    },
+  };
+  if (method === "POST" && body) {
+    (init.headers as Record<string, string>)["content-type"] = "application/x-www-form-urlencoded";
+    init.body = new URLSearchParams(body).toString();
+  }
+  const resp = await fetch(url, init);
+  const text = await resp.text();
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = { raw: text };
+  }
+  if (!resp.ok) {
+    const msg = parsed?.error?.message ?? parsed?.raw ?? `stripe ${path} returned ${resp.status}`;
+    throw new Error(msg);
+  }
+  return parsed;
+}
+
+// loadOrgStripe pulls just the Stripe-relevant columns for a caller's org.
+async function loadOrgStripe(env: DashboardEnv, orgID: string): Promise<{ name: string; stripe_customer_id: string | null; stripe_subscription_id: string | null } | null> {
+  return env.OPENCOMPUTER_DB.prepare(
+    `SELECT name, stripe_customer_id, stripe_subscription_id FROM orgs WHERE id = ?1`,
+  )
+    .bind(orgID)
+    .first();
+}
+
+// ── Stripe billing handlers ────────────────────────────────────────────
+
+async function handleBillingPortal(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  const org = await loadOrgStripe(env, caller.orgID);
+  if (!org) return json({ error: "org not found" }, 404);
+  if (!org.stripe_customer_id) {
+    return json({ error: "no billing customer — upgrade to Pro first" }, 400);
+  }
+  // Bounce back wherever the dashboard came from when the user closes the portal.
+  const returnURL = req.headers.get("referer") ?? `${new URL(req.url).origin}/dashboard/billing`;
+  try {
+    const session = await stripeApi(env, "/v1/billing_portal/sessions", {
+      customer: org.stripe_customer_id,
+      return_url: returnURL,
+    });
+    return json({ url: session.url });
+  } catch (e) {
+    console.error("billing/portal:", e);
+    return json({ error: (e as Error).message }, 500);
+  }
+}
+
+async function handleBillingSetup(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  const org = await loadOrgStripe(env, caller.orgID);
+  if (!org) return json({ error: "org not found" }, 404);
+
+  // Ensure a Stripe customer exists — create one if this org has never been
+  // through checkout. Persist the ID back to D1 so the webhook flow can find
+  // it later (subscription.created carries customer_id + metadata.org_id).
+  let customerID = org.stripe_customer_id;
+  if (!customerID) {
+    try {
+      const cust = await stripeApi(env, "/v1/customers", {
+        name: org.name ?? "",
+        "metadata[org_id]": caller.orgID,
+      });
+      customerID = cust.id as string;
+      await env.OPENCOMPUTER_DB.prepare(
+        `UPDATE orgs SET stripe_customer_id = ?1, updated_at = ?2 WHERE id = ?3`,
+      )
+        .bind(customerID, Math.floor(Date.now() / 1000), caller.orgID)
+        .run();
+    } catch (e) {
+      console.error("billing/setup create customer:", e);
+      return json({ error: "failed to create customer" }, 500);
+    }
+  }
+
+  const origin = new URL(req.url).origin;
+  try {
+    // SetupIntent-style checkout — Stripe collects the payment method, then
+    // the webhook (subscription.created or checkout.session.completed) marks
+    // the org as Pro. Mirrors legacy CreateSetupCheckoutSession field-for-
+    // field (mode=setup + currency=usd + metadata.type=setup); Stripe rejects
+    // setup-mode checkouts without `currency`.
+    const session = await stripeApi(env, "/v1/checkout/sessions", {
+      mode: "setup",
+      currency: "usd",
+      customer: customerID!,
+      success_url: `${origin}/dashboard/billing?setup=success`,
+      cancel_url: `${origin}/dashboard/billing?setup=cancel`,
+      "metadata[org_id]": caller.orgID,
+      "metadata[type]": "setup",
+    });
+    return json({ url: session.url });
+  } catch (e) {
+    console.error("billing/setup create checkout:", e);
+    // Surface Stripe's error message instead of a generic 500 so the
+    // dashboard / CLI can show it. Stripe errors carry useful detail
+    // (test/live mode mismatch, invalid customer, missing capability, etc).
+    return json({ error: (e as Error).message }, 500);
+  }
+}
+
+async function handleBillingRedeem(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  const body = (await req.json().catch(() => null)) as { code?: string } | null;
+  if (!body?.code) return json({ error: "code is required" }, 400);
+
+  const org = await loadOrgStripe(env, caller.orgID);
+  if (!org) return json({ error: "org not found" }, 404);
+  if (!org.stripe_customer_id) {
+    return json({ error: "billing not set up — upgrade to Pro first" }, 400);
+  }
+
+  try {
+    // Look up the promotion code → coupon
+    const promos = await stripeApi(env, `/v1/promotion_codes?code=${encodeURIComponent(body.code)}&active=true`, null, "GET");
+    const pc = promos?.data?.[0];
+    if (!pc) return json({ error: "promo code not found or inactive" }, 400);
+    const couponAmount = pc?.coupon?.amount_off as number | undefined;
+    if (!couponAmount || couponAmount <= 0) {
+      return json({ error: "promo code has no fixed amount_off" }, 400);
+    }
+
+    // Apply as a negative customer balance transaction (= credit). Stripe
+    // pulls from this on the next invoice.
+    await stripeApi(env, `/v1/customers/${org.stripe_customer_id}/balance_transactions`, {
+      amount: String(-couponAmount),
+      currency: pc?.coupon?.currency ?? "usd",
+      description: `Promotion code ${body.code}`,
+    });
+
+    return json({ creditAppliedCents: couponAmount });
+  } catch (e) {
+    console.error("billing/redeem:", e);
+    return json({ error: (e as Error).message }, 400);
+  }
+}
+
+async function handleBillingInvoices(_req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  const org = await loadOrgStripe(env, caller.orgID);
+  if (!org) return json({ error: "org not found" }, 404);
+  if (!org.stripe_customer_id) return json({ invoices: [] });
+  try {
+    const list = await stripeApi(env, `/v1/invoices?customer=${org.stripe_customer_id}&limit=25`, null, "GET");
+    const invoices = (list?.data ?? []).map((inv: any) => ({
+      id: inv.id,
+      status: inv.status,
+      total: inv.total,
+      amountPaid: inv.amount_paid,
+      amountDue: inv.amount_due,
+      currency: inv.currency,
+      hostedInvoiceUrl: inv.hosted_invoice_url,
+      invoicePdf: inv.invoice_pdf,
+      created: inv.created,
+      periodStart: inv.period_start,
+      periodEnd: inv.period_end,
+    }));
+    return json({ invoices });
+  } catch (e) {
+    console.error("billing/invoices:", e);
+    return json({ error: (e as Error).message }, 500);
+  }
 }

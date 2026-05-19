@@ -2150,6 +2150,11 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 			// Pre-fix this was hardcoded to 0, leaving size_bytes meaningless.
 			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key, grpcResp.SizeBytes)
 			log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, grpcResp.SizeBytes)
+			s.publishCheckpointEvent(context.Background(), "checkpoint_ready", checkpointID, sandboxID, orgID, session.WorkerID, map[string]any{
+				"rootfs_s3_key":    grpcResp.RootfsS3Key,
+				"workspace_s3_key": grpcResp.WorkspaceS3Key,
+				"size_bytes":       grpcResp.SizeBytes,
+			})
 		}()
 	} else if s.manager != nil {
 		go func() {
@@ -2169,6 +2174,11 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 			}
 			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, rootfsKey, workspaceKey, sizeBytes)
 			log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, sizeBytes)
+			s.publishCheckpointEvent(context.Background(), "checkpoint_ready", checkpointID, sandboxID, orgID, session.WorkerID, map[string]any{
+				"rootfs_s3_key":    rootfsKey,
+				"workspace_s3_key": workspaceKey,
+				"size_bytes":       sizeBytes,
+			})
 		}()
 	} else {
 		s.pendingCreates.Delete(sandboxID)
@@ -2717,6 +2727,8 @@ func (s *Server) deleteCheckpoint(c echo.Context) error {
 	if err := s.store.DeleteCheckpoint(ctx, orgID, checkpointID); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
+	// Mirror the deletion to D1 checkpoints_index via events-ingest.
+	s.publishCheckpointEvent(ctx, "checkpoint_deleted", checkpointID, sandboxID, orgID, "", nil)
 
 	// Best-effort: delete S3 objects if checkpoint store is configured
 	if s.checkpointStore != nil && cp.RootfsS3Key != nil && cp.WorkspaceS3Key != nil {

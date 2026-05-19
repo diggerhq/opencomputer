@@ -186,8 +186,56 @@ export default {
         return lifecycleRunning.bind(tsSec, e.sandbox_id);
       });
 
+    // Checkpoint lifecycle: keep D1 checkpoints_index in sync with cell PG
+    // sandbox_checkpoints. CP emits checkpoint_ready after SetCheckpointReady
+    // (UPSERT all fields) and checkpoint_deleted after DeleteCheckpoint. The
+    // dashboard cross-cell list + the edge's spawn-from-checkpoint routing
+    // both depend on this table being populated.
+    const checkpointUpsert = env.OPENCOMPUTER_DB.prepare(
+      `INSERT INTO checkpoints_index
+         (id, sandbox_id, org_id, owner_cell_id, s3_url, size_bytes, golden_hash, workspace_size, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', NULL, ?7)
+       ON CONFLICT(id) DO UPDATE SET
+         sandbox_id    = excluded.sandbox_id,
+         owner_cell_id = excluded.owner_cell_id,
+         s3_url        = excluded.s3_url,
+         size_bytes    = excluded.size_bytes`,
+    );
+    const checkpointDelete = env.OPENCOMPUTER_DB.prepare(
+      `DELETE FROM checkpoints_index WHERE id = ?1`,
+    );
+    const checkpointBatches = fresh
+      .filter((e) => e.type === "checkpoint_ready" || e.type === "checkpoint_deleted")
+      .flatMap((e) => {
+        const p = (e.payload ?? {}) as {
+          checkpoint_id?: string;
+          rootfs_s3_key?: string;
+          workspace_s3_key?: string;
+          size_bytes?: number;
+        };
+        if (!p.checkpoint_id) return [];
+        if (e.type === "checkpoint_deleted") {
+          return [checkpointDelete.bind(p.checkpoint_id)];
+        }
+        // checkpoint_ready — use rootfs_s3_key as the canonical s3_url since
+        // it's the rootfs delta the worker pulls at spawn time. The workspace
+        // key is reachable from the rootfs metadata.
+        const tsSec = Math.floor((Date.parse(e.timestamp) || Date.now()) / 1000);
+        return [
+          checkpointUpsert.bind(
+            p.checkpoint_id,
+            e.sandbox_id ?? "",
+            e.org_id ?? "",
+            e.cell_id,
+            p.rootfs_s3_key ?? "",
+            p.size_bytes ?? null,
+            tsSec,
+          ),
+        ];
+      });
+
     try {
-      await env.OPENCOMPUTER_DB.batch([...batches, ...capacityBatches, ...lifecycleBatches]);
+      await env.OPENCOMPUTER_DB.batch([...batches, ...capacityBatches, ...lifecycleBatches, ...checkpointBatches]);
     } catch (err) {
       // Database errors are retryable — return 5xx so the CP forwarder
       // leaves the batch in the PEL.
