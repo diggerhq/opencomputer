@@ -767,9 +767,25 @@ func main() {
 			OnHibernateIdle: func(sandboxIDs []string) {
 				for _, id := range sandboxIDs {
 					if checkpointStore != nil {
-						_, err := mgr.Hibernate(context.Background(), id, checkpointStore)
+						result, err := mgr.Hibernate(context.Background(), id, checkpointStore)
 						if err != nil {
 							log.Printf("pressure-hibernate %s: %v", id, err)
+							continue
+						}
+						// Mirror the per-sandbox SQLite event the gRPC Hibernate
+						// handler writes — without this, auto-hibernate writes
+						// the SUCCEED to local PG but never publishes "hibernated"
+						// to events-ingest, so D1 sandboxes_index drifts to
+						// "running" while the cell PG says "hibernated".
+						if sandboxDBMgr != nil {
+							if sdb, dbErr := sandboxDBMgr.Get(id); dbErr == nil {
+								_ = sdb.LogEvent("hibernated", map[string]string{
+									"sandbox_id":     id,
+									"checkpoint_key": result.HibernationKey,
+									"reason":         "pressure_auto",
+								})
+							}
+							_ = sandboxDBMgr.Remove(id)
 						}
 					}
 				}

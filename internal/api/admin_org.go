@@ -85,14 +85,10 @@ func (s *Server) HaltOrg(ctx context.Context, orgIDStr, reason string) (int, err
 		return 0, fmt.Errorf("invalid org_id: %w", err)
 	}
 
-	// Mirror DO halt state to cell PG first — the wake handler reads this
-	// column synchronously, so doing it before kicking off the async halt
-	// closes the race where a wake arrives while the halt goroutine is
-	// still iterating.
-	if err := s.store.UpdateOrgHaltState(ctx, orgID, true); err != nil {
-		// Non-fatal — log and continue. The reconciler will re-issue if needed.
-		log.Printf("admin: halt-org %s: UpdateOrgHaltState failed: %v", orgIDStr, err)
-	}
+	// Halt state now lives in D1 only (migration 041 dropped the local orgs
+	// table). The edge gates create + wake against D1.is_halted before the
+	// request ever reaches the cell, so the cell-PG mirror this used to keep
+	// is no longer needed. Sandbox hibernation below still proceeds.
 
 	sessions, err := s.store.ListSandboxSessions(ctx, orgID, "running", 1000, 0)
 	if err != nil {
@@ -148,9 +144,8 @@ func (s *Server) ResumeOrg(ctx context.Context, orgIDStr string, skipResume bool
 		return 0, fmt.Errorf("invalid org_id: %w", err)
 	}
 
-	if err := s.store.UpdateOrgHaltState(ctx, orgID, false); err != nil {
-		log.Printf("admin: resume-org %s: UpdateOrgHaltState failed: %v", orgIDStr, err)
-	}
+	// Cell-PG orgs table is gone post-041; D1 is authoritative for is_halted.
+	// Resume of running sandboxes still proceeds below.
 
 	if skipResume {
 		return 0, nil

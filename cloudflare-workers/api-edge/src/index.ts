@@ -542,6 +542,21 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
     postUpdate = { status: "hibernated", setStopped: false };
   } else if (req.method === "POST" && path === `/api/sandboxes/${id}/wake`) {
     postUpdate = { status: "running", setStopped: false };
+    // Halt-gate the wake. D1 is authoritative for is_halted. The cell-side
+    // gate that used to do this read the dropped orgs table post-041 and
+    // silently fell through, letting halted orgs wake. Mirror the create
+    // flow's halt check here so wake gets the same treatment.
+    const haltRow = await env.OPENCOMPUTER_DB.prepare(
+      "SELECT is_halted FROM orgs WHERE id = ?1",
+    )
+      .bind(caller.orgID)
+      .first<{ is_halted: number }>();
+    if (haltRow?.is_halted === 1) {
+      return json(
+        { error: "org is halted — upgrade to pro or wait for credit refill" },
+        402,
+      );
+    }
   }
 
   // WebSocket upgrade — preserve the upgrade context by cloning the inbound

@@ -1734,20 +1734,10 @@ func (s *Server) wakeSandbox(c echo.Context) error {
 	var req types.WakeRequest
 	_ = c.Bind(&req)
 
-	// Credit gate: refuse to wake when the org is halted. The CreditAccount
-	// DO is authoritative; `is_halted` is the cell-local mirror set by the
-	// /admin/halt-org webhook handler. Pro orgs are never halted by credits,
-	// so checking is_halted naturally lets them through. Falls through if
-	// the org row doesn't exist locally (new app2 user with no backfill) —
-	// the edge already gated on D1's is_halted before this request was
-	// routed to us, so a missing row means the edge said yes.
-	if orgID, ok := auth.GetOrgID(c); ok && s.store != nil {
-		if org, err := s.store.GetOrg(ctx, orgID); err == nil && org.IsHalted {
-			return c.JSON(http.StatusPaymentRequired, map[string]string{
-				"error": "org is halted — upgrade to pro or wait for credit refill",
-			})
-		}
-	}
+	// Halt-gate moved to the edge (proxyToCellSDK on /wake) post-041 — the
+	// cell-PG orgs table this used to read is gone, and D1 is authoritative.
+	// halt_reconciler still enforces against running sandboxes; this wake
+	// path is reached only after the edge has gated on D1.is_halted.
 
 	// Server mode: pick any worker, dispatch via gRPC
 	if s.workerRegistry != nil {
