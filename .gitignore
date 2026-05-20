@@ -31,6 +31,9 @@ node_modules/
 
 # Build artifacts
 dist/
+# Built dashboard SPA bundle served by the api-edge Worker — produced by
+# `vite build` in web/, copied here by the deploy script. Never check in.
+cloudflare-workers/api-edge/assets/
 
 # Compiled binaries
 bin/
