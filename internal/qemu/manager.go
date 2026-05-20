@@ -73,6 +73,33 @@ func prepareAgentForHibernate(ctx context.Context, agent *AgentClient) error {
 		return nil
 	}
 
+	// fsfreeze guest filesystems BEFORE we let the host-side prepare path
+	// run sync/savevm. Reason: prepareHibernate (or the legacy sync) only
+	// flushes whatever's already dirty at the moment it runs — customer
+	// processes are still scheduled and can keep dirtying ext4 metadata
+	// up until qmp.Stop() (which is ~210ms later: 200ms post-close sleep +
+	// QMP round-trip). fsfreeze blocks new write syscalls at the VFS
+	// layer, leaving ext4's in-memory state in a fully quiesced shape with
+	// no in-flight metadata transactions. Empirically the savevm/loadvm
+	// ext4 metadata_csum corruption (incident sb-33f8a5b3 2026-05-19)
+	// surfaces only after high-frequency hibernates of sandboxes with
+	// heavy concurrent dx_tree churn, so reducing the in-flight metadata
+	// state before snapshot is the most direct mitigation we can do
+	// without touching QEMU. Counterpart: agentFsThawAfterWake runs on
+	// the wake side once the agent reconnects.
+	//
+	// Best-effort: tolerates fsfreeze missing (older util-linux), already
+	// frozen, or any transient error. Never blocks the hibernate.
+	freezeCtx, freezeCancel := context.WithTimeout(ctx, 5*time.Second)
+	if _, freezeErr := agent.Exec(freezeCtx, &pb.ExecRequest{
+		Command:   "/bin/sh",
+		Args:      []string{"-c", "fsfreeze --freeze /home/sandbox 2>/dev/null; fsfreeze --freeze / 2>/dev/null; true"},
+		RunAsRoot: true,
+	}); freezeErr != nil {
+		log.Printf("qemu: prepareHibernate: fsfreeze best-effort failed: %v (continuing)", freezeErr)
+	}
+	freezeCancel()
+
 	prepareOnce := func() error {
 		rpcCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -553,6 +580,104 @@ func (m *Manager) setupAptCacheBindMount(ctx context.Context, sandboxID string, 
 	if err != nil {
 		log.Printf("qemu: %s: apt-cache bind-mount failed: %v (apt cache will live on rootfs)", sandboxID, err)
 		return
+	}
+}
+
+// verifyWakeIntegrity exec's a known binary inside the guest to detect the
+// savevm/loadvm ext4 metadata_csum corruption pattern observed on prod
+// 2026-05-19 (sb-33f8a5b3): when QEMU restores guest memory, the in-kernel
+// ext4 state used for metadata-checksum verification ends up inconsistent
+// with the on-disk superblock, so the next fresh directory lookup returns
+// EBADMSG / "bad message" / errno -74. We detect this by trying to exec a
+// binary out of /usr/bin/. On a healthy wake the call returns exit 0; on
+// the corrupted path it returns a "bad message" / "exec format error".
+//
+// Returns nil when the wake is healthy. Returns errCorruptedWake when the
+// signature is detected so callers can tear down and cold-boot the same
+// qcow2 (workspace files are intact — only running process state is lost).
+//
+// Order of operations matters: drop_caches first forces a fresh disk read
+// (without it, a warm dentry from before hibernate masks the corruption).
+// The cost is ~10-50ms on a healthy sandbox vs. the cost of a customer-
+// visible broken sandbox.
+func (m *Manager) verifyWakeIntegrity(ctx context.Context, sandboxID string, agent *AgentClient) error {
+	if agent == nil {
+		return nil
+	}
+	execCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
+	// Force the next fork/exec to actually hit disk for dx_tree lookup.
+	if _, err := agent.Exec(execCtx, &pb.ExecRequest{
+		Command:   "/bin/sh",
+		Args:      []string{"-c", "echo 3 > /proc/sys/vm/drop_caches"},
+		RunAsRoot: true,
+	}); err != nil {
+		// If we can't even run /bin/sh, that's already a corrupted-wake signal.
+		log.Printf("qemu: %s: wake integrity: drop_caches itself failed: %v", sandboxID, err)
+		return errCorruptedWake
+	}
+
+	// Now try to actually exec a binary out of /usr/bin. With caches dropped,
+	// kernel must readdir /usr/bin to resolve the path. If dx_tree is bad,
+	// execve returns EBADMSG which Go surfaces as "bad message" / similar.
+	resp, err := agent.Exec(execCtx, &pb.ExecRequest{
+		Command:   "/usr/bin/stat",
+		Args:      []string{"/usr/bin", "/etc", "/"},
+		RunAsRoot: true,
+	})
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "bad message") || strings.Contains(msg, "EBADMSG") || strings.Contains(msg, "input/output error") {
+			log.Printf("qemu: %s: wake integrity: corruption signature in exec error: %v", sandboxID, err)
+			return errCorruptedWake
+		}
+		log.Printf("qemu: %s: wake integrity: exec failed with non-corruption error: %v (proceeding)", sandboxID, err)
+		return nil
+	}
+	if resp.ExitCode != 0 {
+		stderr := string(resp.Stderr)
+		if strings.Contains(stderr, "Bad message") || strings.Contains(stderr, "Input/output error") {
+			log.Printf("qemu: %s: wake integrity: stat returned exit %d, stderr=%q", sandboxID, resp.ExitCode, truncate(stderr, 200))
+			return errCorruptedWake
+		}
+	}
+	return nil
+}
+
+// truncate returns s truncated to n bytes (for safe logging of error messages).
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...(truncated)"
+}
+
+// errCorruptedWake is returned by verifyWakeIntegrity when the savevm/loadvm
+// ext4 metadata_csum corruption pattern is detected. Callers tear down the
+// current QEMU instance and cold-boot from the same qcow2 (which we have
+// confirmed produces a working VM — see incident analysis 2026-05-19).
+var errCorruptedWake = fmt.Errorf("post-loadvm fs integrity check failed (savevm corruption signature)")
+
+// agentFsThawAfterWake unfreezes guest filesystems that prepareAgentForHibernate
+// froze before savevm. Idempotent: if the filesystem isn't frozen (e.g.,
+// older snapshot taken before the fsfreeze change landed), unfreeze just
+// errors and we move on. Must run BEFORE anything that writes to the guest
+// fs — otherwise the write blocks indefinitely on the still-frozen rootfs.
+func (m *Manager) agentFsThawAfterWake(ctx context.Context, sandboxID string, agent *AgentClient) {
+	if agent == nil {
+		return
+	}
+	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := agent.Exec(execCtx, &pb.ExecRequest{
+		Command:   "/bin/sh",
+		Args:      []string{"-c", "fsfreeze --unfreeze / 2>/dev/null; fsfreeze --unfreeze /home/sandbox 2>/dev/null; true"},
+		RunAsRoot: true,
+	}); err != nil {
+		// Loud log + continue: if thaw fails, customer processes will hang
+		// on writes — clear signal at the customer's first write attempt.
+		log.Printf("qemu: %s: fsfreeze --unfreeze after wake FAILED: %v (customer writes will hang until this is resolved)", sandboxID, err)
 	}
 }
 
@@ -3141,6 +3266,28 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 		return fmt.Errorf("agent connect: %w", err)
 	}
 
+	// Unfreeze the guest filesystems if the source-side checkpoint was made
+	// via the savevm path (which now goes through prepareAgentForHibernate +
+	// fsfreeze). Idempotent: errors harmlessly if not frozen (e.g., older
+	// pre-PR checkpoints, or migration-source captures). Must run before any
+	// customer write to the guest fs.
+	m.agentFsThawAfterWake(context.Background(), sandboxID, agentClient)
+
+	// Same sentinel as doWake: detect the savevm/loadvm ext4 metadata_csum
+	// corruption pattern. If the restored checkpoint state is broken,
+	// returning the error here makes the API caller see the failure cleanly
+	// rather than handing back a sandbox where every fork hits EBADMSG.
+	// We don't auto-cold-boot from a checkpoint (the customer specifically
+	// asked to restore *this* checkpoint state) — bubble up instead.
+	if err := m.verifyWakeIntegrity(context.Background(), sandboxID, agentClient); err != nil {
+		log.Printf("qemu: RestoreFromCheckpoint %s: %v", sandboxID, err)
+		qmpClient.Close()
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, "")
+		return fmt.Errorf("restore from checkpoint produced corrupted state: %w", err)
+	}
+
 	if err := patchGuestNetwork(context.Background(), agentClient, netCfg); err != nil {
 		log.Printf("qemu: RestoreFromCheckpoint %s: network patch failed: %v", sandboxID, err)
 	}
@@ -3426,6 +3573,27 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	}
 
 	log.Printf("qemu: ForkFromCheckpoint %s → %s: agent connected, patching network...", checkpointID, id)
+
+	// Unfreeze the guest filesystems if the source checkpoint was made via
+	// the savevm path (which fsfreezes before snapshot). Idempotent: errors
+	// harmlessly if not frozen. Must run before any guest write (incl. the
+	// integrity probe below).
+	m.agentFsThawAfterWake(context.Background(), id, agent)
+
+	// Verify the forked VM landed in a healthy state (savevm/loadvm ext4
+	// metadata_csum corruption sentinel). If broken, abort the fork — the
+	// customer gets a clear error instead of a sandbox that fails every
+	// subsequent fork/exec.
+	if err := m.verifyWakeIntegrity(context.Background(), id, agent); err != nil {
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: ABORT post-loadvm integrity failed: %v",
+			checkpointID, id, err)
+		_ = agent.Close()
+		_ = qmpClient.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("fork %s from checkpoint %s: post-loadvm integrity check failed: %w", id, checkpointID, err)
+	}
 
 	// Patch network (fork gets new IPs) + sync clock — both LOAD-BEARING.
 	// Earlier this code only logged failures; the fork would "complete" with

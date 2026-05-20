@@ -542,6 +542,28 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		return nil, fmt.Errorf("agent not ready: %w", err)
 	}
 
+	// Unfreeze the guest filesystems that prepareAgentForHibernate froze
+	// before savevm. MUST run before verifyWakeIntegrity (whose drop_caches
+	// and exec calls write to the fs) and before any customer traffic.
+	m.agentFsThawAfterWake(context.Background(), sandboxID, agentClient)
+
+	// Verify the wake didn't land in a savevm/loadvm-corrupted state (see
+	// verifyWakeIntegrity docstring + 2026-05-19 incident analysis). If the
+	// ext4 metadata_csum corruption signature is present, every subsequent
+	// fork/exec inside the VM will hit EBADMSG once dentries evict — the
+	// sandbox is effectively dead, the customer sees "command not found".
+	// In that case, tear down + cold-boot the same qcow2: customer keeps
+	// their workspace files but loses running process state.
+	if err := m.verifyWakeIntegrity(context.Background(), sandboxID, agentClient); err != nil {
+		log.Printf("qemu: wake %s: %v — falling back to cold boot", sandboxID, err)
+		_ = agentClient.Close()
+		qmpClient.Close()
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, "")
+		return m.coldBootLocal(ctx, sandboxID, timeout)
+	}
+
 	// Hibernate captured the guest with its mount state intact (we never
 	// unmount before savevm), so loadvm restores the correct mount layout
 	// automatically. Do NOT blindly mount /dev/vdb on /home/sandbox here:
