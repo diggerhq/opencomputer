@@ -820,6 +820,11 @@ func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
 	client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
 	if err != nil {
 		log.Printf("sandbox: worker %s unreachable for destroy: %v", session.WorkerID, err)
+		// Worker never received the destroy call — its LogEvent("stopped") path
+		// won't run, so D1 sandboxes_index would otherwise stay at "running"
+		// while cell PG says "stopped". Emit a CP-side fallback to close the
+		// drift. status is already marked stopped on cell PG above.
+		s.publishSandboxLifecycleEvent(c.Request().Context(), "stopped", sandboxID, session.OrgID, session.WorkerID, "worker_unreachable")
 		return c.NoContent(http.StatusNoContent)
 	}
 
@@ -828,6 +833,10 @@ func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
 
 	if _, err := client.DestroySandbox(grpcCtx, &pb.DestroySandboxRequest{SandboxId: sandboxID}); err != nil {
 		log.Printf("sandbox: gRPC destroy failed for %s: %v", sandboxID, err)
+		// Same drift-prevention as above: worker's emit path may not have run
+		// (timeout, transient gRPC error, worker dying mid-destroy). Fallback
+		// emit so D1 reflects the cell-PG truth.
+		s.publishSandboxLifecycleEvent(c.Request().Context(), "stopped", sandboxID, session.OrgID, session.WorkerID, "grpc_destroy_failed")
 	}
 
 	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", nil)
@@ -1111,6 +1120,14 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 			log.Printf("migrate %s: WARNING: CompleteMigration DB update failed: %v", id, err)
 		}
 		completeDBCancel()
+		// Mirror to D1 sandboxes_index so the dashboard's cross-cell view and
+		// the proxyToCellSDK routing reflect the new worker immediately. The
+		// new worker's `created` event would eventually sync it, but emitting
+		// here closes the window where stale routing would re-target the
+		// vanished source worker. Reads org from the existing session.
+		if session, err := s.store.GetSandboxSession(context.Background(), id); err == nil {
+			s.publishSandboxLifecycleEvent(context.Background(), "migrated", id, session.OrgID, req.TargetWorker, "user_migrate")
+		}
 	}
 	migrationDone = true
 

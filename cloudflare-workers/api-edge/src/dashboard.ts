@@ -933,13 +933,24 @@ export async function handleDashboard(
     if (m && method === "DELETE") return handleDeleteCheckpoint(req, env, caller, m[1]);
   }
 
-  // ── images: proxy to home cell ────────────────────────────────────────
-  // image_cache is per-cell; for now dashboard shows the home cell's view.
-  // Cross-cell image visibility is Phase 2 (D1 image_cache mirror).
-  if (sub === "/images" || sub.startsWith("/images/")) {
-    const cell = await homeCell(env, caller.orgID);
-    if (!cell) return json({ error: "home cell unavailable" }, 503);
-    return proxyToCell(req, env, caller, cell, `/internal/dashboard${sub}`);
+  // ── images: cross-cell list from D1 images_index ───────────────────────
+  // CP emits image_cache_ready / image_cache_deleted events; events-ingest
+  // upserts/deletes this table. The dashboard's Images page used to proxy
+  // to the user's home_cell, which broke cross-cell visibility — building
+  // a snapshot on cell A wouldn't show in the dashboard if the user later
+  // moved to cell B. D1 is now authoritative.
+  //
+  // Mutations (DELETE) still need to land on the owning cell — only that
+  // cell has the underlying bytes/checkpoint to clean up — so DELETE is
+  // routed to the cell that owns the row.
+  if (sub === "/images" && method === "GET") {
+    return handleListImages(env, caller);
+  }
+  {
+    const m = sub.match(/^\/images\/([^/]+)$/);
+    if (m && method === "DELETE") {
+      return handleDeleteImage(req, env, caller, m[1]);
+    }
   }
 
   // ── agents: proxy to home cell (cell-side hits external agents service) ─
@@ -1021,6 +1032,70 @@ export async function handleDashboard(
   }
 
   return json({ error: `not found: ${method} ${sub}` }, 404);
+}
+
+// ── Images (cross-cell via D1 images_index) ────────────────────────────
+
+interface ImagesRow {
+  id: string;
+  org_id: string;
+  owner_cell_id: string;
+  content_hash: string;
+  checkpoint_id: string | null;
+  name: string | null;
+  manifest: string;
+  status: string;
+  created_at: number;
+  last_used_at: number;
+}
+
+async function handleListImages(env: DashboardEnv, caller: Caller): Promise<Response> {
+  const { results } = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT id, org_id, owner_cell_id, content_hash, checkpoint_id, name, manifest, status, created_at, last_used_at
+       FROM images_index WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 200`,
+  )
+    .bind(caller.orgID)
+    .all<ImagesRow>();
+  const out = (results ?? []).map((r) => {
+    let manifest: unknown = {};
+    try { manifest = JSON.parse(r.manifest); } catch { /* keep empty */ }
+    return {
+      id: r.id,
+      orgId: r.org_id,
+      cellId: r.owner_cell_id,
+      contentHash: r.content_hash,
+      checkpointId: r.checkpoint_id,
+      name: r.name,
+      manifest,
+      status: r.status,
+      createdAt: new Date(r.created_at * 1000).toISOString(),
+      lastUsedAt: new Date(r.last_used_at * 1000).toISOString(),
+    };
+  });
+  return json(out);
+}
+
+async function handleDeleteImage(req: Request, env: DashboardEnv, caller: Caller, imageID: string): Promise<Response> {
+  // Look up owning cell to forward the DELETE to (bytes + checkpoint live there).
+  const row = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT owner_cell_id, name FROM images_index WHERE id = ?1 AND org_id = ?2`,
+  )
+    .bind(imageID, caller.orgID)
+    .first<{ owner_cell_id: string; name: string | null }>();
+  if (!row) return json({ error: "image not found" }, 404);
+  if (!row.name) return json({ error: "auto-cached images are managed by the cell — only named snapshots can be deleted via dashboard" }, 400);
+
+  // Find the cell's base_url and forward via tunnel.
+  const cell = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT base_url FROM cells WHERE cell_id = ?1`,
+  )
+    .bind(row.owner_cell_id)
+    .first<{ base_url: string }>();
+  if (!cell) return json({ error: "owning cell not registered" }, 503);
+
+  // Reuse proxyToCell so the cap-token / cookie auth chain handles auth.
+  // Path mirrors what the legacy dashboard called: /internal/dashboard/images/{name}
+  return proxyToCell(req, env, caller, { cell_id: row.owner_cell_id, base_url: cell.base_url }, `/internal/dashboard/images/${row.name}`);
 }
 
 // ── Stripe helpers ─────────────────────────────────────────────────────

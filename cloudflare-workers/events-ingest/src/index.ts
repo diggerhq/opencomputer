@@ -155,6 +155,15 @@ export default {
           SET status = 'running', stopped_at = NULL, last_event_at = ?1
         WHERE id = ?2 AND (last_event_at IS NULL OR last_event_at < ?1)`,
     );
+    // Migration: sandbox moved to a new worker. Update worker_id alongside
+    // status so proxyToCellSDK + dashboard reflect the new home immediately
+    // (the "created" event on the destination worker would set status but
+    // not worker_id otherwise).
+    const lifecycleMigrated = env.OPENCOMPUTER_DB.prepare(
+      `UPDATE sandboxes_index
+          SET status = 'running', worker_id = ?1, stopped_at = NULL, last_event_at = ?2
+        WHERE id = ?3 AND (last_event_at IS NULL OR last_event_at < ?2)`,
+    );
     const capacityBatches = fresh
       .filter((e) => e.type === "cell_capacity")
       .map((e) => {
@@ -175,11 +184,17 @@ export default {
       });
 
     const lifecycleBatches = fresh
-      .filter((e) => e.sandbox_id && (e.type === "stopped" || e.type === "hibernated" || e.type === "running" || e.type === "woke" || e.type === "created"))
+      .filter((e) => e.sandbox_id && (e.type === "stopped" || e.type === "hibernated" || e.type === "running" || e.type === "woke" || e.type === "created" || e.type === "migrated"))
       .map((e) => {
         const tsSec = Math.floor((Date.parse(e.timestamp) || Date.now()) / 1000);
         if (e.type === "stopped") return lifecycleStopped.bind(tsSec, e.sandbox_id);
         if (e.type === "hibernated") return lifecycleHibernated.bind(tsSec, e.sandbox_id);
+        if (e.type === "migrated") {
+          // worker_id moves with the sandbox; payload carries the new one
+          // (the CP-side publishSandboxLifecycleEvent uses the envelope's
+          // worker_id field rather than payload for migrated events).
+          return lifecycleMigrated.bind(e.worker_id ?? "", tsSec, e.sandbox_id);
+        }
         // "running", "woke", "created" all set the row to running (created
         // is handled by the edge on POST, but accept here for redundancy
         // in case of replay against a future cell-only create path).
@@ -234,8 +249,61 @@ export default {
         ];
       });
 
+    // Image cache lifecycle (analogous to checkpoint lifecycle): CP emits
+    // image_cache_ready after a build/snapshot lands in cell PG image_cache,
+    // image_cache_deleted on removal. Keeps the dashboard's /api/dashboard/
+    // images view in sync without per-cell fan-out.
+    const imageUpsert = env.OPENCOMPUTER_DB.prepare(
+      `INSERT INTO images_index
+         (id, org_id, owner_cell_id, content_hash, checkpoint_id, name, manifest, status, created_at, last_used_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+       ON CONFLICT(id) DO UPDATE SET
+         content_hash  = excluded.content_hash,
+         checkpoint_id = excluded.checkpoint_id,
+         name          = excluded.name,
+         manifest      = excluded.manifest,
+         status        = excluded.status,
+         last_used_at  = excluded.last_used_at`,
+    );
+    const imageDelete = env.OPENCOMPUTER_DB.prepare(
+      `DELETE FROM images_index WHERE id = ?1`,
+    );
+    const imageBatches = fresh
+      .filter((e) => e.type === "image_cache_ready" || e.type === "image_cache_deleted")
+      .flatMap((e) => {
+        const p = (e.payload ?? {}) as {
+          image_id?: string;
+          content_hash?: string;
+          checkpoint_id?: string | null;
+          name?: string | null;
+          manifest?: string;
+          status?: string;
+          created_at?: number;
+          last_used_at?: number;
+        };
+        if (!p.image_id) return [];
+        if (e.type === "image_cache_deleted") {
+          return [imageDelete.bind(p.image_id)];
+        }
+        const ts = Math.floor((Date.parse(e.timestamp) || Date.now()) / 1000);
+        return [
+          imageUpsert.bind(
+            p.image_id,
+            e.org_id ?? "",
+            e.cell_id,
+            p.content_hash ?? "",
+            p.checkpoint_id ?? null,
+            p.name ?? null,
+            p.manifest ?? "{}",
+            p.status ?? "ready",
+            p.created_at ?? ts,
+            p.last_used_at ?? ts,
+          ),
+        ];
+      });
+
     try {
-      await env.OPENCOMPUTER_DB.batch([...batches, ...capacityBatches, ...lifecycleBatches, ...checkpointBatches]);
+      await env.OPENCOMPUTER_DB.batch([...batches, ...capacityBatches, ...lifecycleBatches, ...checkpointBatches, ...imageBatches]);
     } catch (err) {
       // Database errors are retryable — return 5xx so the CP forwarder
       // leaves the batch in the PEL.

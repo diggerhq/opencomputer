@@ -125,10 +125,14 @@ export class CreditAccount {
       dispatchedHalt = true;
     } else {
       await this.persist(s);
-      // Best-effort: mirror to D1 every N debits to keep dashboard reads
-      // close to real-time without paying the write on every tick. waitUntil
-      // keeps it async so it doesn't block the /debit ack to events-ingest.
-      this.state.waitUntil(this.mirrorBalanceToD1(orgID, s.balance_cents));
+      // Mirror balance to D1 synchronously on every debit. Was async via
+      // waitUntil — that left a window where two close debits could land
+      // their mirror writes out of order, briefly showing a higher D1
+      // balance than the DO truth. The synchronous write costs ~5-20ms per
+      // debit but eliminates the desync. Dashboard /billing still cross-
+      // reads the DO snapshot as the authoritative source; the D1 column
+      // is the fast-path cache the create-flow halt check reads.
+      await this.mirrorBalanceToD1(orgID, s.balance_cents);
     }
 
     return json({

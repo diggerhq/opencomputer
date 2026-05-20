@@ -479,6 +479,13 @@ func main() {
 				MaxWorkers:   cfg.MaxWorkersPerRegion,
 				IdleReserve:  cfg.IdleReserveWorkers,
 				MachineSizes: machineSizes,
+				// For "migrated" event emit after scaler-driven migrations
+				// (rolling replace, evacuation) — keeps D1 sandboxes_index
+				// worker_id in sync with cell-PG truth. Without this, the
+				// dashboard's "which worker is my sandbox on" view goes stale
+				// every time the autoscaler shuffles things around.
+				RedisClient: redisRegistry.RedisClient(),
+				CellID:      cfg.CellID,
 			})
 			defer scaler.Stop()
 
