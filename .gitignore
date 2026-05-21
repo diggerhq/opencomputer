@@ -15,8 +15,6 @@ Thumbs.db
 .claude/settings.local.json
 
 # Environment files
-.env
-.env.*
 !.env.example
 
 # Python
@@ -75,3 +73,4 @@ deploy/azure/.dev-vector-token-*
 /server
 /seed-dev-secrets
 /backfill
+config.bat

@@ -1186,10 +1186,58 @@ export default {
         const orgRow = await env.OPENCOMPUTER_DB.prepare("SELECT plan FROM orgs WHERE id = ?1")
           .bind(caller.orgID).first<{ plan: string }>();
         const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cpRow.owner_cell_id, orgRow?.plan ?? "free", caller.userID);
-        const fwd = new Request(cell.base_url.replace(/\/$/, "") + path, req);
-        fwd.headers.set("authorization", "Bearer " + token);
-        fwd.headers.delete("x-api-key");
-        return await fetch(fwd);
+        // Read the body so we can both forward it and record cpu/mem, then
+        // register the forked sandbox in sandboxes_index — same as createSandbox.
+        // Without this, forked sandboxes run on the cell but are invisible to the
+        // edge (exec/delete/get 404), since the row is otherwise only INSERTed on
+        // the POST /api/sandboxes create path.
+        const fcBody = await req.text();
+        let fcCpu = 0;
+        let fcMem = 0;
+        try {
+          const b = JSON.parse(fcBody || "{}");
+          if (typeof b.cpuCount === "number") fcCpu = b.cpuCount;
+          if (typeof b.memoryMB === "number") fcMem = b.memoryMB;
+        } catch {
+          /* malformed JSON — let the CP reject */
+        }
+        const fcResp = await fetch(cell.base_url.replace(/\/$/, "") + path, {
+          method: "POST",
+          headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+          body: fcBody || "{}",
+        });
+        const fcText = await fcResp.text();
+        if (fcResp.status >= 200 && fcResp.status < 300) {
+          let parsed: { sandboxID?: string; workerID?: string; status?: string } = {};
+          try {
+            parsed = JSON.parse(fcText);
+          } catch {
+            /* leave empty */
+          }
+          if (parsed.sandboxID) {
+            await env.OPENCOMPUTER_DB.prepare(
+              `INSERT OR REPLACE INTO sandboxes_index
+                 (id, org_id, user_id, cell_id, worker_id, status, cpu_count, memory_mb, created_at, last_event_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)`,
+            )
+              .bind(
+                parsed.sandboxID,
+                caller.orgID,
+                caller.userID,
+                cell.cell_id,
+                parsed.workerID ?? null,
+                parsed.status ?? "running",
+                fcCpu,
+                fcMem,
+                Math.floor(Date.now() / 1000),
+              )
+              .run();
+          }
+        }
+        return new Response(fcText, {
+          status: fcResp.status,
+          headers: { "content-type": "application/json" },
+        });
       }
     }
 
