@@ -18,6 +18,39 @@ export async function parseSSEStream<T>(resp: Response, onLog: (msg: string) => 
   let buffer = "";
   let result: T | null = null;
 
+  const processEvent = (part: string): void => {
+    if (!part.trim()) return;
+
+    let eventType = "";
+    let data = "";
+    for (const line of part.split("\n")) {
+      if (line.startsWith("event: ")) eventType = line.slice(7);
+      else if (line.startsWith("data: ")) data = line.slice(6);
+    }
+
+    if (!data) return;
+
+    switch (eventType) {
+      case "build_log": {
+        try {
+          onLog(JSON.parse(data).message ?? data);
+        } catch {
+          onLog(data);
+        }
+        break;
+      }
+      case "error": {
+        let msg = data;
+        try { msg = JSON.parse(data).error ?? data; } catch {}
+        throw new Error(`Build failed: ${msg}`);
+      }
+      case "result": {
+        result = JSON.parse(data);
+        break;
+      }
+    }
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -27,37 +60,17 @@ export async function parseSSEStream<T>(resp: Response, onLog: (msg: string) => 
     buffer = parts.pop() ?? "";
 
     for (const part of parts) {
-      if (!part.trim()) continue;
-
-      let eventType = "";
-      let data = "";
-      for (const line of part.split("\n")) {
-        if (line.startsWith("event: ")) eventType = line.slice(7);
-        else if (line.startsWith("data: ")) data = line.slice(6);
-      }
-
-      if (!data) continue;
-
-      switch (eventType) {
-        case "build_log": {
-          try {
-            onLog(JSON.parse(data).message ?? data);
-          } catch {
-            onLog(data);
-          }
-          break;
-        }
-        case "error": {
-          let msg = data;
-          try { msg = JSON.parse(data).error ?? data; } catch {}
-          throw new Error(`Build failed: ${msg}`);
-        }
-        case "result": {
-          result = JSON.parse(data);
-          break;
-        }
-      }
+      processEvent(part);
     }
+  }
+
+  // Flush the final decoder state and process any residual buffer. If the
+  // server closes the stream after a terminal event without the canonical
+  // trailing `\n\n`, the loop above will leave that event in `buffer` and
+  // we'd lose the result. See #301.
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    processEvent(buffer);
   }
 
   if (!result) throw new Error("No result received from build stream");
