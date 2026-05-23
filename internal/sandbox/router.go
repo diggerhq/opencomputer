@@ -176,6 +176,13 @@ func (r *SandboxRouter) MarkCreated(sandboxID string, err error) {
 	if err != nil {
 		entry.wakeErr = err
 		entry.state = StateHibernated // mark as failed
+		// Schedule cleanup so a failed creation doesn't leak the map entry
+		// forever. The wakeCh close below unblocks any in-flight waiters,
+		// and a short TTL gives them time to observe wakeErr before the
+		// entry disappears. A later Route() can rediscover from the DB.
+		entry.timer = time.AfterFunc(failedCreateRetentionTTL, func() {
+			r.Unregister(sandboxID)
+		})
 	} else {
 		entry.state = StateRunning
 		if entry.timeout > 0 {
@@ -186,6 +193,12 @@ func (r *SandboxRouter) MarkCreated(sandboxID string, err error) {
 	}
 	close(entry.wakeCh)
 }
+
+// failedCreateRetentionTTL is how long a failed-creation entry sits in
+// the router map before it's unregistered. Long enough for in-flight
+// waiters to read wakeErr after wakeCh closes; short enough that the
+// map doesn't accumulate dead entries under sustained creation failure.
+const failedCreateRetentionTTL = 60 * time.Second
 
 // Unregister removes a sandbox from the router (called on kill/destroy).
 func (r *SandboxRouter) Unregister(sandboxID string) {
