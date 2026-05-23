@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -255,6 +256,17 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		defer func() {
 			if uploadCb != nil {
 				uploadCb(sandboxID, checkpointKey, sizeBytes, goroutineErr)
+			}
+		}()
+		// Catch panics in archive/upload so the uploadCb still reports a
+		// terminal error rather than leaving the sandbox in `hibernated`
+		// with no blob. Declared *after* the uploadCb defer so it runs
+		// first (LIFO) and `goroutineErr` is observed by the callback.
+		defer func() {
+			if r := recover(); r != nil {
+				goroutineErr = fmt.Errorf("hibernation upload panicked: %v", r)
+				log.Printf("qemu: async hibernate panic for %s: %v\n%s",
+					sandboxID, r, debug.Stack())
 			}
 		}()
 
