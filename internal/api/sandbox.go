@@ -2101,13 +2101,11 @@ func (s *Server) listCheckpoints(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
 	}
 
-	// Verify sandbox belongs to org
-	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
+	// Verify sandbox belongs to org. Use the org-scoped lookup so a
+	// wrong-org probe returns 404 instead of 403 — see #274.
+	_, err := s.store.GetSandboxSessionInOrg(c.Request().Context(), orgID, sandboxID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
-	}
-	if session.OrgID != orgID {
-		return c.JSON(http.StatusForbidden, map[string]string{"error": "sandbox does not belong to this organization"})
 	}
 
 	checkpoints, err := s.store.ListCheckpoints(c.Request().Context(), sandboxID)
@@ -2138,13 +2136,11 @@ func (s *Server) restoreCheckpoint(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid checkpoint ID"})
 	}
 
-	// Verify sandbox belongs to org and is running
-	session, err := s.store.GetSandboxSession(ctx, sandboxID)
+	// Verify sandbox belongs to org and is running. Use the org-scoped
+	// lookup so a wrong-org probe returns 404 instead of 403 — see #274.
+	session, err := s.store.GetSandboxSessionInOrg(ctx, orgID, sandboxID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
-	}
-	if session.OrgID != orgID {
-		return c.JSON(http.StatusForbidden, map[string]string{"error": "sandbox does not belong to this organization"})
 	}
 	if session.Status != "running" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox must be running to restore a checkpoint"})

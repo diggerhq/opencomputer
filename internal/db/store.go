@@ -707,6 +707,16 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 	return total, nil
 }
 
+// GetSandboxSession looks up a session by sandbox ID alone, without
+// org-scoping. **Prefer [Store.GetSandboxSessionInOrg]** whenever the
+// caller has org context (most HTTP handlers do — see middleware) —
+// using the unscoped variant in handler paths leaks cross-org sandbox
+// existence via the 404-vs-403 distinction (design F12).
+//
+// This function remains for internal callers (background workers,
+// patch helpers, proxy lookups) that legitimately don't have org
+// context. New code in `internal/api/` should not call it directly;
+// see issue #274 for the in-flight migration.
 func (s *Store) GetSandboxSession(ctx context.Context, sandboxID string) (*SandboxSession, error) {
 	session := &SandboxSession{}
 	err := s.pool.QueryRow(ctx,
