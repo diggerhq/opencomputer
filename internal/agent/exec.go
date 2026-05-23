@@ -395,6 +395,15 @@ func killCgroup() {
 func (s *Server) SetResourceLimits(ctx context.Context, req *pb.SetResourceLimitsRequest) (*pb.SetResourceLimitsResponse, error) {
 	const cgroupDir = "/sys/fs/cgroup/sandbox"
 
+	// Reject negative values explicitly. The `> 0` checks below mean negative
+	// inputs are silently treated as "leave unchanged", which masks bugs in
+	// the caller (e.g., signed-int wraparound or off-by-one in the worker's
+	// scaling math).
+	if req.MaxPids < 0 || req.MaxMemoryBytes < 0 || req.CpuMaxUsec < 0 || req.CpuPeriodUsec < 0 {
+		return nil, fmt.Errorf("resource limits must be non-negative (got pids=%d memory=%d cpu_max=%d cpu_period=%d)",
+			req.MaxPids, req.MaxMemoryBytes, req.CpuMaxUsec, req.CpuPeriodUsec)
+	}
+
 	if req.MaxPids > 0 {
 		if err := os.WriteFile(cgroupDir+"/pids.max", []byte(fmt.Sprintf("%d", req.MaxPids)), 0644); err != nil {
 			return nil, fmt.Errorf("set pids.max: %w", err)

@@ -40,7 +40,10 @@ func (s *Server) WriteFile(ctx context.Context, req *pb.WriteFileRequest) (*pb.W
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 
-	mode := os.FileMode(req.Mode)
+	// Mask to permission bits only. Caller-supplied setuid/setgid/sticky
+	// bits would let the agent write a setuid file into a tenant-writable
+	// path; we never want to honor those here.
+	mode := os.FileMode(req.Mode) & os.ModePerm
 	if mode == 0 {
 		mode = 0644
 	}
@@ -167,7 +170,8 @@ func (s *Server) WriteFileStream(stream pb.SandboxAgent_WriteFileStreamServer) e
 	}
 
 	path := resolvePath(msg.Path)
-	mode := os.FileMode(msg.Mode)
+	// Mask to permission bits only; see WriteFile for rationale.
+	mode := os.FileMode(msg.Mode) & os.ModePerm
 	if mode == 0 {
 		mode = 0644
 	}

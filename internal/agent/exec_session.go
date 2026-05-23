@@ -43,6 +43,12 @@ type execSession struct {
 	disconnectTimer *time.Timer
 }
 
+// maxScrollbackBytes caps the per-session scrollback buffer. Callers can
+// request smaller; anything larger (or negative) is clamped to this
+// value so a misbehaving or buggy caller can't trigger multi-GB
+// allocations inside the agent.
+const maxScrollbackBytes = 16 * 1024 * 1024 // 16 MiB
+
 // ExecSessionCreate starts a command and returns a session ID.
 func (s *Server) ExecSessionCreate(ctx context.Context, req *pb.ExecSessionCreateRequest) (*pb.ExecSessionCreateResponse, error) {
 	sessionID := uuid.New().String()[:8]
@@ -87,7 +93,14 @@ func (s *Server) ExecSessionCreate(ctx context.Context, req *pb.ExecSessionCreat
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 
+	// Cap caller-supplied scrollback so a misbehaving or buggy caller can't
+	// trigger multi-GB allocations inside the VM. 16 MiB is well above the
+	// largest reasonable terminal scrollback and small enough to bound a
+	// single session's memory footprint.
 	maxScrollback := int(req.ScrollbackMaxBytes)
+	if maxScrollback < 0 || maxScrollback > maxScrollbackBytes {
+		maxScrollback = maxScrollbackBytes
+	}
 	scrollback := sandbox.NewScrollbackBuffer(maxScrollback)
 
 	stdoutTee, stderrTee := s.newExecLineWriters(req.Command, req.Args)
