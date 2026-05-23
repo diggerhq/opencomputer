@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -71,9 +72,18 @@ func loadFile() Config {
 	var cfg Config
 	data, err := os.ReadFile(ConfigPath())
 	if err != nil {
+		// A missing config file is normal on first run. Other I/O errors
+		// are surfaced so the user sees them instead of getting a silent
+		// "no API key" later.
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "oc: warning: could not read %s: %v\n", ConfigPath(), err)
+		}
 		return cfg
 	}
-	json.Unmarshal(data, &cfg)
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "oc: warning: %s is not valid JSON: %v\n", ConfigPath(), err)
+		return Config{}
+	}
 	return cfg
 }
 
