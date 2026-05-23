@@ -1,15 +1,19 @@
+export type KnownAgentEventType =
+  | "ready"
+  | "configured"
+  | "assistant"
+  | "result"
+  | "system"
+  | "tool_use_summary"
+  | "turn_complete"
+  | "interrupted"
+  | "error";
+
 export interface AgentEvent {
-  type:
-    | "ready"
-    | "configured"
-    | "assistant"
-    | "result"
-    | "system"
-    | "tool_use_summary"
-    | "turn_complete"
-    | "interrupted"
-    | "error"
-    | string;
+  // `string & {}` keeps the known-literals union exhaustive for `switch`
+  // statements while still allowing forward-compatibility with future event
+  // types added by the server. See #302.
+  type: KnownAgentEventType | (string & {});
   [key: string]: unknown;
 }
 
