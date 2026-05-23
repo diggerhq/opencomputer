@@ -17,13 +17,21 @@ type SignedURLParams struct {
 	ExpiresAt time.Time
 }
 
+// signURLBytes produces the raw HMAC-SHA256 signature bytes for the
+// given parameters. SignURL is a hex-encoded wrapper kept for callers
+// that need a URL-safe form; VerifyURL uses signURLBytes directly to
+// avoid an encode→decode round trip on a value we already control.
+func signURLBytes(secret []byte, params SignedURLParams) []byte {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(signPayload(params)))
+	return mac.Sum(nil)
+}
+
 // SignURL produces an HMAC-SHA256 hex signature for the given parameters.
 // The signing payload uses a domain-separated canonical format to prevent
 // parameter substitution attacks.
 func SignURL(secret []byte, params SignedURLParams) string {
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(signPayload(params)))
-	return hex.EncodeToString(mac.Sum(nil))
+	return hex.EncodeToString(signURLBytes(secret, params))
 }
 
 // VerifyURL checks the HMAC signature and expiration.
@@ -32,14 +40,16 @@ func VerifyURL(secret []byte, params SignedURLParams, signature string) error {
 		return fmt.Errorf("signed URL expired")
 	}
 
-	expected := SignURL(secret, params)
 	sigBytes, err := hex.DecodeString(signature)
 	if err != nil {
 		return fmt.Errorf("invalid signature encoding")
 	}
-	expectedBytes, _ := hex.DecodeString(expected)
 
-	if !hmac.Equal(sigBytes, expectedBytes) {
+	// Compare against the byte-sum directly. Previous code called SignURL
+	// to get the hex string and decoded it again — the second decode
+	// swallowed its error with `_`, which would silently treat a corrupt
+	// internal computation as a mismatch instead of a bug.
+	if !hmac.Equal(sigBytes, signURLBytes(secret, params)) {
 		return fmt.Errorf("invalid signature")
 	}
 

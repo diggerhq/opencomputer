@@ -3,6 +3,7 @@ package crypto
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 )
 
 // KeyRing holds multiple versioned encryption keys. New data is always encrypted
@@ -59,6 +60,12 @@ func (r *KeyRing) Encrypt(plaintext []byte) ([]byte, error) {
 // Decrypt reads the version header and decrypts with the matching key.
 // Falls back to the primary key for legacy data without a version header
 // (ciphertext shorter than expected or version 0 with no v0 key registered).
+//
+// When a registered version's decrypt fails but the legacy fallback then
+// succeeds, a WARN log is emitted: this almost always signals data that
+// was *meant* to be versioned but is corrupted, mis-versioned, or
+// encrypted under a key that's no longer in the ring — investigating it
+// is more useful than silently treating it as legacy.
 func (r *KeyRing) Decrypt(data []byte) ([]byte, error) {
 	// Legacy unversioned data: try primary key directly
 	if len(data) < 2 {
@@ -66,17 +73,26 @@ func (r *KeyRing) Decrypt(data []byte) ([]byte, error) {
 	}
 
 	ver := binary.BigEndian.Uint16(data[:2])
+	versionedAttempted := false
 	if enc, ok := r.keys[ver]; ok {
+		versionedAttempted = true
 		result, err := enc.Decrypt(data[2:])
 		if err == nil {
 			return result, nil
 		}
-		// If versioned decrypt fails, fall through to legacy
+		// Versioned decrypt failed for a known version. Log and fall through
+		// to legacy so pre-rotation blobs still decode; the fallback success
+		// itself is logged below for forensic visibility.
+		log.Printf("keyring: versioned decrypt for v%d failed (%v); attempting legacy fallback", ver, err)
 	}
 
 	// Legacy fallback: data may not have a version header (pre-rotation secrets).
 	// Try primary key on the full blob.
-	return r.primary.Decrypt(data)
+	result, err := r.primary.Decrypt(data)
+	if err == nil && versionedAttempted {
+		log.Printf("keyring: legacy fallback succeeded after v%d versioned-decrypt failure — investigate the source of this blob", ver)
+	}
+	return result, err
 }
 
 // PrimaryVersion returns the version number of the active encryption key.
