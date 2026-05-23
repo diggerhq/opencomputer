@@ -171,13 +171,17 @@ func (s *Server) servePTYData(sess *ptySession, ctx context.Context, ready chan<
 
 	// Wait for command to exit
 	sess.cmd.Wait()
-	sess.ptyFile.Close()
-	wg.Wait()
 
-	// Clean up session
+	// Remove from the session map BEFORE closing ptyFile so a concurrent
+	// PTYAttach can't acquire this entry just to find its file descriptor
+	// closed underneath it. After the delete, no new attach can find the
+	// session — only the io.Copy goroutines still hold sess.ptyFile.
 	s.ptyMu.Lock()
 	delete(s.ptySessions, sess.id)
 	s.ptyMu.Unlock()
+
+	sess.ptyFile.Close()
+	wg.Wait()
 }
 
 // PTYAttach opens a bidirectional gRPC stream for PTY I/O.
