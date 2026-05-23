@@ -163,12 +163,15 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		return nil, fmt.Errorf("marshal snapshot meta: %w", err)
 	}
 	metaPath := filepath.Join(snapshotDir, "snapshot-meta.json")
-	// Atomic write: write to temp file then rename to avoid partial JSON on crash
+	// Atomic write: write to temp file then rename to avoid partial JSON on crash.
+	// On rename failure (e.g., ENOSPC, dir-inode exhaustion) remove the tmp file
+	// so the next attempt doesn't see a stale `.tmp` that may shadow recovery.
 	tmpMetaPath := metaPath + ".tmp"
 	if err := os.WriteFile(tmpMetaPath, metaJSON, 0644); err != nil {
 		return nil, fmt.Errorf("write snapshot meta: %w", err)
 	}
 	if err := os.Rename(tmpMetaPath, metaPath); err != nil {
+		_ = os.Remove(tmpMetaPath)
 		return nil, fmt.Errorf("rename snapshot meta: %w", err)
 	}
 
