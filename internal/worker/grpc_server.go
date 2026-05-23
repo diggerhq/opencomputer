@@ -248,6 +248,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 			return &pb.CreateSandboxResponse{
 				SandboxId: sb.ID,
 				Status:    string(sb.Status),
+				MemoryMb:  int32(sb.MemoryMB),
 			}, nil
 		}
 		// Cache miss path: try to recover by downloading the checkpoint from
@@ -297,6 +298,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		return &pb.CreateSandboxResponse{
 			SandboxId: sb.ID,
 			Status:    string(sb.Status),
+			MemoryMb:  int32(sb.MemoryMB),
 		}, nil
 	}
 
@@ -343,6 +345,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 	return &pb.CreateSandboxResponse{
 		SandboxId: sb.ID,
 		Status:    string(sb.Status),
+		MemoryMb:  int32(sb.MemoryMB),
 	}, nil
 }
 

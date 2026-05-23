@@ -3435,6 +3435,34 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		memMB = m.cfg.DefaultMemoryMB
 	}
 
+	// memMB is the snapshot's QEMU -m — migration requires destination -m to
+	// match source exactly, so we always launch at base. floorMB is the
+	// snapshot's *running* total (base + virtio-mem plugged at snapshot time):
+	// it's the safe lower bound for a restore because restored processes were
+	// sized for that total, and shrinking below it would OOM them. We reach
+	// the requested size via pre-Cont virtio-mem hotplug (same pattern as
+	// RestoreFromCheckpoint). Hotplug ceiling is the QEMU maxmem set by
+	// buildQEMUArgs (= base + virtio-mem pool, capped at 16GB for base ≤ 16GB).
+	floorMB := meta.MemoryMB
+	if floorMB < memMB {
+		floorMB = memMB // older snapshots without MemoryMB filled in
+	}
+	desiredMemMB := floorMB
+	if cfg.MemoryMB > 0 {
+		hotplugCeilingMB := memMB + max(1024, 16384-memMB)
+		switch {
+		case cfg.MemoryMB < floorMB:
+			log.Printf("qemu: ForkFromCheckpoint %s: requested memoryMB=%d ignored (snapshot was running with %dMB — downscale would OOM restored processes)",
+				id, cfg.MemoryMB, floorMB)
+		case cfg.MemoryMB > hotplugCeilingMB:
+			log.Printf("qemu: ForkFromCheckpoint %s: requested memoryMB=%d clamped to hotplug ceiling %dMB (snapshot base=%d)",
+				id, cfg.MemoryMB, hotplugCeilingMB, memMB)
+			desiredMemMB = hotplugCeilingMB
+		default:
+			desiredMemMB = cfg.MemoryMB
+		}
+	}
+
 	guestCID := m.allocateCID()
 	guestMAC := generateMAC(id)
 	bootArgs := fmt.Sprintf(
@@ -3528,6 +3556,20 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 				cmd.Process.Kill()
 				cmd.Wait()
 				return nil, nil, nil, fmt.Errorf("loadvm: %w", err)
+			}
+		}
+
+		// Honor cfg.MemoryMB above the snapshot base via pre-Cont virtio-mem
+		// plug. VM is paused, so the kernel sees the full memory map on resume —
+		// same pattern as RestoreFromCheckpoint and wake-from-hibernate.
+		if desiredMemMB > memMB {
+			additionalMB := alignVirtioMemBlock(desiredMemMB - memMB)
+			if err := qmpClient.SetVirtioMemSize(additionalMB); err != nil {
+				log.Printf("qemu: ForkFromCheckpoint %s: pre-resume virtio-mem plug to +%dMB failed: %v (continuing at base %dMB)",
+					id, additionalMB, err, memMB)
+			} else {
+				log.Printf("qemu: ForkFromCheckpoint %s: pre-resume virtio-mem +%dMB (base=%d, total=%d)",
+					id, additionalMB, memMB, memMB+additionalMB)
 			}
 		}
 
@@ -3640,29 +3682,31 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		timeout = 300 * time.Second
 	}
 
+	virtioMemAddedMB := alignVirtioMemBlock(desiredMemMB - memMB)
 	vm := &VMInstance{
-		ID:            id,
-		Template:      meta.Template,
-		Status:        types.SandboxStatusRunning,
-		StartedAt:     now,
-		EndAt:         now.Add(timeout),
-		CpuCount:      cpus,
-		MemoryMB:      memMB,
-		baseMemoryMB:  memMB,
-		HostPort:      hostPort,
-		GuestPort:     guestPort,
-		pid:           cmd.Process.Pid,
-		cmd:           cmd,
-		network:       netCfg,
-		sandboxDir:    sandboxDir,
-		qmpSockPath:   qmpSockPath,
-		agentSockPath: agentSockPath,
-		qmp:           qmpClient,
-		guestMAC:      guestMAC,
-		guestCID:      guestCID,
-		bootArgs:      bootArgs,
-		agent:         agent,
-		goldenVersion: m.goldenVersion, // set on wake — VM uses the current base image
+		ID:                   id,
+		Template:             meta.Template,
+		Status:               types.SandboxStatusRunning,
+		StartedAt:            now,
+		EndAt:                now.Add(timeout),
+		CpuCount:             cpus,
+		MemoryMB:             memMB + virtioMemAddedMB,
+		baseMemoryMB:         memMB,
+		virtioMemRequestedMB: virtioMemAddedMB,
+		HostPort:             hostPort,
+		GuestPort:            guestPort,
+		pid:                  cmd.Process.Pid,
+		cmd:                  cmd,
+		network:              netCfg,
+		sandboxDir:           sandboxDir,
+		qmpSockPath:          qmpSockPath,
+		agentSockPath:        agentSockPath,
+		qmp:                  qmpClient,
+		guestMAC:             guestMAC,
+		guestCID:             guestCID,
+		bootArgs:             bootArgs,
+		agent:                agent,
+		goldenVersion:        m.goldenVersion, // set on wake — VM uses the current base image
 	}
 
 	m.mu.Lock()
@@ -3690,7 +3734,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		StartedAt: now,
 		EndAt:     now.Add(timeout),
 		CpuCount:  cpus,
-		MemoryMB:  memMB,
+		MemoryMB:  memMB + virtioMemAddedMB,
 		HostPort:  hostPort,
 	}, nil
 }
