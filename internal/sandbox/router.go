@@ -355,8 +355,13 @@ func (r *SandboxRouter) ensureRunning(ctx context.Context, sandboxID string) err
 		entry.wakeErr = nil
 		entry.mu.Unlock()
 
-		// Perform wake (only one goroutine does this)
-		r.doWake(ctx, sandboxID, entry)
+		// Perform wake (only one goroutine does this). Pass a background
+		// context — doWake derives its own deadline from
+		// context.Background() internally so it survives the caller's
+		// request context being cancelled. Passing the request context
+		// here would be misleading at the call site even though doWake
+		// ignores it.
+		r.doWake(context.Background(), sandboxID, entry)
 
 		// Check wake result
 		entry.mu.Lock()
@@ -432,9 +437,12 @@ func (r *SandboxRouter) discoverAndEnsure(ctx context.Context, sandboxID string)
 
 // doWake performs the actual wake operation and transitions state.
 // Only one goroutine calls this per sandbox per wake cycle.
-func (r *SandboxRouter) doWake(ctx context.Context, sandboxID string, entry *sandboxEntry) {
-	// Use a background context for the wake itself so it completes
-	// even if the original request times out
+//
+// The `_` parameter is the caller's context; intentionally unused because
+// wake must complete even if the original request times out. Callers
+// should pass `context.Background()` to make the intent explicit at the
+// call site.
+func (r *SandboxRouter) doWake(_ context.Context, sandboxID string, entry *sandboxEntry) {
 	wakeCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
