@@ -62,6 +62,19 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
+// Now returns the database's current UTC time. Prefer this over
+// `time.Now().UTC()` when the value participates in comparisons against
+// timestamps that were written by Postgres — e.g. settlement bucket
+// boundaries — so process and DB clock skew can't include or exclude
+// rows at the boundary.
+func (s *Store) Now(ctx context.Context) (time.Time, error) {
+	var t time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT (NOW() AT TIME ZONE 'UTC')::timestamp`).Scan(&t); err != nil {
+		return time.Time{}, fmt.Errorf("db now: %w", err)
+	}
+	return t.UTC(), nil
+}
+
 // Close closes the connection pool.
 func (s *Store) Close() {
 	s.pool.Close()

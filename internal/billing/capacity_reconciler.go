@@ -103,7 +103,21 @@ func (r *CapacityReconciler) tick() {
 	// Cutoff: only buckets whose end is at least `settle` ago are eligible.
 	// Truncate to a 15-min boundary so we don't accidentally include a
 	// half-finished bucket if `settle` happens to land mid-bucket.
-	cutoff := time.Now().UTC().Add(-r.settle).Truncate(15 * time.Minute)
+	//
+	// Source the wall clock from the database, not the reconciler host:
+	// allocator candidates and bucket boundaries are written by Postgres,
+	// so using `time.Now()` here makes the cutoff sensitive to clock skew
+	// between the reconciler host and the DB. On skew, buckets at the
+	// edge can be picked up before the DB considers them closed, or
+	// missed for a full interval if the host clock is behind. Falls back
+	// to the host clock if the DB lookup fails (interval is generous
+	// enough to recover on the next tick).
+	nowUTC, err := r.store.Now(ctx)
+	if err != nil {
+		log.Printf("capacity-reconciler: db NOW() failed (%v); falling back to host clock", err)
+		nowUTC = time.Now().UTC()
+	}
+	cutoff := nowUTC.Add(-r.settle).Truncate(15 * time.Minute)
 	lookbackStart := cutoff.Add(-r.lookback)
 
 	candidates, err := r.store.ListAllocatorCandidates(ctx, lookbackStart, cutoff, r.limit)
