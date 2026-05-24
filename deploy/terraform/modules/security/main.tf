@@ -39,6 +39,20 @@ resource "aws_security_group" "dev" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # Caller-supplied extra ports (see variables.tf::extra_ingress_ports).
+  # Typical use: opening :3000 for an agent orchestrator running on the
+  # same host, or :9090 for a Prometheus scrape endpoint.
+  dynamic "ingress" {
+    for_each = var.extra_ingress_ports
+    content {
+      description = ingress.value.description
+      from_port   = ingress.value.port
+      to_port     = ingress.value.port
+      protocol    = "tcp"
+      cidr_blocks = [var.extra_ingress_cidr]
+    }
+  }
+
   # All outbound
   egress {
     description = "All outbound"
