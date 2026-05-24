@@ -3464,12 +3464,21 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	}
 
 	// Boot QEMU, load the checkpoint (migration or loadvm), and connect the
-	// agent inside. Post-loadvm virtio-serial occasionally comes up with the
-	// Accept side not ready (the guest resumes, the kernel brings up the
-	// virtio-serial port, but the agent's accept() doesn't land in time).
-	// That's a transient flake — retrying a fresh boot from the same checkpoint
-	// usually recovers. Wrap boot-to-agent-connect in one retry.
-	bootAndRestore := func() (*exec.Cmd, *QMPClient, *AgentClient, error) {
+	// agent inside. Post-restore virtio-serial occasionally comes up with the
+	// Accept side not ready: the guest resumes, the kernel brings up the
+	// virtio-serial port, but the in-VM agent's accept() on the new
+	// host-side agent.sock doesn't fire before the host-side dial times out.
+	// Root cause is still under investigation (see PR description); the
+	// observable symptom on our deployment is 100% reproducible
+	// "agent connect" timeout after a clean migration load. A bare 2-attempt
+	// retry doesn't recover it.
+	//
+	// coldBoot=true is the escape-hatch path: skip incomingURI entirely and
+	// boot a fresh VM off the checkpoint's rootfs.qcow2. This loses warm
+	// in-memory state but preserves the pre-installed userland (apt-installed
+	// packages, agent tooling) — much faster than a true fresh-create which
+	// would have to apt-install at runtime.
+	bootAndRestore := func(coldBoot bool) (*exec.Cmd, *QMPClient, *AgentClient, error) {
 		os.Remove(qmpSockPath)
 		os.Remove(agentSockPath)
 
@@ -3481,11 +3490,15 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 
 		args := m.buildQEMUArgs(cpus, memMB, rootfsPath, workspacePath,
 			netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
-		if incomingURI != "" {
+		useMigration := !coldBoot && incomingURI != ""
+		if useMigration {
 			args = append(args, "-incoming", incomingURI)
-		} else {
+		} else if !coldBoot {
+			// savevm/loadvm path: start paused, do loadvm, then cont
 			args = append(args, "-S")
 		}
+		// coldBoot: no -incoming, no -S — let the kernel cold-boot off the
+		// checkpoint's rootfs immediately.
 
 		cmd := exec.Command(m.cfg.QEMUBin, args...)
 		cmd.Stdout = logFile
@@ -3496,8 +3509,8 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		}
 		logFile.Close()
 
-		log.Printf("qemu: ForkFromCheckpoint %s → %s: QEMU started (pid=%d, migration=%v)",
-			checkpointID, id, cmd.Process.Pid, incomingURI != "")
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: QEMU started (pid=%d, migration=%v, coldBoot=%v)",
+			checkpointID, id, cmd.Process.Pid, useMigration, coldBoot)
 
 		qmpClient, err := waitForQMP(qmpSockPath, 10*time.Second)
 		if err != nil {
@@ -3506,7 +3519,13 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 			return nil, nil, nil, fmt.Errorf("QMP connect: %w", err)
 		}
 
-		if incomingURI != "" {
+		if coldBoot {
+			// Cold boot: VM is already running, kernel will boot the
+			// checkpoint's rootfs and the osb-agent in it will start fresh
+			// and accept the new agent.sock. No QMP cont needed.
+			log.Printf("qemu: ForkFromCheckpoint %s → %s: cold-boot from checkpoint rootfs, waiting for kernel + agent...",
+				checkpointID, id)
+		} else if useMigration {
 			// 5-minute ceiling. Typical migration loads finish in <10s, but
 			// rebased overlays may be slower due to extra COW cluster I/O
 			// the first time blocks are read through the new backing chain.
@@ -3531,17 +3550,23 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 			}
 		}
 
-		if err := qmpClient.Cont(); err != nil {
-			qmpClient.Close()
-			cmd.Process.Kill()
-			cmd.Wait()
-			return nil, nil, nil, fmt.Errorf("QMP cont: %w", err)
+		if !coldBoot {
+			if err := qmpClient.Cont(); err != nil {
+				qmpClient.Close()
+				cmd.Process.Kill()
+				cmd.Wait()
+				return nil, nil, nil, fmt.Errorf("QMP cont: %w", err)
+			}
+			log.Printf("qemu: ForkFromCheckpoint %s → %s: VM resumed (%dms), connecting agent...",
+				checkpointID, id, time.Since(t0).Milliseconds())
 		}
-		log.Printf("qemu: ForkFromCheckpoint %s → %s: VM resumed (%dms), connecting agent...",
-			checkpointID, id, time.Since(t0).Milliseconds())
 
+		// Cold boot needs the full Linux boot path; warm migration restore
+		// has memory pre-loaded and agent.sock accept() can fire fast.
 		agentTimeout := 30 * time.Second
-		if incomingURI != "" {
+		if coldBoot {
+			agentTimeout = 60 * time.Second // kernel boot + osb-agent init
+		} else if incomingURI != "" {
 			agentTimeout = 10 * time.Second
 		}
 		agent, err := m.waitForAgentSocket(context.Background(), agentSockPath, agentTimeout)
@@ -3557,19 +3582,73 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	var cmd *exec.Cmd
 	var qmpClient *QMPClient
 	var agent *AgentClient
+	migrationFailed := false
 	for attempt := 1; attempt <= 2; attempt++ {
-		c, q, a, bErr := bootAndRestore()
+		c, q, a, bErr := bootAndRestore(false)
 		if bErr == nil {
 			cmd, qmpClient, agent = c, q, a
 			break
 		}
 		retriable := attempt == 1 && strings.Contains(bErr.Error(), "agent connect")
 		if !retriable {
+			// On final failure, if it was an agent-connect timeout, try
+			// cold-boot before giving up. Migration load failures (qcow2
+			// errors etc.) bail immediately — those won't be fixed by
+			// cold-booting.
+			if attempt == 2 && strings.Contains(bErr.Error(), "agent connect") {
+				migrationFailed = true
+				log.Printf("qemu: ForkFromCheckpoint %s → %s: migration-restore agent-connect failed twice, attempting cold-boot fallback: %v",
+					checkpointID, id, bErr)
+				break
+			}
 			m.cleanupVM(netCfg, sandboxDir)
 			return nil, bErr
 		}
 		log.Printf("qemu: ForkFromCheckpoint %s → %s: transient virtio-serial flake on attempt %d, retrying: %v",
 			checkpointID, id, attempt, bErr)
+	}
+
+	// Cold-boot fallback: keep the checkpoint's rootfs (so the pre-installed
+	// userland survives) but boot a fresh kernel + agent. ~30-60s on the
+	// happy path, vs migration restore's 1-3s; still ~10× faster than a
+	// fresh-create from the base image (which would also apt-install at
+	// runtime). Worst-case end-to-end latency before the caller sees an
+	// error is now ~140s (30s+10s+30s = 70s for the two warm attempts,
+	// + 10s+60s = 70s for the cold-boot attempt). Worth knowing for
+	// callers with tight cancellation deadlines.
+	if cmd == nil && migrationFailed {
+		// Re-copy the qcow2s from the checkpoint cache. The two failed
+		// migration attempts above each ran qmpClient.Cont(), so the kernel
+		// resumed and may have written EXT4 journal blocks back to
+		// rootfs.qcow2 before the host-side dial timed out. Cold-booting on
+		// top of that "post-resume" image works (ext4 journal recovery
+		// handles it) but it's not really the fresh-rootfs the path name
+		// implies. Re-reflinking from cache is cheap on XFS and removes the
+		// half-written-image risk entirely.
+		m.checkpointCacheMu.RLock()
+		if rErr := copyFileReflink(cachedRootfs, rootfsPath); rErr != nil {
+			log.Printf("qemu: ForkFromCheckpoint %s → %s: cold-boot prep: re-reflink rootfs failed (%v) — proceeding anyway",
+				checkpointID, id, rErr)
+		}
+		if rErr := copyFileReflink(cachedWorkspace, workspacePath); rErr != nil {
+			log.Printf("qemu: ForkFromCheckpoint %s → %s: cold-boot prep: re-reflink workspace failed (%v) — proceeding anyway",
+				checkpointID, id, rErr)
+		}
+		m.checkpointCacheMu.RUnlock()
+
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: cold-boot fallback starting (elapsed=%dms)",
+			checkpointID, id, time.Since(t0).Milliseconds())
+
+		c, q, a, bErr := bootAndRestore(true)
+		if bErr != nil {
+			log.Printf("qemu: ForkFromCheckpoint %s → %s: cold-boot fallback also failed: %v",
+				checkpointID, id, bErr)
+			m.cleanupVM(netCfg, sandboxDir)
+			return nil, fmt.Errorf("fork from checkpoint %s: migration+cold-boot both failed: %w", checkpointID, bErr)
+		}
+		cmd, qmpClient, agent = c, q, a
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: cold-boot fallback succeeded (%dms total)",
+			checkpointID, id, time.Since(t0).Milliseconds())
 	}
 
 	log.Printf("qemu: ForkFromCheckpoint %s → %s: agent connected, patching network...", checkpointID, id)
