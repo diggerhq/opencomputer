@@ -56,8 +56,18 @@ resource "aws_instance" "dev_host" {
 
   associate_public_ip_address = true
 
-  cpu_options {
-    nested_virtualization = "enabled"
+  # Nested virtualization is only configurable on hypervised instances
+  # (e.g. m5.large, c8i.xlarge). Bare-metal instance types (anything ending
+  # in `.metal`) run on the bare host and already expose /dev/kvm directly,
+  # so AWS rejects the cpu_options block with InvalidParameterCombination.
+  #
+  # Heuristic: enable the option iff the instance type is NOT a `.metal` SKU.
+  # If you ever introduce another non-hypervised flavor, extend this check.
+  dynamic "cpu_options" {
+    for_each = endswith(var.instance_type, ".metal") ? [] : [1]
+    content {
+      nested_virtualization = "enabled"
+    }
   }
 
   root_block_device {

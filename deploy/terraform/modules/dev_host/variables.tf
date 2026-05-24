@@ -19,7 +19,7 @@ variable "security_group_id" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type (must be bare-metal for Firecracker KVM, e.g. c6g.metal)"
+  description = "EC2 instance type. Bare-metal (e.g. c6g.metal) exposes /dev/kvm directly; Nitro hypervised instances (e.g. c8i.xlarge) get nested virtualization enabled via cpu_options."
   type        = string
 }
 
