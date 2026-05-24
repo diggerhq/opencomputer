@@ -182,7 +182,13 @@ OPENSANDBOX_PORT=8081
 OPENSANDBOX_JWT_SECRET=dev-secret
 OPENSANDBOX_WORKER_ID=w-test-1
 OPENSANDBOX_REGION=use1
-OPENSANDBOX_HTTP_ADDR=http://${WORKER_IP}:8081
+# NOTE: HTTP_ADDR is what the control plane uses to reach this worker's HTTP API
+# (for /exec, /files, etc. proxying). On single-host deploys the server and worker
+# share the same machine; advertising the public IP forces the proxy through the
+# security group (default-deny on :8081), so we must advertise loopback. For
+# multi-host deploys, set this to a private VPC address reachable from the
+# control plane instances.
+OPENSANDBOX_HTTP_ADDR=http://127.0.0.1:8081
 OPENSANDBOX_GRPC_ADVERTISE=127.0.0.1:9090
 OPENSANDBOX_DATA_DIR=/data/sandboxes
 OPENSANDBOX_FIRECRACKER_BIN=/usr/local/bin/firecracker

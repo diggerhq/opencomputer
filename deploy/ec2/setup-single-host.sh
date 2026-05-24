@@ -43,7 +43,7 @@ export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update && sudo apt-get upgrade -y
 
 echo "==> Installing build dependencies..."
-sudo apt-get install -y e2fsprogs git podman uidmap slirp4netns postgresql-client
+sudo apt-get install -y e2fsprogs xfsprogs git podman uidmap slirp4netns postgresql-client qemu-system-x86
 
 ###############################################################################
 # 2. Docker
@@ -164,11 +164,59 @@ net.ipv4.neigh.default.gc_thresh3 = 8192
 fs.file-max = 1000000
 fs.inotify.max_user_instances = 8192
 fs.inotify.max_user_watches = 524288
+# QEMU's virtio-mem device reserves the FULL maxmem range (default 16GB per VM)
+# even though the backing pages are committed lazily. With overcommit_memory=0
+# (heuristic), the kernel refuses the mmap on hosts smaller than 16GB and QEMU
+# fails with "cannot set up guest memory 'vmem0': Cannot allocate memory".
+# overcommit_memory=1 ("always overcommit") allows the reservation; the
+# virtio-mem device only actually pins memory as the guest plugs in blocks.
+vm.overcommit_memory = 1
 SYSCTL
 sudo sysctl --system
 
 ###############################################################################
-# 7. Create directory structure
+# 7. Data volume: XFS with reflink=1 (required by QEMU manager)
+###############################################################################
+# The QEMU manager hard-fails on init if the data directory doesn't support
+# reflink (see internal/qemu/manager.go:391 "data directory does not support
+# reflink: XFS with reflink=1 required"). Snapshot fan-out uses
+# `cp --reflink=always` to share rootfs/workspace COW between sandboxes.
+echo "==> Checking /data filesystem (XFS with reflink required)..."
+if mountpoint -q /data; then
+    DATA_FSTYPE=$(findmnt -no FSTYPE /data 2>/dev/null || echo "")
+    if [ "$DATA_FSTYPE" != "xfs" ]; then
+        echo "    /data is $DATA_FSTYPE, must be XFS for reflink support."
+        echo "    Backing up, reformatting as XFS reflink=1, and restoring..."
+        DATA_DEV=$(findmnt -no SOURCE /data)
+        sudo mkdir -p /opt/data-migrate
+        if [ -n "$(sudo ls /data/ 2>/dev/null)" ]; then
+            sudo cp -a /data/. /opt/data-migrate/
+        fi
+        sudo umount /data
+        sudo mkfs.xfs -f -m reflink=1 "$DATA_DEV"
+        UUID=$(sudo blkid -s UUID -o value "$DATA_DEV")
+        # Replace existing /data fstab line (any FS type, label or UUID) with UUID-based xfs
+        sudo sed -i.bak -E "/[[:space:]]\/data[[:space:]]/d" /etc/fstab
+        echo "UUID=$UUID /data xfs defaults,nofail 0 2" | sudo tee -a /etc/fstab >/dev/null
+        sudo mount /data
+        sudo cp -a /opt/data-migrate/. /data/
+        sudo rm -rf /opt/data-migrate
+        echo "    /data reformatted as XFS reflink=1"
+    else
+        # Verify reflink is enabled on this XFS
+        if ! sudo xfs_info /data 2>/dev/null | grep -q "reflink=1"; then
+            echo "    WARNING: /data is XFS but reflink is NOT enabled. Reformat required."
+            echo "             Run: mkfs.xfs -f -m reflink=1 $(findmnt -no SOURCE /data)"
+        else
+            echo "    /data is XFS with reflink=1 ✓"
+        fi
+    fi
+else
+    echo "    NOTE: /data is not a separate mount — using rootfs. Reflink support depends on root FS."
+fi
+
+###############################################################################
+# 8. Create directory structure
 ###############################################################################
 echo "==> Creating directory structure..."
 sudo mkdir -p /data/sandboxes /data/firecracker/images /data/checkpoints /etc/opensandbox
