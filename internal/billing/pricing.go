@@ -91,7 +91,7 @@ const (
 
 	// Instant (overage): single meter, flat across all sandbox sizes.
 	OverageMeterKey = "sandbox_overage"
-	OveragePriceKey = "sandbox_overage_v1"
+	OveragePriceKey = "sandbox_overage_v2"
 )
 
 // DiskOverageGBSeconds returns the chargeable GB-seconds for one usage summary
