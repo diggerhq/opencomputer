@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 const sqliteSchema = `
@@ -58,7 +58,7 @@ func OpenSandboxDB(dataDir, sandboxID string) (*SandboxDB, error) {
 	}
 
 	dbPath := filepath.Join(dir, "state.db")
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite: %w", err)
 	}
@@ -203,6 +203,16 @@ type SandboxDBManager struct {
 	dataDir string
 	mu      sync.RWMutex
 	dbs     map[string]*SandboxDB
+
+	// onRemove is invoked synchronously inside Remove BEFORE the SQLite
+	// connection is closed and the file is deleted. The event publisher
+	// registers a callback here so any unsynced terminal events (stopped,
+	// hibernated) are flushed upstream before the per-sandbox DB goes
+	// away. Without this hook, LogEvent("stopped") writes to SQLite but
+	// the 2s publisher poll loses the race and the event never reaches
+	// the events-ingest Worker, so D1 sandboxes_index keeps showing the
+	// sandbox as running.
+	onRemove func(sandboxID string)
 }
 
 // NewSandboxDBManager creates a new SandboxDB manager.
@@ -211,6 +221,16 @@ func NewSandboxDBManager(dataDir string) *SandboxDBManager {
 		dataDir: dataDir,
 		dbs:     make(map[string]*SandboxDB),
 	}
+}
+
+// SetOnRemove registers a callback invoked synchronously by Remove before the
+// SQLite DB is closed and deleted. Used by the Redis event publisher to flush
+// any pending terminal events for that sandbox to the cell's events stream.
+// nil-safe; only one callback is supported (the second registration overwrites).
+func (m *SandboxDBManager) SetOnRemove(fn func(sandboxID string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onRemove = fn
 }
 
 // Get returns the SandboxDB for a given sandbox, creating it if necessary.
@@ -238,10 +258,23 @@ func (m *SandboxDBManager) Get(sandboxID string) (*SandboxDB, error) {
 	return db, nil
 }
 
-// Remove closes and removes the database for a sandbox.
+// Remove closes and removes the database for a sandbox. If an OnRemove hook
+// is registered it is called synchronously BEFORE the SQLite file is closed,
+// giving the event publisher a chance to flush any terminal events (stopped,
+// hibernated, etc.) the caller wrote just before invoking Remove.
 func (m *SandboxDBManager) Remove(sandboxID string) error {
+	// Snapshot the hook + db handle under the lock. Run the hook outside
+	// the lock so a slow flush doesn't block other Get/MarkSynced traffic.
 	m.mu.Lock()
+	hook := m.onRemove
 	db, ok := m.dbs[sandboxID]
+	m.mu.Unlock()
+
+	if hook != nil {
+		hook(sandboxID)
+	}
+
+	m.mu.Lock()
 	delete(m.dbs, sandboxID)
 	m.mu.Unlock()
 
