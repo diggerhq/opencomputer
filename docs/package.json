@@ -1,0 +1,23 @@
+{
+  "name": "opencomputer-docs-holocron-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "build:cloudflare": "HOLOCRON_DEPLOY=1 vite build",
+    "deploy:cloudflare": "npm run build:cloudflare && wrangler deploy dist/.holocron/rsc/index.js --config dist/.holocron/client/wrangler.json --compatibility-flag nodejs_compat",
+    "start": "node dist/rsc/index.js"
+  },
+  "dependencies": {
+    "@holocron.so/vite": "latest",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "vite": "^8.0.10"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^5.9.3"
+  }
+}
