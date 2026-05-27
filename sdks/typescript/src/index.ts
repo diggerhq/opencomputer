@@ -20,6 +20,17 @@ export { Pty, type PtySession, type PtyOpts } from "./pty.js";
 export { Templates, type TemplateInfo } from "./template.js";
 export { SecretStore, type SecretStoreInfo, type SecretEntryInfo, type SecretStoreOpts, type CreateSecretStoreOpts, type UpdateSecretStoreOpts } from "./project.js";
 export {
+  ManagedClaw,
+  ManagedClawApiError,
+  type ManagedClawOpts,
+  type ManagedClawSandboxTimeout,
+  type ManagedClawFleet,
+  type CreateManagedClawFleetOpts,
+  type ManagedClawAgent,
+  type ManagedClawMessageResult,
+  type GetOrCreateManagedClawAgentOpts,
+} from "./managed-claw.js";
+export {
   Usage,
   Tags,
   type UsageSandboxItem,

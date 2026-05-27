@@ -114,7 +114,8 @@
           "guides/build-a-lovable-clone",
           "guides/browser-automation",
           "guides/agent-skill",
-          "guides/deploy-openclaw"
+          "guides/deploy-openclaw",
+          "guides/managed-claw"
         ]
       },
       {

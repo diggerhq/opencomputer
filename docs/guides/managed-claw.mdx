@@ -1,0 +1,94 @@
+---
+title: "Managed Claw"
+description: "Build a managed per-user Claw API on top of OpenComputer and OpenClaw"
+---
+
+This guide documents the current Clawputer-style managed setup built on top of OpenComputer. The shape is simple:
+
+1. Your app owns user identity and transport.
+2. A small API service provisions one sandbox-backed Claw per user.
+3. The OpenComputer TypeScript SDK creates fleets, provisions agents, and sends messages.
+4. The managed runtime runs OpenClaw inside each sandbox.
+
+## What You Need
+
+- An OpenComputer API key for the SDK layer
+- A running `clawputer-api` service
+- A reachable OpenClaw runtime image
+
+## SDK Example
+
+Install the SDK:
+
+```bash
+npm install @opencomputer/sdk
+```
+
+Create a managed client:
+
+```ts
+import { ManagedClaw } from "@opencomputer/sdk";
+
+const claw = new ManagedClaw({
+  apiUrl: "http://localhost:8081",
+  opencomputerApiKey: process.env.OPENCOMPUTER_API_KEY,
+});
+```
+
+Create a fleet, provision an agent, and send a message:
+
+```ts
+const fleet = await claw.fleets.create({
+  name: "Local Managed Claw",
+  instructions: "You are a concise assistant.",
+  model: "openrouter/openai/gpt-5.5",
+  runtime: {
+    image: "opencomputerdeveuacr.azurecr.io/openclaw-managed:2026.5.2-npm",
+    sandboxTimeoutSeconds: 0,
+  },
+});
+
+const agent = await claw.agents.getOrCreate({
+  externalUserId: "local-test-user",
+  displayName: "Local Test User",
+  fleetId: fleet.id,
+});
+
+const reply = await claw.agents.sendMessage(agent.id, "Say hello in one short sentence.");
+console.log(reply.replyText);
+```
+
+## API Service Example
+
+The API service expects the OpenComputer key per request, not in server env. The SDK forwards it as `x-opencomputer-api-key`.
+
+Run the API:
+
+```bash
+cd clawputer-api
+export DATABASE_URL="..."
+export OPENCLAW_IMAGE="opencomputerdeveuacr.azurecr.io/openclaw-managed:2026.5.2-npm"
+export OPENROUTER_API_KEY="..."
+npm run dev
+```
+
+Then run the SDK example from `sdks/typescript`:
+
+```bash
+export OPENCOMPUTER_API_KEY="..."
+export CLAWPUTER_API_URL="http://localhost:8081"
+npx tsx examples/managed-claw-local.ts
+```
+
+## Current Behavior
+
+- Fleets are persisted in Postgres when `DATABASE_URL` is set.
+- Agents are provisioned into fresh base sandboxes with `timeout: 0`.
+- The managed runtime image is pulled inside the sandbox and started as a container.
+- Messages are forwarded to the OpenClaw gateway in the sandbox and the reply text is returned by the API.
+
+## Notes
+
+- Existing fleets keep their stored runtime image. Changing `OPENCLAW_IMAGE` only affects newly created fleets.
+- The Azure registry hostname must resolve from the sandbox network. If it does not, provisioning fails during `docker pull`.
+- The managed flow is still experimental. The API surface is intentionally small: `fleets.create`, `fleets.get`, `agents.getOrCreate`, `agents.get`, and `agents.sendMessage`.
