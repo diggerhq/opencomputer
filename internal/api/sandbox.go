@@ -16,6 +16,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/edgeclient"
+	"github.com/opensandbox/opensandbox/internal/observability"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
@@ -574,7 +575,18 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		}
 		cfgJSON, _ := json.Marshal(cfgForPersistence(cfg))
 		metadataJSON, _ := json.Marshal(cfg.Metadata)
-		_, _ = s.store.CreateSandboxSessionWithStatus(ctx, sandboxID, orgID, auth.GetUserID(c), template, region, worker.ID, cfgJSON, metadataJSON, "pending", secretStoreID)
+		// Log + report (Sentry) any session-insert failure loudly. The old
+		// `_, _ =` swallow produced D1-only sandboxes: the edge wrote the
+		// sandboxes_index row, the cell PG row never materialized, and every
+		// subsequent kill/hibernate/exec returned "sandbox not found" via
+		// GetSandboxSession. Continuing past the error keeps the user-visible
+		// create path 200 (the gRPC call below still creates the VM), but the
+		// failure now surfaces in logs and Sentry so we can chase root causes
+		// instead of silently producing orphans.
+		if _, insErr := s.store.CreateSandboxSessionWithStatus(ctx, sandboxID, orgID, auth.GetUserID(c), template, region, worker.ID, cfgJSON, metadataJSON, "pending", secretStoreID); insErr != nil {
+			log.Printf("sandbox: PG session insert failed for %s: %v — sandbox will be D1-only until reconciled", sandboxID, insErr)
+			observability.CaptureError(insErr, "area", "sandbox_create", "op", "pg_session_insert", "sandbox_id", sandboxID, "org_id", uuid.UUID(orgID).String())
+		}
 		if worker.GoldenVersion != "" {
 			_ = s.store.SetSandboxGoldenVersion(ctx, sandboxID, worker.GoldenVersion)
 		}

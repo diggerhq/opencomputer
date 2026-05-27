@@ -1,0 +1,7 @@
+-- Restoring the FK requires that every value in sandbox_sessions.secret_store_id
+-- map to a row in cell PG's secret_stores table. Post-cutover that's not true —
+-- D1 is the only source of new stores — so this down migration would fail on
+-- any cell that has accepted post-cutover writes. Left as documentation.
+-- ALTER TABLE sandbox_sessions
+--   ADD CONSTRAINT sandbox_sessions_secret_store_id_fkey
+--   FOREIGN KEY (secret_store_id) REFERENCES secret_stores(id);
