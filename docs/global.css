@@ -1,0 +1,104 @@
+:root {
+  --background: #f8f6f1;
+  --foreground: #131311;
+  --card: #ffffff;
+  --muted-foreground: rgba(19, 19, 17, 0.62);
+  --sidebar-foreground: rgba(19, 19, 17, 0.72);
+  --sidebar-primary: #131311;
+  --border: rgba(19, 19, 17, 0.1);
+  --border-subtle: rgba(19, 19, 17, 0.1);
+  --divider: rgba(19, 19, 17, 0.06);
+  --accent: rgba(19, 19, 17, 0.06);
+  --logo-height: 26px;
+  --header-padding-y: 13px;
+  --layout-gap: 18px;
+  --type-body-size: 15px;
+  --type-heading-1-size: 30px;
+  --type-heading-2-size: 22px;
+  --type-heading-3-size: 18px;
+  --weight-heading: 400;
+  --weight-prose: 430;
+}
+
+.dark {
+  --background: #0f0f0f;
+  --foreground: #dfdfdf;
+  --card: #171717;
+  --muted-foreground: rgba(223, 223, 223, 0.64);
+  --sidebar-foreground: rgba(223, 223, 223, 0.72);
+  --sidebar-primary: #dfdfdf;
+  --border: rgba(223, 223, 223, 0.12);
+  --border-subtle: rgba(223, 223, 223, 0.12);
+  --divider: rgba(223, 223, 223, 0.08);
+  --accent: rgba(223, 223, 223, 0.08);
+}
+
+.slot-logo img {
+  display: none;
+}
+
+.slot-logo span {
+  font-family: "Newsreader", serif !important;
+  font-size: 25px !important;
+  font-weight: 400 !important;
+  letter-spacing: 0.01em !important;
+}
+
+.slot-navbar {
+  background: var(--background);
+}
+
+.slot-navbar-primary {
+  border-radius: 0;
+}
+
+.slot-page main,
+.slot-main {
+  background: var(--background);
+}
+
+.slot-sidebar-left aside {
+  font-size: 14px;
+}
+
+.slot-sidebar-left nav {
+  gap: 22px;
+}
+
+.slot-sidebar-left nav a {
+  line-height: 1.55;
+}
+
+.slot-sidebar-left [class*="uppercase"] {
+  font-family: var(--font-code);
+  font-size: 12px !important;
+  letter-spacing: 0 !important;
+}
+
+.prose,
+.markdown,
+[data-mdx-content] {
+  color: var(--muted-foreground);
+}
+
+.slot-page h1,
+.slot-page h2,
+.slot-page h3,
+.slot-page h4 {
+  color: var(--foreground);
+  font-family: "Newsreader", serif;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.slot-page h1 {
+  line-height: 1.15;
+}
+
+.slot-page p {
+  line-height: 1.65;
+}
+
+.slot-page [class*="rounded"] {
+  border-radius: 0;
+}
