@@ -15,13 +15,11 @@ resident memory consumed by the sandbox process, sampled every 60s.
 </ParamField>
 
 <ParamField query="from" type="string">
-  Lower bound. Accepts either a date (`2026-05-27`, treated as UTC
-  midnight) or a full RFC3339 timestamp. Default: now minus 1 hour.
+  RFC3339 lower bound. Default: now minus 1 hour.
 </ParamField>
 
 <ParamField query="to" type="string">
-  Upper bound. Same format as `from`. Default: now. Window must be ≤
-  30 days.
+  RFC3339 upper bound. Default: now. Window must be ≤ 30 days.
 </ParamField>
 
 ## Response
@@ -185,7 +183,7 @@ running for one minute, `memoryAllocatedGbSeconds` is
 
 ### Use the aggregator for cross-sandbox questions
 
-To rank sandboxes by spend, use [`GET /api/usage`](/api-reference/usage/get-usage)
+To rank sandboxes by usage, use [`GET /api/usage`](/api-reference/usage/get-usage)
 — that endpoint serves cross-sandbox aggregates and supports
 filter/sort/cursor. The per-sandbox endpoint here is for "look at
 this one sandbox in detail."

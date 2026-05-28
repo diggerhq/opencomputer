@@ -3,7 +3,7 @@ title: 'Usage Aggregator'
 api: 'GET /api/usage'
 ---
 
-Aggregate spend grouped by sandbox or by tag. Dollars are not exposed
+Aggregate usage grouped by sandbox or by tag. Dollars are not exposed
 — the platform returns the same physical quantities the invoice is
 computed from. For per-sandbox time-series drilldown (memory
 utilization over time, 1-minute resolution), see
@@ -25,20 +25,19 @@ billing pipeline uses, so the numbers here match the invoice.
 ## Request
 
 <ParamField query="groupBy" type="string" required>
-  `sandbox` for top sandboxes, or `tag:<key>` for spend by tag value.
+  `sandbox` for top sandboxes, or `tag:<key>` for usage by tag value.
   Keys may contain `:` — everything after the first `:` is the tag
   key (so `groupBy=tag:team:payments` groups by the key
   `team:payments`).
 </ParamField>
 
 <ParamField query="from" type="string">
-  Inclusive lower bound. Accepts either a date (`2026-05-27`, treated
-  as UTC midnight) or a full RFC3339 timestamp. Default: now minus
-  30 days. Max window: 90 days.
+  RFC3339 inclusive lower bound. Default: now minus 30 days. Max
+  window: 90 days.
 </ParamField>
 
 <ParamField query="to" type="string">
-  Exclusive upper bound. Same format as `from`. Default: now.
+  RFC3339 exclusive upper bound. Default: now.
 </ParamField>
 
 <ParamField query="filter[tag:<key>]" type="string">

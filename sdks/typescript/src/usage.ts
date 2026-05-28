@@ -4,6 +4,17 @@
 // intentionally mirrors the server's "physical quantity" model so
 // the invoice stays the source of truth for currency.
 
+function resolveApiUrl(url: string): string {
+  const base = url.replace(/\/+$/, "");
+  return base.endsWith("/api") ? base : `${base}/api`;
+}
+
+async function throwApiError(resp: Response, action: string): Promise<never> {
+  const body = await resp.text();
+  const detail = body ? ` ${body}` : "";
+  throw new Error(`Failed to ${action}: ${resp.status}${detail}`);
+}
+
 export interface UsageSandboxItem {
   sandboxId: string;
   alias?: string;
@@ -122,10 +133,14 @@ export interface TagKeyInfo {
 }
 
 export class Usage {
+  private apiUrl: string;
+
   constructor(
-    private apiUrl: string,
+    apiUrl: string,
     private apiKey: string,
-  ) {}
+  ) {
+    this.apiUrl = resolveApiUrl(apiUrl);
+  }
 
   private get headers(): Record<string, string> {
     const h: Record<string, string> = { "Content-Type": "application/json" };
@@ -147,7 +162,7 @@ export class Usage {
     return s ? `?${s}` : "";
   }
 
-  /** `GET /usage?groupBy=sandbox` — top sandboxes by spend. */
+  /** `GET /usage?groupBy=sandbox` — top sandboxes by usage. */
   async bySandbox(opts: UsageQueryOpts = {}): Promise<UsageBySandboxResponse> {
     const qs = this.buildQueryString({
       groupBy: "sandbox",
@@ -158,11 +173,11 @@ export class Usage {
       cursor: opts.cursor,
     }, opts.filter);
     const resp = await fetch(`${this.apiUrl}/usage${qs}`, { headers: this.headers });
-    if (!resp.ok) throw new Error(`Failed to fetch usage: ${resp.status}`);
+    if (!resp.ok) await throwApiError(resp, "fetch usage");
     return resp.json();
   }
 
-  /** `GET /usage?groupBy=tag:<key>` — spend per tag value, plus untagged sibling bucket. */
+  /** `GET /usage?groupBy=tag:<key>` — usage per tag value, plus untagged sibling bucket. */
   async byTag(tagKey: string, opts: UsageQueryOpts = {}): Promise<UsageByTagResponse> {
     const qs = this.buildQueryString({
       groupBy: `tag:${tagKey}`,
@@ -173,7 +188,7 @@ export class Usage {
       cursor: opts.cursor,
     }, opts.filter);
     const resp = await fetch(`${this.apiUrl}/usage${qs}`, { headers: this.headers });
-    if (!resp.ok) throw new Error(`Failed to fetch usage: ${resp.status}`);
+    if (!resp.ok) await throwApiError(resp, "fetch usage");
     return resp.json();
   }
 
@@ -181,16 +196,20 @@ export class Usage {
   async forSandbox(sandboxId: string, opts: Pick<UsageQueryOpts, "from" | "to"> = {}): Promise<SandboxUsageResponse> {
     const qs = this.buildQueryString({ from: opts.from, to: opts.to });
     const resp = await fetch(`${this.apiUrl}/sandboxes/${sandboxId}/usage${qs}`, { headers: this.headers });
-    if (!resp.ok) throw new Error(`Failed to fetch sandbox usage: ${resp.status}`);
+    if (!resp.ok) await throwApiError(resp, "fetch sandbox usage");
     return resp.json();
   }
 }
 
 export class Tags {
+  private apiUrl: string;
+
   constructor(
-    private apiUrl: string,
+    apiUrl: string,
     private apiKey: string,
-  ) {}
+  ) {
+    this.apiUrl = resolveApiUrl(apiUrl);
+  }
 
   private get headers(): Record<string, string> {
     const h: Record<string, string> = { "Content-Type": "application/json" };
@@ -201,7 +220,7 @@ export class Tags {
   /** `GET /tags` — discovery of all tag keys across the org. */
   async listKeys(): Promise<TagKeyInfo[]> {
     const resp = await fetch(`${this.apiUrl}/tags`, { headers: this.headers });
-    if (!resp.ok) throw new Error(`Failed to list tag keys: ${resp.status}`);
+    if (!resp.ok) await throwApiError(resp, "list tag keys");
     const body = await resp.json();
     return body.keys;
   }
@@ -209,7 +228,7 @@ export class Tags {
   /** `GET /sandboxes/:id/tags` — current tag set. */
   async get(sandboxId: string): Promise<{ tags: Record<string, string>; tagsLastUpdatedAt: string | null }> {
     const resp = await fetch(`${this.apiUrl}/sandboxes/${sandboxId}/tags`, { headers: this.headers });
-    if (!resp.ok) throw new Error(`Failed to get tags: ${resp.status}`);
+    if (!resp.ok) await throwApiError(resp, "get tags");
     return resp.json();
   }
 
@@ -220,7 +239,7 @@ export class Tags {
       headers: this.headers,
       body: JSON.stringify(tags),
     });
-    if (!resp.ok) throw new Error(`Failed to set tags: ${resp.status}`);
+    if (!resp.ok) await throwApiError(resp, "set tags");
     return resp.json();
   }
 }

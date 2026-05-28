@@ -7,8 +7,9 @@
 // or the reconciliation invariant against GetOrgUsage. Those live here.
 //
 // Run locally:
-//   TEST_DATABASE_URL=postgres://user:pass@localhost:5432/dbname?sslmode=disable \
-//     go test -tags=pgfixture ./internal/db/ -run UsagePoints -v
+//
+//	TEST_DATABASE_URL=postgres://user:pass@localhost:5432/dbname?sslmode=disable \
+//	  go test -tags=pgfixture ./internal/db/ -run UsagePoints -v
 package db
 
 import (
@@ -81,10 +82,10 @@ func seedSandboxUsagePointsFixture(t *testing.T, store *Store, orgID uuid.UUID, 
 	insertSE(2048, t0.Add(-1*time.Hour), resizeAt)
 	insertSE(4096, resizeAt, stoppedAt)
 
-	insertSamples(0, 6*60, 2048, 1_400_000_000)        // Phase A
-	insertSamples(6*60, 8*60, 4096, 2_800_000_000)     // Phase B
+	insertSamples(0, 6*60, 2048, 1_400_000_000)    // Phase A
+	insertSamples(6*60, 8*60, 4096, 2_800_000_000) // Phase B
 	// Gap: 8*60..9*60 — no samples
-	insertSamples(9*60, 18*60, 4096, 3_500_000_000)    // Phase C
+	insertSamples(9*60, 18*60, 4096, 3_500_000_000) // Phase C
 }
 
 // TestSandboxUsagePoints_Shape_pgfixture asserts the bucket grid, the
@@ -178,6 +179,40 @@ func TestSandboxUsagePoints_Shape_pgfixture(t *testing.T) {
 	}
 }
 
+func TestSandboxUsagePoints_PartialBucketAllocatedPeak_pgfixture(t *testing.T) {
+	ctx := context.Background()
+	store := openPgStore(t)
+
+	orgID := uuid.New()
+	sandboxID := freshSandboxID("sbx-usage-partial-peak")
+	t0 := time.Now().UTC().Truncate(time.Hour).Add(-24 * time.Hour)
+	seedSandboxUsagePointsFixture(t, store, orgID, sandboxID, t0)
+
+	// The fixture resizes from 2048MB to 4096MB at t0+6h30s.
+	// Query only 5 seconds inside the post-resize side of that bucket.
+	// allocatedMemoryMb remains the bucket-normalized chart value, but
+	// the envelope peak should still report the actual tier encountered.
+	from := t0.Add(6*time.Hour + 45*time.Second)
+	to := t0.Add(6*time.Hour + 50*time.Second)
+	points, totals, err := store.SandboxUsagePoints(ctx, orgID, sandboxID, from, to)
+	if err != nil {
+		t.Fatalf("SandboxUsagePoints: %v", err)
+	}
+	if got, want := len(points), 1; got != want {
+		t.Fatalf("len(points) = %d, want %d", got, want)
+	}
+	if points[0].UptimeSeconds != 5 {
+		t.Errorf("points[0].UptimeSeconds = %d, want 5", points[0].UptimeSeconds)
+	}
+	assertClose(t, "points[0].MemoryAllocatedGbSeconds", 20, points[0].MemoryAllocatedGbSeconds)
+	if points[0].AllocatedMemoryMb != 341 {
+		t.Errorf("points[0].AllocatedMemoryMb = %d, want 341 (4096MB * 5/60)", points[0].AllocatedMemoryMb)
+	}
+	if totals.MemoryAllocatedPeakMb != 4096 {
+		t.Errorf("totals.MemoryAllocatedPeakMb = %d, want 4096", totals.MemoryAllocatedPeakMb)
+	}
+}
+
 // TestSandboxUsagePoints_SumInvariant_pgfixture pins the contract that
 // Σ points.* == totals.* exactly (Go-side sum, not a separate query),
 // for every additive field. If this drifts, the response shape breaks
@@ -265,7 +300,7 @@ func TestSandboxUsagePoints_Boundary_pgfixture(t *testing.T) {
 	// Anchor everything to a known minute so the fractional math is
 	// reproducible regardless of when the test runs.
 	anchor := time.Now().UTC().Truncate(time.Hour)
-	from := anchor.Add(30 * time.Second)  // mid-minute lower bound
+	from := anchor.Add(30 * time.Second)             // mid-minute lower bound
 	to := anchor.Add(1*time.Minute + 45*time.Second) // mid-minute upper bound; 75s window total
 
 	// Scale event covers the entire window and beyond.

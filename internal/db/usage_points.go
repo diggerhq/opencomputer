@@ -138,6 +138,7 @@ allocated AS (
   SELECT
     bucket_ts,
     SUM(memory_mb::float * overlap_seconds) / 60.0           AS weighted_memory_mb,
+    MAX(memory_mb) FILTER (WHERE overlap_seconds > 0)         AS peak_memory_mb,
     SUM(memory_mb::float / 1024.0 * overlap_seconds)         AS gb_seconds,
     COALESCE(SUM(overlap_seconds)::int, 0)                   AS uptime_seconds
   FROM event_overlap
@@ -147,6 +148,7 @@ SELECT
   b.ts,
   COALESCE(a.gb_seconds, 0)::float                                       AS memory_allocated_gb_seconds,
   COALESCE(a.weighted_memory_mb, 0)::int                                 AS allocated_memory_mb,
+  COALESCE(a.peak_memory_mb, 0)::int                                      AS allocated_memory_peak_mb,
   COALESCE(s.memory_bytes_avg::float / 1073741824.0 * 60, 0)             AS memory_used_gb_seconds,
   COALESCE((s.memory_bytes_avg / 1024 / 1024)::int, 0)                   AS used_memory_mb_avg,
   COALESCE((s.memory_bytes_peak / 1024 / 1024)::int, 0)                  AS used_memory_mb_peak,
@@ -193,10 +195,12 @@ func (s *Store) SandboxUsagePoints(ctx context.Context, orgID uuid.UUID, sandbox
 	var totals SandboxUsageTotals
 	for rows.Next() {
 		var p UsagePoint
+		var allocatedMemoryPeakMb int
 		if err := rows.Scan(
 			&p.Timestamp,
 			&p.MemoryAllocatedGbSeconds,
 			&p.AllocatedMemoryMb,
+			&allocatedMemoryPeakMb,
 			&p.MemoryUsedGbSeconds,
 			&p.UsedMemoryMbAvg,
 			&p.UsedMemoryMbPeak,
@@ -209,8 +213,8 @@ func (s *Store) SandboxUsagePoints(ctx context.Context, orgID uuid.UUID, sandbox
 		totals.MemoryAllocatedGbSeconds += p.MemoryAllocatedGbSeconds
 		totals.MemoryUsedGbSeconds += p.MemoryUsedGbSeconds
 		totals.UptimeSeconds += p.UptimeSeconds
-		if p.AllocatedMemoryMb > totals.MemoryAllocatedPeakMb {
-			totals.MemoryAllocatedPeakMb = p.AllocatedMemoryMb
+		if allocatedMemoryPeakMb > totals.MemoryAllocatedPeakMb {
+			totals.MemoryAllocatedPeakMb = allocatedMemoryPeakMb
 		}
 		if p.UsedMemoryMbPeak > totals.MemoryUsedPeakMb {
 			totals.MemoryUsedPeakMb = p.UsedMemoryMbPeak

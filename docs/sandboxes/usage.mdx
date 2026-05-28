@@ -8,7 +8,7 @@ returns a per-minute time series of a sandbox's memory — both the
 tier you provisioned and what the process actually consumed —
 together with envelope totals. Use it to answer "am I over-paying for
 this sandbox" or "when did memory spike?" For cross-sandbox
-leaderboards (rank by spend, group by tag) see the aggregator at
+leaderboards (rank by usage, group by tag) see the aggregator at
 [`GET /api/usage`](/api-reference/usage/get-usage) instead.
 
 ## Example
@@ -85,13 +85,12 @@ falls out of `points[]` directly: `allocatedMemoryMb` is the step,
 ## Request
 
 ```http
-GET /api/sandboxes/sb-abc/usage?from=2026-05-27&to=2026-05-28
+GET /api/sandboxes/sb-abc/usage?from=2026-05-27T00:00:00Z&to=2026-05-27T01:00:00Z
 ```
 
-Path carries the sandbox ID. `from` and `to` accept either a date
-(`2026-05-27`, interpreted as UTC midnight) or a full timestamp
-(`2026-05-27T15:30:00Z`). Both are optional — omit for the last
-hour. Max window is **30 days**. Full param reference: the
+Path carries the sandbox ID. `from` and `to` are optional RFC3339
+timestamps; omit them for the last hour. Max window is **30 days**.
+Full param reference: the
 [API page](/api-reference/usage/get-sandbox-usage).
 
 ## Response
@@ -141,7 +140,10 @@ Both are in **GiB-seconds** (binary, 2<sup>30</sup> bytes/GiB), so
 ```typescript TypeScript
 import { Usage } from "@opencomputer/sdk";
 
-const usage = new Usage("https://app.opencomputer.dev", process.env.OC_API_KEY!);
+const usage = new Usage(
+  "https://app.opencomputer.dev",
+  process.env.OPENCOMPUTER_API_KEY!,
+);
 
 // Default window = last 1 hour. Pass `from`/`to` for up to 30 days.
 const r = await usage.forSandbox("sb-abc");
@@ -154,11 +156,13 @@ for (const p of r.points) {
 ```
 
 ```bash cURL
-curl -s "$OC_API_URL/api/sandboxes/sb-abc/usage?from=2026-05-27T00:00:00Z&to=2026-05-27T01:00:00Z" \
-  -H "X-API-Key: $OC_API_KEY" | jq '.totals'
+curl -s "$OPENCOMPUTER_API_URL/api/sandboxes/sb-abc/usage?from=2026-05-27T00:00:00Z&to=2026-05-27T01:00:00Z" \
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" | jq '.totals'
 ```
 
 </CodeGroup>
+
+Full TypeScript SDK reference: [Usage & Tags](/reference/typescript-sdk/usage).
 
 ## Bucket semantics
 

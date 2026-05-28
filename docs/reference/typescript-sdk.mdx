@@ -10,7 +10,7 @@ npm install @opencomputer/sdk
 ```
 
 ```typescript
-import { Sandbox } from "@opencomputer/sdk";
+import { Sandbox, Usage, Tags } from "@opencomputer/sdk";
 import { Image } from "@opencomputer/sdk/dist/image.js";
 import { Snapshots } from "@opencomputer/sdk/dist/snapshot.js";
 ```
@@ -34,7 +34,7 @@ Create a new sandbox.
 | `envs` | Record\<string, string\> | — | Environment variables |
 | `metadata` | Record\<string, string\> | — | Arbitrary metadata |
 | `cpuCount` | number | — | CPU cores (1, 2, or 4) |
-| `memoryMB` | number | — | Memory in MB (1024, 4096, 8192, or 16384) |
+| `memoryMB` | number | — | Memory in MB (1024, 4096, 8192, 16384, 32768, or 65536) |
 | `image` | Image | — | Declarative image definition (see [Image](#image)) |
 | `snapshot` | string | — | Name of a pre-built snapshot |
 | `onBuildLog` | `(log: string) => void` | — | Build log callback (when using `image`) |
@@ -243,6 +243,86 @@ interface PreviewURLResult {
   createdAt: string;
 }
 ```
+
+---
+
+## Usage & Tags
+
+Query billing-aligned usage, inspect per-sandbox memory points, and
+manage sandbox tags used for grouping. Full reference:
+[Usage & Tags](/reference/typescript-sdk/usage).
+
+```typescript
+const usage = new Usage("https://app.opencomputer.dev", process.env.OPENCOMPUTER_API_KEY!);
+const tags = new Tags("https://app.opencomputer.dev", process.env.OPENCOMPUTER_API_KEY!);
+```
+
+### `usage.forSandbox(sandboxId, opts?): Promise<SandboxUsageResponse>`
+
+Return 1-minute allocated and used memory points for one sandbox.
+`from` and `to` are optional RFC3339 timestamps; default window is the
+last hour.
+
+```typescript
+const r = await usage.forSandbox("sb-abc123", {
+  from: "2026-05-27T00:00:00Z",
+  to: "2026-05-27T01:00:00Z",
+});
+
+console.log(r.totals.memoryAllocatedGbSeconds, r.totals.memoryUsedGbSeconds);
+```
+
+### `usage.bySandbox(opts?): Promise<UsageBySandboxResponse>`
+
+Rank sandboxes by usage. Supports RFC3339 `from` / `to`,
+`filter`, `sort`, `limit`, and `cursor`.
+
+```typescript
+const page = await usage.bySandbox({
+  filter: { "tag:team": "payments" },
+  limit: 20,
+});
+```
+
+### `usage.byTag(tagKey, opts?): Promise<UsageByTagResponse>`
+
+Group usage by one tag key, with an `untagged` sibling bucket.
+
+```typescript
+const byTeam = await usage.byTag("team", {
+  filter: { "tag:env": "prod" },
+});
+```
+
+### `tags.set(sandboxId, tags): Promise<{ tags; tagsLastUpdatedAt }>`
+
+Replace the full tag set for a sandbox. `{}` clears all tags.
+
+```typescript
+await tags.set("sb-abc123", {
+  team: "payments",
+  env: "prod",
+});
+```
+
+### `tags.get(sandboxId): Promise<{ tags; tagsLastUpdatedAt }>`
+
+Read the current tag set for a sandbox.
+
+```typescript
+const current = await tags.get("sb-abc123");
+```
+
+### `tags.listKeys(): Promise<TagKeyInfo[]>`
+
+List tag keys seen in the organization.
+
+```typescript
+const keys = await tags.listKeys();
+```
+
+All `*GbSeconds` fields are GiB-seconds. For example, 4096 MiB
+provisioned for one minute reports `240` `memoryAllocatedGbSeconds`.
 
 ---
 

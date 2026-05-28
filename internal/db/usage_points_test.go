@@ -32,6 +32,7 @@ func TestBuildSandboxUsagePointsQuery_Shape(t *testing.T) {
 		"scale-event filter org-scoped":       "e.org_id    = $1",
 		"scale-event filter sandbox-scoped":   "e.sandbox_id = $2",
 		"weighted memory_mb computation":      "weighted_memory_mb",
+		"peak memory_mb computation":          "peak_memory_mb",
 		"gb-seconds integration":              "memory_mb::float / 1024.0",
 		"used GiB-seconds from memory_bytes":  "memory_bytes_avg::float / 1073741824.0",
 		"uptime derived from overlap":         "a.uptime_seconds",

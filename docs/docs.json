@@ -124,6 +124,7 @@
           "reference/typescript-sdk/overview",
           "reference/typescript-sdk/sandbox",
           "reference/typescript-sdk/scaling",
+          "reference/typescript-sdk/usage",
           "reference/typescript-sdk/exec",
           "reference/typescript-sdk/filesystem",
           "reference/typescript-sdk/pty",
