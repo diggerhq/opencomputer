@@ -4,24 +4,25 @@ api: 'GET /api/usage'
 ---
 
 Aggregate spend grouped by sandbox or by tag. Dollars are not exposed
-— Stripe owns pricing, and this endpoint returns the same physical
-quantities the invoice is computed from.
+— the platform returns the same physical quantities the invoice is
+computed from. For per-sandbox time-series drilldown (memory
+utilization over time, 1-minute resolution), see
+[`GET /api/sandboxes/:id/usage`](/api-reference/usage/get-sandbox-usage).
 
 <Note>
 All `*GbSeconds` fields are **GiB-seconds** (binary, 2<sup>30</sup>
 bytes/GiB), not decimal GB. For a sandbox provisioned at 1024 MiB
-running for one second, `memoryGbSeconds` is 1.
+running for one second, `memoryGbSeconds` is `1`.
 </Note>
 
 <Note>
-Freshness: accurate to the minute for cleanly-shutdown sandboxes.
-A silently-dead worker leaves scale events open until the worker
-restarts; until then, accrual keeps going. This is the same behavior
-as the Stripe pipeline.
+Freshness: accurate to the minute under normal conditions. A sandbox
+that exited uncleanly continues to accrue against its provisioned
+tier until the platform reconciles state — the same behavior the
+billing pipeline uses, so the numbers here match the invoice.
 </Note>
 
-For per-sandbox time-series drilldown (memory utilization over time,
-1-minute resolution), see [`GET /api/sandboxes/:id/usage`](/api-reference/usage/get-sandbox-usage).
+## Request
 
 <ParamField query="groupBy" type="string" required>
   `sandbox` for top sandboxes, or `tag:<key>` for spend by tag value.
@@ -31,12 +32,12 @@ For per-sandbox time-series drilldown (memory utilization over time,
 </ParamField>
 
 <ParamField query="from" type="string">
-  ISO-8601 inclusive lower bound. Default: now minus 30 days. Max
+  RFC3339 inclusive lower bound. Default: now minus 30 days. Max
   window: 90 days.
 </ParamField>
 
 <ParamField query="to" type="string">
-  ISO-8601 exclusive upper bound. Default: now.
+  RFC3339 exclusive upper bound. Default: now.
 </ParamField>
 
 <ParamField query="filter[tag:<key>]" type="string">
@@ -59,6 +60,115 @@ For per-sandbox time-series drilldown (memory utilization over time,
 <ParamField query="cursor" type="string">
   Opaque cursor from a prior response's `nextCursor`.
 </ParamField>
+
+## Response
+
+<ResponseField name="from" type="string" required>
+  RFC3339 echo of the effective window lower bound.
+</ResponseField>
+
+<ResponseField name="to" type="string" required>
+  RFC3339 echo of the effective window upper bound.
+</ResponseField>
+
+<ResponseField name="groupBy" type="string" required>
+  Echo of the requested `groupBy` value.
+</ResponseField>
+
+<ResponseField name="total" type="object" required>
+  Aggregate across **all rows matching the window and filters**, not
+  just the current page. Use this for headline numbers; sum `items[]`
+  if you need a per-page subtotal instead.
+
+  <Expandable title="properties">
+    <ResponseField name="memoryGbSeconds" type="number" required>
+      Total provisioned memory × time across matching sandboxes, in
+      GiB-seconds.
+    </ResponseField>
+
+    <ResponseField name="diskOverageGbSeconds" type="number" required>
+      Total disk-overage × time. Disk usage within the free
+      allowance does not contribute; this is the billable excess.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="items" type="object[]" required>
+  Paginated rows, sorted by `sort` (default: largest first).
+
+  When `groupBy=sandbox`, each row is one sandbox:
+
+  <Expandable title="groupBy=sandbox row">
+    <ResponseField name="sandboxId" type="string" required>
+      The sandbox identifier.
+    </ResponseField>
+    <ResponseField name="alias" type="string">
+      Display name set at create time. Absent when none was provided.
+    </ResponseField>
+    <ResponseField name="status" type="string">
+      Current sandbox status (e.g., `running`, `hibernated`,
+      `stopped`). Absent when no session exists.
+    </ResponseField>
+    <ResponseField name="tags" type="object" required>
+      Current tag set on the sandbox. Empty object when none.
+    </ResponseField>
+    <ResponseField name="tagsLastUpdatedAt" type="string">
+      RFC3339 timestamp of the most recent tag change, or `null` if
+      no tags exist.
+    </ResponseField>
+    <ResponseField name="memoryGbSeconds" type="number" required>
+      Provisioned memory × time for this sandbox in the window.
+    </ResponseField>
+    <ResponseField name="diskOverageGbSeconds" type="number" required>
+      Disk overage × time for this sandbox.
+    </ResponseField>
+  </Expandable>
+
+  When `groupBy=tag:<key>`, each row is one tag value:
+
+  <Expandable title="groupBy=tag row">
+    <ResponseField name="tagKey" type="string" required>
+      The tag key from the request (e.g., `team`).
+    </ResponseField>
+    <ResponseField name="tagValue" type="string" required>
+      The tag value for this group.
+    </ResponseField>
+    <ResponseField name="memoryGbSeconds" type="number" required>
+      Total provisioned memory × time across sandboxes carrying
+      `tagKey=tagValue`.
+    </ResponseField>
+    <ResponseField name="diskOverageGbSeconds" type="number" required>
+      Total disk overage × time for the same group.
+    </ResponseField>
+    <ResponseField name="sandboxCount" type="integer" required>
+      Distinct sandboxes contributing to this row.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="untagged" type="object">
+  Only present when `groupBy=tag:<key>`. Sibling bucket for sandboxes
+  that lack the grouping key — without it, untagged sandboxes would
+  silently disappear from the rollup. Same shape as a tag row minus
+  `tagKey`/`tagValue`.
+
+  <Expandable title="properties">
+    <ResponseField name="memoryGbSeconds" type="number" required>
+      Total provisioned memory × time across untagged sandboxes.
+    </ResponseField>
+    <ResponseField name="diskOverageGbSeconds" type="number" required>
+      Total disk overage × time.
+    </ResponseField>
+    <ResponseField name="sandboxCount" type="integer" required>
+      Distinct sandboxes in the untagged bucket.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="nextCursor" type="string">
+  Opaque cursor to pass as `cursor=` on the next request, or `null`
+  when no further pages exist.
+</ResponseField>
 
 <ResponseExample>
 ```json groupBy=sandbox

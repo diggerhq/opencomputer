@@ -8,6 +8,8 @@ envelope totals. Allocated memory is the tier the sandbox was
 provisioned at, integrated over time; used memory is the actual
 resident memory consumed by the sandbox process, sampled every 60s.
 
+## Request
+
 <ParamField path="id" type="string" required>
   Sandbox ID.
 </ParamField>
@@ -19,6 +21,127 @@ resident memory consumed by the sandbox process, sampled every 60s.
 <ParamField query="to" type="string">
   RFC3339 upper bound. Default: now. Window must be ≤ 30 days.
 </ParamField>
+
+## Response
+
+<ResponseField name="sandboxId" type="string" required>
+  Echo of the requested sandbox ID.
+</ResponseField>
+
+<ResponseField name="alias" type="string">
+  The sandbox's display name (set at create time). Absent if no alias
+  was provided.
+</ResponseField>
+
+<ResponseField name="from" type="string" required>
+  RFC3339 lower bound of the window the response covers — either the
+  caller's `from`, or the server default (`now - 1h`) when omitted.
+</ResponseField>
+
+<ResponseField name="to" type="string" required>
+  RFC3339 upper bound. Either the caller's `to`, or the server
+  default (`now`) when omitted.
+</ResponseField>
+
+<ResponseField name="totals" type="object" required>
+  Envelope totals for the full window. Each additive field equals the
+  sum of the matching field across `points[]` — useful for getting
+  the headline numbers without iterating.
+
+  <Expandable title="properties">
+    <ResponseField name="memoryAllocatedGbSeconds" type="number" required>
+      Total GiB-seconds the sandbox was provisioned for. This is the
+      physical quantity the bill is computed from. For a sandbox at
+      1 GiB running for 1 hour, this is `3600`.
+    </ResponseField>
+
+    <ResponseField name="memoryUsedGbSeconds" type="number" required>
+      Total GiB-seconds the sandbox actually consumed (integrated
+      resident memory). Compare against `memoryAllocatedGbSeconds` to
+      see headroom — `1 - used/allocated` is wasted provisioning.
+    </ResponseField>
+
+    <ResponseField name="uptimeSeconds" type="integer" required>
+      Number of seconds the sandbox was provisioned (i.e., had an
+      open scale event) within the window. A 1-hour window where the
+      sandbox ran the whole time returns `3600`.
+    </ResponseField>
+
+    <ResponseField name="memoryAllocatedPeakMb" type="integer" required>
+      Maximum provisioned memory tier (MiB) seen in the window.
+      Reflects the highest size the sandbox was resized to.
+    </ResponseField>
+
+    <ResponseField name="memoryUsedPeakMb" type="integer" required>
+      Maximum measured resident memory (MiB) in any sample during the
+      window. Useful for detecting workloads that briefly approached
+      their tier ceiling.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="points" type="object[]" required>
+  Time-ordered array of 1-minute buckets covering `[from, to)`.
+  Buckets are minute-aligned in UTC. Boundary buckets are clamped to
+  the original window — a mid-minute `from` produces a partial first
+  bucket whose integrals reflect only the overlap with the requested
+  range.
+
+  Minutes where the sandbox was not provisioned (before first start,
+  after final stop) appear with all fields at `0` rather than as
+  missing entries — gaps read as continuous flat zero on a chart.
+
+  <Expandable title="properties">
+    <ResponseField name="ts" type="string" required>
+      RFC3339 timestamp of the bucket start (minute-aligned, UTC).
+      The bucket covers `[ts, ts + 1 minute)`.
+    </ResponseField>
+
+    <ResponseField name="memoryAllocatedGbSeconds" type="number" required>
+      Provisioned memory integrated over this minute, in GiB-seconds.
+      Summing this across all points reproduces
+      `totals.memoryAllocatedGbSeconds` exactly.
+    </ResponseField>
+
+    <ResponseField name="memoryUsedGbSeconds" type="number" required>
+      Measured resident memory integrated over this minute, in
+      GiB-seconds. Same compositional property — summing reproduces
+      `totals.memoryUsedGbSeconds`.
+    </ResponseField>
+
+    <ResponseField name="uptimeSeconds" type="integer" required>
+      Seconds within this minute the sandbox was provisioned. Usually
+      `60`; `0` when not running; a fractional value (e.g., `30`)
+      appears in the resize or start/stop bucket where the sandbox
+      began or ended part-way through the minute.
+    </ResponseField>
+
+    <ResponseField name="allocatedMemoryMb" type="integer" required>
+      Time-weighted average of the provisioned memory tier (MiB)
+      across this bucket. When a resize falls inside the bucket, this
+      shows the blend (e.g., 30s at 2048 + 30s at 4096 → `3072`).
+      Designed to render directly as a step line on a chart.
+    </ResponseField>
+
+    <ResponseField name="usedMemoryMbAvg" type="integer" required>
+      Average measured resident memory (MiB) across samples that fell
+      in this bucket. The natural Y value for a "memory used" chart.
+    </ResponseField>
+
+    <ResponseField name="usedMemoryMbPeak" type="integer" required>
+      Maximum measured resident memory (MiB) across samples in this
+      bucket. Catches sub-minute spikes that the average smooths out.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Units
+
+All `*GbSeconds` fields are **GiB-seconds** (binary, 2<sup>30</sup>
+bytes/GiB), not decimal GB. For a sandbox provisioned at 1024 MiB
+running for one minute, `memoryAllocatedGbSeconds` is
+`1024/1024 × 60 = 60`. For a measured RSS of 612 MiB,
+`memoryUsedGbSeconds` is `612/1024 × 60 ≈ 35.86`.
 
 <ResponseExample>
 ```json 200
@@ -36,64 +159,31 @@ resident memory consumed by the sandbox process, sampled every 60s.
   },
   "points": [
     {
-      "ts":                          "2026-05-27T00:00:00Z",
-      "memoryAllocatedGbSeconds":         60.0,
-      "memoryUsedGbSeconds":              35.86,
-      "uptimeSeconds":                     60,
-      "allocatedMemoryMb":               1024,
-      "usedMemoryMbAvg":                  612,
-      "usedMemoryMbPeak":                 720
+      "ts":                       "2026-05-27T00:00:00Z",
+      "memoryAllocatedGbSeconds":      60.0,
+      "memoryUsedGbSeconds":           35.86,
+      "uptimeSeconds":                 60,
+      "allocatedMemoryMb":           1024,
+      "usedMemoryMbAvg":              612,
+      "usedMemoryMbPeak":             720
     },
     {
-      "ts":                          "2026-05-27T00:01:00Z",
-      "memoryAllocatedGbSeconds":         60.0,
-      "memoryUsedGbSeconds":              40.02,
-      "uptimeSeconds":                     60,
-      "allocatedMemoryMb":               1024,
-      "usedMemoryMbAvg":                  683,
-      "usedMemoryMbPeak":                 742
+      "ts":                       "2026-05-27T00:01:00Z",
+      "memoryAllocatedGbSeconds":      60.0,
+      "memoryUsedGbSeconds":           40.02,
+      "uptimeSeconds":                 60,
+      "allocatedMemoryMb":           1024,
+      "usedMemoryMbAvg":              683,
+      "usedMemoryMbPeak":             742
     }
   ]
 }
 ```
 </ResponseExample>
 
-### Units
-
-All `*GbSeconds` fields are **GiB-seconds** (binary, 2<sup>30</sup>
-bytes/GiB), not decimal GB. For a sandbox provisioned at 1024 MiB
-running for one minute, `memoryAllocatedGbSeconds` is
-`1024/1024 × 60 = 60`. For a measured RSS of 612 MiB,
-`memoryUsedGbSeconds` is `612/1024 × 60 ≈ 35.86`.
-
-### Reading the response
-
-`totals.memoryAllocatedGbSeconds` is what the bill is computed from —
-the same physical quantity the Stripe pipeline reports. `totals.memoryUsedGbSeconds`
-is the integrated actual RSS; the ratio between the two tells you
-whether the sandbox is over-provisioned.
-
-Each point's `memoryAllocatedGbSeconds` and `memoryUsedGbSeconds`
-integrate over that 1-minute bucket — summing them across any
-subrange reconstructs the integral for that subrange. `totals.*` is
-the server-side sum across all returned points. Snapshot scalars
-(`allocatedMemoryMb`, `usedMemoryMb{Avg,Peak}`) are time-weighted
-averages over the bucket and are intended for chart rendering.
-
-### Bucket semantics
-
-- Buckets are minute-aligned in UTC, not aligned to `from`. The first
-  and last buckets may be partial if `from` / `to` are mid-minute.
-- Minutes where the sandbox is not running emit zero-points
-  (`uptimeSeconds: 0`, all integrals `0`) rather than nulls — gaps
-  read as continuous flat zero on a chart.
-- When a sandbox is resized mid-bucket, `allocatedMemoryMb` shows the
-  time-weighted average across the bucket; subsequent buckets reflect
-  the new tier.
-
 ### Use the aggregator for cross-sandbox questions
 
-To rank sandboxes by spend (or, soon, by actual usage), use
-[`GET /api/usage`](/api-reference/usage/get-usage) — that endpoint
-serves cross-sandbox aggregates and supports filter/sort/cursor. The
-per-sandbox endpoint here is for "look at this one sandbox in detail."
+To rank sandboxes by spend, use [`GET /api/usage`](/api-reference/usage/get-usage)
+— that endpoint serves cross-sandbox aggregates and supports
+filter/sort/cursor. The per-sandbox endpoint here is for "look at
+this one sandbox in detail."
