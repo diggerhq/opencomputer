@@ -82,7 +82,17 @@ Everything on the chart — the resize step, the peak, the brief gap —
 falls out of `points[]` directly: `allocatedMemoryMb` is the step,
 `usedMemoryMbPeak` finds the peak, `uptimeSeconds: 0` marks downtime.
 
-## Response shape
+## Request
+
+```http
+GET /api/sandboxes/{id}/usage?from=<RFC3339>&to=<RFC3339>
+```
+
+Path takes the sandbox ID. `from` and `to` are optional — default is
+the last hour, max window is **30 days**. Full param reference: the
+[API page](/api-reference/usage/get-sandbox-usage).
+
+## Response
 
 ```json
 {
