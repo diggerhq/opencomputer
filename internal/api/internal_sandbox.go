@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -106,8 +107,13 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 	if err := c.Bind(&cfg); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
 	}
+	// Default networkEnabled=true when caller omits it. Same as the public
+	// createSandbox handler. Pre-fix the edge-first path persisted
+	// networkEnabled=false (the zero value) into sandbox_sessions.config_json,
+	// so forks of that sandbox inherited a no-network config.
+	cfg.EnsureNetworkEnabledDefault()
 
-	// Same defaults the public POST /api/sandboxes applies.
+	// Same memory/cpu defaults the public POST /api/sandboxes applies.
 	if cfg.MemoryMB == 0 {
 		cfg.MemoryMB = 4096
 		cfg.CpuCount = 1
@@ -117,6 +123,68 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 	}
 	if err := types.ValidateResourceTier(&cfg); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	// Disk size validation. Pre-fix any value was accepted — customer could
+	// pass diskMB=1 (boot fails opaquely) or diskMB=10_000_000 (allocates
+	// 10TB of storage per sandbox). Mirrors internal/api/sandbox.go bounds.
+	if cfg.DiskMB < 20480 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "diskMB must be at least 20480 (20GB)"})
+	}
+	if cfg.DiskMB > 262144 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "diskMB cannot exceed 262144 (256GB)"})
+	}
+	// Per-org disk gates: free-tier capped at 20GB, paid orgs may have a
+	// custom max_disk_mb. Look up the cell-local org (upserted at top of
+	// this handler from the cap-token claims).
+	if s.store != nil {
+		if org, oerr := s.store.GetOrg(c.Request().Context(), orgID); oerr == nil && org != nil {
+			if org.Plan == "free" && cfg.DiskMB > 20480 {
+				return c.JSON(http.StatusPaymentRequired, map[string]string{"error": "upgrade to pro for larger disk sizes"})
+			}
+			maxDisk := org.MaxDiskMB
+			if maxDisk == 0 {
+				maxDisk = 20480
+			}
+			if cfg.DiskMB > maxDisk {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": fmt.Sprintf("disk size %dMB exceeds org limit of %dMB", cfg.DiskMB, maxDisk)})
+			}
+		}
+	}
+
+	// Declarative image or named snapshot → resolve to a checkpoint and use
+	// the createFromCheckpoint flow. Mirrors the public createSandbox handler
+	// (internal/api/sandbox.go) which gates on this same condition. Pre-fix
+	// this branch was missing from internalCreateSandbox, so every customer
+	// hitting POST /api/sandboxes through the edge-first path with an
+	// `image` or `snapshot` field got a plain base sandbox — the manifest
+	// was silently discarded by createSandboxRemote below. Confirmed by
+	// reproducing with a `run` step that touched a marker file: file was
+	// missing on the resulting sandbox.
+	if len(cfg.ImageManifest) > 0 || cfg.Snapshot != "" {
+		var checkpointID uuid.UUID
+		var err error
+		if cfg.Snapshot != "" {
+			checkpointID, err = s.resolveSnapshot(c.Request().Context(), orgID, cfg.Snapshot)
+		} else {
+			checkpointID, err = s.resolveImageManifest(c.Request().Context(), orgID, cfg.ImageManifest, nil)
+		}
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+
+		// createFromCheckpointCore reads the checkpoint id from the
+		// "checkpointId" path param. Inject it the same way the public
+		// /api/sandboxes/from-checkpoint/:checkpointId route would.
+		c.SetParamNames("checkpointId")
+		c.SetParamValues(checkpointID.String())
+		// Forward user-supplied envs + secret store + metadata so they're
+		// applied at fork time. Same semantics as the public path.
+		result, status, cpErr := s.createFromCheckpointCore(c, cfg.Envs, cfg.SecretStore, cfg.Metadata)
+		if cpErr != nil {
+			return c.JSON(status, map[string]string{"error": cpErr.Error()})
+		}
+		return c.JSON(status, result)
 	}
 
 	// Resolve secret store binding (if cfg.SecretStore is set). The edge-first

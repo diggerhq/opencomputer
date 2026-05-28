@@ -313,9 +313,11 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
   const caller = await authenticate(req, env);
   if (!caller) return json({ error: "missing or invalid API key" }, 401);
 
-  const org = await env.OPENCOMPUTER_DB.prepare("SELECT home_cell, plan, is_halted FROM orgs WHERE id = ?1")
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes FROM orgs WHERE id = ?1",
+  )
     .bind(caller.orgID)
-    .first<{ home_cell: string; plan: string; is_halted: number }>();
+    .first<{ home_cell: string; plan: string; is_halted: number; max_concurrent_sandboxes: number }>();
   if (!org) return json({ error: "org not found" }, 401);
   const plan = org.plan === "pro" ? "pro" : "free";
 
@@ -356,6 +358,43 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
     }
   } catch {
     /* malformed JSON — let the CP reject with a proper 400 */
+  }
+
+  // Org-policy gates that used to live on the cell's public createSandbox
+  // handler but were dropped from the edge-first internalCreateSandbox path
+  // during cutover. Enforce them here in the edge — D1 has all the data
+  // (org plan + max_concurrent_sandboxes + the active sandboxes_index
+  // count) so we don't need a cell round-trip.
+  //
+  // Free-tier instance size: customers on the free plan can't request
+  // bigger than 4GB / 1 vCPU. Pre-fix the limit was silently ignored at
+  // the edge-first path; free users could spin up 64GB / 16 vCPU
+  // instances at no cost.
+  if (plan === "free" && (bodyMemoryMB > 4096 || bodyCpuCount > 1)) {
+    return json({ error: "upgrade to pro for larger instances" }, 402);
+  }
+
+  // Concurrent sandbox limit: every plan has one. D1's sandboxes_index is
+  // the cross-cell source of truth for active counts (status=running OR
+  // hibernated counts toward the limit, since hibernated still costs
+  // S3 storage). Pre-fix Jordan reported running 7 sandboxes against a
+  // (displayed) limit of 5 — the gate wasn't enforced anywhere.
+  const limit = org.max_concurrent_sandboxes ?? 5;
+  const countRow = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status IN ('running', 'hibernated')",
+  )
+    .bind(caller.orgID)
+    .first<{ n: number }>();
+  const active = countRow?.n ?? 0;
+  if (active >= limit) {
+    return json(
+      {
+        error: `concurrent sandbox limit reached (${active}/${limit}) — hibernate or delete one before creating another`,
+        active,
+        limit,
+      },
+      429,
+    );
   }
 
   const cell = await pickCell(env, org.home_cell, requestedCellID);
