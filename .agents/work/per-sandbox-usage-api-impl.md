@@ -4,6 +4,42 @@ Working doc. Design is at `.agents/design/per-sandbox-usage-api.md`,
 signed off. v1 ships **memory only**; CPU is a follow-up gated on the
 `usage_collector.go:103` cgroup `cpu.stat` parse.
 
+## Status (post-implementation)
+
+The implementation has landed on this branch. Outcomes:
+
+- **Q1** (alias in response): kept inline. See design's "What gets
+  dropped" section for the carved-out rationale.
+- **Q2** (bucket alignment): UTC-aligned buckets + per-event overlap
+  clamping to `[$3, $4]` so boundary buckets correctly report only
+  the fraction overlapping the original `from`/`to`. Pinned by
+  `TestSandboxUsagePoints_Boundary_pgfixture`.
+- **Q3** (sample.memory_mb vs scale_events): allocation reads from
+  `sandbox_scale_events` exclusively to keep the billing
+  reconciliation invariant.
+- **Q4** (30d performance): EXPLAIN on the dev box showed acceptable
+  plan; the `event_overlap` CTE materializes one row per (bucket ×
+  scale_event) which Postgres handles fine for the bounded set sizes.
+- **Q5** (pgfixture vs pgtest): pgfixture, matching the existing
+  reconciliation test.
+
+Two additional issues surfaced during review and were fixed in the
+same PR:
+
+- **Boundary clamp bug** (over-reported by up to 2 minutes per call
+  on the default `now-1h..now` window). Same fix as Q2.
+- **Uptime semantics**: switched from "sample present" to
+  "scale-event overlap" so collector outages no longer masquerade as
+  downtime. INNER JOIN (not LEFT) in `event_overlap` to prevent
+  phantom NULL-event rows from emitting full-bucket overlap.
+- **Units**: `memory_bytes / 1073741824` (GiB) to align with the
+  allocation side's `memory_mb / 1024` (also GiB). Wire field names
+  keep the historical `Gb` for backwards compat with the aggregator.
+
+Sections below capture the original plan and the SQL sketch — they
+are historical and do not necessarily reflect the final code. For the
+shipped implementation read `internal/db/usage_points.go` directly.
+
 ## Surfaces
 
 The change touches three layers and three artifacts:
@@ -11,7 +47,7 @@ The change touches three layers and three artifacts:
 | Layer | File | Change |
 |---|---|---|
 | DB query | `internal/db/usage_points.go` (new) | Build the generate-series query that returns 1m points + run server-side totals |
-| HTTP handler | `internal/api/usage.go` | Replace `getSandboxUsage` (line 292) with the new shape. Drop old fields per design — `diskOverageGbSeconds`, `tags`, `tagsLastUpdatedAt`, `status`, `alias`, `firstStartedAt`, `lastEndedAt` |
+| HTTP handler | `internal/api/usage.go` | Replace `getSandboxUsage` (line 292) with the new shape. Drop old fields per design — `diskOverageGbSeconds`, `tags`, `tagsLastUpdatedAt`, `status`, `firstStartedAt`, `lastEndedAt` (keep `alias` per Q1) |
 | Handler tests | `internal/api/usage_test.go` | Replace existing per-sandbox tests, add the cases from Testing strategy |
 | SDK (TS) | `sdks/typescript/src/usage.ts` | Update `getSandboxUsage` types + helper; major bump |
 | SDK (Py) | `sdks/python/opencomputer/usage.py` | Same; major bump |
