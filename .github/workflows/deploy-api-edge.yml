@@ -1,0 +1,97 @@
+name: Deploy API Edge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare-workers/api-edge/**'
+      - 'cloudflare-workers/shared/**'
+      - 'web/**'
+      - '.github/workflows/deploy-api-edge.yml'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Cloudflare Worker target'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+          - prod
+          - dev
+
+concurrency:
+  group: deploy-api-edge
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy API Edge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Resolve target
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET="${{ inputs.target }}"
+          else
+            TARGET="prod"
+          fi
+
+          case "$TARGET" in
+            prod)
+              echo "config=wrangler.prod.toml" >> "$GITHUB_OUTPUT"
+              echo "name=opencomputer-edge-prod" >> "$GITHUB_OUTPUT"
+              ;;
+            dev)
+              echo "config=wrangler.toml" >> "$GITHUB_OUTPUT"
+              echo "name=opensandbox-edge-dev" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "unknown target: $TARGET" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Build dashboard assets
+        working-directory: web
+        env:
+          VITE_PUBLIC_POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
+          VITE_PUBLIC_POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Stage dashboard assets for Worker
+        run: |
+          rm -rf cloudflare-workers/api-edge/assets
+          mkdir -p cloudflare-workers/api-edge/assets
+          cp -R web/dist/. cloudflare-workers/api-edge/assets/
+
+      - name: Install api-edge dependencies
+        working-directory: cloudflare-workers/api-edge
+        run: npm ci
+
+      - name: Test api-edge
+        working-directory: cloudflare-workers/api-edge
+        run: |
+          npm test -- --run
+          npx tsc --noEmit
+
+      - name: Deploy ${{ steps.target.outputs.name }}
+        working-directory: cloudflare-workers/api-edge
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "CLOUDFLARE_API_TOKEN GitHub secret is required for Wrangler deploys" >&2
+            exit 1
+          fi
+          npx wrangler deploy -c "${{ steps.target.outputs.config }}"

@@ -1,6 +1,6 @@
 # API edge WebSocket query auth
 
-Status: **fix implemented on `fix/api-edge-websocket-query-auth`**.
+Status: **completed**. PR #339 merged.
 Implementation commit: `b6e9070`.
 
 ## Summary
