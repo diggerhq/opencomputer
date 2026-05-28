@@ -6,6 +6,12 @@ api: 'PUT /api/sandboxes/{id}/tags'
 Replace the full tag set for a sandbox. Partial updates are not
 supported — GET, modify, PUT. `{}` clears all tags.
 
+<Note>
+  **Preview:** Usage and tag APIs are new. Endpoints, response fields,
+  and SDK method names may change before GA; temporary inaccuracies or
+  rough edges are possible while the surface settles.
+</Note>
+
 <ParamField path="id" type="string" required>
   Sandbox ID.
 </ParamField>

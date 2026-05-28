@@ -252,6 +252,12 @@ Query billing-aligned usage, inspect per-sandbox memory points, and
 manage sandbox tags used for grouping. Full reference:
 [Usage & Tags](/reference/typescript-sdk/usage).
 
+<Note>
+  **Preview:** Usage and tag APIs are new. Endpoints, response fields,
+  and SDK method names may change before GA; temporary inaccuracies or
+  rough edges are possible while the surface settles.
+</Note>
+
 ```typescript
 const usage = new Usage("https://app.opencomputer.dev", process.env.OPENCOMPUTER_API_KEY!);
 const tags = new Tags("https://app.opencomputer.dev", process.env.OPENCOMPUTER_API_KEY!);

@@ -10,6 +10,12 @@ utilization over time, 1-minute resolution), see
 [`GET /api/sandboxes/:id/usage`](/api-reference/usage/get-sandbox-usage).
 
 <Note>
+  **Preview:** Usage and tag APIs are new. Endpoints, response fields,
+  and SDK method names may change before GA; temporary inaccuracies or
+  rough edges are possible while the surface settles.
+</Note>
+
+<Note>
 All `*GbSeconds` fields are **GiB-seconds** (binary, 2<sup>30</sup>
 bytes/GiB), not decimal GB. For a sandbox provisioned at 1024 MiB
 running for one second, `memoryGbSeconds` is `1`.
