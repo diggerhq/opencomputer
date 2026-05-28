@@ -85,12 +85,14 @@ falls out of `points[]` directly: `allocatedMemoryMb` is the step,
 ## Request
 
 ```http
-GET /api/sandboxes/sb-abc/usage?from=2026-05-27T00:00:00Z&to=2026-05-27T01:00:00Z
+GET /api/sandboxes/sb-abc/usage?from=2026-05-27&to=2026-05-28
 ```
 
-Path carries the sandbox ID. `from` and `to` are optional ISO-8601
-timestamps — omit them for the last hour, max window is **30 days**.
-Full param reference: the [API page](/api-reference/usage/get-sandbox-usage).
+Path carries the sandbox ID. `from` and `to` accept either a date
+(`2026-05-27`, interpreted as UTC midnight) or a full timestamp
+(`2026-05-27T15:30:00Z`). Both are optional — omit for the last
+hour. Max window is **30 days**. Full param reference: the
+[API page](/api-reference/usage/get-sandbox-usage).
 
 ## Response
 

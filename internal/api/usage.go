@@ -25,6 +25,22 @@ const (
 	usageHandlerTimeout = 10 * time.Second
 )
 
+// parseUsageTimestamp accepts either a full RFC3339 timestamp
+// (`2026-05-27T15:30:00Z`) or a bare ISO date (`2026-05-27`). Dates
+// are interpreted as UTC midnight — the conventional "start of day"
+// semantics for usage windows. Anything in between (date + time
+// without a timezone) is rejected because the interpretation isn't
+// obvious.
+func parseUsageTimestamp(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("must be an ISO date (YYYY-MM-DD) or RFC3339 timestamp")
+}
+
 // parseUsageQuery reads from / to / groupBy / filter[...] / sort /
 // limit / cursor from the echo request. Returns a fully-validated
 // UsageQuery suitable for handing to the store.
@@ -38,18 +54,18 @@ func parseUsageQuery(c echo.Context) (db.UsageQuery, error) {
 
 	now := time.Now().UTC()
 	if s := c.QueryParam("from"); s != "" {
-		t, err := time.Parse(time.RFC3339, s)
+		t, err := parseUsageTimestamp(s)
 		if err != nil {
-			return q, fmt.Errorf("`from` must be RFC3339: %w", err)
+			return q, fmt.Errorf("`from` %w", err)
 		}
 		q.From = t
 	} else {
 		q.From = now.Add(-usageDefaultWindow)
 	}
 	if s := c.QueryParam("to"); s != "" {
-		t, err := time.Parse(time.RFC3339, s)
+		t, err := parseUsageTimestamp(s)
 		if err != nil {
-			return q, fmt.Errorf("`to` must be RFC3339: %w", err)
+			return q, fmt.Errorf("`to` %w", err)
 		}
 		q.To = t
 	} else {
@@ -304,7 +320,7 @@ const sandboxUsageDefaultWindow = time.Hour
 // once usage_collector.go starts populating cpu_usec.
 func (s *Server) getSandboxUsage(c echo.Context) error {
 	sandboxID := c.Param("id")
-	if err := s.ownsSandbox(c, sandboxID); err != nil {
+	if ok, err := s.ownsSandbox(c, sandboxID); err != nil || !ok {
 		return err
 	}
 
@@ -313,16 +329,16 @@ func (s *Server) getSandboxUsage(c echo.Context) error {
 	now := time.Now().UTC()
 	from, to := now.Add(-sandboxUsageDefaultWindow), now
 	if s := c.QueryParam("from"); s != "" {
-		t, err := time.Parse(time.RFC3339, s)
+		t, err := parseUsageTimestamp(s)
 		if err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "`from` must be RFC3339"})
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("`from` %s", err)})
 		}
 		from = t
 	}
 	if s := c.QueryParam("to"); s != "" {
-		t, err := time.Parse(time.RFC3339, s)
+		t, err := parseUsageTimestamp(s)
 		if err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "`to` must be RFC3339"})
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("`to` %s", err)})
 		}
 		to = t
 	}
