@@ -374,14 +374,16 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
     return json({ error: "upgrade to pro for larger instances" }, 402);
   }
 
-  // Concurrent sandbox limit: every plan has one. D1's sandboxes_index is
-  // the cross-cell source of truth for active counts (status=running OR
-  // hibernated counts toward the limit, since hibernated still costs
-  // S3 storage). Pre-fix Jordan reported running 7 sandboxes against a
-  // (displayed) limit of 5 — the gate wasn't enforced anywhere.
+  // Concurrent sandbox limit: count `running` only, matching legacy
+  // CountActiveSandboxes semantics (internal/db/store.go). Pre-fix this
+  // gate counted `running` + `hibernated`, which 429'd a heavy-hibernation
+  // workload — Mysten Labs had 157 hibernated + 1 running and got
+  // "limit reached (158/20)" even though only 1 was actually consuming
+  // worker capacity. Hibernated sandboxes live in S3 and don't count
+  // against compute capacity, only restore-on-wake potential.
   const limit = org.max_concurrent_sandboxes ?? 5;
   const countRow = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status IN ('running', 'hibernated')",
+    "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'",
   )
     .bind(caller.orgID)
     .first<{ n: number }>();
