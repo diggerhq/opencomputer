@@ -72,8 +72,8 @@ export interface UsageFilterMap {
 }
 
 export interface UsageQueryOpts {
-  from?: string; // RFC3339; default: now - 30d
-  to?: string;
+  from?: string; // ISO date (YYYY-MM-DD) or RFC3339; default: now - 30d
+  to?: string; // ISO date (YYYY-MM-DD) or RFC3339
   filter?: UsageFilterMap;
   sort?: "-memoryGbSeconds" | "-diskOverageGbSeconds";
   limit?: number;

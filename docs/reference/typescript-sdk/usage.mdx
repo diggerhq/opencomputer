@@ -34,11 +34,13 @@ Return 1-minute memory points plus envelope totals for one sandbox.
 </ParamField>
 
 <ParamField body="from" type="string">
-  RFC3339 lower bound. Default: now minus 1 hour.
+  ISO date (`YYYY-MM-DD`) or RFC3339 lower bound. Default: now minus
+  1 hour.
 </ParamField>
 
 <ParamField body="to" type="string">
-  RFC3339 upper bound. Default: now. Window must be at most 30 days.
+  ISO date (`YYYY-MM-DD`) or RFC3339 upper bound. Default: now.
+  Window must be at most 30 days.
 </ParamField>
 
 **Returns:** `Promise<SandboxUsageResponse>`
@@ -67,11 +69,13 @@ for (const point of r.points) {
 Rank sandboxes by usage for an organization. [HTTP API ->](/api-reference/usage/get-usage)
 
 <ParamField body="from" type="string">
-  RFC3339 lower bound. Default: now minus 30 days.
+  ISO date (`YYYY-MM-DD`) or RFC3339 lower bound. Default: now minus
+  30 days.
 </ParamField>
 
 <ParamField body="to" type="string">
-  RFC3339 upper bound. Default: now. Window must be at most 90 days.
+  ISO date (`YYYY-MM-DD`) or RFC3339 upper bound. Default: now.
+  Window must be at most 90 days.
 </ParamField>
 
 <ParamField body="filter" type="Record<string, string>">
@@ -130,11 +134,13 @@ Group usage by the value of one tag key. Tag keys may contain `:`.
 </ParamField>
 
 <ParamField body="from" type="string">
-  RFC3339 lower bound. Default: now minus 30 days.
+  ISO date (`YYYY-MM-DD`) or RFC3339 lower bound. Default: now minus
+  30 days.
 </ParamField>
 
 <ParamField body="to" type="string">
-  RFC3339 upper bound. Default: now. Window must be at most 90 days.
+  ISO date (`YYYY-MM-DD`) or RFC3339 upper bound. Default: now.
+  Window must be at most 90 days.
 </ParamField>
 
 <ParamField body="sort" type="string">

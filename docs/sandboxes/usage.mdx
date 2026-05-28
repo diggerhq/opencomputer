@@ -94,7 +94,8 @@ falls out of `points[]` directly: `allocatedMemoryMb` is the step,
 GET /api/sandboxes/sb-abc/usage?from=2026-05-27T00:00:00Z&to=2026-05-27T01:00:00Z
 ```
 
-Path carries the sandbox ID. `from` and `to` are optional RFC3339
+Path carries the sandbox ID. `from` and `to` are optional and accept
+ISO dates (`YYYY-MM-DD`, interpreted as UTC midnight) or RFC3339
 timestamps; omit them for the last hour. Max window is **30 days**.
 Full param reference: the
 [API page](/api-reference/usage/get-sandbox-usage).

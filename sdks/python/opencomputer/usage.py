@@ -100,7 +100,9 @@ class SandboxUsageTotals:
 @dataclass
 class SandboxUsageResponse:
     """Response for ``GET /sandboxes/:id/usage``. Default window is
-    last 1 hour; max 30 days (server returns 400 beyond that)."""
+    last 1 hour; max 30 days (server returns 400 beyond that).
+    ``from_`` and ``to`` accept ISO dates (``YYYY-MM-DD``) or RFC3339
+    timestamps."""
 
     sandbox_id: str
     from_: str

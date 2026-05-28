@@ -38,12 +38,14 @@ billing pipeline uses, so the numbers here match the invoice.
 </ParamField>
 
 <ParamField query="from" type="string">
-  RFC3339 inclusive lower bound. Default: now minus 30 days. Max
-  window: 90 days.
+  Inclusive lower bound. Accepts either an ISO date (`2026-05-27`,
+  interpreted as UTC midnight) or an RFC3339 timestamp. Default: now
+  minus 30 days. Max window: 90 days.
 </ParamField>
 
 <ParamField query="to" type="string">
-  RFC3339 exclusive upper bound. Default: now.
+  Exclusive upper bound. Same accepted formats as `from`. Default:
+  now.
 </ParamField>
 
 <ParamField query="filter[tag:<key>]" type="string">

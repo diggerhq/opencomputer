@@ -266,8 +266,8 @@ const tags = new Tags("https://app.opencomputer.dev", process.env.OPENCOMPUTER_A
 ### `usage.forSandbox(sandboxId, opts?): Promise<SandboxUsageResponse>`
 
 Return 1-minute allocated and used memory points for one sandbox.
-`from` and `to` are optional RFC3339 timestamps; default window is the
-last hour.
+`from` and `to` accept ISO dates (`YYYY-MM-DD`) or RFC3339
+timestamps; default window is the last hour.
 
 ```typescript
 const r = await usage.forSandbox("sb-abc123", {
@@ -280,7 +280,7 @@ console.log(r.totals.memoryAllocatedGbSeconds, r.totals.memoryUsedGbSeconds);
 
 ### `usage.bySandbox(opts?): Promise<UsageBySandboxResponse>`
 
-Rank sandboxes by usage. Supports RFC3339 `from` / `to`,
+Rank sandboxes by usage. Supports ISO date or RFC3339 `from` / `to`,
 `filter`, `sort`, `limit`, and `cursor`.
 
 ```typescript
