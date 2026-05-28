@@ -343,7 +343,8 @@ async function proxyWebSocket(
     }
     if (ArrayBuffer.isView(data)) {
       const v = data as ArrayBufferView;
-      const ab = v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
+      const ab = new ArrayBuffer(v.byteLength);
+      new Uint8Array(ab).set(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
       addBytes(ab.byteLength);
       try { target.send(ab); } catch (err) { console.error(`${label}: send (view) failed: ${(err as Error).message}`); }
       return Promise.resolve();
