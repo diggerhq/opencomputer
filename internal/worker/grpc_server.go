@@ -70,8 +70,8 @@ type LogshipConfigurator interface {
 type GRPCServer struct {
 	pb.UnimplementedSandboxWorkerServer
 	manager            sandbox.Manager
-	migrator           LiveMigrator      // optional, set if manager supports live migration
-	goldenRebuilder    GoldenRebuilder   // optional, set if manager supports golden rebuild
+	migrator           LiveMigrator    // optional, set if manager supports live migration
+	goldenRebuilder    GoldenRebuilder // optional, set if manager supports golden rebuild
 	router             *sandbox.SandboxRouter
 	ptyManager         *sandbox.PTYManager
 	execSessionManager *sandbox.ExecSessionManager
@@ -249,6 +249,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 			return &pb.CreateSandboxResponse{
 				SandboxId: sb.ID,
 				Status:    string(sb.Status),
+				MemoryMb:  int32(sb.MemoryMB),
 			}, nil
 		}
 		// Cache miss path: try to recover by downloading the checkpoint from
@@ -336,6 +337,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 	return &pb.CreateSandboxResponse{
 		SandboxId: sb.ID,
 		Status:    string(sb.Status),
+		MemoryMb:  int32(sb.MemoryMB),
 	}, nil
 }
 

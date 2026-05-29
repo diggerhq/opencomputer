@@ -177,7 +177,7 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 		c.SetParamValues(checkpointID.String())
 		// Forward user-supplied envs + secret store + metadata so they're
 		// applied at fork time. Same semantics as the public path.
-		result, status, cpErr := s.createFromCheckpointCore(c, cfg.Envs, cfg.SecretStore, cfg.Metadata)
+		result, status, cpErr := s.createFromCheckpointCore(c, cfg.Envs, cfg.SecretStore, cfg.Metadata, cfg.MemoryMB)
 		if cpErr != nil {
 			return c.JSON(status, map[string]string{"error": cpErr.Error()})
 		}

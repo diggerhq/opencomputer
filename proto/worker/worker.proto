@@ -98,6 +98,12 @@ message CreateSandboxRequest {
 message CreateSandboxResponse {
   string sandbox_id = 1;
   string status = 2;
+  // Effective memory of the created sandbox. May differ from
+  // CreateSandboxRequest.memory_mb when forking from a checkpoint: the
+  // snapshot's base memory is the floor (downscale would OOM restored
+  // processes), and the hotplug ceiling caps the upper end. Always reflects
+  // the actual value the sandbox is running at.
+  int32 memory_mb = 3;
 }
 
 message DestroySandboxRequest {

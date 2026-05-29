@@ -514,7 +514,7 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
 
   const cpText = await cpResp.text();
   if (cpResp.status >= 200 && cpResp.status < 300) {
-    let parsed: { sandboxID?: string; workerID?: string; status?: string } = {};
+    let parsed: { sandboxID?: string; workerID?: string; status?: string; memoryMB?: number } = {};
     try {
       parsed = JSON.parse(cpText);
     } catch {
@@ -534,7 +534,7 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
           parsed.workerID ?? null,
           parsed.status ?? "running",
           bodyCpuCount,
-          bodyMemoryMB,
+          parsed.memoryMB ?? bodyMemoryMB,
           Math.floor(Date.now() / 1000),
         )
         .run();
@@ -1485,7 +1485,7 @@ export default {
         });
         const fcText = await fcResp.text();
         if (fcResp.status >= 200 && fcResp.status < 300) {
-          let parsed: { sandboxID?: string; workerID?: string; status?: string } = {};
+          let parsed: { sandboxID?: string; workerID?: string; status?: string; memoryMB?: number } = {};
           try {
             parsed = JSON.parse(fcText);
           } catch {
@@ -1505,7 +1505,7 @@ export default {
                 parsed.workerID ?? null,
                 parsed.status ?? "running",
                 fcCpu,
-                fcMem,
+                parsed.memoryMB ?? fcMem,
                 Math.floor(Date.now() / 1000),
               )
               .run();

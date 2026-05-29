@@ -11,9 +11,9 @@ import (
 	"log"
 	"net"
 	"os"
-	"strconv"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -224,24 +224,24 @@ type VMInstance struct {
 	GuestPort int
 
 	// VM internals
-	pid         int
-	cmd         *exec.Cmd
-	network     *NetworkConfig
-	sandboxDir  string
-	agent       *AgentClient
-	qmpSockPath   string
-	agentSockPath string
-	qmp           *QMPClient
-	guestMAC      string
-	guestCID      uint32
-	bootArgs      string
-	restoring     chan struct{}
-	opMu          sync.Mutex   // serializes destructive VM ops (checkpoint, restore, hibernate)
-	archiveDone   chan struct{} // closed when async hibernate archive completes (nil if no archive in flight)
-	memoryReady   chan struct{} // closed once virtio-mem hotplug has committed enough memory for user workloads (nil = pre-existing hotplug, treat as ready)
-	baseMemoryMB         int    // initial memory passed to -m (before virtio-mem)
-	virtioMemRequestedMB int    // additional memory via virtio-mem (beyond base)
-	goldenVersion        string // golden version this sandbox was created from (empty if cold-booted)
+	pid                  int
+	cmd                  *exec.Cmd
+	network              *NetworkConfig
+	sandboxDir           string
+	agent                *AgentClient
+	qmpSockPath          string
+	agentSockPath        string
+	qmp                  *QMPClient
+	guestMAC             string
+	guestCID             uint32
+	bootArgs             string
+	restoring            chan struct{}
+	opMu                 sync.Mutex    // serializes destructive VM ops (checkpoint, restore, hibernate)
+	archiveDone          chan struct{} // closed when async hibernate archive completes (nil if no archive in flight)
+	memoryReady          chan struct{} // closed once virtio-mem hotplug has committed enough memory for user workloads (nil = pre-existing hotplug, treat as ready)
+	baseMemoryMB         int           // initial memory passed to -m (before virtio-mem)
+	virtioMemRequestedMB int           // additional memory via virtio-mem (beyond base)
+	goldenVersion        string        // golden version this sandbox was created from (empty if cold-booted)
 }
 
 // SandboxMeta is persisted to sandbox-meta.json for recovery after hard kills.
@@ -883,7 +883,7 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	umountCtx, umountCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	_, umountErr := agentClient.Exec(umountCtx, &pb.ExecRequest{
 		Command:   "/bin/sh",
-		Args: []string{"-c", "umount -f /home/sandbox 2>/dev/null; sync; echo 3 > /proc/sys/vm/drop_caches; echo 3 > /proc/sys/vm/drop_caches; blockdev --flushbufs /dev/vdb 2>/dev/null; true"},
+		Args:      []string{"-c", "umount -f /home/sandbox 2>/dev/null; sync; echo 3 > /proc/sys/vm/drop_caches; echo 3 > /proc/sys/vm/drop_caches; blockdev --flushbufs /dev/vdb 2>/dev/null; true"},
 		RunAsRoot: true,
 	})
 	umountCancel()
@@ -2918,18 +2918,18 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	workspaceKey = fmt.Sprintf("checkpoints/%s/%s/workspace.tar.zst", sandboxID, checkpointID)
 
 	meta := &SnapshotMeta{
-		SandboxID:      vm.ID,
-		Network:        vm.network,
-		GuestCID:       vm.guestCID,
-		GuestMAC:       vm.guestMAC,
-		BootArgs:       vm.bootArgs,
-		CpuCount:       vm.CpuCount,
-		MemoryMB:       vm.MemoryMB,
-		BaseMemoryMB:   vm.baseMemoryMB,
-		Template:       vm.Template,
-		GuestPort:      vm.GuestPort,
-		GoldenVersion:  vm.goldenVersion,
-		SnapshotedAt:   time.Now(),
+		SandboxID:     vm.ID,
+		Network:       vm.network,
+		GuestCID:      vm.guestCID,
+		GuestMAC:      vm.guestMAC,
+		BootArgs:      vm.bootArgs,
+		CpuCount:      vm.CpuCount,
+		MemoryMB:      vm.MemoryMB,
+		BaseMemoryMB:  vm.baseMemoryMB,
+		Template:      vm.Template,
+		GuestPort:     vm.GuestPort,
+		GoldenVersion: vm.goldenVersion,
+		SnapshotedAt:  time.Now(),
 	}
 	// Persist secrets proxy state so RestoreFromCheckpoint can re-register the session.
 	if m.secretsProxy != nil && vm.network != nil {
@@ -3435,6 +3435,34 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		memMB = m.cfg.DefaultMemoryMB
 	}
 
+	// memMB is the snapshot's QEMU -m — migration requires destination -m to
+	// match source exactly, so we always launch at base. floorMB is the
+	// snapshot's *running* total (base + virtio-mem plugged at snapshot time):
+	// it's the safe lower bound for a restore because restored processes were
+	// sized for that total, and shrinking below it would OOM them. We reach
+	// the requested size via pre-Cont virtio-mem hotplug (same pattern as
+	// RestoreFromCheckpoint). Hotplug ceiling is the QEMU maxmem set by
+	// buildQEMUArgs (= base + virtio-mem pool, capped at 16GB for base ≤ 16GB).
+	floorMB := meta.MemoryMB
+	if floorMB < memMB {
+		floorMB = memMB // older snapshots without MemoryMB filled in
+	}
+	desiredMemMB := floorMB
+	if cfg.MemoryMB > 0 {
+		hotplugCeilingMB := memMB + max(1024, 16384-memMB)
+		switch {
+		case cfg.MemoryMB < floorMB:
+			log.Printf("qemu: ForkFromCheckpoint %s: requested memoryMB=%d ignored (snapshot was running with %dMB — downscale would OOM restored processes)",
+				id, cfg.MemoryMB, floorMB)
+		case cfg.MemoryMB > hotplugCeilingMB:
+			log.Printf("qemu: ForkFromCheckpoint %s: requested memoryMB=%d clamped to hotplug ceiling %dMB (snapshot base=%d)",
+				id, cfg.MemoryMB, hotplugCeilingMB, memMB)
+			desiredMemMB = hotplugCeilingMB
+		default:
+			desiredMemMB = cfg.MemoryMB
+		}
+	}
+
 	guestCID := m.allocateCID()
 	guestMAC := generateMAC(id)
 	bootArgs := fmt.Sprintf(
@@ -3528,6 +3556,20 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 				cmd.Process.Kill()
 				cmd.Wait()
 				return nil, nil, nil, fmt.Errorf("loadvm: %w", err)
+			}
+		}
+
+		// Honor cfg.MemoryMB above the snapshot base via pre-Cont virtio-mem
+		// plug. VM is paused, so the kernel sees the full memory map on resume —
+		// same pattern as RestoreFromCheckpoint and wake-from-hibernate.
+		if desiredMemMB > memMB {
+			additionalMB := alignVirtioMemBlock(desiredMemMB - memMB)
+			if err := qmpClient.SetVirtioMemSize(additionalMB); err != nil {
+				log.Printf("qemu: ForkFromCheckpoint %s: pre-resume virtio-mem plug to +%dMB failed: %v (continuing at base %dMB)",
+					id, additionalMB, err, memMB)
+			} else {
+				log.Printf("qemu: ForkFromCheckpoint %s: pre-resume virtio-mem +%dMB (base=%d, total=%d)",
+					id, additionalMB, memMB, memMB+additionalMB)
 			}
 		}
 
@@ -3640,29 +3682,31 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		timeout = 300 * time.Second
 	}
 
+	virtioMemAddedMB := alignVirtioMemBlock(desiredMemMB - memMB)
 	vm := &VMInstance{
-		ID:            id,
-		Template:      meta.Template,
-		Status:        types.SandboxStatusRunning,
-		StartedAt:     now,
-		EndAt:         now.Add(timeout),
-		CpuCount:      cpus,
-		MemoryMB:      memMB,
-		baseMemoryMB:  memMB,
-		HostPort:      hostPort,
-		GuestPort:     guestPort,
-		pid:           cmd.Process.Pid,
-		cmd:           cmd,
-		network:       netCfg,
-		sandboxDir:    sandboxDir,
-		qmpSockPath:   qmpSockPath,
-		agentSockPath: agentSockPath,
-		qmp:           qmpClient,
-		guestMAC:      guestMAC,
-		guestCID:      guestCID,
-		bootArgs:      bootArgs,
-		agent:         agent,
-		goldenVersion: m.goldenVersion, // set on wake — VM uses the current base image
+		ID:                   id,
+		Template:             meta.Template,
+		Status:               types.SandboxStatusRunning,
+		StartedAt:            now,
+		EndAt:                now.Add(timeout),
+		CpuCount:             cpus,
+		MemoryMB:             memMB + virtioMemAddedMB,
+		baseMemoryMB:         memMB,
+		virtioMemRequestedMB: virtioMemAddedMB,
+		HostPort:             hostPort,
+		GuestPort:            guestPort,
+		pid:                  cmd.Process.Pid,
+		cmd:                  cmd,
+		network:              netCfg,
+		sandboxDir:           sandboxDir,
+		qmpSockPath:          qmpSockPath,
+		agentSockPath:        agentSockPath,
+		qmp:                  qmpClient,
+		guestMAC:             guestMAC,
+		guestCID:             guestCID,
+		bootArgs:             bootArgs,
+		agent:                agent,
+		goldenVersion:        m.goldenVersion, // set on wake — VM uses the current base image
 	}
 
 	m.mu.Lock()
@@ -3690,7 +3734,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		StartedAt: now,
 		EndAt:     now.Add(timeout),
 		CpuCount:  cpus,
-		MemoryMB:  memMB,
+		MemoryMB:  memMB + virtioMemAddedMB,
 		HostPort:  hostPort,
 	}, nil
 }
