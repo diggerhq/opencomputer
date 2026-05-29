@@ -169,14 +169,13 @@ func (f *EventForwarder) reclaimLoop(ctx context.Context) {
 }
 
 // reclaimOnce recovers messages whose previous owning consumer died (e.g. a CP
-// restart left entries in the PEL). XAUTOCLAIM would be the one-shot way to do
-// this but Azure Cache for Redis 6.0 — what prod runs on — doesn't ship that
-// command (6.2+ only). Trying it produced "ERR unknown command 'xautoclaim'"
-// every 30s and left 60+ events stranded after the post-cutover CP restart,
-// which in turn blocked the dashboard's checkpoint/image lists from catching up.
-// Replacement is the legacy two-step: XPENDING to enumerate stale entries by
-// idle time, then XCLAIM to take ownership. Same semantics, same MinIdle gate,
-// works on every Redis version since 5.0.
+// restart left entries in the PEL). Both XAUTOCLAIM and XPENDING's IDLE filter
+// are Redis 6.2+ features; prod runs Azure Cache for Redis 6.0, where they fail
+// every 30s ("ERR unknown command 'xautoclaim'" / "ERR syntax error"
+// respectively), stranding events after a restart. So we use *plain* XPENDING
+// (5.0+) to enumerate the whole PEL and let XCLAIM's MinIdle (5.0+) gate which
+// entries are stale enough to steal — fresh, in-flight messages fail the
+// MinIdle check and are left to their current owner.
 func (f *EventForwarder) reclaimOnce(ctx context.Context) {
 	start := "-"
 	const batch = 100
@@ -184,7 +183,6 @@ func (f *EventForwarder) reclaimOnce(ctx context.Context) {
 		pending, err := f.rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
 			Stream: f.streamKey,
 			Group:  f.groupName,
-			Idle:   60 * time.Second,
 			Start:  start,
 			End:    "+",
 			Count:  batch,
