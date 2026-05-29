@@ -68,13 +68,12 @@ func (s *Server) setAutoscale(c echo.Context) error {
 		// Without this a free-tier user could PUT max=16GB and the
 		// autoscaler would obediently scale them past their plan. Mirror the
 		// same check we apply in scaleSandbox so the two paths can't diverge.
+		// Plan comes from the cap-token (edge-authoritative) when present.
 		if orgID, hasOrg := auth.GetOrgID(c); hasOrg {
-			if org, err := s.store.GetOrg(c.Request().Context(), orgID); err == nil && org.Plan == "free" {
-				if req.MaxMemoryMB > 4096 {
-					return c.JSON(http.StatusPaymentRequired, map[string]string{
-						"error": "free plan caps autoscale at 4096 MB — upgrade to pro for larger instances",
-					})
-				}
+			if s.effectivePlan(c, orgID) == "free" && req.MaxMemoryMB > 4096 {
+				return c.JSON(http.StatusPaymentRequired, map[string]string{
+					"error": "free plan caps autoscale at 4096 MB — upgrade to pro for larger instances",
+				})
 			}
 		}
 	}
@@ -153,12 +152,26 @@ func (a *AutoscalerSetter) SetSandboxMemoryMB(ctx context.Context, sandboxID str
 		return nil
 	}
 
-	// Defense in depth: re-check the org plan cap here in case the autoscale
-	// row was set before a downgrade or the cap was raised by another path.
-	// The PUT /autoscale handler already enforces this; this is the second
-	// gate so an obsolete row can't keep scaling past plan limits.
-	if org, err := a.server.store.GetOrg(ctx, session.OrgID); err == nil && org.Plan == "free" && memoryMB > 4096 {
-		return fmt.Errorf("plan cap: free plan limited to 4096 MB, refusing autoscale to %d", memoryMB)
+	// Plan cap: the autoscaler runs in-process with no cap-token to read plan
+	// from, so it asks the edge (D1 authority) before growing past the
+	// free-tier ceiling. The cell-PG plan copy is stamped at create and goes
+	// stale on upgrade/downgrade, so it can't be trusted here. Only >4GB
+	// growth needs confirmation; staying within free tier is always allowed.
+	// Fail closed: if we can't confirm the org is pro, don't grow — the
+	// sandbox keeps its current size and the autoscaler retries next tick.
+	if memoryMB > 4096 {
+		if a.server.edge != nil {
+			pol, err := a.server.edge.GetOrgPolicy(ctx, session.OrgID)
+			if err != nil {
+				return fmt.Errorf("autoscale plan check: edge org-policy unavailable: %w", err)
+			}
+			if pol.Plan == "free" {
+				return fmt.Errorf("plan cap: free plan limited to 4096 MB, refusing autoscale to %d", memoryMB)
+			}
+		} else if org, err := a.server.store.GetOrg(ctx, session.OrgID); err == nil && org.Plan == "free" {
+			// No edge client (legacy single-cell mode): fall back to cell PG.
+			return fmt.Errorf("plan cap: free plan limited to 4096 MB, refusing autoscale to %d", memoryMB)
+		}
 	}
 
 	client, err := a.server.workerRegistry.GetWorkerClient(session.WorkerID)

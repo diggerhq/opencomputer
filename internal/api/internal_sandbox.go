@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -53,6 +52,7 @@ func (s *Server) capTokenMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 				auth.SetUserID(c, uid)
 			}
 		}
+		auth.SetPlan(c, claims.Plan)
 		return next(c)
 	}
 }
@@ -125,31 +125,17 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
-	// Disk size validation. Pre-fix any value was accepted — customer could
-	// pass diskMB=1 (boot fails opaquely) or diskMB=10_000_000 (allocates
-	// 10TB of storage per sandbox). Mirrors internal/api/sandbox.go bounds.
+	// Physical disk bounds. These are hardware/safety limits, not org policy:
+	// diskMB=1 boots-fail opaquely, diskMB=10_000_000 would allocate 10TB per
+	// sandbox. Per-org disk ceilings (free-tier cap, custom max_disk_mb) are
+	// enforced at the edge against D1 — see enforceCreatePolicy in
+	// cloudflare-workers/api-edge/src/index.ts. The cell trusts the cap-token
+	// and only checks these physical bounds.
 	if cfg.DiskMB < 20480 {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "diskMB must be at least 20480 (20GB)"})
 	}
 	if cfg.DiskMB > 262144 {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "diskMB cannot exceed 262144 (256GB)"})
-	}
-	// Per-org disk gates: free-tier capped at 20GB, paid orgs may have a
-	// custom max_disk_mb. Look up the cell-local org (upserted at top of
-	// this handler from the cap-token claims).
-	if s.store != nil {
-		if org, oerr := s.store.GetOrg(c.Request().Context(), orgID); oerr == nil && org != nil {
-			if org.Plan == "free" && cfg.DiskMB > 20480 {
-				return c.JSON(http.StatusPaymentRequired, map[string]string{"error": "upgrade to pro for larger disk sizes"})
-			}
-			maxDisk := org.MaxDiskMB
-			if maxDisk == 0 {
-				maxDisk = 20480
-			}
-			if cfg.DiskMB > maxDisk {
-				return c.JSON(http.StatusForbidden, map[string]string{"error": fmt.Sprintf("disk size %dMB exceeds org limit of %dMB", cfg.DiskMB, maxDisk)})
-			}
-		}
 	}
 
 	// Declarative image or named snapshot → resolve to a checkpoint and use
@@ -162,6 +148,17 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 	// reproducing with a `run` step that touched a marker file: file was
 	// missing on the resulting sandbox.
 	if len(cfg.ImageManifest) > 0 || cfg.Snapshot != "" {
+		// SSE: when the client asks for an event stream (both SDKs do for
+		// image/snapshot builds), delegate to createSandboxWithSSE so build
+		// logs stream live and a final `result` event is emitted. The edge
+		// streams this response straight through. Pre-fix this path always
+		// returned a single JSON blob, so the Python SDK — which strictly
+		// expects an SSE `result` event — failed with "No result received
+		// from build stream" (the TS SDK happened to tolerate the JSON).
+		if c.Request().Header.Get("Accept") == "text/event-stream" {
+			return s.createSandboxWithSSE(c, c.Request().Context(), orgID, cfg)
+		}
+
 		var checkpointID uuid.UUID
 		var err error
 		if cfg.Snapshot != "" {

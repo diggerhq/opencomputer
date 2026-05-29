@@ -1168,6 +1168,23 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 	})
 }
 
+// effectivePlan returns the org's billing plan for org-policy gates. It
+// prefers the value the edge stamped into the cap-token (authoritative, fresh
+// from D1) and falls back to the cell-local orgs row for legacy direct-to-cell
+// callers that authenticate with a raw API key (no cap-token). Returns "" when
+// neither source is available, in which case callers should not gate.
+func (s *Server) effectivePlan(c echo.Context, orgID uuid.UUID) string {
+	if plan, ok := auth.GetPlan(c); ok {
+		return plan
+	}
+	if s.store != nil {
+		if org, err := s.store.GetOrg(c.Request().Context(), orgID); err == nil && org != nil {
+			return org.Plan
+		}
+	}
+	return ""
+}
+
 func (s *Server) setLimits(c echo.Context) error {
 	id := c.Param("id")
 	ctx := c.Request().Context()
@@ -1193,14 +1210,13 @@ func (s *Server) setLimits(c echo.Context) error {
 		}
 	}
 
-	// Free tier: block scaling beyond 4GB / 1 vCPU
-	if orgID, hasOrg := auth.GetOrgID(c); hasOrg && s.store != nil {
-		if org, err := s.store.GetOrg(ctx, orgID); err == nil && org.Plan == "free" {
-			if req.MemoryMB > 4096 || req.CPUPercent > 100 {
-				return c.JSON(http.StatusPaymentRequired, map[string]string{
-					"error": "upgrade to pro for larger instances",
-				})
-			}
+	// Free tier: block scaling beyond 4GB / 1 vCPU. Plan comes from the
+	// cap-token (edge-authoritative) when present, else the cell-PG copy.
+	if orgID, hasOrg := auth.GetOrgID(c); hasOrg {
+		if s.effectivePlan(c, orgID) == "free" && (req.MemoryMB > 4096 || req.CPUPercent > 100) {
+			return c.JSON(http.StatusPaymentRequired, map[string]string{
+				"error": "upgrade to pro for larger instances",
+			})
 		}
 	}
 
@@ -1250,14 +1266,13 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
-	// Free tier: block scaling beyond 4GB / 1 vCPU
-	if orgID, hasOrg := auth.GetOrgID(c); hasOrg && s.store != nil {
-		if org, err := s.store.GetOrg(c.Request().Context(), orgID); err == nil && org.Plan == "free" {
-			if req.MemoryMB > 4096 {
-				return c.JSON(http.StatusPaymentRequired, map[string]string{
-					"error": "upgrade to pro for larger instances",
-				})
-			}
+	// Free tier: block scaling beyond 4GB. Plan comes from the cap-token
+	// (edge-authoritative) when present, else the cell-PG copy.
+	if orgID, hasOrg := auth.GetOrgID(c); hasOrg {
+		if s.effectivePlan(c, orgID) == "free" && req.MemoryMB > 4096 {
+			return c.JSON(http.StatusPaymentRequired, map[string]string{
+				"error": "upgrade to pro for larger instances",
+			})
 		}
 	}
 
@@ -2414,21 +2429,12 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 		return nil, http.StatusUnauthorized, fmt.Errorf("org context required")
 	}
 
-	// Enforce per-org concurrency limit on the fork path, mirroring the gate
-	// in the direct-create path at the top of CreateSandbox (around line 50).
-	// Without this, callers using POST /api/sandboxes/from-checkpoint/<id>
-	// (i.e. `oc checkpoint spawn` and equivalent SDK calls) can fork unbounded
-	// sandboxes past their plan's max_concurrent_sandboxes — every other
-	// per-plan gate (free-tier credits, machine size, disk size) is also
-	// missing on this path, but concurrency is the load-bearing one because
-	// it directly drives runaway billing.
-	//
-	// Fail-open on DB errors to match the existing direct-create behavior.
-	if org, gerr := s.store.GetOrg(ctx, orgID); gerr == nil {
-		if count, cerr := s.store.CountActiveSandboxes(ctx, orgID); cerr == nil && count >= org.MaxConcurrentSandboxes {
-			return nil, http.StatusTooManyRequests, fmt.Errorf("concurrent sandbox limit reached")
-		}
-	}
+	// Org-policy gates (concurrency, plan tier, disk) are enforced at the edge
+	// against D1 before this request is dispatched — see enforceCreatePolicy in
+	// cloudflare-workers/api-edge/src/index.ts. A cell can only count its own
+	// sandboxes, so a per-cell concurrency check is wrong once an org spans
+	// cells; the edge counts the global sandboxes_index instead. This handler
+	// trusts the cap-token and only validates physical bounds downstream.
 
 	checkpointID, err := uuid.Parse(checkpointIDStr)
 	if err != nil {

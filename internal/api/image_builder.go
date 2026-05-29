@@ -246,6 +246,12 @@ func (s *Server) resolveImageManifest(ctx context.Context, orgID uuid.UUID, mani
 							log.Printf("image-builder: failed to set name %q on cache entry: %v", manifest.Name, err)
 						} else {
 							log.Printf("image-builder: named cache entry %s as %q", cached.ID, manifest.Name)
+							// Mirror the new name to D1 images_index. SetImageCacheName
+							// only touches cell PG; image_cache_ready is the sole writer
+							// of the images_index name, so re-emit with the updated row.
+							name := manifest.Name
+							cached.Name = &name
+							s.publishImageCacheReadyFrom(ctx, cached)
 						}
 					}
 					log.Printf("image-builder: cache hit for hash %s (checkpoint=%s)", contentHash[:12], cached.CheckpointID)
@@ -309,6 +315,15 @@ func (s *Server) resolveImageManifest(ctx context.Context, orgID uuid.UUID, mani
 			ContentHash: contentHash,
 			Manifest:    manifestJSON,
 			Status:      "building",
+		}
+		// Persist the snapshot name so it propagates to D1 images_index via the
+		// image_cache_ready event below. Without this, a named build lands in
+		// images_index with name=null and is invisible to GET /api/snapshots
+		// (the content hash deliberately excludes Name, so the name only lives
+		// on the row, not the hash).
+		if manifest.Name != "" {
+			name := manifest.Name
+			ic.Name = &name
 		}
 		if err := s.store.CreateImageCache(ctx, ic); err != nil {
 			// Might conflict with concurrent insert — try to read existing

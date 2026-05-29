@@ -19,6 +19,7 @@
 export { CreditAccount } from "../../shared/credit_account";
 import { handleDashboard, type DashboardEnv } from "./dashboard";
 import * as secretStores from "./secret_stores";
+import * as snapshots from "./snapshots";
 import * as templates from "./templates";
 
 export interface Env extends DashboardEnv {
@@ -334,95 +335,138 @@ async function handlePreviewURL(
 
 // ── route handlers ───────────────────────────────────────────────────────
 
-async function createSandbox(req: Request, env: Env): Promise<Response> {
-  const caller = await authenticate(req, env);
-  if (!caller) return json({ error: "missing or invalid API key" }, 401);
+// OrgPolicy is the subset of the D1 `orgs` row the create/fork paths gate on.
+interface OrgPolicy {
+  home_cell: string;
+  plan: string;
+  is_halted: number;
+  max_concurrent_sandboxes: number;
+  max_disk_mb: number;
+}
 
-  const org = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes FROM orgs WHERE id = ?1",
+// loadOrgPolicy reads an org's routing + policy fields from D1. Returns null
+// when the org doesn't exist (callers 401).
+async function loadOrgPolicy(env: Env, orgID: string): Promise<OrgPolicy | null> {
+  return await env.OPENCOMPUTER_DB.prepare(
+    "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb FROM orgs WHERE id = ?1",
   )
-    .bind(caller.orgID)
-    .first<{ home_cell: string; plan: string; is_halted: number; max_concurrent_sandboxes: number }>();
-  if (!org) return json({ error: "org not found" }, 401);
+    .bind(orgID)
+    .first<OrgPolicy>();
+}
+
+// enforceCreatePolicy applies every org-level gate for creating or forking a
+// sandbox, reading authoritative state from D1 (and the CreditAccount DO for
+// free orgs). Returns an error Response to short-circuit, or null when allowed.
+//
+// This is the edge's job post-cutover: cells are interchangeable executors
+// that don't know about each other, so org policy can only be enforced
+// correctly here. The concurrent limit especially — it's a count across the
+// global sandboxes_index, and a per-cell count would let an org exceed its
+// limit once its sandboxes spread across cells.
+//
+// `sizes` carries the caller-requested cpu/mem/disk; 0 means "unspecified"
+// (inherit the checkpoint's value or the default), so size gates skip it —
+// the defaults are always within limits.
+async function enforceCreatePolicy(
+  env: Env,
+  orgID: string,
+  org: OrgPolicy,
+  sizes: { cpuCount: number; memoryMB: number; diskMB: number },
+): Promise<Response | null> {
   const plan = org.plan === "pro" ? "pro" : "free";
 
-  // Gate on billing state BEFORE picking a cell. Free orgs hit the DO
-  // /check for an authoritative balance read; pro orgs skip the round trip.
-  // is_halted is a D1 fast path — if it's 1, we don't even need to ask the DO.
+  // Free-tier billing gate. is_halted is the D1 fast path; otherwise ask the
+  // CreditAccount DO for an authoritative balance read. Pro orgs skip this.
   if (plan === "free") {
     if (org.is_halted === 1) {
       return json({ error: "free trial credits exhausted — upgrade to resume" }, 402);
     }
-    const doID = env.CREDIT_ACCOUNT.idFromName(caller.orgID);
-    const doStub = env.CREDIT_ACCOUNT.get(doID);
-    const checkResp = await doStub.fetch(`https://do/check?org_id=${encodeURIComponent(caller.orgID)}`, {
-      method: "POST",
-    });
+    const doStub = env.CREDIT_ACCOUNT.get(env.CREDIT_ACCOUNT.idFromName(orgID));
+    const checkResp = await doStub.fetch(`https://do/check?org_id=${encodeURIComponent(orgID)}`, { method: "POST" });
     if (checkResp.status !== 200) {
-      // DO failure shouldn't soft-fail open — credit gating exists for a reason.
-      // If the DO is genuinely down we get a 5xx; surface that.
+      // Don't soft-fail open — credit gating exists for a reason. A genuinely
+      // down DO surfaces as a 5xx.
       return json({ error: "credit check unavailable" }, 503);
     }
     const check = await checkResp.json<{ allowed: boolean; balance_cents: number }>();
     if (!check.allowed) {
       return json({ error: "free trial credits exhausted — upgrade to resume", balance_cents: check.balance_cents }, 402);
     }
+    // Free-tier ceilings: 4GB / 1 vCPU, 20GB disk.
+    if (sizes.memoryMB > 4096 || sizes.cpuCount > 1) {
+      return json({ error: "upgrade to pro for larger instances" }, 402);
+    }
+    if (sizes.diskMB > 20480) {
+      return json({ error: "upgrade to pro for larger disk sizes" }, 402);
+    }
   }
 
-  // Read body once — used for the hard-pin peek + forwarded to the CP verbatim.
+  // Per-org disk ceiling (all plans). 0 in D1 means "use the 20GB default".
+  if (sizes.diskMB > 0) {
+    const maxDisk = org.max_disk_mb > 0 ? org.max_disk_mb : 20480;
+    if (sizes.diskMB > maxDisk) {
+      return json({ error: `disk size ${sizes.diskMB}MB exceeds org limit of ${maxDisk}MB` }, 403);
+    }
+  }
+
+  // Concurrent-sandbox limit (all plans). Counts `running` only — hibernated
+  // sandboxes live in S3 and don't consume worker capacity. The count spans
+  // every cell via the global sandboxes_index, which is the whole reason it
+  // must live at the edge and not on any single cell.
+  const limit = org.max_concurrent_sandboxes ?? 5;
+  const countRow = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'",
+  )
+    .bind(orgID)
+    .first<{ n: number }>();
+  const active = countRow?.n ?? 0;
+  if (active >= limit) {
+    return json(
+      { error: `concurrent sandbox limit reached (${active}/${limit}) — hibernate or delete one before creating another`, active, limit },
+      429,
+    );
+  }
+
+  return null;
+}
+
+async function createSandbox(req: Request, env: Env): Promise<Response> {
+  const caller = await authenticate(req, env);
+  if (!caller) return json({ error: "missing or invalid API key" }, 401);
+
+  const org = await loadOrgPolicy(env, caller.orgID);
+  if (!org) return json({ error: "org not found" }, 401);
+  const plan = org.plan === "pro" ? "pro" : "free";
+
+  // Read body once — used for size-gating, the hard-pin cell peek, and the
+  // verbatim forward to the CP.
   const bodyText = await req.text();
   let requestedCellID: string | null = null;
   let bodyCpuCount = 0;
   let bodyMemoryMB = 0;
+  let bodyDiskMB = 0;
   try {
     if (bodyText) {
-      const parsed = JSON.parse(bodyText) as { cellId?: unknown; cpuCount?: unknown; memoryMB?: unknown };
+      const parsed = JSON.parse(bodyText) as { cellId?: unknown; cpuCount?: unknown; memoryMB?: unknown; diskMB?: unknown };
       if (typeof parsed.cellId === "string") requestedCellID = parsed.cellId;
       if (typeof parsed.cpuCount === "number") bodyCpuCount = parsed.cpuCount;
       if (typeof parsed.memoryMB === "number") bodyMemoryMB = parsed.memoryMB;
+      if (typeof parsed.diskMB === "number") bodyDiskMB = parsed.diskMB;
     }
   } catch {
     /* malformed JSON — let the CP reject with a proper 400 */
   }
 
-  // Org-policy gates that used to live on the cell's public createSandbox
-  // handler but were dropped from the edge-first internalCreateSandbox path
-  // during cutover. Enforce them here in the edge — D1 has all the data
-  // (org plan + max_concurrent_sandboxes + the active sandboxes_index
-  // count) so we don't need a cell round-trip.
-  //
-  // Free-tier instance size: customers on the free plan can't request
-  // bigger than 4GB / 1 vCPU. Pre-fix the limit was silently ignored at
-  // the edge-first path; free users could spin up 64GB / 16 vCPU
-  // instances at no cost.
-  if (plan === "free" && (bodyMemoryMB > 4096 || bodyCpuCount > 1)) {
-    return json({ error: "upgrade to pro for larger instances" }, 402);
-  }
-
-  // Concurrent sandbox limit: count `running` only, matching legacy
-  // CountActiveSandboxes semantics (internal/db/store.go). Pre-fix this
-  // gate counted `running` + `hibernated`, which 429'd a heavy-hibernation
-  // workload — Mysten Labs had 157 hibernated + 1 running and got
-  // "limit reached (158/20)" even though only 1 was actually consuming
-  // worker capacity. Hibernated sandboxes live in S3 and don't count
-  // against compute capacity, only restore-on-wake potential.
-  const limit = org.max_concurrent_sandboxes ?? 5;
-  const countRow = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'",
-  )
-    .bind(caller.orgID)
-    .first<{ n: number }>();
-  const active = countRow?.n ?? 0;
-  if (active >= limit) {
-    return json(
-      {
-        error: `concurrent sandbox limit reached (${active}/${limit}) — hibernate or delete one before creating another`,
-        active,
-        limit,
-      },
-      429,
-    );
-  }
+  // Every org-policy gate (billing, instance size, disk, concurrency) is
+  // enforced here against D1. Cells trust the cap-token and no longer
+  // re-check — see enforceCreatePolicy for why the concurrent limit in
+  // particular can only be correct at the edge.
+  const gate = await enforceCreatePolicy(env, caller.orgID, org, {
+    cpuCount: bodyCpuCount,
+    memoryMB: bodyMemoryMB,
+    diskMB: bodyDiskMB,
+  });
+  if (gate) return gate;
 
   const cell = await pickCell(env, org.home_cell, requestedCellID);
   if (!cell) {
@@ -435,6 +479,28 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
   }
 
   const capToken = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, caller.userID);
+
+  // SSE build streaming: image/snapshot creates can take minutes (apt installs,
+  // etc.). When the client asks for an event stream, forward the Accept header
+  // and stream the cell's SSE response straight through — build logs reach the
+  // client live and the final `result` event is delivered intact. Buffering
+  // with .text() (the non-SSE path below) collapsed the stream to one blob,
+  // which broke the Python SDK ("No result received from build stream"). The
+  // sandboxes_index row is populated by the cell's `created` event via the
+  // events pipeline, so we don't need the inline INSERT on this path.
+  const wantsSSE = req.headers.get("accept") === "text/event-stream";
+  if (wantsSSE) {
+    try {
+      return await fetch(cell.base_url.replace(/\/$/, "") + "/internal/sandboxes/create", {
+        method: "POST",
+        headers: { authorization: "Bearer " + capToken, "content-type": "application/json", accept: "text/event-stream" },
+        body: bodyText || "{}",
+      });
+    } catch (e) {
+      return json({ error: `cell ${cell.cell_id} unreachable: ${(e as Error).message}` }, 502);
+    }
+  }
+
   let cpResp: Response;
   try {
     cpResp = await fetch(cell.base_url.replace(/\/$/, "") + "/internal/sandboxes/create", {
@@ -665,6 +731,60 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   return resp;
 }
 
+// proxyToCellAuthed forwards an authenticated SDK/CLI request to a cell with an
+// edge-minted cap-token, replacing the caller's X-API-Key (which the cell can no
+// longer validate — api_keys live in D1 post-cutover). The response is streamed
+// through unbuffered, so SSE build-log streams (image/snapshot create) flow to
+// the client frame-by-frame instead of being collapsed to a single JSON blob.
+//
+// Routing:
+//   - opts.cellId set → route to that specific cell (e.g. owner_cell_id of a
+//     snapshot being deleted; correct in a multi-cell world where the resource
+//     lives in one cell only).
+//   - opts.cellId unset → route to the org's home_cell (new-resource creates).
+//
+// This single helper is the backstop for every SDK route that doesn't have a
+// dedicated D1-native handler: it gives correct auth + routing + streaming
+// without the caller's key ever reaching the cell.
+async function proxyToCellAuthed(
+  req: Request,
+  env: Env,
+  caller: Caller,
+  opts: { cellId?: string; pathOverride?: string } = {},
+): Promise<Response> {
+  const org = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT home_cell, plan FROM orgs WHERE id = ?1",
+  ).bind(caller.orgID).first<{ home_cell: string; plan: string }>();
+  if (!org) return json({ error: "org not found" }, 401);
+  const plan = org.plan === "pro" ? "pro" : "free";
+
+  const cell = opts.cellId
+    ? await lookupCell(env, opts.cellId)
+    : await pickCell(env, org.home_cell, null);
+  if (!cell) return json({ error: "no cell available to serve request" }, 503);
+
+  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, caller.userID);
+  const url = new URL(req.url);
+  const target = cell.base_url.replace(/\/$/, "") + (opts.pathOverride ?? url.pathname) + url.search;
+
+  // Forward all headers except the ones the cell shouldn't see: the raw
+  // X-API-Key (replaced by the cap-token), the browser cookie, and CF's
+  // hop-by-hop headers. WebSocket upgrades pass through transparently.
+  const headers = new Headers(req.headers);
+  headers.delete("x-api-key");
+  headers.delete("cookie");
+  headers.set("authorization", "Bearer " + token);
+  if (isWebSocketUpgrade(req)) {
+    const fwd = new Request(target, req);
+    fwd.headers.set("authorization", "Bearer " + token);
+    fwd.headers.delete("x-api-key");
+    return await fetch(fwd);
+  }
+  const init: RequestInit = { method: req.method, headers, redirect: "manual" };
+  if (req.method !== "GET" && req.method !== "HEAD") init.body = req.body;
+  return fetch(target, init);
+}
+
 
 // ── /internal/halt-list ─────────────────────────────────────────────────
 
@@ -713,6 +833,42 @@ async function haltList(req: Request, env: Env): Promise<Response> {
     org_ids: results.map((r) => r.id),
     halted_at: Object.fromEntries(results.map((r) => [r.id, r.halted_at])),
     as_of: now,
+  });
+}
+
+// ── /internal/org-policy ──────────────────────────────────────────────────
+
+// HMAC-auth'd endpoint the cell pulls for an org's authoritative billing
+// policy from D1. The autoscaler loop runs in-process on the cell with no
+// request or cap-token to ride, so it can't get a fresh plan the way the
+// resize handlers do (they read it off the cap-token). D1 is the source of
+// truth for plan post-cutover — the cell's create-time-stamped cell-PG copy
+// goes stale on upgrade/downgrade — so the autoscaler asks here before
+// growing a sandbox past the free-tier ceiling. Same HMAC scheme as haltList.
+async function orgPolicy(req: Request, env: Env): Promise<Response> {
+  const ts = req.headers.get("X-Timestamp") ?? "";
+  const sig = req.headers.get("X-Signature") ?? "";
+  if (!ts || !sig) return json({ error: "missing signature headers" }, 400);
+  const tsNum = Number.parseInt(ts, 10);
+  if (!Number.isFinite(tsNum)) return json({ error: "invalid timestamp" }, 400);
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - tsNum) > 5 * 60) return json({ error: "timestamp out of window" }, 401);
+
+  const url = new URL(req.url);
+  const expected = await hmacHex(env.EVENT_SECRET, `${ts}.${url.pathname}${url.search}`);
+  if (!constantTimeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+
+  const orgID = url.searchParams.get("org_id") ?? "";
+  if (!orgID) return json({ error: "missing org_id" }, 400);
+  const row = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT plan, max_memory_gb FROM orgs WHERE id = ?1",
+  )
+    .bind(orgID)
+    .first<{ plan: string; max_memory_gb: number }>();
+  if (!row) return json({ error: "org not found" }, 404);
+  return json({
+    plan: row.plan === "pro" ? "pro" : "free",
+    maxMemoryMb: (row.max_memory_gb ?? 0) * 1024,
   });
 }
 
@@ -1119,6 +1275,11 @@ export default {
       return haltList(req, env);
     }
 
+    if (path === "/internal/org-policy") {
+      if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
+      return orgPolicy(req, env);
+    }
+
     // /internal/admin/do-mark-free — operator-only escape hatch to flip a
     // CreditAccount DO's internal plan from "pro" back to "free" without
     // running a real Stripe subscription.deleted webhook. HMAC-auth'd with
@@ -1209,6 +1370,44 @@ export default {
       }
     }
 
+    // ── Snapshots + images (SDK/CLI, X-API-Key) ─────────────────────────
+    // A snapshot is a named image; both are mirrored into D1 images_index.
+    // Reads serve straight from D1 (no cell hop, multi-cell correct, survive
+    // an owning-cell outage). Create routes to the org home_cell with SSE
+    // build-log streaming. Delete routes to the cell that owns the bytes.
+    if (path === "/api/snapshots") {
+      const caller = await authenticate(req, env);
+      if (!caller) return json({ error: "missing or invalid API key" }, 401);
+      if (req.method === "GET") return snapshots.listSnapshots(env, caller);
+      if (req.method === "POST") return proxyToCellAuthed(req, env, caller); // build → home_cell, SSE
+      return json({ error: "method not allowed" }, 405);
+    }
+    {
+      // /api/snapshots/:name  and  /api/snapshots/:name/patches[/:patchId]
+      const m = path.match(/^\/api\/snapshots\/([^/]+)(\/patches(?:\/[^/]+)?)?$/);
+      if (m) {
+        const name = decodeURIComponent(m[1]);
+        const isPatch = !!m[2];
+        const caller = await authenticate(req, env);
+        if (!caller) return json({ error: "missing or invalid API key" }, 401);
+        // Patches + delete are cell-work — route to the cell that owns the
+        // snapshot bytes (looked up from D1), not "any active cell".
+        if (isPatch || req.method === "DELETE") {
+          const ownerCell = await snapshots.ownerCellOfSnapshot(env, caller, name);
+          if (!ownerCell) return json({ error: "snapshot not found" }, 404);
+          return proxyToCellAuthed(req, env, caller, { cellId: ownerCell });
+        }
+        if (req.method === "GET") return snapshots.getSnapshot(env, caller, name);
+        return json({ error: "method not allowed" }, 405);
+      }
+    }
+    if (path === "/api/images") {
+      const caller = await authenticate(req, env);
+      if (!caller) return json({ error: "missing or invalid API key" }, 401);
+      if (req.method === "GET") return snapshots.listImages(env, caller);
+      return json({ error: "method not allowed" }, 405);
+    }
+
     // Auth flow (browser).
     if (path === "/auth/login")    { if (req.method === "GET")  return authLogin(req, env); }
     if (path === "/auth/callback") { if (req.method === "GET")  return authCallback(req, env); }
@@ -1253,24 +1452,32 @@ export default {
         if (cpRow.org_id !== caller.orgID) return json({ error: "checkpoint not in your org" }, 403);
         const cell = await lookupCell(env, cpRow.owner_cell_id);
         if (!cell) return json({ error: `cell ${cpRow.owner_cell_id} not registered` }, 503);
-        const orgRow = await env.OPENCOMPUTER_DB.prepare("SELECT plan FROM orgs WHERE id = ?1")
-          .bind(caller.orgID).first<{ plan: string }>();
-        const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cpRow.owner_cell_id, orgRow?.plan ?? "free", caller.userID);
-        // Read the body so we can both forward it and record cpu/mem, then
+        const org = await loadOrgPolicy(env, caller.orgID);
+        if (!org) return json({ error: "org not found" }, 401);
+        // Read the body so we can size-gate, forward it, and record cpu/mem to
         // register the forked sandbox in sandboxes_index — same as createSandbox.
-        // Without this, forked sandboxes run on the cell but are invisible to the
-        // edge (exec/delete/get 404), since the row is otherwise only INSERTed on
-        // the POST /api/sandboxes create path.
+        // Without the index row, forked sandboxes run on the cell but are
+        // invisible to the edge (exec/delete/get 404).
         const fcBody = await req.text();
         let fcCpu = 0;
         let fcMem = 0;
+        let fcDisk = 0;
         try {
           const b = JSON.parse(fcBody || "{}");
           if (typeof b.cpuCount === "number") fcCpu = b.cpuCount;
           if (typeof b.memoryMB === "number") fcMem = b.memoryMB;
+          if (typeof b.diskMB === "number") fcDisk = b.diskMB;
         } catch {
           /* malformed JSON — let the CP reject */
         }
+        // Edge-authoritative org-policy gate, same as createSandbox. Forks were
+        // previously ungated at the edge and leaned on a cell-side concurrent
+        // check that read stale cell PG and could only ever count one cell's
+        // sandboxes — wrong once an org spans cells. Enforce from D1 here.
+        const fcGate = await enforceCreatePolicy(env, caller.orgID, org, { cpuCount: fcCpu, memoryMB: fcMem, diskMB: fcDisk });
+        if (fcGate) return fcGate;
+        const plan = org.plan === "pro" ? "pro" : "free";
+        const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cpRow.owner_cell_id, plan, caller.userID);
         const fcResp = await fetch(cell.base_url.replace(/\/$/, "") + path, {
           method: "POST",
           headers: { authorization: "Bearer " + token, "content-type": "application/json" },
@@ -1333,28 +1540,18 @@ export default {
       return proxyToCellSDK(req, env, ctx, caller, id);
     }
 
-    // Generic /api/* fallback proxy — routes unmatched dashboard endpoints
-    // (/api/images, /api/sessions, /api/me, /api/workers, /api/checkpoints,
-    // /api/api-keys, /api/org*, /api/agents, /api/billing*, etc.) to the
-    // home cell's CP. These were served by the CP pre-cutover; the edge
-    // doesn't have native handlers for them yet. The CP does its own auth
-    // (X-API-Key or session JWT) — we just pass through.
+    // Generic /api/* fallback for SDK/CLI routes without a dedicated D1-native
+    // handler yet (/api/usage, /api/tags, /api/capacity/*, /api/workers,
+    // /api/sessions, checkpoint patches, etc.). Authenticate against D1, mint a
+    // cap-token, and route to the org's home_cell. Pre-fix this forwarded the
+    // raw X-API-Key to "any active cell" — which 403'd because the cell can no
+    // longer validate D1-only api_keys, and would mis-route in a multi-cell
+    // world. proxyToCellAuthed streams the response (SSE-safe). This is a
+    // backstop; prefer adding a native handler for high-traffic resources.
     if (path.startsWith("/api/")) {
-      const cellRow = await env.OPENCOMPUTER_DB.prepare(
-        `SELECT cell_id, cloud, region, base_url, status, available_workers, capacity_updated_at
-           FROM cells WHERE status = 'active' LIMIT 1`,
-      ).first<CellRow>();
-      if (!cellRow) return json({ error: "no active cell" }, 503);
-      const target = cellRow.base_url.replace(/\/$/, "") + url.pathname + url.search;
-      const proxyHeaders = new Headers(req.headers);
-      proxyHeaders.set("X-Forwarded-Host", url.host);
-      const proxyReq = new Request(target, {
-        method: req.method,
-        headers: proxyHeaders,
-        body: ["GET", "HEAD"].includes(req.method) ? null : req.body,
-        redirect: "manual",
-      });
-      return fetch(proxyReq);
+      const caller = await authenticate(req, env);
+      if (!caller) return json({ error: "missing or invalid API key" }, 401);
+      return proxyToCellAuthed(req, env, caller);
     }
 
     // Anything not matched above is the dashboard SPA — delegate to the

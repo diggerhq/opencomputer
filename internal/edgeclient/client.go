@@ -174,6 +174,37 @@ func (c *Client) LookupTemplate(ctx context.Context, orgID uuid.UUID, name strin
 	return et.toDB()
 }
 
+// ── Org policy ─────────────────────────────────────────────────────────
+
+// OrgPolicy is an org's authoritative billing policy, read from D1 by the
+// edge. The CP autoscaler pulls this before growing a sandbox past the
+// free-tier ceiling — it runs in-process with no cap-token to read plan from,
+// and the cell-PG plan copy (stamped at create) goes stale on plan changes.
+type OrgPolicy struct {
+	Plan        string `json:"plan"`        // "free" | "pro"
+	MaxMemoryMB int    `json:"maxMemoryMb"` // 0 = no custom cap
+}
+
+// GetOrgPolicy fetches an org's plan + memory cap from the edge.
+func (c *Client) GetOrgPolicy(ctx context.Context, orgID uuid.UUID) (*OrgPolicy, error) {
+	q := "/internal/org-policy?org_id=" + escapeQuery(orgID.String())
+	body, status, err := c.do(ctx, "GET", q, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status == 404 {
+		return nil, ErrNotFound
+	}
+	if status != 200 {
+		return nil, fmt.Errorf("edge status %d: %s", status, string(body))
+	}
+	var p OrgPolicy
+	if err := json.Unmarshal(body, &p); err != nil {
+		return nil, fmt.Errorf("decode org-policy: %w", err)
+	}
+	return &p, nil
+}
+
 // RegisterTemplate inserts a template row in D1. Called from the CP's "save
 // sandbox as template" flow after the rootfs + workspace are uploaded to
 // Tigris. The id field is honored if non-Nil (so the CP can reuse one it

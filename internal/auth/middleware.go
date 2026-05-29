@@ -16,6 +16,10 @@ const (
 	ContextKeyOrgID contextKey = "org_id"
 	// ContextKeyUserID is the echo context key for the authenticated user ID.
 	ContextKeyUserID contextKey = "user_id"
+	// ContextKeyPlan is the echo context key for the org's billing plan, when
+	// the request carried an edge-minted cap-token (which stamps the plan from
+	// D1 at mint time). Absent for direct API-key auth.
+	ContextKeyPlan contextKey = "plan"
 )
 
 // SetOrgID stores the org ID in the echo context.
@@ -36,6 +40,30 @@ func GetOrgID(c echo.Context) (uuid.UUID, bool) {
 // SetUserID stores the user ID in the echo context.
 func SetUserID(c echo.Context, userID uuid.UUID) {
 	c.Set(string(ContextKeyUserID), userID)
+}
+
+// SetPlan stores the org's billing plan (from an edge-minted cap-token) in the
+// echo context. Empty strings are ignored so a later authoritative value isn't
+// clobbered by an absent one.
+func SetPlan(c echo.Context, plan string) {
+	if plan != "" {
+		c.Set(string(ContextKeyPlan), plan)
+	}
+}
+
+// GetPlan retrieves the cap-token-supplied plan from the echo context. The
+// bool is false when the request didn't carry a plan (e.g. direct API-key
+// auth), so callers can fall back to a cell-PG lookup.
+func GetPlan(c echo.Context) (string, bool) {
+	v := c.Get(string(ContextKeyPlan))
+	if v == nil {
+		return "", false
+	}
+	p, ok := v.(string)
+	if !ok || p == "" {
+		return "", false
+	}
+	return p, true
 }
 
 // GetUserID retrieves the user ID from the echo context. Returns nil if not set.
@@ -107,6 +135,12 @@ func PGAPIKeyMiddleware(store *db.Store, staticKey string, jwtIssuer *JWTIssuer,
 								SetUserID(c, uid)
 							}
 						}
+						// The cap-token carries the org's plan, stamped from D1
+						// at mint time. Stash it so org-policy gates (resize,
+						// autoscale) enforce against this authoritative value
+						// instead of the cell-PG copy, which goes stale on
+						// plan changes between sandbox creates.
+						SetPlan(c, claims.Plan)
 						return next(c)
 					}
 				}
