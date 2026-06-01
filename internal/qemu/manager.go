@@ -348,6 +348,12 @@ type Manager struct {
 	// Per-sandbox stats cache populated by a background collector and read by
 	// the heartbeat path. See stats_collector.go.
 	statsCache *SandboxStatsCache
+
+	// Ghost-VM reaper: periodically prunes m.vms entries whose qemu process is
+	// dead but the map entry wasn't cleaned up. See ghost_reaper.go.
+	reaperStop chan struct{}
+	reaperDone chan struct{}
+	reaperOnce sync.Once
 }
 
 // NewManager creates a new QEMU-backed sandbox manager.
@@ -400,12 +406,17 @@ func NewManager(cfg Config) (*Manager, error) {
 		log.Printf("qemu: cleaned up stale archive-staging: %s", d)
 	}
 
-	return &Manager{
+	m := &Manager{
 		cfg:     cfg,
 		subnets: NewSubnetAllocator(),
 		vms:     make(map[string]*VMInstance),
 		nextCID: 3,
-	}, nil
+	}
+	// Start the ghost-VM reaper. Without it a code path that leaks an m.vms
+	// entry on failure (qemu dies but map entry stays) leads to usage_ticker
+	// emitting billing events forever — see ghost_reaper.go.
+	m.startGhostReaper()
+	return m, nil
 }
 
 // SetMetadataCallbacks registers callbacks that are invoked when sandboxes
@@ -2029,6 +2040,13 @@ func (m *Manager) List(ctx context.Context) ([]types.Sandbox, error) {
 
 	result := make([]types.Sandbox, 0, len(m.vms))
 	for _, vm := range m.vms {
+		// Filter ghost VMs: qemu died but the m.vms entry never got cleaned
+		// up. The reaper (ghost_reaper.go) eventually prunes these, but List
+		// callers — most importantly usage_ticker, which uses the list to
+		// drive billing — should never see them, even between reaper ticks.
+		if !vmAlive(vm) {
+			continue
+		}
 		result = append(result, *vmToSandbox(vm))
 	}
 	return result, nil
@@ -2043,6 +2061,8 @@ func (m *Manager) Count(ctx context.Context) (int, error) {
 
 // Close stops all VMs and cleans up.
 func (m *Manager) Close() {
+	m.stopGhostReaper()
+
 	m.mu.Lock()
 	vms := make([]*VMInstance, 0, len(m.vms))
 	for _, vm := range m.vms {
@@ -2666,6 +2686,17 @@ func (m *Manager) Hibernate(ctx context.Context, sandboxID string, checkpointSto
 
 	result, err := m.doHibernate(ctx, vm, checkpointStore)
 	if err != nil {
+		// Fix C: doHibernate may have killed qemu mid-flight (savevm path
+		// quits the VM) before bailing out. If qemu is dead, clean the
+		// m.vms entry now — otherwise it becomes a ghost that drives the
+		// usage_ticker until the next ghost-reaper tick (~30s). If qemu is
+		// still alive, leave it: the sandbox may still be recoverable.
+		if !vmAlive(vm) {
+			m.mu.Lock()
+			delete(m.vms, sandboxID)
+			m.mu.Unlock()
+			log.Printf("qemu: Hibernate %s failed (%v) AND qemu process is dead — cleaned m.vms entry inline", sandboxID, err)
+		}
 		return nil, err
 	}
 

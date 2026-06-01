@@ -108,7 +108,25 @@ func (t *UsageTicker) tick(ctx context.Context) {
 		return
 	}
 	emitted := 0
+	skippedDead := 0
 	for _, sb := range list {
+		// Defense in depth: even if manager.List() returns a ghost entry
+		// (m.vms entry whose qemu/firecracker process died but wasn't
+		// cleaned up), don't bill for it. The leak this guards against
+		// was a 70+ hour-per-sandbox billing bleed in prod where ghosts
+		// kept ticking until the worker process restarted and wiped m.vms.
+		// See internal/qemu/ghost_reaper.go for the boundary fix +
+		// reaper that drains the map.
+		alive, err := t.manager.IsSandboxAlive(ctx, sb.ID)
+		if err != nil {
+			log.Printf("usage_ticker: %s: IsSandboxAlive check failed: %v — skipping this tick", sb.ID, err)
+			continue
+		}
+		if !alive {
+			skippedDead++
+			log.Printf("usage_ticker: %s: not alive (ghost m.vms entry?) — skipping; reaper should drain it", sb.ID)
+			continue
+		}
 		sdb, err := t.sandboxDBs.Get(sb.ID)
 		if err != nil {
 			log.Printf("usage_ticker: %s: Get failed: %v", sb.ID, err)
@@ -124,5 +142,5 @@ func (t *UsageTicker) tick(ctx context.Context) {
 		}
 		emitted++
 	}
-	log.Printf("usage_ticker: tick: emitted %d usage_tick event(s) for %d running sandbox(es)", emitted, len(list))
+	log.Printf("usage_ticker: tick: emitted %d usage_tick event(s) for %d listed sandbox(es) (skipped %d as not-alive)", emitted, len(list), skippedDead)
 }
