@@ -17,16 +17,23 @@
 //   3. Fetch the cell's /internal/dashboard/{path} with Authorization: Bearer.
 //   4. Stream the response (or WebSocket pair) back to the browser.
 
+import { routeWsViaGateway } from "../../shared/sandbox_ws_gateway";
+
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
   SESSIONS_KV: KVNamespace;
   CREDIT_ACCOUNT: DurableObjectNamespace;
+  // Per-sandbox WS gateway DO. Holds the client socket, dials the owning cell,
+  // bridges frames. Activated when WS_VIA_DO === "1"; otherwise the legacy
+  // edge-side WebSocketPair path (proxyWebSocket below) is used unchanged.
+  SANDBOX_WS: DurableObjectNamespace;
   SESSION_JWT_SECRET: string;
   WORKOS_API_KEY: string;
   WORKOS_CLIENT_ID: string;
   STRIPE_API_KEY: string;
   WORKER_ENV: string;
   CELLS: string;
+  WS_VIA_DO?: string;
   // CF Custom Hostnames API token + zone (for /org/custom-domain). Optional —
   // if unset the custom-domain endpoints return 503 (feature disabled).
   CF_API_TOKEN?: string;
@@ -264,6 +271,7 @@ async function proxyWebSocket(
   caller: Caller,
   cell: CellRow,
   cellPath: string,
+  sandboxID: string,
 ): Promise<Response> {
   if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
     return json({ error: "expected websocket upgrade" }, 400);
@@ -275,6 +283,22 @@ async function proxyWebSocket(
     console.error("proxyWebSocket: mint failed:", e);
     return new Response("token mint failed", { status: 500 });
   }
+
+  // WS_VIA_DO routes through the per-sandbox SandboxWsGateway DO instead of
+  // terminating + re-upgrading inline. The DO owns the WebSocketPair against
+  // the browser and the upstream dial against the cell — this is what unlocks
+  // heartbeat (v2), worker-migration redial (v3), and output buffering (v4).
+  if (env.WS_VIA_DO === "1" && env.SANDBOX_WS) {
+    return routeWsViaGateway({
+      ns: env.SANDBOX_WS,
+      sandboxID,
+      originalRequest: req,
+      capToken: token,
+      cellBaseURL: cell.base_url,
+      cellPath,
+    });
+  }
+
   const upstreamURL = cell.base_url.replace(/\/$/, "") + cellPath;
   console.log(`proxyWebSocket: dialing upstream ${upstreamURL}`);
 
@@ -926,7 +950,7 @@ export async function handleDashboard(
       const cellPath = `/internal/dashboard/sessions/${sandboxID}${rest}`;
       // WebSocket on PTY GET — anything else is a regular HTTP proxy.
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket" && /^\/pty\/[^/]+$/.test(rest)) {
-        return proxyWebSocket(req, env, caller, cell, cellPath);
+        return proxyWebSocket(req, env, caller, cell, cellPath, sandboxID);
       }
       return proxyToCell(req, env, caller, cell, cellPath);
     }

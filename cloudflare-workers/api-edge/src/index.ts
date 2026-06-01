@@ -17,6 +17,8 @@
 //   GET  /health
 
 export { CreditAccount } from "../../shared/credit_account";
+export { SandboxWsGateway } from "../../shared/sandbox_ws_gateway";
+import { routeWsViaGateway } from "../../shared/sandbox_ws_gateway";
 import { handleDashboard, type DashboardEnv } from "./dashboard";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
@@ -702,7 +704,23 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // accept-key derivation). CF Workers + CF Tunnel forward WebSocket
   // upgrades transparently when you pass a Request clone — same pattern
   // handlePreviewURL uses and that's verified to work end-to-end with WS.
+  //
+  // WS_VIA_DO=1: route the upgrade through the per-sandbox SandboxWsGateway
+  // DO instead, which terminates the client socket and dials the cell itself.
+  // That's the foundation v2–v5 layer on (heartbeat, redial, buffer, cap-token
+  // caching). Unsetting the flag instantly reverts to the transparent forward.
   if (isWebSocketUpgrade(req)) {
+    if (env.WS_VIA_DO === "1" && env.SANDBOX_WS) {
+      const t = new URL(target);
+      return routeWsViaGateway({
+        ns: env.SANDBOX_WS,
+        sandboxID: id,
+        originalRequest: req,
+        capToken: token,
+        cellBaseURL: cell.base_url,
+        cellPath: t.pathname + t.search,
+      });
+    }
     const fwd = new Request(target, req);
     fwd.headers.set("authorization", "Bearer " + token);
     fwd.headers.delete("x-api-key");

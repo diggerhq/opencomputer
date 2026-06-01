@@ -64,9 +64,22 @@ name = "CREDIT_ACCOUNT"
 class_name = "CreditAccount"
 script_name = "opensandbox-edge-dev"
 
+# Per-sandbox WebSocket gateway DO. Holds the client WS, dials the owning cell,
+# bridges frames. Gated by WS_VIA_DO=1 below — when unset, the old transparent
+# CF-Tunnel forward (index.ts) and edge-side WebSocketPair (dashboard.ts) paths
+# stay in place, so disabling the flag is the fast rollback.
+[[durable_objects.bindings]]
+name = "SANDBOX_WS"
+class_name = "SandboxWsGateway"
+script_name = "opensandbox-edge-dev"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CreditAccount"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["SandboxWsGateway"]
 
 # Secrets (set via `wrangler secret put`):
 #   SESSION_JWT_SECRET     — HMAC for session JWT (shared with all CPs in cell fleet)
@@ -79,6 +92,11 @@ new_sqlite_classes = ["CreditAccount"]
 
 [vars]
 WORKER_ENV = "dev"
+# When "1", SDK pty/exec + Dashboard pty WS upgrades route through the
+# SandboxWsGateway DO (per-sandbox, idFromName(sandboxID)) instead of the
+# transparent CF-Tunnel forward / edge-side WebSocketPair. Off in prod until
+# v1 parity is verified on dev.
+WS_VIA_DO = "1"
 # Cells available in this deployment — comma-separated cell_ids. The edge
 # validates cell selections against this list; each cell's base_url comes from
 # the D1 `cells` table (see schema.sql + scripts/seed_dev_xcell.sh).
