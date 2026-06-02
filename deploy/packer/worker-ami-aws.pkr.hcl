@@ -20,15 +20,10 @@
 #   # 1. Build binaries for linux/amd64:
 #   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X main.WorkerVersion=$(git rev-parse --short HEAD)" \
 #     -o bin/opensandbox-worker ./cmd/worker/
-#   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X main.ServerVersion=$(git rev-parse --short HEAD)" \
-#     -o bin/opensandbox-server ./cmd/server/
 #   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/osb-agent ./cmd/agent/
 #
 #   # 2. Build the rootfs context tarball:
 #   tar czf /tmp/packer-rootfs-ctx.tar.gz deploy/firecracker/rootfs/ deploy/ec2/build-rootfs-docker.sh scripts/claude-agent-wrapper/
-#   npm --prefix web ci
-#   npm --prefix web run build
-#   tar czf /tmp/packer-web-dist.tar.gz web/dist/
 #
 #   # 3. Run packer:
 #   packer init deploy/packer/worker-ami-aws.pkr.hcl
@@ -76,11 +71,6 @@ variable "worker_binary" {
   default = "bin/opensandbox-worker"
 }
 
-variable "server_binary" {
-  type    = string
-  default = "bin/opensandbox-server"
-}
-
 variable "agent_binary" {
   type    = string
   default = "bin/osb-agent"
@@ -96,12 +86,6 @@ variable "vector_context" {
   type        = string
   default     = "/tmp/packer-vector-ctx.tar.gz"
   description = "Pre-built tarball of deploy/vector/ (config + populator + units). Pre-create with: tar czf /tmp/packer-vector-ctx.tar.gz deploy/vector/"
-}
-
-variable "web_dist_context" {
-  type        = string
-  default     = "/tmp/packer-web-dist.tar.gz"
-  description = "Pre-built tarball of web/dist/. Pre-create with: npm --prefix web ci && npm --prefix web run build && tar czf /tmp/packer-web-dist.tar.gz web/dist/"
 }
 
 variable "golden_cache_bucket" {
@@ -179,10 +163,6 @@ build {
     destination = "/tmp/opensandbox-worker"
   }
   provisioner "file" {
-    source      = var.server_binary
-    destination = "/tmp/opensandbox-server"
-  }
-  provisioner "file" {
     source      = var.agent_binary
     destination = "/tmp/osb-agent"
   }
@@ -207,10 +187,6 @@ build {
   provisioner "file" {
     source      = var.vector_context
     destination = "/tmp/vector-ctx.tar.gz"
-  }
-  provisioner "file" {
-    source      = var.web_dist_context
-    destination = "/tmp/web-dist.tar.gz"
   }
   provisioner "shell" {
     inline = [
@@ -244,13 +220,8 @@ build {
       # Install worker + agent binaries.
       "mv /tmp/opensandbox-worker /usr/local/bin/opensandbox-worker",
       "chmod +x /usr/local/bin/opensandbox-worker",
-      "mv /tmp/opensandbox-server /usr/local/bin/opensandbox-server",
-      "chmod +x /usr/local/bin/opensandbox-server",
       "mv /tmp/osb-agent /usr/local/bin/osb-agent",
       "chmod +x /usr/local/bin/osb-agent",
-      "mkdir -p /usr/local/bin/web",
-      "tar xzf /tmp/web-dist.tar.gz -C /usr/local/bin/web --strip-components=1",
-      "rm /tmp/web-dist.tar.gz",
 
       # Install systemd unit.
       "mv /tmp/opensandbox-worker.service /etc/systemd/system/opensandbox-worker.service",

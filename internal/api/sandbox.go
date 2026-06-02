@@ -1020,14 +1020,6 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox must be running to migrate"})
 	}
 
-	targetWorker := s.workerRegistry.GetWorker(req.TargetWorker)
-	if targetWorker == nil {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "target worker not found"})
-	}
-	if !targetWorker.AcceptsMigrationRouting() {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "target worker is not accepting migrations"})
-	}
-
 	// Mark as migrating — blocks exec/proxy routing until migration completes
 	migrationDone := false
 	if s.store != nil {
@@ -1515,9 +1507,6 @@ func (s *Server) findScaleMigrationTargets(sourceWorkerID string, requestedMemMB
 
 	for _, w := range workers {
 		if w.ID == sourceWorkerID {
-			continue
-		}
-		if !w.AcceptsMigrationRouting() {
 			continue
 		}
 		if w.Draining {

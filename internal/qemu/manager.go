@@ -454,67 +454,7 @@ func (m *Manager) SetHibernationUploadCallback(cb func(sandboxID, hibernationKey
 // GoldenVersion returns the hash identifying this worker's golden snapshot base image.
 // Empty string means no golden snapshot is available.
 func (m *Manager) GoldenVersion() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
 	return m.goldenVersion
-}
-
-// LoadGoldenVersionFromImage seeds GoldenVersion from the baked image metadata.
-// It is intentionally lightweight so the worker can advertise its base version
-// before the runtime golden memory snapshot has finished preparing.
-func (m *Manager) LoadGoldenVersionFromImage() error {
-	baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, "default")
-	if err != nil {
-		return fmt.Errorf("resolve base image: %w", err)
-	}
-	v, err := m.computeBaseGoldenVersion(baseImage)
-	if err != nil {
-		return err
-	}
-	m.mu.Lock()
-	m.goldenVersion = v
-	m.mu.Unlock()
-	log.Printf("qemu: loaded base golden version %s", v)
-	return nil
-}
-
-func (m *Manager) computeBaseGoldenVersion(baseImage string) (string, error) {
-	versionPath := filepath.Join(m.cfg.ImagesDir, "golden-version")
-	if b, err := os.ReadFile(versionPath); err == nil {
-		if v := strings.TrimSpace(string(b)); v != "" {
-			return v, nil
-		}
-	}
-	return computeGoldenVersion(baseImage)
-}
-
-func (m *Manager) setGoldenSnapshot(dir, version string, cid uint32, guestIP, hostIP string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.goldenDir = dir
-	m.goldenVersion = version
-	m.goldenCID = cid
-	m.goldenGuestIP = guestIP
-	m.goldenHostIP = hostIP
-}
-
-func (m *Manager) goldenSnapshot() (dir, version string) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.goldenDir, m.goldenVersion
-}
-
-func (m *Manager) setGoldenDir(dir string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.goldenDir = dir
-}
-
-func (m *Manager) restoreGoldenSnapshot(dir, version string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.goldenDir = dir
-	m.goldenVersion = version
 }
 
 // MemoryAllocatedBytes returns the sum of memory committed to currently-running
@@ -788,34 +728,32 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		stale := false
 		baseImage, _ := ResolveBaseImage(m.cfg.ImagesDir, "default")
 		if baseImage != "" && storedVersion != "" {
-			if currentHash, err := m.computeBaseGoldenVersion(baseImage); err == nil && currentHash != storedVersion {
+			if currentHash, err := computeGoldenVersion(baseImage); err == nil && currentHash != storedVersion {
 				log.Printf("qemu: base image changed (golden=%s, disk=%s), rebuilding golden snapshot", storedVersion, currentHash)
 				stale = true
 			}
 		}
 
 		if !stale {
-			goldenVersion := storedVersion
-			var goldenCID uint32
-			var goldenGuestIP, goldenHostIP string
+			m.goldenDir = goldenDir
+			m.goldenVersion = storedVersion
 			if cidBytes, err := os.ReadFile(filepath.Join(goldenDir, "cid")); err == nil {
-				fmt.Sscanf(string(cidBytes), "%d", &goldenCID)
+				fmt.Sscanf(string(cidBytes), "%d", &m.goldenCID)
 			}
 			if ipBytes, err := os.ReadFile(filepath.Join(goldenDir, "guest_ip")); err == nil {
-				goldenGuestIP = string(ipBytes)
+				m.goldenGuestIP = string(ipBytes)
 			}
 			if ipBytes, err := os.ReadFile(filepath.Join(goldenDir, "host_ip")); err == nil {
-				goldenHostIP = string(ipBytes)
+				m.goldenHostIP = string(ipBytes)
 			}
 			if storedVersion == "" && baseImage != "" {
-				if v, err := m.computeBaseGoldenVersion(baseImage); err == nil {
-					goldenVersion = v
+				if v, err := computeGoldenVersion(baseImage); err == nil {
+					m.goldenVersion = v
 					_ = os.WriteFile(versionFile, []byte(v), 0644)
 				}
 			}
-			m.setGoldenSnapshot(goldenDir, goldenVersion, goldenCID, goldenGuestIP, goldenHostIP)
-			log.Printf("qemu: golden snapshot already exists at %s (CID=%d, guestIP=%s, version=%s)", goldenDir, goldenCID, goldenGuestIP, goldenVersion)
-			go m.uploadBaseImageIfNew(goldenVersion)
+			log.Printf("qemu: golden snapshot already exists at %s (CID=%d, guestIP=%s, version=%s)", goldenDir, m.goldenCID, m.goldenGuestIP, m.goldenVersion)
+			go m.uploadBaseImageIfNew(m.goldenVersion)
 			return nil
 		}
 
@@ -1029,22 +967,24 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	}
 
 	// Compute and persist golden version hash
-	goldenVersion := m.GoldenVersion()
-	if v, err := m.computeBaseGoldenVersion(baseImage); err == nil {
-		goldenVersion = v
+	if v, err := computeGoldenVersion(baseImage); err == nil {
+		m.goldenVersion = v
 		_ = os.WriteFile(filepath.Join(goldenDir, "version"), []byte(v), 0644)
 	}
 
 	// Remove preparing marker — golden snapshot is complete
 	os.Remove(preparingMarker)
 
-	m.setGoldenSnapshot(goldenDir, goldenVersion, goldenCID, netCfg.GuestIP, netCfg.HostIP)
+	m.goldenDir = goldenDir
+	m.goldenCID = goldenCID
+	m.goldenGuestIP = netCfg.GuestIP
+	m.goldenHostIP = netCfg.HostIP
 	_ = os.WriteFile(filepath.Join(goldenDir, "cid"), []byte(fmt.Sprintf("%d", goldenCID)), 0644)
 	_ = os.WriteFile(filepath.Join(goldenDir, "guest_ip"), []byte(netCfg.GuestIP), 0644)
 	_ = os.WriteFile(filepath.Join(goldenDir, "host_ip"), []byte(netCfg.HostIP), 0644)
 	log.Printf("qemu: golden snapshot ready (%dms total, mem=%s, CID=%d, guestIP=%s, version=%s)",
-		time.Since(t0).Milliseconds(), memFile, goldenCID, netCfg.GuestIP, goldenVersion)
-	go m.uploadBaseImageIfNew(goldenVersion)
+		time.Since(t0).Milliseconds(), memFile, goldenCID, netCfg.GuestIP, m.goldenVersion)
+	go m.uploadBaseImageIfNew(m.goldenVersion)
 	return nil
 }
 
@@ -1053,7 +993,7 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 // independent reflink copies — only new sandboxes use the new golden.
 // Returns the old and new golden version strings.
 func (m *Manager) RebuildGoldenSnapshot() (oldVersion, newVersion string, err error) {
-	oldGoldenDir, oldVersion := m.goldenSnapshot()
+	oldVersion = m.goldenVersion
 	goldenDir := filepath.Join(m.cfg.DataDir, "golden")
 
 	// Build new golden in a staging directory
@@ -1061,13 +1001,14 @@ func (m *Manager) RebuildGoldenSnapshot() (oldVersion, newVersion string, err er
 	os.RemoveAll(stagingDir) // clean up any prior failed attempt
 
 	// Temporarily point goldenDir to staging so PrepareGoldenSnapshot builds there
-	m.setGoldenDir("")
+	oldGoldenDir := m.goldenDir
+	m.goldenDir = ""
 
 	// Rename current golden out of the way so PrepareGoldenSnapshot sees no existing snapshot
 	backupDir := filepath.Join(m.cfg.DataDir, "golden-old")
 	os.RemoveAll(backupDir)
 	if err := os.Rename(goldenDir, backupDir); err != nil && !os.IsNotExist(err) {
-		m.setGoldenDir(oldGoldenDir)
+		m.goldenDir = oldGoldenDir
 		return oldVersion, "", fmt.Errorf("backup old golden: %w", err)
 	}
 
@@ -1076,12 +1017,13 @@ func (m *Manager) RebuildGoldenSnapshot() (oldVersion, newVersion string, err er
 		// Restore old golden on failure
 		os.RemoveAll(goldenDir)
 		if backupErr := os.Rename(backupDir, goldenDir); backupErr == nil {
-			m.restoreGoldenSnapshot(oldGoldenDir, oldVersion)
+			m.goldenDir = oldGoldenDir
+			m.goldenVersion = oldVersion
 		}
 		return oldVersion, "", fmt.Errorf("rebuild golden: %w", err)
 	}
 
-	newVersion = m.GoldenVersion()
+	newVersion = m.goldenVersion
 
 	// Clean up old golden — sandboxes created from it have independent reflink copies
 	os.RemoveAll(backupDir)
@@ -1095,10 +1037,6 @@ func (m *Manager) RebuildGoldenSnapshot() (oldVersion, newVersion string, err er
 // After restore, we patch the network config inside the guest.
 func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig, id string) (*types.Sandbox, error) {
 	t0 := time.Now()
-	goldenDir, goldenVersion := m.goldenSnapshot()
-	if goldenDir == "" {
-		return nil, fmt.Errorf("golden snapshot not ready")
-	}
 
 	template := cfg.Template
 	if template == "" || template == "base" {
@@ -1112,7 +1050,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 
 	// Copy golden rootfs as qcow2 overlay (golden snapshot was taken with qcow2 drives)
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	goldenRootfs := filepath.Join(goldenDir, "rootfs.qcow2")
+	goldenRootfs := filepath.Join(m.goldenDir, "rootfs.qcow2")
 	if err := copyFileReflink(goldenRootfs, rootfsPath); err != nil {
 		os.RemoveAll(sandboxDir)
 		return nil, fmt.Errorf("copy golden rootfs: %w", err)
@@ -1124,7 +1062,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
 	diskMB := m.cfg.DefaultDiskMB
 	var goldenWSUUID string
-	if data, readErr := os.ReadFile(filepath.Join(goldenDir, "workspace_uuid")); readErr == nil {
+	if data, readErr := os.ReadFile(filepath.Join(m.goldenDir, "workspace_uuid")); readErr == nil {
 		goldenWSUUID = strings.TrimSpace(string(data))
 	}
 	if err := CreateWorkspace(workspacePath, diskMB, goldenWSUUID); err != nil {
@@ -1221,8 +1159,8 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 
 	// Build QEMU args with -incoming to restore from golden snapshot.
 	// Use zstd-compressed mem file if available (less EBS I/O despite CPU cost).
-	goldenMemZst := filepath.Join(goldenDir, "mem.zst")
-	goldenMemRaw := filepath.Join(goldenDir, "mem")
+	goldenMemZst := filepath.Join(m.goldenDir, "mem.zst")
+	goldenMemRaw := filepath.Join(m.goldenDir, "mem")
 	var incomingURI string
 	if fileExists(goldenMemZst) {
 		incomingURI = fmt.Sprintf("exec:zstdcat %s", goldenMemZst)
@@ -1302,7 +1240,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		guestMAC:      guestMAC,
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
-		goldenVersion: goldenVersion,
+		goldenVersion: m.goldenVersion,
 	}
 
 	// Connect to agent via Unix socket
@@ -1663,8 +1601,7 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 	}
 
 	// Fast path: restore from golden snapshot if available and using default template
-	goldenDir, _ := m.goldenSnapshot()
-	if goldenDir != "" && template == "default" && cfg.TemplateRootfsKey == "" {
+	if m.goldenDir != "" && template == "default" && cfg.TemplateRootfsKey == "" {
 		sb, err := m.createFromGolden(ctx, cfg, id)
 		if err != nil {
 			log.Printf("qemu: golden restore failed for %s, falling back to cold boot: %v", id, err)
@@ -1837,7 +1774,7 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 		guestMAC:      guestMAC,
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
-		goldenVersion: m.GoldenVersion(), // set even on cold boot — VM uses the same base image
+		goldenVersion: m.goldenVersion, // set even on cold boot — VM uses the same base image
 	}
 
 	// Wait for agent via Unix socket
@@ -3800,7 +3737,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		guestCID:             guestCID,
 		bootArgs:             bootArgs,
 		agent:                agent,
-		goldenVersion:        m.GoldenVersion(), // set on wake — VM uses the current base image
+		goldenVersion:        m.goldenVersion, // set on wake — VM uses the current base image
 	}
 
 	m.mu.Lock()

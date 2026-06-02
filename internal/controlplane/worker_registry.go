@@ -13,24 +13,22 @@ import (
 
 // WorkerInfo represents a registered worker.
 type WorkerInfo struct {
-	ID                string    `json:"worker_id"`
-	MachineID         string    `json:"machine_id,omitempty"` // EC2 instance ID
-	Region            string    `json:"region"`
-	GRPCAddr          string    `json:"grpc_addr"`
-	HTTPAddr          string    `json:"http_addr"`
-	Capacity          int       `json:"capacity"`
-	Current           int       `json:"current"`
-	CPUPct            float64   `json:"cpu_pct"`
-	MemPct            float64   `json:"mem_pct"`
-	DiskPct           float64   `json:"disk_pct"`
-	TotalMemoryMB     int       `json:"total_memory_mb,omitempty"`
-	CommittedMemoryMB int       `json:"committed_memory_mb,omitempty"`
-	GoldenVersion     string    `json:"golden_version,omitempty"`
-	WorkerVersion     string    `json:"worker_version,omitempty"`
-	AcceptsCreates    bool      `json:"accepts_creates,omitempty"`
-	AcceptsMigrations bool      `json:"accepts_migrations,omitempty"`
-	LastSeen          time.Time `json:"-"`
-	MissedBeats       int       `json:"-"`
+	ID           string    `json:"worker_id"`
+	MachineID    string    `json:"machine_id,omitempty"` // EC2 instance ID
+	Region       string    `json:"region"`
+	GRPCAddr     string    `json:"grpc_addr"`
+	HTTPAddr     string    `json:"http_addr"`
+	Capacity     int       `json:"capacity"`
+	Current      int       `json:"current"`
+	CPUPct       float64   `json:"cpu_pct"`
+	MemPct       float64   `json:"mem_pct"`
+	DiskPct       float64   `json:"disk_pct"`
+	TotalMemoryMB     int  `json:"total_memory_mb,omitempty"`
+	CommittedMemoryMB int  `json:"committed_memory_mb,omitempty"`
+	GoldenVersion string    `json:"golden_version,omitempty"`
+	WorkerVersion string    `json:"worker_version,omitempty"`
+	LastSeen      time.Time `json:"-"`
+	MissedBeats  int       `json:"-"`
 }
 
 // WorkerRegistry tracks live workers from NATS heartbeats.
@@ -127,9 +125,6 @@ func (r *WorkerRegistry) GetLeastLoadedWorker(region string) *WorkerInfo {
 	var best *WorkerInfo
 	bestScore := -1.0
 	for _, w := range workers {
-		if !w.AcceptsCreateRouting() {
-			continue
-		}
 		remaining := w.Capacity - w.Current
 		if remaining <= 0 {
 			continue
@@ -231,7 +226,6 @@ func (r *WorkerRegistry) handleHeartbeat(msg *nats.Msg) {
 	if err := json.Unmarshal(msg.Data, &hb); err != nil {
 		return
 	}
-	normalizeWorkerInfoReadiness(&hb)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -243,8 +237,6 @@ func (r *WorkerRegistry) handleHeartbeat(msg *nats.Msg) {
 		existing.CPUPct = hb.CPUPct
 		existing.MemPct = hb.MemPct
 		existing.DiskPct = hb.DiskPct
-		existing.AcceptsCreates = hb.AcceptsCreates
-		existing.AcceptsMigrations = hb.AcceptsMigrations
 		if hb.GoldenVersion != "" {
 			existing.GoldenVersion = hb.GoldenVersion
 		}
@@ -267,40 +259,6 @@ func (r *WorkerRegistry) handleHeartbeat(msg *nats.Msg) {
 		r.workers[hb.ID] = &hb
 		log.Printf("worker_registry: new worker registered: %s (region=%s)", hb.ID, hb.Region)
 	}
-}
-
-func normalizeWorkerInfoReadiness(w *WorkerInfo) {
-	// Older workers did not publish these booleans. If both are absent they
-	// decode as false; preserve legacy behavior by treating them as ready for
-	// both placement classes.
-	if !w.AcceptsCreates && !w.AcceptsMigrations {
-		w.AcceptsCreates = true
-		w.AcceptsMigrations = true
-	}
-}
-
-// AcceptsCreateRouting returns whether this worker should receive new sandbox
-// creates. Both fields false is treated as legacy/unknown and therefore ready.
-func (w *WorkerInfo) AcceptsCreateRouting() bool {
-	return w.AcceptsCreates || (!w.AcceptsCreates && !w.AcceptsMigrations)
-}
-
-// AcceptsMigrationRouting returns whether this worker should receive incoming
-// live migrations. Both fields false is treated as legacy/unknown and ready.
-func (w *WorkerInfo) AcceptsMigrationRouting() bool {
-	return w.AcceptsMigrations || (!w.AcceptsCreates && !w.AcceptsMigrations)
-}
-
-// AcceptsCreateRouting returns whether this worker should receive new sandbox
-// creates. Both fields false is treated as legacy/unknown and therefore ready.
-func (w *WorkerEntry) AcceptsCreateRouting() bool {
-	return w.AcceptsCreates || (!w.AcceptsCreates && !w.AcceptsMigrations)
-}
-
-// AcceptsMigrationRouting returns whether this worker should receive incoming
-// live migrations. Both fields false is treated as legacy/unknown and ready.
-func (w *WorkerEntry) AcceptsMigrationRouting() bool {
-	return w.AcceptsMigrations || (!w.AcceptsCreates && !w.AcceptsMigrations)
 }
 
 func (r *WorkerRegistry) checkStaleWorkers() {

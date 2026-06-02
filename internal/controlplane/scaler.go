@@ -785,9 +785,6 @@ func (s *Scaler) findMigrationTarget(region, excludeWorkerID string, requiredMem
 		if w.ID == excludeWorkerID {
 			continue
 		}
-		if !w.AcceptsMigrationRouting() {
-			continue
-		}
 		if s.state.IsDraining(w.MachineID) {
 			continue
 		}

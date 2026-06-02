@@ -52,22 +52,20 @@ const (
 
 // WorkerEntry represents a worker in the Redis-backed registry.
 type WorkerEntry struct {
-	ID                string  `json:"worker_id"`
-	MachineID         string  `json:"machine_id,omitempty"` // EC2 instance ID
-	Region            string  `json:"region"`
-	GRPCAddr          string  `json:"grpc_addr"`
-	HTTPAddr          string  `json:"http_addr"`
-	Capacity          int     `json:"capacity"`
-	Current           int     `json:"current"`
-	CPUPct            float64 `json:"cpu_pct"`
-	MemPct            float64 `json:"mem_pct"`
+	ID        string  `json:"worker_id"`
+	MachineID string  `json:"machine_id,omitempty"` // EC2 instance ID
+	Region    string  `json:"region"`
+	GRPCAddr  string  `json:"grpc_addr"`
+	HTTPAddr  string  `json:"http_addr"`
+	Capacity  int     `json:"capacity"`
+	Current   int     `json:"current"`
+	CPUPct    float64 `json:"cpu_pct"`
+	MemPct    float64 `json:"mem_pct"`
 	DiskPct           float64 `json:"disk_pct"`
 	TotalMemoryMB     int     `json:"total_memory_mb,omitempty"`
 	CommittedMemoryMB int     `json:"committed_memory_mb,omitempty"`
 	GoldenVersion     string  `json:"golden_version,omitempty"`
 	WorkerVersion     string  `json:"worker_version,omitempty"`
-	AcceptsCreates    bool    `json:"accepts_creates,omitempty"`
-	AcceptsMigrations bool    `json:"accepts_migrations,omitempty"`
 	Draining          bool    `json:"draining,omitempty"`
 
 	// Per-sandbox stats published by the worker. Bounded by per-host sandbox
@@ -90,13 +88,13 @@ type SandboxStats struct {
 // backed by Redis pub/sub for real-time updates and periodic SCAN for reconciliation.
 // It also maintains a persistent gRPC connection pool to workers.
 type RedisWorkerRegistry struct {
-	rdb       *redis.Client
-	mu        sync.RWMutex
-	workers   map[string]*WorkerEntry           // in-memory hot cache
-	conns     map[string]*grpc.ClientConn       // persistent gRPC connections
-	clients   map[string]pb.SandboxWorkerClient // cached gRPC clients
-	rrCounter uint64                            // round-robin counter for tie-breaking
-	stop      chan struct{}
+	rdb        *redis.Client
+	mu         sync.RWMutex
+	workers    map[string]*WorkerEntry       // in-memory hot cache
+	conns      map[string]*grpc.ClientConn   // persistent gRPC connections
+	clients    map[string]pb.SandboxWorkerClient // cached gRPC clients
+	rrCounter  uint64                        // round-robin counter for tie-breaking
+	stop       chan struct{}
 
 	// onWorkerRejoined fires when a worker registers — both genuinely new and
 	// after being pruned for missed heartbeats. Used by the reconcile-on-
@@ -316,8 +314,6 @@ func (r *RedisWorkerRegistry) reconcileAndPrune() {
 
 // handleHeartbeat updates the in-memory worker map and dials gRPC if this is a new worker.
 func (r *RedisWorkerRegistry) handleHeartbeat(entry WorkerEntry) {
-	normalizeWorkerEntryReadiness(&entry)
-
 	// Read drain state outside the lock — this is a network call and we don't
 	// want to block other registry ops on Redis latency. The drain key is the
 	// cross-CP source of truth; per-CP SetDraining writes it on the admin
@@ -341,8 +337,6 @@ func (r *RedisWorkerRegistry) handleHeartbeat(entry WorkerEntry) {
 		existing.DiskPct = entry.DiskPct
 		existing.TotalMemoryMB = entry.TotalMemoryMB
 		existing.CommittedMemoryMB = entry.CommittedMemoryMB
-		existing.AcceptsCreates = entry.AcceptsCreates
-		existing.AcceptsMigrations = entry.AcceptsMigrations
 		existing.Draining = drainOverride
 		if entry.GoldenVersion != "" {
 			existing.GoldenVersion = entry.GoldenVersion
@@ -368,7 +362,7 @@ func (r *RedisWorkerRegistry) handleHeartbeat(entry WorkerEntry) {
 		// during the unreachable window. See internal/controlplane/reconcile.go.
 		entry.Draining = drainOverride
 		r.workers[entry.ID] = &entry
-		log.Printf("redis_registry: new worker registered: %s (region=%s, grpc=%s, draining=%v, acceptsCreates=%v, acceptsMigrations=%v)", entry.ID, entry.Region, entry.GRPCAddr, drainOverride, entry.AcceptsCreates, entry.AcceptsMigrations)
+		log.Printf("redis_registry: new worker registered: %s (region=%s, grpc=%s, draining=%v)", entry.ID, entry.Region, entry.GRPCAddr, drainOverride)
 		if r.onWorkerRejoined != nil {
 			// Fire in a goroutine — reconcile may take a few seconds (DB query
 			// + a DestroySandbox RPC per stale entry) and we don't want
@@ -442,16 +436,6 @@ func (r *RedisWorkerRegistry) handleHeartbeat(entry WorkerEntry) {
 		if needsDial {
 			r.dialWorkerLocked(entry.ID, entry.GRPCAddr)
 		}
-	}
-}
-
-func normalizeWorkerEntryReadiness(w *WorkerEntry) {
-	// Older workers did not publish these booleans. If both are absent they
-	// decode as false; preserve legacy behavior by treating them as ready for
-	// both placement classes.
-	if !w.AcceptsCreates && !w.AcceptsMigrations {
-		w.AcceptsCreates = true
-		w.AcceptsMigrations = true
 	}
 }
 
@@ -596,9 +580,6 @@ func (r *RedisWorkerRegistry) collectEligibleLocked(region string, anyRegion boo
 			continue
 		}
 		if w.Draining {
-			continue
-		}
-		if !w.AcceptsCreateRouting() {
 			continue
 		}
 		if w.CPUPct >= routingHardCapPct || w.MemPct >= routingHardCapPct || w.DiskPct >= routingHardCapPct {
@@ -770,22 +751,20 @@ func (r *RedisWorkerRegistry) GetWorkersByRegion(region string) []*WorkerInfo {
 	for _, w := range r.workers {
 		if w.Region == region {
 			result = append(result, &WorkerInfo{
-				ID:                w.ID,
-				MachineID:         w.MachineID,
-				Region:            w.Region,
-				GRPCAddr:          w.GRPCAddr,
-				HTTPAddr:          w.HTTPAddr,
-				Capacity:          w.Capacity,
-				Current:           w.Current,
-				CPUPct:            w.CPUPct,
-				MemPct:            w.MemPct,
-				DiskPct:           w.DiskPct,
+				ID:        w.ID,
+				MachineID: w.MachineID,
+				Region:    w.Region,
+				GRPCAddr:  w.GRPCAddr,
+				HTTPAddr:  w.HTTPAddr,
+				Capacity:  w.Capacity,
+				Current:   w.Current,
+				CPUPct:    w.CPUPct,
+				MemPct:    w.MemPct,
+				DiskPct:       w.DiskPct,
 				TotalMemoryMB:     w.TotalMemoryMB,
 				CommittedMemoryMB: w.CommittedMemoryMB,
-				GoldenVersion:     w.GoldenVersion,
-				WorkerVersion:     w.WorkerVersion,
-				AcceptsCreates:    w.AcceptsCreates,
-				AcceptsMigrations: w.AcceptsMigrations,
+				GoldenVersion: w.GoldenVersion,
+				WorkerVersion: w.WorkerVersion,
 			})
 		}
 	}
