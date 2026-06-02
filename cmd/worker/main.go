@@ -267,9 +267,8 @@ func main() {
 		// capacity. See internal/qemu/orphan_reaper.go.
 		qmMgr.StartOrphanReaper(ctx)
 
-		// Prepare golden snapshot for fast VM creation
-		if err := qmMgr.PrepareGoldenSnapshot(); err != nil {
-			log.Printf("opensandbox-worker: WARNING: golden snapshot failed, using cold boot: %v", err)
+		if err := qmMgr.LoadGoldenVersionFromImage(); err != nil {
+			log.Printf("opensandbox-worker: WARNING: base golden version not available yet: %v", err)
 		}
 
 		mgr = qmMgr
@@ -608,6 +607,8 @@ func main() {
 		}
 	}()
 
+	var hb *worker.RedisHeartbeat
+
 	// Redis heartbeat
 	if cfg.RedisURL != "" {
 		grpcAdvertise := grpcAddr
@@ -615,13 +616,16 @@ func main() {
 			grpcAdvertise = addr
 		}
 
-		hb, err := worker.NewRedisHeartbeat(cfg.RedisURL, cfg.WorkerID, cfg.Region, grpcAdvertise, cfg.HTTPAddr)
+		var err error
+		hb, err = worker.NewRedisHeartbeat(cfg.RedisURL, cfg.WorkerID, cfg.Region, grpcAdvertise, cfg.HTTPAddr)
 		if err != nil {
 			log.Printf("opensandbox-worker: Redis heartbeat not available: %v", err)
 		} else {
 			hb.SetWorkerVersion(WorkerVersion)
 			if qemuMgr != nil {
 				hb.SetGoldenVersion(qemuMgr.GoldenVersion())
+				hb.SetAcceptsCreates(false)
+				hb.SetAcceptsMigrations(qemuMgr.GoldenVersion() != "")
 			}
 			if envID := os.Getenv("OPENSANDBOX_MACHINE_ID"); envID != "" {
 				hb.SetMachineID(envID)
@@ -717,6 +721,23 @@ func main() {
 				}
 			}()
 		}
+	}
+
+	if qemuMgr != nil {
+		go func() {
+			log.Println("opensandbox-worker: preparing golden snapshot in background")
+			if err := qemuMgr.PrepareGoldenSnapshot(); err != nil {
+				log.Printf("opensandbox-worker: WARNING: golden snapshot failed, using cold boot: %v", err)
+			}
+			if hb != nil {
+				hb.SetGoldenVersion(qemuMgr.GoldenVersion())
+				hb.SetAcceptsCreates(true)
+				if qemuMgr.GoldenVersion() != "" {
+					hb.SetAcceptsMigrations(true)
+				}
+			}
+			log.Println("opensandbox-worker: create readiness enabled")
+		}()
 	}
 
 	// CF-parallel: Redis Streams event publisher. Inert unless CellID is set.

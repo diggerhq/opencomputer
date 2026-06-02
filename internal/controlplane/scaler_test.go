@@ -173,12 +173,12 @@ func (p *mockPool) DestroyMachine(_ context.Context, machineID string) error {
 	return nil
 }
 
-func (p *mockPool) DrainMachine(_ context.Context, _ string) error               { return nil }
-func (p *mockPool) StartMachine(_ context.Context, _ string) error               { return nil }
-func (p *mockPool) StopMachine(_ context.Context, _ string) error                { return nil }
-func (p *mockPool) HealthCheck(_ context.Context, _ string) error                { return nil }
-func (p *mockPool) CleanupOrphanedResources(_ context.Context) (int, error)      { return 0, nil }
-func (p *mockPool) ListMachines(_ context.Context) ([]*compute.Machine, error)   { return nil, nil }
+func (p *mockPool) DrainMachine(_ context.Context, _ string) error             { return nil }
+func (p *mockPool) StartMachine(_ context.Context, _ string) error             { return nil }
+func (p *mockPool) StopMachine(_ context.Context, _ string) error              { return nil }
+func (p *mockPool) HealthCheck(_ context.Context, _ string) error              { return nil }
+func (p *mockPool) CleanupOrphanedResources(_ context.Context) (int, error)    { return 0, nil }
+func (p *mockPool) ListMachines(_ context.Context) ([]*compute.Machine, error) { return nil, nil }
 func (p *mockPool) SupportedRegions(_ context.Context) ([]string, error) {
 	return []string{"us-east-1"}, nil
 }
@@ -673,6 +673,59 @@ func TestFindMigrationTargetSelectsLeastLoaded(t *testing.T) {
 	}
 	if target.ID != "cold" {
 		t.Errorf("expected cold worker as target, got %s", target.ID)
+	}
+}
+
+func TestFindMigrationTargetSkipsMigrationDisabledWorker(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	reg.addWorker(&WorkerInfo{
+		ID: "source", MachineID: "osb-worker-source", Region: "us-east-1",
+		Capacity: 50, Current: 20, CPUPct: 70, MemPct: 50, DiskPct: 30,
+	})
+	reg.addWorker(&WorkerInfo{
+		ID: "disabled", MachineID: "osb-worker-disabled", Region: "us-east-1",
+		Capacity: 50, Current: 1, CPUPct: 5, MemPct: 5, DiskPct: 5,
+		AcceptsCreates: true, AcceptsMigrations: false,
+	})
+	reg.addWorker(&WorkerInfo{
+		ID: "ready", MachineID: "osb-worker-ready", Region: "us-east-1",
+		Capacity: 50, Current: 10, CPUPct: 20, MemPct: 20, DiskPct: 20,
+		AcceptsCreates: true, AcceptsMigrations: true,
+	})
+
+	s := newTestScaler(reg, pool)
+	target := s.findMigrationTarget("us-east-1", "source", 0)
+	if target == nil {
+		t.Fatal("expected a migration target")
+	}
+	if target.ID != "ready" {
+		t.Errorf("expected ready worker as target, got %s", target.ID)
+	}
+}
+
+func TestFindMigrationTargetAllowsCreateDisabledWorker(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	reg.addWorker(&WorkerInfo{
+		ID: "source", MachineID: "osb-worker-source", Region: "us-east-1",
+		Capacity: 50, Current: 20, CPUPct: 70, MemPct: 50, DiskPct: 30,
+	})
+	reg.addWorker(&WorkerInfo{
+		ID: "target", MachineID: "osb-worker-target", Region: "us-east-1",
+		Capacity: 50, Current: 1, CPUPct: 5, MemPct: 5, DiskPct: 5,
+		AcceptsCreates: false, AcceptsMigrations: true,
+	})
+
+	s := newTestScaler(reg, pool)
+	target := s.findMigrationTarget("us-east-1", "source", 0)
+	if target == nil {
+		t.Fatal("expected a migration target")
+	}
+	if target.ID != "target" {
+		t.Errorf("expected target worker as target, got %s", target.ID)
 	}
 }
 

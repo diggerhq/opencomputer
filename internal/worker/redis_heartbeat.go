@@ -13,20 +13,22 @@ import (
 
 // redisHeartbeatPayload is the JSON structure published to Redis.
 type redisHeartbeatPayload struct {
-	WorkerID  string  `json:"worker_id"`
-	MachineID string  `json:"machine_id,omitempty"` // EC2 instance ID (e.g. i-099088f8ac4a34ef3)
-	Region    string  `json:"region"`
-	GRPCAddr  string  `json:"grpc_addr"`
-	HTTPAddr  string  `json:"http_addr"`
-	Capacity  int     `json:"capacity"`
-	Current   int     `json:"current"`
-	CPUPct    float64 `json:"cpu_pct"`
-	MemPct    float64 `json:"mem_pct"`
+	WorkerID          string  `json:"worker_id"`
+	MachineID         string  `json:"machine_id,omitempty"` // EC2 instance ID (e.g. i-099088f8ac4a34ef3)
+	Region            string  `json:"region"`
+	GRPCAddr          string  `json:"grpc_addr"`
+	HTTPAddr          string  `json:"http_addr"`
+	Capacity          int     `json:"capacity"`
+	Current           int     `json:"current"`
+	CPUPct            float64 `json:"cpu_pct"`
+	MemPct            float64 `json:"mem_pct"`
 	DiskPct           float64 `json:"disk_pct"`
 	TotalMemoryMB     int     `json:"total_memory_mb,omitempty"`
 	CommittedMemoryMB int     `json:"committed_memory_mb,omitempty"`
 	GoldenVersion     string  `json:"golden_version,omitempty"`
 	WorkerVersion     string  `json:"worker_version,omitempty"`
+	AcceptsCreates    bool    `json:"accepts_creates,omitempty"`
+	AcceptsMigrations bool    `json:"accepts_migrations,omitempty"`
 
 	// Per-sandbox stats snapshot. Populated by the worker's stats collector
 	// (see internal/qemu/stats_collector.go) and consumed by the CP autoscaler
@@ -52,21 +54,24 @@ type SandboxStatsWire struct {
 //  1. SETs worker:{id} with a 30s TTL (auto-expires if worker dies)
 //  2. PUBLISHes to workers:heartbeat for real-time server notification
 type RedisHeartbeat struct {
-	rdb       *redis.Client
-	workerID  string
-	machineID string
-	region    string
-	grpcAddr  string
-	httpAddr  string
-	getStats         func() (capacity, current int, cpuPct, memPct, diskPct float64)
-	getMemoryInfo    func() (totalMB, committedMB int) // optional: committed memory for dynamic capacity
-	getSandboxStats  func() map[string]SandboxStatsWire // optional: per-sandbox stats for autoscaler
-	onReconnect      func() // called when heartbeat succeeds after a previous failure
-	goldenVersion string
-	workerVersion string
-	wasDown       bool   // true if the last publish failed (used to detect reconnect)
-	stop          chan struct{}
-	stopOnce      sync.Once // guards close(stop) + rdb.Del — Stop() may be called from preemption handler and defer
+	rdb               *redis.Client
+	workerID          string
+	machineID         string
+	region            string
+	grpcAddr          string
+	httpAddr          string
+	getStats          func() (capacity, current int, cpuPct, memPct, diskPct float64)
+	getMemoryInfo     func() (totalMB, committedMB int)  // optional: committed memory for dynamic capacity
+	getSandboxStats   func() map[string]SandboxStatsWire // optional: per-sandbox stats for autoscaler
+	onReconnect       func()                             // called when heartbeat succeeds after a previous failure
+	stateMu           sync.RWMutex
+	goldenVersion     string
+	workerVersion     string
+	acceptsCreates    bool
+	acceptsMigrations bool
+	wasDown           bool // true if the last publish failed (used to detect reconnect)
+	stop              chan struct{}
+	stopOnce          sync.Once // guards close(stop) + rdb.Del — Stop() may be called from preemption handler and defer
 }
 
 // NewRedisHeartbeat creates a new heartbeat publisher.
@@ -92,28 +97,52 @@ func NewRedisHeartbeat(redisURL, workerID, region, grpcAddr, httpAddr string) (*
 	}
 
 	return &RedisHeartbeat{
-		rdb:      rdb,
-		workerID: workerID,
-		region:   region,
-		grpcAddr: grpcAddr,
-		httpAddr: httpAddr,
-		stop:     make(chan struct{}),
+		rdb:               rdb,
+		workerID:          workerID,
+		region:            region,
+		grpcAddr:          grpcAddr,
+		httpAddr:          httpAddr,
+		acceptsCreates:    true,
+		acceptsMigrations: true,
+		stop:              make(chan struct{}),
 	}, nil
 }
 
 // SetMachineID sets the EC2 instance ID for the heartbeat (used by scaler for drain/terminate).
 func (h *RedisHeartbeat) SetMachineID(id string) {
+	h.stateMu.Lock()
+	defer h.stateMu.Unlock()
 	h.machineID = id
 }
 
 // SetGoldenVersion sets the golden snapshot version hash for the heartbeat.
 func (h *RedisHeartbeat) SetGoldenVersion(v string) {
+	h.stateMu.Lock()
+	defer h.stateMu.Unlock()
 	h.goldenVersion = v
 }
 
 // SetWorkerVersion sets the worker binary version (git SHA) for the heartbeat.
 func (h *RedisHeartbeat) SetWorkerVersion(v string) {
+	h.stateMu.Lock()
+	defer h.stateMu.Unlock()
 	h.workerVersion = v
+}
+
+// SetAcceptsCreates controls whether the control plane may route new sandbox
+// creates to this worker.
+func (h *RedisHeartbeat) SetAcceptsCreates(v bool) {
+	h.stateMu.Lock()
+	defer h.stateMu.Unlock()
+	h.acceptsCreates = v
+}
+
+// SetAcceptsMigrations controls whether the control plane may choose this
+// worker as an incoming live-migration target.
+func (h *RedisHeartbeat) SetAcceptsMigrations(v bool) {
+	h.stateMu.Lock()
+	defer h.stateMu.Unlock()
+	h.acceptsMigrations = v
 }
 
 // SetMemoryInfoFunc sets a callback that returns host total and committed memory in MB.
@@ -159,20 +188,29 @@ func (h *RedisHeartbeat) Start(getStats func() (int, int, float64, float64, floa
 
 func (h *RedisHeartbeat) publish() {
 	capacity, current, cpuPct, memPct, diskPct := h.getStats()
+	h.stateMu.RLock()
+	machineID := h.machineID
+	goldenVersion := h.goldenVersion
+	workerVersion := h.workerVersion
+	acceptsCreates := h.acceptsCreates
+	acceptsMigrations := h.acceptsMigrations
+	h.stateMu.RUnlock()
 
 	payload := redisHeartbeatPayload{
-		WorkerID:  h.workerID,
-		MachineID: h.machineID,
-		Region:    h.region,
-		GRPCAddr:  h.grpcAddr,
-		HTTPAddr:  h.httpAddr,
-		Capacity:  capacity,
-		Current:   current,
-		CPUPct:    cpuPct,
-		MemPct:    memPct,
-		DiskPct:       diskPct,
-		GoldenVersion: h.goldenVersion,
-		WorkerVersion: h.workerVersion,
+		WorkerID:          h.workerID,
+		MachineID:         machineID,
+		Region:            h.region,
+		GRPCAddr:          h.grpcAddr,
+		HTTPAddr:          h.httpAddr,
+		Capacity:          capacity,
+		Current:           current,
+		CPUPct:            cpuPct,
+		MemPct:            memPct,
+		DiskPct:           diskPct,
+		GoldenVersion:     goldenVersion,
+		WorkerVersion:     workerVersion,
+		AcceptsCreates:    acceptsCreates,
+		AcceptsMigrations: acceptsMigrations,
 	}
 
 	// Add committed memory info for dynamic capacity
