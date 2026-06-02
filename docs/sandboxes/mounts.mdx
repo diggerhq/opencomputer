@@ -1,0 +1,278 @@
+---
+title: "Mounts"
+description: "Mount S3, GCS, Azure Blob, SFTP, WebDAV, and Dropbox into a sandbox via FUSE"
+---
+
+Mount remote filesystems directly into your sandbox so your code reads and
+writes them like local files — no SDK calls, no chunked downloads, no
+boilerplate. Perfect for pulling in datasets, model weights, or a customer's
+bucket without staging anything to disk first.
+
+```typescript
+import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create();
+
+await sandbox.mounts.add({
+  path: "/mnt/data",
+  remote: "s3:my-bucket/datasets",
+  backend: "s3",
+  creds: {
+    access_key_id: process.env.AWS_ACCESS_KEY_ID!,
+    secret_access_key: process.env.AWS_SECRET_ACCESS_KEY!,
+    region: "us-east-1",
+  },
+});
+
+// Now anything in the sandbox can read s3://my-bucket/datasets as /mnt/data:
+await sandbox.exec.run("ls /mnt/data");
+await sandbox.exec.run("head /mnt/data/train.csv");
+```
+
+## How It Works
+
+Mounts use [`rclone mount`](https://rclone.org/commands/rclone_mount/) under
+the hood — a single binary that speaks ~40 backends (S3, GCS, Azure Blob,
+SFTP, WebDAV, Dropbox, and more). When you call `mounts.add()`:
+
+1. The control plane templates an rclone config from your `backend` + `creds`.
+2. The config is written to a tmpfs file inside the VM (mode `0600` — the
+   sandbox user can't read it).
+3. `rclone mount` is spawned as a background daemon, exposing the remote at
+   the path you specified.
+4. Every process in the sandbox can now read/write that path.
+
+Credentials live only inside the VM's tmpfs for the lifetime of the mount.
+The worker keeps no copy.
+
+## Supported Backends
+
+`backend` selects how `creds` are templated. The keys you pass map directly to
+[rclone config fields](https://rclone.org/docs/) for that backend type.
+
+| Backend       | Common keys                                                                 |
+| ------------- | --------------------------------------------------------------------------- |
+| `s3`          | `access_key_id`, `secret_access_key`, `region`, `provider` (default `AWS`), `endpoint` |
+| `gcs`         | `service_account_credentials` (JSON string) or `service_account_file`       |
+| `azureblob`   | `account`, `key` *or* `sas_url`                                             |
+| `sftp`        | `host`, `user`, `pass` or `key_file`, `port`                                |
+| `webdav`      | `url`, `vendor`, `user`, `pass`                                             |
+| `dropbox`     | `token`                                                                     |
+
+For anything not in this list, or for advanced tuning, pass `rcloneConfig`
+directly with a raw rclone config string — see [Custom Config](#custom-config)
+below.
+
+## Examples
+
+### S3 (AWS)
+
+<CodeGroup>
+
+```typescript TypeScript
+await sandbox.mounts.add({
+  path: "/mnt/data",
+  remote: "s3:my-bucket",
+  backend: "s3",
+  creds: {
+    access_key_id: process.env.AWS_ACCESS_KEY_ID!,
+    secret_access_key: process.env.AWS_SECRET_ACCESS_KEY!,
+    region: "us-east-1",
+  },
+});
+```
+
+```python Python
+await sandbox.mounts.add(
+    path="/mnt/data",
+    remote="s3:my-bucket",
+    backend="s3",
+    creds={
+        "access_key_id": os.environ["AWS_ACCESS_KEY_ID"],
+        "secret_access_key": os.environ["AWS_SECRET_ACCESS_KEY"],
+        "region": "us-east-1",
+    },
+)
+```
+
+</CodeGroup>
+
+### S3-compatible (MinIO, R2, Tigris, etc.)
+
+Override the `provider` and point at the endpoint:
+
+```typescript
+await sandbox.mounts.add({
+  path: "/mnt/r2",
+  remote: "r2:my-bucket",
+  backend: "s3",
+  creds: {
+    provider: "Cloudflare",
+    access_key_id: "...",
+    secret_access_key: "...",
+    endpoint: "https://<accountid>.r2.cloudflarestorage.com",
+    region: "auto",
+  },
+});
+```
+
+### Google Cloud Storage
+
+<CodeGroup>
+
+```typescript TypeScript
+import fs from "node:fs";
+
+await sandbox.mounts.add({
+  path: "/mnt/gcs",
+  remote: "gcs:my-bucket",
+  backend: "gcs",
+  creds: {
+    service_account_credentials: fs.readFileSync("./sa-key.json", "utf8"),
+  },
+});
+```
+
+```python Python
+with open("./sa-key.json") as f:
+    sa_json = f.read()
+
+await sandbox.mounts.add(
+    path="/mnt/gcs",
+    remote="gcs:my-bucket",
+    backend="gcs",
+    creds={"service_account_credentials": sa_json},
+)
+```
+
+</CodeGroup>
+
+### SFTP
+
+```typescript
+await sandbox.mounts.add({
+  path: "/mnt/remote",
+  remote: "ssh:/home/data",
+  backend: "sftp",
+  creds: {
+    host: "data.example.com",
+    user: "agent",
+    pass: process.env.SSH_PASSWORD!, // or key_file
+  },
+});
+```
+
+### Custom Config
+
+For backends not in the typed list — or to tune things like `--vfs-cache-mode`
+or `--dir-cache-time` — pass an rclone config string directly. The section
+name in the config must match the part of `remote` before the colon.
+
+```typescript
+await sandbox.mounts.add({
+  path: "/mnt/box",
+  remote: "box:Reports",
+  rcloneConfig: `
+[box]
+type = box
+token = {"access_token":"...","refresh_token":"...","expiry":"..."}
+`.trim(),
+  mountOptions: ["--dir-cache-time", "1m"],
+});
+```
+
+## Read-only by default
+
+Mounts are read-only unless you explicitly opt into read-write:
+
+```typescript
+await sandbox.mounts.add({
+  path: "/mnt/writable",
+  remote: "s3:scratch",
+  backend: "s3",
+  creds: {...},
+  readOnly: false,    // opts into RW; uses --vfs-cache-mode writes
+});
+```
+
+<Warning>
+  Object-store FUSE mounts have well-known write footguns — concurrent writers
+  to the same key can produce surprising results, and small-write workloads
+  amplify request counts (and your bill). Prefer object-store SDKs for
+  write-heavy workloads; use mounts for read-heavy access and append-style
+  artifacts.
+</Warning>
+
+## Listing and removing
+
+```typescript
+const mounts = await sandbox.mounts.list();
+// [{ path: "/mnt/data", remote: "s3:my-bucket", backend: "s3", readOnly: true }]
+
+await sandbox.mounts.remove("/mnt/data");
+```
+
+## Hibernate behavior
+
+<Warning>
+  **Mounts do not survive hibernate.** When a sandbox hibernates (manually or
+  via idle timeout), all FUSE mounts are torn down before the snapshot is
+  taken — otherwise the snapshot would capture broken file descriptors that
+  hang processes on wake.
+
+  v1 does not auto-restore mounts on wake. After waking, call `mounts.add()`
+  again for anything you need back. `mounts.list()` returns empty post-wake.
+</Warning>
+
+The simplest pattern is to remount on wake:
+
+```typescript
+const sandbox = await Sandbox.connect("sb-abc123");
+if (sandbox.status === "hibernated") {
+  await sandbox.wake();
+  await sandbox.mounts.add({ path: "/mnt/data", remote: "s3:my-bucket", backend: "s3", creds });
+}
+```
+
+## CLI
+
+```bash
+oc mounts add sb-abc123 \
+  --path /mnt/data \
+  --remote s3:my-bucket \
+  --backend s3 \
+  --cred access_key_id=AKIA... \
+  --cred secret_access_key=... \
+  --cred region=us-east-1
+
+oc mounts list sb-abc123
+oc mounts rm sb-abc123 /mnt/data
+```
+
+For raw rclone configs, point `--config-file` at a local file:
+
+```bash
+oc mounts add sb-abc123 --path /mnt/box --remote box:Reports --config-file ./rclone.conf
+```
+
+## Troubleshooting
+
+**`sandbox image is missing rclone and/or fusermount3`** — the sandbox is
+running on an older base image. Recreate the sandbox from the latest default
+template or build a new image off the current `Dockerfile.default`.
+
+**Mount succeeds but `ls` returns empty** — usually a creds / permission issue
+on the remote side rather than a mount issue. SSH in (`oc shell`) and run
+`rclone ls <remote>: --config /run/oc-agent/mounts/<id>.conf` to see the real
+error. Or just `ls -la` the mount point — FUSE errors surface as filesystem
+errors there.
+
+**`fuse: bad mount point ... permission denied`** — make sure the target path
+isn't already a non-empty directory you don't own. The mount call creates the
+path with `sandbox:sandbox` ownership; pre-existing roots can conflict.
+
+<Tip>
+  CLI equivalent: [`oc mounts`](/cli/mounts). Full reference:
+  [TypeScript SDK](/reference/typescript-sdk#mounts) ·
+  [Python SDK](/reference/python-sdk#mounts).
+</Tip>

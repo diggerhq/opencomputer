@@ -37,6 +37,7 @@
           "sandboxes/overview",
           "sandboxes/running-commands",
           "sandboxes/working-with-files",
+          "sandboxes/mounts",
           "sandboxes/signed-urls",
           "sandboxes/interactive-terminals",
           "sandboxes/timeout",
