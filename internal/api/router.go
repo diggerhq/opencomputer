@@ -35,35 +35,40 @@ var errSandboxNotAvailable = map[string]string{
 	"error": "sandbox execution not available in server-only mode",
 }
 
+type workerEvacuator interface {
+	EvacuateWorker(ctx context.Context, workerID string) error
+}
+
 // Server holds the API server dependencies.
 type Server struct {
-	echo       *echo.Echo
-	manager    sandbox.Manager
-	router     *sandbox.SandboxRouter  // routes all sandbox interactions (state machine, auto-wake, rolling timeout)
-	ptyManager *sandbox.PTYManager
-	store      *db.Store               // nil in combined/dev mode without PG
-	jwtIssuer  *auth.JWTIssuer         // nil if JWT not configured
-	capTokenIssuer *auth.JWTIssuer     // verifies edge→CP capability tokens; nil if SESSION_JWT_SECRET unset
-	cfAdminSecret  string              // HMAC shared with CreditAccount DO for /admin/halt-org and /admin/resume-org; empty disables auth (dev only)
-	cfEventSecret  string              // HMAC shared with the api-edge Worker for /internal/secret-refresh and other edge-→cell push paths
-	cellID     string                  // this control plane's cell_id (for the cap-token cell check)
-	mode       string                  // "server", "worker", "combined"
-	workerID   string                  // this worker's ID
-	region     string                  // this worker's region
-	httpAddr   string                  // public HTTP address for direct access
-	execSessionManager *sandbox.ExecSessionManager     // nil if not configured
-	sandboxDBs      *sandbox.SandboxDBManager         // per-sandbox SQLite manager
-	workos          *auth.WorkOSMiddleware            // nil if WorkOS not configured
-	workerRegistry  *controlplane.RedisWorkerRegistry // nil in combined/worker mode
-	checkpointStore *storage.CheckpointStore          // nil if hibernation not configured
-	sandboxDomain   string                            // base domain for sandbox subdomains
-	cfClient        *cloudflare.Client                // nil if Cloudflare not configured
-	pendingCreates  sync.Map                          // map[sandboxID]*pendingCreate — async sandbox creation tracking
-	sandboxAPIProxy *proxy.SandboxAPIProxy            // nil except in server mode (proxies data-plane to workers)
-	stripeClient    *billing.StripeClient              // nil if Stripe not configured
-	redisClient     *redis.Client                     // nil if Redis not configured (for health checks)
-	adminEvents     *AdminEventBus                    // real-time event bus for admin dashboard
-	ready           int32                             // atomic: 1 = ready, 0 = not ready
+	echo               *echo.Echo
+	manager            sandbox.Manager
+	router             *sandbox.SandboxRouter // routes all sandbox interactions (state machine, auto-wake, rolling timeout)
+	ptyManager         *sandbox.PTYManager
+	store              *db.Store                         // nil in combined/dev mode without PG
+	jwtIssuer          *auth.JWTIssuer                   // nil if JWT not configured
+	capTokenIssuer     *auth.JWTIssuer                   // verifies edge→CP capability tokens; nil if SESSION_JWT_SECRET unset
+	cfAdminSecret      string                            // HMAC shared with CreditAccount DO for /admin/halt-org and /admin/resume-org; empty disables auth (dev only)
+	cfEventSecret      string                            // HMAC shared with the api-edge Worker for /internal/secret-refresh and other edge-→cell push paths
+	cellID             string                            // this control plane's cell_id (for the cap-token cell check)
+	mode               string                            // "server", "worker", "combined"
+	workerID           string                            // this worker's ID
+	region             string                            // this worker's region
+	httpAddr           string                            // public HTTP address for direct access
+	execSessionManager *sandbox.ExecSessionManager       // nil if not configured
+	sandboxDBs         *sandbox.SandboxDBManager         // per-sandbox SQLite manager
+	workos             *auth.WorkOSMiddleware            // nil if WorkOS not configured
+	workerRegistry     *controlplane.RedisWorkerRegistry // nil in combined/worker mode
+	workerEvacuator    workerEvacuator                   // nil when autoscaler is disabled
+	checkpointStore    *storage.CheckpointStore          // nil if hibernation not configured
+	sandboxDomain      string                            // base domain for sandbox subdomains
+	cfClient           *cloudflare.Client                // nil if Cloudflare not configured
+	pendingCreates     sync.Map                          // map[sandboxID]*pendingCreate — async sandbox creation tracking
+	sandboxAPIProxy    *proxy.SandboxAPIProxy            // nil except in server mode (proxies data-plane to workers)
+	stripeClient       *billing.StripeClient             // nil if Stripe not configured
+	redisClient        *redis.Client                     // nil if Redis not configured (for health checks)
+	adminEvents        *AdminEventBus                    // real-time event bus for admin dashboard
+	ready              int32                             // atomic: 1 = ready, 0 = not ready
 
 	// Axiom log query (sandbox session logs read API).
 	// Empty token = endpoint returns 503.
@@ -94,34 +99,35 @@ func (s *Server) SetAxiomQueryConfig(queryToken, dataset string) {
 // pendingCreate tracks an async sandbox creation.
 type pendingCreate struct {
 	ready chan struct{} // closed when creation completes
-	err   error        // set before closing ready
+	err   error         // set before closing ready
 }
 
 // ServerOpts holds optional dependencies for the API server.
 type ServerOpts struct {
-	Store       *db.Store
-	JWTIssuer   *auth.JWTIssuer
-	SessionJWTSecret string // shared edge↔CP HMAC secret; enables /internal/sandboxes/create
-	CFAdminSecret    string // HMAC shared with CF CreditAccount DO; enables /admin/halt-org and /admin/resume-org
-	CFEventSecret    string // HMAC shared with the api-edge Worker; enables /internal/secret-refresh and other edge-→cell push paths
-	CellID      string // this control plane's cell_id
-	Mode        string // "server", "worker", "combined"
-	WorkerID    string
-	Region      string
-	HTTPAddr    string
+	Store              *db.Store
+	JWTIssuer          *auth.JWTIssuer
+	SessionJWTSecret   string // shared edge↔CP HMAC secret; enables /internal/sandboxes/create
+	CFAdminSecret      string // HMAC shared with CF CreditAccount DO; enables /admin/halt-org and /admin/resume-org
+	CFEventSecret      string // HMAC shared with the api-edge Worker; enables /internal/secret-refresh and other edge-→cell push paths
+	CellID             string // this control plane's cell_id
+	Mode               string // "server", "worker", "combined"
+	WorkerID           string
+	Region             string
+	HTTPAddr           string
 	ExecSessionManager *sandbox.ExecSessionManager
-	SandboxDBs     *sandbox.SandboxDBManager
-	Router         *sandbox.SandboxRouter             // nil in server-only mode
-	SandboxProxy   *proxy.SandboxProxy               // nil if subdomain routing not configured
-	ControlPlaneProxy *proxy.ControlPlaneProxy        // nil except in server mode (routes subdomains to workers)
-	SandboxDomain  string                             // base domain for sandbox subdomains
-	WorkOSConfig    *auth.WorkOSConfig                // nil if WorkOS not configured
-	WorkerRegistry  *controlplane.RedisWorkerRegistry  // nil in combined/worker mode
-	CheckpointStore *storage.CheckpointStore           // nil if hibernation not configured
-	CFClient        *cloudflare.Client                 // nil if Cloudflare not configured
-	SandboxAPIProxy *proxy.SandboxAPIProxy             // nil except in server mode (proxies data-plane to workers)
-	StripeClient    *billing.StripeClient              // nil if Stripe not configured
-	RedisClient     *redis.Client                     // nil if Redis not configured (for health checks)
+	SandboxDBs         *sandbox.SandboxDBManager
+	Router             *sandbox.SandboxRouter            // nil in server-only mode
+	SandboxProxy       *proxy.SandboxProxy               // nil if subdomain routing not configured
+	ControlPlaneProxy  *proxy.ControlPlaneProxy          // nil except in server mode (routes subdomains to workers)
+	SandboxDomain      string                            // base domain for sandbox subdomains
+	WorkOSConfig       *auth.WorkOSConfig                // nil if WorkOS not configured
+	WorkerRegistry     *controlplane.RedisWorkerRegistry // nil in combined/worker mode
+	WorkerEvacuator    *controlplane.Scaler              // nil when autoscaler is disabled
+	CheckpointStore    *storage.CheckpointStore          // nil if hibernation not configured
+	CFClient           *cloudflare.Client                // nil if Cloudflare not configured
+	SandboxAPIProxy    *proxy.SandboxAPIProxy            // nil except in server mode (proxies data-plane to workers)
+	StripeClient       *billing.StripeClient             // nil if Stripe not configured
+	RedisClient        *redis.Client                     // nil if Redis not configured (for health checks)
 }
 
 // NewServer creates a new API server with all routes configured.
@@ -153,6 +159,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.sandboxDBs = opts.SandboxDBs
 		s.router = opts.Router
 		s.workerRegistry = opts.WorkerRegistry
+		s.workerEvacuator = opts.WorkerEvacuator
 		s.checkpointStore = opts.CheckpointStore
 		s.sandboxDomain = opts.SandboxDomain
 		s.cfClient = opts.CFClient
@@ -267,6 +274,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	admin.GET("/report", s.adminReport)
 	admin.POST("/events/clear", s.adminClearEvents)
 	admin.POST("/workers/:id/drain", s.adminSetWorkerDraining)
+	admin.POST("/workers/:id/evacuate", s.adminEvacuateWorker)
 	admin.GET("/demo/migration", s.demoPingPongPage)
 	admin.GET("/demo/chaos", s.demoChaosPage)
 

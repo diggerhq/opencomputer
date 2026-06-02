@@ -43,6 +43,8 @@ const (
 	evacuationBatchSize    = 3                // sandboxes to migrate per eval cycle per worker
 	evacuationCooldown     = 60 * time.Second // per-worker cooldown between evacuation batches
 	drainTimeout           = 45 * time.Minute // max time to drain a worker via live migration (allows 30 sandboxes × 10min each in batches of 3)
+	drainBatchSuccessPause = 2 * time.Second  // pause between successful drain batches
+	drainBatchFailurePause = 5 * time.Second  // pause before retrying after a failed drain batch
 
 	creationFailureThreshold = 3                // consecutive failures before exponential backoff
 	creationBackoffMin       = 1 * time.Minute  // initial backoff after threshold hit
@@ -241,6 +243,39 @@ func (s *Scaler) Stop() {
 	s.running = false
 	s.mu.Unlock()
 	s.wg.Wait()
+}
+
+// EvacuateWorker starts the normal live-migration drain loop for a specific
+// worker without terminating the machine when the worker becomes empty. This is
+// intended for operator-triggered evacuation tests and spot-preemption drills.
+func (s *Scaler) EvacuateWorker(_ context.Context, workerID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	target := s.getWorkerInfo(workerID)
+	if target == nil {
+		return fmt.Errorf("worker %s not found", workerID)
+	}
+	if target.MachineID == "" {
+		return fmt.Errorf("worker %s has no machine id", workerID)
+	}
+	if !s.state.TryAcquireEvacuationLock() {
+		return fmt.Errorf("another evacuation is already running")
+	}
+
+	s.state.SetDraining(target.MachineID, &drainState{
+		WorkerID:  target.ID,
+		MachineID: target.MachineID,
+		Region:    target.Region,
+		StartedAt: time.Now(),
+	})
+
+	go func() {
+		defer s.state.ReleaseEvacuationLock()
+		s.drainWorker(target.ID, target.MachineID, target.Region)
+	}()
+
+	return nil
 }
 
 func (s *Scaler) evaluate() {
@@ -1239,9 +1274,9 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 		}
 
 		if batchFailed {
-			time.Sleep(5 * time.Second)
+			time.Sleep(drainBatchFailurePause)
 		} else {
-			time.Sleep(2 * time.Second)
+			time.Sleep(drainBatchSuccessPause)
 		}
 	}
 }

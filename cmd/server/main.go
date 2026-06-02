@@ -26,8 +26,8 @@ import (
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/edgeclient"
 	"github.com/opensandbox/opensandbox/internal/metrics"
-	"github.com/opensandbox/opensandbox/internal/obslog"
 	"github.com/opensandbox/opensandbox/internal/observability"
+	"github.com/opensandbox/opensandbox/internal/obslog"
 	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
@@ -507,6 +507,7 @@ func main() {
 				RedisClient: redisRegistry.RedisClient(),
 				CellID:      cfg.CellID,
 			})
+			opts.WorkerEvacuator = scaler
 			defer scaler.Stop()
 
 			// Leader election: only the leader runs the scaler. The
@@ -525,6 +526,19 @@ func main() {
 			leaderElector.Start()
 			defer leaderElector.Stop()
 			log.Printf("opensandbox: leader election started (instance=%s)", leaderElector.InstanceID())
+		}
+
+		if opts.WorkerEvacuator == nil && redisRegistry != nil {
+			scalerState := controlplane.NewRedisScalerState(redisRegistry.RedisClient())
+			opts.WorkerEvacuator = controlplane.NewScaler(controlplane.ScalerConfig{
+				Registry:    redisRegistry,
+				Store:       opts.Store,
+				StateStore:  scalerState,
+				MaxWorkers:  cfg.MaxWorkersPerRegion,
+				RedisClient: redisRegistry.RedisClient(),
+				CellID:      cfg.CellID,
+			})
+			log.Printf("opensandbox: admin worker evacuator configured without compute pool")
 		}
 	}
 
