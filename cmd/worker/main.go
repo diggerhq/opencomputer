@@ -14,9 +14,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/opensandbox/opensandbox/internal/analytics"
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/blobstore"
+	"github.com/opensandbox/opensandbox/internal/cellevents"
 	"github.com/opensandbox/opensandbox/internal/config"
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/metrics"
@@ -41,7 +45,7 @@ var WorkerVersion = "dev"
 
 func main() {
 	// Subcommands that don't need config/secrets. Must short-circuit before
-	// LoadSecrets, which is slow and would fail without cloud credentials.
+	// LoadSecrets, which is slow and can fail without cloud credentials.
 	//
 	// "golden-version <path>" prints the full-file hash used for golden-image
 	// archive keys. Packer invokes this so the archive key matches what
@@ -79,9 +83,11 @@ func main() {
 		return
 	}
 
-	// Load secrets from Azure Key Vault if configured (before config.Load reads env vars).
+	// Load secrets from the configured cloud secret store before config.Load
+	// reads env vars. No-op if neither Azure Key Vault nor AWS Secrets Manager
+	// is configured.
 	if err := config.LoadSecrets(); err != nil {
-		log.Fatalf("failed to load secrets from Key Vault: %v", err)
+		log.Fatalf("failed to load secrets: %v", err)
 	}
 
 	cfg, err := config.Load()
@@ -126,6 +132,10 @@ func main() {
 	var doGracefulShutdown func(checkpointStore *storage.CheckpointStore, store *db.Store)
 	// Metadata server (set by QEMU backend, wired to store later)
 	var metadataSrv *worker.MetadataServer
+	// Forward-declared so doGracefulShutdown's closure (built in the QEMU
+	// init block below) can capture it; the actual NewSandboxDBManager call
+	// happens after backend init.
+	var sandboxDBMgr *sandbox.SandboxDBManager
 
 	// Initialize secrets proxy for MITM token substitution.
 	// Runs on :3128 — VMs route HTTPS through this to keep real secrets off-VM.
@@ -313,7 +323,7 @@ func main() {
 				log.Printf("opensandbox-worker: %d VMs failed to hibernate: %v", len(failed), failed)
 			}
 
-			processHibernateResults(results, store, checkpointStore, func(r interface{}) (string, string, error) {
+			processHibernateResults(results, store, checkpointStore, sandboxDBMgr, func(r interface{}) (string, string, error) {
 				hr := r.(qm.HibernateAllResult)
 				return hr.SandboxID, hr.HibernationKey, hr.Err
 			})
@@ -340,8 +350,9 @@ func main() {
 	ptyMgr := sandbox.NewAgentPTYManager(ptySessionFactory)
 	defer ptyMgr.CloseAll()
 
-	// Initialize per-sandbox SQLite manager
-	sandboxDBMgr := sandbox.NewSandboxDBManager(cfg.DataDir)
+	// Initialize per-sandbox SQLite manager (forward-declared above so the
+	// graceful-shutdown closure can capture it).
+	sandboxDBMgr = sandbox.NewSandboxDBManager(cfg.DataDir)
 	defer sandboxDBMgr.Close()
 
 	// JWT issuer
@@ -413,11 +424,21 @@ func main() {
 			defer store.Close()
 			log.Println("opensandbox-worker: PostgreSQL store connected (auto-wake enabled)")
 
-			_, stopped, err := store.ReconcileWorkerSessions(ctx, cfg.WorkerID)
+			hibernated, stopped, err := store.ReconcileWorkerSessions(ctx, cfg.WorkerID)
 			if err != nil {
 				log.Printf("opensandbox-worker: warning: session reconciliation failed: %v", err)
-			} else if stopped > 0 {
-				log.Printf("opensandbox-worker: reconciled %d unrecoverable sessions as stopped", stopped)
+			} else {
+				if len(stopped) > 0 {
+					log.Printf("opensandbox-worker: reconciled %d unrecoverable sessions as stopped", len(stopped))
+				}
+				if len(hibernated) > 0 {
+					log.Printf("opensandbox-worker: reconciled %d sessions as hibernated", len(hibernated))
+				}
+				// Mirror PG state changes to D1 via the cell events stream.
+				// Without these XADDs, the dashboard keeps the rows at the
+				// pre-restart state ("running" on a worker that just rebooted).
+				emitReconcileEvents(ctx, cfg, "hibernated", "worker_restart", hibernated)
+				emitReconcileEvents(ctx, cfg, "stopped", "worker_restart", stopped)
 			}
 
 			// Wire up metadata server billing callback
@@ -475,12 +496,37 @@ func main() {
 				}
 				_ = store.UpdateSandboxSessionStatus(context.Background(), sandboxID, "hibernated", nil)
 			}
+			// Emit "hibernated" lifecycle event so events-ingest mirrors the
+			// status flip to D1 sandboxes_index. Without this, idle-timeout
+			// hibernations only land in cell PG and D1 keeps showing the
+			// sandbox as running on a worker that no longer hosts it.
+			if sandboxDBMgr != nil {
+				if sdb, dbErr := sandboxDBMgr.Get(sandboxID); dbErr == nil {
+					_ = sdb.LogEvent("hibernated", map[string]string{
+						"sandbox_id":     sandboxID,
+						"checkpoint_key": result.HibernationKey,
+						"reason":         "idle_timeout",
+					})
+				}
+				_ = sandboxDBMgr.Remove(sandboxID)
+			}
 		},
 		OnKill: func(sandboxID string) {
 			log.Printf("opensandbox-worker: sandbox %s killed on timeout", sandboxID)
 			execMgr.RemoveSessions(sandboxID)
 			if store != nil {
 				_ = store.UpdateSandboxSessionStatus(context.Background(), sandboxID, "stopped", nil)
+			}
+			// Same fix as OnHibernate above — D1 needs a "stopped" event so
+			// the dashboard doesn't keep the row at "running" forever.
+			if sandboxDBMgr != nil {
+				if sdb, dbErr := sandboxDBMgr.Get(sandboxID); dbErr == nil {
+					_ = sdb.LogEvent("stopped", map[string]string{
+						"sandbox_id": sandboxID,
+						"reason":     "kill_timeout",
+					})
+				}
+				_ = sandboxDBMgr.Remove(sandboxID)
 			}
 		},
 	})
@@ -638,64 +684,128 @@ func main() {
 					fixed, err := store.ReconcileWorkerReconnect(context.Background(), cfg.WorkerID, runningIDs)
 					if err != nil {
 						log.Printf("opensandbox-worker: reconnect reconciliation failed: %v", err)
-					} else if fixed > 0 {
-						log.Printf("opensandbox-worker: reconnect reconciliation: %d sessions restored to running", fixed)
+					} else if len(fixed) > 0 {
+						log.Printf("opensandbox-worker: reconnect reconciliation: %d sessions restored to running", len(fixed))
+						// Mirror to D1: emit `running` events so the dashboard
+						// reflects the recovery. Without these, D1 keeps the
+						// `error` status from the maintenance loop's previous
+						// sweep — customer sees their sandbox as broken until
+						// the next state-changing event.
+						//
+						// Bounded context so a redis stall during shutdown can't
+						// block this callback forever. Budget: 10s per event
+						// (3s XADD × up to 3 retries) × len(fixed), capped at
+						// 60s overall. Reconnect storms rarely produce more
+						// than a handful of fixed rows.
+						emitCtx, emitCancel := context.WithTimeout(context.Background(), 60*time.Second)
+						emitReconcileEvents(emitCtx, cfg, "running", "worker_reconnect", fixed)
+						emitCancel()
 					}
 				})
 			}
 			defer hb.Stop()
 			log.Println("opensandbox-worker: Redis heartbeat started")
 
-			// Spot-preemption monitor. NewMonitor returns a no-op on
-			// non-cloud deployments — the goroutine still spins but
-			// never fires. When OPENSANDBOX_CLOUD=aws the AWS monitor
-			// polls IMDSv2 every 5s for /latest/meta-data/spot/instance-action.
-			//
-			// On a Notice we drain in the most minimal way possible for
-			// the PoC: stop the heartbeat so the CP sees us as gone and
-			// re-schedules our sandboxes. The hibernate-each-sandbox path
-			// is the next iteration — for now, sandboxes on a preempted
-			// host fail and the customer re-creates. This matches the
-			// "PoC accepts sandbox state loss on reclaim" risk in the plan.
 			preemptMon := preemption.NewMonitor()
 			go func() {
 				notices := preemptMon.Watch(ctx)
 				for notice := range notices {
-					log.Printf("opensandbox-worker: PREEMPTION notice from %s — action=%s eta=%s, draining now",
+					log.Printf("opensandbox-worker: PREEMPTION notice from %s - action=%s eta=%s, draining now",
 						preemptMon.Name(), notice.Action, notice.ETA.Format(time.RFC3339))
 					hb.Stop()
-					// TODO: hibernate live sandboxes via mgr to S3 within
-					// the ETA budget before exiting. Until then the
-					// kernel/systemd terminates us when the cloud reclaims.
 					return
 				}
 			}()
 		}
 	}
 
-	// NATS
-	if cfg.NATSURL != "" {
-		pub, err := worker.NewEventPublisher(cfg.NATSURL, cfg.Region, cfg.WorkerID, sandboxDBMgr)
-		if err != nil {
-			log.Printf("opensandbox-worker: NATS not available: %v (continuing without event sync)", err)
-		} else {
-			pub.Start()
-			if qemuMgr != nil {
-				pub.SetGoldenVersion(qemuMgr.GoldenVersion())
+	// CF-parallel: Redis Streams event publisher. Inert unless CellID is set.
+	// (The legacy NATS publisher used to run alongside this; it was removed
+	// once Redis Streams covered all event types end-to-end. NATSURL in the
+	// env file is ignored.)
+	if cfg.CellID != "" && cfg.RedisURL != "" {
+		// Resolver: look up sandbox → org → plan via cell-local PG. Called
+		// per event during flush; sandbox_sessions has an indexed lookup on
+		// sandbox_id and orgs is keyed by org_id, so each call is two index
+		// hits. usage_tick volume is sandboxes × ~30s, so cost is bounded.
+		// nil store (no PG) leaves the fields blank — events-ingest then
+		// treats them as "unknown plan" and skips DO debit, which is the
+		// safe fallback.
+		var planResolver worker.MetadataResolver
+		if store != nil {
+			st := store
+			planResolver = func(sandboxID string) (string, string, bool) {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				orgIDStr, err := st.GetSandboxOrgID(ctx, sandboxID)
+				if err != nil || orgIDStr == "" {
+					return "", "", false
+				}
+				orgID, err := uuid.Parse(orgIDStr)
+				if err != nil {
+					return "", "", false
+				}
+				org, err := st.GetOrg(ctx, orgID)
+				if err != nil {
+					// Org row may not exist yet (new app2 user, lazy upsert
+					// hasn't run from this sandbox's create). Return the
+					// org_id so events-ingest can still archive; leave plan
+					// blank so it skips DO debit until the row exists.
+					return orgIDStr, "", true
+				}
+				return orgIDStr, org.Plan, true
 			}
-			pub.StartHeartbeat(func() (int, int, float64, float64, float64) {
-				count, _ := mgr.Count(context.Background())
-				cpuPct, memPct, diskPct := worker.SystemStats()
-				return cfg.MaxCapacity, count, cpuPct, memPct, diskPct
+		}
+		redisPub, err := worker.NewRedisEventPublisher(worker.RedisEventPublisherConfig{
+			RedisURL:   cfg.RedisURL,
+			SandboxDBs: sandboxDBMgr,
+			CellID:     cfg.CellID,
+			WorkerID:   cfg.WorkerID,
+			Resolver:   planResolver,
+		})
+		if err != nil {
+			log.Printf("opensandbox-worker: Redis event publisher init failed: %v (continuing)", err)
+		} else {
+			// Wire the publisher as the SandboxDBManager's OnRemove hook so
+			// terminal events (stopped, hibernated) are synchronously flushed
+			// to Redis BEFORE the SQLite file is deleted. The destroy /
+			// hibernate gRPC handlers LogEvent + then call Remove; this hook
+			// closes the race that previously dropped those events.
+			sandboxDBMgr.SetOnRemove(func(sandboxID string) {
+				redisPub.FlushSandbox(context.Background(), sandboxID)
 			})
-			defer pub.Stop()
-			log.Println("opensandbox-worker: NATS event publisher started")
+			redisPub.Start(context.Background())
+			defer func() {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stopCancel()
+				_ = redisPub.Stop(stopCtx)
+			}()
+			log.Printf("opensandbox-worker: Redis event publisher started (stream=events:%s)", cfg.CellID)
 		}
 	}
 
 	// Periodic SyncFS
 	autosaver := worker.NewWorkspaceAutosaver(mgr, autosaverSyncer, 5*time.Minute)
 	autosaver.Start()
+
+	// Usage ticker — drives the free-tier billing loop. Emits a usage_tick
+	// per running sandbox every 20s; events-ingest fans out to per-org
+	// CreditAccount DOs, which debit balance + dispatch halt when it
+	// hits zero. Without this the free-tier balance never decrements.
+	// Inert unless CellID is set (combined-mode dev without Redis stream
+	// would write events to /dev/null since there's no consumer).
+	if cfg.CellID != "" && mgr != nil {
+		usageTicker := worker.NewUsageTicker(mgr, sandboxDBMgr, 20*time.Second, 10)
+		if usageTicker != nil {
+			usageTicker.Start(context.Background())
+			defer func() {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer stopCancel()
+				_ = usageTicker.Stop(stopCtx)
+			}()
+			log.Println("opensandbox-worker: usage ticker started (interval=20s, 10¢/tick)")
+		}
+	}
 
 	// Segment analytics — ships per-org GB-seconds memory usage. nil if SEGMENT_WRITE_KEY unset.
 	segmentClient := analytics.New(cfg.SegmentWriteKey)
@@ -722,9 +832,25 @@ func main() {
 			OnHibernateIdle: func(sandboxIDs []string) {
 				for _, id := range sandboxIDs {
 					if checkpointStore != nil {
-						_, err := mgr.Hibernate(context.Background(), id, checkpointStore)
+						result, err := mgr.Hibernate(context.Background(), id, checkpointStore)
 						if err != nil {
 							log.Printf("pressure-hibernate %s: %v", id, err)
+							continue
+						}
+						// Mirror the per-sandbox SQLite event the gRPC Hibernate
+						// handler writes — without this, auto-hibernate writes
+						// the SUCCEED to local PG but never publishes "hibernated"
+						// to events-ingest, so D1 sandboxes_index drifts to
+						// "running" while the cell PG says "hibernated".
+						if sandboxDBMgr != nil {
+							if sdb, dbErr := sandboxDBMgr.Get(id); dbErr == nil {
+								_ = sdb.LogEvent("hibernated", map[string]string{
+									"sandbox_id":     id,
+									"checkpoint_key": result.HibernationKey,
+									"reason":         "pressure_auto",
+								})
+							}
+							_ = sandboxDBMgr.Remove(id)
 						}
 					}
 				}
@@ -1007,7 +1133,15 @@ func deleteOldHibernation(store *storage.CheckpointStore, key string) {
 }
 
 // processHibernateResults handles results from HibernateAll for both backends.
-func processHibernateResults(results interface{}, store *db.Store, checkpointStore *storage.CheckpointStore, extract func(interface{}) (string, string, error)) {
+//
+// In addition to updating cell-local PG, we LogEvent("hibernated") into the
+// per-sandbox SQLite then call sandboxDBs.Remove — the Remove hook flushes
+// any unsynced events (including this one) to Redis Streams synchronously.
+// events-ingest then mirrors the state to D1, keeping the dashboard list in
+// sync. Without this, the bulk-shutdown path silently skipped the lifecycle
+// event the gRPC HibernateSandbox handler emits per call, and D1 stayed
+// "running" until something else nudged it.
+func processHibernateResults(results interface{}, store *db.Store, checkpointStore *storage.CheckpointStore, sandboxDBs *sandbox.SandboxDBManager, extract func(interface{}) (string, string, error)) {
 	switch rs := results.(type) {
 	case []qm.HibernateAllResult:
 		for _, r := range rs {
@@ -1016,6 +1150,12 @@ func processHibernateResults(results interface{}, store *db.Store, checkpointSto
 				if store != nil {
 					errMsg := "hibernate failed on shutdown: " + r.Err.Error()
 					_ = store.UpdateSandboxSessionStatus(context.Background(), r.SandboxID, "stopped", &errMsg)
+				}
+				if sandboxDBs != nil {
+					if sdb, err := sandboxDBs.Get(r.SandboxID); err == nil {
+						_ = sdb.LogEvent("stopped", map[string]string{"reason": "hibernate failed on shutdown"})
+					}
+					_ = sandboxDBs.Remove(r.SandboxID)
 				}
 				continue
 			}
@@ -1029,7 +1169,37 @@ func processHibernateResults(results interface{}, store *db.Store, checkpointSto
 					_ = store.UpdateSandboxSessionStatus(context.Background(), r.SandboxID, "hibernated", nil)
 				}
 			}
+			if sandboxDBs != nil {
+				if sdb, err := sandboxDBs.Get(r.SandboxID); err == nil {
+					_ = sdb.LogEvent("hibernated", map[string]string{"key": r.HibernationKey, "reason": "graceful_shutdown"})
+				}
+				_ = sandboxDBs.Remove(r.SandboxID)
+			}
 		}
+	}
+}
+
+// emitReconcileEvents XADDs a `cellevents.PublishLifecycle` per orphan to the
+// cell's events stream. Used by the worker-startup and worker-reconnect
+// reconcilers — both run rarely (boot, network blip) and need a redis client
+// just for the emit. Keeping the construction here means one URL parse + one
+// pool init + one Close per call site, instead of inlining the same dance
+// twice in main(). ctx must be bounded by the caller; the function does not
+// add its own timeout (cellevents.PublishLifecycle has a 3s XADD timeout per
+// attempt with up to 3 retries, so worst case ~10s per event).
+func emitReconcileEvents(ctx context.Context, cfg *config.Config, eventType, reason string, orphans []db.OrphanedSandbox) {
+	if len(orphans) == 0 || cfg.RedisURL == "" || cfg.CellID == "" {
+		return
+	}
+	opts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		log.Printf("opensandbox-worker: reconcile emit (%s): redis URL parse failed: %v — events skipped", eventType, err)
+		return
+	}
+	rdb := redis.NewClient(opts)
+	defer rdb.Close()
+	for _, o := range orphans {
+		cellevents.PublishLifecycle(ctx, rdb, cfg.CellID, eventType, o.SandboxID, o.WorkerID, o.OrgID, reason)
 	}
 }
 

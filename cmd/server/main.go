@@ -7,12 +7,13 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
-	"os/signal"
 	"syscall"
-
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/opensandbox/opensandbox/internal/api"
 	"github.com/opensandbox/opensandbox/internal/auth"
@@ -23,6 +24,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/controlplane"
 	"github.com/opensandbox/opensandbox/internal/crypto"
 	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opensandbox/opensandbox/internal/edgeclient"
 	"github.com/opensandbox/opensandbox/internal/metrics"
 	"github.com/opensandbox/opensandbox/internal/obslog"
 	"github.com/opensandbox/opensandbox/internal/observability"
@@ -35,8 +37,9 @@ import (
 var ServerVersion = "dev"
 
 func main() {
-	// Load secrets from the configured cloud secret store (Azure KV or AWS SM)
-	// before config.Load reads env vars. No-op if neither is configured.
+	// Load secrets from the configured cloud secret store before config.Load
+	// reads env vars. No-op if neither Azure Key Vault nor AWS Secrets Manager
+	// is configured.
 	if err := config.LoadSecrets(); err != nil {
 		log.Fatalf("failed to load secrets: %v", err)
 	}
@@ -76,10 +79,14 @@ func main() {
 
 	// Build server options
 	opts := &api.ServerOpts{
-		Mode:     cfg.Mode,
-		WorkerID: cfg.WorkerID,
-		Region:   cfg.Region,
-		HTTPAddr: cfg.HTTPAddr,
+		Mode:             cfg.Mode,
+		WorkerID:         cfg.WorkerID,
+		Region:           cfg.Region,
+		HTTPAddr:         cfg.HTTPAddr,
+		CellID:           cfg.CellID,
+		SessionJWTSecret: cfg.SessionJWTSecret,
+		CFAdminSecret:    cfg.CFAdminSecret,
+		CFEventSecret:    cfg.CFEventSecret,
 	}
 
 	// Initialize PostgreSQL if configured
@@ -172,6 +179,29 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to connect to Redis: %v", err)
 		}
+		// Reconcile-on-reconnect: when a worker rejoins after being pruned
+		// for missed heartbeats, run both directions of the cell-vs-worker
+		// state reconcile. See internal/controlplane/reconcile.go for the
+		// full rationale on each. Captured opts.Store + cfg.CellID directly;
+		// the closure reads them at call time.
+		//
+		//   reverse first: cell-running but worker-doesn't-have-it →
+		//     close on cell side (UpdateSessionStatus + EndScaleEvent +
+		//     publish stopped event). Stops the billing leak immediately.
+		//
+		//   forward second: cell-stopped but worker-still-hosting →
+		//     re-issue Destroy via RPC. Cleans the worker side.
+		//
+		// Reverse runs first because the more urgent dollars-on-fire case is
+		// the still-open scale event accruing minute-by-minute, not a stray
+		// qemu the worker still has.
+		redisRegistry.OnWorkerRejoined(func(workerID string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			controlplane.ReconcileRunningOnWorker(ctx, redisRegistry, opts.Store, cfg.CellID, workerID)
+			controlplane.ReconcileStoppedOnWorker(ctx, redisRegistry, opts.Store, workerID)
+		})
+
 		redisRegistry.Start()
 		defer redisRegistry.Stop()
 		opts.WorkerRegistry = redisRegistry
@@ -182,6 +212,48 @@ func main() {
 		if opts.Store != nil && opts.JWTIssuer != nil {
 			opts.SandboxAPIProxy = proxy.NewSandboxAPIProxy(opts.Store, redisRegistry, opts.JWTIssuer)
 			log.Println("opensandbox: sandbox API proxy enabled (data-plane requests proxied to workers)")
+		}
+
+		// CF-parallel event forwarder. Drains events:{cell_id} from Redis and
+		// POSTs HMAC-signed batches to the events-ingest Worker. Inert when
+		// CFEventEndpoint is empty — old NATS path keeps running independently.
+		if cfg.CFEventEndpoint != "" && cfg.CFEventSecret != "" && cfg.CellID != "" {
+			cfClient := controlplane.NewCFEventClient(cfg.CFEventEndpoint, cfg.CFEventSecret, cfg.CellID)
+			fwd, err := controlplane.NewEventForwarder(controlplane.EventForwarderConfig{
+				Redis:  redisRegistry.RedisClient(),
+				CellID: cfg.CellID,
+				Client: cfClient,
+			})
+			if err != nil {
+				log.Fatalf("event_forwarder: %v", err)
+			}
+			if err := fwd.Start(context.Background()); err != nil {
+				log.Fatalf("event_forwarder start: %v", err)
+			}
+			defer func() {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer stopCancel()
+				_ = fwd.Stop(stopCtx)
+			}()
+			log.Printf("opensandbox: CF event forwarder started (endpoint=%s cell=%s)", cfg.CFEventEndpoint, cfg.CellID)
+		} else if cfg.Mode == "server" {
+			log.Printf("opensandbox: CF event forwarder NOT started (CFEventEndpoint/Secret/CellID unset)")
+		}
+
+		// Capacity reporter — periodically pushes a cell_capacity event onto the
+		// same events:{cell_id} stream the forwarder drains. Feeds the edge's
+		// pickCell() cascade via D1. Inert when CellID is empty.
+		if cfg.CellID != "" {
+			cr, err := controlplane.NewCapacityReporter(controlplane.CapacityReporterConfig{
+				Redis:    redisRegistry.RedisClient(),
+				Registry: redisRegistry,
+				CellID:   cfg.CellID,
+			})
+			if err != nil {
+				log.Fatalf("capacity_reporter: %v", err)
+			}
+			cr.Start(context.Background())
+			defer cr.Stop()
 		}
 	}
 
@@ -194,10 +266,63 @@ func main() {
 
 	// Initialize compute pool + autoscaler (server mode)
 	if cfg.Mode == "server" && redisRegistry != nil {
+		// Build the WorkerSpec: cloud-neutral config that the CP supplies to
+		// whichever pool is selected. The pool combines this with cloud-specific
+		// cloud-init to launch new workers.
+		//
+		// Workers need to reach Postgres/Redis on the CP's private IP,
+		// not localhost. Replace localhost with the CP's IP if known.
+		cpIP := os.Getenv("OPENSANDBOX_CONTROLPLANE_IP")
+		workerDBURL := cfg.DatabaseURL
+		workerRedisURL := cfg.RedisURL
+		if cpIP != "" {
+			workerDBURL = strings.ReplaceAll(workerDBURL, "localhost", cpIP)
+			workerDBURL = strings.ReplaceAll(workerDBURL, "127.0.0.1", cpIP)
+			workerRedisURL = strings.ReplaceAll(workerRedisURL, "localhost", cpIP)
+			workerRedisURL = strings.ReplaceAll(workerRedisURL, "127.0.0.1", cpIP)
+		}
+		spec := compute.WorkerSpec{
+			CellID:            cfg.CellID,
+			Region:            cfg.Region,
+			DatabaseURL:       workerDBURL,
+			RedisURL:          workerRedisURL,
+			JWTSecret:         cfg.JWTSecret,
+			SessionJWTSecret:  cfg.SessionJWTSecret,
+			CFEventEndpoint:   cfg.CFEventEndpoint,
+			CFEventSecret:     cfg.CFEventSecret,
+			CFAdminSecret:     cfg.CFAdminSecret,
+			MaxCapacity:       cfg.MaxCapacity,
+			SandboxDomain:     cfg.SandboxDomain,
+			DefaultMemoryMB:   cfg.DefaultSandboxMemoryMB,
+			DefaultCPUs:       cfg.DefaultSandboxCPUs,
+			DefaultDiskMB:     cfg.DefaultSandboxDiskMB,
+			S3Bucket:          cfg.S3Bucket,
+			S3Region:          cfg.S3Region,
+			S3Endpoint:        cfg.S3Endpoint,
+			S3AccessKeyID:     cfg.S3AccessKeyID,
+			S3SecretAccessKey: cfg.S3SecretAccessKey,
+			S3ForcePathStyle:  cfg.S3ForcePathStyle,
+			SegmentWriteKey:   cfg.SegmentWriteKey,
+			SecretsRef:        cfg.SecretsARN,
+		}
+
+		// Provider selection. Explicit cfg.ComputeProvider wins; otherwise we
+		// autodetect from existing fields for backwards compatibility.
+		provider := cfg.ComputeProvider
+		if provider == "" {
+			switch {
+			case cfg.AzureSubscriptionID != "" && (cfg.AzureImageID != "" || cfg.AzureKeyVaultName != ""):
+				provider = "azure"
+			case cfg.EC2AMI != "" || cfg.EC2SSMParameterName != "":
+				provider = "aws"
+			}
+		}
+
 		var pool compute.Pool
 		var poolName string
 
-		if cfg.AzureSubscriptionID != "" && (cfg.AzureImageID != "" || cfg.AzureKeyVaultName != "") {
+		switch provider {
+		case "azure":
 			// Build worker env template — new VMs get this via cloud-init.
 			// GRPC_ADVERTISE, HTTP_ADDR, and WORKER_ID are patched by cloud-init
 			// with the VM's actual private IP and hostname.
@@ -303,7 +428,7 @@ func main() {
 			if err != nil {
 				log.Fatalf("opensandbox: failed to create Azure pool: %v", err)
 			}
-			// If image not set statically but Key Vault is configured, fetch initial image
+			azPool.SetWorkerSpec(spec)
 			if cfg.AzureImageID == "" && cfg.AzureKeyVaultName != "" {
 				imgID, version, kvErr := azPool.RefreshAMI(context.Background())
 				if kvErr != nil {
@@ -313,8 +438,8 @@ func main() {
 			}
 			pool = azPool
 			poolName = fmt.Sprintf("Azure (size=%s, image=%s, keyvault=%s)", cfg.AzureVMSize, cfg.AzureImageID, cfg.AzureKeyVaultName)
-		} else if cfg.EC2AMI != "" || cfg.EC2SSMParameterName != "" {
-			// AWS EC2 compute pool (AMI from config or dynamically from SSM)
+
+		case "aws":
 			ec2Pool, err := compute.NewEC2Pool(compute.EC2PoolConfig{
 				Region:             cfg.S3Region,
 				AccessKeyID:        cfg.S3AccessKeyID,
@@ -331,7 +456,7 @@ func main() {
 			if err != nil {
 				log.Fatalf("opensandbox: failed to create EC2 pool: %v", err)
 			}
-			// If AMI not set statically but SSM is configured, fetch initial AMI from SSM
+			ec2Pool.SetWorkerSpec(spec)
 			if cfg.EC2AMI == "" && cfg.EC2SSMParameterName != "" {
 				amiID, version, ssmErr := ec2Pool.RefreshAMI(context.Background())
 				if ssmErr != nil {
@@ -341,6 +466,11 @@ func main() {
 			}
 			pool = ec2Pool
 			poolName = fmt.Sprintf("EC2 (ami=%s, type=%s, ssm=%s)", cfg.EC2AMI, cfg.EC2InstanceType, cfg.EC2SSMParameterName)
+
+		case "":
+			log.Println("opensandbox: no compute provider configured (combined mode, no autoscaling)")
+		default:
+			log.Fatalf("opensandbox: unknown compute provider %q (expected azure|aws)", provider)
 		}
 
 		if pool != nil {
@@ -369,6 +499,13 @@ func main() {
 				MaxWorkers:   cfg.MaxWorkersPerRegion,
 				IdleReserve:  cfg.IdleReserveWorkers,
 				MachineSizes: machineSizes,
+				// For "migrated" event emit after scaler-driven migrations
+				// (rolling replace, evacuation) — keeps D1 sandboxes_index
+				// worker_id in sync with cell-PG truth. Without this, the
+				// dashboard's "which worker is my sandbox on" view goes stale
+				// every time the autoscaler shuffles things around.
+				RedisClient: redisRegistry.RedisClient(),
+				CellID:      cfg.CellID,
 			})
 			defer scaler.Stop()
 
@@ -413,12 +550,21 @@ func main() {
 				for _, w := range redisRegistry.GetAllWorkers() {
 					liveWorkers[w.ID] = true
 				}
-				orphaned, err := opts.Store.MarkOrphanedSandboxes(ctx, liveWorkers)
+				orphans, err := opts.Store.MarkOrphanedSandboxes(ctx, liveWorkers)
 				if err != nil {
 					log.Printf("maintenance: orphan reconciliation error: %v", err)
 					observability.CaptureError(err, "area", "maintenance", "op", "mark_orphaned_sandboxes")
-				} else if orphaned > 0 {
-					log.Printf("maintenance: marked %d sandboxes as error (worker lost)", orphaned)
+				} else if len(orphans) > 0 {
+					log.Printf("maintenance: marked %d sandboxes as error (worker lost)", len(orphans))
+					// Mirror to D1 via the events stream. Without these XADDs,
+					// sandboxes_index keeps showing the rows as running on the
+					// dead worker indefinitely — the post-cutover ghost-row
+					// bug. Best-effort; the next tick will re-emit for any
+					// row still marked `error` on a dead worker if Redis
+					// rejected the first attempt.
+					if redisRegistry.RedisClient() != nil && cfg.CellID != "" {
+						publishStoppedFromMaintenance(ctx, redisRegistry.RedisClient(), cfg.CellID, orphans)
+					}
 				}
 			}
 		})
@@ -454,6 +600,15 @@ func main() {
 
 	// Create API server
 	server := api.NewServer(mgr, ptyMgr, cfg.APIKey, opts)
+
+	// Wire the CF api-edge HTTP client. Used by resolveSecretStoreInto +
+	// resolveTemplate to read from D1 over HMAC instead of local PG once
+	// migration 041 strips the global tables. Falls back to s.store if
+	// either CFEdgeBaseURL or CFEventSecret is unset (combined dev mode).
+	if cfg.CFEdgeBaseURL != "" && cfg.CFEventSecret != "" {
+		server.SetEdgeClient(edgeclient.New(cfg.CFEdgeBaseURL, cfg.CFEventSecret))
+		log.Printf("opensandbox: edge client wired (base=%s)", cfg.CFEdgeBaseURL)
+	}
 
 	// Wire Axiom read-only token for the sandbox session logs API.
 	// Token never leaves this process; the UI proxies its queries through
@@ -509,9 +664,38 @@ func main() {
 			workers = redisRegistry
 		}
 		reporter := billing.NewUsageReporter(opts.Store, stripeClient, workers)
+		// CF billing mode: when this CP is wired into the CF event pipe, the
+		// CreditAccount DO is authoritative on free-tier balance. Disable
+		// the local free-tier deduction pass so both sides don't race.
+		if cfg.CFEventEndpoint != "" {
+			reporter.SetCFBillingMode(true)
+			log.Println("opensandbox: usage reporter CF-billing mode ON (free-tier deduction deferred to CreditAccount DO)")
+		}
 		reporter.Start()
 		defer reporter.Stop()
 		log.Println("opensandbox: usage reporter started (interval=5m)")
+	}
+
+	// Halt reconciler — safety net for missed CF halt webhooks. Pulls the
+	// authoritative halt-list from api-edge every 60s and re-issues halts
+	// for anything that should be halted but isn't. Inert unless
+	// OPENSANDBOX_HALT_LIST_URL is set.
+	if cfg.HaltListURL != "" && cfg.CFEventSecret != "" && server != nil {
+		reconciler := controlplane.NewHaltReconciler(controlplane.HaltReconcilerConfig{
+			CellID:  cfg.CellID,
+			ListURL: cfg.HaltListURL,
+			Secret:  cfg.CFEventSecret,
+			Halter:  server,
+		})
+		if reconciler != nil {
+			reconciler.Start(ctx)
+			defer func() {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stopCancel()
+				_ = reconciler.Stop(stopCtx)
+			}()
+			log.Printf("opensandbox: halt reconciler started (list_url=%s, period=60s)", cfg.HaltListURL)
+		}
 	}
 
 	// Phase-2 capacity allocator. Writes outbox rows for unified-mode
@@ -628,4 +812,14 @@ func getIntEnv(key string, def int) int {
 		log.Printf("opensandbox: invalid int in %s=%q, using default %d", key, v, def)
 	}
 	return def
+}
+
+// publishStoppedFromMaintenance emits a `stopped` lifecycle event per
+// orphaned sandbox so D1 sandboxes_index mirrors the PG sweep done by
+// MarkOrphanedSandboxes. Without these XADDs, the maintenance loop's
+// dead-worker cleanup is invisible to the dashboard.
+func publishStoppedFromMaintenance(ctx context.Context, rdb *redis.Client, cellID string, orphans []db.OrphanedSandbox) {
+	for _, o := range orphans {
+		controlplane.PublishLifecycle(ctx, rdb, cellID, "stopped", o.SandboxID, o.WorkerID, o.OrgID, "worker_lost")
+	}
 }
