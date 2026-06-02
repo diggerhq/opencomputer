@@ -173,12 +173,12 @@ func (p *mockPool) DestroyMachine(_ context.Context, machineID string) error {
 	return nil
 }
 
-func (p *mockPool) DrainMachine(_ context.Context, _ string) error               { return nil }
-func (p *mockPool) StartMachine(_ context.Context, _ string) error               { return nil }
-func (p *mockPool) StopMachine(_ context.Context, _ string) error                { return nil }
-func (p *mockPool) HealthCheck(_ context.Context, _ string) error                { return nil }
-func (p *mockPool) CleanupOrphanedResources(_ context.Context) (int, error)      { return 0, nil }
-func (p *mockPool) ListMachines(_ context.Context) ([]*compute.Machine, error)   { return nil, nil }
+func (p *mockPool) DrainMachine(_ context.Context, _ string) error             { return nil }
+func (p *mockPool) StartMachine(_ context.Context, _ string) error             { return nil }
+func (p *mockPool) StopMachine(_ context.Context, _ string) error              { return nil }
+func (p *mockPool) HealthCheck(_ context.Context, _ string) error              { return nil }
+func (p *mockPool) CleanupOrphanedResources(_ context.Context) (int, error)    { return 0, nil }
+func (p *mockPool) ListMachines(_ context.Context) ([]*compute.Machine, error) { return nil, nil }
 func (p *mockPool) SupportedRegions(_ context.Context) ([]string, error) {
 	return []string{"us-east-1"}, nil
 }
@@ -414,14 +414,17 @@ func TestSmartScaleDownTargetsLeastLoaded(t *testing.T) {
 	reg.addWorker(&WorkerInfo{
 		ID: "w1", MachineID: "osb-worker-w1", Region: "us-east-1",
 		Capacity: 50, Current: 5, CPUPct: 20, MemPct: 20, DiskPct: 20,
+		TotalMemoryMB: 64000, CommittedMemoryMB: 12800,
 	})
 	reg.addWorker(&WorkerInfo{
 		ID: "w2", MachineID: "osb-worker-w2", Region: "us-east-1",
 		Capacity: 50, Current: 2, CPUPct: 10, MemPct: 10, DiskPct: 10,
+		TotalMemoryMB: 64000, CommittedMemoryMB: 6400,
 	})
 	reg.addWorker(&WorkerInfo{
 		ID: "w3", MachineID: "osb-worker-w3", Region: "us-east-1",
 		Capacity: 50, Current: 5, CPUPct: 20, MemPct: 20, DiskPct: 20,
+		TotalMemoryMB: 64000, CommittedMemoryMB: 12800,
 	})
 
 	s := newTestScaler(reg, pool)
@@ -463,10 +466,17 @@ func TestScaleDownSkipsAlreadyDraining(t *testing.T) {
 	reg.addWorker(&WorkerInfo{
 		ID: "w2", MachineID: "osb-worker-w2", Region: "us-east-1",
 		Capacity: 50, Current: 2, CPUPct: 10, MemPct: 10, DiskPct: 10,
+		TotalMemoryMB: 64000, CommittedMemoryMB: 6400,
 	})
 	reg.addWorker(&WorkerInfo{
 		ID: "w3", MachineID: "osb-worker-w3", Region: "us-east-1",
 		Capacity: 50, Current: 5, CPUPct: 20, MemPct: 20, DiskPct: 20,
+		TotalMemoryMB: 64000, CommittedMemoryMB: 12800,
+	})
+	reg.addWorker(&WorkerInfo{
+		ID: "w4", MachineID: "osb-worker-w4", Region: "us-east-1",
+		Capacity: 50, Current: 10, CPUPct: 20, MemPct: 20, DiskPct: 20,
+		TotalMemoryMB: 64000, CommittedMemoryMB: 12800,
 	})
 
 	s := newTestScaler(reg, pool)
@@ -857,7 +867,7 @@ func TestDrainTimeoutCancelsDrainKeepsWorker(t *testing.T) {
 		WorkerID:  "w2",
 		MachineID: "osb-worker-w2",
 		Region:    "us-east-1",
-		StartedAt: time.Now().Add(-20 * time.Minute), // well past drainTimeout
+		StartedAt: time.Now().Add(-(drainTimeout + time.Minute)),
 	})
 
 	ctx := context.Background()
