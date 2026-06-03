@@ -1,59 +1,47 @@
 // SandboxWsGateway — Durable Object per sandbox that brokers SDK and Dashboard
 // WebSocket traffic between client and the sandbox's owning cell. One DO
-// instance per sandbox_id (deterministically routed via idFromName).
+// instance per sandbox_id (deterministically routed via idFromName); the
+// instance hosts ≥0 concurrent Sessions, one per inbound WebSocket upgrade.
 //
-// v5 adds: cap-token caching inside the DO.
-//   - The edge mints a 120s HS256 cap-token on every WS upgrade and puts it
-//     in the Authorization header. v5 parses that JWT (org_id / cell_id /
-//     plan / iat live in the payload) and stores it as a typed cache entry.
-//   - On v3 redial, getOrMintCapToken returns the cached token when it still
-//     matches the current (org, cell, plan) and has > 30s of life left. Only
-//     re-mints when stale or when the sandbox genuinely moved cells. That
-//     turns a 10-attempt redial backoff loop from 10 mints into 0–1 mints,
-//     and re-opens within the same DO instance reuse the edge's token
-//     without the DO ever minting.
-//   - Cache is in-memory only — it's reseeded from ctx.capToken on each new
-//     fetch(), and re-mints are cheap (single HMAC) so survival across DO
-//     eviction isn't worth the storage write churn.
+// v7 (multi-session refactor):
+//   - Per-session state (clientWs, upstreamWs, queues, isExec, redial flags,
+//     execExited) lives on a Session object. v6 stored singletons on the DO
+//     instance so a second fetch() to the same sandbox clobbered the first —
+//     dashboard + SDK on the same sandbox, or two dashboard tabs, broke. The
+//     gateway now keeps `sessions: Set<Session>` and the alarm tick iterates.
+//   - The cap-token cache stays on the gateway (per-sandbox shared) — every
+//     session in the same DO benefits from a hit.
+//   - The exec-output ring buffer (v4) is gone. Cell-side scrollback is a 1MB
+//     ring (internal/sandbox/scrollback.go:30) that resends from t=0 on every
+//     attach; the DO's 64KB buffer was a strict subset and produced visible
+//     duplicate output post-redial. Frame inspection for the 0x03 exit marker
+//     stays (still drives v6 exit-suppress).
+//   - Migration-aware backoff: when the cell returns 503 + body matches
+//     /migrating/, the redial loop drops into a longer cadence (2s × up to
+//     30 attempts ≈ 60s wall clock) instead of advancing the normal sequence.
+//     Real cross-cell migrations take longer than the 25s default budget;
+//     this prevents giving up mid-migration.
+//   - Per-session circuit breaker: > REDIAL_FLAP_THRESHOLD startRedial calls
+//     within REDIAL_FLAP_WINDOW_MS closes the client with 1011 / "upstream
+//     flapping". Prevents an upstream that keeps closing cleanly (e.g. the
+//     pre-v6 exec-exit loop) from burning the CF subrequest budget.
 //
-// v4 adds: output ring buffer + replay-on-redial for exec/agent sessions.
-//   - Exec sessions (path contains /exec/) keep the last ~64 KB of
-//     upstream→client frames in a ring buffer (ArrayBuffer[] with a running
-//     byte count). PTY sessions skip the buffer — they're live terminals;
-//     users re-type if anything was lost.
-//   - On successful v3 redial, the DO replays the entire buffer to the
-//     client BEFORE the new upstream is accept()ed. Sync sends queue into
-//     the client WS in order, so live frames from the new upstream arrive
-//     strictly after the replay.
-//   - The buffer is NOT cleared after replay — a session that takes multiple
-//     redials gets gap-free output every time. The eviction policy keeps
-//     the steady-state size bounded.
-//   - In-memory only; we don't persist to state.storage because the DO is
-//     non-hibernatable while live WSes are held (v2 finding). If we ever
-//     gain a way to hibernate one side, periodic snapshots into storage are
-//     the natural follow-up.
+// v6 carried forward:
+//   - 0x03 exit-marker detection on exec/agent. When set, the upstream-close
+//     handler closes the client (1000 "exec completed") instead of redialing.
+//     Without it the worker re-serves the now-done session on every reattach.
+//   - Empty (0-byte) keepalive frames on each alarm tick to both clientWs and
+//     upstreamWs, per Session. Defends DO ↔ cell hop against CF Workers
+//     fetch-WebSocket idle drop (~100s). Empty frames are no-ops on every
+//     receiver (PTY worker: Write(nil); exec worker: len(raw) < 1 continue;
+//     SDK/xterm.js consumers: empty data).
 //
-// v3 adds: redial on upstream close.
-//   - When the upstream WS closes, the DO does NOT close the client. Instead it
-//     re-resolves the sandbox's current cell from D1 (sandboxes_index +
-//     cells), mints a fresh cap-token, and dials the cell again with
-//     exponential backoff (250ms → 4s, ~10 attempts).
-//   - If D1 reports status ∈ {stopped, failed}, the DO closes the client with
-//     a clear reason instead of retrying.
-//   - The client→upstream forwarder dereferences this.upstreamWs on every
-//     frame, so swapping the upstream during a redial is transparent on the
-//     client side. Frames sent during the redial window are dropped (v4 will
-//     buffer them).
-//   - Known limitation: if the cell-side per-session state was wiped (e.g. a
-//     worker restart kills the PTY session_id), the redial completes the WS
-//     connect but the cell may immediately close it again. We log that case
-//     loudly and exhaust the backoff before giving up.
+// v5 carried forward: cap-token caching (per-sandbox, shared across sessions).
 //
-// v2 carried forward: alarm tick + state.storage persistence + log-noise
-// filter. CF's Hibernatable WS API only accepts the server half of a
-// WebSocketPair (not the upstream from fetch()), so the bridge still uses
-// standard addEventListener; holding live WSes keeps the DO from being
-// evicted, which is enough for long-idle sessions.
+// v3 carried forward: redial on upstream close. The cell's per-session state
+// (PTY/exec session_id) survives WS reconnects, so a fresh upgrade lands on
+// the same worker session_id and resumes. Worker restart still loses session
+// state — DO sees 404 from the new worker process and closes terminal.
 //
 // Routing headers the edge MUST set on the inbound request (unchanged):
 //   Upgrade: websocket          — required
@@ -69,8 +57,21 @@ interface Env {
 
 const CTX_KEY = "ctx";
 const ALARM_INTERVAL_MS = 30_000;
+
+// Default redial cadence — fast and tight for transient drops.
 const REDIAL_BACKOFF_MS = [250, 500, 1000, 2000, 4000, 4000, 4000, 4000, 4000, 4000];
-const MAX_BUFFER_BYTES = 64 * 1024;
+// Migration-aware cadence: cross-cell live migration (VM state transfer) can
+// take 30s+ on slow links. Keep retrying at a steadier 2s for ~60s before
+// giving up.
+const MIGRATION_BACKOFF_MS = 2000;
+const MIGRATION_MAX_ATTEMPTS = 30;
+
+// Circuit breaker: redial cycle = one startRedial call (regardless of how
+// many internal dial attempts that triggers). After this many cycles within
+// the window, give up and close the client.
+const REDIAL_FLAP_THRESHOLD = 3;
+const REDIAL_FLAP_WINDOW_MS = 60_000;
+
 // Cap-tokens have a 120s exp; refresh 30s ahead so a fresh dial always has
 // enough lifetime to complete + a few seconds of margin on the cell side.
 const CAP_REFRESH_AHEAD_MS = 30_000;
@@ -78,111 +79,84 @@ const CAP_LIFETIME_MS = 120_000;
 
 interface Ctx {
   sandboxID: string;
+  // First-session bootstrap state. Each Session also carries its own copy of
+  // cellURL/cellPath/capToken; the on-disk Ctx exists so an alarm tick after
+  // DO eviction recovers enough context to log meaningfully. Per-session
+  // state isn't persisted — sessions don't survive eviction.
   cellURL: string;
-  cellPath: string;
-  capToken: string;
-  capTokenMintedAt: number;
   createdAt: number;
   lastTickAt: number;
 }
 
-export class SandboxWsGateway {
-  // Live WSes for the current session. Survive across alarm() ticks because
-  // CF keeps the DO instance in memory while non-hibernatable sockets are
-  // open. Cleared on close so alarm can detect "session ended" and tear
-  // storage down.
+interface CapCacheEntry {
+  token: string;
+  mintedAt: number;
+  orgID: string;
+  cellID: string;
+  plan: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Session — one inbound WS upgrade. Holds the client+upstream socket pair,
+// per-direction queues, redial state, exit detection. Created in fetch();
+// removed from the gateway's set when the client closes.
+// ─────────────────────────────────────────────────────────────────────────────
+class Session {
   private clientWs?: WebSocket;
   private upstreamWs?: WebSocket;
-  private redialing = false;
-
-  // Per-direction serial queues preserve frame ordering across the Blob →
-  // ArrayBuffer await chain. Kept as instance state so they survive across
-  // upstream swaps during a redial (client→upstream ordering must hold even
-  // as the target socket changes).
   private upQueue: Promise<unknown> = Promise.resolve();
   private downQueue: Promise<unknown> = Promise.resolve();
 
-  // v4: Output ring buffer for exec/agent sessions. Holds normalized
-  // upstream→client frames. Bounded by MAX_BUFFER_BYTES; oldest frames are
-  // evicted when the cap is exceeded. PTY sessions skip the buffer (isExec
-  // stays false).
-  private isExec = false;
-  private outputBuffer: (ArrayBuffer | string)[] = [];
-  private outputBufferBytes = 0;
+  // Path-derived flag. Drives v6 exec-exit detection. Re-evaluated never.
+  readonly isExec: boolean;
 
-  // v5: cap-token cache. The edge mints a 120s HS256 JWT and passes it via
-  // the Authorization header on every fetch; we parse the payload once so
-  // we know what (org, cell, plan) it's bound to and can decide whether to
-  // reuse it instead of re-minting during a v3 redial.
-  private cachedCap?: { token: string; mintedAt: number; orgID: string; cellID: string; plan: string };
+  // v6: exec process exited. Set when the worker's 5-byte 0x03+exitCode frame
+  // arrives. On the next upstream close, we close the client cleanly instead
+  // of redialing.
+  private execExited = false;
 
-  constructor(private state: DurableObjectState, private env: Env) {}
+  private redialing = false;
+  private redialTimes: number[] = []; // wall-clock ms of recent startRedial calls — for circuit breaker
 
-  async fetch(req: Request): Promise<Response> {
-    if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-      return new Response("expected websocket upgrade", { status: 400 });
-    }
-    const cellURL = req.headers.get("x-oc-cell-url");
-    const cellPath = req.headers.get("x-oc-cell-path");
-    const auth = req.headers.get("authorization");
-    const sandboxID = req.headers.get("x-oc-sandbox-id") || "";
-    if (!cellURL || !cellPath || !auth) {
-      return new Response(
-        "sandbox-ws-gateway: missing routing headers (x-oc-cell-url, x-oc-cell-path, authorization)",
-        { status: 400 },
-      );
-    }
+  private cellURL: string;
+  private capToken: string;
+  private readonly cellPath: string;
 
-    // /exec/ and /agent/ paths use the framed exec protocol — enable the
-    // v4 ring buffer so a successful redial can replay missed output. /pty/
-    // is a live terminal; users re-type, so we skip the buffer.
+  constructor(
+    private readonly gateway: SandboxWsGateway,
+    readonly sandboxID: string,
+    cellURL: string,
+    cellPath: string,
+    capToken: string,
+  ) {
+    this.cellURL = cellURL;
+    this.cellPath = cellPath;
+    this.capToken = capToken;
     this.isExec = /\/(exec|agent)\//.test(cellPath);
+  }
 
-    const upstream = await this.dialUpstream(cellURL.replace(/\/$/, "") + cellPath, auth);
-    if (!upstream.ok) return upstream.errResp;
+  async open(): Promise<Response> {
+    const upstreamURL = this.cellURL.replace(/\/$/, "") + this.cellPath;
+    const dial = await dialUpstream(upstreamURL, "Bearer " + this.capToken);
+    if (!dial.ok) return dial.errResp;
 
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-
     this.clientWs = server;
-    this.upstreamWs = upstream.ws;
+    this.upstreamWs = dial.ws;
 
-    const now = Date.now();
-    const ctx: Ctx = {
-      sandboxID,
-      cellURL,
-      cellPath,
-      capToken: auth.replace(/^Bearer\s+/i, ""),
-      capTokenMintedAt: now,
-      createdAt: now,
-      lastTickAt: now,
-    };
-    await this.state.storage.put(CTX_KEY, ctx);
+    // Seed the gateway cap-token cache from the edge-supplied token so the
+    // first redial can reuse it without re-minting.
+    const parsed = parseCapToken(this.capToken);
+    if (parsed) this.gateway.primeCapCache(this.capToken, parsed);
 
-    // v5: prime the cap-token cache from the edge-supplied token. parseCapToken
-    // returns null if the JWT doesn't decode cleanly — in that case we just
-    // leave the cache empty and the first redial will mint fresh.
-    const parsed = parseCapToken(ctx.capToken);
-    if (parsed) {
-      this.cachedCap = {
-        token: ctx.capToken,
-        mintedAt: parsed.iat * 1000,
-        orgID: parsed.orgID,
-        cellID: parsed.cellID,
-        plan: parsed.plan,
-      };
-    }
-
-    // Client side — wired once. The message listener dereferences
-    // this.upstreamWs dynamically so a v3 upstream swap is transparent.
+    // Client side — wired once. Forwarder dereferences this.upstreamWs each
+    // frame so a v3 upstream swap during redial is transparent.
     server.addEventListener("message", (e) => {
       const data = e.data;
       this.upQueue = this.upQueue.then(async () => {
         const u = this.upstreamWs;
-        // Dropped during a v3 redial. The v4 buffer only covers upstream→client
-        // (output); client keystrokes/stdin during the redial window are lost
-        // by design.
         if (!u || u.readyState !== 1) return;
         const payload = await normalizeFrame(data, "client→upstream");
         if (payload === null) return;
@@ -194,6 +168,7 @@ export class SandboxWsGateway {
     server.addEventListener("close", (e) => {
       this.clientWs = undefined;
       try { this.upstreamWs?.close(e.code || 1000, e.reason || "client closed"); } catch {}
+      this.gateway.removeSession(this);
     });
     server.addEventListener("error", (e: Event) => {
       const msg = (e as ErrorEvent)?.message ?? "unknown";
@@ -203,46 +178,86 @@ export class SandboxWsGateway {
       try { this.upstreamWs?.close(1011, "client error"); } catch {}
     });
 
-    // Upstream side — wired here AND re-wired on each successful redial.
-    this.wireUpstreamListeners(upstream.ws, server);
+    this.wireUpstreamListeners(dial.ws);
 
-    upstream.ws.accept();
+    dial.ws.accept();
     server.accept();
 
-    await this.state.storage.setAlarm(now + ALARM_INTERVAL_MS);
-
     console.log(
-      `sandbox-ws-gateway: opened sandbox=${sandboxID} cell=${cellURL} path=${cellPath}`,
+      `sandbox-ws-gateway: opened sandbox=${this.sandboxID} cell=${this.cellURL} path=${this.cellPath} sessions_now=${this.gateway.sessionCount()}`,
     );
 
     return new Response(null, { status: 101, webSocket: client } as ResponseInit & { webSocket: WebSocket });
   }
 
-  // Wire upstream→client forwarding, close-triggers-redial, and error filter.
+  // Empty binary frame on both sockets every alarm tick. Keeps middleboxes
+  // (CF Workers fetch-WS idle, NAT) from idling a long-quiet session out.
+  // Empty frames are safe on every receiver — see file header for proof.
+  keepalive(): void {
+    const empty = new ArrayBuffer(0);
+    if (this.clientWs && this.clientWs.readyState === 1) {
+      try { this.clientWs.send(empty); } catch (err) {
+        console.error(`sandbox-ws-gateway: client keepalive send failed: ${(err as Error).message}`);
+      }
+    }
+    if (this.upstreamWs && this.upstreamWs.readyState === 1) {
+      try { this.upstreamWs.send(empty); } catch (err) {
+        console.error(`sandbox-ws-gateway: upstream keepalive send failed: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  hasOpenSockets(): boolean {
+    const c = !!this.clientWs && this.clientWs.readyState === 1;
+    const u = !!this.upstreamWs && this.upstreamWs.readyState === 1;
+    return c || u;
+  }
+
+  state(): string {
+    const c = !!this.clientWs && this.clientWs.readyState === 1 ? "open" : "closed";
+    const u = !!this.upstreamWs && this.upstreamWs.readyState === 1 ? "open" : "closed";
+    return `client=${c} upstream=${u}${this.redialing ? " redialing" : ""}${this.execExited ? " exec-exited" : ""}`;
+  }
+
+  // Wire upstream → client forwarding, close-triggers-redial, error filter.
   // Called once on initial fetch() and again on each redial's new upstream.
-  private wireUpstreamListeners(upstream: WebSocket, server: WebSocket): void {
+  private wireUpstreamListeners(upstream: WebSocket): void {
     upstream.addEventListener("message", (e) => {
       const data = e.data;
       this.downQueue = this.downQueue.then(async () => {
+        // Guard against frames from a stale upstream after a redial swap.
+        if (this.upstreamWs !== upstream) return;
         const c = this.clientWs;
         if (!c || c.readyState !== 1) return;
         const payload = await normalizeFrame(data, "upstream→client");
         if (payload === null) return;
-        // v4: capture for replay on next redial (exec/agent only).
-        if (this.isExec) this.appendToBuffer(payload);
+        // v6: detect the worker's exec-exit marker — 5-byte binary frame
+        // tagged 0x03 with the 4-byte exit code. Worker sends once per
+        // session.Done branch (handlers.go) then closes 1000.
+        if (
+          this.isExec &&
+          payload instanceof ArrayBuffer &&
+          payload.byteLength === 5 &&
+          new Uint8Array(payload)[0] === 0x03
+        ) {
+          this.execExited = true;
+        }
         try { c.send(payload); } catch (err) {
           console.error(`sandbox-ws-gateway: upstream→client send failed: ${(err as Error).message}`);
         }
       });
     });
     upstream.addEventListener("close", (e) => {
-      // Only act if this is still the *current* upstream — during a redial we
-      // may swap upstreams and the OLD one fires close after the swap.
       if (this.upstreamWs !== upstream) return;
       this.upstreamWs = undefined;
       if (!this.clientWs || this.clientWs.readyState !== 1) return;
-      // v3: trigger redial. Fire-and-forget — runRedial holds its own error
-      // path. We deliberately do NOT close the client here.
+      if (this.execExited) {
+        console.log(`sandbox-ws-gateway: exec exited — closing client (upstream code=${e.code}) sandbox=${this.sandboxID}`);
+        try { this.clientWs.close(1000, "exec completed"); } catch {}
+        this.clientWs = undefined;
+        this.gateway.removeSession(this);
+        return;
+      }
       void this.startRedial(`upstream close code=${e.code} reason=${e.reason || "(none)"}`);
     });
     upstream.addEventListener("error", (e: Event) => {
@@ -254,11 +269,171 @@ export class SandboxWsGateway {
     });
   }
 
-  // v5: return a cap-token bound to (orgID, cellID, plan). Reuses the cached
-  // token when it matches and has > 30s of life left; mints + caches a
-  // fresh one otherwise. Called by runRedial — fresh fetches don't go through
-  // this path because the edge mints unconditionally.
-  private async getOrMintCapToken(orgID: string, cellID: string, plan: string): Promise<string> {
+  private async startRedial(reason: string): Promise<void> {
+    if (this.redialing) return;
+
+    // Circuit breaker — give up if upstream is flapping. Bound the array so
+    // recent-only window stays cheap. Threshold itself is reached on the
+    // (N+1)-th call within the window: keep up to N recent timestamps.
+    const now = Date.now();
+    this.redialTimes = this.redialTimes.filter((t) => now - t < REDIAL_FLAP_WINDOW_MS);
+    if (this.redialTimes.length >= REDIAL_FLAP_THRESHOLD) {
+      console.log(
+        `sandbox-ws-gateway: redial flap threshold hit sandbox=${this.sandboxID} ` +
+        `(${this.redialTimes.length} cycles in ${Math.round((now - this.redialTimes[0]) / 1000)}s) — closing client`,
+      );
+      try { this.clientWs?.close(1011, "upstream flapping"); } catch {}
+      this.clientWs = undefined;
+      this.gateway.removeSession(this);
+      return;
+    }
+    this.redialTimes.push(now);
+
+    this.redialing = true;
+    console.log(`sandbox-ws-gateway: redial start sandbox=${this.sandboxID} cycle=${this.redialTimes.length} — ${reason}`);
+    try {
+      const handled = await this.runRedial();
+      if (!handled) {
+        console.log(`sandbox-ws-gateway: redial exhausted sandbox=${this.sandboxID} — closing client`);
+        try { this.clientWs?.close(1011, "upstream unrecoverable"); } catch {}
+        this.clientWs = undefined;
+        this.gateway.removeSession(this);
+      }
+    } catch (e) {
+      console.error(`sandbox-ws-gateway: redial threw: ${(e as Error).message}`);
+      try { this.clientWs?.close(1011, "redial error"); } catch {}
+      this.clientWs = undefined;
+      this.gateway.removeSession(this);
+    } finally {
+      this.redialing = false;
+    }
+  }
+
+  // Returns true when the situation was handled — redial succeeded, or the
+  // sandbox is officially gone and we closed the client cleanly. False ⇒
+  // ran out of attempts; caller closes with an unrecoverable reason.
+  private async runRedial(): Promise<boolean> {
+    const env = this.gateway.envHandle();
+    const sbRow = await env.OPENCOMPUTER_DB.prepare(
+      "SELECT cell_id, org_id, status FROM sandboxes_index WHERE id = ?1",
+    ).bind(this.sandboxID).first<{ cell_id: string; org_id: string; status: string }>();
+    if (!sbRow) {
+      console.log(`sandbox-ws-gateway: redial: sandbox ${this.sandboxID} not in sandboxes_index`);
+      try { this.clientWs?.close(1000, "sandbox not found"); } catch {}
+      this.clientWs = undefined;
+      this.gateway.removeSession(this);
+      return true;
+    }
+    if (sbRow.status === "stopped" || sbRow.status === "failed") {
+      console.log(`sandbox-ws-gateway: redial: sandbox ${this.sandboxID} status=${sbRow.status} — closing client`);
+      try { this.clientWs?.close(1000, `sandbox ${sbRow.status}`); } catch {}
+      this.clientWs = undefined;
+      this.gateway.removeSession(this);
+      return true;
+    }
+    const cellRow = await env.OPENCOMPUTER_DB.prepare(
+      "SELECT base_url FROM cells WHERE cell_id = ?1",
+    ).bind(sbRow.cell_id).first<{ base_url: string }>();
+    if (!cellRow) {
+      console.log(`sandbox-ws-gateway: redial: cell ${sbRow.cell_id} not in cells table`);
+      return false;
+    }
+    const orgRow = await env.OPENCOMPUTER_DB.prepare(
+      "SELECT plan FROM orgs WHERE id = ?1",
+    ).bind(sbRow.org_id).first<{ plan: string }>();
+    const plan = orgRow?.plan === "pro" ? "pro" : "free";
+
+    if (cellRow.base_url !== this.cellURL) {
+      console.log(`sandbox-ws-gateway: redial: sandbox moved cell ${this.cellURL} → ${cellRow.base_url}`);
+    }
+
+    // Adaptive backoff: start with the fast sequence, but on the first 503
+    // /migrating/ response switch to the steadier migration cadence for the
+    // rest of the cycle. Switching back and forth would be noisy and pointless.
+    let inMigrationMode = false;
+    let attempt = 0;
+    const maxAttempts = REDIAL_BACKOFF_MS.length;
+
+    while (true) {
+      const delay = inMigrationMode
+        ? MIGRATION_BACKOFF_MS
+        : REDIAL_BACKOFF_MS[Math.min(attempt, REDIAL_BACKOFF_MS.length - 1)];
+      const limit = inMigrationMode ? MIGRATION_MAX_ATTEMPTS : maxAttempts;
+      if (attempt >= limit) return false;
+
+      await sleep(delay);
+      if (!this.clientWs || this.clientWs.readyState !== 1) {
+        console.log(`sandbox-ws-gateway: redial: client gone during backoff, abort`);
+        return true;
+      }
+
+      const capToken = await this.gateway.getOrMintCapToken(sbRow.org_id, sbRow.cell_id, plan);
+      const upstreamURL = cellRow.base_url.replace(/\/$/, "") + this.cellPath;
+      console.log(
+        `sandbox-ws-gateway: redial: attempt ${attempt + 1}/${limit}${inMigrationMode ? " (migrating)" : ""} sandbox=${this.sandboxID} → ${upstreamURL}`,
+      );
+
+      const dial = await dialUpstream(upstreamURL, `Bearer ${capToken}`);
+      if (!dial.ok) {
+        console.log(`sandbox-ws-gateway: redial: attempt ${attempt + 1} failed — ${dial.note}`);
+        if (dial.terminal) {
+          const reason = dial.body.toLowerCase().includes("stopped")
+            ? "sandbox stopped"
+            : `cell ${dial.status ?? "gone"}`;
+          console.log(`sandbox-ws-gateway: redial: terminal (status=${dial.status}) — closing client (${reason})`);
+          try { this.clientWs?.close(1000, reason); } catch {}
+          this.clientWs = undefined;
+          this.gateway.removeSession(this);
+          return true;
+        }
+        if (dial.migrating && !inMigrationMode) {
+          console.log(`sandbox-ws-gateway: redial: cell reports migrating — switching to migration backoff (${MIGRATION_BACKOFF_MS}ms × ${MIGRATION_MAX_ATTEMPTS})`);
+          inMigrationMode = true;
+          attempt = 0;
+          continue;
+        }
+        attempt++;
+        continue;
+      }
+
+      // Success. No buffer replay (cell scrollback covers it).
+      this.upstreamWs = dial.ws;
+      this.cellURL = cellRow.base_url;
+      this.capToken = capToken;
+      this.wireUpstreamListeners(dial.ws);
+      dial.ws.accept();
+      console.log(`sandbox-ws-gateway: redial: success on attempt ${attempt + 1} sandbox=${this.sandboxID}`);
+      return true;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Durable Object entry point. One instance per sandboxID, ≥0 Sessions inside.
+// ─────────────────────────────────────────────────────────────────────────────
+export class SandboxWsGateway {
+  private sessions: Set<Session> = new Set();
+  private cachedCap?: CapCacheEntry;
+
+  constructor(private state: DurableObjectState, private env: Env) {}
+
+  // Internal accessors used by Session — keeps env private to this class
+  // while letting the Session reach D1 and the cap-token cache.
+  envHandle(): Env { return this.env; }
+  sessionCount(): number { return this.sessions.size; }
+  removeSession(s: Session): void { this.sessions.delete(s); }
+
+  primeCapCache(token: string, parsed: { orgID: string; cellID: string; plan: string; iat: number }): void {
+    this.cachedCap = {
+      token,
+      mintedAt: parsed.iat * 1000,
+      orgID: parsed.orgID,
+      cellID: parsed.cellID,
+      plan: parsed.plan,
+    };
+  }
+
+  async getOrMintCapToken(orgID: string, cellID: string, plan: string): Promise<string> {
     const now = Date.now();
     if (
       this.cachedCap &&
@@ -278,212 +453,63 @@ export class SandboxWsGateway {
     return token;
   }
 
-  // v4: append a normalized upstream→client frame to the ring buffer for
-  // replay on a future redial. Evicts oldest frames once the byte cap is
-  // exceeded. Only called when this.isExec is true.
-  private appendToBuffer(payload: ArrayBuffer | string): void {
-    const size = typeof payload === "string" ? payload.length : payload.byteLength;
-    this.outputBuffer.push(payload);
-    this.outputBufferBytes += size;
-    while (this.outputBufferBytes > MAX_BUFFER_BYTES && this.outputBuffer.length > 0) {
-      const dropped = this.outputBuffer.shift()!;
-      this.outputBufferBytes -= typeof dropped === "string" ? dropped.length : dropped.byteLength;
+  async fetch(req: Request): Promise<Response> {
+    if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+      return new Response("expected websocket upgrade", { status: 400 });
     }
-  }
-
-  private async startRedial(reason: string): Promise<void> {
-    if (this.redialing) return;
-    this.redialing = true;
-    console.log(`sandbox-ws-gateway: redial start — ${reason}`);
-    try {
-      const handled = await this.runRedial();
-      if (!handled) {
-        console.log(`sandbox-ws-gateway: redial exhausted — closing client`);
-        try { this.clientWs?.close(1011, "upstream unrecoverable"); } catch {}
-        this.clientWs = undefined;
-      }
-    } catch (e) {
-      console.error(`sandbox-ws-gateway: redial threw: ${(e as Error).message}`);
-      try { this.clientWs?.close(1011, "redial error"); } catch {}
-      this.clientWs = undefined;
-    } finally {
-      this.redialing = false;
-    }
-  }
-
-  // Returns true if the situation was handled (either redial succeeded or the
-  // sandbox is officially gone and we closed the client cleanly). Returns
-  // false if we ran out of backoff attempts without success — the caller
-  // closes the client with an unrecoverable reason.
-  private async runRedial(): Promise<boolean> {
-    const ctx = await this.state.storage.get<Ctx>(CTX_KEY);
-    if (!ctx) {
-      console.error("sandbox-ws-gateway: redial: no ctx in storage");
-      return false;
+    const cellURL = req.headers.get("x-oc-cell-url");
+    const cellPath = req.headers.get("x-oc-cell-path");
+    const auth = req.headers.get("authorization");
+    const sandboxID = req.headers.get("x-oc-sandbox-id") || "";
+    if (!cellURL || !cellPath || !auth) {
+      return new Response(
+        "sandbox-ws-gateway: missing routing headers (x-oc-cell-url, x-oc-cell-path, authorization)",
+        { status: 400 },
+      );
     }
 
-    const sbRow = await this.env.OPENCOMPUTER_DB.prepare(
-      "SELECT cell_id, org_id, status FROM sandboxes_index WHERE id = ?1",
-    ).bind(ctx.sandboxID).first<{ cell_id: string; org_id: string; status: string }>();
-
-    if (!sbRow) {
-      console.log(`sandbox-ws-gateway: redial: sandbox ${ctx.sandboxID} not in sandboxes_index`);
-      try { this.clientWs?.close(1000, "sandbox not found"); } catch {}
-      this.clientWs = undefined;
-      return true;
-    }
-    if (sbRow.status === "stopped" || sbRow.status === "failed") {
-      console.log(`sandbox-ws-gateway: redial: sandbox ${ctx.sandboxID} status=${sbRow.status} — closing client`);
-      try { this.clientWs?.close(1000, `sandbox ${sbRow.status}`); } catch {}
-      this.clientWs = undefined;
-      return true;
-    }
-
-    const cellRow = await this.env.OPENCOMPUTER_DB.prepare(
-      "SELECT base_url FROM cells WHERE cell_id = ?1",
-    ).bind(sbRow.cell_id).first<{ base_url: string }>();
-    if (!cellRow) {
-      console.log(`sandbox-ws-gateway: redial: cell ${sbRow.cell_id} not in cells table`);
-      return false;
-    }
-
-    const orgRow = await this.env.OPENCOMPUTER_DB.prepare(
-      "SELECT plan FROM orgs WHERE id = ?1",
-    ).bind(sbRow.org_id).first<{ plan: string }>();
-    const plan = orgRow?.plan === "pro" ? "pro" : "free";
-
-    const cellMoved = cellRow.base_url !== ctx.cellURL;
-    if (cellMoved) {
-      console.log(`sandbox-ws-gateway: redial: sandbox moved cell ${ctx.cellURL} → ${cellRow.base_url}`);
-    }
-
-    for (let i = 0; i < REDIAL_BACKOFF_MS.length; i++) {
-      await sleep(REDIAL_BACKOFF_MS[i]);
-      if (!this.clientWs || this.clientWs.readyState !== 1) {
-        console.log(`sandbox-ws-gateway: redial: client gone during backoff, abort`);
-        return true;
-      }
-
-      // v5: cached if it still matches (org, cell, plan) and has > 30s left.
-      const capToken = await this.getOrMintCapToken(sbRow.org_id, sbRow.cell_id, plan);
-      const upstreamURL = cellRow.base_url.replace(/\/$/, "") + ctx.cellPath;
-      console.log(`sandbox-ws-gateway: redial: attempt ${i + 1}/${REDIAL_BACKOFF_MS.length} → ${upstreamURL}`);
-
-      const dial = await this.dialUpstream(upstreamURL, `Bearer ${capToken}`);
-      if (!dial.ok) {
-        console.log(`sandbox-ws-gateway: redial: attempt ${i + 1} failed — ${dial.note}`);
-        if (dial.terminal) {
-          // Cell explicitly said the resource is gone (404/410). No point
-          // burning the rest of the backoff — close the client with the
-          // cell's reason so the SDK gets a clear signal.
-          const reason = dial.body.toLowerCase().includes("stopped")
-            ? "sandbox stopped"
-            : `cell ${dial.status ?? "gone"}`;
-          console.log(`sandbox-ws-gateway: redial: terminal (status=${dial.status}) — closing client (${reason})`);
-          try { this.clientWs?.close(1000, reason); } catch {}
-          this.clientWs = undefined;
-          return true;
-        }
-        continue;
-      }
-
-      // Success. Order matters here:
-      //   1. Replay the v4 ring buffer to the client BEFORE wiring or
-      //      accepting the new upstream. Sync sends queue into the client WS
-      //      in order, so any live frames from the new upstream arrive after.
-      //   2. Set this.upstreamWs so the client→upstream forwarder picks up
-      //      the new socket.
-      //   3. Wire upstream→client listeners.
-      //   4. accept() the new upstream — messages start flowing.
-      // The buffer is NOT cleared after replay; a session that takes more
-      // than one redial still gets gap-free output every time.
-      if (this.isExec && this.outputBuffer.length > 0 && this.clientWs && this.clientWs.readyState === 1) {
-        console.log(
-          `sandbox-ws-gateway: redial: replaying ${this.outputBufferBytes}B (${this.outputBuffer.length} frames) to client`,
-        );
-        for (const frame of this.outputBuffer) {
-          try { this.clientWs.send(frame); } catch (err) {
-            console.error(`sandbox-ws-gateway: redial replay send failed: ${(err as Error).message}`);
-            break;
-          }
-        }
-      }
-      this.upstreamWs = dial.ws;
-      ctx.cellURL = cellRow.base_url;
-      ctx.capToken = capToken;
-      ctx.capTokenMintedAt = Date.now();
-      await this.state.storage.put(CTX_KEY, ctx);
-      this.wireUpstreamListeners(dial.ws, this.clientWs);
-      dial.ws.accept();
-      console.log(`sandbox-ws-gateway: redial: success on attempt ${i + 1}`);
-      return true;
-    }
-    return false;
-  }
-
-  // Shared upstream dial used by both fetch() and runRedial(). Returns either
-  // a live WS, a "terminal" failure (cell explicitly says the resource is gone —
-  // 404 or 410 — which the redial loop treats as unrecoverable), or a transient
-  // failure that the redial loop should keep retrying with backoff.
-  private async dialUpstream(
-    upstreamURL: string,
-    authHeader: string,
-  ): Promise<
-    | { ok: true; ws: WebSocket }
-    | { ok: false; terminal: boolean; status?: number; body: string; errResp: Response; note: string }
-  > {
-    let resp: Response;
-    try {
-      resp = await fetch(upstreamURL, {
-        headers: { Upgrade: "websocket", Authorization: authHeader },
-      });
-    } catch (e) {
-      const note = `upstream fetch threw: ${(e as Error).message}`;
-      console.error(`sandbox-ws-gateway: ${note}`);
-      return {
-        ok: false,
-        terminal: false,
-        body: "",
-        errResp: new Response(`cell websocket fetch failed: ${(e as Error).message}`, { status: 502 }),
-        note,
+    const session = new Session(this, sandboxID, cellURL, cellPath, auth.replace(/^Bearer\s+/i, ""));
+    const resp = await session.open();
+    if (resp.status === 101) {
+      this.sessions.add(session);
+      // Make sure the alarm is armed. setAlarm is idempotent for a given
+      // time, and we always set it to now + interval — overlapping calls
+      // just re-set the next tick, never multiplying alarms.
+      await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
+      // Persist a minimal ctx so post-eviction alarm logs still know the sandbox.
+      const ctx: Ctx = {
+        sandboxID,
+        cellURL,
+        createdAt: Date.now(),
+        lastTickAt: Date.now(),
       };
+      await this.state.storage.put(CTX_KEY, ctx);
     }
-    const ws = (resp as Response & { webSocket?: WebSocket }).webSocket;
-    if (ws) return { ok: true, ws };
-
-    const errBody = (await resp.text().catch(() => "")).slice(0, 200);
-    // 404 Not Found and 410 Gone are explicit "this resource is permanently
-    // unavailable" signals — the cell knows the sandbox is stopped/missing.
-    // Retrying just waits out the backoff to no purpose.
-    const terminal = resp.status === 404 || resp.status === 410;
-    const note = `status=${resp.status} body=${errBody}${terminal ? " (terminal)" : ""}`;
-    console.error(`sandbox-ws-gateway: no webSocket on response ${note}`);
-    return {
-      ok: false,
-      terminal,
-      status: resp.status,
-      body: errBody,
-      errResp: new Response(`cell websocket connect failed (status ${resp.status}): ${errBody}`, { status: 502 }),
-      note,
-    };
+    return resp;
   }
 
   async alarm(): Promise<void> {
-    const clientOpen = !!this.clientWs && this.clientWs.readyState === 1;
-    const upstreamOpen = !!this.upstreamWs && this.upstreamWs.readyState === 1;
     const ctx = await this.state.storage.get<Ctx>(CTX_KEY);
 
-    if (!clientOpen && !upstreamOpen && !this.redialing) {
+    // Reap sessions whose sockets are all closed but never called removeSession
+    // (defensive — close handlers should already have removed them).
+    for (const s of [...this.sessions]) {
+      if (!s.hasOpenSockets()) this.sessions.delete(s);
+    }
+
+    if (this.sessions.size === 0) {
       console.log(`sandbox-ws-gateway: alarm sandbox=${ctx?.sandboxID || "?"} — idle, releasing`);
       await this.state.storage.deleteAll();
       return;
     }
 
-    const bufferInfo = this.isExec
-      ? ` buffer=${this.outputBufferBytes}B/${this.outputBuffer.length}f`
-      : "";
+    for (const s of this.sessions) s.keepalive();
+
+    const summary = [...this.sessions]
+      .map((s) => `[${s.isExec ? "exec" : "pty"} ${s.state()}]`)
+      .join(" ");
     console.log(
-      `sandbox-ws-gateway: alarm sandbox=${ctx?.sandboxID || "?"} client=${clientOpen ? "open" : "closed"} upstream=${upstreamOpen ? "open" : "closed"}${this.redialing ? " redialing" : ""}${bufferInfo}`,
+      `sandbox-ws-gateway: alarm sandbox=${ctx?.sandboxID || "?"} sessions=${this.sessions.size} ${summary}`,
     );
 
     if (ctx) {
@@ -498,10 +524,64 @@ export class SandboxWsGateway {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+interface DialFailure {
+  ok: false;
+  terminal: boolean;     // 404/410 — cell says the resource is permanently gone
+  migrating: boolean;    // 503 + body contains "migrating" — wait longer
+  status?: number;
+  body: string;
+  errResp: Response;
+  note: string;
+}
+
+interface DialSuccess {
+  ok: true;
+  ws: WebSocket;
+}
+
+async function dialUpstream(upstreamURL: string, authHeader: string): Promise<DialSuccess | DialFailure> {
+  let resp: Response;
+  try {
+    resp = await fetch(upstreamURL, {
+      headers: { Upgrade: "websocket", Authorization: authHeader },
+    });
+  } catch (e) {
+    const note = `upstream fetch threw: ${(e as Error).message}`;
+    console.error(`sandbox-ws-gateway: ${note}`);
+    return {
+      ok: false,
+      terminal: false,
+      migrating: false,
+      body: "",
+      errResp: new Response(`cell websocket fetch failed: ${(e as Error).message}`, { status: 502 }),
+      note,
+    };
+  }
+  const ws = (resp as Response & { webSocket?: WebSocket }).webSocket;
+  if (ws) return { ok: true, ws };
+
+  const errBody = (await resp.text().catch(() => "")).slice(0, 200);
+  const terminal = resp.status === 404 || resp.status === 410;
+  const migrating = resp.status === 503 && /migrating/i.test(errBody);
+  const note =
+    `status=${resp.status} body=${errBody}` +
+    (terminal ? " (terminal)" : "") +
+    (migrating ? " (migrating)" : "");
+  console.error(`sandbox-ws-gateway: no webSocket on response ${note}`);
+  return {
+    ok: false,
+    terminal,
+    migrating,
+    status: resp.status,
+    body: errBody,
+    errResp: new Response(`cell websocket connect failed (status ${resp.status}): ${errBody}`, { status: 502 }),
+    note,
+  };
+}
+
 // Normalize an inbound WebSocket frame to a payload we can both send and
-// store in the v4 buffer. CF delivers binary frames as Blob on non-
+// inspect for the exit marker. CF delivers binary frames as Blob on non-
 // hibernatable WSes, so we await blob.arrayBuffer() before returning.
-// Strings pass through. Returns null on unknown shapes — caller drops.
 async function normalizeFrame(data: unknown, label: string): Promise<ArrayBuffer | string | null> {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return data;
@@ -527,10 +607,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// Mint the cell-bound capability token the regional CP expects. Mirrors the
-// edge's mintCapToken in api-edge/src/index.ts — HS256 JWT signed with
-// SESSION_JWT_SECRET, iss=opensandbox-edge, 120s exp. Used by v3 redial when
-// the original edge-minted token has expired or the sandbox moved cells.
 async function mintCapToken(
   secret: string,
   orgID: string,
@@ -564,16 +640,10 @@ async function mintCapToken(
   return signingInput + "." + b64url(sig);
 }
 
-// parseCapToken decodes the payload segment of an HS256 cap-token JWT and
-// extracts the cell-binding claims. No signature check — the edge minted it
-// upstream of us; we just need the routing keys (org_id, cell_id, plan) and
-// the issue timestamp so the v5 cache can decide freshness. Returns null on
-// anything malformed; callers fall back to a fresh mint.
 function parseCapToken(token: string): { orgID: string; cellID: string; plan: string; iat: number } | null {
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
-    // JWT b64url → standard b64 → JSON
     const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     const pad = b64.length % 4 ? b64 + "=".repeat(4 - (b64.length % 4)) : b64;
     const payload = JSON.parse(atob(pad)) as {
@@ -594,17 +664,9 @@ function b64url(buf: ArrayBuffer | Uint8Array): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Edge-side helper
+// Edge-side helper — unchanged signature for callers in index.ts / dashboard.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// routeWsViaGateway — edge-side helper. Sends a WS upgrade request through the
-// per-sandbox DO instance with the routing headers the DO expects. Used by
-// both the SDK proxy path (index.ts proxyToCellSDK) and the Dashboard PTY
-// path (dashboard.ts proxyWebSocket) so the two surfaces share one code path.
-//
-// The api_key query param is stripped from the cloned request URL before
-// handing it to the DO — the DO reads cap-token from Authorization, never the
-// URL, and we don't want the long-lived SDK key flowing into DO logs/storage.
 export async function routeWsViaGateway(opts: {
   ns: DurableObjectNamespace;
   sandboxID: string;

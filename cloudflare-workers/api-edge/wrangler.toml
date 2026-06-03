@@ -68,10 +68,16 @@ script_name = "opensandbox-edge-dev"
 # bridges frames. Gated by WS_VIA_DO=1 below — when unset, the old transparent
 # CF-Tunnel forward (index.ts) and edge-side WebSocketPair (dashboard.ts) paths
 # stay in place, so disabling the flag is the fast rollback.
+#
+# script_name intentionally omitted (unlike CREDIT_ACCOUNT). After a sibling
+# branch dropped this class and was deployed to dev, CF's binding validator
+# (which checks against the currently-LIVE script when script_name names this
+# script) rejected re-adding SANDBOX_WS — the live script no longer exported
+# it. Omitting script_name makes it an implicit local binding resolved against
+# the version under deploy, breaking the chicken-and-egg.
 [[durable_objects.bindings]]
 name = "SANDBOX_WS"
 class_name = "SandboxWsGateway"
-script_name = "opensandbox-edge-dev"
 
 [[migrations]]
 tag = "v1"
@@ -79,6 +85,17 @@ new_sqlite_classes = ["CreditAccount"]
 
 [[migrations]]
 tag = "v2"
+new_sqlite_classes = ["SandboxWsGateway"]
+
+# v3: another branch deployed without SandboxWsGateway and burned the v2
+# tag/namespace. v3 explicitly deletes the (already-gone) class so CF's
+# migration head is in a clean state. v4 then re-creates it.
+[[migrations]]
+tag = "v3"
+deleted_classes = ["SandboxWsGateway"]
+
+[[migrations]]
+tag = "v4"
 new_sqlite_classes = ["SandboxWsGateway"]
 
 # Secrets (set via `wrangler secret put`):
