@@ -52,15 +52,15 @@ const (
 
 // WorkerEntry represents a worker in the Redis-backed registry.
 type WorkerEntry struct {
-	ID        string  `json:"worker_id"`
-	MachineID string  `json:"machine_id,omitempty"` // EC2 instance ID
-	Region    string  `json:"region"`
-	GRPCAddr  string  `json:"grpc_addr"`
-	HTTPAddr  string  `json:"http_addr"`
-	Capacity  int     `json:"capacity"`
-	Current   int     `json:"current"`
-	CPUPct    float64 `json:"cpu_pct"`
-	MemPct    float64 `json:"mem_pct"`
+	ID                string  `json:"worker_id"`
+	MachineID         string  `json:"machine_id,omitempty"` // EC2 instance ID
+	Region            string  `json:"region"`
+	GRPCAddr          string  `json:"grpc_addr"`
+	HTTPAddr          string  `json:"http_addr"`
+	Capacity          int     `json:"capacity"`
+	Current           int     `json:"current"`
+	CPUPct            float64 `json:"cpu_pct"`
+	MemPct            float64 `json:"mem_pct"`
 	DiskPct           float64 `json:"disk_pct"`
 	TotalMemoryMB     int     `json:"total_memory_mb,omitempty"`
 	CommittedMemoryMB int     `json:"committed_memory_mb,omitempty"`
@@ -88,13 +88,13 @@ type SandboxStats struct {
 // backed by Redis pub/sub for real-time updates and periodic SCAN for reconciliation.
 // It also maintains a persistent gRPC connection pool to workers.
 type RedisWorkerRegistry struct {
-	rdb        *redis.Client
-	mu         sync.RWMutex
-	workers    map[string]*WorkerEntry       // in-memory hot cache
-	conns      map[string]*grpc.ClientConn   // persistent gRPC connections
-	clients    map[string]pb.SandboxWorkerClient // cached gRPC clients
-	rrCounter  uint64                        // round-robin counter for tie-breaking
-	stop       chan struct{}
+	rdb       *redis.Client
+	mu        sync.RWMutex
+	workers   map[string]*WorkerEntry           // in-memory hot cache
+	conns     map[string]*grpc.ClientConn       // persistent gRPC connections
+	clients   map[string]pb.SandboxWorkerClient // cached gRPC clients
+	rrCounter uint64                            // round-robin counter for tie-breaking
+	stop      chan struct{}
 
 	// onWorkerRejoined fires when a worker registers — both genuinely new and
 	// after being pruned for missed heartbeats. Used by the reconcile-on-
@@ -751,20 +751,21 @@ func (r *RedisWorkerRegistry) GetWorkersByRegion(region string) []*WorkerInfo {
 	for _, w := range r.workers {
 		if w.Region == region {
 			result = append(result, &WorkerInfo{
-				ID:        w.ID,
-				MachineID: w.MachineID,
-				Region:    w.Region,
-				GRPCAddr:  w.GRPCAddr,
-				HTTPAddr:  w.HTTPAddr,
-				Capacity:  w.Capacity,
-				Current:   w.Current,
-				CPUPct:    w.CPUPct,
-				MemPct:    w.MemPct,
-				DiskPct:       w.DiskPct,
+				ID:                w.ID,
+				MachineID:         w.MachineID,
+				Region:            w.Region,
+				GRPCAddr:          w.GRPCAddr,
+				HTTPAddr:          w.HTTPAddr,
+				Capacity:          w.Capacity,
+				Current:           w.Current,
+				CPUPct:            w.CPUPct,
+				MemPct:            w.MemPct,
+				DiskPct:           w.DiskPct,
+				Draining:          w.Draining,
 				TotalMemoryMB:     w.TotalMemoryMB,
 				CommittedMemoryMB: w.CommittedMemoryMB,
-				GoldenVersion: w.GoldenVersion,
-				WorkerVersion: w.WorkerVersion,
+				GoldenVersion:     w.GoldenVersion,
+				WorkerVersion:     w.WorkerVersion,
 			})
 		}
 	}

@@ -718,7 +718,7 @@ func TestFindMigrationTargetSkipsDraining(t *testing.T) {
 	})
 	reg.addWorker(&WorkerInfo{
 		ID: "draining", MachineID: "osb-worker-draining", Region: "us-east-1",
-		Capacity: 50, Current: 5, CPUPct: 10, MemPct: 10, DiskPct: 10,
+		Capacity: 50, Current: 5, CPUPct: 10, MemPct: 10, DiskPct: 10, Draining: true,
 	})
 
 	s := newTestScaler(reg, pool)
@@ -727,6 +727,31 @@ func TestFindMigrationTargetSkipsDraining(t *testing.T) {
 	target := s.findMigrationTarget("us-east-1", "hot", 0)
 	if target != nil {
 		t.Errorf("expected no target (only candidate is draining), got %s", target.ID)
+	}
+}
+
+func TestFindMigrationTargetClearsStaleDrainState(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	reg.addWorker(&WorkerInfo{
+		ID: "hot", MachineID: "osb-worker-hot", Region: "us-east-1",
+		Capacity: 50, Current: 45, CPUPct: 85, MemPct: 50, DiskPct: 30,
+	})
+	reg.addWorker(&WorkerInfo{
+		ID: "candidate", MachineID: "osb-worker-candidate", Region: "us-east-1",
+		Capacity: 50, Current: 5, CPUPct: 10, MemPct: 10, DiskPct: 10,
+	})
+
+	s := newTestScaler(reg, pool)
+	s.state.SetDraining("osb-worker-candidate", &drainState{WorkerID: "candidate"})
+
+	target := s.findMigrationTarget("us-east-1", "hot", 0)
+	if target == nil || target.ID != "candidate" {
+		t.Fatalf("expected stale-drain candidate to be usable, got %#v", target)
+	}
+	if s.state.IsDraining("osb-worker-candidate") {
+		t.Fatalf("expected stale drain state to be cleared")
 	}
 }
 
@@ -1796,6 +1821,9 @@ func TestDrainPolicyForReason(t *testing.T) {
 	if normal.failurePause != drainBatchFailurePause {
 		t.Fatalf("expected normal drain failure pause %s, got %s", drainBatchFailurePause, normal.failurePause)
 	}
+	if normal.concurrency != evacuationBatchSize {
+		t.Fatalf("expected normal drain concurrency %d, got %d", evacuationBatchSize, normal.concurrency)
+	}
 
 	spot := drainPolicyForReason(drainReasonSpotPreemption)
 	if spot.backoff != spotDrainBackoff {
@@ -1804,8 +1832,14 @@ func TestDrainPolicyForReason(t *testing.T) {
 	if spot.failurePause != spotDrainFailurePause {
 		t.Fatalf("expected spot drain failure pause %s, got %s", spotDrainFailurePause, spot.failurePause)
 	}
+	if spot.concurrency != spotDrainConcurrency {
+		t.Fatalf("expected spot drain concurrency %d, got %d", spotDrainConcurrency, spot.concurrency)
+	}
 	if spot.backoff >= normal.backoff {
 		t.Fatalf("expected spot drain backoff to be shorter than normal drain backoff")
+	}
+	if spot.concurrency <= normal.concurrency {
+		t.Fatalf("expected spot drain concurrency to be higher than normal drain concurrency")
 	}
 }
 

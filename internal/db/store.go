@@ -187,14 +187,14 @@ type Org struct {
 	UpdatedAt              time.Time `json:"updatedAt"`
 
 	// Custom domain fields
-	CustomDomain               *string `json:"customDomain,omitempty"`
-	CFHostnameID               *string `json:"cfHostnameId,omitempty"`
-	DomainVerificationStatus   string  `json:"domainVerificationStatus"`
-	DomainSSLStatus            string  `json:"domainSslStatus"`
-	VerificationTxtName        *string `json:"verificationTxtName,omitempty"`
-	VerificationTxtValue       *string `json:"verificationTxtValue,omitempty"`
-	SSLTxtName                 *string `json:"sslTxtName,omitempty"`
-	SSLTxtValue                *string `json:"sslTxtValue,omitempty"`
+	CustomDomain             *string `json:"customDomain,omitempty"`
+	CFHostnameID             *string `json:"cfHostnameId,omitempty"`
+	DomainVerificationStatus string  `json:"domainVerificationStatus"`
+	DomainSSLStatus          string  `json:"domainSslStatus"`
+	VerificationTxtName      *string `json:"verificationTxtName,omitempty"`
+	VerificationTxtValue     *string `json:"verificationTxtValue,omitempty"`
+	SSLTxtName               *string `json:"sslTxtName,omitempty"`
+	SSLTxtValue              *string `json:"sslTxtValue,omitempty"`
 
 	// WorkOS organization fields
 	WorkOSOrgID        *string    `json:"workosOrgId,omitempty"`
@@ -208,10 +208,10 @@ type Org struct {
 	FreeCreditsRemainingCents int64 `json:"freeCreditsRemainingCents"`
 
 	// Stripe billing fields
-	StripeCustomerID     *string    `json:"stripeCustomerId,omitempty"`
-	StripeSubscriptionID *string    `json:"stripeSubscriptionId,omitempty"`
-	LastUsageReportedAt  time.Time  `json:"lastUsageReportedAt"`
-	PriceLocked          bool       `json:"priceLocked"`
+	StripeCustomerID     *string   `json:"stripeCustomerId,omitempty"`
+	StripeSubscriptionID *string   `json:"stripeSubscriptionId,omitempty"`
+	LastUsageReportedAt  time.Time `json:"lastUsageReportedAt"`
+	PriceLocked          bool      `json:"priceLocked"`
 
 	// Per-org billing pipeline selector. 'legacy' = UsageReporter ships
 	// to Stripe; 'unified' = the phase-3 sender ships from
@@ -630,25 +630,27 @@ func (s *Store) DeleteAPIKeyForOrg(ctx context.Context, id uuid.UUID, orgID uuid
 // --- Sandbox Session operations ---
 
 type SandboxSession struct {
-	ID                   uuid.UUID       `json:"id"`
-	SandboxID            string          `json:"sandboxId"`
-	OrgID                uuid.UUID       `json:"orgId"`
-	UserID               *uuid.UUID      `json:"userId,omitempty"`
-	Template             string          `json:"template"`
-	Region               string          `json:"region"`
-	WorkerID             string          `json:"workerId"`
-	Status               string          `json:"status"`
-	Config               json.RawMessage `json:"config"`
-	Metadata             json.RawMessage `json:"metadata,omitempty"`
-	StartedAt            time.Time       `json:"startedAt"`
-	StoppedAt            *time.Time      `json:"stoppedAt,omitempty"`
-	ErrorMsg             *string         `json:"errorMsg,omitempty"`
-	BasedOnCheckpointID  *uuid.UUID      `json:"basedOnCheckpointId,omitempty"`
-	LastPatchSequence    int             `json:"lastPatchSequence"`
-	MigratingToWorker    string          `json:"migratingToWorker,omitempty"`
-	PatchError           *string         `json:"patchError,omitempty"`
-	GoldenVersion        *string         `json:"goldenVersion,omitempty"`
+	ID                  uuid.UUID       `json:"id"`
+	SandboxID           string          `json:"sandboxId"`
+	OrgID               uuid.UUID       `json:"orgId"`
+	UserID              *uuid.UUID      `json:"userId,omitempty"`
+	Template            string          `json:"template"`
+	Region              string          `json:"region"`
+	WorkerID            string          `json:"workerId"`
+	Status              string          `json:"status"`
+	Config              json.RawMessage `json:"config"`
+	Metadata            json.RawMessage `json:"metadata,omitempty"`
+	StartedAt           time.Time       `json:"startedAt"`
+	StoppedAt           *time.Time      `json:"stoppedAt,omitempty"`
+	ErrorMsg            *string         `json:"errorMsg,omitempty"`
+	BasedOnCheckpointID *uuid.UUID      `json:"basedOnCheckpointId,omitempty"`
+	LastPatchSequence   int             `json:"lastPatchSequence"`
+	MigratingToWorker   string          `json:"migratingToWorker,omitempty"`
+	PatchError          *string         `json:"patchError,omitempty"`
+	GoldenVersion       *string         `json:"goldenVersion,omitempty"`
 }
+
+const PostQMPMigrationFailureMessage = "migration failed after QMP transfer; source VM gone, target failed to complete"
 
 func (s *Store) CreateSandboxSession(ctx context.Context, sandboxID string, orgID uuid.UUID, userID *uuid.UUID, template, region, workerID string, config, metadata json.RawMessage, secretStoreID *uuid.UUID) (*SandboxSession, error) {
 	return s.CreateSandboxSessionWithStatus(ctx, sandboxID, orgID, userID, template, region, workerID, config, metadata, "running", secretStoreID)
@@ -741,10 +743,17 @@ func (s *Store) CompleteMigration(ctx context.Context, sandboxID, newWorkerID st
 	// Use status IN ('migrating', 'running', 'stopped') — a race with the source
 	// worker's cleanup may have already set it to 'stopped' or reverted to 'running'.
 	// The migration DID succeed (QEMU is running on the target), so force the update.
+	// Also recover the specific post-QMP error state: an earlier target-complete
+	// timeout may have marked the row error even though the target VM later became
+	// usable and participated in a subsequent successful migration.
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE sandbox_sessions SET status = 'running', worker_id = $1, migrating_to_worker = '', stopped_at = NULL, error_msg = NULL
-		 WHERE sandbox_id = $2 AND status IN ('migrating', 'running', 'stopped')`,
-		newWorkerID, sandboxID)
+		 WHERE sandbox_id = $2
+		   AND (
+		     status IN ('migrating', 'running', 'stopped')
+		     OR (status = 'error' AND error_msg = $3)
+		   )`,
+		newWorkerID, sandboxID, PostQMPMigrationFailureMessage)
 	if err != nil {
 		return err
 	}

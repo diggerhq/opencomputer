@@ -13,22 +13,23 @@ import (
 
 // WorkerInfo represents a registered worker.
 type WorkerInfo struct {
-	ID           string    `json:"worker_id"`
-	MachineID    string    `json:"machine_id,omitempty"` // EC2 instance ID
-	Region       string    `json:"region"`
-	GRPCAddr     string    `json:"grpc_addr"`
-	HTTPAddr     string    `json:"http_addr"`
-	Capacity     int       `json:"capacity"`
-	Current      int       `json:"current"`
-	CPUPct       float64   `json:"cpu_pct"`
-	MemPct       float64   `json:"mem_pct"`
-	DiskPct       float64   `json:"disk_pct"`
-	TotalMemoryMB     int  `json:"total_memory_mb,omitempty"`
-	CommittedMemoryMB int  `json:"committed_memory_mb,omitempty"`
-	GoldenVersion string    `json:"golden_version,omitempty"`
-	WorkerVersion string    `json:"worker_version,omitempty"`
-	LastSeen      time.Time `json:"-"`
-	MissedBeats  int       `json:"-"`
+	ID                string    `json:"worker_id"`
+	MachineID         string    `json:"machine_id,omitempty"` // EC2 instance ID
+	Region            string    `json:"region"`
+	GRPCAddr          string    `json:"grpc_addr"`
+	HTTPAddr          string    `json:"http_addr"`
+	Capacity          int       `json:"capacity"`
+	Current           int       `json:"current"`
+	CPUPct            float64   `json:"cpu_pct"`
+	MemPct            float64   `json:"mem_pct"`
+	DiskPct           float64   `json:"disk_pct"`
+	Draining          bool      `json:"draining,omitempty"`
+	TotalMemoryMB     int       `json:"total_memory_mb,omitempty"`
+	CommittedMemoryMB int       `json:"committed_memory_mb,omitempty"`
+	GoldenVersion     string    `json:"golden_version,omitempty"`
+	WorkerVersion     string    `json:"worker_version,omitempty"`
+	LastSeen          time.Time `json:"-"`
+	MissedBeats       int       `json:"-"`
 }
 
 // WorkerRegistry tracks live workers from NATS heartbeats.

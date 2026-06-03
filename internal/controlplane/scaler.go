@@ -48,6 +48,7 @@ const (
 	spotDrainFailurePause  = 1 * time.Second  // spot/preemption drains should keep moving inside the 2min notice window
 	normalDrainBackoff     = 5 * time.Minute  // conservative retry backoff for ordinary scaler drains
 	spotDrainBackoff       = 1 * time.Second  // aggressive retry backoff for spot/preemption drains
+	spotDrainConcurrency   = 10               // rolling parallelism for urgent spot/preemption drains
 
 	creationFailureThreshold = 3                // consecutive failures before exponential backoff
 	creationBackoffMin       = 1 * time.Minute  // initial backoff after threshold hit
@@ -131,6 +132,7 @@ type drainPolicy struct {
 	reason       string
 	backoff      time.Duration
 	failurePause time.Duration
+	concurrency  int
 }
 
 func drainPolicyForReason(reason string) drainPolicy {
@@ -139,6 +141,7 @@ func drainPolicyForReason(reason string) drainPolicy {
 			reason:       reason,
 			backoff:      spotDrainBackoff,
 			failurePause: spotDrainFailurePause,
+			concurrency:  spotDrainConcurrency,
 		}
 	}
 	if reason == "" {
@@ -148,6 +151,7 @@ func drainPolicyForReason(reason string) drainPolicy {
 		reason:       reason,
 		backoff:      normalDrainBackoff,
 		failurePause: drainBatchFailurePause,
+		concurrency:  evacuationBatchSize,
 	}
 }
 
@@ -821,8 +825,12 @@ func (s *Scaler) findMigrationTarget(region, excludeWorkerID string, requiredMem
 		if w.ID == excludeWorkerID {
 			continue
 		}
-		if s.state.IsDraining(w.MachineID) {
+		if w.Draining {
 			continue
+		}
+		if s.state.IsDraining(w.MachineID) {
+			log.Printf("scaler: migration target %s had stale drain state without live registry drain flag; clearing", w.ID)
+			s.state.RemoveDraining(w.MachineID)
 		}
 		// Subtract in-flight migrations from remaining capacity
 		pending := s.state.GetInFlight(w.ID)
@@ -1168,6 +1176,9 @@ func (s *Scaler) drainWorker(workerID, machineID, region, reason string) {
 	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
 	policy := drainPolicyForReason(reason)
+	if machineID != "" {
+		defer s.state.RemoveDraining(machineID)
+	}
 
 	// Mark worker as draining so routing skips it
 	s.registry.SetDraining(workerID, true)
@@ -1286,31 +1297,13 @@ func (s *Scaler) drainWorker(workerID, machineID, region, reason string) {
 			return
 		}
 
-		// Migrate a batch — bounded parallelism to avoid overwhelming
-		// network/disk on source and target workers. Each sandbox picks its
-		// own target (based on its own memory footprint) inside liveMigrateSandbox.
-		batch := running
-		if len(batch) > evacuationBatchSize {
-			batch = batch[:evacuationBatchSize]
-		}
-
-		batchFailed := false
-		var wg sync.WaitGroup
-		var failCount int64
-		for _, sandboxID := range batch {
-			wg.Add(1)
-			go func(sbID string) {
-				defer wg.Done()
-				if err := s.liveMigrateSandbox(ctx, sbID, workerID, ""); err != nil {
-					log.Printf("scaler: drain: migrate %s failed: %v", sbID, err)
-					atomic.AddInt64(&failCount, 1)
-				}
-			}(sandboxID)
-		}
-		wg.Wait()
+		// Migrate with bounded rolling parallelism. A slow sandbox occupies one
+		// worker slot, but does not block the remaining pending sandboxes from
+		// starting as other slots complete.
+		failCount := s.drainMigrateSandboxes(ctx, workerID, running, policy.concurrency)
+		batchFailed := failCount > 0
 		if failCount > 0 {
 			migrationFailures += int(failCount)
-			batchFailed = true
 		}
 
 		if batchFailed {
@@ -1319,6 +1312,46 @@ func (s *Scaler) drainWorker(workerID, machineID, region, reason string) {
 			time.Sleep(drainBatchSuccessPause)
 		}
 	}
+}
+
+func (s *Scaler) drainMigrateSandboxes(ctx context.Context, workerID string, sandboxIDs []string, concurrency int) int64 {
+	if concurrency <= 0 {
+		concurrency = evacuationBatchSize
+	}
+	if concurrency > len(sandboxIDs) {
+		concurrency = len(sandboxIDs)
+	}
+
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	var failCount int64
+
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for sandboxID := range jobs {
+				if err := s.liveMigrateSandbox(ctx, sandboxID, workerID, ""); err != nil {
+					log.Printf("scaler: drain: migrate %s failed: %v", sandboxID, err)
+					atomic.AddInt64(&failCount, 1)
+				}
+			}
+		}()
+	}
+
+	for _, sandboxID := range sandboxIDs {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return failCount
+		case jobs <- sandboxID:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+
+	return failCount
 }
 
 // waitForNaturalDrain polls until the worker has 0 sandboxes or the context expires.
@@ -1619,7 +1652,7 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 			//     no QEMU, drain's ListSandboxes returns 0 and exits cleanly leaving
 			//     the row stuck. Mark error instead so the sandbox is visibly broken.
 			if qmpSucceeded {
-				if err := s.store.FailMigrationPostQMP(ctx, sandboxID, "migration failed after QMP transfer; source VM gone, target failed to complete"); err != nil {
+				if err := s.store.FailMigrationPostQMP(ctx, sandboxID, db.PostQMPMigrationFailureMessage); err != nil {
 					log.Printf("scaler: migrate %s: FailMigrationPostQMP failed: %v", sandboxID, err)
 				}
 				// Source VM is gone, target failed. Emit a `stopped` event so
