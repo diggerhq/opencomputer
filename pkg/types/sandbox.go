@@ -16,42 +16,52 @@ const (
 	SandboxStatusHibernated SandboxStatus = "hibernated"
 )
 
+const (
+	SandboxFamilyDefault = ""
+	SandboxFamilySpot    = "spot"
+)
+
 // Sandbox represents a running sandbox instance.
 type Sandbox struct {
-	ID         string            `json:"sandboxID"`
-	Template   string            `json:"templateID,omitempty"`
-	Alias      string            `json:"alias,omitempty"`
-	ClientID   string            `json:"clientID,omitempty"`
-	Status     SandboxStatus     `json:"status"`
-	StartedAt  time.Time         `json:"startedAt"`
-	EndAt      time.Time         `json:"endAt"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	CpuCount   int               `json:"cpuCount"`
-	MemoryMB   int               `json:"memoryMB"`
-	MachineID  string            `json:"machineID,omitempty"`
+	ID            string            `json:"sandboxID"`
+	Template      string            `json:"templateID,omitempty"`
+	Alias         string            `json:"alias,omitempty"`
+	ClientID      string            `json:"clientID,omitempty"`
+	Status        SandboxStatus     `json:"status"`
+	StartedAt     time.Time         `json:"startedAt"`
+	EndAt         time.Time         `json:"endAt"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	CpuCount      int               `json:"cpuCount"`
+	MemoryMB      int               `json:"memoryMB"`
+	SandboxFamily string            `json:"sandboxFamily,omitempty"`
+	MachineID     string            `json:"machineID,omitempty"`
 	// ConnectURL and Token are currently unused by SDKs. All data-plane traffic
 	// flows through the control plane's SandboxAPIProxy, which proxies to workers
 	// over the internal VPC network. Direct worker access support coming in a future release.
-	ConnectURL string            `json:"connectURL,omitempty"`
-	Token      string            `json:"token,omitempty"`
-	HostPort   int               `json:"hostPort,omitempty"`   // Mapped host port for the sandbox's container port
+	ConnectURL string `json:"connectURL,omitempty"`
+	Token      string `json:"token,omitempty"`
+	HostPort   int    `json:"hostPort,omitempty"` // Mapped host port for the sandbox's container port
 }
 
 // SandboxConfig is the request body for creating a sandbox.
 type SandboxConfig struct {
-	Template   string            `json:"templateID,omitempty"`
-	Alias      string            `json:"alias,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	Timeout    int               `json:"timeout,omitempty"`    // seconds, default 300
-	CpuCount   int               `json:"cpuCount,omitempty"`   // default 1
-	MemoryMB   int               `json:"memoryMB,omitempty"`   // default 256
-	DiskMB     int               `json:"diskMB,omitempty"`    // workspace disk in MB (default 20480)
-	Envs       map[string]string `json:"envs,omitempty"`
-	Port       int               `json:"port,omitempty"`       // container port to expose via subdomain (default 80)
+	Template string            `json:"templateID,omitempty"`
+	Alias    string            `json:"alias,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+	Timeout  int               `json:"timeout,omitempty"`  // seconds, default 300
+	CpuCount int               `json:"cpuCount,omitempty"` // default 1
+	MemoryMB int               `json:"memoryMB,omitempty"` // default 256
+	DiskMB   int               `json:"diskMB,omitempty"`   // workspace disk in MB (default 20480)
+	// SandboxFamily selects an alpha placement/resource family. Empty is the
+	// default on-demand family. "spot" routes through spot-only capacity and is
+	// currently restricted to 1 vCPU / 1024 MB with scaling disabled.
+	SandboxFamily string            `json:"sandboxFamily,omitempty"`
+	Envs          map[string]string `json:"envs,omitempty"`
+	Port          int               `json:"port,omitempty"` // container port to expose via subdomain (default 80)
 	// NetworkEnabled is a pointer so we can distinguish "unset" from
 	// "explicitly false". Unset defaults to true (see IsNetworkEnabled).
-	NetworkEnabled *bool         `json:"networkEnabled,omitempty"`
-	ImageRef       string        `json:"imageRef,omitempty"`       // resolved ECR URI for custom templates
+	NetworkEnabled *bool  `json:"networkEnabled,omitempty"`
+	ImageRef       string `json:"imageRef,omitempty"` // resolved ECR URI for custom templates
 	// Sandbox snapshot template: S3 keys for rootfs and workspace drives.
 	// When set, the sandbox boots from these drives instead of the standard base image.
 	TemplateRootfsKey    string `json:"templateRootfsKey,omitempty"`
@@ -186,6 +196,38 @@ func ValidateResourceTier(cfg *SandboxConfig) error {
 		}
 	}
 	return fmt.Errorf("cpuCount %d and memoryMB %d do not match an allowed tier; valid combinations: 1/1024, 1/4096, 2/8192, 4/16384, 8/32768, 16/65536", cfg.CpuCount, cfg.MemoryMB)
+}
+
+// ApplySandboxFamilyDefaultsAndValidate normalizes alpha sandbox-family options
+// before regular resource-tier validation.
+func ApplySandboxFamilyDefaultsAndValidate(cfg *SandboxConfig) error {
+	switch cfg.SandboxFamily {
+	case SandboxFamilyDefault:
+		return nil
+	case "default":
+		cfg.SandboxFamily = SandboxFamilyDefault
+		return nil
+	case SandboxFamilySpot:
+		if len(cfg.ImageManifest) > 0 || cfg.Snapshot != "" {
+			return fmt.Errorf("sandboxFamily %q does not support image or snapshot creates in alpha", SandboxFamilySpot)
+		}
+		if cfg.MemoryMB == 0 {
+			cfg.MemoryMB = 1024
+		}
+		if cfg.CpuCount == 0 {
+			cfg.CpuCount = 1
+		}
+		if cfg.MemoryMB != 1024 || cfg.CpuCount != 1 {
+			return fmt.Errorf("sandboxFamily %q is currently limited to 1 vCPU and 1024 MB memory", SandboxFamilySpot)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported sandboxFamily %q", cfg.SandboxFamily)
+	}
+}
+
+func (c SandboxConfig) IsSpotFamily() bool {
+	return c.SandboxFamily == SandboxFamilySpot
 }
 
 // SandboxListResponse is the response for listing sandboxes.

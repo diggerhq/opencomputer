@@ -84,6 +84,8 @@ WORKER_ENV = "dev"
 # the D1 `cells` table (see schema.sql + scripts/seed_dev_xcell.sh).
 # Cross-cell testbed: dev2 (Azure westus2) + dev3 (AWS us-east-1).
 CELLS = "azure-us-west-2-b,aws-us-east-1-a"
+# Optional alpha route for sandboxFamily="spot". Leave empty to disable.
+SPOT_CELL_ID = ""
 
 # Ship console output + exceptions to opensandbox-log-tail, which forwards
 # to Axiom dataset cf-dev. Keeps CF Worker logs durable in the same store

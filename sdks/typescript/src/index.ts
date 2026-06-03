@@ -2,6 +2,7 @@ export {
   Sandbox,
   ScalingLockedError,
   PlanLimitError,
+  SandboxFamilyLimitError,
   type SandboxOpts,
   type CheckpointInfo,
   type PatchInfo,

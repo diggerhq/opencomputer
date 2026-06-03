@@ -113,7 +113,12 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 	// so forks of that sandbox inherited a no-network config.
 	cfg.EnsureNetworkEnabledDefault()
 
+	if err := types.ApplySandboxFamilyDefaultsAndValidate(&cfg); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
 	// Same memory/cpu defaults the public POST /api/sandboxes applies.
+	// Sandbox-family defaults are applied above and should not be overwritten.
 	if cfg.MemoryMB == 0 {
 		cfg.MemoryMB = 4096
 		cfg.CpuCount = 1

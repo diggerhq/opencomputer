@@ -32,6 +32,12 @@ func (s *Server) createSandbox(c echo.Context) error {
 	// to sandbox_sessions.config_json is explicit and forks inherit it correctly.
 	cfg.EnsureNetworkEnabledDefault()
 
+	if err := types.ApplySandboxFamilyDefaultsAndValidate(&cfg); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
 	// Validate CPU/memory against allowed tiers.
 	// Allowed tiers (memoryMB → vCPU): 1024→1, 4096→1, 8192→2, 16384→4, 32768→8, 65536→16.
 	if err := types.ValidateResourceTier(&cfg); err != nil {
@@ -71,7 +77,8 @@ func (s *Server) createSandbox(c echo.Context) error {
 				}
 			}
 
-			// Default to 4GB/1vCPU if not specified (all plans)
+			// Default to 4GB/1vCPU if not specified (all plans). Sandbox-family
+			// defaults are applied above and should not be overwritten here.
 			if cfg.MemoryMB == 0 {
 				cfg.MemoryMB = 4096
 				cfg.CpuCount = 1
@@ -177,6 +184,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 			"error": err.Error(),
 		})
 	}
+	sb.SandboxFamily = cfg.SandboxFamily
 
 	// Register with sandbox router for rolling timeout tracking.
 	// timeout == 0 means "persistent" (no auto-hibernate). Negative values are
@@ -669,11 +677,14 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	s.emitEvent("create", grpcResp.SandboxId, worker.ID, fmt.Sprintf("created on %s", worker.ID[len(worker.ID)-8:]))
 
 	resp := map[string]interface{}{
-		"sandboxID": grpcResp.SandboxId,
-		"token":     token,
-		"status":    grpcResp.Status,
-		"region":    region,
-		"workerID":  worker.ID,
+		"sandboxID":     grpcResp.SandboxId,
+		"token":         token,
+		"status":        grpcResp.Status,
+		"region":        region,
+		"workerID":      worker.ID,
+		"cpuCount":      cfg.CpuCount,
+		"memoryMB":      cfg.MemoryMB,
+		"sandboxFamily": cfg.SandboxFamily,
 	}
 	if s.sandboxDomain != "" {
 		resp["sandboxDomain"] = s.sandboxDomain
@@ -1184,6 +1195,21 @@ func (s *Server) effectivePlan(c echo.Context, orgID uuid.UUID) string {
 	return ""
 }
 
+func sandboxSessionFamily(session *db.SandboxSession) string {
+	if session == nil || len(session.Config) == 0 {
+		return types.SandboxFamilyDefault
+	}
+	var cfg types.SandboxConfig
+	if err := json.Unmarshal(session.Config, &cfg); err != nil {
+		return types.SandboxFamilyDefault
+	}
+	return cfg.SandboxFamily
+}
+
+func isSpotSandboxSession(session *db.SandboxSession) bool {
+	return sandboxSessionFamily(session) == types.SandboxFamilySpot
+}
+
 func (s *Server) setLimits(c echo.Context) error {
 	id := c.Param("id")
 	ctx := c.Request().Context()
@@ -1279,6 +1305,12 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 	// resources. Same code that the autoscale endpoint and the autoscaler
 	// loop use, so SDK consumers can branch on a single error code.
 	if s.store != nil {
+		if session, err := s.store.GetSandboxSession(c.Request().Context(), id); err == nil && isSpotSandboxSession(session) {
+			return c.JSON(http.StatusForbidden, map[string]any{
+				"error": "spot sandboxes are fixed at 1 vCPU and 1024 MB in alpha",
+				"code":  "sandbox_family_scale_disabled",
+			})
+		}
 		if locked, err := s.store.GetScalingLock(c.Request().Context(), id); err == nil && locked {
 			return c.JSON(http.StatusForbidden, map[string]any{
 				"error": "scaling is locked on this sandbox — unlock via PUT /scaling-lock to allow size changes",
@@ -1337,6 +1369,12 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 	session, err := s.store.GetSandboxSession(ctx, sandboxID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+	}
+	if isSpotSandboxSession(session) {
+		return c.JSON(http.StatusForbidden, map[string]any{
+			"error": "spot sandboxes are fixed at 1 vCPU and 1024 MB in alpha",
+			"code":  "sandbox_family_scale_disabled",
+		})
 	}
 	if session.Status != "running" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox is not running"})
