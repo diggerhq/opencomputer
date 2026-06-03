@@ -17,6 +17,13 @@ type PTYManager struct {
 
 	// createFunc creates PTY sessions via the Firecracker agent.
 	createFunc func(sandboxID string, req types.PTYCreateRequest) (*PTYSessionHandle, error)
+
+	// rebindFunc binds a NEW gRPC PTYAttach stream to an EXISTING agent-side
+	// session by ID. Used after live migration (or worker restart): the in-VM
+	// agent retains the PTY/shell across the move, but the destination worker's
+	// in-process session map is empty. Falling back to rebind on cache miss
+	// makes session_id portable across workers without touching the agent.
+	rebindFunc func(sandboxID, sessionID string) (*PTYSessionHandle, error)
 }
 
 // PTYSessionHandle holds the state for an active PTY session.
@@ -33,13 +40,48 @@ type PTYSessionHandle struct {
 	onResize func(cols, rows int) error
 }
 
-// NewAgentPTYManager creates a PTY manager that delegates to a custom
-// create function (used by Firecracker mode).
-func NewAgentPTYManager(createFunc func(sandboxID string, req types.PTYCreateRequest) (*PTYSessionHandle, error)) *PTYManager {
+// NewAgentPTYManager creates a PTY manager that delegates session creation
+// to createFunc (gRPC PTYCreate against the in-VM agent) and session
+// recovery to rebindFunc (gRPC PTYAttach against an existing in-VM session).
+// rebindFunc may be nil — RebindFromAgent then always reports "not found",
+// so the manager behaves as a strict local cache with no agent fallback.
+func NewAgentPTYManager(
+	createFunc func(sandboxID string, req types.PTYCreateRequest) (*PTYSessionHandle, error),
+	rebindFunc func(sandboxID, sessionID string) (*PTYSessionHandle, error),
+) *PTYManager {
 	return &PTYManager{
 		sessions:   make(map[string]*PTYSessionHandle),
 		createFunc: createFunc,
+		rebindFunc: rebindFunc,
 	}
+}
+
+// RebindFromAgent attempts to look up sessionID against the in-VM agent and,
+// if it's still alive, register a fresh local handle that streams through a
+// new PTYAttach. Used after live migration or worker restart wipes the local
+// session map. Returns the registered handle on success, or an error if the
+// agent reports the session is gone (or if rebindFunc was not configured).
+func (pm *PTYManager) RebindFromAgent(sandboxID, sessionID string) (*PTYSessionHandle, error) {
+	if pm.rebindFunc == nil {
+		return nil, fmt.Errorf("PTY session %s not found", sessionID)
+	}
+	// Drop any stale local entry first — its underlying gRPC stream points at
+	// the old worker's agent connection and won't ever produce bytes again.
+	pm.mu.Lock()
+	if stale, ok := pm.sessions[sessionID]; ok {
+		delete(pm.sessions, sessionID)
+		_ = stale.PTY.Close()
+	}
+	pm.mu.Unlock()
+
+	handle, err := pm.rebindFunc(sandboxID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	pm.mu.Lock()
+	pm.sessions[handle.ID] = handle
+	pm.mu.Unlock()
+	return handle, nil
 }
 
 // CreateSession starts a new PTY session inside a sandbox.
@@ -115,6 +157,28 @@ func (pm *PTYManager) KillSession(sessionID string) error {
 		_ = session.Cmd.Process.Kill()
 	}
 	return nil
+}
+
+// ReleaseForSandbox drops every local session belonging to sandboxID and
+// closes its underlying gRPC PTY stream so any in-flight WS handler blocked
+// on session.PTY.Read() unblocks immediately. Does NOT invoke onKill — the
+// in-VM PTY is owned by the agent and may have migrated to another worker
+// that's still serving it. Use this on the SOURCE side of a live migration
+// (or after DestroySandbox) so the edge DO sees the upstream close, redials,
+// and lands on the destination worker where RebindFromAgent can take over.
+func (pm *PTYManager) ReleaseForSandbox(sandboxID string) {
+	pm.mu.Lock()
+	var toRelease []*PTYSessionHandle
+	for id, s := range pm.sessions {
+		if s.SandboxID == sandboxID {
+			toRelease = append(toRelease, s)
+			delete(pm.sessions, id)
+		}
+	}
+	pm.mu.Unlock()
+	for _, s := range toRelease {
+		_ = s.PTY.Close()
+	}
 }
 
 // CloseAll terminates all PTY sessions.

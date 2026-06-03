@@ -349,6 +349,14 @@ func (mc *MigrationCoordinator) LiveMigrate(ctx context.Context, sandboxID, inco
 		mc.manager.onSandboxDestroy(sandboxID)
 	}
 
+	// Release source-side PTY/exec session handles. Distinct from destroy:
+	// the in-VM session is still alive on the DESTINATION worker, so we must
+	// not call onKill paths that would hit the agent (the call would either
+	// fail or, worse, succeed against a now-unrelated host).
+	if mc.manager.onMigrationOutgoing != nil {
+		mc.manager.onMigrationOutgoing(sandboxID)
+	}
+
 	return nil
 }
 

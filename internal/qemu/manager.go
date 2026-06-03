@@ -333,7 +333,8 @@ type Manager struct {
 
 	// Metadata service callbacks (set via SetMetadataCallbacks)
 	onSandboxReady   func(sandboxID, guestIP, template string, startedAt time.Time)
-	onSandboxDestroy func(sandboxID string)
+	onSandboxDestroy    func(sandboxID string)
+	onMigrationOutgoing func(sandboxID string)
 
 	// Hibernation upload status callback (set via SetHibernationUploadCallback).
 	// Invoked from the async archive+upload goroutine in doHibernate exactly once
@@ -417,6 +418,18 @@ func (m *Manager) SetMetadataCallbacks(
 ) {
 	m.onSandboxReady = onReady
 	m.onSandboxDestroy = onDestroy
+}
+
+// SetMigrationOutgoingCallback registers a callback fired AFTER a successful
+// outgoing LiveMigrate has handed the VM off to the destination worker and
+// cleaned up local QEMU + network state. Used to release per-sandbox session
+// handles (PTY, exec) without killing the in-VM session — the destination
+// worker now owns it. Without this hook the source worker's gRPC PTY/exec
+// streams sit on a dead vsock connection, so the edge DO sees no upstream
+// close, never redials, and the user's WS appears alive but is silently
+// black-holed.
+func (m *Manager) SetMigrationOutgoingCallback(cb func(sandboxID string)) {
+	m.onMigrationOutgoing = cb
 }
 
 // SetSecretsProxy configures the secrets proxy integration for token substitution.

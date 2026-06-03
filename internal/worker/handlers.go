@@ -133,7 +133,15 @@ func (s *HTTPServer) execSessionWebSocket(c echo.Context) error {
 
 	session, err := s.execSessionManager.GetSession(sessionID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		// Local cache miss — possible post-migration first attach. Ask the
+		// agent; if the in-VM session is still alive, register a new local
+		// handle that streams through ExecSessionAttach.
+		rebound, rebindErr := s.execSessionManager.RebindFromAgent(id, sessionID)
+		if rebindErr != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		}
+		session = rebound
+		log.Printf("worker exec: rebound session=%s sandbox=%s from agent", sessionID, id)
 	}
 
 	if session.SandboxID != id {
@@ -549,8 +557,16 @@ func (s *HTTPServer) ptyWebSocket(c echo.Context) error {
 
 	session, err := s.ptyManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("worker PTY: GetSession(%s) failed: %v", sessionID, err)
-		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		// Local cache miss — try a lazy rebind against the agent. If the
+		// in-VM PTY is still alive (the common case after live migration or
+		// worker process restart), register a new local handle and continue.
+		rebound, rebindErr := s.ptyManager.RebindFromAgent(id, sessionID)
+		if rebindErr != nil {
+			log.Printf("worker PTY: GetSession(%s) miss, rebind also failed: get=%v rebind=%v", sessionID, err, rebindErr)
+			return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		}
+		session = rebound
+		log.Printf("worker PTY: rebound session=%s sandbox=%s from agent", sessionID, id)
 	}
 
 	if session.SandboxID != id {
