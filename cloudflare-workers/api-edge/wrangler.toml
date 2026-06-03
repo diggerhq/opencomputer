@@ -83,20 +83,27 @@ class_name = "SandboxWsGateway"
 tag = "v1"
 new_sqlite_classes = ["CreditAccount"]
 
+# v2 was applied to the deployed dev worker out-of-band, in advance of this
+# branch landing (it created a SandboxWsGateway DO from an unmerged feature
+# branch — the predecessor of this PR). Empty here so the ledger is
+# contiguous and matches what CF has already recorded for v2.
 [[migrations]]
 tag = "v2"
-new_sqlite_classes = ["SandboxWsGateway"]
 
-# v3: another branch deployed without SandboxWsGateway and burned the v2
-# tag/namespace. v3 explicitly deletes the (already-gone) class so CF's
-# migration head is in a clean state. v4 then re-creates it.
+# v3 was added by the billing PR (#349) to drop the orphaned out-of-band
+# SandboxWsGateway class so that branch could deploy (CF blocks removing a
+# depended-on class without an explicit delete-class migration).
 [[migrations]]
 tag = "v3"
 deleted_classes = ["SandboxWsGateway"]
 
+# v4 re-creates SandboxWsGateway via the now-canonical sandbox_ws_gateway.ts
+# definition that lands with this PR. Paired with the SANDBOX_WS binding
+# above and the WS_VIA_DO=1 gate below.
 [[migrations]]
 tag = "v4"
 new_sqlite_classes = ["SandboxWsGateway"]
+
 
 # Secrets (set via `wrangler secret put`):
 #   SESSION_JWT_SECRET     — HMAC for session JWT (shared with all CPs in cell fleet)

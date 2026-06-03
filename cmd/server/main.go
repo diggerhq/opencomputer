@@ -26,8 +26,8 @@ import (
 	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/edgeclient"
 	"github.com/opensandbox/opensandbox/internal/metrics"
-	"github.com/opensandbox/opensandbox/internal/obslog"
 	"github.com/opensandbox/opensandbox/internal/observability"
+	"github.com/opensandbox/opensandbox/internal/obslog"
 	"github.com/opensandbox/opensandbox/internal/proxy"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
@@ -82,6 +82,12 @@ func main() {
 	var ptyMgr *sandbox.PTYManager
 	log.Printf("opensandbox: server mode — delegating sandbox management to workers via gRPC")
 
+	// Pro-billing cutover switch (cell half): "edge" means the billing-rollup
+	// Worker is authoritative, so the cell billers stand down and creates must
+	// carry a cap-token (no direct API-key bypass of edge billing). Anything
+	// else = cell-authoritative (current behavior).
+	proBillingEdge := strings.EqualFold(strings.TrimSpace(cfg.ProBillingAuthority), "edge")
+
 	// Build server options
 	opts := &api.ServerOpts{
 		Mode:             cfg.Mode,
@@ -92,6 +98,7 @@ func main() {
 		SessionJWTSecret: cfg.SessionJWTSecret,
 		CFAdminSecret:    cfg.CFAdminSecret,
 		CFEventSecret:    cfg.CFEventSecret,
+		RequireCapToken:  proBillingEdge,
 	}
 
 	// Initialize PostgreSQL if configured
@@ -184,6 +191,29 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to connect to Redis: %v", err)
 		}
+		// Reconcile-on-reconnect: when a worker rejoins after being pruned
+		// for missed heartbeats, run both directions of the cell-vs-worker
+		// state reconcile. See internal/controlplane/reconcile.go for the
+		// full rationale on each. Captured opts.Store + cfg.CellID directly;
+		// the closure reads them at call time.
+		//
+		//   reverse first: cell-running but worker-doesn't-have-it →
+		//     close on cell side (UpdateSessionStatus + EndScaleEvent +
+		//     publish stopped event). Stops the billing leak immediately.
+		//
+		//   forward second: cell-stopped but worker-still-hosting →
+		//     re-issue Destroy via RPC. Cleans the worker side.
+		//
+		// Reverse runs first because the more urgent dollars-on-fire case is
+		// the still-open scale event accruing minute-by-minute, not a stray
+		// qemu the worker still has.
+		redisRegistry.OnWorkerRejoined(func(workerID string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			controlplane.ReconcileRunningOnWorker(ctx, redisRegistry, opts.Store, cfg.CellID, workerID)
+			controlplane.ReconcileStoppedOnWorker(ctx, redisRegistry, opts.Store, workerID)
+		})
+
 		redisRegistry.Start()
 		defer redisRegistry.Stop()
 		opts.WorkerRegistry = redisRegistry
@@ -636,11 +666,17 @@ func main() {
 		log.Println("opensandbox: per-sandbox autoscaler started (interval=30s, leader-gated)")
 	}
 
+	if proBillingEdge {
+		log.Println("opensandbox: pro billing authority=edge — cell usage_reporter, capacity allocator, and billable-events sender DISABLED (billing-rollup Worker is authoritative); direct API-key creates require a cap-token")
+	}
+
 	// Start usage reporter — reports Pro org usage to Stripe and deducts
 	// free-tier trial credits (force-hibernates on empty) every 5 min.
 	// redisRegistry may be nil in combined mode; reporter tolerates that by
-	// logging instead of hibernating when free credits run out.
-	if opts.Store != nil && stripeClient != nil {
+	// logging instead of hibernating when free credits run out. Disabled when
+	// pro billing authority is the edge (billing-rollup meters Pro; the DO
+	// owns free credits).
+	if opts.Store != nil && stripeClient != nil && !proBillingEdge {
 		var workers billing.WorkerClientSource
 		if redisRegistry != nil {
 			workers = redisRegistry
@@ -680,11 +716,32 @@ func main() {
 		}
 	}
 
+	// Usage-parity checker — shadow-parity gate for the Pro-billing edge
+	// cutover. Hourly, compares edge-measured GB-seconds (tick samples) against
+	// cell sandbox_scale_events and logs per-org drift. Read-only; never bills.
+	// Inert unless OPENSANDBOX_USAGE_PARITY_URL is set.
+	if cfg.UsageParityURL != "" && cfg.CFEventSecret != "" && opts.Store != nil {
+		parity := controlplane.NewUsageParityChecker(controlplane.UsageParityConfig{
+			Store:     opts.Store,
+			ParityURL: cfg.UsageParityURL,
+			Secret:    cfg.CFEventSecret,
+		})
+		if parity != nil {
+			parity.Start(ctx)
+			defer func() {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stopCancel()
+				_ = parity.Stop(stopCtx)
+			}()
+			log.Printf("opensandbox: usage-parity checker started (url=%s, period=1h)", cfg.UsageParityURL)
+		}
+	}
+
 	// Phase-2 capacity allocator. Writes outbox rows for unified-mode
 	// pro orgs after each settled bucket. Allocator skips legacy and
 	// free orgs (see ListAllocatorCandidates); rollback is by
 	// reverting the deploy.
-	if opts.Store != nil {
+	if opts.Store != nil && !proBillingEdge {
 		allocOpts := billing.CapacityReconcilerOpts{
 			Interval: getDurationEnv("CAPACITY_ALLOCATOR_INTERVAL", 5*time.Minute),
 			Settle:   getDurationEnv("CAPACITY_ALLOCATOR_SETTLE", 30*time.Minute),
@@ -704,7 +761,7 @@ func main() {
 	// migration 031; existing orgs are pinned to legacy and stay
 	// untouched on UsageReporter. Idempotency is per-row via
 	// `billable_events.id` as Stripe meter event Identifier.
-	if opts.Store != nil && stripeClient != nil {
+	if opts.Store != nil && stripeClient != nil && !proBillingEdge {
 		senderOpts := billing.BillableEventsSenderOpts{
 			Interval: getDurationEnv("BILLABLE_EVENTS_SENDER_INTERVAL", 5*time.Minute),
 			Batch:    getIntEnv("BILLABLE_EVENTS_SENDER_BATCH", 200),

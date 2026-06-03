@@ -1,0 +1,30 @@
+# billing-rollup Worker — PROD on Mo's CF account.
+# Mirrors wrangler.toml (dev). Deploy: `wrangler deploy -c wrangler.prod.toml`
+#
+# Ships nothing until SHADOW is flipped to "false" — keep it shadow on prod
+# until dev parity has been clean and prod has soaked.
+# Secrets: wrangler secret put STRIPE_API_KEY --config wrangler.prod.toml
+#          (Stripe LIVE-mode key on prod)
+
+name = "opencomputer-billing-rollup-prod"
+main = "src/index.ts"
+compatibility_date = "2026-04-28"
+compatibility_flags = ["nodejs_compat"]
+account_id = "b8f23cb87a7a6c64040d3134643da448"
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[[d1_databases]]
+binding = "OPENCOMPUTER_DB"
+database_name = "opencomputer-prod"
+database_id = "8329e0f0-100d-445a-bf89-95c065f15dbb"
+
+[vars]
+WORKER_ENV = "prod"
+SHADOW = "true"
+BUCKET_SECONDS = "3600"
+GRACE_SECONDS = "600"
+
+[[tail_consumers]]
+service = "opencomputer-log-tail-prod"

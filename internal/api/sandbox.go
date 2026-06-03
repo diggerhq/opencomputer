@@ -42,13 +42,33 @@ func (s *Server) createSandbox(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
+	// When the edge is the Pro-billing authority (PRO_BILLING_AUTHORITY=edge),
+	// a billing-relevant create must arrive via the edge (cap-token), not a raw
+	// API key hitting the CP directly — the direct path bypasses the edge's
+	// authoritative credit/halt gates. The cap-token branch is the only auth
+	// path that stamps a plan, so its absence in split mode means a direct API
+	// key. Combined mode (no cap-token issuer) is exempt.
+	if s.requireCapToken && s.capTokenIssuer != nil {
+		if _, viaCapToken := auth.GetPlan(c); !viaCapToken {
+			return c.JSON(http.StatusUnauthorized, map[string]string{
+				"error": "direct API-key sandbox creation is disabled; create through the edge endpoint",
+			})
+		}
+	}
+
 	// Check org quota and plan enforcement
 	orgID, hasOrg := auth.GetOrgID(c)
 	var org *db.Org
+	var effPlan string
 	if hasOrg && s.store != nil {
 		var err error
 		org, err = s.store.GetOrg(ctx, orgID)
 		if err == nil {
+			// Plan is a global signal — resolve it authoritatively (cap-token
+			// → D1 org-policy → cell-PG last resort), never trusting the stale
+			// cell-PG org row outright. See effectivePlan.
+			effPlan = s.effectivePlan(c, orgID)
+
 			// Concurrent sandbox limit applies to all plans.
 			count, err := s.store.CountActiveSandboxes(ctx, orgID)
 			if err == nil && count >= org.MaxConcurrentSandboxes {
@@ -58,7 +78,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 			}
 
 			// Free-tier: trial credits gate + machine-size restriction.
-			if org.Plan == "free" {
+			if effPlan == "free" {
 				if org.FreeCreditsRemainingCents <= 0 {
 					return c.JSON(http.StatusPaymentRequired, map[string]string{
 						"error": "free trial credits exhausted — upgrade to pro to create new sandboxes",
@@ -94,7 +114,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 		})
 	}
 	if org != nil {
-		if org.Plan == "free" && cfg.DiskMB > 20480 {
+		if effPlan == "free" && cfg.DiskMB > 20480 {
 			return c.JSON(http.StatusPaymentRequired, map[string]string{
 				"error": "upgrade to pro for larger disk sizes",
 			})
@@ -1167,17 +1187,30 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 	})
 }
 
-// effectivePlan returns the org's billing plan for org-policy gates. It
-// prefers the value the edge stamped into the cap-token (authoritative, fresh
-// from D1) and falls back to the cell-local orgs row for legacy direct-to-cell
-// callers that authenticate with a raw API key (no cap-token). Returns "" when
-// neither source is available, in which case callers should not gate.
+// effectivePlan returns the org's billing plan for billing gates, resolving it
+// from the most authoritative source available. Plan is a GLOBAL signal: it
+// changes via the edge (Stripe → DO mark-pro → D1), and no single cell has the
+// complete picture — the cell-PG copy goes stale on upgrade/downgrade. So:
+//
+//  1. Cap-token plan — edge requests already carry the D1-resolved plan.
+//  2. org-policy (D1) — for the legacy direct-to-CP API-key path (no cap-token):
+//     resolve authoritatively from D1 rather than trusting stale cell PG.
+//  3. cell-PG org row — last resort ONLY when D1 is unreachable (edge outage)
+//     or absent (combined/dev mode, where the cell is itself authoritative).
+//
+// Returns "" when nothing is available, in which case callers should not gate.
 func (s *Server) effectivePlan(c echo.Context, orgID uuid.UUID) string {
 	if plan, ok := auth.GetPlan(c); ok {
 		return plan
 	}
+	ctx := c.Request().Context()
+	if s.edge != nil {
+		if pol, err := s.edge.GetOrgPolicy(ctx, orgID); err == nil && pol != nil {
+			return pol.Plan
+		}
+	}
 	if s.store != nil {
-		if org, err := s.store.GetOrg(c.Request().Context(), orgID); err == nil && org != nil {
+		if org, err := s.store.GetOrg(ctx, orgID); err == nil && org != nil {
 			return org.Plan
 		}
 	}

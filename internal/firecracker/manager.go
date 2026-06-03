@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -675,16 +676,44 @@ func (m *Manager) cleanupVM(netCfg *NetworkConfig, sandboxDir string) {
 	}
 }
 
-// List returns all running VMs.
+// List returns all running VMs. Skips ghost entries — see fcVMAlive.
 func (m *Manager) List(ctx context.Context) ([]types.Sandbox, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	result := make([]types.Sandbox, 0, len(m.vms))
 	for _, vm := range m.vms {
+		if !fcVMAlive(vm) {
+			continue
+		}
 		result = append(result, *vmToSandbox(vm))
 	}
 	return result, nil
+}
+
+// fcVMAlive — same signal-0 process probe as qemu's vmAlive (see
+// qemu/ghost_reaper.go). Firecracker VMInstance has the same cmd/pid shape
+// but is a distinct type, so the check is inlined here rather than abstracted.
+func fcVMAlive(vm *VMInstance) bool {
+	if vm == nil || vm.cmd == nil || vm.cmd.Process == nil {
+		return false
+	}
+	if vm.cmd.ProcessState != nil && vm.cmd.ProcessState.Exited() {
+		return false
+	}
+	return vm.cmd.Process.Signal(syscall.Signal(0)) == nil
+}
+
+// IsSandboxAlive — interface contract for Manager. (false, nil) on unknown id
+// OR known-but-dead. Usage_ticker treats both the same: skip the tick.
+func (m *Manager) IsSandboxAlive(ctx context.Context, id string) (bool, error) {
+	m.mu.RLock()
+	vm, ok := m.vms[id]
+	m.mu.RUnlock()
+	if !ok {
+		return false, nil
+	}
+	return fcVMAlive(vm), nil
 }
 
 // Count returns the number of running VMs.

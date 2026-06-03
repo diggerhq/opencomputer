@@ -110,6 +110,26 @@ func (m *Manager) PowerCycleSandbox(ctx context.Context, sandboxID string) (host
 
 	t0 := time.Now()
 
+	// Fix C: once we kill the old qemu below, vm.cmd points to a reaped
+	// process until step 6 swaps in a new live cmd. Eight failure-returns
+	// live between the kill and the swap (drives missing, subnet alloc,
+	// TAP create, free port, DNAT, fresh qemu start, fresh QMP connect,
+	// fresh agent connect). Without this defer, any of them leaves m.vms
+	// holding a VMInstance whose vm.cmd refers to a reaped process — the
+	// ghost-VM shape that drove the billing leak. usage_ticker.IsSandboxAlive
+	// already skips these and the ghost-reaper drains them in ≤ 30s, but
+	// explicit local cleanup makes the failure semantics obvious here and
+	// matches the Hibernate failure-path fix.
+	var vmRestored bool
+	defer func() {
+		if err != nil && !vmRestored {
+			m.mu.Lock()
+			delete(m.vms, sandboxID)
+			m.mu.Unlock()
+			log.Printf("qemu: PowerCycleSandbox %s: failed before new qemu swap-in (%v) — cleaned m.vms entry", sandboxID, err)
+		}
+	}()
+
 	// Best-effort sync before we yank the rug. The QEMU drive is opened
 	// with cache=writethrough so the host always has a consistent view
 	// once the guest issues a write — but the guest kernel's own page
@@ -306,6 +326,9 @@ func (m *Manager) PowerCycleSandbox(ctx context.Context, sandboxID string) (host
 	vm.MemoryMB = finalMemMB
 	vm.baseMemoryMB = bootMemMB
 	vm.virtioMemRequestedMB = finalPlugMB
+	// Swap-in complete — the deferred cleanup at the top of this function
+	// will now no-op even if a future addition adds error returns below.
+	vmRestored = true
 
 	log.Printf("qemu: PowerCycleSandbox %s: complete (%dms, port=%d, tap=%s)",
 		sandboxID, time.Since(t0).Milliseconds(), freshPort, netCfg.TAPName)

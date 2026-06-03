@@ -96,6 +96,15 @@ type RedisWorkerRegistry struct {
 	rrCounter  uint64                        // round-robin counter for tie-breaking
 	stop       chan struct{}
 
+	// onWorkerRejoined fires when a worker registers — both genuinely new and
+	// after being pruned for missed heartbeats. Used by the reconcile-on-
+	// reconnect sweep to re-issue Destroy for sandboxes the cell already
+	// believes are stopped on this worker but the worker may still be hosting
+	// (e.g., the cell ran the "publish stopped fallback" path in
+	// internal/api/sandbox.go while this worker was unreachable). Fired in a
+	// goroutine; callback should be idempotent.
+	onWorkerRejoined func(workerID string)
+
 	// Per-sandbox stats indexed by sandboxID for O(1) autoscaler lookup. Updated
 	// from each worker heartbeat. Lock-protected separately from workers so the
 	// autoscaler doesn't contend with the routing path (which holds workersMu).
@@ -107,6 +116,17 @@ type RedisWorkerRegistry struct {
 // RedisClient returns the underlying Redis client (for health checks, shared state, etc.).
 func (r *RedisWorkerRegistry) RedisClient() *redis.Client {
 	return r.rdb
+}
+
+// OnWorkerRejoined registers a callback fired when a worker enters the
+// registry — both genuine first-seen and a rejoin after the worker was pruned
+// for missed heartbeats. Used by the reconcile-on-reconnect sweep (see
+// internal/controlplane/reconcile.go). Set this before Start(); callback runs
+// in its own goroutine.
+func (r *RedisWorkerRegistry) OnWorkerRejoined(fn func(workerID string)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onWorkerRejoined = fn
 }
 
 // GetSandboxStats returns the latest cached stats for a sandbox along with
@@ -334,10 +354,22 @@ func (r *RedisWorkerRegistry) handleHeartbeat(entry WorkerEntry) {
 			existing.MachineID = entry.MachineID
 		}
 	} else {
-		// New worker
+		// New worker (genuine first-seen OR a rejoin after the worker was
+		// pruned for missing heartbeats). Both cases want reconcile-on-reconnect
+		// to fire: for genuine new workers the cell PG has no stopped sandboxes
+		// on that ID so it's a cheap no-op; for rejoins, this is where we
+		// re-issue Destroy for sandboxes the cell published "stopped" for
+		// during the unreachable window. See internal/controlplane/reconcile.go.
 		entry.Draining = drainOverride
 		r.workers[entry.ID] = &entry
 		log.Printf("redis_registry: new worker registered: %s (region=%s, grpc=%s, draining=%v)", entry.ID, entry.Region, entry.GRPCAddr, drainOverride)
+		if r.onWorkerRejoined != nil {
+			// Fire in a goroutine — reconcile may take a few seconds (DB query
+			// + a DestroySandbox RPC per stale entry) and we don't want
+			// subsequent heartbeats (which need r.mu) blocking on it.
+			workerID := entry.ID
+			go r.onWorkerRejoined(workerID)
+		}
 	}
 
 	// Per-sandbox stats indexing. Update fresh entries; prune sandboxes that

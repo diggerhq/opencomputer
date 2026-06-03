@@ -57,6 +57,12 @@ type Manager interface {
 	Kill(ctx context.Context, id string) error
 	List(ctx context.Context) ([]types.Sandbox, error)
 	Count(ctx context.Context) (int, error)
+	// IsSandboxAlive reports whether the manager has a tracked VM for id AND
+	// its backing process (qemu/firecracker) is still running. Used by the
+	// usage_ticker before emitting billing events so a stale in-memory entry
+	// (the "ghost VM" bug) can't drive billing on a dead sandbox.
+	// Returns (false, nil) for both "unknown id" and "known but dead".
+	IsSandboxAlive(ctx context.Context, id string) (bool, error)
 	Close()
 
 	// Execution

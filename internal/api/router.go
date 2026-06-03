@@ -44,6 +44,7 @@ type Server struct {
 	store      *db.Store               // nil in combined/dev mode without PG
 	jwtIssuer  *auth.JWTIssuer         // nil if JWT not configured
 	capTokenIssuer *auth.JWTIssuer     // verifies edge→CP capability tokens; nil if SESSION_JWT_SECRET unset
+	requireCapToken bool // derived from PRO_BILLING_AUTHORITY=edge: reject direct API-key creates that bypass edge billing (split mode only)
 	cfAdminSecret  string              // HMAC shared with CreditAccount DO for /admin/halt-org and /admin/resume-org; empty disables auth (dev only)
 	cfEventSecret  string              // HMAC shared with the api-edge Worker for /internal/secret-refresh and other edge-→cell push paths
 	cellID     string                  // this control plane's cell_id (for the cap-token cell check)
@@ -102,6 +103,7 @@ type ServerOpts struct {
 	Store       *db.Store
 	JWTIssuer   *auth.JWTIssuer
 	SessionJWTSecret string // shared edge↔CP HMAC secret; enables /internal/sandboxes/create
+	RequireCapToken  bool   // set from PRO_BILLING_AUTHORITY=edge; rejects edge-bypassing direct API-key creates
 	CFAdminSecret    string // HMAC shared with CF CreditAccount DO; enables /admin/halt-org and /admin/resume-org
 	CFEventSecret    string // HMAC shared with the api-edge Worker; enables /internal/secret-refresh and other edge-→cell push paths
 	CellID      string // this control plane's cell_id
@@ -142,6 +144,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		if opts.SessionJWTSecret != "" {
 			s.capTokenIssuer = auth.NewJWTIssuer(opts.SessionJWTSecret)
 		}
+		s.requireCapToken = opts.RequireCapToken
 		s.cfAdminSecret = opts.CFAdminSecret
 		s.cfEventSecret = opts.CFEventSecret
 		s.cellID = opts.CellID

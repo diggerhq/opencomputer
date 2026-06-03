@@ -167,6 +167,31 @@ CREATE INDEX IF NOT EXISTS idx_events_type_ts    ON events(type, ts DESC);
 
 -- Billing (pro tier) ------------------------------------------------------
 
+-- Raw per-tick resource samples for pro orgs — the edge analog of the cell's
+-- `sandbox_scale_events`. events-ingest writes one row per pro `usage_tick`;
+-- the rollup cron aggregates these into `usage_snapshots` (memory_gb_seconds
+-- per hourly bucket) and meters them to Stripe.
+--
+-- `id` is the originating event UUID, so the INSERT can use ON CONFLICT(id)
+-- DO NOTHING for the same at-least-once dedup the `events` table relies on —
+-- the CP forwarder retries batches, and additive billing must not double-count.
+-- Rows are disposable once rolled up (see rolled_up flag); kept short-lived,
+-- independent of the `events` audit log's retention.
+CREATE TABLE IF NOT EXISTS usage_samples (
+  id          TEXT PRIMARY KEY,                  -- originating event UUID
+  org_id      TEXT NOT NULL,
+  sandbox_id  TEXT NOT NULL,
+  memory_mb   INTEGER NOT NULL,
+  cpu_count   INTEGER NOT NULL,
+  interval_s  INTEGER NOT NULL,                  -- seconds this sample covers
+  ts          INTEGER NOT NULL,                  -- unix ms (tick emit time)
+  cell_id     TEXT NOT NULL,
+  rolled_up   INTEGER NOT NULL DEFAULT 0
+);
+-- Rollup cron scans unrolled samples ordered by time; partial index keeps it
+-- tight as rolled-up rows accumulate before cleanup.
+CREATE INDEX IF NOT EXISTS idx_usage_samples_unrolled ON usage_samples(org_id, ts) WHERE rolled_up = 0;
+
 CREATE TABLE IF NOT EXISTS usage_snapshots (
   org_id            TEXT NOT NULL,
   snapshot_ts       INTEGER NOT NULL,             -- hourly bucket (unix s)
@@ -179,6 +204,49 @@ CREATE TABLE IF NOT EXISTS usage_snapshots (
   PRIMARY KEY (org_id, snapshot_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_usage_unreported ON usage_snapshots(reported_to_stripe, org_id) WHERE reported_to_stripe = 0;
+
+-- Billing outbox — one row per Stripe meter event the rollup cron will ship.
+-- The edge analog of the cell's `billable_events`. Meter-grained (not one row
+-- per org/hour like usage_snapshots) because legacy orgs bill one meter event
+-- PER memory tier, while unified orgs bill a single flat overage meter — a
+-- per-org/hour row can't hold the legacy per-tier breakdown.
+--
+-- `id` is deterministic: "{org}:{bucket_start}:{meter_event_name}". That makes
+-- the whole rollup idempotent — re-running a bucket recomputes identical ids,
+-- so ON CONFLICT(id) DO NOTHING drops the dup, and it doubles as the Stripe
+-- meter-event Identifier (Stripe dedups the same identifier within 24h). So a
+-- crash anywhere in roll→send→mark is safe to replay.
+--
+-- `value` units depend on billing_mode: unified=GB-seconds (float), legacy=
+-- seconds at that tier (integer, the unit the cell's per-tier meter expects).
+CREATE TABLE IF NOT EXISTS usage_meter_events (
+  id                TEXT PRIMARY KEY,             -- {org}:{bucket_start}:{meter_event_name}
+  org_id            TEXT NOT NULL,
+  meter_event_name  TEXT NOT NULL,                -- Stripe meter event_name
+  value             REAL NOT NULL,                -- GB-seconds (unified) | seconds (legacy tier)
+  billing_mode      TEXT NOT NULL,                -- 'legacy' | 'unified' (for the parity diff)
+  bucket_start      INTEGER NOT NULL,             -- unix s (inclusive)
+  bucket_end        INTEGER NOT NULL,             -- unix s (exclusive); meter event timestamp
+  state             TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'sent' | 'shadow'
+  stripe_identifier TEXT,                         -- echoed back by Stripe on send
+  created_at        INTEGER NOT NULL,
+  sent_at           INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_meter_events_pending ON usage_meter_events(state, bucket_start) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS idx_meter_events_org_bucket ON usage_meter_events(org_id, bucket_start);
+
+-- Stripe price catalog — the resolved metered Price IDs the edge attaches when
+-- it provisions a pro subscription. The catalog is GLOBAL (one Stripe account,
+-- same prices for every cell), so it's written by a single deploy-time step
+-- (cmd/ensure-products), NOT by per-cell publishing — 40 cells must not each
+-- race to write it. The edge reads every row and attaches each price_id as a
+-- subscription item (mirrors the CP's CreateSubscription).
+--   key: "tier_1024".."tier_65536" | "overage" | "reserved" | "disk_overage"
+CREATE TABLE IF NOT EXISTS billing_prices (
+  key        TEXT PRIMARY KEY,
+  price_id   TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS org_subscription_items (
   org_id          TEXT NOT NULL,

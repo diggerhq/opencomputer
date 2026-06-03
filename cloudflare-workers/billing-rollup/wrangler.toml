@@ -1,0 +1,40 @@
+# billing-rollup Worker — global Pro-billing rollup cron (DEV).
+#
+# Hourly: aggregates D1 `usage_samples` into the `usage_meter_events` outbox
+# (billing_mode-aware), then ships pending outbox rows to Stripe meter events.
+# In shadow mode it writes the outbox but ships nothing — that's the parity
+# phase where edge meter events are diffed against the cell's billable_events.
+#
+# Deploy:  wrangler deploy
+# Secrets: wrangler secret put STRIPE_API_KEY   (Stripe TEST-mode key on dev)
+# Manual:  curl -X POST https://<worker>.workers.dev/run   (dev only)
+
+name = "opensandbox-billing-rollup-dev"
+main = "src/index.ts"
+compatibility_date = "2026-04-28"
+compatibility_flags = ["nodejs_compat"]
+account_id = "1241f114453e32d292197e3fb36210b2"
+
+# Runs every 15 min; the grace watermark (GRACE_SECONDS) decides which buckets
+# are closed enough to roll, so a frequent trigger just means low latency to
+# pick up a freshly-settled bucket — it never double-bills (deterministic ids).
+[triggers]
+crons = ["*/15 * * * *"]
+
+[[d1_databases]]
+binding = "OPENCOMPUTER_DB"
+database_name = "opencomputer-dev"
+database_id = "f9e534bf-a9f3-4b30-81cd-f9eb9087e96d"
+
+[vars]
+WORKER_ENV = "dev"
+# Shadow until parity is clean. Set to "false" to arm live Stripe metering.
+SHADOW = "true"
+BUCKET_SECONDS = "3600"
+GRACE_SECONDS = "600"
+# BILL_FROM unset = steady state (bill all closed buckets). At cutover, set it
+# to the chosen handoff boundary T (unix seconds) so the edge bills only from T
+# while the cell drains everything before it.
+
+[[tail_consumers]]
+service = "opensandbox-log-tail"

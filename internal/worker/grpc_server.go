@@ -756,13 +756,28 @@ func (s *GRPCServer) WakeSandbox(ctx context.Context, req *pb.WakeSandboxRequest
 		s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
 	}
 
-	// Re-initialize per-sandbox SQLite
+	// Re-initialize the per-sandbox SQLite and emit a `woke` lifecycle event.
+	// The hibernate path called sandboxDBs.Remove(id) which deleted the
+	// on-disk SQLite + dir; Get() here recreates it via OpenSandboxDB →
+	// MkdirAll + schema apply. The fresh DB has no history (the previous
+	// "hibernated" event was already flushed by Hibernate's Remove hook), but
+	// new events (including this `woke`) flow normally through the event
+	// publisher poll loop.
+	//
+	// Previously this Get/LogEvent pair silently swallowed both errors, which
+	// hid the fact that `woke` events were getting lost in the wild — D1
+	// `events` shows ~10× more `hibernated` than `woke` across prod, and the
+	// missing transitions broke the phantom-tick auditor's post-hibernate
+	// classification (looked like post-hibernate phantoms instead of legit
+	// post-wake billing). Log loudly now.
 	if s.sandboxDBs != nil {
-		sdb, err := s.sandboxDBs.Get(sb.ID)
-		if err == nil {
-			_ = sdb.LogEvent("woke", map[string]string{
-				"sandbox_id": sb.ID,
-			})
+		sdb, getErr := s.sandboxDBs.Get(sb.ID)
+		if getErr != nil {
+			log.Printf("grpc: WakeSandbox %s: sandboxDBs.Get failed (woke event will not be emitted, downstream timeline will miss the wake transition): %v", sb.ID, getErr)
+		} else if logErr := sdb.LogEvent("woke", map[string]string{
+			"sandbox_id": sb.ID,
+		}); logErr != nil {
+			log.Printf("grpc: WakeSandbox %s: LogEvent(woke) failed: %v", sb.ID, logErr)
 		}
 	}
 

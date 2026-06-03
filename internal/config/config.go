@@ -212,6 +212,21 @@ type Config struct {
 	// to catch missed halt webhooks. Empty disables the reconciler.
 	HaltListURL string
 
+	// CF usage-parity endpoint (api-edge /internal/usage-parity). The
+	// usage-parity checker polls this to compare edge-measured Pro usage
+	// against cell sandbox_scale_events during the billing cutover soak.
+	// Empty disables the checker.
+	UsageParityURL string
+
+	// ProBillingAuthority selects who meters Pro usage to Stripe: "cell"
+	// (default — the in-CP usage_reporter / capacity allocator / billable-
+	// events sender) or "edge" (the billing-rollup Worker). This is the cell
+	// half of the Pro-billing cutover switch: setting it to "edge" stops the
+	// three cell billers AND requires cap-tokens for creates, so direct
+	// API-key clients can't bypass edge billing. Flip together with the edge
+	// SHADOW flag at the cutover boundary. Anything other than "edge" = cell.
+	ProBillingAuthority string
+
 	// CF edge base URL — root of the api-edge Worker (e.g.
 	// "https://app.dev.opensandbox.ai"). Used to construct /internal/*
 	// HMAC endpoints for stateless template + secret-store lookup at
@@ -379,6 +394,8 @@ func Load() (*Config, error) {
 		CFAdminSecret:    os.Getenv("OPENSANDBOX_CF_ADMIN_SECRET"),
 		SessionJWTSecret: os.Getenv("OPENSANDBOX_SESSION_JWT_SECRET"),
 		HaltListURL:      os.Getenv("OPENSANDBOX_HALT_LIST_URL"),
+		UsageParityURL:   os.Getenv("OPENSANDBOX_USAGE_PARITY_URL"),
+		ProBillingAuthority: os.Getenv("OPENSANDBOX_PRO_BILLING_AUTHORITY"),
 		CFEdgeBaseURL:    os.Getenv("OPENSANDBOX_CF_EDGE_BASE_URL"),
 
 		ComputeProvider: os.Getenv("OPENSANDBOX_COMPUTE_PROVIDER"),

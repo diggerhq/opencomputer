@@ -220,6 +220,32 @@ func (s *Store) GetOrgUsage(ctx context.Context, orgID string, from, to time.Tim
 	return results, rows.Err()
 }
 
+// ListOrgIDsWithScaleEvents returns the distinct org_ids that had any scale
+// event overlapping [from, to). Used by the usage-parity checker to know which
+// orgs to compare against the edge — the union of these and the edge's
+// reported orgs is the full set worth diffing (an org present on one side but
+// not the other is itself a parity failure).
+func (s *Store) ListOrgIDsWithScaleEvents(ctx context.Context, from, to time.Time) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT org_id
+		FROM sandbox_scale_events
+		WHERE started_at < $2 AND (ended_at IS NULL OR ended_at > $1)`,
+		from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // --- Stripe billing methods ---
 
 // SetStripeCustomerID sets the Stripe customer ID for an org.

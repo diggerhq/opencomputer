@@ -890,6 +890,58 @@ async function orgPolicy(req: Request, env: Env): Promise<Response> {
   });
 }
 
+// ── /internal/usage-parity ────────────────────────────────────────────────
+
+// HMAC-auth'd read-only endpoint the cell's usage-parity checker polls to
+// compare edge-measured Pro usage against the cell's authoritative
+// sandbox_scale_events. Returns per-org GB-seconds over [from,to) computed from
+// the RAW tick samples (usage_samples), not the priced meter rows — the point
+// is to validate measurement (ticks vs scale-event intervals) independent of
+// the rollup/pricing layer, and it works for legacy and unified alike because
+// GB-seconds is mode-independent.
+//
+// from/to are unix seconds; samples are keyed by ts (unix ms). Same HMAC scheme
+// as haltList/orgPolicy. NOTE: this reads usage_samples, so the sample-retention
+// window must exceed the parity lookback (samples aren't deleted at rollup, only
+// flagged rolled_up).
+async function usageParity(req: Request, env: Env): Promise<Response> {
+  const ts = req.headers.get("X-Timestamp") ?? "";
+  const sig = req.headers.get("X-Signature") ?? "";
+  if (!ts || !sig) return json({ error: "missing signature headers" }, 400);
+  const tsNum = Number.parseInt(ts, 10);
+  if (!Number.isFinite(tsNum)) return json({ error: "invalid timestamp" }, 400);
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - tsNum) > 5 * 60) return json({ error: "timestamp out of window" }, 401);
+
+  const url = new URL(req.url);
+  const expected = await hmacHex(env.EVENT_SECRET, `${ts}.${url.pathname}${url.search}`);
+  if (!constantTimeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+
+  const from = Number.parseInt(url.searchParams.get("from") ?? "", 10);
+  const to = Number.parseInt(url.searchParams.get("to") ?? "", 10);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) {
+    return json({ error: "from/to required (unix seconds, to > from)" }, 400);
+  }
+
+  const res = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT org_id AS org_id,
+            SUM(memory_mb * interval_s) AS mem_mb_secs,
+            COUNT(*) AS samples
+       FROM usage_samples
+      WHERE ts >= ?1 AND ts < ?2
+      GROUP BY org_id`,
+  )
+    .bind(from * 1000, to * 1000)
+    .all<{ org_id: string; mem_mb_secs: number; samples: number }>();
+
+  const orgs = (res.results ?? []).map((r) => ({
+    org_id: r.org_id,
+    gb_seconds: (r.mem_mb_secs ?? 0) / 1024,
+    samples: r.samples ?? 0,
+  }));
+  return json({ window: { from, to }, orgs, as_of: now });
+}
+
 async function hmacHex(secret: string, data: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -1218,6 +1270,21 @@ async function stripeWebhook(req: Request, env: Env): Promise<Response> {
         console.error(`stripe: ${event.type} without org_id metadata; logging and skipping`);
         return json({ received: true, skipped: "no org_id" });
       }
+      // A completed setup-checkout IS the upgrade: provision the Stripe
+      // subscription (every metered price from the D1 catalog + $30 credit)
+      // BEFORE marking pro, so an org is never pro-but-unprovisioned. ONLY on
+      // the setup checkout — never on customer.subscription.created, which our
+      // own provisioning fires (that would loop). Idempotent, so Stripe webhook
+      // retries can't create a second subscription.
+      if (event.type === "checkout.session.completed" && obj.metadata?.type === "setup" && obj.customer) {
+        try {
+          await provisionProSubscription(env, orgID, obj.customer);
+        } catch (e) {
+          console.error(`stripe: provision subscription for ${orgID} failed`, e);
+          return json({ error: "provisioning failed" }, 500); // 5xx → Stripe retries
+        }
+      }
+
       const stub = env.CREDIT_ACCOUNT.get(env.CREDIT_ACCOUNT.idFromName(orgID));
       const resp = await stub.fetch(`https://do/mark-pro?org_id=${encodeURIComponent(orgID)}`, { method: "POST" });
       if (resp.status >= 400) {
@@ -1253,6 +1320,95 @@ async function stripeWebhook(req: Request, env: Env): Promise<Response> {
       // Ack so Stripe stops retrying.
       return json({ received: true, ignored: event.type });
   }
+}
+
+// provisionProSubscription creates the org's Stripe subscription with every
+// metered price from the D1 catalog (billing_prices, written once by
+// cmd/ensure-products), applies the $30 promo credit, and persists the
+// subscription + item IDs to D1. This is the edge replacement for the cell's
+// CreateSubscription — necessary because the public Stripe webhook must
+// terminate on the edge, not the (private) cell. Idempotent: a no-op if the
+// org already has a subscription, and the Stripe-side Idempotency-Key keeps a
+// retry/concurrent delivery from ever creating two.
+async function provisionProSubscription(env: Env, orgID: string, customerID: string): Promise<void> {
+  const existing = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT stripe_subscription_id FROM orgs WHERE id = ?1",
+  )
+    .bind(orgID)
+    .first<{ stripe_subscription_id: string | null }>();
+  if (existing?.stripe_subscription_id) {
+    return; // already provisioned — retry no-op
+  }
+
+  // Global price catalog. Empty = cmd/ensure-products hasn't run; refuse rather
+  // than create a subscription with no metered items (silent under-bill).
+  const cat = await env.OPENCOMPUTER_DB.prepare("SELECT key, price_id FROM billing_prices").all<{
+    key: string;
+    price_id: string;
+  }>();
+  const catalog = cat.results ?? [];
+  if (catalog.length === 0) {
+    throw new Error("billing_prices catalog empty — run cmd/ensure-products before provisioning");
+  }
+
+  // Subscription with every catalog price as a line item (mirrors the cell's
+  // CreateSubscription: per-tier + overage + reserved + disk). Idempotency-Key
+  // is org-scoped so a duplicate delivery can't create a second subscription.
+  const subForm = new URLSearchParams();
+  subForm.set("customer", customerID);
+  catalog.forEach((r, i) => subForm.set(`items[${i}][price]`, r.price_id));
+  const sub = await stripePost(env, "/v1/subscriptions", subForm, `sub-create-${orgID}`);
+
+  // $30 promotional credit (negative customer balance), same as the cell.
+  await stripePost(env, `/v1/customers/${encodeURIComponent(customerID)}`, new URLSearchParams({ balance: "-3000" }));
+
+  const now = Math.floor(Date.now() / 1000);
+  await env.OPENCOMPUTER_DB.prepare(
+    "UPDATE orgs SET stripe_subscription_id = ?1, updated_at = ?2 WHERE id = ?3",
+  )
+    .bind(sub.id, now, orgID)
+    .run();
+
+  // Persist item IDs, mapping each back to its catalog key.
+  const keyByPrice = new Map(catalog.map((r) => [r.price_id, r.key]));
+  const itemStmt = env.OPENCOMPUTER_DB.prepare(
+    `INSERT INTO org_subscription_items (org_id, tier, stripe_item_id, price_id)
+     VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT(org_id, tier) DO UPDATE SET stripe_item_id = excluded.stripe_item_id, price_id = excluded.price_id`,
+  );
+  const items = (sub.items?.data ?? []) as Array<{ id: string; price?: { id: string } }>;
+  const batch: D1PreparedStatement[] = [];
+  for (const it of items) {
+    const priceID = it.price?.id ?? "";
+    const key = keyByPrice.get(priceID);
+    if (key) batch.push(itemStmt.bind(orgID, key, it.id, priceID));
+  }
+  if (batch.length > 0) await env.OPENCOMPUTER_DB.batch(batch);
+
+  console.log(`stripe: provisioned subscription ${sub.id} for org ${orgID} (${batch.length} items, $30 credit)`);
+}
+
+// stripePost POSTs form-urlencoded to the Stripe API and returns parsed JSON,
+// throwing on non-2xx. An optional Idempotency-Key makes a call safe to retry.
+async function stripePost(env: Env, path: string, form: URLSearchParams, idempotencyKey?: string): Promise<any> {
+  const headers: Record<string, string> = {
+    authorization: "Bearer " + env.STRIPE_API_KEY,
+    "stripe-version": "2024-06-20",
+    "content-type": "application/x-www-form-urlencoded",
+  };
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+  const resp = await fetch(`https://api.stripe.com${path}`, { method: "POST", headers, body: form.toString() });
+  const text = await resp.text();
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = { raw: text };
+  }
+  if (!resp.ok) {
+    throw new Error(parsed?.error?.message ?? parsed?.raw ?? `stripe ${path} returned ${resp.status}`);
+  }
+  return parsed;
 }
 
 // verifyStripeSignature checks the t=… v1=… Stripe-Signature header.
@@ -1296,6 +1452,11 @@ export default {
     if (path === "/internal/org-policy") {
       if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
       return orgPolicy(req, env);
+    }
+
+    if (path === "/internal/usage-parity") {
+      if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
+      return usageParity(req, env);
     }
 
     // /internal/admin/do-mark-free — operator-only escape hatch to flip a
