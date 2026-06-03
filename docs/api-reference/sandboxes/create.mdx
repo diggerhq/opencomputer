@@ -21,6 +21,10 @@ Create a new sandbox.
   Memory in MB. Must match an allowed tier: `1024`, `4096`, `8192`, or `16384`. If omitted but `cpuCount` is set, inferred automatically.
 </ParamField>
 
+<ParamField body="sandboxFamily" type="string">
+  Alpha placement/resource family. Set to `"spot"` to create a [spot sandbox](/sandboxes/spot-sandboxes), currently fixed at 1 vCPU / 1 GB with scaling disabled.
+</ParamField>
+
 The allowed CPU/memory combinations are:
 
 | Memory | vCPU |

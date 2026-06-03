@@ -1,0 +1,203 @@
+---
+title: "Spot Sandboxes"
+description: "Alpha sandbox family for interruption-tolerant, low-cost 1 vCPU / 1 GB workloads"
+---
+
+<Warning>
+  Spot sandboxes are in alpha. They are only available for the 1 vCPU / 1 GB
+  sandbox size and cannot be scaled. OpenComputer actively migrates spot
+  sandboxes away from workers that are draining or at risk, but spot capacity is
+  still best-effort during alpha.
+</Warning>
+
+Spot sandboxes run on spare cloud capacity instead of standard on-demand capacity. They expose the same OpenComputer sandbox API for commands, files, PTY, preview URLs, and lifecycle operations. OpenComputer keeps spare spot capacity and migrates workloads between workers to make interruptions rare in normal operation, while still passing the lower infrastructure cost through to you.
+
+Use spot sandboxes when the work is cost-sensitive and can tolerate the small chance of an interruption. Avoid them for workloads where even a rare restart or disconnect would be unacceptable.
+
+## Pricing
+
+Spot sandboxes are priced roughly **3x cheaper than on-demand sandboxes**.
+
+The alpha offering is intentionally narrow:
+
+| Family | Size | Scaling | Availability |
+| --- | --- | --- | --- |
+| On-demand | Standard sandbox sizes | Supported | Standard capacity |
+| Spot | 1 vCPU / 1 GB only | Disabled | Spare capacity with active migration |
+
+## Create a Spot Sandbox
+
+Set the sandbox family to `spot` when creating the sandbox. You do not need to pass `cpuCount` or `memoryMB`; spot sandboxes default to the only supported alpha size.
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create({
+  sandboxFamily: "spot",
+  timeout: 300,
+});
+
+const result = await sandbox.exec.run("echo hello from spot");
+console.log(result.stdout);
+
+await sandbox.kill();
+```
+
+```python Python
+from opencomputer import Sandbox
+
+async with await Sandbox.create(
+    sandbox_family="spot",
+    timeout=300,
+) as sandbox:
+    result = await sandbox.exec.run("echo hello from spot")
+    print(result.stdout)
+```
+
+```bash HTTP
+curl -X POST https://app.opencomputer.dev/api/sandboxes \
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sandboxFamily": "spot",
+    "timeout": 300
+  }'
+```
+
+</CodeGroup>
+
+You can also pass the explicit size if you want the request body to be self-documenting:
+
+```json
+{
+  "sandboxFamily": "spot",
+  "cpuCount": 1,
+  "memoryMB": 1024
+}
+```
+
+Requests for larger spot sandboxes are rejected during alpha.
+
+## What Happens on Interruption
+
+Spot capacity can be reclaimed by the cloud provider. OpenComputer monitors for worker drain and interruption signals, keeps spare capacity available, and attempts to live-migrate running spot sandboxes to another worker before users are affected.
+
+In normal operation, this means spot sandboxes should usually keep running without a visible restart. There are still important limits:
+
+- Migration is best-effort and depends on spare spot capacity being available.
+- A sudden worker loss can still interrupt active terminals, sockets, subprocesses, and in-flight commands.
+- If a worker disappears before migration completes, in-memory process state can be lost.
+- The sandbox's persistent disk can be preserved and used to resume elsewhere.
+
+Design spot workloads to assume interruptions are uncommon but possible: keep important state durable, make long commands retryable, and reconnect clients after transient disconnects.
+
+## Good Fits
+
+Spot sandboxes work well for cost-sensitive workloads that benefit from active migration and can still tolerate the rare failed migration:
+
+- Batch code execution where failed jobs can be requeued.
+- CI-style checks, test runners, linters, and formatters.
+- AI agent tool calls with durable task state outside the sandbox.
+- Parallel exploration jobs where losing one attempt is acceptable.
+- Development, previews, and experiments where cost matters more than availability.
+
+## Poor Fits
+
+Use on-demand sandboxes instead when the residual interruption risk is unacceptable:
+
+- User-facing interactive sessions where a rare disconnect is still disruptive.
+- Long-running stateful services that keep important state only in RAM.
+- Databases, queues, or coordinators running inside the sandbox.
+- Workloads with strict deadlines and no retry budget.
+- Any task that cannot safely restart after a partial command failure.
+
+## Alpha Limitations
+
+During alpha, spot sandboxes have these restrictions:
+
+| Capability | Spot alpha behavior |
+| --- | --- |
+| Size | Fixed at 1 vCPU / 1 GB |
+| Scaling | Manual scaling and autoscaling are disabled |
+| Images and snapshots | Not supported for spot creates yet |
+| Capacity | Best effort; create may fail or wait when spot capacity is full |
+| Migration | Active live migration when workers drain or interruption signals arrive |
+
+If you call `scale` or enable autoscaling on a spot sandbox, the API returns a `sandbox_family_scale_disabled` error.
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Sandbox, SandboxFamilyLimitError } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create({ sandboxFamily: "spot" });
+
+try {
+  await sandbox.scale({ memoryMB: 4096 });
+} catch (err) {
+  if (err instanceof SandboxFamilyLimitError) {
+    console.log("Spot sandboxes are fixed at 1 vCPU / 1 GB in alpha.");
+  } else {
+    throw err;
+  }
+}
+```
+
+```python Python
+from opencomputer import Sandbox, SandboxFamilyLimitError
+
+sandbox = await Sandbox.create(sandbox_family="spot")
+
+try:
+    await sandbox.scale(memory_mb=4096)
+except SandboxFamilyLimitError:
+    print("Spot sandboxes are fixed at 1 vCPU / 1 GB in alpha.")
+finally:
+    await sandbox.kill()
+```
+
+</CodeGroup>
+
+## Reliability Pattern
+
+For agent or batch systems, treat a spot sandbox as reliable-but-retryable compute:
+
+1. Store task state outside the sandbox.
+2. Write outputs to durable storage as the task progresses.
+3. Keep long commands idempotent so rare retries are safe.
+4. On disconnect or sandbox error, reconnect first; if the sandbox cannot resume, create a new spot sandbox and retry the task.
+5. Use on-demand sandboxes for workloads with no interruption budget.
+
+```typescript TypeScript
+async function runRetryableTask(command: string) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const sandbox = await Sandbox.create({
+      sandboxFamily: "spot",
+      timeout: 300,
+      metadata: { workload: "retryable-batch", attempt: String(attempt) },
+    });
+
+    try {
+      const result = await sandbox.exec.run(command, { timeout: 120 });
+      return result.stdout;
+    } finally {
+      await sandbox.kill().catch(() => {});
+    }
+  }
+
+  throw new Error("task failed after spot retries");
+}
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Elasticity" href="/sandboxes/elasticity">
+    Resource tiers, autoscaling, and scaling limits
+  </Card>
+  <Card title="Checkpoints" href="/sandboxes/checkpoints">
+    Save and resume sandbox state
+  </Card>
+</CardGroup>

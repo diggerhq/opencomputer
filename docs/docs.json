@@ -47,6 +47,13 @@
           "sandboxes/preview-urls",
           "sandboxes/elasticity",
           {
+            "group": "Spot Sandboxes",
+            "tag": "Alpha",
+            "pages": [
+              "sandboxes/spot-sandboxes"
+            ]
+          },
+          {
             "group": "Usage",
             "tag": "Preview",
             "expanded": true,

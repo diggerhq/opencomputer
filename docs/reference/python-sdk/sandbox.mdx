@@ -33,6 +33,10 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
   Arbitrary metadata
 </ParamField>
 
+<ParamField body="sandbox_family" type='"spot"'>
+  Alpha placement/resource family. Set to `"spot"` for a [spot sandbox](/sandboxes/spot-sandboxes), currently fixed at 1 vCPU / 1 GB with active migration and scaling disabled.
+</ParamField>
+
 <ParamField body="image" type="Image">
   Declarative image definition (see [Image](/reference/python-sdk/image))
 </ParamField>
@@ -51,8 +55,23 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
 sandbox = await Sandbox.create(template="my-stack", timeout=600)
 ```
 
+Create a spot sandbox:
+
+```python
+sandbox = await Sandbox.create(
+    sandbox_family="spot",
+    timeout=300,
+)
+```
+
 <Note>
-  `cpuCount` and `memoryMB` are not available in the Python SDK. Use the [HTTP API](/api-reference/sandboxes/create) for custom resources.
+  Spot sandboxes are alpha. They run on spare capacity, are actively migrated
+  away from draining workers, and are priced roughly 3x cheaper than on-demand
+  sandboxes. They are currently limited to 1 vCPU / 1 GB and cannot be scaled.
+</Note>
+
+<Note>
+  Custom `cpuCount` and `memoryMB` are not available in the Python SDK. Use the [HTTP API](/api-reference/sandboxes/create) for custom resources. Spot sandboxes do not need custom resource fields because the server applies the 1 vCPU / 1 GB alpha size automatically.
 </Note>
 
 ---

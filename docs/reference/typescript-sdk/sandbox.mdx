@@ -33,6 +33,10 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
   Arbitrary metadata
 </ParamField>
 
+<ParamField body="sandboxFamily" type='"spot"'>
+  Alpha placement/resource family. Set to `"spot"` for a [spot sandbox](/sandboxes/spot-sandboxes), currently fixed at 1 vCPU / 1 GB with active migration and scaling disabled.
+</ParamField>
+
 <ParamField body="cpuCount" type="number">
   CPU cores
 </ParamField>
@@ -62,6 +66,21 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
 ```typescript
 const sandbox = await Sandbox.create({ template: "my-stack", timeout: 600 });
 ```
+
+Create a spot sandbox:
+
+```typescript
+const sandbox = await Sandbox.create({
+  sandboxFamily: "spot",
+  timeout: 300,
+});
+```
+
+<Note>
+  Spot sandboxes are alpha. They run on spare capacity, are actively migrated
+  away from draining workers, and are priced roughly 3x cheaper than on-demand
+  sandboxes. They are currently limited to 1 vCPU / 1 GB and cannot be scaled.
+</Note>
 
 ---
 
