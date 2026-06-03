@@ -41,9 +41,26 @@ name = "CREDIT_ACCOUNT"
 class_name = "CreditAccount"
 script_name = "opencomputer-edge-prod"
 
+# Per-sandbox WebSocket gateway DO. Brokers SDK and dashboard PTY/exec WS
+# traffic between the client and the sandbox's owning cell, gated by
+# WS_VIA_DO below. When the flag is unset/non-"1", the legacy transparent
+# CF-Tunnel forward (index.ts) and edge-side WebSocketPair (dashboard.ts)
+# paths stay in place — the binding existing without the flag set is a
+# no-op, so deploying this PR ships infra parity with dev and the actual
+# activation is a separate flip via wrangler secret put / var change.
+#
+# script_name omitted intentionally — see the same comment in wrangler.toml.
+[[durable_objects.bindings]]
+name = "SANDBOX_WS"
+class_name = "SandboxWsGateway"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CreditAccount"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["SandboxWsGateway"]
 
 # Secrets (set via `wrangler secret put --config wrangler.prod.toml`):
 #   SESSION_JWT_SECRET     — fresh prod HMAC (DO NOT reuse dev secret)
@@ -62,6 +79,13 @@ WORKER_ENV = "prod"
 # No prod cells registered yet. Populate when prod CPs come online and
 # their rows are written to the D1 `cells` table.
 CELLS = ""
+# WS_VIA_DO routes SDK pty/exec + dashboard pty WS upgrades through the
+# SandboxWsGateway DO (per-sandbox, idFromName(sandboxID)) instead of the
+# transparent CF-Tunnel forward. Off by default in prod — flip to "1" via
+# `wrangler secret put WS_VIA_DO --config wrangler.prod.toml` (or edit here
+# and redeploy) after dev burn-in. Rollback is the same one-line change in
+# reverse.
+# WS_VIA_DO = "1"
 
 # Ship Worker logs to opencomputer-log-tail-prod → Axiom dataset cf-prod.
 [[tail_consumers]]
