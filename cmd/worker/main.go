@@ -386,7 +386,7 @@ func main() {
 	if qemuMgr != nil {
 		qemuMgr.SetMigrationOutgoingCallback(func(sandboxID string) {
 			ptyMgr.ReleaseForSandbox(sandboxID)
-			execMgr.RemoveSessions(sandboxID)
+			execMgr.ReleaseForSandbox(sandboxID)
 		})
 	}
 
@@ -974,6 +974,7 @@ func rebindExecSessionQEMU(agent *qm.AgentClient, sandboxID, sessionID string) (
 	scrollback := sandbox.NewScrollbackBuffer(0)
 	done := make(chan struct{})
 	stdinR, stdinW := io.Pipe()
+	streamCtx, cancel := context.WithCancel(context.Background())
 
 	handle := &sandbox.ExecSessionHandle{
 		ID:          sessionID,
@@ -987,6 +988,7 @@ func rebindExecSessionQEMU(agent *qm.AgentClient, sandboxID, sessionID string) (
 			stdinW.Close()
 			return agent.ExecSessionKill(context.Background(), sessionID, int32(signal))
 		},
+		Cancel: cancel,
 	}
 
 	// Same goroutine shape as the create path — attach + send first message
@@ -995,17 +997,17 @@ func rebindExecSessionQEMU(agent *qm.AgentClient, sandboxID, sessionID string) (
 	// gone, causing consumeExecOutput to return immediately; the caller's
 	// timeout on the WS upgrade will then fail. Acceptable for an edge case
 	// where the user reconnects right as the exec process exits.
-	go runExecRebindQEMU(agent, sessionID, stdinR, done, scrollback, handle)
+	go runExecRebindQEMU(streamCtx, agent, sessionID, stdinR, done, scrollback, handle)
 
 	return handle, nil
 }
 
 // runExecRebindQEMU mirrors runExecStreamQEMU but binds to an existing
 // session_id instead of expecting Create to have just allocated it.
-func runExecRebindQEMU(agent *qm.AgentClient, sessionID string, stdinR *io.PipeReader, done chan struct{}, scrollback *sandbox.ScrollbackBuffer, handle *sandbox.ExecSessionHandle) {
+func runExecRebindQEMU(ctx context.Context, agent *qm.AgentClient, sessionID string, stdinR *io.PipeReader, done chan struct{}, scrollback *sandbox.ScrollbackBuffer, handle *sandbox.ExecSessionHandle) {
 	defer close(done)
 	defer stdinR.Close()
-	stream, err := agent.ExecSessionAttach(context.Background())
+	stream, err := agent.ExecSessionAttach(ctx)
 	if err != nil {
 		return
 	}
@@ -1035,6 +1037,7 @@ func createExecSessionQEMU(agent *qm.AgentClient, sandboxID string, req types.Ex
 	scrollback := sandbox.NewScrollbackBuffer(0)
 	done := make(chan struct{})
 	stdinR, stdinW := io.Pipe()
+	streamCtx, cancel := context.WithCancel(context.Background())
 
 	handle := &sandbox.ExecSessionHandle{
 		ID:          sessionID,
@@ -1050,18 +1053,19 @@ func createExecSessionQEMU(agent *qm.AgentClient, sandboxID string, req types.Ex
 			stdinW.Close()
 			return agent.ExecSessionKill(context.Background(), sessionID, int32(signal))
 		},
+		Cancel: cancel,
 	}
 
-	go runExecStreamQEMU(agent, sessionID, stdinR, done, scrollback, handle)
+	go runExecStreamQEMU(streamCtx, agent, sessionID, stdinR, done, scrollback, handle)
 
 	return handle, nil
 }
 
 // runExecStreamQEMU attaches to an exec session stream (QEMU backend).
-func runExecStreamQEMU(agent *qm.AgentClient, sessionID string, stdinR *io.PipeReader, done chan struct{}, scrollback *sandbox.ScrollbackBuffer, handle *sandbox.ExecSessionHandle) {
+func runExecStreamQEMU(ctx context.Context, agent *qm.AgentClient, sessionID string, stdinR *io.PipeReader, done chan struct{}, scrollback *sandbox.ScrollbackBuffer, handle *sandbox.ExecSessionHandle) {
 	defer close(done)
 	defer stdinR.Close()
-	stream, err := agent.ExecSessionAttach(context.Background())
+	stream, err := agent.ExecSessionAttach(ctx)
 	if err != nil {
 		return
 	}

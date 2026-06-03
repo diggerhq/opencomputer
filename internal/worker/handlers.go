@@ -236,14 +236,19 @@ func (s *HTTPServer) execSessionWebSocket(c echo.Context) error {
 				}
 			}
 		sendExit:
-			exitMsg := make([]byte, 5)
-			exitMsg[0] = 0x03
-			exitCode := 0
+			// Only emit the 0x03 exit-code marker when the process actually
+			// exited (ExitCode is non-nil — consumeExecOutput only sets it on
+			// an EXIT message from the agent). When the goroutine was canceled
+			// for other reasons (e.g. source-side ReleaseForSandbox during
+			// live migration), ExitCode stays nil and emitting a fake 0x03
+			// would be misread by the edge DO as "exec completed" → close
+			// client instead of redialing.
 			if session.ExitCode != nil {
-				exitCode = *session.ExitCode
+				exitMsg := make([]byte, 5)
+				exitMsg[0] = 0x03
+				binary.BigEndian.PutUint32(exitMsg[1:], uint32(int32(*session.ExitCode)))
+				_ = ws.WriteMessage(websocket.BinaryMessage, exitMsg)
 			}
-			binary.BigEndian.PutUint32(exitMsg[1:], uint32(int32(exitCode)))
-			_ = ws.WriteMessage(websocket.BinaryMessage, exitMsg)
 
 			ws.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
