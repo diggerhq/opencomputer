@@ -10,12 +10,14 @@ import (
 )
 
 // ExecSessionManager manages exec sessions on the host side.
-// Mirrors PTYManager's pattern: supports both Podman (stub) and Firecracker
-// (via createFunc override).
 type ExecSessionManager struct {
 	mu         sync.RWMutex
 	sessions   map[string]*ExecSessionHandle
 	createFunc func(sandboxID string, req types.ExecSessionCreateRequest) (*ExecSessionHandle, error)
+	// rebindFunc binds a NEW gRPC ExecSessionAttach stream to an EXISTING
+	// agent-side session by ID. Used after live migration (or worker restart)
+	// makes the local session map empty while the in-VM session keeps running.
+	rebindFunc func(sandboxID, sessionID string) (*ExecSessionHandle, error)
 }
 
 // ExecSessionHandle holds the state for an exec session on the host side.
@@ -41,13 +43,50 @@ func NewExecSessionManager() *ExecSessionManager {
 	}
 }
 
-// NewAgentExecSessionManager creates an exec session manager that delegates to
-// a custom create function (used by Firecracker mode).
-func NewAgentExecSessionManager(createFunc func(sandboxID string, req types.ExecSessionCreateRequest) (*ExecSessionHandle, error)) *ExecSessionManager {
+// NewAgentExecSessionManager creates an exec session manager that delegates
+// session creation to createFunc (gRPC ExecSessionCreate) and recovery to
+// rebindFunc (gRPC ExecSessionAttach against an existing in-VM session).
+// rebindFunc may be nil — RebindFromAgent then always reports "not found".
+func NewAgentExecSessionManager(
+	createFunc func(sandboxID string, req types.ExecSessionCreateRequest) (*ExecSessionHandle, error),
+	rebindFunc func(sandboxID, sessionID string) (*ExecSessionHandle, error),
+) *ExecSessionManager {
 	return &ExecSessionManager{
 		sessions:   make(map[string]*ExecSessionHandle),
 		createFunc: createFunc,
+		rebindFunc: rebindFunc,
 	}
+}
+
+// RebindFromAgent attempts to look up sessionID against the in-VM agent and,
+// if it's still alive, register a fresh local handle that streams through a
+// new ExecSessionAttach. Used after live migration or worker restart wipes
+// the local session map. Returns the registered handle on success, or an
+// error if the agent reports the session is gone.
+func (m *ExecSessionManager) RebindFromAgent(sandboxID, sessionID string) (*ExecSessionHandle, error) {
+	if m.rebindFunc == nil {
+		return nil, fmt.Errorf("exec session %s not found", sessionID)
+	}
+	// Drop stale local entry first — its gRPC stream targets the old worker.
+	m.mu.Lock()
+	if stale, ok := m.sessions[sessionID]; ok {
+		delete(m.sessions, sessionID)
+		if stale.OnKill != nil {
+			// Don't actually kill — just release local pipes. The agent owns
+			// the process and we want it to keep running.
+			_ = stale
+		}
+	}
+	m.mu.Unlock()
+
+	handle, err := m.rebindFunc(sandboxID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	m.sessions[handle.ID] = handle
+	m.mu.Unlock()
+	return handle, nil
 }
 
 // CreateSession creates a new exec session.

@@ -129,8 +129,13 @@ func main() {
 
 	// Backend-specific exec session factory
 	var execSessionFactory func(sandboxID string, req types.ExecSessionCreateRequest) (*sandbox.ExecSessionHandle, error)
+	// Lazy reattach to an existing agent-side exec session — populated when the
+	// local map misses (live migration or worker restart).
+	var execSessionRebinder func(sandboxID, sessionID string) (*sandbox.ExecSessionHandle, error)
 	// Backend-specific PTY session factory
 	var ptySessionFactory func(sandboxID string, req types.PTYCreateRequest) (*sandbox.PTYSessionHandle, error)
+	// Lazy reattach for PTY sessions, same role as execSessionRebinder.
+	var ptySessionRebinder func(sandboxID, sessionID string) (*sandbox.PTYSessionHandle, error)
 	// Backend-specific autosaver syncer
 	var autosaverSyncer worker.SyncFSer
 	// Backend-specific graceful shutdown
@@ -296,12 +301,28 @@ func main() {
 			return createExecSessionQEMU(agent, sandboxID, req)
 		}
 
+		execSessionRebinder = func(sandboxID, sessionID string) (*sandbox.ExecSessionHandle, error) {
+			agent, err := qmMgr.GetAgent(sandboxID)
+			if err != nil {
+				return nil, fmt.Errorf("get agent for %s: %w", sandboxID, err)
+			}
+			return rebindExecSessionQEMU(agent, sandboxID, sessionID)
+		}
+
 		ptySessionFactory = func(sandboxID string, req types.PTYCreateRequest) (*sandbox.PTYSessionHandle, error) {
 			agent, err := qmMgr.GetAgent(sandboxID)
 			if err != nil {
 				return nil, fmt.Errorf("get agent for %s: %w", sandboxID, err)
 			}
 			return createPTYSessionQEMU(agent, sandboxID, req)
+		}
+
+		ptySessionRebinder = func(sandboxID, sessionID string) (*sandbox.PTYSessionHandle, error) {
+			agent, err := qmMgr.GetAgent(sandboxID)
+			if err != nil {
+				return nil, fmt.Errorf("get agent for %s: %w", sandboxID, err)
+			}
+			return rebindPTYSessionQEMU(agent, sandboxID, sessionID)
 		}
 
 		doGracefulShutdown = func(checkpointStore *storage.CheckpointStore, store *db.Store) {
@@ -348,12 +369,26 @@ func main() {
 	}
 
 	// Initialize exec session manager
-	execMgr := sandbox.NewAgentExecSessionManager(execSessionFactory)
+	execMgr := sandbox.NewAgentExecSessionManager(execSessionFactory, execSessionRebinder)
 	defer execMgr.CloseAll()
 
 	// Initialize PTY manager
-	ptyMgr := sandbox.NewAgentPTYManager(ptySessionFactory)
+	ptyMgr := sandbox.NewAgentPTYManager(ptySessionFactory, ptySessionRebinder)
 	defer ptyMgr.CloseAll()
+
+	// On outgoing migration, drop SOURCE-side PTY/exec handles so any WS
+	// blocked on a now-orphaned gRPC stream unblocks immediately. The edge DO
+	// then redials, the destination worker's RebindFromAgent picks up the
+	// still-alive in-VM session, and the user's terminal continues without
+	// any visible interruption beyond the redial latency. Wired here (not
+	// inside the QEMU manager) because the session managers live in the
+	// worker layer and the QEMU layer shouldn't depend on them.
+	if qemuMgr != nil {
+		qemuMgr.SetMigrationOutgoingCallback(func(sandboxID string) {
+			ptyMgr.ReleaseForSandbox(sandboxID)
+			execMgr.RemoveSessions(sandboxID)
+		})
+	}
 
 	// Initialize per-sandbox SQLite manager (forward-declared above so the
 	// graceful-shutdown closure can capture it).
@@ -926,6 +961,61 @@ func buildCheckpointBackend(label, endpoint, region, accessKeyID, secretAccessKe
 	})
 }
 
+// rebindExecSessionQEMU opens a fresh ExecSessionAttach stream against an
+// EXISTING agent-side exec session. The agent already has the process and
+// the scrollback ring — reattach delivers the scrollback snapshot followed
+// by live output, same shape as the original create flow.
+//
+// The local handle's Command/Args metadata is left blank: it isn't load-
+// bearing for the WS bridge (handlers.go uses the handle only for SandboxID
+// match + scrollback + stdin pipe). If we later need it post-migration, an
+// agent.ExecSessionList() lookup keyed on sessionID can populate it.
+func rebindExecSessionQEMU(agent *qm.AgentClient, sandboxID, sessionID string) (*sandbox.ExecSessionHandle, error) {
+	scrollback := sandbox.NewScrollbackBuffer(0)
+	done := make(chan struct{})
+	stdinR, stdinW := io.Pipe()
+
+	handle := &sandbox.ExecSessionHandle{
+		ID:          sessionID,
+		SandboxID:   sandboxID,
+		Running:     true,
+		StartedAt:   time.Now(),
+		Done:        done,
+		Scrollback:  scrollback,
+		StdinWriter: stdinW,
+		OnKill: func(signal int) error {
+			stdinW.Close()
+			return agent.ExecSessionKill(context.Background(), sessionID, int32(signal))
+		},
+	}
+
+	// Same goroutine shape as the create path — attach + send first message
+	// (bind to existing session) + pump stdin/scrollback. The agent will
+	// emit a "session not found" error to stream.Recv() if the session is
+	// gone, causing consumeExecOutput to return immediately; the caller's
+	// timeout on the WS upgrade will then fail. Acceptable for an edge case
+	// where the user reconnects right as the exec process exits.
+	go runExecRebindQEMU(agent, sessionID, stdinR, done, scrollback, handle)
+
+	return handle, nil
+}
+
+// runExecRebindQEMU mirrors runExecStreamQEMU but binds to an existing
+// session_id instead of expecting Create to have just allocated it.
+func runExecRebindQEMU(agent *qm.AgentClient, sessionID string, stdinR *io.PipeReader, done chan struct{}, scrollback *sandbox.ScrollbackBuffer, handle *sandbox.ExecSessionHandle) {
+	defer close(done)
+	defer stdinR.Close()
+	stream, err := agent.ExecSessionAttach(context.Background())
+	if err != nil {
+		return
+	}
+	if err := stream.Send(&agentpb.ExecSessionInput{SessionId: sessionID}); err != nil {
+		return
+	}
+	go forwardStdin(stdinR, stream)
+	consumeExecOutput(stream, scrollback, handle)
+}
+
 // createExecSessionQEMU creates an exec session using a QEMU agent client.
 func createExecSessionQEMU(agent *qm.AgentClient, sandboxID string, req types.ExecSessionCreateRequest) (*sandbox.ExecSessionHandle, error) {
 	agentPB := &agentpb.ExecSessionCreateRequest{
@@ -1072,6 +1162,44 @@ func (c *grpcPTYConn) Resize(cols, rows int) error {
 func (c *grpcPTYConn) Close() error {
 	c.closeOnce.Do(func() { c.cancel() })
 	return nil
+}
+
+// rebindPTYSessionQEMU opens a fresh PTYAttach stream against an EXISTING
+// agent-side PTY session — i.e. the agent already has the shell + tty, we
+// just need a host-side I/O channel into it. Used after a live migration or
+// worker restart wipes the destination worker's local session map.
+//
+// Failure modes:
+//   - agent returns "pty session <id> not found" on the first stream.Recv() →
+//     the session is genuinely gone (process exited or VM rebooted). We don't
+//     distinguish this from a transport error here — caller treats both as
+//     "not found" and returns 404 to the edge.
+//   - the bidi stream opens successfully → the agent looked up the session
+//     and is now streaming. Return a PTYSessionHandle that adapts the stream
+//     just like the create path's grpcPTYConn.
+func rebindPTYSessionQEMU(agent *qm.AgentClient, sandboxID, sessionID string) (*sandbox.PTYSessionHandle, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := agent.PTYAttach(ctx)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("rebind PTY stream: %w", err)
+	}
+	// First message binds the stream to an existing session in the agent.
+	// Cols/Rows omitted — the agent keeps whatever the original Create
+	// set; a fresh client that wants to resize will send PTYResize.
+	if err := stream.Send(&agentpb.PTYInput{SessionId: sessionID}); err != nil {
+		cancel()
+		return nil, fmt.Errorf("send PTY session ID for rebind: %w", err)
+	}
+
+	conn := &grpcPTYConn{stream: stream, cancel: cancel}
+	done := make(chan struct{})
+	return &sandbox.PTYSessionHandle{
+		ID:        sessionID,
+		SandboxID: sandboxID,
+		PTY:       conn,
+		Done:      done,
+	}, nil
 }
 
 // createPTYSessionQEMU creates a PTY session using gRPC PTYAttach (QEMU backend).
