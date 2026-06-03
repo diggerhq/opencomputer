@@ -1788,6 +1788,27 @@ func TestInMemoryScalerState_Draining(t *testing.T) {
 	}
 }
 
+func TestDrainPolicyForReason(t *testing.T) {
+	normal := drainPolicyForReason(drainReasonScaleDown)
+	if normal.backoff != normalDrainBackoff {
+		t.Fatalf("expected normal drain backoff %s, got %s", normalDrainBackoff, normal.backoff)
+	}
+	if normal.failurePause != drainBatchFailurePause {
+		t.Fatalf("expected normal drain failure pause %s, got %s", drainBatchFailurePause, normal.failurePause)
+	}
+
+	spot := drainPolicyForReason(drainReasonSpotPreemption)
+	if spot.backoff != spotDrainBackoff {
+		t.Fatalf("expected spot drain backoff %s, got %s", spotDrainBackoff, spot.backoff)
+	}
+	if spot.failurePause != spotDrainFailurePause {
+		t.Fatalf("expected spot drain failure pause %s, got %s", spotDrainFailurePause, spot.failurePause)
+	}
+	if spot.backoff >= normal.backoff {
+		t.Fatalf("expected spot drain backoff to be shorter than normal drain backoff")
+	}
+}
+
 func TestInMemoryScalerState_AllDraining(t *testing.T) {
 	m := NewInMemoryScalerState()
 

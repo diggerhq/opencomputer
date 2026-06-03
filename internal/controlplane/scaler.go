@@ -45,6 +45,9 @@ const (
 	drainTimeout           = 45 * time.Minute // max time to drain a worker via live migration (allows 30 sandboxes × 10min each in batches of 3)
 	drainBatchSuccessPause = 2 * time.Second  // pause between successful drain batches
 	drainBatchFailurePause = 5 * time.Second  // pause before retrying after a failed drain batch
+	spotDrainFailurePause  = 1 * time.Second  // spot/preemption drains should keep moving inside the 2min notice window
+	normalDrainBackoff     = 5 * time.Minute  // conservative retry backoff for ordinary scaler drains
+	spotDrainBackoff       = 1 * time.Second  // aggressive retry backoff for spot/preemption drains
 
 	creationFailureThreshold = 3                // consecutive failures before exponential backoff
 	creationBackoffMin       = 1 * time.Minute  // initial backoff after threshold hit
@@ -114,6 +117,38 @@ type drainState struct {
 	MachineID string    `json:"machine_id"`
 	Region    string    `json:"region"`
 	StartedAt time.Time `json:"started_at"`
+	Reason    string    `json:"reason,omitempty"`
+}
+
+const (
+	drainReasonScaleDown      = "scale_down"
+	drainReasonRollingReplace = "rolling_replace"
+	drainReasonSpotPreemption = "spot_preemption"
+	maxDrainMigrationFailures = 3
+)
+
+type drainPolicy struct {
+	reason       string
+	backoff      time.Duration
+	failurePause time.Duration
+}
+
+func drainPolicyForReason(reason string) drainPolicy {
+	if reason == drainReasonSpotPreemption {
+		return drainPolicy{
+			reason:       reason,
+			backoff:      spotDrainBackoff,
+			failurePause: spotDrainFailurePause,
+		}
+	}
+	if reason == "" {
+		reason = drainReasonScaleDown
+	}
+	return drainPolicy{
+		reason:       reason,
+		backoff:      normalDrainBackoff,
+		failurePause: drainBatchFailurePause,
+	}
 }
 
 // Scaler manages autoscaling of workers via the compute Pool.
@@ -268,11 +303,12 @@ func (s *Scaler) EvacuateWorker(_ context.Context, workerID string) error {
 		MachineID: target.MachineID,
 		Region:    target.Region,
 		StartedAt: time.Now(),
+		Reason:    drainReasonSpotPreemption,
 	})
 
 	go func() {
 		defer s.state.ReleaseEvacuationLock()
-		s.drainWorker(target.ID, target.MachineID, target.Region)
+		s.drainWorker(target.ID, target.MachineID, target.Region, drainReasonSpotPreemption)
 	}()
 
 	return nil
@@ -957,9 +993,10 @@ func (s *Scaler) smartScaleDown(_ context.Context, region string, workers []*Wor
 		MachineID: target.MachineID,
 		Region:    region,
 		StartedAt: time.Now(),
+		Reason:    drainReasonScaleDown,
 	})
 
-	go s.drainWorker(target.ID, target.MachineID, region)
+	go s.drainWorker(target.ID, target.MachineID, region, drainReasonScaleDown)
 }
 
 // rollingReplace executes a quota-aware rolling replacement of stale workers
@@ -1069,6 +1106,7 @@ func (s *Scaler) rollingReplace(ctx context.Context, region string, workers []*W
 		MachineID: target.MachineID,
 		Region:    region,
 		StartedAt: time.Now(),
+		Reason:    drainReasonRollingReplace,
 	})
 
 	// Run the dance in a goroutine so we don't block the scaler tick.
@@ -1093,7 +1131,7 @@ func (s *Scaler) replaceOneStale(ctx context.Context, region string, target *Wor
 	//    fires. drainWorker handles per-sandbox findMigrationTarget so each
 	//    sandbox lands on whichever current-version worker has the most room
 	//    at that exact moment.
-	s.drainWorker(target.ID, target.MachineID, region)
+	s.drainWorker(target.ID, target.MachineID, region, drainReasonRollingReplace)
 
 	// 2. Terminate the (now-empty) stale worker. Frees the quota slot for the
 	//    replacement scaleUp below. We do this even on partial drain — the
@@ -1126,9 +1164,10 @@ func (s *Scaler) replaceOneStale(ctx context.Context, region string, target *Wor
 // (e.g., S3 auth, no targets), falls back to waiting for natural expiry —
 // sandboxes will timeout or be destroyed by users. No new sandboxes are routed
 // to draining workers.
-func (s *Scaler) drainWorker(workerID, machineID, region string) {
+func (s *Scaler) drainWorker(workerID, machineID, region, reason string) {
 	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
+	policy := drainPolicyForReason(reason)
 
 	// Mark worker as draining so routing skips it
 	s.registry.SetDraining(workerID, true)
@@ -1141,7 +1180,6 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 	}
 
 	migrationFailures := 0
-	const maxMigrationFailures = 3 // after 3 failed attempts, stop trying migration
 
 	for {
 		select {
@@ -1197,14 +1235,14 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 		// and a periodic reset lets us succeed once the transient clears. If
 		// migration genuinely can't complete, drainTimeout terminates the loop
 		// and the next eval tick takes over.
-		if migrationFailures >= maxMigrationFailures {
-			log.Printf("scaler: drain: %d migration failures on %s, backing off 5min before retry (%d sandboxes remaining)",
-				migrationFailures, workerID, len(running))
+		if migrationFailures >= maxDrainMigrationFailures {
+			log.Printf("scaler: drain: %d migration failures on %s, backing off %s before retry (reason=%s, %d sandboxes remaining)",
+				migrationFailures, workerID, policy.backoff, policy.reason, len(running))
 			select {
 			case <-ctx.Done():
 				log.Printf("scaler: drain: timeout reached for worker %s", workerID)
 				return
-			case <-time.After(5 * time.Minute):
+			case <-time.After(policy.backoff):
 			}
 			migrationFailures = 0
 			continue
@@ -1228,7 +1266,7 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 				}
 			}
 			pending := len(s.state.GetPendingLaunches(region))
-			if effective+pending < s.maxWorkers {
+			if s.pool != nil && effective+pending < s.maxWorkers {
 				log.Printf("scaler: drain: no migration target for %s (%d sandboxes), triggering scale-up", workerID, len(running))
 				s.scaleUp(ctx, region)
 				select {
@@ -1237,6 +1275,11 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 				case <-time.After(60 * time.Second):
 				}
 				continue
+			}
+			if s.pool == nil {
+				log.Printf("scaler: drain: no migration target for %s (%d sandboxes) and no compute pool configured, waiting for natural expiry", workerID, len(running))
+				s.waitForNaturalDrain(ctx, workerID)
+				return
 			}
 			log.Printf("scaler: drain: no migration target for %s (%d sandboxes) and at max workers (%d), waiting for natural expiry", workerID, len(running), s.maxWorkers)
 			s.waitForNaturalDrain(ctx, workerID)
@@ -1271,7 +1314,7 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 		}
 
 		if batchFailed {
-			time.Sleep(drainBatchFailurePause)
+			time.Sleep(policy.failurePause)
 		} else {
 			time.Sleep(drainBatchSuccessPause)
 		}

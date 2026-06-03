@@ -111,15 +111,6 @@ func (l *virtioSerialListener) Accept() (net.Conn, error) {
 		}
 		l.mu.Unlock()
 
-		// Drain any stale data from the previous gRPC session.
-		// After a gRPC connection drops, the serial port may have leftover
-		// bytes (GOAWAY frames, partial HTTP/2 frames). If we hand these to
-		// the new gRPC session, it gets a protocol error and closes immediately.
-		if instrumentVirtioSerial {
-			log.Printf("virtio-serial: Accept iter: active=false, draining stale...")
-		}
-		drainStaleData(l.f)
-
 		// Wait for the host to connect (port becomes readable with fresh data)
 		if !waitForReadable(l.f, 500*time.Millisecond) {
 			continue
@@ -219,8 +210,7 @@ type virtioSerialConn struct {
 
 // instrumentVirtioSerial controls per-Read logging on the conn. Set true via
 // OSB_AGENT_TRACE_VIRTIO=1 env var to debug post-loadvm protocol confusion.
-// HARDCODED TO TRUE FOR INVESTIGATION BUILD — revert before merging.
-var instrumentVirtioSerial = true || os.Getenv("OSB_AGENT_TRACE_VIRTIO") == "1"
+var instrumentVirtioSerial = os.Getenv("OSB_AGENT_TRACE_VIRTIO") == "1"
 
 func (c *virtioSerialConn) Read(b []byte) (int, error) {
 	n, err := c.f.Read(b)
