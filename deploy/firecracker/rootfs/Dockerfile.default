@@ -71,15 +71,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Process supervisor — for users who want declarative service management
     # without systemd. Started on demand by users (`sudo supervisord -c ...`).
     supervisor \
-    # FUSE userspace bits + rclone — backs `sandbox.mounts.add(...)`. rclone is
-    # one binary covering ~40 backends (S3, GCS, Azure Blob, SFTP, WebDAV, ...).
-    # Mounts are torn down on hibernate (worker calls `fusermount3 -u -a`
-    # before savevm) and do NOT auto-restore on wake in v1 — callers re-issue
-    # mounts.add post-wake.
+    # FUSE userspace bits — rclone itself is installed from upstream below,
+    # not via apt, because Ubuntu 22.04 ships v1.53.3 (Oct 2020) which lacks
+    # years of backend fixes (Dropbox OAuth changes, GCS uniform access,
+    # newer S3-compatible providers, etc.). Backs `sandbox.mounts.add(...)`.
     fuse3 \
     libfuse3-3 \
-    rclone \
     && rm -rf /var/lib/apt/lists/*
+
+# Install rclone from upstream so we track current backend support. The
+# version pinned into the rootfs is whatever was current at image build
+# time; sandboxes surface it via `mounts.list().rcloneVersion` for ops triage.
+RUN curl -fsSL https://rclone.org/install.sh | bash \
+    && rclone version
 
 # Allow non-root users to pass --allow-other to FUSE mounts so processes
 # running as the `sandbox` user can read mounts created via sudo.

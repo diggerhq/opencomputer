@@ -13,10 +13,11 @@ import (
 // MountInfo mirrors internal/mounts.MountRecord — copied here to avoid an
 // internal-package import from the CLI binary.
 type MountInfo struct {
-	Path     string `json:"path"`
-	Remote   string `json:"remote"`
-	Backend  string `json:"backend,omitempty"`
-	ReadOnly bool   `json:"readOnly"`
+	Path          string `json:"path"`
+	Remote        string `json:"remote"`
+	Backend       string `json:"backend,omitempty"`
+	ReadOnly      bool   `json:"readOnly"`
+	RcloneVersion string `json:"rcloneVersion,omitempty"`
 }
 
 var mountsCmd = &cobra.Command{
@@ -108,14 +109,14 @@ var mountsListCmd = &cobra.Command{
 				fmt.Println("No mounts.")
 				return
 			}
-			headers := []string{"PATH", "REMOTE", "BACKEND", "MODE"}
+			headers := []string{"PATH", "REMOTE", "BACKEND", "MODE", "RCLONE"}
 			var rows [][]string
 			for _, m := range mounts {
 				mode := "rw"
 				if m.ReadOnly {
 					mode = "ro"
 				}
-				rows = append(rows, []string{m.Path, m.Remote, m.Backend, mode})
+				rows = append(rows, []string{m.Path, m.Remote, m.Backend, mode, m.RcloneVersion})
 			}
 			printer.Table(headers, rows)
 		})

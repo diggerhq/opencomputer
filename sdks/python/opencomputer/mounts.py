@@ -19,12 +19,19 @@ MountBackend = Literal["s3", "gcs", "azureblob", "sftp", "webdav", "dropbox"]
 
 @dataclass
 class MountInfo:
-    """An active mount as tracked by the worker."""
+    """An active mount as tracked by the worker.
+
+    ``rclone_version`` is the rclone version inside the sandbox captured at
+    mount-add time (e.g. ``"v1.65.2"``). rclone is baked into the rootfs, so
+    different sandboxes may carry different versions; this lets ops triage
+    backend-specific bug reports quickly.
+    """
 
     path: str
     remote: str
     read_only: bool
     backend: str = ""
+    rclone_version: str = ""
 
 
 @dataclass
@@ -113,4 +120,5 @@ def _mount_from_dict(data: dict) -> MountInfo:
         remote=data["remote"],
         backend=data.get("backend", ""),
         read_only=data.get("readOnly", True),
+        rclone_version=data.get("rcloneVersion", ""),
     )

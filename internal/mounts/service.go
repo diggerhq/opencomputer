@@ -26,11 +26,18 @@ import (
 // MountRecord describes one rclone-backed FUSE mount inside a sandbox.
 // Process-local — tracks what was added via this worker. Credentials are
 // not stored anywhere outside the in-VM tmpfs config file.
+//
+// RcloneVersion is captured at mount-add time. rclone gets installed in the
+// rootfs at image-build time, so different sandboxes can be on different
+// versions depending on which rootfs they cold-booted from. Surfacing this
+// lets ops triage "my S3 mount is broken" reports quickly — "you're on
+// v1.62, the fix is in v1.65, recreate the sandbox".
 type MountRecord struct {
-	Path     string `json:"path"`
-	Remote   string `json:"remote"`
-	Backend  string `json:"backend,omitempty"`
-	ReadOnly bool   `json:"readOnly"`
+	Path          string `json:"path"`
+	Remote        string `json:"remote"`
+	Backend       string `json:"backend,omitempty"`
+	ReadOnly      bool   `json:"readOnly"`
+	RcloneVersion string `json:"rcloneVersion,omitempty"`
 }
 
 // AddRequest is the wire shape the HTTP layer parses and hands to Service.Add.
@@ -94,13 +101,32 @@ func (s *Service) Add(ctx context.Context, sandboxID string, req AddRequest) (Mo
 	}
 
 	rec := MountRecord{
-		Path:     req.Path,
-		Remote:   req.Remote,
-		Backend:  req.Backend,
-		ReadOnly: readOnly,
+		Path:          req.Path,
+		Remote:        req.Remote,
+		Backend:       req.Backend,
+		ReadOnly:      readOnly,
+		RcloneVersion: s.probeRcloneVersion(ctx, sandboxID),
 	}
 	s.registry.put(sandboxID, rec)
 	return rec, nil
+}
+
+// probeRcloneVersion runs `rclone version` in the VM and returns the version
+// token (e.g. "v1.65.2"). Best-effort — returns empty on any failure since
+// this is purely for ops visibility, never load-bearing.
+func (s *Service) probeRcloneVersion(ctx context.Context, sandboxID string) string {
+	resp, err := s.manager.Exec(ctx, sandboxID, types.ProcessConfig{
+		Command: "sh",
+		Args:    []string{"-c", "rclone version 2>/dev/null | head -1"},
+		Timeout: 5,
+	})
+	if err != nil || resp == nil || resp.ExitCode != 0 {
+		return ""
+	}
+	out := strings.TrimSpace(resp.Stdout)
+	// Expected first line: "rclone v1.65.2" — strip the prefix.
+	out = strings.TrimPrefix(out, "rclone ")
+	return out
 }
 
 // Remove unmounts and forgets the mount. Idempotent — no error when the path
@@ -173,7 +199,9 @@ func (s *Service) doMount(ctx context.Context, sandboxID, target, remote, rclone
 		"--daemon",
 		// Cap how long rclone waits for "mount ready" before forking; without
 		// a timeout, an unreachable remote makes the call hang indefinitely.
-		"--daemon-timeout", "30s",
+		// 60s gives cold first-mount paths headroom (DNS + S3 TLS + rclone
+		// init on a fresh sandbox can chew 30-40s before steady-state).
+		"--daemon-timeout", "60s",
 		"--allow-other",
 	}
 	if readOnly {
@@ -186,7 +214,10 @@ func (s *Service) doMount(ctx context.Context, sandboxID, target, remote, rclone
 	resp, err := s.manager.Exec(ctx, sandboxID, types.ProcessConfig{
 		Command: "sudo",
 		Args:    mountArgs,
-		Timeout: 30,
+		// Outer cap on the agent-side exec; needs to be > --daemon-timeout
+		// so rclone's own timeout fires first and we get a clean error
+		// message instead of an agent-killed-the-subprocess error.
+		Timeout: 75,
 	})
 	if err != nil {
 		return fmt.Errorf("rclone mount: %w", err)

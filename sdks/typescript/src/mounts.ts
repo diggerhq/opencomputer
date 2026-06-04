@@ -46,6 +46,12 @@ export interface MountInfo {
   remote: string;
   backend?: string;
   readOnly: boolean;
+  /**
+   * rclone version inside the sandbox at the moment this mount was added
+   * (e.g. `"v1.65.2"`). Captured for ops triage — rclone is baked into the
+   * rootfs, so different sandboxes may carry different versions.
+   */
+  rcloneVersion?: string;
 }
 
 export class Mounts {
