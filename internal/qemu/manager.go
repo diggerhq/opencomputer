@@ -205,6 +205,64 @@ func quiesceAndCloseAgent(ctx context.Context, agent *AgentClient) error {
 	return nil
 }
 
+// resetAndCloseAgentTransportForSnapshot syncs the guest and resets the
+// virtio-serial listener without freezing filesystems. Golden snapshots restore
+// into live sandboxes immediately, so unlike hibernate we must not capture a
+// frozen root filesystem.
+func resetAndCloseAgentTransportForSnapshot(ctx context.Context, agent *AgentClient) error {
+	if agent == nil {
+		return nil
+	}
+
+	prepareOnce := func() error {
+		rpcCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		_, err := agent.PrepareHibernate(rpcCtx, &pb.PrepareHibernateRequest{})
+		return err
+	}
+	err := prepareOnce()
+	if err != nil && IsTransportError(err) {
+		log.Printf("qemu: snapshot PrepareHibernate transport error (%v), redialing", err)
+		if rdErr := agent.Redial(); rdErr == nil {
+			err = prepareOnce()
+		} else {
+			log.Printf("qemu: snapshot PrepareHibernate redial failed: %v (orig: %v)", rdErr, err)
+		}
+	}
+	if err != nil {
+		if st, ok := status.FromError(err); !ok || st.Code() != codes.Unimplemented {
+			log.Printf("qemu: snapshot PrepareHibernate RPC failed: %v (falling back to legacy path)", err)
+		}
+		execOnce := func() error {
+			execCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			_, e := agent.Exec(execCtx, &pb.ExecRequest{
+				Command:   "/bin/sh",
+				Args:      []string{"-c", "sync; blockdev --flushbufs /dev/vda 2>/dev/null; blockdev --flushbufs /dev/vdb 2>/dev/null; sync; kill -USR1 1"},
+				RunAsRoot: true,
+			})
+			return e
+		}
+		fallbackErr := execOnce()
+		if fallbackErr != nil && IsTransportError(fallbackErr) {
+			log.Printf("qemu: snapshot prepare fallback Exec transport error (%v), redialing", fallbackErr)
+			if rdErr := agent.Redial(); rdErr == nil {
+				fallbackErr = execOnce()
+			} else {
+				log.Printf("qemu: snapshot prepare fallback redial failed: %v", rdErr)
+			}
+		}
+		if fallbackErr != nil {
+			return fmt.Errorf("%w: PrepareHibernate=%v, fallback Exec=%v", ErrAgentUnresponsive, err, fallbackErr)
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	_ = agent.Close()
+	time.Sleep(200 * time.Millisecond)
+	return nil
+}
+
 // Compile-time check that Manager implements sandbox.Manager.
 var _ sandbox.Manager = (*Manager)(nil)
 
@@ -904,19 +962,19 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		log.Printf("qemu: golden: /home/sandbox unmounted and synced")
 	}
 
-	// Close agent connection before migration. Use a timeout because gRPC's
-	// graceful close over vsock can hang if vhost-vsock doesn't drain cleanly.
-	closeDone := make(chan struct{})
-	go func() {
-		agentClient.Close()
-		close(closeDone)
-	}()
-	select {
-	case <-closeDone:
-	case <-time.After(2 * time.Second):
-		log.Printf("qemu: golden: agent close timed out, proceeding anyway")
+	// Reset the in-guest virtio-serial listener before snapshotting. A plain
+	// host-side Close can leave the golden image with a stale gRPC parser state;
+	// restored VMs then read HTTP/2 frames but never answer Ping.
+	prepCtx, prepCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := resetAndCloseAgentTransportForSnapshot(prepCtx, agentClient); err != nil {
+		prepCancel()
+		qmpClient.Close()
+		cmd.Process.Kill()
+		cmd.Wait()
+		return fmt.Errorf("golden prepare agent transport: %w", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	prepCancel()
+	log.Printf("qemu: golden: agent transport reset")
 
 	// QMP stop + migrate
 	log.Printf("qemu: golden: sending QMP stop...")

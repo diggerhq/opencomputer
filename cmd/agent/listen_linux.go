@@ -111,6 +111,10 @@ func (l *virtioSerialListener) Accept() (net.Conn, error) {
 		}
 		l.mu.Unlock()
 
+		// Drain stale frames from the previous gRPC session before accepting a
+		// fresh host connection after restore.
+		drainStaleData(l.f)
+
 		// Wait for the host to connect (port becomes readable with fresh data)
 		if !waitForReadable(l.f, 500*time.Millisecond) {
 			continue
@@ -172,7 +176,14 @@ func waitForReadable(f *os.File, timeout time.Duration) bool {
 	if err != nil || n <= 0 {
 		return false
 	}
-	return fds[0].Revents&(unix.POLLIN|unix.POLLHUP) != 0
+	return readableForAccept(fds[0].Revents)
+}
+
+func readableForAccept(revents int16) bool {
+	if revents&unix.POLLHUP != 0 {
+		return false
+	}
+	return revents&unix.POLLIN != 0
 }
 
 // PrepareHibernate resets the active flag so that after migration restore,
