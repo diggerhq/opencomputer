@@ -34,6 +34,7 @@ type Sandbox struct {
 	CpuCount      int               `json:"cpuCount"`
 	MemoryMB      int               `json:"memoryMB"`
 	SandboxFamily string            `json:"sandboxFamily,omitempty"`
+	Resumable     bool              `json:"resumable,omitempty"`
 	MachineID     string            `json:"machineID,omitempty"`
 	// ConnectURL and Token are currently unused by SDKs. All data-plane traffic
 	// flows through the control plane's SandboxAPIProxy, which proxies to workers
@@ -52,12 +53,16 @@ type SandboxConfig struct {
 	CpuCount int               `json:"cpuCount,omitempty"` // default 1
 	MemoryMB int               `json:"memoryMB,omitempty"` // default 256
 	DiskMB   int               `json:"diskMB,omitempty"`   // workspace disk in MB (default 20480)
-	// SandboxFamily selects an alpha placement/resource family. Empty is the
-	// default on-demand family. "spot" routes through spot-only capacity and is
-	// currently restricted to 1 vCPU / 1024 MB with scaling disabled.
-	SandboxFamily string            `json:"sandboxFamily,omitempty"`
-	Envs          map[string]string `json:"envs,omitempty"`
-	Port          int               `json:"port,omitempty"` // container port to expose via subdomain (default 80)
+	// SandboxFamily selects an internal placement family. Empty is the default
+	// on-demand family. "spot" routes through resumable spare-capacity workers.
+	SandboxFamily string `json:"sandboxFamily,omitempty"`
+	// Resumable selects the alpha lower-cost resumable sandbox tier. Resumable
+	// sandboxes preserve disk across infrastructure restarts but do not
+	// guarantee running process or memory survival. Internally this maps to the
+	// spot placement family while that tier is backed by spare cloud capacity.
+	Resumable bool              `json:"resumable,omitempty"`
+	Envs      map[string]string `json:"envs,omitempty"`
+	Port      int               `json:"port,omitempty"` // container port to expose via subdomain (default 80)
 	// NetworkEnabled is a pointer so we can distinguish "unset" from
 	// "explicitly false". Unset defaults to true (see IsNetworkEnabled).
 	NetworkEnabled *bool  `json:"networkEnabled,omitempty"`
@@ -201,25 +206,23 @@ func ValidateResourceTier(cfg *SandboxConfig) error {
 // ApplySandboxFamilyDefaultsAndValidate normalizes alpha sandbox-family options
 // before regular resource-tier validation.
 func ApplySandboxFamilyDefaultsAndValidate(cfg *SandboxConfig) error {
+	if cfg.Resumable {
+		if cfg.SandboxFamily == "" || cfg.SandboxFamily == "default" {
+			cfg.SandboxFamily = SandboxFamilySpot
+		}
+	}
 	switch cfg.SandboxFamily {
 	case SandboxFamilyDefault:
 		return nil
 	case "default":
 		cfg.SandboxFamily = SandboxFamilyDefault
 		return nil
+	case "resumable":
+		cfg.SandboxFamily = SandboxFamilySpot
+		cfg.Resumable = true
+		return ApplySandboxFamilyDefaultsAndValidate(cfg)
 	case SandboxFamilySpot:
-		if len(cfg.ImageManifest) > 0 || cfg.Snapshot != "" {
-			return fmt.Errorf("sandboxFamily %q does not support image or snapshot creates in alpha", SandboxFamilySpot)
-		}
-		if cfg.MemoryMB == 0 {
-			cfg.MemoryMB = 1024
-		}
-		if cfg.CpuCount == 0 {
-			cfg.CpuCount = 1
-		}
-		if cfg.MemoryMB != 1024 || cfg.CpuCount != 1 {
-			return fmt.Errorf("sandboxFamily %q is currently limited to 1 vCPU and 1024 MB memory", SandboxFamilySpot)
-		}
+		cfg.Resumable = true
 		return nil
 	default:
 		return fmt.Errorf("unsupported sandboxFamily %q", cfg.SandboxFamily)
@@ -228,6 +231,10 @@ func ApplySandboxFamilyDefaultsAndValidate(cfg *SandboxConfig) error {
 
 func (c SandboxConfig) IsSpotFamily() bool {
 	return c.SandboxFamily == SandboxFamilySpot
+}
+
+func (c SandboxConfig) IsResumable() bool {
+	return c.Resumable || c.SandboxFamily == SandboxFamilySpot
 }
 
 // SandboxListResponse is the response for listing sandboxes.

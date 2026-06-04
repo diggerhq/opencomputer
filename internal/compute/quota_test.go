@@ -60,6 +60,30 @@ func TestIsEC2QuotaErr(t *testing.T) {
 	}
 }
 
+func TestSupportsEC2NestedVirtualization(t *testing.T) {
+	tests := []struct {
+		instanceType string
+		want         bool
+	}{
+		{"r8i.48xlarge", true},
+		{"m8i.4xlarge", true},
+		{"c8i.2xlarge", true},
+		{"R8I.48XLARGE", true},
+		{"r5d.metal", false},
+		{"c7gd.metal", false},
+		{"m7i.large", false},
+		{"", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.instanceType, func(t *testing.T) {
+			if got := supportsEC2NestedVirtualization(tc.instanceType); got != tc.want {
+				t.Fatalf("supportsEC2NestedVirtualization(%q) = %v, want %v", tc.instanceType, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWrapAzureCreateErrTagsQuota(t *testing.T) {
 	quotaSrc := errors.New("AllocationFailed: no capacity")
 	wrapped := wrapAzureCreateErr(quotaSrc, "azure: create VM foo failed: %w", quotaSrc)

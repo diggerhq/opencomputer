@@ -17,7 +17,6 @@ Memory tiers are fixed: `1024`, `4096`, `8192`, `16384`, `32768`, `65536` MB. CP
 
 - **Manual `scale()`** disables autoscale on the sandbox as a side effect — explicit user intent overrides the loop. Re-enable autoscale with `setAutoscale({ enabled: true, ... })` after if you want.
 - **Setting a scaling lock** disables autoscale at the same time (single-knob: "I don't want this scaling, period"). While locked, both `scale()` and `setAutoscale({ enabled: true })` reject with `ScalingLockedError`. Unlocking does NOT auto-re-enable autoscale.
-- **Spot sandboxes** are fixed at 1 vCPU / 1 GB during alpha. `scale()` and `setAutoscale({ enabled: true })` reject with `SandboxFamilyLimitError`.
 - **Plan caps** apply everywhere. Free-tier orgs are capped at 4 GB. Calls above the cap throw `PlanLimitError`.
 
 ---
@@ -35,11 +34,10 @@ Manually resize the sandbox. [HTTP API →](/api-reference/sandboxes/scale)
 **Throws:**
 
 - `ScalingLockedError` — sandbox has a scaling lock active.
-- `SandboxFamilyLimitError` — sandbox belongs to a family with fixed resources, such as alpha spot sandboxes.
 - `PlanLimitError` — `memoryMB` exceeds the org's plan cap.
 
 ```typescript
-import { Sandbox, ScalingLockedError, PlanLimitError, SandboxFamilyLimitError } from "@opencomputer/sdk";
+import { Sandbox, ScalingLockedError, PlanLimitError } from "@opencomputer/sdk";
 
 const sandbox = await Sandbox.connect("sb-abc123");
 
@@ -49,8 +47,6 @@ try {
 } catch (err) {
   if (err instanceof ScalingLockedError) {
     console.warn("sandbox is locked — unlock to scale");
-  } else if (err instanceof SandboxFamilyLimitError) {
-    console.warn("spot sandboxes are fixed at 1 vCPU / 1 GB in alpha");
   } else if (err instanceof PlanLimitError) {
     console.warn("upgrade required for larger instances");
   } else {
@@ -82,7 +78,6 @@ Enable or disable per-sandbox autoscale.
 **Throws:**
 
 - `ScalingLockedError` — sandbox has a scaling lock active.
-- `SandboxFamilyLimitError` — sandbox belongs to a family with fixed resources, such as alpha spot sandboxes.
 - `PlanLimitError` — `maxMemoryMB` exceeds the org's plan cap.
 
 When `enabled=true`, the platform watches the sandbox's memory pressure and resizes it within the bounds:
@@ -182,19 +177,3 @@ try {
 ### `PlanLimitError`
 
 Thrown when the requested size exceeds the org's plan cap. The HTTP API returns 402 Payment Required for this case.
-
-### `SandboxFamilyLimitError`
-
-Thrown when the sandbox's family does not allow resource changes. Alpha [spot sandboxes](/sandboxes/spot-sandboxes) are fixed at 1 vCPU / 1 GB, so `scale()` and `setAutoscale({ enabled: true })` throw this error.
-
-```typescript
-import { SandboxFamilyLimitError } from "@opencomputer/sdk";
-
-try {
-  await sandbox.scale({ memoryMB: 4096 });
-} catch (err) {
-  if (err instanceof SandboxFamilyLimitError) {
-    // Use a new on-demand sandbox if this workload needs more memory.
-  }
-}
-```

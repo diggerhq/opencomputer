@@ -34,9 +34,8 @@ class PlanLimitError(Exception):
 
 
 class SandboxFamilyLimitError(Exception):
-    """Raised when a resource-changing call is blocked by the sandbox's
-    family. Alpha spot sandboxes are fixed at 1 vCPU / 1024 MB and cannot be
-    scaled.
+    """Raised when a resource-changing call is blocked by a sandbox family.
+    Kept for compatibility with older API responses.
     """
 
     code = "sandbox_family_scale_disabled"
@@ -86,6 +85,7 @@ class Sandbox:
         api_url: str | None = None,
         envs: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
+        resumable: bool | None = None,
         sandbox_family: str | None = None,
         disk_mb: int | None = None,
         memory_mb: int | None = None,
@@ -103,8 +103,10 @@ class Sandbox:
             api_url: API URL (or OPENCOMPUTER_API_URL env var).
             envs: Environment variables to inject. Overrides store secrets.
             metadata: Custom metadata key-value pairs.
-            sandbox_family: Alpha placement/resource family. ``"spot"`` uses
-                spot-only capacity and is limited to 1 vCPU / 1024 MB.
+            resumable: Create a resumable sandbox. Disk is preserved across
+                infrastructure restarts; processes may restart.
+            sandbox_family: Internal/legacy placement family. Prefer
+                ``resumable=True`` for public API usage.
             disk_mb: Workspace disk size in MB (default 20480 = 20GB). Any
                 additional GB above 20GB is metered at a per-second rate
                 comparable to EBS gp3. Closed beta: requests above 20GB
@@ -148,6 +150,8 @@ class Sandbox:
             body["envs"] = envs
         if metadata:
             body["metadata"] = metadata
+        if resumable is not None:
+            body["resumable"] = resumable
         if sandbox_family:
             body["sandboxFamily"] = sandbox_family
         if disk_mb is not None:

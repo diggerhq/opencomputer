@@ -1,45 +1,54 @@
 package types
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
 
-func TestApplySandboxFamilyDefaultsAndValidateSpotDefaultsToSmallestTier(t *testing.T) {
+func TestApplySandboxFamilyDefaultsAndValidateSpotMarksResumable(t *testing.T) {
 	cfg := SandboxConfig{SandboxFamily: SandboxFamilySpot}
 
 	if err := ApplySandboxFamilyDefaultsAndValidate(&cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.CpuCount != 1 || cfg.MemoryMB != 1024 {
-		t.Fatalf("expected spot defaults 1 cpu / 1024MB, got cpu=%d memory=%d", cfg.CpuCount, cfg.MemoryMB)
-	}
-	if err := ValidateResourceTier(&cfg); err != nil {
-		t.Fatalf("spot defaults should be a valid tier: %v", err)
+	if !cfg.Resumable {
+		t.Fatalf("expected internal spot family to mark sandbox resumable")
 	}
 }
 
-func TestApplySandboxFamilyDefaultsAndValidateSpotRejectsLargerTier(t *testing.T) {
+func TestApplySandboxFamilyDefaultsAndValidateResumableFlagMapsToSpot(t *testing.T) {
+	cfg := SandboxConfig{Resumable: true}
+
+	if err := ApplySandboxFamilyDefaultsAndValidate(&cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.SandboxFamily != SandboxFamilySpot {
+		t.Fatalf("expected resumable to map to internal spot family, got %q", cfg.SandboxFamily)
+	}
+	if cfg.CpuCount != 0 || cfg.MemoryMB != 0 {
+		t.Fatalf("expected resumable not to force resources, got cpu=%d memory=%d", cfg.CpuCount, cfg.MemoryMB)
+	}
+}
+
+func TestApplySandboxFamilyDefaultsAndValidateResumableFamilyAlias(t *testing.T) {
+	cfg := SandboxConfig{SandboxFamily: "resumable"}
+
+	if err := ApplySandboxFamilyDefaultsAndValidate(&cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.SandboxFamily != SandboxFamilySpot || !cfg.Resumable {
+		t.Fatalf("expected resumable alias to map to internal spot family, got family=%q resumable=%v", cfg.SandboxFamily, cfg.Resumable)
+	}
+}
+
+func TestApplySandboxFamilyDefaultsAndValidateResumableAllowsLargerTier(t *testing.T) {
 	cfg := SandboxConfig{SandboxFamily: SandboxFamilySpot, CpuCount: 1, MemoryMB: 4096}
 
-	err := ApplySandboxFamilyDefaultsAndValidate(&cfg)
-	if err == nil || !strings.Contains(err.Error(), "limited to 1 vCPU and 1024 MB") {
-		t.Fatalf("expected spot size rejection, got %v", err)
+	if err := ApplySandboxFamilyDefaultsAndValidate(&cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-}
-
-func TestApplySandboxFamilyDefaultsAndValidateSpotRejectsSnapshotAndImage(t *testing.T) {
-	for name, cfg := range map[string]SandboxConfig{
-		"snapshot": {SandboxFamily: SandboxFamilySpot, Snapshot: "snap"},
-		"image":    {SandboxFamily: SandboxFamilySpot, ImageManifest: json.RawMessage(`{"steps":[]}`)},
-	} {
-		t.Run(name, func(t *testing.T) {
-			err := ApplySandboxFamilyDefaultsAndValidate(&cfg)
-			if err == nil || !strings.Contains(err.Error(), "does not support image or snapshot") {
-				t.Fatalf("expected image/snapshot rejection, got %v", err)
-			}
-		})
+	if err := ValidateResourceTier(&cfg); err != nil {
+		t.Fatalf("expected larger resumable tier to validate normally: %v", err)
 	}
 }
 

@@ -37,6 +37,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 			"error": err.Error(),
 		})
 	}
+	cfg = withResumableSandboxEnv(cfg)
 
 	// Validate CPU/memory against allowed tiers.
 	// Allowed tiers (memoryMB → vCPU): 1024→1, 4096→1, 8192→2, 16384→4, 32768→8, 65536→16.
@@ -185,6 +186,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 		})
 	}
 	sb.SandboxFamily = cfg.SandboxFamily
+	sb.Resumable = cfg.IsResumable()
 
 	// Register with sandbox router for rolling timeout tracking.
 	// timeout == 0 means "persistent" (no auto-hibernate). Negative values are
@@ -685,6 +687,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		"cpuCount":      cfg.CpuCount,
 		"memoryMB":      cfg.MemoryMB,
 		"sandboxFamily": cfg.SandboxFamily,
+		"resumable":     cfg.IsResumable(),
 	}
 	if s.sandboxDomain != "" {
 		resp["sandboxDomain"] = s.sandboxDomain
@@ -1210,6 +1213,20 @@ func isSpotSandboxSession(session *db.SandboxSession) bool {
 	return sandboxSessionFamily(session) == types.SandboxFamilySpot
 }
 
+func withResumableSandboxEnv(cfg types.SandboxConfig) types.SandboxConfig {
+	if !cfg.IsResumable() {
+		return cfg
+	}
+	envs := make(map[string]string, len(cfg.Envs)+2)
+	for k, v := range cfg.Envs {
+		envs[k] = v
+	}
+	envs["OPENSANDBOX_RESUMABLE"] = "true"
+	envs["OPENSANDBOX_RESUME_NOTICE_SECONDS"] = "25"
+	cfg.Envs = envs
+	return cfg
+}
+
 func (s *Server) setLimits(c echo.Context) error {
 	id := c.Param("id")
 	ctx := c.Request().Context()
@@ -1305,12 +1322,6 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 	// resources. Same code that the autoscale endpoint and the autoscaler
 	// loop use, so SDK consumers can branch on a single error code.
 	if s.store != nil {
-		if session, err := s.store.GetSandboxSession(c.Request().Context(), id); err == nil && isSpotSandboxSession(session) {
-			return c.JSON(http.StatusForbidden, map[string]any{
-				"error": "spot sandboxes are fixed at 1 vCPU and 1024 MB in alpha",
-				"code":  "sandbox_family_scale_disabled",
-			})
-		}
 		if locked, err := s.store.GetScalingLock(c.Request().Context(), id); err == nil && locked {
 			return c.JSON(http.StatusForbidden, map[string]any{
 				"error": "scaling is locked on this sandbox — unlock via PUT /scaling-lock to allow size changes",
@@ -1369,12 +1380,6 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 	session, err := s.store.GetSandboxSession(ctx, sandboxID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
-	}
-	if isSpotSandboxSession(session) {
-		return c.JSON(http.StatusForbidden, map[string]any{
-			"error": "spot sandboxes are fixed at 1 vCPU and 1024 MB in alpha",
-			"code":  "sandbox_family_scale_disabled",
-		})
 	}
 	if session.Status != "running" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox is not running"})

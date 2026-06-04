@@ -50,6 +50,16 @@ func wrapEC2CreateErr(err error, format string, args ...any) error {
 	return wrapped
 }
 
+func supportsEC2NestedVirtualization(instanceType string) bool {
+	family, _, _ := strings.Cut(strings.ToLower(instanceType), ".")
+	switch family {
+	case "c8i", "m8i", "r8i":
+		return true
+	default:
+		return false
+	}
+}
+
 const (
 	// AWS tag keys (kept consistent with the Azure pool's azure-prefixed tags).
 	awsTagRole         = "opensandbox:role"
@@ -60,14 +70,14 @@ const (
 
 // EC2PoolConfig configures the EC2 compute pool.
 type EC2PoolConfig struct {
-	Region          string
-	AccessKeyID     string // empty = use default credential chain (IAM role preferred)
-	SecretAccessKey string
-	AMI             string // static AMI ID; empty if SSMParameterName is set
-	InstanceType    string // e.g. "c7gd.metal", "r7gd.xlarge", "m7i.large"
-	SubnetID        string
-	SecurityGroupID string
-	KeyName         string // optional SSH key pair (debug use only)
+	Region             string
+	AccessKeyID        string // empty = use default credential chain (IAM role preferred)
+	SecretAccessKey    string
+	AMI                string // static AMI ID; empty if SSMParameterName is set
+	InstanceType       string // e.g. "c7gd.metal", "r7gd.xlarge", "m7i.large"
+	SubnetID           string
+	SecurityGroupID    string
+	KeyName            string // optional SSH key pair (debug use only)
 	IAMInstanceProfile string // attached to instances; gives them Secrets Manager + S3 read
 	SecretsARN         string // Secrets Manager ARN; passed to worker via WorkerSpec.SecretsRef
 	SSMParameterName   string // SSM parameter for dynamic AMI ID (e.g. /opensandbox/dev/worker-ami-id)
@@ -175,6 +185,12 @@ func (p *EC2Pool) CreateMachine(ctx context.Context, opts MachineOpts) (*Machine
 				},
 			},
 		},
+	}
+
+	if supportsEC2NestedVirtualization(instanceType) {
+		input.CpuOptions = &ec2types.CpuOptionsRequest{
+			NestedVirtualization: ec2types.NestedVirtualizationSpecificationEnabled,
+		}
 	}
 
 	if p.cfg.SubnetID != "" {
@@ -485,4 +501,3 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 
 	return sb.String()
 }
-

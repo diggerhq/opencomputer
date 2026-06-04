@@ -359,8 +359,43 @@ func (s *Scaler) evaluate() {
 			regions = poolRegions
 		}
 	}
+	s.recreateResumableOnDeadWorkers(ctx)
 	for _, region := range regions {
 		s.evaluateRegion(ctx, region)
+	}
+}
+
+func (s *Scaler) recreateResumableOnDeadWorkers(ctx context.Context) {
+	if s.store == nil {
+		return
+	}
+	redisRegistry, ok := s.registry.(*RedisWorkerRegistry)
+	if !ok {
+		return
+	}
+	liveWorkers := make(map[string]bool)
+	for _, region := range s.registry.Regions() {
+		for _, w := range s.registry.GetWorkersByRegion(region) {
+			liveWorkers[w.ID] = true
+		}
+	}
+	if len(liveWorkers) == 0 {
+		return
+	}
+	deadRefs, err := s.store.ListRunningSandboxesOnDeadWorkers(ctx, liveWorkers)
+	if err != nil {
+		log.Printf("scaler: resumable dead-worker scan failed: %v", err)
+		return
+	}
+	for _, ref := range deadRefs {
+		ok, err := recreateResumableSandbox(ctx, redisRegistry, s.store, s.cellID, ref.SandboxID, ref.WorkerID)
+		if err != nil {
+			log.Printf("scaler: resumable recreate %s from dead worker %s failed: %v", ref.SandboxID, ref.WorkerID, err)
+			continue
+		}
+		if ok {
+			log.Printf("scaler: resumable recreate %s from dead worker %s succeeded", ref.SandboxID, ref.WorkerID)
+		}
 	}
 }
 

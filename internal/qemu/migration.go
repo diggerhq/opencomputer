@@ -627,6 +627,11 @@ func (m *Manager) CompleteIncomingMigration(ctx context.Context, sandboxID strin
 // type so the worker gRPC layer can refer to it without an import cycle.
 
 func (m *Manager) PreCopyDrives(ctx context.Context, sandboxID string, checkpointStore *storage.CheckpointStore) (rootfsKey, workspaceKey, goldenVer string, baseCPU, baseMem, actualMem int, secrets sandbox.MigrationSecrets, err error) {
+	if checkpointStore == nil {
+		err = fmt.Errorf("checkpoint store not configured")
+		return
+	}
+
 	m.mu.RLock()
 	vm, exists := m.vms[sandboxID]
 	var pid int
@@ -813,6 +818,10 @@ func (m *Manager) LiveMigrate(ctx context.Context, sandboxID, incomingAddr strin
 
 // uploadFile uploads a local file to S3.
 func (mc *MigrationCoordinator) uploadFile(ctx context.Context, localPath, s3Key string) (int64, error) {
+	if mc.checkpointStore == nil {
+		return 0, fmt.Errorf("checkpoint store not configured")
+	}
+
 	info, err := os.Stat(localPath)
 	if err != nil {
 		return 0, err

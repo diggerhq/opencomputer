@@ -17,7 +17,6 @@ Memory tiers are fixed: `1024`, `4096`, `8192`, `16384`, `32768`, `65536` MB. CP
 
 - **Manual `scale()`** disables autoscale on the sandbox as a side effect — explicit user intent overrides the loop. Re-enable with `set_autoscale(enabled=True, ...)` after if you want.
 - **Setting a scaling lock** disables autoscale at the same time (single knob: "I don't want this scaling, period"). While locked, both `scale()` and `set_autoscale(enabled=True)` raise `ScalingLockedError`. Unlocking does NOT auto-re-enable autoscale.
-- **Spot sandboxes** are fixed at 1 vCPU / 1 GB during alpha. `scale()` and `set_autoscale(enabled=True)` raise `SandboxFamilyLimitError`.
 - **Plan caps** apply everywhere. Free-tier orgs are capped at 4 GB. Calls above the cap raise `PlanLimitError`.
 
 ---
@@ -35,11 +34,10 @@ Manually resize the sandbox. [HTTP API →](/api-reference/sandboxes/scale)
 **Raises:**
 
 - `ScalingLockedError` — sandbox has a scaling lock active.
-- `SandboxFamilyLimitError` — sandbox belongs to a family with fixed resources, such as alpha spot sandboxes.
 - `PlanLimitError` — `memory_mb` exceeds the org's plan cap.
 
 ```python
-from opencomputer import Sandbox, ScalingLockedError, PlanLimitError, SandboxFamilyLimitError
+from opencomputer import Sandbox, ScalingLockedError, PlanLimitError
 
 sandbox = await Sandbox.connect("sb-abc123")
 
@@ -48,8 +46,6 @@ try:
     print(f"scaled to {result['memoryMB']}MB / {result['cpuPercent']}% CPU")
 except ScalingLockedError:
     print("sandbox is locked — unlock to scale")
-except SandboxFamilyLimitError:
-    print("spot sandboxes are fixed at 1 vCPU / 1 GB in alpha")
 except PlanLimitError:
     print("upgrade required for larger instances")
 ```
@@ -77,7 +73,6 @@ Enable or disable per-sandbox autoscale.
 **Raises:**
 
 - `ScalingLockedError` — sandbox has a scaling lock active.
-- `SandboxFamilyLimitError` — sandbox belongs to a family with fixed resources, such as alpha spot sandboxes.
 - `PlanLimitError` — `max_memory_mb` exceeds the org's plan cap.
 
 When `enabled=True`, the platform watches the sandbox's memory pressure and resizes it within the bounds:
@@ -174,17 +169,3 @@ except ScalingLockedError:
 ### `PlanLimitError`
 
 Raised when the requested size exceeds the org's plan cap. The HTTP API returns 402 Payment Required for this case.
-
-### `SandboxFamilyLimitError`
-
-Raised when the sandbox's family does not allow resource changes. Alpha [spot sandboxes](/sandboxes/spot-sandboxes) are fixed at 1 vCPU / 1 GB, so `scale()` and `set_autoscale(enabled=True)` raise this error.
-
-```python
-from opencomputer import SandboxFamilyLimitError
-
-try:
-    await sandbox.scale(memory_mb=4096)
-except SandboxFamilyLimitError:
-    # Use a new on-demand sandbox if this workload needs more memory.
-    ...
-```

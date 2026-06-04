@@ -338,6 +338,7 @@ func (r *RedisWorkerRegistry) handleHeartbeat(entry WorkerEntry) {
 		existing.TotalMemoryMB = entry.TotalMemoryMB
 		existing.CommittedMemoryMB = entry.CommittedMemoryMB
 		existing.Draining = drainOverride
+		existing.Sandboxes = entry.Sandboxes
 		if entry.GoldenVersion != "" {
 			existing.GoldenVersion = entry.GoldenVersion
 		}

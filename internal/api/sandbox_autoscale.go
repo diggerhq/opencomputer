@@ -45,12 +45,6 @@ func (s *Server) setAutoscale(c echo.Context) error {
 	}
 
 	if req.Enabled {
-		if session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID); err == nil && isSpotSandboxSession(session) {
-			return c.JSON(http.StatusForbidden, map[string]any{
-				"error": "spot sandboxes are fixed at 1 vCPU and 1024 MB in alpha",
-				"code":  "sandbox_family_scale_disabled",
-			})
-		}
 		// Refuse if the sandbox is scaling-locked. The lock auto-disables
 		// autoscale on toggle; refusing here prevents a user from
 		// re-enabling it while the lock is still on (which would be a
@@ -156,9 +150,6 @@ func (a *AutoscalerSetter) SetSandboxMemoryMB(ctx context.Context, sandboxID str
 		// Don't try to scale stopped/hibernated sandboxes — the autoscaler
 		// shouldn't have picked them, but better to no-op cleanly than fail.
 		return nil
-	}
-	if isSpotSandboxSession(session) {
-		return fmt.Errorf("sandbox family spot is fixed at 1024 MB; refusing autoscale to %d", memoryMB)
 	}
 
 	// Plan cap: the autoscaler runs in-process with no cap-token to read plan

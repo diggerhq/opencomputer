@@ -1658,8 +1658,13 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 		id = "sb-" + uuid.New().String()[:8]
 	}
 
+	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", id)
+	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
+	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
+	reuseExistingDrives := cfg.IsResumable() && fileExists(rootfsPath) && fileExists(workspacePath)
+
 	// Fast path: restore from golden snapshot if available and using default template
-	if m.goldenDir != "" && template == "default" && cfg.TemplateRootfsKey == "" {
+	if !reuseExistingDrives && m.goldenDir != "" && template == "default" && cfg.TemplateRootfsKey == "" {
 		sb, err := m.createFromGolden(ctx, cfg, id)
 		if err != nil {
 			log.Printf("qemu: golden restore failed for %s, falling back to cold boot: %v", id, err)
@@ -1669,15 +1674,13 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 		}
 	}
 
-	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", id)
 	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
 		return nil, fmt.Errorf("mkdir sandbox dir: %w", err)
 	}
 
-	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
-
-	if cfg.TemplateRootfsKey != "" {
+	if reuseExistingDrives {
+		log.Printf("qemu: create %s: reusing existing resumable drives", id)
+	} else if cfg.TemplateRootfsKey != "" {
 		srcRootfs := strings.TrimPrefix(cfg.TemplateRootfsKey, "local://")
 		srcWorkspace := strings.TrimPrefix(cfg.TemplateWorkspaceKey, "local://")
 		log.Printf("qemu: create %s from snapshot template (rootfs=%s, workspace=%s)", id, srcRootfs, srcWorkspace)

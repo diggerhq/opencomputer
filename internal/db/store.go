@@ -988,6 +988,7 @@ func (s *Store) ListSandboxSessions(ctx context.Context, orgID uuid.UUID, status
 type WorkerSandboxRef struct {
 	SandboxID string
 	OrgID     uuid.UUID
+	WorkerID  string
 }
 
 // ListSandboxesByWorkerStatus returns the (sandbox_id, org_id) pairs for sessions
@@ -1011,6 +1012,33 @@ func (s *Store) ListSandboxesByWorkerStatus(ctx context.Context, workerID, statu
 		var r WorkerSandboxRef
 		if err := rows.Scan(&r.SandboxID, &r.OrgID); err != nil {
 			return nil, err
+		}
+		refs = append(refs, r)
+	}
+	return refs, rows.Err()
+}
+
+// ListRunningSandboxesOnDeadWorkers returns running sessions whose worker_id is
+// no longer present in the live worker set. It is read-only; callers decide
+// whether to recover or close each row.
+func (s *Store) ListRunningSandboxesOnDeadWorkers(ctx context.Context, liveWorkers map[string]bool) ([]WorkerSandboxRef, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT sandbox_id, org_id, worker_id FROM sandbox_sessions
+		 WHERE status = 'running'
+		 ORDER BY started_at DESC
+		 LIMIT 1000`)
+	if err != nil {
+		return nil, fmt.Errorf("list running sandboxes: %w", err)
+	}
+	defer rows.Close()
+	var refs []WorkerSandboxRef
+	for rows.Next() {
+		var r WorkerSandboxRef
+		if err := rows.Scan(&r.SandboxID, &r.OrgID, &r.WorkerID); err != nil {
+			return nil, err
+		}
+		if liveWorkers[r.WorkerID] {
+			continue
 		}
 		refs = append(refs, r)
 	}

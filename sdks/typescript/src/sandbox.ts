@@ -13,7 +13,9 @@ function resolveApiUrl(url: string): string {
 
 export interface SandboxOpts {
   template?: string;
-  /** Alpha placement/resource family. "spot" uses spot-only capacity and is limited to 1 vCPU / 1024 MB. */
+  /** Create a resumable sandbox. Disk is preserved across infrastructure restarts; processes may restart. */
+  resumable?: boolean;
+  /** Internal/legacy placement family. Prefer `resumable: true` for public API usage. */
   sandboxFamily?: "spot";
   /**
    * Idle timeout in seconds after which the sandbox auto-hibernates.
@@ -49,6 +51,7 @@ interface SandboxData {
   status: string;
   templateID?: string;
   sandboxFamily?: string;
+  resumable?: boolean;
   connectURL?: string;
   token?: string;
   sandboxDomain?: string;
@@ -122,7 +125,7 @@ export class PlanLimitError extends Error {
 
 /**
  * Thrown when a resource-changing call is blocked by the sandbox's family.
- * Alpha spot sandboxes are fixed at 1 vCPU / 1024 MB and cannot be scaled.
+ * Kept for compatibility with older API responses.
  */
 export class SandboxFamilyLimitError extends Error {
   readonly code = "sandbox_family_scale_disabled";
@@ -263,6 +266,7 @@ export class Sandbox {
     };
     if (opts.envs) body.envs = opts.envs;
     if (opts.metadata) body.metadata = opts.metadata;
+    if (opts.resumable != null) body.resumable = opts.resumable;
     if (opts.sandboxFamily) body.sandboxFamily = opts.sandboxFamily;
     if (opts.cpuCount != null) body.cpuCount = opts.cpuCount;
     if (opts.memoryMB != null) body.memoryMB = opts.memoryMB;

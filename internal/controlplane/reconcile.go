@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
 
@@ -18,15 +20,16 @@ import (
 // believes is stopped on this worker but the worker may still be hosting.
 //
 // Why this exists:
-//   When the worker is unreachable, the customer's DELETE goes through the
-//   cell-side fallback at internal/api/sandbox.go's destroy handler — the
-//   cell marks the session stopped in PG and publishes a `stopped` lifecycle
-//   event "to close the drift" with D1. Worker never receives the gRPC
-//   Destroy. When the worker becomes reachable again, the cell already
-//   thinks the sandbox is dead, but the worker still has m.vms[id] alive,
-//   qemu still running, usage_ticker still emitting `usage_tick` events.
-//   That window has run for 74h+ in the wild before a worker restart finally
-//   cleared the m.vms map.
+//
+//	When the worker is unreachable, the customer's DELETE goes through the
+//	cell-side fallback at internal/api/sandbox.go's destroy handler — the
+//	cell marks the session stopped in PG and publishes a `stopped` lifecycle
+//	event "to close the drift" with D1. Worker never receives the gRPC
+//	Destroy. When the worker becomes reachable again, the cell already
+//	thinks the sandbox is dead, but the worker still has m.vms[id] alive,
+//	qemu still running, usage_ticker still emitting `usage_tick` events.
+//	That window has run for 74h+ in the wild before a worker restart finally
+//	cleared the m.vms map.
 //
 // This reconcile closes that gap: on worker rejoin (RedisWorkerRegistry's
 // OnWorkerRejoined callback), the cell sweeps every sandbox it has marked
@@ -102,30 +105,32 @@ func isSandboxNotFound(err error) bool {
 
 // ReconcileRunningOnWorker is the symmetric direction of ReconcileStoppedOnWorker:
 //
-//   forward  — cell says STOPPED on this worker, worker may still be hosting →
-//              re-issue Destroy via RPC. ReconcileStoppedOnWorker above.
-//   reverse  — cell says RUNNING on this worker, worker doesn't have it →
-//              close the row on the cell side. THIS function.
+//	forward  — cell says STOPPED on this worker, worker may still be hosting →
+//	           re-issue Destroy via RPC. ReconcileStoppedOnWorker above.
+//	reverse  — cell says RUNNING on this worker, worker doesn't have it →
+//	           close the row on the cell side. THIS function.
 //
 // Why both directions are needed:
-//   The cell-side fallback at internal/api/sandbox.go (worker-unreachable
-//   destroy path) covers the forward direction. There's no symmetric fallback
-//   for "worker died, never finished EndScaleEvent on its way out" — when a
-//   worker process crashes/OOMs/restarts, its m.vms is cleared but cell PG
-//   keeps the scale event open. usage-reporter sums (now - started_at)
-//   indefinitely; customer gets billed for compute that hasn't run for days.
+//
+//	The cell-side fallback at internal/api/sandbox.go (worker-unreachable
+//	destroy path) covers the forward direction. There's no symmetric fallback
+//	for "worker died, never finished EndScaleEvent on its way out" — when a
+//	worker process crashes/OOMs/restarts, its m.vms is cleared but cell PG
+//	keeps the scale event open. usage-reporter sums (now - started_at)
+//	indefinitely; customer gets billed for compute that hasn't run for days.
 //
 // Empirical fingerprint from prod: 49 still-open scale events on two workers
 // that were known to have restarted ~3-5 days prior, accumulating ~$2k of
 // phantom Pro billing per restart event.
 //
 // Process:
-//   1. Ask cell PG: what sandboxes are status='running' on this worker?
-//   2. Ask worker (existing ListSandboxes RPC): what do you actually have?
-//   3. For each cell-PG-running entry the worker doesn't claim:
-//        - UpdateSandboxSessionStatus → stopped
-//        - EndScaleEvent → closes the open billing row
-//        - publish stopped lifecycle event so events-ingest updates D1
+//  1. Ask cell PG: what sandboxes are status='running' on this worker?
+//  2. Ask worker (existing ListSandboxes RPC): what do you actually have?
+//  3. For each cell-PG-running entry the worker doesn't claim:
+//     - resumable: recreate from the shared cell disk on an eligible worker
+//     and move routing to that worker
+//     - non-resumable: UpdateSandboxSessionStatus → stopped, EndScaleEvent,
+//     publish stopped lifecycle event so events-ingest updates D1
 func ReconcileRunningOnWorker(ctx context.Context, registry *RedisWorkerRegistry, store *db.Store, cellID, workerID string) {
 	if store == nil || registry == nil {
 		return
@@ -162,10 +167,16 @@ func ReconcileRunningOnWorker(ctx context.Context, registry *RedisWorkerRegistry
 	log.Printf("controlplane: reverse-reconcile %s: cell-running=%d worker-has=%d", workerID, len(cellRunning), len(workerHas))
 
 	reason := "reverse_reconcile_worker_lost_session"
-	var closed, alive int
+	var closed, alive, recreated int
 	for _, ref := range cellRunning {
 		if _, has := workerHas[ref.SandboxID]; has {
 			alive++
+			continue
+		}
+		if ok, err := recreateResumableSandbox(ctx, registry, store, cellID, ref.SandboxID, workerID); err != nil {
+			log.Printf("controlplane: reverse-reconcile %s: resumable recreate %s failed: %v", workerID, ref.SandboxID, err)
+		} else if ok {
+			recreated++
 			continue
 		}
 		// Close the cell-side state. Order matters: status first (so future
@@ -187,7 +198,81 @@ func ReconcileRunningOnWorker(ctx context.Context, registry *RedisWorkerRegistry
 		publishStoppedLifecycleEvent(ctx, registry.RedisClient(), cellID, ref.SandboxID, ref.OrgID.String(), workerID, reason)
 		closed++
 	}
-	log.Printf("controlplane: reverse-reconcile %s: closed=%d still-alive-on-worker=%d (of %d cell-running)", workerID, closed, alive, len(cellRunning))
+	log.Printf("controlplane: reverse-reconcile %s: recreated=%d closed=%d still-alive-on-worker=%d (of %d cell-running)", workerID, recreated, closed, alive, len(cellRunning))
+}
+
+func recreateResumableSandbox(ctx context.Context, registry *RedisWorkerRegistry, store *db.Store, cellID, sandboxID, oldWorkerID string) (bool, error) {
+	session, err := store.GetSandboxSession(ctx, sandboxID)
+	if err != nil {
+		return false, err
+	}
+	if session.Status != "running" {
+		return false, nil
+	}
+	var cfg types.SandboxConfig
+	if len(session.Config) > 0 {
+		if err := json.Unmarshal(session.Config, &cfg); err != nil {
+			return false, fmt.Errorf("parse sandbox config: %w", err)
+		}
+	}
+	if !cfg.IsResumable() {
+		return false, nil
+	}
+	cfg.EnsureNetworkEnabledDefault()
+	cfg.SandboxID = sandboxID
+	if cfg.Envs == nil {
+		cfg.Envs = map[string]string{}
+	}
+	cfg.Envs["OPENSANDBOX_RESUMABLE"] = "true"
+	cfg.Envs["OPENSANDBOX_RESUME_NOTICE_SECONDS"] = "25"
+
+	worker, client, err := registry.GetLeastLoadedWorker(session.Region)
+	if err != nil {
+		return true, fmt.Errorf("pick worker: %w", err)
+	}
+
+	rpcCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	resp, err := client.CreateSandbox(rpcCtx, &pb.CreateSandboxRequest{
+		SandboxId:          sandboxID,
+		Template:           cfg.Template,
+		Timeout:            int32(cfg.Timeout),
+		Envs:               cfg.Envs,
+		MemoryMb:           int32(cfg.MemoryMB),
+		CpuCount:           int32(cfg.CpuCount),
+		NetworkEnabled:     cfg.IsNetworkEnabled(),
+		Port:               int32(cfg.Port),
+		EgressAllowlist:    cfg.EgressAllowlist,
+		SecretAllowedHosts: flattenSecretAllowedHostsForReconcile(cfg.SecretAllowedHosts),
+		SecretEnvs:         cfg.SecretEnvs,
+		DiskMb:             int32(cfg.DiskMB),
+	})
+	cancel()
+	if err != nil {
+		return true, fmt.Errorf("worker CreateSandbox on %s: %w", worker.ID, err)
+	}
+	if resp == nil || resp.SandboxId == "" {
+		return true, fmt.Errorf("worker CreateSandbox on %s returned empty response", worker.ID)
+	}
+	if err := store.CompleteMigration(ctx, sandboxID, worker.ID); err != nil {
+		return true, fmt.Errorf("update session worker: %w", err)
+	}
+	if worker.GoldenVersion != "" {
+		_ = store.SetSandboxGoldenVersion(ctx, sandboxID, worker.GoldenVersion)
+	}
+	PublishLifecycle(ctx, registry.RedisClient(), cellID, "migrated", sandboxID, worker.ID, session.OrgID, "resumable_recreate")
+	log.Printf("controlplane: resumable recreate %s: %s -> %s", sandboxID, oldWorkerID, worker.ID)
+	return true, nil
+}
+
+func flattenSecretAllowedHostsForReconcile(m map[string][]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, hosts := range m {
+		out[k] = strings.Join(hosts, ",")
+	}
+	return out
 }
 
 // publishStoppedLifecycleEvent emits a `stopped` event onto this cell's events

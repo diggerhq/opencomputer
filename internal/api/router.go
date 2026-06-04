@@ -277,6 +277,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	admin.POST("/workers/:id/evacuate", s.adminEvacuateWorker)
 	admin.GET("/demo/migration", s.demoPingPongPage)
 	admin.GET("/demo/chaos", s.demoChaosPage)
+	admin.GET("/demo/drain", s.adminDrainVisualizerPage)
 
 	// Signed URL endpoints (self-authenticated via HMAC, no API key required)
 	e.GET("/api/sandboxes/:id/files/download", s.signedDownload)

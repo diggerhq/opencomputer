@@ -220,6 +220,10 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		SecretEnvs:         req.SecretEnvs,
 		DiskMB:             int(req.DiskMb),
 	}
+	if cfg.Envs["OPENSANDBOX_RESUMABLE"] == "true" {
+		cfg.Resumable = true
+		cfg.SandboxFamily = types.SandboxFamilySpot
+	}
 
 	// Warm fork: if checkpoint_id is set, fork from the local checkpoint cache.
 	// ForkFromCheckpoint uses the local cache directly — no S3 needed.

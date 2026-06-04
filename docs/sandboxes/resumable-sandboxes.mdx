@@ -1,0 +1,149 @@
+---
+title: "Resumable Sandboxes"
+description: "Alpha lower-cost sandboxes that preserve disk across infrastructure restarts"
+---
+
+<Warning>
+  Resumable sandboxes are in alpha. They preserve filesystem state across
+  infrastructure restarts, but running processes, in-memory state, terminal
+  sessions, and open network connections may restart.
+</Warning>
+
+Resumable sandboxes are lower-cost OpenComputer sandboxes designed for workloads that can recover from a process restart. They expose the same OpenComputer API for commands, files, PTY, preview URLs, images, snapshots, scaling, and lifecycle operations.
+
+If OpenComputer receives advance infrastructure interruption notice, the sandbox gets up to **25 seconds** to flush state before it restarts on healthy capacity. The sandbox's filesystem is preserved and made available after resume.
+
+## Pricing
+
+Resumable sandboxes are priced roughly **2x cheaper than on-demand sandboxes**.
+
+## Create a Resumable Sandbox
+
+Set `resumable: true` when creating the sandbox.
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create({
+  resumable: true,
+  memoryMB: 4096,
+  timeout: 300,
+});
+
+const result = await sandbox.exec.run("echo hello from resumable");
+console.log(result.stdout);
+
+await sandbox.kill();
+```
+
+```python Python
+from opencomputer import Sandbox
+
+async with await Sandbox.create(
+    resumable=True,
+    memory_mb=4096,
+    timeout=300,
+) as sandbox:
+    result = await sandbox.exec.run("echo hello from resumable")
+    print(result.stdout)
+```
+
+```bash HTTP
+curl -X POST https://app.opencomputer.dev/api/sandboxes \
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "resumable": true,
+    "memoryMB": 4096,
+    "timeout": 300
+  }'
+```
+
+</CodeGroup>
+
+## What Happens on Interruption
+
+Infrastructure capacity can be reclaimed or restarted by the cloud provider. When OpenComputer receives advance notice, it notifies the sandbox and starts the resumability flow.
+
+The sandbox receives these environment variables:
+
+- `OPENSANDBOX_RESUMABLE=true`
+- `OPENSANDBOX_RESUME_NOTICE_SECONDS=25`
+
+During the notice window, write important state to disk. After resume, restart your process from durable state.
+
+## Good Fits
+
+Resumable sandboxes work well for cost-sensitive workloads that can restart from disk:
+
+- Batch code execution where failed jobs can be requeued.
+- CI-style checks, test runners, linters, and formatters.
+- AI agent tool calls with durable task state outside the sandbox.
+- Parallel exploration jobs where one attempt can restart.
+- Development, previews, and experiments where cost matters more than availability.
+
+## Poor Fits
+
+Use on-demand sandboxes when process continuity is required:
+
+- User-facing interactive sessions where a rare disconnect is still disruptive.
+- Long-running stateful services that keep important state only in RAM.
+- Databases, queues, or coordinators running inside the sandbox.
+- Workloads with strict deadlines and no retry budget.
+- Any task that cannot safely restart after a partial command failure.
+
+## Alpha Limitations
+
+During alpha, resumable sandboxes have these restrictions:
+
+| Capability | Resumable alpha behavior |
+| --- | --- |
+| Process state | May restart |
+| Filesystem | Preserved across resumable restarts |
+| Notice window | Up to 25 seconds when advance notice is available |
+| Sudden host failure | May resume without advance notice |
+| Capacity | Best effort; create may fail or wait when resumable capacity is full |
+
+## Reliability Pattern
+
+For agent or batch systems, treat a resumable sandbox as durable-disk, restartable compute:
+
+1. Store task state on disk or outside the sandbox.
+2. Write outputs to durable storage as the task progresses.
+3. Keep long commands idempotent so restarts are safe.
+4. On disconnect, reconnect and check the sandbox before retrying the task.
+5. Use on-demand sandboxes for workloads with no interruption budget.
+
+```typescript TypeScript
+async function runRetryableTask(command: string) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const sandbox = await Sandbox.create({
+      resumable: true,
+      timeout: 300,
+      metadata: { workload: "retryable-batch", attempt: String(attempt) },
+    });
+
+    try {
+      const result = await sandbox.exec.run(command, { timeout: 120 });
+      return result.stdout;
+    } finally {
+      await sandbox.kill().catch(() => {});
+    }
+  }
+
+  throw new Error("task failed after resumable retries");
+}
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Elasticity" href="/sandboxes/elasticity">
+    Resource tiers and autoscaling
+  </Card>
+  <Card title="Checkpoints" href="/sandboxes/checkpoints">
+    Save and resume sandbox state
+  </Card>
+</CardGroup>
