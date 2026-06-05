@@ -1418,6 +1418,18 @@ func (s *Store) UpdateSandboxSessionForWake(ctx context.Context, sandboxID, newW
 	return err
 }
 
+// UpdateSandboxSessionForRecreate marks a resumable sandbox running on a new
+// worker after disk-only recreation. Unlike wake, this path does not require a
+// hibernation row because RAM is intentionally not preserved.
+func (s *Store) UpdateSandboxSessionForRecreate(ctx context.Context, sandboxID, newWorkerID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions
+		    SET status = 'running', worker_id = $1, stopped_at = NULL, error_msg = NULL
+		  WHERE sandbox_id = $2`,
+		newWorkerID, sandboxID)
+	return err
+}
+
 // ReconcileWorkerSessions marks stale "running" sessions for a worker on startup.
 // Sessions with an active checkpoint are set to "hibernated" (recoverable via wake-on-request).
 // Sessions without a checkpoint are set to "stopped" (VM is gone, no recovery possible).

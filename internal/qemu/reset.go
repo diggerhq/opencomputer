@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/agent"
 )
 
@@ -333,4 +334,218 @@ func (m *Manager) PowerCycleSandbox(ctx context.Context, sandboxID string) (host
 	log.Printf("qemu: PowerCycleSandbox %s: complete (%dms, port=%d, tap=%s)",
 		sandboxID, time.Since(t0).Milliseconds(), freshPort, netCfg.TAPName)
 	return freshPort, nil
+}
+
+// StartExistingSandbox cold-boots an existing sandbox directory on this worker.
+// It is the disk-only resumable recovery primitive: no savevm/loadvm, no RAM
+// preservation, just a fresh QEMU process using the existing rootfs/workspace
+// drives for the same sandbox ID.
+func (m *Manager) StartExistingSandbox(ctx context.Context, sandboxID string, cfg types.SandboxConfig) (*types.Sandbox, error) {
+	t0 := time.Now()
+
+	m.mu.Lock()
+	if _, exists := m.vms[sandboxID]; exists {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("sandbox %s is already running on this worker", sandboxID)
+	}
+	m.mu.Unlock()
+
+	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
+	rootfsPath := detectDrivePath(sandboxDir, "rootfs")
+	workspacePath := detectDrivePath(sandboxDir, "workspace")
+	if !fileExists(rootfsPath) || !fileExists(workspacePath) {
+		return nil, fmt.Errorf("sandbox %s: existing drives missing on this worker (rootfs=%v, workspace=%v, dir=%s)",
+			sandboxID, fileExists(rootfsPath), fileExists(workspacePath), sandboxDir)
+	}
+
+	var meta SandboxMeta
+	if data, err := os.ReadFile(filepath.Join(sandboxDir, "sandbox-meta.json")); err == nil {
+		_ = json.Unmarshal(data, &meta)
+	}
+	template := cfg.Template
+	if template == "" {
+		template = meta.Template
+	}
+	if template == "" {
+		template = "default"
+	}
+	cpus := cfg.CpuCount
+	if cpus <= 0 {
+		cpus = meta.CpuCount
+	}
+	if cpus <= 0 {
+		cpus = m.cfg.DefaultCPUs
+	}
+	memMB := cfg.MemoryMB
+	if memMB <= 0 {
+		memMB = meta.MemoryMB
+	}
+	if memMB <= 0 {
+		memMB = m.cfg.DefaultMemoryMB
+	}
+	guestPort := cfg.Port
+	if guestPort == 0 {
+		guestPort = meta.GuestPort
+	}
+	if guestPort == 0 {
+		guestPort = m.cfg.DefaultPort
+	}
+
+	netCfg, err := m.subnets.Allocate()
+	if err != nil {
+		return nil, fmt.Errorf("allocate subnet: %w", err)
+	}
+	if err := CreateTAP(netCfg); err != nil {
+		m.subnets.Release(netCfg.TAPName)
+		return nil, fmt.Errorf("create TAP: %w", err)
+	}
+	hostPort, err := FindFreePort()
+	if err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		return nil, fmt.Errorf("find free port: %w", err)
+	}
+	netCfg.HostPort = hostPort
+	netCfg.GuestPort = guestPort
+	if err := AddDNAT(netCfg); err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		return nil, fmt.Errorf("add DNAT: %w", err)
+	}
+	if err := AddMetadataDNAT(netCfg.TAPName, netCfg.HostIP); err != nil {
+		log.Printf("qemu: StartExistingSandbox %s: metadata DNAT failed: %v", sandboxID, err)
+	}
+
+	guestMAC := generateMAC(sandboxID)
+	guestCID := m.allocateCID()
+	bootArgs := fmt.Sprintf(
+		"console=ttyS0 reboot=k panic=1 root=/dev/vda rw ip=%s::%s:%s::eth0:off init=/sbin/init osb.gateway=%s",
+		netCfg.GuestIP, netCfg.HostIP, netCfg.Mask, netCfg.HostIP,
+	)
+	qmpSockPath := filepath.Join(sandboxDir, "qmp.sock")
+	agentSockPath := filepath.Join(sandboxDir, "agent.sock")
+	os.Remove(qmpSockPath)
+	os.Remove(agentSockPath)
+
+	logFile, err := os.Create(filepath.Join(sandboxDir, "qemu.log"))
+	if err != nil {
+		m.cleanupVM(netCfg, "")
+		return nil, fmt.Errorf("create log: %w", err)
+	}
+	args := m.buildQEMUArgs(cpus, memMB, rootfsPath, workspacePath,
+		netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
+	cmd := exec.Command(m.cfg.QEMUBin, args...)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		m.cleanupVM(netCfg, "")
+		return nil, fmt.Errorf("start QEMU: %w", err)
+	}
+	logFile.Close()
+
+	qmpClient, err := waitForQMP(qmpSockPath, 30*time.Second)
+	if err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, "")
+		return nil, fmt.Errorf("QMP connect: %w", err)
+	}
+	agentClient, err := m.waitForAgentSocket(ctx, agentSockPath, 60*time.Second)
+	if err != nil {
+		qmpClient.Close()
+		cmd.Process.Kill()
+		cmd.Wait()
+		m.cleanupVM(netCfg, "")
+		return nil, fmt.Errorf("agent connect: %w", err)
+	}
+
+	if err := syncGuestClock(ctx, agentClient); err != nil {
+		log.Printf("qemu: StartExistingSandbox %s: clock sync failed: %v", sandboxID, err)
+	}
+	mountCtx, mountCancel := context.WithTimeout(ctx, 15*time.Second)
+	_, mountErr := agentClient.Exec(mountCtx, &pb.ExecRequest{
+		Command:   "/bin/sh",
+		Args:      []string{"-c", "mount /dev/vdb /home/sandbox 2>/dev/null || true; resize2fs /dev/vdb 2>/dev/null || true; chown 1000:1000 /home/sandbox"},
+		RunAsRoot: true,
+	})
+	mountCancel()
+	if mountErr != nil {
+		log.Printf("qemu: StartExistingSandbox %s: mount /home/sandbox failed: %v", sandboxID, mountErr)
+	}
+	m.setupAptCacheBindMount(ctx, sandboxID, agentClient)
+	m.reinstallProxyCA(ctx, sandboxID, agentClient)
+
+	envsToInject := m.sealSandboxEnvs(ctx, sandboxID, netCfg, agentClient, cfg)
+	if len(envsToInject) > 0 {
+		envCtx, envCancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := agentClient.SetEnvs(envCtx, envsToInject); err != nil {
+			log.Printf("qemu: StartExistingSandbox %s: SetEnvs failed: %v", sandboxID, err)
+		}
+		envCancel()
+	}
+
+	now := time.Now()
+	timeout := time.Duration(cfg.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = 300 * time.Second
+	}
+	vm := &VMInstance{
+		ID:            sandboxID,
+		Template:      template,
+		Status:        types.SandboxStatusRunning,
+		StartedAt:     now,
+		EndAt:         now.Add(timeout),
+		CpuCount:      cpus,
+		MemoryMB:      memMB,
+		baseMemoryMB:  memMB,
+		HostPort:      hostPort,
+		GuestPort:     guestPort,
+		pid:           cmd.Process.Pid,
+		cmd:           cmd,
+		network:       netCfg,
+		sandboxDir:    sandboxDir,
+		agent:         agentClient,
+		qmpSockPath:   qmpSockPath,
+		agentSockPath: agentSockPath,
+		qmp:           qmpClient,
+		guestMAC:      guestMAC,
+		guestCID:      guestCID,
+		bootArgs:      bootArgs,
+		goldenVersion: m.goldenVersion,
+	}
+
+	m.mu.Lock()
+	m.vms[sandboxID] = vm
+	m.mu.Unlock()
+
+	if m.onSandboxReady != nil {
+		m.onSandboxReady(sandboxID, netCfg.GuestIP, template, vm.StartedAt)
+	}
+
+	sbMeta := SandboxMeta{
+		SandboxID: sandboxID,
+		Template:  template,
+		CpuCount:  cpus,
+		MemoryMB:  memMB,
+		GuestPort: guestPort,
+	}
+	if metaJSON, err := json.Marshal(sbMeta); err == nil {
+		if writeErr := os.WriteFile(filepath.Join(sandboxDir, "sandbox-meta.json"), metaJSON, 0644); writeErr != nil {
+			log.Printf("qemu: WARNING: failed to write sandbox-meta.json for %s: %v", sandboxDir, writeErr)
+		}
+	}
+
+	log.Printf("qemu: StartExistingSandbox %s: complete (%dms, port=%d→%d, tap=%s)",
+		sandboxID, time.Since(t0).Milliseconds(), hostPort, guestPort, netCfg.TAPName)
+	return &types.Sandbox{
+		ID:        sandboxID,
+		Template:  template,
+		Status:    types.SandboxStatusRunning,
+		StartedAt: now,
+		EndAt:     now.Add(timeout),
+		CpuCount:  cpus,
+		MemoryMB:  memMB,
+		HostPort:  hostPort,
+	}, nil
 }

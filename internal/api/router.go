@@ -275,6 +275,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	admin.POST("/events/clear", s.adminClearEvents)
 	admin.POST("/workers/:id/drain", s.adminSetWorkerDraining)
 	admin.POST("/workers/:id/evacuate", s.adminEvacuateWorker)
+	admin.POST("/sandboxes/:id/recreate", s.adminRecreateSandbox)
 	admin.GET("/demo/migration", s.demoPingPongPage)
 	admin.GET("/demo/chaos", s.demoChaosPage)
 	admin.GET("/demo/drain", s.adminDrainVisualizerPage)

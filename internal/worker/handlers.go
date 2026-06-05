@@ -21,6 +21,86 @@ import (
 // jsonMarshal is a helper to marshal JSON for agent session stdin commands.
 var jsonMarshal = json.Marshal
 
+type restartNoticeRequest struct {
+	NoticeSeconds int    `json:"noticeSeconds"`
+	ETA           string `json:"eta,omitempty"`
+}
+
+type recreateSandboxRequest struct {
+	SandboxID string              `json:"sandboxId"`
+	Config    types.SandboxConfig `json:"config"`
+}
+
+type existingSandboxStarter interface {
+	StartExistingSandbox(ctx context.Context, sandboxID string, cfg types.SandboxConfig) (*types.Sandbox, error)
+}
+
+func (s *HTTPServer) adminRestartNotice(c echo.Context) error {
+	var req restartNoticeRequest
+	if c.Request().Body != nil {
+		_ = c.Bind(&req)
+	}
+
+	notice := 25 * time.Second
+	if req.NoticeSeconds > 0 {
+		if req.NoticeSeconds > 120 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "noticeSeconds must be <= 120"})
+		}
+		notice = time.Duration(req.NoticeSeconds) * time.Second
+	}
+
+	var eta time.Time
+	if req.ETA != "" {
+		parsed, err := time.Parse(time.RFC3339, req.ETA)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "eta must be RFC3339"})
+		}
+		eta = parsed
+	}
+
+	notified := NotifyResumableSandboxesBeforeRestart(c.Request().Context(), s.manager, s.store, s.sandboxDBs, notice, eta)
+	return c.JSON(http.StatusAccepted, map[string]any{
+		"notified":      notified,
+		"noticeSeconds": int(notice.Seconds()),
+	})
+}
+
+func (s *HTTPServer) adminRecreateSandbox(c echo.Context) error {
+	var req recreateSandboxRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+	}
+	if req.SandboxID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandboxId required"})
+	}
+	starter, ok := s.manager.(existingSandboxStarter)
+	if !ok {
+		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "backend does not support recreating existing sandbox disks"})
+	}
+	sb, err := starter.StartExistingSandbox(c.Request().Context(), req.SandboxID, req.Config)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if s.router != nil {
+		timeout := req.Config.Timeout
+		if timeout < 0 {
+			timeout = 0
+		}
+		s.router.Register(req.SandboxID, time.Duration(timeout)*time.Second)
+	}
+	if s.sandboxDBs != nil {
+		if sdb, dbErr := s.sandboxDBs.Get(req.SandboxID); dbErr == nil {
+			_ = sdb.LogEvent("resumed", map[string]string{
+				"sandbox_id":       req.SandboxID,
+				"restart_reason":   "resumable_recreate",
+				"preserves_disk":   "true",
+				"preserves_memory": "false",
+			})
+		}
+	}
+	return c.JSON(http.StatusOK, sb)
+}
+
 func (s *HTTPServer) setTimeout(c echo.Context) error {
 	if s.router == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{

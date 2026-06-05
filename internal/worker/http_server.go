@@ -6,6 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/opensandbox/opensandbox/internal/auth"
+	"github.com/opensandbox/opensandbox/internal/db"
 	"github.com/opensandbox/opensandbox/internal/observability"
 	"github.com/opensandbox/opensandbox/internal/obslog"
 	"github.com/opensandbox/opensandbox/internal/proxy"
@@ -23,10 +24,11 @@ type HTTPServer struct {
 	sandboxDBs         *sandbox.SandboxDBManager
 	router             *sandbox.SandboxRouter
 	sandboxDomain      string
+	store              *db.Store
 }
 
 // NewHTTPServer creates a new worker HTTP server for direct SDK access.
-func NewHTTPServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, execMgr *sandbox.ExecSessionManager, jwtIssuer *auth.JWTIssuer, sandboxDBs *sandbox.SandboxDBManager, sbProxy *proxy.SandboxProxy, sbRouter *sandbox.SandboxRouter, sandboxDomain string) *HTTPServer {
+func NewHTTPServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, execMgr *sandbox.ExecSessionManager, jwtIssuer *auth.JWTIssuer, sandboxDBs *sandbox.SandboxDBManager, sbProxy *proxy.SandboxProxy, sbRouter *sandbox.SandboxRouter, sandboxDomain string, store *db.Store) *HTTPServer {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
@@ -40,6 +42,7 @@ func NewHTTPServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, execMgr *san
 		sandboxDBs:         sandboxDBs,
 		router:             sbRouter,
 		sandboxDomain:      sandboxDomain,
+		store:              store,
 	}
 
 	// Global middleware. Sentry goes first so it can observe panics and
@@ -63,6 +66,8 @@ func NewHTTPServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, execMgr *san
 	e.GET("/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok", "role": "worker"})
 	})
+	e.POST("/admin/resumable/restart-notice", s.adminRestartNotice)
+	e.POST("/admin/resumable/recreate", s.adminRecreateSandbox)
 
 	// All sandbox routes require JWT auth
 	api := e.Group("")
