@@ -33,6 +33,10 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
   Arbitrary metadata
 </ParamField>
 
+<ParamField body="resumable" type="boolean">
+  Create a [resumable sandbox](/sandboxes/resumable-sandboxes). Disk is preserved across infrastructure restarts; processes may restart.
+</ParamField>
+
 <ParamField body="cpuCount" type="number">
   CPU cores
 </ParamField>
@@ -62,6 +66,21 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
 ```typescript
 const sandbox = await Sandbox.create({ template: "my-stack", timeout: 600 });
 ```
+
+Create a resumable sandbox:
+
+```typescript
+const sandbox = await Sandbox.create({
+  resumable: true,
+  timeout: 300,
+});
+```
+
+<Note>
+  Resumable sandboxes are alpha. They preserve filesystem state across
+  infrastructure restarts, may restart running processes, and are priced roughly
+  2x cheaper than on-demand sandboxes.
+</Note>
 
 ---
 

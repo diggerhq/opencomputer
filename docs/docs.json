@@ -48,6 +48,13 @@
           "sandboxes/preview-urls",
           "sandboxes/elasticity",
           {
+            "group": "Resumable Sandboxes",
+            "tag": "Alpha",
+            "pages": [
+              "sandboxes/resumable-sandboxes"
+            ]
+          },
+          {
             "group": "Usage",
             "tag": "Preview",
             "expanded": true,
