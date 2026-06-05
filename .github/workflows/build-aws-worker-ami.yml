@@ -1,0 +1,188 @@
+name: Build AWS Worker AMI
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: AWS region to build the AMI in
+        required: true
+        default: us-east-2
+      builder_instance_type:
+        description: EC2 instance type used by Packer for the build
+        required: true
+        default: c5.4xlarge
+      cleanup_old_amis:
+        description: Deregister old OpenComputer AWS worker AMIs after a successful build
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      ssm_parameter_prefix:
+        description: SSM prefix to update after publishing the AMI
+        required: true
+        default: /opencomputer/aws-us-east-2-burst-prod
+
+env:
+  AWS_REGION: ${{ inputs.region || vars.AWS_REGION || 'us-east-2' }}
+  BUILDER_INSTANCE_TYPE: ${{ inputs.builder_instance_type || 'c5.4xlarge' }}
+  SSM_PARAMETER_PREFIX: ${{ inputs.ssm_parameter_prefix || '/opencomputer/aws-us-east-2-burst-prod' }}
+
+jobs:
+  build-ami:
+    name: Build AWS Worker AMI
+    runs-on: ubuntu-latest
+    environment: aws-prod
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PROD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+
+      - name: Build binaries (amd64)
+        run: |
+          VERSION=$(git rev-parse --short HEAD)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          AGENT_VERSION=$(git log -1 --pretty=format:%h -- cmd/agent internal/agent proto/agent)
+          if [ -z "$AGENT_VERSION" ]; then
+            AGENT_VERSION=$VERSION
+          fi
+          echo "AGENT_VERSION=$AGENT_VERSION" >> "$GITHUB_ENV"
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-X main.WorkerVersion=$VERSION -X main.AgentVersion=$AGENT_VERSION" \
+            -o bin/opensandbox-worker ./cmd/worker/
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-X main.Version=$AGENT_VERSION" \
+            -o bin/osb-agent ./cmd/agent/
+
+      - name: Package rootfs context
+        run: |
+          tar czf /tmp/packer-rootfs-ctx.tar.gz \
+            deploy/firecracker/rootfs/ \
+            deploy/ec2/build-rootfs-docker.sh \
+            scripts/claude-agent-wrapper/
+
+      - name: Package Vector configs
+        run: tar czf /tmp/packer-vector-ctx.tar.gz -C deploy vector
+
+      - name: Packer init
+        run: packer init deploy/packer/worker-ami-aws.pkr.hcl
+
+      - name: Build and publish AMI
+        run: |
+          packer build \
+            -var "worker_version=$VERSION" \
+            -var "agent_version=$AGENT_VERSION" \
+            -var "region=$AWS_REGION" \
+            -var "instance_type=$BUILDER_INSTANCE_TYPE" \
+            deploy/packer/worker-ami-aws.pkr.hcl | tee /tmp/packer-output.txt
+
+      - name: Read AMI manifest
+        id: ami
+        run: |
+          AMI_ID=$(jq -r '.builds[-1].artifact_id | split(":")[-1]' packer-manifest-aws.json)
+          if [ -z "$AMI_ID" ] || [ "$AMI_ID" = "null" ]; then
+            echo "Could not read AMI ID from packer-manifest-aws.json"
+            cat packer-manifest-aws.json
+            exit 1
+          fi
+
+          GOLDEN_VERSION=$(grep -a 'Golden version:' /tmp/packer-output.txt | tail -1 | awk '{print $NF}' | tr -d '\r')
+
+          echo "ami_id=$AMI_ID" >> "$GITHUB_OUTPUT"
+          echo "golden_version=$GOLDEN_VERSION" >> "$GITHUB_OUTPUT"
+          echo "AMI_ID=$AMI_ID" >> "$GITHUB_ENV"
+          echo "GOLDEN_VERSION=$GOLDEN_VERSION" >> "$GITHUB_ENV"
+
+      - name: Verify AMI tags
+        run: |
+          aws ec2 describe-images \
+            --region "$AWS_REGION" \
+            --image-ids "$AMI_ID" \
+            --query 'Images[0].{ImageId:ImageId,Name:Name,State:State,Role:Tags[?Key==`opensandbox-role`].Value|[0],Cloud:Tags[?Key==`opensandbox-cloud`].Value|[0],Version:Tags[?Key==`opensandbox-version`].Value|[0]}' \
+            --output table
+
+      - name: Update worker AMI pointer
+        run: |
+          aws ssm put-parameter \
+            --region "$AWS_REGION" \
+            --name "$SSM_PARAMETER_PREFIX/worker-ami-id" \
+            --type String \
+            --value "$AMI_ID" \
+            --overwrite
+
+          aws ssm put-parameter \
+            --region "$AWS_REGION" \
+            --name "$SSM_PARAMETER_PREFIX/worker-ami-version" \
+            --type String \
+            --value "$VERSION" \
+            --overwrite
+
+          echo "Updated SSM worker AMI pointer: $SSM_PARAMETER_PREFIX/worker-ami-id -> $AMI_ID"
+
+      - name: Cleanup old AMIs
+        if: ${{ inputs.cleanup_old_amis == 'true' }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t OLD_AMIS < <(
+            aws ec2 describe-images \
+              --region "$AWS_REGION" \
+              --owners self \
+              --filters \
+                "Name=tag:opensandbox-role,Values=worker" \
+                "Name=tag:opensandbox-cloud,Values=aws" \
+                "Name=state,Values=available" \
+              --query 'reverse(sort_by(Images,&CreationDate))[10:].ImageId' \
+              --output text | tr '\t' '\n' | awk 'NF'
+          )
+
+          if [ "${#OLD_AMIS[@]}" -eq 0 ]; then
+            echo "No old AMIs to clean up"
+            exit 0
+          fi
+
+          for AMI in "${OLD_AMIS[@]}"; do
+            echo "Deregistering old AMI: $AMI"
+            SNAPSHOTS=$(aws ec2 describe-images \
+              --region "$AWS_REGION" \
+              --image-ids "$AMI" \
+              --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' \
+              --output text)
+            aws ec2 deregister-image --region "$AWS_REGION" --image-id "$AMI"
+            for SNAPSHOT in $SNAPSHOTS; do
+              echo "Deleting old AMI snapshot: $SNAPSHOT"
+              aws ec2 delete-snapshot --region "$AWS_REGION" --snapshot-id "$SNAPSHOT" || true
+            done
+          done
+
+      - name: Summary
+        run: |
+          echo "## AWS Worker AMI Build Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **AMI ID:** \`$AMI_ID\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Worker version:** \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Agent version:** \`$AGENT_VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Golden version:** \`${GOLDEN_VERSION:-unknown}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Region:** \`$AWS_REGION\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SSM pointer:** \`$SSM_PARAMETER_PREFIX/worker-ami-id\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "The CP scaler reads this AMI through \`OPENSANDBOX_EC2_SSM_AMI_PARAM\`. Terraform creates the parameter but ignores value drift so later applies do not overwrite CI-published AMIs." >> "$GITHUB_STEP_SUMMARY"
