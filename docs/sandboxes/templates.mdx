@@ -195,7 +195,7 @@ curl -X POST https://app.opencomputer.dev/api/sandboxes \
 `memoryMB` is clamped to a valid range, and the response's `memoryMB` reports the effective value:
 
 - **Floor — the snapshot's own memory.** A smaller request is ignored; a fork can't start smaller than the snapshot it restores. A 4 GB snapshot forked with `memoryMB: 1024` still boots at ~4 GB.
-- **Ceiling.** Larger requests are capped to the maximum platform tier.
+- **Ceiling — 16 GB.** Larger requests are capped (`32768` → `16384`).
 
 The same `memoryMB` field works when [forking from a checkpoint](/api-reference/checkpoints/fork).
 

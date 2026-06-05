@@ -11,7 +11,7 @@ The CLI groups three related actions for sizing a sandbox:
 | [`oc sandbox scale`](#oc-sandbox-scale-id-memory-mb) | Manually resize once |
 | [`oc sandbox lock`](#oc-sandbox-lock-id) / [`unlock`](#oc-sandbox-unlock-id) / [`lock-status`](#oc-sandbox-lock-status-id) | Freeze or unfreeze the current size |
 
-CPU follows memory per the platform's tier table; you don't pick CPU separately.
+Memory tiers are fixed: `1024`, `4096`, `8192`, `16384`, `32768`, `65536` MB. CPU follows memory per the platform's tier table (e.g. 8 GB → 4 vCPU); you don't pick CPU separately.
 
 For the underlying concepts and how these three modes interact, see the [Elasticity](/sandboxes/elasticity) guide.
 
@@ -53,8 +53,8 @@ The asymmetry is deliberate: rapid response when the user notices lag, conservat
 | --- | --- |
 | `--on` | Enable autoscale (requires `--min` and `--max`). |
 | `--off` | Disable autoscale. Mutually exclusive with `--on`. |
-| `--min N` | Minimum memory in MB. |
-| `--max N` | Maximum memory in MB. Must be ≥ `--min`. |
+| `--min N` | Minimum memory tier in MB. Must be an allowed tier. |
+| `--max N` | Maximum memory tier in MB. Must be an allowed tier and ≥ `--min`. |
 
 **Errors**
 

@@ -11,7 +11,7 @@ OpenComputer sandboxes can change size at runtime. There are three knobs:
 | Track memory pressure automatically | [`set_autoscale()`](#sandbox-set-autoscale) |
 | Freeze the current size | [`set_scaling_lock()`](#sandbox-set-scaling-lock-locked) |
 
-CPU follows memory per the platform's tier table. You don't pick CPU separately.
+Memory tiers are fixed: `1024`, `4096`, `8192`, `16384`, `32768`, `65536` MB. CPU follows memory per the platform's tier table (e.g. 8 GB → 4 vCPU). You don't pick CPU separately.
 
 ## How the three interact
 
@@ -26,7 +26,7 @@ CPU follows memory per the platform's tier table. You don't pick CPU separately.
 Manually resize the sandbox. [HTTP API →](/api-reference/sandboxes/scale)
 
 <ParamField body="memory_mb" type="int" required>
-  Target memory in MB.
+  Target memory tier in MB. Must be one of the allowed tiers.
 </ParamField>
 
 **Returns:** `dict` with `sandboxID`, `memoryMB`, `cpuPercent`.
@@ -61,11 +61,11 @@ Enable or disable per-sandbox autoscale.
 </ParamField>
 
 <ParamField body="min_memory_mb" type="int">
-  Lower bound when `enabled=True`.
+  Lower bound when `enabled=True`. Must be an allowed tier.
 </ParamField>
 
 <ParamField body="max_memory_mb" type="int">
-  Upper bound when `enabled=True`. Must be ≥ `min_memory_mb`.
+  Upper bound when `enabled=True`. Must be an allowed tier and ≥ `min_memory_mb`.
 </ParamField>
 
 **Returns:** `dict` with `sandboxID`, `enabled`, `minMemoryMB`, `maxMemoryMB`.
