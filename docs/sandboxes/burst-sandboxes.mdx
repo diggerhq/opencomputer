@@ -1,25 +1,25 @@
 ---
-title: "Resumable Sandboxes"
+title: "Burst Sandboxes"
 description: "Alpha lower-cost sandboxes that preserve disk across infrastructure restarts"
 ---
 
 <Warning>
-  Resumable sandboxes are in alpha. They preserve filesystem state across
+  Burst Sandboxes are in alpha. They preserve filesystem state across
   infrastructure restarts, but running processes, in-memory state, terminal
   sessions, and open network connections may restart.
 </Warning>
 
-Resumable sandboxes are lower-cost OpenComputer sandboxes designed for workloads that can recover from a process restart. They expose the same OpenComputer API for commands, files, PTY, preview URLs, images, snapshots, scaling, and lifecycle operations.
+Burst Sandboxes are lower-cost OpenComputer sandboxes designed for workloads that can recover from a process restart. They expose the same OpenComputer API for commands, files, PTY, preview URLs, images, snapshots, scaling, and lifecycle operations.
 
 If OpenComputer receives advance infrastructure interruption notice, the sandbox gets up to **25 seconds** to flush state before it restarts on healthy capacity. The sandbox's filesystem is preserved and made available after resume.
 
 ## Pricing
 
-Resumable sandboxes are priced roughly **2x cheaper than on-demand sandboxes**.
+Burst Sandboxes are priced roughly **2x cheaper than on-demand sandboxes**.
 
-## Create a Resumable Sandbox
+## Create a Burst Sandbox
 
-Set `resumable: true` when creating the sandbox.
+Set `burst: true` when creating the sandbox.
 
 <CodeGroup>
 
@@ -27,12 +27,12 @@ Set `resumable: true` when creating the sandbox.
 import { Sandbox } from "@opencomputer/sdk";
 
 const sandbox = await Sandbox.create({
-  resumable: true,
+  burst: true,
   memoryMB: 4096,
   timeout: 300,
 });
 
-const result = await sandbox.exec.run("echo hello from resumable");
+const result = await sandbox.exec.run("echo hello from burst");
 console.log(result.stdout);
 
 await sandbox.kill();
@@ -42,11 +42,11 @@ await sandbox.kill();
 from opencomputer import Sandbox
 
 async with await Sandbox.create(
-    resumable=True,
+    burst=True,
     memory_mb=4096,
     timeout=300,
 ) as sandbox:
-    result = await sandbox.exec.run("echo hello from resumable")
+    result = await sandbox.exec.run("echo hello from burst")
     print(result.stdout)
 ```
 
@@ -55,7 +55,7 @@ curl -X POST https://app.opencomputer.dev/api/sandboxes \
   -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "resumable": true,
+    "burst": true,
     "memoryMB": 4096,
     "timeout": 300
   }'
@@ -65,7 +65,7 @@ curl -X POST https://app.opencomputer.dev/api/sandboxes \
 
 ## What Happens on Interruption
 
-Infrastructure capacity can be reclaimed or restarted by the cloud provider. When OpenComputer receives advance notice, it notifies the sandbox and starts the resumability flow.
+Infrastructure capacity can be reclaimed or restarted by the cloud provider. When OpenComputer receives advance notice, it notifies the sandbox and starts the burst restart flow.
 
 The sandbox receives these environment variables:
 
@@ -76,7 +76,7 @@ During the notice window, write important state to disk. After resume, restart y
 
 ## Good Fits
 
-Resumable sandboxes work well for cost-sensitive workloads that can restart from disk:
+Burst Sandboxes work well for cost-sensitive workloads that can restart from disk:
 
 - Batch code execution where failed jobs can be requeued.
 - CI-style checks, test runners, linters, and formatters.
@@ -96,15 +96,15 @@ Use on-demand sandboxes when process continuity is required:
 
 ## Alpha Limitations
 
-During alpha, resumable sandboxes have these restrictions:
+During alpha, Burst Sandboxes have these restrictions:
 
-| Capability | Resumable alpha behavior |
+| Capability | Burst alpha behavior |
 | --- | --- |
 | Process state | May restart |
-| Filesystem | Preserved across resumable restarts |
+| Filesystem | Preserved across burst restarts |
 | Notice window | Up to 25 seconds when advance notice is available |
 | Sudden host failure | May resume without advance notice |
-| Capacity | Best effort; create may fail or wait when resumable capacity is full |
+| Capacity | Best effort; create may fail or wait when burst capacity is full |
 
 ## Reliability Pattern
 
@@ -124,7 +124,7 @@ Example setup:
 import { Sandbox } from "@opencomputer/sdk";
 
 const sandbox = await Sandbox.create({
-  resumable: true,
+  burst: true,
   timeout: 0,
 });
 
@@ -173,7 +173,7 @@ await sandbox.exec.background("/home/sandbox/app/worker.sh", {
 ```python Python
 from opencomputer import Sandbox
 
-sandbox = await Sandbox.create(resumable=True, timeout=0)
+sandbox = await Sandbox.create(burst=True, timeout=0)
 
 await sandbox.exec.run("mkdir -p /home/sandbox/.opencomputer /home/sandbox/app")
 
