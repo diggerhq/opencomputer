@@ -86,7 +86,7 @@ class Sandbox:
         api_url: str | None = None,
         envs: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
-        resumable: bool | None = None,
+        burst: bool | None = None,
         sandbox_family: str | None = None,
         disk_mb: int | None = None,
         memory_mb: int | None = None,
@@ -104,10 +104,10 @@ class Sandbox:
             api_url: API URL (or OPENCOMPUTER_API_URL env var).
             envs: Environment variables to inject. Overrides store secrets.
             metadata: Custom metadata key-value pairs.
-            resumable: Create a resumable sandbox. Disk is preserved across
+            burst: Create a Burst Sandbox. Disk is preserved across
                 infrastructure restarts; processes may restart.
             sandbox_family: Internal/legacy placement family. Prefer
-                ``resumable=True`` for public API usage.
+                ``burst=True`` for public API usage.
             disk_mb: Workspace disk size in MB (default 20480 = 20GB). Any
                 additional GB above 20GB is metered at a per-second rate
                 comparable to EBS gp3. Closed beta: requests above 20GB
@@ -151,8 +151,8 @@ class Sandbox:
             body["envs"] = envs
         if metadata:
             body["metadata"] = metadata
-        if resumable is not None:
-            body["resumable"] = resumable
+        if burst is not None:
+            body["burst"] = burst
         if sandbox_family:
             body["sandboxFamily"] = sandbox_family
         if disk_mb is not None:
