@@ -33,6 +33,10 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
   Arbitrary metadata
 </ParamField>
 
+<ParamField body="burst" type="bool">
+  Create a [Burst Sandbox](/sandboxes/burst-sandboxes). Disk is preserved across infrastructure restarts; processes may restart.
+</ParamField>
+
 <ParamField body="image" type="Image">
   Declarative image definition (see [Image](/reference/python-sdk/image))
 </ParamField>
@@ -51,8 +55,19 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
 sandbox = await Sandbox.create(template="my-stack", timeout=600)
 ```
 
+Create a Burst Sandbox:
+
+```python
+sandbox = await Sandbox.create(
+    burst=True,
+    timeout=300,
+)
+```
+
 <Note>
-  `cpuCount` and `memoryMB` are not available in the Python SDK. Use the [HTTP API](/api-reference/sandboxes/create) for custom resources.
+  Burst Sandboxes are alpha. They preserve filesystem state across
+  infrastructure restarts, may restart running processes, and are priced roughly
+  2x cheaper than on-demand sandboxes.
 </Note>
 
 ---

@@ -1,0 +1,234 @@
+---
+title: "Burst Sandboxes"
+description: "Alpha lower-cost sandboxes that preserve disk across infrastructure restarts"
+---
+
+<Warning>
+  Burst Sandboxes are in alpha. They preserve filesystem state across
+  infrastructure restarts, but running processes, in-memory state, terminal
+  sessions, and open network connections may restart.
+</Warning>
+
+Burst Sandboxes are lower-cost OpenComputer sandboxes designed for workloads that can recover from a process restart. They expose the same OpenComputer API for commands, files, PTY, preview URLs, images, snapshots, scaling, and lifecycle operations.
+
+If OpenComputer receives advance infrastructure interruption notice, the sandbox gets up to **25 seconds** to flush state before it restarts on healthy capacity. The sandbox's filesystem is preserved and made available after resume.
+
+## Pricing
+
+Burst Sandboxes are priced roughly **2x cheaper than on-demand sandboxes**.
+
+## Create a Burst Sandbox
+
+Set `burst: true` when creating the sandbox.
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create({
+  burst: true,
+  memoryMB: 4096,
+  timeout: 300,
+});
+
+const result = await sandbox.exec.run("echo hello from burst");
+console.log(result.stdout);
+
+await sandbox.kill();
+```
+
+```python Python
+from opencomputer import Sandbox
+
+async with await Sandbox.create(
+    burst=True,
+    memory_mb=4096,
+    timeout=300,
+) as sandbox:
+    result = await sandbox.exec.run("echo hello from burst")
+    print(result.stdout)
+```
+
+```bash HTTP
+curl -X POST https://app.opencomputer.dev/api/sandboxes \
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "burst": true,
+    "memoryMB": 4096,
+    "timeout": 300
+  }'
+```
+
+</CodeGroup>
+
+## What Happens on Interruption
+
+Infrastructure capacity can be reclaimed or restarted by the cloud provider. When OpenComputer receives advance notice, it notifies the sandbox and starts the burst restart flow.
+
+The sandbox receives these environment variables:
+
+- `OPENSANDBOX_RESUMABLE=true`
+- `OPENSANDBOX_RESUME_NOTICE_SECONDS=25`
+
+During the notice window, write important state to disk. After resume, restart your process from durable state.
+
+## Good Fits
+
+Burst Sandboxes work well for cost-sensitive workloads that can restart from disk:
+
+- Batch code execution where failed jobs can be requeued.
+- CI-style checks, test runners, linters, and formatters.
+- AI agent tool calls with durable task state outside the sandbox.
+- Parallel exploration jobs where one attempt can restart.
+- Development, previews, and experiments where cost matters more than availability.
+
+## Poor Fits
+
+Use on-demand sandboxes when process continuity is required:
+
+- User-facing interactive sessions where a rare disconnect is still disruptive.
+- Long-running stateful services that keep important state only in RAM.
+- Databases, queues, or coordinators running inside the sandbox.
+- Workloads with strict deadlines and no retry budget.
+- Any task that cannot safely restart after a partial command failure.
+
+## Alpha Limitations
+
+During alpha, Burst Sandboxes have these restrictions:
+
+| Capability | Burst alpha behavior |
+| --- | --- |
+| Process state | May restart |
+| Filesystem | Preserved across burst restarts |
+| Notice window | Up to 25 seconds when advance notice is available |
+| Sudden host failure | May resume without advance notice |
+| Capacity | Best effort; create may fail or wait when burst capacity is full |
+
+## Reliability Pattern
+
+For agent or batch systems, run your work from a small process wrapper and install a restart-notice hook.
+
+1. Store task state on disk or outside the sandbox.
+2. Write outputs to durable storage as the task progresses.
+3. Install `/home/sandbox/.opencomputer/on-restart-notice` to flush or checkpoint before restart.
+4. Make your startup command resume from the last durable state.
+5. Use on-demand sandboxes for workloads with no process restart budget.
+
+Example setup:
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create({
+  burst: true,
+  timeout: 0,
+});
+
+await sandbox.exec.run("mkdir -p /home/sandbox/.opencomputer /home/sandbox/app");
+
+await sandbox.files.write(
+  "/home/sandbox/.opencomputer/on-restart-notice",
+  `#!/bin/sh
+set -eu
+echo "restart notice: ${1:-25}s" >> /home/sandbox/app/events.log
+touch /home/sandbox/app/restarting
+sync
+`,
+);
+
+await sandbox.exec.run("chmod +x /home/sandbox/.opencomputer/on-restart-notice");
+
+await sandbox.files.write(
+  "/home/sandbox/app/worker.sh",
+  `#!/bin/sh
+set -eu
+cd /home/sandbox/app
+if [ -f restarting ]; then
+  echo "resumed after restart" >> events.log
+  rm -f restarting
+else
+  echo "started" >> events.log
+fi
+
+i=$(cat counter 2>/dev/null || echo 0)
+while true; do
+  i=$((i + 1))
+  echo "$i" > counter
+  sync
+  sleep 5
+done
+`,
+);
+
+await sandbox.exec.run("chmod +x /home/sandbox/app/worker.sh");
+await sandbox.exec.background("/home/sandbox/app/worker.sh", {
+  maxRunAfterDisconnect: 0,
+});
+```
+
+```python Python
+from opencomputer import Sandbox
+
+sandbox = await Sandbox.create(burst=True, timeout=0)
+
+await sandbox.exec.run("mkdir -p /home/sandbox/.opencomputer /home/sandbox/app")
+
+await sandbox.files.write(
+    "/home/sandbox/.opencomputer/on-restart-notice",
+    """#!/bin/sh
+set -eu
+echo "restart notice: ${1:-25}s" >> /home/sandbox/app/events.log
+touch /home/sandbox/app/restarting
+sync
+""",
+)
+
+await sandbox.exec.run("chmod +x /home/sandbox/.opencomputer/on-restart-notice")
+
+await sandbox.files.write(
+    "/home/sandbox/app/worker.sh",
+    """#!/bin/sh
+set -eu
+cd /home/sandbox/app
+if [ -f restarting ]; then
+  echo "resumed after restart" >> events.log
+  rm -f restarting
+else
+  echo "started" >> events.log
+fi
+
+i=$(cat counter 2>/dev/null || echo 0)
+while true; do
+  i=$((i + 1))
+  echo "$i" > counter
+  sync
+  sleep 5
+done
+""",
+)
+
+await sandbox.exec.run("chmod +x /home/sandbox/app/worker.sh")
+await sandbox.exec.background(
+    "/home/sandbox/app/worker.sh",
+    max_run_after_disconnect=0,
+)
+```
+
+</CodeGroup>
+
+When OpenComputer receives notice, it runs the hook with the notice window in seconds. If the sandbox resumes on another worker, start your process again and read the state you wrote under `/home/sandbox/app`.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Elasticity" href="/sandboxes/elasticity">
+    Resource tiers and autoscaling
+  </Card>
+  <Card title="Checkpoints" href="/sandboxes/checkpoints">
+    Save and resume sandbox state
+  </Card>
+</CardGroup>
