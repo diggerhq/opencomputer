@@ -11,7 +11,7 @@ OpenComputer sandboxes can change size at runtime. There are three knobs:
 | Track memory pressure automatically | [`setAutoscale()`](#sandbox-setautoscale-opts) |
 | Freeze the current size | [`setScalingLock()`](#sandbox-setscalinglock-locked) |
 
-Memory tiers are fixed: `1024`, `4096`, `8192`, `16384`, `32768`, `65536` MB. CPU follows memory per the platform's tier table (e.g. 8 GB → 4 vCPU). You don't pick CPU separately.
+CPU follows memory per the platform's tier table. You don't pick CPU separately.
 
 ## How the three interact
 
@@ -26,7 +26,7 @@ Memory tiers are fixed: `1024`, `4096`, `8192`, `16384`, `32768`, `65536` MB. CP
 Manually resize the sandbox. [HTTP API →](/api-reference/sandboxes/scale)
 
 <ParamField body="memoryMB" type="number" required>
-  Target memory tier in MB. Must be one of the allowed tiers.
+  Target memory in MB.
 </ParamField>
 
 **Returns:** `Promise<{ sandboxID: string; memoryMB: number; cpuPercent: number }>`
@@ -66,11 +66,11 @@ Enable or disable per-sandbox autoscale.
 </ParamField>
 
 <ParamField body="minMemoryMB" type="number">
-  Lower bound when `enabled=true`. Must be an allowed tier.
+  Lower bound when `enabled=true`.
 </ParamField>
 
 <ParamField body="maxMemoryMB" type="number">
-  Upper bound when `enabled=true`. Must be an allowed tier and ≥ `minMemoryMB`.
+  Upper bound when `enabled=true`. Must be ≥ `minMemoryMB`.
 </ParamField>
 
 **Returns:** `Promise<{ sandboxID: string; enabled: boolean; minMemoryMB: number; maxMemoryMB: number }>`
