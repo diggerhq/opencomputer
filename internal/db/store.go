@@ -846,6 +846,8 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 		`SELECT DISTINCT worker_id FROM sandbox_sessions
 		 WHERE status = 'running'
 		   AND NOT (
+		     COALESCE((config->>'burst')::boolean, false)
+		     OR
 		     COALESCE((config->>'resumable')::boolean, false)
 		     OR config->>'sandboxFamily' = 'spot'
 		     OR config->>'sandboxFamily' = 'resumable'
@@ -872,6 +874,8 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 			`UPDATE sandbox_sessions SET status = 'error', error_msg = 'worker lost', stopped_at = now()
 			 WHERE worker_id = $1 AND status = 'running'
 			   AND NOT (
+			     COALESCE((config->>'burst')::boolean, false)
+			     OR
 			     COALESCE((config->>'resumable')::boolean, false)
 			     OR config->>'sandboxFamily' = 'spot'
 			     OR config->>'sandboxFamily' = 'resumable'
@@ -1461,6 +1465,8 @@ func (s *Store) ReconcileWorkerSessions(ctx context.Context, workerID string) (h
 		`UPDATE sandbox_sessions SET status = 'hibernated'
 		 WHERE worker_id = $1 AND status = 'running'
 		 AND NOT (
+		     COALESCE((config->>'burst')::boolean, false)
+		     OR
 		     COALESCE((config->>'resumable')::boolean, false)
 		     OR config->>'sandboxFamily' = 'spot'
 		     OR config->>'sandboxFamily' = 'resumable'
@@ -1495,6 +1501,8 @@ func (s *Store) ReconcileWorkerSessions(ctx context.Context, workerID string) (h
 		 error_msg = 'worker restarted'
 		 WHERE worker_id = $1 AND status = 'running'
 		 AND NOT (
+		     COALESCE((config->>'burst')::boolean, false)
+		     OR
 		     COALESCE((config->>'resumable')::boolean, false)
 		     OR config->>'sandboxFamily' = 'spot'
 		     OR config->>'sandboxFamily' = 'resumable'

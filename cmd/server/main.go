@@ -284,6 +284,7 @@ func main() {
 		spec := compute.WorkerSpec{
 			CellID:            cfg.CellID,
 			Region:            cfg.Region,
+			WorkerPool:        cfg.WorkerPool,
 			DatabaseURL:       workerDBURL,
 			RedisURL:          workerRedisURL,
 			JWTSecret:         cfg.JWTSecret,
@@ -441,17 +442,24 @@ func main() {
 
 		case "aws":
 			ec2Pool, err := compute.NewEC2Pool(compute.EC2PoolConfig{
-				Region:             cfg.S3Region,
-				AccessKeyID:        cfg.S3AccessKeyID,
-				SecretAccessKey:    cfg.S3SecretAccessKey,
-				AMI:                cfg.EC2AMI,
-				InstanceType:       cfg.EC2InstanceType,
-				SubnetID:           cfg.EC2SubnetID,
-				SecurityGroupID:    cfg.EC2SecurityGroupID,
-				KeyName:            cfg.EC2KeyName,
-				IAMInstanceProfile: cfg.EC2IAMInstanceProfile,
-				SecretsARN:         cfg.SecretsARN,
-				SSMParameterName:   cfg.EC2SSMParameterName,
+				Region:                    cfg.Region,
+				AccessKeyID:               cfg.EC2AccessKeyID,
+				SecretAccessKey:           cfg.EC2SecretAccessKey,
+				AMI:                       cfg.EC2AMI,
+				InstanceType:              cfg.EC2InstanceType,
+				SubnetID:                  cfg.EC2SubnetID,
+				SecurityGroupID:           cfg.EC2SecurityGroupID,
+				KeyName:                   cfg.EC2KeyName,
+				IAMInstanceProfile:        cfg.EC2IAMInstanceProfile,
+				SecretsARN:                cfg.SecretsARN,
+				SSMParameterName:          cfg.EC2SSMParameterName,
+				MarketType:                cfg.EC2MarketType,
+				CellID:                    cfg.CellID,
+				SharedSandboxDataVolumeID: cfg.EC2SharedSandboxDataVolumeID,
+				SharedGoldensVolumeID:     cfg.EC2SharedGoldensVolumeID,
+				OCFS2ClusterName:          cfg.EC2OCFS2ClusterName,
+				OCFS2ExpectedNodes:        cfg.EC2OCFS2ExpectedNodes,
+				OCFS2MaxNodes:             cfg.EC2OCFS2MaxNodes,
 			})
 			if err != nil {
 				log.Fatalf("opensandbox: failed to create EC2 pool: %v", err)
@@ -498,6 +506,7 @@ func main() {
 				MinWorkers:   cfg.MinWorkersPerRegion,
 				MaxWorkers:   cfg.MaxWorkersPerRegion,
 				IdleReserve:  cfg.IdleReserveWorkers,
+				WorkerPool:   cfg.WorkerPool,
 				MachineSizes: machineSizes,
 				// For "migrated" event emit after scaler-driven migrations
 				// (rolling replace, evacuation) — keeps D1 sandboxes_index

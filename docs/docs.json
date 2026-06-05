@@ -47,10 +47,10 @@
           "sandboxes/preview-urls",
           "sandboxes/elasticity",
           {
-            "group": "Resumable Sandboxes",
+            "group": "Burst Sandboxes",
             "tag": "Alpha",
             "pages": [
-              "sandboxes/resumable-sandboxes"
+              "sandboxes/burst-sandboxes"
             ]
           },
           {

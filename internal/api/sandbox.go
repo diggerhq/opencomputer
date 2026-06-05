@@ -37,7 +37,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 			"error": err.Error(),
 		})
 	}
-	cfg = withResumableSandboxEnv(cfg)
+	cfg = withBurstSandboxEnv(cfg)
 
 	// Validate CPU/memory against allowed tiers.
 	// Allowed tiers (memoryMB → vCPU): 1024→1, 4096→1, 8192→2, 16384→4, 32768→8, 65536→16.
@@ -186,7 +186,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 		})
 	}
 	sb.SandboxFamily = cfg.SandboxFamily
-	sb.Resumable = cfg.IsResumable()
+	sb.Burst = cfg.IsResumable()
 
 	// Register with sandbox router for rolling timeout tracking.
 	// timeout == 0 means "persistent" (no auto-hibernate). Negative values are
@@ -503,7 +503,11 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		region = "iad"
 	}
 
-	worker, grpcClient, err := s.workerRegistry.GetLeastLoadedWorker(region)
+	workerPool := controlplane.WorkerPoolOnDemand
+	if cfg.IsResumable() {
+		workerPool = controlplane.WorkerPoolBurst
+	}
+	worker, grpcClient, err := s.workerRegistry.GetLeastLoadedWorkerForPool(region, workerPool)
 	if err != nil {
 		// No worker immediately available — poll for up to 30s
 		// (scaler may be launching a new worker)
@@ -514,17 +518,17 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 			select {
 			case <-deadline:
 				return c.JSON(http.StatusServiceUnavailable, map[string]string{
-					"error": "no workers available in region " + region + " (waited 30s)",
+					"error": fmt.Sprintf("no %s workers available in region %s (waited 30s)", workerPool, region),
 				})
 			case <-ctx.Done():
 				return c.JSON(http.StatusServiceUnavailable, map[string]string{
 					"error": "request cancelled while waiting for capacity",
 				})
 			case <-ticker.C:
-				worker, grpcClient, err = s.workerRegistry.GetLeastLoadedWorker(region)
+				worker, grpcClient, err = s.workerRegistry.GetLeastLoadedWorkerForPool(region, workerPool)
 			}
 		}
-		log.Printf("sandbox: worker became available after queuing (region=%s)", region)
+		log.Printf("sandbox: %s worker became available after queuing (region=%s)", workerPool, region)
 	}
 
 	// Resolve template (org-scoped lookup with public fallback).
@@ -687,7 +691,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		"cpuCount":      cfg.CpuCount,
 		"memoryMB":      cfg.MemoryMB,
 		"sandboxFamily": cfg.SandboxFamily,
-		"resumable":     cfg.IsResumable(),
+		"burst":         cfg.IsResumable(),
 	}
 	if s.sandboxDomain != "" {
 		resp["sandboxDomain"] = s.sandboxDomain
@@ -1213,14 +1217,15 @@ func isSpotSandboxSession(session *db.SandboxSession) bool {
 	return sandboxSessionFamily(session) == types.SandboxFamilySpot
 }
 
-func withResumableSandboxEnv(cfg types.SandboxConfig) types.SandboxConfig {
+func withBurstSandboxEnv(cfg types.SandboxConfig) types.SandboxConfig {
 	if !cfg.IsResumable() {
 		return cfg
 	}
-	envs := make(map[string]string, len(cfg.Envs)+2)
+	envs := make(map[string]string, len(cfg.Envs)+3)
 	for k, v := range cfg.Envs {
 		envs[k] = v
 	}
+	envs["OPENSANDBOX_BURST"] = "true"
 	envs["OPENSANDBOX_RESUMABLE"] = "true"
 	envs["OPENSANDBOX_RESUME_NOTICE_SECONDS"] = "25"
 	cfg.Envs = envs

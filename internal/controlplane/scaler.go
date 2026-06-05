@@ -90,6 +90,7 @@ type ScalerConfig struct {
 	MinWorkers  int           // minimum total workers per region (0 = default 1). Always kept running.
 	MaxWorkers  int           // maximum workers per region (0 = default 10). Hard cap to prevent runaway launches.
 	IdleReserve int           // target idle (0 sandbox) workers for burst absorption (0 = default 1). Separate from MinWorkers.
+	WorkerPool  string        // optional placement pool filter: ondemand or burst
 
 	// Event emit for D1 sandboxes_index sync. After a scaler-triggered
 	// migration succeeds (rolling replace, evacuation), XADD a "migrated"
@@ -167,6 +168,7 @@ type Scaler struct {
 	minWorkers  int
 	maxWorkers  int
 	idleReserve int
+	workerPool  string
 
 	rdb    *redis.Client
 	cellID string
@@ -221,6 +223,7 @@ func NewScaler(cfg ScalerConfig) *Scaler {
 		minWorkers:   minWorkers,
 		maxWorkers:   maxWorkers,
 		idleReserve:  idleReserve,
+		workerPool:   cfg.WorkerPool,
 		machineSizes: cfg.MachineSizes,
 		rdb:          cfg.RedisClient,
 		cellID:       cfg.CellID,
@@ -268,7 +271,7 @@ func (s *Scaler) Start() {
 			}
 		}
 	}()
-	log.Printf("scaler: autoscaling controller started (interval=%s, cooldown=%s)", s.interval, s.cooldown)
+	log.Printf("scaler: autoscaling controller started (pool=%s, interval=%s, cooldown=%s)", NormalizeWorkerPool(s.workerPool), s.interval, s.cooldown)
 }
 
 // Stop stops the autoscaling loop. Can be called multiple times (idempotent).
@@ -282,6 +285,51 @@ func (s *Scaler) Stop() {
 	s.running = false
 	s.mu.Unlock()
 	s.wg.Wait()
+}
+
+func (s *Scaler) workersByRegion(region string) []*WorkerInfo {
+	workers := s.registry.GetWorkersByRegion(region)
+	if s.workerPool == "" {
+		return workers
+	}
+	pool := NormalizeWorkerPool(s.workerPool)
+	filtered := workers[:0]
+	for _, w := range workers {
+		if NormalizeWorkerPool(w.Pool) == pool {
+			filtered = append(filtered, w)
+		}
+	}
+	return filtered
+}
+
+func (s *Scaler) regionUtilization(workers []*WorkerInfo) float64 {
+	if len(workers) == 0 {
+		return 0
+	}
+	var totalCapacity, totalCurrent int
+	for _, w := range workers {
+		totalCapacity += w.Capacity
+		totalCurrent += w.Current
+	}
+	if totalCapacity == 0 {
+		return 0
+	}
+	return float64(totalCurrent) / float64(totalCapacity)
+}
+
+func (s *Scaler) regionResourcePressure(workers []*WorkerInfo) (maxCPU, maxMem, maxDisk float64) {
+	for _, w := range workers {
+		if w.CPUPct > maxCPU {
+			maxCPU = w.CPUPct
+		}
+		if w.MemPct > maxMem {
+			maxMem = w.MemPct
+		}
+		if w.DiskPct > maxDisk {
+			maxDisk = w.DiskPct
+		}
+	}
+	return maxCPU, maxMem, maxDisk
 }
 
 // EvacuateWorker starts the normal live-migration drain loop for a specific
@@ -403,9 +451,9 @@ func (s *Scaler) evaluateRegion(ctx context.Context, region string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	workers := s.registry.GetWorkersByRegion(region)
-	utilization := s.registry.RegionUtilization(region)
-	maxCPU, maxMem, maxDisk := s.registry.RegionResourcePressure(region)
+	workers := s.workersByRegion(region)
+	utilization := s.regionUtilization(workers)
+	maxCPU, maxMem, maxDisk := s.regionResourcePressure(workers)
 
 	// Expire stale pending launches
 	s.expirePending(region)
@@ -660,7 +708,7 @@ func (s *Scaler) expirePending(region string) {
 
 	// Get currently registered worker machine IDs
 	registered := make(map[string]bool)
-	for _, w := range s.registry.GetWorkersByRegion(region) {
+	for _, w := range s.workersByRegion(region) {
 		if w.MachineID != "" {
 			registered[w.MachineID] = true
 		}
@@ -852,7 +900,7 @@ func (s *Scaler) evacuateHotWorkers(_ context.Context, region string, workers []
 // need 2x the workers of one at 50% actual — expensive dead weight for an
 // idle-heavy workload like sandboxes.
 func (s *Scaler) findMigrationTarget(region, excludeWorkerID string, requiredMemMB int32) *WorkerInfo {
-	workers := s.registry.GetWorkersByRegion(region)
+	workers := s.workersByRegion(region)
 
 	var best *WorkerInfo
 	bestScore := -1.0
@@ -1306,7 +1354,7 @@ func (s *Scaler) drainWorker(workerID, machineID, region, reason string) {
 		// utilization-based scale-up path in Evaluate() won't trigger.
 		if probe := s.findMigrationTarget(region, workerID, 0); probe == nil {
 			effective := 0
-			for _, w := range s.registry.GetWorkersByRegion(region) {
+			for _, w := range s.workersByRegion(region) {
 				if !s.state.IsDraining(w.MachineID) {
 					effective++
 				}
@@ -1434,7 +1482,7 @@ func (s *Scaler) checkDrainingWorkers(ctx context.Context, region string) {
 		}
 
 		// Check if worker has 0 sandboxes
-		workers := s.registry.GetWorkersByRegion(region)
+		workers := s.workersByRegion(region)
 		for _, w := range workers {
 			if w.MachineID == machineID && w.Current == 0 {
 				log.Printf("scaler: worker %s fully drained (0 sandboxes), destroying machine %s",

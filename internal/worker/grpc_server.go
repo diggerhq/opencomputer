@@ -220,7 +220,8 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		SecretEnvs:         req.SecretEnvs,
 		DiskMB:             int(req.DiskMb),
 	}
-	if cfg.Envs["OPENSANDBOX_RESUMABLE"] == "true" {
+	if cfg.Envs["OPENSANDBOX_BURST"] == "true" || cfg.Envs["OPENSANDBOX_RESUMABLE"] == "true" {
+		cfg.Burst = true
 		cfg.Resumable = true
 		cfg.SandboxFamily = types.SandboxFamilySpot
 	}

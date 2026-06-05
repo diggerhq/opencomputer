@@ -40,8 +40,9 @@ type MachineOpts struct {
 // cloud means writing a new Pool; the CP doesn't change.
 type WorkerSpec struct {
 	// Cell + region identity
-	CellID string // "{cloud}-{region}-{slot}", e.g. "azure-us-west-2-b"
-	Region string // AWS-style hyphenated, e.g. "us-west-2", "us-east-1"
+	CellID     string // "{cloud}-{region}-{slot}", e.g. "azure-us-west-2-b"
+	Region     string // AWS-style hyphenated, e.g. "us-west-2", "us-east-1"
+	WorkerPool string // "ondemand" or "burst"; empty means ondemand
 
 	// Connectivity back to the control plane
 	DatabaseURL string
@@ -128,6 +129,7 @@ func BuildWorkerEnv(spec WorkerSpec) string {
 		{"OPENSANDBOX_JWT_SECRET", spec.JWTSecret},
 		{"OPENSANDBOX_REGION", spec.Region},
 		{"OPENSANDBOX_CELL_ID", spec.CellID},
+		{"OPENSANDBOX_WORKER_POOL", spec.WorkerPool},
 		{"OPENSANDBOX_MAX_CAPACITY", itoa(spec.MaxCapacity)},
 		{"OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB", itoa(spec.DefaultMemoryMB)},
 		{"OPENSANDBOX_DEFAULT_SANDBOX_CPUS", itoa(spec.DefaultCPUs)},

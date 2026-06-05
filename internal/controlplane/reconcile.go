@@ -223,10 +223,11 @@ func recreateResumableSandbox(ctx context.Context, registry *RedisWorkerRegistry
 	if cfg.Envs == nil {
 		cfg.Envs = map[string]string{}
 	}
+	cfg.Envs["OPENSANDBOX_BURST"] = "true"
 	cfg.Envs["OPENSANDBOX_RESUMABLE"] = "true"
 	cfg.Envs["OPENSANDBOX_RESUME_NOTICE_SECONDS"] = "25"
 
-	worker, client, err := registry.GetLeastLoadedWorker(session.Region)
+	worker, client, err := registry.GetLeastLoadedWorkerForPool(session.Region, WorkerPoolBurst)
 	if err != nil {
 		return true, fmt.Errorf("pick worker: %w", err)
 	}

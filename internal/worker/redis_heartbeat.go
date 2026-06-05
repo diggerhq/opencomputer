@@ -13,15 +13,16 @@ import (
 
 // redisHeartbeatPayload is the JSON structure published to Redis.
 type redisHeartbeatPayload struct {
-	WorkerID  string  `json:"worker_id"`
-	MachineID string  `json:"machine_id,omitempty"` // EC2 instance ID (e.g. i-099088f8ac4a34ef3)
-	Region    string  `json:"region"`
-	GRPCAddr  string  `json:"grpc_addr"`
-	HTTPAddr  string  `json:"http_addr"`
-	Capacity  int     `json:"capacity"`
-	Current   int     `json:"current"`
-	CPUPct    float64 `json:"cpu_pct"`
-	MemPct    float64 `json:"mem_pct"`
+	WorkerID          string  `json:"worker_id"`
+	MachineID         string  `json:"machine_id,omitempty"` // EC2 instance ID (e.g. i-099088f8ac4a34ef3)
+	Pool              string  `json:"pool,omitempty"`
+	Region            string  `json:"region"`
+	GRPCAddr          string  `json:"grpc_addr"`
+	HTTPAddr          string  `json:"http_addr"`
+	Capacity          int     `json:"capacity"`
+	Current           int     `json:"current"`
+	CPUPct            float64 `json:"cpu_pct"`
+	MemPct            float64 `json:"mem_pct"`
 	DiskPct           float64 `json:"disk_pct"`
 	TotalMemoryMB     int     `json:"total_memory_mb,omitempty"`
 	CommittedMemoryMB int     `json:"committed_memory_mb,omitempty"`
@@ -52,21 +53,22 @@ type SandboxStatsWire struct {
 //  1. SETs worker:{id} with a 30s TTL (auto-expires if worker dies)
 //  2. PUBLISHes to workers:heartbeat for real-time server notification
 type RedisHeartbeat struct {
-	rdb       *redis.Client
-	workerID  string
-	machineID string
-	region    string
-	grpcAddr  string
-	httpAddr  string
-	getStats         func() (capacity, current int, cpuPct, memPct, diskPct float64)
-	getMemoryInfo    func() (totalMB, committedMB int) // optional: committed memory for dynamic capacity
-	getSandboxStats  func() map[string]SandboxStatsWire // optional: per-sandbox stats for autoscaler
-	onReconnect      func() // called when heartbeat succeeds after a previous failure
-	goldenVersion string
-	workerVersion string
-	wasDown       bool   // true if the last publish failed (used to detect reconnect)
-	stop          chan struct{}
-	stopOnce      sync.Once // guards close(stop) + rdb.Del — Stop() may be called from preemption handler and defer
+	rdb             *redis.Client
+	workerID        string
+	machineID       string
+	pool            string
+	region          string
+	grpcAddr        string
+	httpAddr        string
+	getStats        func() (capacity, current int, cpuPct, memPct, diskPct float64)
+	getMemoryInfo   func() (totalMB, committedMB int)  // optional: committed memory for dynamic capacity
+	getSandboxStats func() map[string]SandboxStatsWire // optional: per-sandbox stats for autoscaler
+	onReconnect     func()                             // called when heartbeat succeeds after a previous failure
+	goldenVersion   string
+	workerVersion   string
+	wasDown         bool // true if the last publish failed (used to detect reconnect)
+	stop            chan struct{}
+	stopOnce        sync.Once // guards close(stop) + rdb.Del — Stop() may be called from preemption handler and defer
 }
 
 // NewRedisHeartbeat creates a new heartbeat publisher.
@@ -99,6 +101,12 @@ func NewRedisHeartbeat(redisURL, workerID, region, grpcAddr, httpAddr string) (*
 		httpAddr: httpAddr,
 		stop:     make(chan struct{}),
 	}, nil
+}
+
+// SetPool sets the placement pool advertised by this worker. Empty defaults
+// to ondemand on the control plane for backward compatibility.
+func (h *RedisHeartbeat) SetPool(pool string) {
+	h.pool = pool
 }
 
 // SetMachineID sets the EC2 instance ID for the heartbeat (used by scaler for drain/terminate).
@@ -161,15 +169,16 @@ func (h *RedisHeartbeat) publish() {
 	capacity, current, cpuPct, memPct, diskPct := h.getStats()
 
 	payload := redisHeartbeatPayload{
-		WorkerID:  h.workerID,
-		MachineID: h.machineID,
-		Region:    h.region,
-		GRPCAddr:  h.grpcAddr,
-		HTTPAddr:  h.httpAddr,
-		Capacity:  capacity,
-		Current:   current,
-		CPUPct:    cpuPct,
-		MemPct:    memPct,
+		WorkerID:      h.workerID,
+		MachineID:     h.machineID,
+		Pool:          h.pool,
+		Region:        h.region,
+		GRPCAddr:      h.grpcAddr,
+		HTTPAddr:      h.httpAddr,
+		Capacity:      capacity,
+		Current:       current,
+		CPUPct:        cpuPct,
+		MemPct:        memPct,
 		DiskPct:       diskPct,
 		GoldenVersion: h.goldenVersion,
 		WorkerVersion: h.workerVersion,

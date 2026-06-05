@@ -54,6 +54,7 @@ const (
 type WorkerEntry struct {
 	ID                string  `json:"worker_id"`
 	MachineID         string  `json:"machine_id,omitempty"` // EC2 instance ID
+	Pool              string  `json:"pool,omitempty"`
 	Region            string  `json:"region"`
 	GRPCAddr          string  `json:"grpc_addr"`
 	HTTPAddr          string  `json:"http_addr"`
@@ -72,6 +73,20 @@ type WorkerEntry struct {
 	// capacity (~50-150 entries) so the heartbeat doesn't grow unboundedly.
 	// Consumed by the autoscaler — see GetSandboxStats accessor below.
 	Sandboxes map[string]SandboxStats `json:"sandboxes,omitempty"`
+}
+
+const (
+	WorkerPoolOnDemand = "ondemand"
+	WorkerPoolBurst    = "burst"
+)
+
+func NormalizeWorkerPool(pool string) string {
+	switch pool {
+	case WorkerPoolBurst:
+		return WorkerPoolBurst
+	default:
+		return WorkerPoolOnDemand
+	}
 }
 
 // SandboxStats is the per-sandbox snapshot ingested from worker heartbeats.
@@ -330,6 +345,7 @@ func (r *RedisWorkerRegistry) handleHeartbeat(entry WorkerEntry) {
 	existing, ok := r.workers[entry.ID]
 	if ok {
 		// Update existing entry
+		existing.Pool = NormalizeWorkerPool(entry.Pool)
 		existing.Current = entry.Current
 		existing.Capacity = entry.Capacity
 		existing.CPUPct = entry.CPUPct
@@ -361,9 +377,10 @@ func (r *RedisWorkerRegistry) handleHeartbeat(entry WorkerEntry) {
 		// on that ID so it's a cheap no-op; for rejoins, this is where we
 		// re-issue Destroy for sandboxes the cell published "stopped" for
 		// during the unreachable window. See internal/controlplane/reconcile.go.
+		entry.Pool = NormalizeWorkerPool(entry.Pool)
 		entry.Draining = drainOverride
 		r.workers[entry.ID] = &entry
-		log.Printf("redis_registry: new worker registered: %s (region=%s, grpc=%s, draining=%v)", entry.ID, entry.Region, entry.GRPCAddr, drainOverride)
+		log.Printf("redis_registry: new worker registered: %s (pool=%s, region=%s, grpc=%s, draining=%v)", entry.ID, entry.Pool, entry.Region, entry.GRPCAddr, drainOverride)
 		if r.onWorkerRejoined != nil {
 			// Fire in a goroutine — reconcile may take a few seconds (DB query
 			// + a DestroySandbox RPC per stale entry) and we don't want
@@ -490,18 +507,23 @@ func (r *RedisWorkerRegistry) dialWorkerLocked(workerID, grpcAddr string) {
 // score, since they're spikier and a transient burst shouldn't permanently
 // disprefer a worker.
 func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry, pb.SandboxWorkerClient, error) {
+	return r.GetLeastLoadedWorkerForPool(region, WorkerPoolOnDemand)
+}
+
+func (r *RedisWorkerRegistry) GetLeastLoadedWorkerForPool(region string, pool string) (*WorkerEntry, pb.SandboxWorkerClient, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	pool = NormalizeWorkerPool(pool)
 
 	routingCtx, routingCancel := context.WithTimeout(context.Background(), time.Second)
 	defer routingCancel()
 
-	eligible := r.collectEligibleLocked(region, false /* anyRegion */)
+	eligible := r.collectEligibleLocked(region, false /* anyRegion */, pool)
 	if len(eligible) == 0 && region != "" {
-		eligible = r.collectEligibleLocked(region, true /* anyRegion */)
+		eligible = r.collectEligibleLocked(region, true /* anyRegion */, pool)
 	}
 	if len(eligible) == 0 {
-		return nil, nil, fmt.Errorf("no workers available")
+		return nil, nil, fmt.Errorf("no %s workers available", pool)
 	}
 
 	// Apply the cross-CP routing counter so an in-flight placement on the
@@ -574,9 +596,12 @@ func (r *RedisWorkerRegistry) GetLeastLoadedWorker(region string) (*WorkerEntry,
 // collectEligibleLocked returns workers passing the routing eligibility gates.
 // If anyRegion is true the region filter is dropped (used for cross-region
 // fallback when a region is starved). Caller must hold r.mu.
-func (r *RedisWorkerRegistry) collectEligibleLocked(region string, anyRegion bool) []*WorkerEntry {
+func (r *RedisWorkerRegistry) collectEligibleLocked(region string, anyRegion bool, pool string) []*WorkerEntry {
 	var out []*WorkerEntry
 	for _, w := range r.workers {
+		if NormalizeWorkerPool(w.Pool) != pool {
+			continue
+		}
 		if !anyRegion && region != "" && w.Region != region {
 			continue
 		}
@@ -745,15 +770,26 @@ func (r *RedisWorkerRegistry) Regions() []string {
 
 // GetWorkersByRegion returns workers in a region (satisfies ScalerRegistry).
 func (r *RedisWorkerRegistry) GetWorkersByRegion(region string) []*WorkerInfo {
+	return r.GetWorkersByRegionAndPool(region, "")
+}
+
+func (r *RedisWorkerRegistry) GetWorkersByRegionAndPool(region, pool string) []*WorkerInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if pool != "" {
+		pool = NormalizeWorkerPool(pool)
+	}
 
 	var result []*WorkerInfo
 	for _, w := range r.workers {
+		if pool != "" && NormalizeWorkerPool(w.Pool) != pool {
+			continue
+		}
 		if w.Region == region {
 			result = append(result, &WorkerInfo{
 				ID:                w.ID,
 				MachineID:         w.MachineID,
+				Pool:              NormalizeWorkerPool(w.Pool),
 				Region:            w.Region,
 				GRPCAddr:          w.GRPCAddr,
 				HTTPAddr:          w.HTTPAddr,

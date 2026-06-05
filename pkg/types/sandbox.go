@@ -34,7 +34,7 @@ type Sandbox struct {
 	CpuCount      int               `json:"cpuCount"`
 	MemoryMB      int               `json:"memoryMB"`
 	SandboxFamily string            `json:"sandboxFamily,omitempty"`
-	Resumable     bool              `json:"resumable,omitempty"`
+	Burst         bool              `json:"burst,omitempty"`
 	MachineID     string            `json:"machineID,omitempty"`
 	// ConnectURL and Token are currently unused by SDKs. All data-plane traffic
 	// flows through the control plane's SandboxAPIProxy, which proxies to workers
@@ -54,12 +54,16 @@ type SandboxConfig struct {
 	MemoryMB int               `json:"memoryMB,omitempty"` // default 256
 	DiskMB   int               `json:"diskMB,omitempty"`   // workspace disk in MB (default 20480)
 	// SandboxFamily selects an internal placement family. Empty is the default
-	// on-demand family. "spot" routes through resumable spare-capacity workers.
+	// on-demand family. "spot" routes through burst spare-capacity workers.
 	SandboxFamily string `json:"sandboxFamily,omitempty"`
-	// Resumable selects the alpha lower-cost resumable sandbox tier. Resumable
-	// sandboxes preserve disk across infrastructure restarts but do not
-	// guarantee running process or memory survival. Internally this maps to the
-	// spot placement family while that tier is backed by spare cloud capacity.
+	// Burst selects the alpha lower-cost Burst Sandbox tier. Burst Sandboxes
+	// preserve disk across infrastructure restarts but do not guarantee running
+	// process or memory survival. Internally this maps to the spot placement
+	// family while that tier is backed by spare cloud capacity.
+	Burst bool `json:"burst,omitempty"`
+	// Resumable is the legacy public field name for Burst Sandboxes. Keep
+	// accepting it for existing callers and rows, but prefer Burst for new API
+	// requests/responses.
 	Resumable bool              `json:"resumable,omitempty"`
 	Envs      map[string]string `json:"envs,omitempty"`
 	Port      int               `json:"port,omitempty"` // container port to expose via subdomain (default 80)
@@ -206,7 +210,7 @@ func ValidateResourceTier(cfg *SandboxConfig) error {
 // ApplySandboxFamilyDefaultsAndValidate normalizes alpha sandbox-family options
 // before regular resource-tier validation.
 func ApplySandboxFamilyDefaultsAndValidate(cfg *SandboxConfig) error {
-	if cfg.Resumable {
+	if cfg.Burst || cfg.Resumable {
 		if cfg.SandboxFamily == "" || cfg.SandboxFamily == "default" {
 			cfg.SandboxFamily = SandboxFamilySpot
 		}
@@ -217,12 +221,16 @@ func ApplySandboxFamilyDefaultsAndValidate(cfg *SandboxConfig) error {
 	case "default":
 		cfg.SandboxFamily = SandboxFamilyDefault
 		return nil
+	case "burst":
+		cfg.SandboxFamily = SandboxFamilySpot
+		cfg.Burst = true
+		return ApplySandboxFamilyDefaultsAndValidate(cfg)
 	case "resumable":
 		cfg.SandboxFamily = SandboxFamilySpot
-		cfg.Resumable = true
+		cfg.Burst = true
 		return ApplySandboxFamilyDefaultsAndValidate(cfg)
 	case SandboxFamilySpot:
-		cfg.Resumable = true
+		cfg.Burst = true
 		return nil
 	default:
 		return fmt.Errorf("unsupported sandboxFamily %q", cfg.SandboxFamily)
@@ -234,7 +242,7 @@ func (c SandboxConfig) IsSpotFamily() bool {
 }
 
 func (c SandboxConfig) IsResumable() bool {
-	return c.Resumable || c.SandboxFamily == SandboxFamilySpot
+	return c.Burst || c.Resumable || c.SandboxFamily == SandboxFamilySpot
 }
 
 // SandboxListResponse is the response for listing sandboxes.

@@ -100,6 +100,7 @@ sync`
 				Command: "/bin/sh",
 				Args:    []string{"-lc", restartNoticeScript},
 				Env: map[string]string{
+					"OPENSANDBOX_BURST":                 "true",
 					"OPENSANDBOX_RESUMABLE":             "true",
 					"OPENSANDBOX_RESUME_NOTICE_SECONDS": fmt.Sprintf("%d", noticeSeconds),
 				},

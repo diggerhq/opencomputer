@@ -104,17 +104,26 @@ type Config struct {
 	ImagesDir  string // Path to base rootfs images
 	GoldenDir  string // Path to worker-local golden VM snapshot cache
 	QEMUBin    string // Path to qemu-system binary (default: "qemu-system-x86_64")
+	WorkerPool string // Worker placement pool advertised in heartbeats: "ondemand" (default) or "burst"
 
 	// AWS EC2 compute pool (server mode only — for auto-scaling worker machines)
-	EC2AMI                string   // Custom AMI for worker instances
-	EC2InstanceType       string   // single fallback type; used only when EC2InstanceTypes is empty
-	EC2InstanceTypes      []string // ranked list of instance types tried in order on quota/capacity errors
-	EC2SubnetID           string   // VPC subnet for worker instances
-	EC2SecurityGroupID    string   // Security group (allow 8080, 9090, 9091)
-	EC2KeyName            string   // SSH key pair name (for debugging)
-	EC2WorkerImage        string   // Docker image for containerized workers
-	EC2IAMInstanceProfile string   // IAM instance profile for worker instances (Secrets Manager + S3)
-	EC2SSMParameterName   string   // SSM parameter name for dynamic AMI ID (e.g. /opensandbox/prod/worker-ami-id)
+	EC2AMI                       string   // Custom AMI for worker instances
+	EC2InstanceType              string   // single fallback type; used only when EC2InstanceTypes is empty
+	EC2InstanceTypes             []string // ranked list of instance types tried in order on quota/capacity errors
+	EC2SubnetID                  string   // VPC subnet for worker instances
+	EC2SecurityGroupID           string   // Security group (allow 8080, 9090, 9091)
+	EC2KeyName                   string   // SSH key pair name (for debugging)
+	EC2WorkerImage               string   // Docker image for containerized workers
+	EC2IAMInstanceProfile        string   // IAM instance profile for worker instances (Secrets Manager + S3)
+	EC2SSMParameterName          string   // SSM parameter name for dynamic AMI ID (e.g. /opensandbox/prod/worker-ami-id)
+	EC2MarketType                string   // empty/on-demand or spot
+	EC2AccessKeyID               string   // optional EC2-specific static credentials; empty = IAM/default chain
+	EC2SecretAccessKey           string
+	EC2SharedSandboxDataVolumeID string // optional io2 Multi-Attach volume mounted at /data/sandboxes
+	EC2SharedGoldensVolumeID     string // optional io2 Multi-Attach volume mounted read-only for golden images
+	EC2OCFS2ClusterName          string
+	EC2OCFS2ExpectedNodes        int
+	EC2OCFS2MaxNodes             int
 
 	// Azure compute pool (server mode — for auto-scaling worker VMs)
 	AzureSubscriptionID string   // Azure subscription ID
@@ -344,16 +353,25 @@ func Load() (*Config, error) {
 		ImagesDir:  os.Getenv("OPENSANDBOX_IMAGES_DIR"),  // default derived from DataDir
 		GoldenDir:  os.Getenv("OPENSANDBOX_GOLDEN_DIR"),  // default derived from DataDir
 		QEMUBin:    envOrDefault("OPENSANDBOX_QEMU_BIN", "qemu-system-x86_64"),
+		WorkerPool: envOrDefault("OPENSANDBOX_WORKER_POOL", "ondemand"),
 
-		EC2AMI:                os.Getenv("OPENSANDBOX_EC2_AMI"),
-		EC2InstanceType:       envOrDefault("OPENSANDBOX_EC2_INSTANCE_TYPE", "c7gd.metal"),
-		EC2InstanceTypes:      splitCSV(os.Getenv("OPENSANDBOX_EC2_INSTANCE_TYPES")),
-		EC2SubnetID:           os.Getenv("OPENSANDBOX_EC2_SUBNET_ID"),
-		EC2SecurityGroupID:    os.Getenv("OPENSANDBOX_EC2_SECURITY_GROUP_ID"),
-		EC2KeyName:            os.Getenv("OPENSANDBOX_EC2_KEY_NAME"),
-		EC2WorkerImage:        envOrDefault("OPENSANDBOX_EC2_WORKER_IMAGE", "opensandbox-worker:latest"),
-		EC2IAMInstanceProfile: os.Getenv("OPENSANDBOX_EC2_IAM_INSTANCE_PROFILE"),
-		EC2SSMParameterName:   os.Getenv("OPENSANDBOX_EC2_SSM_AMI_PARAM"),
+		EC2AMI:                       os.Getenv("OPENSANDBOX_EC2_AMI"),
+		EC2InstanceType:              envOrDefault("OPENSANDBOX_EC2_INSTANCE_TYPE", "c7gd.metal"),
+		EC2InstanceTypes:             splitCSV(os.Getenv("OPENSANDBOX_EC2_INSTANCE_TYPES")),
+		EC2SubnetID:                  os.Getenv("OPENSANDBOX_EC2_SUBNET_ID"),
+		EC2SecurityGroupID:           os.Getenv("OPENSANDBOX_EC2_SECURITY_GROUP_ID"),
+		EC2KeyName:                   os.Getenv("OPENSANDBOX_EC2_KEY_NAME"),
+		EC2WorkerImage:               envOrDefault("OPENSANDBOX_EC2_WORKER_IMAGE", "opensandbox-worker:latest"),
+		EC2IAMInstanceProfile:        os.Getenv("OPENSANDBOX_EC2_IAM_INSTANCE_PROFILE"),
+		EC2SSMParameterName:          os.Getenv("OPENSANDBOX_EC2_SSM_AMI_PARAM"),
+		EC2MarketType:                os.Getenv("OPENSANDBOX_EC2_MARKET_TYPE"),
+		EC2AccessKeyID:               os.Getenv("OPENSANDBOX_EC2_ACCESS_KEY_ID"),
+		EC2SecretAccessKey:           os.Getenv("OPENSANDBOX_EC2_SECRET_ACCESS_KEY"),
+		EC2SharedSandboxDataVolumeID: os.Getenv("OPENSANDBOX_SHARED_SANDBOX_DATA_VOLUME_ID"),
+		EC2SharedGoldensVolumeID:     os.Getenv("OPENSANDBOX_SHARED_GOLDENS_VOLUME_ID"),
+		EC2OCFS2ClusterName:          envOrDefault("OPENSANDBOX_OCFS2_CLUSTER_NAME", "opensandbox"),
+		EC2OCFS2ExpectedNodes:        envOrDefaultInt("OPENSANDBOX_OCFS2_EXPECTED_NODES", 1),
+		EC2OCFS2MaxNodes:             envOrDefaultInt("OPENSANDBOX_OCFS2_MAX_NODES", 4),
 
 		AzureSubscriptionID:   os.Getenv("OPENSANDBOX_AZURE_SUBSCRIPTION_ID"),
 		AzureResourceGroup:    os.Getenv("OPENSANDBOX_AZURE_RESOURCE_GROUP"),

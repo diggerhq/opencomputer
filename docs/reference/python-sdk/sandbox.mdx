@@ -33,8 +33,8 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
   Arbitrary metadata
 </ParamField>
 
-<ParamField body="resumable" type="bool">
-  Create a [resumable sandbox](/sandboxes/resumable-sandboxes). Disk is preserved across infrastructure restarts; processes may restart.
+<ParamField body="burst" type="bool">
+  Create a [Burst Sandbox](/sandboxes/burst-sandboxes). Disk is preserved across infrastructure restarts; processes may restart.
 </ParamField>
 
 <ParamField body="image" type="Image">
@@ -55,17 +55,17 @@ Create a new sandbox. [HTTP API →](/api-reference/sandboxes/create)
 sandbox = await Sandbox.create(template="my-stack", timeout=600)
 ```
 
-Create a resumable sandbox:
+Create a Burst Sandbox:
 
 ```python
 sandbox = await Sandbox.create(
-    resumable=True,
+    burst=True,
     timeout=300,
 )
 ```
 
 <Note>
-  Resumable sandboxes are alpha. They preserve filesystem state across
+  Burst Sandboxes are alpha. They preserve filesystem state across
   infrastructure restarts, may restart running processes, and are priced roughly
   2x cheaper than on-demand sandboxes.
 </Note>

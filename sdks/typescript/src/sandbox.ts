@@ -13,9 +13,11 @@ function resolveApiUrl(url: string): string {
 
 export interface SandboxOpts {
   template?: string;
-  /** Create a resumable sandbox. Disk is preserved across infrastructure restarts; processes may restart. */
+  /** Create a Burst Sandbox. Disk is preserved across infrastructure restarts; processes may restart. */
+  burst?: boolean;
+  /** @deprecated Use `burst` instead. */
   resumable?: boolean;
-  /** Internal/legacy placement family. Prefer `resumable: true` for public API usage. */
+  /** Internal/legacy placement family. Prefer `burst: true` for public API usage. */
   sandboxFamily?: "spot";
   /**
    * Idle timeout in seconds after which the sandbox auto-hibernates.
@@ -51,6 +53,7 @@ interface SandboxData {
   status: string;
   templateID?: string;
   sandboxFamily?: string;
+  burst?: boolean;
   resumable?: boolean;
   connectURL?: string;
   token?: string;
@@ -266,6 +269,7 @@ export class Sandbox {
     };
     if (opts.envs) body.envs = opts.envs;
     if (opts.metadata) body.metadata = opts.metadata;
+    if (opts.burst != null) body.burst = opts.burst;
     if (opts.resumable != null) body.resumable = opts.resumable;
     if (opts.sandboxFamily) body.sandboxFamily = opts.sandboxFamily;
     if (opts.cpuCount != null) body.cpuCount = opts.cpuCount;

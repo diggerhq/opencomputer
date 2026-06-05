@@ -627,6 +627,7 @@ func main() {
 		if err != nil {
 			log.Printf("opensandbox-worker: Redis heartbeat not available: %v", err)
 		} else {
+			hb.SetPool(cfg.WorkerPool)
 			hb.SetWorkerVersion(WorkerVersion)
 			if qemuMgr != nil {
 				hb.SetGoldenVersion(qemuMgr.GoldenVersion())

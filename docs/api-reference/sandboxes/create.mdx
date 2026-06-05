@@ -21,8 +21,8 @@ Create a new sandbox.
   Memory in MB. Must match an allowed tier: `1024`, `4096`, `8192`, `16384`, `32768`, or `65536`. If omitted but `cpuCount` is set, inferred automatically.
 </ParamField>
 
-<ParamField body="resumable" type="boolean">
-  Create a [resumable sandbox](/sandboxes/resumable-sandboxes). Disk is preserved across infrastructure restarts; processes may restart.
+<ParamField body="burst" type="boolean">
+  Create a [Burst Sandbox](/sandboxes/burst-sandboxes). Disk is preserved across infrastructure restarts; processes may restart.
 </ParamField>
 
 The allowed CPU/memory combinations are:

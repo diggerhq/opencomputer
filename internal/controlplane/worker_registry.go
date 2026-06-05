@@ -15,6 +15,7 @@ import (
 type WorkerInfo struct {
 	ID                string    `json:"worker_id"`
 	MachineID         string    `json:"machine_id,omitempty"` // EC2 instance ID
+	Pool              string    `json:"pool,omitempty"`
 	Region            string    `json:"region"`
 	GRPCAddr          string    `json:"grpc_addr"`
 	HTTPAddr          string    `json:"http_addr"`

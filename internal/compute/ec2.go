@@ -63,6 +63,7 @@ func supportsEC2NestedVirtualization(instanceType string) bool {
 const (
 	// AWS tag keys (kept consistent with the Azure pool's azure-prefixed tags).
 	awsTagRole         = "opensandbox:role"
+	awsTagCell         = "opensandbox:cell"
 	awsTagInstanceType = "opensandbox:instance-type"
 	awsTagDraining     = "opensandbox:draining"
 	awsTagWorker       = "worker"
@@ -70,17 +71,24 @@ const (
 
 // EC2PoolConfig configures the EC2 compute pool.
 type EC2PoolConfig struct {
-	Region             string
-	AccessKeyID        string // empty = use default credential chain (IAM role preferred)
-	SecretAccessKey    string
-	AMI                string // static AMI ID; empty if SSMParameterName is set
-	InstanceType       string // e.g. "c7gd.metal", "r7gd.xlarge", "m7i.large"
-	SubnetID           string
-	SecurityGroupID    string
-	KeyName            string // optional SSH key pair (debug use only)
-	IAMInstanceProfile string // attached to instances; gives them Secrets Manager + S3 read
-	SecretsARN         string // Secrets Manager ARN; passed to worker via WorkerSpec.SecretsRef
-	SSMParameterName   string // SSM parameter for dynamic AMI ID (e.g. /opensandbox/dev/worker-ami-id)
+	Region                    string
+	AccessKeyID               string // empty = use default credential chain (IAM role preferred)
+	SecretAccessKey           string
+	AMI                       string // static AMI ID; empty if SSMParameterName is set
+	InstanceType              string // e.g. "c7gd.metal", "r7gd.xlarge", "m7i.large"
+	SubnetID                  string
+	SecurityGroupID           string
+	KeyName                   string // optional SSH key pair (debug use only)
+	IAMInstanceProfile        string // attached to instances; gives them Secrets Manager + S3 read
+	SecretsARN                string // Secrets Manager ARN; passed to worker via WorkerSpec.SecretsRef
+	SSMParameterName          string // SSM parameter for dynamic AMI ID (e.g. /opensandbox/dev/worker-ami-id)
+	MarketType                string // empty/on-demand or spot
+	CellID                    string
+	SharedSandboxDataVolumeID string // optional io2 Multi-Attach volume mounted at /data/sandboxes via OCFS2
+	SharedGoldensVolumeID     string // optional io2 Multi-Attach volume for golden image cache
+	OCFS2ClusterName          string
+	OCFS2ExpectedNodes        int
+	OCFS2MaxNodes             int
 }
 
 // EC2Pool implements compute.Pool using AWS EC2 instances.
@@ -162,6 +170,25 @@ func (p *EC2Pool) CreateMachine(ctx context.Context, opts MachineOpts) (*Machine
 
 	userData := p.buildUserData(opts)
 	machineName := fmt.Sprintf("osb-worker-%s", randomSuffix())
+	instanceTags := []ec2types.Tag{
+		{Key: aws.String("Name"), Value: aws.String(machineName)},
+		{Key: aws.String("Role"), Value: aws.String("worker")},
+		{Key: aws.String(awsTagRole), Value: aws.String(awsTagWorker)},
+		{Key: aws.String(awsTagInstanceType), Value: aws.String(instanceType)},
+	}
+	volumeTags := []ec2types.Tag{
+		{Key: aws.String(awsTagRole), Value: aws.String(awsTagWorker)},
+	}
+	if p.cfg.CellID != "" {
+		instanceTags = append(instanceTags,
+			ec2types.Tag{Key: aws.String("Cell"), Value: aws.String(p.cfg.CellID)},
+			ec2types.Tag{Key: aws.String(awsTagCell), Value: aws.String(p.cfg.CellID)},
+		)
+		volumeTags = append(volumeTags,
+			ec2types.Tag{Key: aws.String("Cell"), Value: aws.String(p.cfg.CellID)},
+			ec2types.Tag{Key: aws.String(awsTagCell), Value: aws.String(p.cfg.CellID)},
+		)
+	}
 
 	input := &ec2.RunInstancesInput{
 		ImageId:      aws.String(ami),
@@ -172,19 +199,22 @@ func (p *EC2Pool) CreateMachine(ctx context.Context, opts MachineOpts) (*Machine
 		TagSpecifications: []ec2types.TagSpecification{
 			{
 				ResourceType: ec2types.ResourceTypeInstance,
-				Tags: []ec2types.Tag{
-					{Key: aws.String("Name"), Value: aws.String(machineName)},
-					{Key: aws.String(awsTagRole), Value: aws.String(awsTagWorker)},
-					{Key: aws.String(awsTagInstanceType), Value: aws.String(instanceType)},
-				},
+				Tags:         instanceTags,
 			},
 			{
 				ResourceType: ec2types.ResourceTypeVolume,
-				Tags: []ec2types.Tag{
-					{Key: aws.String(awsTagRole), Value: aws.String(awsTagWorker)},
-				},
+				Tags:         volumeTags,
 			},
 		},
+	}
+	if strings.EqualFold(p.cfg.MarketType, "spot") {
+		input.InstanceMarketOptions = &ec2types.InstanceMarketOptionsRequest{
+			MarketType: ec2types.MarketTypeSpot,
+			SpotOptions: &ec2types.SpotMarketOptions{
+				InstanceInterruptionBehavior: ec2types.InstanceInterruptionBehaviorTerminate,
+				SpotInstanceType:             ec2types.SpotInstanceTypeOneTime,
+			},
+		}
 	}
 
 	if supportsEC2NestedVirtualization(instanceType) {
@@ -437,6 +467,15 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 	_ = opts // opts.Region/Size honored at instance launch; cloud-init is cell-uniform
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\nset -euo pipefail\n\n")
+	sb.WriteString("systemctl stop opensandbox-worker.service 2>/dev/null || true\n")
+	sb.WriteString("systemctl disable opensandbox-worker.service 2>/dev/null || true\n")
+	sb.WriteString("systemctl reset-failed opensandbox-worker.service 2>/dev/null || true\n\n")
+
+	sb.WriteString("# Instance identity from EC2 metadata (IMDSv2)\n")
+	sb.WriteString("TOKEN=$(curl -fsS -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')\n")
+	sb.WriteString("MY_IP=$(curl -fsS -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/local-ipv4)\n")
+	sb.WriteString("INSTANCE_ID=$(curl -fsS -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/instance-id)\n")
+	sb.WriteString("WORKER_ID=\"w-aws-${INSTANCE_ID}\"\n\n")
 
 	// NVMe instance store handling. Larger metal/x.gd instance families expose
 	// multiple NVMe drives at /dev/nvme[1-N]n1; smaller instances rely on EBS
@@ -464,6 +503,14 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 	sb.WriteString("  fi\n")
 	sb.WriteString("fi\n")
 	sb.WriteString("mkdir -p /data/sandboxes /data/firecracker/images\n")
+
+	if p.cfg.SharedSandboxDataVolumeID != "" {
+		sb.WriteString(p.sharedSandboxDataUserData())
+	}
+	if p.cfg.SharedGoldensVolumeID != "" {
+		sb.WriteString(p.sharedGoldensUserData())
+	}
+
 	sb.WriteString("# Copy AMI-baked rootfs images to data disk if not already present\n")
 	sb.WriteString("if [ -d /opt/opensandbox/images ] && [ ! -f /data/firecracker/images/default.ext4 ]; then\n")
 	sb.WriteString("  cp /opt/opensandbox/images/*.ext4 /data/firecracker/images/ 2>/dev/null || true\n")
@@ -483,10 +530,6 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 		sb.WriteString(fmt.Sprintf("echo '%s' | base64 -d > /etc/opensandbox/worker.env\n\n", envB64))
 
 		sb.WriteString("# Patch worker identity from EC2 instance metadata (IMDSv2)\n")
-		sb.WriteString("TOKEN=$(curl -s -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')\n")
-		sb.WriteString("MY_IP=$(curl -s -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/local-ipv4)\n")
-		sb.WriteString("INSTANCE_ID=$(curl -s -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/instance-id)\n")
-		sb.WriteString("WORKER_ID=\"w-aws-${INSTANCE_ID}\"\n")
 		sb.WriteString("sed -i \"s|OPENSANDBOX_GRPC_ADVERTISE=.*|OPENSANDBOX_GRPC_ADVERTISE=${MY_IP}:9090|\" /etc/opensandbox/worker.env\n")
 		sb.WriteString("sed -i \"s|OPENSANDBOX_HTTP_ADDR=.*|OPENSANDBOX_HTTP_ADDR=http://${MY_IP}:8081|\" /etc/opensandbox/worker.env\n")
 		sb.WriteString("sed -i \"s|OPENSANDBOX_WORKER_ID=.*|OPENSANDBOX_WORKER_ID=${WORKER_ID}|\" /etc/opensandbox/worker.env\n")
@@ -500,4 +543,99 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 	sb.WriteString("systemctl restart opensandbox-worker\n")
 
 	return sb.String()
+}
+
+func (p *EC2Pool) sharedSandboxDataUserData() string {
+	clusterName := p.cfg.OCFS2ClusterName
+	if clusterName == "" {
+		clusterName = "opensandbox"
+	}
+	expectedNodes := p.cfg.OCFS2ExpectedNodes
+	if expectedNodes <= 0 {
+		expectedNodes = 1
+	}
+	maxNodes := p.cfg.OCFS2MaxNodes
+	if maxNodes <= 0 {
+		maxNodes = expectedNodes
+	}
+	if maxNodes < expectedNodes {
+		maxNodes = expectedNodes
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# Shared sandbox data: OCFS2 over io2 Multi-Attach\n")
+	sb.WriteString("if ! command -v mount.ocfs2 >/dev/null 2>&1; then\n")
+	sb.WriteString("  for i in $(seq 1 120); do\n")
+	sb.WriteString("    fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || break\n")
+	sb.WriteString("    sleep 2\n")
+	sb.WriteString("  done\n")
+	sb.WriteString("  apt-get update\n")
+	sb.WriteString("  DEBIAN_FRONTEND=noninteractive apt-get install -y ocfs2-tools \"linux-modules-extra-$(uname -r)\"\n")
+	sb.WriteString("fi\n")
+	sb.WriteString(fmt.Sprintf("SANDBOX_VOLUME_ID=%q\n", p.cfg.SharedSandboxDataVolumeID))
+	sb.WriteString(fmt.Sprintf("OCFS2_CLUSTER_NAME=%q\n", clusterName))
+	sb.WriteString(fmt.Sprintf("OCFS2_EXPECTED_NODES=%d\n", expectedNodes))
+	sb.WriteString(fmt.Sprintf("OCFS2_MAX_NODES=%d\n", maxNodes))
+	sb.WriteString("aws ec2 attach-volume --region " + shellQuote(p.cfg.Region) + " --volume-id \"$SANDBOX_VOLUME_ID\" --instance-id \"$INSTANCE_ID\" --device /dev/sdg || true\n")
+	sb.WriteString("SANDBOX_DEV=\"\"\n")
+	sb.WriteString("SANDBOX_VOL_NO_DASH=\"${SANDBOX_VOLUME_ID//-/}\"\n")
+	sb.WriteString("for i in $(seq 1 180); do\n")
+	sb.WriteString("  if [ -e \"/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${SANDBOX_VOL_NO_DASH}\" ]; then\n")
+	sb.WriteString("    SANDBOX_DEV=$(readlink -f \"/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${SANDBOX_VOL_NO_DASH}\")\n")
+	sb.WriteString("  elif [ -e \"/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${SANDBOX_VOL_NO_DASH}_1\" ]; then\n")
+	sb.WriteString("    SANDBOX_DEV=$(readlink -f \"/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${SANDBOX_VOL_NO_DASH}_1\")\n")
+	sb.WriteString("  else\n")
+	sb.WriteString("    SANDBOX_DEV=$(lsblk -dn -o NAME,SERIAL | awk -v v=\"$SANDBOX_VOL_NO_DASH\" '$2 == v {print \"/dev/\"$1; exit}')\n")
+	sb.WriteString("  fi\n")
+	sb.WriteString("  [ -n \"${SANDBOX_DEV:-}\" ] && break\n")
+	sb.WriteString("  sleep 1\n")
+	sb.WriteString("done\n")
+	sb.WriteString("if [ -z \"${SANDBOX_DEV:-}\" ]; then echo \"ERROR: shared sandbox data volume not attached\"; lsblk -o NAME,MODEL,SERIAL,SIZE,FSTYPE,MOUNTPOINT || true; exit 1; fi\n")
+	sb.WriteString("mapfile -t OCFS2_NODES < <(for i in $(seq 1 60); do aws ec2 describe-instances --region " + shellQuote(p.cfg.Region) + " --filters \"Name=tag:Cell,Values=" + shellEscapedDouble(p.cfg.CellID) + "\" \"Name=tag:Role,Values=worker\" \"Name=instance-state-name,Values=running\" --query 'Reservations[].Instances[].PrivateDnsName' --output text | tr '\\t' '\\n' | awk 'NF { sub(/\\..*/, \"\", $0); print }' | sort -u; break; done)\n")
+	sb.WriteString("for i in $(seq 1 60); do\n")
+	sb.WriteString("  [ \"${#OCFS2_NODES[@]}\" -ge \"$OCFS2_EXPECTED_NODES\" ] && break\n")
+	sb.WriteString("  sleep 2\n")
+	sb.WriteString("  mapfile -t OCFS2_NODES < <(aws ec2 describe-instances --region " + shellQuote(p.cfg.Region) + " --filters \"Name=tag:Cell,Values=" + shellEscapedDouble(p.cfg.CellID) + "\" \"Name=tag:Role,Values=worker\" \"Name=instance-state-name,Values=running\" --query 'Reservations[].Instances[].PrivateDnsName' --output text | tr '\\t' '\\n' | awk 'NF { sub(/\\..*/, \"\", $0); print }' | sort -u)\n")
+	sb.WriteString("done\n")
+	sb.WriteString("if [ \"${#OCFS2_NODES[@]}\" -lt \"$OCFS2_EXPECTED_NODES\" ]; then echo \"ERROR: found ${#OCFS2_NODES[@]} OCFS2 nodes, expected $OCFS2_EXPECTED_NODES\"; exit 1; fi\n")
+	sb.WriteString("install -d -m 0755 /etc/ocfs2 /etc/sysconfig\n")
+	sb.WriteString("{ echo \"cluster:\"; echo \"  node_count = ${#OCFS2_NODES[@]}\"; echo \"  name = $OCFS2_CLUSTER_NAME\"; echo \"\"; n=0; for node in \"${OCFS2_NODES[@]}\"; do ip=$(getent ahostsv4 \"$node\" | awk '{print $1; exit}'); [ -n \"${ip:-}\" ] || { echo \"ERROR: could not resolve OCFS2 node $node\"; exit 1; }; echo \"node:\"; echo \"  ip_port = 7777\"; echo \"  ip_address = $ip\"; echo \"  number = $n\"; echo \"  name = $node\"; echo \"  cluster = $OCFS2_CLUSTER_NAME\"; echo \"\"; n=$((n + 1)); done; } > /etc/ocfs2/cluster.conf\n")
+	sb.WriteString("cat > /etc/default/o2cb <<EOF\nO2CB_ENABLED=true\nO2CB_BOOTCLUSTER=$OCFS2_CLUSTER_NAME\nO2CB_HEARTBEAT_THRESHOLD=31\nO2CB_IDLE_TIMEOUT_MS=30000\nO2CB_KEEPALIVE_DELAY_MS=2000\nO2CB_RECONNECT_DELAY_MS=2000\nEOF\n")
+	sb.WriteString("cp /etc/default/o2cb /etc/sysconfig/o2cb\n")
+	sb.WriteString("modprobe ocfs2 || true\nmodprobe ocfs2_dlmfs || true\nmodprobe ocfs2_stack_o2cb || true\nsystemctl enable --now o2cb || true\nsystemctl restart o2cb || true\n")
+	sb.WriteString("command -v o2cb >/dev/null 2>&1 && o2cb register-cluster \"$OCFS2_CLUSTER_NAME\" || true\n")
+	sb.WriteString("[ -x /etc/init.d/o2cb ] && /etc/init.d/o2cb online \"$OCFS2_CLUSTER_NAME\" || true\n")
+	sb.WriteString("mkdir -p /data/sandboxes\n")
+	sb.WriteString("FSTYPE=$(blkid -s TYPE -o value \"$SANDBOX_DEV\" 2>/dev/null || true)\n")
+	sb.WriteString("if [ -z \"$FSTYPE\" ]; then mkfs.ocfs2 -F -N \"$OCFS2_MAX_NODES\" -L opensandbox-sandboxes -T vmstore \"$SANDBOX_DEV\"; fi\n")
+	sb.WriteString("if ! grep -q 'LABEL=opensandbox-sandboxes' /etc/fstab; then echo 'LABEL=opensandbox-sandboxes /data/sandboxes ocfs2 noauto,_netdev,noatime 0 0' >> /etc/fstab; fi\n")
+	sb.WriteString("timeout 90 mount -t ocfs2 -o noatime LABEL=opensandbox-sandboxes /data/sandboxes\n")
+	sb.WriteString("chown root:root /data/sandboxes\n\n")
+	return sb.String()
+}
+
+func (p *EC2Pool) sharedGoldensUserData() string {
+	var sb strings.Builder
+	sb.WriteString("# Shared golden image volume\n")
+	sb.WriteString("mkdir -p /opt/opensandbox/goldens-shared /var/lib/opensandbox/golden\n")
+	sb.WriteString(fmt.Sprintf("GOLDENS_VOLUME_ID=%q\n", p.cfg.SharedGoldensVolumeID))
+	sb.WriteString("aws ec2 attach-volume --region " + shellQuote(p.cfg.Region) + " --volume-id \"$GOLDENS_VOLUME_ID\" --instance-id \"$INSTANCE_ID\" --device /dev/sdf || true\n")
+	sb.WriteString("GOLDENS_DEV=\"\"\n")
+	sb.WriteString("GOLDENS_VOL_NO_DASH=\"${GOLDENS_VOLUME_ID//-/}\"\n")
+	sb.WriteString("for i in $(seq 1 120); do\n")
+	sb.WriteString("  if [ -e \"/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${GOLDENS_VOL_NO_DASH}\" ]; then GOLDENS_DEV=$(readlink -f \"/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${GOLDENS_VOL_NO_DASH}\"); fi\n")
+	sb.WriteString("  [ -n \"${GOLDENS_DEV:-}\" ] && break\n")
+	sb.WriteString("  sleep 1\n")
+	sb.WriteString("done\n")
+	sb.WriteString("if [ -n \"${GOLDENS_DEV:-}\" ]; then mount -o ro,noload \"$GOLDENS_DEV\" /opt/opensandbox/goldens-shared || true; fi\n")
+	sb.WriteString("if [ -d /opt/opensandbox/goldens-shared/golden ]; then ln -sfn /opt/opensandbox/goldens-shared/golden /var/lib/opensandbox/golden; fi\n\n")
+	return sb.String()
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func shellEscapedDouble(s string) string {
+	return strings.ReplaceAll(s, `"`, `\"`)
 }
