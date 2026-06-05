@@ -476,15 +476,8 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
         if (parsed.image != null || parsed.snapshot != null) {
           return json({ error: "Burst Sandboxes do not support image or snapshot creates in alpha" }, 400);
         }
-        if ((bodyCpuCount && bodyCpuCount !== 1) || (bodyMemoryMB && bodyMemoryMB !== 1024)) {
-          return json({ error: "Burst Sandboxes are currently limited to 1 vCPU and 1024 MB memory" }, 400);
-        }
-        parsed.cpuCount = 1;
-        parsed.memoryMB = 1024;
         parsed.burst = true;
         requestedCellID = env.BURST_CELL_ID;
-        bodyCpuCount = 1;
-        bodyMemoryMB = 1024;
         bodyText = JSON.stringify(parsed);
       }
     }
