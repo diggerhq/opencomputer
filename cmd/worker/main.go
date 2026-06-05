@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -308,9 +309,15 @@ func main() {
 			if len(vms) == 0 {
 				return
 			}
-			log.Printf("opensandbox-worker: hibernating %d sandboxes...", len(vms))
+			skip := shutdownHibernateSkipSet(context.Background(), store, cfg.WorkerID, vms)
+			hibernateCount := len(vms) - len(skip)
+			if hibernateCount == 0 {
+				log.Printf("opensandbox-worker: shutdown skipping hibernation for %d sandbox(es)", len(skip))
+				return
+			}
+			log.Printf("opensandbox-worker: hibernating %d sandboxes (skipping %d)...", hibernateCount, len(skip))
 			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			results := qmMgr.HibernateAll(shutCtx, checkpointStore)
+			results := qmMgr.HibernateAllExcept(shutCtx, checkpointStore, skip)
 			cancel()
 
 			// Log which VMs were NOT hibernated
@@ -324,7 +331,7 @@ func main() {
 				log.Printf("opensandbox-worker: %d VMs failed to hibernate: %v", len(failed), failed)
 			}
 
-			processHibernateResults(results, store, checkpointStore, sandboxDBMgr, func(r interface{}) (string, string, error) {
+			processHibernateResults(results, store, checkpointStore, sandboxDBMgr, cfg.WorkerID, func(r interface{}) (string, string, error) {
 				hr := r.(qm.HibernateAllResult)
 				return hr.SandboxID, hr.HibernationKey, hr.Err
 			})
@@ -1134,6 +1141,48 @@ func deleteOldHibernation(store *storage.CheckpointStore, key string) {
 	}
 }
 
+func shutdownHibernateSkipSet(ctx context.Context, store *db.Store, workerID string, sandboxes []types.Sandbox) map[string]struct{} {
+	skip := make(map[string]struct{})
+	if store == nil {
+		return skip
+	}
+	for _, sb := range sandboxes {
+		if sb.ID == "" {
+			continue
+		}
+		session, err := store.GetSandboxSession(ctx, sb.ID)
+		if err != nil {
+			log.Printf("opensandbox-worker: shutdown hibernate: could not load session %s: %v", sb.ID, err)
+			continue
+		}
+		if session.WorkerID != workerID {
+			log.Printf("opensandbox-worker: shutdown hibernate: skipping %s; DB owner is %s, not %s", sb.ID, session.WorkerID, workerID)
+			skip[sb.ID] = struct{}{}
+			continue
+		}
+		if sandboxSessionIsResumable(session) {
+			log.Printf("opensandbox-worker: shutdown hibernate: skipping resumable sandbox %s", sb.ID)
+			skip[sb.ID] = struct{}{}
+		}
+	}
+	return skip
+}
+
+func sandboxSessionIsResumable(session *db.SandboxSession) bool {
+	if session == nil || len(session.Config) == 0 {
+		return false
+	}
+	var cfg types.SandboxConfig
+	if err := json.Unmarshal(session.Config, &cfg); err != nil {
+		return false
+	}
+	return cfg.IsResumable()
+}
+
+func sandboxSessionOwnedByWorker(session *db.SandboxSession, workerID string) bool {
+	return session != nil && session.WorkerID == workerID
+}
+
 // processHibernateResults handles results from HibernateAll for both backends.
 //
 // In addition to updating cell-local PG, we LogEvent("hibernated") into the
@@ -1143,10 +1192,32 @@ func deleteOldHibernation(store *storage.CheckpointStore, key string) {
 // sync. Without this, the bulk-shutdown path silently skipped the lifecycle
 // event the gRPC HibernateSandbox handler emits per call, and D1 stayed
 // "running" until something else nudged it.
-func processHibernateResults(results interface{}, store *db.Store, checkpointStore *storage.CheckpointStore, sandboxDBs *sandbox.SandboxDBManager, extract func(interface{}) (string, string, error)) {
+func processHibernateResults(results interface{}, store *db.Store, checkpointStore *storage.CheckpointStore, sandboxDBs *sandbox.SandboxDBManager, workerID string, extract func(interface{}) (string, string, error)) {
 	switch rs := results.(type) {
 	case []qm.HibernateAllResult:
 		for _, r := range rs {
+			var session *db.SandboxSession
+			if store != nil {
+				var err error
+				session, err = store.GetSandboxSession(context.Background(), r.SandboxID)
+				if err != nil {
+					log.Printf("opensandbox-worker: shutdown hibernate: could not load session %s: %v", r.SandboxID, err)
+				}
+			}
+			if store != nil && session != nil && !sandboxSessionOwnedByWorker(session, workerID) {
+				log.Printf("opensandbox-worker: shutdown hibernate: ignoring result for %s; DB owner is %s, not %s", r.SandboxID, session.WorkerID, workerID)
+				if sandboxDBs != nil {
+					_ = sandboxDBs.Remove(r.SandboxID)
+				}
+				continue
+			}
+			if sandboxSessionIsResumable(session) {
+				log.Printf("opensandbox-worker: shutdown hibernate: ignoring result for resumable sandbox %s", r.SandboxID)
+				if sandboxDBs != nil {
+					_ = sandboxDBs.Remove(r.SandboxID)
+				}
+				continue
+			}
 			if r.Err != nil {
 				log.Printf("opensandbox-worker: hibernate failed for %s: %v", r.SandboxID, r.Err)
 				if store != nil {
@@ -1162,14 +1233,11 @@ func processHibernateResults(results interface{}, store *db.Store, checkpointSto
 				continue
 			}
 			log.Printf("opensandbox-worker: hibernated %s (key=%s)", r.SandboxID, r.HibernationKey)
-			if store != nil {
-				session, err := store.GetSandboxSession(context.Background(), r.SandboxID)
-				if err == nil {
-					_, superseded, _ := store.CreateHibernation(context.Background(), r.SandboxID, session.OrgID,
-						r.HibernationKey, 0, session.Region, session.Template, session.Config)
-					deleteOldHibernation(checkpointStore, superseded)
-					_ = store.UpdateSandboxSessionStatus(context.Background(), r.SandboxID, "hibernated", nil)
-				}
+			if store != nil && session != nil {
+				_, superseded, _ := store.CreateHibernation(context.Background(), r.SandboxID, session.OrgID,
+					r.HibernationKey, 0, session.Region, session.Template, session.Config)
+				deleteOldHibernation(checkpointStore, superseded)
+				_ = store.UpdateSandboxSessionStatus(context.Background(), r.SandboxID, "hibernated", nil)
 			}
 			if sandboxDBs != nil {
 				if sdb, err := sandboxDBs.Get(r.SandboxID); err == nil {

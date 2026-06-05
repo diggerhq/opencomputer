@@ -87,6 +87,12 @@ func (s *HTTPServer) adminRecreateSandbox(c echo.Context) error {
 			timeout = 0
 		}
 		s.router.Register(req.SandboxID, time.Duration(timeout)*time.Second)
+		if timeout == 0 {
+			// Register applies the worker default timeout for zero values. For
+			// disk-only resumable recreates, zero means persistent: keep the
+			// router entry for request routing, but remove the idle timer.
+			s.router.SetTimeout(req.SandboxID, 0)
+		}
 	}
 	if s.sandboxDBs != nil {
 		if sdb, dbErr := s.sandboxDBs.Get(req.SandboxID); dbErr == nil {

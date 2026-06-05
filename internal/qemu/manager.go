@@ -2173,9 +2173,17 @@ type HibernateAllResult struct {
 
 // HibernateAll hibernates all running VMs concurrently.
 func (m *Manager) HibernateAll(ctx context.Context, checkpointStore *storage.CheckpointStore) []HibernateAllResult {
+	return m.HibernateAllExcept(ctx, checkpointStore, nil)
+}
+
+// HibernateAllExcept hibernates all running VMs except IDs in skip.
+func (m *Manager) HibernateAllExcept(ctx context.Context, checkpointStore *storage.CheckpointStore, skip map[string]struct{}) []HibernateAllResult {
 	m.mu.RLock()
 	ids := make([]string, 0, len(m.vms))
 	for id := range m.vms {
+		if _, ok := skip[id]; ok {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	m.mu.RUnlock()

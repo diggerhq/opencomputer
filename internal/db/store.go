@@ -835,15 +835,21 @@ func (s *Store) RecoverStaleMigrations(ctx context.Context, maxAge time.Duration
 	return int(tag.RowsAffected()), nil
 }
 
-// MarkOrphanedSandboxes marks running sandboxes on dead workers as error
-// and returns the affected (sandbox_id, org_id, worker_id) tuples so the
-// caller can publish `stopped` lifecycle events. liveWorkers is the set
-// of worker IDs currently registered. Without the returned IDs the maintenance
-// loop's PG sweep would never reach D1 sandboxes_index, which is exactly
-// the post-cutover ghost-row bug.
+// MarkOrphanedSandboxes marks non-resumable running sandboxes on dead workers
+// as error and returns the affected (sandbox_id, org_id, worker_id) tuples so
+// the caller can publish `stopped` lifecycle events. liveWorkers is the set of
+// worker IDs currently registered. Resumable sandboxes are deliberately skipped
+// here: the scaler's dead-worker recovery loop needs those rows to remain
+// running long enough to recreate them on another worker.
 func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[string]bool) ([]OrphanedSandbox, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT worker_id FROM sandbox_sessions WHERE status = 'running'`)
+		`SELECT DISTINCT worker_id FROM sandbox_sessions
+		 WHERE status = 'running'
+		   AND NOT (
+		     COALESCE((config->>'resumable')::boolean, false)
+		     OR config->>'sandboxFamily' = 'spot'
+		     OR config->>'sandboxFamily' = 'resumable'
+		   )`)
 	if err != nil {
 		return nil, err
 	}
@@ -865,6 +871,11 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 		upd, err := s.pool.Query(ctx,
 			`UPDATE sandbox_sessions SET status = 'error', error_msg = 'worker lost', stopped_at = now()
 			 WHERE worker_id = $1 AND status = 'running'
+			   AND NOT (
+			     COALESCE((config->>'resumable')::boolean, false)
+			     OR config->>'sandboxFamily' = 'spot'
+			     OR config->>'sandboxFamily' = 'resumable'
+			   )
 			 RETURNING sandbox_id, org_id, worker_id`, workerID)
 		if err != nil {
 			continue
@@ -1433,6 +1444,9 @@ func (s *Store) UpdateSandboxSessionForRecreate(ctx context.Context, sandboxID, 
 // ReconcileWorkerSessions marks stale "running" sessions for a worker on startup.
 // Sessions with an active checkpoint are set to "hibernated" (recoverable via wake-on-request).
 // Sessions without a checkpoint are set to "stopped" (VM is gone, no recovery possible).
+// Resumable sessions are skipped: their disk is the recovery source of truth,
+// so the control plane's reverse-reconcile/dead-worker path should recreate
+// them instead of converting them to hibernated/stopped on worker restart.
 // Returns the affected sandbox identities so the caller can emit lifecycle
 // events; without them D1 drifts from PG every time a worker restarts.
 func (s *Store) ReconcileWorkerSessions(ctx context.Context, workerID string) (hibernated, stopped []OrphanedSandbox, err error) {
@@ -1446,6 +1460,11 @@ func (s *Store) ReconcileWorkerSessions(ctx context.Context, workerID string) (h
 	hibernatedRows, err := tx.Query(ctx,
 		`UPDATE sandbox_sessions SET status = 'hibernated'
 		 WHERE worker_id = $1 AND status = 'running'
+		 AND NOT (
+		     COALESCE((config->>'resumable')::boolean, false)
+		     OR config->>'sandboxFamily' = 'spot'
+		     OR config->>'sandboxFamily' = 'resumable'
+		 )
 		 AND sandbox_id IN (
 		     SELECT sandbox_id FROM sandbox_hibernations
 		     WHERE restored_at IS NULL AND expired_at IS NULL
@@ -1475,6 +1494,11 @@ func (s *Store) ReconcileWorkerSessions(ctx context.Context, workerID string) (h
 		`UPDATE sandbox_sessions SET status = 'stopped', stopped_at = now(),
 		 error_msg = 'worker restarted'
 		 WHERE worker_id = $1 AND status = 'running'
+		 AND NOT (
+		     COALESCE((config->>'resumable')::boolean, false)
+		     OR config->>'sandboxFamily' = 'spot'
+		     OR config->>'sandboxFamily' = 'resumable'
+		 )
 		 RETURNING sandbox_id, org_id, worker_id`, workerID)
 	if err != nil {
 		return hibernated, nil, fmt.Errorf("failed to reconcile stopped sessions: %w", err)

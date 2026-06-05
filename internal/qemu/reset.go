@@ -337,9 +337,12 @@ func (m *Manager) PowerCycleSandbox(ctx context.Context, sandboxID string) (host
 }
 
 // StartExistingSandbox cold-boots an existing sandbox directory on this worker.
-// It is the disk-only resumable recovery primitive: no savevm/loadvm, no RAM
-// preservation, just a fresh QEMU process using the existing rootfs/workspace
-// drives for the same sandbox ID.
+// It is the disk-only resumable recovery primitive: no savevm/loadvm and no RAM
+// preservation. Only the workspace/data disk is durable; the rootfs is reset
+// from this worker's clean golden image before boot. This avoids cold-booting a
+// rootfs qcow2 that was last used by a VM restored from a golden memory snapshot
+// or killed mid-flight, both of which can leave ext4 metadata unsafe to mount
+// as a fresh boot device.
 func (m *Manager) StartExistingSandbox(ctx context.Context, sandboxID string, cfg types.SandboxConfig) (*types.Sandbox, error) {
 	t0 := time.Now()
 
@@ -351,12 +354,26 @@ func (m *Manager) StartExistingSandbox(ctx context.Context, sandboxID string, cf
 	m.mu.Unlock()
 
 	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
-	rootfsPath := detectDrivePath(sandboxDir, "rootfs")
 	workspacePath := detectDrivePath(sandboxDir, "workspace")
-	if !fileExists(rootfsPath) || !fileExists(workspacePath) {
-		return nil, fmt.Errorf("sandbox %s: existing drives missing on this worker (rootfs=%v, workspace=%v, dir=%s)",
-			sandboxID, fileExists(rootfsPath), fileExists(workspacePath), sandboxDir)
+	if !fileExists(workspacePath) {
+		return nil, fmt.Errorf("sandbox %s: existing workspace drive missing on this worker (dir=%s)", sandboxID, sandboxDir)
 	}
+	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
+	goldenRootfs := filepath.Join(m.goldenDir, "rootfs.qcow2")
+	if !fileExists(goldenRootfs) {
+		return nil, fmt.Errorf("sandbox %s: golden rootfs missing on this worker (%s)", sandboxID, goldenRootfs)
+	}
+	tmpRootfs := filepath.Join(sandboxDir, fmt.Sprintf(".rootfs.%d.tmp", time.Now().UnixNano()))
+	if err := copyFileReflink(goldenRootfs, tmpRootfs); err != nil {
+		os.Remove(tmpRootfs)
+		return nil, fmt.Errorf("reset rootfs from golden: %w", err)
+	}
+	if err := os.Rename(tmpRootfs, rootfsPath); err != nil {
+		os.Remove(tmpRootfs)
+		return nil, fmt.Errorf("replace rootfs from golden: %w", err)
+	}
+	log.Printf("qemu: StartExistingSandbox %s: rootfs reset from golden %s (%dms)",
+		sandboxID, m.goldenVersion, time.Since(t0).Milliseconds())
 
 	var meta SandboxMeta
 	if data, err := os.ReadFile(filepath.Join(sandboxDir, "sandbox-meta.json")); err == nil {

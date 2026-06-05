@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // computeGoldenVersion computes a version hash for a golden snapshot by hashing
@@ -18,6 +20,10 @@ import (
 // serve stale overlays against fresh bases, producing ext4 directory-block
 // checksum errors in guests.
 func computeGoldenVersion(baseImagePath string) (string, error) {
+	if v, err := readGoldenVersionSidecar(baseImagePath); err == nil && v != "" {
+		return v, nil
+	}
+
 	f, err := os.Open(baseImagePath)
 	if err != nil {
 		return "", fmt.Errorf("open base image: %w", err)
@@ -29,6 +35,21 @@ func computeGoldenVersion(baseImagePath string) (string, error) {
 		return "", fmt.Errorf("read base image: %w", err)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))[:16], nil
+}
+
+func readGoldenVersionSidecar(baseImagePath string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(baseImagePath), "golden-version"))
+	if err != nil {
+		return "", err
+	}
+	v := strings.TrimSpace(string(b))
+	if v == "" {
+		return "", nil
+	}
+	if len(v) > 16 {
+		v = v[:16]
+	}
+	return v, nil
 }
 
 // ComputeGoldenVersion is the exported entry point used by cmd/worker's
