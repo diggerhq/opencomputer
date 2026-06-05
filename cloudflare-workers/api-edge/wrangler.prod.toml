@@ -62,8 +62,8 @@ WORKER_ENV = "prod"
 # No prod cells registered yet. Populate when prod CPs come online and
 # their rows are written to the D1 `cells` table.
 CELLS = ""
-# Optional alpha route for sandboxFamily="spot". Leave empty to disable.
-SPOT_CELL_ID = ""
+# Optional alpha route for Burst Sandboxes. Leave empty to disable.
+BURST_CELL_ID = ""
 
 # Ship Worker logs to opencomputer-log-tail-prod → Axiom dataset cf-prod.
 [[tail_consumers]]

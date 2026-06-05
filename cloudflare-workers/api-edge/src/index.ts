@@ -33,9 +33,9 @@ export interface Env extends DashboardEnv {
   // CF_API_TOKEN and CF_ZONE_ID are optional in DashboardEnv (custom domain
   // feature gates on them). Inherited.
   ASSETS?: Fetcher;
-  // Optional alpha spot-only cell. When unset, sandboxFamily="spot" creates
+  // Optional alpha Burst Sandbox cell. When unset, burst=true creates
   // fail closed rather than silently landing on on-demand capacity.
-  SPOT_CELL_ID?: string;
+  BURST_CELL_ID?: string;
 }
 
 // ── small helpers ────────────────────────────────────────────────────────
@@ -448,7 +448,7 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
   let bodyCpuCount = 0;
   let bodyMemoryMB = 0;
   let bodyDiskMB = 0;
-  let sandboxFamily = "";
+  let burst = false;
   try {
     if (bodyText) {
       const parsed = JSON.parse(bodyText) as {
@@ -456,7 +456,7 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
         cpuCount?: unknown;
         memoryMB?: unknown;
         diskMB?: unknown;
-        sandboxFamily?: unknown;
+        burst?: unknown;
         image?: unknown;
         snapshot?: unknown;
       };
@@ -464,29 +464,25 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
       if (typeof parsed.cpuCount === "number") bodyCpuCount = parsed.cpuCount;
       if (typeof parsed.memoryMB === "number") bodyMemoryMB = parsed.memoryMB;
       if (typeof parsed.diskMB === "number") bodyDiskMB = parsed.diskMB;
-      if (typeof parsed.sandboxFamily === "string") sandboxFamily = parsed.sandboxFamily;
+      if (typeof parsed.burst === "boolean") burst = parsed.burst;
 
-      if (sandboxFamily === "default") sandboxFamily = "";
-      if (sandboxFamily && sandboxFamily !== "spot") {
-        return json({ error: `unsupported sandboxFamily ${sandboxFamily}` }, 400);
-      }
-      if (sandboxFamily === "spot") {
-        if (!env.SPOT_CELL_ID) {
-          return json({ error: "spot sandbox alpha is not configured" }, 503);
+      if (burst) {
+        if (!env.BURST_CELL_ID) {
+          return json({ error: "Burst Sandboxes alpha is not configured" }, 503);
         }
-        if (requestedCellID && requestedCellID !== env.SPOT_CELL_ID) {
-          return json({ error: "sandboxFamily spot cannot be combined with a different cellId" }, 400);
+        if (requestedCellID && requestedCellID !== env.BURST_CELL_ID) {
+          return json({ error: "burst cannot be combined with a different cellId" }, 400);
         }
         if (parsed.image != null || parsed.snapshot != null) {
-          return json({ error: "sandboxFamily spot does not support image or snapshot creates in alpha" }, 400);
+          return json({ error: "Burst Sandboxes do not support image or snapshot creates in alpha" }, 400);
         }
         if ((bodyCpuCount && bodyCpuCount !== 1) || (bodyMemoryMB && bodyMemoryMB !== 1024)) {
-          return json({ error: "sandboxFamily spot is currently limited to 1 vCPU and 1024 MB memory" }, 400);
+          return json({ error: "Burst Sandboxes are currently limited to 1 vCPU and 1024 MB memory" }, 400);
         }
         parsed.cpuCount = 1;
         parsed.memoryMB = 1024;
-        parsed.sandboxFamily = "spot";
-        requestedCellID = env.SPOT_CELL_ID;
+        parsed.burst = true;
+        requestedCellID = env.BURST_CELL_ID;
         bodyCpuCount = 1;
         bodyMemoryMB = 1024;
         bodyText = JSON.stringify(parsed);
