@@ -50,13 +50,27 @@ If both `cpuCount` and `memoryMB` are provided, they must match one of these tie
   Name of a pre-built snapshot for instant boot
 </ParamField>
 
+<ParamField body="previewAuth" type="object">
+  Opt in to bearer-token authentication on the sandbox's preview URLs. When set, every request to `https://sb-<id>-p<port>.<domain>` must include an `Authorization: Bearer <token>` (or `X-OC-Preview-Token: <token>`) header; missing or wrong → 401.
+
+  - `scheme` *(string)*: must be `"bearer"`. Reserved for HMAC/JWT later.
+  - `token` *(string)*: `"auto"` (or omitted) → server generates a 256-bit random token. An explicit string of at least 16 characters lets you bring your own.
+
+  The plaintext is returned exactly once in the response as `previewAuthToken`; only its SHA-256 hash is stored. Use [`POST /api/sandboxes/{id}/preview/rotate`](/api-reference/preview/rotate-auth) to mint a new one.
+
+  Omit this field for the legacy open behavior — preview URLs respond to anyone who can reach the hostname.
+</ParamField>
+
 <ResponseExample>
 ```json 201
 {
   "sandboxID": "sb-abc123",
   "status": "running",
   "region": "use2",
-  "workerID": "w-use2-abc123"
+  "workerID": "w-use2-abc123",
+  "previewAuthToken": "qx2sSi5IYXWBvnnRqwK9Ky_cIAI-x0Vx1bPCt0XMxsI"
 }
 ```
+
+`previewAuthToken` is only present when `previewAuth` was set in the request. Read it once and store it durably — the server will not return it again.
 </ResponseExample>

@@ -57,6 +57,37 @@ oc preview delete sb-abc123 3000
 
 Preview URLs persist across hibernation/wake cycles — no need to re-create them.
 
+## Bearer-Token Authentication
+
+By default, anyone who knows the preview hostname can hit your sandbox's port. To require an `Authorization: Bearer <token>` header on every request, opt in at create time:
+
+```bash
+oc sandbox create --preview-auth
+# Created sandbox sb-abc123 (status: running)
+# Preview auth token (shown once): qx2sSi5IYXWBvnnRqwK9Ky_cIAI-x0Vx1bPCt0XMxsI
+```
+
+Then call your preview URL with the token:
+
+```bash
+curl -H "Authorization: Bearer qx2sSi5IYX..." https://sb-abc123-p3000.workers.opencomputer.dev/
+```
+
+Bring your own token if your gateway already has a shared secret:
+
+```bash
+oc sandbox create --preview-auth-token "$GATEWAY_TOKEN"
+```
+
+Rotate the token (old one stops working immediately):
+
+```bash
+oc preview rotate-auth sb-abc123
+# New preview auth token (shown once): <new token>
+```
+
+Token is shown exactly once and only its SHA-256 hash is stored. See [Authentication](/sandboxes/preview-urls#authentication) for the SDK equivalents.
+
 <Tip>
   SDK usage: [Preview URLs](/sandboxes/preview-urls). Full flags: [CLI Reference](/reference/cli#oc-preview).
 </Tip>

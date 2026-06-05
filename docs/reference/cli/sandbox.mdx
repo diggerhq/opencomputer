@@ -29,8 +29,18 @@ Create a new sandbox. **Alias:** `oc create`
   Metadata `KEY=VALUE` (repeatable)
 </ParamField>
 
+<ParamField query="--preview-auth" type="bool">
+  Require a bearer token on the sandbox's preview URLs. The server generates a 256-bit random token and prints it once. See [Preview-URL authentication](/sandboxes/preview-urls#authentication).
+</ParamField>
+
+<ParamField query="--preview-auth-token" type="string">
+  Bring your own preview-URL bearer token (≥16 characters). Implies `--preview-auth`. Useful when your gateway already has a shared secret.
+</ParamField>
+
 ```bash
 oc create --timeout 600 --cpu 2 --memory 1024 --env NODE_ENV=production
+oc create --preview-auth                                    # server-generated token
+oc create --preview-auth-token "$GATEWAY_TOKEN"             # bring your own
 ```
 
 ---

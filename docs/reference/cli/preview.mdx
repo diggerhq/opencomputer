@@ -34,3 +34,20 @@ Output columns: `PORT`, `HOSTNAME`, `SSL`, `CREATED`
 ## `oc preview delete <sandbox-id> <port>`
 
 [HTTP API →](/api-reference/preview/delete)
+
+---
+
+## `oc preview rotate-auth <sandbox-id>`
+
+[HTTP API →](/api-reference/preview/rotate-auth)
+
+Mint a new bearer token for the sandbox's preview URLs. The old token stops working immediately. The new plaintext is printed once — capture it before moving on; the server will not return it again.
+
+```bash
+oc preview rotate-auth sb-abc
+# New preview auth token (shown once): qx2sSi5IYX...
+```
+
+Calling this on a sandbox that was created without `--preview-auth` installs a token and starts enforcing the gate from that point on.
+
+See [`oc sandbox create --preview-auth`](/reference/cli/sandbox#oc-sandbox-create) to enable at create time, or [`--preview-auth-token`](/reference/cli/sandbox#oc-sandbox-create) to bring your own.

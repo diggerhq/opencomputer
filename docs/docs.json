@@ -302,7 +302,8 @@
             "pages": [
               "api-reference/preview/create",
               "api-reference/preview/list",
-              "api-reference/preview/delete"
+              "api-reference/preview/delete",
+              "api-reference/preview/rotate-auth"
             ]
           },
           {

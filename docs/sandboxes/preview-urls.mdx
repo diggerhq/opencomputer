@@ -23,6 +23,115 @@ console.log(sandbox.getPreviewDomain(3000));
 
 The `domain` and `getPreviewDomain(port)` properties construct the preview hostname directly — no API call needed. Traffic is routed through the control plane proxy to the correct sandbox.
 
+## Authentication
+
+Preview URLs are public by default — anyone who can guess or learn the hostname can hit your sandbox's port. To require a bearer token in front of every request, opt in at create time with `previewAuth`.
+
+When enabled, the control plane validates an `Authorization: Bearer <token>` (or `X-OC-Preview-Token: <token>`) header on every preview-URL request. Missing or wrong → 401. The check happens before traffic ever reaches your sandbox, so a brute-force run also can't wake a hibernated sandbox.
+
+### Enable at create time
+
+<CodeGroup>
+
+```typescript TypeScript
+const sandbox = await Sandbox.create({
+  previewAuth: { scheme: "bearer", token: "auto" },
+});
+
+// previewAuthToken is returned exactly once — store it somewhere durable.
+console.log(sandbox.previewAuthToken);
+// → "qx2sSi5IYXWBvnnRqwK9Ky_cIAI-x0Vx1bPCt0XMxsI"
+```
+
+```python Python
+sandbox = await Sandbox.create(
+    preview_auth={"scheme": "bearer", "token": "auto"},
+)
+
+# preview_auth_token is returned exactly once — store it somewhere durable.
+print(sandbox.preview_auth_token)
+# → "qx2sSi5IYXWBvnnRqwK9Ky_cIAI-x0Vx1bPCt0XMxsI"
+```
+
+```bash CLI
+oc sandbox create --preview-auth
+# Created sandbox sb-abc123 (status: running)
+# Preview auth token (shown once): qx2sSi5IYXWBvnnRqwK9Ky_cIAI-x0Vx1bPCt0XMxsI
+```
+
+</CodeGroup>
+
+`token: "auto"` (or omitting the field) tells the server to generate a 256-bit random token. To bring your own — useful when your gateway already has a secret it can share with both ends — pass an explicit string of at least 16 characters:
+
+<CodeGroup>
+
+```typescript TypeScript
+await Sandbox.create({
+  previewAuth: { scheme: "bearer", token: process.env.GATEWAY_TOKEN! },
+});
+```
+
+```python Python
+await Sandbox.create(
+    preview_auth={"scheme": "bearer", "token": os.environ["GATEWAY_TOKEN"]},
+)
+```
+
+```bash CLI
+oc sandbox create --preview-auth-token "$GATEWAY_TOKEN"
+```
+
+</CodeGroup>
+
+### Making authenticated requests
+
+Send the token on every request to the preview URL. Two header forms are accepted; pick whichever fits your client:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://sb-abc123-p3000.workers.opencomputer.dev/
+curl -H "X-OC-Preview-Token: $TOKEN"   https://sb-abc123-p3000.workers.opencomputer.dev/
+```
+
+The token gates **every port** on the sandbox — there's one token per sandbox, shared across all preview URLs you create on it.
+
+### Rotation
+
+When you need to roll the token — exposure, scheduled rotation, employee offboarding — call `rotate`. The old token stops working immediately and the new plaintext is returned exactly once:
+
+<CodeGroup>
+
+```typescript TypeScript
+const newToken = await sandbox.rotatePreviewAuthToken();
+// sandbox.previewAuthToken is also updated in place.
+```
+
+```python Python
+new_token = await sandbox.rotate_preview_auth_token()
+# sandbox.preview_auth_token is also updated in place.
+```
+
+```bash CLI
+oc preview rotate-auth sb-abc123
+# New preview auth token (shown once): <new token>
+```
+
+</CodeGroup>
+
+There is no zero-downtime dual-token mode in v1 — roll out the new token to your caller before discarding the old one, or expect a brief window of 401s during the swap.
+
+### What's stored and what's not
+
+- Only the **SHA-256 hash** of the token is persisted. The server never sees the plaintext after the create or rotate response returns.
+- There is no GET endpoint that returns the token. If you lose it, your only options are to rotate (mint a new one) or recreate the sandbox.
+- A sandbox created **without** `previewAuth` has open preview URLs — exactly the same as before this feature existed. The feature is fully opt-in and backwards compatible.
+
+### Where the check happens
+
+Authentication is enforced by the cell's control plane immediately before the request is proxied to the worker. That means:
+
+- **Hibernated sandboxes** stay hibernated on missing/wrong tokens — bad tokens can't burn wake capacity.
+- **Self-hosted deployments** without the Cloudflare edge get the same gate for free — the check follows the sandbox, not the front door.
+
 ## Explicit Preview URLs
 
 For tracking, custom domains, or auth configuration, use the preview URL API:
