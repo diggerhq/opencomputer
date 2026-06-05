@@ -14,6 +14,10 @@ function resolveApiUrl(url: string): string {
 
 export interface SandboxOpts {
   template?: string;
+  /** Create a resumable sandbox. Disk is preserved across infrastructure restarts; processes may restart. */
+  resumable?: boolean;
+  /** Internal/legacy placement family. Prefer `resumable: true` for public API usage. */
+  sandboxFamily?: "spot";
   /**
    * Idle timeout in seconds after which the sandbox auto-hibernates.
    * Default: `0` (persistent — never auto-hibernate).
@@ -47,6 +51,8 @@ interface SandboxData {
   sandboxID: string;
   status: string;
   templateID?: string;
+  sandboxFamily?: string;
+  resumable?: boolean;
   connectURL?: string;
   token?: string;
   sandboxDomain?: string;
@@ -119,6 +125,18 @@ export class PlanLimitError extends Error {
 }
 
 /**
+ * Thrown when a resource-changing call is blocked by the sandbox's family.
+ * Kept for compatibility with older API responses.
+ */
+export class SandboxFamilyLimitError extends Error {
+  readonly code = "sandbox_family_scale_disabled";
+  constructor(message?: string) {
+    super(message ?? "sandbox family does not allow scaling");
+    this.name = "SandboxFamilyLimitError";
+  }
+}
+
+/**
  * Inspect a non-OK response from a scaling endpoint and throw the most
  * specific error type. Falls back to a generic Error when the response
  * doesn't match a known shape so callers still see the status + body.
@@ -133,6 +151,9 @@ async function throwScalingError(resp: Response, action: string): Promise<never>
   }
   if (resp.status === 403 && body.code === "scaling_locked") {
     throw new ScalingLockedError(body.error);
+  }
+  if (resp.status === 403 && body.code === "sandbox_family_scale_disabled") {
+    throw new SandboxFamilyLimitError(body.error);
   }
   if (resp.status === 402) {
     throw new PlanLimitError(body.error);
@@ -248,6 +269,8 @@ export class Sandbox {
     };
     if (opts.envs) body.envs = opts.envs;
     if (opts.metadata) body.metadata = opts.metadata;
+    if (opts.resumable != null) body.resumable = opts.resumable;
+    if (opts.sandboxFamily) body.sandboxFamily = opts.sandboxFamily;
     if (opts.cpuCount != null) body.cpuCount = opts.cpuCount;
     if (opts.memoryMB != null) body.memoryMB = opts.memoryMB;
     if (opts.diskMB != null) body.diskMB = opts.diskMB;
