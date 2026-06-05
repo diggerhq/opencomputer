@@ -47,13 +47,7 @@
           "sandboxes/patches",
           "sandboxes/preview-urls",
           "sandboxes/elasticity",
-          {
-            "group": "Burst Sandboxes",
-            "tag": "Alpha",
-            "pages": [
-              "sandboxes/burst-sandboxes"
-            ]
-          },
+          "sandboxes/burst-sandboxes",
           {
             "group": "Usage",
             "tag": "Preview",
