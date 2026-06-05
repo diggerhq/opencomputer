@@ -348,6 +348,7 @@ type Config struct {
 	DataDir         string // base data directory (e.g., /data)
 	KernelPath      string // path to vmlinux kernel
 	ImagesDir       string // path to base rootfs images
+	GoldenDir       string // path to worker-local golden snapshot cache
 	QEMUBin         string // path to qemu-system-x86_64 binary
 	AgentBinaryPath string // path to osb-agent binary on host (for hot-upgrade)
 	AgentVersion    string // expected agent version (for hot-upgrade check)
@@ -424,6 +425,9 @@ func NewManager(cfg Config) (*Manager, error) {
 	}
 	if cfg.ImagesDir == "" {
 		cfg.ImagesDir = filepath.Join(cfg.DataDir, "images")
+	}
+	if cfg.GoldenDir == "" {
+		cfg.GoldenDir = filepath.Join(cfg.DataDir, "golden")
 	}
 	if cfg.QEMUBin == "" {
 		cfg.QEMUBin = "qemu-system-x86_64"
@@ -513,6 +517,13 @@ func (m *Manager) SetHibernationUploadCallback(cb func(sandboxID, hibernationKey
 // Empty string means no golden snapshot is available.
 func (m *Manager) GoldenVersion() string {
 	return m.goldenVersion
+}
+
+func (m *Manager) goldenSnapshotDir() string {
+	if m.cfg.GoldenDir != "" {
+		return m.cfg.GoldenDir
+	}
+	return filepath.Join(m.cfg.DataDir, "golden")
 }
 
 // MemoryAllocatedBytes returns the sum of memory committed to currently-running
@@ -762,7 +773,7 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		log.Printf("qemu: blobstore golden fetch failed (will try local-only): %v", err)
 	}
 
-	goldenDir := filepath.Join(m.cfg.DataDir, "golden")
+	goldenDir := m.goldenSnapshotDir()
 	memFile := filepath.Join(goldenDir, "mem")
 	rootfsFile := filepath.Join(goldenDir, "rootfs.qcow2")
 
@@ -1052,10 +1063,10 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 // Returns the old and new golden version strings.
 func (m *Manager) RebuildGoldenSnapshot() (oldVersion, newVersion string, err error) {
 	oldVersion = m.goldenVersion
-	goldenDir := filepath.Join(m.cfg.DataDir, "golden")
+	goldenDir := m.goldenSnapshotDir()
 
 	// Build new golden in a staging directory
-	stagingDir := filepath.Join(m.cfg.DataDir, "golden-staging")
+	stagingDir := goldenDir + "-staging"
 	os.RemoveAll(stagingDir) // clean up any prior failed attempt
 
 	// Temporarily point goldenDir to staging so PrepareGoldenSnapshot builds there
@@ -1063,7 +1074,7 @@ func (m *Manager) RebuildGoldenSnapshot() (oldVersion, newVersion string, err er
 	m.goldenDir = ""
 
 	// Rename current golden out of the way so PrepareGoldenSnapshot sees no existing snapshot
-	backupDir := filepath.Join(m.cfg.DataDir, "golden-old")
+	backupDir := goldenDir + "-old"
 	os.RemoveAll(backupDir)
 	if err := os.Rename(goldenDir, backupDir); err != nil && !os.IsNotExist(err) {
 		m.goldenDir = oldGoldenDir

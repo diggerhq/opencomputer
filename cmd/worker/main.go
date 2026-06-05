@@ -237,6 +237,7 @@ func main() {
 			DataDir:                 cfg.DataDir,
 			KernelPath:              cfg.KernelPath,
 			ImagesDir:               cfg.ImagesDir,
+			GoldenDir:               cfg.GoldenDir,
 			QEMUBin:                 cfg.QEMUBin,
 			AgentBinaryPath:         "/usr/local/bin/osb-agent",
 			AgentVersion:            AgentVersion,
