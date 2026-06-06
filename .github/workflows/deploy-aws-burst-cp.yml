@@ -1,0 +1,283 @@
+name: Deploy AWS Burst Control Plane
+
+on:
+  push:
+    branches:
+      - main
+      - feat/aws-poc-worker-support-clean-rebased
+    paths:
+      - "cmd/server/**"
+      - "internal/**"
+      - "web/**"
+      - "deploy/vector/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/deploy-aws-burst-cp.yml"
+  workflow_dispatch:
+    inputs:
+      region:
+        description: AWS region
+        required: true
+        default: us-east-2
+      cell_id:
+        description: Cell ID
+        required: true
+        default: aws-us-east-2-burst-prod
+      cp_domain:
+        description: Public control-plane domain
+        required: true
+        default: cp-aws-us-east-2-burst-prod.opencomputer.dev
+
+env:
+  AWS_REGION: ${{ inputs.region || vars.AWS_REGION || 'us-east-2' }}
+  CELL_ID: ${{ inputs.cell_id || 'aws-us-east-2-burst-prod' }}
+  CP_DOMAIN: ${{ inputs.cp_domain || 'cp-aws-us-east-2-burst-prod.opencomputer.dev' }}
+  GOARCH: amd64
+
+jobs:
+  deploy:
+    name: Deploy AWS Burst CP
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Discover control plane
+        run: |
+          set -euo pipefail
+
+          CP_INSTANCE_ID=$(aws ec2 describe-instances \
+            --region "$AWS_REGION" \
+            --filters \
+              "Name=tag:Name,Values=oc-cp-$CELL_ID" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text)
+
+          if [ -z "$CP_INSTANCE_ID" ] || [ "$CP_INSTANCE_ID" = "None" ]; then
+            echo "No running CP instance found for $CELL_ID"
+            exit 1
+          fi
+
+          CP_PUBLIC_IP=$(aws ec2 describe-instances \
+            --region "$AWS_REGION" \
+            --instance-ids "$CP_INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text)
+
+          CP_AZ=$(aws ec2 describe-instances \
+            --region "$AWS_REGION" \
+            --instance-ids "$CP_INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].Placement.AvailabilityZone' \
+            --output text)
+
+          CP_SG_ID=$(aws ec2 describe-security-groups \
+            --region "$AWS_REGION" \
+            --filters "Name=group-name,Values=oc-sg-cp-$CELL_ID" \
+            --query 'SecurityGroups[0].GroupId' \
+            --output text)
+
+          if [ -z "$CP_PUBLIC_IP" ] || [ "$CP_PUBLIC_IP" = "None" ]; then
+            echo "CP instance $CP_INSTANCE_ID has no public IP"
+            exit 1
+          fi
+
+          if [ -z "$CP_SG_ID" ] || [ "$CP_SG_ID" = "None" ]; then
+            echo "CP security group not found for $CELL_ID"
+            exit 1
+          fi
+
+          echo "CP_INSTANCE_ID=$CP_INSTANCE_ID" >> "$GITHUB_ENV"
+          echo "CP_PUBLIC_IP=$CP_PUBLIC_IP" >> "$GITHUB_ENV"
+          echo "CP_AZ=$CP_AZ" >> "$GITHUB_ENV"
+          echo "CP_SG_ID=$CP_SG_ID" >> "$GITHUB_ENV"
+
+      - name: Build server binary
+        run: |
+          set -euo pipefail
+          VERSION=$(git rev-parse --short HEAD)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build \
+            -ldflags "-X main.Version=$VERSION" \
+            -o bin/opensandbox-server ./cmd/server/
+
+      - name: Build web dashboard
+        run: cd web && npm ci && npm run build
+
+      - name: Package deploy artifacts
+        run: |
+          set -euo pipefail
+          tar czf bin/web-dist.tar.gz -C web dist
+          tar czf bin/vector-deploy.tar.gz -C deploy vector
+
+      - name: Prepare SSH key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.AWS_CP_SSH_PRIVATE_KEY }}" > ~/.ssh/aws-burst-cp
+          chmod 600 ~/.ssh/aws-burst-cp
+          ssh-keygen -y -f ~/.ssh/aws-burst-cp > ~/.ssh/aws-burst-cp.pub
+
+      - name: Authorize runner SSH
+        run: |
+          set -euo pipefail
+          RUNNER_IP=$(curl -fsSL https://checkip.amazonaws.com | tr -d '[:space:]')
+          echo "RUNNER_CIDR=${RUNNER_IP}/32" >> "$GITHUB_ENV"
+
+          set +e
+          aws ec2 authorize-security-group-ingress \
+            --region "$AWS_REGION" \
+            --group-id "$CP_SG_ID" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${RUNNER_IP}/32,Description=github-actions-cp-deploy-${GITHUB_RUN_ID}}]"
+          STATUS=$?
+          set -e
+
+          if [ "$STATUS" -ne 0 ]; then
+            echo "SSH ingress may already exist; continuing so deploy can attempt SSH."
+          fi
+
+      - name: Push SSH key with EC2 Instance Connect
+        run: |
+          set -euo pipefail
+          aws ec2-instance-connect send-ssh-public-key \
+            --region "$AWS_REGION" \
+            --instance-id "$CP_INSTANCE_ID" \
+            --availability-zone "$CP_AZ" \
+            --instance-os-user ubuntu \
+            --ssh-public-key "file://$HOME/.ssh/aws-burst-cp.pub"
+
+      - name: Wait for SSH
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if ssh -i ~/.ssh/aws-burst-cp \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=5 \
+              ubuntu@"$CP_PUBLIC_IP" 'echo ssh-ready'; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "SSH did not become ready"
+          exit 1
+
+      - name: Upload artifacts
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/aws-burst-cp \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            bin/opensandbox-server bin/web-dist.tar.gz bin/vector-deploy.tar.gz \
+            ubuntu@"$CP_PUBLIC_IP":/tmp/
+
+      - name: Install and restart control plane
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/aws-burst-cp \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            ubuntu@"$CP_PUBLIC_IP" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          sudo mkdir -p /opt/opensandbox/web
+          sudo install -m 0755 /tmp/opensandbox-server /usr/local/bin/opensandbox-server
+          sudo tar xzf /tmp/web-dist.tar.gz -C /opt/opensandbox/web
+
+          sudo tee /etc/systemd/system/opensandbox-server.service >/dev/null <<'UNIT'
+          [Unit]
+          Description=OpenComputer Control Plane
+          After=network-online.target cloud-init.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          WorkingDirectory=/opt/opensandbox
+          EnvironmentFile=/etc/opensandbox/server.env
+          ExecStart=/usr/local/bin/opensandbox-server
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          sudo systemctl daemon-reload
+          sudo systemctl enable opensandbox-server
+          sudo systemctl restart opensandbox-server
+
+          mkdir -p /tmp/vector-deploy
+          tar xzf /tmp/vector-deploy.tar.gz -C /tmp/vector-deploy
+          sudo bash /tmp/vector-deploy/vector/install.sh control-plane || true
+          rm -rf /tmp/vector-deploy /tmp/opensandbox-server /tmp/web-dist.tar.gz /tmp/vector-deploy.tar.gz
+
+          sudo systemctl is-active opensandbox-server
+          REMOTE
+
+      - name: Health check
+        run: |
+          set -euo pipefail
+
+          echo "Checking direct CP health..."
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 "http://${CP_PUBLIC_IP}:8080/health"; then
+              echo
+              break
+            fi
+            sleep 5
+          done
+
+          echo "Checking public domain health..."
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 10 "https://${CP_DOMAIN}/health"; then
+              echo
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "Public health check failed"
+          exit 1
+
+      - name: Revoke runner SSH
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNER_CIDR:-}" ] || [ -z "${CP_SG_ID:-}" ]; then
+            echo "No runner SSH rule recorded; skipping revoke"
+            exit 0
+          fi
+
+          aws ec2 revoke-security-group-ingress \
+            --region "$AWS_REGION" \
+            --group-id "$CP_SG_ID" \
+            --protocol tcp \
+            --port 22 \
+            --cidr "$RUNNER_CIDR" || true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## AWS Burst CP Deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Cell:** \`$CELL_ID\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **CP instance:** \`${CP_INSTANCE_ID:-unknown}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **CP public IP:** \`${CP_PUBLIC_IP:-unknown}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** \`${VERSION:-unknown}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Domain:** \`https://$CP_DOMAIN\`" >> "$GITHUB_STEP_SUMMARY"
