@@ -335,6 +335,12 @@ type Manager struct {
 	onSandboxReady   func(sandboxID, guestIP, template string, startedAt time.Time)
 	onSandboxDestroy func(sandboxID string)
 
+	// Billing-attribution observer (set via SetLifecycleObserver). nil-safe.
+	// Distinct from the metadata callbacks above so each consumer gets the
+	// data it actually needs (metadata wants guestIP/template; billing wants
+	// memory_mb/cpu_count). See internal/sandbox/lifecycle.go.
+	lifecycleObs sandbox.LifecycleObserver
+
 	// Hibernation upload status callback (set via SetHibernationUploadCallback).
 	// Invoked from the async archive+upload goroutine in doHibernate exactly once
 	// per hibernation, with err=nil on success or non-nil on archive/upload
@@ -434,6 +440,12 @@ func (m *Manager) SetMetadataCallbacks(
 // Must be called before any sandboxes are created.
 func (m *Manager) SetSecretsProxy(sp SecretsProxyIntegration) {
 	m.secretsProxy = sp
+}
+
+// SetLifecycleObserver wires a billing-attribution observer. Safe to leave nil.
+// See internal/sandbox/lifecycle.go for the contract.
+func (m *Manager) SetLifecycleObserver(obs sandbox.LifecycleObserver) {
+	m.lifecycleObs = obs
 }
 
 // SetCheckpointStore sets the S3 checkpoint store for base image archival and
@@ -1997,6 +2009,14 @@ func (m *Manager) destroyVM(vm *VMInstance) error {
 		m.onSandboxDestroy(vm.ID)
 	}
 
+	// Notify billing observer: emit a closing tick for the final slice and
+	// drop per-sandbox state. vm.MemoryMB/CpuCount still reflect the config
+	// the sandbox had right up to destroy. StartedAt is the fallback
+	// attribution point for sandboxes that died before any periodic tick.
+	if m.lifecycleObs != nil {
+		m.lifecycleObs.OnSandboxDestroy(vm.ID, vm.MemoryMB, vm.CpuCount, vm.StartedAt)
+	}
+
 	if vm.qmpSockPath != "" {
 		os.Remove(vm.qmpSockPath)
 	}
@@ -2300,6 +2320,15 @@ func (m *Manager) SetResourceLimits(ctx context.Context, sandboxID string, maxPi
 	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return err
+	}
+
+	// Notify billing observer BEFORE applying any change so it can attribute
+	// the slice ending here to the OLD config. If the scale itself fails
+	// below, the observer has reset lastSeen and the next periodic tick will
+	// attribute a small slice (now → next tick) under the still-active old
+	// config — which is correct.
+	if m.lifecycleObs != nil {
+		m.lifecycleObs.OnSandboxScale(sandboxID, vm.MemoryMB, vm.CpuCount, vm.StartedAt)
 	}
 
 	// Shrink-safety: refuse any request whose total memory falls below the
@@ -2684,6 +2713,16 @@ func (m *Manager) Hibernate(ctx context.Context, sandboxID string, checkpointSto
 	}
 	defer vm.opMu.Unlock()
 
+	// Notify billing observer BEFORE savevm so it can flush a final pre-
+	// hibernate slice. Without this, the window from the last periodic tick
+	// to hibernation is lost (the sandbox is gone from the periodic-tick
+	// loop's view) and on wake the next tick would otherwise try to
+	// attribute backwards through the entire hibernation gap (the prune
+	// + cap mitigate this but the observer-driven explicit hook is exact).
+	if m.lifecycleObs != nil {
+		m.lifecycleObs.OnSandboxHibernate(sandboxID, vm.MemoryMB, vm.CpuCount, vm.StartedAt)
+	}
+
 	result, err := m.doHibernate(ctx, vm, checkpointStore)
 	if err != nil {
 		// Fix C: doHibernate may have killed qemu mid-flight (savevm path
@@ -2735,7 +2774,18 @@ func (m *Manager) Wake(ctx context.Context, sandboxID string, checkpointKey stri
 		metrics.WakeDuration.WithLabelValues(m.cfg.Region, template, "s3", status).Observe(time.Since(t0).Seconds())
 	}()
 
-	return m.doWake(ctx, sandboxID, checkpointKey, checkpointStore, timeout)
+	sb, err := m.doWake(ctx, sandboxID, checkpointKey, checkpointStore, timeout)
+	if err != nil {
+		return nil, err
+	}
+	// Notify billing observer AFTER wake succeeds so it resets per-sandbox
+	// state. Hibernation time should not be billed as compute — the next
+	// periodic tick will attribute from the wake-fresh start, not from the
+	// pre-hibernate last-seen timestamp.
+	if m.lifecycleObs != nil {
+		m.lifecycleObs.OnSandboxWake(sandboxID)
+	}
+	return sb, nil
 }
 
 // TemplateCachePath returns "" — not implemented.

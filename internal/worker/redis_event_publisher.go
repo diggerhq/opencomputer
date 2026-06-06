@@ -209,7 +209,13 @@ func (p *RedisEventPublisher) FlushSandbox(ctx context.Context, sandboxID string
 			// didn't — crash/timeout) must collide with the prior id so the
 			// downstream D1 `ON CONFLICT(id) DO NOTHING` dedups it. A fresh
 			// UUID per attempt would double-apply (e.g. usage_tick → double debit).
-			ID:        fmt.Sprintf("%s:%d", sandboxID, e.ID),
+			//
+			// The middle segment is the per-DB generation: hibernate deletes
+			// the SQLite file and wake recreates it, which restarts the
+			// AUTOINCREMENT row id. Without the generation namespace, post-wake
+			// events with row id ≤ pre-hibernate max-id would collide with
+			// pre-hibernate envelope IDs and be silently dropped by D1.
+			ID:        fmt.Sprintf("%s:%d:%d", sandboxID, db.Generation(), e.ID),
 			Type:      e.Type,
 			SandboxID: sandboxID,
 			OrgID:     orgID,
@@ -260,8 +266,9 @@ func (p *RedisEventPublisher) flush(ctx context.Context) {
 
 	for _, se := range events {
 		envelope := SandboxEventEnvelope{
-			// Deterministic id (see FlushSandbox) so retries dedup downstream.
-			ID:        fmt.Sprintf("%s:%d", se.SandboxID, se.Event.ID),
+			// Deterministic id (see FlushSandbox) so retries dedup downstream;
+			// generation segment namespaces across hibernate→wake DB recreation.
+			ID:        fmt.Sprintf("%s:%d:%d", se.SandboxID, se.Generation, se.Event.ID),
 			Type:      se.Event.Type,
 			SandboxID: se.SandboxID,
 			WorkerID:  p.workerID,

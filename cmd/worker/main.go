@@ -801,6 +801,20 @@ func main() {
 	if cfg.CellID != "" && mgr != nil {
 		usageTicker := worker.NewUsageTicker(mgr, sandboxDBMgr, 20*time.Second, 10)
 		if usageTicker != nil {
+			// Wire the ticker as the manager's lifecycle observer so scale,
+			// destroy, hibernate, and wake events flush accurate final-slice
+			// emits. Without this, the periodic ticker alone has up to one
+			// tick-interval of attribution slop per lifecycle event (caused
+			// the +300% / -100% drifts seen on the parity check pre-PR-349-
+			// cutover). Type-assert because only qemu.Manager implements the
+			// observer wiring — other backends (firecracker) skip it.
+			type lifecycleObservable interface {
+				SetLifecycleObserver(sandbox.LifecycleObserver)
+			}
+			if obs, ok := mgr.(lifecycleObservable); ok {
+				obs.SetLifecycleObserver(usageTicker)
+				log.Println("opensandbox-worker: usage ticker wired as manager lifecycle observer")
+			}
 			usageTicker.Start(context.Background())
 			defer func() {
 				stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)

@@ -42,15 +42,32 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_unsynced ON events(synced) WHERE synced = 0;
+
+-- Generation stamp embedded in upstream envelope IDs so post-wake events
+-- (where AUTOINCREMENT restarts after the DB file is recreated) do not
+-- collide with pre-hibernate IDs and get silently dropped by events-ingest's
+-- ON CONFLICT(id) DO NOTHING. One row, key = singleton, written on first open.
+CREATE TABLE IF NOT EXISTS db_meta (
+    key TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL
+);
 `
 
 // SandboxDB manages the per-sandbox SQLite database.
 type SandboxDB struct {
-	db        *sql.DB
-	sandboxID string
+	db         *sql.DB
+	sandboxID  string
+	generation int64
 }
 
 // OpenSandboxDB opens (or creates) the SQLite database for a sandbox.
+//
+// On first open the DB is stamped with a generation = UnixNano. This value is
+// stable for the lifetime of the file (re-opens read the same value back) and
+// is embedded into every upstream event's envelope ID so that hibernate+wake
+// — which deletes and re-creates the file — gets a fresh generation, breaking
+// the AUTOINCREMENT-id collision that previously caused post-wake events to
+// be silently dropped by events-ingest's ON CONFLICT(id) DO NOTHING.
 func OpenSandboxDB(dataDir, sandboxID string) (*SandboxDB, error) {
 	dir := filepath.Join(dataDir, sandboxID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -68,7 +85,26 @@ func OpenSandboxDB(dataDir, sandboxID string) (*SandboxDB, error) {
 		return nil, fmt.Errorf("failed to apply sqlite schema: %w", err)
 	}
 
-	return &SandboxDB{db: db, sandboxID: sandboxID}, nil
+	if _, err := db.Exec(
+		`INSERT OR IGNORE INTO db_meta (key, generation) VALUES ('singleton', ?)`,
+		time.Now().UnixNano()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to stamp db generation: %w", err)
+	}
+	var generation int64
+	if err := db.QueryRow(`SELECT generation FROM db_meta WHERE key='singleton'`).Scan(&generation); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to read db generation: %w", err)
+	}
+
+	return &SandboxDB{db: db, sandboxID: sandboxID, generation: generation}, nil
+}
+
+// Generation returns the per-DB generation stamp embedded into upstream
+// envelope IDs. Stable across re-opens; changes when the file is deleted and
+// re-created (e.g. hibernate → wake).
+func (s *SandboxDB) Generation() int64 {
+	return s.generation
 }
 
 // Close closes the database connection.
@@ -326,25 +362,30 @@ func (m *SandboxDBManager) Close() {
 // GetAllUnsyncedEventsFlat returns all unsynced events across all sandboxes as a flat list
 // with sandbox ID attached, useful for the NATS event publisher.
 type SandboxEvent struct {
-	SandboxID string
-	Event     Event
-	Timestamp time.Time
+	SandboxID  string
+	Generation int64
+	Event      Event
+	Timestamp  time.Time
 }
 
 func (m *SandboxDBManager) GetAllUnsyncedEventsFlat(limitPerDB int) ([]SandboxEvent, error) {
-	grouped, err := m.AllUnsyncedEvents(limitPerDB)
-	if err != nil {
-		return nil, err
-	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	var flat []SandboxEvent
-	for sandboxID, events := range grouped {
+	for sandboxID, db := range m.dbs {
+		events, err := db.GetUnsyncedEvents(limitPerDB)
+		if err != nil {
+			continue
+		}
+		gen := db.Generation()
 		for _, e := range events {
 			ts, _ := time.Parse("2006-01-02 15:04:05", e.CreatedAt)
 			flat = append(flat, SandboxEvent{
-				SandboxID: sandboxID,
-				Event:     e,
-				Timestamp: ts,
+				SandboxID:  sandboxID,
+				Generation: gen,
+				Event:      e,
+				Timestamp:  ts,
 			})
 		}
 	}
