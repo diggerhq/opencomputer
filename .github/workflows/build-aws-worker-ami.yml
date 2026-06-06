@@ -1,6 +1,9 @@
 name: Build AWS Worker AMI
 
 on:
+  push:
+    branches:
+      - feat/aws-poc-worker-support-clean-rebased
   workflow_dispatch:
     inputs:
       region:
