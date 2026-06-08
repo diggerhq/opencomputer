@@ -63,7 +63,7 @@ WORKER_ENV = "prod"
 # their rows are written to the D1 `cells` table.
 CELLS = ""
 # Optional alpha route for Burst Sandboxes. Leave empty to disable.
-BURST_CELL_ID = ""
+BURST_CELL_ID = "aws-us-east-2-burst-prod"
 
 # Ship Worker logs to opencomputer-log-tail-prod → Axiom dataset cf-prod.
 [[tail_consumers]]
