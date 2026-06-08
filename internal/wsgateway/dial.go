@@ -12,11 +12,20 @@ import (
 )
 
 // ErrUpstreamMigrating is the sentinel the ResolveWorker closure (in
-// internal/api/ws_broker.go) returns wrapped via errors.Join when the
+// internal/api/ws_broker.go) returns wrapped via fmt.Errorf when the
 // cell-CP reports the sandbox is mid-migration. The broker's runRedial
 // recognizes it and switches to the longer migration backoff cadence
 // instead of burning the fast-ladder budget on a guaranteed-to-fail dial.
 var ErrUpstreamMigrating = errors.New("upstream migrating")
+
+// ErrUpstreamTerminal is the sentinel the ResolveWorker closure returns
+// when the cell-CP reports the sandbox is gone for good — 404 not found
+// or 410 stopped/error. The broker's runRedial closes the client with a
+// clean 1000 + the wrapped reason instead of retrying.
+//
+// The reason string sent to the client is extracted from the wrapped
+// error (see terminalReasonFromErr in session.go).
+var ErrUpstreamTerminal = errors.New("upstream terminal")
 
 // DialResult classifies an upstream dial outcome so the redial loop can
 // pick the right backoff policy. Either Conn is non-nil (success), or

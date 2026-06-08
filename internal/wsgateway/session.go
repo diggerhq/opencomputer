@@ -230,6 +230,14 @@ func (s *Session) runRedial(clientDone <-chan struct{}) (*websocket.Conn, bool, 
 		url, token, err := s.workerWSURLFn()
 		if err != nil {
 			log.Printf("wsgateway: redial: url resolve failed sandbox=%s session=%s: %v", s.sandboxID, s.sessionID, err)
+			// Cell-CP says the sandbox is gone for good (DELETEd, stopped,
+			// errored, never existed). Close the client cleanly with the
+			// reason from the wrapped error instead of burning attempts.
+			if errors.Is(err, ErrUpstreamTerminal) {
+				reason := terminalReasonFromErr(err)
+				log.Printf("wsgateway: redial: cell reports terminal (resolve, reason=%q) — closing client sandbox=%s", reason, s.sandboxID)
+				return nil, true, reason, false
+			}
 			// Cell-CP signaling "currently migrating" → switch to the
 			// longer cadence (no point burning fast-ladder attempts at a
 			// resolve that's deterministically going to fail until the
@@ -375,6 +383,25 @@ func writeOne(c *websocket.Conn, mu sync.Locker, mt int, data []byte) error {
 	defer mu.Unlock()
 	_ = c.SetWriteDeadline(time.Now().Add(WriteTimeout))
 	return c.WriteMessage(mt, data)
+}
+
+// terminalReasonFromErr extracts a clean close-reason from an error
+// wrapped with ErrUpstreamTerminal. The wrapped echo.HTTPError carries
+// a message like "sandbox sb-xxx has been stopped" or
+// "sandbox sb-xxx not found" — we want the verb only, not the noisy
+// sandbox ID echoed back to clients. Falls back to a generic reason
+// when the wrapped error doesn't match a known shape.
+func terminalReasonFromErr(err error) string {
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "stopped"):
+		return "sandbox stopped"
+	case strings.Contains(lower, "not found"):
+		return "sandbox not found"
+	default:
+		return "sandbox unavailable"
+	}
 }
 
 // terminalReason maps a terminal-status DialResult into the close

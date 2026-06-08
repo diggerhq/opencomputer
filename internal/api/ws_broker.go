@@ -77,6 +77,9 @@ func (s *Server) brokerWebSocket(c echo.Context) error {
 			if isMigratingErr(err) {
 				return "", "", fmt.Errorf("%w: %v", wsgateway.ErrUpstreamMigrating, err)
 			}
+			if isTerminalErr(err) {
+				return "", "", fmt.Errorf("%w: %v", wsgateway.ErrUpstreamTerminal, err)
+			}
 			return "", "", err
 		}
 		return buildWorkerWSURL(r.WorkerURL, cellPathStripped, rawQuery), r.Token, nil
@@ -88,6 +91,22 @@ func (s *Server) brokerWebSocket(c echo.Context) error {
 		CellPath:      cellPath,
 		ResolveWorker: resolve,
 	})
+}
+
+// isTerminalErr matches the echo.HTTPError shapes ResolveWorker returns
+// for sandboxes that are permanently gone — 404 (no DB row, e.g. just
+// DELETEd or never existed) and 410 (status=stopped or error). The
+// broker uses this to close the client with a clean 1000 reason
+// instead of cycling through the redial budget.
+func isTerminalErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var he *echo.HTTPError
+	if !errors.As(err, &he) {
+		return false
+	}
+	return he.Code == http.StatusNotFound || he.Code == http.StatusGone
 }
 
 // isMigratingErr peeks at the echo.HTTPError returned by ResolveWorker
