@@ -1,9 +1,14 @@
 ---
-title: "Agents"
-description: "Run Claude inside sandboxes"
+title: "Run an agent in a sandbox"
+sidebarTitle: "Overview"
+description: "Run Claude inside a sandbox you control, with the SDK"
 ---
 
-An agent session is a Claude Agent SDK instance running inside a sandbox. You send a prompt, the agent works autonomously — writing files, running commands, iterating on errors — and streams events back to your code.
+An agent session is a Claude Agent SDK instance running inside a [sandbox](/sandboxes/overview). You send a prompt, the agent works autonomously — writing files, running commands, iterating on errors — and streams events back to your code. You own the sandbox and drive the loop directly: no deploy step, no hosting.
+
+<Info>
+  **There are two ways to run agents on OpenComputer.** This is the **SDK** path — you create a sandbox yourself and drive a Claude session inside it directly, owning the sandbox and the loop. If you'd instead like the platform to manage an agent *definition* for you — reached through persistent instances or ephemeral sessions, and connectable to messaging channels or a public API — see [Hosted Agents](/agents-api/overview) (Hermes, OpenClaw).
+</Info>
 
 <CodeGroup>
 
