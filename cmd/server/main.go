@@ -623,17 +623,13 @@ func main() {
 		log.Printf("opensandbox: edge client wired (base=%s)", cfg.CFEdgeBaseURL)
 	}
 
-	// Wire the in-process WebSocket broker. When enabled, data-plane
-	// WS routes (/sandboxes/:id/pty/:sid, /exec/:sid, /agent/:sid) go
-	// through internal/wsgateway instead of the legacy proxy's hijack
-	// + io.Copy path — gains redial on upstream close, keepalive,
-	// multi-session, exec-exit suppression, circuit breaker. Gated on
-	// OPENSANDBOX_WS_BROKER=1 so the rollout is a per-cell env flip;
-	// off keeps the legacy transparent forward in place.
-	if os.Getenv("OPENSANDBOX_WS_BROKER") == "1" {
-		server.SetWSGateway(wsgateway.NewGateway())
-		log.Printf("opensandbox: ws-broker enabled (OPENSANDBOX_WS_BROKER=1)")
-	}
+	// Wire the in-process WebSocket broker. Data-plane WS routes
+	// (/sandboxes/:id/pty/:sid, /exec/:sid, /agent/:sid) go through
+	// internal/wsgateway — redial on upstream close, keepalive, multi-
+	// session per sandbox, exec-exit suppression, flap circuit breaker.
+	// Always on; rollback is `git revert + redeploy` if the broker ever
+	// regresses, same as for any other commit.
+	server.SetWSGateway(wsgateway.NewGateway())
 
 	// Wire Axiom read-only token for the sandbox session logs API.
 	// Token never leaves this process; the UI proxies its queries through
