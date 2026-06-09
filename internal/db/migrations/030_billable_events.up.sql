@@ -13,6 +13,8 @@
 --   'overage_usage'       — instant usage above the reserved floor,
 --                           emitted per running sandbox tier with the
 --                           tier as memory_mb
+--   'burst_usage'         — burst sandbox compute, billed as GB-seconds
+--                           independent of reserved capacity; memory_mb = 0
 --   'disk_overage_usage'  — disk above the 20 GB allowance, org-level
 --                           per bucket; memory_mb = 0
 CREATE TABLE IF NOT EXISTS billable_events (
@@ -28,7 +30,7 @@ CREATE TABLE IF NOT EXISTS billable_events (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     delivered_at        TIMESTAMPTZ,
     UNIQUE (org_id, event_type, memory_mb, bucket_start),
-    CHECK (event_type IN ('reserved_usage', 'overage_usage', 'disk_overage_usage')),
+    CHECK (event_type IN ('reserved_usage', 'overage_usage', 'burst_usage', 'disk_overage_usage')),
     CHECK (delivery_state IN ('pending', 'sent', 'failed')),
     CHECK (gb_seconds > 0),
     CHECK (memory_mb >= 0),

@@ -142,6 +142,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{42, "migrations/042_global_sync_outbox.up.sql"},
 		{43, "migrations/043_credit_halt.up.sql"},
 		{44, "migrations/044_drop_secret_store_fk.up.sql"},
+		{45, "migrations/045_burst_billable_events.up.sql"},
 	}
 
 	for _, m := range migrations {

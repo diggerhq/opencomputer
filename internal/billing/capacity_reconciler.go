@@ -14,7 +14,7 @@ import (
 // it scans for closed 15-min buckets that are at least `settle` past
 // their end and haven't been processed yet, runs the per-second
 // integration walk for each (org, bucket), and emits the resulting
-// reserved_usage / overage_usage / disk_overage_usage rows to the
+// reserved_usage / overage_usage / burst_usage / disk_overage_usage rows to the
 // `billable_events` outbox.
 //
 // Phase 2 runs in shadow: the rows are written but not delivered to
@@ -152,6 +152,7 @@ func (r *CapacityReconciler) processBucket(ctx context.Context, orgID uuid.UUID,
 // is org-level, summed across all running events at each segment.
 type BucketTotals struct {
 	OverageGBSecondsByTier map[int]float64
+	BurstGBSeconds         float64
 	DiskOverageGBSeconds   float64
 	ReservedFloorGBSeconds float64 // reservedGb × secs accumulated across segments — for shadow validation only
 }
@@ -176,6 +177,7 @@ type clippedEvent struct {
 	From, To time.Time
 	TierMB   int
 	DiskMB   int
+	Burst    bool
 }
 
 // clipEvent restricts a ScaleEvent's lifetime to the bucket window.
@@ -192,7 +194,7 @@ func clipEvent(e db.ScaleEvent, bucketStart, bucketEnd time.Time) (clippedEvent,
 	if !to.After(from) {
 		return clippedEvent{}, false
 	}
-	return clippedEvent{From: from, To: to, TierMB: e.MemoryMB, DiskMB: e.DiskMB}, true
+	return clippedEvent{From: from, To: to, TierMB: e.MemoryMB, DiskMB: e.DiskMB, Burst: e.Burst}, true
 }
 
 func collectBoundaries(events []clippedEvent, bucketStart, bucketEnd time.Time) []time.Time {
@@ -216,9 +218,10 @@ func collectBoundaries(events []clippedEvent, bucketStart, bucketEnd time.Time) 
 }
 
 type segment struct {
-	From, To       time.Time
-	RunningByTier  map[int]int // tier_mb → running GB at this tier
-	DiskOverageMB  int         // sum of (disk_mb − 20480) over running events
+	From, To      time.Time
+	RunningByTier map[int]int // non-burst tier_mb → running GB at this tier
+	BurstGB       int
+	DiskOverageMB int // sum of (disk_mb − 20480) over running events
 }
 
 func walkSegments(boundaries []time.Time, events []clippedEvent) []segment {
@@ -229,6 +232,7 @@ func walkSegments(boundaries []time.Time, events []clippedEvent) []segment {
 			continue
 		}
 		tiers := map[int]int{}
+		burstGB := 0
 		diskOver := 0
 		for _, e := range events {
 			// Event is "running" in [from, to) if it covers the segment
@@ -236,13 +240,18 @@ func walkSegments(boundaries []time.Time, events []clippedEvent) []segment {
 			// boundary set includes every event endpoint, every segment
 			// is fully contained in any event whose span covers `from`.
 			if !e.From.After(from) && !e.To.Before(to) {
-				tiers[e.TierMB] += e.TierMB / 1024
+				gb := e.TierMB / 1024
+				if e.Burst {
+					burstGB += gb
+				} else {
+					tiers[e.TierMB] += gb
+				}
 				if e.DiskMB > 20480 {
 					diskOver += e.DiskMB - 20480
 				}
 			}
 		}
-		segs = append(segs, segment{From: from, To: to, RunningByTier: tiers, DiskOverageMB: diskOver})
+		segs = append(segs, segment{From: from, To: to, RunningByTier: tiers, BurstGB: burstGB, DiskOverageMB: diskOver})
 	}
 	return segs
 }
@@ -251,6 +260,10 @@ func integrateSegments(segs []segment, reservedGB int) BucketTotals {
 	out := BucketTotals{OverageGBSecondsByTier: map[int]float64{}}
 	for _, s := range segs {
 		secs := s.To.Sub(s.From).Seconds()
+		if s.BurstGB > 0 {
+			out.BurstGBSeconds += float64(s.BurstGB) * secs
+		}
+
 		usage := 0
 		for _, gb := range s.RunningByTier {
 			usage += gb
@@ -281,7 +294,9 @@ func integrateSegments(segs []segment, reservedGB int) BucketTotals {
 //     actual usage — the customer paid for the floor whether or not
 //     they used it).
 //   - overage_usage   — one row per (org, sandbox_tier, bucket) where
-//     the tier's overage contribution is non-zero.
+//     the non-burst tier's overage contribution is non-zero.
+//   - burst_usage — one row per (org, bucket) when burst sandboxes ran.
+//     Burst is billed independently and does not consume reserved floors.
 //   - disk_overage_usage — one row per (org, bucket) when any sandbox
 //     in the bucket exceeded the 20 GB allowance.
 //
@@ -311,6 +326,20 @@ func emitBucket(ctx context.Context, store *db.Store, orgID uuid.UUID, bucketSta
 			EventType:   db.BillableEventOverageUsage,
 			MemoryMB:    tier,
 			GBSeconds:   gbs,
+			BucketStart: bucketStart,
+			BucketEnd:   bucketEnd,
+		}
+		if _, err := store.UpsertBillableEvent(ctx, ev); err != nil {
+			return err
+		}
+	}
+
+	if totals.BurstGBSeconds > 0 {
+		ev := db.BillableEvent{
+			OrgID:       orgID,
+			EventType:   db.BillableEventBurstUsage,
+			MemoryMB:    0,
+			GBSeconds:   totals.BurstGBSeconds,
 			BucketStart: bucketStart,
 			BucketEnd:   bucketEnd,
 		}

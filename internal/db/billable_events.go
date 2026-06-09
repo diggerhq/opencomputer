@@ -19,9 +19,10 @@ import (
 // Event types written to billable_events.event_type. Mirror the schema
 // CHECK constraint in migration 030.
 const (
-	BillableEventReservedUsage     = "reserved_usage"
-	BillableEventOverageUsage      = "overage_usage"
-	BillableEventDiskOverageUsage  = "disk_overage_usage"
+	BillableEventReservedUsage    = "reserved_usage"
+	BillableEventOverageUsage     = "overage_usage"
+	BillableEventBurstUsage       = "burst_usage"
+	BillableEventDiskOverageUsage = "disk_overage_usage"
 )
 
 // Delivery states. Mirror the schema CHECK constraint in migration 030.
@@ -33,22 +34,23 @@ const (
 
 // BillableEvent is one outbox row.
 //
-// `MemoryMB` is 0 for `reserved_usage` and `disk_overage_usage` (sentinel
-// for "not a sandbox tier"), and the running sandbox tier for
+// `MemoryMB` is 0 for `reserved_usage`, `burst_usage`, and
+// `disk_overage_usage` (sentinel for "not a sandbox tier"), and the
+// running sandbox tier for
 // `overage_usage` (one row per tier per bucket via the proportional split
 // rule — see ws-pricing/work/001 "Per-second integration walk").
 type BillableEvent struct {
-	ID             uuid.UUID  `json:"id"`
-	OrgID          uuid.UUID  `json:"orgId"`
-	EventType      string     `json:"eventType"`
-	MemoryMB       int        `json:"memoryMB"`
-	GBSeconds      float64    `json:"gbSeconds"`
-	BucketStart    time.Time  `json:"bucketStart"`
-	BucketEnd      time.Time  `json:"bucketEnd"`
-	DeliveryState  string     `json:"deliveryState"`
-	StripeEventID  *string    `json:"stripeEventId,omitempty"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	DeliveredAt    *time.Time `json:"deliveredAt,omitempty"`
+	ID            uuid.UUID  `json:"id"`
+	OrgID         uuid.UUID  `json:"orgId"`
+	EventType     string     `json:"eventType"`
+	MemoryMB      int        `json:"memoryMB"`
+	GBSeconds     float64    `json:"gbSeconds"`
+	BucketStart   time.Time  `json:"bucketStart"`
+	BucketEnd     time.Time  `json:"bucketEnd"`
+	DeliveryState string     `json:"deliveryState"`
+	StripeEventID *string    `json:"stripeEventId,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	DeliveredAt   *time.Time `json:"deliveredAt,omitempty"`
 }
 
 // UpsertBillableEvent inserts a new outbox row, or no-ops if a row with
@@ -304,7 +306,18 @@ func (s *Store) GetReservedGBForBucket(ctx context.Context, orgID uuid.UUID, buc
 // metering. See the same NOT EXISTS in GetOrgUsage for rationale.
 func (s *Store) GetScaleEventsForBucket(ctx context.Context, orgID uuid.UUID, bucketStart, bucketEnd time.Time) ([]ScaleEvent, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, sandbox_id, org_id, memory_mb, cpu_percent, disk_mb, started_at, ended_at
+		SELECT id, sandbox_id, org_id, memory_mb, cpu_percent, disk_mb,
+		       EXISTS (
+		         SELECT 1
+		         FROM sandbox_sessions ss
+		         WHERE ss.sandbox_id = se.sandbox_id
+		           AND (
+		             COALESCE((ss.config->>'burst')::boolean, false)
+		             OR COALESCE((ss.config->>'resumable')::boolean, false)
+		             OR ss.config->>'sandboxFamily' IN ('spot', 'resumable', 'burst')
+		           )
+		       ) AS burst,
+		       started_at, ended_at
 		FROM sandbox_scale_events se
 		WHERE org_id = $1
 		  AND started_at < $3
@@ -330,7 +343,7 @@ func (s *Store) GetScaleEventsForBucket(ctx context.Context, orgID uuid.UUID, bu
 	for rows.Next() {
 		var e ScaleEvent
 		var orgUUID uuid.UUID
-		if err := rows.Scan(&e.ID, &e.SandboxID, &orgUUID, &e.MemoryMB, &e.CPUPct, &e.DiskMB, &e.StartedAt, &e.EndedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SandboxID, &orgUUID, &e.MemoryMB, &e.CPUPct, &e.DiskMB, &e.Burst, &e.StartedAt, &e.EndedAt); err != nil {
 			return nil, fmt.Errorf("scan scale event: %w", err)
 		}
 		e.OrgID = orgUUID.String()

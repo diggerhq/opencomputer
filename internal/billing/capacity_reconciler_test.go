@@ -66,6 +66,19 @@ func TestIntegrateBucket_zeroReservation_replaysLegacy(t *testing.T) {
 	}
 }
 
+func TestIntegrateBucket_burstUsageSeparateFromOverage(t *testing.T) {
+	bs, be := canonicalBucket()
+	totals := IntegrateBucket(bs, be, 8, []db.ScaleEvent{
+		{MemoryMB: 8192, DiskMB: 20480, Burst: true, StartedAt: bs, EndedAt: &be},
+		{MemoryMB: 8192, DiskMB: 20480, StartedAt: bs, EndedAt: &be},
+	})
+	eq(t, "burst", totals.BurstGBSeconds, 8*900)
+	eq(t, "reserved floor", totals.ReservedFloorGBSeconds, 8*900)
+	if len(totals.OverageGBSecondsByTier) != 0 {
+		t.Errorf("expected burst to stay out of overage, got %v", totals.OverageGBSecondsByTier)
+	}
+}
+
 func TestIntegrateBucket_fullCoverage_noOverage(t *testing.T) {
 	bs, be := canonicalBucket()
 	// One 8 GB sandbox, reservation covers it.

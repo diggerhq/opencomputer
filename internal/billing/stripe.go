@@ -32,17 +32,19 @@ type StripeClient struct {
 	MeterEventNames map[int]string
 
 	// Disk overage meter / price (single dimension: GB-seconds above 20GB).
-	DiskOveragePriceID       string
+	DiskOveragePriceID        string
 	DiskOverageMeterEventName string
 
-	// Phase-3 unified-pipeline meters and prices. Two flat meters
-	// (overage + reserved) used by new orgs (`billing_mode='unified'`).
+	// Phase-3 unified-pipeline meters and prices. Flat meters
+	// (overage + reserved + burst) used by new orgs (`billing_mode='unified'`).
 	// Legacy per-tier meters above are untouched and continue to serve
 	// existing orgs via UsageReporter.
 	OveragePriceID         string // flat overage Price for `overage_usage` events
 	OverageMeterEventName  string // "sandbox_compute_sandbox_overage"
 	ReservedPriceID        string // flat reserved Price for `reserved_usage` events
 	ReservedMeterEventName string // "sandbox_compute_sandbox_reserved"
+	BurstPriceID           string // flat burst Price for `burst_usage` events
+	BurstMeterEventName    string // "sandbox_compute_sandbox_burst"
 
 	// Per-agent paywalled-feature prices. Configured from env and
 	// referenced by name from the dashboard subscribe handlers. Empty
@@ -236,8 +238,8 @@ func (s *StripeClient) EnsureProducts() error {
 		log.Printf("billing: created disk overage price (id=%s)", p.ID)
 	}
 
-	// 5. Phase-3 unified-pipeline meters. Two flat meters (overage +
-	//    reserved) at unit GB-seconds. Code creates the *meters* (their
+	// 5. Phase-3 unified-pipeline meters. Flat meters (overage, reserved,
+	//    and burst) at unit GB-seconds. Code creates the *meters* (their
 	//    event names are stable wire-protocol coupling) but **does not
 	//    create Prices** — those are configured in the Stripe Dashboard
 	//    so pricing changes don't need a code deploy. The Price IDs
@@ -246,6 +248,7 @@ func (s *StripeClient) EnsureProducts() error {
 	//    linked to the meter in Stripe.
 	s.OverageMeterEventName = ensureMeter(existingMeters, "sandbox_compute_"+OverageMeterKey, "Sandbox Instant Compute (GB-seconds)")
 	s.ReservedMeterEventName = ensureMeter(existingMeters, "sandbox_compute_"+ReservedMeterKey, "Sandbox Reserved Capacity (GB-seconds)")
+	s.BurstMeterEventName = ensureMeter(existingMeters, "sandbox_compute_"+BurstMeterKey, "Sandbox Burst Compute (GB-seconds)")
 
 	if id, ok := existingPrices[OveragePriceKey]; ok {
 		s.OveragePriceID = id
@@ -258,6 +261,12 @@ func (s *StripeClient) EnsureProducts() error {
 		log.Printf("billing: found existing reserved price (id=%s)", id)
 	} else {
 		log.Printf("billing: no reserved price configured for meter %s — meter events will flow but won't appear on invoices until a Price is created in Stripe", s.ReservedMeterEventName)
+	}
+	if id, ok := existingPrices[BurstPriceKey]; ok {
+		s.BurstPriceID = id
+		log.Printf("billing: found existing burst price (id=%s)", id)
+	} else {
+		log.Printf("billing: no burst price configured for meter %s — meter events will flow but won't appear on invoices until a Price is created in Stripe", s.BurstMeterEventName)
 	}
 
 	return nil

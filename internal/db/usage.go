@@ -15,6 +15,7 @@ type ScaleEvent struct {
 	MemoryMB  int        `json:"memoryMB"`
 	CPUPct    int        `json:"cpuPercent"`
 	DiskMB    int        `json:"diskMB"`
+	Burst     bool       `json:"burst"`
 	StartedAt time.Time  `json:"startedAt"`
 	EndedAt   *time.Time `json:"endedAt,omitempty"`
 }

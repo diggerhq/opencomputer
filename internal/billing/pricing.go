@@ -54,8 +54,8 @@ var TierPriceKey = map[int]string{
 // full lifetime of the sandbox (running OR hibernated, since the workspace
 // qcow2 still occupies host disk).
 const (
-	DiskFreeAllowanceMB            = 20480      // 20GB included with every sandbox
-	DiskOveragePricePerGBPerSecond = 0.0000001  // ~$0.26 per GB-month
+	DiskFreeAllowanceMB            = 20480     // 20GB included with every sandbox
+	DiskOveragePricePerGBPerSecond = 0.0000001 // ~$0.26 per GB-month
 	DiskOverageMetadataKey         = "sandbox_disk_overage"
 )
 
@@ -68,6 +68,8 @@ const (
 //     reserve capacity pay this.
 //   - Overage: customer-facing name "instant." Flat per-GB rate
 //     regardless of sandbox tier.
+//   - Burst: customer-facing name "burst." Flat per-GB rate for
+//     restartable burst sandboxes, independent of reserved capacity.
 //
 // **Dollar rates are deliberately not in code.** Stripe Prices are
 // configured in the Stripe Dashboard (or via Stripe API by the
@@ -92,6 +94,10 @@ const (
 	// Instant (overage): single meter, flat across all sandbox sizes.
 	OverageMeterKey = "sandbox_overage"
 	OveragePriceKey = "sandbox_overage_v1"
+
+	// Burst: single meter, flat across all sandbox sizes.
+	BurstMeterKey = "sandbox_burst"
+	BurstPriceKey = "sandbox_burst_v1"
 )
 
 // DiskOverageGBSeconds returns the chargeable GB-seconds for one usage summary

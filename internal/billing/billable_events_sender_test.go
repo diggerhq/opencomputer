@@ -10,12 +10,13 @@ import (
 // meterEventNameFor pins the (event_type, memory_mb) → Stripe meter
 // routing. Overage is flat — memory_mb is preserved on the outbox row
 // for analytics but ignored at ship time so a 1 GB and 64 GB sandbox
-// hit the same meter.
+// hit the same meter. Burst is also flat, but routed to its own meter.
 
 func newSenderForTest() *BillableEventsSender {
 	stripe := &StripeClient{
 		ReservedMeterEventName:    "sandbox_compute_sandbox_reserved",
 		OverageMeterEventName:     "sandbox_compute_sandbox_overage",
+		BurstMeterEventName:       "sandbox_compute_sandbox_burst",
 		DiskOverageMeterEventName: "sandbox_compute_sandbox_disk_overage",
 	}
 	return &BillableEventsSender{stripe: stripe}
@@ -56,6 +57,17 @@ func TestSender_meterEventName_diskOverage(t *testing.T) {
 	}
 }
 
+func TestSender_meterEventName_burstFlat(t *testing.T) {
+	s := newSenderForTest()
+	got, err := s.meterEventNameFor(db.BillableEventBurstUsage, 0)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "sandbox_compute_sandbox_burst" {
+		t.Errorf("got %q", got)
+	}
+}
+
 func TestSender_meterEventName_unknownTypeRejected(t *testing.T) {
 	s := newSenderForTest()
 	_, err := s.meterEventNameFor("totally_made_up", 0)
@@ -74,6 +86,7 @@ func TestSender_meterEventName_missingProvisionRejected(t *testing.T) {
 	}{
 		{db.BillableEventReservedUsage, "reserved meter not provisioned"},
 		{db.BillableEventOverageUsage, "overage meter not provisioned"},
+		{db.BillableEventBurstUsage, "burst meter not provisioned"},
 		{db.BillableEventDiskOverageUsage, "disk overage meter not provisioned"},
 	}
 	for _, tc := range cases {

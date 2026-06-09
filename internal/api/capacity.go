@@ -249,11 +249,11 @@ func (s *Server) getCapacityBillableEvents(c echo.Context) error {
 
 	eventType := c.QueryParam("eventType")
 	switch eventType {
-	case "", db.BillableEventReservedUsage, db.BillableEventOverageUsage, db.BillableEventDiskOverageUsage:
+	case "", db.BillableEventReservedUsage, db.BillableEventOverageUsage, db.BillableEventBurstUsage, db.BillableEventDiskOverageUsage:
 		// ok
 	default:
 		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "eventType must be one of reserved_usage, overage_usage, disk_overage_usage (or omitted for all)",
+			"error": "eventType must be one of reserved_usage, overage_usage, burst_usage, disk_overage_usage (or omitted for all)",
 		})
 	}
 

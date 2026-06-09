@@ -138,7 +138,7 @@ func (s *BillableEventsSender) shipOne(ctx context.Context, p db.PendingBillable
 }
 
 // meterEventNameFor maps an outbox event_type → Stripe meter event_name.
-// All three event types route to a single meter each — overage is flat
+// All event types route to a single meter each — overage and burst are flat
 // (the per-tier memory_mb on the outbox row is preserved for analytics
 // but ignored when shipping; Stripe sums GB-seconds across rows).
 func (s *BillableEventsSender) meterEventNameFor(eventType string, memoryMB int) (string, error) {
@@ -153,6 +153,11 @@ func (s *BillableEventsSender) meterEventNameFor(eventType string, memoryMB int)
 			return "", fmt.Errorf("overage meter not provisioned (run EnsureProducts)")
 		}
 		return s.stripe.OverageMeterEventName, nil
+	case db.BillableEventBurstUsage:
+		if s.stripe.BurstMeterEventName == "" {
+			return "", fmt.Errorf("burst meter not provisioned (run EnsureProducts)")
+		}
+		return s.stripe.BurstMeterEventName, nil
 	case db.BillableEventDiskOverageUsage:
 		if s.stripe.DiskOverageMeterEventName == "" {
 			return "", fmt.Errorf("disk overage meter not provisioned")
