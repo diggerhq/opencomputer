@@ -42,7 +42,16 @@ const (
 	emergencyDiskThreshold = 90.0
 	evacuationBatchSize    = 3                  // sandboxes to migrate per eval cycle per worker
 	evacuationCooldown     = 60 * time.Second   // per-worker cooldown between evacuation batches
-	drainTimeout           = 45 * time.Minute   // max time to drain a worker via live migration (allows 30 sandboxes × 10min each in batches of 3)
+	// drainTimeout caps total wall-clock time for a single drain. With
+	// per-target serialization (one in-flight migration per target), a
+	// drain bottlenecked on a single target processes sandboxes serially
+	// at ~30–60s each. At 250 sandboxes/worker (prod capacity) and 60s
+	// per migration, worst-case is ~4 hours. The prior 45-min cap was
+	// sized for the old fan-onto-one-target model and would orphan most
+	// of a full drain. Bumping to 6h leaves headroom for large workloads;
+	// genuine stuck drains are caught by per-migration timeouts + the
+	// natural-expiry fallback in drainWorker.
+	drainTimeout           = 6 * time.Hour
 
 	creationFailureThreshold = 3                // consecutive failures before exponential backoff
 	creationBackoffMin       = 1 * time.Minute  // initial backoff after threshold hit
@@ -753,9 +762,20 @@ func (s *Scaler) findMigrationTarget(region, excludeWorkerID string, requiredMem
 		if s.state.IsDraining(w.MachineID) {
 			continue
 		}
-		// Subtract in-flight migrations from remaining capacity
-		pending := s.state.GetInFlight(w.ID)
-		remaining := w.Capacity - w.Current - pending
+		// Hard cap: one in-flight migration per target. Each
+		// PrepareMigrationIncoming spawns a QEMU receiver that pre-allocates
+		// the sandbox's full memory; running multiple in parallel against
+		// the same target stacks those pre-allocations and OOM-kills the
+		// worker process under cgroup memory limits. Cascading symptoms on
+		// failure: gRPC "connection refused" (worker shutting down),
+		// "client connection closing" (mid-call), and "migration wait
+		// failed" (target QEMU killed mid-transfer). Multiple targets can
+		// still receive migrations in parallel — the constraint is
+		// one-per-target, not one-globally.
+		if s.state.GetInFlight(w.ID) > 0 {
+			continue
+		}
+		remaining := w.Capacity - w.Current
 		if remaining <= 0 || w.CPUPct > 85 || w.MemPct > 85 || w.DiskPct > 85 {
 			continue
 		}
@@ -777,6 +797,44 @@ func (s *Scaler) findMigrationTarget(region, excludeWorkerID string, requiredMem
 		}
 	}
 	return best
+}
+
+// waitForMigrationTarget is findMigrationTarget wrapped in a polling loop. It
+// returns the first eligible target, or nil if ctx expires before one becomes
+// free. Used by liveMigrateSandbox so a batch that briefly outpaces target
+// availability (every target has an in-flight migration) waits for a slot
+// instead of erroring out immediately. The outer drain timeout still bounds
+// the total wall-clock — this just smooths over the inner contention window.
+//
+// 5s poll interval matches the typical live-migrate completion time on small
+// sandboxes; pollSlower (15s) kicks in after the first minute so a genuinely
+// stuck drain doesn't burn CPU on tight retries.
+func (s *Scaler) waitForMigrationTarget(ctx context.Context, region, excludeWorkerID string, requiredMemMB int32) *WorkerInfo {
+	const (
+		pollFast = 5 * time.Second
+		pollSlow = 15 * time.Second
+		fastFor  = 60 * time.Second
+	)
+	if target := s.findMigrationTarget(region, excludeWorkerID, requiredMemMB); target != nil {
+		return target
+	}
+	t0 := time.Now()
+	for {
+		interval := pollFast
+		if time.Since(t0) > fastFor {
+			interval = pollSlow
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(interval):
+		}
+		if target := s.findMigrationTarget(region, excludeWorkerID, requiredMemMB); target != nil {
+			log.Printf("scaler: waitForMigrationTarget: %s available after %v wait (region=%s, mem=%dMB)",
+				target.ID, time.Since(t0).Round(time.Second), region, requiredMemMB)
+			return target
+		}
+	}
 }
 
 // evacuateBatch live-migrates up to count sandboxes off sourceWorker, picking
@@ -1060,11 +1118,28 @@ func (s *Scaler) replaceOneStale(ctx context.Context, region string, target *Wor
 	//    at that exact moment.
 	s.drainWorker(target.ID, target.MachineID, region)
 
-	// 2. Terminate the (now-empty) stale worker. Frees the quota slot for the
-	//    replacement scaleUp below. We do this even on partial drain — the
-	//    natural-expiry path will catch any stragglers on the source via
-	//    sandbox timeouts; better to free quota and unblock the dance than
-	//    keep an old-version worker around.
+	// 2. If drain left sandboxes behind (drainTimeout fired, all targets
+	//    saturated, etc.), HIBERNATE the leftovers before terminating.
+	//    Hibernate is well-tested and doesn't depend on a target worker
+	//    being ready — the snapshot lands in S3 and any worker can wake
+	//    the sandbox on next access. Without this fallback, terminating
+	//    a non-empty source would orphan running customer workload
+	//    (status flips to 'error' via MarkOrphanedOnWorker, the
+	//    customer's process just disappears).
+	leftover := s.countSandboxesOnWorker(target.ID)
+	if leftover > 0 {
+		log.Printf("scaler: rolling replace: drain of %s returned with %d sandbox(es) still on it — hibernating the rest before termination", target.ID, leftover)
+		s.hibernateAllOnWorker(target.ID)
+		leftover = s.countSandboxesOnWorker(target.ID)
+		if leftover > 0 {
+			log.Printf("scaler: rolling replace: %s still has %d sandbox(es) after hibernate fallback — NOT terminating; next scaler tick will re-attempt", target.ID, leftover)
+			return
+		}
+	}
+	if leftover < 0 {
+		log.Printf("scaler: rolling replace: %s unreachable, can't confirm empty — NOT terminating", target.ID)
+		return
+	}
 	if s.pool != nil && target.MachineID != "" {
 		termCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		if err := s.pool.DestroyMachine(termCtx, target.MachineID); err != nil {
@@ -1314,21 +1389,27 @@ func (s *Scaler) getDrainingWorkerSandboxCount(workerID string) int {
 }
 
 // hibernateAllOnWorker attempts to hibernate all running sandboxes on a worker.
-// Best-effort — logs failures but doesn't block.
-func (s *Scaler) hibernateAllOnWorker(workerID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+// Best-effort — logs failures but doesn't block. Returns the count actually
+// hibernated.
+//
+// Outer timeout is 30 min total; each per-sandbox hibernate gets its own 2-min
+// sub-timeout so one slow snapshot doesn't starve the rest. Previous 2-min
+// total timeout was sized for a 1-3 sandbox emergency burst and would only
+// hibernate the first few sandboxes when used as a drain fallback.
+func (s *Scaler) hibernateAllOnWorker(workerID string) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	client, err := s.registry.GetWorkerClient(workerID)
 	if err != nil {
 		log.Printf("scaler: hibernate-all: no gRPC client for %s: %v", workerID, err)
-		return
+		return 0
 	}
 
 	listResp, err := client.ListSandboxes(ctx, &pb.ListSandboxesRequest{})
 	if err != nil {
 		log.Printf("scaler: hibernate-all: ListSandboxes failed for %s: %v", workerID, err)
-		return
+		return 0
 	}
 
 	hibernated := 0
@@ -1336,9 +1417,17 @@ func (s *Scaler) hibernateAllOnWorker(workerID string) {
 		if sb.Status != "running" {
 			continue
 		}
-		_, err := client.HibernateSandbox(ctx, &pb.HibernateSandboxRequest{
+		select {
+		case <-ctx.Done():
+			log.Printf("scaler: hibernate-all: outer timeout reached on %s after %d hibernated", workerID, hibernated)
+			return hibernated
+		default:
+		}
+		hibCtx, hibCancel := context.WithTimeout(ctx, 2*time.Minute)
+		_, err := client.HibernateSandbox(hibCtx, &pb.HibernateSandboxRequest{
 			SandboxId: sb.SandboxId,
 		})
+		hibCancel()
 		if err != nil {
 			log.Printf("scaler: hibernate-all: hibernate %s failed: %v", sb.SandboxId, err)
 			continue
@@ -1347,6 +1436,60 @@ func (s *Scaler) hibernateAllOnWorker(workerID string) {
 	}
 
 	log.Printf("scaler: hibernate-all: %d sandboxes hibernated on worker %s", hibernated, workerID)
+	return hibernated
+}
+
+// abortIncomingOnTarget calls DestroySandbox on the migration target as a
+// best-effort cleanup after a failed live-migration. PrepareMigrationIncoming
+// spawned a QEMU receiver process and registered the sandbox in the target's
+// m.vms map; if migration didn't complete, that state leaks. The receiver
+// process stays alive (it's a real QEMU pid that vmAlive's Signal(0) check
+// passes), m.vms keeps the entry, and usage_ticker emits billing events at
+// the default memory tier for as long as the worker runs. DestroySandbox
+// kills the pid + removes from m.vms in one shot.
+//
+// Errors are logged but not returned — the caller is in a failure-recovery
+// path that has already done what it needed for the source-side state.
+func (s *Scaler) abortIncomingOnTarget(targetWorkerID, sandboxID string) {
+	if targetWorkerID == "" {
+		return
+	}
+	client, err := s.registry.GetWorkerClient(targetWorkerID)
+	if err != nil {
+		log.Printf("scaler: abort-incoming: target %s unreachable for cleanup of %s: %v", targetWorkerID, sandboxID, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := client.DestroySandbox(ctx, &pb.DestroySandboxRequest{SandboxId: sandboxID}); err != nil {
+		log.Printf("scaler: abort-incoming: DestroySandbox(%s) on target %s failed: %v — orphan may leak until ghost-reaper catches it", sandboxID, targetWorkerID, err)
+		return
+	}
+	log.Printf("scaler: abort-incoming: cleaned up failed migration receiver %s on target %s", sandboxID, targetWorkerID)
+}
+
+// countSandboxesOnWorker returns the number of running sandboxes the worker
+// reports. Used by replaceOneStale to decide whether termination is safe.
+// Returns -1 if the worker is unreachable (caller should treat as "don't
+// terminate" — we can't tell if it's empty).
+func (s *Scaler) countSandboxesOnWorker(workerID string) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := s.registry.GetWorkerClient(workerID)
+	if err != nil {
+		return -1
+	}
+	resp, err := client.ListSandboxes(ctx, &pb.ListSandboxesRequest{})
+	if err != nil {
+		return -1
+	}
+	n := 0
+	for _, sb := range resp.Sandboxes {
+		if sb.Status == "running" {
+			n++
+		}
+	}
+	return n
 }
 
 // destroyDrainedMachine tags and terminates a machine after drain.
@@ -1411,6 +1554,17 @@ func (s *Scaler) getWorkerInfo(workerID string) *WorkerInfo {
 
 // --- Live Migration Orchestration ---
 
+// LiveMigrateSandbox is the public entry point for live migration. Both the
+// scaler's drain path AND the API's POST /api/sandboxes/:id/migrate handler
+// flow through this — keeping a single implementation ensures both paths
+// share the per-target serialization, in-flight tracking, abort-on-failure
+// cleanup, and source/target consistency guarantees. Previously the API had
+// its own copy that bypassed all of these, so any caller of the API could
+// trigger the same parallel-migration OOM cascade the scaler's drain fixed.
+func (s *Scaler) LiveMigrateSandbox(ctx context.Context, sandboxID, sourceWorkerID, targetWorkerID string) error {
+	return s.liveMigrateSandbox(ctx, sandboxID, sourceWorkerID, targetWorkerID)
+}
+
 // liveMigrateSandbox performs a full live migration of a sandbox between workers.
 // Steps: pre-copy drives to S3 → prepare target → QMP migrate → complete → update DB.
 //
@@ -1418,7 +1572,8 @@ func (s *Scaler) getWorkerInfo(workerID string) *WorkerInfo {
 // sandbox's actual memory footprint (so an oversize sandbox doesn't get
 // routed to a worker that can only reserve 4GB). Callers that need to force
 // a specific destination (e.g. evacuateBatch, which uses a pre-scored
-// target for the whole batch) pass it explicitly.
+// target for the whole batch; or the API handler when the user names a
+// target) pass it explicitly.
 func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorkerID, targetWorkerID string) error {
 	// Prevent double-migrate
 	if !s.state.AcquireMigrationLock(sandboxID) {
@@ -1509,9 +1664,15 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 		if srcInfo == nil {
 			return fmt.Errorf("source worker %s not in registry", sourceWorkerID)
 		}
-		target := s.findMigrationTarget(srcInfo.Region, sourceWorkerID, actualMemMB)
+		// Wait up to 2 min for a target to become free. With per-target
+		// serialization, parallel batches may temporarily have all targets
+		// in-flight; waiting smooths over that contention instead of
+		// failing-then-retrying through the outer drain loop.
+		waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Minute)
+		target := s.waitForMigrationTarget(waitCtx, srcInfo.Region, sourceWorkerID, actualMemMB)
+		waitCancel()
 		if target == nil {
-			return fmt.Errorf("no viable migration target in %s for %dMB actual-RSS sandbox", srcInfo.Region, actualMemMB)
+			return fmt.Errorf("no viable migration target in %s for %dMB actual-RSS sandbox (waited up to 2m)", srcInfo.Region, actualMemMB)
 		}
 		targetWorkerID = target.ID
 	}
@@ -1565,6 +1726,16 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 				// fired yet (only fires on success), so D1's worker_id was
 				// never moved off source. No event needed.
 			}
+			// Abort on target: clean up the half-prepared receiver. Without
+			// this, the QEMU receiver process (started by PrepareMigrationIncoming
+			// with the sandbox's full memory pre-allocated) sits around forever
+			// pretending to be a live sandbox — usage_ticker emits billing
+			// events for it at the default memory tier, and the ghost-reaper
+			// can't catch it because the qemu process is genuinely alive
+			// (just stuck in -incoming wait). DestroySandbox sends Kill which
+			// removes from m.vms and tears down the qemu pid. Best-effort —
+			// log on failure but don't propagate.
+			s.abortIncomingOnTarget(targetWorkerID, sandboxID)
 		}()
 	}
 

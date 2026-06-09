@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -823,16 +824,59 @@ func (s *Store) FailMigration(ctx context.Context, sandboxID string) error {
 	return err
 }
 
+// closeOpenScaleEventsForSandboxes closes any open sandbox_scale_events rows
+// for the given sandboxes. Caller is responsible for the surrounding tx so the
+// close-out is atomic with whatever status transition triggered it.
+//
+// Exists because three raw-SQL paths (FailMigrationPostQMP, MarkOrphanedOnWorker,
+// MarkOrphanedSandboxes) transition sandboxes to terminal states *outside*
+// UpdateSandboxSessionStatus, which has its own inline close-out. Without this
+// helper each path duplicated the same UPDATE — and at least one of them
+// (MarkOrphanedOnWorker) was missing it entirely, leaving scale_events open
+// after the sandbox died. GetOrgUsage then attributed phantom GB-seconds to
+// the dead sandbox until manual cleanup.
+//
+// Safe to call with an empty slice (no-op).
+func closeOpenScaleEventsForSandboxes(ctx context.Context, tx pgx.Tx, sandboxIDs []string) error {
+	if len(sandboxIDs) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx,
+		`UPDATE sandbox_scale_events SET ended_at = now()
+		 WHERE sandbox_id = ANY($1) AND ended_at IS NULL`,
+		sandboxIDs)
+	return err
+}
+
 // FailMigrationPostQMP marks a sandbox as error after QMP transfer succeeded but the migration
 // failed to complete (typically agent-connect on target). After QMP, the source has shut down
 // its QEMU, so neither side has a healthy VM. Marking error (rather than reverting to running)
 // stops drainWorker from believing the sandbox is still alive on the source.
+//
+// Wrapped in a tx with closeOpenScaleEvents: pre-fix, the status update
+// bypassed UpdateSandboxSessionStatus (which has its own close-out), so
+// sandbox_scale_events rows stayed open after the sandbox died. GetOrgUsage
+// then over-counted the dead sandbox as still running indefinitely — a
+// phantom-billing leak that grows linearly with time since the failure.
 func (s *Store) FailMigrationPostQMP(ctx context.Context, sandboxID, errorMsg string) error {
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx,
 		`UPDATE sandbox_sessions SET status = 'error', migrating_to_worker = '', stopped_at = now(), error_msg = $2
 		 WHERE sandbox_id = $1 AND status = 'migrating'`,
 		sandboxID, errorMsg)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		if err := closeOpenScaleEventsForSandboxes(ctx, tx, []string{sandboxID}); err != nil {
+			return fmt.Errorf("close scale events: %w", err)
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // OrphanedSandbox is one row affected by MarkOrphanedOnWorker /
@@ -850,8 +894,17 @@ type OrphanedSandbox struct {
 // missed — e.g. a sandbox that vanished from the worker (failed migration cleanup) but whose DB
 // row still references the worker. Returns the affected (sandbox_id, org_id) pairs so the
 // caller can publish `stopped` events; without them, D1 keeps the row at `running`.
+//
+// Wrapped in a tx with closeOpenScaleEvents (see FailMigrationPostQMP for the
+// pattern). Pre-fix, scale_events rows for sandboxes marked error here stayed
+// open, so GetOrgUsage continued attributing GB-seconds to the (dead) sandbox.
 func (s *Store) MarkOrphanedOnWorker(ctx context.Context, workerID, errorMsg string) ([]OrphanedSandbox, error) {
-	rows, err := s.pool.Query(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx,
 		`UPDATE sandbox_sessions SET status = 'error', migrating_to_worker = '', stopped_at = now(), error_msg = $2
 		 WHERE worker_id = $1 AND status IN ('running', 'migrating')
 		 RETURNING sandbox_id, org_id, worker_id`,
@@ -859,16 +912,32 @@ func (s *Store) MarkOrphanedOnWorker(ctx context.Context, workerID, errorMsg str
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var orphans []OrphanedSandbox
 	for rows.Next() {
 		var o OrphanedSandbox
 		if err := rows.Scan(&o.SandboxID, &o.OrgID, &o.WorkerID); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		orphans = append(orphans, o)
 	}
-	return orphans, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(orphans) > 0 {
+		ids := make([]string, len(orphans))
+		for i, o := range orphans {
+			ids[i] = o.SandboxID
+		}
+		if err := closeOpenScaleEventsForSandboxes(ctx, tx, ids); err != nil {
+			return nil, fmt.Errorf("close scale events: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return orphans, nil
 }
 
 // RecoverStaleMigrations resets any sandbox stuck in 'migrating' status for more than the given duration.
@@ -910,20 +979,44 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 
 	var orphans []OrphanedSandbox
 	for _, workerID := range deadWorkers {
-		upd, err := s.pool.Query(ctx,
+		// Wrap in a tx so the status update + scale-event close-out are atomic.
+		// Pre-fix this was a bare UPDATE, leaving scale_events open after the
+		// status change — same phantom-billing pattern as FailMigrationPostQMP.
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			continue
+		}
+		upd, err := tx.Query(ctx,
 			`UPDATE sandbox_sessions SET status = 'error', error_msg = 'worker lost', stopped_at = now()
 			 WHERE worker_id = $1 AND status = 'running'
 			 RETURNING sandbox_id, org_id, worker_id`, workerID)
 		if err != nil {
+			tx.Rollback(ctx)
 			continue
 		}
+		var batchOrphans []OrphanedSandbox
 		for upd.Next() {
 			var o OrphanedSandbox
 			if err := upd.Scan(&o.SandboxID, &o.OrgID, &o.WorkerID); err == nil {
-				orphans = append(orphans, o)
+				batchOrphans = append(batchOrphans, o)
 			}
 		}
 		upd.Close()
+		if len(batchOrphans) > 0 {
+			ids := make([]string, len(batchOrphans))
+			for i, o := range batchOrphans {
+				ids[i] = o.SandboxID
+			}
+			if err := closeOpenScaleEventsForSandboxes(ctx, tx, ids); err != nil {
+				log.Printf("MarkOrphanedSandboxes: close scale events for worker %s: %v", workerID, err)
+				tx.Rollback(ctx)
+				continue
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			continue
+		}
+		orphans = append(orphans, batchOrphans...)
 	}
 	return orphans, nil
 }

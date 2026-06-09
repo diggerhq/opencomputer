@@ -78,6 +78,26 @@ type Server struct {
 	// single-PG mode or tests); resolveSecretStoreInto + template lookup fall
 	// back to s.store in that case.
 	edge *edgeclient.Client
+
+	// migrator delegates live-migration to the scaler's orchestrator so the
+	// API path (POST /api/sandboxes/:id/migrate) shares the per-target
+	// serialization + abort-on-failure cleanup the scaler uses for drains.
+	// nil disables the migrate endpoint (returns 503).
+	migrator MigrationOrchestrator
+}
+
+// MigrationOrchestrator is the slice of the scaler the API needs to delegate
+// migration requests to. Defined as an interface here (rather than importing
+// the concrete *controlplane.Scaler) so the API package stays test-friendly
+// and the dependency direction is API → interface ← controlplane.
+type MigrationOrchestrator interface {
+	LiveMigrateSandbox(ctx context.Context, sandboxID, sourceWorkerID, targetWorkerID string) error
+}
+
+// SetMigrator wires the scaler-backed migration orchestrator. Called from
+// cmd/server/main.go after the scaler is constructed.
+func (s *Server) SetMigrator(m MigrationOrchestrator) {
+	s.migrator = m
 }
 
 // SetEdgeClient wires the api-edge HTTP client. Caller is responsible for
