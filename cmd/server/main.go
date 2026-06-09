@@ -183,7 +183,10 @@ func main() {
 		log.Printf("opensandbox: sandbox domain configured (%s)", cfg.SandboxDomain)
 	}
 
-	// Initialize Redis worker registry in server mode
+	// Initialize Redis worker registry in server mode. The scaler reference
+	// is hoisted to outer scope so the API server can be wired with it later
+	// for the migrate endpoint (see server.SetMigrator below).
+	var scalerOrchestrator *controlplane.Scaler
 	var redisRegistry *controlplane.RedisWorkerRegistry
 	if cfg.Mode == "server" && cfg.RedisURL != "" {
 		var err error
@@ -500,6 +503,11 @@ func main() {
 			}
 
 			scalerState := controlplane.NewRedisScalerState(redisRegistry.RedisClient())
+			// Note: this scaler is also exposed via scalerOrchestrator so the
+			// API server can wire it (server.SetMigrator) below. POST
+			// /api/sandboxes/:id/migrate then flows through the same
+			// per-target-serialized, in-flight-tracked, abort-cleaned-up
+			// code path as the scaler's drain.
 			scaler := controlplane.NewScaler(controlplane.ScalerConfig{
 				Pool:         pool,
 				Registry:     redisRegistry,
@@ -520,6 +528,7 @@ func main() {
 				CellID:      cfg.CellID,
 			})
 			defer scaler.Stop()
+			scalerOrchestrator = scaler
 
 			// Leader election: only the leader runs the scaler. The
 			// per-sandbox autoscaler (created later) consults this same
@@ -626,6 +635,14 @@ func main() {
 	// Token never leaves this process; the UI proxies its queries through
 	// /api/sandboxes/:id/logs. Empty token disables the endpoint (503).
 	server.SetAxiomQueryConfig(cfg.AxiomQueryToken, cfg.AxiomDataset)
+
+	// Wire the scaler as the API's migration orchestrator. nil-safe — when
+	// the scaler isn't running (combined mode, no pool) the migrate endpoint
+	// returns 503 instead of routing through the old duplicated inline path.
+	if scalerOrchestrator != nil {
+		server.SetMigrator(scalerOrchestrator)
+		log.Printf("opensandbox: migrate API wired to scaler orchestrator (shared per-target serialization)")
+	}
 	if cfg.AxiomQueryToken != "" {
 		log.Printf("opensandbox: sandbox session logs read API enabled (dataset=%s)", cfg.AxiomDataset)
 	}

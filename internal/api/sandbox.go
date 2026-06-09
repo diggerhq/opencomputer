@@ -1059,6 +1059,14 @@ func (s *Server) setTimeout(c echo.Context) error {
 
 // migrateSandbox performs live migration of a sandbox to a different worker.
 // POST /api/sandboxes/:id/migrate {"targetWorker": "w-azure-osb-worker-xxx"}
+//
+// Delegates to the scaler's LiveMigrateSandbox so the user-driven API path
+// shares the same per-target serialization, in-flight tracking, abort-on-
+// failure cleanup, and source/target consistency guarantees as the scaler's
+// drain path. Previously this handler had its own inline copy of the
+// migration sequence that bypassed all those protections, meaning a user
+// firing parallel /migrate calls at a single target could OOM-kill the
+// target worker the same way the parallel-drain cascade did.
 func (s *Server) migrateSandbox(c echo.Context) error {
 	id := c.Param("id")
 	ctx := c.Request().Context()
@@ -1073,6 +1081,9 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 	if s.workerRegistry == nil || s.store == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "migration requires server mode with worker registry"})
 	}
+	if s.migrator == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "migration orchestrator not configured (scaler missing)"})
+	}
 
 	// Look up sandbox to find source worker
 	session, err := s.store.GetSandboxSession(ctx, id)
@@ -1083,137 +1094,16 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox must be running to migrate"})
 	}
 
-	// Mark as migrating — blocks exec/proxy routing until migration completes
-	migrationDone := false
-	if s.store != nil {
-		if err := s.store.SetMigrating(ctx, id, req.TargetWorker); err != nil {
-			log.Printf("migrate %s: failed to set migrating state: %v", id, err)
-		}
-		// Guarantee we revert on failure
-		defer func() {
-			if !migrationDone && s.store != nil {
-				s.store.FailMigration(ctx, id)
-			}
-		}()
-	}
-
-	// Get source and target worker gRPC clients
-	sourceClient, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
-	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "source worker unreachable: " + err.Error()})
-	}
-	targetClient, err := s.workerRegistry.GetWorkerClient(req.TargetWorker)
-	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "target worker unreachable: " + err.Error()})
-	}
-
 	t0 := time.Now()
-
-	// Step 1: Pre-copy drives to S3 (thin overlay, never flatten).
-	preCopyCtx, preCopyCancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer preCopyCancel()
-	preCopyResp, err := sourceClient.PreCopyDrives(preCopyCtx, &pb.PreCopyDrivesRequest{
-		SandboxId: id,
-	})
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "pre-copy drives: " + err.Error()})
+	if err := s.migrator.LiveMigrateSandbox(ctx, id, session.WorkerID, req.TargetWorker); err != nil {
+		// LiveMigrateSandbox sets cell-PG state on failure (FailMigration /
+		// FailMigrationPostQMP) and emits the relevant stopped/migrated D1
+		// event itself. Don't double-flip here — just surface the error.
+		log.Printf("migrate %s: LiveMigrateSandbox failed: %v", id, err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	if preCopyResp.GoldenVersion == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "source sandbox has no goldenVersion — cannot live migrate safely; use hibernate/wake instead"})
-	}
-
-	log.Printf("migrate %s: drives pre-copied to S3 (%dms, golden=%s)", id, time.Since(t0).Milliseconds(), preCopyResp.GoldenVersion)
-
-	// Step 2: Prepare target (downloads thin overlay, rebases if needed, starts QEMU -incoming).
-	// CPU and memory come from the source worker — must match exactly for QEMU migration.
-	cpuCount := preCopyResp.BaseCpuCount
-	memoryMB := preCopyResp.BaseMemoryMb
-	if cpuCount == 0 {
-		cpuCount = 2
-	}
-	if memoryMB == 0 {
-		memoryMB = 1024
-	}
-
-	prepCtx, prepCancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer prepCancel()
-	prepResp, err := targetClient.PrepareMigrationIncoming(prepCtx, &pb.PrepareMigrationIncomingRequest{
-		SandboxId:           id,
-		CpuCount:            cpuCount,
-		MemoryMb:            memoryMB,
-		GuestPort:           80,
-		Template:            session.Template,
-		RootfsS3Key:         preCopyResp.RootfsKey,
-		WorkspaceS3Key:      preCopyResp.WorkspaceKey,
-		OverlayMode:         true,
-		SourceGoldenVersion: preCopyResp.GoldenVersion,
-		// Carry the secrets-proxy session from source → target. Without
-		// this the destination has no substitution map and outbound HTTPS
-		// from the migrated VM would leak `osb_sealed_xxx` env vars
-		// verbatim to upstream services. Empty when no secret store.
-		SealedTokens:    preCopyResp.SealedTokens,
-		EgressAllowlist: preCopyResp.EgressAllowlist,
-		TokenHosts:      preCopyResp.TokenHosts,
-		SealedNames:     preCopyResp.SealedNames,
-	})
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "prepare target: " + err.Error()})
-	}
-
-	log.Printf("migrate %s: target prepared at %s (host port %d, secrets=%d)", id, prepResp.IncomingAddr, prepResp.HostPort, len(preCopyResp.SealedTokens))
-
-	// Step 3: Live migrate from source to target
-	migrateCtx, migrateCancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer migrateCancel()
-	_, err = sourceClient.LiveMigrate(migrateCtx, &pb.LiveMigrateRequest{
-		SandboxId:    id,
-		IncomingAddr: prepResp.IncomingAddr,
-	})
-	if err != nil {
-		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		targetClient.DestroySandbox(cleanCtx, &pb.DestroySandboxRequest{SandboxId: id})
-		cleanCancel()
-		log.Printf("migrate %s: live migrate failed, cleaned up target on %s: %v", id, req.TargetWorker, err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "live migrate: " + err.Error()})
-	}
-
-	log.Printf("migrate %s: QMP migration complete (%dms)", id, time.Since(t0).Milliseconds())
-
-	// Step 4: Complete migration on target (reconnect agent, patch network)
-	completeCtx, completeCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer completeCancel()
-	_, err = targetClient.CompleteMigrationIncoming(completeCtx, &pb.CompleteMigrationIncomingRequest{
-		SandboxId: id,
-	})
-	if err != nil {
-		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		targetClient.DestroySandbox(cleanCtx, &pb.DestroySandboxRequest{SandboxId: id})
-		cleanCancel()
-		log.Printf("migrate %s: complete failed, cleaned up target on %s: %v", id, req.TargetWorker, err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "complete migration: " + err.Error()})
-	}
-
-	// Step 5: Complete migration — update DB status and worker_id atomically.
-	// Use background context — the request context may be close to expiry for large migrations.
-	if s.store != nil {
-		completeDBCtx, completeDBCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := s.store.CompleteMigration(completeDBCtx, id, req.TargetWorker); err != nil {
-			log.Printf("migrate %s: WARNING: CompleteMigration DB update failed: %v", id, err)
-		}
-		completeDBCancel()
-		// Mirror to D1 sandboxes_index so the dashboard's cross-cell view and
-		// the proxyToCellSDK routing reflect the new worker immediately. The
-		// new worker's `created` event would eventually sync it, but emitting
-		// here closes the window where stale routing would re-target the
-		// vanished source worker. Reads org from the existing session.
-		if session, err := s.store.GetSandboxSession(context.Background(), id); err == nil {
-			s.publishSandboxLifecycleEvent(context.Background(), "migrated", id, session.OrgID, req.TargetWorker, "user_migrate")
-		}
-	}
-	migrationDone = true
-
-	// Invalidate proxy route cache so next request routes to the new worker
+	// Invalidate proxy route cache so next request routes to the new worker.
 	if s.sandboxAPIProxy != nil {
 		s.sandboxAPIProxy.InvalidateRouteCache(id)
 	}
@@ -1229,6 +1119,7 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 		"elapsedMs":    elapsed,
 	})
 }
+
 
 // effectivePlan returns the org's billing plan for billing gates, resolving it
 // from the most authoritative source available. Plan is a GLOBAL signal: it

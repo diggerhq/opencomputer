@@ -2,7 +2,10 @@ package qemu
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"os"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -26,23 +29,61 @@ import (
 
 const reaperInterval = 30 * time.Second
 
-// vmAlive reports whether the qemu process backing this VM is still running.
-// Uses signal-0 ("does this process exist?") which is non-blocking and safe to
-// call on every tick. Survives transient QMP unresponsiveness (e.g. during a
-// savevm) because it checks the OS process, not the QMP socket.
+// vmAlive reports whether the qemu process backing this VM is still running
+// and functional. "Functional" excludes zombie (Z-state) processes — a zombie
+// has exited but its parent hasn't reaped it, so Signal(0) succeeds (kernel
+// still has the PID entry) but the process is doing nothing. Treating zombies
+// as alive means usage_ticker keeps emitting billing events for a dead VM,
+// and the ghost-reaper can't drain the m.vms entry.
 //
-// Returns false for: nil cmd, nil cmd.Process, or a reaped/exited process.
+// Three checks in order:
+//   1. ProcessState — if cmd.Wait() returned, definitively dead.
+//   2. /proc/<pid>/stat — if state is Z (zombie) or X (dying), treat as dead.
+//   3. Signal(0) — fallback liveness probe; ESRCH means PID gone.
+//
+// Returns false for: nil cmd, nil cmd.Process, reaped process, zombie, or
+// "no such process".
 func vmAlive(vm *VMInstance) bool {
 	if vm == nil || vm.cmd == nil || vm.cmd.Process == nil {
 		return false
 	}
-	// If cmd.Wait() already returned, ProcessState is non-nil and Exited() is true.
 	if vm.cmd.ProcessState != nil && vm.cmd.ProcessState.Exited() {
 		return false
 	}
-	// Signal(0) is the standard Unix "test process existence" probe. Returns
-	// nil if the process is still around, ESRCH/"already finished" otherwise.
+	if state, ok := procState(vm.cmd.Process.Pid); ok {
+		// State chars from man proc(5): R(unning), S(leeping), D(disk-sleep),
+		// Z(ombie), T(stopped), t(traced), W(paging old kernels), X(dying),
+		// x(dead old kernels), K(wakekill), P(parked), I(idle).
+		// Z and X mean "kernel is about to clean up, no useful work happening."
+		if state == "Z" || state == "X" || state == "x" {
+			return false
+		}
+	}
 	return vm.cmd.Process.Signal(syscall.Signal(0)) == nil
+}
+
+// procState reads /proc/<pid>/stat and returns the process state char (one of
+// RSDZTtWXxKPI). Returns ("", false) if the file can't be read — caller should
+// fall back to Signal(0). Cheap (~1 syscall) and Linux-only; on platforms
+// without /proc the (false) return naturally degrades.
+func procState(pid int) (string, bool) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return "", false
+	}
+	// Format: "PID (comm) STATE PPID ..."
+	// comm may contain spaces and parens; find the last ')' to skip it.
+	s := string(data)
+	idx := strings.LastIndexByte(s, ')')
+	if idx == -1 || idx+2 >= len(s) {
+		return "", false
+	}
+	// After ')' there's a space then the state char.
+	rest := s[idx+2:]
+	if len(rest) == 0 {
+		return "", false
+	}
+	return string(rest[0]), true
 }
 
 // IsSandboxAlive returns true iff the manager has a tracked VM for this id AND
