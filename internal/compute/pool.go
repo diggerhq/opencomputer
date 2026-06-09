@@ -74,6 +74,17 @@ type WorkerSpec struct {
 	// Optional analytics
 	SegmentWriteKey string
 
+	// Sandbox session log shipping (in-VM agent → Axiom). If empty, workers
+	// skip ConfigureLogship for every sandbox and no session logs reach the
+	// dashboard/CLI.
+	AxiomIngestToken string
+	AxiomDataset     string
+
+	// Azure Key Vault name. Workers need it at boot for
+	// populate-vector-env.service (platform logs/metrics) and KV-backed
+	// config loading. Azure-only; leave empty on other providers.
+	KeyVaultName string
+
 	// Provider-specific secrets reference (AWS Secrets Manager ARN, GCP Secret
 	// Manager name, etc.). The pool decides what to do with this — Azure pool
 	// ignores it (uses Key Vault directly), AWS pool exports it as
@@ -142,6 +153,10 @@ func BuildWorkerEnv(spec WorkerSpec) string {
 		{"OPENSANDBOX_S3_FORCE_PATH_STYLE", boolStr(spec.S3ForcePathStyle)},
 		{"OPENSANDBOX_SANDBOX_DOMAIN", spec.SandboxDomain},
 		{"SEGMENT_WRITE_KEY", spec.SegmentWriteKey},
+		{"AXIOM_INGEST_TOKEN", spec.AxiomIngestToken},
+		{"AXIOM_DATASET", spec.AxiomDataset},
+		{"OPENSANDBOX_AZURE_KEY_VAULT_NAME", spec.KeyVaultName},
+		{"SECRETS_VAULT_NAME", spec.KeyVaultName},
 		{"OPENSANDBOX_CF_EVENT_ENDPOINT", spec.CFEventEndpoint},
 		{"OPENSANDBOX_CF_EVENT_SECRET", spec.CFEventSecret},
 		{"OPENSANDBOX_CF_ADMIN_SECRET", spec.CFAdminSecret},
