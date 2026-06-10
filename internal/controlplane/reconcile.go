@@ -2,13 +2,9 @@ package controlplane
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/opensandbox/opensandbox/internal/db"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
@@ -18,15 +14,16 @@ import (
 // believes is stopped on this worker but the worker may still be hosting.
 //
 // Why this exists:
-//   When the worker is unreachable, the customer's DELETE goes through the
-//   cell-side fallback at internal/api/sandbox.go's destroy handler — the
-//   cell marks the session stopped in PG and publishes a `stopped` lifecycle
-//   event "to close the drift" with D1. Worker never receives the gRPC
-//   Destroy. When the worker becomes reachable again, the cell already
-//   thinks the sandbox is dead, but the worker still has m.vms[id] alive,
-//   qemu still running, usage_ticker still emitting `usage_tick` events.
-//   That window has run for 74h+ in the wild before a worker restart finally
-//   cleared the m.vms map.
+//
+//	When the worker is unreachable, the customer's DELETE goes through the
+//	cell-side fallback at internal/api/sandbox.go's destroy handler — the
+//	cell marks the session stopped in PG and publishes a `stopped` lifecycle
+//	event "to close the drift" with D1. Worker never receives the gRPC
+//	Destroy. When the worker becomes reachable again, the cell already
+//	thinks the sandbox is dead, but the worker still has m.vms[id] alive,
+//	qemu still running, usage_ticker still emitting `usage_tick` events.
+//	That window has run for 74h+ in the wild before a worker restart finally
+//	cleared the m.vms map.
 //
 // This reconcile closes that gap: on worker rejoin (RedisWorkerRegistry's
 // OnWorkerRejoined callback), the cell sweeps every sandbox it has marked
@@ -102,30 +99,31 @@ func isSandboxNotFound(err error) bool {
 
 // ReconcileRunningOnWorker is the symmetric direction of ReconcileStoppedOnWorker:
 //
-//   forward  — cell says STOPPED on this worker, worker may still be hosting →
-//              re-issue Destroy via RPC. ReconcileStoppedOnWorker above.
-//   reverse  — cell says RUNNING on this worker, worker doesn't have it →
-//              close the row on the cell side. THIS function.
+//	forward  — cell says STOPPED on this worker, worker may still be hosting →
+//	           re-issue Destroy via RPC. ReconcileStoppedOnWorker above.
+//	reverse  — cell says RUNNING on this worker, worker doesn't have it →
+//	           close the row on the cell side. THIS function.
 //
 // Why both directions are needed:
-//   The cell-side fallback at internal/api/sandbox.go (worker-unreachable
-//   destroy path) covers the forward direction. There's no symmetric fallback
-//   for "worker died, never finished EndScaleEvent on its way out" — when a
-//   worker process crashes/OOMs/restarts, its m.vms is cleared but cell PG
-//   keeps the scale event open. usage-reporter sums (now - started_at)
-//   indefinitely; customer gets billed for compute that hasn't run for days.
+//
+//	The cell-side fallback at internal/api/sandbox.go (worker-unreachable
+//	destroy path) covers the forward direction. There's no symmetric fallback
+//	for "worker died, never finished EndScaleEvent on its way out" — when a
+//	worker process crashes/OOMs/restarts, its m.vms is cleared but cell PG
+//	keeps the scale event open. usage-reporter sums (now - started_at)
+//	indefinitely; customer gets billed for compute that hasn't run for days.
 //
 // Empirical fingerprint from prod: 49 still-open scale events on two workers
 // that were known to have restarted ~3-5 days prior, accumulating ~$2k of
 // phantom Pro billing per restart event.
 //
 // Process:
-//   1. Ask cell PG: what sandboxes are status='running' on this worker?
-//   2. Ask worker (existing ListSandboxes RPC): what do you actually have?
-//   3. For each cell-PG-running entry the worker doesn't claim:
-//        - UpdateSandboxSessionStatus → stopped
-//        - EndScaleEvent → closes the open billing row
-//        - publish stopped lifecycle event so events-ingest updates D1
+//  1. Ask cell PG: what sandboxes are status='running' on this worker?
+//  2. Ask worker (existing ListSandboxes RPC): what do you actually have?
+//  3. For each cell-PG-running entry the worker doesn't claim:
+//     - UpdateSandboxSessionStatus → stopped
+//     - EndScaleEvent → closes the open billing row
+//     - publish stopped lifecycle event so events-ingest updates D1
 func ReconcileRunningOnWorker(ctx context.Context, registry *RedisWorkerRegistry, store *db.Store, cellID, workerID string) {
 	if store == nil || registry == nil {
 		return
@@ -168,10 +166,11 @@ func ReconcileRunningOnWorker(ctx context.Context, registry *RedisWorkerRegistry
 			alive++
 			continue
 		}
-		// Close the cell-side state. Order matters: status first (so future
-		// dashboard reads see the right thing immediately), then scale event
-		// (so usage-reporter stops billing), then the lifecycle event (so D1
-		// gets the same signal via events-ingest).
+		// Close the cell-side state. UpdateSandboxSessionStatus(stopped) does the
+		// status flip, closes any open scale event, AND fires the terminal hook
+		// that publishes the `stopped` lifecycle event to D1 — all in one place.
+		// The explicit EndScaleEvent below is now belt-and-suspenders (the status
+		// update already closed it) on this billing-critical reconcile path.
 		errMsg := reason
 		if err := store.UpdateSandboxSessionStatus(ctx, ref.SandboxID, "stopped", &errMsg); err != nil {
 			log.Printf("controlplane: reverse-reconcile %s: UpdateSandboxSessionStatus %s: %v", workerID, ref.SandboxID, err)
@@ -179,50 +178,8 @@ func ReconcileRunningOnWorker(ctx context.Context, registry *RedisWorkerRegistry
 		}
 		if err := store.EndScaleEvent(ctx, ref.SandboxID); err != nil {
 			log.Printf("controlplane: reverse-reconcile %s: EndScaleEvent %s: %v", workerID, ref.SandboxID, err)
-			// Don't continue — the status update already happened, so emit
-			// the lifecycle event anyway. The scale event being orphaned is
-			// at worst a per-row leak the usage-reporter will eventually
-			// notice; the lifecycle event is what unblocks D1.
 		}
-		publishStoppedLifecycleEvent(ctx, registry.RedisClient(), cellID, ref.SandboxID, ref.OrgID.String(), workerID, reason)
 		closed++
 	}
 	log.Printf("controlplane: reverse-reconcile %s: closed=%d still-alive-on-worker=%d (of %d cell-running)", workerID, closed, alive, len(cellRunning))
-}
-
-// publishStoppedLifecycleEvent emits a `stopped` event onto this cell's events
-// stream so events-ingest mirrors it into D1 sandboxes_index. Mirrors the
-// shape of internal/api/checkpoint_events.go's publishSandboxLifecycleEvent
-// — extracted here so the reconcile (which lives in controlplane, doesn't
-// have an *api.Server handle) can call it directly.
-func publishStoppedLifecycleEvent(ctx context.Context, rdb *redis.Client, cellID, sandboxID, orgID, workerID, reason string) {
-	if rdb == nil || cellID == "" || sandboxID == "" {
-		return
-	}
-	envelope := map[string]any{
-		"id":         uuid.NewString(),
-		"type":       "stopped",
-		"sandbox_id": sandboxID,
-		"org_id":     orgID,
-		"worker_id":  workerID,
-		"cell_id":    cellID,
-		"payload":    map[string]any{"reason": reason},
-		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
-	}
-	body, err := json.Marshal(envelope)
-	if err != nil {
-		log.Printf("controlplane: publishStoppedLifecycleEvent: marshal: %v", err)
-		return
-	}
-	streamKey := "events:" + cellID
-	xaddCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	if err := rdb.XAdd(xaddCtx, &redis.XAddArgs{
-		Stream: streamKey,
-		MaxLen: 100000,
-		Approx: true,
-		Values: map[string]any{"event": string(body)},
-	}).Err(); err != nil {
-		log.Printf("controlplane: publishStoppedLifecycleEvent: XADD %s: %v", sandboxID, err)
-	}
 }

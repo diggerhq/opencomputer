@@ -23,13 +23,32 @@ var migrationsFS embed.FS
 
 // Store provides data access to the global PostgreSQL database.
 type Store struct {
-	pool      *pgxpool.Pool
-	encryptor *crypto.Encryptor // nil if no encryption key configured
+	pool       *pgxpool.Pool
+	encryptor  *crypto.Encryptor // nil if no encryption key configured
+	onTerminal TerminalHook      // nil if not wired; fires after a terminal session transition commits
 }
+
+// TerminalHook is invoked after UpdateSandboxSessionStatus commits a transition
+// to a terminal state (stopped/error/failed). It exists so callers can publish
+// the `stopped` lifecycle event to the cell's events stream — without it, the
+// edge (D1 sandboxes_index / CreditAccount DO) keeps the row at `running` and
+// bills it forever. Every terminal transition funnels through one place, so no
+// individual call site can forget to publish (the failure mode #361 left in the
+// create-failed / fork-failed / proxy-worker-gone / stop-handler paths).
+//
+// Fired best-effort AFTER the DB commit; a publish failure never fails the DB
+// write. workerID is intentionally omitted (the sandbox is leaving its worker).
+type TerminalHook func(sandboxID string, orgID uuid.UUID, status, reason string)
 
 // SetEncryptor configures the encryption key for project secrets.
 func (s *Store) SetEncryptor(enc *crypto.Encryptor) {
 	s.encryptor = enc
+}
+
+// SetTerminalHook wires the lifecycle publisher (see TerminalHook). Set once at
+// startup on the server/worker store. Safe to leave unset (e.g. in tests).
+func (s *Store) SetTerminalHook(h TerminalHook) {
+	s.onTerminal = h
 }
 
 // Encryptor exposes the configured encryption helper so callers outside the
@@ -190,14 +209,14 @@ type Org struct {
 	UpdatedAt              time.Time `json:"updatedAt"`
 
 	// Custom domain fields
-	CustomDomain               *string `json:"customDomain,omitempty"`
-	CFHostnameID               *string `json:"cfHostnameId,omitempty"`
-	DomainVerificationStatus   string  `json:"domainVerificationStatus"`
-	DomainSSLStatus            string  `json:"domainSslStatus"`
-	VerificationTxtName        *string `json:"verificationTxtName,omitempty"`
-	VerificationTxtValue       *string `json:"verificationTxtValue,omitempty"`
-	SSLTxtName                 *string `json:"sslTxtName,omitempty"`
-	SSLTxtValue                *string `json:"sslTxtValue,omitempty"`
+	CustomDomain             *string `json:"customDomain,omitempty"`
+	CFHostnameID             *string `json:"cfHostnameId,omitempty"`
+	DomainVerificationStatus string  `json:"domainVerificationStatus"`
+	DomainSSLStatus          string  `json:"domainSslStatus"`
+	VerificationTxtName      *string `json:"verificationTxtName,omitempty"`
+	VerificationTxtValue     *string `json:"verificationTxtValue,omitempty"`
+	SSLTxtName               *string `json:"sslTxtName,omitempty"`
+	SSLTxtValue              *string `json:"sslTxtValue,omitempty"`
 
 	// WorkOS organization fields
 	WorkOSOrgID        *string    `json:"workosOrgId,omitempty"`
@@ -211,10 +230,10 @@ type Org struct {
 	FreeCreditsRemainingCents int64 `json:"freeCreditsRemainingCents"`
 
 	// Stripe billing fields
-	StripeCustomerID     *string    `json:"stripeCustomerId,omitempty"`
-	StripeSubscriptionID *string    `json:"stripeSubscriptionId,omitempty"`
-	LastUsageReportedAt  time.Time  `json:"lastUsageReportedAt"`
-	PriceLocked          bool       `json:"priceLocked"`
+	StripeCustomerID     *string   `json:"stripeCustomerId,omitempty"`
+	StripeSubscriptionID *string   `json:"stripeSubscriptionId,omitempty"`
+	LastUsageReportedAt  time.Time `json:"lastUsageReportedAt"`
+	PriceLocked          bool      `json:"priceLocked"`
 
 	// Per-org billing pipeline selector. 'legacy' = UsageReporter ships
 	// to Stripe; 'unified' = the phase-3 sender ships from
@@ -650,29 +669,29 @@ func (s *Store) DeleteAPIKeyForOrg(ctx context.Context, id uuid.UUID, orgID uuid
 // --- Sandbox Session operations ---
 
 type SandboxSession struct {
-	ID                   uuid.UUID       `json:"id"`
-	SandboxID            string          `json:"sandboxId"`
-	OrgID                uuid.UUID       `json:"orgId"`
-	UserID               *uuid.UUID      `json:"userId,omitempty"`
-	Template             string          `json:"template"`
-	Region               string          `json:"region"`
-	WorkerID             string          `json:"workerId"`
-	Status               string          `json:"status"`
-	Config               json.RawMessage `json:"config"`
-	Metadata             json.RawMessage `json:"metadata,omitempty"`
-	StartedAt            time.Time       `json:"startedAt"`
-	StoppedAt            *time.Time      `json:"stoppedAt,omitempty"`
-	ErrorMsg             *string         `json:"errorMsg,omitempty"`
-	BasedOnCheckpointID  *uuid.UUID      `json:"basedOnCheckpointId,omitempty"`
-	LastPatchSequence    int             `json:"lastPatchSequence"`
-	MigratingToWorker    string          `json:"migratingToWorker,omitempty"`
-	PatchError           *string         `json:"patchError,omitempty"`
-	GoldenVersion        *string         `json:"goldenVersion,omitempty"`
+	ID                  uuid.UUID       `json:"id"`
+	SandboxID           string          `json:"sandboxId"`
+	OrgID               uuid.UUID       `json:"orgId"`
+	UserID              *uuid.UUID      `json:"userId,omitempty"`
+	Template            string          `json:"template"`
+	Region              string          `json:"region"`
+	WorkerID            string          `json:"workerId"`
+	Status              string          `json:"status"`
+	Config              json.RawMessage `json:"config"`
+	Metadata            json.RawMessage `json:"metadata,omitempty"`
+	StartedAt           time.Time       `json:"startedAt"`
+	StoppedAt           *time.Time      `json:"stoppedAt,omitempty"`
+	ErrorMsg            *string         `json:"errorMsg,omitempty"`
+	BasedOnCheckpointID *uuid.UUID      `json:"basedOnCheckpointId,omitempty"`
+	LastPatchSequence   int             `json:"lastPatchSequence"`
+	MigratingToWorker   string          `json:"migratingToWorker,omitempty"`
+	PatchError          *string         `json:"patchError,omitempty"`
+	GoldenVersion       *string         `json:"goldenVersion,omitempty"`
 	// PreviewAuthHash is the SHA-256 hex of the bearer token required on
 	// preview-URL requests. NULL = open (the default). Plaintext is never
 	// stored — set once via SetSandboxPreviewAuth and rotated via the same.
-	PreviewAuthHash      *string         `json:"-"`
-	PreviewAuthScheme    *string         `json:"-"`
+	PreviewAuthHash   *string `json:"-"`
+	PreviewAuthScheme *string `json:"-"`
 }
 
 // SetSandboxPreviewAuth installs or rotates the per-sandbox bearer-token gate
@@ -759,6 +778,12 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 		args = []interface{}{status, sandboxID}
 	}
 
+	// Terminal = the sandbox is no longer running and should stop billing.
+	// `failed` (pending→failed, create never succeeded) is terminal too — it
+	// was previously omitted from both the scale-event close and any D1 publish,
+	// which let failed-creates bill forever on the edge.
+	terminal := status == "stopped" || status == "error" || status == "failed"
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to begin tx: %w", err)
@@ -772,16 +797,32 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 
 	// Close any open scale_events when the session actually transitioned to a
 	// non-billable state. Tied to the same tx as the session update so the
-	// usage reporter can never observe a stopped/hibernated session with an
-	// ended_at IS NULL scale_event (which would keep billing the window).
-	if tag.RowsAffected() > 0 && (status == "stopped" || status == "hibernated" || status == "error") {
+	// usage reporter can never observe a stopped/hibernated/failed session with
+	// an ended_at IS NULL scale_event (which would keep billing the window).
+	var orgID uuid.UUID
+	if tag.RowsAffected() > 0 && (terminal || status == "hibernated") {
 		if _, err := tx.Exec(ctx,
 			`UPDATE sandbox_scale_events SET ended_at = now()
 			 WHERE sandbox_id = $1 AND ended_at IS NULL`, sandboxID); err != nil {
 			return fmt.Errorf("failed to close scale events: %w", err)
 		}
+		// Capture org for the lifecycle publish below (same tx; cheap).
+		_ = tx.QueryRow(ctx,
+			`SELECT org_id FROM sandbox_sessions WHERE sandbox_id = $1`, sandboxID).Scan(&orgID)
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	// Fire the lifecycle publish AFTER the commit so the edge (D1 / CreditAccount
+	// DO) flips the row running→stopped and stops billing. Best-effort: a publish
+	// failure must not fail an already-committed DB write. Only on a real terminal
+	// transition that affected a row (hibernated is NOT a stop — billing pauses,
+	// the sandbox can wake — so it keeps its own dedicated event path).
+	if terminal && tag.RowsAffected() > 0 && s.onTerminal != nil {
+		s.onTerminal(sandboxID, orgID, status, "session_terminal:"+status)
+	}
+	return nil
 }
 
 // SetMigrating marks a sandbox as migrating to a target worker.
