@@ -6,7 +6,7 @@ import base64
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 
@@ -47,6 +47,12 @@ class Image:
 
     _base: str = "base"
     _steps: tuple[ImageStep, ...] = field(default_factory=tuple)
+    # RAM for the build phase (apt/pip). 0 = server default (generous). Does not
+    # pin the output image — the server re-snapshots at the runtime floor.
+    _builder_memory_mb: int = 0
+    # Memory floor of the OUTPUT image. 0 = server default (1 GB). Forks can't run
+    # below this but can scale up. Raise only for images with heavy boot services.
+    _runtime_memory_mb: int = 0
 
     @classmethod
     def base(cls) -> Image:
@@ -60,36 +66,36 @@ class Image:
 
     def apt_install(self, packages: list[str]) -> Image:
         """Install system packages via apt-get."""
-        return Image(
-            _base=self._base,
+        return replace(
+            self,
             _steps=(*self._steps, ImageStep("apt_install", {"packages": packages})),
         )
 
     def pip_install(self, packages: list[str]) -> Image:
         """Install Python packages via pip."""
-        return Image(
-            _base=self._base,
+        return replace(
+            self,
             _steps=(*self._steps, ImageStep("pip_install", {"packages": packages})),
         )
 
     def run_commands(self, *commands: str) -> Image:
         """Run one or more shell commands."""
-        return Image(
-            _base=self._base,
+        return replace(
+            self,
             _steps=(*self._steps, ImageStep("run", {"commands": list(commands)})),
         )
 
     def env(self, vars: dict[str, str]) -> Image:
         """Set environment variables (written to /etc/environment)."""
-        return Image(
-            _base=self._base,
+        return replace(
+            self,
             _steps=(*self._steps, ImageStep("env", {"vars": vars})),
         )
 
     def workdir(self, path: str) -> Image:
         """Set the default working directory."""
-        return Image(
-            _base=self._base,
+        return replace(
+            self,
             _steps=(*self._steps, ImageStep("workdir", {"path": path})),
         )
 
@@ -101,8 +107,8 @@ class Image:
             content: String content of the file.
         """
         encoded = base64.b64encode(content.encode()).decode()
-        return Image(
-            _base=self._base,
+        return replace(
+            self,
             _steps=(*self._steps, ImageStep("add_file", {
                 "path": remote_path,
                 "content": encoded,
@@ -121,8 +127,8 @@ class Image:
         """
         with open(local_path, "rb") as f:
             encoded = base64.b64encode(f.read()).decode()
-        return Image(
-            _base=self._base,
+        return replace(
+            self,
             _steps=(*self._steps, ImageStep("add_file", {
                 "path": remote_path,
                 "content": encoded,
@@ -147,22 +153,39 @@ class Image:
                 with open(full, "rb") as f:
                     encoded = base64.b64encode(f.read()).decode()
                 files.append({"relativePath": rel, "content": encoded})
-        return Image(
-            _base=self._base,
+        return replace(
+            self,
             _steps=(*self._steps, ImageStep("add_dir", {
                 "path": remote_path,
                 "files": files,
             })),
         )
 
+    def builder_memory(self, mb: int) -> Image:
+        """Set the RAM (MB) for the build phase. Use this when a build OOMs at the
+        default (e.g. heavy ``apt``/``pip``). Does not affect the output's floor."""
+        return replace(self, _builder_memory_mb=mb)
+
+    def runtime_memory(self, mb: int) -> Image:
+        """Set the memory floor (MB) of the resulting image. Forks can't run below
+        it. Defaults to 1 GB; raise only for images whose services auto-start heavy."""
+        return replace(self, _runtime_memory_mb=mb)
+
     def to_dict(self) -> dict[str, Any]:
         """Returns the manifest as a plain dict (for JSON serialization)."""
-        return {
+        d: dict[str, Any] = {
             "base": self._base,
             "steps": [s.to_dict() for s in self._steps],
         }
+        if self._builder_memory_mb > 0:
+            d["builderMemoryMB"] = self._builder_memory_mb
+        if self._runtime_memory_mb > 0:
+            d["runtimeMemoryMB"] = self._runtime_memory_mb
+        return d
 
     def cache_key(self) -> str:
-        """Compute a deterministic content hash for caching."""
-        canonical = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
+        """Deterministic content hash for caching. Memory knobs are resource
+        params, not image content, so they're excluded (matches the server)."""
+        content = {"base": self._base, "steps": [s.to_dict() for s in self._steps]}
+        canonical = json.dumps(content, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode()).hexdigest()

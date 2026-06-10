@@ -10,6 +10,13 @@ export interface ImageStep {
 export interface ImageManifest {
   base: string;
   steps: ImageStep[];
+  /** RAM (MB) for the build phase (apt/pip). Omit for the server default
+   * (generous). Does NOT pin the output — the server re-snapshots at the floor. */
+  builderMemoryMB?: number;
+  /** Memory floor (MB) of the output image. Omit for the server default (1 GB).
+   * Forks can't run below it but can scale up. Raise only for images with heavy
+   * boot-time services. */
+  runtimeMemoryMB?: number;
 }
 
 /**
@@ -28,6 +35,9 @@ export interface ImageManifest {
  *   .env({ PROJECT_ROOT: '/workspace' })
  *   .workdir('/workspace')
  *
+ * // Heavy build that should still fork down to the default floor:
+ * const big = Image.base().aptInstall(['build-essential']).builderMemory(8192)
+ *
  * // On-demand: cached by content hash
  * const sandbox = await Sandbox.create({ image })
  *
@@ -39,8 +49,8 @@ export interface ImageManifest {
 export class Image {
   private readonly manifest: ImageManifest;
 
-  private constructor(steps: ImageStep[] = []) {
-    this.manifest = { base: "base", steps };
+  private constructor(manifest: ImageManifest) {
+    this.manifest = manifest;
   }
 
   /**
@@ -49,57 +59,47 @@ export class Image {
    * Customize by chaining steps like `.aptInstall()`, `.pipInstall()`, `.runCommands()`, etc.
    */
   static base(): Image {
-    return new Image();
+    return new Image({ base: "base", steps: [] });
+  }
+
+  /** Append a step, preserving base + memory settings. */
+  private withStep(step: ImageStep): Image {
+    return new Image({ ...this.manifest, steps: [...this.manifest.steps, step] });
   }
 
   /**
    * Install system packages via apt-get.
    */
   aptInstall(packages: string[]): Image {
-    return new Image([
-      ...this.manifest.steps,
-      { type: "apt_install", args: { packages } },
-    ]);
+    return this.withStep({ type: "apt_install", args: { packages } });
   }
 
   /**
    * Install Python packages via pip.
    */
   pipInstall(packages: string[]): Image {
-    return new Image([
-      ...this.manifest.steps,
-      { type: "pip_install", args: { packages } },
-    ]);
+    return this.withStep({ type: "pip_install", args: { packages } });
   }
 
   /**
    * Run one or more shell commands.
    */
   runCommands(...commands: string[]): Image {
-    return new Image([
-      ...this.manifest.steps,
-      { type: "run", args: { commands } },
-    ]);
+    return this.withStep({ type: "run", args: { commands } });
   }
 
   /**
    * Set environment variables (written to /etc/environment).
    */
   env(vars: Record<string, string>): Image {
-    return new Image([
-      ...this.manifest.steps,
-      { type: "env", args: { vars } },
-    ]);
+    return this.withStep({ type: "env", args: { vars } });
   }
 
   /**
    * Set the default working directory.
    */
   workdir(path: string): Image {
-    return new Image([
-      ...this.manifest.steps,
-      { type: "workdir", args: { path } },
-    ]);
+    return this.withStep({ type: "workdir", args: { path } });
   }
 
   /**
@@ -109,10 +109,7 @@ export class Image {
    */
   addFile(remotePath: string, content: string): Image {
     const encoded = Buffer.from(content).toString("base64");
-    return new Image([
-      ...this.manifest.steps,
-      { type: "add_file", args: { path: remotePath, content: encoded, encoding: "base64" } },
-    ]);
+    return this.withStep({ type: "add_file", args: { path: remotePath, content: encoded, encoding: "base64" } });
   }
 
   /**
@@ -124,10 +121,7 @@ export class Image {
   addLocalFile(localPath: string, remotePath: string): Image {
     const content = readFileSync(localPath);
     const encoded = content.toString("base64");
-    return new Image([
-      ...this.manifest.steps,
-      { type: "add_file", args: { path: remotePath, content: encoded, encoding: "base64" } },
-    ]);
+    return this.withStep({ type: "add_file", args: { path: remotePath, content: encoded, encoding: "base64" } });
   }
 
   /**
@@ -139,10 +133,23 @@ export class Image {
   addLocalDir(localPath: string, remotePath: string): Image {
     const files: Array<{ relativePath: string; content: string }> = [];
     collectFiles(localPath, localPath, files);
-    return new Image([
-      ...this.manifest.steps,
-      { type: "add_dir", args: { path: remotePath, files } },
-    ]);
+    return this.withStep({ type: "add_dir", args: { path: remotePath, files } });
+  }
+
+  /**
+   * Set the RAM (MB) for the build phase. Use this when a build OOMs at the
+   * default (e.g. heavy `apt`/`pip`). Does not affect the output image's floor.
+   */
+  builderMemory(mb: number): Image {
+    return new Image({ ...this.manifest, builderMemoryMB: mb });
+  }
+
+  /**
+   * Set the memory floor (MB) of the resulting image. Forks can't run below it.
+   * Defaults to 1 GB; raise only for images whose services auto-start heavy.
+   */
+  runtimeMemory(mb: number): Image {
+    return new Image({ ...this.manifest, runtimeMemoryMB: mb });
   }
 
   /**
@@ -153,10 +160,11 @@ export class Image {
   }
 
   /**
-   * Compute a deterministic content hash for caching.
+   * Compute a deterministic content hash for caching. Memory knobs are resource
+   * params, not image content, so they're excluded (matches the server).
    */
   cacheKey(): string {
-    const canonical = JSON.stringify(this.manifest);
+    const canonical = JSON.stringify({ base: this.manifest.base, steps: this.manifest.steps });
     return createHash("sha256").update(canonical).digest("hex");
   }
 }

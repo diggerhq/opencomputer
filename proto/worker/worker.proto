@@ -338,6 +338,11 @@ message CreateCheckpointRequest {
   string sandbox_id = 1;
   string checkpoint_id = 2;  // UUID assigned by control plane
   bool prepare_golden = 3;   // If true, prepare a golden snapshot from this checkpoint
+  // If > 0, finalize the checkpoint at this memory: the worker stops the build VM,
+  // cold-boots a fresh VM from its disks at finalize_memory_mb, and snapshots THAT
+  // — so the image's memory floor is finalize_memory_mb, decoupled from the
+  // (larger) build-phase RAM. Used by the image builder. 0 = snapshot in place.
+  int32 finalize_memory_mb = 4;
 }
 
 message CreateCheckpointResponse {

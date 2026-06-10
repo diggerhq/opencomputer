@@ -882,7 +882,25 @@ func (s *GRPCServer) CreateCheckpoint(ctx context.Context, req *pb.CreateCheckpo
 	// it's marked "ready" — forks poll for "ready" before downloading.
 	// The gRPC call returns immediately with the S3 keys — the CP's fork path
 	// polls for checkpoint readiness and blocks until onReady fires.
-	rootfsKey, workspaceKey, sizeBytes, err := s.manager.CreateCheckpoint(ctx, req.SandboxId, checkpointID, s.checkpointStore, onReady)
+	// Finalize: when finalize_memory_mb is set (image builder), produce the
+	// checkpoint at that memory floor by cold-booting a fresh VM from the build
+	// disks and snapshotting it — decoupling the image's floor from the build's
+	// (larger) RAM. Otherwise snapshot the sandbox in place.
+	var rootfsKey, workspaceKey string
+	var sizeBytes int64
+	var err error
+	if req.FinalizeMemoryMb > 0 {
+		type finalizer interface {
+			CreateCheckpointFinalized(ctx context.Context, buildSandboxID, checkpointID string, store *storage.CheckpointStore, finalizeMemMB int, onReady func()) (string, string, int64, error)
+		}
+		fz, ok := s.manager.(finalizer)
+		if !ok {
+			return nil, fmt.Errorf("manager does not support finalized checkpoints")
+		}
+		rootfsKey, workspaceKey, sizeBytes, err = fz.CreateCheckpointFinalized(ctx, req.SandboxId, checkpointID, s.checkpointStore, int(req.FinalizeMemoryMb), onReady)
+	} else {
+		rootfsKey, workspaceKey, sizeBytes, err = s.manager.CreateCheckpoint(ctx, req.SandboxId, checkpointID, s.checkpointStore, onReady)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create checkpoint failed: %w", err)
 	}

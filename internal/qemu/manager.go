@@ -332,7 +332,7 @@ type Manager struct {
 	goldenVersion string // hash of base image — used for overlay-based migration
 
 	// Metadata service callbacks (set via SetMetadataCallbacks)
-	onSandboxReady   func(sandboxID, guestIP, template string, startedAt time.Time)
+	onSandboxReady      func(sandboxID, guestIP, template string, startedAt time.Time)
 	onSandboxDestroy    func(sandboxID string)
 	onMigrationOutgoing func(sandboxID string)
 
@@ -2845,6 +2845,67 @@ func (m *Manager) CheckpointCachePath(checkpointID, filename string) string {
 // checkpoint actually is. Upload failures now propagate as an error rather
 // than being silently logged — the control plane gets the reason and
 // persists it via SetCheckpointFailed (migration 039 added error_msg).
+// CreateCheckpointFinalized produces an image checkpoint whose memory floor is
+// finalizeMemMB, decoupled from the build VM's (larger) build-phase RAM. The
+// image builder uses this so a build can run at, say, 8 GB (apt/pip don't OOM)
+// while the resulting image still forks down to a 1 GB floor.
+//
+// Why two VMs: a savevm captures the *running* memory, and ForkFromCheckpoint
+// floors every fork at that size (shrinking past it would OOM restored
+// processes). So the only way to get a low floor from a high-memory build is to
+// cold-boot a fresh VM from the built disks at the target floor and snapshot
+// THAT. The cold-boot machinery already exists (Create with TemplateRootfsKey).
+//
+// Sequence: sync the build guest's FS → cold-boot a finalize VM from a copy of
+// the build disks at finalizeMemMB → snapshot the finalize VM (the output) →
+// tear the finalize VM down. The build VM is left running for its caller to
+// destroy (Kill would delete the disks we copy from). Cold-boot replays the
+// ext4 journal, so a post-sync disk copy restores cleanly.
+//
+// NOTE: the disk-consistency of the live-disk copy and the finalize cold-boot's
+// agent bring-up are the things to validate on dev before prod.
+func (m *Manager) CreateCheckpointFinalized(ctx context.Context, buildSandboxID, checkpointID string, checkpointStore *storage.CheckpointStore, finalizeMemMB int, onReady func()) (rootfsKey, workspaceKey string, sizeBytes int64, err error) {
+	// 1. Flush the build guest's filesystem so the on-disk qcow2 is consistent
+	//    before we copy it. Best-effort: the cold-boot journal-replays regardless.
+	if syncErr := m.SyncFS(ctx, buildSandboxID); syncErr != nil {
+		log.Printf("qemu: finalize %s: SyncFS warning: %v (continuing)", buildSandboxID, syncErr)
+	}
+
+	buildDir := filepath.Join(m.cfg.DataDir, "sandboxes", buildSandboxID)
+	buildRootfs := filepath.Join(buildDir, "rootfs.qcow2")
+	buildWorkspace := filepath.Join(buildDir, "workspace.qcow2")
+	if !fileExists(buildRootfs) || !fileExists(buildWorkspace) {
+		return "", "", 0, fmt.Errorf("finalize: build disks not found for %s", buildSandboxID)
+	}
+
+	// 2. Cold-boot a fresh finalize VM from a copy of the build disks at the
+	//    target floor. Create() copies the disks (reflink) via TemplateRootfsKey
+	//    and cold-boots — no savevm restore, so no memory floor inherited.
+	finalizeID := buildSandboxID + "-fin"
+	netEnabled := true
+	finCfg := types.SandboxConfig{
+		SandboxID:            finalizeID,
+		MemoryMB:             finalizeMemMB,
+		NetworkEnabled:       &netEnabled,
+		TemplateRootfsKey:    "local://" + buildRootfs,
+		TemplateWorkspaceKey: "local://" + buildWorkspace,
+	}
+	log.Printf("qemu: finalize: cold-booting %s from %s disks at %dMB", finalizeID, buildSandboxID, finalizeMemMB)
+	if _, err := m.Create(ctx, finCfg); err != nil {
+		return "", "", 0, fmt.Errorf("finalize: cold-boot at %dMB: %w", finalizeMemMB, err)
+	}
+	// Tear down the ephemeral finalize VM after we snapshot it.
+	defer func() {
+		if kErr := m.Kill(context.Background(), finalizeID); kErr != nil {
+			log.Printf("qemu: finalize %s: cleanup Kill failed: %v", finalizeID, kErr)
+		}
+	}()
+
+	// 3. Snapshot the finalize VM → the output checkpoint (floor = finalizeMemMB).
+	log.Printf("qemu: finalize %s → checkpoint %s (floor %dMB)", finalizeID, checkpointID, finalizeMemMB)
+	return m.CreateCheckpoint(ctx, finalizeID, checkpointID, checkpointStore, onReady)
+}
+
 func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID string, checkpointStore *storage.CheckpointStore, onReady func()) (rootfsKey, workspaceKey string, sizeBytes int64, err error) {
 	tStart := time.Now()
 	// failureReason is updated at each error site below so the defer can attribute
