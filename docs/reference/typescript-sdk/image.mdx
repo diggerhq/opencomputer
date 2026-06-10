@@ -115,6 +115,30 @@ const image = Image.base()
 
 **Returns:** `Image`
 
+### `image.builderMemory(mb)`
+
+Sets the RAM (MB) used during the build phase. Raise this when a build OOMs
+(heavy `apt`/`pip`). Does **not** pin the output image — the build is
+re-snapshotted at the runtime floor. Defaults to a generous build-phase size.
+
+<ParamField body="mb" type="number" required>
+  Build-phase memory in MB
+</ParamField>
+
+**Returns:** `Image`
+
+### `image.runtimeMemory(mb)`
+
+Sets the memory floor (MB) of the resulting image. Forks can't run below this
+but can scale up. Defaults to 1024. Raise only for images whose services
+auto-start heavy at boot.
+
+<ParamField body="mb" type="number" required>
+  Memory floor in MB
+</ParamField>
+
+**Returns:** `Image`
+
 ---
 
 ## Utility Methods
