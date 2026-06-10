@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -66,6 +67,8 @@ const (
 	awsTagCell         = "opensandbox:cell"
 	awsTagInstanceType = "opensandbox:instance-type"
 	awsTagDraining     = "opensandbox:draining"
+	awsTagOCFS2Slot    = "opensandbox:ocfs2-slot"
+	awsTagOCFS2IP      = "opensandbox:ocfs2-ip"
 	awsTagWorker       = "worker"
 )
 
@@ -89,6 +92,14 @@ type EC2PoolConfig struct {
 	OCFS2ClusterName          string
 	OCFS2ExpectedNodes        int
 	OCFS2MaxNodes             int
+	OCFS2NodeIPs              []string // fixed private IPs, one per OCFS2 node slot
+}
+
+type ocfs2Assignment struct {
+	Enabled bool
+	Slot    int
+	IP      string
+	NodeIPs []string
 }
 
 // EC2Pool implements compute.Pool using AWS EC2 instances.
@@ -168,13 +179,24 @@ func (p *EC2Pool) CreateMachine(ctx context.Context, opts MachineOpts) (*Machine
 		return nil, fmt.Errorf("ec2: no AMI set (configure AMI or SSMParameterName)")
 	}
 
-	userData := p.buildUserData(opts)
+	ocfs2, err := p.allocateOCFS2Slot(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	userData := p.buildUserData(opts, ocfs2)
 	machineName := fmt.Sprintf("osb-worker-%s", randomSuffix())
 	instanceTags := []ec2types.Tag{
 		{Key: aws.String("Name"), Value: aws.String(machineName)},
 		{Key: aws.String("Role"), Value: aws.String("worker")},
 		{Key: aws.String(awsTagRole), Value: aws.String(awsTagWorker)},
 		{Key: aws.String(awsTagInstanceType), Value: aws.String(instanceType)},
+	}
+	if ocfs2.Enabled {
+		instanceTags = append(instanceTags,
+			ec2types.Tag{Key: aws.String(awsTagOCFS2Slot), Value: aws.String(strconv.Itoa(ocfs2.Slot))},
+			ec2types.Tag{Key: aws.String(awsTagOCFS2IP), Value: aws.String(ocfs2.IP)},
+		)
 	}
 	volumeTags := []ec2types.Tag{
 		{Key: aws.String(awsTagRole), Value: aws.String(awsTagWorker)},
@@ -228,6 +250,9 @@ func (p *EC2Pool) CreateMachine(ctx context.Context, opts MachineOpts) (*Machine
 	}
 	if p.cfg.SecurityGroupID != "" {
 		input.SecurityGroupIds = []string{p.cfg.SecurityGroupID}
+	}
+	if ocfs2.Enabled {
+		input.PrivateIpAddress = aws.String(ocfs2.IP)
 	}
 	if p.cfg.KeyName != "" {
 		input.KeyName = aws.String(p.cfg.KeyName)
@@ -329,6 +354,67 @@ func (p *EC2Pool) DrainMachine(ctx context.Context, machineID string) error {
 		return fmt.Errorf("ec2: tag %s draining: %w", machineID, err)
 	}
 	return nil
+}
+
+func (p *EC2Pool) allocateOCFS2Slot(ctx context.Context) (ocfs2Assignment, error) {
+	if p.cfg.SharedSandboxDataVolumeID == "" || len(p.cfg.OCFS2NodeIPs) == 0 {
+		return ocfs2Assignment{}, nil
+	}
+
+	used := make(map[int]bool, len(p.cfg.OCFS2NodeIPs))
+	ipToSlot := make(map[string]int, len(p.cfg.OCFS2NodeIPs))
+	for i, ip := range p.cfg.OCFS2NodeIPs {
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			return ocfs2Assignment{}, fmt.Errorf("ec2: OCFS2 node IP slot %d is empty", i)
+		}
+		ipToSlot[ip] = i
+	}
+
+	filters := []ec2types.Filter{
+		{Name: aws.String("tag:" + awsTagRole), Values: []string{awsTagWorker}},
+		{Name: aws.String("instance-state-name"), Values: []string{"pending", "running", "stopping", "stopped"}},
+	}
+	if p.cfg.CellID != "" {
+		filters = append(filters, ec2types.Filter{Name: aws.String("tag:" + awsTagCell), Values: []string{p.cfg.CellID}})
+	}
+
+	result, err := p.client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{Filters: filters})
+	if err != nil {
+		return ocfs2Assignment{}, fmt.Errorf("ec2: describe workers for OCFS2 slot allocation: %w", err)
+	}
+	for _, res := range result.Reservations {
+		for _, inst := range res.Instances {
+			if inst.PrivateIpAddress != nil {
+				if slot, ok := ipToSlot[aws.ToString(inst.PrivateIpAddress)]; ok {
+					used[slot] = true
+				}
+			}
+			for _, tag := range inst.Tags {
+				if aws.ToString(tag.Key) != awsTagOCFS2Slot {
+					continue
+				}
+				slot, convErr := strconv.Atoi(aws.ToString(tag.Value))
+				if convErr == nil && slot >= 0 && slot < len(p.cfg.OCFS2NodeIPs) {
+					used[slot] = true
+				}
+			}
+		}
+	}
+
+	for slot, ip := range p.cfg.OCFS2NodeIPs {
+		if used[slot] {
+			continue
+		}
+		return ocfs2Assignment{
+			Enabled: true,
+			Slot:    slot,
+			IP:      strings.TrimSpace(ip),
+			NodeIPs: append([]string(nil), p.cfg.OCFS2NodeIPs...),
+		}, nil
+	}
+
+	return ocfs2Assignment{}, fmt.Errorf("ec2: no free OCFS2 node slots available (%d configured)", len(p.cfg.OCFS2NodeIPs))
 }
 
 // CleanupOrphanedResources reclaims ENIs and EBS volumes left by failed
@@ -463,7 +549,7 @@ func (p *EC2Pool) instanceToMachine(inst *ec2types.Instance) *Machine {
 // buildUserData returns the EC2 instance user-data script. Combines the
 // CP-supplied WorkerSpec with EC2-specific cloud-init (NVMe instance-store
 // mount, AMI-baked rootfs copy, machine-id stamping).
-func (p *EC2Pool) buildUserData(opts MachineOpts) string {
+func (p *EC2Pool) buildUserData(opts MachineOpts, ocfs2 ocfs2Assignment) string {
 	_ = opts // opts.Region/Size honored at instance launch; cloud-init is cell-uniform
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\nset -euo pipefail\n\n")
@@ -511,7 +597,7 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 	sb.WriteString("oc_boot_log 'base data mount ready'\n\n")
 
 	if p.cfg.SharedSandboxDataVolumeID != "" {
-		sb.WriteString(p.sharedSandboxDataUserData())
+		sb.WriteString(p.sharedSandboxDataUserData(ocfs2))
 	}
 	if p.cfg.SharedGoldensVolumeID != "" {
 		sb.WriteString(p.sharedGoldensUserData())
@@ -554,7 +640,7 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 	return sb.String()
 }
 
-func (p *EC2Pool) sharedSandboxDataUserData() string {
+func (p *EC2Pool) sharedSandboxDataUserData(ocfs2 ocfs2Assignment) string {
 	clusterName := p.cfg.OCFS2ClusterName
 	if clusterName == "" {
 		clusterName = "opensandbox"
@@ -566,6 +652,9 @@ func (p *EC2Pool) sharedSandboxDataUserData() string {
 	maxNodes := p.cfg.OCFS2MaxNodes
 	if maxNodes <= 0 {
 		maxNodes = expectedNodes
+	}
+	if ocfs2.Enabled && maxNodes < len(ocfs2.NodeIPs) {
+		maxNodes = len(ocfs2.NodeIPs)
 	}
 	if maxNodes < expectedNodes {
 		maxNodes = expectedNodes
@@ -582,6 +671,10 @@ func (p *EC2Pool) sharedSandboxDataUserData() string {
 	sb.WriteString(fmt.Sprintf("OCFS2_CLUSTER_NAME=%q\n", clusterName))
 	sb.WriteString(fmt.Sprintf("OCFS2_EXPECTED_NODES=%d\n", expectedNodes))
 	sb.WriteString(fmt.Sprintf("OCFS2_MAX_NODES=%d\n", maxNodes))
+	if ocfs2.Enabled {
+		sb.WriteString(fmt.Sprintf("OCFS2_NODE_SLOT=%d\n", ocfs2.Slot))
+		sb.WriteString(fmt.Sprintf("OCFS2_NODE_IP=%q\n", ocfs2.IP))
+	}
 	sb.WriteString("oc_boot_log \"attaching shared sandbox data volume $SANDBOX_VOLUME_ID\"\n")
 	sb.WriteString("aws ec2 attach-volume --region " + shellQuote(p.cfg.Region) + " --volume-id \"$SANDBOX_VOLUME_ID\" --instance-id \"$INSTANCE_ID\" --device /dev/sdg || true\n")
 	sb.WriteString("SANDBOX_DEV=\"\"\n")
@@ -602,17 +695,29 @@ func (p *EC2Pool) sharedSandboxDataUserData() string {
 	sb.WriteString("if [ \"$SANDBOX_SERIAL\" != \"$SANDBOX_VOL_NO_DASH\" ]; then echo \"ERROR: $SANDBOX_DEV serial $SANDBOX_SERIAL does not match sandbox volume $SANDBOX_VOLUME_ID\"; lsblk -o NAME,MODEL,SERIAL,SIZE,FSTYPE,MOUNTPOINT || true; exit 1; fi\n")
 	sb.WriteString("echo \"Using shared sandbox data volume $SANDBOX_VOLUME_ID at $SANDBOX_DEV\"\n")
 	sb.WriteString("oc_boot_log \"shared sandbox data volume visible at $SANDBOX_DEV\"\n")
-	sb.WriteString("oc_boot_log 'discovering OCFS2 peer nodes'\n")
-	sb.WriteString("mapfile -t OCFS2_NODES < <(for i in $(seq 1 60); do aws ec2 describe-instances --region " + shellQuote(p.cfg.Region) + " --filters \"Name=tag:Cell,Values=" + shellEscapedDouble(p.cfg.CellID) + "\" \"Name=tag:Role,Values=worker\" \"Name=instance-state-name,Values=running\" --query 'Reservations[].Instances[].PrivateDnsName' --output text | tr '\\t' '\\n' | awk 'NF { sub(/\\..*/, \"\", $0); print }' | sort -u; break; done)\n")
-	sb.WriteString("for i in $(seq 1 60); do\n")
-	sb.WriteString("  [ \"${#OCFS2_NODES[@]}\" -ge \"$OCFS2_EXPECTED_NODES\" ] && break\n")
-	sb.WriteString("  sleep 2\n")
-	sb.WriteString("  mapfile -t OCFS2_NODES < <(aws ec2 describe-instances --region " + shellQuote(p.cfg.Region) + " --filters \"Name=tag:Cell,Values=" + shellEscapedDouble(p.cfg.CellID) + "\" \"Name=tag:Role,Values=worker\" \"Name=instance-state-name,Values=running\" --query 'Reservations[].Instances[].PrivateDnsName' --output text | tr '\\t' '\\n' | awk 'NF { sub(/\\..*/, \"\", $0); print }' | sort -u)\n")
-	sb.WriteString("done\n")
-	sb.WriteString("if [ \"${#OCFS2_NODES[@]}\" -lt \"$OCFS2_EXPECTED_NODES\" ]; then echo \"ERROR: found ${#OCFS2_NODES[@]} OCFS2 nodes, expected $OCFS2_EXPECTED_NODES\"; exit 1; fi\n")
-	sb.WriteString("oc_boot_log \"OCFS2 peer nodes: ${OCFS2_NODES[*]}\"\n")
 	sb.WriteString("install -d -m 0755 /etc/ocfs2 /etc/sysconfig\n")
-	sb.WriteString("{ echo \"cluster:\"; echo \"  node_count = ${#OCFS2_NODES[@]}\"; echo \"  name = $OCFS2_CLUSTER_NAME\"; echo \"\"; n=0; for node in \"${OCFS2_NODES[@]}\"; do ip=$(getent ahostsv4 \"$node\" | awk '{print $1; exit}'); [ -n \"${ip:-}\" ] || { echo \"ERROR: could not resolve OCFS2 node $node\"; exit 1; }; echo \"node:\"; echo \"  ip_port = 7777\"; echo \"  ip_address = $ip\"; echo \"  number = $n\"; echo \"  name = $node\"; echo \"  cluster = $OCFS2_CLUSTER_NAME\"; echo \"\"; n=$((n + 1)); done; } > /etc/ocfs2/cluster.conf\n")
+	if ocfs2.Enabled {
+		sb.WriteString("oc_boot_log \"using static OCFS2 slot $OCFS2_NODE_SLOT at $OCFS2_NODE_IP\"\n")
+		sb.WriteString("OCFS2_NODE_NAMES=()\n")
+		sb.WriteString("OCFS2_NODE_IPS=()\n")
+		for _, ip := range ocfs2.NodeIPs {
+			ip = strings.TrimSpace(ip)
+			sb.WriteString(fmt.Sprintf("OCFS2_NODE_NAMES+=(%q)\n", awsPrivateDNSShortName(ip)))
+			sb.WriteString(fmt.Sprintf("OCFS2_NODE_IPS+=(%q)\n", ip))
+		}
+		sb.WriteString("{ echo \"cluster:\"; echo \"  node_count = ${#OCFS2_NODE_IPS[@]}\"; echo \"  name = $OCFS2_CLUSTER_NAME\"; echo \"\"; for i in \"${!OCFS2_NODE_IPS[@]}\"; do echo \"node:\"; echo \"  ip_port = 7777\"; echo \"  ip_address = ${OCFS2_NODE_IPS[$i]}\"; echo \"  number = $i\"; echo \"  name = ${OCFS2_NODE_NAMES[$i]}\"; echo \"  cluster = $OCFS2_CLUSTER_NAME\"; echo \"\"; done; } > /etc/ocfs2/cluster.conf\n")
+	} else {
+		sb.WriteString("oc_boot_log 'discovering OCFS2 peer nodes'\n")
+		sb.WriteString("mapfile -t OCFS2_NODES < <(for i in $(seq 1 60); do aws ec2 describe-instances --region " + shellQuote(p.cfg.Region) + " --filters \"Name=tag:Cell,Values=" + shellEscapedDouble(p.cfg.CellID) + "\" \"Name=tag:Role,Values=worker\" \"Name=instance-state-name,Values=running\" --query 'Reservations[].Instances[].PrivateDnsName' --output text | tr '\\t' '\\n' | awk 'NF { sub(/\\..*/, \"\", $0); print }' | sort -u; break; done)\n")
+		sb.WriteString("for i in $(seq 1 60); do\n")
+		sb.WriteString("  [ \"${#OCFS2_NODES[@]}\" -ge \"$OCFS2_EXPECTED_NODES\" ] && break\n")
+		sb.WriteString("  sleep 2\n")
+		sb.WriteString("  mapfile -t OCFS2_NODES < <(aws ec2 describe-instances --region " + shellQuote(p.cfg.Region) + " --filters \"Name=tag:Cell,Values=" + shellEscapedDouble(p.cfg.CellID) + "\" \"Name=tag:Role,Values=worker\" \"Name=instance-state-name,Values=running\" --query 'Reservations[].Instances[].PrivateDnsName' --output text | tr '\\t' '\\n' | awk 'NF { sub(/\\..*/, \"\", $0); print }' | sort -u)\n")
+		sb.WriteString("done\n")
+		sb.WriteString("if [ \"${#OCFS2_NODES[@]}\" -lt \"$OCFS2_EXPECTED_NODES\" ]; then echo \"ERROR: found ${#OCFS2_NODES[@]} OCFS2 nodes, expected $OCFS2_EXPECTED_NODES\"; exit 1; fi\n")
+		sb.WriteString("oc_boot_log \"OCFS2 peer nodes: ${OCFS2_NODES[*]}\"\n")
+		sb.WriteString("{ echo \"cluster:\"; echo \"  node_count = ${#OCFS2_NODES[@]}\"; echo \"  name = $OCFS2_CLUSTER_NAME\"; echo \"\"; n=0; for node in \"${OCFS2_NODES[@]}\"; do ip=$(getent ahostsv4 \"$node\" | awk '{print $1; exit}'); [ -n \"${ip:-}\" ] || { echo \"ERROR: could not resolve OCFS2 node $node\"; exit 1; }; echo \"node:\"; echo \"  ip_port = 7777\"; echo \"  ip_address = $ip\"; echo \"  number = $n\"; echo \"  name = $node\"; echo \"  cluster = $OCFS2_CLUSTER_NAME\"; echo \"\"; n=$((n + 1)); done; } > /etc/ocfs2/cluster.conf\n")
+	}
 	sb.WriteString("cat > /etc/default/o2cb <<EOF\nO2CB_ENABLED=true\nO2CB_BOOTCLUSTER=$OCFS2_CLUSTER_NAME\nO2CB_HEARTBEAT_THRESHOLD=31\nO2CB_IDLE_TIMEOUT_MS=30000\nO2CB_KEEPALIVE_DELAY_MS=2000\nO2CB_RECONNECT_DELAY_MS=2000\nEOF\n")
 	sb.WriteString("cp /etc/default/o2cb /etc/sysconfig/o2cb\n")
 	sb.WriteString("oc_boot_log 'starting OCFS2 cluster service'\n")
@@ -670,4 +775,8 @@ func shellQuote(s string) string {
 
 func shellEscapedDouble(s string) string {
 	return strings.ReplaceAll(s, `"`, `\"`)
+}
+
+func awsPrivateDNSShortName(ip string) string {
+	return "ip-" + strings.ReplaceAll(strings.TrimSpace(ip), ".", "-")
 }

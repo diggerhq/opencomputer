@@ -460,6 +460,7 @@ func main() {
 				OCFS2ClusterName:          cfg.EC2OCFS2ClusterName,
 				OCFS2ExpectedNodes:        cfg.EC2OCFS2ExpectedNodes,
 				OCFS2MaxNodes:             cfg.EC2OCFS2MaxNodes,
+				OCFS2NodeIPs:              cfg.EC2OCFS2NodeIPs,
 			})
 			if err != nil {
 				log.Fatalf("opensandbox: failed to create EC2 pool: %v", err)

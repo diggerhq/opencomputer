@@ -124,6 +124,7 @@ type Config struct {
 	EC2OCFS2ClusterName          string
 	EC2OCFS2ExpectedNodes        int
 	EC2OCFS2MaxNodes             int
+	EC2OCFS2NodeIPs              []string
 
 	// Azure compute pool (server mode — for auto-scaling worker VMs)
 	AzureSubscriptionID string   // Azure subscription ID
@@ -372,6 +373,7 @@ func Load() (*Config, error) {
 		EC2OCFS2ClusterName:          envOrDefault("OPENSANDBOX_OCFS2_CLUSTER_NAME", "opensandbox"),
 		EC2OCFS2ExpectedNodes:        envOrDefaultInt("OPENSANDBOX_OCFS2_EXPECTED_NODES", 1),
 		EC2OCFS2MaxNodes:             envOrDefaultInt("OPENSANDBOX_OCFS2_MAX_NODES", 4),
+		EC2OCFS2NodeIPs:              splitCSV(os.Getenv("OPENSANDBOX_OCFS2_NODE_IPS")),
 
 		AzureSubscriptionID:   os.Getenv("OPENSANDBOX_AZURE_SUBSCRIPTION_ID"),
 		AzureResourceGroup:    os.Getenv("OPENSANDBOX_AZURE_RESOURCE_GROUP"),
