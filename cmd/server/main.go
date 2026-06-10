@@ -319,6 +319,9 @@ func main() {
 			S3ForcePathStyle:  cfg.S3ForcePathStyle,
 			SegmentWriteKey:   cfg.SegmentWriteKey,
 			SecretsRef:        cfg.SecretsARN,
+			AxiomIngestToken:  cfg.AxiomIngestToken,
+			AxiomDataset:      cfg.AxiomDataset,
+			KeyVaultName:      cfg.AzureKeyVaultName,
 		}
 
 		// Provider selection. Explicit cfg.ComputeProvider wins; otherwise we
