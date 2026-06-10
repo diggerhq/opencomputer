@@ -40,6 +40,25 @@ type Store struct {
 // write. workerID is intentionally omitted (the sandbox is leaving its worker).
 type TerminalHook func(sandboxID string, orgID uuid.UUID, status, reason string)
 
+// isTerminalSessionStatus reports whether a session status means the sandbox is
+// gone for good and billing must stop — as opposed to `hibernated` (a pause,
+// billing resumes on wake) or `running`/`pending`/`migrating` (still live).
+// Terminal statuses both close the open scale_event AND fire the terminal hook
+// (which publishes `stopped` to D1). `failed` (pending→failed) is terminal:
+// the create never succeeded, so it must stop billing — it was historically
+// omitted, which let failed-creates bill forever on the edge.
+//
+// Extracted as a pure predicate so it has DB-free unit coverage: adding a new
+// terminal status without classifying it here is the easy regression.
+func isTerminalSessionStatus(status string) bool {
+	switch status {
+	case "stopped", "error", "failed":
+		return true
+	default:
+		return false
+	}
+}
+
 // SetEncryptor configures the encryption key for project secrets.
 func (s *Store) SetEncryptor(enc *crypto.Encryptor) {
 	s.encryptor = enc
@@ -778,11 +797,7 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 		args = []interface{}{status, sandboxID}
 	}
 
-	// Terminal = the sandbox is no longer running and should stop billing.
-	// `failed` (pending→failed, create never succeeded) is terminal too — it
-	// was previously omitted from both the scale-event close and any D1 publish,
-	// which let failed-creates bill forever on the edge.
-	terminal := status == "stopped" || status == "error" || status == "failed"
+	terminal := isTerminalSessionStatus(status)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
