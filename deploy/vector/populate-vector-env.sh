@@ -174,7 +174,7 @@ aws)
         exit 0
     fi
     if ! command -v aws >/dev/null 2>&1; then
-        log "aws CLI not installed in AMI — populator can't fetch from Secrets Manager. Bake awscli into the worker image (see deploy/packer/worker-ami-aws.pkr.hcl)."
+        log "aws CLI not installed in AMI — populator can't fetch from Secrets Manager. Bake awscli into the worker image (see deploy/packer/worker-ami-aws-burst.pkr.hcl)."
         exit 0
     fi
     # Auto-detect region from IMDSv2 so we don't have to plumb it via env.

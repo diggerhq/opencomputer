@@ -89,7 +89,7 @@ jobs:
         run: tar czf /tmp/packer-vector-ctx.tar.gz -C deploy vector
 
       - name: Packer init
-        run: packer init deploy/packer/worker-ami-aws.pkr.hcl
+        run: packer init deploy/packer/worker-ami-aws-burst.pkr.hcl
 
       - name: Build and publish AMI
         run: |
@@ -98,7 +98,11 @@ jobs:
             -var "agent_version=$AGENT_VERSION" \
             -var "region=$AWS_REGION" \
             -var "instance_type=$BUILDER_INSTANCE_TYPE" \
-            deploy/packer/worker-ami-aws.pkr.hcl | tee /tmp/packer-output.txt
+            -var "tigris_endpoint=${{ secrets.TIGRIS_ENDPOINT }}" \
+            -var "tigris_access_key_id=${{ secrets.TIGRIS_ACCESS_KEY_ID }}" \
+            -var "tigris_secret_access_key=${{ secrets.TIGRIS_SECRET_ACCESS_KEY }}" \
+            -var "tigris_goldens_bucket=${{ secrets.TIGRIS_GOLDENS_BUCKET }}" \
+            deploy/packer/worker-ami-aws-burst.pkr.hcl | tee /tmp/packer-output.txt
 
       - name: Read AMI manifest
         id: ami
@@ -186,6 +190,7 @@ jobs:
           echo "- **Worker version:** \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Agent version:** \`$AGENT_VERSION\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Golden version:** \`${GOLDEN_VERSION:-unknown}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Golden cache:** \`${{ secrets.TIGRIS_GOLDENS_BUCKET != '' && 'Tigris enabled' || 'disabled' }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Region:** \`$AWS_REGION\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **SSM pointer:** \`$SSM_PARAMETER_PREFIX/worker-ami-id\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"

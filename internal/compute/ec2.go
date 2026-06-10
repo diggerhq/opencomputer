@@ -467,6 +467,8 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 	_ = opts // opts.Region/Size honored at instance launch; cloud-init is cell-uniform
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\nset -euo pipefail\n\n")
+	sb.WriteString("oc_boot_log() { echo \"opensandbox-worker-bootstrap $(date -Is) $*\"; }\n")
+	sb.WriteString("oc_boot_log 'user-data start'\n\n")
 	sb.WriteString("systemctl stop opensandbox-worker.service 2>/dev/null || true\n")
 	sb.WriteString("systemctl disable opensandbox-worker.service 2>/dev/null || true\n")
 	sb.WriteString("systemctl reset-failed opensandbox-worker.service 2>/dev/null || true\n\n")
@@ -479,6 +481,7 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 	sb.WriteString("MY_IP=$(curl -fsS -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/local-ipv4)\n")
 	sb.WriteString("INSTANCE_ID=$(curl -fsS -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/instance-id)\n")
 	sb.WriteString("WORKER_ID=\"w-aws-${INSTANCE_ID}\"\n\n")
+	sb.WriteString("oc_boot_log \"instance identity ready: $INSTANCE_ID $MY_IP\"\n\n")
 
 	// NVMe instance store handling. Larger metal/x.gd instance families expose
 	// multiple NVMe drives at /dev/nvme[1-N]n1; smaller instances rely on EBS
@@ -505,6 +508,7 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 	sb.WriteString("  fi\n")
 	sb.WriteString("fi\n")
 	sb.WriteString("mkdir -p /data/sandboxes /data/firecracker/images\n")
+	sb.WriteString("oc_boot_log 'base data mount ready'\n\n")
 
 	if p.cfg.SharedSandboxDataVolumeID != "" {
 		sb.WriteString(p.sharedSandboxDataUserData())
@@ -515,6 +519,7 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 
 	sb.WriteString("# Copy AMI-baked rootfs images to data disk if not already present\n")
 	sb.WriteString("if [ -d /opt/opensandbox/images ] && [ ! -f /data/firecracker/images/default.ext4 ]; then\n")
+	sb.WriteString("  oc_boot_log 'copying AMI-baked rootfs to data disk'\n")
 	sb.WriteString("  cp /opt/opensandbox/images/*.ext4 /data/firecracker/images/ 2>/dev/null || true\n")
 	sb.WriteString("fi\n")
 	sb.WriteString("if [ -d /opt/opensandbox/images/bases ] && [ ! -d /data/firecracker/images/bases ]; then\n")
@@ -542,7 +547,9 @@ func (p *EC2Pool) buildUserData(opts MachineOpts) string {
 	sb.WriteString("rm -rf /data/sandboxes/golden-snapshot /data/sandboxes/golden\n\n")
 
 	// Start worker
+	sb.WriteString("oc_boot_log 'starting opensandbox-worker service'\n")
 	sb.WriteString("systemctl restart opensandbox-worker\n")
+	sb.WriteString("oc_boot_log 'user-data complete'\n")
 
 	return sb.String()
 }
@@ -566,18 +573,16 @@ func (p *EC2Pool) sharedSandboxDataUserData() string {
 
 	var sb strings.Builder
 	sb.WriteString("# Shared sandbox data: OCFS2 over io2 Multi-Attach\n")
-	sb.WriteString("if ! command -v mount.ocfs2 >/dev/null 2>&1; then\n")
-	sb.WriteString("  for i in $(seq 1 120); do\n")
-	sb.WriteString("    fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || break\n")
-	sb.WriteString("    sleep 2\n")
-	sb.WriteString("  done\n")
-	sb.WriteString("  apt-get update\n")
-	sb.WriteString("  DEBIAN_FRONTEND=noninteractive apt-get install -y ocfs2-tools \"linux-modules-extra-$(uname -r)\"\n")
-	sb.WriteString("fi\n")
+	sb.WriteString("oc_boot_log 'validating baked OCFS2 dependencies'\n")
+	sb.WriteString("command -v mount.ocfs2 >/dev/null 2>&1 || { echo 'ERROR: AMI missing ocfs2-tools; rebuild worker AMI'; exit 1; }\n")
+	sb.WriteString("modprobe ocfs2 || { echo 'ERROR: AMI missing ocfs2 kernel module; rebuild worker AMI with linux-modules-extra'; exit 1; }\n")
+	sb.WriteString("modprobe ocfs2_dlmfs || { echo 'ERROR: AMI missing ocfs2_dlmfs kernel module; rebuild worker AMI'; exit 1; }\n")
+	sb.WriteString("modprobe ocfs2_stack_o2cb || { echo 'ERROR: AMI missing ocfs2_stack_o2cb kernel module; rebuild worker AMI'; exit 1; }\n")
 	sb.WriteString(fmt.Sprintf("SANDBOX_VOLUME_ID=%q\n", p.cfg.SharedSandboxDataVolumeID))
 	sb.WriteString(fmt.Sprintf("OCFS2_CLUSTER_NAME=%q\n", clusterName))
 	sb.WriteString(fmt.Sprintf("OCFS2_EXPECTED_NODES=%d\n", expectedNodes))
 	sb.WriteString(fmt.Sprintf("OCFS2_MAX_NODES=%d\n", maxNodes))
+	sb.WriteString("oc_boot_log \"attaching shared sandbox data volume $SANDBOX_VOLUME_ID\"\n")
 	sb.WriteString("aws ec2 attach-volume --region " + shellQuote(p.cfg.Region) + " --volume-id \"$SANDBOX_VOLUME_ID\" --instance-id \"$INSTANCE_ID\" --device /dev/sdg || true\n")
 	sb.WriteString("SANDBOX_DEV=\"\"\n")
 	sb.WriteString("SANDBOX_VOL_NO_DASH=\"${SANDBOX_VOLUME_ID//-/}\"\n")
@@ -596,6 +601,8 @@ func (p *EC2Pool) sharedSandboxDataUserData() string {
 	sb.WriteString("SANDBOX_SERIAL=$(lsblk -dn -o SERIAL \"$SANDBOX_DEV\" 2>/dev/null | head -1 || true)\n")
 	sb.WriteString("if [ \"$SANDBOX_SERIAL\" != \"$SANDBOX_VOL_NO_DASH\" ]; then echo \"ERROR: $SANDBOX_DEV serial $SANDBOX_SERIAL does not match sandbox volume $SANDBOX_VOLUME_ID\"; lsblk -o NAME,MODEL,SERIAL,SIZE,FSTYPE,MOUNTPOINT || true; exit 1; fi\n")
 	sb.WriteString("echo \"Using shared sandbox data volume $SANDBOX_VOLUME_ID at $SANDBOX_DEV\"\n")
+	sb.WriteString("oc_boot_log \"shared sandbox data volume visible at $SANDBOX_DEV\"\n")
+	sb.WriteString("oc_boot_log 'discovering OCFS2 peer nodes'\n")
 	sb.WriteString("mapfile -t OCFS2_NODES < <(for i in $(seq 1 60); do aws ec2 describe-instances --region " + shellQuote(p.cfg.Region) + " --filters \"Name=tag:Cell,Values=" + shellEscapedDouble(p.cfg.CellID) + "\" \"Name=tag:Role,Values=worker\" \"Name=instance-state-name,Values=running\" --query 'Reservations[].Instances[].PrivateDnsName' --output text | tr '\\t' '\\n' | awk 'NF { sub(/\\..*/, \"\", $0); print }' | sort -u; break; done)\n")
 	sb.WriteString("for i in $(seq 1 60); do\n")
 	sb.WriteString("  [ \"${#OCFS2_NODES[@]}\" -ge \"$OCFS2_EXPECTED_NODES\" ] && break\n")
@@ -603,11 +610,13 @@ func (p *EC2Pool) sharedSandboxDataUserData() string {
 	sb.WriteString("  mapfile -t OCFS2_NODES < <(aws ec2 describe-instances --region " + shellQuote(p.cfg.Region) + " --filters \"Name=tag:Cell,Values=" + shellEscapedDouble(p.cfg.CellID) + "\" \"Name=tag:Role,Values=worker\" \"Name=instance-state-name,Values=running\" --query 'Reservations[].Instances[].PrivateDnsName' --output text | tr '\\t' '\\n' | awk 'NF { sub(/\\..*/, \"\", $0); print }' | sort -u)\n")
 	sb.WriteString("done\n")
 	sb.WriteString("if [ \"${#OCFS2_NODES[@]}\" -lt \"$OCFS2_EXPECTED_NODES\" ]; then echo \"ERROR: found ${#OCFS2_NODES[@]} OCFS2 nodes, expected $OCFS2_EXPECTED_NODES\"; exit 1; fi\n")
+	sb.WriteString("oc_boot_log \"OCFS2 peer nodes: ${OCFS2_NODES[*]}\"\n")
 	sb.WriteString("install -d -m 0755 /etc/ocfs2 /etc/sysconfig\n")
 	sb.WriteString("{ echo \"cluster:\"; echo \"  node_count = ${#OCFS2_NODES[@]}\"; echo \"  name = $OCFS2_CLUSTER_NAME\"; echo \"\"; n=0; for node in \"${OCFS2_NODES[@]}\"; do ip=$(getent ahostsv4 \"$node\" | awk '{print $1; exit}'); [ -n \"${ip:-}\" ] || { echo \"ERROR: could not resolve OCFS2 node $node\"; exit 1; }; echo \"node:\"; echo \"  ip_port = 7777\"; echo \"  ip_address = $ip\"; echo \"  number = $n\"; echo \"  name = $node\"; echo \"  cluster = $OCFS2_CLUSTER_NAME\"; echo \"\"; n=$((n + 1)); done; } > /etc/ocfs2/cluster.conf\n")
 	sb.WriteString("cat > /etc/default/o2cb <<EOF\nO2CB_ENABLED=true\nO2CB_BOOTCLUSTER=$OCFS2_CLUSTER_NAME\nO2CB_HEARTBEAT_THRESHOLD=31\nO2CB_IDLE_TIMEOUT_MS=30000\nO2CB_KEEPALIVE_DELAY_MS=2000\nO2CB_RECONNECT_DELAY_MS=2000\nEOF\n")
 	sb.WriteString("cp /etc/default/o2cb /etc/sysconfig/o2cb\n")
-	sb.WriteString("modprobe ocfs2 || true\nmodprobe ocfs2_dlmfs || true\nmodprobe ocfs2_stack_o2cb || true\nsystemctl enable --now o2cb || true\nsystemctl restart o2cb || true\n")
+	sb.WriteString("oc_boot_log 'starting OCFS2 cluster service'\n")
+	sb.WriteString("systemctl enable --now o2cb || true\nsystemctl restart o2cb || true\n")
 	sb.WriteString("command -v o2cb >/dev/null 2>&1 && o2cb register-cluster \"$OCFS2_CLUSTER_NAME\" || true\n")
 	sb.WriteString("[ -x /etc/init.d/o2cb ] && /etc/init.d/o2cb online \"$OCFS2_CLUSTER_NAME\" || true\n")
 	sb.WriteString("mkdir -p /data/sandboxes\n")
@@ -616,7 +625,9 @@ func (p *EC2Pool) sharedSandboxDataUserData() string {
 	sb.WriteString("FSTYPE=$(blkid -s TYPE -o value \"$SANDBOX_DEV\" 2>/dev/null || true)\n")
 	sb.WriteString("if [ \"$FSTYPE\" != \"ocfs2\" ]; then echo \"ERROR: shared sandbox data volume $SANDBOX_DEV has filesystem '$FSTYPE', expected ocfs2\"; lsblk -o NAME,MODEL,SERIAL,SIZE,FSTYPE,MOUNTPOINT || true; exit 1; fi\n")
 	sb.WriteString("if ! grep -q 'LABEL=opensandbox-sandboxes' /etc/fstab; then echo 'LABEL=opensandbox-sandboxes /data/sandboxes ocfs2 noauto,_netdev,noatime 0 0' >> /etc/fstab; fi\n")
+	sb.WriteString("oc_boot_log 'mounting OCFS2 shared sandbox data volume'\n")
 	sb.WriteString("timeout 90 mount -t ocfs2 -o noatime \"$SANDBOX_DEV\" /data/sandboxes\n")
+	sb.WriteString("oc_boot_log 'OCFS2 shared sandbox data mounted'\n")
 	sb.WriteString("chown root:root /data/sandboxes\n\n")
 	return sb.String()
 }

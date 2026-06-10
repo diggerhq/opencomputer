@@ -1,4 +1,4 @@
-# worker-ami-aws.pkr.hcl — Build an immutable AMI for OpenSandbox workers (QEMU backend) on AWS.
+# worker-ami-aws-burst.pkr.hcl — Build an immutable AMI for OpenSandbox Burst workers on AWS.
 #
 # Mirrors deploy/packer/worker-ami.pkr.hcl (Azure variant) but targets the
 # amazon-ebs builder. The setup script (`deploy/azure/setup-azure-host.sh`)
@@ -7,10 +7,9 @@
 #
 # Differences from the Azure file:
 #   - amazon-ebs source on Ubuntu 24.04 LTS x86_64 instead of azure-arm.
-#   - No rootfs blob caching (the Azure variant's elaborate Azure-blob cache
-#     dance was the only Azure-API touch; for the PoC we just rebuild the
-#     rootfs each time, ~10min extra per bake — acceptable for low rebuild
-#     frequency).
+#   - Optional Tigris/S3-compatible rootfs blob caching. Same rootfs inputs
+#     reuse the same cached default.ext4, which keeps AMI builds fast and
+#     golden versions stable when the guest image did not change.
 #   - Installs awscli (needed by deploy/vector/populate-vector-env.sh AWS path
 #     and by the worker user-data shared-disk attach).
 #   - Tags the AMI for the terraform `aws_ami` data source lookup
@@ -26,8 +25,8 @@
 #   tar czf /tmp/packer-rootfs-ctx.tar.gz deploy/firecracker/rootfs/ deploy/ec2/build-rootfs-docker.sh scripts/claude-agent-wrapper/
 #
 #   # 3. Run packer:
-#   packer init deploy/packer/worker-ami-aws.pkr.hcl
-#   packer build -var "worker_version=$(git rev-parse --short HEAD)" deploy/packer/worker-ami-aws.pkr.hcl
+#   packer init deploy/packer/worker-ami-aws-burst.pkr.hcl
+#   packer build -var "worker_version=$(git rev-parse --short HEAD)" deploy/packer/worker-ami-aws-burst.pkr.hcl
 #
 #   # 4. The data source in opencomputer-infra/terraform/aws/us-east-2-poc/ami.tf
 #   #    picks up the new AMI on the next `tofu apply`.
@@ -88,10 +87,30 @@ variable "vector_context" {
   description = "Pre-built tarball of deploy/vector/ (config + populator + units). Pre-create with: tar czf /tmp/packer-vector-ctx.tar.gz deploy/vector/"
 }
 
-variable "golden_cache_bucket" {
+variable "tigris_endpoint" {
   type        = string
   default     = ""
-  description = "Optional S3 bucket to upload the bake's golden default.ext4 to (under bases/<golden_version>/). Cell-scoped — e.g. oc-aws-us-east-2-poc-golden-cache. Empty = skip upload."
+  description = "Optional S3-compatible endpoint for Tigris rootfs/golden cache."
+}
+
+variable "tigris_access_key_id" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Optional Tigris access key for rootfs/golden cache."
+}
+
+variable "tigris_secret_access_key" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Optional Tigris secret key for rootfs/golden cache."
+}
+
+variable "tigris_goldens_bucket" {
+  type        = string
+  default     = ""
+  description = "Optional Tigris bucket for content-addressed rootfs cache and golden uploads. Empty = skip cache."
 }
 
 # ---------------------------------------------------------------------
@@ -104,8 +123,8 @@ source "amazon-ebs" "worker" {
   ssh_username  = "ubuntu"
   ssh_pty       = true
 
-  ami_name        = "opensandbox-worker-${var.worker_version}-${formatdate("YYYYMMDD-hhmm", timestamp())}"
-  ami_description = "OpenSandbox worker AMI (Ubuntu 24.04, QEMU/KVM nested-virt). Built from git ${var.worker_version}."
+  ami_name        = "opensandbox-burst-worker-${var.worker_version}-${formatdate("YYYYMMDD-hhmm", timestamp())}"
+  ami_description = "OpenSandbox Burst worker AMI (Ubuntu 24.04, QEMU/KVM nested-virt). Built from git ${var.worker_version}."
 
   source_ami_filter {
     filters = {
@@ -131,7 +150,7 @@ source "amazon-ebs" "worker" {
   # AMI tags — the terraform `aws_ami` data source in the AWS leaf filters
   # on these to pick the most-recent worker AMI for this cloud.
   tags = {
-    Name                  = "opensandbox-worker-${var.worker_version}"
+    Name                  = "opensandbox-burst-worker-${var.worker_version}"
     "opensandbox-role"    = "worker"
     "opensandbox-cloud"   = "aws"
     "opensandbox-version" = var.worker_version
@@ -204,18 +223,30 @@ build {
   }
 
   # 6. AWS-specific: install awscli (used by populate-vector-env.sh and by
-  #    the worker user-data's shared-disk attach), then install binaries and
-  #    build the golden rootfs.
+  #    the worker user-data's shared-disk attach), bake OCFS2 dependencies for
+  #    the shared data volume, then install binaries and build the golden rootfs.
   provisioner "shell" {
     execute_command = "chmod +x {{ .Path }}; {{ .Vars }} sudo -E bash '{{ .Path }}'"
+    environment_vars = [
+      "TIGRIS_ENDPOINT=${var.tigris_endpoint}",
+      "TIGRIS_ACCESS_KEY_ID=${var.tigris_access_key_id}",
+      "TIGRIS_SECRET_ACCESS_KEY=${var.tigris_secret_access_key}",
+      "TIGRIS_GOLDENS_BUCKET=${var.tigris_goldens_bucket}",
+      "AWS_DEFAULT_REGION=auto",
+    ]
     inline = [
       # awscli v2 — apt's `awscli` is v1 and missing some commands we use.
       "apt-get update -qq",
-      "apt-get install -y -qq unzip",
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unzip ocfs2-tools \"linux-modules-extra-$(uname -r)\"",
       "curl -fsSL 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o /tmp/awscliv2.zip",
       "cd /tmp && unzip -q awscliv2.zip && ./aws/install --update",
       "rm -rf /tmp/awscliv2.zip /tmp/aws",
       "aws --version",
+      "modprobe ocfs2",
+      "modprobe ocfs2_dlmfs",
+      "modprobe ocfs2_stack_o2cb",
+      "command -v mount.ocfs2",
+      "systemctl disable --now apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service 2>/dev/null || true",
 
       # Install worker + agent binaries.
       "mv /tmp/opensandbox-worker /usr/local/bin/opensandbox-worker",
@@ -228,15 +259,33 @@ build {
       "systemctl daemon-reload",
       "systemctl enable opensandbox-worker.service",
 
-      # Build the golden rootfs (no caching for PoC — every bake builds from scratch).
+      # Build or restore the golden rootfs. The cache key is content-addressed
+      # from the guest agent, rootfs sources, and guest kernel modules.
       "mkdir -p /tmp/rootfs-ctx",
       "cd /tmp/rootfs-ctx && tar xzf /tmp/rootfs-ctx.tar.gz",
       "INPUT_HASH=$({ sha256sum /usr/local/bin/osb-agent; find /tmp/rootfs-ctx -type f | sort | xargs sha256sum; sha256sum /opt/opensandbox/guest-modules/*.ko* 2>/dev/null; } | sha256sum | awk '{print $1}')",
       "echo \"Rootfs input hash: $INPUT_HASH\"",
       "ROOTFS_UUID=$(echo \"$INPUT_HASH\" | head -c 32 | sed 's/\\(........\\)\\(....\\)\\(....\\)\\(....\\)\\(............\\)/\\1-\\2-\\3-\\4-\\5/')",
       "export ROOTFS_UUID",
+      "INPUT_HASH_SHORT=$(echo \"$INPUT_HASH\" | cut -c1-16)",
+      "CACHE_KEY=\"rootfs-cache/$INPUT_HASH_SHORT/default.ext4\"",
+      "CACHE_HIT=0",
       "mkdir -p /data/firecracker/images /opt/opensandbox/images",
-      "cd /tmp/rootfs-ctx && bash deploy/ec2/build-rootfs-docker.sh /usr/local/bin/osb-agent /data/firecracker/images default",
+      "if [ -n \"$TIGRIS_ENDPOINT\" ] && [ -n \"$TIGRIS_ACCESS_KEY_ID\" ] && [ -n \"$TIGRIS_SECRET_ACCESS_KEY\" ] && [ -n \"$TIGRIS_GOLDENS_BUCKET\" ]; then",
+      "  export AWS_ACCESS_KEY_ID=\"$TIGRIS_ACCESS_KEY_ID\" AWS_SECRET_ACCESS_KEY=\"$TIGRIS_SECRET_ACCESS_KEY\"",
+      "  echo \"Checking rootfs cache: s3://$TIGRIS_GOLDENS_BUCKET/$CACHE_KEY\"",
+      "  if aws s3 cp --endpoint-url \"$TIGRIS_ENDPOINT\" \"s3://$TIGRIS_GOLDENS_BUCKET/$CACHE_KEY\" /data/firecracker/images/default.ext4; then",
+      "    CACHE_HIT=1",
+      "    echo 'Rootfs restored from cache — skipping Docker build'",
+      "  else",
+      "    echo 'Rootfs cache miss — building from source'",
+      "  fi",
+      "else",
+      "  echo 'Tigris cache credentials incomplete; rootfs cache disabled'",
+      "fi",
+      "if [ \"$CACHE_HIT\" != \"1\" ]; then",
+      "  cd /tmp/rootfs-ctx && ROOTFS_UUID=\"$ROOTFS_UUID\" bash deploy/ec2/build-rootfs-docker.sh /usr/local/bin/osb-agent /data/firecracker/images default",
+      "fi",
       "cp /data/firecracker/images/default.ext4 /opt/opensandbox/images/default.ext4",
 
       # Inject guest kernel modules into rootfs.
@@ -255,31 +304,36 @@ build {
       "GOLDEN_VERSION=$(/usr/local/bin/opensandbox-worker golden-version /opt/opensandbox/images/default.ext4 2>/dev/null || sha256sum /opt/opensandbox/images/default.ext4 | awk '{print $1}')",
       "echo \"$GOLDEN_VERSION\" > /opt/opensandbox/images/golden-version",
       "echo \"Golden version: $GOLDEN_VERSION\"",
+      "if [ \"$CACHE_HIT\" != \"1\" ] && [ -n \"$TIGRIS_ENDPOINT\" ] && [ -n \"$TIGRIS_ACCESS_KEY_ID\" ] && [ -n \"$TIGRIS_SECRET_ACCESS_KEY\" ] && [ -n \"$TIGRIS_GOLDENS_BUCKET\" ]; then",
+      "  export AWS_ACCESS_KEY_ID=\"$TIGRIS_ACCESS_KEY_ID\" AWS_SECRET_ACCESS_KEY=\"$TIGRIS_SECRET_ACCESS_KEY\"",
+      "  echo \"Uploading rootfs cache: s3://$TIGRIS_GOLDENS_BUCKET/$CACHE_KEY\"",
+      "  aws s3 cp --endpoint-url \"$TIGRIS_ENDPOINT\" /opt/opensandbox/images/default.ext4 \"s3://$TIGRIS_GOLDENS_BUCKET/$CACHE_KEY\" || echo 'rootfs cache upload failed — continuing'",
+      "fi",
     ]
   }
 
-  # 7. Optional: upload the golden to S3 so the cell's shared-disk seeder
+  # 7. Optional: upload the golden to Tigris so future hydration paths
   #    + future per-instance prefetch path can fetch it without rebuilding.
   provisioner "shell" {
     execute_command = "chmod +x {{ .Path }}; {{ .Vars }} sudo -E bash '{{ .Path }}'"
     environment_vars = [
-      "GOLDEN_CACHE_BUCKET=${var.golden_cache_bucket}",
-      "AWS_DEFAULT_REGION=${var.region}",
+      "TIGRIS_ENDPOINT=${var.tigris_endpoint}",
+      "TIGRIS_ACCESS_KEY_ID=${var.tigris_access_key_id}",
+      "TIGRIS_SECRET_ACCESS_KEY=${var.tigris_secret_access_key}",
+      "TIGRIS_GOLDENS_BUCKET=${var.tigris_goldens_bucket}",
+      "AWS_DEFAULT_REGION=auto",
     ]
     inline = [
       "set -e",
-      "if [ -z \"$GOLDEN_CACHE_BUCKET\" ]; then",
-      "  echo 'No golden_cache_bucket set; skipping S3 upload (worker AMI still includes the baked golden)'",
+      "if [ -z \"$TIGRIS_ENDPOINT\" ] || [ -z \"$TIGRIS_ACCESS_KEY_ID\" ] || [ -z \"$TIGRIS_SECRET_ACCESS_KEY\" ] || [ -z \"$TIGRIS_GOLDENS_BUCKET\" ]; then",
+      "  echo 'Tigris cache credentials incomplete; skipping golden upload (worker AMI still includes the baked golden)'",
       "  exit 0",
       "fi",
+      "export AWS_ACCESS_KEY_ID=\"$TIGRIS_ACCESS_KEY_ID\" AWS_SECRET_ACCESS_KEY=\"$TIGRIS_SECRET_ACCESS_KEY\"",
       "GOLDEN_VERSION=$(cat /opt/opensandbox/images/golden-version)",
       "S3_KEY=\"bases/$GOLDEN_VERSION/default.ext4\"",
-      "echo \"Uploading default.ext4 → s3://$GOLDEN_CACHE_BUCKET/$S3_KEY (~4GB, will take a moment)\"",
-      # Instance profile credentials — the bake runs on an EC2 instance and
-      # picks up its role via the metadata service. If the builder role
-      # doesn't have s3:PutObject on the cell's bucket, the upload fails
-      # gracefully and the AMI still works (just without S3-side hydration).
-      "aws s3 cp /opt/opensandbox/images/default.ext4 \"s3://$GOLDEN_CACHE_BUCKET/$S3_KEY\" || echo 'S3 upload failed — continuing (AMI golden is the only copy)'",
+      "echo \"Uploading default.ext4 -> s3://$TIGRIS_GOLDENS_BUCKET/$S3_KEY (~4GB, will take a moment)\"",
+      "aws s3 cp --endpoint-url \"$TIGRIS_ENDPOINT\" /opt/opensandbox/images/default.ext4 \"s3://$TIGRIS_GOLDENS_BUCKET/$S3_KEY\" || echo 'Tigris upload failed — continuing (AMI golden is the only copy)'",
     ]
   }
 
