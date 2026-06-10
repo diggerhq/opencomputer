@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/opensandbox/opensandbox/internal/api"
@@ -223,6 +224,20 @@ func main() {
 		opts.WorkerRegistry = redisRegistry
 		opts.RedisClient = redisRegistry.RedisClient()
 		log.Println("opensandbox: Redis worker registry started")
+
+		// Wire the terminal lifecycle publisher: any session that transitions to
+		// a terminal state (stopped/error/failed) via UpdateSandboxSessionStatus
+		// now publishes a `stopped` event → events-ingest → D1 → stop edge
+		// billing. Closes the gap where create-failed / fork-failed /
+		// proxy-worker-gone / stop-handler paths marked the cell terminal but
+		// left D1 (and the edge) billing the sandbox forever.
+		if opts.Store != nil && cfg.CellID != "" {
+			rc := redisRegistry.RedisClient()
+			cellID := cfg.CellID
+			opts.Store.SetTerminalHook(func(sandboxID string, orgID uuid.UUID, status, reason string) {
+				controlplane.PublishLifecycle(context.Background(), rc, cellID, "stopped", sandboxID, "", orgID, reason)
+			})
+		}
 
 		// Create sandbox API proxy for routing data-plane requests to workers
 		if opts.Store != nil && opts.JWTIssuer != nil {
