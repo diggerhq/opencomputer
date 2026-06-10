@@ -28,6 +28,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/observability"
 	"github.com/opensandbox/opensandbox/internal/obslog"
 	"github.com/opensandbox/opensandbox/internal/proxy"
+	"github.com/opensandbox/opensandbox/internal/wsgateway"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
 )
@@ -63,6 +64,7 @@ type Server struct {
 	pendingCreates  sync.Map                          // map[sandboxID]*pendingCreate — async sandbox creation tracking
 	mountSvc        *mounts.Service                   // shared with worker.HTTPServer; nil disables the mounts API
 	sandboxAPIProxy *proxy.SandboxAPIProxy            // nil except in server mode (proxies data-plane to workers)
+	wsGateway       *wsgateway.Gateway                // nil disables the broker; WS data-plane routes fall back to sandboxAPIProxy
 	stripeClient    *billing.StripeClient              // nil if Stripe not configured
 	redisClient     *redis.Client                     // nil if Redis not configured (for health checks)
 	adminEvents     *AdminEventBus                    // real-time event bus for admin dashboard
@@ -104,6 +106,17 @@ func (s *Server) SetMigrator(m MigrationOrchestrator) {
 // constructing it with the right base URL + HMAC secret (CFEventSecret).
 func (s *Server) SetEdgeClient(c *edgeclient.Client) {
 	s.edge = c
+}
+
+// SetWSGateway wires the in-process WebSocket broker. When non-nil,
+// data-plane WS routes (/sandboxes/:id/pty/:sid, /exec/:sid, /agent/:sid)
+// route through the broker instead of the legacy SandboxAPIProxy
+// hijack-and-io.Copy path. The broker provides multi-session, redial on
+// upstream close, exec-exit marker handling, keepalive, and circuit
+// breaking — see internal/wsgateway for the spec. Safe to leave nil
+// for cells that prefer the legacy transparent forward.
+func (s *Server) SetWSGateway(gw *wsgateway.Gateway) {
+	s.wsGateway = gw
 }
 
 // SetAxiomQueryConfig wires the read-only Axiom token and dataset for
@@ -469,16 +482,28 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		// Server mode: proxy all data-plane requests to the worker that owns the sandbox
 		pxy := s.sandboxAPIProxy.ProxyHandler
 
+		// WS data-plane handler — dispatches dynamically per request so
+		// SetWSGateway works regardless of whether it was called before or
+		// after route registration. Non-WS verbs on the same paths always
+		// go through the proxy: the broker only handles bidi streaming.
+		wsHandler := func(c echo.Context) error {
+			if s.wsGateway != nil {
+				return s.brokerWebSocket(c)
+			}
+			return pxy(c)
+		}
+
 		// Exec
 		api.POST("/sandboxes/:id/exec", pxy)
 		api.GET("/sandboxes/:id/exec", pxy)
-		api.GET("/sandboxes/:id/exec/:sessionID", pxy)
+		api.GET("/sandboxes/:id/exec/:sessionID", wsHandler)
 		api.POST("/sandboxes/:id/exec/:sessionID/kill", pxy)
 		api.POST("/sandboxes/:id/exec/run", pxy)
 
 		// Agent
 		api.POST("/sandboxes/:id/agent", pxy)
 		api.GET("/sandboxes/:id/agent", pxy)
+		api.GET("/sandboxes/:id/agent/:sid", wsHandler)
 		api.POST("/sandboxes/:id/agent/:sid/prompt", pxy)
 		api.POST("/sandboxes/:id/agent/:sid/interrupt", pxy)
 		api.POST("/sandboxes/:id/agent/:sid/kill", pxy)
@@ -497,7 +522,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 
 		// PTY
 		api.POST("/sandboxes/:id/pty", pxy)
-		api.GET("/sandboxes/:id/pty/:sessionID", pxy)
+		api.GET("/sandboxes/:id/pty/:sessionID", wsHandler)
 		api.POST("/sandboxes/:id/pty/:sessionID/resize", pxy)
 		api.DELETE("/sandboxes/:id/pty/:sessionID", pxy)
 

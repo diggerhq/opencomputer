@@ -268,6 +268,19 @@ async function proxyWebSocket(
   if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
     return json({ error: "expected websocket upgrade" }, 400);
   }
+
+  // Mint the cell-bound cap-token the cell-CP expects in Authorization,
+  // then transparently forward the upgrade to the cell-CP. With the
+  // OPENSANDBOX_WS_BROKER=1 cell-CP path active, the cell-CP's
+  // wsgateway terminates the browser's WS and brokers it against the
+  // worker — redial on upstream close, keepalive, exec-exit suppression,
+  // multi-session per sandbox, etc. live in Go, not here.
+  //
+  // Previously this function did an edge-side WebSocketPair + manual
+  // Blob-aware bridge. That made the cell-CP see the EDGE as the client,
+  // which short-circuited the broker's redial/keepalive — a worker
+  // restart killed the browser's terminal. Replacing the bridge with
+  // a transparent forward puts the broker actually in the middle.
   let token: string;
   try {
     token = await mintCellCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, caller.plan, caller.userID);
@@ -276,130 +289,15 @@ async function proxyWebSocket(
     return new Response("token mint failed", { status: 500 });
   }
   const upstreamURL = cell.base_url.replace(/\/$/, "") + cellPath;
-  console.log(`proxyWebSocket: dialing upstream ${upstreamURL}`);
+  console.log(`proxyWebSocket: forwarding upgrade to ${upstreamURL}`);
 
-  // CF Workers WebSocket fetch: only the Upgrade: websocket header is needed.
-  // Setting Connection: Upgrade can confuse the runtime; omit it. The Worker
-  // returns a Response with a `.webSocket` property on success (status 101).
-  let upstreamResp: Response;
-  try {
-    upstreamResp = await fetch(upstreamURL, {
-      headers: {
-        Upgrade: "websocket",
-        Authorization: "Bearer " + token,
-      },
-    });
-  } catch (e) {
-    console.error(`proxyWebSocket: upstream fetch threw: ${(e as Error).message}`);
-    return new Response(`cell websocket fetch failed: ${(e as Error).message}`, { status: 502 });
-  }
-  console.log(`proxyWebSocket: upstream status=${upstreamResp.status}`);
-  const upstream = (upstreamResp as Response & { webSocket?: WebSocket }).webSocket;
-  if (!upstream) {
-    const errBody = await upstreamResp.text().catch(() => "");
-    console.error(`proxyWebSocket: no webSocket on response; body=${errBody.slice(0, 200)}`);
-    return new Response(
-      `cell websocket connect failed (status ${upstreamResp.status}): ${errBody.slice(0, 200)}`,
-      { status: 502 },
-    );
-  }
-  const pair = new WebSocketPair();
-  const client = pair[0];
-  const server = pair[1];
-
-  // CF Workers delivers binary WebSocket frames as Blob and ignores any
-  // `binaryType = "arraybuffer"` setter on these proxy WebSockets. We have
-  // to detect Blob in the handler and await `.arrayBuffer()` before
-  // forwarding. We also use that ArrayBuffer when calling `.send()` so the
-  // browser (which has `binaryType="arraybuffer"`) decodes the frame to a
-  // plain ArrayBuffer in `event.data`.
-
-  // Diagnostic byte counters. Forward binary + text messages between
-  // upstream (cell) <-> server (browser-facing half of our pair).
-  let upToBrowser = 0;
-  let browserToUp = 0;
-
-  // forward async-awaits Blob → ArrayBuffer (binary) or passes through
-  // strings (text). Sending a Blob directly results in "[object Blob]"
-  // text frame, which xterm renders as nothing. The await-chain ordering
-  // is preserved per-direction by serializing through a single Promise.
-  let upQueue: Promise<unknown> = Promise.resolve();
-  let downQueue: Promise<unknown> = Promise.resolve();
-  const forward = (
-    data: unknown,
-    target: WebSocket,
-    addBytes: (n: number) => void,
-    label: string,
-  ): Promise<void> => {
-    if (typeof data === "string") {
-      addBytes(data.length);
-      try { target.send(data); } catch (err) { console.error(`${label}: send (string) failed: ${(err as Error).message}`); }
-      return Promise.resolve();
-    }
-    if (data instanceof ArrayBuffer) {
-      addBytes(data.byteLength);
-      try { target.send(data); } catch (err) { console.error(`${label}: send (ab) failed: ${(err as Error).message}`); }
-      return Promise.resolve();
-    }
-    if (ArrayBuffer.isView(data)) {
-      const v = data as ArrayBufferView;
-      const ab = new ArrayBuffer(v.byteLength);
-      new Uint8Array(ab).set(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
-      addBytes(ab.byteLength);
-      try { target.send(ab); } catch (err) { console.error(`${label}: send (view) failed: ${(err as Error).message}`); }
-      return Promise.resolve();
-    }
-    if (data && typeof (data as any).arrayBuffer === "function") {
-      return (data as Blob).arrayBuffer().then(
-        (ab) => {
-          addBytes(ab.byteLength);
-          try { target.send(ab); } catch (err) { console.error(`${label}: send (blob) failed: ${(err as Error).message}`); }
-        },
-        (err) => { console.error(`${label}: blob.arrayBuffer failed: ${(err as Error).message}`); },
-      );
-    }
-    console.error(`${label}: unknown data shape: ${typeof data} ${(data as any)?.constructor?.name}`);
-    return Promise.resolve();
-  };
-
-  upstream.addEventListener("message", (e) => {
-    const isFirst = upToBrowser === 0;
-    if (isFirst) {
-      console.log(`proxyWebSocket: up->browser first frame typeof=${typeof e.data} ctor=${(e.data as any)?.constructor?.name}`);
-    }
-    downQueue = downQueue.then(() => forward(e.data, server, (n) => { upToBrowser += n; }, "proxyWebSocket: server.send"));
-  });
-  server.addEventListener("message", (e) => {
-    const isFirst = browserToUp === 0;
-    if (isFirst) {
-      console.log(`proxyWebSocket: browser->up first frame typeof=${typeof e.data} ctor=${(e.data as any)?.constructor?.name}`);
-    }
-    upQueue = upQueue.then(() => forward(e.data, upstream, (n) => { browserToUp += n; }, "proxyWebSocket: upstream.send"));
-  });
-  server.addEventListener("close", (e) => {
-    console.log(`proxyWebSocket: server close code=${e.code} reason=${e.reason} (up->browser=${upToBrowser}, browser->up=${browserToUp})`);
-    try { upstream.close(e.code, e.reason); } catch {}
-  });
-  upstream.addEventListener("close", (e) => {
-    console.log(`proxyWebSocket: upstream close code=${e.code} reason=${e.reason} (up->browser=${upToBrowser}, browser->up=${browserToUp})`);
-    try { server.close(e.code, e.reason); } catch {}
-  });
-  server.addEventListener("error", (e: any) => {
-    console.error(`proxyWebSocket: server error: ${e?.message ?? "unknown"}`);
-    try { upstream.close(1011, "client error"); } catch {}
-  });
-  upstream.addEventListener("error", (e: any) => {
-    console.error(`proxyWebSocket: upstream error: ${e?.message ?? "unknown"}`);
-    try { server.close(1011, "upstream error"); } catch {}
-  });
-
-  // Accept AFTER attaching listeners so we don't miss the first frame.
-  // The worker emits the shell prompt (~27 bytes) within ~0.5ms of upgrade.
-  upstream.accept();
-  server.accept();
-  console.log(`proxyWebSocket: bridge wired up + accepted`);
-
-  return new Response(null, { status: 101, webSocket: client } as any);
+  const fwd = new Request(upstreamURL, req);
+  fwd.headers.set("authorization", "Bearer " + token);
+  // Strip browser cookies — cell-CP authenticates the cap-token, not
+  // dashboard session cookies, and the cookies would only bloat the
+  // upstream request.
+  fwd.headers.delete("cookie");
+  return await fetch(fwd);
 }
 
 // ── identity (/me, /orgs, /org, /org/switch) ─────────────────────────────

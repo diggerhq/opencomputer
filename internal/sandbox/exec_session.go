@@ -10,12 +10,14 @@ import (
 )
 
 // ExecSessionManager manages exec sessions on the host side.
-// Mirrors PTYManager's pattern: supports both Podman (stub) and Firecracker
-// (via createFunc override).
 type ExecSessionManager struct {
 	mu         sync.RWMutex
 	sessions   map[string]*ExecSessionHandle
 	createFunc func(sandboxID string, req types.ExecSessionCreateRequest) (*ExecSessionHandle, error)
+	// rebindFunc binds a NEW gRPC ExecSessionAttach stream to an EXISTING
+	// agent-side session by ID. Used after live migration (or worker restart)
+	// makes the local session map empty while the in-VM session keeps running.
+	rebindFunc func(sandboxID, sessionID string) (*ExecSessionHandle, error)
 }
 
 // ExecSessionHandle holds the state for an exec session on the host side.
@@ -32,6 +34,13 @@ type ExecSessionHandle struct {
 	StdinWriter io.Writer
 
 	OnKill func(signal int) error
+
+	// Cancel terminates the gRPC ExecSessionAttach stream this handle is
+	// driven by, without signaling the in-VM session to exit. Called by
+	// ReleaseForSandbox on the source side of a live migration so the
+	// worker's WS handler unblocks immediately and the edge DO sees an
+	// upstream close (→ redial → destination rebind). Nil-safe.
+	Cancel func()
 }
 
 // NewExecSessionManager creates a stub exec session manager (Podman — not supported).
@@ -41,13 +50,48 @@ func NewExecSessionManager() *ExecSessionManager {
 	}
 }
 
-// NewAgentExecSessionManager creates an exec session manager that delegates to
-// a custom create function (used by Firecracker mode).
-func NewAgentExecSessionManager(createFunc func(sandboxID string, req types.ExecSessionCreateRequest) (*ExecSessionHandle, error)) *ExecSessionManager {
+// NewAgentExecSessionManager creates an exec session manager that delegates
+// session creation to createFunc (gRPC ExecSessionCreate) and recovery to
+// rebindFunc (gRPC ExecSessionAttach against an existing in-VM session).
+// rebindFunc may be nil — RebindFromAgent then always reports "not found".
+func NewAgentExecSessionManager(
+	createFunc func(sandboxID string, req types.ExecSessionCreateRequest) (*ExecSessionHandle, error),
+	rebindFunc func(sandboxID, sessionID string) (*ExecSessionHandle, error),
+) *ExecSessionManager {
 	return &ExecSessionManager{
 		sessions:   make(map[string]*ExecSessionHandle),
 		createFunc: createFunc,
+		rebindFunc: rebindFunc,
 	}
+}
+
+// RebindFromAgent attempts to look up sessionID against the in-VM agent and,
+// if it's still alive, register a fresh local handle that streams through a
+// new ExecSessionAttach. Used after live migration or worker restart wipes
+// the local session map. Returns the registered handle on success, or an
+// error if the agent reports the session is gone.
+func (m *ExecSessionManager) RebindFromAgent(sandboxID, sessionID string) (*ExecSessionHandle, error) {
+	if m.rebindFunc == nil {
+		return nil, fmt.Errorf("exec session %s not found", sessionID)
+	}
+	// Defensive: drop any stale local entry — after a normal migration the
+	// source worker's onMigrationOutgoing hook has already released this
+	// sandbox's sessions, so the map should be empty here. If it isn't, the
+	// fresh handle we install below supersedes the stale one; we don't try
+	// to actively reclaim the old gRPC stream because its context is owned
+	// by a goroutine we don't have a handle to from here.
+	m.mu.Lock()
+	delete(m.sessions, sessionID)
+	m.mu.Unlock()
+
+	handle, err := m.rebindFunc(sandboxID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	m.sessions[handle.ID] = handle
+	m.mu.Unlock()
+	return handle, nil
 }
 
 // CreateSession creates a new exec session.
@@ -139,6 +183,31 @@ func (m *ExecSessionManager) RemoveSessions(sandboxID string) {
 	for id, s := range m.sessions {
 		if s.SandboxID == sandboxID {
 			delete(m.sessions, id)
+		}
+	}
+}
+
+// ReleaseForSandbox drops every local exec session for sandboxID and cancels
+// its gRPC ExecSessionAttach stream so the worker's WS handler — blocked on
+// the scrollback subscription — unblocks via session.Done. Does NOT invoke
+// OnKill (which would tell the in-VM agent to terminate the process); the
+// session is alive on another worker post-migration.
+//
+// Counterpart to PTYManager.ReleaseForSandbox; same role for the source side
+// of a live migration.
+func (m *ExecSessionManager) ReleaseForSandbox(sandboxID string) {
+	m.mu.Lock()
+	var toRelease []*ExecSessionHandle
+	for id, s := range m.sessions {
+		if s.SandboxID == sandboxID {
+			toRelease = append(toRelease, s)
+			delete(m.sessions, id)
+		}
+	}
+	m.mu.Unlock()
+	for _, s := range toRelease {
+		if s.Cancel != nil {
+			s.Cancel()
 		}
 	}
 }

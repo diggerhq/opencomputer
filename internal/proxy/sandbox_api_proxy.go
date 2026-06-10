@@ -123,6 +123,91 @@ func (p *SandboxAPIProxy) SetWaitForReady(fn func(ctx context.Context, sandboxID
 	p.waitForReady = fn
 }
 
+// ResolvedRoute is the output of ResolveWorker: the worker's HTTP base
+// URL, its registered worker ID, and a fresh short-TTL sandbox JWT to
+// hand the worker on this request. Used by callers that need to do
+// their own transport (e.g. the WebSocket broker) but want the same
+// auth + routing logic as the proxy.
+type ResolvedRoute struct {
+	WorkerURL string
+	WorkerID  string
+	Token     string
+}
+
+// ResolveWorker performs the same lookup as ProxyHandler — waits for
+// async creation, rejects migrating, wakes hibernated, returns 404/410
+// equivalents — but instead of forwarding the request, returns the
+// resolved worker URL + token to the caller. Used by the WebSocket
+// broker (internal/wsgateway) which manages its own dialing.
+//
+// Errors are echo HTTP errors with the same status codes ProxyHandler
+// would return, so the caller can `return err` from a route handler and
+// get the right client-facing response.
+func (p *SandboxAPIProxy) ResolveWorker(c echo.Context, sandboxID string) (*ResolvedRoute, error) {
+	if sandboxID == "" {
+		return nil, echo.NewHTTPError(http.StatusBadRequest, "sandbox ID required")
+	}
+	ctx := c.Request().Context()
+
+	if workerURL, workerID, token, ok := p.routeCache.get(sandboxID); ok {
+		return &ResolvedRoute{WorkerURL: workerURL, WorkerID: workerID, Token: token}, nil
+	}
+
+	if p.waitForReady != nil {
+		if err := p.waitForReady(ctx, sandboxID); err != nil {
+			return nil, echo.NewHTTPError(http.StatusBadGateway, fmt.Sprintf("sandbox %s: creation failed: %v", sandboxID, err))
+		}
+	}
+
+	session, err := p.store.GetSandboxSession(ctx, sandboxID)
+	if err != nil {
+		return nil, echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("sandbox %s not found", sandboxID))
+	}
+	if session.Status == "migrating" {
+		return nil, echo.NewHTTPError(http.StatusServiceUnavailable, fmt.Sprintf("sandbox %s is migrating, retry shortly", sandboxID))
+	}
+	if session.Status == "hibernated" {
+		worker, workerURL, err := p.wakeHibernatedSandbox(ctx, sandboxID)
+		if err != nil {
+			return nil, echo.NewHTTPError(http.StatusBadGateway, fmt.Sprintf("sandbox %s: failed to wake: %v", sandboxID, err))
+		}
+		token := p.mintToken(c, sandboxID, worker.ID)
+		p.routeCache.set(sandboxID, workerURL, worker.ID, token)
+		return &ResolvedRoute{WorkerURL: workerURL, WorkerID: worker.ID, Token: token}, nil
+	}
+	if session.Status == "stopped" || session.Status == "error" {
+		return nil, echo.NewHTTPError(http.StatusGone, fmt.Sprintf("sandbox %s has been stopped", sandboxID))
+	}
+
+	worker := p.registry.GetWorker(session.WorkerID)
+	if worker == nil {
+		// Worker disappeared. Same recover-from-hibernation path the proxy uses,
+		// but we don't have a request to forward here so just surface the error.
+		return nil, echo.NewHTTPError(http.StatusBadGateway, fmt.Sprintf("worker %s unavailable", session.WorkerID))
+	}
+	if worker.HTTPAddr == "" {
+		return nil, echo.NewHTTPError(http.StatusBadGateway, fmt.Sprintf("worker %s has no HTTP address", session.WorkerID))
+	}
+	token := p.mintToken(c, sandboxID, session.WorkerID)
+	p.routeCache.set(sandboxID, worker.HTTPAddr, session.WorkerID, token)
+	return &ResolvedRoute{WorkerURL: worker.HTTPAddr, WorkerID: session.WorkerID, Token: token}, nil
+}
+
+// mintToken issues the same 5-minute sandbox JWT the proxy's forward()
+// path uses. Returns empty string if no jwtIssuer is configured (legacy
+// dev mode) — workers then accept anonymous in dev.
+func (p *SandboxAPIProxy) mintToken(c echo.Context, sandboxID, workerID string) string {
+	if p.jwtIssuer == nil {
+		return ""
+	}
+	orgID, _ := auth.GetOrgID(c)
+	t, err := p.jwtIssuer.IssueSandboxToken(orgID, sandboxID, workerID, 5*time.Minute)
+	if err != nil {
+		return ""
+	}
+	return t
+}
+
 // InvalidateRouteCache removes a sandbox from the proxy route cache.
 // Call this on hibernate, kill, or any event that changes the sandbox→worker mapping.
 func (p *SandboxAPIProxy) InvalidateRouteCache(sandboxID string) {

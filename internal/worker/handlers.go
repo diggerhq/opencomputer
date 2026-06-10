@@ -133,7 +133,15 @@ func (s *HTTPServer) execSessionWebSocket(c echo.Context) error {
 
 	session, err := s.execSessionManager.GetSession(sessionID)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		// Local cache miss — possible post-migration first attach. Ask the
+		// agent; if the in-VM session is still alive, register a new local
+		// handle that streams through ExecSessionAttach.
+		rebound, rebindErr := s.execSessionManager.RebindFromAgent(id, sessionID)
+		if rebindErr != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		}
+		session = rebound
+		log.Printf("worker exec: rebound session=%s sandbox=%s from agent", sessionID, id)
 	}
 
 	if session.SandboxID != id {
@@ -228,14 +236,19 @@ func (s *HTTPServer) execSessionWebSocket(c echo.Context) error {
 				}
 			}
 		sendExit:
-			exitMsg := make([]byte, 5)
-			exitMsg[0] = 0x03
-			exitCode := 0
+			// Only emit the 0x03 exit-code marker when the process actually
+			// exited (ExitCode is non-nil — consumeExecOutput only sets it on
+			// an EXIT message from the agent). When the goroutine was canceled
+			// for other reasons (e.g. source-side ReleaseForSandbox during
+			// live migration), ExitCode stays nil and emitting a fake 0x03
+			// would be misread by the edge DO as "exec completed" → close
+			// client instead of redialing.
 			if session.ExitCode != nil {
-				exitCode = *session.ExitCode
+				exitMsg := make([]byte, 5)
+				exitMsg[0] = 0x03
+				binary.BigEndian.PutUint32(exitMsg[1:], uint32(int32(*session.ExitCode)))
+				_ = ws.WriteMessage(websocket.BinaryMessage, exitMsg)
 			}
-			binary.BigEndian.PutUint32(exitMsg[1:], uint32(int32(exitCode)))
-			_ = ws.WriteMessage(websocket.BinaryMessage, exitMsg)
 
 			ws.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
@@ -549,8 +562,16 @@ func (s *HTTPServer) ptyWebSocket(c echo.Context) error {
 
 	session, err := s.ptyManager.GetSession(sessionID)
 	if err != nil {
-		log.Printf("worker PTY: GetSession(%s) failed: %v", sessionID, err)
-		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		// Local cache miss — try a lazy rebind against the agent. If the
+		// in-VM PTY is still alive (the common case after live migration or
+		// worker process restart), register a new local handle and continue.
+		rebound, rebindErr := s.ptyManager.RebindFromAgent(id, sessionID)
+		if rebindErr != nil {
+			log.Printf("worker PTY: GetSession(%s) miss, rebind also failed: get=%v rebind=%v", sessionID, err, rebindErr)
+			return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		}
+		session = rebound
+		log.Printf("worker PTY: rebound session=%s sandbox=%s from agent", sessionID, id)
 	}
 
 	if session.SandboxID != id {
