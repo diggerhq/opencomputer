@@ -106,23 +106,11 @@ image = (
 ### `image.builder_memory(mb)`
 
 Sets the RAM (in MB) used during the build phase. Raise this when a build OOMs
-(heavy `apt`/`pip`). Does **not** pin the output image — the build is re-snapshotted
-at the runtime floor. Defaults to a generous build-phase size.
+(heavy `apt`/`pip`/`npm`). Defaults to **4096**. Does **not** affect the resulting
+sandbox's memory — size that at create time via `memory_mb`.
 
 <ParamField body="mb" type="int" required>
   Build-phase memory in MB
-</ParamField>
-
-**Returns:** `Image`
-
-### `image.runtime_memory(mb)`
-
-Sets the memory floor (in MB) of the resulting image. Forks can't run below this
-but can scale up. Defaults to 1024. Raise only for images whose services
-auto-start heavy at boot.
-
-<ParamField body="mb" type="int" required>
-  Memory floor in MB
 </ParamField>
 
 **Returns:** `Image`

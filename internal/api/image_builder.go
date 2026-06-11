@@ -27,25 +27,27 @@ type ImageManifest struct {
 	// BuilderMemoryMB is the RAM given to the build VM while it runs the steps
 	// (apt/pip can be memory-hungry; the old 1 GB default OOM'd large builds).
 	// It does NOT pin the output: the finalize pass re-snapshots at
-	// RuntimeMemoryMB. Default defaultBuilderMemoryMB.
+	// RuntimeMemoryMB. Default defaultBuilderMemoryMB. Exposed in the SDKs as
+	// .builderMemory().
 	BuilderMemoryMB int `json:"builderMemoryMB,omitempty"`
 
 	// RuntimeMemoryMB is the memory floor of the OUTPUT image — the RAM the
-	// finalize VM is cold-booted + savevm'd at. Forks of this image can't run
-	// below it (a warm savevm can't shrink past its running size) but can hotplug
-	// up. Default defaultRuntimeMemoryMB (= today's behavior). Raise it only for
-	// images whose services auto-start heavy at boot.
+	// finalize VM is cold-booted + savevm'd at. Forks can't run below it (a warm
+	// savevm can't shrink past its running size) but can hotplug up. Defaults to
+	// defaultRuntimeMemoryMB (1 GB); callers size the actual sandbox at create
+	// time via memoryMB. NOT exposed in the SDKs — an advanced/raw-manifest knob
+	// for images whose services auto-start heavy at boot.
 	RuntimeMemoryMB int `json:"runtimeMemoryMB,omitempty"`
 }
 
 const (
-	// defaultBuilderMemoryMB is the build-phase RAM. Generous so common
+	// defaultBuilderMemoryMB is the build-phase RAM. Enough that common
 	// apt/pip/npm builds don't OOM; safe because it never pins the output (see
 	// the finalize pass in buildImage).
-	defaultBuilderMemoryMB = 8192
+	defaultBuilderMemoryMB = 4096
 
-	// defaultRuntimeMemoryMB is the output image's memory floor. Kept at the
-	// historical 1 GB so existing fork behavior is unchanged.
+	// defaultRuntimeMemoryMB is the output image's memory floor — the historical
+	// 1 GB, so every image forks down to 1 GB and scales up on demand.
 	defaultRuntimeMemoryMB = 1024
 )
 

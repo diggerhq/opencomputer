@@ -10,13 +10,10 @@ export interface ImageStep {
 export interface ImageManifest {
   base: string;
   steps: ImageStep[];
-  /** RAM (MB) for the build phase (apt/pip). Omit for the server default
-   * (generous). Does NOT pin the output — the server re-snapshots at the floor. */
+  /** RAM (MB) for the build phase (apt/pip). Omit for the server default. Does
+   * NOT pin the output — the server re-snapshots at the default 1 GB floor, and
+   * you size the actual sandbox at create time via memoryMB. */
   builderMemoryMB?: number;
-  /** Memory floor (MB) of the output image. Omit for the server default (1 GB).
-   * Forks can't run below it but can scale up. Raise only for images with heavy
-   * boot-time services. */
-  runtimeMemoryMB?: number;
 }
 
 /**
@@ -138,18 +135,11 @@ export class Image {
 
   /**
    * Set the RAM (MB) for the build phase. Use this when a build OOMs at the
-   * default (e.g. heavy `apt`/`pip`). Does not affect the output image's floor.
+   * default 4 GB (e.g. heavy `apt`/`pip`/`npm`). Does not affect the resulting
+   * image's memory — size the sandbox at create time via `memoryMB`.
    */
   builderMemory(mb: number): Image {
     return new Image({ ...this.manifest, builderMemoryMB: mb });
-  }
-
-  /**
-   * Set the memory floor (MB) of the resulting image. Forks can't run below it.
-   * Defaults to 1 GB; raise only for images whose services auto-start heavy.
-   */
-  runtimeMemory(mb: number): Image {
-    return new Image({ ...this.manifest, runtimeMemoryMB: mb });
   }
 
   /**

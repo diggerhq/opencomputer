@@ -47,12 +47,10 @@ class Image:
 
     _base: str = "base"
     _steps: tuple[ImageStep, ...] = field(default_factory=tuple)
-    # RAM for the build phase (apt/pip). 0 = server default (generous). Does not
-    # pin the output image — the server re-snapshots at the runtime floor.
+    # RAM for the build phase (apt/pip). 0 = server default. Does not pin the
+    # output image — the server re-snapshots at the default 1 GB floor, and you
+    # size the actual sandbox at create time via memory_mb.
     _builder_memory_mb: int = 0
-    # Memory floor of the OUTPUT image. 0 = server default (1 GB). Forks can't run
-    # below this but can scale up. Raise only for images with heavy boot services.
-    _runtime_memory_mb: int = 0
 
     @classmethod
     def base(cls) -> Image:
@@ -163,13 +161,9 @@ class Image:
 
     def builder_memory(self, mb: int) -> Image:
         """Set the RAM (MB) for the build phase. Use this when a build OOMs at the
-        default (e.g. heavy ``apt``/``pip``). Does not affect the output's floor."""
+        default 4 GB (e.g. heavy ``apt``/``pip``/``npm``). Does not affect the
+        resulting image's memory — size the sandbox at create time via ``memory_mb``."""
         return replace(self, _builder_memory_mb=mb)
-
-    def runtime_memory(self, mb: int) -> Image:
-        """Set the memory floor (MB) of the resulting image. Forks can't run below
-        it. Defaults to 1 GB; raise only for images whose services auto-start heavy."""
-        return replace(self, _runtime_memory_mb=mb)
 
     def to_dict(self) -> dict[str, Any]:
         """Returns the manifest as a plain dict (for JSON serialization)."""
@@ -179,8 +173,6 @@ class Image:
         }
         if self._builder_memory_mb > 0:
             d["builderMemoryMB"] = self._builder_memory_mb
-        if self._runtime_memory_mb > 0:
-            d["runtimeMemoryMB"] = self._runtime_memory_mb
         return d
 
     def cache_key(self) -> str:
