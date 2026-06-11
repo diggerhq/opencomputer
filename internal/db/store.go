@@ -1015,8 +1015,13 @@ func (s *Store) RecoverStaleMigrations(ctx context.Context, maxAge time.Duration
 // loop's PG sweep would never reach D1 sandboxes_index, which is exactly
 // the post-cutover ghost-row bug.
 func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[string]bool) ([]OrphanedSandbox, error) {
+	// Include 'pending' as well as 'running': a sandbox whose create never
+	// reached running (stuck pending) on a worker that then disappeared used to
+	// slip through here — its scale_event stayed open and billed forever (the
+	// orphaned-pending leak). 'pending' on a *live* worker is left alone (it may
+	// still be mid-create); only pending rows on a dead worker are reaped.
 	rows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT worker_id FROM sandbox_sessions WHERE status = 'running'`)
+		`SELECT DISTINCT worker_id FROM sandbox_sessions WHERE status IN ('running', 'pending')`)
 	if err != nil {
 		return nil, err
 	}
@@ -1044,7 +1049,7 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 		}
 		upd, err := tx.Query(ctx,
 			`UPDATE sandbox_sessions SET status = 'error', error_msg = 'worker lost', stopped_at = now()
-			 WHERE worker_id = $1 AND status = 'running'
+			 WHERE worker_id = $1 AND status IN ('running', 'pending')
 			 RETURNING sandbox_id, org_id, worker_id`, workerID)
 		if err != nil {
 			tx.Rollback(ctx)
@@ -1075,6 +1080,52 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 		orphans = append(orphans, batchOrphans...)
 	}
 	return orphans, nil
+}
+
+// ReapStalePendingSessions terminates sandbox sessions stuck in 'pending' past
+// olderThan, closing their open scale_events. This is the backstop for the
+// orphaned-pending billing leak that MarkOrphanedSandboxes can't catch: a create
+// that hangs in 'pending' on a worker that is STILL alive (so it's never an
+// orphan) — without this it bills 1 GB forever. Returns the reaped rows so the
+// caller can publish 'stopped' to the edge. Marked 'failed' (the create never
+// succeeded) rather than 'error'; both are terminal and stop billing.
+func (s *Store) ReapStalePendingSessions(ctx context.Context, olderThan time.Duration) ([]OrphanedSandbox, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	upd, err := tx.Query(ctx,
+		`UPDATE sandbox_sessions SET status = 'failed', error_msg = 'stale_pending', stopped_at = now()
+		 WHERE status = 'pending' AND started_at < now() - $1::interval
+		 RETURNING sandbox_id, org_id, worker_id`,
+		fmt.Sprintf("%d seconds", int(olderThan.Seconds())))
+	if err != nil {
+		return nil, fmt.Errorf("reap stale pending: %w", err)
+	}
+	var reaped []OrphanedSandbox
+	for upd.Next() {
+		var o OrphanedSandbox
+		if err := upd.Scan(&o.SandboxID, &o.OrgID, &o.WorkerID); err == nil {
+			reaped = append(reaped, o)
+		}
+	}
+	upd.Close()
+	if len(reaped) == 0 {
+		return nil, tx.Commit(ctx)
+	}
+	ids := make([]string, len(reaped))
+	for i, o := range reaped {
+		ids[i] = o.SandboxID
+	}
+	if err := closeOpenScaleEventsForSandboxes(ctx, tx, ids); err != nil {
+		return nil, fmt.Errorf("reap stale pending: close scale events: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return reaped, nil
 }
 
 func (s *Store) GetSandboxSession(ctx context.Context, sandboxID string) (*SandboxSession, error) {

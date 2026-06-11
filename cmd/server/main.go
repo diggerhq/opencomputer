@@ -585,6 +585,21 @@ func main() {
 					log.Printf("maintenance: reverted %d stale migrations", recovered)
 				}
 
+				// Stale-pending reaper: a create stuck in 'pending' past the
+				// threshold (even on a still-live worker, which MarkOrphanedSandboxes
+				// below can't catch) is closed → 'failed', ending the open
+				// scale_event that would otherwise bill 1 GB forever. Publishes
+				// 'stopped' to the edge so D1 / usage_samples stop too.
+				if stale, err := opts.Store.ReapStalePendingSessions(ctx, 15*time.Minute); err != nil {
+					log.Printf("maintenance: stale-pending reap error: %v", err)
+					observability.CaptureError(err, "area", "maintenance", "op", "reap_stale_pending")
+				} else if len(stale) > 0 {
+					log.Printf("maintenance: reaped %d stale-pending sandboxes (failed → billing closed)", len(stale))
+					if redisRegistry.RedisClient() != nil && cfg.CellID != "" {
+						publishStoppedFromMaintenance(ctx, redisRegistry.RedisClient(), cfg.CellID, stale)
+					}
+				}
+
 				// DB/worker reconciliation: mark sandboxes on dead workers as error
 				liveWorkers := make(map[string]bool)
 				for _, w := range redisRegistry.GetAllWorkers() {

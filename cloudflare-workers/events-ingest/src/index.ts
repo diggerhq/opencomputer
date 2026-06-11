@@ -375,8 +375,37 @@ export default {
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
        ON CONFLICT(id) DO NOTHING`,
     );
+    // Worker-validation guard. Drop a usage_tick if the emitting worker is NOT
+    // the sandbox's current owner in sandboxes_index, or the sandbox is already
+    // terminal there. This stops a zombie / migration-source / deregistered
+    // worker from billing a sandbox it no longer owns — the leak that silently
+    // 3×'d an org's edge usage when a stuck `-incoming` migration shell kept
+    // ticking after the sandbox had moved away. The cell never had this bug
+    // (scale_events are per-sandbox), but the edge inserted every tick blindly.
+    // Lookup failure → allow (degraded, no worse than before). A sandbox with no
+    // index row yet (create race) is allowed.
+    const tickSandboxIds = [
+      ...new Set(fresh.filter((e) => e.type === "usage_tick" && e.sandbox_id).map((e) => e.sandbox_id as string)),
+    ];
+    const owners = await resolveSandboxOwners(env, tickSandboxIds);
+    const TERMINAL_STATUSES = new Set(["stopped", "terminated", "failed", "error"]);
+    let droppedZombieTicks = 0;
+    const tickFromCurrentWorker = (e: SandboxEventEnvelope): boolean => {
+      if (!owners.ok) return true;
+      const row = e.sandbox_id ? owners.byId.get(e.sandbox_id) : undefined;
+      if (!row) return true; // no index row yet — don't drop a legit fresh create
+      if (TERMINAL_STATUSES.has(row.status)) {
+        droppedZombieTicks++;
+        return false;
+      }
+      if (row.worker_id && e.worker_id && row.worker_id !== e.worker_id) {
+        droppedZombieTicks++;
+        return false;
+      }
+      return true;
+    };
     const usageSampleBatches = fresh
-      .filter((e) => e.type === "usage_tick" && planFor(e) === "pro" && e.org_id && e.sandbox_id)
+      .filter((e) => e.type === "usage_tick" && planFor(e) === "pro" && e.org_id && e.sandbox_id && tickFromCurrentWorker(e))
       .map((e) => {
         const p = (e.payload ?? {}) as {
           memory_mb?: number;
@@ -394,6 +423,10 @@ export default {
           e.cell_id,
         );
       });
+
+    if (droppedZombieTicks > 0) {
+      console.warn(`events-ingest: dropped ${droppedZombieTicks} usage_tick(s) from non-owner/terminal sandboxes (zombie-tick guard)`);
+    }
 
     try {
       await env.OPENCOMPUTER_DB.batch([...batches, ...capacityBatches, ...lifecycleBatches, ...checkpointBatches, ...imageBatches, ...usageSampleBatches]);
@@ -471,6 +504,34 @@ async function fanoutDebits(env: Env, events: SandboxEventEnvelope[]): Promise<v
 // lookup fails, signalling callers to fall back to the envelope plan rather
 // than dropping billing entirely. Orgs absent from D1 (new-org race) are simply
 // missing from the map → treated as unknown plan → skipped, the safe default.
+// resolveSandboxOwners fetches each sandbox's current worker_id + status from
+// the D1 sandboxes_index, so the usage-tick guard can reject ticks from a worker
+// that no longer owns the sandbox (migration source / zombie) or for a sandbox
+// that's already terminal. Lookup failure returns ok:false so the caller allows
+// the ticks (degraded, never blocks billing on a transient D1 error).
+async function resolveSandboxOwners(
+  env: Env,
+  sandboxIds: string[],
+): Promise<{ ok: boolean; byId: Map<string, { worker_id: string; status: string }> }> {
+  const byId = new Map<string, { worker_id: string; status: string }>();
+  if (sandboxIds.length === 0) return { ok: true, byId };
+  const placeholders = sandboxIds.map((_, i) => `?${i + 1}`).join(",");
+  try {
+    const res = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT id, worker_id, status FROM sandboxes_index WHERE id IN (${placeholders})`,
+    )
+      .bind(...sandboxIds)
+      .all<{ id: string; worker_id: string | null; status: string | null }>();
+    for (const r of res.results ?? []) {
+      byId.set(r.id, { worker_id: r.worker_id ?? "", status: r.status ?? "" });
+    }
+    return { ok: true, byId };
+  } catch (err) {
+    console.error("events-ingest: sandbox owner lookup failed — allowing ticks", err);
+    return { ok: false, byId };
+  }
+}
+
 async function resolvePlans(
   env: Env,
   orgIds: string[],
