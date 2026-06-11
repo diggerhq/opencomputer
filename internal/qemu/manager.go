@@ -242,6 +242,12 @@ type VMInstance struct {
 	baseMemoryMB         int           // initial memory passed to -m (before virtio-mem)
 	virtioMemRequestedMB int           // additional memory via virtio-mem (beyond base)
 	goldenVersion        string        // golden version this sandbox was created from (empty if cold-booted)
+	// Set when this VM is started as a migration receiver (paused, -incoming) and
+	// cleared once CompleteIncomingMigration resumes it. While set, the VM is a
+	// not-yet-completed receiver: it's alive (so it passes vmAlive and would be
+	// ticked) but doesn't represent a running sandbox here. The stale-incoming
+	// reaper destroys any whose migration never completes within the timeout.
+	incomingMigrationAt time.Time
 }
 
 // SandboxMeta is persisted to sandbox-meta.json for recovery after hard kills.

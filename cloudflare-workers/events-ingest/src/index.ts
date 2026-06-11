@@ -375,15 +375,15 @@ export default {
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
        ON CONFLICT(id) DO NOTHING`,
     );
-    // Worker-validation guard. Drop a usage_tick if the emitting worker is NOT
-    // the sandbox's current owner in sandboxes_index, or the sandbox is already
-    // terminal there. This stops a zombie / migration-source / deregistered
-    // worker from billing a sandbox it no longer owns — the leak that silently
-    // 3×'d an org's edge usage when a stuck `-incoming` migration shell kept
-    // ticking after the sandbox had moved away. The cell never had this bug
-    // (scale_events are per-sandbox), but the edge inserted every tick blindly.
-    // Lookup failure → allow (degraded, no worse than before). A sandbox with no
-    // index row yet (create race) is allowed.
+    // Worker-validation guard. Edge usage is counted per-tick (one usage_sample
+    // per emitted tick), so a worker that is no longer the sandbox's owner — a
+    // migration source, a deregistered worker, or an abandoned `-incoming`
+    // receiver — must not contribute usage. Drop a usage_tick when the emitting
+    // worker is not the sandbox's current owner in sandboxes_index, or the
+    // sandbox is already terminal there. (The cell side needs no equivalent: its
+    // scale_events are keyed per-sandbox, not per-tick.) Lookup failure → allow
+    // (degraded, never blocks billing). A sandbox with no index row yet (create
+    // race) is allowed.
     const tickSandboxIds = [
       ...new Set(fresh.filter((e) => e.type === "usage_tick" && e.sandbox_id).map((e) => e.sandbox_id as string)),
     ];

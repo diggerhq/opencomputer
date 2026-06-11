@@ -284,7 +284,7 @@ func (mc *MigrationCoordinator) LiveMigrate(ctx context.Context, sandboxID, inco
 	// Set migration parameters for fast cutover
 	_ = vm.qmp.Execute("migrate-set-parameters", map[string]interface{}{
 		"max-bandwidth":  int64(1024 * 1024 * 1024), // 1 GB/s
-		"downtime-limit": int64(100),                 // 100ms max downtime
+		"downtime-limit": int64(100),                // 100ms max downtime
 	})
 
 	// Start live migration
@@ -470,12 +470,16 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
-		if devNull != nil { devNull.Close() }
+		if devNull != nil {
+			devNull.Close()
+		}
 		m.cleanupVM(netCfg, sandboxDir)
 		return "", 0, fmt.Errorf("start qemu: %w", err)
 	}
 	logFile.Close()
-	if devNull != nil { devNull.Close() }
+	if devNull != nil {
+		devNull.Close()
+	}
 	log.Printf("qemu: migration-prepare %s: QEMU started (pid=%d), waiting for QMP", sandboxID, cmd.Process.Pid)
 
 	// Connect QMP — allow up to 60s for large-memory VMs (virtio-mem init takes time)
@@ -524,6 +528,11 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
 		goldenVersion: m.GoldenVersion(),
+		// Marks this as an in-flight migration receiver until CompleteIncoming-
+		// Migration clears it. The reaper uses this to tear down receivers whose
+		// migration is abandoned (never completed), which otherwise stay alive
+		// and get ticked despite never becoming a running sandbox here.
+		incomingMigrationAt: time.Now(),
 	}
 
 	m.mu.Lock()
@@ -621,6 +630,13 @@ func (m *Manager) CompleteIncomingMigration(ctx context.Context, sandboxID strin
 	if m.onSandboxReady != nil {
 		m.onSandboxReady(sandboxID, vm.network.GuestIP, vm.Template, vm.StartedAt)
 	}
+
+	// Migration completed and the VM is resumed + agent-connected: it's now a
+	// normal running sandbox, so clear the receiver marker (the reaper must not
+	// touch it). Under the lock to pair with the reaper's read.
+	m.mu.Lock()
+	vm.incomingMigrationAt = time.Time{}
+	m.mu.Unlock()
 
 	log.Printf("qemu: incoming migration %s complete (port=%d, tap=%s)",
 		sandboxID, vm.HostPort, vm.network.TAPName)

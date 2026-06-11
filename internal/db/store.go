@@ -52,7 +52,10 @@ type TerminalHook func(sandboxID string, orgID uuid.UUID, status, reason string)
 // terminal status without classifying it here is the easy regression.
 func isTerminalSessionStatus(status string) bool {
 	switch status {
-	case "stopped", "error", "failed":
+	// `terminated` is a legacy status no current path writes, but classify it as
+	// terminal anyway: it keeps the cell consistent with the edge guard (which
+	// treats it as terminal) and ensures any future writer stops billing.
+	case "stopped", "error", "failed", "terminated":
 		return true
 	default:
 		return false
@@ -1015,11 +1018,11 @@ func (s *Store) RecoverStaleMigrations(ctx context.Context, maxAge time.Duration
 // loop's PG sweep would never reach D1 sandboxes_index, which is exactly
 // the post-cutover ghost-row bug.
 func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[string]bool) ([]OrphanedSandbox, error) {
-	// Include 'pending' as well as 'running': a sandbox whose create never
-	// reached running (stuck pending) on a worker that then disappeared used to
-	// slip through here — its scale_event stayed open and billed forever (the
-	// orphaned-pending leak). 'pending' on a *live* worker is left alone (it may
-	// still be mid-create); only pending rows on a dead worker are reaped.
+	// Include 'pending' as well as 'running': a create that never reached
+	// running (still 'pending') on a worker that has since disappeared must also
+	// be closed, since its scale_event is open and would keep billing. 'pending'
+	// on a *live* worker is left alone (it may still be mid-create); only pending
+	// rows on a dead worker are reaped.
 	rows, err := s.pool.Query(ctx,
 		`SELECT DISTINCT worker_id FROM sandbox_sessions WHERE status IN ('running', 'pending')`)
 	if err != nil {
@@ -1083,12 +1086,12 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 }
 
 // ReapStalePendingSessions terminates sandbox sessions stuck in 'pending' past
-// olderThan, closing their open scale_events. This is the backstop for the
-// orphaned-pending billing leak that MarkOrphanedSandboxes can't catch: a create
-// that hangs in 'pending' on a worker that is STILL alive (so it's never an
-// orphan) — without this it bills 1 GB forever. Returns the reaped rows so the
-// caller can publish 'stopped' to the edge. Marked 'failed' (the create never
-// succeeded) rather than 'error'; both are terminal and stop billing.
+// olderThan, closing their open scale_events. It complements MarkOrphanedSandboxes,
+// which only reaps sandboxes on dead workers: a create that hangs in 'pending' on
+// a worker that is STILL alive is never an orphan, so its open scale_event needs
+// this age-based backstop to stop billing. Returns the reaped rows so the caller
+// can publish 'stopped' to the edge. Marked 'failed' (the create never
+// succeeded), which is terminal and closes billing.
 func (s *Store) ReapStalePendingSessions(ctx context.Context, olderThan time.Duration) ([]OrphanedSandbox, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

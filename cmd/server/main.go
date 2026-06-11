@@ -587,9 +587,9 @@ func main() {
 
 				// Stale-pending reaper: a create stuck in 'pending' past the
 				// threshold (even on a still-live worker, which MarkOrphanedSandboxes
-				// below can't catch) is closed → 'failed', ending the open
-				// scale_event that would otherwise bill 1 GB forever. Publishes
-				// 'stopped' to the edge so D1 / usage_samples stop too.
+				// below does not cover) is closed → 'failed', ending the open
+				// scale_event that would otherwise keep billing. Publishes 'stopped'
+				// to the edge so D1 / usage_samples stop too.
 				if stale, err := opts.Store.ReapStalePendingSessions(ctx, 15*time.Minute); err != nil {
 					log.Printf("maintenance: stale-pending reap error: %v", err)
 					observability.CaptureError(err, "area", "maintenance", "op", "reap_stale_pending")
@@ -620,6 +620,28 @@ func main() {
 					if redisRegistry.RedisClient() != nil && cfg.CellID != "" {
 						publishStoppedFromMaintenance(ctx, redisRegistry.RedisClient(), cfg.CellID, orphans)
 					}
+				}
+			}
+		})
+	}
+
+	// Periodic reverse-reconcile. The rejoin-triggered ReconcileRunningOnWorker
+	// only fires when a worker reconnects; a worker that is deleted and never
+	// rejoins would leave its sandboxes 'running' (cell + edge sandboxes_index)
+	// with no event ever correcting them. Sweep every live worker every few
+	// minutes and close any sandbox the cell thinks is running that the worker no
+	// longer actually has (confirmed via the worker's ListSandboxes RPC, which
+	// publishes 'stopped' to the edge). This keeps the edge index — the post-
+	// cutover billing authority — accurate even when no 'stopped' event fired.
+	if opts.Store != nil && redisRegistry != nil {
+		observability.Go("periodic-running-reconcile", func() {
+			ticker := time.NewTicker(3 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				for _, w := range redisRegistry.GetAllWorkers() {
+					rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					controlplane.ReconcileRunningOnWorker(rctx, redisRegistry, opts.Store, cfg.CellID, w.ID)
+					cancel()
 				}
 			}
 		})

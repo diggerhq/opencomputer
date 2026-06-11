@@ -9,7 +9,7 @@ import "testing"
 // "killed") without listing it here is the easy regression that would silently
 // leave it billing on the edge.
 func TestIsTerminalSessionStatus(t *testing.T) {
-	terminal := []string{"stopped", "error", "failed"}
+	terminal := []string{"stopped", "error", "failed", "terminated"}
 	notTerminal := []string{"running", "pending", "migrating", "hibernated", "woke", "", "unknown"}
 
 	for _, s := range terminal {

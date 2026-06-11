@@ -37,9 +37,9 @@ const reaperInterval = 30 * time.Second
 // and the ghost-reaper can't drain the m.vms entry.
 //
 // Three checks in order:
-//   1. ProcessState — if cmd.Wait() returned, definitively dead.
-//   2. /proc/<pid>/stat — if state is Z (zombie) or X (dying), treat as dead.
-//   3. Signal(0) — fallback liveness probe; ESRCH means PID gone.
+//  1. ProcessState — if cmd.Wait() returned, definitively dead.
+//  2. /proc/<pid>/stat — if state is Z (zombie) or X (dying), treat as dead.
+//  3. Signal(0) — fallback liveness probe; ESRCH means PID gone.
 //
 // Returns false for: nil cmd, nil cmd.Process, reaped process, zombie, or
 // "no such process".
@@ -138,6 +138,37 @@ func (m *Manager) runGhostReaper() {
 			return
 		case <-t.C:
 			m.reapDeadVMs(context.Background())
+			m.reapStaleIncomingMigrations(context.Background())
+		}
+	}
+}
+
+// staleIncomingTimeout bounds how long a migration receiver may sit paused
+// (-incoming) before the reaper tears it down. A live migration loads in
+// seconds-to-minutes; anything still un-resumed past this never received its
+// source and is abandoned. Generous so a slow-but-real load is never killed.
+const staleIncomingTimeout = 10 * time.Minute
+
+// reapStaleIncomingMigrations destroys migration receivers whose migration never
+// completed. Such a receiver is a paused QEMU that passes vmAlive (the process
+// is up) but is not a running sandbox on this worker, so without this it would
+// be ticked indefinitely. The control-plane aborts receivers on an explicit
+// migration failure; this covers the abandoned case where no abort ever fires.
+// Identify under the lock (cheap timestamp check), tear down outside it.
+func (m *Manager) reapStaleIncomingMigrations(ctx context.Context) {
+	now := time.Now()
+	m.mu.Lock()
+	var stale []string
+	for id, vm := range m.vms {
+		if !vm.incomingMigrationAt.IsZero() && now.Sub(vm.incomingMigrationAt) > staleIncomingTimeout {
+			stale = append(stale, id)
+		}
+	}
+	m.mu.Unlock()
+	for _, id := range stale {
+		log.Printf("qemu: stale-incoming-reaper: destroying %s — migration receiver never resumed within %s", id, staleIncomingTimeout)
+		if err := m.Kill(ctx, id); err != nil {
+			log.Printf("qemu: stale-incoming-reaper: Kill %s failed: %v", id, err)
 		}
 	}
 }
