@@ -90,6 +90,39 @@ When you pass an `image` to `Sandbox.create()`, the server:
 2. If cached, creates the sandbox from the existing checkpoint instantly
 3. If not cached, boots a build sandbox, executes each step, checkpoints the result, then creates your sandbox from it
 
+### Build memory
+
+Images build in a **4 GB** sandbox by default. If a build runs out of memory (heavy `apt`/`pip`/`npm`, compiling a large toolchain), raise the build-phase RAM with **`.builderMemory(mb)` / `.builder_memory(mb)`**.
+
+This only affects the build. The resulting image is unchanged — you size the actual sandbox when you create it, via `memoryMB`:
+
+<CodeGroup>
+
+```typescript TypeScript
+// 8 GB to build…
+const image = Image.base()
+  .aptInstall(['build-essential', 'cmake'])
+  .runCommands('make -j')
+  .builderMemory(8192);
+
+// …but the sandbox runs at whatever you ask for
+const sandbox = await Sandbox.create({ image, memoryMB: 4096 });
+```
+
+```python Python
+image = (
+    Image.base()
+    .apt_install(["build-essential", "cmake"])
+    .run_commands("make -j")
+    .builder_memory(8192)
+)
+sandbox = await Sandbox.create(image=image)  # size via the HTTP API's memoryMB
+```
+
+</CodeGroup>
+
+`builderMemory` doesn't change the cache key — it's a build resource, not image content.
+
 ## Creating pre-built snapshots
 
 Create named snapshots that persist permanently and can be shared across sandboxes. Snapshots are visible in the dashboard and don't need to be rebuilt.
@@ -285,6 +318,7 @@ The `Image` class provides a fluent, immutable API for defining sandbox environm
 | `.addFile(path, content)` / `.add_file(path, content)` | Embed a file with inline content |
 | `.addLocalFile(local, remote)` / `.add_local_file(local, remote)` | Read a local file into the image |
 | `.addLocalDir(local, remote)` / `.add_local_dir(local, remote)` | Read a local directory into the image |
+| `.builderMemory(mb)` / `.builder_memory(mb)` | RAM for the build phase (default 4 GB; doesn't affect the resulting sandbox) |
 | `.toJSON()` / `.to_dict()` | Return the image manifest |
 | `.cacheKey()` / `.cache_key()` | Compute SHA-256 content hash |
 

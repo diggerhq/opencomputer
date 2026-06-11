@@ -115,6 +115,18 @@ const image = Image.base()
 
 **Returns:** `Image`
 
+### `image.builderMemory(mb)`
+
+Sets the RAM (MB) used during the build phase. Raise this when a build OOMs
+(heavy `apt`/`pip`/`npm`). Defaults to **4096**. Does **not** affect the resulting
+sandbox's memory — size that at create time via `memoryMB`.
+
+<ParamField body="mb" type="number" required>
+  Build-phase memory in MB
+</ParamField>
+
+**Returns:** `Image`
+
 ---
 
 ## Utility Methods
