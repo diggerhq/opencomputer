@@ -23,7 +23,33 @@ type ImageManifest struct {
 	Base  string      `json:"base"`
 	Steps []ImageStep `json:"steps"`
 	Name  string      `json:"name,omitempty"` // optional — makes image addressable as a snapshot (for patches, etc.)
+
+	// BuilderMemoryMB is the RAM given to the build VM while it runs the steps
+	// (apt/pip can be memory-hungry; the old 1 GB default OOM'd large builds).
+	// It does NOT pin the output: the finalize pass re-snapshots at
+	// RuntimeMemoryMB. Default defaultBuilderMemoryMB. Exposed in the SDKs as
+	// .builderMemory().
+	BuilderMemoryMB int `json:"builderMemoryMB,omitempty"`
+
+	// RuntimeMemoryMB is the memory floor of the OUTPUT image — the RAM the
+	// finalize VM is cold-booted + savevm'd at. Forks can't run below it (a warm
+	// savevm can't shrink past its running size) but can hotplug up. Defaults to
+	// defaultRuntimeMemoryMB (1 GB); callers size the actual sandbox at create
+	// time via memoryMB. NOT exposed in the SDKs — an advanced/raw-manifest knob
+	// for images whose services auto-start heavy at boot.
+	RuntimeMemoryMB int `json:"runtimeMemoryMB,omitempty"`
 }
+
+const (
+	// defaultBuilderMemoryMB is the build-phase RAM. Enough that common
+	// apt/pip/npm builds don't OOM; safe because it never pins the output (see
+	// the finalize pass in buildImage).
+	defaultBuilderMemoryMB = 4096
+
+	// defaultRuntimeMemoryMB is the output image's memory floor — the historical
+	// 1 GB, so every image forks down to 1 GB and scales up on demand.
+	defaultRuntimeMemoryMB = 1024
+)
 
 // ImageStep is a single build step in an image manifest.
 type ImageStep struct {
@@ -380,15 +406,36 @@ func (s *Server) buildImage(ctx context.Context, orgID uuid.UUID, manifest *Imag
 		base = "base"
 	}
 
+	// Build-phase RAM (apt/pip), and the output image's memory floor. Both
+	// settable per-manifest; defaults preserve "builds get headroom, floor stays
+	// at the historical 1 GB" (the finalize pass below re-snapshots at the floor).
+	builderMem := manifest.BuilderMemoryMB
+	if builderMem <= 0 {
+		builderMem = defaultBuilderMemoryMB
+	}
+	runtimeMem := manifest.RuntimeMemoryMB
+	if runtimeMem <= 0 {
+		runtimeMem = defaultRuntimeMemoryMB
+	}
+	// Only run the cold-boot finalize pass when it actually lowers the floor.
+	// If runtime >= builder there's nothing to gain (the in-place savevm already
+	// floors at builderMem ≤ runtimeMem), so snapshot in place (finalizeMem = 0).
+	finalizeMem := 0
+	if runtimeMem < builderMem {
+		finalizeMem = runtimeMem
+	}
+
 	// Create a throwaway sandbox
 	buildSandboxID := "sb-build-" + uuid.New().String()[:8]
 	cfg := types.SandboxConfig{
 		Template:  base,
 		Timeout:   600, // 10 min max for builds
 		SandboxID: buildSandboxID,
+		MemoryMB:  builderMem,
 	}
 
-	log.Printf("image-builder: creating build sandbox %s (base=%s, steps=%d)", buildSandboxID, base, len(manifest.Steps))
+	log.Printf("image-builder: creating build sandbox %s (base=%s, steps=%d, builderMem=%dMB, runtimeMem=%dMB)",
+		buildSandboxID, base, len(manifest.Steps), builderMem, runtimeMem)
 
 	var grpcClient pb.SandboxWorkerClient
 	var workerID string
@@ -414,6 +461,7 @@ func (s *Server) buildImage(ctx context.Context, orgID uuid.UUID, manifest *Imag
 			Timeout:        int32(cfg.Timeout),
 			NetworkEnabled: true, // Need network for apt/pip
 			SandboxId:      buildSandboxID,
+			MemoryMb:       int32(builderMem),
 		})
 		if err != nil {
 			return uuid.Nil, fmt.Errorf("failed to create build sandbox: %w", err)
@@ -512,10 +560,10 @@ func (s *Server) buildImage(ctx context.Context, orgID uuid.UUID, manifest *Imag
 	if s.store != nil {
 		cfgJSON, _ := json.Marshal(cfg)
 		cp := &db.Checkpoint{
-			ID:           checkpointID,
-			SandboxID:    buildSandboxID,
-			OrgID:        orgID,
-			Name:         fmt.Sprintf("_image_build_%s", checkpointID.String()[:8]),
+			ID:            checkpointID,
+			SandboxID:     buildSandboxID,
+			OrgID:         orgID,
+			Name:          fmt.Sprintf("_image_build_%s", checkpointID.String()[:8]),
 			SandboxConfig: cfgJSON,
 		}
 		if err := s.store.CreateCheckpoint(ctx, cp); err != nil {
@@ -533,9 +581,10 @@ func (s *Server) buildImage(ctx context.Context, orgID uuid.UUID, manifest *Imag
 		defer cancel()
 
 		resp, err := grpcClient.CreateCheckpoint(cpCtx, &pb.CreateCheckpointRequest{
-			SandboxId:     buildSandboxID,
-			CheckpointId:  checkpointID.String(),
-			PrepareGolden: true, // prepare golden snapshot for instant template creates
+			SandboxId:        buildSandboxID,
+			CheckpointId:     checkpointID.String(),
+			PrepareGolden:    true,               // prepare golden snapshot for instant template creates
+			FinalizeMemoryMb: int32(finalizeMem), // 0 = snapshot in place; >0 = cold-boot finalize at this floor
 		})
 		if err != nil {
 			return uuid.Nil, fmt.Errorf("failed to checkpoint build sandbox: %w", err)
@@ -557,7 +606,17 @@ func (s *Server) buildImage(ctx context.Context, orgID uuid.UUID, manifest *Imag
 			return uuid.Nil, fmt.Errorf("manager does not support checkpoints")
 		}
 
-		rootfsKey, workspaceKey, sizeBytes, err := cpMgr.CreateCheckpoint(ctx, buildSandboxID, checkpointID.String(), s.checkpointStore, func() {})
+		var rootfsKey, workspaceKey string
+		var sizeBytes int64
+		var err error
+		type finalizer interface {
+			CreateCheckpointFinalized(ctx context.Context, buildSandboxID, checkpointID string, store *storage.CheckpointStore, finalizeMemMB int, onReady func()) (string, string, int64, error)
+		}
+		if fz, ok := s.manager.(finalizer); ok && finalizeMem > 0 {
+			rootfsKey, workspaceKey, sizeBytes, err = fz.CreateCheckpointFinalized(ctx, buildSandboxID, checkpointID.String(), s.checkpointStore, finalizeMem, func() {})
+		} else {
+			rootfsKey, workspaceKey, sizeBytes, err = cpMgr.CreateCheckpoint(ctx, buildSandboxID, checkpointID.String(), s.checkpointStore, func() {})
+		}
 		if err != nil {
 			return uuid.Nil, fmt.Errorf("failed to checkpoint build sandbox: %w", err)
 		}
@@ -693,4 +752,3 @@ func stepDescription(step ImageStep) string {
 		return step.Type
 	}
 }
-

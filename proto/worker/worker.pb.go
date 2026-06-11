@@ -2598,8 +2598,13 @@ type CreateCheckpointRequest struct {
 	SandboxId     string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
 	CheckpointId  string                 `protobuf:"bytes,2,opt,name=checkpoint_id,json=checkpointId,proto3" json:"checkpoint_id,omitempty"`     // UUID assigned by control plane
 	PrepareGolden bool                   `protobuf:"varint,3,opt,name=prepare_golden,json=prepareGolden,proto3" json:"prepare_golden,omitempty"` // If true, prepare a golden snapshot from this checkpoint
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// If > 0, finalize the checkpoint at this memory: the worker stops the build VM,
+	// cold-boots a fresh VM from its disks at finalize_memory_mb, and snapshots THAT
+	// — so the image's memory floor is finalize_memory_mb, decoupled from the
+	// (larger) build-phase RAM. Used by the image builder. 0 = snapshot in place.
+	FinalizeMemoryMb int32 `protobuf:"varint,4,opt,name=finalize_memory_mb,json=finalizeMemoryMb,proto3" json:"finalize_memory_mb,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *CreateCheckpointRequest) Reset() {
@@ -2651,6 +2656,13 @@ func (x *CreateCheckpointRequest) GetPrepareGolden() bool {
 		return x.PrepareGolden
 	}
 	return false
+}
+
+func (x *CreateCheckpointRequest) GetFinalizeMemoryMb() int32 {
+	if x != nil {
+		return x.FinalizeMemoryMb
+	}
+	return 0
 }
 
 type CreateCheckpointResponse struct {
@@ -3950,12 +3962,13 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\tnet_input\x18\x04 \x01(\x04R\bnetInput\x12\x1d\n" +
 	"\n" +
 	"net_output\x18\x05 \x01(\x04R\tnetOutput\x12\x12\n" +
-	"\x04pids\x18\x06 \x01(\x05R\x04pids\"\x84\x01\n" +
+	"\x04pids\x18\x06 \x01(\x05R\x04pids\"\xb2\x01\n" +
 	"\x17CreateCheckpointRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12#\n" +
 	"\rcheckpoint_id\x18\x02 \x01(\tR\fcheckpointId\x12%\n" +
-	"\x0eprepare_golden\x18\x03 \x01(\bR\rprepareGolden\"\x87\x01\n" +
+	"\x0eprepare_golden\x18\x03 \x01(\bR\rprepareGolden\x12,\n" +
+	"\x12finalize_memory_mb\x18\x04 \x01(\x05R\x10finalizeMemoryMb\"\x87\x01\n" +
 	"\x18CreateCheckpointResponse\x12\"\n" +
 	"\rrootfs_s3_key\x18\x01 \x01(\tR\vrootfsS3Key\x12(\n" +
 	"\x10workspace_s3_key\x18\x02 \x01(\tR\x0eworkspaceS3Key\x12\x1d\n" +
