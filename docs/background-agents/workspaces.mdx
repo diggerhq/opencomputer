@@ -1,0 +1,69 @@
+---
+title: "Workspaces"
+description: "Prepared machines, kept fresh — why sessions start in seconds"
+---
+
+The slowest part of agent work is usually setup: cloning the repo,
+installing dependencies, warming the build. A workspace moves that work out
+of the session entirely. It's a recipe plus a pipeline: the platform builds
+the machine on a schedule and snapshots it, so every session boots into a
+machine that's ready to work.
+
+```bash
+oc workspace create web \
+  --repo github.com/acme/web \
+  --setup "pnpm i && pnpm build" \
+  --warm "pnpm test --filter smoke" \
+  --refresh 30m \
+  --warm-pool 1
+```
+
+## The recipe
+
+- **repo** — cloned via your GitHub connection (read access only).
+- **setup** — commands that make the machine ready: install, build,
+  generate.
+- **warm** *(optional)* — commands run once to heat caches (e.g. a smoke
+  test), so the agent's first test run isn't a cold one.
+
+## The pipeline
+
+With `--refresh 30m`, the workspace rebuilds itself every 30 minutes:
+fresh clone, setup, warm, snapshot. Builds form an immutable lineage:
+
+```bash
+oc workspace builds web
+# #14  4 minutes ago   main@9f3c21  ok   6m12s
+# #13  34 minutes ago  main@8e1d09  ok   6m05s
+```
+
+Sessions boot from the latest successful build and record it in their pins.
+A failed build never becomes "latest" — sessions keep booting the last good
+one.
+
+`--warm-pool N` keeps N machines pre-booted from the latest build, taking
+session start from seconds to near-instant for busy agents.
+
+## Sharing
+
+Workspaces are typically one-per-repo and shared by every agent working on
+that repo — your `fixer`, `reviewer`, and `docs` agents all boot from the
+same prepared machine. Agent definitions stay lightweight; the heavy
+machinery is shared.
+
+## During a session
+
+The workspace defines the machine at session start; from there the
+session's own sandbox evolves freely (the agent edits, installs, builds).
+Work in progress is protected independently of the workspace — see
+[Sessions](/background-agents/sessions). If a session's machine is ever
+lost, it's restored with its recent state, not rebuilt from scratch.
+
+## API
+
+```bash
+POST /v2/workspaces              # create (recipe, refresh, warm pool)
+GET  /v2/workspaces/:id          # recipe, pool status, latest build
+GET  /v2/workspaces/:id/builds   # lineage
+POST /v2/workspaces/:id/builds   # build now
+```

@@ -78,6 +78,21 @@
         ]
       },
       {
+        "group": "Background Agents",
+        "pages": [
+          "background-agents/overview",
+          "background-agents/quickstart",
+          "background-agents/agents",
+          "background-agents/sessions",
+          "background-agents/workspaces",
+          "background-agents/triggers",
+          "background-agents/models",
+          "background-agents/runtimes",
+          "background-agents/observability",
+          "background-agents/api"
+        ]
+      },
+      {
         "group": "Hosted Agents",
         "pages": [
           "agents-api/overview",

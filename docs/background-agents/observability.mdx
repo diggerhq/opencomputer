@@ -1,0 +1,66 @@
+---
+title: "Observability"
+description: "See everything the agent did — timeline, turns, model calls, machine output"
+---
+
+Background agents work unattended, so seeing what happened is a first-class
+surface, not an afterthought. Everything is correlated: pick any moment on a
+session's timeline and drill down to the model calls and commands behind it.
+
+## The timeline (the source of truth)
+
+The session's event timeline is the durable record:
+[events](/background-agents/sessions#events) for every message, action,
+question, delivery, and error.
+
+```bash
+oc session attach <id>                       # live
+oc session events <id> --after <cursor>      # history, paginated
+```
+
+```bash
+curl "https://api.opencomputer.dev/v2/sessions/$ID/events?stream=sse" \
+  -H "Authorization: Bearer $OC_API_KEY"
+```
+
+## Turns
+
+A turn is one stretch of agent activity (wake → work → sleep). Turns carry
+the operational detail:
+
+```bash
+oc session turns <id>
+# t_7   2m41s   claude-opus-4-8   31.2k tok   $0.41   yielded: delivered PR #413
+oc session trace <id> t_7       # spans: each model call, command, delivery, with timings
+oc session logs <id> --turn t_7 # raw runtime output
+oc session model-calls <id>     # per-call: provider, model served, tokens, latency
+```
+
+Command output from the agent's machine is on the timeline as `action`
+events (truncated inline, full output downloadable).
+
+## Cost
+
+Usage is metered per session and per turn: compute seconds and model tokens,
+with the model that actually served each call.
+
+```bash
+oc session get <id>     # usage: active_seconds, tokens, usd
+```
+
+Dormant time doesn't appear — because it isn't billed.
+
+## Privacy of model traffic
+
+By default OpenComputer records model-call *metadata* (model, tokens,
+latency, cost) but does not expose prompt/response contents. Full payload
+capture for debugging is opt-in per agent (`capture_model_io`) and
+surfaces in `oc session model-calls --full`.
+
+## Debugging a session
+
+1. `oc session attach` / the timeline — what did it do and say?
+2. `oc session trace` — where did the time and tokens go?
+3. `oc session shell` — drop into the actual machine and look around.
+4. `oc session state download` — export the session's working context to
+   reproduce the run locally in the same harness.

@@ -1,0 +1,66 @@
+---
+title: "Models"
+description: "Provider-prefixed IDs, swappable as configuration — no lock-in"
+---
+
+Background Agents is model-agnostic by construction. The model is
+configuration on the agent — not part of any code or image — and changing
+it takes effect on the very next model call, with nothing to restart.
+
+## Addressing
+
+Models use provider-native IDs, prefixed by provider:
+
+```
+anthropic/claude-opus-4-8
+openai/gpt-5.x
+openrouter/qwen-3-coder
+```
+
+OpenComputer never invents model names — the ID after the prefix is exactly
+the provider's. Bare IDs are accepted when unambiguous.
+
+```bash
+oc models list        # every model available through your connected providers
+```
+
+## Setting and switching
+
+```bash
+oc agent create fixer --model anthropic/claude-opus-4-8 ...
+oc agent update fixer --model openai/gpt-5.x     # new agent version; next call switches
+```
+
+For one session, in flight:
+
+```bash
+oc session set <id> --model openai/gpt-5.x       # this session only; audited on its timeline
+```
+
+Switches are immediate (the next model call) and complete — same agent,
+same prompt and skills, same workspace, same triggers. Every change is
+recorded: agent-level changes are versions; session-level overrides appear
+as `status` events; usage records the exact model that served each call.
+
+## Provider keys
+
+```bash
+oc connect anthropic --api-key sk-ant-...
+oc connect openai --api-key sk-...
+oc connect openrouter --api-key sk-or-...
+```
+
+Bring your own keys per provider, or use platform billing where available.
+**OpenRouter** is a first-class provider: one key opens its full catalog of
+models from many labs.
+
+Keys never enter agent machines. All model traffic flows through
+OpenComputer's model gateway, which holds the keys, enforces the configured
+model, meters tokens per session, and powers the per-call usage you see on
+the timeline.
+
+## Restricting
+
+Organizations can restrict which providers agents may use (e.g.
+"Anthropic only") — see [policies](/background-agents/agents#policies). An
+agent's data goes only to providers you've allowed.

@@ -1,0 +1,103 @@
+---
+title: "API Reference"
+description: "The Background Agents REST surface"
+---
+
+Everything the CLI does is one of these calls. Base URL
+`https://api.opencomputer.dev`; authenticate with
+`Authorization: Bearer $OC_API_KEY`.
+
+## Agents
+
+```http
+POST   /v2/agents                    # create — can be as little as {name, workspace, runtime, prompt}
+GET    /v2/agents                    # list
+GET    /v2/agents/:id
+PATCH  /v2/agents/:id                # any config change creates a new version
+GET    /v2/agents/:id/versions
+POST   /v2/agents/:id/versions      # deploy a bundle (what `oc agent deploy` calls)
+```
+
+```json
+{
+  "name": "fixer",
+  "workspace": "web",
+  "runtime": { "image": "opencode", "model": "anthropic/claude-opus-4-8" },
+  "prompt": "You fix bugs labeled 'agent' in acme/web.",
+  "triggers": [
+    { "type": "github", "on": "issue.labeled:agent",
+      "route": { "key": "issue.{number}", "mode": "reuse" } }
+  ],
+  "policies": { "budget": { "per_session_usd": 5 } }
+}
+```
+
+## Workspaces
+
+```http
+POST   /v2/workspaces                # { name, recipe: {repo, setup[], warm[]}, refresh, pool }
+GET    /v2/workspaces/:id            # recipe, pool status, latest build
+GET    /v2/workspaces/:id/builds     # immutable lineage
+POST   /v2/workspaces/:id/builds     # build now
+```
+
+## Sessions
+
+```http
+POST   /v2/sessions                  # { agent, input?, key? } — start explicitly
+GET    /v2/sessions?agent=&status=   # list / filter
+GET    /v2/sessions/:id              # status, pins, sandbox info, usage
+POST   /v2/sessions/:id              # { model_override } — this session only, audited
+POST   /v2/sessions/:id/events      # send: [{ kind: "message", body: "..." }]
+GET    /v2/sessions/:id/events       # ?after=<cursor>&stream=sse
+POST   /v2/sessions/:id/interrupt
+POST   /v2/sessions/:id/archive
+```
+
+Session object (abridged):
+
+```json
+{
+  "id": "s_8f2…",
+  "status": "dormant",
+  "pins": {
+    "agent_version": 4,
+    "workspace_build": 14,
+    "runtime": "opencode@sha256:…"
+  },
+  "sandbox": { "state": "hibernated", "preview_urls": [] },
+  "usage": { "active_seconds": 672, "tokens": { "in": 184211, "out": 9302 }, "usd": 0.47 }
+}
+```
+
+Event envelope:
+
+```json
+{
+  "id": "evt_01…",
+  "ts": "2026-06-12T09:31:04Z",
+  "actor": "agent",
+  "kind": "delivery",
+  "body": { "type": "pr.open", "repo": "acme/web", "number": 413, "as": "maria" },
+  "refs": [{ "type": "github_pr", "number": 413 }]
+}
+```
+
+Kinds: `message`, `action`, `ask`, `delivery`, `status`, `error`.
+
+## Connections & models
+
+```http
+POST   /v2/connections               # { type: "github" | "github_user" | "anthropic" | "openai" | "openrouter", ... }
+GET    /v2/connections
+GET    /v2/models                    # aggregated catalog from connected providers
+```
+
+## Observability
+
+```http
+GET    /v2/sessions/:id/turns
+GET    /v2/sessions/:id/turns/:tid/trace
+GET    /v2/sessions/:id/logs?turn=
+GET    /v2/sessions/:id/model-calls?turn=
+```
