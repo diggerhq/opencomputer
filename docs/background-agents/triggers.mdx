@@ -1,57 +1,49 @@
 ---
 title: "Triggers & Connections"
-description: "Events in, results out — without writing webhook plumbing"
+description: "Events in, results out"
 ---
 
-Triggers are how the world reaches your agent; deliveries are how its work
-gets back out. Both run through **connections** — integrations OpenComputer
-operates for you.
+Triggers bring events to your agent; deliveries carry its work back out.
+Both run through **connections** — integrations OpenComputer operates.
 
 ## Connections
 
 ```bash
 oc connect github            # install the OpenComputer GitHub App on your org
-oc connect github --as-user  # optional: personal grant, so deliveries act as you
+oc connect github --as-user  # optional personal grant: deliveries act as you
 ```
 
-One click installs the GitHub App. You never register an app, configure a
-webhook, or handle a secret — events start flowing and the platform can act
-on repos you granted.
-
-Model provider keys are connections too — see
-[Models](/background-agents/models).
+Installing the App is the entire GitHub integration — no app registration,
+webhook configuration, or secrets. Model provider keys are also connections;
+see [Models](/background-agents/models).
 
 ## Triggers
 
-Declared on the agent; each maps an event to a session:
+Declared on the agent:
 
 ```toml
 [[triggers]]
 type = "github"
-on = "issue.labeled:agent"      # start (or resume) a session per issue
+on = "issue.labeled:agent"
 ```
 
-Supported GitHub events include issue labels and PR/issue comments. When an
-event arrives, the platform acknowledges it instantly, then routes it:
+Supported events include issue labels and PR/issue comments. Events are
+acknowledged instantly, then routed:
 
-- **Routing keys** group events into sessions — by default, one session per
-  issue. Two labels on the same issue reach the same session; different
-  issues get parallel sessions.
-- **Follow-ups find their thread.** A comment on a PR the agent opened
-  resumes the session that opened it — the session remembers everything.
+- **Routing keys** group events into sessions — by default one session per
+  issue.
+- A comment on a PR the agent opened resumes the session that opened it.
 
 ## Deliveries
 
-Agents never hold GitHub tokens. When an agent wants to open a PR or post a
-comment, it requests a **delivery**, and the platform performs it:
+Agents hold no GitHub tokens. To open a PR or post a comment, the agent
+requests a **delivery** and the platform performs it:
 
-- With a personal grant (`oc connect github --as-user`), the PR is opened
-  **as the person who triggered the work** — so review attribution and
-  permissions work exactly as if they'd pushed it themselves.
-- Without a grant, the App opens it with clear *"on behalf of @user"*
-  attribution.
-- Defaults are conservative: draft PRs only, never to protected branches —
-  see [policies](/background-agents/agents#policies).
+- With a personal grant, the PR is opened **as the person who triggered the
+  work** — review attribution and permissions behave as if they pushed it.
+- Without a grant, the App opens it with *"on behalf of @user"* attribution.
+- Defaults: draft PRs only, never to protected branches
+  ([policies](/background-agents/agents#policies)).
 
-Every delivery appears on the session timeline with what was done and
-where, and the resulting PR links back to its session.
+Every delivery appears on the session timeline, and the PR links back to its
+session.

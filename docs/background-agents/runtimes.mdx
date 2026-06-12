@@ -1,11 +1,10 @@
 ---
 title: "Runtimes"
-description: "The loop that drives a session — pick one like you'd pick a base image"
+description: "The loop that drives a session, selected like a base image"
 ---
 
-The runtime is the agent loop: the harness that reads the session, talks to
-the model, and acts in the session's machine. You select it like a base
-image; OpenComputer operates it.
+The runtime is the agent loop: it reads the session, calls the model, and
+acts in the session's machine. You select it; OpenComputer operates it.
 
 ```toml
 [runtime]
@@ -18,34 +17,29 @@ oc runtime list
 # opencode    multi-provider harness (default)
 ```
 
-## What a runtime is (and isn't)
+## Semantics
 
-- A runtime is **versioned like a deployment**: images have tags that move
-  and digests that pin; each session records the exact digest it ran, so
-  runtime upgrades never change in-flight behavior.
-- The **model is not part of the runtime** — it's
-  [configuration](/background-agents/models), switchable independently and
-  instantly. Runtimes declare which providers they can drive; `opencode`
-  drives all of them.
-- Runtimes are **stateless and disposable** by design. All session state —
-  the conversation, the timeline, work in the sandbox — lives outside the
-  runtime, durably. If a runtime's machine disappears mid-task, the session
-  continues from exactly where it was on a fresh one. You'll see at most an
+- **Versioned like a deployment.** Tags move, digests pin; each session
+  records the digest it runs, so runtime upgrades never affect in-flight
+  sessions.
+- **The model is not part of the runtime** — it's
+  [configuration](/background-agents/models). Runtimes declare which
+  providers they can drive; `opencode` drives all.
+- **Stateless and disposable.** Session state — conversation, timeline,
+  sandbox files — lives outside the runtime. If a runtime's machine dies
+  mid-task, the session continues on a fresh one; the timeline shows an
   `error` event and a short pause.
-- Runtimes hold **no credentials**: model keys live in the gateway,
-  delivery tokens in the platform. The loop can reason and act, but it has
-  nothing to leak.
+- **No credentials.** Model keys stay in the gateway, delivery tokens in the
+  platform.
 
-## Behavior you can rely on
+## Behavior
 
-- **No busy-waiting.** When a runtime is waiting — on a person, on a long
-  build, on time — it goes dormant rather than burning compute. This is why
-  dormant sessions cost ~nothing.
-- **Asks block politely.** When the agent needs a decision, the session
-  shows a question on its timeline (`ask`) and waits in the blocked state;
-  answer with `oc session send`.
-- **Budget-aware.** Runtimes wind down cleanly as a session approaches its
-  budget cap; the platform enforces the cap regardless.
+- **No busy-waiting.** Waiting — on a person, a long build, the clock —
+  makes the session dormant instead of burning compute.
+- **Asks block.** When the agent needs a decision, the session shows an
+  `ask` and waits; answer with `oc session send`.
+- **Budget-aware.** Runtimes wind down near the session's budget cap; the
+  platform enforces the cap regardless.
 
-Additional runtime images (including bringing your own loop) follow the
-same model: one registry, one contract, the same durability guarantees.
+Additional images, including your own loop, use the same registry, contract,
+and guarantees.

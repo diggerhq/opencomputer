@@ -1,13 +1,12 @@
 ---
 title: "Sessions"
-description: "Durable threads of work — active while working, free while waiting"
+description: "Durable threads of work; dormancy is not billed"
 ---
 
-A session is one thread of an agent's work: fixing one issue, tending one
-PR, holding one long-running conversation. Its essence is an append-only
-**event timeline** — everything that happened, in order — and that timeline
-is durable independently of any machine. Compute attaches to a session when
-there's work and detaches when there isn't.
+A session is one thread of an agent's work: one issue, one PR, one ongoing
+conversation. It is an append-only **event timeline**, durable independently
+of any machine. Compute attaches when there is work and detaches when there
+isn't.
 
 ## Lifecycle
 
@@ -17,75 +16,66 @@ created ──► active ◄──► dormant ──► archived (retention poli
                 └──► blocked (waiting on a human answer)
 ```
 
-- **active** — a runtime is working; the session's sandbox is up. Billing
-  runs.
-- **dormant** — nothing to do right now. No compute attached; cost ≈
-  storage. A session can stay dormant for months and wake in seconds.
-- **blocked** — the agent asked a question (`ask` event) and is waiting.
-  Like dormant, this costs ~nothing.
-- Sessions are never forcibly ended; archival is a retention policy you
-  control.
+- **active** — a runtime is working; billing runs.
+- **dormant** — nothing to do. No compute attached; cost ≈ storage. A
+  session can stay dormant for months and wake in seconds.
+- **blocked** — the agent asked a question (`ask`) and is waiting. Not
+  billed.
+- Sessions are never forcibly ended; archival is a retention policy you set.
 
-Durability is unconditional: machine failures, deploys, or restarts never
-lose session state. A session resumes with its exact working context — the
-conversation the model was in the middle of, the files in its sandbox —
-regardless of what happened to the underlying compute.
+Machine failures, deploys, and restarts do not lose session state. A session
+resumes with its exact working context — the conversation in progress and
+the files in its sandbox — regardless of what happened to the compute.
 
 ## Starting and routing
 
-Sessions start from triggers (most common), or explicitly:
+Sessions start from triggers, or explicitly:
 
 ```bash
 oc session start fixer "migrate the date helpers to Temporal"
 ```
 
-Triggers route by a **routing key** — e.g. one session per GitHub issue.
-Replies and follow-ups find their session automatically: a PR comment
-resumes the session that opened that PR. One agent, many concurrent
-sessions, each its own thread.
+Triggers route by **routing key** — by default one session per GitHub
+issue. Follow-ups find their session: a comment on a PR resumes the session
+that opened it. One agent runs many concurrent sessions.
 
 ## Events
 
-The timeline is made of typed events:
-
 | Kind | Meaning |
 |---|---|
-| `message` | A human (or trigger) said something; or the agent replied |
-| `action` | The agent did something in its sandbox — command, edit, test run |
-| `ask` | The agent needs a human decision; session blocks until answered |
+| `message` | A human or trigger said something; or the agent replied |
+| `action` | The agent ran a command or edited files in its sandbox |
+| `ask` | The agent needs a human decision; the session blocks until answered |
 | `delivery` | An outward action performed for the agent — PR opened, comment posted |
-| `status` | Lifecycle and configuration changes (audited on the timeline) |
-| `error` | Something failed; visible, with retry context |
-
-Read them, stream them, or send your own:
+| `status` | Lifecycle and configuration changes |
+| `error` | A failure, with retry context |
 
 ```bash
-oc session attach <id>                 # live stream (detaching never stops the agent)
+oc session attach <id>      # live stream; detaching doesn't stop the agent
 oc session send <id> "use the staging DB for repro"
 ```
 
 ```bash
-curl https://api.opencomputer.dev/v2/sessions/$ID/events?stream=sse \
+curl "https://api.opencomputer.dev/v2/sessions/$ID/events?stream=sse" \
   -H "Authorization: Bearer $OC_API_KEY"
 ```
 
 ## The sandbox underneath
 
-Each session works inside its own [sandbox](/sandboxes/overview), booted
-from the workspace's latest build. It's fully managed — created, slept, and
-restored for you — but never hidden:
+Each session works in its own [sandbox](/sandboxes/overview), booted from
+the workspace's latest build, managed for you:
 
 ```bash
-oc session get <id>          # status, pins, sandbox state, preview URLs, usage
-oc session shell <id>        # drop into the actual machine
+oc session get <id>      # status, pins, sandbox state, preview URLs, usage
+oc session shell <id>    # open the actual machine
 ```
 
-`pins` records exactly what the session runs on — agent version, workspace
-build, runtime — so behavior is reproducible and updates never surprise
-in-flight work.
+`pins` records what the session runs on — agent version, workspace build,
+runtime — so in-flight work is unaffected by updates and runs are
+reproducible.
 
 ## Cost
 
-`usage.active_seconds` is the number that matters: you pay for attached
-compute and model tokens while the session works. Dormant and blocked time
-is ~free. A session that worked 11 minutes across two days bills 11 minutes.
+You pay for attached compute and model tokens while the session is active
+(`usage.active_seconds`). A session that worked 11 minutes across two days
+bills 11 minutes.

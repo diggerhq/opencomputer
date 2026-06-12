@@ -3,8 +3,8 @@ title: "Quickstart"
 description: "A working background agent in three commands"
 ---
 
-By the end of this page, labeling a GitHub issue `agent` will produce a
-draft PR, and commenting on that PR will wake the same agent to follow up.
+After this page, labeling a GitHub issue `agent` produces a draft PR, and
+commenting on that PR wakes the same agent to follow up.
 
 ## 1. Connect GitHub
 
@@ -12,13 +12,10 @@ draft PR, and commenting on that PR will wake the same agent to follow up.
 oc connect github
 ```
 
-Opens the GitHub App installation flow for your org. That's the whole
-integration — no app registration, no webhook configuration, no secrets to
-copy.
+Installs the OpenComputer GitHub App on your org. No app registration,
+webhook setup, or secrets.
 
 ## 2. Create a workspace
-
-A workspace is the prepared machine your agent works in:
 
 ```bash
 oc workspace create web \
@@ -27,48 +24,37 @@ oc workspace create web \
   --refresh 30m --warm 1
 ```
 
-The first build clones the repo, runs your setup, and snapshots the result
-(a few minutes). From then on it rebuilds itself every 30 minutes, so
-sessions always start from a machine that's at most half an hour stale —
-with dependencies installed and the build warm.
-
-```bash
-oc workspace builds web    # watch the build lineage accumulate
-```
+The first build clones the repo, runs setup, and snapshots the result. It
+then rebuilds every 30 minutes, so sessions start from a machine at most
+half an hour stale, dependencies installed. `oc workspace builds web` lists
+the builds.
 
 ## 3. Create the agent
-
-An agent can start as just a prompt:
 
 ```bash
 oc agent create fixer \
   --workspace web \
   --model anthropic/claude-opus-4-8 \
-  --prompt "You fix bugs labeled 'agent' in acme/web. Keep diffs minimal and focused. Run the affected tests before pushing." \
+  --prompt "You fix bugs labeled 'agent' in acme/web. Keep diffs minimal. Run the affected tests before pushing." \
   --trigger github:issue.labeled:agent
 ```
 
-Done. There is no step 4 — no server, no queue, no code.
-
 ## Use it
 
-Label any issue in `acme/web` with `agent`. Within seconds a session starts;
-watch it live if you like:
+Label an issue `agent`. A session starts within seconds:
 
 ```bash
 oc session list --agent fixer
-oc session attach <session-id>     # live event stream; Ctrl-C detaches, agent keeps working
+oc session attach <session-id>   # live events; Ctrl-C detaches, the agent keeps working
 ```
 
-A draft PR appears, opened on behalf of whoever labeled the issue. The
-session then goes **dormant** — check `oc session get <id>` and note
-`usage.active_seconds`: you were billed for minutes of work, and dormancy
-costs ~nothing.
+A draft PR opens, attributed to whoever labeled the issue. The session goes
+dormant; `oc session get <id>` shows `usage.active_seconds` — dormant time
+is not billed.
 
-Now comment on the PR: *"also update the changelog."* The dormant session
-wakes with full context — the same conversation, the same machine state —
-pushes a commit, and sleeps again. That thread can stay alive as long as the
-PR does.
+Comment on the PR: *"also update the changelog."* The session wakes with its
+full context, pushes a commit, and sleeps again. The thread stays available
+as long as the PR does.
 
 ## Change the model
 
@@ -76,12 +62,11 @@ PR does.
 oc agent update fixer --model openai/gpt-5.x
 ```
 
-Same agent, same workspace, same triggers — the next model call runs on the
-other provider. Switch back any time; every change is a new agent version
-you can roll back.
+Effective on the next model call; same workspace, prompt, and triggers.
+Each change is a new agent version — `oc agent rollback fixer v1` reverts.
 
 ## Next
 
-- Grow the prompt into an [agent you own as code](/background-agents/agents)
-- Understand [sessions and dormancy](/background-agents/sessions)
-- Tune [workspace freshness and warm pools](/background-agents/workspaces)
+- [Agents as code](/background-agents/agents)
+- [Sessions and dormancy](/background-agents/sessions)
+- [Workspace freshness and warm pools](/background-agents/workspaces)

@@ -1,63 +1,44 @@
 ---
 title: "Background Agents"
-description: "Agents that live in your infrastructure workflow — triggered by events, durable across months, model-agnostic"
+description: "Event-triggered agents with durable sessions, on managed compute"
 ---
 
-A background agent is an agent that works without anyone watching: a GitHub
-issue gets labeled, the agent picks it up in a fresh machine, fixes the bug,
-opens a draft PR, and goes back to sleep. Someone comments on the PR a day
-later — the same agent wakes up with full context and pushes a follow-up.
-You pay for the minutes it worked, not the days it waited.
+A background agent works unattended: an issue gets labeled, the agent fixes
+it in a fresh machine and opens a draft PR. A comment on that PR a day later
+wakes the same agent with full context. You pay for the minutes it worked.
 
-Background Agents is the OpenComputer layer that makes this a few commands
-instead of an infrastructure project. It handles everything around the agent
-loop: receiving events, keeping sessions alive for months, preparing fast
-machines, delivering results back to GitHub, and metering cost — while
-staying **model-agnostic**: switch the model, or the entire harness, with
-one configuration change.
+Background Agents runs everything around the agent loop: event ingestion,
+session state, machine preparation, delivery back to GitHub, metering. The
+model — or the entire harness — is a configuration change.
 
-## The pieces
+## Concepts
 
 | Concept | What it is |
 |---|---|
-| [Agent](/background-agents/agents) | Your agent's definition: prompt, skills, model, triggers, policies. Starts as a single prompt; grows into a repo you own. Versioned. |
-| [Session](/background-agents/sessions) | A durable thread of work: an event timeline that never loses state. Active while working, dormant (≈ free) while waiting. |
-| [Workspace](/background-agents/workspaces) | A prepared machine for your repo — dependencies installed, build warm — kept fresh automatically so sessions start in seconds. |
-| [Trigger](/background-agents/triggers) | What starts or resumes sessions: GitHub events routed to the right session automatically. |
-| [Connection](/background-agents/triggers#connections) | One-click integrations (GitHub) and model provider keys. No app registration, no webhook config. |
-| [Runtime](/background-agents/runtimes) | The loop that drives a session. Pick a default; the model it uses is plain configuration. |
+| [Agent](/background-agents/agents) | Definition: prompt, skills, model, triggers, policies. Versioned. Starts as one prompt; can grow into a repo. |
+| [Session](/background-agents/sessions) | One thread of work: a durable event timeline. Active while working, dormant otherwise; dormancy is not billed. |
+| [Workspace](/background-agents/workspaces) | A machine image for your repo, rebuilt on a schedule — dependencies installed, build warm. |
+| [Trigger](/background-agents/triggers) | GitHub events, routed to the right session. |
+| [Connection](/background-agents/triggers#connections) | The GitHub App install and model provider keys. |
+| [Runtime](/background-agents/runtimes) | The loop that drives a session. Its model is separate configuration. |
 
-## How it relates to Sandboxes
+## Relation to sandboxes
 
-Background Agents is built on [sandboxes](/sandboxes/overview) — every
-session does its work inside a real, isolated Linux VM, booted from your
-workspace's latest build. You never manage these sandboxes directly, but
-they're ordinary OpenComputer sandboxes underneath: you can inspect one with
-`oc session shell` whenever you need to see exactly what the agent sees.
+Sessions work inside ordinary [sandboxes](/sandboxes/overview), booted from
+the workspace's latest build and managed for you. `oc session shell <id>`
+opens the actual machine. For full control of the loop and the machine, use
+the [Agent SDK](/agents/overview) instead.
 
-If you want full control of the loop and the machine, the
-[Agent SDK](/agents/overview) remains the lower-level path. Background
-Agents is for when you want the platform to run the agent for you.
+## Properties
 
-## What makes it different
+- A session is data, not a process. Compute attaches when there is work.
+  Kill any machine and the session resumes where it was; threads can live
+  for months.
+- Sessions start in ~2 seconds, because the workspace rebuilt itself
+  recently.
+- Models are addressed `provider/model` and switched with one command,
+  effective on the next call. Bring your own keys, including OpenRouter.
+- Agents hold no tokens. The platform opens PRs and posts comments on their
+  behalf, attributed to the requesting user.
 
-- **Sessions are durable data.** A session is not a process — compute
-  attaches when there's work and detaches when there isn't. Kill anything,
-  the session continues from exactly where it was. Threads can stay alive
-  for months at ~zero cost.
-- **Fast by preparation, not by magic.** Workspaces rebuild themselves on a
-  schedule, so a triggered session boots into a machine where dependencies
-  are installed and the build is warm — typically ~2 seconds to working.
-- **Model-agnostic for real.** Models are addressed by provider-prefixed IDs
-  (`anthropic/claude-opus-4-8`, `openai/gpt-5.x`) and changed with one
-  command — taking effect on the session's next model call, without
-  restarting anything. Bring your own provider keys, including OpenRouter.
-- **Results arrive where work happens.** Agents don't hold tokens; the
-  platform opens PRs and posts comments on their behalf, attributed to the
-  person who asked.
-
-## Start here
-
-The [quickstart](/background-agents/quickstart) goes from zero to a working
-background agent — triggered by a GitHub label, delivering draft PRs — in
-about ten minutes.
+[Quickstart →](/background-agents/quickstart)

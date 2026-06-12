@@ -1,16 +1,14 @@
 ---
 title: "Agents"
-description: "From a single prompt to a versioned agent you own as code"
+description: "From a single prompt to a versioned agent defined as code"
 ---
 
-An agent is configuration, not compute: what it knows (prompt, skills),
-what drives it (runtime and model), where it works (workspace), what wakes
-it (triggers), and what it's allowed to do (policies). Sessions reference an
-agent; the agent itself never "runs."
+An agent is configuration, not compute: what it knows (prompt, skills), what
+drives it (runtime, model), where it works (workspace), what wakes it
+(triggers), and what it may do (policies). Sessions reference an agent; the
+agent itself never runs.
 
 ## Start as a prompt
-
-The minimal agent is one call:
 
 ```bash
 oc agent create fixer \
@@ -34,7 +32,7 @@ curl -X POST https://api.opencomputer.dev/v2/agents \
 
 ## Grow into a repo
 
-When one prompt isn't enough, the agent becomes a directory you own:
+When one prompt isn't enough, the agent becomes a directory:
 
 ```
 my-agent/
@@ -47,11 +45,11 @@ my-agent/
 ```
 
 ```bash
-oc agent deploy     # from the directory — like deploying any app
+oc agent deploy
 ```
 
-Keep it in git, review changes in PRs, deploy from CI — it's code. The API
-and the directory are two views of the same thing; nothing requires GitHub.
+Keep it in git, review changes as PRs, deploy from CI. The directory and the
+API are two views of the same object; GitHub is not required.
 
 ```toml
 # agent.toml
@@ -72,8 +70,8 @@ budget.per_session_usd = 5
 
 ## Versions
 
-Every change — a config update, a deploy, a model switch — creates a new
-immutable version:
+Every change — config update, deploy, model switch — is a new immutable
+version:
 
 ```bash
 oc agent versions fixer
@@ -81,20 +79,16 @@ oc agent diff fixer v3 v4
 oc agent rollback fixer v3
 ```
 
-Sessions pin the version they started with, so updating an agent never
-changes the behavior of work already in flight; new sessions pick up the
-latest.
+Sessions pin the version they started with; updates apply to new sessions
+only.
 
 ## Policies
 
-Policies bound what an agent can do, with safe defaults:
+- **Deliveries** — draft PRs only by default; protected branches are never
+  pushed; target repos can be restricted.
+- **Budget** — per-session and per-month caps.
+- **Models** — restrict allowed providers.
+- **Network** — sandbox egress is allowlist-based.
 
-- **Deliveries**: draft PRs only by default; protected branches are never
-  pushed to; restrict target repos explicitly.
-- **Budget**: per-session and per-month spend caps.
-- **Models**: restrict which providers the agent may use.
-- **Network**: sandbox egress is allowlist-based.
-
-Organization-level policies act as ceilings — an agent can be stricter than
-the org default, never looser. Policy changes are versioned with the agent,
-so every loosening is a visible diff.
+Organization policies are ceilings: an agent can be stricter, not looser.
+Policies live in the versioned config, so every change is a visible diff.

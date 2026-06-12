@@ -1,13 +1,11 @@
 ---
 title: "Workspaces"
-description: "Prepared machines, kept fresh — why sessions start in seconds"
+description: "Machine images for your repo, rebuilt on a schedule"
 ---
 
-The slowest part of agent work is usually setup: cloning the repo,
-installing dependencies, warming the build. A workspace moves that work out
-of the session entirely. It's a recipe plus a pipeline: the platform builds
-the machine on a schedule and snapshots it, so every session boots into a
-machine that's ready to work.
+Cloning, installing, and building take minutes. A workspace does that work
+ahead of time on a schedule and snapshots the result, so sessions boot into
+a ready machine in seconds.
 
 ```bash
 oc workspace create web \
@@ -18,18 +16,16 @@ oc workspace create web \
   --warm-pool 1
 ```
 
-## The recipe
+## Recipe
 
-- **repo** — cloned via your GitHub connection (read access only).
-- **setup** — commands that make the machine ready: install, build,
-  generate.
-- **warm** *(optional)* — commands run once to heat caches (e.g. a smoke
-  test), so the agent's first test run isn't a cold one.
+- **repo** — cloned via your GitHub connection (read access).
+- **setup** — install, build, generate.
+- **warm** *(optional)* — run once to heat caches, e.g. a smoke test.
 
-## The pipeline
+## Builds
 
-With `--refresh 30m`, the workspace rebuilds itself every 30 minutes:
-fresh clone, setup, warm, snapshot. Builds form an immutable lineage:
+With `--refresh 30m`, the workspace rebuilds every 30 minutes: clone, setup,
+warm, snapshot. Builds form an immutable lineage:
 
 ```bash
 oc workspace builds web
@@ -37,27 +33,22 @@ oc workspace builds web
 # #13  34 minutes ago  main@8e1d09  ok   6m05s
 ```
 
-Sessions boot from the latest successful build and record it in their pins.
-A failed build never becomes "latest" — sessions keep booting the last good
-one.
+Sessions boot from the latest successful build and pin it. A failed build
+never becomes latest.
 
-`--warm-pool N` keeps N machines pre-booted from the latest build, taking
-session start from seconds to near-instant for busy agents.
+`--warm-pool N` keeps N machines pre-booted from the latest build, removing
+even the boot seconds for busy agents.
 
 ## Sharing
 
-Workspaces are typically one-per-repo and shared by every agent working on
-that repo — your `fixer`, `reviewer`, and `docs` agents all boot from the
-same prepared machine. Agent definitions stay lightweight; the heavy
-machinery is shared.
+Workspaces are typically one per repo, shared by every agent working on it.
 
 ## During a session
 
-The workspace defines the machine at session start; from there the
-session's own sandbox evolves freely (the agent edits, installs, builds).
-Work in progress is protected independently of the workspace — see
-[Sessions](/background-agents/sessions). If a session's machine is ever
-lost, it's restored with its recent state, not rebuilt from scratch.
+The workspace defines the machine at session start; after that the session's
+sandbox evolves freely. Work in progress is protected independently — if a
+session's machine is lost, it is restored with its recent state, not rebuilt
+from the workspace (see [Sessions](/background-agents/sessions)).
 
 ## API
 
