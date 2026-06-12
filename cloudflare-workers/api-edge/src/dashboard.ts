@@ -26,7 +26,6 @@ export interface DashboardEnv {
   WORKOS_CLIENT_ID: string;
   STRIPE_API_KEY: string;
   WORKER_ENV: string;
-  CELLS: string;
   // CF Custom Hostnames API token + zone (for /org/custom-domain). Optional —
   // if unset the custom-domain endpoints return 503 (feature disabled).
   CF_API_TOKEN?: string;

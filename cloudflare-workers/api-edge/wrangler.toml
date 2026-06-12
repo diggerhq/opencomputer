@@ -89,11 +89,9 @@ new_sqlite_classes = ["CreditAccount"]
 
 [vars]
 WORKER_ENV = "dev"
-# Cells available in this deployment — comma-separated cell_ids. The edge
-# validates cell selections against this list; each cell's base_url comes from
-# the D1 `cells` table (see schema.sql + scripts/seed_dev_xcell.sh).
-# Cross-cell testbed: dev2 (Azure westus2) + dev3 (AWS us-east-1).
-CELLS = "azure-us-west-2-b,aws-us-east-1-a"
+# Cells eligible for new-org home assignment are NOT configured here anymore —
+# it's the `accepts_new_orgs` column on the D1 `cells` table (single source of
+# truth, toggled per-row without a deploy). See pickHomeCell in src/index.ts.
 # Optional alpha route for Burst Sandboxes. Leave empty to disable.
 BURST_CELL_ID = ""
 

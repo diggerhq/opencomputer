@@ -111,6 +111,12 @@ CREATE TABLE IF NOT EXISTS cells (
   region      TEXT NOT NULL,
   base_url    TEXT NOT NULL,                     -- regional CP base URL (scheme+host[:port])
   status      TEXT NOT NULL DEFAULT 'active',    -- active | draining | down
+  -- New-org onboarding gate: pickHomeCell only assigns brand-new orgs to cells
+  -- with accepts_new_orgs=1. Distinct from `status` (which governs routing of
+  -- existing orgs / pins / failover) so a cell can be active+routable without
+  -- yet adopting new signups. Default 0 = a freshly-registered cell does NOT
+  -- onboard new orgs until explicitly opened (a D1 row toggle, no deploy).
+  accepts_new_orgs    INTEGER NOT NULL DEFAULT 0,
   -- Capacity-aware placement (updated by cell_capacity events; see
   -- internal/controlplane/capacity_reporter.go + events-ingest worker).
   -- The CP aggregates per-worker memory pressure from WorkerEntry. A cell is
