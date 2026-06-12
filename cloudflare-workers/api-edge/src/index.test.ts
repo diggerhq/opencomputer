@@ -54,7 +54,6 @@ const env = {
   WORKOS_CLIENT_ID: "",
   STRIPE_API_KEY: "",
   WORKER_ENV: "test",
-  CELLS: cellID,
   CF_ADMIN_SECRET: "",
   STRIPE_WEBHOOK_SECRET: "",
   EVENT_SECRET: "",

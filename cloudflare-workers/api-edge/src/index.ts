@@ -1142,32 +1142,33 @@ async function authRefresh(req: Request, env: Env): Promise<Response> {
 }
 
 // pickHomeCell chooses a home cell for a brand-new org. Policy:
-//   1. If the request carries a `cf-ipcountry` header, map to a continent
-//      and prefer a cell whose region is on that continent.
-//   2. Otherwise pick the first cell from env.CELLS that's currently
-//      registered in D1 and healthy.
-//   3. Last-resort fallback: first entry in env.CELLS regardless of D1 state.
+//   1. If the request carries a `cf-ipcountry` header, map to a continent and
+//      prefer an onboarding-eligible cell whose region is on that continent.
+//   2. Otherwise the first onboarding-eligible cell (alphabetical → deterministic).
+//   3. None eligible → "" (downstream errors loudly).
 //
-// Geo lookup is intentionally coarse — continent-level is enough for
-// "don't put a UK user on a US cell" without an IP-to-region service.
+// "Onboarding-eligible" = status='active' AND accepts_new_orgs=1. That gate is a
+// property of the cell row itself — there's no separate env allowlist to keep in
+// sync, so it can't drift from the `cells` table (which is what previously left
+// new orgs with an empty home_cell). Opening a cell to new orgs is a D1 toggle,
+// not a deploy. Geo lookup is intentionally coarse — continent-level is enough.
 async function pickHomeCell(env: Env, req: Request): Promise<string> {
   const country = req.headers.get("cf-ipcountry") ?? "";
   const continent = COUNTRY_TO_CONTINENT[country.toUpperCase()] ?? "";
 
-  const configured = env.CELLS.split(",").map((c) => c.trim()).filter(Boolean);
-  if (configured.length === 0) return ""; // misconfigured — let downstream error
-
   const { results } = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT cell_id, region, status FROM cells WHERE status = 'active'`,
-  ).all<{ cell_id: string; region: string; status: string }>();
-  const activeCells = (results ?? []).filter((c) => configured.includes(c.cell_id));
+    `SELECT cell_id, region FROM cells
+       WHERE status = 'active' AND accepts_new_orgs = 1
+       ORDER BY cell_id`,
+  ).all<{ cell_id: string; region: string }>();
+  const eligible = results ?? [];
+  if (eligible.length === 0) return ""; // none open for onboarding — downstream errors
 
-  if (continent && activeCells.length > 0) {
-    const onContinent = activeCells.find((c) => REGION_CONTINENT[c.region] === continent);
+  if (continent) {
+    const onContinent = eligible.find((c) => REGION_CONTINENT[c.region] === continent);
     if (onContinent) return onContinent.cell_id;
   }
-  if (activeCells.length > 0) return activeCells[0].cell_id;
-  return configured[0];
+  return eligible[0].cell_id;
 }
 
 // COUNTRY_TO_CONTINENT covers the countries we'd actually see on the
@@ -1451,7 +1452,7 @@ export default {
     }
 
     if (path === "/health") {
-      return json({ ok: true, env: env.WORKER_ENV, cells: env.CELLS.split(",") });
+      return json({ ok: true, env: env.WORKER_ENV });
     }
 
     if (path === "/internal/halt-list") {
