@@ -1,0 +1,59 @@
+---
+title: "How it works"
+description: "The loop, the machine, and why nothing is lost when either dies"
+---
+
+```
+GitHub event ──► session timeline (durable record)
+                      │ wakes
+                      ▼
+                 runtime — the loop ───► model gateway ───► provider
+                      │ acts in
+                      ▼
+                 sandbox — the machine ───► deliveries (PR, comment)
+```
+
+A session separates the agent into a record and two machines:
+
+- **The timeline** is the record: every message, action, and result, stored
+  as it happens. The timeline *is* the session; the machines are not.
+- **The runtime** runs the loop: read the timeline, call the model, decide.
+  It holds no state and no credentials.
+- **The sandbox** is where the agent acts — files, commands, tests — booted
+  from the workspace's latest build.
+
+## Nothing lives in the machines
+
+State leaves the machines the moment it exists:
+
+- Timeline events are stored as they are produced.
+- The conversation: every model call passes through the model gateway, which
+  records request and response as they stream. Provider APIs carry the full
+  context on every call, so the latest exchange is the agent's complete
+  working memory — captured without the runtime's involvement.
+- Files: the session's sandbox is snapshotted periodically while work is in
+  progress.
+
+Either machine can therefore be lost at any point — mid-task, mid-model-call
+— and the session resumes where it was on fresh machines. A model response
+in flight when the runtime dies is still recorded, and not re-billed.
+
+## Consequences
+
+- **Dormancy is free.** Waiting — for a person, a build, a schedule —
+  detaches both machines; only the record remains. Waking takes seconds.
+- **Model switching is per call.** The gateway applies the configured model
+  to each request: no restart, no migration. This is also why provider keys
+  never enter the machines.
+- **Threads can live for months.** The timeline is append-only and cheap to
+  keep; a session can follow a PR for as long as it stays open.
+- **Updates don't disturb running work.** Sessions pin their agent version,
+  workspace build, and runtime at start; changes apply to new sessions.
+
+## Why two machines
+
+The sandbox runs arbitrary code — yours, and code the agent writes — so it
+is isolated per session and treated as replaceable. The loop needs neither
+of those risks nor that lifecycle: separating it keeps long-running work in
+the sandbox (a one-hour build doesn't hold the loop hostage) and lets the
+platform place, restart, and upgrade loops freely.

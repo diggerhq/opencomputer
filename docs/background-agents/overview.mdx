@@ -22,6 +22,15 @@ model — or the entire harness — is a configuration change.
 | [Connection](/background-agents/triggers#connections) | The GitHub App install and model provider keys. |
 | [Runtime](/background-agents/runtimes) | The loop that drives a session. Its model is separate configuration. |
 
+## How it works
+
+A session is a durable timeline of events. While there is work, two machines
+attach: a **runtime** (the loop) and a **sandbox** (the machine it acts in);
+they detach when the work pauses. All state — events, the model
+conversation, files — leaves the machines as it is produced, so either can
+die at any point and the session resumes where it was. Details:
+[How it works](/background-agents/how-it-works).
+
 ## Relation to sandboxes
 
 Sessions work inside ordinary [sandboxes](/sandboxes/overview), booted from
@@ -31,9 +40,6 @@ the [Agent SDK](/agents/overview) instead.
 
 ## Properties
 
-- A session is data, not a process. Compute attaches when there is work.
-  Kill any machine and the session resumes where it was; threads can live
-  for months.
 - Sessions start in ~2 seconds, because the workspace rebuilt itself
   recently.
 - Models are addressed `provider/model` and switched with one command,

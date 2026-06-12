@@ -82,6 +82,7 @@
         "pages": [
           "background-agents/overview",
           "background-agents/quickstart",
+          "background-agents/how-it-works",
           "background-agents/agents",
           "background-agents/sessions",
           "background-agents/workspaces",
