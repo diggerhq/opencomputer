@@ -46,7 +46,7 @@ POST   /v2/workspaces/:id/builds     # build now
 POST   /v2/sessions                  # { agent, input?, key? } — start explicitly
 GET    /v2/sessions?agent=&status=   # list / filter
 GET    /v2/sessions/:id              # status, pins, sandbox info, usage
-POST   /v2/sessions/:id              # { model_override } — this session only, audited
+PATCH  /v2/sessions/:id              # { model_override } — this session only, audited
 POST   /v2/sessions/:id/events      # send: [{ kind: "message", body: "..." }]
 GET    /v2/sessions/:id/events       # ?after=<cursor>&stream=sse
 POST   /v2/sessions/:id/interrupt

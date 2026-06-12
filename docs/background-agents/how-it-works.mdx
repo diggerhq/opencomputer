@@ -52,8 +52,10 @@ What this buys:
   response is still recorded, and not re-billed.
 - **Free dormancy.** Waiting detaches both machines; a session can sleep for
   months for ~storage cost and wake in seconds.
-- **Per-call model switching.** The gateway applies model config on each
-  request — no restart; keys never enter the machines.
+- **Model switching as configuration.** The gateway applies model config on
+  each request — no restart. Within a provider, a change is effective on the
+  next call; switching providers is effective on the next turn, when the
+  runtime reconnects. Keys never enter the machines.
 - **Risk isolation.** The sandbox runs arbitrary code, so it's per-session
   and replaceable; the loop carries neither that risk nor that lifecycle. A
   one-hour build in the sandbox doesn't keep a loop machine running.
