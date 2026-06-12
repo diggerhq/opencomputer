@@ -12,9 +12,9 @@ description: "The moving parts, how they interact, and why they're split this wa
 | Part | What it is | Durability | Responsibility |
 |---|---|---|---|
 | Session timeline | Append-only event record in the platform | **Durable** — it *is* the session | Holds everything that happened; wakes the runtime when new events arrive |
-| Runtime — "the brains" | A VM running the agent loop | Disposable | Read timeline → call model → decide → act. Holds no state, no credentials |
-| Model gateway | Proxy between runtimes and providers | **Durable** (its records) | Applies the configured model per call, holds provider keys, meters tokens, records every request and response as they stream |
-| Sandbox — "the hands" | A VM booted from the workspace's latest build | Disposable (snapshotted periodically) | Where the agent acts: commands, edits, tests. One per session, never shared |
+| Runtime | A VM running the agent loop | Disposable | Read timeline → call model → decide → act. Holds no state, no credentials |
+| Model gateway | Proxy between runtimes and providers | **Durable** (its records) | Applies the configured model per call, holds provider keys, meters tokens, records every request and response as they stream — encrypted, used only to resume the session, never exposed unless capture is opted in |
+| Sandbox | A VM booted from the workspace's latest build | Disposable (snapshotted periodically) | Where the agent acts: commands, edits, tests. One per session, never shared |
 | Delivery connectors | Platform-side GitHub integration | — | Open PRs and post comments for the agent, attributed to the requesting user |
 
 ## How a task flows
@@ -30,7 +30,7 @@ description: "The moving parts, how they interact, and why they're split this wa
 5. To open a PR, the runtime appends a delivery request; a connector
    performs it and records the PR number.
 6. Nothing left to do: the runtime exits, the sandbox sleeps. The session is
-   dormant — just the record, no machines, no billing.
+   dormant — just the record, no machines; storage only.
 7. A comment on the PR routes back to this session (step 5 recorded the PR),
    and the cycle repeats with full context.
 

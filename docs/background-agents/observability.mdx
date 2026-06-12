@@ -28,7 +28,7 @@ A turn is one stretch of activity (wake → work → sleep):
 
 ```bash
 oc session turns <id>
-# t_7   2m41s   claude-opus-4-8   31.2k tok   $0.41   yielded: delivered PR #413
+# t_7   2m41s   anthropic/claude-opus-4-8   31.2k tok   $0.41   yielded: delivered PR #413
 oc session trace <id> t_7        # spans: model calls, commands, deliveries, timings
 oc session logs <id> --turn t_7  # raw runtime output
 oc session model-calls <id>      # per call: provider, model served, tokens, latency

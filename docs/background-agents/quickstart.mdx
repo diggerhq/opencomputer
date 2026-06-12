@@ -20,13 +20,12 @@ webhook setup, or secrets.
 ```bash
 oc workspace create web \
   --repo github.com/acme/web \
-  --setup "pnpm i && pnpm build" \
-  --refresh 30m --warm 1
+  --setup "pnpm i && pnpm build"
 ```
 
-The first build clones the repo, runs setup, and snapshots the result. It
-then rebuilds every 30 minutes, so sessions start from a machine at most
-half an hour stale, dependencies installed. `oc workspace builds web` lists
+The first build clones the repo, runs setup, and snapshots the result. After
+that it rebuilds on every push to the default branch, so sessions start from
+a ready machine matching the latest code. `oc workspace builds web` lists
 the builds.
 
 ## 3. Create the agent
@@ -50,11 +49,11 @@ oc session attach <session-id>   # live events; Ctrl-C detaches, the agent keeps
 
 A draft PR opens, attributed to whoever labeled the issue. The session goes
 dormant; `oc session get <id>` shows `usage.active_seconds` — dormant time
-is not billed.
+uses no compute.
 
 Comment on the PR: *"also update the changelog."* The session wakes with its
-full context, pushes a commit, and sleeps again. The thread stays available
-as long as the PR does.
+full context, pushes a commit, and sleeps again. The thread persists; a
+comment weeks later wakes the same context.
 
 ## Change the model
 
@@ -62,8 +61,10 @@ as long as the PR does.
 oc agent update fixer --model openai/gpt-5.x
 ```
 
-Effective on the next model call; same workspace, prompt, and triggers.
-Each change is a new agent version — `oc agent rollback fixer v1` reverts.
+Effective when the agent next wakes — switching providers means the runtime
+reconnects; a change within the same provider applies on the very next model
+call. Same workspace, prompt, and triggers. Each change is a new agent
+version — `oc agent rollback fixer v1` reverts.
 
 ## Next
 

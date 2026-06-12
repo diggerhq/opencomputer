@@ -16,8 +16,8 @@ model — or the entire harness — is a configuration change.
 | Concept | What it is |
 |---|---|
 | [Agent](/background-agents/agents) | Definition: prompt, skills, model, triggers, policies. Versioned. Starts as one prompt; can grow into a repo. |
-| [Session](/background-agents/sessions) | One thread of work: a durable event timeline. Active while working, dormant otherwise; dormancy is not billed. |
-| [Workspace](/background-agents/workspaces) | A machine image for your repo, rebuilt on a schedule — dependencies installed, build warm. |
+| [Session](/background-agents/sessions) | One thread of work: a durable event timeline. Active while working, dormant otherwise; dormant holds no compute. |
+| [Workspace](/background-agents/workspaces) | A machine image for your repo, rebuilt on every push — dependencies installed, build warm. |
 | [Trigger](/background-agents/triggers) | GitHub events, routed to the right session. |
 | [Connection](/background-agents/triggers#connections) | The GitHub App install and model provider keys. |
 | [Runtime](/background-agents/runtimes) | The loop that drives a session. Its model is separate configuration. |
@@ -36,12 +36,15 @@ die at any point and the session resumes where it was. Details:
 Sessions work inside ordinary [sandboxes](/sandboxes/overview), booted from
 the workspace's latest build and managed for you. `oc session shell <id>`
 opens the actual machine. For full control of the loop and the machine, use
-the [Agent SDK](/agents/overview) instead.
+the [Agent SDK](/agents/overview) instead. [Hosted
+Agents](/agents-api/overview) remains the surface for chat-style agents on
+managed cores and channels; Background Agents is for event-triggered,
+unattended work.
 
 ## Properties
 
-- Sessions start in ~2 seconds, because the workspace rebuilt itself
-  recently.
+- Sessions start in seconds, because the workspace rebuilt itself on the
+  last push.
 - Models are addressed `provider/model` and switched with one command —
   effective on the next call within a provider, on the next turn across
   providers. Bring your own keys, including OpenRouter.

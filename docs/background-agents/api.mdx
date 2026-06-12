@@ -62,7 +62,8 @@ Session object (abridged):
   "pins": {
     "agent_version": 4,
     "workspace_build": 14,
-    "runtime": "opencode@sha256:…"
+    "runtime": "opencode@sha256:…",
+    "model": { "requested": "anthropic/claude-opus-4-8", "served": "anthropic/claude-opus-4-8" }
   },
   "sandbox": { "state": "hibernated", "preview_urls": [] },
   "usage": { "active_seconds": 672, "tokens": { "in": 184211, "out": 9302 }, "usd": 0.47 }
@@ -75,7 +76,7 @@ Event envelope:
 {
   "id": "evt_01…",
   "ts": "2026-06-12T09:31:04Z",
-  "actor": "agent",
+  "actor": "platform",
   "kind": "delivery",
   "body": { "type": "pr.open", "repo": "acme/web", "number": 413, "as": "maria" },
   "refs": [{ "type": "github_pr", "number": 413 }]

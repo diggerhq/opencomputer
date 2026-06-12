@@ -1,6 +1,6 @@
 ---
 title: "Sessions"
-description: "Durable threads of work; dormancy is not billed"
+description: "Durable threads of work; dormant sessions hold no compute"
 ---
 
 A session is one thread of an agent's work: one issue, one PR, one ongoing
@@ -11,21 +11,22 @@ isn't.
 ## Lifecycle
 
 ```
-created ──► active ◄──► dormant ──► archived (retention policy)
-                │
-                └──► blocked (waiting on a human answer)
+active ◄──► dormant ──► archived (retention policy)
+   │
+   └──► blocked (waiting on a human answer)
 ```
 
 - **active** — a runtime is working; billing runs.
-- **dormant** — nothing to do. No compute attached; cost ≈ storage. A
+- **dormant** — nothing to do. No compute attached; storage only. A
   session can stay dormant for months and wake in seconds.
-- **blocked** — the agent asked a question (`ask`) and is waiting. Not
-  billed.
+- **blocked** — the agent asked a question (`ask`) and is waiting. No
+  compute attached.
 - Sessions are never forcibly ended; archival is a retention policy you set.
 
-Machine failures, deploys, and restarts do not lose session state. A session
-resumes with its exact working context — the conversation in progress and
-the files in its sandbox — regardless of what happened to the compute.
+Machine failures, deploys, and restarts do not lose session state. The
+conversation resumes exactly where it was; sandbox files are restored from a
+snapshot taken at most minutes earlier, with the commands run since
+reconciled on top.
 
 ## Starting and routing
 
@@ -78,4 +79,5 @@ reproducible.
 
 You pay for attached compute and model tokens while the session is active
 (`usage.active_seconds`). A session that worked 11 minutes across two days
-bills 11 minutes.
+bills 11 minutes of compute; dormant time costs only the storage of the
+timeline and snapshots.

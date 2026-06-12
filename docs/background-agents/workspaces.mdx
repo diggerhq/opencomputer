@@ -1,19 +1,18 @@
 ---
 title: "Workspaces"
-description: "Machine images for your repo, rebuilt on a schedule"
+description: "Machine images for your repo, rebuilt on every push"
 ---
 
 Cloning, installing, and building take minutes. A workspace does that work
-ahead of time on a schedule and snapshots the result, so sessions boot into
-a ready machine in seconds.
+ahead of time — on every push — and snapshots the result, so sessions boot
+into a ready machine in seconds.
 
 ```bash
 oc workspace create web \
   --repo github.com/acme/web \
   --setup "pnpm i && pnpm build" \
   --warm "pnpm test --filter smoke" \
-  --refresh 30m \
-  --warm-pool 1
+  --pool 1
 ```
 
 ## Recipe
@@ -24,8 +23,11 @@ oc workspace create web \
 
 ## Builds
 
-With `--refresh 30m`, the workspace rebuilds every 30 minutes: clone, setup,
-warm, snapshot. Builds form an immutable lineage:
+The workspace rebuilds on every push to the default branch — clone, setup,
+warm, snapshot — so the latest build matches the latest code. `--refresh
+30m` switches to interval rebuilds instead: useful at commit volumes where
+per-push builds would pile up, or to pick up floating dependencies on a
+quiet repo. Builds form an immutable lineage:
 
 ```bash
 oc workspace builds web
@@ -36,8 +38,12 @@ oc workspace builds web
 Sessions boot from the latest successful build and pin it. A failed build
 never becomes latest.
 
-`--warm-pool N` keeps N machines pre-booted from the latest build, removing
-even the boot seconds for busy agents.
+Builds run on ordinary sandboxes and bill as build minutes. On-push refresh
+costs nothing while the repo is quiet; `--refresh 30m` runs ~48 builds a day
+whether or not anything changed.
+
+`--pool N` keeps N machines pre-booted from the latest build, removing even
+the boot seconds for busy agents.
 
 ## Sharing
 
@@ -53,7 +59,7 @@ from the workspace (see [Sessions](/background-agents/sessions)).
 ## API
 
 ```bash
-POST /v2/workspaces              # create (recipe, refresh, warm pool)
+POST /v2/workspaces              # create (recipe, refresh, pool)
 GET  /v2/workspaces/:id          # recipe, pool status, latest build
 GET  /v2/workspaces/:id/builds   # lineage
 POST /v2/workspaces/:id/builds   # build now

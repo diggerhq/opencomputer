@@ -34,6 +34,10 @@ acknowledged instantly, then routed:
   issue.
 - A comment on a PR the agent opened resumes the session that opened it.
 
+Only members of your organization can trigger an agent or wake a session —
+labels and comments from anyone else are ignored. Configurable per agent
+([policies](/background-agents/agents#policies)).
+
 ## Deliveries
 
 Agents hold no GitHub tokens. To open a PR or post a comment, the agent
