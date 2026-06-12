@@ -1,59 +1,61 @@
 ---
 title: "How it works"
-description: "The loop, the machine, and why nothing is lost when either dies"
+description: "The moving parts, how they interact, and why they're split this way"
 ---
 
-```
-GitHub event ──► session timeline (durable record)
-                      │ wakes
-                      ▼
-                 runtime — the loop ───► model gateway ───► provider
-                      │ acts in
-                      ▼
-                 sandbox — the machine ───► deliveries (PR, comment)
-```
+<Frame>
+  <img src="/images/background-agents-architecture.svg" alt="Background Agents architecture: triggers feed a durable session timeline; a disposable runtime reads and appends to it, calls models through the gateway, and acts in a disposable sandbox; deliveries carry results back to GitHub" />
+</Frame>
 
-A session separates the agent into a record and two machines:
+## The moving parts
 
-- **The timeline** is the record: every message, action, and result, stored
-  as it happens. The timeline *is* the session; the machines are not.
-- **The runtime** runs the loop: read the timeline, call the model, decide.
-  It holds no state and no credentials.
-- **The sandbox** is where the agent acts — files, commands, tests — booted
-  from the workspace's latest build.
+| Part | What it is | Durability | Responsibility |
+|---|---|---|---|
+| Session timeline | Append-only event record in the platform | **Durable** — it *is* the session | Holds everything that happened; wakes the runtime when new events arrive |
+| Runtime | A VM running the agent loop | Disposable | Read timeline → call model → decide → act. Holds no state, no credentials |
+| Model gateway | Proxy between runtimes and providers | **Durable** (its records) | Applies the configured model per call, holds provider keys, meters tokens, records every request and response as they stream |
+| Sandbox | A VM booted from the workspace's latest build | Disposable (snapshotted periodically) | Where the agent acts: commands, edits, tests. One per session, never shared |
+| Delivery connectors | Platform-side GitHub integration | — | Open PRs and post comments for the agent, attributed to the requesting user |
 
-## Nothing lives in the machines
+## How a task flows
 
-State leaves the machines the moment it exists:
+1. Someone labels an issue. The trigger event is stored on a session's
+   timeline (new session, or the existing one for that issue).
+2. The platform starts a runtime and attaches the session's sandbox.
+3. The runtime reads the timeline from where it left off and calls the
+   model — through the gateway, which substitutes the configured model and
+   records the exchange.
+4. The agent acts in the sandbox; each action is appended to the timeline
+   as it happens.
+5. To open a PR, the runtime appends a delivery request; a connector
+   performs it and records the PR number.
+6. Nothing left to do: the runtime exits, the sandbox sleeps. The session is
+   dormant — just the record, no machines, no billing.
+7. A comment on the PR routes back to this session (step 5 recorded the PR),
+   and the cycle repeats with full context.
 
-- Timeline events are stored as they are produced.
-- The conversation: every model call passes through the model gateway, which
-  records request and response as they stream. Provider APIs carry the full
-  context on every call, so the latest exchange is the agent's complete
-  working memory — captured without the runtime's involvement.
-- Files: the session's sandbox is snapshotted periodically while work is in
-  progress.
+## Why it's split this way
 
-Either machine can therefore be lost at any point — mid-task, mid-model-call
-— and the session resumes where it was on fresh machines. A model response
-in flight when the runtime dies is still recorded, and not re-billed.
+Both machines are disposable because no state lives in them — it has already
+left by the time it could be lost:
 
-## Consequences
+- events are stored as they are produced (step 4);
+- the conversation is recorded at the gateway (step 3) — provider APIs carry
+  the full context on every call, so the latest recorded exchange is the
+  agent's complete working memory;
+- sandbox files are snapshotted periodically while work is in progress.
 
-- **Dormancy is free.** Waiting — for a person, a build, a schedule —
-  detaches both machines; only the record remains. Waking takes seconds.
-- **Model switching is per call.** The gateway applies the configured model
-  to each request: no restart, no migration. This is also why provider keys
-  never enter the machines.
-- **Threads can live for months.** The timeline is append-only and cheap to
-  keep; a session can follow a PR for as long as it stays open.
-- **Updates don't disturb running work.** Sessions pin their agent version,
-  workspace build, and runtime at start; changes apply to new sessions.
+What this buys:
 
-## Why two machines
-
-The sandbox runs arbitrary code — yours, and code the agent writes — so it
-is isolated per session and treated as replaceable. The loop needs neither
-of those risks nor that lifecycle: separating it keeps long-running work in
-the sandbox (a one-hour build doesn't hold the loop hostage) and lets the
-platform place, restart, and upgrade loops freely.
+- **Crash-proof.** Kill either machine mid-task — even mid-model-call — and
+  the session resumes where it was on fresh machines. An in-flight model
+  response is still recorded, and not re-billed.
+- **Free dormancy.** Waiting detaches both machines; a session can sleep for
+  months for ~storage cost and wake in seconds.
+- **Per-call model switching.** The gateway applies model config on each
+  request — no restart; keys never enter the machines.
+- **Risk isolation.** The sandbox runs arbitrary code, so it's per-session
+  and replaceable; the loop carries neither that risk nor that lifecycle. A
+  one-hour build in the sandbox doesn't keep a loop machine running.
+- **Safe upgrades.** Sessions pin their agent version, workspace build, and
+  runtime at start; changes apply to new sessions.
