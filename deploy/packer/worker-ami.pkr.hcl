@@ -259,7 +259,11 @@ build {
       # Compute a stable hash over all rootfs inputs. Order must be
       # deterministic — use `sort` — so the same inputs always hash to the
       # same value regardless of filesystem enumeration order.
-      "INPUT_HASH=$({ sha256sum /usr/local/bin/osb-agent; find /tmp/rootfs-ctx -type f | sort | xargs sha256sum; sha256sum /opt/opensandbox/guest-modules/*.ko* 2>/dev/null; } | sha256sum | awk '{print $1}')",
+      # guest-kernel-version is a hash input: build-rootfs-docker.sh bakes the
+      # host's /lib/modules/<kver> tree into the ext4, so a kernel pin change
+      # MUST miss the cache — a cached rootfs carrying the old kernel's modules
+      # paired with the new vmlinux fails module loading (virtio_mem) at boot.
+      "INPUT_HASH=$({ sha256sum /usr/local/bin/osb-agent; find /tmp/rootfs-ctx -type f | sort | xargs sha256sum; sha256sum /opt/opensandbox/guest-modules/*.ko* 2>/dev/null; cat /opt/opensandbox/guest-kernel-version 2>/dev/null; } | sha256sum | awk '{print $1}')",
       "echo \"Rootfs input hash: $INPUT_HASH\"",
       "# Derive ext4 UUID from the hash (first 32 hex chars, dashed to UUID form).",
       "ROOTFS_UUID=$(echo \"$INPUT_HASH\" | head -c 32 | sed 's/\\(........\\)\\(....\\)\\(....\\)\\(....\\)\\(............\\)/\\1-\\2-\\3-\\4-\\5/')",
