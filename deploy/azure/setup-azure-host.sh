@@ -45,17 +45,28 @@ export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
 echo "Go: $(/usr/local/go/bin/go version)"
 
 # --- Guest kernel for QEMU ---
-# Use the host's generic Ubuntu kernel (has VIRTIO_BLK=y, VIRTIO_NET=y, VIRTIO_PCI=y built-in).
+# Use a generic Ubuntu kernel (has VIRTIO_BLK=y, VIRTIO_NET=y, VIRTIO_PCI=y built-in).
 # We also need vsock and overlay as modules — those get baked into the rootfs image.
+#
+# The guest kernel is PINNED to an exact version. Hibernate/wake (savevm/loadvm)
+# correctness depends on guest kernel behavior, so kernel bumps must be
+# deliberate, validated changes — never whatever the Ubuntu archive happens to
+# serve on build day. To move the pin: bump GUEST_KVER_PIN, build the image, and
+# validate create → hibernate → wake → exec (plus e2fsck of the woken rootfs)
+# on dev before any prod roll.
 echo "Setting up guest kernel..."
 KERNEL_DIR="/opt/opensandbox"
 mkdir -p "$KERNEL_DIR"
 
-# Install generic kernel package (has virtio built-in, unlike the azure kernel)
-apt-get install -y -qq linux-image-generic
+GUEST_KVER_PIN="6.8.0-117"
 
-# Find the generic kernel and copy it
-GENERIC_VMLINUZ=$(ls -t /boot/vmlinuz-*-generic 2>/dev/null | head -1)
+# Install the exact pinned kernel (generic flavor: virtio built-in, unlike the
+# azure kernel). A missing package fails the build loudly — that's correct for
+# a pin; resolve by choosing and validating a new pin, not by unpinning.
+apt-get install -y -qq "linux-image-${GUEST_KVER_PIN}-generic"
+
+GENERIC_VMLINUZ="/boot/vmlinuz-${GUEST_KVER_PIN}-generic"
+[ -f "$GENERIC_VMLINUZ" ] || GENERIC_VMLINUZ=""
 if [ -n "$GENERIC_VMLINUZ" ]; then
     cp "$GENERIC_VMLINUZ" "$KERNEL_DIR/vmlinux"
     chmod 644 "$KERNEL_DIR/vmlinux"
