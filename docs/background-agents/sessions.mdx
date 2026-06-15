@@ -49,6 +49,8 @@ that opened it. One agent runs many concurrent sessions.
 | `ask` | The agent needs a human decision; the session blocks until answered |
 | `delivery` | An outward action performed for the agent — PR opened, comment posted |
 | `status` | Lifecycle and configuration changes |
+| `timer` | A scheduled wake fired |
+| `exec.completed` | A long-running command the agent was waiting on finished |
 | `error` | A failure, with retry context |
 
 ```bash

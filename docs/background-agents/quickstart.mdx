@@ -6,6 +6,9 @@ description: "A working background agent in three commands"
 After this page, labeling a GitHub issue `agent` produces a draft PR, and
 commenting on that PR wakes the same agent to follow up.
 
+<Note>**Preview** — see the [overview](/background-agents/overview); some steps
+below are still rolling out.</Note>
+
 ## 1. Connect GitHub
 
 ```bash
@@ -13,7 +16,8 @@ oc connect github
 ```
 
 Installs the OpenComputer GitHub App on your org. No app registration,
-webhook setup, or secrets.
+webhook setup, or secrets. To have PRs open **as you** rather than as the App
+on your behalf, also run `oc connect github --as-user`.
 
 ## 2. Create a workspace
 
@@ -47,8 +51,9 @@ oc session list --agent fixer
 oc session attach <session-id>   # live events; Ctrl-C detaches, the agent keeps working
 ```
 
-A draft PR opens, attributed to whoever labeled the issue. The session goes
-dormant; `oc session get <id>` shows `usage.active_seconds` — dormant time
+A draft PR opens, attributed to the person who labeled the issue — as them if
+they ran `oc connect github --as-user`, otherwise opened by the App on their
+behalf. The session goes dormant; `oc session get <id>` shows `usage.active_seconds` — dormant time
 uses no compute.
 
 Comment on the PR: *"also update the changelog."* The session wakes with its
