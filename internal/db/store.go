@@ -62,6 +62,14 @@ func isTerminalSessionStatus(status string) bool {
 	}
 }
 
+// IsTerminalSessionStatus is the exported view of isTerminalSessionStatus, for
+// callers outside this package (e.g. the scaler's drain path, which reaps a
+// worker-reported-running VM whose cell session is already terminal instead of
+// migrating the zombie onto a fresh worker).
+func IsTerminalSessionStatus(status string) bool {
+	return isTerminalSessionStatus(status)
+}
+
 // SetEncryptor configures the encryption key for project secrets.
 func (s *Store) SetEncryptor(enc *crypto.Encryptor) {
 	s.encryptor = enc
