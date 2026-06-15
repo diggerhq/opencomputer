@@ -227,6 +227,7 @@ export interface AllowedHostsInfo {
 
 export class Sandbox {
   readonly sandboxId: string;
+  readonly id: string;
   readonly agent: Agent;
   readonly files: Filesystem;
   readonly exec: Exec;
@@ -257,6 +258,7 @@ export class Sandbox {
 
   private constructor(data: SandboxData, apiUrl: string, apiKey: string) {
     this.sandboxId = data.sandboxID;
+    this.id = this.sandboxId;
     this._status = data.status;
     this.apiUrl = apiUrl;
     this.apiKey = apiKey;

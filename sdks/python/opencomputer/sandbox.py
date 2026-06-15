@@ -83,6 +83,10 @@ class Sandbox:
     _client: httpx.AsyncClient = field(default=None, repr=False)
     _data_client: httpx.AsyncClient = field(default=None, repr=False)
 
+    @property
+    def id(self) -> str:
+        return self.sandbox_id
+
     @classmethod
     async def create(
         cls,
