@@ -215,6 +215,18 @@ RUN useradd -m -u 1000 -s /bin/bash sandbox && \
     chown sandbox:sandbox /workspace 2>/dev/null || true
 COPY osb-agent /usr/local/bin/osb-agent
 RUN chmod +x /usr/local/bin/osb-agent
+# PID 1 is our custom init at /sbin/init (it execs osb-agent). That path is
+# normally owned by systemd-sysv, which ships /sbin/init as a symlink to
+# systemd. The base image has systemd-sysv removed so the path is ours — but a
+# user image build that runs `apt install` of anything pulling libpam-systemd
+# (cups, at-spi, many GUI/browser libs) drags systemd-sysv back in, and its
+# maintainer scripts reclaim /sbin/init -> /lib/systemd/systemd. The finalized
+# image then cold-boots systemd instead of osb-agent, the agent socket never
+# comes up, and the build fails at finalize with "agent not ready after 30s".
+# dpkg-divert redirects any future packaged /sbin/init to /sbin/init.distrib so
+# our init stays PID 1 no matter what the guest installs. Must run BEFORE we
+# place our init so the diversion is registered against the path first.
+RUN dpkg-divert --local --rename --divert /sbin/init.distrib /sbin/init
 COPY init /sbin/init
 RUN chmod +x /sbin/init
 RUN mkdir -p /mnt/data /mnt/overlay
