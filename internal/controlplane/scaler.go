@@ -1198,12 +1198,44 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 			return
 		}
 
-		// Count running sandboxes
+		// Count running sandboxes — but reap zombies instead of migrating them.
+		//
+		// The worker reports a VM as "running" whenever its qemu process is
+		// alive (vmAlive). That is NOT the same as the cell believing the
+		// sandbox is live: a sandbox can fail (session→failed, billing closed)
+		// while its qemu is never reaped, leaving a zombie the worker still
+		// lists as running. Migrating such a zombie relocates it onto a fresh
+		// worker, orphaned from the cell — it bills forever on the edge
+		// (D1=running, ticks flow) and is unroutable (cell session=failed →
+		// "Session not found"). This is exactly how sb-f62fc71d leaked during a
+		// rolling replace. Reap it on the source instead; only migrate VMs whose
+		// cell session is genuinely live.
+		//
+		// A VM with no cell session at all (lookup error) is left to migrate —
+		// it may be a brand-new create whose session row hasn't committed yet,
+		// and the worker-authoritative orphan reaper is the right place to
+		// handle truly session-less VMs.
 		var running []string
 		for _, sb := range listResp.Sandboxes {
-			if sb.Status == "running" {
-				running = append(running, sb.SandboxId)
+			if sb.Status != "running" {
+				continue
 			}
+			if s.store != nil {
+				if sess, err := s.store.GetSandboxSession(ctx, sb.SandboxId); err == nil && sess != nil && db.IsTerminalSessionStatus(sess.Status) {
+					log.Printf("scaler: drain: %s reports running on %s but cell session is %q — reaping zombie instead of migrating", sb.SandboxId, workerID, sess.Status)
+					reapCtx, reapCancel := context.WithTimeout(ctx, 10*time.Second)
+					if _, derr := sourceClient.DestroySandbox(reapCtx, &pb.DestroySandboxRequest{SandboxId: sb.SandboxId}); derr != nil {
+						log.Printf("scaler: drain: reap %s on %s failed: %v (ghost-reaper will retry)", sb.SandboxId, workerID, derr)
+					} else {
+						// Mirror reality to D1 so sandboxes_index stops showing
+						// running@worker and the edge stops metering the zombie.
+						s.publishStopped(context.Background(), sb.SandboxId, workerID, sess.OrgID, "drain_zombie_reap")
+					}
+					reapCancel()
+					continue
+				}
+			}
+			running = append(running, sb.SandboxId)
 		}
 		if len(running) == 0 {
 			log.Printf("scaler: drain: worker %s fully drained", workerID)
