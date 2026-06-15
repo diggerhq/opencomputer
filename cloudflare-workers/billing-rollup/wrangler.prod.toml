@@ -22,7 +22,13 @@ database_id = "8329e0f0-100d-445a-bf89-95c065f15dbb"
 
 [vars]
 WORKER_ENV = "prod"
-SHADOW = "true"
+# Armed for Pro-billing cutover: the edge ships live Stripe meter events from
+# BILL_FROM onward. Buckets that START before BILL_FROM emit no meter events
+# (the cell billed those). Flip the cell half
+# (OPENSANDBOX_PRO_BILLING_AUTHORITY=edge on all CPs) just after BILL_FROM.
+SHADOW = "false"
+# 1781564400 = 2026-06-15T23:00:00Z (4:00 PM PDT).
+BILL_FROM = "1781564400"
 BUCKET_SECONDS = "3600"
 GRACE_SECONDS = "600"
 
