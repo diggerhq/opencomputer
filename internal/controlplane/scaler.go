@@ -24,6 +24,7 @@ const (
 	scaleDownThreshold  = 0.20             // Scale down when utilization < 20%
 	maxWorkersPerRegion = 10               // Hard cap to prevent runaway launches
 	pendingWorkerTTL    = 10 * time.Minute // How long to wait for a launched worker to register
+	defaultWorkerCap    = 50               // Capacity estimate for pending workers before first heartbeat.
 
 	// Resource-based scaling thresholds (applied per-worker, trigger on ANY worker exceeding)
 	resourceCPUThreshold  = 70.0 // Scale up if any worker CPU > 70%
@@ -90,7 +91,16 @@ type ScalerConfig struct {
 	MinWorkers  int           // minimum total workers per region (0 = default 1). Always kept running.
 	MaxWorkers  int           // maximum workers per region (0 = default 10). Hard cap to prevent runaway launches.
 	IdleReserve int           // target idle (0 sandbox) workers for burst absorption (0 = default 1). Separate from MinWorkers.
-	WorkerPool  string        // optional placement pool filter: ondemand or burst
+	// MinIdleCapacity is the target spare sandbox slot capacity per region.
+	// When >0, this replaces the worker-count based MinWorkers/IdleReserve
+	// pre-provisioning logic while still respecting MaxWorkers.
+	MinIdleCapacity int
+	// MinIdleCPUs is the target spare sandbox CPU units per region. When >0,
+	// it takes precedence over MinIdleCapacity and is converted to slots via
+	// DefaultSandboxCPUs.
+	MinIdleCPUs       int
+	DefaultSandboxCPUs int
+	WorkerPool        string // optional placement pool filter: ondemand or burst
 
 	// Event emit for D1 sandboxes_index sync. After a scaler-triggered
 	// migration succeeds (rolling replace, evacuation), XADD a "migrated"
@@ -168,6 +178,9 @@ type Scaler struct {
 	minWorkers  int
 	maxWorkers  int
 	idleReserve int
+	minIdleCap  int
+	minIdleCPUs int
+	sandboxCPUs int
 	workerPool  string
 
 	rdb    *redis.Client
@@ -207,6 +220,10 @@ func NewScaler(cfg ScalerConfig) *Scaler {
 	if idleReserve < 0 {
 		idleReserve = 0
 	}
+	sandboxCPUs := cfg.DefaultSandboxCPUs
+	if sandboxCPUs <= 0 {
+		sandboxCPUs = 1
+	}
 	stateStore := cfg.StateStore
 	if stateStore == nil {
 		stateStore = NewInMemoryScalerState()
@@ -223,6 +240,9 @@ func NewScaler(cfg ScalerConfig) *Scaler {
 		minWorkers:   minWorkers,
 		maxWorkers:   maxWorkers,
 		idleReserve:  idleReserve,
+		minIdleCap:   cfg.MinIdleCapacity,
+		minIdleCPUs:  cfg.MinIdleCPUs,
+		sandboxCPUs:  sandboxCPUs,
 		workerPool:   cfg.WorkerPool,
 		machineSizes: cfg.MachineSizes,
 		rdb:          cfg.RedisClient,
@@ -516,10 +536,15 @@ func (s *Scaler) evaluateRegion(ctx context.Context, region string) {
 		}
 	}
 
-	// Ensure minimum workers are running (pre-provisioned capacity).
-	// Ignores cooldowns but respects creation failure backoff.
 	totalWorkers := len(workers) + len(s.state.GetPendingLaunches(region))
-	if totalWorkers < s.minWorkers {
+
+	if s.hasMinIdleReserve() {
+		if s.ensureMinIdleReserve(ctx, region, workers, totalWorkers) {
+			return
+		}
+	} else if totalWorkers < s.minWorkers {
+		// Ensure minimum workers are running (pre-provisioned capacity).
+		// Ignores cooldowns but respects creation failure backoff.
 		if until, ok := s.state.GetCreationBackoffUntil(region); ok {
 			log.Printf("scaler: region %s below minimum workers (%d/%d) but creation backoff active until %s",
 				region, totalWorkers, s.minWorkers, until.Format(time.RFC3339))
@@ -534,28 +559,30 @@ func (s *Scaler) evaluateRegion(ctx context.Context, region string) {
 		return
 	}
 
-	// Headroom: maintain a pool of idle workers for burst absorption.
-	// Uses minWorkers as the reserve target — this is separate from the
-	// minimum total workers check above. When bin-packing overflows into
-	// reserve workers, we launch replacements one at a time so there's
-	// always warm capacity without thrashing.
-	idleWorkers := 0
-	for _, w := range workers {
-		if s.state.IsDraining(w.MachineID) {
-			continue
+	if !s.hasMinIdleReserve() {
+		// Headroom: maintain a pool of idle workers for burst absorption.
+		// Uses minWorkers as the reserve target — this is separate from the
+		// minimum total workers check above. When bin-packing overflows into
+		// reserve workers, we launch replacements one at a time so there's
+		// always warm capacity without thrashing.
+		idleWorkers := 0
+		for _, w := range workers {
+			if s.state.IsDraining(w.MachineID) {
+				continue
+			}
+			if w.Current == 0 {
+				idleWorkers++
+			}
 		}
-		if w.Current == 0 {
-			idleWorkers++
+		pendingCount := len(s.state.GetPendingLaunches(region))
+		reserveTarget := s.idleReserve
+		idleOrPending := idleWorkers + pendingCount
+		if idleOrPending < reserveTarget && totalWorkers < s.maxWorkers {
+			// Launch 1 at a time to avoid over-provisioning
+			log.Printf("scaler: region %s reserve low (%d idle + %d pending < %d target), launching 1",
+				region, idleWorkers, pendingCount, reserveTarget)
+			s.scaleUp(ctx, region)
 		}
-	}
-	pendingCount := len(s.state.GetPendingLaunches(region))
-	reserveTarget := s.idleReserve
-	idleOrPending := idleWorkers + pendingCount
-	if idleOrPending < reserveTarget && totalWorkers+pendingCount < s.maxWorkers {
-		// Launch 1 at a time to avoid over-provisioning
-		log.Printf("scaler: region %s reserve low (%d idle + %d pending < %d target), launching 1",
-			region, idleWorkers, pendingCount, reserveTarget)
-		s.scaleUp(ctx, region)
 	}
 
 	if needsScaleUp {
@@ -596,7 +623,7 @@ func (s *Scaler) evaluateRegion(ctx context.Context, region string) {
 				region, reason, maxCPU, maxMem, maxDisk, utilization*100)
 			s.scaleUp(ctx, region)
 		}
-	} else if utilization < scaleDownThreshold && len(workers) > s.minWorkers {
+	} else if utilization < scaleDownThreshold && s.canScaleDown(region, workers) {
 		// Phase 4: Scale down via smart drain (live-migrate sandboxes, then destroy)
 		log.Printf("scaler: region %s utilization %.1f%% < %.0f%%, initiating smart drain", region, utilization*100, scaleDownThreshold*100)
 		s.smartScaleDown(ctx, region, workers)
@@ -604,6 +631,92 @@ func (s *Scaler) evaluateRegion(ctx context.Context, region string) {
 
 	// Phase 5: Rolling replacement of workers running old versions
 	s.rollingReplace(ctx, region, workers)
+}
+
+func (s *Scaler) hasMinIdleReserve() bool {
+	return s.minIdleCPUs > 0 || s.minIdleCap > 0
+}
+
+func (s *Scaler) minIdleReserveTarget() (target, multiplier int, label string) {
+	if s.minIdleCPUs > 0 {
+		return s.minIdleCPUs, s.sandboxCPUs, "cpu"
+	}
+	return s.minIdleCap, 1, "slot"
+}
+
+func (s *Scaler) ensureMinIdleReserve(ctx context.Context, region string, workers []*WorkerInfo, totalWorkers int) bool {
+	target, multiplier, label := s.minIdleReserveTarget()
+	idleCapacity, pendingCapacity, estimate := s.idleCapacity(region, workers, multiplier)
+	if idleCapacity+pendingCapacity >= target {
+		return false
+	}
+	if until, ok := s.state.GetCreationBackoffUntil(region); ok {
+		log.Printf("scaler: region %s idle %s capacity low (%d live + %d pending < %d target) but creation backoff active until %s",
+			region, label, idleCapacity, pendingCapacity, target, until.Format(time.RFC3339))
+		return true
+	}
+	remainingWorkers := s.maxWorkers - totalWorkers
+	if remainingWorkers <= 0 {
+		log.Printf("scaler: region %s idle %s capacity low (%d live + %d pending < %d target) but at max workers (%d/%d)",
+			region, label, idleCapacity, pendingCapacity, target, totalWorkers, s.maxWorkers)
+		return false
+	}
+
+	deficit := target - idleCapacity - pendingCapacity
+	launches := (deficit + estimate - 1) / estimate
+	if launches > remainingWorkers {
+		launches = remainingWorkers
+	}
+	log.Printf("scaler: region %s idle %s capacity low (%d live + %d pending < %d target), launching %d worker(s) using ~%d %s/worker",
+		region, label, idleCapacity, pendingCapacity, target, launches, estimate, label)
+	for i := 0; i < launches; i++ {
+		s.scaleUp(ctx, region)
+	}
+	return true
+}
+
+func (s *Scaler) idleCapacity(region string, workers []*WorkerInfo, multiplier int) (idleCapacity, pendingCapacity, estimate int) {
+	if multiplier <= 0 {
+		multiplier = 1
+	}
+	estimate = defaultWorkerCap * multiplier
+	for _, w := range workers {
+		if w.Draining || s.state.IsDraining(w.MachineID) {
+			continue
+		}
+		workerCapacity := w.Capacity * multiplier
+		if workerCapacity > estimate {
+			estimate = workerCapacity
+		}
+		if w.Capacity > w.Current {
+			idleCapacity += (w.Capacity - w.Current) * multiplier
+		}
+	}
+	pendingCapacity = len(s.state.GetPendingLaunches(region)) * estimate
+	return idleCapacity, pendingCapacity, estimate
+}
+
+func (s *Scaler) canScaleDown(region string, workers []*WorkerInfo) bool {
+	if len(workers) <= s.minWorkers {
+		return false
+	}
+	if !s.hasMinIdleReserve() {
+		return true
+	}
+
+	target, multiplier, _ := s.minIdleReserveTarget()
+	idleCapacity, pendingCapacity, _ := s.idleCapacity(region, workers, multiplier)
+	bestRemovable := 0
+	for _, w := range workers {
+		if w.Draining || s.state.IsDraining(w.MachineID) {
+			continue
+		}
+		spare := (w.Capacity - w.Current) * multiplier
+		if spare > bestRemovable {
+			bestRemovable = spare
+		}
+	}
+	return idleCapacity+pendingCapacity-bestRemovable >= target
 }
 
 func (s *Scaler) scaleUp(_ context.Context, region string) {

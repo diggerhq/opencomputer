@@ -75,6 +75,8 @@ var secretMapping = map[string]string{
 	"server-sentry-dsn":            "OPENSANDBOX_SENTRY_DSN",
 	"server-azure-vm-sizes":        "OPENSANDBOX_AZURE_VM_SIZES",
 	"server-ec2-instance-types":    "OPENSANDBOX_EC2_INSTANCE_TYPES",
+	"server-min-idle-capacity":     "OPENSANDBOX_MIN_IDLE_CAPACITY",
+	"server-min-idle-cpus":         "OPENSANDBOX_MIN_IDLE_CPUS",
 	"server-ocfs2-node-ips":        "OPENSANDBOX_OCFS2_NODE_IPS",
 	"server-s3-access-key":         "OPENSANDBOX_S3_ACCESS_KEY_ID",
 	"server-s3-secret-key":         "OPENSANDBOX_S3_SECRET_ACCESS_KEY",

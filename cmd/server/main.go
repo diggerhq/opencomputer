@@ -501,17 +501,20 @@ func main() {
 
 			scalerState := controlplane.NewRedisScalerState(redisRegistry.RedisClient())
 			scaler := controlplane.NewScaler(controlplane.ScalerConfig{
-				Pool:         pool,
-				Registry:     redisRegistry,
-				Store:        opts.Store,
-				StateStore:   scalerState,
-				WorkerImage:  workerImage,
-				Cooldown:     time.Duration(cfg.ScaleCooldownSec) * time.Second,
-				MinWorkers:   cfg.MinWorkersPerRegion,
-				MaxWorkers:   cfg.MaxWorkersPerRegion,
-				IdleReserve:  cfg.IdleReserveWorkers,
-				WorkerPool:   cfg.WorkerPool,
-				MachineSizes: machineSizes,
+				Pool:            pool,
+				Registry:        redisRegistry,
+				Store:           opts.Store,
+				StateStore:      scalerState,
+				WorkerImage:     workerImage,
+				Cooldown:        time.Duration(cfg.ScaleCooldownSec) * time.Second,
+				MinWorkers:      cfg.MinWorkersPerRegion,
+				MaxWorkers:      cfg.MaxWorkersPerRegion,
+				IdleReserve:     cfg.IdleReserveWorkers,
+				MinIdleCapacity: cfg.MinIdleCapacity,
+				MinIdleCPUs:     cfg.MinIdleCPUs,
+				DefaultSandboxCPUs: cfg.DefaultSandboxCPUs,
+				WorkerPool:      cfg.WorkerPool,
+				MachineSizes:    machineSizes,
 				// For "migrated" event emit after scaler-driven migrations
 				// (rolling replace, evacuation) — keeps D1 sandboxes_index
 				// worker_id in sync with cell-PG truth. Without this, the

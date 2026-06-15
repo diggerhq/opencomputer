@@ -1380,15 +1380,16 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	mountCtx, mountCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	_, mountErr := agentClient.Exec(mountCtx, &pb.ExecRequest{
 		Command: "/bin/sh",
-		Args: []string{"-c", strings.Join([]string{
-			"echo 3 > /proc/sys/vm/drop_caches",
-			"echo 3 > /proc/sys/vm/drop_caches",
-			"mount /dev/vdb /home/sandbox 2>/dev/null || true",
-			"resize2fs /dev/vdb 2>/dev/null || true",
-			"chown 1000:1000 /home/sandbox",
-			"mkdir -p /home/sandbox/.osb-apt-cache /var/cache/apt/archives",
-			"mountpoint -q /var/cache/apt/archives || mount --bind /home/sandbox/.osb-apt-cache /var/cache/apt/archives 2>/dev/null || true",
-		}, " && ")},
+		Args: []string{"-c", `
+set -u
+echo 3 > /proc/sys/vm/drop_caches
+echo 3 > /proc/sys/vm/drop_caches
+mount /dev/vdb /home/sandbox 2>/dev/null || true
+(timeout 30s resize2fs /dev/vdb >/dev/null 2>&1 || true) &
+chown 1000:1000 /home/sandbox
+mkdir -p /home/sandbox/.osb-apt-cache /var/cache/apt/archives
+mountpoint -q /var/cache/apt/archives || mount --bind /home/sandbox/.osb-apt-cache /var/cache/apt/archives 2>/dev/null || true
+`},
 		RunAsRoot: true,
 	})
 	mountCancel()

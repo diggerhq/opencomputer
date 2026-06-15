@@ -402,6 +402,211 @@ func TestMinWorkersEnforced(t *testing.T) {
 	}
 }
 
+func TestMinIdleCapacityOverridesMinWorkers(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	reg.addWorker(&WorkerInfo{
+		ID: "w1", MachineID: "osb-worker-w1", Region: "us-east-1",
+		Capacity: 50, Current: 0, CPUPct: 0, MemPct: 0, DiskPct: 0,
+	})
+
+	s := NewScaler(ScalerConfig{
+		Pool:            pool,
+		Registry:        reg,
+		Cooldown:        1 * time.Second,
+		Interval:        100 * time.Millisecond,
+		MinWorkers:      5,
+		MaxWorkers:      10,
+		MinIdleCapacity: 120,
+	})
+
+	s.evaluateRegion(context.Background(), "us-east-1")
+	time.Sleep(50 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&pool.created); got != 2 {
+		t.Fatalf("expected 2 launches to add ~100 spare slots, got %d", got)
+	}
+}
+
+func TestMinIdleCapacityCountsPendingLaunches(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	reg.addWorker(&WorkerInfo{
+		ID: "w1", MachineID: "osb-worker-w1", Region: "us-east-1",
+		Capacity: 50, Current: 0, CPUPct: 0, MemPct: 0, DiskPct: 0,
+	})
+
+	s := NewScaler(ScalerConfig{
+		Pool:            pool,
+		Registry:        reg,
+		Cooldown:        1 * time.Second,
+		Interval:        100 * time.Millisecond,
+		MinWorkers:      1,
+		MaxWorkers:      10,
+		MinIdleCapacity: 100,
+	})
+	s.state.AddPendingLaunch("us-east-1", pendingLaunch{
+		MachineID:  "osb-worker-pending-test",
+		LaunchedAt: time.Now(),
+	})
+
+	s.evaluateRegion(context.Background(), "us-east-1")
+	time.Sleep(50 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&pool.created); got != 0 {
+		t.Fatalf("expected no launches because pending capacity satisfies reserve, got %d", got)
+	}
+}
+
+func TestMinIdleCapacityRespectsMaxWorkers(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	for i := 0; i < 2; i++ {
+		reg.addWorker(&WorkerInfo{
+			ID: fmt.Sprintf("w%d", i), MachineID: fmt.Sprintf("osb-worker-w%d", i), Region: "us-east-1",
+			Capacity: 50, Current: 45, CPUPct: 0, MemPct: 0, DiskPct: 0,
+		})
+	}
+
+	s := NewScaler(ScalerConfig{
+		Pool:            pool,
+		Registry:        reg,
+		Cooldown:        1 * time.Second,
+		Interval:        100 * time.Millisecond,
+		MinWorkers:      1,
+		MaxWorkers:      2,
+		MinIdleCapacity: 100,
+	})
+
+	s.evaluateRegion(context.Background(), "us-east-1")
+	time.Sleep(50 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&pool.created); got != 0 {
+		t.Fatalf("expected no launches at max workers, got %d", got)
+	}
+}
+
+func TestMinIdleCapacityPreventsScaleDownBelowReserve(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	reg.addWorker(&WorkerInfo{
+		ID: "w1", MachineID: "osb-worker-w1", Region: "us-east-1",
+		Capacity: 50, Current: 0, CPUPct: 0, MemPct: 0, DiskPct: 0,
+	})
+	reg.addWorker(&WorkerInfo{
+		ID: "w2", MachineID: "osb-worker-w2", Region: "us-east-1",
+		Capacity: 50, Current: 0, CPUPct: 0, MemPct: 0, DiskPct: 0,
+	})
+
+	s := NewScaler(ScalerConfig{
+		Pool:            pool,
+		Registry:        reg,
+		Cooldown:        1 * time.Second,
+		Interval:        100 * time.Millisecond,
+		MinWorkers:      1,
+		MaxWorkers:      10,
+		MinIdleCapacity: 80,
+	})
+
+	if s.canScaleDown("us-east-1", reg.GetWorkersByRegion("us-east-1")) {
+		t.Fatal("expected min idle capacity reserve to block scale-down")
+	}
+}
+
+func TestMinIdleCPUsOverridesMinIdleCapacity(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	reg.addWorker(&WorkerInfo{
+		ID: "w1", MachineID: "osb-worker-w1", Region: "us-east-1",
+		Capacity: 50, Current: 0, CPUPct: 0, MemPct: 0, DiskPct: 0,
+	})
+
+	s := NewScaler(ScalerConfig{
+		Pool:               pool,
+		Registry:           reg,
+		Cooldown:           1 * time.Second,
+		Interval:           100 * time.Millisecond,
+		MinWorkers:         1,
+		MaxWorkers:         10,
+		MinIdleCapacity:    200,
+		MinIdleCPUs:        120,
+		DefaultSandboxCPUs: 2,
+	})
+
+	s.evaluateRegion(context.Background(), "us-east-1")
+	time.Sleep(50 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&pool.created); got != 1 {
+		t.Fatalf("expected 1 launch using cpu reserve target, got %d", got)
+	}
+}
+
+func TestMinIdleCPUsCountsPendingLaunches(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	reg.addWorker(&WorkerInfo{
+		ID: "w1", MachineID: "osb-worker-w1", Region: "us-east-1",
+		Capacity: 50, Current: 0, CPUPct: 0, MemPct: 0, DiskPct: 0,
+	})
+
+	s := NewScaler(ScalerConfig{
+		Pool:               pool,
+		Registry:           reg,
+		Cooldown:           1 * time.Second,
+		Interval:           100 * time.Millisecond,
+		MinWorkers:         1,
+		MaxWorkers:         10,
+		MinIdleCPUs:        200,
+		DefaultSandboxCPUs: 2,
+	})
+	s.state.AddPendingLaunch("us-east-1", pendingLaunch{
+		MachineID:  "osb-worker-pending-test",
+		LaunchedAt: time.Now(),
+	})
+
+	s.evaluateRegion(context.Background(), "us-east-1")
+	time.Sleep(50 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&pool.created); got != 0 {
+		t.Fatalf("expected no launches because pending CPU reserve satisfies target, got %d", got)
+	}
+}
+
+func TestMinIdleCPUsPreventsScaleDownBelowReserve(t *testing.T) {
+	reg := newMockRegistry()
+	pool := newMockPool()
+
+	reg.addWorker(&WorkerInfo{
+		ID: "w1", MachineID: "osb-worker-w1", Region: "us-east-1",
+		Capacity: 50, Current: 0, CPUPct: 0, MemPct: 0, DiskPct: 0,
+	})
+	reg.addWorker(&WorkerInfo{
+		ID: "w2", MachineID: "osb-worker-w2", Region: "us-east-1",
+		Capacity: 50, Current: 0, CPUPct: 0, MemPct: 0, DiskPct: 0,
+	})
+
+	s := NewScaler(ScalerConfig{
+		Pool:               pool,
+		Registry:           reg,
+		Cooldown:           1 * time.Second,
+		Interval:           100 * time.Millisecond,
+		MinWorkers:         1,
+		MaxWorkers:         10,
+		MinIdleCPUs:        160,
+		DefaultSandboxCPUs: 2,
+	})
+
+	if s.canScaleDown("us-east-1", reg.GetWorkersByRegion("us-east-1")) {
+		t.Fatal("expected min idle CPU reserve to block scale-down")
+	}
+}
+
 // ============================================================
 // Test: Scale-down triggers
 // ============================================================

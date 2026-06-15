@@ -154,6 +154,8 @@ type Config struct {
 	MinWorkersPerRegion int // Minimum total workers per region, default 1
 	MaxWorkersPerRegion int // Maximum workers per region (hard cap), default 10
 	IdleReserveWorkers  int // Target idle workers for burst absorption, default 1
+	MinIdleCapacity     int // Minimum spare sandbox capacity slots per region. When >0, overrides MinWorkers/IdleReserve.
+	MinIdleCPUs         int // Minimum spare sandbox CPU units per region. When >0, overrides MinIdleCapacity.
 
 	// Stripe billing
 	StripeSecretKey     string
@@ -395,6 +397,8 @@ func Load() (*Config, error) {
 		MinWorkersPerRegion: envOrDefaultInt("OPENSANDBOX_MIN_WORKERS", 1),
 		MaxWorkersPerRegion: envOrDefaultInt("OPENSANDBOX_MAX_WORKERS", 10),
 		IdleReserveWorkers:  envOrDefaultInt("OPENSANDBOX_IDLE_RESERVE", 1),
+		MinIdleCapacity:     envOrDefaultInt("OPENSANDBOX_MIN_IDLE_CAPACITY", 0),
+		MinIdleCPUs:         envOrDefaultInt("OPENSANDBOX_MIN_IDLE_CPUS", 0),
 
 		StripeSecretKey:            os.Getenv("STRIPE_SECRET_KEY"),
 		StripeWebhookSecret:        os.Getenv("STRIPE_WEBHOOK_SECRET"),

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,6 +89,8 @@ type GRPCServer struct {
 	// region is the worker's region label, used to tag operation metrics.
 	// Set via SetRegion at startup. Empty = "unknown".
 	region string
+
+	createSem chan struct{}
 }
 
 // SetRegion stamps the worker's region onto operation metrics emitted from
@@ -140,9 +143,40 @@ func NewGRPCServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, execMgr *san
 		checkpointStore:    checkpointStore,
 		store:              store,
 		server:             grpc.NewServer(serverOpts...),
+		createSem:          make(chan struct{}, workerCreateConcurrency()),
 	}
 	pb.RegisterSandboxWorkerServer(s.server, s)
 	return s
+}
+
+func workerCreateConcurrency() int {
+	const defaultCreateConcurrency = 4
+	raw := strings.TrimSpace(os.Getenv("OPENSANDBOX_WORKER_CREATE_CONCURRENCY"))
+	if raw == "" {
+		return defaultCreateConcurrency
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		log.Printf("grpc: invalid OPENSANDBOX_WORKER_CREATE_CONCURRENCY=%q, using %d", raw, defaultCreateConcurrency)
+		return defaultCreateConcurrency
+	}
+	return n
+}
+
+func (s *GRPCServer) acquireCreateSlot(ctx context.Context, sandboxID string) (func(), error) {
+	if s.createSem == nil {
+		return func() {}, nil
+	}
+	start := time.Now()
+	select {
+	case s.createSem <- struct{}{}:
+		if waited := time.Since(start); waited > 250*time.Millisecond {
+			log.Printf("grpc: CreateSandbox %s waited %s for worker create slot", sandboxID, waited.Round(time.Millisecond))
+		}
+		return func() { <-s.createSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // Start starts the gRPC server on the given address.
@@ -204,6 +238,12 @@ func parseSecretAllowedHosts(m map[string]string) map[string][]string {
 }
 
 func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxRequest) (*pb.CreateSandboxResponse, error) {
+	releaseCreateSlot, err := s.acquireCreateSlot(ctx, req.SandboxId)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "worker create queue cancelled: %v", err)
+	}
+	defer releaseCreateSlot()
+
 	cfg := types.SandboxConfig{
 		Template:           req.Template,
 		Timeout:            int(req.Timeout),
