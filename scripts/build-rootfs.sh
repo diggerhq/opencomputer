@@ -209,6 +209,10 @@ build_image() {
 # --- OpenSandbox agent injection ---
 COPY osb-agent /usr/local/bin/osb-agent
 RUN chmod +x /usr/local/bin/osb-agent
+# Divert /sbin/init so a guest `apt install` that pulls in systemd-sysv can't
+# reclaim PID 1 from our custom init (see deploy/ec2/build-rootfs-docker.sh for
+# the full rationale — keep these two builders in sync).
+RUN dpkg-divert --local --rename --divert /sbin/init.distrib /sbin/init
 COPY init /sbin/init
 RUN chmod +x /sbin/init
 RUN mkdir -p /mnt/data /mnt/overlay

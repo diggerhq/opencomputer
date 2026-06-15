@@ -1808,8 +1808,14 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 		goldenVersion: m.goldenVersion, // set even on cold boot — VM uses the same base image
 	}
 
-	// Wait for agent via Unix socket
-	agentClient, err := m.waitForAgentSocket(context.Background(), agentSockPath, 30*time.Second)
+	// Wait for agent via Unix socket. Default 30s; callers can extend it (the
+	// image-finalize cold boot does, since a heavy user-built rootfs can take
+	// longer to reach agent-ready than a stock base image).
+	agentReadyTimeout := 30 * time.Second
+	if cfg.AgentReadyTimeout > 0 {
+		agentReadyTimeout = cfg.AgentReadyTimeout
+	}
+	agentClient, err := m.waitForAgentSocket(context.Background(), agentSockPath, agentReadyTimeout)
 	if err != nil {
 		log.Printf("qemu: agent not ready for %s, killing VM: %v", id, err)
 		qmpClient.Close()
@@ -2884,6 +2890,18 @@ func (m *Manager) CreateCheckpointFinalized(ctx context.Context, buildSandboxID,
 		return "", "", 0, fmt.Errorf("finalize: build disks not found for %s", buildSandboxID)
 	}
 
+	// 1b. Pre-flight: verify the build steps didn't break PID 1 on the way the
+	//     finalize VM boots. The finalize cold-boots with init=/sbin/init; if a
+	//     build step replaced our custom init (most commonly `apt install`
+	//     pulling in systemd-sysv, which reclaims /sbin/init -> systemd) or
+	//     removed the agent binary, the finalize VM boots without the agent and
+	//     fails opaquely with "agent not ready after 30s". The build VM is still
+	//     running here with a working agent, so probe it and fail with a clear,
+	//     actionable error instead of a 30s timeout downstream.
+	if err := m.verifyBuildInitIntact(ctx, buildSandboxID); err != nil {
+		return "", "", 0, err
+	}
+
 	// 2. Cold-boot a fresh finalize VM from a copy of the build disks at the
 	//    target floor. Create() copies the disks (reflink) via TemplateRootfsKey
 	//    and cold-boots — no savevm restore, so no memory floor inherited.
@@ -2895,6 +2913,11 @@ func (m *Manager) CreateCheckpointFinalized(ctx context.Context, buildSandboxID,
 		NetworkEnabled:       &netEnabled,
 		TemplateRootfsKey:    "local://" + buildRootfs,
 		TemplateWorkspaceKey: "local://" + buildWorkspace,
+		// A heavy user-built rootfs (many apt/npm layers) can legitimately take
+		// longer than a stock base to reach agent-ready on cold boot. Give the
+		// finalize bring-up generous headroom so we don't fail a correct image
+		// on the default 30s wait.
+		AgentReadyTimeout: finalizeAgentReadyTimeout,
 	}
 	log.Printf("qemu: finalize: cold-booting %s from %s disks at %dMB", finalizeID, buildSandboxID, finalizeMemMB)
 	if _, err := m.Create(ctx, finCfg); err != nil {
@@ -2910,6 +2933,52 @@ func (m *Manager) CreateCheckpointFinalized(ctx context.Context, buildSandboxID,
 	// 3. Snapshot the finalize VM → the output checkpoint (floor = finalizeMemMB).
 	log.Printf("qemu: finalize %s → checkpoint %s (floor %dMB)", finalizeID, checkpointID, finalizeMemMB)
 	return m.CreateCheckpoint(ctx, finalizeID, checkpointID, checkpointStore, onReady)
+}
+
+// finalizeAgentReadyTimeout is how long the finalize cold-boot waits for the
+// guest agent. Larger than the default cold-boot wait because a heavy
+// user-built rootfs can legitimately take longer to reach agent-ready.
+const finalizeAgentReadyTimeout = 90 * time.Second
+
+// verifyBuildInitIntact probes the still-running build VM to confirm its rootfs
+// will cold-boot our agent at finalize time. The finalize VM boots
+// init=/sbin/init; a build step that replaced our custom busybox init (most
+// commonly `apt install` pulling in systemd-sysv, which repoints /sbin/init at
+// systemd) or removed the agent binary would otherwise fail downstream with an
+// opaque "agent not ready after 30s". Probing the live build agent lets us fail
+// with a clear, actionable error naming the cause.
+//
+// Best-effort: if there's no agent to probe with (or the probe itself errors),
+// we proceed — the cold boot still surfaces a failure if init is genuinely
+// broken; this check only upgrades the error message when it can.
+func (m *Manager) verifyBuildInitIntact(ctx context.Context, buildSandboxID string) error {
+	vm, err := m.getVM(buildSandboxID)
+	if err != nil || vm == nil || vm.agent == nil {
+		log.Printf("qemu: finalize %s: skipping init pre-flight (no live agent: %v)", buildSandboxID, err)
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	resp, err := vm.agent.Exec(probeCtx, &pb.ExecRequest{
+		Command:   "/bin/sh",
+		Args:      []string{"-c", `if [ ! -x /usr/local/bin/osb-agent ]; then echo AGENT_MISSING; elif [ -L /sbin/init ]; then echo "INIT_SYMLINK:$(readlink /sbin/init)"; else head -c 32 /sbin/init; fi`},
+		RunAsRoot: true,
+	})
+	if err != nil {
+		log.Printf("qemu: finalize %s: init pre-flight exec failed: %v (proceeding to cold boot)", buildSandboxID, err)
+		return nil
+	}
+	out := strings.TrimSpace(string(resp.Stdout))
+	switch {
+	case strings.Contains(out, "AGENT_MISSING"):
+		return fmt.Errorf("finalize: built image is missing an executable /usr/local/bin/osb-agent — a build step removed or overwrote the sandbox agent")
+	case strings.HasPrefix(out, "INIT_SYMLINK:"):
+		target := strings.TrimPrefix(out, "INIT_SYMLINK:")
+		return fmt.Errorf("finalize: built image replaced /sbin/init (now a symlink to %q) — a build step clobbered PID 1 (commonly `apt install` pulling in systemd-sysv); the finalized image would boot systemd instead of the agent", target)
+	case !strings.HasPrefix(out, "#!"):
+		return fmt.Errorf("finalize: built image /sbin/init is not the expected init script (starts with %q) — a build step replaced PID 1", truncate(out, 16))
+	}
+	return nil
 }
 
 func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID string, checkpointStore *storage.CheckpointStore, onReady func()) (rootfsKey, workspaceKey string, sizeBytes int64, err error) {

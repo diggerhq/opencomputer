@@ -99,6 +99,11 @@ type SandboxConfig struct {
 	// SandboxID allows pre-determining the sandbox ID for async creation.
 	// If empty, a new ID is generated automatically.
 	SandboxID string `json:"-"`
+	// AgentReadyTimeout overrides how long Create waits for the guest agent
+	// socket after cold boot (zero = default 30s). Set larger for the
+	// image-finalize cold boot, where a heavy user-built rootfs can legitimately
+	// take longer to reach agent-ready. Internal-only (not part of the API).
+	AgentReadyTimeout time.Duration `json:"-"`
 	// CheckpointID is the source checkpoint for template/snapshot creates.
 	// Used by the worker to key per-template golden snapshots.
 	CheckpointID string `json:"-"`
