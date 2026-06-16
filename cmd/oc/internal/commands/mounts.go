@@ -13,11 +13,14 @@ import (
 // MountInfo mirrors internal/mounts.MountRecord — copied here to avoid an
 // internal-package import from the CLI binary.
 type MountInfo struct {
-	Path          string `json:"path"`
-	Remote        string `json:"remote"`
-	Backend       string `json:"backend,omitempty"`
-	ReadOnly      bool   `json:"readOnly"`
-	RcloneVersion string `json:"rcloneVersion,omitempty"`
+	Path          string            `json:"path"`
+	Driver        string            `json:"driver"`
+	ReadOnly      bool              `json:"readOnly"`
+	Remote        string            `json:"remote,omitempty"`
+	Backend       string            `json:"backend,omitempty"`
+	RcloneVersion string            `json:"rcloneVersion,omitempty"`
+	Command       []string          `json:"command,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
 }
 
 var mountsCmd = &cobra.Command{
@@ -44,36 +47,59 @@ var mountsAddCmd = &cobra.Command{
 		configFile, _ := cmd.Flags().GetString("config-file")
 		readWrite, _ := cmd.Flags().GetBool("read-write")
 		extraOpts, _ := cmd.Flags().GetStringArray("opt")
-
-		creds := map[string]string{}
-		for _, kv := range credsFlag {
-			i := strings.Index(kv, "=")
-			if i <= 0 {
-				return fmt.Errorf("--cred must be key=value (got %q)", kv)
-			}
-			creds[kv[:i]] = kv[i+1:]
-		}
+		command, _ := cmd.Flags().GetStringArray("command")
+		envFlag, _ := cmd.Flags().GetStringArray("env")
+		secretFlag, _ := cmd.Flags().GetStringArray("secret")
 
 		body := map[string]any{
 			"path":     path,
-			"remote":   remote,
 			"readOnly": !readWrite,
 		}
-		if backend != "" {
-			body["backend"] = backend
-		}
-		if len(creds) > 0 {
-			body["creds"] = creds
-		}
-		if configFile != "" {
-			raw, err := os.ReadFile(configFile)
+
+		if len(command) > 0 {
+			// command driver — bring your own FUSE daemon / mount command.
+			body["driver"] = "command"
+			body["command"] = command
+			env, err := parseKV(envFlag, "--env")
 			if err != nil {
-				return fmt.Errorf("read --config-file: %w", err)
+				return err
 			}
-			body["rcloneConfig"] = string(raw)
-		}
-		if len(extraOpts) > 0 {
-			body["mountOptions"] = extraOpts
+			if len(env) > 0 {
+				body["env"] = env
+			}
+			secrets, err := parseKV(secretFlag, "--secret")
+			if err != nil {
+				return err
+			}
+			if len(secrets) > 0 {
+				body["secrets"] = secrets
+			}
+		} else {
+			// rclone driver (default).
+			if remote == "" {
+				return fmt.Errorf("--remote is required (or pass --command to run your own FUSE daemon)")
+			}
+			body["remote"] = remote
+			creds, err := parseKV(credsFlag, "--cred")
+			if err != nil {
+				return err
+			}
+			if backend != "" {
+				body["backend"] = backend
+			}
+			if len(creds) > 0 {
+				body["creds"] = creds
+			}
+			if configFile != "" {
+				raw, err := os.ReadFile(configFile)
+				if err != nil {
+					return fmt.Errorf("read --config-file: %w", err)
+				}
+				body["rcloneConfig"] = string(raw)
+			}
+			if len(extraOpts) > 0 {
+				body["mountOptions"] = extraOpts
+			}
 		}
 
 		var info MountInfo
@@ -86,7 +112,11 @@ var mountsAddCmd = &cobra.Command{
 			if info.ReadOnly {
 				ro = "ro"
 			}
-			fmt.Printf("Mounted %s → %s (%s)\n", info.Remote, info.Path, ro)
+			src := info.Remote
+			if info.Driver == "command" {
+				src = strings.Join(info.Command, " ")
+			}
+			fmt.Printf("Mounted %s → %s (%s)\n", src, info.Path, ro)
 		})
 		return nil
 	},
@@ -109,14 +139,22 @@ var mountsListCmd = &cobra.Command{
 				fmt.Println("No mounts.")
 				return
 			}
-			headers := []string{"PATH", "REMOTE", "BACKEND", "MODE", "RCLONE"}
+			headers := []string{"PATH", "DRIVER", "SOURCE", "MODE"}
 			var rows [][]string
 			for _, m := range mounts {
 				mode := "rw"
 				if m.ReadOnly {
 					mode = "ro"
 				}
-				rows = append(rows, []string{m.Path, m.Remote, m.Backend, mode, m.RcloneVersion})
+				driver := m.Driver
+				if driver == "" {
+					driver = "rclone"
+				}
+				source := m.Remote
+				if m.Driver == "command" {
+					source = strings.Join(m.Command, " ")
+				}
+				rows = append(rows, []string{m.Path, driver, source, mode})
 			}
 			printer.Table(headers, rows)
 		})
@@ -141,16 +179,33 @@ var mountsRemoveCmd = &cobra.Command{
 	},
 }
 
+// parseKV turns repeated "key=value" flag values into a map.
+func parseKV(pairs []string, flag string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, kv := range pairs {
+		i := strings.Index(kv, "=")
+		if i <= 0 {
+			return nil, fmt.Errorf("%s must be key=value (got %q)", flag, kv)
+		}
+		out[kv[:i]] = kv[i+1:]
+	}
+	return out, nil
+}
+
 func init() {
 	mountsAddCmd.Flags().String("path", "", "Absolute path inside the sandbox to mount at (required)")
-	mountsAddCmd.Flags().String("remote", "", "rclone remote spec, e.g. s3:my-bucket (required)")
+	// rclone driver (default)
+	mountsAddCmd.Flags().String("remote", "", "rclone remote spec, e.g. s3:my-bucket (rclone driver)")
 	mountsAddCmd.Flags().String("backend", "", "Backend type: s3, gcs, azureblob, sftp, webdav, dropbox")
 	mountsAddCmd.Flags().StringArray("cred", nil, "Backend credential as key=value (repeatable; e.g. --cred access_key_id=AKIA...)")
 	mountsAddCmd.Flags().String("config-file", "", "Path to a raw rclone config file (overrides --backend/--cred)")
-	mountsAddCmd.Flags().Bool("read-write", false, "Mount read-write (default is read-only)")
 	mountsAddCmd.Flags().StringArray("opt", nil, "Extra args appended to `rclone mount` (repeatable)")
+	// command driver (bring your own FUSE)
+	mountsAddCmd.Flags().StringArray("command", nil, "FUSE daemon/mount argv (repeatable; switches to the command driver). {mountpoint} is replaced with --path")
+	mountsAddCmd.Flags().StringArray("env", nil, "Env var for the command as key=value (repeatable)")
+	mountsAddCmd.Flags().StringArray("secret", nil, "Secret env var as key=value (repeatable; injected into the daemon env, never recorded)")
+	mountsAddCmd.Flags().Bool("read-write", false, "Mount read-write (default is read-only)")
 	_ = mountsAddCmd.MarkFlagRequired("path")
-	_ = mountsAddCmd.MarkFlagRequired("remote")
 
 	mountsCmd.AddCommand(mountsAddCmd)
 	mountsCmd.AddCommand(mountsListCmd)
