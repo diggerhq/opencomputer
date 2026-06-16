@@ -25,6 +25,35 @@ curl "https://api.opencomputer.dev/v2/sessions/$ID/events?stream=sse" \
   -H "Authorization: Bearer $OC_API_KEY"
 ```
 
+## Levels
+
+Every event carries a **level** — a visibility class — and the stream carries
+**everything**, full fidelity. You filter; the platform never decides for you
+what to show your users.
+
+| Level | What | Example |
+|---|---|---|
+| `internal` | Platform/runtime mechanics, raw tool I/O | `action` (a tool call), model-call marks |
+| `progress` | The play-by-play — "watch it work" | agent narration, `status` ("cloned repo", "running tests") |
+| `user` | What an end-user sees by default | the agent's `say`, `ask`, and `delivery` ("opened PR #42") |
+
+The stream filters by a **minimum** level — `?level=user` is just the
+conversation; `?level=progress` adds narration; `?level=internal` is everything
+(the debug view). Default is full fidelity.
+
+```bash
+oc session attach <id> --level user
+```
+
+```bash
+curl "https://api.opencomputer.dev/v2/sessions/$ID/events?stream=sse&level=progress" \
+  -H "Authorization: Bearer $OC_API_KEY"
+```
+
+This is how a [channel](/background-agents/channels) decides what to surface: a
+Slack thread renders `user`/`progress`, a debugging view renders `internal`
+too — from the one stream.
+
 ## Turns
 
 A turn is one stretch of activity (wake → work → sleep):
@@ -54,6 +83,11 @@ billed.
 By default, model-call metadata (model, tokens, latency, cost) is recorded;
 prompt and response contents are not exposed. Payload capture is opt-in per
 agent (`capture_model_io`) and surfaces in `oc session model-calls --full`.
+
+<Note>**Preview** — payload capture runs through the model gateway, which is not
+enabled in v0 (see the [overview](/background-agents/overview)). Until then,
+only metadata is available; the `capture_model_io` opt-in and `--full` payloads
+are the designed behavior.</Note>
 
 ## Debugging
 

@@ -6,9 +6,12 @@ description: "Event-triggered agents with durable sessions, on managed compute"
 <Note>
 **Preview.** Background Agents is in active development. This section
 describes the product as designed; capabilities are rolling out in stages and
-not all are generally available yet. It currently ships as the `oc-agents`
-CLI; the target grammar shown here is `oc agent …` (today `oc agent …` is
-[Hosted Agents](/agents-api/overview)).
+not all are generally available yet. Commands are shown in the target grammar
+`oc agent …`; today they ship under the `oc-agents` CLI (e.g. `oc-agents agent
+deploy`), because the `oc agent …` namespace currently belongs to
+[Hosted Agents](/agents-api/overview). The runtime that ships today is
+`claude`; the gateway-dependent capabilities (model hot-swap, payload capture)
+and prepared workspaces are flagged Preview where they appear.
 </Note>
 
 A background agent works unattended: an issue gets labeled, the agent fixes
@@ -26,8 +29,9 @@ model — or the entire harness — is a configuration change.
 | [Agent](/background-agents/agents) | Definition: prompt, skills, model, triggers, policies, and a connection. Versioned. Not bound to a repo or workspace; via its connection it acts across many repos. |
 | [Session](/background-agents/sessions) | One thread of work: a durable event timeline. Active while working, dormant otherwise; dormant holds no compute. |
 | [Workspace](/background-agents/workspaces) | A prepared environment for one or more repos, rebuilt on every push — dependencies installed, build warm. Not tied to an agent. |
-| [Trigger](/background-agents/triggers) | GitHub events, routed to the right session. |
-| [Connection](/background-agents/triggers#connections) | The GitHub App install and model provider keys. |
+| [Trigger](/background-agents/triggers) | GitHub events or a Slack @mention, routed to the right session. |
+| [Channel](/background-agents/channels) | A two-way thread the session talks in — Slack today, a GitHub PR. Bindings are additive; a session is never typed by surface. |
+| [Connection](/background-agents/triggers#connections) | The GitHub App install, Slack workspace, and model provider keys. |
 | [Runtime](/background-agents/runtimes) | The loop that drives a session. Its model is separate configuration. |
 
 ## How it works
@@ -58,5 +62,8 @@ unattended work.
   providers. Bring your own keys, including OpenRouter.
 - Agents hold no tokens. The platform opens PRs and posts comments on their
   behalf, attributed to the requesting user.
+- Sessions are two-way. Talk to an agent in a Slack thread, watch it work, and
+  steer it; it asks when it needs a decision. See
+  [Channels](/background-agents/channels).
 
 [Quickstart →](/background-agents/quickstart)

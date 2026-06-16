@@ -71,6 +71,50 @@ reconnects; a change within the same provider applies on the very next model
 call. Same prompt and triggers. Each change is a new agent
 version — `oc agent rollback fixer v1` reverts.
 
+## Or: talk to it in Slack
+
+An agent can be conversational instead of (or as well as) issue-triggered.
+Declare a Slack trigger and it becomes a teammate you @mention in a thread:
+
+```toml
+# opencomputer.toml
+name = "slack-helper"
+
+[runtime]
+image = "claude"
+model = "anthropic/claude-opus-4-8"
+
+[[triggers]]
+type = "slack"
+on   = "mention"
+
+[connection]
+github = "diggerhq"   # the repos it may act on; it resolves which from the chat
+```
+
+```bash
+oc connect slack          # install the OpenComputer Slack app (Preview — see below)
+oc agent deploy ./slack-helper
+```
+
+`/invite` it to a channel and @mention it:
+
+```
+you   @slack-helper parseDuration in oc-agent-demo-target mis-parses "1.5h" — fix it?
+bot   On it — pulling oc-agent-demo-target…
+bot   Found it: the regex silently drops "1.". Throw on bad input, or support fractions?
+you   throw
+bot   Done — tests pass. 📦 Opened PR #42
+```
+
+It works out *which* repo from the conversation, investigates in a sandbox,
+**asks** when it needs a decision (and pauses, free, until you reply), and opens
+a draft PR — narrating in-thread the whole time. Full walkthrough:
+[Channels](/background-agents/channels).
+
+<Note>**Preview** — in v0 the Slack app is platform-configured for a single demo
+workspace; self-serve `oc connect slack` is planned.</Note>
+
 ## Next
 
 - [Agents as code](/background-agents/agents)

@@ -57,12 +57,30 @@ the boot seconds for busy agents.
 
 ## Resolution and sharing
 
-A session uses the workspace resolved from its repo and ref — the one taken
-from the triggering event — independent of which agent runs. Workspaces are
-not 1:1 with a repo: a repo can have more than one (e.g. per branch), and a
-single workspace can span multiple repos. Any workspace covering a session's
-repo/ref is shared by every agent and session that lands there. With no
-matching workspace, the session clones the repo on demand.
+A session is **not bound to a repo** — it *resolves* which repo(s) to work in,
+from one of several sources:
+
+- the **triggering event** (a labeled issue's repo) — one source, not the only
+  one;
+- the **conversation** — a chat-born session has no triggering repo, so the
+  agent picks one from the repos its connection covers (see below);
+- a **configured default** on the agent;
+- or it **asks** the human.
+
+Resolution can be **lazy** (deferred until first needed) and **re-resolvable**:
+a session can switch repos mid-thread, or open several at once — each is checked
+out as its own directory inside the session's single sandbox.
+
+The agent drives this at runtime with a **`use_repo`** tool: it lists the repos
+its [connection](/background-agents/triggers#connections) scopes, checks one
+out, and calls again to switch or to add a second checkout. Where a prepared
+workspace covers the resolved repo/ref, the session boots from its latest build
+(fast); otherwise it **clones on demand**.
+
+Workspaces are not 1:1 with a repo: a repo can have more than one (e.g. per
+branch), and a single workspace can span multiple repos. Any workspace covering
+a session's repo/ref is shared by every agent and session that lands there,
+independent of which agent runs.
 
 ## During a session
 

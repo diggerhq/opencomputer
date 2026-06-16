@@ -10,6 +10,13 @@ The model is configuration on the agent — not part of code or a runtime
 image. A change takes effect on the next model call — the next turn, when
 switching providers; nothing restarts.
 
+<Note>**Preview** — the hot-swap and metering behavior on this page runs through
+the model gateway, which is **not enabled in v0** (see the
+[overview](/background-agents/overview)). Today the `claude` runtime calls the
+provider directly with a configured key; model addressing and per-agent
+configuration are real, but live rewrite, cross-provider flips, and gateway
+metering are the designed behavior.</Note>
+
 ## Addressing
 
 Provider-prefixed, provider-native IDs:
@@ -37,7 +44,7 @@ oc session set <id> --model openai/gpt-5.x      # one session, in flight
 Agent-level changes are versions; session-level overrides appear as `status`
 events on the timeline; usage records the model that served each call.
 Switching to a different provider requires a [runtime](/background-agents/runtimes)
-that drives it — `opencode` drives all.
+that drives it (the planned `opencode` drives all — Preview).
 
 ## Provider keys
 

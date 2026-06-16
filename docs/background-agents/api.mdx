@@ -24,7 +24,7 @@ POST   /v2/agents/:id/versions      # deploy a bundle (what `oc agent deploy` ca
 {
   "name": "fixer",
   "connection": "github:acme",
-  "runtime": { "image": "opencode", "model": "anthropic/claude-opus-4-8" },
+  "runtime": { "image": "claude", "model": "anthropic/claude-opus-4-8" },
   "prompt": "You fix bugs labeled 'agent' in acme/web.",
   "triggers": [
     { "type": "github", "on": "issue.labeled:agent",
@@ -36,8 +36,10 @@ POST   /v2/agents/:id/versions      # deploy a bundle (what `oc agent deploy` ca
 
 ## Workspaces
 
-Keyed by the repo(s) they prepare, not by agent — a session resolves its
-workspace from its repo and ref.
+Keyed by the repo(s) they prepare, not by agent — a session
+[resolves](/background-agents/workspaces#resolution-and-sharing) which repo(s)
+to work in (from the trigger, the conversation, a default, or by asking) and
+matches a workspace covering that repo and ref.
 
 ```http
 POST   /v2/workspaces                # { name, recipe: {repos: [{repo, ref?}], setup[], warm[]}, refresh, pool }
@@ -54,11 +56,13 @@ POST   /v2/sessions                  # { agent, input?, key? } — start explici
 GET    /v2/sessions?agent=&status=   # list / filter
 GET    /v2/sessions/:id              # status, pins, sandbox info, usage
 PATCH  /v2/sessions/:id              # { model_override } — this session only, audited
-POST   /v2/sessions/:id/events      # send: [{ kind: "message", body: "..." }]
-GET    /v2/sessions/:id/events       # ?after=<cursor>&stream=sse
-POST   /v2/sessions/:id/interrupt
+GET    /v2/sessions/:id/events       # ?after=<cursor>&stream=sse&level=user
+POST   /v2/sessions/:id/events      # raw append (low-level): [{ kind: "message", body: "..." }]
 POST   /v2/sessions/:id/archive
 ```
+
+`status` is `active | dormant | awaiting_input | archived` (`awaiting_input` =
+the agent emitted an `ask` and yielded).
 
 Session object (abridged):
 
@@ -69,7 +73,7 @@ Session object (abridged):
   "pins": {
     "agent_version": 4,
     "workspace_build": 14,
-    "runtime": "opencode@sha256:…",
+    "runtime": "claude@sha256:…",
     "model": { "requested": "anthropic/claude-opus-4-8", "served": "anthropic/claude-opus-4-8" }
   },
   "sandbox": { "state": "hibernated", "preview_urls": [] },
@@ -77,7 +81,8 @@ Session object (abridged):
 }
 ```
 
-Event envelope:
+Event envelope — every event carries a `level`
+([visibility class](/background-agents/observability#levels)):
 
 ```json
 {
@@ -85,21 +90,50 @@ Event envelope:
   "ts": "2026-06-12T09:31:04Z",
   "actor": "platform",
   "kind": "delivery",
+  "level": "user",
+  "target": "chan_…",
   "body": { "type": "pr.open", "repo": "acme/web", "number": 413, "as": "maria" },
   "refs": [{ "type": "github_pr", "number": 413 }]
 }
 ```
 
-Kinds: `message`, `action`, `ask`, `delivery`, `status`, `timer`,
-`exec.completed`, `error`.
+Kinds: `message`, `say`, `action`, `ask`, `delivery`, `status`, `timer`,
+`exec.completed`, `error`. Levels: `internal | progress | user`, derived at
+append from `(actor, kind)` with an optional override. `target` (optional) names
+a [channel binding](#messaging) to deliver an event to a specific thread.
+
+## Messaging
+
+The two-way surface a chat UI is built on — send messages in, render the stream
+out, bind external threads (see [Channels](/background-agents/channels)):
+
+```http
+POST   /v2/sessions/:id/messages     # a steer (in): { text, actor?, idem_key? }
+GET    /v2/sessions/:id/messages?after=…    # conversation history (replay a UI)
+POST   /v2/sessions/:id/channels     # bind a thread: { provider, thread_ref, role[] }
+GET    /v2/sessions/:id/channels     # list bindings
+```
+
+`POST /messages` is the ergonomic steer (one inbound message); `POST /events`
+is the low-level raw append underneath it. Channel `role[]` is
+`conversation | delivery`.
+
+<Note>**Preview** — `POST /v2/sessions/:id/interrupt` (mid-turn interrupt
+steering) is designed but not built in v0. Steers are consumed at the next turn
+boundary; see [Sessions](/background-agents/sessions#preview-mid-turn-interrupt).</Note>
 
 ## Connections & models
 
 ```http
-POST   /v2/connections               # { type: "github" | "github_user" | "anthropic" | "openai" | "openrouter", ... }
+POST   /v2/connections               # { type: "github" | "github_user" | "slack" | "anthropic" | "openai" | "openrouter", ... }
 GET    /v2/connections
 GET    /v2/models                    # aggregated catalog from connected providers
 ```
+
+The `slack` connection (per-workspace OAuth, token held platform-side) powers
+the [Slack channel](/background-agents/channels). In v0 it is
+platform-configured for a single workspace; self-serve `oc connect slack` is
+Preview.
 
 ## Observability
 

@@ -18,7 +18,7 @@ capabilities below are still rolling out.</Note>
 | Runtime | A VM running the agent loop | Disposable | Read timeline → call model → decide → act. Holds no state, no credentials |
 | Model gateway *(Preview)* | Proxy between runtimes and providers | **Durable** (its records) | As designed: applies the configured model per call, holds provider keys, meters tokens, records every request and response as they stream — encrypted, used only to resume the session, never exposed unless capture is opted in. Not built in v0 |
 | Sandbox | A VM booted from the workspace's latest build | Disposable (snapshotted periodically) | Where the agent acts: commands, edits, tests. One per session, never shared |
-| Delivery connectors | Platform-side GitHub integration | — | Open PRs and post comments for the agent, attributed to the requesting user |
+| Connectors & outbox | Platform-side GitHub/Slack integration | **Durable** (delivery state) | Carry events out — open PRs and post comments, project the agent's messages into Slack/PR threads — at-least-once and idempotent, attributed to the requesting user. Also bring inbound messages in as steers |
 
 ## How a task flows
 
@@ -36,6 +36,25 @@ capabilities below are still rolling out.</Note>
    dormant — just the record, no machines; storage only.
 7. A comment on the PR routes back to this session (step 5 recorded the PR),
    and the cycle repeats with full context.
+
+## Two-way flow
+
+The timeline is a bus in both directions, not just an output log:
+
+- **In.** Any inbound message — a Slack reply, a PR comment, an API call — is a
+  **steer**: appended to the timeline (de-duplicated by the provider's event id)
+  and consumed at the next turn. A **channel binding** ties the session to an
+  external thread (a Slack `thread_ts`, a PR number) so follow-ups land on the
+  same session. Bindings are additive — a session is never typed by surface.
+- **Out.** The agent speaks with `say` (a message) and `ask` (a question that
+  pauses the turn until answered). The **outbox** projects these — and
+  deliveries — to the bound channels, at-least-once and idempotent, so a
+  replayed turn after a crash never double-posts and a provider blip never drops
+  a message. The agent only appends events; it never calls Slack or GitHub
+  itself.
+
+See [Channels](/background-agents/channels) and the
+[conversation model](/background-agents/sessions#conversation).
 
 ## Why it's split this way
 

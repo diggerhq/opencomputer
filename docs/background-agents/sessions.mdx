@@ -16,20 +16,23 @@ isn't.
 ```
 active ◄──► dormant ──► archived (retention policy)
    │
-   └──► blocked (waiting on a human answer)
+   └──► awaiting_input (waiting on a human answer)
 ```
 
 - **active** — a runtime is working; billing runs.
 - **dormant** — nothing to do. No compute attached; storage only. A
   session can stay dormant for months and wake in seconds.
-- **blocked** — the agent asked a question (`ask`) and is waiting. No
-  compute attached.
+- **awaiting_input** — the agent asked a question (`ask`) and is waiting. The
+  turn has yielded, so no compute is attached; a reply wakes it.
 - Sessions are never forcibly ended; archival is a retention policy you set.
 
-Machine failures, deploys, and restarts do not lose session state. The
-conversation resumes exactly where it was; sandbox files are restored from a
-snapshot taken at most minutes earlier, with the commands run since
-reconciled on top.
+Machine failures, deploys, and restarts do not lose session state. Kill the
+sandbox mid-thread and the session resumes — a dead-but-connectable machine is
+recreated and re-cloned, and the pushed branch plus the event timeline are the
+durable copy of the work; nothing in the conversation is dropped. *(As
+designed, the conversation also resumes byte-exact from the gateway's recorded
+exchange — a [Preview](/background-agents/overview) capability, not built in v0;
+the cheap-visible resume above is what ships today.)*
 
 ## Starting and routing
 
@@ -43,22 +46,49 @@ Triggers route by **routing key** — by default one session per GitHub
 issue. Follow-ups find their session: a comment on a PR resumes the session
 that opened it. One agent runs many concurrent sessions.
 
+## Conversation
+
+A session is two-way. The agent has two ways to reach a human, and only these
+two are shown — its raw internal reasoning is never surfaced:
+
+- **`say`** — a deliberate message to the human: progress, a finding, an
+  answer. The frontend chooses how much to surface (see
+  [levels](/background-agents/observability#levels)).
+- **`ask`** — a question that **pauses the turn**. The agent appends the
+  question and yields; the session goes **`awaiting_input`** and holds no
+  compute while it waits. A reply wakes it with the answer already in context,
+  and it continues. This is what makes it a conversation, not a fire-and-forget
+  command.
+
+Any inbound message — a Slack reply, a PR comment, a direct API call — is a
+**steer**: it is appended to the timeline and picked up at the next turn. (A
+steer adjusts the *next* turn; mid-turn interruption is
+[Preview](#preview-mid-turn-interrupt).) Channels project `say`/`ask` and
+progress out to where people are watching — see
+[Channels](/background-agents/channels).
+
 ## Events
 
-| Kind | Meaning |
-|---|---|
-| `message` | A human or trigger said something; or the agent replied |
-| `action` | The agent ran a command or edited files in its sandbox |
-| `ask` | The agent needs a human decision; the session blocks until answered |
-| `delivery` | An outward action performed for the agent — PR opened, comment posted |
-| `status` | Lifecycle and configuration changes |
-| `timer` | A scheduled wake fired |
-| `exec.completed` | A long-running command the agent was waiting on finished |
-| `error` | A failure, with retry context |
+Every event carries an actor, a `kind`, and a **`level`** —
+`internal | progress | user` — a visibility class so a consumer can show as
+much or as little as it wants (see
+[Observability](/background-agents/observability#levels)).
+
+| Kind | Level | Meaning |
+|---|---|---|
+| `message` | progress | A human or trigger said something; or agent narration |
+| `say` | user | The agent's deliberate user-facing message |
+| `action` | internal | The agent ran a command or edited files in its sandbox |
+| `ask` | user | The agent needs a human decision; the session goes `awaiting_input` until answered |
+| `delivery` | user | An outward action performed for the agent — PR opened, comment posted |
+| `status` | progress | Lifecycle and configuration changes |
+| `timer` | — | A scheduled wake fired |
+| `exec.completed` | — | A long-running command the agent was waiting on finished |
+| `error` | user | A failure, with retry context |
 
 ```bash
 oc session attach <id>      # live stream; detaching doesn't stop the agent
-oc session send <id> "use the staging DB for repro"
+oc session send <id> "use the staging DB for repro"   # a steer, in
 ```
 
 ```bash
@@ -86,3 +116,10 @@ You pay for attached compute and model tokens while the session is active
 (`usage.active_seconds`). A session that worked 11 minutes across two days
 bills 11 minutes of compute; dormant time costs only the storage of the
 timeline and snapshots.
+
+## Preview: mid-turn interrupt
+
+A steer is consumed at the next turn boundary — it adjusts the *next* turn, not
+the one in flight. Interrupting a turn already running (a steer that redirects
+work mid-task) is designed but not built in v0. To steer in v0, send the
+message; it is applied when the current turn yields.

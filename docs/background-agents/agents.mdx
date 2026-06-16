@@ -11,6 +11,13 @@ drives it (runtime, model), what wakes it (triggers), what it may do
 (policies), and a connection scoping which repos it acts on. Sessions
 reference an agent; the agent itself never runs.
 
+An agent is **not bound to a repo or a workspace**. Its connection defines the
+*candidate set* of repos it may act on; each session
+[resolves](/background-agents/workspaces#resolution-and-sharing) which one(s) to
+work in at runtime — from the trigger, the conversation, an optional `repo`
+default on the agent, or by asking. This is why one agent can serve issues in
+several repos, or hold a chat where it picks the repo from what you ask.
+
 ## Start as a prompt
 
 ```bash
@@ -25,7 +32,7 @@ curl -X POST https://api.opencomputer.dev/v2/agents \
   -H "Authorization: Bearer $OC_API_KEY" \
   -d '{
     "name": "fixer",
-    "runtime": { "image": "opencode", "model": "anthropic/claude-opus-4-8" },
+    "runtime": { "image": "claude", "model": "anthropic/claude-opus-4-8" },
     "prompt": "You fix bugs labeled agent in acme/web.",
     "triggers": [{ "type": "github", "on": "issue.labeled:agent" }]
   }'
@@ -57,7 +64,7 @@ API are two views of the same object; GitHub is not required.
 name = "fixer"
 
 [runtime]
-image = "opencode"
+image = "claude"
 model = "anthropic/claude-opus-4-8"
 
 [[triggers]]

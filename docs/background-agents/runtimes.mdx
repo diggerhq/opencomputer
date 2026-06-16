@@ -11,13 +11,15 @@ acts in the session's machine. You select it; OpenComputer operates it.
 
 ```toml
 [runtime]
-image = "opencode"
+image = "claude"
 model = "anthropic/claude-opus-4-8"
 ```
 
 ```bash
 oc runtime list
-# opencode    multi-provider harness (default)
+# claude      Claude Code / Agent SDK harness (default)
+# codex       Preview — not built yet
+# opencode    Preview — multi-provider harness, not built yet
 ```
 
 ## Semantics
@@ -27,7 +29,8 @@ oc runtime list
   sessions.
 - **The model is not part of the runtime** — it's
   [configuration](/background-agents/models). Runtimes declare which
-  providers they can drive; `opencode` drives all.
+  providers they can drive; switching *across* providers needs an image that
+  drives the target (the planned `opencode` drives all — Preview).
 - **Stateless and disposable.** Session state — conversation, timeline,
   sandbox files — lives outside the runtime. If a runtime's machine dies
   mid-task, the session continues on a fresh one; the timeline shows an
@@ -39,10 +42,27 @@ oc runtime list
 
 - **No busy-waiting.** Waiting — on a person, a long build, the clock —
   makes the session dormant instead of burning compute.
-- **Asks block.** When the agent needs a decision, the session shows an
-  `ask` and waits; answer with `oc session send`.
+- **Asks yield.** When the agent needs a decision it emits an `ask` and the
+  turn yields; the session goes `awaiting_input` and holds no compute until a
+  reply arrives (`oc session send`).
 - **Budget-aware.** Runtimes wind down near the session's budget cap; the
   platform enforces the cap regardless.
 
-Additional images, including your own loop, use the same registry, contract,
-and guarantees.
+## Tools the runtime provides
+
+The agent works through a small set of platform tools — building an agent is
+mostly a prompt that uses them well:
+
+- **`say`** / **`ask`** — speak to the human; the agent's raw reasoning is never
+  shown, only `say`/`ask`. `ask` pauses the turn until answered (see
+  [Conversation](/background-agents/sessions#conversation)).
+- **`use_repo`** — pick a repo to work in from the ones the connection covers,
+  and switch or open more
+  ([resolution](/background-agents/workspaces#resolution-and-sharing)).
+- **`deliver`** — open or update a draft PR; the platform pushes it as the
+  human, so no git tokens enter the sandbox.
+- **`bash` / `read` / `write` / `ls`** — the session's sandbox.
+
+<Note>**Preview** — additional platform images (`codex`, `opencode`) and
+publishing your own loop (`oc runtime push`) use the same registry and contract,
+but are not built in v0; `claude` is the runtime that ships today.</Note>
