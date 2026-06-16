@@ -5,10 +5,15 @@ const orgID = "org-1";
 const userID = "user-1";
 const cellID = "azure-us-east-2-a";
 
+const sandboxIndexInserts: unknown[][] = [];
+
 class FakeStatement {
   constructor(private sql: string) {}
 
-  bind(..._args: unknown[]) {
+  private args: unknown[] = [];
+
+  bind(...args: unknown[]) {
+    this.args = args;
     return this;
   }
 
@@ -33,10 +38,44 @@ class FakeStatement {
     if (this.sql.includes("SELECT plan FROM orgs")) {
       return { plan: "pro" } as T;
     }
+    if (this.sql.includes("SELECT home_cell, plan, is_halted")) {
+      return {
+        home_cell: cellID,
+        plan: "pro",
+        is_halted: 0,
+        max_concurrent_sandboxes: 10,
+        max_disk_mb: 262144,
+      } as T;
+    }
+    if (this.sql.includes("COUNT(*) AS n FROM sandboxes_index")) {
+      return { n: 0 } as T;
+    }
     return null;
   }
 
+  async all<T>() {
+    if (this.sql.includes("FROM cells WHERE status = 'active'")) {
+      return {
+        results: [
+          {
+            cell_id: cellID,
+            cloud: "azure",
+            region: "us-east-2",
+            base_url: "https://cp-us-east-2.opencomputer.dev",
+            status: "active",
+            available_workers: 1,
+            capacity_updated_at: Math.floor(Date.now() / 1000),
+          },
+        ],
+      } as { results: T[] };
+    }
+    return { results: [] as T[] };
+  }
+
   async run() {
+    if (this.sql.includes("INSERT OR REPLACE INTO sandboxes_index")) {
+      sandboxIndexInserts.push(this.args);
+    }
     return {};
   }
 }
@@ -68,6 +107,7 @@ const ctx = {
 describe("api-edge WebSocket auth", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    sandboxIndexInserts.length = 0;
   });
 
   it("accepts api_key query auth for sandbox WebSocket proxy requests", async () => {
@@ -166,5 +206,59 @@ describe("api-edge WebSocket auth", () => {
     expect(resp.status).toBe(401);
     expect(await resp.json()).toEqual({ error: "missing or invalid API key" });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("api-edge sandbox create", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    sandboxIndexInserts.length = 0;
+  });
+
+  it("indexes SSE snapshot creates before the streamed response completes", async () => {
+    const fetchSpy = vi.fn(async (_url: string, _init?: RequestInit) => {
+      const body = [
+        "event: build_log",
+        'data: {"message":"creating"}',
+        "",
+        "event: result",
+        'data: {"sandboxID":"sb-sse1234","workerID":"worker-1","status":"running","memoryMB":2048}',
+        "",
+      ].join("\n");
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const resp = await worker.fetch(
+      new Request("https://app.opencomputer.dev/api/sandboxes", {
+        method: "POST",
+        headers: {
+          "X-API-Key": "osb_test",
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({ snapshot: "snapshot-1", memoryMB: 1024 }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(resp.status).toBe(200);
+    expect(await resp.text()).toContain("event: result");
+    expect(sandboxIndexInserts).toHaveLength(1);
+    expect(sandboxIndexInserts[0]).toEqual([
+      "sb-sse1234",
+      orgID,
+      userID,
+      cellID,
+      "worker-1",
+      "running",
+      0,
+      2048,
+      expect.any(Number),
+    ]);
   });
 });
