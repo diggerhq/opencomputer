@@ -6,7 +6,9 @@ description: "Event-triggered agents with durable sessions, on managed compute"
 <Note>
 **Preview.** Background Agents is in active development. This section
 describes the product as designed; capabilities are rolling out in stages and
-not all are generally available yet.
+not all are generally available yet. It currently ships as the `oc-agents`
+CLI; the target grammar shown here is `oc agent …` (today `oc agent …` is
+[Hosted Agents](/agents-api/overview)).
 </Note>
 
 A background agent works unattended: an issue gets labeled, the agent fixes
@@ -21,9 +23,9 @@ model — or the entire harness — is a configuration change.
 
 | Concept | What it is |
 |---|---|
-| [Agent](/background-agents/agents) | Definition: prompt, skills, model, triggers, policies. Versioned. Starts as one prompt; can grow into a repo. |
+| [Agent](/background-agents/agents) | Definition: prompt, skills, model, triggers, policies, and a connection. Versioned. Not bound to a repo or workspace; via its connection it acts across many repos. |
 | [Session](/background-agents/sessions) | One thread of work: a durable event timeline. Active while working, dormant otherwise; dormant holds no compute. |
-| [Workspace](/background-agents/workspaces) | A machine image for your repo, rebuilt on every push — dependencies installed, build warm. |
+| [Workspace](/background-agents/workspaces) | A prepared environment for one or more repos, rebuilt on every push — dependencies installed, build warm. Not tied to an agent. |
 | [Trigger](/background-agents/triggers) | GitHub events, routed to the right session. |
 | [Connection](/background-agents/triggers#connections) | The GitHub App install and model provider keys. |
 | [Runtime](/background-agents/runtimes) | The loop that drives a session. Its model is separate configuration. |

@@ -3,6 +3,9 @@ title: "How it works"
 description: "The moving parts, how they interact, and why they're split this way"
 ---
 
+<Note>**Preview** — see the [overview](/background-agents/overview); some
+capabilities below are still rolling out.</Note>
+
 <Frame>
   <img src="/images/background-agents-architecture.svg" alt="Background Agents architecture: triggers feed a durable session timeline; a disposable runtime reads and appends to it, calls models through the gateway, and acts in a disposable sandbox; deliveries carry results back to GitHub" />
 </Frame>
@@ -13,7 +16,7 @@ description: "The moving parts, how they interact, and why they're split this wa
 |---|---|---|---|
 | Session timeline | Append-only event record in the platform | **Durable** — it *is* the session | Holds everything that happened; wakes the runtime when new events arrive |
 | Runtime | A VM running the agent loop | Disposable | Read timeline → call model → decide → act. Holds no state, no credentials |
-| Model gateway | Proxy between runtimes and providers | **Durable** (its records) | Applies the configured model per call, holds provider keys, meters tokens, records every request and response as they stream — encrypted, used only to resume the session, never exposed unless capture is opted in |
+| Model gateway *(Preview)* | Proxy between runtimes and providers | **Durable** (its records) | As designed: applies the configured model per call, holds provider keys, meters tokens, records every request and response as they stream — encrypted, used only to resume the session, never exposed unless capture is opted in. Not built in v0 |
 | Sandbox | A VM booted from the workspace's latest build | Disposable (snapshotted periodically) | Where the agent acts: commands, edits, tests. One per session, never shared |
 | Delivery connectors | Platform-side GitHub integration | — | Open PRs and post comments for the agent, attributed to the requesting user |
 
@@ -42,20 +45,21 @@ left by the time it could be lost:
 - events are stored as they are produced (step 4);
 - the conversation is recorded at the gateway (step 3) — provider APIs carry
   the full context on every call, so the latest recorded exchange is the
-  agent's complete working memory;
+  agent's complete working memory *(gateway recording is Preview; see the
+  note above)*;
 - sandbox files are snapshotted periodically while work is in progress.
 
-What this buys:
+What this buys (gateway-dependent points are Preview, not built in v0):
 
-- **Crash-proof.** Kill either machine mid-task — even mid-model-call — and
-  the session resumes where it was on fresh machines. An in-flight model
-  response is still recorded, and not re-billed.
+- **Crash-proof.** Kill either machine mid-task and the session resumes where
+  it was on fresh machines. As designed, even a kill mid-model-call recovers:
+  the in-flight response is still recorded at the gateway, and not re-billed.
 - **Free dormancy.** Waiting detaches both machines; a session can sleep for
   months for ~storage cost and wake in seconds.
-- **Model switching as configuration.** The gateway applies model config on
-  each request — no restart. Within a provider, a change is effective on the
-  next call; switching providers is effective on the next turn, when the
-  runtime reconnects. Keys never enter the machines.
+- **Model switching as configuration.** As designed, the gateway applies
+  model config on each request — no restart. Within a provider, a change is
+  effective on the next call; switching providers is effective on the next
+  turn, when the runtime reconnects. Keys never enter the machines.
 - **Risk isolation.** The sandbox runs arbitrary code, so it's per-session
   and replaceable; the loop carries neither that risk nor that lifecycle. A
   one-hour build in the sandbox doesn't keep a loop machine running.

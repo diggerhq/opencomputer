@@ -3,13 +3,16 @@ title: "API Reference"
 description: "The Background Agents REST surface"
 ---
 
+<Note>**Preview** — see the [overview](/background-agents/overview); some
+endpoints below are still rolling out.</Note>
+
 Base URL `https://api.opencomputer.dev`; authenticate with
 `Authorization: Bearer $OC_API_KEY`. The CLI is a wrapper over these calls.
 
 ## Agents
 
 ```http
-POST   /v2/agents                    # create — can be as little as {name, workspace, runtime, prompt}
+POST   /v2/agents                    # create — can be as little as {name, connection, runtime, prompt}
 GET    /v2/agents                    # list
 GET    /v2/agents/:id
 PATCH  /v2/agents/:id                # any config change creates a new version
@@ -20,7 +23,7 @@ POST   /v2/agents/:id/versions      # deploy a bundle (what `oc agent deploy` ca
 ```json
 {
   "name": "fixer",
-  "workspace": "web",
+  "connection": "github:acme",
   "runtime": { "image": "opencode", "model": "anthropic/claude-opus-4-8" },
   "prompt": "You fix bugs labeled 'agent' in acme/web.",
   "triggers": [
@@ -33,8 +36,12 @@ POST   /v2/agents/:id/versions      # deploy a bundle (what `oc agent deploy` ca
 
 ## Workspaces
 
+Keyed by the repo(s) they prepare, not by agent — a session resolves its
+workspace from its repo and ref.
+
 ```http
-POST   /v2/workspaces                # { name, recipe: {repo, setup[], warm[]}, refresh, pool }
+POST   /v2/workspaces                # { name, recipe: {repos: [{repo, ref?}], setup[], warm[]}, refresh, pool }
+GET    /v2/workspaces?repo=&ref=     # list / resolve by repo and ref
 GET    /v2/workspaces/:id            # recipe, pool status, latest build
 GET    /v2/workspaces/:id/builds     # immutable lineage
 POST   /v2/workspaces/:id/builds     # build now

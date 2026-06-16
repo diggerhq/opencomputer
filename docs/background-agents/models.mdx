@@ -3,6 +3,9 @@ title: "Models"
 description: "Provider-prefixed IDs, switched as configuration"
 ---
 
+<Note>**Preview** — see the [overview](/background-agents/overview); some
+capabilities below are still rolling out.</Note>
+
 The model is configuration on the agent — not part of code or a runtime
 image. A change takes effect on the next model call — the next turn, when
 switching providers; nothing restarts.
@@ -47,9 +50,10 @@ oc connect openrouter --api-key sk-or-...
 Bring your own keys per provider, or use platform billing where available.
 One OpenRouter key opens its full multi-lab catalog.
 
-Keys never enter agent machines: model traffic flows through OpenComputer's
-model gateway, which holds the keys, enforces the configured model, and
-meters tokens per session.
+As designed, keys never enter agent machines: model traffic flows through
+OpenComputer's model gateway, which holds the keys, enforces the configured
+model, and meters tokens per session. The gateway is a Preview capability —
+see the [overview](/background-agents/overview).
 
 ## Restricting
 

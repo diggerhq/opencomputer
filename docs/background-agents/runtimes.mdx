@@ -3,6 +3,9 @@ title: "Runtimes"
 description: "The loop that drives a session, selected like a base image"
 ---
 
+<Note>**Preview** — see the [overview](/background-agents/overview); some
+capabilities below are still rolling out.</Note>
+
 The runtime is the agent loop: it reads the session, calls the model, and
 acts in the session's machine. You select it; OpenComputer operates it.
 
@@ -29,8 +32,8 @@ oc runtime list
   sandbox files — lives outside the runtime. If a runtime's machine dies
   mid-task, the session continues on a fresh one; the timeline shows an
   `error` event and a short pause.
-- **No credentials.** Model keys stay in the gateway, delivery tokens in the
-  platform.
+- **No credentials.** By design, model keys stay in the gateway (a Preview
+  capability) and delivery tokens in the platform.
 
 ## Behavior
 

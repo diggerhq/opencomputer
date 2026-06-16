@@ -79,6 +79,7 @@
       },
       {
         "group": "Background Agents",
+        "tag": "Preview",
         "pages": [
           "background-agents/overview",
           "background-agents/quickstart",

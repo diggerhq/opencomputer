@@ -1,11 +1,19 @@
 ---
 title: "Workspaces"
-description: "Machine images for your repo, rebuilt on every push"
+description: "Prepared environments for one or more repos, rebuilt on every push"
 ---
+
+<Note>**Preview** — workspaces are not built in v0 yet. Today a session clones
+its repo on demand; the prepared-environment model below describes the
+designed behavior. See the [overview](/background-agents/overview).</Note>
 
 Cloning, installing, and building take minutes. A workspace does that work
 ahead of time — on every push — and snapshots the result, so sessions boot
 into a ready machine in seconds.
+
+A workspace is a first-class resource, not an agent attribute: it prepares
+**one or more repos** (each at an optional ref or branch) and is shared by
+every agent and session that lands on those repos.
 
 ```bash
 oc workspace create web \
@@ -17,7 +25,9 @@ oc workspace create web \
 
 ## Recipe
 
-- **repo** — cloned via your GitHub connection (read access).
+- **repo** — one or more repos, cloned via your GitHub connection (read
+  access). Each may pin an optional ref or branch; pass `--repo` again to
+  span several repos in one environment.
 - **setup** — install, build, generate.
 - **warm** *(optional)* — run once to heat caches, e.g. a smoke test.
 
@@ -45,9 +55,14 @@ whether or not anything changed.
 `--pool N` keeps N machines pre-booted from the latest build, removing even
 the boot seconds for busy agents.
 
-## Sharing
+## Resolution and sharing
 
-Workspaces are typically one per repo, shared by every agent working on it.
+A session uses the workspace resolved from its repo and ref — the one taken
+from the triggering event — independent of which agent runs. Workspaces are
+not 1:1 with a repo: a repo can have more than one (e.g. per branch), and a
+single workspace can span multiple repos. Any workspace covering a session's
+repo/ref is shared by every agent and session that lands there. With no
+matching workspace, the session clones the repo on demand.
 
 ## During a session
 

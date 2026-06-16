@@ -3,16 +3,18 @@ title: "Agents"
 description: "From a single prompt to a versioned agent defined as code"
 ---
 
+<Note>**Preview** — see the [overview](/background-agents/overview); some
+capabilities below are still rolling out.</Note>
+
 An agent is configuration, not compute: what it knows (prompt, skills), what
-drives it (runtime, model), where it works (workspace), what wakes it
-(triggers), and what it may do (policies). Sessions reference an agent; the
-agent itself never runs.
+drives it (runtime, model), what wakes it (triggers), what it may do
+(policies), and a connection scoping which repos it acts on. Sessions
+reference an agent; the agent itself never runs.
 
 ## Start as a prompt
 
 ```bash
 oc agent create fixer \
-  --workspace web \
   --model anthropic/claude-opus-4-8 \
   --prompt "You fix bugs labeled 'agent' in acme/web." \
   --trigger github:issue.labeled:agent
@@ -23,7 +25,6 @@ curl -X POST https://api.opencomputer.dev/v2/agents \
   -H "Authorization: Bearer $OC_API_KEY" \
   -d '{
     "name": "fixer",
-    "workspace": "web",
     "runtime": { "image": "opencode", "model": "anthropic/claude-opus-4-8" },
     "prompt": "You fix bugs labeled agent in acme/web.",
     "triggers": [{ "type": "github", "on": "issue.labeled:agent" }]
@@ -36,7 +37,7 @@ When one prompt isn't enough, the agent becomes a directory:
 
 ```
 my-agent/
-  agent.toml        # name, runtime, model, workspace, triggers, policies
+  opencomputer.toml # name, runtime, model, triggers, policies, connection
   prompt.md
   skills/
     testing.md      # conventions the agent loads when relevant
@@ -52,9 +53,8 @@ Keep it in git, review changes as PRs, deploy from CI. The directory and the
 API are two views of the same object; GitHub is not required.
 
 ```toml
-# agent.toml
+# opencomputer.toml
 name = "fixer"
-workspace = "web"
 
 [runtime]
 image = "opencode"

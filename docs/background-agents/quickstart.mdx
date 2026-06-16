@@ -19,7 +19,7 @@ Installs the OpenComputer GitHub App on your org. No app registration,
 webhook setup, or secrets. To have PRs open **as you** rather than as the App
 on your behalf, also run `oc connect github --as-user`.
 
-## 2. Create a workspace
+## 2. Create a workspace (optional, Preview)
 
 ```bash
 oc workspace create web \
@@ -27,16 +27,16 @@ oc workspace create web \
   --setup "pnpm i && pnpm build"
 ```
 
-The first build clones the repo, runs setup, and snapshots the result. After
-that it rebuilds on every push to the default branch, so sessions start from
-a ready machine matching the latest code. `oc workspace builds web` lists
-the builds.
+A workspace prepares a repo ahead of time: the first build clones it, runs
+setup, and snapshots the result, then rebuilds on every push so sessions
+start from a ready machine matching the latest code. `oc workspace builds
+web` lists the builds. **In v0 this step is not built yet** — skip it and the
+session clones the repo on demand.
 
 ## 3. Create the agent
 
 ```bash
 oc agent create fixer \
-  --workspace web \
   --model anthropic/claude-opus-4-8 \
   --prompt "You fix bugs labeled 'agent' in acme/web. Keep diffs minimal. Run the affected tests before pushing." \
   --trigger github:issue.labeled:agent
@@ -68,7 +68,7 @@ oc agent update fixer --model openai/gpt-5.x
 
 Effective when the agent next wakes — switching providers means the runtime
 reconnects; a change within the same provider applies on the very next model
-call. Same workspace, prompt, and triggers. Each change is a new agent
+call. Same prompt and triggers. Each change is a new agent
 version — `oc agent rollback fixer v1` reverts.
 
 ## Next
