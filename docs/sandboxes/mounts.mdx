@@ -1,20 +1,36 @@
 ---
 title: "Mounts"
-description: "Mount S3, GCS, Azure Blob, SFTP, WebDAV, and Dropbox into a sandbox via FUSE"
+description: "Mount remote filesystems into a sandbox via FUSE — rclone's ~40 backends, or your own FUSE daemon"
 tag: "Preview"
 ---
 
 <Note>
   **Preview:** the mounts API is new. Endpoints, request shape, and SDK
-  method names may change before GA. Backend coverage is rclone's — works
-  for the listed providers today; expect rough edges on less-tested
-  backends.
+  method names may change before GA.
 </Note>
 
-Mount remote filesystems directly into your sandbox so your code reads and
-writes them like local files — no SDK calls, no chunked downloads, no
-boilerplate. Perfect for pulling in datasets, model weights, or a customer's
-bucket without staging anything to disk first.
+Mount filesystems directly into your sandbox so your code reads and writes them
+like local files — no SDK calls, no chunked downloads, no boilerplate. Perfect
+for pulling in datasets, model weights, or a customer's bucket without staging
+anything to disk first.
+
+## Two drivers
+
+A FUSE mount is a userspace daemon that serves a filesystem under a mountpoint.
+The platform manages the mountpoint, secret injection, and teardown — the
+*driver* decides which daemon establishes the mount:
+
+| Driver | When to use | What you pass |
+| --- | --- | --- |
+| **`rclone`** (default) | You want S3 / GCS / Azure Blob / SFTP / WebDAV / Dropbox and ~35 more, behind a simple creds shape. | `remote` + `backend` + `creds` |
+| **`command`** | You already have a FUSE-ready filesystem (your own VFS, gcsfuse, s3fs, …) and don't want rclone as a middle layer. | a `command` (the daemon's argv) + `env`/`secrets` |
+
+Both share the same lifecycle (`list`, `remove`, hibernate survival) and the
+same secret guarantee — credentials never persist on the worker.
+
+## rclone driver
+
+Wrap any of rclone's backends behind `remote` + `backend` + `creds`:
 
 ```typescript
 import { Sandbox } from "@opencomputer/sdk";
@@ -37,11 +53,12 @@ await sandbox.exec.run("ls /mnt/data");
 await sandbox.exec.run("head /mnt/data/train.csv");
 ```
 
-## How It Works
+## How the rclone driver works
 
-Mounts use [`rclone mount`](https://rclone.org/commands/rclone_mount/) under
-the hood — a single binary that speaks ~40 backends (S3, GCS, Azure Blob,
-SFTP, WebDAV, Dropbox, and more). When you call `mounts.add()`:
+The rclone driver uses [`rclone mount`](https://rclone.org/commands/rclone_mount/)
+under the hood — a single binary that speaks ~40 backends (S3, GCS, Azure Blob,
+SFTP, WebDAV, Dropbox, and more). When you call `mounts.add()` without a
+`driver` (or `driver: "rclone"`):
 
 1. The control plane templates an rclone config from your `backend` + `creds`.
 2. The config is written to a tmpfs file inside the VM (mode `0600` — the
@@ -211,21 +228,148 @@ await sandbox.mounts.add({
   artifacts.
 </Warning>
 
+## command driver — bring your own FUSE
+
+If you already have a FUSE-ready filesystem, skip rclone entirely. Pass
+`driver: "command"` with the daemon's argv; the platform runs it as the sandbox
+user, injects your env/secrets, waits for the mount to come live, and tears it
+down on `remove` — the same lifecycle as an rclone mount.
+
+<CodeGroup>
+
+```typescript TypeScript
+await sandbox.mounts.add({
+  path: "/mnt/data",
+  driver: "command",
+  command: ["my-vfs-fuse", "--bucket", "gs://my-bucket", "{mountpoint}"],
+  secrets: { MY_VFS_TOKEN: process.env.MY_VFS_TOKEN! },
+});
+```
+
+```python Python
+await sandbox.mounts.add_command(
+    path="/mnt/data",
+    command=["my-vfs-fuse", "--bucket", "gs://my-bucket", "{mountpoint}"],
+    secrets={"MY_VFS_TOKEN": os.environ["MY_VFS_TOKEN"]},
+)
+```
+
+</CodeGroup>
+
+### The `{mountpoint}` token
+
+`{mountpoint}` (or `{path}`) in your argv is replaced with `path` before the
+command runs, so you don't repeat the path twice. The call above runs:
+
+```
+my-vfs-fuse --bucket gs://my-bucket /mnt/data
+```
+
+You can also hardcode the path — the token is just a convenience.
+
+### env and secrets
+
+- **`env`** — plain environment variables for the daemon. Recorded and returned
+  by `list()`.
+- **`secrets`** — credentials. Injected into the daemon's **process
+  environment** (never the command line, so they don't leak via `ps`), never
+  written to disk on the worker, and never returned by `list()`.
+
+Both end up in the daemon's environment; the only difference is that `secrets`
+are kept out of every record and response. For daemons that need a credentials
+*file* (e.g. a service-account JSON), write it first with the
+[filesystem API](/sandboxes/filesystem) and point the command at it.
+
+### Read-only
+
+`readOnly` is **advisory** for this driver — your command must honor it (we
+also export `OC_MOUNT_READONLY=1` so the daemon can read the intent). Unlike
+rclone, the platform can't enforce read-only on an arbitrary daemon.
+
+### Requirements
+
+Your daemon must:
+
+- be present in the sandbox — bake it into your image, or install/download it at
+  runtime before mounting;
+- mount at the mountpoint and keep running (a foreground daemon is fine — we
+  background it; a self-daemonizing one works too);
+- exit when its mount is unmounted (standard libfuse behavior) so `remove`
+  cleans up.
+
+The platform handles the rest: `/dev/fuse` access, creating the mountpoint, and
+`-o allow_other` support (`user_allow_other` is set in `/etc/fuse.conf`).
+
+If the mount doesn't come up within the timeout, the call fails with the
+**daemon's own log tail** so you can see why (a bad flag, missing binary, auth
+error, etc.).
+
+### Example: gcsfuse (GCS, no rclone)
+
+[gcsfuse](https://cloud.google.com/storage/docs/gcsfuse-install) is Google's own
+GCS-to-FUSE adapter. Run it directly via the command driver — no rclone in the
+middle. Install it in your image (or at runtime), write your service-account key
+with the [filesystem API](/sandboxes/filesystem), and mount:
+
+```typescript
+// 1. write the service-account JSON into the sandbox (tmpfs)
+await sandbox.files.write("/run/gcp-sa.json", process.env.GCP_SA_JSON!);
+
+// 2. run gcsfuse via the command driver
+await sandbox.mounts.add({
+  path: "/mnt/bucket",
+  driver: "command",
+  command: [
+    "gcsfuse", "--foreground", "--implicit-dirs",
+    "-o", "allow_other",
+    "--key-file", "/run/gcp-sa.json",
+    "my-bucket", "{mountpoint}",
+  ],
+});
+
+await sandbox.exec.run("ls /mnt/bucket");   // GCS objects, read like local files
+```
+
+For a **public** bucket, skip the key and pass `--anonymous-access`:
+
+```typescript
+command: ["gcsfuse", "--foreground", "--anonymous-access", "-o", "allow_other",
+          "gcp-public-data-landsat", "{mountpoint}"],
+```
+
+### Example: bindfs
+
+A minimal local FUSE — mirror one directory onto another path:
+
+```typescript
+await sandbox.exec.run("apt-get update && apt-get install -y bindfs");
+await sandbox.mounts.add({
+  path: "/mnt/mirror",
+  driver: "command",
+  command: ["bindfs", "-f", "-o", "allow_other", "/home/sandbox/data", "{mountpoint}"],
+  readOnly: false,
+});
+// reads/writes under /mnt/mirror now pass through to /home/sandbox/data
+```
+
 ## Listing and removing
+
+`list()` returns both driver shapes:
 
 ```typescript
 const mounts = await sandbox.mounts.list();
-// [{ path: "/mnt/data", remote: "s3:my-bucket", backend: "s3", readOnly: true }]
+// rclone:  { path: "/mnt/data", driver: "rclone", remote: "s3:my-bucket", backend: "s3", readOnly: true }
+// command: { path: "/mnt/mirror", driver: "command", command: ["bindfs", "-f", ...], readOnly: false }
 
-await sandbox.mounts.remove("/mnt/data");
+await sandbox.mounts.remove("/mnt/data");   // fusermount3 -u, same for both drivers
 ```
 
 ## Hibernate behavior
 
-Mounts survive hibernate/wake transparently. The VM snapshot captures the live
-FUSE mount and the rclone daemon process; when the sandbox wakes, both are
-restored as-is. No re-mount call needed — the mount is exactly where you left
-it, with the same credentials, serving the same path.
+Mounts survive hibernate/wake transparently, **for both drivers**. The VM
+snapshot captures the live FUSE mount and the daemon process — rclone or your
+own — and `wake` restores both as-is. No re-mount call needed; the mount is
+exactly where you left it, serving the same path.
 
 ```typescript
 await sandbox.mounts.add({ path: "/mnt/data", remote: "s3:my-bucket", backend: "s3", creds });
@@ -255,6 +399,8 @@ credentials.
 
 ## CLI
 
+rclone driver:
+
 ```bash
 oc mounts add sb-abc123 \
   --path /mnt/data \
@@ -274,17 +420,34 @@ For raw rclone configs, point `--config-file` at a local file:
 oc mounts add sb-abc123 --path /mnt/box --remote box:Reports --config-file ./rclone.conf
 ```
 
+Command driver — pass `--command` (repeat per argv element) to run your own
+FUSE daemon; `--env`/`--secret` take `key=value`:
+
+```bash
+oc mounts add sb-abc123 \
+  --path /mnt/mirror \
+  --command bindfs --command -f --command -o --command allow_other \
+  --command /home/sandbox/data --command '{mountpoint}' \
+  --secret MY_VFS_TOKEN=...
+```
+
 ## Troubleshooting
 
 **`sandbox image is missing rclone and/or fusermount3`** — the sandbox is
-running on an older base image. Recreate the sandbox from the latest default
-template or build a new image off the current `Dockerfile.default`.
+running on an older base image. The rclone driver needs both `rclone` and
+`fusermount3`; the command driver needs only `fusermount3`. Recreate the sandbox
+from the latest default template, or build an image off the current
+`Dockerfile.default`.
 
-**Mount succeeds but `ls` returns empty** — usually a creds / permission issue
-on the remote side rather than a mount issue. SSH in (`oc shell`) and run
+**`mount command did not produce a live mount … within timeout`** (command
+driver) — the error includes your daemon's **log tail**. Common causes: the
+binary isn't installed in the sandbox, a bad flag, or an auth failure. Reproduce
+by hand with `oc shell` and run the same command.
+
+**Mount succeeds but `ls` returns empty** (rclone driver) — usually a creds /
+permission issue on the remote side. SSH in (`oc shell`) and run
 `rclone ls <remote>: --config /run/oc-agent/mounts/<id>.conf` to see the real
-error. Or just `ls -la` the mount point — FUSE errors surface as filesystem
-errors there.
+error. Or `ls -la` the mount point — FUSE errors surface as filesystem errors.
 
 **`fuse: bad mount point ... permission denied`** — make sure the target path
 isn't already a non-empty directory you don't own. The mount call creates the

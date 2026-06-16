@@ -11,9 +11,15 @@ export type MountBackend =
   | "webdav"
   | "dropbox";
 
-export interface AddMountOpts {
+/**
+ * rclone-driver mount — the easy path. Wraps any of rclone's ~40 backends
+ * behind a simple remote+creds shape.
+ */
+export interface RcloneMountOpts {
   /** Absolute path inside the sandbox where the remote will be mounted. */
   path: string;
+  /** Driver. Defaults to `"rclone"`. */
+  driver?: "rclone";
   /** rclone remote spec — `<name>:<path>` (e.g. `"s3:my-bucket/prefix"`). */
   remote: string;
   /**
@@ -26,8 +32,7 @@ export interface AddMountOpts {
    * e.g. for S3: `access_key_id`, `secret_access_key`, `region`).
    *
    * Creds are written to a tmpfs file inside the VM (mode 0600) and never
-   * persisted on the worker. v1 does not auto-restore mounts on hibernate —
-   * re-call `mounts.add` after wake if you need the mount back.
+   * persisted on the worker.
    */
   creds?: Record<string, string>;
   /**
@@ -41,17 +46,58 @@ export interface AddMountOpts {
   mountOptions?: string[];
 }
 
+/**
+ * Command-driver mount — run your own FUSE daemon / mount command. Use this
+ * when you already have a FUSE-ready filesystem (your own VFS, gcsfuse, s3fs,
+ * …) and don't want rclone as a middle layer. The platform manages the
+ * mountpoint, env/secret injection, and teardown; your command establishes the
+ * mount.
+ */
+export interface CommandMountOpts {
+  /** Absolute path inside the sandbox where the filesystem will be mounted. */
+  path: string;
+  driver: "command";
+  /**
+   * argv for the FUSE daemon / mount command. Any `"{mountpoint}"` token is
+   * replaced with `path` (so you can template where the mount lands).
+   * @example ["gcsfuse", "my-bucket", "{mountpoint}"]
+   */
+  command: string[];
+  /** Env vars for the command. Returned by `list()`. */
+  env?: Record<string, string>;
+  /**
+   * Secret env vars — injected into the daemon's process environment (never
+   * the command line, so they don't leak via `ps`), and never recorded or
+   * returned by `list()`.
+   */
+  secrets?: Record<string, string>;
+  /**
+   * Advisory for this driver — your command must honor it. Also exported to
+   * the daemon as `OC_MOUNT_READONLY=1`. Default `true`.
+   */
+  readOnly?: boolean;
+}
+
+export type AddMountOpts = RcloneMountOpts | CommandMountOpts;
+
 export interface MountInfo {
   path: string;
-  remote: string;
-  backend?: string;
+  driver: "rclone" | "command";
   readOnly: boolean;
+  /** rclone driver: the remote spec. */
+  remote?: string;
+  /** rclone driver: the backend type. */
+  backend?: string;
   /**
-   * rclone version inside the sandbox at the moment this mount was added
-   * (e.g. `"v1.65.2"`). Captured for ops triage — rclone is baked into the
-   * rootfs, so different sandboxes may carry different versions.
+   * rclone driver: rclone version inside the sandbox at add time (e.g.
+   * `"v1.65.2"`). Captured for ops triage — rclone is baked into the rootfs,
+   * so different sandboxes may carry different versions.
    */
   rcloneVersion?: string;
+  /** command driver: the resolved argv. */
+  command?: string[];
+  /** command driver: non-secret env vars (secrets are omitted). */
+  env?: Record<string, string>;
 }
 
 export class Mounts {
@@ -68,15 +114,28 @@ export class Mounts {
   }
 
   /**
-   * Mount a remote filesystem via rclone+FUSE inside the sandbox.
+   * Mount a filesystem inside the sandbox. Two drivers:
    *
-   * @example
+   * - `rclone` (default): wrap any rclone backend behind remote+creds.
+   * - `command`: run your own FUSE daemon / mount command.
+   *
+   * @example rclone driver
    * ```ts
    * await sandbox.mounts.add({
    *   path: "/mnt/data",
    *   remote: "s3:my-bucket",
    *   backend: "s3",
    *   creds: { access_key_id: "...", secret_access_key: "...", region: "us-east-1" },
+   * });
+   * ```
+   *
+   * @example command driver (bring your own FUSE)
+   * ```ts
+   * await sandbox.mounts.add({
+   *   path: "/mnt/data",
+   *   driver: "command",
+   *   command: ["my-vfs-fuse", "--bucket", "gs://my-bucket", "{mountpoint}"],
+   *   secrets: { GOOGLE_APPLICATION_CREDENTIALS_JSON: saJson },
    * });
    * ```
    */
