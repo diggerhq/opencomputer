@@ -663,19 +663,35 @@ func (m *Manager) verifyWakeIntegrity(ctx context.Context, sandboxID string, age
 	// Now try to actually exec a binary out of /usr/bin. With caches dropped,
 	// kernel must readdir /usr/bin to resolve the path. If dx_tree is bad,
 	// execve returns EBADMSG which Go surfaces as "bad message" / similar.
-	resp, err := agent.Exec(execCtx, &pb.ExecRequest{
-		Command:   "/usr/bin/stat",
-		Args:      []string{"/usr/bin", "/etc", "/"},
-		RunAsRoot: true,
-	})
+	//
+	// The probe must PASS for the wake to be considered healthy. A probe that
+	// errors without the corruption signature (most commonly DeadlineExceeded
+	// from an unresponsive agent) gets one retry with a fresh deadline; if
+	// that also fails, fail SAFE and report corruption. Serving a guest whose
+	// health we cannot demonstrate hands the customer a sandbox where every
+	// exec may fail — the recovery cold boot costs seconds, the false
+	// negative costs the sandbox.
+	probe := func() (*pb.ExecResponse, error) {
+		probeCtx, probeCancel := context.WithTimeout(ctx, 8*time.Second)
+		defer probeCancel()
+		return agent.Exec(probeCtx, &pb.ExecRequest{
+			Command:   "/usr/bin/stat",
+			Args:      []string{"/usr/bin", "/etc", "/"},
+			RunAsRoot: true,
+		})
+	}
+	resp, err := probe()
+	if err != nil && !isCorruptionSignature(err.Error()) {
+		log.Printf("qemu: %s: wake integrity: probe failed (%v), retrying once", sandboxID, err)
+		resp, err = probe()
+	}
 	if err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "bad message") || strings.Contains(msg, "EBADMSG") || strings.Contains(msg, "input/output error") {
+		if isCorruptionSignature(err.Error()) {
 			log.Printf("qemu: %s: wake integrity: corruption signature in exec error: %v", sandboxID, err)
-			return errCorruptedWake
+		} else {
+			log.Printf("qemu: %s: wake integrity: probe failed twice with non-corruption error: %v — failing safe", sandboxID, err)
 		}
-		log.Printf("qemu: %s: wake integrity: exec failed with non-corruption error: %v (proceeding)", sandboxID, err)
-		return nil
+		return errCorruptedWake
 	}
 	if resp.ExitCode != 0 {
 		stderr := string(resp.Stderr)
@@ -693,6 +709,15 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "...(truncated)"
+}
+
+// isCorruptionSignature reports whether an exec error message carries the
+// ext4 metadata_csum corruption fingerprint (EBADMSG surfaces as "bad
+// message"; severe cases degrade to I/O errors).
+func isCorruptionSignature(msg string) bool {
+	return strings.Contains(msg, "bad message") ||
+		strings.Contains(msg, "EBADMSG") ||
+		strings.Contains(msg, "input/output error")
 }
 
 // errCorruptedWake is returned by verifyWakeIntegrity when the savevm/loadvm

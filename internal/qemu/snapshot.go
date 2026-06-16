@@ -570,7 +570,7 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		cmd.Process.Kill()
 		cmd.Wait()
 		m.cleanupVM(netCfg, "")
-		return m.coldBootLocal(ctx, sandboxID, timeout)
+		return m.recoverCorruptWake(ctx, sandboxID, timeout)
 	}
 
 	// Hibernate captured the guest with its mount state intact (we never
@@ -670,8 +670,78 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 	return vmToSandbox(vm), nil
 }
 
+// recoverCorruptWake recovers a sandbox whose loadvm restore tripped the
+// wake-integrity check. Two-stage, matching where the corruption can live:
+//
+//  1. Cold boot from the existing disks. A fresh kernel with a clean page
+//     cache recovers the memory-only corruption case, and keeps everything
+//     the customer installed on the rootfs (apt packages etc.).
+//  2. If the cold-booted guest ALSO fails the integrity probe, the rootfs is
+//     structurally corrupt on disk (e2fsck-confirmed failure mode: savevm
+//     persisted bad ext4 metadata). Discard the rootfs and cold-boot again —
+//     coldBootLocal recreates it from the template base. The workspace disk
+//     survives (it carries the customer's /workspace files and has been clean
+//     in every observed instance); the rootfs is golden-derived OS state, so
+//     losing it costs installed packages, not workspace data. Discarding the
+//     rootfs also discards the corrupt savevm snapshot embedded in the qcow2,
+//     which is what previously kept wake retries looping on the same bad
+//     restore forever.
+func (m *Manager) recoverCorruptWake(ctx context.Context, sandboxID string, timeout int) (*types.Sandbox, error) {
+	log.Printf("qemu: recover %s: stage 1 — cold boot from existing disks", sandboxID)
+	sb, err := m.coldBootLocal(ctx, sandboxID, timeout)
+	if err == nil {
+		m.mu.RLock()
+		vm := m.vms[sandboxID]
+		m.mu.RUnlock()
+		var agent *AgentClient
+		if vm != nil {
+			agent = vm.agent
+		}
+		if verr := m.verifyWakeIntegrity(ctx, sandboxID, agent); verr == nil {
+			log.Printf("qemu: recover %s: stage 1 succeeded (memory-only corruption; rootfs kept)", sandboxID)
+			return sb, nil
+		}
+		log.Printf("qemu: recover %s: cold boot from existing rootfs still fails integrity — rootfs is corrupt on disk", sandboxID)
+		if kerr := m.Kill(ctx, sandboxID); kerr != nil {
+			log.Printf("qemu: recover %s: kill stage-1 VM: %v (continuing)", sandboxID, kerr)
+		}
+	} else {
+		log.Printf("qemu: recover %s: stage 1 cold boot failed: %v — escalating to rootfs rebuild", sandboxID, err)
+	}
+
+	// Stage 2: discard the corrupt rootfs (and the bad savevm inside it);
+	// coldBootLocal rebuilds it from the template base image.
+	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
+	rootfsPath := detectDrivePath(sandboxDir, "rootfs")
+	if fileExists(rootfsPath) {
+		if rerr := os.Remove(rootfsPath); rerr != nil {
+			return nil, fmt.Errorf("recover %s: remove corrupt rootfs: %w", sandboxID, rerr)
+		}
+		log.Printf("qemu: recover %s: stage 2 — discarded corrupt rootfs %s (workspace kept; installed packages lost)", sandboxID, rootfsPath)
+	}
+	sb, err = m.coldBootLocal(ctx, sandboxID, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("recover %s: cold boot after rootfs rebuild: %w", sandboxID, err)
+	}
+	log.Printf("qemu: recover %s: stage 2 succeeded — rootfs rebuilt from template, workspace intact", sandboxID)
+	return sb, nil
+}
+
 // coldBootLocal boots a fresh VM using an existing workspace.ext4 on disk.
+// Thin logging wrapper: this is the recovery path of last resort, so both its
+// start and any failure must be visible in the journal — a silent error here
+// previously left wake failures looping with no trace of why the fallback
+// never produced a VM.
 func (m *Manager) coldBootLocal(ctx context.Context, sandboxID string, timeout int) (*types.Sandbox, error) {
+	log.Printf("qemu: cold-boot-local %s: starting", sandboxID)
+	sb, err := m.coldBootLocalInner(ctx, sandboxID, timeout)
+	if err != nil {
+		log.Printf("qemu: cold-boot-local %s: FAILED: %v", sandboxID, err)
+	}
+	return sb, err
+}
+
+func (m *Manager) coldBootLocalInner(ctx context.Context, sandboxID string, timeout int) (*types.Sandbox, error) {
 	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
 	workspacePath := detectDrivePath(sandboxDir, "workspace")
 	rootfsPath := detectDrivePath(sandboxDir, "rootfs")
@@ -680,14 +750,41 @@ func (m *Manager) coldBootLocal(ctx context.Context, sandboxID string, timeout i
 		return nil, fmt.Errorf("workspace not found at %s", workspacePath)
 	}
 
-	sbMetaPath := filepath.Join(sandboxDir, "sandbox-meta.json")
-	metaJSON, err := os.ReadFile(sbMetaPath)
-	if err != nil {
-		return nil, fmt.Errorf("read sandbox-meta.json: %w", err)
-	}
+	// Resolve the sandbox config. The create-time sandbox-meta.json lives only
+	// on the worker that created the sandbox and is NOT included in the
+	// hibernate archive, so on a cross-worker recovery cold boot (the common
+	// case after a worker roll) it's absent. Fall back to snapshot-meta.json,
+	// which IS in the archive and carries the same template/cpu/mem/port.
+	// Without this fallback, recovering a corrupted wake on any worker other
+	// than the creator fails with "read sandbox-meta.json: no such file".
 	var meta SandboxMeta
-	if err := json.Unmarshal(metaJSON, &meta); err != nil {
-		return nil, fmt.Errorf("parse sandbox-meta.json: %w", err)
+	sbMetaPath := filepath.Join(sandboxDir, "sandbox-meta.json")
+	if metaJSON, readErr := os.ReadFile(sbMetaPath); readErr == nil {
+		if err := json.Unmarshal(metaJSON, &meta); err != nil {
+			return nil, fmt.Errorf("parse sandbox-meta.json: %w", err)
+		}
+	} else {
+		snapPath := filepath.Join(sandboxDir, "snapshot", "snapshot-meta.json")
+		snapJSON, snapErr := os.ReadFile(snapPath)
+		if snapErr != nil {
+			return nil, fmt.Errorf("read sandbox-meta.json: %w (snapshot-meta.json fallback also failed: %v)", readErr, snapErr)
+		}
+		var snap SnapshotMeta
+		if err := json.Unmarshal(snapJSON, &snap); err != nil {
+			return nil, fmt.Errorf("parse snapshot-meta.json (sandbox-meta.json fallback): %w", err)
+		}
+		meta = SandboxMeta{
+			SandboxID: sandboxID,
+			Template:  snap.Template,
+			CpuCount:  snap.CpuCount,
+			MemoryMB:  snap.MemoryMB,
+			GuestPort: snap.GuestPort,
+		}
+		log.Printf("qemu: cold-boot-local %s: sandbox-meta.json absent — recovered config from snapshot-meta.json (template=%q, mem=%dMB, cpu=%d)",
+			sandboxID, meta.Template, meta.MemoryMB, meta.CpuCount)
+	}
+	if meta.Template == "" {
+		meta.Template = "default"
 	}
 
 	if !fileExists(rootfsPath) {
