@@ -2217,15 +2217,27 @@ func (m *Manager) HibernateAll(ctx context.Context, checkpointStore *storage.Che
 }
 
 // Exec runs a command in the VM via the agent.
+// execNoTimeoutSeconds is the cap handed to the in-VM agent when the caller
+// asks for no timeout (cfg.Timeout <= 0). It's large enough to be unreachable
+// in practice (the sandbox hibernates first) while staying a positive value, so
+// older agents that floor 0→60s instead run effectively-unbounded.
+const execNoTimeoutSeconds = 7 * 24 * 3600 // 7 days
+
 func (m *Manager) Exec(ctx context.Context, sandboxID string, cfg types.ProcessConfig) (*types.ProcessResult, error) {
 	vm, err := m.getReadyVM(ctx, sandboxID)
 	if err != nil {
 		return nil, err
 	}
 
+	// timeout == 0 means "no timeout". We send an effectively-unbounded value
+	// rather than a literal 0 because OLDER in-VM agents floor 0 to 60s — so to
+	// give EXISTING sandboxes a true no-timeout we hand them a cap large enough
+	// that the sandbox hibernates long before it's reached (7 days). New agents
+	// treat 0 as unbounded natively; once the fleet has rolled past the old
+	// agent this can become a literal 0.
 	timeout := int32(cfg.Timeout)
 	if timeout <= 0 {
-		timeout = 60
+		timeout = execNoTimeoutSeconds
 	}
 
 	command := cfg.Command

@@ -288,8 +288,11 @@ export class Exec {
     };
     if (opts.env) body.envs = opts.env;
     if (opts.cwd) body.cwd = opts.cwd;
+    // Default: no timeout (0). The command runs until it completes; the server
+    // keeps the connection alive with heartbeats. Pass an explicit `timeout`
+    // (seconds) to opt into a hard cap.
     if (opts.timeout != null) body.timeout = opts.timeout;
-    else body.timeout = 60;
+    else body.timeout = 0;
 
     const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/run`, {
       method: "POST",

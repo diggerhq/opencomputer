@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -287,6 +289,11 @@ func (p *ControlPlaneProxy) doHTTP(c echo.Context, sandboxID, workerURL string, 
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = p.transport
+	// Stream the worker's response to the client as it arrives. Buffering the
+	// whole thing (the old behavior) made any response slower than Cloudflare's
+	// ~100s ceiling a 524 and broke streaming (SSE, chunked, long-poll).
+	// FlushInterval=-1 flushes chunks immediately.
+	proxy.FlushInterval = -1
 
 	var proxyErr error
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
@@ -302,32 +309,49 @@ func (p *ControlPlaneProxy) doHTTP(c echo.Context, sandboxID, workerURL string, 
 		r.Host = originalHost
 	}
 
-	rec := &responseRecorder{
-		header: make(http.Header),
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		// The outer CORS middleware sets these; forwarding the worker's copies
+		// would duplicate them.
+		for k := range resp.Header {
+			if strings.HasPrefix(strings.ToLower(k), "access-control-") {
+				resp.Header.Del(k)
+			}
+		}
+		// A 502 "not found" from the worker means the sandbox was lost (worker
+		// restart). Convert to a clean 410 and mark the session stopped. Only
+		// 502s are read here (error bodies are tiny) — normal responses stream
+		// straight through without buffering.
+		if resp.StatusCode == http.StatusBadGateway {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if strings.Contains(string(b), "not found") || strings.Contains(string(b), "not available") {
+				log.Printf("cp-proxy: sandbox %s not found on worker, marking session stopped", sandboxID)
+				errMsg := "sandbox lost on worker"
+				_ = p.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", &errMsg)
+				b = []byte(fmt.Sprintf(`{"error":"sandbox %s is no longer available"}`, sandboxID))
+				resp.StatusCode = http.StatusGone
+				resp.Status = "410 Gone"
+				resp.Header.Set("Content-Type", "application/json")
+			}
+			// Restore the (small) body so the proxy can stream it out.
+			resp.Body = io.NopCloser(bytes.NewReader(b))
+			resp.ContentLength = int64(len(b))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(b)))
+		}
+		return nil
 	}
-	proxy.ServeHTTP(rec, c.Request())
+
+	proxy.ServeHTTP(c.Response(), c.Request())
 
 	if proxyErr != nil {
+		// Once bytes have reached the client we can't swap in an error page.
+		if c.Response().Committed {
+			log.Printf("cp-proxy: mid-stream error proxying sandbox %s to %s: %v", sandboxID, workerURL, proxyErr)
+			return nil
+		}
 		log.Printf("cp-proxy: error proxying sandbox %s to %s: %v", sandboxID, workerURL, proxyErr)
 		return serveUpstreamUnavailable(c, sandboxID, port)
 	}
-
-	// If the worker returned a 502 with "not found", the sandbox was lost
-	// (e.g., worker restarted). Mark the session as stopped so future
-	// requests get a clean 410 Gone instead of a confusing 502.
-	if rec.statusCode == http.StatusBadGateway {
-		body := rec.body.String()
-		if strings.Contains(body, "not found") || strings.Contains(body, "not available") {
-			log.Printf("cp-proxy: sandbox %s not found on worker, marking session stopped", sandboxID)
-			errMsg := "sandbox lost on worker"
-			_ = p.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", &errMsg)
-			return c.JSON(http.StatusGone, map[string]string{
-				"error": fmt.Sprintf("sandbox %s is no longer available", sandboxID),
-			})
-		}
-	}
-
-	rec.writeTo(c.Response())
 	return nil
 }
 

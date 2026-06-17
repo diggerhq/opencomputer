@@ -101,7 +101,7 @@ class Exec:
     async def run(
         self,
         command: str,
-        timeout: int = 60,
+        timeout: int = 0,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> ProcessResult:
@@ -109,6 +109,10 @@ class Exec:
 
         The command is executed via `sh -c`, so shell features like pipes,
         redirects, and env var expansion work as expected.
+
+        timeout defaults to 0 (no timeout): the command runs until it completes
+        and the server keeps the connection alive with heartbeats. Pass a
+        positive number of seconds to opt into a hard cap.
         """
         body: dict[str, Any] = {"cmd": "sh", "args": ["-c", command], "timeout": timeout}
         if env:

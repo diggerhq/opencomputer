@@ -241,18 +241,29 @@ func (p *SandboxProxy) doHTTP(c echo.Context, sandboxID, addr string, hostPort i
 			c.Request().Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		}
 
-		// Use a recorder to capture the proxy response so we can detect
-		// errors and retry without having already written to the client.
-		rec := &responseRecorder{
-			header: make(http.Header),
-		}
-
 		proxy := httputil.NewSingleHostReverseProxy(target)
+		// Stream the upstream response straight to the client as bytes arrive.
+		// The old path buffered the ENTIRE response in memory before sending a
+		// single byte, which (a) made any response slower than Cloudflare's
+		// ~100s ceiling a 524, and (b) broke streaming (SSE, chunked, long-poll).
+		// FlushInterval=-1 flushes each chunk immediately.
+		proxy.FlushInterval = -1
 		proxy.Transport = &http.Transport{
 			DialContext: (&net.Dialer{
 				Timeout: 2 * time.Second,
 			}).DialContext,
 			ResponseHeaderTimeout: 60 * time.Second,
+		}
+		// The outer server's CORS middleware sets Access-Control-* headers;
+		// forwarding the upstream's copies duplicates them. With buffering gone,
+		// strip them here (before headers reach the client).
+		proxy.ModifyResponse = func(resp *http.Response) error {
+			for k := range resp.Header {
+				if strings.HasPrefix(strings.ToLower(k), "access-control-") {
+					resp.Header.Del(k)
+				}
+			}
+			return nil
 		}
 
 		var proxyErr error
@@ -260,20 +271,25 @@ func (p *SandboxProxy) doHTTP(c echo.Context, sandboxID, addr string, hostPort i
 			proxyErr = err
 		}
 
-		proxy.ServeHTTP(rec, c.Request())
+		proxy.ServeHTTP(c.Response(), c.Request())
 
-		if proxyErr != nil {
-			if isRetryable(proxyErr) && attempt < maxRetries {
-				continue
-			}
-			log.Printf("proxy: error proxying to sandbox %s (port %d) after %d attempts: %v",
-				sandboxID, hostPort, attempt+1, proxyErr)
-			return serveUpstreamUnavailable(c, sandboxID, hostPort)
+		if proxyErr == nil {
+			return nil // streamed to completion
 		}
-
-		// Success — flush the recorded response to the real client.
-		rec.writeTo(c.Response())
-		return nil
+		// Once any byte has reached the client (response committed) we can't
+		// retry — a partial response is already on the wire. Only pre-header
+		// failures are recoverable, which is exactly the CRIU-restore
+		// stabilization window the retry exists for.
+		if c.Response().Committed {
+			log.Printf("proxy: mid-stream error to sandbox %s (port %d): %v", sandboxID, hostPort, proxyErr)
+			return nil
+		}
+		if isRetryable(proxyErr) && attempt < maxRetries {
+			continue
+		}
+		log.Printf("proxy: error proxying to sandbox %s (port %d) after %d attempts: %v",
+			sandboxID, hostPort, attempt+1, proxyErr)
+		return serveUpstreamUnavailable(c, sandboxID, hostPort)
 	}
 
 	// Should not reach here, but just in case.

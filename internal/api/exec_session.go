@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -237,29 +238,95 @@ func (s *Server) execRun(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
 
-	var result *types.ProcessResult
+	return respondExecWithHeartbeat(c, func(ctx context.Context) (*types.ProcessResult, error) {
+		var result *types.ProcessResult
+		op := func(ctx context.Context) error {
+			var err error
+			result, err = s.manager.Exec(ctx, id, req)
+			return err
+		}
+		if s.router != nil {
+			if err := s.router.Route(ctx, id, "execRun", op); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := op(ctx); err != nil {
+				return nil, err
+			}
+		}
+		return result, nil
+	})
+}
 
-	routeOp := func(ctx context.Context) error {
-		var err error
-		result, err = s.manager.Exec(ctx, id, req)
-		return err
+// Heartbeat tunables (vars, not consts, so tests can shrink them).
+var (
+	// execHeartbeatGrace is how long we wait for a fast command before
+	// committing to a chunked, heartbeat-kept-alive response. The vast majority
+	// of commands finish within this window and return with normal status codes.
+	execHeartbeatGrace = 20 * time.Second
+	// execHeartbeatInterval must stay under Cloudflare's ~100s origin-idle
+	// ceiling (a 524 fires if the origin sends no bytes for that long).
+	execHeartbeatInterval = 25 * time.Second
+)
+
+// respondExecWithHeartbeat runs a synchronous exec and writes its ProcessResult,
+// but keeps the HTTP connection warm for long commands so Cloudflare's ~100s
+// origin-idle timeout (524) never fires. Fast commands (< execHeartbeatGrace)
+// return with normal status codes. For a long command it commits a chunked 200
+// and emits whitespace heartbeats every execHeartbeatInterval; leading
+// whitespace is valid JSON, so the ProcessResult still decodes unchanged on the
+// client. Once committed the status can't signal failure, so a work() error is
+// surfaced as a ProcessResult with ExitCode -1 — strictly better than the 524
+// it replaces. (The streaming/WebSocket exec session already has a 30s keepalive
+// ticker; this brings synchronous exec/run to parity.)
+func respondExecWithHeartbeat(c echo.Context, work func(context.Context) (*types.ProcessResult, error)) error {
+	type outcome struct {
+		res *types.ProcessResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		r, e := work(c.Request().Context())
+		done <- outcome{r, e}
+	}()
+
+	select {
+	case o := <-done:
+		if o.err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": o.err.Error()})
+		}
+		return c.JSON(http.StatusOK, o.res)
+	case <-time.After(execHeartbeatGrace):
 	}
 
-	if s.router != nil {
-		if err := s.router.Route(c.Request().Context(), id, "execRun", routeOp); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
-		}
-	} else {
-		if err := routeOp(c.Request().Context()); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{
-				"error": err.Error(),
-			})
+	resp := c.Response()
+	resp.Header().Set("Content-Type", "application/json")
+	resp.WriteHeader(http.StatusOK)
+	resp.Flush()
+
+	ticker := time.NewTicker(execHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if _, err := resp.Write([]byte(" ")); err != nil {
+				return nil // client/edge went away — nothing more to do
+			}
+			resp.Flush()
+		case o := <-done:
+			res := o.res
+			if o.err != nil {
+				res = &types.ProcessResult{ExitCode: -1, Stderr: "exec error: " + o.err.Error()}
+			}
+			body, err := json.Marshal(res)
+			if err != nil {
+				body = []byte(`{"exitCode":-1,"stderr":"exec: result marshal failed"}`)
+			}
+			_, _ = resp.Write(body)
+			resp.Flush()
+			return nil
 		}
 	}
-
-	return c.JSON(http.StatusOK, result)
 }
 
 // execRunRemote routes an exec/run request to the worker via gRPC.
@@ -286,32 +353,35 @@ func (s *Server) execRunRemote(c echo.Context, sandboxID string, req types.Proce
 		})
 	}
 
+	// timeout == 0 means no timeout: the command runs unbounded (bounded only by
+	// the client connection / sandbox lifetime) and the heartbeat keeps the edge
+	// connection alive. An explicit positive timeout is still honored.
 	timeout := int32(req.Timeout)
-	if timeout <= 0 {
-		timeout = 30
-	}
 
-	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), time.Duration(timeout+5)*time.Second)
-	defer cancel()
+	return respondExecWithHeartbeat(c, func(ctx context.Context) (*types.ProcessResult, error) {
+		grpcCtx := ctx
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			grpcCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout+5)*time.Second)
+			defer cancel()
+		}
 
-	resp, err := client.ExecCommand(grpcCtx, &pb.ExecCommandRequest{
-		SandboxId: sandboxID,
-		Command:   req.Command,
-		Args:      req.Args,
-		Envs:      req.Env,
-		Cwd:       req.Cwd,
-		Timeout:   timeout,
-	})
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": err.Error(),
+		resp, err := client.ExecCommand(grpcCtx, &pb.ExecCommandRequest{
+			SandboxId: sandboxID,
+			Command:   req.Command,
+			Args:      req.Args,
+			Envs:      req.Env,
+			Cwd:       req.Cwd,
+			Timeout:   timeout,
 		})
-	}
-
-	return c.JSON(http.StatusOK, &types.ProcessResult{
-		ExitCode: int(resp.ExitCode),
-		Stdout:   resp.Stdout,
-		Stderr:   resp.Stderr,
+		if err != nil {
+			return nil, err
+		}
+		return &types.ProcessResult{
+			ExitCode: int(resp.ExitCode),
+			Stdout:   resp.Stdout,
+			Stderr:   resp.Stderr,
+		}, nil
 	})
 }
 

@@ -261,6 +261,16 @@ func (s *HTTPServer) execSessionWebSocket(c echo.Context) error {
 	}
 }
 
+// Keepalive tunables for synchronous exec/run (vars so tests can shrink them).
+var (
+	// execKeepaliveGrace is how long we wait for a fast command before
+	// committing to a chunked, heartbeat-kept-alive response.
+	execKeepaliveGrace = 20 * time.Second
+	// execKeepaliveInterval must stay under Cloudflare's ~100s origin-idle
+	// ceiling (a 524 fires if the origin sends no bytes for that long).
+	execKeepaliveInterval = 15 * time.Second
+)
+
 func (s *HTTPServer) execRun(c echo.Context) error {
 	id := c.Param("id")
 
@@ -272,71 +282,84 @@ func (s *HTTPServer) execRun(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "cmd is required"})
 	}
 
-	// For long-running commands (timeout > 30s), send response headers
-	// immediately and write periodic keepalive whitespace. This prevents
-	// Cloudflare (and other reverse proxies) from timing out:
-	//   - 524 first-byte timeout (~100s): solved by sending headers early
-	//   - Body idle timeout (~600s): solved by periodic space bytes
-	// JSON parsers ignore leading whitespace, so the final JSON body
-	// is parsed cleanly regardless of how many spaces precede it.
-	earlyFlush := req.Timeout > 30
-	var keepaliveDone chan struct{}
-	if earlyFlush {
-		c.Response().Header().Set("Content-Type", "application/json")
-		c.Response().WriteHeader(http.StatusOK)
-		flusher, _ := c.Response().Writer.(http.Flusher)
-		if flusher != nil {
-			flusher.Flush()
+	// No gate on req.Timeout — a command may run arbitrarily long (an unbounded
+	// timeout==0 request included). respondExecKeepalive keeps the edge
+	// connection warm so it never trips Cloudflare's ~100s origin-idle 524.
+	return respondExecKeepalive(c, func(ctx context.Context) (*types.ProcessResult, error) {
+		var result *types.ProcessResult
+		op := func(ctx context.Context) error {
+			var err error
+			result, err = s.manager.Exec(ctx, id, req)
+			return err
 		}
-
-		keepaliveDone = make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(15 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					c.Response().Write([]byte(" "))
-					if flusher != nil {
-						flusher.Flush()
-					}
-				case <-keepaliveDone:
-					return
-				}
+		if s.router != nil {
+			if err := s.router.Route(ctx, id, "execRun", op); err != nil {
+				return nil, err
 			}
-		}()
-	}
-
-	var result *types.ProcessResult
-
-	routeOp := func(ctx context.Context) error {
-		var err error
-		result, err = s.manager.Exec(ctx, id, req)
-		return err
-	}
-
-	var execErr error
-	if s.router != nil {
-		execErr = s.router.Route(c.Request().Context(), id, "execRun", routeOp)
-	} else {
-		execErr = routeOp(c.Request().Context())
-	}
-
-	if keepaliveDone != nil {
-		close(keepaliveDone)
-	}
-
-	if execErr != nil {
-		if earlyFlush {
-			return json.NewEncoder(c.Response()).Encode(map[string]string{"error": execErr.Error()})
+		} else {
+			if err := op(ctx); err != nil {
+				return nil, err
+			}
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": execErr.Error()})
+		return result, nil
+	})
+}
+
+// respondExecKeepalive runs a synchronous exec and writes its ProcessResult,
+// keeping the HTTP connection warm for long commands so reverse proxies
+// (Cloudflare's ~100s origin-idle 524) don't drop it. Fast commands (under
+// execKeepaliveGrace) return with normal status codes. A long command commits
+// a chunked 200 and emits whitespace heartbeats (valid leading JSON whitespace,
+// so the result still decodes); an error after commit is surfaced as a
+// ProcessResult with ExitCode -1, since the 200 is already on the wire.
+func respondExecKeepalive(c echo.Context, work func(context.Context) (*types.ProcessResult, error)) error {
+	type execOutcome struct {
+		res *types.ProcessResult
+		err error
+	}
+	done := make(chan execOutcome, 1)
+	go func() {
+		r, e := work(c.Request().Context())
+		done <- execOutcome{r, e}
+	}()
+
+	select {
+	case o := <-done:
+		if o.err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": o.err.Error()})
+		}
+		return c.JSON(http.StatusOK, o.res)
+	case <-time.After(execKeepaliveGrace):
 	}
 
-	if earlyFlush {
-		return json.NewEncoder(c.Response()).Encode(result)
+	resp := c.Response()
+	resp.Header().Set("Content-Type", "application/json")
+	resp.WriteHeader(http.StatusOK)
+	resp.Flush()
+
+	ticker := time.NewTicker(execKeepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if _, err := resp.Write([]byte(" ")); err != nil {
+				return nil // client/edge went away
+			}
+			resp.Flush()
+		case o := <-done:
+			res := o.res
+			if o.err != nil {
+				res = &types.ProcessResult{ExitCode: -1, Stderr: "exec error: " + o.err.Error()}
+			}
+			body, err := json.Marshal(res)
+			if err != nil {
+				body = []byte(`{"exitCode":-1,"stderr":"exec: result marshal failed"}`)
+			}
+			_, _ = resp.Write(body)
+			resp.Flush()
+			return nil
+		}
 	}
-	return c.JSON(http.StatusOK, result)
 }
 
 func (s *HTTPServer) killExecSession(c echo.Context) error {

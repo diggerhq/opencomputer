@@ -70,13 +70,14 @@ func (s *Server) SetEnvs(ctx context.Context, req *pb.SetEnvsRequest) (*pb.SetEn
 
 // Exec runs a command synchronously and returns stdout/stderr/exit code.
 func (s *Server) Exec(ctx context.Context, req *pb.ExecRequest) (*pb.ExecResponse, error) {
-	timeout := time.Duration(req.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 60 * time.Second
+	// TimeoutSeconds == 0 means no timeout: the command runs unbounded, bounded
+	// only by the caller's context (the connection) and the sandbox lifetime.
+	// A positive value is enforced as a hard cap.
+	if req.TimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.TimeoutSeconds)*time.Second)
+		defer cancel()
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
 	cmd := exec.CommandContext(ctx, req.Command, req.Args...)
 
@@ -188,13 +189,13 @@ func isExitError(err error) bool {
 
 // ExecStream runs a command and streams stdout/stderr chunks.
 func (s *Server) ExecStream(req *pb.ExecRequest, stream pb.SandboxAgent_ExecStreamServer) error {
-	timeout := time.Duration(req.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 60 * time.Second
+	// TimeoutSeconds == 0 means no timeout (see Exec).
+	ctx := stream.Context()
+	if req.TimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.TimeoutSeconds)*time.Second)
+		defer cancel()
 	}
-
-	ctx, cancel := context.WithTimeout(stream.Context(), timeout)
-	defer cancel()
 
 	cmd := exec.CommandContext(ctx, req.Command, req.Args...)
 
