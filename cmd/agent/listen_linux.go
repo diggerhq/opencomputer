@@ -116,9 +116,8 @@ func (l *virtioSerialListener) Accept() (net.Conn, error) {
 		// bytes (GOAWAY frames, partial HTTP/2 frames). If we hand these to
 		// the new gRPC session, it gets a protocol error and closes immediately.
 		if instrumentVirtioSerial {
-			log.Printf("virtio-serial: Accept iter: active=false, draining stale...")
+			log.Printf("virtio-serial: Accept iter: active=false, waiting for fresh data...")
 		}
-		drainStaleData(l.f)
 
 		// Wait for the host to connect (port becomes readable with fresh data)
 		if !waitForReadable(l.f, 500*time.Millisecond) {
