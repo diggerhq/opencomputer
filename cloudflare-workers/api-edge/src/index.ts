@@ -102,6 +102,13 @@ interface Caller {
   userID: string | null;
 }
 
+interface SandboxCreateResult {
+  sandboxID?: string;
+  workerID?: string;
+  status?: string;
+  memoryMB?: number;
+}
+
 function isWebSocketUpgrade(req: Request): boolean {
   return req.headers.get("upgrade")?.toLowerCase() === "websocket";
 }
@@ -433,6 +440,107 @@ async function enforceCreatePolicy(
   return null;
 }
 
+async function insertSandboxIndex(
+  env: Env,
+  caller: Caller,
+  cellID: string,
+  parsed: SandboxCreateResult,
+  fallbackCpuCount: number,
+  fallbackMemoryMB: number,
+): Promise<void> {
+  if (!parsed.sandboxID) return;
+  await env.OPENCOMPUTER_DB.prepare(
+    `INSERT OR REPLACE INTO sandboxes_index
+       (id, org_id, user_id, cell_id, worker_id, status, cpu_count, memory_mb, created_at, last_event_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)`,
+  )
+    .bind(
+      parsed.sandboxID,
+      caller.orgID,
+      caller.userID,
+      cellID,
+      parsed.workerID ?? null,
+      parsed.status ?? "running",
+      fallbackCpuCount,
+      parsed.memoryMB ?? fallbackMemoryMB,
+      Math.floor(Date.now() / 1000),
+    )
+    .run();
+}
+
+function indexSandboxFromSSE(
+  resp: Response,
+  env: Env,
+  caller: Caller,
+  cellID: string,
+  fallbackCpuCount: number,
+  fallbackMemoryMB: number,
+): Response {
+  if (!resp.ok || !resp.body) return resp;
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventName = "message";
+  let dataLines: string[] = [];
+  let indexed = false;
+
+  const handleEvent = async () => {
+    if (eventName !== "result" || dataLines.length === 0 || indexed) {
+      eventName = "message";
+      dataLines = [];
+      return;
+    }
+
+    indexed = true;
+    const data = dataLines.join("\n");
+    eventName = "message";
+    dataLines = [];
+
+    try {
+      const parsed = JSON.parse(data) as SandboxCreateResult;
+      await insertSandboxIndex(env, caller, cellID, parsed, fallbackCpuCount, fallbackMemoryMB);
+    } catch (e) {
+      console.error("sandboxes_index SSE create insert failed:", e);
+    }
+  };
+
+  const processLine = async (line: string) => {
+    if (line === "") {
+      await handleEvent();
+      return;
+    }
+    if (line.startsWith(":")) return;
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    const value = colon === -1 ? "" : line.slice(colon + (line[colon + 1] === " " ? 2 : 1));
+    if (field === "event") {
+      eventName = value;
+    } else if (field === "data") {
+      dataLines.push(value);
+    }
+  };
+
+  const stream = new TransformStream<Uint8Array, Uint8Array>({
+    async transform(chunk, controller) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const lines = buffer.split(/\r\n|\r|\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        await processLine(line);
+      }
+      controller.enqueue(chunk);
+    },
+    async flush() {
+      const tail = decoder.decode();
+      if (tail) buffer += tail;
+      if (buffer) await processLine(buffer);
+      await handleEvent();
+    },
+  });
+
+  return new Response(resp.body.pipeThrough(stream), resp);
+}
+
 async function createSandbox(req: Request, env: Env): Promise<Response> {
   const caller = await authenticate(req, env);
   if (!caller) return json({ error: "missing or invalid API key" }, 401);
@@ -509,21 +617,18 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
   const capToken = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, caller.userID);
 
   // SSE build streaming: image/snapshot creates can take minutes (apt installs,
-  // etc.). When the client asks for an event stream, forward the Accept header
-  // and stream the cell's SSE response straight through — build logs reach the
-  // client live and the final `result` event is delivered intact. Buffering
-  // with .text() (the non-SSE path below) collapsed the stream to one blob,
-  // which broke the Python SDK ("No result received from build stream"). The
-  // sandboxes_index row is populated by the cell's `created` event via the
-  // events pipeline, so we don't need the inline INSERT on this path.
+  // etc.). Preserve live streaming, but index the final `result` event inline
+  // before the stream closes. Relying only on async lifecycle events leaves a
+  // race where immediate GET/DELETE after create sees no sandboxes_index row.
   const wantsSSE = req.headers.get("accept") === "text/event-stream";
   if (wantsSSE) {
     try {
-      return await fetch(cell.base_url.replace(/\/$/, "") + "/internal/sandboxes/create", {
+      const cpResp = await fetch(cell.base_url.replace(/\/$/, "") + "/internal/sandboxes/create", {
         method: "POST",
         headers: { authorization: "Bearer " + capToken, "content-type": "application/json", accept: "text/event-stream" },
         body: bodyText || "{}",
       });
+      return indexSandboxFromSSE(cpResp, env, caller, cell.cell_id, bodyCpuCount, bodyMemoryMB);
     } catch (e) {
       return json({ error: `cell ${cell.cell_id} unreachable: ${(e as Error).message}` }, 502);
     }
@@ -542,31 +647,13 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
 
   const cpText = await cpResp.text();
   if (cpResp.status >= 200 && cpResp.status < 300) {
-    let parsed: { sandboxID?: string; workerID?: string; status?: string; memoryMB?: number } = {};
+    let parsed: SandboxCreateResult = {};
     try {
       parsed = JSON.parse(cpText);
     } catch {
       /* leave parsed empty — still record what we can */
     }
-    if (parsed.sandboxID) {
-      await env.OPENCOMPUTER_DB.prepare(
-        `INSERT OR REPLACE INTO sandboxes_index
-           (id, org_id, user_id, cell_id, worker_id, status, cpu_count, memory_mb, created_at, last_event_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)`,
-      )
-        .bind(
-          parsed.sandboxID,
-          caller.orgID,
-          caller.userID,
-          cell.cell_id,
-          parsed.workerID ?? null,
-          parsed.status ?? "running",
-          bodyCpuCount,
-          parsed.memoryMB ?? bodyMemoryMB,
-          Math.floor(Date.now() / 1000),
-        )
-        .run();
-    }
+    await insertSandboxIndex(env, caller, cell.cell_id, parsed, bodyCpuCount, bodyMemoryMB);
   }
   // Pass the CP's response through verbatim (status + body).
   return new Response(cpText, {
