@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/singleflight"
+
 	"github.com/opensandbox/opensandbox/internal/blobstore"
 	"github.com/opensandbox/opensandbox/internal/metrics"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
@@ -326,6 +328,13 @@ type Manager struct {
 	vms      map[string]*VMInstance
 	nextCID  uint32
 	uploadWg sync.WaitGroup
+
+	// wakeSF collapses concurrent Wake calls for the same sandbox into a
+	// single doWake execution (all callers share its result). Without this,
+	// a control-plane wake retry that fires while the first wake is still
+	// running spawns a second QEMU + a second corrupt-wake recovery on the
+	// same sandbox dir — racing on rootfs.qcow2 and contending for the host.
+	wakeSF singleflight.Group
 
 	// Checkpoint cache mutex: write-locked during cache creation, read-locked during fork
 	checkpointCacheMu sync.RWMutex
@@ -663,19 +672,35 @@ func (m *Manager) verifyWakeIntegrity(ctx context.Context, sandboxID string, age
 	// Now try to actually exec a binary out of /usr/bin. With caches dropped,
 	// kernel must readdir /usr/bin to resolve the path. If dx_tree is bad,
 	// execve returns EBADMSG which Go surfaces as "bad message" / similar.
-	resp, err := agent.Exec(execCtx, &pb.ExecRequest{
-		Command:   "/usr/bin/stat",
-		Args:      []string{"/usr/bin", "/etc", "/"},
-		RunAsRoot: true,
-	})
+	//
+	// The probe must PASS for the wake to be considered healthy. A probe that
+	// errors without the corruption signature (most commonly DeadlineExceeded
+	// from an unresponsive agent) gets one retry with a fresh deadline; if
+	// that also fails, fail SAFE and report corruption. Serving a guest whose
+	// health we cannot demonstrate hands the customer a sandbox where every
+	// exec may fail — the recovery cold boot costs seconds, the false
+	// negative costs the sandbox.
+	probe := func() (*pb.ExecResponse, error) {
+		probeCtx, probeCancel := context.WithTimeout(ctx, 8*time.Second)
+		defer probeCancel()
+		return agent.Exec(probeCtx, &pb.ExecRequest{
+			Command:   "/usr/bin/stat",
+			Args:      []string{"/usr/bin", "/etc", "/"},
+			RunAsRoot: true,
+		})
+	}
+	resp, err := probe()
+	if err != nil && !isCorruptionSignature(err.Error()) {
+		log.Printf("qemu: %s: wake integrity: probe failed (%v), retrying once", sandboxID, err)
+		resp, err = probe()
+	}
 	if err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "bad message") || strings.Contains(msg, "EBADMSG") || strings.Contains(msg, "input/output error") {
+		if isCorruptionSignature(err.Error()) {
 			log.Printf("qemu: %s: wake integrity: corruption signature in exec error: %v", sandboxID, err)
-			return errCorruptedWake
+		} else {
+			log.Printf("qemu: %s: wake integrity: probe failed twice with non-corruption error: %v — failing safe", sandboxID, err)
 		}
-		log.Printf("qemu: %s: wake integrity: exec failed with non-corruption error: %v (proceeding)", sandboxID, err)
-		return nil
+		return errCorruptedWake
 	}
 	if resp.ExitCode != 0 {
 		stderr := string(resp.Stderr)
@@ -693,6 +718,15 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "...(truncated)"
+}
+
+// isCorruptionSignature reports whether an exec error message carries the
+// ext4 metadata_csum corruption fingerprint (EBADMSG surfaces as "bad
+// message"; severe cases degrade to I/O errors).
+func isCorruptionSignature(msg string) bool {
+	return strings.Contains(msg, "bad message") ||
+		strings.Contains(msg, "EBADMSG") ||
+		strings.Contains(msg, "input/output error")
 }
 
 // errCorruptedWake is returned by verifyWakeIntegrity when the savevm/loadvm
@@ -2799,10 +2833,19 @@ func (m *Manager) Wake(ctx context.Context, sandboxID string, checkpointKey stri
 		metrics.WakeDuration.WithLabelValues(m.cfg.Region, template, "s3", status).Observe(time.Since(t0).Seconds())
 	}()
 
-	sb, err := m.doWake(ctx, sandboxID, checkpointKey, checkpointStore, timeout)
+	// Single-flight: concurrent wakes for the same sandbox (e.g. a control-plane
+	// retry firing before the first completes) collapse into one doWake; all
+	// callers share its result instead of racing a second recovery.
+	res, err, _ := m.wakeSF.Do(sandboxID, func() (interface{}, error) {
+		return m.doWake(ctx, sandboxID, checkpointKey, checkpointStore, timeout)
+	})
 	if err != nil {
+		reason := classifyWakeFailure(err)
+		metrics.WakeFailuresTotal.WithLabelValues(m.cfg.Region, "unknown", reason).Inc()
+		log.Printf("wake-metric: outcome=failure sandbox=%s source=s3 reason=%s err=%q", sandboxID, reason, err.Error())
 		return nil, err
 	}
+	sb, _ = res.(*types.Sandbox)
 	// Notify billing observer AFTER wake succeeds so it resets per-sandbox
 	// state. Hibernation time should not be billed as compute — the next
 	// periodic tick will attribute from the wake-fresh start, not from the

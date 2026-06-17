@@ -231,6 +231,16 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		observeWake := func(source, status string) {
 			metrics.WakeDuration.WithLabelValues(s.region, cfg.Template, source, status).Observe(time.Since(tWake).Seconds())
 		}
+		// failWake records a wake failure: the duration observation, the
+		// classified failure counter, and a single structured "wake-metric"
+		// log line that the Axiom dashboard aggregates on.
+		failWake := func(source string, err error) {
+			observeWake(source, "failure")
+			reason := classifyWakeFailure(err)
+			metrics.WakeFailuresTotal.WithLabelValues(s.region, cfg.Template, reason).Inc()
+			log.Printf("wake-metric: outcome=failure sandbox=%s template=%s source=%s reason=%s err=%q",
+				req.SandboxId, cfg.Template, source, reason, err.Error())
+		}
 
 		sb, err := s.manager.ForkFromCheckpoint(ctx, req.CheckpointId, cfg)
 		if err == nil {
@@ -261,8 +271,9 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 			// Some other error (rebase failure, agent reconnect, etc.).
 			// Don't try to mask it — return the real reason. Attribute as
 			// warm_cache failure since we never got to the S3 path.
-			observeWake("warm_cache", "failure")
-			return nil, fmt.Errorf("fork from checkpoint %s: %w", req.CheckpointId, err)
+			e := fmt.Errorf("fork from checkpoint %s: %w", req.CheckpointId, err)
+			failWake("warm_cache", e)
+			return nil, e
 		}
 		if req.TemplateRootfsKey == "" || s.checkpointStore == nil {
 			// We can't recover this fork — the controlplane gave us a
@@ -273,18 +284,21 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 			// symptom Oliviero hit on a checkpoint whose DB row had
 			// empty rootfs_s3_key. Fail loud instead so the customer (and
 			// us) sees an actionable error rather than a corrupt sandbox.
-			observeWake("s3", "failure")
-			return nil, fmt.Errorf("fork from checkpoint %s: not in local cache and no S3 key to recover from (DB row may be missing rootfs_s3_key)", req.CheckpointId)
+			e := fmt.Errorf("fork from checkpoint %s: not in local cache and no S3 key to recover from (DB row may be missing rootfs_s3_key)", req.CheckpointId)
+			failWake("s3", e)
+			return nil, e
 		}
 		log.Printf("grpc: warm fork %s: not in local cache, downloading from S3", req.CheckpointId)
 		if dlErr := s.downloadFullCheckpoint(ctx, req.CheckpointId, req.TemplateRootfsKey); dlErr != nil {
-			observeWake("s3", "failure")
-			return nil, fmt.Errorf("fork from checkpoint %s: cache miss + S3 download failed: %w", req.CheckpointId, dlErr)
+			e := fmt.Errorf("fork from checkpoint %s: cache miss + S3 download failed: %w", req.CheckpointId, dlErr)
+			failWake("s3", e)
+			return nil, e
 		}
 		sb, retryErr := s.manager.ForkFromCheckpoint(ctx, req.CheckpointId, cfg)
 		if retryErr != nil {
-			observeWake("s3", "failure")
-			return nil, fmt.Errorf("fork from checkpoint %s: retry after S3 download failed: %w", req.CheckpointId, retryErr)
+			e := fmt.Errorf("fork from checkpoint %s: retry after S3 download failed: %w", req.CheckpointId, retryErr)
+			failWake("s3", e)
+			return nil, e
 		}
 		observeWake("s3", "success")
 		if s.router != nil {
@@ -1330,4 +1344,30 @@ func (s *GRPCServer) GetSandboxStats(ctx context.Context, req *pb.GetSandboxStat
 		NetOutput:  stats.NetOutput,
 		Pids:       int32(stats.PIDs),
 	}, nil
+}
+
+// classifyWakeFailure maps a wake error to a stable reason label for the
+// WakeFailuresTotal metric and the wake-metric log event. Order matters:
+// more specific signatures are checked first.
+func classifyWakeFailure(err error) string {
+	if err == nil {
+		return "other"
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "bad message"), strings.Contains(s, "metadata_csum"), strings.Contains(s, "corrupt"):
+		return "corruption"
+	case strings.Contains(s, "snapshot-meta"), strings.Contains(s, "sandbox-meta"), strings.Contains(s, "rebuild"):
+		return "recovery_failed"
+	case strings.Contains(s, "agent not ready"), strings.Contains(s, "agent.sock"):
+		return "agent_timeout"
+	case strings.Contains(s, "no s3 key"), strings.Contains(s, "not in local cache"), strings.Contains(s, "not found in cache"):
+		return "checkpoint_missing"
+	case strings.Contains(s, "download"):
+		return "s3_download"
+	case strings.Contains(s, "rebase"):
+		return "rebase"
+	default:
+		return "other"
+	}
 }
