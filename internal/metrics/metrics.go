@@ -60,6 +60,29 @@ var (
 		[]string{"region", "template", "status"},
 	)
 
+	// WakeFailuresTotal counts wakes that ultimately failed (after any
+	// corruption-recovery attempt), classified by reason. reason values:
+	// corruption, recovery_failed, agent_timeout, checkpoint_missing,
+	// s3_download, rebase, other.
+	WakeFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "opensandbox_wake_failures_total",
+			Help: "Hibernate-wake failures by classified reason",
+		},
+		[]string{"region", "template", "reason"},
+	)
+
+	// WakeRecoveryTotal counts corrupt-wake recovery outcomes so latent
+	// savevm corruption is visible even when recovery succeeds. outcome
+	// values: detected, recovered_stage1, recovered_stage2, failed.
+	WakeRecoveryTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "opensandbox_wake_recovery_total",
+			Help: "Corrupt-wake recovery outcomes (savevm corruption fallback path)",
+		},
+		[]string{"region", "outcome"},
+	)
+
 	// source=warm_cache: local snapshot reused. source=s3: downloaded archive.
 	WakeDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -218,6 +241,8 @@ func init() {
 		CheckpointFailuresTotal,
 		HibernateDuration,
 		WakeDuration,
+		WakeFailuresTotal,
+		WakeRecoveryTotal,
 		ExecDuration,
 		PTYSessionsActive,
 		WorkerUtilization,

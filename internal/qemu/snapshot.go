@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/opensandbox/opensandbox/internal/metrics"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/pkg/types"
@@ -565,6 +566,8 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 	// their workspace files but loses running process state.
 	if err := m.verifyWakeIntegrity(context.Background(), sandboxID, agentClient); err != nil {
 		log.Printf("qemu: wake %s: %v — falling back to cold boot", sandboxID, err)
+		metrics.WakeRecoveryTotal.WithLabelValues(m.cfg.Region, "detected").Inc()
+		log.Printf("wake-metric: outcome=corruption-detected sandbox=%s", sandboxID)
 		_ = agentClient.Close()
 		qmpClient.Close()
 		cmd.Process.Kill()
@@ -699,6 +702,8 @@ func (m *Manager) recoverCorruptWake(ctx context.Context, sandboxID string, time
 		}
 		if verr := m.verifyWakeIntegrity(ctx, sandboxID, agent); verr == nil {
 			log.Printf("qemu: recover %s: stage 1 succeeded (memory-only corruption; rootfs kept)", sandboxID)
+			metrics.WakeRecoveryTotal.WithLabelValues(m.cfg.Region, "recovered_stage1").Inc()
+			log.Printf("wake-metric: outcome=recovered stage=1 sandbox=%s", sandboxID)
 			return sb, nil
 		}
 		log.Printf("qemu: recover %s: cold boot from existing rootfs still fails integrity — rootfs is corrupt on disk", sandboxID)
@@ -715,15 +720,21 @@ func (m *Manager) recoverCorruptWake(ctx context.Context, sandboxID string, time
 	rootfsPath := detectDrivePath(sandboxDir, "rootfs")
 	if fileExists(rootfsPath) {
 		if rerr := os.Remove(rootfsPath); rerr != nil {
+			metrics.WakeRecoveryTotal.WithLabelValues(m.cfg.Region, "failed").Inc()
+			log.Printf("wake-metric: outcome=recovery-failed sandbox=%s err=%q", sandboxID, rerr.Error())
 			return nil, fmt.Errorf("recover %s: remove corrupt rootfs: %w", sandboxID, rerr)
 		}
 		log.Printf("qemu: recover %s: stage 2 — discarded corrupt rootfs %s (workspace kept; installed packages lost)", sandboxID, rootfsPath)
 	}
 	sb, err = m.coldBootLocal(ctx, sandboxID, timeout)
 	if err != nil {
+		metrics.WakeRecoveryTotal.WithLabelValues(m.cfg.Region, "failed").Inc()
+		log.Printf("wake-metric: outcome=recovery-failed sandbox=%s err=%q", sandboxID, err.Error())
 		return nil, fmt.Errorf("recover %s: cold boot after rootfs rebuild: %w", sandboxID, err)
 	}
 	log.Printf("qemu: recover %s: stage 2 succeeded — rootfs rebuilt from template, workspace intact", sandboxID)
+	metrics.WakeRecoveryTotal.WithLabelValues(m.cfg.Region, "recovered_stage2").Inc()
+	log.Printf("wake-metric: outcome=recovered stage=2 sandbox=%s", sandboxID)
 	return sb, nil
 }
 
@@ -732,6 +743,12 @@ func (m *Manager) recoverCorruptWake(ctx context.Context, sandboxID string, time
 // start and any failure must be visible in the journal — a silent error here
 // previously left wake failures looping with no trace of why the fallback
 // never produced a VM.
+// recoveryColdBootAgentWait is how long a recovery cold boot waits for the
+// in-VM agent before giving up. Deliberately longer than the normal 30s boot
+// wait: every coldBootLocal caller is a recovery/fallback path, and a
+// premature timeout here escalates to a destructive rootfs rebuild.
+const recoveryColdBootAgentWait = 90 * time.Second
+
 func (m *Manager) coldBootLocal(ctx context.Context, sandboxID string, timeout int) (*types.Sandbox, error) {
 	log.Printf("qemu: cold-boot-local %s: starting", sandboxID)
 	sb, err := m.coldBootLocalInner(ctx, sandboxID, timeout)
@@ -788,6 +805,13 @@ func (m *Manager) coldBootLocalInner(ctx context.Context, sandboxID string, time
 	}
 
 	if !fileExists(rootfsPath) {
+		// PrepareRootfs emits a qcow2 overlay, so the rebuilt rootfs must land
+		// at rootfs.qcow2 — otherwise detectDrivePath's .ext4 fallback (which
+		// fires once stage-2 recovery has discarded rootfs.qcow2) names the
+		// qcow2 file rootfs.ext4, and buildQEMUArgs then attaches it as raw.
+		// The guest kernel reads the qcow2 header as the filesystem, fails to
+		// mount root, and the agent never comes up (30s socket timeout).
+		rootfsPath = filepath.Join(sandboxDir, "rootfs.qcow2")
 		baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, meta.Template)
 		if err != nil {
 			return nil, fmt.Errorf("resolve base image: %w", err)
@@ -914,7 +938,13 @@ func (m *Manager) coldBootLocalInner(ctx context.Context, sandboxID string, time
 		goldenVersion: m.goldenVersion, // cold boot: VM runs on the current worker's base
 	}
 
-	agentClient, err := m.waitForAgentSocket(context.Background(), agentSockPath, 30*time.Second)
+	// Generous agent wait: coldBootLocalInner is only reached on the
+	// corrupt-wake / loadvm-failure recovery paths, where the alternative to
+	// waiting is escalating to a destructive rootfs rebuild (stage 2, which
+	// discards the customer's installed packages). A few extra seconds on a
+	// rare path is far cheaper than that escalation, and a healthy worker
+	// still connects in ~1.5s — the longer ceiling only bites under load.
+	agentClient, err := m.waitForAgentSocket(context.Background(), agentSockPath, recoveryColdBootAgentWait)
 	if err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
@@ -1066,4 +1096,31 @@ func waitForQMP(socketPath string, timeout time.Duration) (*QMPClient, error) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return nil, fmt.Errorf("QMP socket %s not ready after %v", socketPath, timeout)
+}
+
+// classifyWakeFailure maps a wake error to a stable reason label for the
+// WakeFailuresTotal metric and the wake-metric log event. Mirrors the
+// worker-side classifier (internal/worker) intentionally; kept package-local
+// to avoid a cross-package import just for a label string.
+func classifyWakeFailure(err error) string {
+	if err == nil {
+		return "other"
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "bad message"), strings.Contains(s, "metadata_csum"), strings.Contains(s, "corrupt"):
+		return "corruption"
+	case strings.Contains(s, "snapshot-meta"), strings.Contains(s, "sandbox-meta"), strings.Contains(s, "rebuild"):
+		return "recovery_failed"
+	case strings.Contains(s, "agent not ready"), strings.Contains(s, "agent.sock"):
+		return "agent_timeout"
+	case strings.Contains(s, "no s3 key"), strings.Contains(s, "not in local cache"), strings.Contains(s, "not found in cache"), strings.Contains(s, "object not found"):
+		return "checkpoint_missing"
+	case strings.Contains(s, "download"):
+		return "s3_download"
+	case strings.Contains(s, "rebase"):
+		return "rebase"
+	default:
+		return "other"
+	}
 }

@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/singleflight"
+
 	"github.com/opensandbox/opensandbox/internal/blobstore"
 	"github.com/opensandbox/opensandbox/internal/metrics"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
@@ -326,6 +328,13 @@ type Manager struct {
 	vms      map[string]*VMInstance
 	nextCID  uint32
 	uploadWg sync.WaitGroup
+
+	// wakeSF collapses concurrent Wake calls for the same sandbox into a
+	// single doWake execution (all callers share its result). Without this,
+	// a control-plane wake retry that fires while the first wake is still
+	// running spawns a second QEMU + a second corrupt-wake recovery on the
+	// same sandbox dir — racing on rootfs.qcow2 and contending for the host.
+	wakeSF singleflight.Group
 
 	// Checkpoint cache mutex: write-locked during cache creation, read-locked during fork
 	checkpointCacheMu sync.RWMutex
@@ -2818,10 +2827,19 @@ func (m *Manager) Wake(ctx context.Context, sandboxID string, checkpointKey stri
 		metrics.WakeDuration.WithLabelValues(m.cfg.Region, template, "s3", status).Observe(time.Since(t0).Seconds())
 	}()
 
-	sb, err := m.doWake(ctx, sandboxID, checkpointKey, checkpointStore, timeout)
+	// Single-flight: concurrent wakes for the same sandbox (e.g. a control-plane
+	// retry firing before the first completes) collapse into one doWake; all
+	// callers share its result instead of racing a second recovery.
+	res, err, _ := m.wakeSF.Do(sandboxID, func() (interface{}, error) {
+		return m.doWake(ctx, sandboxID, checkpointKey, checkpointStore, timeout)
+	})
 	if err != nil {
+		reason := classifyWakeFailure(err)
+		metrics.WakeFailuresTotal.WithLabelValues(m.cfg.Region, "unknown", reason).Inc()
+		log.Printf("wake-metric: outcome=failure sandbox=%s source=s3 reason=%s err=%q", sandboxID, reason, err.Error())
 		return nil, err
 	}
+	sb, _ = res.(*types.Sandbox)
 	// Notify billing observer AFTER wake succeeds so it resets per-sandbox
 	// state. Hibernation time should not be billed as compute — the next
 	// periodic tick will attribute from the wake-fresh start, not from the
