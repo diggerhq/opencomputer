@@ -28,7 +28,7 @@ Create a new sandbox.
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `template` | string | `"base"` | Template name |
-| `timeout` | number | `300` | Idle timeout in seconds |
+| `timeout` | number | `0` | Idle timeout in seconds |
 | `apiKey` | string | env var | API key |
 | `apiUrl` | string | env var | API URL |
 | `envs` | Record\<string, string\> | — | Environment variables |
@@ -64,7 +64,7 @@ Create a new sandbox from a checkpoint.
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `checkpointId` | string | — | Checkpoint ID (**required**) |
-| `timeout` | number | `300` | Idle timeout |
+| `timeout` | number | `0` | Idle timeout |
 | `apiKey` | string | env var | API key |
 | `apiUrl` | string | env var | API URL |
 
@@ -120,7 +120,7 @@ Resume a hibernated sandbox.
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `timeout` | number | `300` | Idle timeout after wake |
+| `timeout` | number | `0` | Idle timeout after wake |
 
 #### `sandbox.setTimeout(timeout): Promise<void>`
 
