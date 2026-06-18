@@ -38,5 +38,5 @@ What's guaranteed today, and what isn't:
 | Sandbox is **lost** (not hibernated) | The session may re-run / re-clone. Only **logged or delivered** outputs are durable. |
 
 <Warning>
-  v1 does **not** do byte-exact recovery after an arbitrary sandbox or model failure — in-flight, unlogged work can be redone. Build idempotent side effects, and treat the event log (and delivered webhooks) as your durable record. Byte-exact resume is coming in a later release.
+  Sessions don't **yet** do byte-exact recovery after an arbitrary sandbox or model failure — in-flight, unlogged work can be redone. Build idempotent side effects, and treat the event log (and delivered webhooks) as your durable record. Byte-exact resume is coming in a later release.
 </Warning>
