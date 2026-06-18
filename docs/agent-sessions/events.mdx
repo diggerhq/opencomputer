@@ -36,4 +36,4 @@ Every event has a visibility level; filter the stream and webhooks by it.
 - **`head`** — the highest `seq` in the session.
 - **`cursor`** — how far a reader (or the runtime) has consumed.
 
-Read or stream with `after=<seq>` and you get everything since that point. This is how **resume** works: reconnect with the last `seq` you saw — you miss nothing and get no duplicates.
+Read or stream with `after=<seq>` and you get everything since that point. This is how **resume** works: reconnect with the last `seq` you saw — you miss nothing and get no duplicates. In the browser, native `EventSource` does this automatically — each event's `seq` is the SSE `id`, so it resumes via `Last-Event-ID` on reconnect (see the [quickstart](/agent-sessions/quickstart)).

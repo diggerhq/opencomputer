@@ -1,9 +1,9 @@
 ---
-title: "Messaging & webhooks"
-description: "Steer a session, and receive its output reliably"
+title: "Messaging"
+description: "Steer a session, and the shared message envelope"
 ---
 
-Messaging is two halves over one shape: **steer** sends a message in; **destinations** push messages out. Both use the same channel-agnostic envelope, so the channels we add later (Slack, GitHub, …) won't change it.
+**Steer** sends a message into a session. Inbound and outbound messages share one channel-agnostic **envelope**, so the channels we add later (Slack, GitHub, …) won't change it. Outbound delivery has its own page: [Webhooks](/agent-sessions/webhooks).
 
 ## Steer (inbound)
 
@@ -41,47 +41,6 @@ Every inbound and outbound message normalizes to this shape. The core fields are
 - **`text`** — the content the agent reads (or that you receive).
 - **`raw`** — untouched original payload; optional, never read by the core.
 
-## Destinations (outbound webhooks)
+To get a session's output **out**, register a webhook destination — see [Webhooks](/agent-sessions/webhooks).
 
-Register a destination and the agent's messages are delivered to it. Filter what you receive so you're not spammed with internal chatter.
-
-```bash
-curl https://api.opencomputer.dev/v3/sessions/$ID/destinations \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "url": "https://your.app/oc-webhook",
-        "secret": "whsec_…",
-        "level": "user",          // user (default) | progress
-        "kinds": ["message"],     // optional allow-list; default all
-        "include_raw": false }'   // strip raw from the delivered envelope
-```
-
-### Delivery contract
-
-- **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused.
-- **At-least-once, idempotent per (event × destination)**, with exponential backoff. After the max attempts a delivery is **dead-lettered** — inspect and retry it:
-
-```bash
-curl https://api.opencomputer.dev/v3/sessions/$ID/destinations/$DID/deliveries \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY"          # includes dead-lettered
-curl -X POST .../deliveries/$DELIVERY_ID/retry -H "Authorization: Bearer $OPENCOMPUTER_API_KEY"
-```
-
-- **Signed.** Each request carries `X-OC-Signature` (HMAC-SHA256 over `timestamp + "." + body`, keyed by your `secret`) and `X-OC-Timestamp`. The `secret` is write-only — set once, never returned.
-- A delivery succeeds on HTTP `2xx`.
-
-### Verify a webhook
-
-```js
-import { createHmac, timingSafeEqual } from "node:crypto";
-
-function verify(req, secret, body) {
-  const ts = req.headers["x-oc-timestamp"];
-  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false; // reject stale → replay guard
-  const expected = createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
-  const got = req.headers["x-oc-signature"];
-  return got.length === expected.length &&
-         timingSafeEqual(Buffer.from(got), Buffer.from(expected));
-}
-```
-
-<Note>v1 ships the **generic webhook** channel. Channel adapters (Slack, GitHub comments, Jira, email) — inbound and outbound — are coming soon and reuse this exact envelope and delivery contract.</Note>
+<Note>Inbound channels (Slack, GitHub, Jira, email) are coming soon — they map onto this same envelope; today you steer in via the API.</Note>

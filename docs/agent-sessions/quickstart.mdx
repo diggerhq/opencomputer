@@ -13,7 +13,7 @@ export OPENCOMPUTER_API_KEY=your-api-key
 
 ## 1. Start a session
 
-One call starts the session. Pass a `model`, a `prompt` (the agent's instructions), and `input` (the task).
+You don't need to create an agent first — one call starts a session. Pass a `model`, a `prompt` (the instructions), and `input` (the task).
 
 ```bash
 curl https://api.opencomputer.dev/v3/sessions \
@@ -30,26 +30,20 @@ curl https://api.opencomputer.dev/v3/sessions \
 }
 ```
 
-<Note>Defining the agent inline like this is sugar for one-off sessions. To reuse an agent across sessions, [create one](/agent-sessions/api-reference#agents) and start sessions with `{ "agent": "agt_…", "input": … }`.</Note>
+<Note>Defining the agent inline like this is sugar for one-off sessions. To reuse an agent across sessions, [create one](/agent-sessions/agents) and start sessions with `{ "agent": "agt_…", "input": … }`.</Note>
 
 ## 2. Stream it live
 
-Tail the event log over SSE from a cursor. Use the `client_token` from step 1 — no API key needed in the client. `level=user` shows only what an end user should see (see [levels](/agent-sessions/events#levels)).
+Open an `EventSource` with the `client_token` from step 1. It rides the query string — browsers can't set headers on `EventSource`, so the scoped client token goes in the URL (never your API key). `level=user` shows only what an end user should see (see [levels](/agent-sessions/events#levels)).
 
 ```js
-const res = await fetch(
-  `https://api.opencomputer.dev/v3/sessions/${id}/events?stream=sse&after=0&level=user`,
-  { headers: { Authorization: `Bearer ${clientToken}` } }
+const es = new EventSource(
+  `https://api.opencomputer.dev/v3/sessions/${id}/events?stream=sse&level=user&token=${clientToken}`
 );
-const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-for (;;) {
-  const { value, done } = await reader.read();
-  if (done) break;
-  console.log(value);            // raw SSE chunk(s) — split on "\n\n", strip "data:", JSON.parse
-}
+es.onmessage = (e) => render(JSON.parse(e.data)); // each event: { seq, actor, kind, level, body, … }
 ```
 
-To **resume** after a disconnect, reconnect with `after=<last seq you saw>` — you won't miss or duplicate events.
+**Resume is automatic.** Each event carries its `seq` as the SSE event `id`, so on a dropped connection `EventSource` reconnects and resends `Last-Event-ID` — you pick up exactly where you left off, no bookkeeping. (Pass `after=<seq>` on the URL to start from a specific point.)
 
 ## 3. Steer it
 
@@ -71,7 +65,7 @@ curl https://api.opencomputer.dev/v3/sessions/$ID/destinations \
   -d '{ "url": "https://your.app/oc-webhook", "secret": "whsec_…", "level": "user" }'
 ```
 
-See [Messaging & webhooks](/agent-sessions/messaging) to verify the signature.
+See [Webhooks](/agent-sessions/webhooks#verify-a-webhook) to verify the signature.
 
 ## Next steps
 
@@ -79,7 +73,7 @@ See [Messaging & webhooks](/agent-sessions/messaging) to verify the signature.
   <Card title="Sessions" icon="book" href="/agent-sessions/sessions">
     How a session works — lifecycle and events.
   </Card>
-  <Card title="Messaging & webhooks" icon="bell" href="/agent-sessions/messaging">
-    The envelope, steering, and reliable delivery.
+  <Card title="Webhooks" icon="bell" href="/agent-sessions/webhooks">
+    Deliver output reliably, and control deliveries.
   </Card>
 </CardGroup>

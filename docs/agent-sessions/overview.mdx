@@ -13,7 +13,7 @@ Give an agent a prompt and a task; OpenComputer runs it on a managed runtime in 
     `POST /v3/sessions { agent, input }` and the agent starts working immediately; you get back the session and a browser-safe `client_token`. *(Or inline `{ prompt, model, input }` for a one-off, without a reusable agent.)*
   </Step>
   <Step title="Watch, steer, get notified">
-    Stream `GET …/events?stream=sse` — reconnect from any cursor to [resume](/agent-sessions/events). `POST …/messages` to [steer](/agent-sessions/messaging), and register a [webhook](/agent-sessions/messaging) to have output pushed to you.
+    Stream `GET …/events?stream=sse` — reconnect from any cursor to [resume](/agent-sessions/events). `POST …/messages` to [steer](/agent-sessions/messaging), and register a [webhook](/agent-sessions/webhooks) to have output pushed to you.
   </Step>
 </Steps>
 

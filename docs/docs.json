@@ -69,6 +69,7 @@
           "agent-sessions/authentication",
           "agent-sessions/durability",
           "agent-sessions/messaging",
+          "agent-sessions/webhooks",
           "agent-sessions/runtimes",
           "agent-sessions/api-reference"
         ]

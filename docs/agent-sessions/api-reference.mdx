@@ -42,21 +42,28 @@ Event = { id, seq, ts, session, actor, kind, level, body, refs }
 | --- | --- |
 | `POST /sessions/:id/messages` | Append an input message; wakes the session. Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `{ seq }`. |
 
-## Destinations (webhooks)
+## Destinations
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /sessions/:id/destinations` | Register a webhook. Body: `url`, `secret?`, `level?` (`user`), `kinds?[]`, `include_raw?` (`false`). |
-| `GET /sessions/:id/destinations` | List destinations. |
-| `DELETE /sessions/:id/destinations/:id` | Remove a destination. |
-| `GET /sessions/:id/destinations/:id/deliveries` | List deliveries (incl. dead-lettered). |
-| `POST /sessions/:id/destinations/:id/deliveries/:id/retry` | Retry a dead-lettered delivery. |
+| `POST /sessions/:id/destinations` | Register a webhook. Body: `url`, `secret?`, `level?` (`user`), `kinds?[]`, `include_raw?` (`false`), `enabled?` (`true`). |
+| `GET /sessions/:id/destinations` · `GET …/:did` | List / fetch. |
+| `PATCH /sessions/:id/destinations/:did` | Pause/resume (`enabled`), retune `level`/`kinds`, rotate `secret`. |
+| `DELETE /sessions/:id/destinations/:did` | Remove. |
 
-See [Messaging & webhooks](/agent-sessions/messaging#delivery-contract) for the signing and delivery contract.
+## Deliveries
+
+| Method · Path | Purpose |
+| --- | --- |
+| `GET /sessions/:id/deliveries?destination=&status=` | List deliveries — status, attempts, last response/error. |
+| `GET /sessions/:id/deliveries/:id` | One delivery, in detail. |
+| `POST /sessions/:id/deliveries/:id/redeliver` | Re-send any delivery (not just dead-lettered). |
+
+See [Webhooks](/agent-sessions/webhooks#delivery-contract) for the signing and delivery contract.
 
 ```
-Destination = { id, url, level, kinds, include_raw, created_at }
-Delivery    = { id, status, attempts, last_error?, event_id }
+Destination = { id, url, level, kinds, include_raw, enabled, created_at }
+Delivery    = { id, destination_id, event_id, status, attempts, last_attempt_at, response_code?, error? }
 ```
 
 ## Agents
