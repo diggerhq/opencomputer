@@ -23,11 +23,11 @@ Every inbound and outbound message normalizes to this shape. The core fields are
 
 ```json
 {
-  "id": "webhook:abc123",
-  "source": "webhook",
+  "id": "client:abc123",
+  "source": "client",
   "kind": "message",
   "actor": { "id": "client:user-7", "display": "Ada", "type": "human" },
-  "conversation": { "source": "webhook", "ref": "ticket-42" },
+  "conversation": { "source": "client", "ref": "thread-42" },
   "text": "also check the CI config",
   "refs": {},
   "ts": "2026-06-18T12:00:00Z",
