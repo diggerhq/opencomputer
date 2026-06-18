@@ -73,7 +73,15 @@
           "agent-sessions/webhooks",
           "agent-sessions/runtimes",
           "agent-sessions/runtime-tools",
-          "agent-sessions/api-reference"
+          "agent-sessions/api-reference",
+          {
+            "group": "Labs",
+            "tag": "Coming soon",
+            "expanded": true,
+            "pages": [
+              "agent-sessions/artifacts"
+            ]
+          }
         ]
       },
       {
@@ -271,13 +279,6 @@
         "group": "Resources",
         "pages": [
           "troubleshooting"
-        ]
-      },
-      {
-        "group": "Labs",
-        "tag": "Coming soon",
-        "pages": [
-          "agent-sessions/artifacts"
         ]
       }
     ]

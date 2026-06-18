@@ -5,9 +5,9 @@ description: "A session's published outputs — live previews and durable files 
 
 <Note>**Coming soon.** This page is our current thinking, not a shipped contract — names and shapes may change. What works *today*: large event bodies already spill to a [`content_ref`](/agent-sessions/events) you can fetch, and events can carry forward [`refs.artifacts[]`](/agent-sessions/events). The first-class collection below is what comes next.</Note>
 
-A session does its work in a private scratch sandbox. **Artifacts** are the subset it deliberately *publishes* for you and your UI to consume — a durable, session-scoped collection that survives reconnects and page reloads, so a "preview" or "outputs" panel can be rebuilt at any time, not just caught live. A **preview** is one kind of artifact: a live URL to something the agent is running (a dev server, a built app).
+A session does its work in a private scratch sandbox. **Artifacts** are the subset it deliberately *publishes* for your UI to consume — a durable, session-scoped collection you can fetch on load and stream for updates, so a preview or outputs panel survives reconnects and reloads. A **preview** is one kind of artifact: a live URL to something the agent is running (a dev server, a built app).
 
-## Two kinds, two lifetimes
+## Durable vs live
 
 The split is what lets a panel survive a refresh:
 
@@ -21,7 +21,7 @@ The runtime would get two tools alongside `bash`/`read`/`write`:
 - `oc.preview(port)` — expose a port of the session's machine as a preview URL.
 - `oc.publish(path)` — snapshot a file as a durable artifact.
 
-Each publish appends a `user`-level event and upserts the artifact, so it reaches your UI the moment it happens — the agent builds, then *shows* you.
+Each publish appends a `user`-level event and upserts the artifact, so it reaches your UI as soon as it's produced.
 
 ## How your app would consume it
 

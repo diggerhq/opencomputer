@@ -26,7 +26,7 @@ Each **turn is one bounded run**, invoke-style — it:
 2. drives the Claude Agent SDK loop,
 3. **streams every step back as events** over the authenticated events API,
 4. performs side effects only through the remote [sandbox tools](/agent-sessions/runtime-tools) (`bash` / `read` / `write` / `ls`, plus `say` / `ask`), and
-5. **exits when it has nothing left to do** — it yields rather than busy-waits (waiting on a person, a build, or the clock costs no compute).
+5. **exits when it has nothing left to do** — it yields rather than busy-waits, so time spent waiting costs no compute.
 
 Across turns it continues an on-box **journal**; the durable record is the event log *plus* that journal, which the platform checkpoints at each boundary and restores on recovery ([durability](/agent-sessions/durability)).
 
@@ -34,11 +34,11 @@ Across turns it continues an on-box **journal**; the durable record is the event
 
 A regional **supervisor** owns each running session and keeps the runtime healthy — you never restart anything:
 
-- **One driver at a time.** The supervisor holds a **fenced lease** on the session: exactly one runtime instance may write at a time, and the fence rejects a stale or zombie instance (e.g. a slow machine that returns after it was given up) — no split-brain, no double-writes.
+- **One driver at a time.** The supervisor holds a **fenced lease** on the session: exactly one runtime instance can write at a time, and the fence rejects writes from a stale instance (e.g. a slow machine that returns after it was given up), so a session never has two concurrent writers.
 - **Liveness.** The lease is renewed while a turn runs. If the runtime's machine dies, the lease lapses and the supervisor **re-claims the turn and continues it** from the journal.
 - **Crash / hang / lost machine.** A bad exit restarts the turn in place (bounded attempts, with crash-loop backoff); a hung turn is bounded by a **deadline** and ends `deadline_exceeded`; a lost machine is recreated and **restored from the last checkpoint**. Full matrix in [durability](/agent-sessions/durability#limits).
-- **Failures surface — never an eternal spinner.** If a turn can't even start (the model key can't be resolved, the runtime image can't be fetched), the turn ends with an **`error` event carrying the reason** and the session returns to idle, instead of hanging.
-- **Backstop reconciler.** A periodic sweep re-dispatches work whose wake-up was missed, re-claims turns whose lease expired, and resets sessions left `running` after a crash — so nothing strands silently.
+- **A turn that can't start fails cleanly.** If the model key can't be resolved or the runtime image can't be fetched, the turn ends with an **`error` event carrying the reason** and the session returns to idle, rather than hanging.
+- **Backstop reconciler.** A periodic sweep re-dispatches work whose wake-up was missed, re-claims turns whose lease expired, and resets sessions left `running` after a crash, so stranded work is picked up.
 - **Observable.** Every turn and machine transition — turn start / complete / error, sandbox create / provision / hibernate, lease renew / fence — is recorded, so the platform can show exactly where a session is and why a turn ended the way it did.
 
 ## Coming soon
