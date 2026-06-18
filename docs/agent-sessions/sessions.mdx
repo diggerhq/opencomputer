@@ -44,7 +44,7 @@ Cap a session at create (or default it on the [agent](/agent-sessions/agents)) w
 
 ## Stop a session
 
-`POST /sessions/:id/cancel` **requests** a cooperative stop: the turn ends at its next checkpoint, so an in-flight model call may run to its timeout — billing for that turn stops when it actually exits, not the instant you call. `POST /sessions/:id/archive` cancels any active turn, then closes the session read-only.
+`POST /sessions/:id/cancel` **requests** a cooperative stop: the turn ends at its next checkpoint with a `turn.completed` (`yield_reason: "canceled"`), so an in-flight model call may run to its timeout — billing for that turn stops when it actually exits, not the instant you call. `POST /sessions/:id/archive` cancels any active turn, then closes the session read-only.
 
 **`archive` is not delete** — the session's log is retained, just read-only. Hard delete (`DELETE /sessions/:id`) and export are coming soon.
 

@@ -3,7 +3,7 @@ title: "Webhooks"
 description: "Deliver a session's output, and control deliveries"
 ---
 
-Register a **destination** and a session's outbound messages are delivered to it over the shared [envelope](/agent-sessions/messaging#the-envelope) — at-least-once, signed, and retried. Filter what you receive so you're not spammed with internal chatter.
+Register a **destination** and a session's [events](/agent-sessions/events) are delivered to it as **`Event` objects — the same shape the [SSE stream](/agent-sessions/events) emits** — at-least-once, signed, and retried. (Webhooks carry every event `type` — `turn.completed`, `exec.completed`, messages, … — not just messages.) Filter what you receive so you're not spammed with internal chatter.
 
 ## Destinations
 
@@ -16,7 +16,7 @@ curl https://api.opencomputer.dev/v3/sessions/$ID/destinations \
         "include_raw": false }'
 ```
 
-`level` is the visibility threshold (`user` default, or `progress`); `types` is an optional event-type allow-list (default: all — which **includes the terminal `turn.completed`**); `include_raw: false` strips `raw` from the delivered envelope. To get only completions, set `types: ["turn.completed"]`.
+`level` is the visibility threshold (`user` default, or `progress`); `types` is an optional event-type allow-list (default: all — which **includes the terminal `turn.completed`**); `include_raw: false` strips `body.raw` from the delivered Event. To get only completions, set `types: ["turn.completed"]`.
 
 | Method · Path | Purpose |
 | --- | --- |
