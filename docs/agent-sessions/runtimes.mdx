@@ -3,7 +3,7 @@ title: "Runtimes"
 description: "The engine that runs your agent — claude today, more soon"
 ---
 
-A **runtime** is the stateless engine that executes the agent loop. You pick one per agent via `runtime`; it defaults to `claude`.
+A **runtime** is the engine that executes the agent loop. You pick one per agent via `runtime`; it defaults to `claude`. The runtime **image** is stateless and interchangeable; the **running instance** keeps its session state on the sandbox, and OpenComputer manages and recovers it for you (see [durability](/agent-sessions/durability)).
 
 ## `claude` — available today
 
@@ -33,4 +33,4 @@ A runtime is a container image implementing the **runtime contract**. On wake it
 4. Performs all side effects through the **remote sandbox tools** (no local disk or network).
 5. Calls the model, and **exits 0 when it has nothing left to do** (yield, don't block).
 
-It holds no durable state — the session is the durable record. You'll register it with `oc runtime push <image>` and select it with `runtime: "<name>"`. This is the extensibility seam: any agent harness becomes a runtime.
+The **image** carries no durable state — the durable record is the session (event log) plus the runtime's session journal, which the platform checkpoints and restores for the instance ([durability](/agent-sessions/durability)). You'll register it with `oc runtime push <image>` and select it with `runtime: "<name>"`. This is the extensibility seam: any agent harness becomes a runtime.

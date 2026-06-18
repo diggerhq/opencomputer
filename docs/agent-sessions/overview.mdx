@@ -7,11 +7,40 @@ Give an agent a prompt and a task; OpenComputer runs it on a **fully managed run
 
 **You never babysit the runtime.** A session is *durable*: we keep your agent running, and recover it for you.
 
-- **Crashes or hangs?** We **restart it automatically** — it continues from where it was, mid-task, not from scratch.
-- **Idle for hours or days?** It hibernates (≈ free) and **survives even if the underlying sandbox is reclaimed** — its state is checkpointed off-box, so it wakes back up intact.
+- **Crashes?** We **restart it automatically** — it picks up from where it was, not from scratch.
+- **Hangs?** A turn deadline bounds it; the turn ends and you steer to continue.
+- **Idle for hours or days?** It hibernates (≈ free) and resumes intact — and even if the underlying sandbox is reclaimed, its state is checkpointed off-box so the session comes back.
 - **Disconnect?** Reconnect from any cursor — nothing missed.
 
 That managed, self-healing runtime — not just a chat API over a model — is the point.
+
+## How it fits together
+
+```mermaid
+flowchart LR
+    App["Your app / browser"]
+
+    subgraph S["Durable Agent Session — managed by OpenComputer"]
+      direction TB
+      Brain["Runtime · brain<br/>(agent loop, auto-restarted)"]
+      Log[("Event log · durable")]
+      Hands["Sandbox · hands<br/>(files + commands)"]
+      Brain <-->|read / append| Log
+      Brain -->|remote tools| Hands
+    end
+
+    Sec["Your Anthropic key<br/>(secret store)"]
+    Model["Anthropic"]
+    Hook["Your webhook"]
+
+    App -->|start · steer| Log
+    Log -->|stream · SSE| App
+    Brain -->|model calls| Model
+    Sec -. "injected on egress — never in a sandbox" .-> Model
+    Log -->|Standard Webhooks| Hook
+```
+
+The **event log** is the durable spine: you start and steer against it, stream from it, and it drives the runtime. The **brain** (agent loop) is isolated from the **hands** sandbox (where commands and file edits run), and your key lives in the secret store — never in a sandbox.
 
 <Steps>
   <Step title="Define an agent (with your key)">
@@ -33,8 +62,8 @@ The hard parts, handled:
 
 <CardGroup cols={2}>
   <Card title="Self-healing, managed runtime" icon="heart-pulse">
-    - Crash or hang → **auto-restart**, continues mid-task
-    - Idle → hibernate (≈ free); **survives sandbox loss**
+    - Crash → **auto-restart**, picks up where it was
+    - Idle → hibernate (≈ free); **session survives sandbox loss**
     - You never restart anything — [details](/agent-sessions/durability)
   </Card>
   <Card title="Brain / hands isolation" icon="shield-halved">

@@ -29,7 +29,7 @@ Session = { id, status, head, input_cursor,
             limits: { tokens?, turn_seconds?, turns? }, key?, created_at }
 ```
 
-`yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
+`yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`; `requires_action` is reserved, not emitted yet) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
 
 ## Events
 
