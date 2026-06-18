@@ -3,7 +3,7 @@ title: "Events"
 description: "The append-only log: envelope, levels, cursors, and resume"
 ---
 
-Every step a session takes is an **event**, appended to the log in order. The log is the source of truth — you read it, stream it, and resume from any point.
+Every step a session takes is an **event**, appended to the log in order. The log is the source of truth — you read it, stream it, and resume from any point. Everything you build on top — a chat UI, a live "what's it doing" feed, notifications, an audit trail — comes from reading or streaming these events and filtering them by **level**.
 
 ```json
 { "id": "evt_…", "seq": 12, "ts": "…", "session": "sess_…",
@@ -20,15 +20,23 @@ Every step a session takes is an **event**, appended to the log in order. The lo
 
 Inbound and outbound messages share one [envelope](/agent-sessions/messaging#the-envelope) shape.
 
-## Levels
+## Levels — pick what to show
 
-Every event has a visibility level; filter the stream and webhooks by it.
+Every event carries a `level` saying **who it's for**. You filter the stream (and webhook deliveries) by it, so each surface shows the right amount of detail.
 
-| Level | For |
-| --- | --- |
-| `internal` | The agent's own reasoning and tool detail. |
-| `progress` | Step-by-step updates. |
-| `user` | What an end user should see (default for delivery). |
+| Level | What lands here | Reach for it when you want… |
+| --- | --- | --- |
+| `user` | What a person is meant to read — the answer, results, a question back to them. The default for webhook delivery. | a chat bubble, the final result, a notification |
+| `progress` | Plain-language step updates: "cloning the repo", "running tests", "found 3 failures". | a live "what's it doing right now" feed or status line |
+| `internal` | The agent's raw reasoning and tool calls — verbose, not meant for end users. | debugging, an audit trail, your own internal console |
+
+Filtering is **cumulative** — `user` is the narrowest, `internal` is everything:
+
+- `?level=user` → just `user`
+- `?level=progress` → `progress` + `user`
+- `?level=internal` → everything
+
+So a customer-facing chat asks for `user`; an agent-activity view asks for `progress`; debugging your agent asks for `internal`.
 
 ## seq, cursor, head
 
