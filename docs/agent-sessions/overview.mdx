@@ -16,31 +16,11 @@ That managed, self-healing runtime — not just a chat API over a model — is t
 
 ## How it fits together
 
-```mermaid
-flowchart LR
-    App["Your app / browser"]
+<Frame>
+  <img src="/images/durable-agent-sessions-architecture.svg" alt="Durable Agent Sessions architecture: your app starts/steers and streams a durable event-log session; a runtime (the brain) reads and appends to it and acts in a sandbox (the hands); the model runs on your key from the secret store, which never enters a sandbox; user-level events are delivered out via your webhook." />
+</Frame>
 
-    subgraph S["Durable Agent Session — managed by OpenComputer"]
-      direction TB
-      Brain["Runtime · brain<br/>(agent loop, auto-restarted)"]
-      Log[("Event log · durable")]
-      Hands["Sandbox · hands<br/>(files + commands)"]
-      Brain <-->|read / append| Log
-      Brain -->|remote tools| Hands
-    end
-
-    Sec["Your Anthropic key<br/>(secret store)"]
-    Model["Anthropic"]
-    Hook["Your webhook"]
-
-    App -->|start · steer| Log
-    Log -->|stream · SSE| App
-    Brain -->|model calls| Model
-    Sec -. "injected on egress — never in a sandbox" .-> Model
-    Log -->|Standard Webhooks| Hook
-```
-
-The **event log** is the durable spine: you start and steer against it, stream from it, and it drives the runtime. The **brain** (agent loop) is isolated from the **hands** sandbox (where commands and file edits run), and your key lives in the secret store — never in a sandbox.
+The **event log** is the durable spine: you start and steer against it, stream from it, and it drives the runtime. The **brain** (agent loop) is isolated from the **hands** sandbox (where commands and file edits run), your key lives in the secret store — never in a sandbox — and user-level events are delivered out to your webhook.
 
 <Steps>
   <Step title="Define an agent (with your key)">
