@@ -73,6 +73,7 @@
           "agent-sessions/webhooks",
           "agent-sessions/runtimes",
           "agent-sessions/runtime-tools",
+          "agent-sessions/artifacts",
           "agent-sessions/api-reference"
         ]
       },

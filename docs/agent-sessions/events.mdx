@@ -40,7 +40,7 @@ The stable contract is the top-level **`type`** — **switch on it, don't parse 
 
 **Correlate a steer to its turn.** Steers coalesce — one turn can pick up several — so [`POST /messages`](/agent-sessions/messaging) returns the *event* `seq`, not a turn. The turn that consumes your steer emits `turn.started` with `input_from_seq ≤ your_seq ≤ input_to_seq`; await its `turn.completed`, then `GET …/events?turn_id=` for everything it produced.
 
-**Large output.** A large `body` is offloaded to a `content_ref`; fetch the bytes with `GET /sessions/:id/events/:eventId/content` (e.g. full `exec.completed` output). Richer **artifacts** (named files, diffs, screenshots, reports) ride a forward `refs.artifacts[]`, with a first-class artifacts API **coming soon**. `refs` also carries optional correlation/evidence keys (`trace_id`, `sources[]`).
+**Large output.** A large `body` is offloaded to a `content_ref`; fetch the bytes with `GET /sessions/:id/events/:eventId/content` (e.g. full `exec.completed` output). Richer **artifacts** (named files, diffs, screenshots, reports) ride a forward `refs.artifacts[]`, with a first-class [artifacts & previews API](/agent-sessions/artifacts) **coming soon**. `refs` also carries optional correlation/evidence keys (`trace_id`, `sources[]`).
 
 ## Levels
 
