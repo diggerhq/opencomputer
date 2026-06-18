@@ -13,7 +13,7 @@ When you write a prompt for the `claude` [runtime](/agent-sessions/runtimes), it
 | `read` | Read a file from the sandbox. |
 | `write` | Write a file to the sandbox. |
 | `ls` | List a directory in the sandbox. |
-| `use_repo` | Check out a **public** git repository into the workspace. (Private-repo access — connections, repo catalog, scoped tokens — is coming soon; for launch, point it at a public URL or `git clone` via `bash`.) |
+| `use_repo` | Check out a **public** git repository into the workspace. (Private-repo access and prepared [workspaces](/agent-sessions/workspaces) — connections, repo catalog, scoped tokens — are coming soon; for launch, point it at a public URL or `git clone` via `bash`.) |
 
 These map to events you can stream: a `bash` run surfaces as an [`exec.completed`](/agent-sessions/events#event-shape) event (`{ command, exit_code, summary }`), with large output available via `content_ref`.
 

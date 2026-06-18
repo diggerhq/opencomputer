@@ -79,6 +79,9 @@
             "tag": "Coming soon",
             "expanded": true,
             "pages": [
+              "agent-sessions/triggers",
+              "agent-sessions/channels",
+              "agent-sessions/workspaces",
               "agent-sessions/artifacts"
             ]
           }
