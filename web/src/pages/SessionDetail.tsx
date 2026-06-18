@@ -184,44 +184,6 @@ export default function SessionDetail() {
             <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
               {session.template || 'base'} &middot; Started {timeAgo(session.startedAt)}
             </div>
-            {session.status === 'running' && (
-              <div style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 8,
-                marginTop: 12,
-                padding: '6px 8px',
-                background: 'var(--bg-deep)',
-                border: '1px solid var(--border-subtle)',
-                borderRadius: 'var(--radius-sm)',
-              }}>
-                <span style={{
-                  fontSize: 10,
-                  color: 'var(--text-tertiary)',
-                  fontWeight: 600,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em',
-                }}>
-                  CLI
-                </span>
-                <code style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 12,
-                  color: 'var(--text-accent)',
-                  background: 'transparent',
-                  padding: 0,
-                }}>
-                  {shellCommand}
-                </code>
-                <button
-                  onClick={() => copyShellCommand(shellCommand)}
-                  className="btn-ghost"
-                  style={{ padding: '3px 8px', fontSize: 11 }}
-                >
-                  {copiedShell ? 'Copied' : 'Copy'}
-                </button>
-              </div>
-            )}
           </div>
 
           {/* Actions */}
@@ -457,6 +419,14 @@ export default function SessionDetail() {
           <DetailRow label="CPUs" value={String(session.config?.cpuCount ?? 1)} />
           <DetailRow label="Memory" value={`${session.config?.memoryMB ?? 512} MB`} />
           <DetailRow label="Started" value={new Date(session.startedAt).toLocaleString()} />
+          {session.status === 'running' && (
+            <DetailCommandRow
+              label="CLI shell"
+              value={shellCommand}
+              copied={copiedShell}
+              onCopy={() => copyShellCommand(shellCommand)}
+            />
+          )}
           {session.stoppedAt && (
             <DetailRow label="Stopped" value={new Date(session.stoppedAt).toLocaleString()} />
           )}
@@ -493,6 +463,41 @@ function DetailRow({ label, value, isError }: { label: string; value: string; is
         wordBreak: 'break-all',
       }}>
         {value}
+      </div>
+    </div>
+  )
+}
+
+function DetailCommandRow({
+  label,
+  value,
+  copied,
+  onCopy,
+}: {
+  label: string
+  value: string
+  copied: boolean
+  onCopy: () => void
+}) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 2 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <code style={{
+          fontSize: 13,
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--text-primary)',
+          wordBreak: 'break-all',
+        }}>
+          {value}
+        </code>
+        <button
+          className="btn-ghost"
+          onClick={onCopy}
+          style={{ padding: '2px 7px', fontSize: 11, flexShrink: 0 }}
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
       </div>
     </div>
   )
