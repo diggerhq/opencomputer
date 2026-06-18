@@ -1,0 +1,81 @@
+---
+title: "API reference"
+description: "Every endpoint in the Durable Agent Sessions API"
+---
+
+Base URL `https://api.opencomputer.dev/v3`. Management calls authenticate with your **org API key**; stream and steer also accept a **[client token](/agent-sessions/authentication#client-tokens)**.
+
+## Sessions
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /sessions` | Start a run. Body: `agent?`, `prompt?`, `model?`, `runtime?`, `input`, `key?`, `webhook?`, `destinations?[]`. Returns `{ session, client_token }`. |
+| `GET /sessions/:id` | Fetch a session. |
+| `GET /sessions` | List sessions. |
+| `POST /sessions/:id/archive` | Archive (close) a session. |
+| `POST /sessions/:id/client-tokens` | Mint a client token. Body: `scopes?`, `ttl?`. |
+
+Provide `agent` (a saved agent id) **or** inline `prompt` + `model`. `key` gives get-or-create (one session per key). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#the-envelope).
+
+```
+Session = { id, status, head, cursor,
+            agent_snapshot: { prompt_hash, model, runtime },
+            last_turn: { state, result_event_id?, error? }, key?, created_at }
+```
+
+## Events
+
+| Method · Path | Purpose |
+| --- | --- |
+| `GET /sessions/:id/events?after=<seq>&level=<lvl>&limit=<n>` | Read events since a cursor. |
+| `GET /sessions/:id/events?after=<seq>&level=<lvl>&stream=sse` | Live SSE stream from a cursor. |
+
+`after` resumes from a `seq`; `level` is the max [level](/agent-sessions/concepts#levels) to receive.
+
+```
+Event = { id, seq, ts, session, actor, kind, level, body, refs }
+```
+
+## Steer
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /sessions/:id/messages` | Append an input message; wakes the session. Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `{ seq }`. |
+
+## Destinations (webhooks)
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /sessions/:id/destinations` | Register a webhook. Body: `url`, `secret?`, `level?` (`user`), `kinds?[]`, `include_raw?` (`false`). |
+| `GET /sessions/:id/destinations` | List destinations. |
+| `DELETE /sessions/:id/destinations/:id` | Remove a destination. |
+| `GET /sessions/:id/destinations/:id/deliveries` | List deliveries (incl. dead-lettered). |
+| `POST /sessions/:id/destinations/:id/deliveries/:id/retry` | Retry a dead-lettered delivery. |
+
+See [Messaging & webhooks](/agent-sessions/messaging#delivery-contract) for the signing and delivery contract.
+
+```
+Destination = { id, url, level, kinds, include_raw, created_at }
+Delivery    = { id, status, attempts, last_error?, event_id }
+```
+
+## Agents
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /agents` | Create a reusable agent. Body: `name`, `prompt`, `model`, `runtime?` (`claude`). Idempotent by `(owner, name)`. |
+| `GET /agents/:id` · `GET /agents` | Fetch / list. |
+| `PATCH /agents/:id` | Update `prompt?` / `model?`. Never affects existing sessions (snapshots are pinned). |
+
+## Credentials
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /credentials` | Add a provider key. Body: `provider`, `key`, `name?`. Key is write-only. |
+| `GET /credentials` · `DELETE /credentials/:id` | List / remove. |
+| `PUT /credentials/default` | Set the org default for a provider. Body: `provider`, `credential`. |
+
+```
+Credential  = { id, provider, name?, last4, created_at }
+ClientToken = { token, scopes, expires_at }
+```

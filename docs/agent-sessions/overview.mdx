@@ -1,0 +1,61 @@
+---
+title: "Durable Agent Sessions"
+description: "Resumable, steerable agent runs — start one in a single API call"
+---
+
+Give an agent a prompt and a task; OpenComputer runs it on a managed runtime in a sandbox and records **every step as a durable, streamable, resumable session**. Watch it work live, drop your connection and reconnect right where you left off, let it idle and the sandbox hibernates (≈ free), then steer it with a message or get notified by webhook.
+
+```bash
+curl https://api.opencomputer.dev/v3/sessions \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "model": "anthropic/claude-opus-4-8",
+        "prompt": "You are a coding assistant.",
+        "input": "Clone github.com/acme/widget, run its tests, and summarize what fails." }'
+# → { "session": { "id": "sess_…", "status": "running" }, "client_token": "…" }
+```
+
+## What you get
+
+- **One call to start** — `POST /v3/sessions` with a prompt, model, and task; the run begins immediately.
+- **A durable event log** — every message, action, and status is appended with a monotonic `seq`; nothing is lost.
+- **Live streaming + resume** — tail the log over SSE; reconnect from any cursor and continue.
+- **Hibernate on idle** — the sandbox sleeps between turns and wakes on the next message; you pay storage-only while it's idle.
+- **Steer & notify** — send a follow-up message any time; register a webhook to get results pushed to you, reliably.
+- **Browser-safe tokens** — issue a session-scoped token so a front-end can stream and steer without your API key.
+
+## What "durable" means here
+
+<Note>
+  We're precise about this so you can build on it:
+  - The **event log is the source of truth** and is always durable.
+  - The **stream resumes** from any cursor — disconnects lose nothing.
+  - A **hibernated sandbox resumes** with its state intact.
+
+  It is **not** byte-exact recovery after arbitrary failure. If a sandbox is *lost* (not hibernated), the session may re-run or re-clone, and only **logged or delivered outputs are guaranteed durable**. Byte-exact resume is [coming soon](/agent-sessions/durability#limits).
+</Note>
+
+## When to use it
+
+Reach for sessions when you want a long-running or interactive agent and don't want to build the plumbing — an event store, live streaming, resume, idle hibernation, and reliable delivery — yourself. For a one-shot command in a raw box, use a [sandbox](/sandboxes/overview) directly.
+
+## Available today vs coming soon
+
+| Today | Coming soon |
+| --- | --- |
+| Agents on the `claude` runtime | Other runtimes (`codex`, `opencode`, custom BYO image) |
+| Create / run / stream / resume / hibernate / archive sessions | `ask` (blocking request-for-input) |
+| Steer by session id | Inbound channels (Slack, GitHub, Jira, email) |
+| Outbound webhook delivery (signed, retried, filtered) | Outbound channel delivery (post to Slack, GitHub, …) |
+| Browser client tokens · BYO Anthropic key | Other providers · model hot-swap |
+| Platform-billed Anthropic + per-session cap | Workspaces, scheduled triggers, byte-exact resume |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/agent-sessions/quickstart">
+    Start a session, stream it, and steer it in a few minutes.
+  </Card>
+  <Card title="Concepts" icon="book" href="/agent-sessions/concepts">
+    Agents, sessions, events, cursors, and statuses.
+  </Card>
+</CardGroup>

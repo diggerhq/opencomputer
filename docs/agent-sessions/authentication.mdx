@@ -1,0 +1,57 @@
+---
+title: "Authentication"
+description: "Org keys, browser-safe client tokens, and bring-your-own model keys"
+---
+
+Three credentials, each with a job.
+
+## Org API key
+
+Your account key. Use it server-side for all **management** calls — creating agents, starting sessions, registering webhooks, managing credentials.
+
+```bash
+curl https://api.opencomputer.dev/v3/sessions \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" -d '{ … }'
+```
+
+<Warning>Never ship the org API key to a browser or mobile client — it can do anything on your account. Use a client token instead.</Warning>
+
+## Client tokens
+
+A **session-scoped, short-lived** token with `read` + `steer` scope — safe to hand to a front-end. It can stream and steer **one** session and nothing else.
+
+You get one back from `POST /v3/sessions`, and can mint more:
+
+```bash
+curl https://api.opencomputer.dev/v3/sessions/$ID/client-tokens \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "scopes": ["read", "steer"], "ttl": 3600 }'
+```
+
+The pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
+
+```
+browser ──(create task)──▶ your backend ──(org key)──▶ POST /v3/sessions
+browser ◀──(client_token)── your backend
+browser ──(client_token)──▶ GET …/events (SSE) · POST …/messages
+```
+
+## Model credentials (BYO key)
+
+By default, runs are **platform-billed on Anthropic** — zero setup, metered to your org, capped per session. To run on **your own** provider key, add a credential once. It's stored in our secret store (encrypted, write-only, never returned) — you never manage a raw secret store yourself.
+
+```bash
+curl https://api.opencomputer.dev/v3/credentials \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "provider": "anthropic", "key": "sk-ant-…", "name": "prod" }'
+# → { "id": "cred_…", "provider": "anthropic", "last4": "…", … }
+
+# make it the default for this provider
+curl -X PUT https://api.opencomputer.dev/v3/credentials/default \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "provider": "anthropic", "credential": "cred_…" }'
+```
+
+**Resolution** for each run: the agent's credential → your org default for the model's provider → platform billing.
+
+<Note>Today only **Anthropic** (the `claude` runtime). Other providers and model hot-swap are [coming soon](/agent-sessions/runtimes) — the credentials shape is the same, so adding them won't break anything.</Note>

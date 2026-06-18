@@ -1,0 +1,85 @@
+---
+title: "Quickstart"
+description: "Start a session, stream it live, and steer it"
+---
+
+## Prerequisites
+
+```bash
+export OPENCOMPUTER_API_KEY=your-api-key
+```
+
+<Tip>Grab your API key from [app.opencomputer.dev](https://app.opencomputer.dev).</Tip>
+
+## 1. Start a session
+
+One call starts the run. Pass a `model`, a `prompt` (the agent's instructions), and `input` (the task).
+
+```bash
+curl https://api.opencomputer.dev/v3/sessions \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "model": "anthropic/claude-opus-4-8",
+        "prompt": "You are a coding assistant.",
+        "input": "Clone github.com/acme/widget, run its tests, and summarize what fails." }'
+```
+
+```json
+{
+  "session": { "id": "sess_abc", "status": "running", "head": 0, "cursor": 0 },
+  "client_token": "ct_…"     // session-scoped; safe to hand to a browser (read + steer)
+}
+```
+
+<Note>Defining the agent inline like this is sugar for one-off runs. To reuse an agent across sessions, [create one](/agent-sessions/api-reference#agents) and start sessions with `{ "agent": "agt_…", "input": … }`.</Note>
+
+## 2. Stream it live
+
+Tail the event log over SSE from a cursor. Use the `client_token` from step 1 — no API key needed in the client. `level=user` shows only what an end user should see (see [levels](/agent-sessions/concepts#levels)).
+
+```js
+const res = await fetch(
+  `https://api.opencomputer.dev/v3/sessions/${id}/events?stream=sse&after=0&level=user`,
+  { headers: { Authorization: `Bearer ${clientToken}` } }
+);
+const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+for (;;) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  console.log(value);            // raw SSE chunk(s) — split on "\n\n", strip "data:", JSON.parse
+}
+```
+
+To **resume** after a disconnect, reconnect with `after=<last seq you saw>` — you won't miss or duplicate events.
+
+## 3. Steer it
+
+Send a follow-up at any time. The session wakes and continues with full prior context.
+
+```bash
+curl https://api.opencomputer.dev/v3/sessions/$ID/messages \
+  -H "Authorization: Bearer $CLIENT_TOKEN" \
+  -d '{ "text": "also check the CI config", "idempotency_key": "nudge-1" }'
+```
+
+## 4. Get notified (optional)
+
+Register a webhook and the agent's user-facing messages are delivered to it — signed, retried, and de-duplicated.
+
+```bash
+curl https://api.opencomputer.dev/v3/sessions/$ID/destinations \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "url": "https://your.app/oc-webhook", "secret": "whsec_…", "level": "user" }'
+```
+
+See [Messaging & webhooks](/agent-sessions/messaging) to verify the signature.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Concepts" icon="book" href="/agent-sessions/concepts">
+    The session model: events, cursors, statuses.
+  </Card>
+  <Card title="Messaging & webhooks" icon="bell" href="/agent-sessions/messaging">
+    The envelope, steering, and reliable delivery.
+  </Card>
+</CardGroup>

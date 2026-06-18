@@ -1,0 +1,36 @@
+---
+title: "Runtimes"
+description: "The engine that runs your agent — claude today, more soon"
+---
+
+A **runtime** is the stateless engine that executes the agent loop. You pick one per agent via `runtime`; it defaults to `claude`.
+
+## `claude` — available today
+
+The managed Claude agent loop. It works in a sandbox through remote tools, streams its steps into the session as events, and runs on Anthropic models — platform-billed by default, or on your [own key](/agent-sessions/authentication#model-credentials-byo-key).
+
+```bash
+curl https://api.opencomputer.dev/v3/agents \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "name": "reviewer", "model": "anthropic/claude-opus-4-8",
+        "prompt": "You review code.", "runtime": "claude" }'
+```
+
+## Coming soon
+
+<Note>The runtimes below are not yet callable. `runtime` is an open field, so adopting one later is just a new value — no breaking changes to the API you build against today.</Note>
+
+- **`codex`, `opencode`** — prebuilt, multi-provider runtimes.
+- **Custom (bring your own image)** — package any harness — your own, or a lab's — as a runtime.
+
+### How custom runtimes will work
+
+A runtime is a container image implementing the **runtime contract**. On wake it:
+
+1. Reads the session's events from the cursor.
+2. Drives its own agent loop.
+3. **Streams events back** to the session over the authenticated events API.
+4. Performs all side effects through the **remote sandbox tools** (no local disk or network).
+5. Calls the model, and **exits 0 when it has nothing left to do** (yield, don't block).
+
+It holds no durable state — the session is the durable record. You'll register it with `oc runtime push <image>` and select it with `runtime: "<name>"`. This is the extensibility seam: any agent harness becomes a runtime.

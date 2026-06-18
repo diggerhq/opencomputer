@@ -59,6 +59,19 @@
         ]
       },
       {
+        "group": "Durable Agent Sessions",
+        "pages": [
+          "agent-sessions/overview",
+          "agent-sessions/quickstart",
+          "agent-sessions/concepts",
+          "agent-sessions/authentication",
+          "agent-sessions/durability",
+          "agent-sessions/messaging",
+          "agent-sessions/runtimes",
+          "agent-sessions/api-reference"
+        ]
+      },
+      {
         "group": "Reserved Capacity",
         "pages": [
           "reserved-capacity/overview",

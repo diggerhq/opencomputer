@@ -1,0 +1,42 @@
+---
+title: "Durability & resume"
+description: "What survives a disconnect, an idle period, or a crash — and what doesn't"
+---
+
+## The event log is the source of truth
+
+Every step is appended to the session's log with a monotonic `seq`. The log is durable and ordered; reads and the live stream are served from it. Anything the agent has logged or delivered is safe.
+
+## Stream resume
+
+Disconnects lose nothing. Reconnect with `after=<last seq you saw>` and you get every event since, in order — no gaps, no duplicates.
+
+```js
+// reconnect loop
+let cursor = lastSeqSeen;
+const res = await fetch(
+  `https://api.opencomputer.dev/v3/sessions/${id}/events?stream=sse&after=${cursor}`,
+  { headers: { Authorization: `Bearer ${clientToken}` } }
+);
+```
+
+## Hibernate & resume
+
+When a session has nothing to do it goes **idle** and its sandbox **hibernates** — the VM is snapshotted and stopped. You pay storage-only while idle; **active seconds only** show up in usage. The next message (a steer, or the next turn) wakes it, typically sub-second, and it continues with prior context.
+
+<Note>This mirrors [sandbox hibernation](/sandboxes/timeout): idle ≈ free, fast wake. Sessions manage it for you — you don't set a timeout per turn.</Note>
+
+## Limits (be precise) {#limits}
+
+What's guaranteed today, and what isn't:
+
+| Failure | What happens |
+| --- | --- |
+| Client disconnects | Reconnect from your cursor; nothing lost. |
+| Session idles | Sandbox hibernates; resumes on the next message. |
+| Runtime crashes mid-turn | Auto re-wakes and continues from the hibernated sandbox state. |
+| Sandbox is **lost** (not hibernated) | The session may re-run / re-clone. Only **logged or delivered** outputs are durable. |
+
+<Warning>
+  v1 does **not** do byte-exact recovery after an arbitrary sandbox or model failure — in-flight, unlogged work can be redone. Build idempotent side effects, and treat the event log (and delivered webhooks) as your durable record. Byte-exact resume is coming in a later release.
+</Warning>

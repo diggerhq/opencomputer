@@ -1,0 +1,70 @@
+---
+title: "Concepts"
+description: "Agents, sessions, events, and the run loop"
+---
+
+## The run loop
+
+1. You create a **session** from an **agent** (a prompt + model). The run starts.
+2. The **runtime** executes the agent in a sandbox, **appending events** to the session log as it works.
+3. When it has nothing to do, the session goes **idle** and the sandbox **hibernates**.
+4. A **steer** message wakes it; it resumes with full prior context. Repeat.
+
+## Agent
+
+A first-class, reusable definition of *what* runs: `{ name, prompt, model, runtime }`. Create one and start many sessions from it, or inline `{ prompt, model }` at session-create for a one-off.
+
+**Agent snapshot.** At create, the session **freezes** the agent's `{ prompt, model, runtime }`. Editing the named agent later never changes a running or resumed session — its behavior is pinned.
+
+## Session
+
+One durable run: an append-only **event log** plus the pinned snapshot and a lifecycle status.
+
+| Status | Meaning |
+| --- | --- |
+| `running` | A turn is executing. |
+| `idle` | Quiescent and steerable; the sandbox is hibernated. |
+| `failed` | The run errored out. |
+| `archived` | Closed; read-only. |
+
+A session also carries `last_turn = { state: "ok" \| "error", result_event_id?, error? }`, so a one-off run tells you whether it finished and what it produced. By convention, the **final result is a `user`-level `message` event**.
+
+## Event
+
+Every step is an event, appended in order:
+
+```json
+{ "id": "evt_…", "seq": 12, "ts": "…", "session": "sess_…",
+  "actor": { "id": "agent", "type": "agent" },
+  "kind": "message", "level": "user",
+  "body": { "text": "3 tests fail in auth.spec.ts" }, "refs": {} }
+```
+
+- **`kind`** — `message` (content), `status` (lifecycle), or `error`.
+- **`actor`** — `{ id, display?, type: "human" | "agent" | "system" }`.
+- **`level`** — see below.
+- **`body` / `refs`** — payload and related ids.
+
+Inbound and outbound messages share one [envelope](/agent-sessions/messaging#the-envelope) shape.
+
+## seq / cursor / head {#cursors}
+
+- **`seq`** — a monotonic id assigned to each event; the cursor space.
+- **`head`** — the highest `seq` in the session.
+- **`cursor`** — how far a reader (or the runtime) has consumed.
+
+Read or stream with `after=<seq>` and you get everything since that point — this is how **resume** works: reconnect with the last `seq` you saw.
+
+## Levels {#levels}
+
+Every event has a visibility level; filter the stream and webhooks by it.
+
+| Level | For |
+| --- | --- |
+| `internal` | The agent's own reasoning and tool detail. |
+| `progress` | Step-by-step updates. |
+| `user` | What an end user should see (default for delivery). |
+
+## Runtime
+
+The stateless engine that runs the agent loop. **`claude`** today; more [coming soon](/agent-sessions/runtimes). The runtime works in a sandbox that hibernates when idle — durability is the session's job, not the runtime's.
