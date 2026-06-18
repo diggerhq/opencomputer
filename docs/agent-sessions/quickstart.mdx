@@ -18,7 +18,7 @@ You don't need to create an agent first — one call starts a session. Pass a `m
 ```bash
 curl https://api.opencomputer.dev/v3/sessions \
   -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "model": "anthropic/claude-opus-4-8",
+  -d '{ "model": "anthropic/claude-opus-4-8", "runtime": "claude",
         "prompt": "You are a coding assistant.",
         "input": "Clone github.com/acme/widget, run its tests, and summarize what fails." }'
 ```

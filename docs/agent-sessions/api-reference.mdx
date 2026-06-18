@@ -15,7 +15,7 @@ Base URL `https://api.opencomputer.dev/v3`. Management calls authenticate with y
 | `POST /sessions/:id/archive` | Archive (close) a session. |
 | `POST /sessions/:id/client-tokens` | Mint a client token. Body: `scopes?`, `ttl?`. |
 
-Provide `agent` (a saved agent id) **or** inline `prompt` + `model`. `key` gives get-or-create (one session per key). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#the-envelope).
+Provide `agent` (a saved agent id) **or** inline `prompt` + `model` + `runtime`. `key` gives get-or-create (one session per key). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#the-envelope).
 
 ```
 Session = { id, status, head, cursor,
