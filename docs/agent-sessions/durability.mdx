@@ -3,6 +3,15 @@ title: "Durability & resume"
 description: "What survives a disconnect, an idle period, or a crash — and what doesn't"
 ---
 
+A Durable Agent Session is **never lost and always resumable** — that's the promise, and the platform holds it:
+
+- The **event log is durable forever** (the record of everything the agent did).
+- **Disconnect** → reconnect from any cursor, nothing missed.
+- The runtime **crashes or hangs** → we **restart it automatically** and it continues from where it was.
+- The session **idles** → it hibernates (≈ free) and **survives even if its sandbox is reclaimed**.
+
+The only thing not yet covered: resuming **mid-turn** across a sandbox loss (that one turn re-runs) — see [Limits](#limits).
+
 ## The event log is the source of truth
 
 Every step is appended to the session's log with a monotonic `seq`. The log is durable and ordered; reads and the live stream are served from it. Anything the agent has logged or delivered is safe.
@@ -24,7 +33,15 @@ const res = await fetch(
 
 When a session has nothing to do it goes **idle** and its sandbox **hibernates** — the VM is snapshotted and stopped. You pay storage-only while idle; **active seconds only** show up in usage. The next message (a steer, or the next turn) wakes it, typically sub-second, and it continues with prior context.
 
-<Note>This mirrors [sandbox hibernation](/sandboxes/timeout): idle ≈ free, fast wake. Sessions manage it for you — you don't set a timeout per turn.</Note>
+<Note>This mirrors [sandbox hibernation](/sandboxes/timeout): idle ≈ free, fast wake. Sessions manage it for you — you don't set a timeout per turn. The runtime's state is also **checkpointed off-box** at each hibernate, so an idle session resumes even if its sandbox is reclaimed.</Note>
+
+## Self-healing runtime
+
+You don't restart anything — the platform does. The runtime keeps its working state (the agent's session journal) on the sandbox, and OpenComputer recovers it for you:
+
+- **Runtime crashes** (process dies, sandbox fine) → we start it again **in the same sandbox**; it continues from its on-box journal, not from scratch.
+- **Runtime hangs** → it's detected (a turn has a max duration) and **restarted in place**.
+- **Sandbox reclaimed while idle** → we recreate it and **restore the last checkpoint**, resuming from the last completed turn.
 
 ## Limits
 
@@ -33,10 +50,11 @@ What's guaranteed today, and what isn't:
 | Failure | What happens |
 | --- | --- |
 | Client disconnects | Reconnect from your cursor; nothing lost. |
-| Session idles | Sandbox hibernates; resumes on the next message. |
-| Runtime crashes mid-turn | Auto re-wakes and continues; in-flight work since the last logged event may repeat (make side effects idempotent). |
-| Sandbox is **lost** (not hibernated) | The session may re-run / re-clone. Only **logged or delivered** outputs are durable. |
+| Session idles | Sandbox hibernates; resumes on the next message (state checkpointed off-box). |
+| Runtime crashes / hangs | **Auto-restarted; continues from the on-box journal** — in-flight work since the last logged event may repeat (make side effects idempotent). |
+| Sandbox lost **while idle** | Recreated and **restored from the last checkpoint**; resumes from the last completed turn. |
+| Sandbox lost **mid-turn** | That one turn **re-runs** from the log. Only **logged / committed / delivered** work product is guaranteed. |
 
 <Warning>
-  Sessions don't **yet** do byte-exact recovery after an arbitrary sandbox or model failure — in-flight, unlogged work can be redone. Build idempotent side effects, and treat the event log (and delivered webhooks) as your durable record. Byte-exact resume is coming in a later release.
+  The one edge not yet covered: a sandbox lost **mid-turn** re-runs that turn rather than resuming mid-thought — so in-flight, unlogged work can be redone. Build idempotent side effects, and treat the event log (and delivered webhooks) as your durable record. Byte-exact **mid-turn** resume is coming in a later release.
 </Warning>

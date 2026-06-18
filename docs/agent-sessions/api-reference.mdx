@@ -23,6 +23,7 @@ Base URL `https://api.opencomputer.dev/v3`. Management calls authenticate with y
 ```
 Session = { id, status, head, input_cursor,
             agent_snapshot: { prompt_hash, model, runtime, revision },
+            credential_id,   // resolved + pinned at create
             last_turn: { state, yield_reason?, turn_id, started_at, completed_at?, result_event_id?, error? },
             usage: { active_seconds, tokens? },
             limits: { tokens?, turn_seconds?, turns? }, key?, created_at }
@@ -50,7 +51,7 @@ Event = { id, seq, ts, session, actor, type, level, body, refs }
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /sessions/:id/messages` | Append an input message; wakes the session. Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `{ seq }`. |
+| `POST /sessions/:id/messages` | Append an input message; wakes the session. Body: `{ text, idempotency_key? }` or `{ envelope }`. `202` → `{ event: { id, seq }, session: { id, status, head } }`. |
 
 ## Destinations
 

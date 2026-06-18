@@ -3,7 +3,15 @@ title: "Durable Agent Sessions"
 description: "Define an agent, then run resumable, steerable sessions"
 ---
 
-Give an agent a prompt and a task; OpenComputer runs it on a managed runtime in a sandbox and records **every step as a durable, streamable, resumable session**. Watch it work live, drop your connection and reconnect right where you left off, let it idle and the sandbox hibernates (≈ free), then steer it with a message or get notified by webhook.
+Give an agent a prompt and a task; OpenComputer runs it on a **fully managed runtime** and records **every step as a durable, streamable, resumable session**. Watch it work live, drop your connection and reconnect right where you left off, let it idle and the sandbox hibernates (≈ free), then steer it with a message or get notified by webhook.
+
+**You never babysit the runtime.** A session is *durable*: we keep your agent running, and recover it for you.
+
+- **Crashes or hangs?** We **restart it automatically** — it continues from where it was, mid-task, not from scratch.
+- **Idle for hours or days?** It hibernates (≈ free) and **survives even if the underlying sandbox is reclaimed** — its state is checkpointed off-box, so it wakes back up intact.
+- **Disconnect?** Reconnect from any cursor — nothing missed.
+
+That managed, self-healing runtime — not just a chat API over a model — is the point.
 
 <Steps>
   <Step title="Define an agent (with your key)">
@@ -25,13 +33,13 @@ The non-trivial parts you'd otherwise build — and get subtly wrong — handled
 
 <CardGroup cols={2}>
   <Card title="Reliable delivery" icon="paper-plane">
-    Outbound messages are delivered at-least-once, retried with backoff, and dead-lettered — nothing silently dropped. Dedupe on `X-OC-Event-ID`.
+    Outbound messages are delivered at-least-once, retried with backoff, and dead-lettered — nothing silently dropped. Signed with [Standard Webhooks](https://www.standardwebhooks.com); dedupe on `webhook-id`.
   </Card>
-  <Card title="Managed sandbox lifecycle" icon="box">
-    Provision, hibernate on idle (storage-only ≈ free), wake in milliseconds, replace an unresponsive sandbox, tear down — none of it your problem.
+  <Card title="Self-healing, managed runtime" icon="heart-pulse">
+    We keep the agent running and recover it: **auto-restart on crash or hang** (it continues from its on-box state), hibernate on idle (≈ free), and **survive sandbox loss while idle** by restoring an off-box checkpoint. Provision, wake, tear down — none of it your problem. See [durability](/agent-sessions/durability).
   </Card>
   <Card title="Isolated execution" icon="shield-halved">
-    The agent's loop runs separately from the sandbox where its file changes and commands execute — the untrusted work is contained, apart from the loop and your model credentials.
+    The agent's loop runs separately from the sandbox where its file changes and commands execute — the untrusted work is contained, and your model key never enters a sandbox at all.
   </Card>
   <Card title="Durable log & resume" icon="database">
     Every step is recorded in a durable event log. Reconnect from any point and the event stream resumes exactly where you left off — no events missed or duplicated.

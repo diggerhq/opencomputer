@@ -79,7 +79,7 @@ curl https://api.opencomputer.dev/v3/sessions/$ID/destinations \
   -d '{ "url": "https://your.app/oc-webhook", "secret": "whsec_…", "level": "user" }'
 ```
 
-Deliveries are signed and retried; dedupe by `X-OC-Event-ID`. See [Webhooks](/agent-sessions/webhooks) to verify the signature and inspect deliveries.
+Deliveries are signed ([Standard Webhooks](https://www.standardwebhooks.com)) and retried; dedupe by `webhook-id`. See [Webhooks](/agent-sessions/webhooks) to verify the signature and inspect deliveries.
 
 ## Next steps
 

@@ -48,27 +48,25 @@ Delivery = { id, destination_id, event_id, status, attempts, last_attempt_at, re
 ## Delivery contract
 
 - **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused.
-- **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it above). A duplicate can still arrive — a send that succeeds as the worker dies, or a replayed turn — so **dedupe on `X-OC-Event-ID`**.
-- **Correlation headers.** Every request carries `X-OC-Event-ID`, `X-OC-Delivery-ID`, and `X-OC-Session-ID` (for dedupe and correlation), plus the signature headers below.
-- **Signed.** `X-OC-Signature` = HMAC-SHA256 over `X-OC-Timestamp + "." + rawBody`, keyed by your `secret`. Verify against the **raw request body, before parsing it**. `X-OC-Timestamp` guards replay; the `secret` is write-only — set once, never returned.
+- **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it above). A duplicate can still arrive — a send that succeeds as the worker dies, or a replayed turn — so **dedupe on `webhook-id`** (it equals the event id).
+- **Signed with [Standard Webhooks](https://www.standardwebhooks.com).** Every request carries `webhook-id`, `webhook-timestamp`, and `webhook-signature` — so you can verify with an off-the-shelf library instead of hand-rolling. `webhook-signature` = `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; `webhook-timestamp` guards replay; your `secret` (`whsec_…`) is write-only — set once, never returned. Plus `X-OC-Delivery-ID` and `X-OC-Session-ID` for correlation.
 - A delivery succeeds on HTTP `2xx`.
 
 ### Verify a webhook
 
-```js
-import { createHmac, timingSafeEqual } from "node:crypto";
+Use a [Standard Webhooks](https://www.standardwebhooks.com) library:
 
-// body = the RAW request body string, read BEFORE JSON.parse
-function verify(req, secret, body) {
-  const ts  = req.headers["x-oc-timestamp"];
-  const got = req.headers["x-oc-signature"];
-  if (!ts || !got) return false;                                         // missing headers → reject
-  if (!/^\d+$/.test(ts) || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false; // bad/stale ts → replay guard
-  const expected = createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
-  let a, b;
-  try { a = Buffer.from(got, "hex"); b = Buffer.from(expected, "hex"); }  // decode hex explicitly
-  catch { return false; }                                                // malformed signature
-  return a.length === b.length && timingSafeEqual(a, b);                  // constant-time compare
+```js
+import { Webhook } from "standardwebhooks";
+
+// rawBody = the RAW request body string, read BEFORE JSON.parse
+function verify(headers, rawBody, secret) {
+  // throws on a missing/expired/invalid signature
+  return new Webhook(secret).verify(rawBody, {
+    "webhook-id":        headers["webhook-id"],
+    "webhook-timestamp": headers["webhook-timestamp"],
+    "webhook-signature": headers["webhook-signature"],
+  });
 }
 ```
 

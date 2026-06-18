@@ -16,7 +16,7 @@ Pass your Anthropic `key` inline and it's stored as a [credential](/agent-sessio
 
 ## Pinned snapshot
 
-When a session is created it **freezes** the agent's `prompt`, `model`, and `runtime` into the session. Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change.
+When a session is created it **freezes** the agent's `prompt`, `model`, `runtime`, and `revision` (a number that bumps on every edit) into the session — and pins the resolved credential too. Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change. (Rotating a credential's **key value** is the exception — that flows to running sessions, so a compromised key can be replaced; see [authentication](/agent-sessions/authentication#model-credentials).)
 
 ## Model
 

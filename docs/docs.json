@@ -60,6 +60,7 @@
       },
       {
         "group": "Durable Agent Sessions",
+        "tag": "Preview",
         "pages": [
           "agent-sessions/overview",
           "agent-sessions/quickstart",

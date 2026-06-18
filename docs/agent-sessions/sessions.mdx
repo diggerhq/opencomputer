@@ -12,7 +12,7 @@ A **session** is the durable unit of an [agent](/agent-sessions/agents) at work:
 3. With nothing left to do, the session goes **idle** and the sandbox **hibernates** (see [durability](/agent-sessions/durability)).
 4. A [steer](/agent-sessions/messaging) message wakes it; it resumes with its prior context. Repeat.
 
-<Note>If the runtime crashes mid-turn it auto re-wakes and continues — but in-flight work since the last logged event may repeat, so make side effects idempotent. Details: [durability](/agent-sessions/durability).</Note>
+<Note>The runtime is **managed and self-healing**: if it crashes or hangs we restart it and it continues from its on-box state, and an idle session survives even if its sandbox is reclaimed. In-flight work since the last logged event may repeat, so make side effects idempotent. Details: [durability](/agent-sessions/durability).</Note>
 
 ## Lifecycle
 
