@@ -3,34 +3,9 @@ title: "Durable Agent Sessions"
 description: "Define an agent, then run resumable, steerable sessions"
 ---
 
-Give an agent a prompt and a task; OpenComputer runs it on a **fully managed runtime** and records **every step as a durable, streamable, resumable session**. Watch it work live, drop your connection and reconnect right where you left off, let it idle and the sandbox hibernates (≈ free), then steer it with a message or get notified by webhook.
-
-**You never babysit the runtime.** A session is *durable*: we keep your agent running, and recover it for you.
-
-- **Crashes?** We **restart it automatically** — it picks up from where it was, not from scratch.
-- **Hangs?** A turn deadline bounds it; the turn ends and you steer to continue.
-- **Idle for hours or days?** It hibernates (≈ free) and resumes intact — and even if the underlying sandbox is reclaimed, its state is checkpointed off-box so the session comes back.
-- **Disconnect?** Reconnect from any cursor — nothing missed.
-
-That managed, self-healing runtime — not just a chat API over a model — is the point.
-
-<Steps>
-  <Step title="Define an agent (with your key)">
-    A reusable `{ name, model, prompt, runtime }` — `POST /v3/agents`. Pass your Anthropic `key` inline (sessions run on your own key); it's stored as a [credential](/agent-sessions/authentication#model-credentials). ([Agents](/agent-sessions/agents))
-  </Step>
-  <Step title="Start a session">
-    `POST /v3/sessions { agent, input }` and the agent starts working immediately; you get back the session and a browser-safe `client_token`.
-  </Step>
-  <Step title="Watch, steer, get notified">
-    Stream `GET …/events?stream=sse` — reconnect from any cursor to [resume](/agent-sessions/events). `POST …/messages` to [steer](/agent-sessions/messaging), and register a [webhook](/agent-sessions/webhooks) to have output pushed to you.
-  </Step>
-</Steps>
-
-Every session hands back a scoped [client token](/agent-sessions/authentication#client-tokens) (`read` + `steer`), so a front-end can stream and steer **without** your API key.
+Give an agent a prompt and a task; OpenComputer runs it on a **fully managed, self-healing runtime** and records every step as a **durable, streamable, resumable session** — watch it live, steer it, get notified by webhook. A managed agent runtime, not just a chat API over a model.
 
 ## What the platform handles for you
-
-The hard parts, handled:
 
 <CardGroup cols={2}>
   <Card title="Self-healing, managed runtime" icon="heart-pulse">
@@ -52,6 +27,20 @@ The hard parts, handled:
     - Signed ([Standard Webhooks](https://www.standardwebhooks.com)); dedupe on `webhook-id`
   </Card>
 </CardGroup>
+
+## Get started
+
+<Steps>
+  <Step title="Define an agent (with your key)">
+    A reusable `{ name, model, prompt, runtime }` — `POST /v3/agents`. Pass your Anthropic `key` inline; it's stored as a [credential](/agent-sessions/authentication#model-credentials). ([Agents](/agent-sessions/agents))
+  </Step>
+  <Step title="Start a session">
+    `POST /v3/sessions { agent, input }` — the agent starts immediately; you get the session and a browser-safe `client_token`.
+  </Step>
+  <Step title="Watch, steer, get notified">
+    Stream `GET …/events?stream=sse` ([resume](/agent-sessions/events) from any cursor), `POST …/messages` to [steer](/agent-sessions/messaging), and register a [webhook](/agent-sessions/webhooks) for push.
+  </Step>
+</Steps>
 
 ## How it works
 
