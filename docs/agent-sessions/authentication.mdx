@@ -55,7 +55,7 @@ curl https://api.opencomputer.dev/v3/credentials \
 # make it the default for this provider
 curl -X PUT https://api.opencomputer.dev/v3/credentials/default \
   -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "provider": "anthropic", "credential": "cred_…" }'
+  -d '{ "credential": "cred_…" }'
 ```
 
 **Resolution** per session: the agent's credential → your org default for the provider. (No platform-billed fallback yet — bring a key.)

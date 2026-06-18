@@ -14,6 +14,7 @@ Every step a session takes is an **event**, appended to the log in order. The lo
 ```
 
 - **`id`** — the event's own unique id (`evt_…`). The client idempotency key for steering is separate (deduped per session — see [steering](/agent-sessions/messaging)).
+- **`turn_id`** — the turn that produced the event, when applicable; filter a turn's output with `?turn_id=`.
 - **`type`** — the one discriminator: a namespaced string (`agent.message`, `turn.completed`, …). See below.
 - **`actor`** — who produced it: `{ id, display?, type: "human" | "agent" | "system" }`.
 - **`level`** — visibility; see below.
