@@ -34,7 +34,7 @@ curl https://api.opencomputer.dev/v3/sessions \
 
 ## 2. Stream it live
 
-Tail the event log over SSE from a cursor. Use the `client_token` from step 1 — no API key needed in the client. `level=user` shows only what an end user should see (see [levels](/agent-sessions/concepts#levels)).
+Tail the event log over SSE from a cursor. Use the `client_token` from step 1 — no API key needed in the client. `level=user` shows only what an end user should see (see [levels](/agent-sessions/events#levels)).
 
 ```js
 const res = await fetch(
@@ -76,8 +76,8 @@ See [Messaging & webhooks](/agent-sessions/messaging) to verify the signature.
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Concepts" icon="book" href="/agent-sessions/concepts">
-    The session model: events, cursors, statuses.
+  <Card title="Sessions" icon="book" href="/agent-sessions/sessions">
+    The run loop, lifecycle, and events.
   </Card>
   <Card title="Messaging & webhooks" icon="bell" href="/agent-sessions/messaging">
     The envelope, steering, and reliable delivery.

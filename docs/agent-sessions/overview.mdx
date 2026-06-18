@@ -14,40 +14,50 @@ curl https://api.opencomputer.dev/v3/sessions \
 # → { "session": { "id": "sess_…", "status": "running" }, "client_token": "…" }
 ```
 
-## What you get
+## Start a run
 
-- **One call to start** — `POST /v3/sessions` with a prompt, model, and task; the run begins immediately.
-- **A durable event log** — every message, action, and status is appended with a monotonic `seq`; nothing is lost.
-- **Live streaming + resume** — tail the log over SSE; reconnect from any cursor and continue.
-- **Hibernate on idle** — the sandbox sleeps between turns and wakes on the next message; you pay storage-only while it's idle.
-- **Steer & notify** — send a follow-up message any time; register a webhook to get results pushed to you, reliably.
-- **Browser-safe tokens** — issue a session-scoped token so a front-end can stream and steer without your API key.
+`POST /v3/sessions` with a `prompt`, `model`, and `input` (or a saved [agent](/agent-sessions/agents)) and the run begins immediately. One call. See the [quickstart](/agent-sessions/quickstart).
 
-## What "durable" means here
+## Stream & resume
 
-<Note>
-  We're precise about this so you can build on it:
-  - The **event log is the source of truth** and is always durable.
-  - The **stream resumes** from any cursor — disconnects lose nothing.
-  - A **hibernated sandbox resumes** with its state intact.
+Tail the [event log](/agent-sessions/events) over SSE from any cursor. Disconnect and reconnect with the last `seq` you saw — you continue exactly where you left off, nothing missed or duplicated.
 
-  It is **not** byte-exact recovery after arbitrary failure. If a sandbox is *lost* (not hibernated), the session may re-run or re-clone, and only **logged or delivered outputs are guaranteed durable**. Byte-exact resume is [coming soon](/agent-sessions/durability#limits).
-</Note>
+## Steer & get notified
+
+Send a follow-up [message](/agent-sessions/messaging) any time; the session wakes and continues with full prior context. Register a **webhook** and the agent's user-facing output is pushed to you.
+
+## Browser-safe access
+
+Every session hands back a scoped [client token](/agent-sessions/authentication#client-tokens) (`read` + `steer`) so a front-end can stream and steer **without** your API key.
+
+## What the platform handles for you
+
+The non-trivial parts you'd otherwise build — and get subtly wrong — handled:
+
+<CardGroup cols={2}>
+  <Card title="Reliable delivery" icon="paper-plane">
+    Outbound messages are delivered at-least-once, idempotent per destination, retried with backoff, and dead-lettered — no lost or duplicated webhooks.
+  </Card>
+  <Card title="Managed sandbox lifecycle" icon="box">
+    Provision, hibernate on idle (storage-only ≈ free), wake in milliseconds, recover a dead sandbox, tear down — none of it your problem.
+  </Card>
+  <Card title="Isolated model access" icon="shield-halved">
+    The model loop runs in a sandbox separate from your agent's code execution, so a prompt-injected agent can't reach your model key.
+  </Card>
+  <Card title="Durable event log" icon="database">
+    Append + notify in one transaction, idempotent and monotonic — the log is the source of truth, so resume is exact and there's no lost-update window.
+  </Card>
+  <Card title="One driver, crash-safe" icon="lock">
+    A fenced lease guarantees a single active runtime; a crashed or stale run is fenced out and re-woken from its cursor.
+  </Card>
+  <Card title="Budget & safety guards" icon="gauge-high">
+    Per-session spend cap, crash-loop backstop, and SSRF-guarded, signed webhook delivery — runaways and abuse are bounded by default.
+  </Card>
+</CardGroup>
 
 ## When to use it
 
-Reach for sessions when you want a long-running or interactive agent and don't want to build the plumbing — an event store, live streaming, resume, idle hibernation, and reliable delivery — yourself. For a one-shot command in a raw box, use a [sandbox](/sandboxes/overview) directly.
-
-## Available today vs coming soon
-
-| Today | Coming soon |
-| --- | --- |
-| Agents on the `claude` runtime | Other runtimes (`codex`, `opencode`, custom BYO image) |
-| Create / run / stream / resume / hibernate / archive sessions | `ask` (blocking request-for-input) |
-| Steer by session id | Inbound channels (Slack, GitHub, Jira, email) |
-| Outbound webhook delivery (signed, retried, filtered) | Outbound channel delivery (post to Slack, GitHub, …) |
-| Browser client tokens · BYO Anthropic key | Other providers · model hot-swap |
-| Platform-billed Anthropic + per-session cap | Workspaces, scheduled triggers, byte-exact resume |
+Reach for sessions when you want a long-running or interactive agent and don't want to build the plumbing above yourself. For a one-shot command in a raw box, use a [sandbox](/sandboxes/overview) directly.
 
 ## Next steps
 
@@ -55,7 +65,7 @@ Reach for sessions when you want a long-running or interactive agent and don't w
   <Card title="Quickstart" icon="bolt" href="/agent-sessions/quickstart">
     Start a session, stream it, and steer it in a few minutes.
   </Card>
-  <Card title="Concepts" icon="book" href="/agent-sessions/concepts">
-    Agents, sessions, events, cursors, and statuses.
+  <Card title="How sessions work" icon="book" href="/agent-sessions/sessions">
+    The run loop, lifecycle, and events.
   </Card>
 </CardGroup>

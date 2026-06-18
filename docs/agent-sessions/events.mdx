@@ -1,0 +1,39 @@
+---
+title: "Events"
+description: "The append-only log: envelope, levels, cursors, and resume"
+---
+
+Every step a session takes is an **event**, appended to the log in order. The log is the source of truth — you read it, stream it, and resume from any point.
+
+```json
+{ "id": "evt_…", "seq": 12, "ts": "…", "session": "sess_…",
+  "actor": { "id": "agent", "type": "agent" },
+  "kind": "message", "level": "user",
+  "body": { "text": "3 tests fail in auth.spec.ts" }, "refs": {} }
+```
+
+- **`id`** — unique; the idempotency key for appends.
+- **`kind`** — `message` (content), `status` (lifecycle), or `error`.
+- **`actor`** — who produced it: `{ id, display?, type: "human" | "agent" | "system" }`.
+- **`level`** — visibility; see below.
+- **`body` / `refs`** — payload and related ids.
+
+Inbound and outbound messages share one [envelope](/agent-sessions/messaging#the-envelope) shape.
+
+## Levels
+
+Every event has a visibility level; filter the stream and webhooks by it.
+
+| Level | For |
+| --- | --- |
+| `internal` | The agent's own reasoning and tool detail. |
+| `progress` | Step-by-step updates. |
+| `user` | What an end user should see (default for delivery). |
+
+## seq, cursor, head
+
+- **`seq`** — a monotonic id assigned to each event; the cursor space.
+- **`head`** — the highest `seq` in the session.
+- **`cursor`** — how far a reader (or the runtime) has consumed.
+
+Read or stream with `after=<seq>` and you get everything since that point. This is how **resume** works: reconnect with the last `seq` you saw — you miss nothing and get no duplicates.

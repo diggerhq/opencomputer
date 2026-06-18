@@ -1,0 +1,26 @@
+---
+title: "Sessions"
+description: "A durable, resumable run of an agent"
+---
+
+A **session** is one durable run of an [agent](/agent-sessions/agents): an append-only [event log](/agent-sessions/events), the pinned agent snapshot, and a lifecycle status. Compute attaches to it, detaches when idle, and reattaches on the next message — the log is what persists.
+
+## The run loop
+
+1. You create a session from an agent (or an inline prompt + model). The run starts immediately.
+2. The [runtime](/agent-sessions/runtimes) executes the agent in a sandbox, appending [events](/agent-sessions/events) to the log as it works.
+3. With nothing left to do, the session goes **idle** and the sandbox **hibernates** (see [durability](/agent-sessions/durability)).
+4. A [steer](/agent-sessions/messaging) message wakes it; it resumes with full prior context. Repeat.
+
+## Lifecycle
+
+| Status | Meaning |
+| --- | --- |
+| `running` | A turn is executing. |
+| `idle` | Quiescent and steerable; the sandbox is hibernated. |
+| `failed` | The run errored out. |
+| `archived` | Closed; read-only. |
+
+A session also carries `last_turn = { state: "ok" | "error", result_event_id?, error? }`, so a one-off run tells you whether it finished and what it produced. By convention the **final result is a `user`-level [`message`](/agent-sessions/events) event**.
+
+<Note>Blocking on input mid-run (`ask` / awaiting-input) is coming soon. Today, steer is fire-and-continue: send a message and the session incorporates it on its next turn.</Note>

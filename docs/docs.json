@@ -63,7 +63,9 @@
         "pages": [
           "agent-sessions/overview",
           "agent-sessions/quickstart",
-          "agent-sessions/concepts",
+          "agent-sessions/agents",
+          "agent-sessions/sessions",
+          "agent-sessions/events",
           "agent-sessions/authentication",
           "agent-sessions/durability",
           "agent-sessions/messaging",

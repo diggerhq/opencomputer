@@ -1,0 +1,25 @@
+---
+title: "Agents"
+description: "The reusable definition of what runs"
+---
+
+An **agent** is a first-class, reusable definition of *what* runs — a `name`, a `prompt` (its instructions), a `model`, and a [`runtime`](/agent-sessions/runtimes). Create one and start many [sessions](/agent-sessions/sessions) from it.
+
+```bash
+curl https://api.opencomputer.dev/v3/agents \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "name": "reviewer", "model": "anthropic/claude-opus-4-8",
+        "prompt": "You review code.", "runtime": "claude" }'
+```
+
+For a one-off, skip the agent and inline `prompt` + `model` when you [start a session](/agent-sessions/sessions) — same result, no named record.
+
+## Pinned snapshot
+
+When a session is created it **freezes** the agent's `prompt`, `model`, and `runtime` into the session. Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change.
+
+## Model
+
+`model` is a `provider/model` id (e.g. `anthropic/claude-opus-4-8`); the chosen [runtime](/agent-sessions/runtimes) determines which models are valid. Usage is billed to your OpenComputer account, or to [your own provider key](/agent-sessions/authentication#model-credentials-byo-key).
+
+<Note>Additional model providers, and switching a session's model mid-run, are coming soon.</Note>

@@ -30,7 +30,7 @@ Session = { id, status, head, cursor,
 | `GET /sessions/:id/events?after=<seq>&level=<lvl>&limit=<n>` | Read events since a cursor. |
 | `GET /sessions/:id/events?after=<seq>&level=<lvl>&stream=sse` | Live SSE stream from a cursor. |
 
-`after` resumes from a `seq`; `level` is the max [level](/agent-sessions/concepts#levels) to receive.
+`after` resumes from a `seq`; `level` is the max [level](/agent-sessions/events#levels) to receive.
 
 ```
 Event = { id, seq, ts, session, actor, kind, level, body, refs }

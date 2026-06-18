@@ -38,7 +38,7 @@ browser ──(client_token)──▶ GET …/events (SSE) · POST …/messages
 
 ## Model credentials (BYO key)
 
-By default, runs are **platform-billed on Anthropic** — zero setup, metered to your org, capped per session. To run on **your own** provider key, add a credential once. It's stored in our secret store (encrypted, write-only, never returned) — you never manage a raw secret store yourself.
+Model usage is **billed to your OpenComputer account** by default — zero setup, metered, capped per session. To run on **your own** provider key instead, add a **credential**. It's stored in our secret store (encrypted, write-only, never returned) — you never manage a raw secret store yourself.
 
 ```bash
 curl https://api.opencomputer.dev/v3/credentials \
@@ -54,4 +54,4 @@ curl -X PUT https://api.opencomputer.dev/v3/credentials/default \
 
 **Resolution** for each run: the agent's credential → your org default for the model's provider → platform billing.
 
-<Note>Today only **Anthropic** (the `claude` runtime). Other providers and model hot-swap are [coming soon](/agent-sessions/runtimes) — the credentials shape is the same, so adding them won't break anything.</Note>
+<Note>Additional model providers and model hot-swap are coming soon — the credential shape is identical, so adopting them is additive (nothing you build today changes).</Note>
