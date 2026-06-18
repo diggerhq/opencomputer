@@ -7,7 +7,7 @@ description: "Steer a session, and the shared message envelope"
 
 ## Steer (inbound)
 
-Send a message to a running or idle session; it wakes and continues with full context. Minimal form is just text:
+Send a message to a running or idle session; it wakes and continues with its prior context. Minimal form is just text:
 
 ```bash
 curl https://api.opencomputer.dev/v3/sessions/$ID/messages \
@@ -15,7 +15,7 @@ curl https://api.opencomputer.dev/v3/sessions/$ID/messages \
   -d '{ "text": "also check the CI config", "idempotency_key": "nudge-1" }'
 ```
 
-Pass `idempotency_key` so retries (flaky network, double-click) are de-duplicated — the same key is applied at most once.
+Pass `idempotency_key` so retries (flaky network, double-click) are de-duplicated — applied at most once **per session**, so the same key is safe to reuse across different sessions.
 
 ## The envelope
 
@@ -35,7 +35,7 @@ Every inbound and outbound message normalizes to this shape. The core fields are
 }
 ```
 
-- **`id`** — unique; the idempotency key.
+- **`id`** — the idempotency key, deduped **per session** (not global).
 - **`actor`** — who sent it (`human` | `agent` | `system`), namespaced.
 - **`conversation`** — an opaque reply/routing anchor.
 - **`text`** — the content the agent reads (or that you receive).

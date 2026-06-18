@@ -15,12 +15,13 @@ Base URL `https://api.opencomputer.dev/v3`. Management calls authenticate with y
 | `POST /sessions/:id/archive` | Archive (close) a session. |
 | `POST /sessions/:id/client-tokens` | Mint a client token. Body: `scopes?`, `ttl?`. |
 
-Provide `agent` (a saved agent id) **or** inline `prompt` + `model` + `runtime`. `key` gives get-or-create (one session per key). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#the-envelope).
+Provide `agent` (a saved agent id) **or** inline `prompt` + `model` + `runtime`. `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `input` is the task — a string or a full [envelope](/agent-sessions/messaging#the-envelope).
 
 ```
 Session = { id, status, head, cursor,
             agent_snapshot: { prompt_hash, model, runtime },
-            last_turn: { state, result_event_id?, error? }, key?, created_at }
+            last_turn: { state, turn_id, started_at, completed_at?, result_event_id?, error?, budget_exceeded? },
+            usage: { active_seconds, usd, cap_usd?, tokens? }, key?, created_at }
 ```
 
 ## Events

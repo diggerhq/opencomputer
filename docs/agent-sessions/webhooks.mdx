@@ -24,6 +24,8 @@ curl https://api.opencomputer.dev/v3/sessions/$ID/destinations \
 | `PATCH /sessions/:id/destinations/:did` | Pause or resume (`enabled`), retune `level`/`kinds`, or rotate `secret`. |
 | `DELETE /sessions/:id/destinations/:did` | Remove. |
 
+A destination receives events appended **after** it's created. To capture a whole session, pass `webhook` in `POST /v3/sessions` so it's registered before the agent produces output. (Replaying earlier events with `backfill_from_seq` is coming soon.)
+
 ## Deliveries
 
 Every send and its outcome — the data behind a deliveries dashboard.
@@ -45,8 +47,9 @@ Delivery = { id, destination_id, event_id, status, attempts, last_attempt_at, re
 ## Delivery contract
 
 - **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused.
-- **At-least-once, idempotent per (event × destination)**, with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it above).
-- **Signed.** Each request carries `X-OC-Signature` (HMAC-SHA256 over `timestamp + "." + body`, keyed by your `secret`) and `X-OC-Timestamp`. The `secret` is write-only — set once, never returned.
+- **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it above). A duplicate can still arrive — a send that succeeds as the worker dies, or a replayed turn — so **dedupe on `X-OC-Event-ID`**.
+- **Correlation headers.** Every request carries `X-OC-Event-ID`, `X-OC-Delivery-ID`, and `X-OC-Session-ID` (for dedupe and correlation), plus the signature headers below.
+- **Signed.** `X-OC-Signature` = HMAC-SHA256 over `X-OC-Timestamp + "." + rawBody`, keyed by your `secret`. Verify against the **raw request body, before parsing it**. `X-OC-Timestamp` guards replay; the `secret` is write-only — set once, never returned.
 - A delivery succeeds on HTTP `2xx`.
 
 ### Verify a webhook
@@ -54,7 +57,7 @@ Delivery = { id, destination_id, event_id, status, attempts, last_attempt_at, re
 ```js
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-function verify(req, secret, body) {
+function verify(req, secret, body) {       // body = the RAW request body string, read before JSON.parse
   const ts = req.headers["x-oc-timestamp"];
   if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false; // reject stale → replay guard
   const expected = createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");

@@ -25,10 +25,10 @@ The non-trivial parts you'd otherwise build — and get subtly wrong — handled
 
 <CardGroup cols={2}>
   <Card title="Reliable delivery" icon="paper-plane">
-    Outbound messages are delivered at-least-once, idempotent per destination, retried with backoff, and dead-lettered — no lost or duplicated webhooks.
+    Outbound messages are delivered at-least-once, retried with backoff, and dead-lettered — nothing silently dropped. Dedupe on `X-OC-Event-ID`.
   </Card>
   <Card title="Managed sandbox lifecycle" icon="box">
-    Provision, hibernate on idle (storage-only ≈ free), wake in milliseconds, recover a dead sandbox, tear down — none of it your problem.
+    Provision, hibernate on idle (storage-only ≈ free), wake in milliseconds, replace an unresponsive sandbox, tear down — none of it your problem.
   </Card>
   <Card title="Isolated execution" icon="shield-halved">
     The agent's loop runs separately from the sandbox where its file changes and commands execute — the untrusted work is contained, apart from the loop and your model credentials.

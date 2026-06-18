@@ -34,7 +34,7 @@ What's guaranteed today, and what isn't:
 | --- | --- |
 | Client disconnects | Reconnect from your cursor; nothing lost. |
 | Session idles | Sandbox hibernates; resumes on the next message. |
-| Runtime crashes mid-turn | Auto re-wakes and continues from the hibernated sandbox state. |
+| Runtime crashes mid-turn | Auto re-wakes and continues; in-flight work since the last logged event may repeat (make side effects idempotent). |
 | Sandbox is **lost** (not hibernated) | The session may re-run / re-clone. Only **logged or delivered** outputs are durable. |
 
 <Warning>
