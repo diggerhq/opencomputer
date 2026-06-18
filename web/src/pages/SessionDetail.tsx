@@ -62,6 +62,7 @@ export default function SessionDetail() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
+  const [copiedShell, setCopiedShell] = useState(false)
   const [showTerminal, setShowTerminal] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [showInternal, setShowInternal] = useState(false)
@@ -129,6 +130,12 @@ export default function SessionDetail() {
     setTimeout(() => setCopiedUrl(null), 2000)
   }
 
+  const copyShellCommand = (command: string) => {
+    navigator.clipboard.writeText(command)
+    setCopiedShell(true)
+    setTimeout(() => setCopiedShell(false), 1500)
+  }
+
   if (isLoading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
@@ -144,6 +151,8 @@ export default function SessionDetail() {
       </div>
     )
   }
+
+  const shellCommand = `oc shell ${session.sandboxId}`
 
   return (
     <div>
@@ -175,6 +184,44 @@ export default function SessionDetail() {
             <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
               {session.template || 'base'} &middot; Started {timeAgo(session.startedAt)}
             </div>
+            {session.status === 'running' && (
+              <div style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                marginTop: 12,
+                padding: '6px 8px',
+                background: 'var(--bg-deep)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-sm)',
+              }}>
+                <span style={{
+                  fontSize: 10,
+                  color: 'var(--text-tertiary)',
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                }}>
+                  CLI
+                </span>
+                <code style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 12,
+                  color: 'var(--text-accent)',
+                  background: 'transparent',
+                  padding: 0,
+                }}>
+                  {shellCommand}
+                </code>
+                <button
+                  onClick={() => copyShellCommand(shellCommand)}
+                  className="btn-ghost"
+                  style={{ padding: '3px 8px', fontSize: 11 }}
+                >
+                  {copiedShell ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Actions */}
