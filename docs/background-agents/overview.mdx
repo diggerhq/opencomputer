@@ -9,7 +9,7 @@ describes the product as designed; capabilities are rolling out in stages and
 not all are generally available yet. Commands are shown in the target grammar
 `oc agent …`; today they ship under the `oc-agents` CLI (e.g. `oc-agents agent
 deploy`), because the `oc agent …` namespace currently belongs to
-[Hosted Agents](/agents-api/overview). The runtime that ships today is
+[Hosted Agents](/agent-sessions/overview). The runtime that ships today is
 `claude`; the gateway-dependent capabilities (model hot-swap, payload capture)
 and prepared workspaces are flagged Preview where they appear.
 </Note>
@@ -48,8 +48,8 @@ die at any point and the session resumes where it was. Details:
 Sessions work inside ordinary [sandboxes](/sandboxes/overview), booted from
 the workspace's latest build and managed for you. `oc session shell <id>`
 opens the actual machine. For full control of the loop and the machine, use
-the [Agent SDK](/agents/overview) instead. [Hosted
-Agents](/agents-api/overview) remains the surface for chat-style agents on
+the [Agent SDK](/agent-sessions/overview) instead. [Hosted
+Agents](/agent-sessions/overview) remains the surface for chat-style agents on
 managed cores and channels; Background Agents is for event-triggered,
 unattended work.
 
