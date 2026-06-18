@@ -17,7 +17,7 @@ curl https://api.opencomputer.dev/v3/sessions/$ID/messages \
 
 Pass `idempotency_key` so retries (flaky network, double-click) are de-duplicated — the same key is applied at most once.
 
-## The envelope {#the-envelope}
+## The envelope
 
 Every inbound and outbound message normalizes to this shape. The core fields are fixed; anything source-specific lives under `raw`, which the platform never interprets.
 

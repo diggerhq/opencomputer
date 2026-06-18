@@ -27,7 +27,7 @@ One durable run: an append-only **event log** plus the pinned snapshot and a lif
 | `failed` | The run errored out. |
 | `archived` | Closed; read-only. |
 
-A session also carries `last_turn = { state: "ok" \| "error", result_event_id?, error? }`, so a one-off run tells you whether it finished and what it produced. By convention, the **final result is a `user`-level `message` event**.
+A session also carries `last_turn = { state: "ok" | "error", result_event_id?, error? }`, so a one-off run tells you whether it finished and what it produced. By convention, the **final result is a `user`-level `message` event**.
 
 ## Event
 
@@ -47,7 +47,7 @@ Every step is an event, appended in order:
 
 Inbound and outbound messages share one [envelope](/agent-sessions/messaging#the-envelope) shape.
 
-## seq / cursor / head {#cursors}
+## seq / cursor / head
 
 - **`seq`** — a monotonic id assigned to each event; the cursor space.
 - **`head`** — the highest `seq` in the session.
@@ -55,7 +55,7 @@ Inbound and outbound messages share one [envelope](/agent-sessions/messaging#the
 
 Read or stream with `after=<seq>` and you get everything since that point — this is how **resume** works: reconnect with the last `seq` you saw.
 
-## Levels {#levels}
+## Levels
 
 Every event has a visibility level; filter the stream and webhooks by it.
 
