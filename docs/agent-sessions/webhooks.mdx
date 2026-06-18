@@ -12,10 +12,12 @@ curl https://api.opencomputer.dev/v3/sessions/$ID/destinations \
   -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
   -d '{ "url": "https://your.app/oc-webhook",
         "secret": "whsec_…",
-        "level": "user",          // user (default) | progress
-        "kinds": ["message"],     // optional allow-list; default all
-        "include_raw": false }'   // strip raw from the delivered envelope
+        "level": "user",
+        "kinds": ["message"],
+        "include_raw": false }'
 ```
+
+`level` is the visibility threshold (`user` default, or `progress`); `kinds` is an optional allow-list (default: all); `include_raw: false` strips `raw` from the delivered envelope.
 
 | Method · Path | Purpose |
 | --- | --- |
@@ -57,13 +59,17 @@ Delivery = { id, destination_id, event_id, status, attempts, last_attempt_at, re
 ```js
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-function verify(req, secret, body) {       // body = the RAW request body string, read before JSON.parse
-  const ts = req.headers["x-oc-timestamp"];
-  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false; // reject stale → replay guard
-  const expected = createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
+// body = the RAW request body string, read BEFORE JSON.parse
+function verify(req, secret, body) {
+  const ts  = req.headers["x-oc-timestamp"];
   const got = req.headers["x-oc-signature"];
-  return got.length === expected.length &&
-         timingSafeEqual(Buffer.from(got), Buffer.from(expected));
+  if (!ts || !got) return false;                                         // missing headers → reject
+  if (!/^\d+$/.test(ts) || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false; // bad/stale ts → replay guard
+  const expected = createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
+  let a, b;
+  try { a = Buffer.from(got, "hex"); b = Buffer.from(expected, "hex"); }  // decode hex explicitly
+  catch { return false; }                                                // malformed signature
+  return a.length === b.length && timingSafeEqual(a, b);                  // constant-time compare
 }
 ```
 

@@ -30,6 +30,8 @@ curl https://api.opencomputer.dev/v3/sessions/$ID/client-tokens \
 
 The pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
 
+<Warning>A client token can **spend**: each `steer` starts a turn, which incurs model cost on the session it's scoped to. Mint short-lived tokens, and rely on the session's [bounds](/agent-sessions/sessions#bounds) (`max_usd`/`max_turn_seconds`/`max_turns`) to cap exposure.</Warning>
+
 ```
 browser ──(create task)──▶ your backend ──(org key)──▶ POST /v3/sessions
 browser ◀──(client_token)── your backend

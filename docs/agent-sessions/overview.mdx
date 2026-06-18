@@ -34,7 +34,7 @@ The non-trivial parts you'd otherwise build — and get subtly wrong — handled
     The agent's loop runs separately from the sandbox where its file changes and commands execute — the untrusted work is contained, apart from the loop and your model credentials.
   </Card>
   <Card title="Durable log & resume" icon="database">
-    Every step is recorded in a durable event log. Reconnect from any point and resume exactly where you left off — nothing lost or replayed.
+    Every step is recorded in a durable event log. Reconnect from any point and the event stream resumes exactly where you left off — no events missed or duplicated.
   </Card>
 </CardGroup>
 

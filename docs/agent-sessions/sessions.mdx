@@ -18,11 +18,31 @@ A **session** is the durable unit of an [agent](/agent-sessions/agents) at work:
 
 | Status | Meaning |
 | --- | --- |
+| `queued` | Scheduled; a turn hasn't started running yet. |
 | `running` | A turn is executing. |
 | `idle` | Quiescent and steerable; the sandbox is hibernated. |
 | `failed` | The session errored out. |
 | `archived` | Closed; read-only. |
 
-A session also carries `last_turn = { state: "running" | "ok" | "error", turn_id, started_at, completed_at?, result_event_id?, error?, budget_exceeded? }` and a `usage` summary (`active_seconds`, `usd`). Together with the status, these tell you whether a one-shot **finished**, is **waiting for steer**, or **stopped** on an error or budget cap — and what it produced. By convention the **final result is a `user`-level [`message`](/agent-sessions/events) event**.
+A session also carries `last_turn = { state, yield_reason?, turn_id, started_at, completed_at?, result_event_id?, error?, budget_exceeded? }` and `usage` (`active_seconds`, `usd`). The **`yield_reason`** tells you *why* the last turn ended — `completed`, `needs_input` (the agent asked a question; answer by [steering](/agent-sessions/messaging)), `budget_exceeded` / `deadline_exceeded` / `max_turns` (a [bound](#bounds) tripped), or `canceled`.
 
-<Note>Blocking on input mid-turn (`ask` / awaiting-input) is coming soon. Today, steer is fire-and-continue: send a message and the session incorporates it on its next turn.</Note>
+## Get the result
+
+Don't sniff prose for "is it done." Await the **`status` · `turn.completed`** event (on the [stream](/agent-sessions/events) or a [webhook](/agent-sessions/webhooks)), then fetch the answer:
+
+```bash
+curl https://api.opencomputer.dev/v3/sessions/$ID/result \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY"
+# → { "last_turn": { "state": "ok", "yield_reason": "completed", "result_event_id": "evt_…" },
+#     "result": { "kind": "message", "body": { "type": "agent.message", "text": "…", "final": true } } }
+```
+
+## Bounds
+
+Cap a session at create (or default it on the [agent](/agent-sessions/agents)): `max_usd`, `max_turn_seconds` (per-turn wall-clock), `max_turns`. Hitting one ends the turn with the matching `yield_reason`.
+
+## Stop a session
+
+`POST /sessions/:id/cancel` cooperatively stops the active turn and stops billing; `POST /sessions/:id/archive` cancels any active turn, then closes the session read-only.
+
+<Note>Blocking on input mid-turn (formal `ask` / awaiting-input) is coming soon. Today the agent signals it needs input via `yield_reason: "needs_input"`, and you reply by [steering](/agent-sessions/messaging) — fire-and-continue.</Note>

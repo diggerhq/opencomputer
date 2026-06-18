@@ -71,6 +71,7 @@
           "agent-sessions/messaging",
           "agent-sessions/webhooks",
           "agent-sessions/runtimes",
+          "agent-sessions/runtime-tools",
           "agent-sessions/api-reference"
         ]
       },

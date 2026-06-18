@@ -9,7 +9,8 @@ Every step a session takes is an **event**, appended to the log in order. The lo
 { "id": "evt_…", "seq": 12, "ts": "…", "session": "sess_…",
   "actor": { "id": "agent", "type": "agent" },
   "kind": "message", "level": "user",
-  "body": { "text": "3 tests fail in auth.spec.ts" }, "refs": {} }
+  "body": { "type": "agent.message", "text": "3 tests fail in auth.spec.ts", "final": true },
+  "refs": {} }
 ```
 
 - **`id`** — the event's own unique id (`evt_…`). The client idempotency key for steering is separate (deduped per session — see [steering](/agent-sessions/messaging)).
@@ -20,7 +21,25 @@ Every step a session takes is an **event**, appended to the log in order. The lo
 
 Inbound and outbound messages share one [envelope](/agent-sessions/messaging#the-envelope) shape.
 
-## Levels — pick what to show
+## Event shape
+
+The three `kind`s stay small; the **stable contract is `body.type`** — switch on it, **don't parse prose.** Unknown types render fine from their `text`/`summary`, so new ones are additive.
+
+| `kind` · `body.type` | `body` shape | Use it for |
+| --- | --- | --- |
+| `message` · `agent.message` | `{ text, final? }` | agent output; the result is the `final` one (= `last_turn.result_event_id`) |
+| `message` · `user.message` | `{ text }` | a steer you sent |
+| `status` · `turn.started` | `{ turn_id }` | a turn began |
+| `status` · `turn.completed` | `{ turn_id, yield_reason, result_event_id? }` | **the "done" signal — await this** |
+| `status` · `tool.call` | `{ tool, args_summary }` | the agent invoked a tool |
+| `status` · `exec.completed` | `{ command, exit_code, summary, content_ref?, bytes? }` | a finished command |
+| `error` · `error.*` | `{ code, message, retriable? }` | a failure |
+
+**Coming soon** (already shaped, additive): `test.results`, `diff`/`patch`, `artifact`, `pr.result`, `preview.url`.
+
+**Artifacts & large output.** Any event may carry `refs.artifacts[]` = `[{ name, content_ref | url, content_type, bytes }]`, and a large `body` is offloaded to a `content_ref`. Fetch the bytes with `GET /sessions/:id/events/:eventId/content` — that's how you render diffs, command logs, generated files, screenshots, and reports.
+
+## Levels
 
 Every event carries a `level` saying **who it's for**. You filter the stream (and webhook deliveries) by it, so each surface shows the right amount of detail.
 
