@@ -79,6 +79,7 @@
             "tag": "Coming soon",
             "expanded": true,
             "pages": [
+              "agent-sessions/custom-runtimes",
               "agent-sessions/triggers",
               "agent-sessions/channels",
               "agent-sessions/workspaces",

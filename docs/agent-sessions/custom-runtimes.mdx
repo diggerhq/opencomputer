@@ -1,0 +1,30 @@
+---
+title: "Custom runtimes"
+description: "Package any agent harness as a runtime (coming soon)"
+---
+
+<Note>**Coming soon.** Current thinking, not a shipped contract. Today the only [runtime](/agent-sessions/runtimes) is `claude`; custom runtimes are the extensibility seam — `claude` itself is just the first runtime built on this contract.</Note>
+
+A runtime is a container image that implements the **runtime contract**. Any agent harness — your own, or a lab's — becomes a runtime by meeting it; you then select it per agent with `runtime: "<name>"`, and nothing else about the session changes.
+
+## The contract
+
+The platform invokes your image once per turn and passes it (via env) the session id, the read cursor, the events API URL, and a fenced **turn token**. Per turn the image:
+
+1. reads the new input from the [event log](/agent-sessions/events) at the cursor;
+2. drives its own agent loop;
+3. **streams events back** to the session over the authenticated events API — the turn token is fenced, so if the platform has superseded this instance its writes are rejected and a stale machine can't corrupt the log;
+4. performs all side effects through the **remote [sandbox tools](/agent-sessions/runtime-tools)** — it has no local disk or network of its own; the sandbox is the boundary;
+5. **exits 0 when it has nothing left to do** (yield, don't block). A non-zero exit is treated as a crash, and the platform restarts the turn in place.
+
+## State and recovery
+
+The image carries no durable state. The durable record is the event log plus the runtime's on-box **journal**. Keep your resumable state in the journal directory the platform provides and you inherit the same [durability](/agent-sessions/durability) as `claude`: a crash restarts from the journal, an idle session hibernates and is checkpointed, and a lost machine is recreated and restored.
+
+## Models
+
+The model is configuration, not part of the image. A runtime declares which providers it can drive; switching across providers needs an image that drives the target (the planned `opencode` aims to drive all).
+
+## Distribution
+
+You register a runtime with `oc runtime push <image>` and select it with `runtime: "<name>"`. Runtimes are versioned and a session pins the version it runs, so pushing a new build never affects in-flight sessions — the same mechanism behind the prebuilt `claude`, `codex`, and `opencode` images.
