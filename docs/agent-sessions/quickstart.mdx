@@ -13,7 +13,7 @@ export OPENCOMPUTER_API_KEY=your-api-key
 
 ## 1. Start a session
 
-One call starts the run. Pass a `model`, a `prompt` (the agent's instructions), and `input` (the task).
+One call starts the session. Pass a `model`, a `prompt` (the agent's instructions), and `input` (the task).
 
 ```bash
 curl https://api.opencomputer.dev/v3/sessions \
@@ -30,7 +30,7 @@ curl https://api.opencomputer.dev/v3/sessions \
 }
 ```
 
-<Note>Defining the agent inline like this is sugar for one-off runs. To reuse an agent across sessions, [create one](/agent-sessions/api-reference#agents) and start sessions with `{ "agent": "agt_…", "input": … }`.</Note>
+<Note>Defining the agent inline like this is sugar for one-off sessions. To reuse an agent across sessions, [create one](/agent-sessions/api-reference#agents) and start sessions with `{ "agent": "agt_…", "input": … }`.</Note>
 
 ## 2. Stream it live
 
@@ -77,7 +77,7 @@ See [Messaging & webhooks](/agent-sessions/messaging) to verify the signature.
 
 <CardGroup cols={2}>
   <Card title="Sessions" icon="book" href="/agent-sessions/sessions">
-    The run loop, lifecycle, and events.
+    How a session works — lifecycle and events.
   </Card>
   <Card title="Messaging & webhooks" icon="bell" href="/agent-sessions/messaging">
     The envelope, steering, and reliable delivery.

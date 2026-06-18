@@ -52,6 +52,6 @@ curl -X PUT https://api.opencomputer.dev/v3/credentials/default \
   -d '{ "provider": "anthropic", "credential": "cred_…" }'
 ```
 
-**Resolution** for each run: the agent's credential → your org default for the model's provider → platform billing.
+**Resolution** per session: the agent's credential → your org default for the model's provider → platform billing.
 
 <Note>Additional model providers and model hot-swap are coming soon — the credential shape is identical, so adopting them is additive (nothing you build today changes).</Note>

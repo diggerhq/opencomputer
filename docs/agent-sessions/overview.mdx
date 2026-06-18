@@ -1,34 +1,23 @@
 ---
 title: "Durable Agent Sessions"
-description: "Resumable, steerable agent runs — start one in a single API call"
+description: "Define an agent, then run resumable, steerable sessions"
 ---
 
 Give an agent a prompt and a task; OpenComputer runs it on a managed runtime in a sandbox and records **every step as a durable, streamable, resumable session**. Watch it work live, drop your connection and reconnect right where you left off, let it idle and the sandbox hibernates (≈ free), then steer it with a message or get notified by webhook.
 
-```bash
-curl https://api.opencomputer.dev/v3/sessions \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "model": "anthropic/claude-opus-4-8",
-        "prompt": "You are a coding assistant.",
-        "input": "Clone github.com/acme/widget, run its tests, and summarize what fails." }'
-# → { "session": { "id": "sess_…", "status": "running" }, "client_token": "…" }
-```
+<Steps>
+  <Step title="Define an agent">
+    A reusable `{ name, model, prompt }` — `POST /v3/agents`. ([Agents](/agent-sessions/agents))
+  </Step>
+  <Step title="Start a session">
+    `POST /v3/sessions { agent, input }` and the agent starts working immediately; you get back the session and a browser-safe `client_token`. *(Or inline `{ prompt, model, input }` for a one-off, without a reusable agent.)*
+  </Step>
+  <Step title="Watch, steer, get notified">
+    Stream `GET …/events?stream=sse` — reconnect from any cursor to [resume](/agent-sessions/events). `POST …/messages` to [steer](/agent-sessions/messaging), and register a [webhook](/agent-sessions/messaging) to have output pushed to you.
+  </Step>
+</Steps>
 
-## Start a run
-
-`POST /v3/sessions` with a `prompt`, `model`, and `input` (or a saved [agent](/agent-sessions/agents)) and the run begins immediately. One call. See the [quickstart](/agent-sessions/quickstart).
-
-## Stream & resume
-
-Tail the [event log](/agent-sessions/events) over SSE from any cursor. Disconnect and reconnect with the last `seq` you saw — you continue exactly where you left off, nothing missed or duplicated.
-
-## Steer & get notified
-
-Send a follow-up [message](/agent-sessions/messaging) any time; the session wakes and continues with full prior context. Register a **webhook** and the agent's user-facing output is pushed to you.
-
-## Browser-safe access
-
-Every session hands back a scoped [client token](/agent-sessions/authentication#client-tokens) (`read` + `steer`) so a front-end can stream and steer **without** your API key.
+Every session hands back a scoped [client token](/agent-sessions/authentication#client-tokens) (`read` + `steer`), so a front-end can stream and steer **without** your API key.
 
 ## What the platform handles for you
 
@@ -66,6 +55,6 @@ Reach for sessions when you want a long-running or interactive agent and don't w
     Start a session, stream it, and steer it in a few minutes.
   </Card>
   <Card title="How sessions work" icon="book" href="/agent-sessions/sessions">
-    The run loop, lifecycle, and events.
+    How a session works — lifecycle and events.
   </Card>
 </CardGroup>
