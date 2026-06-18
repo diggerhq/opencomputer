@@ -25,7 +25,7 @@ A **session** is the durable unit of an [agent](/agent-sessions/agents) at work:
 | `failed` | The session errored out. |
 | `archived` | Closed; read-only. |
 
-A session also carries `last_turn = { state, yield_reason?, turn_id, started_at, completed_at?, result_event_id?, error? }` and `usage` (`active_seconds`, `tokens` — observed only). The **`yield_reason`** tells you *why* the last turn ended — `completed`, `needs_input` (the agent asked a question — the session is now `awaiting_input`; answer by [steering](/agent-sessions/messaging)), `budget_exceeded` / `deadline_exceeded` / `max_turns` (a [limit](#limits) tripped), or `canceled`.
+A session also carries `last_turn = { id, state, yield_reason?, result_event_id? }` and `usage`; the fuller turn record (`started_at`, `completed_at`, `error`, `active_seconds`, `usage`) comes from [`GET …/result`](/agent-sessions/api-reference) and `…/turns`. The **`yield_reason`** tells you *why* the last turn ended — `completed`, `needs_input` (the agent asked a question — the session is now `awaiting_input`; answer by [steering](/agent-sessions/messaging)), `budget_exceeded` / `deadline_exceeded` / `max_turns` (a [limit](#limits) tripped), or `canceled`.
 
 ## Get the result
 
@@ -34,7 +34,7 @@ Don't sniff prose for "is it done." Await the **`turn.completed`** event (on the
 ```bash
 curl https://api.opencomputer.dev/v3/sessions/$ID/result \
   -H "Authorization: Bearer $OPENCOMPUTER_API_KEY"
-# → { "last_turn": { "state": "ok", "yield_reason": "completed", "result_event_id": "evt_…" },
+# → { "last_turn": { "id": "trn_…", "state": "ok", "yield_reason": "completed", "result_event_id": "evt_…" },
 #     "result": { "type": "agent.message", "level": "user", "body": { "text": "…" } } }
 ```
 

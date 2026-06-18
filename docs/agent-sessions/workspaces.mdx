@@ -1,0 +1,21 @@
+---
+title: "Workspaces"
+description: "Prepared repo environments, rebuilt on push (coming soon)"
+---
+
+<Note>**Coming soon.** Current thinking, not a shipped contract. Today a session works in its [sandbox](/agent-sessions/runtime-tools) and clones a repo on demand; workspaces prepare that environment ahead of time.</Note>
+
+Cloning, installing, and building take minutes. A **workspace** does that work ahead of time — on every push — and snapshots the result, so a session boots into a ready machine in seconds. It is a first-class resource (not an agent attribute), shared by every session that lands on its repo(s).
+
+```bash
+oc workspace create web \
+  --repo github.com/acme/web \
+  --setup "pnpm i && pnpm build" \
+  --pool 1
+```
+
+- **Recipe.** One or more repos (each at an optional ref), a `setup` step, and an optional `warm` step to heat caches.
+- **Builds.** Rebuilt on every push (or on an interval) into an immutable lineage; a session boots from the latest successful build and pins it. `--pool N` keeps machines pre-booted.
+- **Resolution.** A session is not bound to a repo — it resolves which to work in from the triggering event, the conversation, an agent default, or by asking, via a `use_repo` tool. Resolution is lazy and re-resolvable: switch repos mid-session, or open several at once.
+
+Pairs with the scoped, tokenless private-repo access noted in [Runtime tools](/agent-sessions/runtime-tools).

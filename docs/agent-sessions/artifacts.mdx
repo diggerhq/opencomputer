@@ -1,0 +1,41 @@
+---
+title: "Artifacts & previews"
+description: "A session's published outputs — live previews and durable files (coming soon)"
+---
+
+<Note>**Coming soon.** This page is our current thinking, not a shipped contract — names and shapes may change. What works *today*: large event bodies already spill to a [`content_ref`](/agent-sessions/events) you can fetch, and events can carry forward [`refs.artifacts[]`](/agent-sessions/events). The first-class collection below is what comes next.</Note>
+
+A session does its work in a private scratch sandbox. **Artifacts** are the subset it deliberately *publishes* for your UI to consume — a durable, session-scoped collection you can fetch on load and stream for updates, so a preview or outputs panel survives reconnects and reloads. A **preview** is one kind of artifact: a live URL to something the agent is running (a dev server, a built app).
+
+## Durable vs live
+
+The split is what lets a panel survive a refresh:
+
+- **`file` / `link` — durable.** Snapshotted to storage at publish; fetchable forever, even after the session's machine is gone. (Reports, build outputs, screenshots, diffs.)
+- **`preview` — live.** A URL into the running session machine. The *entry* is durable (you always get it back on reload), but the served app is bound to a warm machine, so it carries a `status` (`live` / `cold`) and can be resumed.
+
+## How the agent publishes
+
+The runtime would get two tools alongside `bash`/`read`/`write`:
+
+- `oc.preview(port)` — expose a port of the session's machine as a preview URL.
+- `oc.publish(path)` — snapshot a file as a durable artifact.
+
+Each publish appends a `user`-level event and upserts the artifact, so it reaches your UI as soon as it's produced.
+
+## How your app would consume it
+
+The same snapshot-plus-stream pattern as [events](/agent-sessions/events): list on load, subscribe for changes.
+
+```
+GET /v3/sessions/:id/artifacts             → [Artifact]      # the panel on load (survives refresh)
+GET /v3/sessions/:id/artifacts/:key/content                  # durable file bytes
+events: artifact.published | artifact.updated | artifact.removed   (level: user)
+
+Artifact = { key, kind: "preview" | "file" | "link", title?, status?, url?,
+             content_type?, bytes?, created_at, updated_at }
+```
+
+A preview URL is a public capability — the browser loads it directly; a [client token](/agent-sessions/authentication#client-tokens) only gates *learning* the URL (via the user-level event), so you can stream the whole build *and* embed the running app from the same front-end.
+
+<Note>Actively being designed — if you have a shape in mind or want it sooner, tell us how you'd use it.</Note>
