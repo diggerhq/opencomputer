@@ -102,4 +102,4 @@ ClientToken = { token, scopes, expires_at }
 
 ## Errors & rate limits
 
-Errors use one envelope: `{ "error": { "type", "message", "code", "param?", "request_id" } }`. Cross-owner resources return `404` (not `403`). Over a rate or concurrency limit, calls return **`429`** with a **`Retry-After`** header — back off and retry.
+Errors use one envelope: `{ "error": { "type", "message", "code", "param?", "request_id" } }`. Cross-owner resources return `404` (not `403`). Rate and concurrency limits are not enforced at launch; clients should still treat a `429` (with a `Retry-After` header, when present) as a signal to back off and retry, since limits may be introduced later.
