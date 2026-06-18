@@ -7,7 +7,7 @@ A **session** is the durable unit of an [agent](/agent-sessions/agents) at work:
 
 ## How a session works
 
-1. You create a session from an agent (or an inline prompt + model). The session starts immediately.
+1. You create a session from an [agent](/agent-sessions/agents) (and an [Anthropic credential](/agent-sessions/authentication#model-credentials) — both required). The session starts immediately.
 2. The [runtime](/agent-sessions/runtimes) executes the agent in a sandbox, appending [events](/agent-sessions/events) to the log as it works.
 3. With nothing left to do, the session goes **idle** and the sandbox **hibernates** (see [durability](/agent-sessions/durability)).
 4. A [steer](/agent-sessions/messaging) message wakes it; it resumes with its prior context. Repeat.
@@ -20,29 +20,34 @@ A **session** is the durable unit of an [agent](/agent-sessions/agents) at work:
 | --- | --- |
 | `queued` | Scheduled; a turn hasn't started running yet. |
 | `running` | A turn is executing. |
-| `idle` | Quiescent and steerable; the sandbox is hibernated. |
+| `awaiting_input` | A turn ended asking you a question — steerable; reply to continue. |
+| `idle` | Done for now; quiescent and steerable; the sandbox is hibernated. |
 | `failed` | The session errored out. |
 | `archived` | Closed; read-only. |
 
-A session also carries `last_turn = { state, yield_reason?, turn_id, started_at, completed_at?, result_event_id?, error?, budget_exceeded? }` and `usage` (`active_seconds`, `usd`). The **`yield_reason`** tells you *why* the last turn ended — `completed`, `needs_input` (the agent asked a question; answer by [steering](/agent-sessions/messaging)), `budget_exceeded` / `deadline_exceeded` / `max_turns` (a [bound](#bounds) tripped), or `canceled`.
+A session also carries `last_turn = { state, yield_reason?, turn_id, started_at, completed_at?, result_event_id?, error? }` and `usage` (`active_seconds`, `tokens` — observed only). The **`yield_reason`** tells you *why* the last turn ended — `completed`, `needs_input` (the agent asked a question — the session is now `awaiting_input`; answer by [steering](/agent-sessions/messaging)), `budget_exceeded` / `deadline_exceeded` / `max_turns` (a [limit](#limits) tripped), or `canceled`.
 
 ## Get the result
 
-Don't sniff prose for "is it done." Await the **`status` · `turn.completed`** event (on the [stream](/agent-sessions/events) or a [webhook](/agent-sessions/webhooks)), then fetch the answer:
+Don't sniff prose for "is it done." Await the **`turn.completed`** event (on the [stream](/agent-sessions/events) or a [webhook](/agent-sessions/webhooks)), then fetch the answer:
 
 ```bash
 curl https://api.opencomputer.dev/v3/sessions/$ID/result \
   -H "Authorization: Bearer $OPENCOMPUTER_API_KEY"
 # → { "last_turn": { "state": "ok", "yield_reason": "completed", "result_event_id": "evt_…" },
-#     "result": { "kind": "message", "body": { "type": "agent.message", "text": "…", "final": true } } }
+#     "result": { "type": "agent.message", "level": "user", "body": { "text": "…" } } }
 ```
 
-## Bounds
+## Limits
 
-Cap a session at create (or default it on the [agent](/agent-sessions/agents)): `max_usd`, `max_turn_seconds` (per-turn wall-clock), `max_turns`. Hitting one ends the turn with the matching `yield_reason`.
+Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are **non-monetary** (no dollar caps — we don't bill model usage yet; you run on your own key). Hitting one ends the turn with the matching `yield_reason`. (`usage` is observed-only.)
 
 ## Stop a session
 
-`POST /sessions/:id/cancel` cooperatively stops the active turn and stops billing; `POST /sessions/:id/archive` cancels any active turn, then closes the session read-only.
+`POST /sessions/:id/cancel` **requests** a cooperative stop: the turn ends at its next checkpoint, so an in-flight model call may run to its timeout — billing for that turn stops when it actually exits, not the instant you call. `POST /sessions/:id/archive` cancels any active turn, then closes the session read-only.
 
-<Note>Blocking on input mid-turn (formal `ask` / awaiting-input) is coming soon. Today the agent signals it needs input via `yield_reason: "needs_input"`, and you reply by [steering](/agent-sessions/messaging) — fire-and-continue.</Note>
+**`archive` is not delete** — the session's log is retained, just read-only. Hard delete (`DELETE /sessions/:id`) and export are coming soon.
+
+<Note>Blocking on input *mid-turn* (the formal `ask` loop) is coming soon. Today the agent signals it needs input by ending the turn with `yield_reason: "needs_input"` (status `awaiting_input`); you reply by [steering](/agent-sessions/messaging).</Note>
+
+<Note>**No cross-session memory (yet).** Each session starts fresh from the agent's prompt + that session's `input` — a durable log is *session history*, not memory the agent carries between sessions. A dedicated memory surface is on the roadmap.</Note>

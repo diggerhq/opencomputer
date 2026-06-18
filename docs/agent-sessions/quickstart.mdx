@@ -11,42 +11,55 @@ export OPENCOMPUTER_API_KEY=your-api-key
 
 <Tip>Grab your API key from [app.opencomputer.dev](https://app.opencomputer.dev).</Tip>
 
-## 1. Start a session
+## 1. Create an agent (with your Anthropic key)
 
-One call starts a session. Pass a `model`, a `prompt` (the instructions), and `input` (the task) — plus an optional `webhook` to receive every event from the start.
+An [agent](/agent-sessions/agents) is the reusable "what" — a name, a prompt, and a model. Sessions run the model on **your** Anthropic key, so pass it inline with `key`. It's held in OpenComputer's [secret store](/sandboxes/secrets) (encrypted, write-only); the **real key never enters the sandbox** — it's sealed, and a host proxy reveals it only on the outbound call to Anthropic, so it's never exposed to the model or the agent's code.
+
+```bash
+curl https://api.opencomputer.dev/v3/agents \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "name": "coder", "prompt": "You are a coding assistant.",
+        "model": "anthropic/claude-opus-4-8", "key": "sk-ant-…" }'
+# → { "id": "agt_…", "name": "coder", … }
+```
+
+<Tip>Reusing one key across agents? Add it once via [`POST /credentials`](/agent-sessions/authentication#model-credentials), set it as your default, and skip `key` here.</Tip>
+
+## 2. Start a session
+
+Start a session on the agent with a task. Add an optional `webhook` to receive every event from the start.
 
 ```bash
 curl https://api.opencomputer.dev/v3/sessions \
   -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "model": "anthropic/claude-opus-4-8", "runtime": "claude",
-        "prompt": "You are a coding assistant.",
+  -d '{ "agent": "agt_…",
         "input": "Write a Python script that prints the first 20 primes, run it, and report the output.",
         "webhook": "https://your.app/oc-webhook" }'
 ```
 
 ```jsonc
 {
-  "session": { "id": "sess_abc", "status": "queued", "head": 0, "cursor": 0 },
+  "session": { "id": "sess_abc", "status": "queued", "head": 0, "input_cursor": 0 },
   "client_token": "ct_…"     // session-scoped; safe to hand to a browser (read + steer)
 }
 ```
 
-<Note>Defining the agent inline like this is sugar for one-off sessions. To reuse an agent across sessions, [create one](/agent-sessions/agents) and start sessions with `{ "agent": "agt_…", "input": … }`.</Note>
+<Note>Reuse the agent across as many sessions as you like. To bound a run, pass `limits: { tokens?, turn_seconds?, turns? }` on the agent or the session.</Note>
 
-## 2. Stream it live
+## 3. Stream it live
 
-Open an `EventSource` with the `client_token` from step 1. It rides the query string — browsers can't set headers on `EventSource`, so the scoped client token goes in the URL (never your API key). `level=user` shows only what an end user should see (see [levels](/agent-sessions/events#levels)).
+Open an `EventSource` with the `client_token` from the create call. It rides the query string — browsers can't set headers on `EventSource`, so the scoped client token goes in the URL (never your API key). `level=user` shows only what an end user should see (see [levels](/agent-sessions/events#levels)).
 
 ```js
 const es = new EventSource(
   `https://api.opencomputer.dev/v3/sessions/${id}/events?stream=sse&level=user&token=${clientToken}`
 );
-es.onmessage = (e) => render(JSON.parse(e.data)); // each event: { seq, actor, kind, level, body, … }
+es.onmessage = (e) => render(JSON.parse(e.data)); // each event: { seq, actor, type, level, body, … }
 ```
 
 **Resume is automatic.** Each event carries its `seq` as the SSE event `id`, so on a dropped connection `EventSource` reconnects and resends `Last-Event-ID` — you pick up exactly where you left off, no bookkeeping. (Pass `after=<seq>` on the URL to start from a specific point.)
 
-## 3. Steer it
+## 4. Steer it
 
 Send a follow-up at any time. The session wakes and continues with its prior context.
 
@@ -56,7 +69,7 @@ curl https://api.opencomputer.dev/v3/sessions/$ID/messages \
   -d '{ "text": "also check the CI config", "idempotency_key": "nudge-1" }'
 ```
 
-## 4. Manage destinations (optional)
+## 5. Manage destinations (optional)
 
 You already passed a `webhook` at create. Add or manage more destinations later — each receives events from when it's created (earlier events aren't backfilled yet).
 

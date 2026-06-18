@@ -8,13 +8,13 @@ Every step a session takes is an **event**, appended to the log in order. The lo
 ```json
 { "id": "evt_…", "seq": 12, "ts": "…", "session": "sess_…",
   "actor": { "id": "agent", "type": "agent" },
-  "kind": "message", "level": "user",
-  "body": { "type": "agent.message", "text": "3 tests fail in auth.spec.ts", "final": true },
+  "type": "agent.message", "level": "user",
+  "body": { "text": "3 tests fail in auth.spec.ts" },
   "refs": {} }
 ```
 
 - **`id`** — the event's own unique id (`evt_…`). The client idempotency key for steering is separate (deduped per session — see [steering](/agent-sessions/messaging)).
-- **`kind`** — `message` (content), `status` (lifecycle), or `error`.
+- **`type`** — the one discriminator: a namespaced string (`agent.message`, `turn.completed`, …). See below.
 - **`actor`** — who produced it: `{ id, display?, type: "human" | "agent" | "system" }`.
 - **`level`** — visibility; see below.
 - **`body` / `refs`** — payload and related ids.
@@ -23,21 +23,23 @@ Inbound and outbound messages share one [envelope](/agent-sessions/messaging#the
 
 ## Event shape
 
-The three `kind`s stay small; the **stable contract is `body.type`** — switch on it, **don't parse prose.** Unknown types render fine from their `text`/`summary`, so new ones are additive.
+The stable contract is the top-level **`type`** — **switch on it, don't parse prose.** Unknown types render fine from their `text`/`summary`, so new ones are additive. (There's no separate `kind`; coarse buckets are just `type` prefixes like `turn.*` or `agent.*`.)
 
-| `kind` · `body.type` | `body` shape | Use it for |
+| `type` | `body` shape | Use it for |
 | --- | --- | --- |
-| `message` · `agent.message` | `{ text, final? }` | agent output; the result is the `final` one (= `last_turn.result_event_id`) |
-| `message` · `user.message` | `{ text }` | a steer you sent |
-| `status` · `turn.started` | `{ turn_id }` | a turn began |
-| `status` · `turn.completed` | `{ turn_id, yield_reason, result_event_id? }` | **the "done" signal — await this** |
-| `status` · `tool.call` | `{ tool, args_summary }` | the agent invoked a tool |
-| `status` · `exec.completed` | `{ command, exit_code, summary, content_ref?, bytes? }` | a finished command |
-| `error` · `error.*` | `{ code, message, retriable? }` | a failure |
+| `agent.message` | `{ text }` | agent output (the result is whichever one `turn.completed` points to) |
+| `user.message` | `{ text }` | a steer you sent |
+| `turn.started` | `{ turn_id, input_from_seq, input_to_seq }` | a turn began, consuming input events in `[from,to]` |
+| `turn.completed` | `{ turn_id, yield_reason, result_event_id? }` | **the "done" signal — await this** |
+| `tool.call` | `{ tool, args_summary }` | the agent invoked a tool |
+| `exec.completed` | `{ command, exit_code, summary, content_ref?, bytes? }` | a finished command |
+| `error.runtime` · `error.model` · `error.task` | `{ code, message, retriable? }` | a failure |
 
-**Coming soon** (already shaped, additive): `test.results`, `diff`/`patch`, `artifact`, `pr.result`, `preview.url`.
+**Coming soon** (already shaped, additive): `test.results`, `diff`/`patch`, `pr.result`, `preview.url`, `action.required` (agent needs an approval / tool result).
 
-**Artifacts & large output.** Any event may carry `refs.artifacts[]` = `[{ name, content_ref | url, content_type, bytes }]`, and a large `body` is offloaded to a `content_ref`. Fetch the bytes with `GET /sessions/:id/events/:eventId/content` — that's how you render diffs, command logs, generated files, screenshots, and reports.
+**Correlate a steer to its turn.** Steers coalesce — one turn can pick up several — so [`POST /messages`](/agent-sessions/messaging) returns the *event* `seq`, not a turn. The turn that consumes your steer emits `turn.started` with `input_from_seq ≤ your_seq ≤ input_to_seq`; await its `turn.completed`, then `GET …/events?turn_id=` for everything it produced.
+
+**Large output.** A large `body` is offloaded to a `content_ref`; fetch the bytes with `GET /sessions/:id/events/:eventId/content` (e.g. full `exec.completed` output). Richer **artifacts** (named files, diffs, screenshots, reports) ride a forward `refs.artifacts[]`, with a first-class artifacts API **coming soon**. `refs` also carries optional correlation/evidence keys (`trace_id`, `sources[]`).
 
 ## Levels
 
@@ -57,10 +59,10 @@ Filtering is **cumulative** — `user` is the narrowest, `internal` is everythin
 
 So a customer-facing chat asks for `user`; an agent-activity view asks for `progress`; debugging your agent asks for `internal`.
 
-## seq, cursor, head
+## seq, head, input_cursor
 
-- **`seq`** — a monotonic id assigned to each event; the cursor space.
+- **`seq`** — a monotonic id assigned to each event.
 - **`head`** — the highest `seq` in the session.
-- **`cursor`** — how far a reader (or the runtime) has consumed.
+- **`input_cursor`** — how far the *runtime* has consumed (a session field). As a **reader** you don't track this — you just pass `after=<seq>`.
 
 Read or stream with `after=<seq>` and you get everything since that point. This is how **resume** works: reconnect with the last `seq` you saw — you miss nothing and get no duplicates. In the browser, native `EventSource` does this automatically — each event's `seq` is the SSE `id`, so it resumes via `Last-Event-ID` on reconnect (see the [quickstart](/agent-sessions/quickstart)).

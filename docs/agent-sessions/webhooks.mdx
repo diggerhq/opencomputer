@@ -13,17 +13,16 @@ curl https://api.opencomputer.dev/v3/sessions/$ID/destinations \
   -d '{ "url": "https://your.app/oc-webhook",
         "secret": "whsec_…",
         "level": "user",
-        "kinds": ["message"],
         "include_raw": false }'
 ```
 
-`level` is the visibility threshold (`user` default, or `progress`); `kinds` is an optional allow-list (default: all); `include_raw: false` strips `raw` from the delivered envelope.
+`level` is the visibility threshold (`user` default, or `progress`); `types` is an optional event-type allow-list (default: all — which **includes the terminal `turn.completed`**); `include_raw: false` strips `raw` from the delivered envelope. To get only completions, set `types: ["turn.completed"]`.
 
 | Method · Path | Purpose |
 | --- | --- |
 | `POST /sessions/:id/destinations` | Register a destination. |
 | `GET /sessions/:id/destinations` · `GET …/:did` | List / fetch. |
-| `PATCH /sessions/:id/destinations/:did` | Pause or resume (`enabled`), retune `level`/`kinds`, or rotate `secret`. |
+| `PATCH /sessions/:id/destinations/:did` | Pause or resume (`enabled`), retune `level`/`types`, or rotate `secret`. |
 | `DELETE /sessions/:id/destinations/:did` | Remove. |
 
 A destination receives events appended **after** it's created. To capture a whole session, pass `webhook` in `POST /v3/sessions` so it's registered before the agent produces output. (Replaying earlier events with `backfill_from_seq` is coming soon.)

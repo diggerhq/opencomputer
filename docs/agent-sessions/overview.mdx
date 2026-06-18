@@ -6,11 +6,11 @@ description: "Define an agent, then run resumable, steerable sessions"
 Give an agent a prompt and a task; OpenComputer runs it on a managed runtime in a sandbox and records **every step as a durable, streamable, resumable session**. Watch it work live, drop your connection and reconnect right where you left off, let it idle and the sandbox hibernates (≈ free), then steer it with a message or get notified by webhook.
 
 <Steps>
-  <Step title="Define an agent">
-    A reusable `{ name, model, prompt, runtime }` — `POST /v3/agents`. ([Agents](/agent-sessions/agents))
+  <Step title="Define an agent (with your key)">
+    A reusable `{ name, model, prompt, runtime }` — `POST /v3/agents`. Pass your Anthropic `key` inline (sessions run on your own key); it's stored as a [credential](/agent-sessions/authentication#model-credentials). ([Agents](/agent-sessions/agents))
   </Step>
   <Step title="Start a session">
-    `POST /v3/sessions { agent, input }` and the agent starts working immediately; you get back the session and a browser-safe `client_token`. *(Or inline `{ prompt, model, runtime, input }` for a one-off, without a reusable agent.)*
+    `POST /v3/sessions { agent, input }` and the agent starts working immediately; you get back the session and a browser-safe `client_token`.
   </Step>
   <Step title="Watch, steer, get notified">
     Stream `GET …/events?stream=sse` — reconnect from any cursor to [resume](/agent-sessions/events). `POST …/messages` to [steer](/agent-sessions/messaging), and register a [webhook](/agent-sessions/webhooks) to have output pushed to you.

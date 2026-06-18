@@ -9,7 +9,7 @@ Base URL `https://api.opencomputer.dev/v3`. Management calls authenticate with y
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /sessions` | Start a session. Body: `agent?`, `prompt?`, `model?`, `runtime?`, `input`, `key?`, `webhook?`, `destinations?[]`, `max_usd?`, `max_turn_seconds?`, `max_turns?`. Returns `{ session, client_token }`. |
+| `POST /sessions` | Start a session. Body: `agent` (required), `input`, `key?`, `webhook?`, `destinations?[]`, `limits?: { tokens?, turn_seconds?, turns? }`. Returns `{ session, client_token }`. |
 | `GET /sessions/:id` | Fetch a session. |
 | `GET /sessions?status=&agent=&key=&after=&before=&limit=` | List sessions (filtered, paginated). |
 | `POST /sessions/:id/archive` | Cancel any active turn, then close (read-only). |
@@ -18,14 +18,14 @@ Base URL `https://api.opencomputer.dev/v3`. Management calls authenticate with y
 | `GET /sessions/:id/turns` · `GET …/turns/:turnId` | Per-turn history: timing, usage, error. |
 | `POST /sessions/:id/client-tokens` | Mint a client token. Body: `scopes?`, `ttl?`. |
 
-Provide `agent` (a saved agent id) **or** inline `prompt` + `model` + `runtime`. `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `input` is the task — a string or a full [envelope](/agent-sessions/messaging#the-envelope) (structured context rides `input.refs`: `repo`/`branch`/`commit`/`issue`/…). The bounds `max_usd` / `max_turn_seconds` / `max_turns` cap spend, per-turn wall-clock, and auto-runs; hitting one ends the turn with a matching `last_turn.yield_reason`.
+`agent` is **required** (create a saved [agent](#agents) first); a resolvable Anthropic [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `input` is the task — a string or a full [envelope](/agent-sessions/messaging#the-envelope) (structured context rides `input.refs`: `repo`/`branch`/`commit`/`issue`/…). `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations).
 
 ```
-Session = { id, status, head, cursor,
-            agent_snapshot: { prompt_hash, model, runtime },
-            last_turn: { state, yield_reason?, turn_id, started_at, completed_at?, result_event_id?, error?, budget_exceeded? },
-            usage: { active_seconds, usd, cap_usd?, tokens? },
-            limits: { max_usd?, max_turn_seconds?, max_turns? }, key?, created_at }
+Session = { id, status, head, input_cursor,
+            agent_snapshot: { prompt_hash, model, runtime, revision },
+            last_turn: { state, yield_reason?, turn_id, started_at, completed_at?, result_event_id?, error? },
+            usage: { active_seconds, tokens? },
+            limits: { tokens?, turn_seconds?, turns? }, key?, created_at }
 ```
 
 `yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
@@ -34,16 +34,16 @@ Session = { id, status, head, cursor,
 
 | Method · Path | Purpose |
 | --- | --- |
-| `GET /sessions/:id/events?after=<seq>&level=<lvl>&kind=&type=&turn_id=&limit=<n>` | Read events since a cursor (filter by `kind`, `body.type`, or `turn_id`). |
+| `GET /sessions/:id/events?after=<seq>&level=<lvl>&type=&turn_id=&limit=<n>` | Read events since a cursor (filter by `type` exact or `prefix.*`, or `turn_id`). |
 | `GET /sessions/:id/events?after=<seq>&level=<lvl>&stream=sse` | Live SSE stream from a cursor. |
 | `GET /sessions/:id/events/:eventId` | Fetch one event (resolve `result_event_id`). |
-| `GET /sessions/:id/events/:eventId/content` | Fetch a blob-backed body (large outputs/artifacts). |
-| `GET /sessions/:id/messages?after=<seq>&limit=<n>` | User-message history (alias for `level=user` + `kind=message`). |
+| `GET /sessions/:id/events/:eventId/content` | Fetch a blob-backed body (large outputs). |
+| `GET /sessions/:id/messages?after=<seq>&limit=<n>` | User-message history (alias for `level=user` + `type=*.message`). |
 
-`after` resumes from a `seq`; `level` is a **visibility threshold** — `user` returns only user-facing events, `progress` adds work updates, `internal` adds everything (see [levels](/agent-sessions/events#levels)). Switch on [`body.type`](/agent-sessions/events#event-shape), don't parse prose.
+`after` resumes from a `seq`; `level` is a **visibility threshold** — `user` returns only user-facing events, `progress` adds work updates, `internal` adds everything (see [levels](/agent-sessions/events#levels)). Switch on [`type`](/agent-sessions/events#event-shape), don't parse prose.
 
 ```
-Event = { id, seq, ts, session, actor, kind, level, body, refs, operation_key? }
+Event = { id, seq, ts, session, actor, type, level, body, refs }
 ```
 
 ## Steer
@@ -56,9 +56,9 @@ Event = { id, seq, ts, session, actor, kind, level, body, refs, operation_key? }
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /sessions/:id/destinations` | Register a webhook. Body: `url`, `secret?`, `level?` (`user`), `kinds?[]`, `include_raw?` (`false`), `enabled?` (`true`). |
+| `POST /sessions/:id/destinations` | Register a webhook. Body: `url`, `secret?`, `level?` (`user`), `types?[]` (event-type filter; exact or `prefix.*`), `include_raw?` (`false`), `enabled?` (`true`). |
 | `GET /sessions/:id/destinations` · `GET …/:did` | List / fetch. |
-| `PATCH /sessions/:id/destinations/:did` | Pause/resume (`enabled`), retune `level`/`kinds`, rotate `secret`. |
+| `PATCH /sessions/:id/destinations/:did` | Pause/resume (`enabled`), retune `level`/`types`, rotate `secret`. |
 | `DELETE /sessions/:id/destinations/:did` | Remove. |
 
 ## Deliveries
@@ -72,7 +72,7 @@ Event = { id, seq, ts, session, actor, kind, level, body, refs, operation_key? }
 See [Webhooks](/agent-sessions/webhooks#delivery-contract) for the signing and delivery contract.
 
 ```
-Destination = { id, url, level, kinds, include_raw, enabled, created_at }
+Destination = { id, url, level, types, include_raw, enabled, created_at }
 Delivery    = { id, destination_id, event_id, status, attempts, last_attempt_at, response_code?, error? }
 ```
 
@@ -80,15 +80,17 @@ Delivery    = { id, destination_id, event_id, status, attempts, last_attempt_at,
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /agents` | Create a reusable agent. Body: `name`, `prompt`, `model`, `runtime?` (`claude`). Idempotent by `(owner, name)`. |
+| `POST /agents` | Create a reusable agent. Body: `name`, `prompt`, `model`, `runtime?` (`claude`), `key?` (Anthropic key — creates + attaches a [credential](#credentials)), `credential?` (reference an existing one), `limits?: { tokens?, turn_seconds?, turns? }`. Idempotent by `(owner, name)`. |
 | `GET /agents/:id` · `GET /agents` | Fetch / list. |
-| `PATCH /agents/:id` | Update `prompt?` / `model?`. Never affects existing sessions (snapshots are pinned). |
+| `PATCH /agents/:id` | Update `prompt?` / `model?` / `key?` (rotate) / `credential?` / `limits?`. Never affects existing sessions (snapshots are pinned). |
+
+Pass `key` **or** `credential` (or neither → org default). The agent's `limits` are the defaults for its sessions; a session's own `limits` override. Each agent has a monotonic `revision` (bumped on PATCH) that sessions pin in `agent_snapshot.revision`, so you can tell which version produced a run.
 
 ## Credentials
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /credentials` | Add a provider key. Body: `provider`, `key`, `name?`. Key is write-only. |
+| `POST /credentials` | Add a provider key (Anthropic). Body: `provider`, `key`, `name?`. Key is write-only. **Required** — sessions run on your key (no platform billing yet). |
 | `GET /credentials` · `DELETE /credentials/:id` | List / remove. |
 | `PUT /credentials/default` | Set the org default for a provider. Body: `provider`, `credential`. |
 

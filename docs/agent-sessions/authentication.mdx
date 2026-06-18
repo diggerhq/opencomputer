@@ -30,7 +30,7 @@ curl https://api.opencomputer.dev/v3/sessions/$ID/client-tokens \
 
 The pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
 
-<Warning>A client token can **spend**: each `steer` starts a turn, which incurs model cost on the session it's scoped to. Mint short-lived tokens, and rely on the session's [bounds](/agent-sessions/sessions#bounds) (`max_usd`/`max_turn_seconds`/`max_turns`) to cap exposure.</Warning>
+<Warning>A client token isn't free to hand out: each `steer` starts a turn, which **consumes tokens on your Anthropic key** for the session it's scoped to. Mint short-lived tokens, and rely on the session's [limits](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) to cap exposure.</Warning>
 
 ```
 browser ──(create task)──▶ your backend ──(org key)──▶ POST /v3/sessions
@@ -40,9 +40,11 @@ browser ──(client_token)──▶ GET …/events (SSE) · POST …/messages
 
 For the SSE stream the browser passes the client token as `?token=` (native `EventSource` can't set an `Authorization` header); other calls use the `Authorization` header normally.
 
-## Model credentials (BYO key)
+## Model credentials
 
-Model usage is **billed to your OpenComputer account** by default — zero setup, metered, capped per session. To run on **your own** provider key instead, add a **credential**. It's stored in our secret store (encrypted, write-only, never returned) — you never manage a raw secret store yourself.
+Sessions run the model on **your own Anthropic key**. It's held in OpenComputer's [secret store](/sandboxes/secrets) — encrypted at rest (AES-256-GCM) and write-only (**never returned** by the API). Crucially, **the real key never enters a sandbox at all**: it's sealed into an opaque token, and a host-side proxy swaps in the real value only on the outbound HTTPS call to `api.anthropic.com` (scoped by an egress allowlist). So it's **never exposed to the model, never in the agent's prompt or code, and never in the VM** — see [Secrets](/sandboxes/secrets). A credential is **required** — a session with no resolvable key fails to start (`422 no_credential`).
+
+The easiest way to add one is inline when you [create an agent](/agent-sessions/agents) (`"key": "sk-ant-…"`). The standalone resource below is for reusing one key across agents, setting an org default, and rotating/removing keys:
 
 ```bash
 curl https://api.opencomputer.dev/v3/credentials \
@@ -56,6 +58,6 @@ curl -X PUT https://api.opencomputer.dev/v3/credentials/default \
   -d '{ "provider": "anthropic", "credential": "cred_…" }'
 ```
 
-**Resolution** per session: the agent's credential → your org default for the model's provider → platform billing.
+**Resolution** per session: the agent's credential → your org default for the provider. (No platform-billed fallback yet — bring a key.)
 
-<Note>Additional model providers and model hot-swap are coming soon — they use this same credential shape, so your setup won't change.</Note>
+<Note>Additional model providers, model hot-swap, and platform-billed usage are coming soon — they use this same credential shape, so your setup won't change.</Note>
