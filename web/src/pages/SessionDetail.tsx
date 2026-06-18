@@ -62,6 +62,7 @@ export default function SessionDetail() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
+  const [copiedShell, setCopiedShell] = useState(false)
   const [showTerminal, setShowTerminal] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [showInternal, setShowInternal] = useState(false)
@@ -129,6 +130,12 @@ export default function SessionDetail() {
     setTimeout(() => setCopiedUrl(null), 2000)
   }
 
+  const copyShellCommand = (command: string) => {
+    navigator.clipboard.writeText(command)
+    setCopiedShell(true)
+    setTimeout(() => setCopiedShell(false), 1500)
+  }
+
   if (isLoading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
@@ -144,6 +151,8 @@ export default function SessionDetail() {
       </div>
     )
   }
+
+  const shellCommand = `oc shell ${session.sandboxId}`
 
   return (
     <div>
@@ -410,6 +419,14 @@ export default function SessionDetail() {
           <DetailRow label="CPUs" value={String(session.config?.cpuCount ?? 1)} />
           <DetailRow label="Memory" value={`${session.config?.memoryMB ?? 512} MB`} />
           <DetailRow label="Started" value={new Date(session.startedAt).toLocaleString()} />
+          {session.status === 'running' && (
+            <DetailCommandRow
+              label="CLI shell"
+              value={shellCommand}
+              copied={copiedShell}
+              onCopy={() => copyShellCommand(shellCommand)}
+            />
+          )}
           {session.stoppedAt && (
             <DetailRow label="Stopped" value={new Date(session.stoppedAt).toLocaleString()} />
           )}
@@ -446,6 +463,41 @@ function DetailRow({ label, value, isError }: { label: string; value: string; is
         wordBreak: 'break-all',
       }}>
         {value}
+      </div>
+    </div>
+  )
+}
+
+function DetailCommandRow({
+  label,
+  value,
+  copied,
+  onCopy,
+}: {
+  label: string
+  value: string
+  copied: boolean
+  onCopy: () => void
+}) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 2 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <code style={{
+          fontSize: 13,
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--text-primary)',
+          wordBreak: 'break-all',
+        }}>
+          {value}
+        </code>
+        <button
+          className="btn-ghost"
+          onClick={onCopy}
+          style={{ padding: '2px 7px', fontSize: 11, flexShrink: 0 }}
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
       </div>
     </div>
   )
