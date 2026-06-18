@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { getSessionDetail, getSessionStats, rebootSession, powerCycleSession } from '../api/client'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { deleteSession, getSessionDetail, getSessionStats, rebootSession, powerCycleSession, type Session, type SessionDetail as SessionDetailData } from '../api/client'
 import Terminal from '../components/Terminal'
 import LogsPanel from '../components/LogsPanel'
 
@@ -67,6 +67,40 @@ export default function SessionDetail() {
   const [showInternal, setShowInternal] = useState(false)
   const [resetState, setResetState] = useState<'idle' | 'rebooting' | 'power-cycling'>('idle')
   const [resetError, setResetError] = useState<string | null>(null)
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deleteSession(id),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ['session-detail', sandboxId] })
+      await queryClient.cancelQueries({ queryKey: ['sessions'] })
+      const stoppedAt = new Date().toISOString()
+      queryClient.setQueryData<SessionDetailData>(['session-detail', sandboxId], (old) =>
+        old ? { ...old, status: 'stopped', stoppedAt } : old
+      )
+      queryClient.setQueriesData<Session[]>({ queryKey: ['sessions'] }, (old) =>
+        old?.map((item) =>
+          item.sandboxId === sandboxId
+            ? { ...item, status: 'stopped', stoppedAt }
+            : item
+        )
+      )
+      setShowTerminal(false)
+      setResetError(null)
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      queryClient.invalidateQueries({ queryKey: ['session-detail', sandboxId] })
+      queryClient.invalidateQueries({ queryKey: ['session-stats', sandboxId] })
+    },
+  })
+
+  const handleDelete = () => {
+    if (!sandboxId) return
+    if (!confirm(
+      `Delete sandbox ${sandboxId}?\n\n` +
+      'The sandbox will be stopped and its preview URLs removed.'
+    )) return
+    deleteMutation.mutate(sandboxId)
+  }
 
   const handleReboot = async () => {
     if (resetState !== 'idle') return
@@ -235,9 +269,27 @@ export default function SessionDetail() {
                 </button>
               </>
             )}
+            {(session.status === 'running' || session.status === 'hibernated') && (
+              <button
+                className="btn-danger"
+                onClick={handleDelete}
+                disabled={deleteMutation.isPending}
+                title="Stop and delete this sandbox"
+                style={{ padding: '9px 18px', fontSize: 13 }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6l-1 14H6L5 6" />
+                  <path d="M10 11v6" />
+                  <path d="M14 11v6" />
+                  <path d="M9 6V4h6v2" />
+                </svg>
+                {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+              </button>
+            )}
           </div>
         </div>
-        {resetError && (
+        {(resetError || deleteMutation.isError) && (
           <div style={{
             marginTop: 12,
             padding: '10px 14px',
@@ -247,7 +299,9 @@ export default function SessionDetail() {
             color: 'var(--text-error, #f87171)',
             fontSize: 13,
           }}>
-            Reset failed: {resetError}
+            {resetError
+              ? `Reset failed: ${resetError}`
+              : `Delete failed: ${deleteMutation.error instanceof Error ? deleteMutation.error.message : String(deleteMutation.error)}`}
           </div>
         )}
       </div>

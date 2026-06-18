@@ -842,11 +842,13 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 }
 
 func (s *Server) killSandbox(c echo.Context) error {
-	id := c.Param("id")
+	return s.killSandboxByID(c, c.Param("id"))
+}
 
+func (s *Server) killSandboxByID(c echo.Context, sandboxID string) error {
 	// Server mode with worker registry: dispatch destroy via gRPC
 	if s.workerRegistry != nil {
-		return s.killSandboxRemote(c, id)
+		return s.killSandboxRemote(c, sandboxID)
 	}
 
 	// Combined/worker mode: kill locally
@@ -856,11 +858,11 @@ func (s *Server) killSandbox(c echo.Context) error {
 
 	// Mark stopped immediately so it no longer counts toward concurrency limits.
 	if s.store != nil {
-		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), id, "stopped", nil)
-		s.cleanupPreviewURLs(c.Request().Context(), id)
+		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", nil)
+		s.cleanupPreviewURLs(c.Request().Context(), sandboxID)
 	}
 
-	if err := s.manager.Kill(c.Request().Context(), id); err != nil {
+	if err := s.manager.Kill(c.Request().Context(), sandboxID); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
 		})
@@ -868,11 +870,11 @@ func (s *Server) killSandbox(c echo.Context) error {
 
 	// Unregister from sandbox router
 	if s.router != nil {
-		s.router.Unregister(id)
+		s.router.Unregister(sandboxID)
 	}
 
 	if s.sandboxDBs != nil {
-		_ = s.sandboxDBs.Remove(id)
+		_ = s.sandboxDBs.Remove(sandboxID)
 	}
 
 	return c.NoContent(http.StatusNoContent)
@@ -1119,7 +1121,6 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 		"elapsedMs":    elapsed,
 	})
 }
-
 
 // effectivePlan returns the org's billing plan for billing gates, resolving it
 // from the most authoritative source available. Plan is a GLOBAL signal: it

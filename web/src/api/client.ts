@@ -81,6 +81,9 @@ export const getSessionDetail = (sandboxId: string) =>
 export const getSessionStats = (sandboxId: string) =>
   apiFetch<SandboxStats>(`/sessions/${sandboxId}/stats`)
 
+export const deleteSession = (sandboxId: string) =>
+  apiFetch<void>(`/sessions/${sandboxId}`, { method: 'DELETE' })
+
 // Soft restart: guest kernel reboots, QEMU process + workspace stay.
 export const rebootSession = (sandboxId: string) =>
   apiFetch<void>(`/sessions/${sandboxId}/reboot`, { method: 'POST' })

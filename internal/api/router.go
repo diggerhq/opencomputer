@@ -340,6 +340,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		idash := internal.Group("/dashboard")
 		idash.GET("/sessions/:sandboxId", s.dashboardGetSession)
 		idash.GET("/sessions/:sandboxId/stats", s.dashboardGetSessionStats)
+		idash.DELETE("/sessions/:sandboxId", s.dashboardDeleteSession)
 		idash.POST("/sessions/:sandboxId/reboot", s.dashboardRebootSession)
 		idash.POST("/sessions/:sandboxId/power-cycle", s.dashboardPowerCycleSession)
 		idash.POST("/sessions/:sandboxId/pty", s.dashboardCreatePTY)
@@ -669,6 +670,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		// Session detail + stats
 		dash.GET("/sessions/:sandboxId", s.dashboardGetSession)
 		dash.GET("/sessions/:sandboxId/stats", s.dashboardGetSessionStats)
+		dash.DELETE("/sessions/:sandboxId", s.dashboardDeleteSession)
 		// Reset operations
 		dash.POST("/sessions/:sandboxId/reboot", s.dashboardRebootSession)
 		dash.POST("/sessions/:sandboxId/power-cycle", s.dashboardPowerCycleSession)
