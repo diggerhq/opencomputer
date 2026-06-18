@@ -9,7 +9,7 @@ Base URL `https://api.opencomputer.dev/v3`. Management calls authenticate with y
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /sessions` | Start a run. Body: `agent?`, `prompt?`, `model?`, `runtime?`, `input`, `key?`, `webhook?`, `destinations?[]`. Returns `{ session, client_token }`. |
+| `POST /sessions` | Start a session. Body: `agent?`, `prompt?`, `model?`, `runtime?`, `input`, `key?`, `webhook?`, `destinations?[]`. Returns `{ session, client_token }`. |
 | `GET /sessions/:id` | Fetch a session. |
 | `GET /sessions` | List sessions. |
 | `POST /sessions/:id/archive` | Archive (close) a session. |
