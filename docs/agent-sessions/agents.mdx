@@ -1,0 +1,25 @@
+---
+title: "Agents"
+description: "The reusable definition of what runs"
+---
+
+An **agent** is a first-class, reusable definition of *what* runs — a `name`, a `prompt` (its instructions), a `model`, and a [`runtime`](/agent-sessions/runtimes). Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like.
+
+```bash
+curl https://api.opencomputer.dev/v3/agents \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "name": "reviewer", "model": "anthropic/claude-opus-4-8",
+        "prompt": "You review code.", "runtime": "claude", "key": "sk-ant-…" }'
+```
+
+Pass your Anthropic `key` inline and it's stored as a [credential](/agent-sessions/authentication#model-credentials) and attached to the agent — sessions run the model on it. Already have a credential? Reference it with `credential: "cred_…"` instead, or omit both to use your org default. Optionally set default [`limits`](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) too; sessions inherit them.
+
+## Pinned snapshot
+
+When a session is created it **freezes** the agent's `prompt`, `model`, `runtime`, and `revision` (a number that bumps on every edit) into the session — and pins the resolved credential too. Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change. (Rotating a credential's **key value** is the exception — that flows to running sessions, so a compromised key can be replaced; see [authentication](/agent-sessions/authentication#model-credentials).)
+
+## Model
+
+`model` is a `provider/model` id (e.g. `anthropic/claude-opus-4-8`); the chosen [runtime](/agent-sessions/runtimes) determines which models are valid. The model runs on [your Anthropic key](/agent-sessions/authentication#model-credentials) (required). Today the only callable runtime is `claude`.
+
+<Note>Additional model providers, and switching a session's model mid-session, are coming soon.</Note>

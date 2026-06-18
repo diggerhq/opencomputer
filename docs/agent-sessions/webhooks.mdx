@@ -1,0 +1,73 @@
+---
+title: "Webhooks"
+description: "Deliver a session's output, and control deliveries"
+---
+
+Register a **destination** and a session's [events](/agent-sessions/events) are delivered to it as **`Event` objects — the same shape the [SSE stream](/agent-sessions/events) emits** — at-least-once, signed, and retried. (Webhooks carry every event `type` — `turn.completed`, `exec.completed`, messages, … — not just messages.) Filter what you receive so you're not spammed with internal chatter.
+
+## Destinations
+
+```bash
+curl https://api.opencomputer.dev/v3/sessions/$ID/destinations \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "url": "https://your.app/oc-webhook",
+        "secret": "whsec_…",
+        "level": "user",
+        "include_raw": false }'
+```
+
+`level` is the visibility threshold (`user` default, or `progress`); `types` is an optional event-type allow-list (default: all — which **includes the terminal `turn.completed`**); `include_raw: false` strips `body.raw` from the delivered Event. To get only completions, set `types: ["turn.completed"]`.
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /sessions/:id/destinations` | Register a destination. |
+| `GET /sessions/:id/destinations` · `GET …/:did` | List / fetch. |
+| `PATCH /sessions/:id/destinations/:did` | Pause or resume (`enabled`), retune `level`/`types`, or rotate `secret`. |
+| `DELETE /sessions/:id/destinations/:did` | Remove. |
+
+A destination receives events appended **after** it's created. To capture a whole session, pass `webhook` in `POST /v3/sessions` so it's registered before the agent produces output. (Replaying earlier events with `backfill_from_seq` is coming soon.)
+
+## Deliveries
+
+Every send and its outcome — the data behind a deliveries dashboard.
+
+| Method · Path | Purpose |
+| --- | --- |
+| `GET /sessions/:id/deliveries?destination=&status=` | List deliveries — status, attempts, last response/error. |
+| `GET /sessions/:id/deliveries/:id` | One delivery, in detail. |
+| `POST /sessions/:id/deliveries/:id/redeliver` | Re-send — **any** delivery, not just dead-lettered. |
+
+A delivery moves `pending → delivering → delivered`, or `failed` (retrying) → `dead_letter` after the max attempts.
+
+```
+Delivery = { id, destination_id, event_id, status, attempts, last_attempt_at, response_code?, error? }
+```
+
+<Note>Coming soon: full request/response **body** capture in delivery detail (today records status, attempts, response code, and error); a **test-ping** for a destination; and **org/agent-scoped** destinations that persist across sessions.</Note>
+
+## Delivery contract
+
+- **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused.
+- **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it above). A duplicate can still arrive — a send that succeeds as the worker dies, or a replayed turn — so **dedupe on `webhook-id`** (it equals the event id).
+- **Signed with [Standard Webhooks](https://www.standardwebhooks.com).** Every request carries `webhook-id`, `webhook-timestamp`, and `webhook-signature` — so you can verify with an off-the-shelf library instead of hand-rolling. `webhook-signature` = `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; `webhook-timestamp` guards replay; your `secret` (`whsec_…`) is write-only — set once, never returned. Plus `X-OC-Delivery-ID` and `X-OC-Session-ID` for correlation.
+- A delivery succeeds on HTTP `2xx`.
+
+### Verify a webhook
+
+Use a [Standard Webhooks](https://www.standardwebhooks.com) library:
+
+```js
+import { Webhook } from "standardwebhooks";
+
+// rawBody = the RAW request body string, read BEFORE JSON.parse
+function verify(headers, rawBody, secret) {
+  // throws on a missing/expired/invalid signature
+  return new Webhook(secret).verify(rawBody, {
+    "webhook-id":        headers["webhook-id"],
+    "webhook-timestamp": headers["webhook-timestamp"],
+    "webhook-signature": headers["webhook-signature"],
+  });
+}
+```
+
+<Note>Today, delivery is over **generic webhooks**. Slack, GitHub comments, Jira, and email are coming soon — all on this same envelope and delivery contract.</Note>

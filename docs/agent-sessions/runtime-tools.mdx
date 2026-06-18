@@ -1,0 +1,40 @@
+---
+title: "Claude runtime tools"
+description: "The tools the claude runtime can use — what to rely on when you write prompts"
+---
+
+When you write a prompt for the `claude` [runtime](/agent-sessions/runtimes), it's useful to know exactly what the agent can do. Every side effect runs through a fixed set of tools against the session's **sandbox** — the agent has no direct filesystem, shell, or network of its own. The built-in local tools are disabled; only these remote tools are available.
+
+## Working in the sandbox
+
+| Tool | What it does |
+| --- | --- |
+| `bash` | Run a shell command in the sandbox — the **only** place commands run. Each call is a fresh shell, so use absolute paths or `cd /workspace && …`. Returns exit code + stdout/stderr. |
+| `read` | Read a file from the sandbox. |
+| `write` | Write a file to the sandbox. |
+| `ls` | List a directory in the sandbox. |
+| `use_repo` | Check out a **public** git repository into the workspace. (Private-repo access — connections, repo catalog, scoped tokens — is coming soon; for launch, point it at a public URL or `git clone` via `bash`.) |
+
+These map to events you can stream: a `bash` run surfaces as an [`exec.completed`](/agent-sessions/events#event-shape) event (`{ command, exit_code, summary }`), with large output available via `content_ref`.
+
+<Note>**Network:** the sandbox has **open outbound internet** by default (so `git clone`, package installs, and API calls just work), with private, loopback, link-local, and cloud-metadata addresses blocked. Per-agent egress allowlists are coming.</Note>
+
+## Talking to the user
+
+| Tool | What it does |
+| --- | --- |
+| `say` | Emit a message to the user — a `user`-level [`message`](/agent-sessions/events) event. The agent's final `say` is the session's result. |
+| `ask` | Ask the user a question and **pause** — the turn ends with `yield_reason: "needs_input"`. Answer by [steering](/agent-sessions/messaging) a reply, which wakes the session. |
+
+<Note>`ask` is how an agent gets a decision today. The turn yields rather than blocking; your app sees `last_turn.yield_reason = "needs_input"` and replies with a steer. The formal blocking `ask` state is coming soon.</Note>
+
+## Delivering work to external systems
+
+`deliver` (open/update a pull request or post a comment) and `reconcile` (declare the desired end state and let the platform converge to it) are how an agent acts **outside** the sandbox. They land with the channel launches (GitHub, etc.); until then, get a session's output out via [webhooks](/agent-sessions/webhooks) — the agent's `user`-level messages and results are delivered there.
+
+## Writing good prompts
+
+- Tell the agent to do all work in the sandbox via `bash`/`read`/`write` — it can't touch your machine.
+- To work on a repo, point it at a **public** one (`use_repo`, or `bash` + `git clone`); pass the target in [`input.refs`](/agent-sessions/messaging) (`repo`, `branch`, `commit`) rather than burying it in prose. (Private-repo connections are coming soon.)
+- Have it `say` a clear final result — that's what `GET /sessions/:id/result` returns.
+- Have it `ask` only when it genuinely needs a decision; otherwise it should proceed.

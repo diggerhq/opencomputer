@@ -1,0 +1,47 @@
+---
+title: "Messaging"
+description: "Steer a session, and the shared message envelope"
+---
+
+**Steer** sends a message into a session. Inbound and outbound messages share one channel-agnostic **envelope** — so you handle every message the same way, wherever it came from or goes. Outbound delivery has its own page: [Webhooks](/agent-sessions/webhooks).
+
+## Steer (inbound)
+
+Send a message to a running or idle session; it wakes and continues with its prior context. Minimal form is just text:
+
+```bash
+curl https://api.opencomputer.dev/v3/sessions/$ID/messages \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{ "text": "also check the CI config", "idempotency_key": "nudge-1" }'
+```
+
+Pass `idempotency_key` so retries (flaky network, double-click) are de-duplicated — applied at most once **per session**, so the same key is safe to reuse across different sessions.
+
+## The envelope
+
+Every inbound and outbound message normalizes to this shape. The core fields are fixed; anything source-specific lives under `raw`, which the platform never interprets.
+
+```json
+{
+  "id": "client:abc123",
+  "source": "client",
+  "kind": "message",
+  "actor": { "id": "client:user-7", "display": "Ada", "type": "human" },
+  "conversation": { "source": "client", "ref": "thread-42" },
+  "text": "also check the CI config",
+  "refs": {},
+  "ts": "2026-06-18T12:00:00Z",
+  "raw": {}
+}
+```
+
+- **`id`** — the idempotency key, deduped **per session** (not global).
+- **`actor`** — who sent it (`human` | `agent` | `system`), namespaced.
+- **`conversation`** — an opaque reply/routing anchor.
+- **`text`** — the content the agent reads (or that you receive).
+- **`refs`** — structured context the agent shouldn't have to infer from prose. Blessed keys: `repo`, `branch`, `commit`, `ref`, `issue`, `pr` (plus your own). Pass them on the initial `input` so a coding agent knows its target.
+- **`raw`** — untouched original payload; optional, never read by the core.
+
+To get a session's output **out**, register a webhook destination. Deliveries carry the full [Event](/agent-sessions/events) (a message event's `body` is this envelope) — see [Webhooks](/agent-sessions/webhooks).
+
+<Note>Inbound channels (Slack, GitHub, Jira, email) are coming soon — they map onto this same envelope; today you steer in via the API.</Note>

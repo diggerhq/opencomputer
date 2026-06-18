@@ -1,0 +1,36 @@
+---
+title: "Runtimes"
+description: "The engine that runs your agent — claude today, more soon"
+---
+
+A **runtime** is the engine that executes the agent loop. You pick one per agent via `runtime`; it defaults to `claude`. The runtime **image** is stateless and interchangeable; the **running instance** keeps its session state on the sandbox, and OpenComputer manages and recovers it for you (see [durability](/agent-sessions/durability)).
+
+## `claude` — available today
+
+The managed Claude agent loop. It works in a sandbox through remote tools, streams its steps into the session as events, and runs Claude models on your [Anthropic key](/agent-sessions/authentication#model-credentials).
+
+```bash
+curl https://api.opencomputer.dev/v3/agents \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -d '{ "name": "reviewer", "model": "anthropic/claude-opus-4-8",
+        "prompt": "You review code.", "runtime": "claude" }'
+```
+
+## Coming soon
+
+<Note>The runtimes below are not yet callable. When one is available, you select it by setting `runtime` to its name — nothing else changes.</Note>
+
+- **`codex`, `opencode`** — prebuilt, multi-provider runtimes.
+- **Custom (bring your own image)** — package any harness — your own, or a lab's — as a runtime.
+
+### How custom runtimes will work
+
+A runtime is a container image implementing the **runtime contract**. On wake it:
+
+1. Reads the session's events from the cursor.
+2. Drives its own agent loop.
+3. **Streams events back** to the session over the authenticated events API.
+4. Performs all side effects through the **remote sandbox tools** (no local disk or network).
+5. Calls the model, and **exits 0 when it has nothing left to do** (yield, don't block).
+
+The **image** carries no durable state — the durable record is the session (event log) plus the runtime's session journal, which the platform checkpoints and restores for the instance ([durability](/agent-sessions/durability)). You'll register it with `oc runtime push <image>` and select it with `runtime: "<name>"`. This is the extensibility seam: any agent harness becomes a runtime.
