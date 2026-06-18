@@ -65,13 +65,12 @@
   <!-- Runtime -> Model -->
   <line x1="714" y1="110" x2="736" y2="110" stroke="#9a9a9a" stroke-width="1.25" marker-end="url(#ah)"/>
 
-  <!-- ============ RIGHT: Model (your key, via secret store) ============ -->
+  <!-- ============ RIGHT: Model / LLM (your key, via secret store) ============ -->
   <rect x="744" y="66" width="176" height="100" rx="8" fill="#f4f4f2" stroke="#d4d4d4"/>
-  <text x="758" y="88" font-size="12" font-weight="600" fill="#4a4a4a">Anthropic</text>
-  <text x="758" y="106" font-size="10" fill="#6b6b6b">runs on your key</text>
-  <text x="758" y="122" font-size="10" fill="#7c7aae">key in the secret store</text>
-  <text x="758" y="140" font-size="10" fill="#6b6b6b">never enters a sandbox</text>
-  <text x="758" y="157" font-size="9" fill="#9a9a9a">claude today · more soon</text>
+  <text x="758" y="90" font-size="12" font-weight="600" fill="#4a4a4a">Model (LLM)</text>
+  <text x="758" y="110" font-size="10" fill="#6b6b6b">runs on your key</text>
+  <text x="758" y="127" font-size="10" fill="#7c7aae">key in the secret store</text>
+  <text x="758" y="144" font-size="10" fill="#6b6b6b">never enters a sandbox</text>
 
   <!-- Runtime -> Sandbox -->
   <line x1="585" y1="220" x2="585" y2="266" stroke="#9a9a9a" stroke-width="1.25" marker-end="url(#ah)"/>
