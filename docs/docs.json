@@ -72,6 +72,24 @@
         ]
       },
       {
+        "group": "Background Agents",
+        "tag": "Preview",
+        "pages": [
+          "background-agents/overview",
+          "background-agents/quickstart",
+          "background-agents/how-it-works",
+          "background-agents/agents",
+          "background-agents/sessions",
+          "background-agents/workspaces",
+          "background-agents/triggers",
+          "background-agents/channels",
+          "background-agents/models",
+          "background-agents/runtimes",
+          "background-agents/observability",
+          "background-agents/api"
+        ]
+      },
+      {
         "group": "Reserved Capacity",
         "pages": [
           "reserved-capacity/overview",
