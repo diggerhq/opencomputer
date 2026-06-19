@@ -31,10 +31,22 @@ A session also carries `last_turn = { id, state, yield_reason?, result_event_id?
 
 Do not infer completion from prose. Await the **`turn.completed`** event (on the [stream](/agent-sessions/events) or a [webhook](/agent-sessions/webhooks)), then fetch the answer:
 
-```http
+<CodeGroup>
+
+```ts TypeScript
+import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const session = await oc.sessions.get("sess_...");
+const { lastTurn, result } = await session.result();
+```
+
+```http REST
 GET https://api.opencomputer.dev/v3/sessions/sess_.../result
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 ```
+
+</CodeGroup>
 
 Response:
 

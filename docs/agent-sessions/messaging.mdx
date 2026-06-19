@@ -9,7 +9,16 @@ description: "Steer a session, and the shared message envelope"
 
 Send a message to a running or idle session; it wakes and continues with its prior context. Minimal form is just text:
 
-```http
+<CodeGroup>
+
+```ts TypeScript
+import { connectSession } from "@opencomputer/sdk";
+
+const live = await connectSession({ sessionId, clientToken });
+await live.steer("also check the CI config", { idempotencyKey: "msg_01" });
+```
+
+```http REST
 POST https://api.opencomputer.dev/v3/sessions/sess_.../messages
 Authorization: Bearer $CLIENT_TOKEN
 Content-Type: application/json
@@ -19,6 +28,8 @@ Content-Type: application/json
   "idempotency_key": "msg_01"
 }
 ```
+
+</CodeGroup>
 
 Pass `idempotency_key` so retries (flaky network, double-click) are de-duplicated — applied at most once **per session**, so the same key is safe to reuse across different sessions.
 

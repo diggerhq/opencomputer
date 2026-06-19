@@ -9,13 +9,28 @@ Durable Agent Sessions use three credential types.
 
 Your account key. Use it server-side for all **management** calls — creating agents, starting sessions, registering webhooks, managing credentials.
 
-```http
+<CodeGroup>
+
+```ts TypeScript
+import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! }); // org key, server-side only
+
+const session = await oc.sessions.create({
+  agent: "agt_...",
+  input: "Run the tests and summarize failures.",
+});
+```
+
+```http REST
 POST https://api.opencomputer.dev/v3/sessions
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
 
 { "agent": "agt_...", "input": "Run the tests and summarize failures." }
 ```
+
+</CodeGroup>
 
 <Warning>Never ship the org API key to a browser or mobile client — it can do anything on your account. Use a client token instead.</Warning>
 
@@ -25,13 +40,26 @@ A **session-scoped, short-lived** token with `read` + `steer` scope — safe to 
 
 You get one back from `POST /v3/sessions`, and can mint more:
 
-```http
+<CodeGroup>
+
+```ts TypeScript
+const session = await oc.sessions.get("sess_...");
+
+const clientToken = await session.mintClientToken({
+  scopes: ["read", "steer"],
+  ttlSeconds: 3600,
+});
+```
+
+```http REST
 POST https://api.opencomputer.dev/v3/sessions/sess_.../client-tokens
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
 
 { "scopes": ["read", "steer"], "ttl": 3600 }
 ```
+
+</CodeGroup>
 
 Browser pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
 
@@ -52,7 +80,17 @@ Sessions run the model on **your own Anthropic key**. It's held in OpenComputer'
 
 The easiest way to add one is inline when you [create an agent](/agent-sessions/agents) (`"key": "sk-ant-…"`). The standalone resource below is for reusing one key across agents, setting an org default, and rotating/removing keys:
 
-```http
+<CodeGroup>
+
+```ts TypeScript
+await oc.credentials.create({
+  provider: "anthropic",
+  key: "sk-ant-...",
+  name: "prod",
+});
+```
+
+```http REST
 POST https://api.opencomputer.dev/v3/credentials
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
@@ -60,13 +98,26 @@ Content-Type: application/json
 { "provider": "anthropic", "key": "sk-ant-...", "name": "prod" }
 ```
 
-```http
+</CodeGroup>
+
+<CodeGroup>
+
+```ts TypeScript
+await oc.credentials.setDefault({
+  provider: "anthropic",
+  credential: "cred_...",
+});
+```
+
+```http REST
 PUT https://api.opencomputer.dev/v3/credentials/default
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
 
 { "credential": "cred_..." }
 ```
+
+</CodeGroup>
 
 **Resolution** per session: the agent's credential → your org default for the provider. (No platform-billed fallback yet — bring a key.)
 
