@@ -83,7 +83,7 @@ pre code {
 /* Sidebar item highlight — its own dial (independent of the surface radius above).
    0 = square; bump to 0.125rem (2px) / 0.25rem (4px) for a little rounding. */
 :root {
-  --oc-sidebar-radius: 0;
+  --oc-sidebar-radius: 0.125rem;
 }
 #sidebar a {
   border-radius: var(--oc-sidebar-radius);
