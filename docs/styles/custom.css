@@ -88,3 +88,9 @@ pre code {
 #sidebar a {
   border-radius: var(--oc-sidebar-radius);
 }
+
+/* Nav tag pills (Preview / Coming soon) — 2px, matching the sidebar items.
+   Scoped to the tag only (not the shared rounded-md UI). */
+.nav-tag-pill-text[data-nav-tag] {
+  border-radius: var(--oc-sidebar-radius);
+}
