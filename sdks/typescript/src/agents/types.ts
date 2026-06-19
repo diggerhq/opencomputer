@@ -38,6 +38,16 @@ export interface LastTurn {
   error?: unknown;
 }
 
+export interface Turn {
+  id: string;
+  state?: "queued" | "running" | "ok" | "error";
+  yieldReason?: YieldReason;
+  resultEventId?: string;
+  error?: unknown;
+  startedAt?: string;
+  completedAt?: string;
+}
+
 export interface SessionData {
   id: string;
   status: SessionStatus;
@@ -57,6 +67,29 @@ export interface Credential {
   name?: string;
   last4?: string;
   createdAt?: string;
+}
+
+export interface Destination {
+  id: string;
+  url: string;
+  level: Level;
+  types?: string[];
+  includeRaw: boolean;
+  enabled: boolean;
+  createdAt?: string;
+}
+
+export type DeliveryStatus = "pending" | "delivering" | "delivered" | "failed" | "dead_letter";
+
+export interface Delivery {
+  id: string;
+  destinationId: string;
+  eventId: string;
+  status: DeliveryStatus;
+  attempts: number;
+  lastAttemptAt?: string;
+  responseCode?: number;
+  error?: string;
 }
 
 // ── Events ─────────────────────────────────────────────────────────────────────

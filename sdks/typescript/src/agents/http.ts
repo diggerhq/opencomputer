@@ -78,6 +78,13 @@ export class Http {
     if (!res.ok) throw errorFromResponse(res.status, (await safeJson(res))?.error, retryAfterSec(res));
     return res;
   }
+
+  /** Raw GET (no JSON parse) — e.g. blob-backed event content. Returns the checked Response. */
+  async raw(method: string, path: string, opts: { query?: Query; signal?: AbortSignal } = {}): Promise<Response> {
+    const res = await this.doFetch(this.url(path, opts.query), { method, headers: this.headers(), signal: opts.signal });
+    if (!res.ok) throw errorFromResponse(res.status, (await safeJson(res))?.error, retryAfterSec(res));
+    return res;
+  }
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

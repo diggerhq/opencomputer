@@ -1,6 +1,7 @@
 import type { Http, Query } from "./http.js";
-import type { Event, Level, Limits, LastTurn, SessionData, SessionStatus } from "./types.js";
+import type { Event, Level, Limits, LastTurn, SessionData, SessionStatus, Turn } from "./types.js";
 import { parseEventStream } from "./sse.js";
+import { Destinations, Deliveries } from "./destinations.js";
 
 export type Envelope = { text?: string; [k: string]: unknown };
 
@@ -51,11 +52,16 @@ export class Sessions {
 export class Session {
   /** Present after create / connectSession — safe to hand to a browser. */
   readonly clientToken?: string;
+  /** Webhook destinations + delivery records for this session (management — need the org key). */
+  readonly destinations: Destinations;
+  readonly deliveries: Deliveries;
   private data: SessionData;
 
   constructor(private readonly http: Http, data: SessionData, clientToken?: string) {
     this.data = data;
     this.clientToken = clientToken;
+    this.destinations = new Destinations(http, data.id);
+    this.deliveries = new Deliveries(http, data.id);
   }
 
   get id(): string { return this.data.id; }
@@ -105,6 +111,31 @@ export class Session {
   /** Read a page of events without streaming. */
   listEvents(opts: { after?: number; level?: Level; type?: string; limit?: number } = {}): Promise<ListPage<Event>> {
     return this.http.request("GET", `/sessions/${this.id}/events`, { query: opts as Query });
+  }
+
+  /** Fetch a single event by id. */
+  event(eventId: string): Promise<Event> {
+    return this.http.request("GET", `/sessions/${this.id}/events/${eventId}`);
+  }
+
+  /** Fetch a blob-backed event body (large outputs) as text. */
+  async eventContent(eventId: string): Promise<string> {
+    return (await this.http.raw("GET", `/sessions/${this.id}/events/${eventId}/content`)).text();
+  }
+
+  /** User-message history (alias for level=user + type=*.message). */
+  messages(opts: { after?: number; limit?: number } = {}): Promise<ListPage<Event>> {
+    return this.http.request("GET", `/sessions/${this.id}/messages`, { query: opts as Query });
+  }
+
+  /** Per-turn history (timing + outcome). */
+  turns(): Promise<Turn[]> {
+    return this.http
+      .request<{ data?: Turn[] } | Turn[]>("GET", `/sessions/${this.id}/turns`)
+      .then((r) => (Array.isArray(r) ? r : r.data ?? []));
+  }
+  turn(turnId: string): Promise<Turn> {
+    return this.http.request("GET", `/sessions/${this.id}/turns/${turnId}`);
   }
 
   /** Send a message; wakes the session. */
