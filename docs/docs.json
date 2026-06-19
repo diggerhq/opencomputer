@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "willow",
+  "theme": "mint",
   "name": "OpenComputer",
   "description": "Cloud sandboxes for running AI agents",
   "contextual": {
@@ -89,6 +89,7 @@
       },
       {
         "group": "Reserved Capacity",
+        "tag": "Preview",
         "pages": [
           "reserved-capacity/overview",
           "reserved-capacity/concepts",
@@ -330,7 +331,7 @@
   "fonts": {
     "heading": {
       "family": "Newsreader",
-      "weight": 400
+      "weight": 600
     },
     "body": {
       "family": "Inter",

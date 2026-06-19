@@ -1,22 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap');
+
 h5 {
   font-family: 'Inter', sans-serif;
 }
+
+/* Brand wordmark in the navbar — matches the marketing site (Geist Mono, medium, tight,
+   lowercase). Mintlify renders its logo as an <img>, which can't use a page web font, so
+   hide it and draw the wordmark. The :has(.nav-logo) selector targets the logo link by
+   structure, not a theme-specific class, so a theme change won't blank it. */
 #navbar .nav-logo {
   display: none;
 }
-#navbar a.select-none::before {
-  content: 'opencomputer';
-  font-family: 'Newsreader', serif;
-  font-size: 24px;
-  font-weight: 400;
-  letter-spacing: 0.01em;
-  transition: letter-spacing 0.3s ease;
+#navbar a:has(.nav-logo)::after {
+  content: "opencomputer";
+  font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 500;
+  font-size: 1.125rem;
+  letter-spacing: -0.025em;
   color: #131311;
 }
-#navbar a:hover::before {
-  letter-spacing: 0.06em;
+.dark #navbar a:has(.nav-logo)::after {
+  color: #dfdfdf;
 }
 
-.dark #navbar a.select-none::before {
-  color: #dfdfdf;
+/* ── Subtle brand vibe — layered on mint, nothing structural ─────────────────── */
+
+/* Code is the brand's signature texture: Geist Mono (the site's monospace). Only the
+   typeface changes — Mintlify keeps its code-block chrome and syntax colors. */
+code,
+kbd,
+samp,
+pre,
+pre code {
+  font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Brand selection: ink-on-paper, inverted, matching opencomputer.dev's ::selection. */
+::selection {
+  background: #131311;
+  color: #f8f6f1;
+}
+.dark ::selection {
+  background: #dfdfdf;
+  color: #0f0f0f;
+}
+
+/* Cards read "off" because the title and body are both text-base (16px) — a flat 1:1 scale,
+   so the title never leads as a heading. Two fixes: give the title the UI sans (the inherited
+   display serif looks mis-sized at a 16px semibold label), and step the body down to 14px so
+   the title clearly leads. Title size/weight/color stay as Mintlify set them. */
+[data-component-part="card-title"] {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+[data-component-part="card-title"] + .prose {
+  font-size: 0.875rem;
+  line-height: 1.5;
+  margin-top: 0.625rem; /* was mt-1 (4px) — too tight under the heading; give it air */
+}
+
+/* Corner radius: OC's brand radius is 6px (the site's --radius). Mint wires each rounded-*
+   utility to a --rounded-* variable (defaulting the big steps to 12–16px), so redefine those
+   at the source. This tightens code blocks (incl. nested/tabbed pieces), cards, callouts, and
+   sidebar items consistently — and avoids the corner/border mismatch a single-element override
+   caused. Pills (rounded-full) and the small step (rounded-md = 6px) are left as-is.
+   Dial --oc-radius: 0.25rem = crisper, 0 = terminal-sharp. */
+:root {
+  --oc-radius: 0.375rem;
+  --rounded-lg: var(--oc-radius);
+  --rounded-xl: var(--oc-radius);
+  --rounded-2xl: var(--oc-radius);
+  --rounded-3xl: var(--oc-radius);
+}
+
+/* In a tabbed code group the content sits flush under the tab bar — square its top corners
+   so it reads as one unit (bottom corners keep the brand radius). */
+[data-component-part="code-group-tab-content"],
+[data-component-part="code-group-tab-content"] [data-component-part="code-block-root"] {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+/* Sidebar item highlight — its own dial (independent of the surface radius above).
+   0 = square; bump to 0.125rem (2px) / 0.25rem (4px) for a little rounding. */
+:root {
+  --oc-sidebar-radius: 0.125rem;
+}
+#sidebar a {
+  border-radius: var(--oc-sidebar-radius);
+}
+
+/* Nav tag pills (Preview / Coming soon) — 2px, matching the sidebar items.
+   Scoped to the tag only (not the shared rounded-md UI). */
+.nav-tag-pill-text[data-nav-tag] {
+  border-radius: var(--oc-sidebar-radius);
 }

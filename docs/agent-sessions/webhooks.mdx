@@ -1,4 +1,5 @@
 ---
+mode: "wide"
 title: "Webhooks"
 description: "Deliver a session's output, and control deliveries"
 ---
@@ -40,12 +41,33 @@ Content-Type: application/json
 
 `level` is the visibility threshold (`user` default, or `progress`); `types` is an optional event-type allow-list (default: all — which **includes the terminal `turn.completed`**); `include_raw: false` strips `body.raw` from the delivered Event. To get only completions, set `types: ["turn.completed"]`.
 
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `session.destinations.create(params)` | Register a destination. |
+| `session.destinations.list()` | List destinations. |
+| `session.destinations.get(did)` | Fetch one. |
+| `session.destinations.update(did, params)` | Pause or resume (`enabled`), retune `level`/`types`, or rotate `secret`. |
+| `session.destinations.delete(did)` | Remove. |
+
+</Tab>
+
+<Tab title="REST API">
+
 | Method · Path | Purpose |
 | --- | --- |
 | `POST /sessions/:id/destinations` | Register a destination. |
-| `GET /sessions/:id/destinations` · `GET …/:did` | List / fetch. |
+| `GET /sessions/:id/destinations` | List destinations. |
+| `GET /sessions/:id/destinations/:did` | Fetch one. |
 | `PATCH /sessions/:id/destinations/:did` | Pause or resume (`enabled`), retune `level`/`types`, or rotate `secret`. |
 | `DELETE /sessions/:id/destinations/:did` | Remove. |
+
+</Tab>
+
+</Tabs>
 
 A destination receives events appended **after** it's created. To capture a whole session, pass `webhook` in `POST /v3/sessions` so it's registered before the agent produces output. (Replaying earlier events with `backfill_from_seq` is coming soon.)
 
@@ -53,11 +75,29 @@ A destination receives events appended **after** it's created. To capture a whol
 
 Every send and its outcome — the data behind a deliveries dashboard.
 
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `session.deliveries.list(opts)` | List deliveries — status, attempts, last response/error. |
+| `session.deliveries.get(id)` | One delivery, in detail. |
+| `session.deliveries.redeliver(id)` | Re-send any delivery (not just dead-lettered). |
+
+</Tab>
+
+<Tab title="REST API">
+
 | Method · Path | Purpose |
 | --- | --- |
 | `GET /sessions/:id/deliveries?destination=&status=` | List deliveries — status, attempts, last response/error. |
 | `GET /sessions/:id/deliveries/:id` | One delivery, in detail. |
-| `POST /sessions/:id/deliveries/:id/redeliver` | Re-send — **any** delivery, not just dead-lettered. |
+| `POST /sessions/:id/deliveries/:id/redeliver` | Re-send any delivery (not just dead-lettered). |
+
+</Tab>
+
+</Tabs>
 
 A delivery moves `pending → delivering → delivered`, or `failed` (retrying) → `dead_letter` after the max attempts.
 
@@ -73,7 +113,7 @@ Delivery = {
 ## Signing, retries, and dedupe
 
 - **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused.
-- **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it above). A duplicate can still arrive — a send that succeeds as the worker dies, or a replayed turn — so **dedupe on `webhook-id`** (it equals the event id).
+- **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it above). A duplicate can still arrive — a delivery interrupted after it reached you, or a replayed turn — so **dedupe on `webhook-id`** (it equals the event id).
 - **Signed with [Standard Webhooks](https://www.standardwebhooks.com).** Every request carries `webhook-id`, `webhook-timestamp`, and `webhook-signature` — so you can verify with an off-the-shelf library instead of hand-rolling. `webhook-signature` = `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; `webhook-timestamp` guards replay; your `secret` (`whsec_…`) is write-only — set once, never returned. Plus `X-OC-Delivery-ID` and `X-OC-Session-ID` for correlation.
 - A delivery succeeds on HTTP `2xx`.
 

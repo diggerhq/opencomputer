@@ -1,18 +1,12 @@
 ---
+mode: "wide"
 title: "Quickstart"
 description: "Start a session, stream it live, and steer it"
 ---
 
 Build the smallest useful Durable Agent Sessions integration: define an agent, start a session, stream its event log, then send follow-up messages with a scoped client token.
 
-<CardGroup cols={2}>
-  <Card title="Complete example app" icon="github" href="https://github.com/diggerhq/oc-sessions-demos">
-    A Lovable-style app builder using the same API calls.
-  </Card>
-  <Card title="API reference" icon="code" href="/agent-sessions/api-reference">
-    Endpoint details and response shapes.
-  </Card>
-</CardGroup>
+For the finished version, see the [example app](https://github.com/diggerhq/oc-sessions-demos); for every endpoint, the [API / SDK reference](/agent-sessions/api-reference).
 
 ## Prerequisites
 
@@ -68,6 +62,8 @@ Response:
 ```json
 { "id": "agt_...", "name": "quickstart-coder", "revision": 1 }
 ```
+
+<Note>Your Anthropic `key` is held in OpenComputer's [secret store](/sandboxes/secrets) (encrypted, write-only) and **never enters the sandbox**. The agent runs with a placeholder; an **egress proxy substitutes the real key in-flight** on the outbound call to Anthropic — so neither the model nor your agent's code ever sees it. Reuse one key across agents via a [credential](/agent-sessions/authentication#model-credentials).</Note>
 
 <Tip>`POST /agents` is idempotent by agent name, so it is fine to call this during application startup.</Tip>
 
@@ -214,8 +210,5 @@ Response:
   </Card>
   <Card title="API reference" icon="code" href="/agent-sessions/api-reference">
     Endpoint details and response shapes.
-  </Card>
-  <Card title="Example apps" icon="github" href="https://github.com/diggerhq/oc-sessions-demos">
-    A repo of examples built on this API.
   </Card>
 </CardGroup>
