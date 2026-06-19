@@ -44,3 +44,15 @@ pre code {
   background: #dfdfdf;
   color: #0f0f0f;
 }
+
+/* Cards read "off" because the title and body are both text-base (16px) — a flat 1:1 scale,
+   so the title never leads as a heading. Two fixes: give the title the UI sans (the inherited
+   display serif looks mis-sized at a 16px semibold label), and step the body down to 14px so
+   the title clearly leads. Title size/weight/color stay as Mintlify set them. */
+[data-component-part="card-title"] {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+[data-component-part="card-title"] + .prose {
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
