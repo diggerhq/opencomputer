@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "willow",
+  "theme": "mint",
   "name": "OpenComputer",
   "description": "Cloud sandboxes for running AI agents",
   "contextual": {
