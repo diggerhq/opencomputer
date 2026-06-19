@@ -5,7 +5,7 @@ description: "Define an agent, then run resumable, steerable sessions"
 
 Give an agent a prompt and a task; OpenComputer runs it on a managed runtime and records every step as a **durable, streamable, resumable session** — stream it live, steer it with a message, and get results by webhook.
 
-## What the platform handles for you
+## Managed pieces
 
 <CardGroup cols={2}>
   <Card title="Self-healing, managed runtime" icon="heart-pulse">
@@ -42,17 +42,17 @@ Give an agent a prompt and a task; OpenComputer runs it on a managed runtime and
   </Step>
 </Steps>
 
-## How it works
+## Architecture
 
 <Frame>
   <img src="/images/durable-agent-sessions-architecture.svg" alt="Durable Agent Sessions architecture: your app starts/steers and streams a durable event-log session; a runtime (the brain) reads and appends to it and acts in a sandbox (the hands); the model runs on your key from the secret store, which never enters a sandbox; user-level events are delivered out via your webhook." />
 </Frame>
 
-The **event log** is the durable spine: you start and steer against it, stream from it, and it drives the runtime. The **brain** (agent loop) is isolated from the **hands** sandbox (where commands and file edits run), your key lives in the secret store — never in a sandbox — and user-level events are delivered out to your webhook.
+The event log is the durable record. Your app starts sessions, streams events, and steers with messages. The runtime reads and appends to the log, drives the hands sandbox for file and command work, and delivers user-level events to your webhook. Your model key stays in the secret store.
 
-## When to use it
+## Use cases
 
-Reach for sessions when you want a long-running or interactive agent and don't want to build the plumbing above yourself. For a one-shot command in a raw box, use a [sandbox](/sandboxes/overview) directly.
+Use sessions for long-running or interactive agents. For a one-shot command in a raw box, use a [sandbox](/sandboxes/overview) directly.
 
 ## Next steps
 
@@ -63,7 +63,7 @@ Reach for sessions when you want a long-running or interactive agent and don't w
   <Card title="Prompting" icon="file-lines" href="/agent-sessions/prompting">
     Start from a prompt template designed for useful event streams and final results.
   </Card>
-  <Card title="How sessions work" icon="book" href="/agent-sessions/sessions">
-    How a session works — lifecycle and events.
+  <Card title="Session lifecycle" icon="book" href="/agent-sessions/sessions">
+    Statuses, events, results, and limits.
   </Card>
 </CardGroup>

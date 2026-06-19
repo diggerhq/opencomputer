@@ -3,7 +3,7 @@ title: "Webhooks"
 description: "Deliver a session's output, and control deliveries"
 ---
 
-Register a **destination** and a session's [events](/agent-sessions/events) are delivered to it as **`Event` objects — the same shape the [SSE stream](/agent-sessions/events) emits** — at-least-once, signed, and retried. (Webhooks carry every event `type` — `turn.completed`, `exec.completed`, messages, … — not just messages.) Filter what you receive so you're not spammed with internal chatter.
+Register a **destination** and a session's [events](/agent-sessions/events) are delivered to it as **`Event` objects — the same shape the [SSE stream](/agent-sessions/events) emits** — at-least-once, signed, and retried. (Webhooks carry every event `type` — `turn.completed`, `exec.completed`, messages, … — not just messages.) Filter what you receive to avoid internal runtime detail.
 
 ## Destinations
 
@@ -52,7 +52,7 @@ Delivery = {
 
 <Note>Coming soon: full request/response **body** capture in delivery detail (today records status, attempts, response code, and error); a **test-ping** for a destination; and **org/agent-scoped** destinations that persist across sessions.</Note>
 
-## Delivery contract
+## Signing, retries, and dedupe
 
 - **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused.
 - **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it above). A duplicate can still arrive — a send that succeeds as the worker dies, or a replayed turn — so **dedupe on `webhook-id`** (it equals the event id).
@@ -77,4 +77,4 @@ function verify(headers, rawBody, secret) {
 }
 ```
 
-<Note>Today, delivery is over **generic webhooks**. Slack, GitHub comments, Jira, and email are coming soon — all on this same envelope and delivery contract.</Note>
+<Note>Today, delivery is over **generic webhooks**. Slack, GitHub comments, Jira, and email are coming soon — all on this same event and delivery model.</Note>

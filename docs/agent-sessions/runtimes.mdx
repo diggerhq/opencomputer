@@ -23,7 +23,7 @@ Content-Type: application/json
 }
 ```
 
-### How it's structured
+### Brain and hands sandboxes
 
 The runtime runs the agent loop in its **own per-session sandbox** (the *brain*). The agent's file and shell tools don't run there — they run in a **separate sandbox** (the *hands*) that the brain drives through remote tools, so the model has no local disk or network of its own: the sandbox is the only surface it can act through. The brain carries the [sealed model key](/agent-sessions/authentication#model-credentials) (egress-allowlisted to the model API, swapped in by a host proxy so the key never enters the VM); the hands sandbox holds no secrets at all.
 
@@ -37,20 +37,20 @@ Each **turn is one bounded run**, invoke-style — it:
 
 Across turns it continues an on-box **journal**; the durable record is the event log *plus* that journal, which the platform checkpoints at each boundary and restores on recovery ([durability](/agent-sessions/durability)).
 
-### Reliability & supervision
+### Supervision and recovery
 
 A regional **supervisor** owns each running session and keeps the runtime healthy — you never restart anything:
 
 - **One driver at a time.** The supervisor holds a **fenced lease** on the session: exactly one runtime instance can write at a time, and the fence rejects writes from a stale instance (e.g. a slow machine that returns after it was given up), so a session never has two concurrent writers.
 - **Liveness.** The lease is renewed while a turn runs. If the runtime's machine dies, the lease lapses and the supervisor **re-claims the turn and continues it** from the journal.
-- **Crash / hang / lost machine.** A bad exit restarts the turn in place (bounded attempts, with crash-loop backoff); a hung turn is bounded by a **deadline** and ends `deadline_exceeded`; a lost machine is recreated and **restored from the last checkpoint**. Full matrix in [durability](/agent-sessions/durability#limits).
+- **Crash / hang / lost machine.** A bad exit restarts the turn in place (bounded attempts, with crash-loop backoff); a hung turn is bounded by a **deadline** and ends `deadline_exceeded`; a lost machine is recreated and **restored from the last checkpoint**. Full matrix in [durability](/agent-sessions/durability#failure-behavior).
 - **A turn that can't start fails cleanly.** If the model key can't be resolved or the runtime image can't be fetched, the turn ends with an **`error` event carrying the reason** and the session returns to idle, rather than hanging.
 - **Backstop reconciler.** A periodic sweep re-dispatches work whose wake-up was missed, re-claims turns whose lease expired, and resets sessions left `running` after a crash, so stranded work is picked up.
 - **Observable.** Every turn and machine transition — turn start / complete / error, sandbox create / provision / hibernate, lease renew / fence — is recorded, so the platform can show exactly where a session is and why a turn ended the way it did.
 
-## Coming soon
+## Planned runtimes
 
 <Note>The runtimes below are not yet callable. When one is available, you select it by setting `runtime` to its name — nothing else changes.</Note>
 
 - **`codex`, `opencode`** — prebuilt, multi-provider runtimes.
-- **Custom (bring your own image)** — package any agent harness as a runtime. See [Custom runtimes](/agent-sessions/custom-runtimes) for the contract and our current thinking.
+- **Custom (bring your own image)** — package any agent harness as a runtime. See [Custom runtimes](/agent-sessions/custom-runtimes) for the planned API shape.

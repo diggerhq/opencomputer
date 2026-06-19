@@ -3,7 +3,7 @@ title: "Authentication"
 description: "Org keys, browser-safe client tokens, and bring-your-own model keys"
 ---
 
-Three credentials, each with a job.
+Durable Agent Sessions use three credential types.
 
 ## Org API key
 
@@ -33,7 +33,7 @@ Content-Type: application/json
 { "scopes": ["read", "steer"], "ttl": 3600 }
 ```
 
-The pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
+Browser pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
 
 <Warning>A client token isn't free to hand out: each `steer` starts a turn, which **consumes tokens on your Anthropic key** for the session it's scoped to. Mint short-lived tokens, and rely on the session's [limits](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) to cap exposure.</Warning>
 

@@ -3,11 +3,11 @@ title: "Prompting agents"
 description: "Write Claude runtime prompts that produce reliable sessions"
 ---
 
-In Durable Agent Sessions, the prompt is part of your application contract. It shapes the event stream your UI renders, when the agent asks for help, what it treats as done, and how easy failures are to debug.
+In Durable Agent Sessions, the prompt shapes the event stream your UI renders, when the agent asks for help, what it treats as done, and how easy failures are to debug.
 
 Use a prompt that tells the agent how to work in the sandbox, how to communicate progress, and how to end each turn.
 
-## A good starting prompt
+## Coding-agent prompt
 
 This is a production-minded baseline for coding agents. Adapt the product-specific section, but keep the operating rules explicit.
 
@@ -92,7 +92,7 @@ Treat refs.repo, refs.branch, refs.commit, refs.issue, and refs.pr
 as authoritative task context. Do not infer those values from prose.
 ```
 
-## Make outputs easy to render
+## Renderable outputs
 
 Design your prompt around the UI you want:
 
@@ -114,13 +114,13 @@ Your renderer should still switch on [event `type`](/agent-sessions/events#event
 - Do not rely on unstructured final prose as your only completion signal. Await `turn.completed`.
 - Do not assume side effects run once. Use idempotency keys in your app and ask the agent to make external actions idempotent.
 
-## Where to go next
+## Next steps
 
 <CardGroup cols={2}>
   <Card title="Runtime tools" icon="toolbox" href="/agent-sessions/runtime-tools">
     The exact tools the Claude runtime can use.
   </Card>
   <Card title="Events" icon="timeline" href="/agent-sessions/events">
-    How progress updates, tool calls, results, and errors appear in the log.
+    Progress updates, tool calls, results, and errors in the log.
   </Card>
 </CardGroup>

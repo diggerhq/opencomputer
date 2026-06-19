@@ -3,29 +3,27 @@ title: "Artifacts & previews"
 description: "A session's published outputs — live previews and durable files (coming soon)"
 ---
 
-<Note>**Coming soon.** This page is our current thinking, not a shipped contract — names and shapes may change. What works *today*: large event bodies already spill to a [`content_ref`](/agent-sessions/events) you can fetch, and events can carry forward [`refs.artifacts[]`](/agent-sessions/events). The first-class collection below is what comes next.</Note>
+<Note>**Coming soon.** This page is design direction, not a shipped API. Today, large event bodies can spill to a [`content_ref`](/agent-sessions/events), and events can carry [`refs.artifacts[]`](/agent-sessions/events).</Note>
 
-A session does its work in a private scratch sandbox. **Artifacts** are the subset it deliberately *publishes* for your UI to consume — a durable, session-scoped collection you can fetch on load and stream for updates, so a preview or outputs panel survives reconnects and reloads. A **preview** is one kind of artifact: a live URL to something the agent is running (a dev server, a built app).
+**Artifacts** are session outputs your UI can load later: files, links, reports, and live previews. A **preview** is a URL to something the agent is running, such as a dev server or built app.
 
-## Durable vs live
+## Artifact kinds
 
-The split is what lets a panel survive a refresh:
+- **`file` / `link`**: snapshotted to storage at publish; fetchable after the machine is gone.
+- **`preview`**: a durable entry for a live URL into the session machine. The served app depends on machine state, so it carries a `status` (`live` / `cold`).
 
-- **`file` / `link` — durable.** Snapshotted to storage at publish; fetchable forever, even after the session's machine is gone. (Reports, build outputs, screenshots, diffs.)
-- **`preview` — live.** A URL into the running session machine. The *entry* is durable (you always get it back on reload), but the served app is bound to a warm machine, so it carries a `status` (`live` / `cold`) and can be resumed.
+## Publish from the runtime
 
-## How the agent publishes
-
-The runtime would get two tools alongside `bash`/`read`/`write`:
+The runtime would get two tools:
 
 - `oc.preview(port)` — expose a port of the session's machine as a preview URL.
 - `oc.publish(path)` — snapshot a file as a durable artifact.
 
 Each publish appends a `user`-level event and upserts the artifact, so it reaches your UI as soon as it's produced.
 
-## How your app would consume it
+## Read artifacts in your app
 
-The same snapshot-plus-stream pattern as [events](/agent-sessions/events): list on load, subscribe for changes.
+Use the same snapshot-plus-stream pattern as [events](/agent-sessions/events): list on load, subscribe for changes.
 
 ```
 GET /v3/sessions/:id/artifacts

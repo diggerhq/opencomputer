@@ -1,9 +1,9 @@
 ---
 title: "Agents"
-description: "The reusable definition of what runs"
+description: "Reusable agent configuration"
 ---
 
-An **agent** is a first-class, reusable definition of *what* runs — a `name`, a `prompt` (its instructions), a `model`, and a [`runtime`](/agent-sessions/runtimes). Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like.
+An **agent** is reusable configuration: `name`, `prompt`, `model`, and [`runtime`](/agent-sessions/runtimes). Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like.
 
 ```http
 POST https://api.opencomputer.dev/v3/agents
@@ -23,7 +23,7 @@ Pass your Anthropic `key` inline and it's stored as a [credential](/agent-sessio
 
 <Tip>Keep the org key and model key on your backend. Only return session-scoped client tokens to browsers.</Tip>
 
-## Pinned snapshot
+## Session-pinned config
 
 When a session is created it **freezes** the agent's `prompt`, `model`, `runtime`, and `revision` (a number that bumps on every edit) into the session — and pins the resolved credential too. Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change. (Rotating a credential's **key value** is the exception — that flows to running sessions, so a compromised key can be replaced; see [authentication](/agent-sessions/authentication#model-credentials).)
 

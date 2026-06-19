@@ -22,7 +22,7 @@ Content-Type: application/json
 
 Pass `idempotency_key` so retries (flaky network, double-click) are de-duplicated — applied at most once **per session**, so the same key is safe to reuse across different sessions.
 
-## The envelope
+## Message envelope
 
 Every inbound and outbound message normalizes to this shape. The core fields are fixed; anything source-specific lives under `raw`, which the platform never interprets.
 
@@ -47,6 +47,6 @@ Every inbound and outbound message normalizes to this shape. The core fields are
 - **`refs`** — structured context the agent shouldn't have to infer from prose. Blessed keys: `repo`, `branch`, `commit`, `ref`, `issue`, `pr` (plus your own). Pass them on the initial `input` so a coding agent knows its target.
 - **`raw`** — untouched original payload; optional, never read by the core.
 
-To get a session's output **out**, register a webhook destination. Deliveries carry the full [Event](/agent-sessions/events) (a message event's `body` is this envelope) — see [Webhooks](/agent-sessions/webhooks).
+To deliver a session's output, register a webhook destination. Deliveries carry the full [Event](/agent-sessions/events) (a message event's `body` is this envelope) — see [Webhooks](/agent-sessions/webhooks).
 
 <Note>[Inbound channels](/agent-sessions/channels) (Slack, GitHub, Jira, email) are coming soon — they map onto this same envelope; today you steer in via the API.</Note>

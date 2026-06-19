@@ -5,7 +5,7 @@ description: "The tools the claude runtime can use — what to rely on when you 
 
 When you write a prompt for the `claude` [runtime](/agent-sessions/runtimes), it's useful to know exactly what the agent can do. Every side effect runs through a fixed set of tools against the session's **sandbox** — the agent has no direct filesystem, shell, or network of its own. The built-in local tools are disabled; only these remote tools are available.
 
-## Working in the sandbox
+## Sandbox tools
 
 | Tool | What it does |
 | --- | --- |
@@ -21,7 +21,7 @@ For launch, `use_repo` works with public repos. Private-repo access and prepared
 
 <Note>**Network:** the sandbox has **open outbound internet** by default (so `git clone`, package installs, and API calls just work), with private, loopback, link-local, and cloud-metadata addresses blocked. Per-agent egress allowlists are coming.</Note>
 
-## Talking to the user
+## User-facing tools
 
 | Tool | What it does |
 | --- | --- |
@@ -32,11 +32,11 @@ The agent's final `say` is the session result. `ask` ends the turn with `yield_r
 
 <Note>The formal blocking `ask` state is coming soon. Today the turn yields rather than blocking.</Note>
 
-## Delivering work to external systems
+## External delivery tools
 
 `deliver` (open/update a pull request or post a comment) and `reconcile` (declare the desired end state and let the platform converge to it) are how an agent acts **outside** the sandbox. They land with the channel launches (GitHub, etc.); until then, get a session's output out via [webhooks](/agent-sessions/webhooks) — the agent's `user`-level messages and results are delivered there.
 
-## Writing good prompts
+## Prompt guidance
 
 - Tell the agent to do all work in the sandbox via `bash`/`read`/`write` — it can't touch your machine.
 - To work on a repo, point it at a **public** one (`use_repo`, or `bash` + `git clone`); pass the target in [`input.refs`](/agent-sessions/messaging) (`repo`, `branch`, `commit`) rather than burying it in prose. (Private-repo connections are coming soon.)

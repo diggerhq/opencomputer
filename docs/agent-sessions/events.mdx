@@ -3,7 +3,7 @@ title: "Events"
 description: "The append-only log: envelope, levels, cursors, and resume"
 ---
 
-Every step a session takes is an **event**, appended to the log in order. The log is the source of truth — you read it, stream it, and resume from any point. Everything you build on top — a chat UI, a live "what's it doing" feed, notifications, an audit trail — comes from reading or streaming these events and filtering them by **level**.
+Every session step is an **event** appended in order. Read events, stream them live, or resume from any `seq`. Use the same stream for chat, activity feeds, notifications, and audit trails by filtering on **level**.
 
 ```json
 { "id": "evt_…", "seq": 12, "ts": "…", "session": "sess_…",
@@ -20,11 +20,11 @@ Every step a session takes is an **event**, appended to the log in order. The lo
 - **`level`** — visibility; see below.
 - **`body` / `refs`** — payload and related ids.
 
-Inbound and outbound messages share one [envelope](/agent-sessions/messaging#the-envelope) shape.
+Inbound and outbound messages share one [envelope](/agent-sessions/messaging#message-envelope) shape.
 
 ## Event shape
 
-The stable contract is the top-level **`type`** — **switch on it, don't parse prose.** Unknown types render fine from their `text`/`summary`, so new ones are additive. (There's no separate `kind`; coarse buckets are just `type` prefixes like `turn.*` or `agent.*`.)
+Treat the top-level **`type`** as the stable discriminator — **switch on it, don't parse prose.** Unknown types render fine from their `text`/`summary`, so new ones are additive. (There's no separate `kind`; coarse buckets are just `type` prefixes like `turn.*` or `agent.*`.)
 
 | `type` | `body` shape | Use it for |
 | --- | --- | --- |
@@ -42,9 +42,9 @@ The stable contract is the top-level **`type`** — **switch on it, don't parse 
 
 **Large output.** A large `body` is offloaded to a `content_ref`; fetch the bytes with `GET /sessions/:id/events/:eventId/content` (e.g. full `exec.completed` output). Richer **artifacts** (named files, diffs, screenshots, reports) ride a forward `refs.artifacts[]`, with a first-class [artifacts & previews API](/agent-sessions/artifacts) **coming soon**. `refs` also carries optional correlation/evidence keys (`trace_id`, `sources[]`).
 
-## Levels
+## Visibility levels
 
-Every event carries a `level` saying **who it's for**. You filter the stream (and webhook deliveries) by it, so each surface shows the right amount of detail.
+Every event carries a `level`. Use it to choose how much detail each surface receives.
 
 | Level | Contains | Use for |
 | --- | --- | --- |
@@ -62,7 +62,7 @@ Filtering is **cumulative** — `user` is the narrowest, `internal` is everythin
 
 So a customer-facing chat asks for `user`; an agent-activity view asks for `progress`; debugging your agent asks for `internal`.
 
-## seq, head, input_cursor
+## Cursors
 
 - **`seq`** — a monotonic id assigned to each event.
 - **`head`** — the highest `seq` in the session.
