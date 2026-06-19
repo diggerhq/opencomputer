@@ -3,15 +3,18 @@ title: "Authentication"
 description: "Org keys, browser-safe client tokens, and bring-your-own model keys"
 ---
 
-Three credentials, each with a job.
+Durable Agent Sessions use three credential types.
 
 ## Org API key
 
 Your account key. Use it server-side for all **management** calls — creating agents, starting sessions, registering webhooks, managing credentials.
 
-```bash
-curl https://api.opencomputer.dev/v3/sessions \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" -d '{ … }'
+```http
+POST https://api.opencomputer.dev/v3/sessions
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "agent": "agt_...", "input": "Run the tests and summarize failures." }
 ```
 
 <Warning>Never ship the org API key to a browser or mobile client — it can do anything on your account. Use a client token instead.</Warning>
@@ -22,20 +25,23 @@ A **session-scoped, short-lived** token with `read` + `steer` scope — safe to 
 
 You get one back from `POST /v3/sessions`, and can mint more:
 
-```bash
-curl https://api.opencomputer.dev/v3/sessions/$ID/client-tokens \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "scopes": ["read", "steer"], "ttl": 3600 }'
+```http
+POST https://api.opencomputer.dev/v3/sessions/sess_.../client-tokens
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "scopes": ["read", "steer"], "ttl": 3600 }
 ```
 
-The pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
+Browser pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
 
 <Warning>A client token isn't free to hand out: each `steer` starts a turn, which **consumes tokens on your Anthropic key** for the session it's scoped to. Mint short-lived tokens, and rely on the session's [limits](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) to cap exposure.</Warning>
 
 ```
-browser ──(create task)──▶ your backend ──(org key)──▶ POST /v3/sessions
-browser ◀──(client_token)── your backend
-browser ──(client_token)──▶ GET …/events (SSE) · POST …/messages
+browser  -> your backend: create task
+backend  -> OpenComputer: POST /v3/sessions (org key)
+backend  -> browser: client_token
+browser  -> OpenComputer: stream + steer (client_token)
 ```
 
 For the SSE stream the browser passes the client token as `?token=` (native `EventSource` can't set an `Authorization` header); other calls use the `Authorization` header normally.
@@ -46,16 +52,20 @@ Sessions run the model on **your own Anthropic key**. It's held in OpenComputer'
 
 The easiest way to add one is inline when you [create an agent](/agent-sessions/agents) (`"key": "sk-ant-…"`). The standalone resource below is for reusing one key across agents, setting an org default, and rotating/removing keys:
 
-```bash
-curl https://api.opencomputer.dev/v3/credentials \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "provider": "anthropic", "key": "sk-ant-…", "name": "prod" }'
-# → { "id": "cred_…", "provider": "anthropic", "last4": "…", … }
+```http
+POST https://api.opencomputer.dev/v3/credentials
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
 
-# make it the default for this provider
-curl -X PUT https://api.opencomputer.dev/v3/credentials/default \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "credential": "cred_…" }'
+{ "provider": "anthropic", "key": "sk-ant-...", "name": "prod" }
+```
+
+```http
+PUT https://api.opencomputer.dev/v3/credentials/default
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "credential": "cred_..." }
 ```
 
 **Resolution** per session: the agent's credential → your org default for the provider. (No platform-billed fallback yet — bring a key.)

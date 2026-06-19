@@ -11,11 +11,11 @@ A Durable Agent Session is **never lost and always resumable**:
 - The runtime **hangs** → a turn deadline bounds it; the turn ends and you steer to continue.
 - The session **idles** → it hibernates (≈ free) and the session **survives even if its sandbox is reclaimed**.
 
-Narrow edges, all on the roadmap (see [Limits](#limits)): a sandbox lost **mid-turn** re-runs that turn; a hung turn ends at its deadline rather than auto-continuing; **uncommitted files** don't survive sandbox loss (commit/push to keep them).
+Narrow edges, all on the roadmap (see [Failure behavior](#failure-behavior)): a sandbox lost **mid-turn** re-runs that turn; a hung turn ends at its deadline rather than auto-continuing; **uncommitted files** don't survive sandbox loss (commit/push to keep them).
 
-## The event log is the source of truth
+## Durable event log
 
-Every step is appended to the session's log with a monotonic `seq`. The log is durable and ordered; reads and the live stream are served from it. Anything the agent has logged or delivered is safe.
+Every step is appended with a monotonic `seq`. Reads and live streams are served from that ordered log, so anything logged or delivered is recoverable.
 
 ## Stream resume
 
@@ -44,7 +44,7 @@ You don't restart anything — the platform does. The runtime keeps its working 
 - **Runtime hangs** → bounded by a **turn deadline**; the turn ends with `deadline_exceeded` and you steer to continue. (Faster heartbeat-based restart is on the roadmap.)
 - **Sandbox reclaimed while idle** → we recreate it and **restore the last checkpoint**, resuming the conversation from the last completed turn. (The brain state is restored; commit/push to keep file changes — see below.)
 
-## Limits
+## Failure behavior
 
 What's guaranteed today, and what isn't:
 
@@ -52,10 +52,12 @@ What's guaranteed today, and what isn't:
 | --- | --- |
 | Client disconnects | Reconnect from your cursor; nothing lost. |
 | Session idles | Sandbox hibernates; resumes intact on the next message. |
-| Runtime **crashes** | **Auto-restarted in the same sandbox; continues from the on-box journal** — work since the last journaled step may repeat (make side effects idempotent). |
+| Runtime **crashes** | Auto-restarted; continues from the on-box journal. |
 | Runtime **hangs** | Bounded by the turn deadline; the turn ends `deadline_exceeded` — steer to continue. |
-| Sandbox lost **while idle** | Recreated and **restored from the last checkpoint**; conversation resumes from the last completed turn. **Uncommitted hands-sandbox files are not restored** — commit/push to keep them. |
-| Sandbox lost **mid-turn** | That one turn **re-runs** from the log. Only **logged / committed / delivered** work product is guaranteed. |
+| Sandbox lost **while idle** | Recreated from the last checkpoint. |
+| Sandbox lost **mid-turn** | That turn re-runs from the log. |
+
+Work since the last journaled step may repeat, so make side effects idempotent. Uncommitted hands-sandbox files are not restored after sandbox loss; commit or push to keep them.
 
 <Warning>
   The one edge not yet covered: a sandbox lost **mid-turn** re-runs that turn rather than resuming mid-thought — so in-flight, unlogged work can be redone. Build idempotent side effects, and treat the event log (and delivered webhooks) as your durable record. Byte-exact **mid-turn** resume is coming in a later release.

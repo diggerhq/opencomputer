@@ -3,14 +3,13 @@ title: "Events"
 description: "The append-only log: envelope, levels, cursors, and resume"
 ---
 
-Every step a session takes is an **event**, appended to the log in order. The log is the source of truth — you read it, stream it, and resume from any point. Everything you build on top — a chat UI, a live "what's it doing" feed, notifications, an audit trail — comes from reading or streaming these events and filtering them by **level**.
+Every session step is an **event** appended in order. Read events, stream them live, or resume from any `seq`. Use the same stream for chat, activity feeds, notifications, and audit trails by filtering on **level**.
 
 ```json
 { "id": "evt_…", "seq": 12, "ts": "…", "session": "sess_…",
   "actor": { "id": "agent", "type": "agent" },
   "type": "agent.message", "level": "user",
-  "body": { "text": "3 tests fail in auth.spec.ts" },
-  "refs": {} }
+  "body": { "text": "3 tests fail in auth.spec.ts" } }
 ```
 
 - **`id`** — the event's own unique id (`evt_…`). The client idempotency key for steering is separate (deduped per session — see [steering](/agent-sessions/messaging)).
@@ -18,13 +17,13 @@ Every step a session takes is an **event**, appended to the log in order. The lo
 - **`type`** — the one discriminator: a namespaced string (`agent.message`, `turn.completed`, …). See below.
 - **`actor`** — who produced it: `{ id, display?, type: "human" | "agent" | "system" }`.
 - **`level`** — visibility; see below.
-- **`body` / `refs`** — payload and related ids.
+- **`body`** — the event payload.
 
-Inbound and outbound messages share one [envelope](/agent-sessions/messaging#the-envelope) shape.
+Inbound and outbound messages share one [envelope](/agent-sessions/messaging#message-envelope) shape.
 
 ## Event shape
 
-The stable contract is the top-level **`type`** — **switch on it, don't parse prose.** Unknown types render fine from their `text`/`summary`, so new ones are additive. (There's no separate `kind`; coarse buckets are just `type` prefixes like `turn.*` or `agent.*`.)
+Treat the top-level **`type`** as the stable discriminator — **switch on it, don't parse prose.** Unknown types render fine from their `text`/`summary`, so new ones are additive. (There's no separate `kind`; coarse buckets are just `type` prefixes like `turn.*` or `agent.*`.)
 
 | `type` | `body` shape | Use it for |
 | --- | --- | --- |
@@ -40,17 +39,19 @@ The stable contract is the top-level **`type`** — **switch on it, don't parse 
 
 **Correlate a steer to its turn.** Steers coalesce — one turn can pick up several — so [`POST /messages`](/agent-sessions/messaging) returns the *event* `seq`, not a turn. The turn that consumes your steer emits `turn.started` with `input_from_seq ≤ your_seq ≤ input_to_seq`; await its `turn.completed`, then `GET …/events?turn_id=` for everything it produced.
 
-**Large output.** A large `body` is offloaded to a `content_ref`; fetch the bytes with `GET /sessions/:id/events/:eventId/content` (e.g. full `exec.completed` output). Richer **artifacts** (named files, diffs, screenshots, reports) ride a forward `refs.artifacts[]`, with a first-class [artifacts & previews API](/agent-sessions/artifacts) **coming soon**. `refs` also carries optional correlation/evidence keys (`trace_id`, `sources[]`).
+**Large output.** A large `body` is offloaded to a `content_ref`; fetch the bytes with `GET /sessions/:id/events/:eventId/content` (e.g. full `exec.completed` output). Richer **artifacts** (named files, diffs, screenshots, reports) have a first-class [artifacts & previews API](/agent-sessions/artifacts) **coming soon**.
 
-## Levels
+## Visibility levels
 
-Every event carries a `level` saying **who it's for**. You filter the stream (and webhook deliveries) by it, so each surface shows the right amount of detail.
+Every event carries a `level`. Use it to choose how much detail each surface receives.
 
-| Level | What lands here | Reach for it when you want… |
+| Level | Contains | Use for |
 | --- | --- | --- |
-| `user` | What a person is meant to read — the answer, results, a question back to them. The default for webhook delivery. | a chat bubble, the final result, a notification |
-| `progress` | Plain-language step updates: "cloning the repo", "running tests", "found 3 failures". | a live "what's it doing right now" feed or status line |
-| `internal` | Tool calls and runtime detail — verbose, not meant for end users (the model's private reasoning is never surfaced). | debugging, an audit trail, your own internal console |
+| `user` | Answers, results, and questions. | Chat, final results, notifications. |
+| `progress` | Plain-language work updates. | Activity feeds and status lines. |
+| `internal` | Tool calls and runtime detail. | Debug consoles and audit trails. |
+
+The model's private reasoning is never surfaced. Webhooks default to `user`.
 
 Filtering is **cumulative** — `user` is the narrowest, `internal` is everything:
 
@@ -60,7 +61,7 @@ Filtering is **cumulative** — `user` is the narrowest, `internal` is everythin
 
 So a customer-facing chat asks for `user`; an agent-activity view asks for `progress`; debugging your agent asks for `internal`.
 
-## seq, head, input_cursor
+## Cursors
 
 - **`seq`** — a monotonic id assigned to each event.
 - **`head`** — the highest `seq` in the session.

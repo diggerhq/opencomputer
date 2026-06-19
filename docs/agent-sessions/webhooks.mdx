@@ -3,17 +3,21 @@ title: "Webhooks"
 description: "Deliver a session's output, and control deliveries"
 ---
 
-Register a **destination** and a session's [events](/agent-sessions/events) are delivered to it as **`Event` objects — the same shape the [SSE stream](/agent-sessions/events) emits** — at-least-once, signed, and retried. (Webhooks carry every event `type` — `turn.completed`, `exec.completed`, messages, … — not just messages.) Filter what you receive so you're not spammed with internal chatter.
+Register a **destination** and a session's [events](/agent-sessions/events) are delivered to it as **`Event` objects — the same shape the [SSE stream](/agent-sessions/events) emits** — at-least-once, signed, and retried. (Webhooks carry every event `type` — `turn.completed`, `exec.completed`, messages, … — not just messages.) Filter what you receive to avoid internal runtime detail.
 
 ## Destinations
 
-```bash
-curl https://api.opencomputer.dev/v3/sessions/$ID/destinations \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "url": "https://your.app/oc-webhook",
-        "secret": "whsec_…",
-        "level": "user",
-        "include_raw": false }'
+```http
+POST https://api.opencomputer.dev/v3/sessions/sess_.../destinations
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "url": "https://your.app/oc-webhook",
+  "secret": "whsec_...",
+  "level": "user",
+  "include_raw": false
+}
 ```
 
 `level` is the visibility threshold (`user` default, or `progress`); `types` is an optional event-type allow-list (default: all — which **includes the terminal `turn.completed`**); `include_raw: false` strips `body.raw` from the delivered Event. To get only completions, set `types: ["turn.completed"]`.
@@ -40,12 +44,15 @@ Every send and its outcome — the data behind a deliveries dashboard.
 A delivery moves `pending → delivering → delivered`, or `failed` (retrying) → `dead_letter` after the max attempts.
 
 ```
-Delivery = { id, session, destination, event_id, event_seq, status, attempts, last_attempt_at, response_code?, error?, created_at, updated_at }
+Delivery = {
+  id, session, destination, event_id, event_seq, status, attempts,
+  last_attempt_at, response_code?, error?, created_at, updated_at
+}
 ```
 
 <Note>Coming soon: full request/response **body** capture in delivery detail (today records status, attempts, response code, and error); a **test-ping** for a destination; and **org/agent-scoped** destinations that persist across sessions.</Note>
 
-## Delivery contract
+## Signing, retries, and dedupe
 
 - **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused.
 - **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it above). A duplicate can still arrive — a send that succeeds as the worker dies, or a replayed turn — so **dedupe on `webhook-id`** (it equals the event id).
@@ -70,4 +77,4 @@ function verify(headers, rawBody, secret) {
 }
 ```
 
-<Note>Today, delivery is over **generic webhooks**. Slack, GitHub comments, Jira, and email are coming soon — all on this same envelope and delivery contract.</Note>
+<Note>Today, delivery is over **generic webhooks**. Slack, GitHub comments, Jira, and email are coming soon — all on this same event and delivery model.</Note>

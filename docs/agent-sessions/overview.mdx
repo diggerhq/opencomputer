@@ -5,63 +5,68 @@ description: "Define an agent, then run resumable, steerable sessions"
 
 Give an agent a prompt and a task; OpenComputer runs it on a managed runtime and records every step as a **durable, streamable, resumable session** — stream it live, steer it with a message, and get results by webhook.
 
-## What the platform handles for you
+## Built into every session
 
 <CardGroup cols={2}>
-  <Card title="Self-healing, managed runtime" icon="heart-pulse">
-    - Crash → **auto-restart**, picks up where it was
-    - Idle → hibernate (≈ free); an **idle** session survives sandbox loss
-    - You never restart anything — [details](/agent-sessions/durability)
+  <Card title="Self-healing runtime" icon="heart-pulse">
+    - Runtime crashes restart automatically
+    - Idle sessions hibernate and wake on the next message
+    - Hung runs stop cleanly instead of staying stuck
   </Card>
-  <Card title="Brain / hands isolation" icon="shield-halved">
-    - The **brain** (agent loop) runs apart from the **hands** sandbox (its files + commands)
-    - Untrusted work stays contained
-    - Your model key never enters either sandbox — it lives in the [secret store](/sandboxes/secrets)
+  <Card title="Brain / hands sandboxing" icon="shield-halved">
+    - **Brain**: agent loop. **Hands**: files and commands.
+    - Untrusted work stays contained in the hands sandbox
+    - Your model key stays in the [secret store](/sandboxes/secrets), never in a sandbox
   </Card>
-  <Card title="Durable log & resume" icon="database">
-    - Every step in one ordered, durable log
-    - Reconnect from any cursor — nothing missed
+  <Card title="Live streaming and steering" icon="radio">
+    - Stream events directly from the browser with a session token
+    - Reconnect from any `seq` without gaps
+    - Send follow-up messages without exposing your org key
   </Card>
-  <Card title="Reliable delivery" icon="paper-plane">
-    - At-least-once, retried, dead-lettered
-    - Signed ([Standard Webhooks](https://www.standardwebhooks.com)); dedupe on `webhook-id`
+  <Card title="Reliable backend delivery" icon="paper-plane">
+    - Deliver user-level events to your webhook
+    - Signed with [Standard Webhooks](https://www.standardwebhooks.com)
+    - Retried, dead-lettered, inspectable, and redeliverable
   </Card>
 </CardGroup>
 
 ## Get started
 
 <Steps>
-  <Step title="Define an agent (with your key)">
-    A reusable `{ name, model, prompt, runtime }` — `POST /v3/agents`. Pass your Anthropic `key` inline; it's stored as a [credential](/agent-sessions/authentication#model-credentials). ([Agents](/agent-sessions/agents))
+  <Step title="Define an agent">
+    Create a reusable `{ name, model, prompt, runtime }` from your backend. Pass your Anthropic `key` inline, or reference a saved [credential](/agent-sessions/authentication#model-credentials). ([Agents](/agent-sessions/agents))
   </Step>
   <Step title="Start a session">
-    `POST /v3/sessions { agent, input }` — the agent starts immediately; you get the session and a browser-safe `client_token`.
+    Start a session with `{ agent, input }`. The agent starts immediately and returns a browser-safe `client_token`.
   </Step>
   <Step title="Watch, steer, get notified">
-    Stream `GET …/events?stream=sse` ([resume](/agent-sessions/events) from any cursor), `POST …/messages` to [steer](/agent-sessions/messaging), and register a [webhook](/agent-sessions/webhooks) for push.
+    Stream events with `EventSource`, [steer](/agent-sessions/messaging) with the client token, and register a [webhook](/agent-sessions/webhooks) when your backend needs push delivery.
   </Step>
 </Steps>
 
-## How it works
+## Architecture
 
 <Frame>
   <img src="/images/durable-agent-sessions-architecture.svg" alt="Durable Agent Sessions architecture: your app starts/steers and streams a durable event-log session; a runtime (the brain) reads and appends to it and acts in a sandbox (the hands); the model runs on your key from the secret store, which never enters a sandbox; user-level events are delivered out via your webhook." />
 </Frame>
 
-The **event log** is the durable spine: you start and steer against it, stream from it, and it drives the runtime. The **brain** (agent loop) is isolated from the **hands** sandbox (where commands and file edits run), your key lives in the secret store — never in a sandbox — and user-level events are delivered out to your webhook.
+The event log is the durable record. Your app starts sessions, streams events, and steers with messages. The runtime reads and appends to the log, drives the hands sandbox for file and command work, and delivers user-level events to your webhook. Your model key stays in the secret store.
 
-## When to use it
+## Use cases
 
-Reach for sessions when you want a long-running or interactive agent and don't want to build the plumbing above yourself. For a one-shot command in a raw box, use a [sandbox](/sandboxes/overview) directly.
+Use sessions for long-running or interactive agents. For a one-shot command in a raw box, use a [sandbox](/sandboxes/overview) directly.
 
 ## Next steps
 
 <CardGroup cols={2}>
   <Card title="Quickstart" icon="bolt" href="/agent-sessions/quickstart">
-    Start a session, stream it, and steer it in a few minutes.
+    Start a session, stream events, and steer it with concise REST examples.
   </Card>
-  <Card title="How sessions work" icon="book" href="/agent-sessions/sessions">
-    How a session works — lifecycle and events.
+  <Card title="Events" icon="timeline" href="/agent-sessions/events">
+    Event shape, visibility levels, cursors, and resume behavior.
+  </Card>
+  <Card title="Session lifecycle" icon="book" href="/agent-sessions/sessions">
+    Statuses, events, results, and limits.
   </Card>
   <Card title="Example apps" icon="github" href="https://github.com/diggerhq/oc-sessions-demos">
     A repo of examples built on this API.
