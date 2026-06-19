@@ -156,6 +156,7 @@ func (s *Store) ListPendingBillableEventsForSender(ctx context.Context, limit in
 		JOIN orgs o ON o.id = be.org_id
 		WHERE be.delivery_state = 'pending'
 		  AND o.billing_mode = 'unified'
+		  AND o.billing_provider != 'autumn'
 		  AND o.stripe_customer_id IS NOT NULL
 		ORDER BY be.created_at, be.id
 		LIMIT $1

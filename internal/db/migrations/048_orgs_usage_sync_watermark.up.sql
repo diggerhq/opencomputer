@@ -1,0 +1,11 @@
+-- Dedicated usage-reporting watermark for the external metered-billing loop
+-- (currently Autumn). Neutral column name so it doesn't lie if the provider
+-- ever changes; the code-side adapter stays vendor-named (cf. stripe_*).
+--
+-- This loop runs in *shadow* alongside the legacy UsageReporter, so it cannot
+-- share last_usage_reported_at — whichever loop advanced it first would starve
+-- the other. This column is the new loop's own high-water mark: usage in
+-- [last_usage_synced_at, now) has been (or is being) shipped via track(). NULL
+-- means "never reported" — the reporter seeds it to now on first sight and bills
+-- forward from there (no retroactive charge on flag-flip).
+ALTER TABLE orgs ADD COLUMN last_usage_synced_at TIMESTAMPTZ;

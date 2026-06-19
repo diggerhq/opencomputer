@@ -84,7 +84,7 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 	// and lazily materialize the row here. Plan comes from the cap-token so
 	// the worker's event resolver can tag usage_tick events correctly.
 	if s.store != nil {
-		if upErr := s.store.UpsertOrgFromCapToken(c.Request().Context(), orgID, claims.Plan); upErr != nil {
+		if upErr := s.store.UpsertOrgFromCapToken(c.Request().Context(), orgID, claims.Plan, claims.BillingProvider); upErr != nil {
 			// Non-fatal — the create may still succeed; downstream gates fall through
 			// when the row is missing. Logged so ops can investigate persistent failures.
 			c.Logger().Errorf("upsert org from cap-token: %v", upErr)
