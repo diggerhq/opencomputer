@@ -358,7 +358,11 @@ export default {
     ];
     const planLookup = await resolvePlans(env, tickOrgIds);
     const planFor = (e: SandboxEventEnvelope): string | undefined =>
-      planLookup.ok ? (e.org_id ? planLookup.byOrg.get(e.org_id) : undefined) : e.plan;
+      planLookup.ok ? (e.org_id ? planLookup.byOrg.get(e.org_id)?.plan : undefined) : e.plan;
+    // billing_provider has no envelope fallback; on a D1-lookup failure this is
+    // undefined → treated as legacy (fail-open, matching planFor's philosophy).
+    const providerFor = (e: SandboxEventEnvelope): string | undefined =>
+      e.org_id ? planLookup.byOrg.get(e.org_id)?.provider : undefined;
 
     // Pro-tier usage samples: land each pro `usage_tick`'s resource dimensions
     // into usage_samples for the rollup cron (the edge analog of the cell's
@@ -460,7 +464,12 @@ export default {
     // Plan comes from the authoritative D1 lookup (planFor), not the stale
     // envelope value — so a free→pro upgrade stops debiting immediately and a
     // pro→free downgrade resumes it, with no dependency on cell-PG freshness.
-    const debitTargets = fresh.filter((e) => e.type === "usage_tick" && planFor(e) === "free" && e.org_id);
+    // Autumn orgs are excluded: their credit ledger + halt live in Autumn, so a
+    // legacy DO debit would touch an ignored balance and could even wrongly halt
+    // them via the DO's debit→0 path.
+    const debitTargets = fresh.filter(
+      (e) => e.type === "usage_tick" && planFor(e) === "free" && providerFor(e) !== "autumn" && e.org_id,
+    );
     if (debitTargets.length > 0) {
       ctx.waitUntil(fanoutDebits(env, debitTargets));
     }
@@ -535,17 +544,17 @@ async function resolveSandboxOwners(
 async function resolvePlans(
   env: Env,
   orgIds: string[],
-): Promise<{ ok: boolean; byOrg: Map<string, string> }> {
-  const byOrg = new Map<string, string>();
+): Promise<{ ok: boolean; byOrg: Map<string, { plan: string; provider: string }> }> {
+  const byOrg = new Map<string, { plan: string; provider: string }>();
   if (orgIds.length === 0) return { ok: true, byOrg };
   const placeholders = orgIds.map((_, i) => `?${i + 1}`).join(",");
   try {
     const res = await env.OPENCOMPUTER_DB.prepare(
-      `SELECT id, plan FROM orgs WHERE id IN (${placeholders})`,
+      `SELECT id, plan, billing_provider FROM orgs WHERE id IN (${placeholders})`,
     )
       .bind(...orgIds)
-      .all<{ id: string; plan: string }>();
-    for (const r of res.results ?? []) byOrg.set(r.id, r.plan);
+      .all<{ id: string; plan: string; billing_provider: string }>();
+    for (const r of res.results ?? []) byOrg.set(r.id, { plan: r.plan, provider: r.billing_provider });
     return { ok: true, byOrg };
   } catch (err) {
     console.error("events-ingest: org plan lookup failed — falling back to envelope plan", err);

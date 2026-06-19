@@ -194,6 +194,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{44, "migrations/044_drop_secret_store_fk.up.sql"},
 		{45, "migrations/045_sandbox_mounts.up.sql"},
 		{46, "migrations/046_preview_auth.up.sql"},
+		{47, "migrations/047_orgs_billing_provider.up.sql"},
+		{48, "migrations/048_orgs_usage_sync_watermark.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -278,6 +280,17 @@ type Org struct {
 	// FreeCreditsRemainingCents is preserved but no longer authoritative.
 	IsHalted bool       `json:"isHalted"`
 	HaltedAt *time.Time `json:"haltedAt,omitempty"`
+
+	// Per-org billing system selector: 'legacy' (in-house CreditAccount DO /
+	// UsageReporter) or 'autumn' (Autumn owns the credit ledger, usage metering,
+	// top-ups, and concurrency plans). Defaults to 'legacy'; flipped per-org
+	// during the move to Autumn.
+	BillingProvider string `json:"billingProvider"`
+
+	// Watermark for the external metered-billing loop (currently Autumn),
+	// separate from LastUsageReportedAt so the shadow reporter and the legacy
+	// reporter don't starve each other. NULL until first seen by that loop.
+	LastUsageSyncedAt *time.Time `json:"lastUsageSyncedAt,omitempty"`
 }
 
 // orgColumns is the list of columns returned by all Org queries.
@@ -286,7 +299,7 @@ const orgColumns = `id, name, slug, plan, max_concurrent_sandboxes, max_sandbox_
 	verification_txt_name, verification_txt_value, ssl_txt_name, ssl_txt_value,
 	workos_org_id, is_personal, owner_user_id, credit_balance_cents,
 	stripe_customer_id, stripe_subscription_id, last_usage_reported_at, price_locked,
-	free_credits_remaining_cents, billing_mode, is_halted, halted_at`
+	free_credits_remaining_cents, billing_mode, is_halted, halted_at, billing_provider, last_usage_synced_at`
 
 // scanOrg scans a row into an Org struct.
 func scanOrg(row pgx.Row) (*Org, error) {
@@ -300,7 +313,7 @@ func scanOrg(row pgx.Row) (*Org, error) {
 		&org.StripeCustomerID, &org.StripeSubscriptionID, &org.LastUsageReportedAt,
 		&org.PriceLocked,
 		&org.FreeCreditsRemainingCents, &org.BillingMode,
-		&org.IsHalted, &org.HaltedAt,
+		&org.IsHalted, &org.HaltedAt, &org.BillingProvider, &org.LastUsageSyncedAt,
 	)
 	return org, err
 }
@@ -356,16 +369,25 @@ func (s *Store) GetOrgPlan(ctx context.Context, orgID string) (string, error) {
 // Plan from the cap-token wins on insert; on conflict we update plan so a
 // pro-upgrade reflected at the edge propagates to the cell on the next
 // sandbox-create round-trip without a separate sync job.
-func (s *Store) UpsertOrgFromCapToken(ctx context.Context, orgID uuid.UUID, plan string) error {
+func (s *Store) UpsertOrgFromCapToken(ctx context.Context, orgID uuid.UUID, plan, billingProvider string) error {
 	if plan != "pro" {
 		plan = "free"
 	}
+	// billingProvider mirrors D1's authoritative value (it rides the cap-token
+	// like plan). Empty means the token didn't carry it (older token / a path
+	// that doesn't set it) → keep the existing cell-PG value, and default a
+	// brand-new row to 'legacy'. So a wake/preview token can never clobber an
+	// org that the create path or backfill already flipped to 'autumn'.
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO orgs (id, name, slug, plan)
-		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (id) DO UPDATE SET plan = EXCLUDED.plan, updated_at = NOW()
-		 WHERE orgs.plan IS DISTINCT FROM EXCLUDED.plan`,
-		orgID, "org-"+orgID.String()[:8], orgID.String(), plan,
+		`INSERT INTO orgs (id, name, slug, plan, billing_provider)
+		 VALUES ($1, $2, $3, $4, COALESCE(NULLIF($5, ''), 'legacy'))
+		 ON CONFLICT (id) DO UPDATE SET
+		   plan = EXCLUDED.plan,
+		   billing_provider = CASE WHEN NULLIF($5, '') IS NULL THEN orgs.billing_provider ELSE $5 END,
+		   updated_at = NOW()
+		 WHERE orgs.plan IS DISTINCT FROM EXCLUDED.plan
+		    OR (NULLIF($5, '') IS NOT NULL AND orgs.billing_provider IS DISTINCT FROM $5)`,
+		orgID, "org-"+orgID.String()[:8], orgID.String(), plan, billingProvider,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert org from cap-token: %w", err)

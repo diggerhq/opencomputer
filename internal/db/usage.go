@@ -290,6 +290,56 @@ func (s *Store) UpdateLastUsageReportedAt(ctx context.Context, orgID uuid.UUID, 
 	return err
 }
 
+// SetBillingProvider flips an org's billing system selector in cell-PG. The
+// migrate tool pairs this with edgeclient.SetAutumnProvider (D1) for an
+// atomic-as-possible per-org cutover; ordering across the two stores is chosen
+// so the legacy and Autumn chargers are never both live for the same org.
+func (s *Store) SetBillingProvider(ctx context.Context, orgID uuid.UUID, provider string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE orgs SET billing_provider = $2, updated_at = NOW() WHERE id = $1`,
+		orgID, provider)
+	return err
+}
+
+// SetLastUsageSyncedAt advances the external metered-billing (Autumn) loop's
+// watermark. Separate from last_usage_reported_at so the shadow Autumn reporter
+// and the legacy reporter can run concurrently without starving each other.
+func (s *Store) SetLastUsageSyncedAt(ctx context.Context, orgID uuid.UUID, t time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE orgs SET last_usage_synced_at = $2 WHERE id = $1`,
+		orgID, t)
+	return err
+}
+
+// ListAutumnOrgIDsWithUsage returns org IDs whose billing_provider is 'autumn'
+// and that have scale-event usage not yet shipped to Autumn — either a
+// currently-running sandbox or a scale event that ended after the org's
+// last_usage_synced_at watermark. Orgs first seen (NULL watermark) are included
+// so the reporter can seed them; it bills forward from now, never retroactively.
+func (s *Store) ListAutumnOrgIDsWithUsage(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT se.org_id
+		 FROM sandbox_scale_events se
+		 JOIN orgs o ON o.id = se.org_id
+		 WHERE o.billing_provider = 'autumn'
+		   AND (se.ended_at IS NULL
+		        OR se.ended_at > COALESCE(o.last_usage_synced_at, o.created_at))`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // ListBillableOrgIDs returns org IDs with plan="pro" AND
 // billing_mode='legacy' that have unreported usage: either a
 // currently-running sandbox or a scale event that ended after the last
@@ -303,6 +353,7 @@ func (s *Store) ListBillableOrgIDs(ctx context.Context) ([]uuid.UUID, error) {
 		 JOIN orgs o ON o.id = se.org_id
 		 WHERE o.plan = 'pro'
 		   AND o.billing_mode = 'legacy'
+		   AND o.billing_provider != 'autumn'
 		   AND (se.ended_at IS NULL OR se.ended_at > o.last_usage_reported_at)`)
 	if err != nil {
 		return nil, err
@@ -330,6 +381,7 @@ func (s *Store) ListFreeOrgIDsWithOpenUsage(ctx context.Context) ([]uuid.UUID, e
 		 FROM sandbox_scale_events se
 		 JOIN orgs o ON o.id = se.org_id
 		 WHERE o.plan = 'free'
+		   AND o.billing_provider != 'autumn'
 		   AND (se.ended_at IS NULL OR se.ended_at > o.last_usage_reported_at)`)
 	if err != nil {
 		return nil, err
