@@ -11,7 +11,11 @@ export interface CreateSessionParams {
   /** get-or-create idempotency/routing key — one session per key. */
   key?: string;
   webhook?: string;
-  destinations?: Array<{ url: string; secret?: string; level?: Level; types?: string[]; includeRaw?: boolean; enabled?: boolean }>;
+  /**
+   * Inline webhook destinations. These can't carry a signing `secret` — to sign
+   * deliveries, register the destination with `session.destinations.create({ secret })`.
+   */
+  destinations?: Array<{ url: string; level?: Level; types?: string[]; includeRaw?: boolean; enabled?: boolean }>;
   limits?: Limits;
   /** Makes a keyless create retry-safe (sent as the Idempotency-Key header). */
   idempotencyKey?: string;
@@ -34,15 +38,10 @@ export class Sessions {
   constructor(private readonly http: Http) {}
 
   async create(params: CreateSessionParams): Promise<Session> {
-    const { idempotencyKey, destinations, ...rest } = params;
-    const body = {
-      ...rest,
-      // inline destinations on create take `secret_ref`; the standalone API takes `secret`.
-      destinations: destinations?.map(({ secret, ...d }) => ({ ...d, secretRef: secret })),
-    };
+    const { idempotencyKey, ...body } = params;
     const r = await this.http.request<{ session: SessionData; clientToken?: string }>(
       "POST", "/sessions",
-      { body, idempotencyKey, idempotent: Boolean(idempotencyKey || rest.key) },
+      { body, idempotencyKey, idempotent: Boolean(idempotencyKey || params.key) },
     );
     return new Session(this.http, r.session, r.clientToken);
   }
@@ -55,41 +54,18 @@ export class Sessions {
 }
 
 /**
- * A handle to one session. Returned by `sessions.create`/`get` (org key) and by
- * `connectSession` (browser, client token) — same type, both auth modes.
+ * Read + steer surface for one session. Works with a session **client token** (browser-safe,
+ * `read`+`steer` scopes) or an org key, and is what `connectSession` returns. For management
+ * (lifecycle, destinations, deliveries, minting tokens) use the full {@link Session} returned
+ * by `sessions.create`/`get` with the org key.
  */
-export class Session {
-  /** Present after create / connectSession — safe to hand to a browser. */
-  readonly clientToken?: string;
-  /** Webhook destinations + delivery records for this session (management — need the org key). */
-  readonly destinations: Destinations;
-  readonly deliveries: Deliveries;
-  private data: SessionData;
-
-  constructor(private readonly http: Http, data: SessionData, clientToken?: string) {
-    this.data = data;
-    this.clientToken = clientToken;
-    this.destinations = new Destinations(http, data.id);
-    this.deliveries = new Deliveries(http, data.id);
-  }
-
-  get id(): string { return this.data.id; }
-  get status(): SessionStatus { return this.data.status; }
-  get lastTurn(): LastTurn | undefined { return this.data.lastTurn; }
-  /** The latest fetched session record. */
-  get snapshot(): SessionData { return this.data; }
-
-  async refresh(): Promise<this> {
-    this.data = await this.http.request<SessionData>("GET", `/sessions/${this.id}`);
-    return this;
-  }
+export class ClientSession {
+  constructor(protected readonly http: Http, readonly id: string, readonly clientToken?: string) {}
 
   /**
    * Stream events as an async iterator. Reconnects from the last seq on a dropped
    * connection and keeps tailing until the `signal` aborts. Replays the log from `after`
-   * (default 0) on first connect, so opening a session shows its whole history.
-   *
-   *   for await (const ev of session.events({ signal })) { switch (ev.type) { … } }
+   * (default 0) on first connect.
    */
   async *events(opts: StreamOptions = {}): AsyncGenerator<Event> {
     let after = opts.after ?? 0;
@@ -137,16 +113,6 @@ export class Session {
     return this.http.request("GET", `/sessions/${this.id}/messages`, { query: opts as Query });
   }
 
-  /** Per-turn history (timing + outcome). */
-  turns(): Promise<Turn[]> {
-    return this.http
-      .request<{ data?: Turn[] } | Turn[]>("GET", `/sessions/${this.id}/turns`)
-      .then((r) => (Array.isArray(r) ? r : r.data ?? []));
-  }
-  turn(turnId: string): Promise<Turn> {
-    return this.http.request("GET", `/sessions/${this.id}/turns/${turnId}`);
-  }
-
   /** Send a message; wakes the session. */
   async steer(text: string, opts: { idempotencyKey?: string } = {}): Promise<{ id: string; seq: number }> {
     const r = await this.http.request<{ event: { id: string; seq: number } }>(
@@ -154,6 +120,43 @@ export class Session {
       { body: { text, idempotencyKey: opts.idempotencyKey }, idempotent: Boolean(opts.idempotencyKey) },
     );
     return r.event;
+  }
+}
+
+/**
+ * Full handle to one session — everything in {@link ClientSession} plus management
+ * (lifecycle, destinations, deliveries, client tokens). Needs the **org key**; returned by
+ * `sessions.create`/`get`.
+ */
+export class Session extends ClientSession {
+  /** Webhook destinations + delivery records for this session (org key). */
+  readonly destinations: Destinations;
+  readonly deliveries: Deliveries;
+  private data: SessionData;
+
+  constructor(http: Http, data: SessionData, clientToken?: string) {
+    super(http, data.id, clientToken);
+    this.data = data;
+    this.destinations = new Destinations(http, data.id);
+    this.deliveries = new Deliveries(http, data.id);
+  }
+
+  get status(): SessionStatus { return this.data.status; }
+  get lastTurn(): LastTurn | undefined { return this.data.lastTurn; }
+  /** The latest fetched session record. */
+  get snapshot(): SessionData { return this.data; }
+
+  async refresh(): Promise<this> {
+    this.data = await this.http.request<SessionData>("GET", `/sessions/${this.id}`);
+    return this;
+  }
+
+  /** Per-turn history (timing + outcome), paginated. */
+  turns(opts: { after?: string; limit?: number } = {}): Promise<ListPage<Turn>> {
+    return this.http.request("GET", `/sessions/${this.id}/turns`, { query: opts as Query });
+  }
+  turn(turnId: string): Promise<Turn> {
+    return this.http.request("GET", `/sessions/${this.id}/turns/${turnId}`);
   }
 
   /** The resolved final result + last-turn summary. */
