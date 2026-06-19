@@ -1,3 +1,24 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@500&display=swap');
+
 h5 {
   font-family: 'Inter', sans-serif;
+}
+
+/* Brand wordmark in the navbar — matches the marketing site (Geist Mono, medium, tight,
+   lowercase). Mintlify renders its logo as an <img>, which can't use a page web font, so
+   hide it and draw the wordmark. The :has(.nav-logo) selector targets the logo link by
+   structure, not a theme-specific class, so a theme change won't blank it. */
+#navbar .nav-logo {
+  display: none;
+}
+#navbar a:has(.nav-logo)::after {
+  content: "opencomputer";
+  font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 500;
+  font-size: 1.125rem;
+  letter-spacing: -0.025em;
+  color: #131311;
+}
+.dark #navbar a:has(.nav-logo)::after {
+  color: #dfdfdf;
 }
