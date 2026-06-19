@@ -42,5 +42,3 @@ The agent's final `say` is the session result. `ask` ends the turn with `yield_r
 - To work on a repo, include the repo URL and branch or commit in the task text, then have the agent use `use_repo` or `bash` + `git clone`. Public repos work today; private-repo connections are coming soon.
 - Have it `say` a clear final result — that's what `GET /sessions/:id/result` returns.
 - Have it `ask` only when it genuinely needs a decision; otherwise it should proceed.
-
-For a complete starting point, use the [prompt template](/agent-sessions/prompting). It includes operating rules for progress updates, verification, idempotency, and final results.
