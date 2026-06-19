@@ -5,26 +5,28 @@ description: "Define an agent, then run resumable, steerable sessions"
 
 Give an agent a prompt and a task; OpenComputer runs it on a managed runtime and records every step as a **durable, streamable, resumable session** — stream it live, steer it with a message, and get results by webhook.
 
-## Managed pieces
+## Built into every session
 
 <CardGroup cols={2}>
-  <Card title="Self-healing, managed runtime" icon="heart-pulse">
-    - Crash → **auto-restart**, picks up where it was
-    - Idle → hibernate (≈ free); an **idle** session survives sandbox loss
-    - You never restart anything — [details](/agent-sessions/durability)
+  <Card title="Self-healing runtime" icon="heart-pulse">
+    - Runtime crashes restart automatically
+    - Idle sessions hibernate and wake on the next message
+    - Turn deadlines bound hangs
   </Card>
-  <Card title="Brain / hands isolation" icon="shield-halved">
-    - The **brain** (agent loop) runs apart from the **hands** sandbox (its files + commands)
-    - Untrusted work stays contained
-    - Your model key never enters either sandbox — it lives in the [secret store](/sandboxes/secrets)
+  <Card title="Brain / hands sandboxing" icon="shield-halved">
+    - The **brain** (agent loop) runs apart from the **hands** sandbox (files and commands)
+    - Untrusted file and shell work stays contained
+    - Your model key stays in the [secret store](/sandboxes/secrets), never in either sandbox
   </Card>
-  <Card title="Durable log & resume" icon="database">
-    - Every step in one ordered, durable log
-    - Reconnect from any cursor — nothing missed
+  <Card title="Live streaming and steering" icon="radio">
+    - Stream events directly from the browser with a session token
+    - Reconnect from any `seq` without gaps
+    - Send follow-up messages without exposing your org key
   </Card>
-  <Card title="Reliable delivery" icon="paper-plane">
-    - At-least-once, retried, dead-lettered
-    - Signed ([Standard Webhooks](https://www.standardwebhooks.com)); dedupe on `webhook-id`
+  <Card title="Reliable backend delivery" icon="paper-plane">
+    - Deliver user-level events to your webhook
+    - Signed with [Standard Webhooks](https://www.standardwebhooks.com)
+    - Retried, dead-lettered, inspectable, and redeliverable
   </Card>
 </CardGroup>
 
