@@ -57,3 +57,16 @@ pre code {
   line-height: 1.5;
   margin-top: 0.625rem; /* was mt-1 (4px) — too tight under the heading; give it air */
 }
+
+/* Corner radius: OC's brand radius is 6px (the site's --radius). Mint already uses 6px for
+   small UI, but over-rounds the big surfaces to 16px (rounded-2xl). Bring code blocks,
+   callouts, and cards to the brand radius — crisper + consistent. Dial --oc-radius to taste
+   (0.25rem = crisper, 0 = terminal-sharp). Pills/badges (rounded-full) are left alone. */
+:root {
+  --oc-radius: 0.375rem;
+}
+[data-component-part="code-block-root"],
+[data-component-part="card"],
+.callout {
+  border-radius: var(--oc-radius);
+}
