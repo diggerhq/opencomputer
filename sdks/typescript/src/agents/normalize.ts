@@ -4,7 +4,7 @@
 
 const NUMERIC = new Set([
   "seq", "head", "inputCursor", "inputFromSeq", "inputToSeq", "exitCode", "bytes", "port",
-  "numTurns", "revision", "tokens", "turnSeconds", "turns", "activeSeconds", "usd",
+  "numTurns", "revision", "tokens", "turnSeconds", "turns",
   "attempts", "responseCode",
 ]);
 

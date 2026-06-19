@@ -25,7 +25,7 @@ A **session** is the durable unit of an [agent](/agent-sessions/agents) at work:
 | `failed` | The session errored out. |
 | `archived` | Closed; read-only. |
 
-A session also carries `last_turn = { id, state, yield_reason?, result_event_id? }` and `usage`; the fuller turn record (`started_at`, `completed_at`, `error`, `active_seconds`, `usage`) comes from [`GET …/result`](/agent-sessions/api-reference) and `…/turns`. The **`yield_reason`** tells you *why* the last turn ended — `completed`, `needs_input` (the agent asked a question — the session is now `awaiting_input`; answer by [steering](/agent-sessions/messaging)), `budget_exceeded` / `deadline_exceeded` / `max_turns` (a [limit](#limits) tripped), or `canceled`.
+A session also carries `last_turn = { id, state, yield_reason?, result_event_id? }`; the fuller turn record (`started_at`, `completed_at`, `error`) comes from [`GET …/result`](/agent-sessions/api-reference) and `…/turns`. The **`yield_reason`** tells you *why* the last turn ended — `completed`, `needs_input` (the agent asked a question — the session is now `awaiting_input`; answer by [steering](/agent-sessions/messaging)), `budget_exceeded` / `deadline_exceeded` / `max_turns` (a [limit](#limits) tripped), or `canceled`.
 
 ## Fetch the result
 
@@ -56,7 +56,7 @@ Response:
 
 ## Limits
 
-Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are **non-monetary** (no dollar caps — we don't bill model usage yet; you run on your own key). Hitting one ends the turn with the matching `yield_reason`. (`usage` is observed-only.)
+Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are **non-monetary** (no dollar caps — we don't bill model usage yet; you run on your own key). Hitting one ends the turn with the matching `yield_reason`.
 
 ## Stop a session
 

@@ -32,7 +32,7 @@ const res = await fetch(
 
 ## Hibernate & resume
 
-When a session has nothing to do it goes **idle** and its sandbox **hibernates** — the VM is snapshotted and stopped. You pay storage-only while idle; **active seconds only** show up in usage. The next message (a steer, or the next turn) wakes it, typically sub-second, and it continues with prior context.
+When a session has nothing to do it goes **idle** and its sandbox **hibernates** — the VM is snapshotted and stopped. You pay storage-only while idle. The next message (a steer, or the next turn) wakes it, typically sub-second, and it continues with prior context.
 
 <Note>This mirrors [sandbox hibernation](/sandboxes/timeout): idle ≈ free, fast wake. Sessions manage it for you — you don't set a timeout per turn. The runtime's state is also **checkpointed off-box** at each hibernate, so an idle session resumes even if its sandbox is reclaimed.</Note>
 

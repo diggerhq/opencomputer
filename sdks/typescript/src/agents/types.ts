@@ -38,8 +38,6 @@ export interface LastTurn {
   error?: unknown;
 }
 
-export interface SessionUsage { activeSeconds?: number; usd?: number; tokens?: number; }
-
 export interface SessionData {
   id: string;
   status: SessionStatus;
@@ -48,7 +46,6 @@ export interface SessionData {
   agentSnapshot?: { promptHash?: string; model?: string; runtime?: string; revision?: number };
   credentialId?: string;
   lastTurn?: LastTurn;
-  usage?: SessionUsage;
   limits?: Limits;
   key?: string;
   createdAt?: string;
