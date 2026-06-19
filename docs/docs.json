@@ -89,6 +89,7 @@
       },
       {
         "group": "Reserved Capacity",
+        "tag": "Preview",
         "pages": [
           "reserved-capacity/overview",
           "reserved-capacity/concepts",
