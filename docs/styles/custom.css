@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap');
 
 h5 {
   font-family: 'Inter', sans-serif;
@@ -21,4 +21,26 @@ h5 {
 }
 .dark #navbar a:has(.nav-logo)::after {
   color: #dfdfdf;
+}
+
+/* ── Subtle brand vibe — layered on mint, nothing structural ─────────────────── */
+
+/* Code is the brand's signature texture: Geist Mono (the site's monospace). Only the
+   typeface changes — Mintlify keeps its code-block chrome and syntax colors. */
+code,
+kbd,
+samp,
+pre,
+pre code {
+  font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Brand selection: ink-on-paper, inverted, matching opencomputer.dev's ::selection. */
+::selection {
+  background: #131311;
+  color: #f8f6f1;
+}
+.dark ::selection {
+  background: #dfdfdf;
+  color: #0f0f0f;
 }
