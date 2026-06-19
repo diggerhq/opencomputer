@@ -9,13 +9,15 @@ When you write a prompt for the `claude` [runtime](/agent-sessions/runtimes), it
 
 | Tool | What it does |
 | --- | --- |
-| `bash` | Run a shell command in the sandbox — the **only** place commands run. Each call is a fresh shell, so use absolute paths or `cd /workspace && …`. Returns exit code + stdout/stderr. |
+| `bash` | Run a shell command in the sandbox. |
 | `read` | Read a file from the sandbox. |
 | `write` | Write a file to the sandbox. |
 | `ls` | List a directory in the sandbox. |
-| `use_repo` | Check out a **public** git repository into the workspace. (Private-repo access and prepared [workspaces](/agent-sessions/workspaces) — connections, repo catalog, scoped tokens — are coming soon; for launch, point it at a public URL or `git clone` via `bash`.) |
+| `use_repo` | Check out a public git repository. |
 
-These map to events you can stream: a `bash` run surfaces as an [`exec.completed`](/agent-sessions/events#event-shape) event (`{ command, exit_code, summary }`), with large output available via `content_ref`.
+`bash` is the only place commands run. Each call is a fresh shell, so use absolute paths or `cd /workspace && ...`. A run surfaces as an [`exec.completed`](/agent-sessions/events#event-shape) event (`{ command, exit_code, summary }`), with large output available via `content_ref`.
+
+For launch, `use_repo` works with public repos. Private-repo access and prepared [workspaces](/agent-sessions/workspaces) are coming soon; until then, use a public URL or `git clone` via `bash`.
 
 <Note>**Network:** the sandbox has **open outbound internet** by default (so `git clone`, package installs, and API calls just work), with private, loopback, link-local, and cloud-metadata addresses blocked. Per-agent egress allowlists are coming.</Note>
 
@@ -23,10 +25,12 @@ These map to events you can stream: a `bash` run surfaces as an [`exec.completed
 
 | Tool | What it does |
 | --- | --- |
-| `say` | Emit a message to the user — a `user`-level [`message`](/agent-sessions/events) event. The agent's final `say` is the session's result. |
-| `ask` | Ask the user a question and **pause** — the turn ends with `yield_reason: "needs_input"`. Answer by [steering](/agent-sessions/messaging) a reply, which wakes the session. |
+| `say` | Emit a `user`-level message. |
+| `ask` | Ask a question and pause the turn. |
 
-<Note>`ask` is how an agent gets a decision today. The turn yields rather than blocking; your app sees `last_turn.yield_reason = "needs_input"` and replies with a steer. The formal blocking `ask` state is coming soon.</Note>
+The agent's final `say` is the session result. `ask` ends the turn with `yield_reason: "needs_input"`; answer by [steering](/agent-sessions/messaging) a reply, which wakes the session.
+
+<Note>The formal blocking `ask` state is coming soon. Today the turn yields rather than blocking.</Note>
 
 ## Delivering work to external systems
 

@@ -44,7 +44,10 @@ Every send and its outcome — the data behind a deliveries dashboard.
 A delivery moves `pending → delivering → delivered`, or `failed` (retrying) → `dead_letter` after the max attempts.
 
 ```
-Delivery = { id, session, destination, event_id, event_seq, status, attempts, last_attempt_at, response_code?, error?, created_at, updated_at }
+Delivery = {
+  id, session, destination, event_id, event_seq, status, attempts,
+  last_attempt_at, response_code?, error?, created_at, updated_at
+}
 ```
 
 <Note>Coming soon: full request/response **body** capture in delivery detail (today records status, attempts, response code, and error); a **test-ping** for a destination; and **org/agent-scoped** destinations that persist across sessions.</Note>

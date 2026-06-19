@@ -28,9 +28,9 @@ Each publish appends a `user`-level event and upserts the artifact, so it reache
 The same snapshot-plus-stream pattern as [events](/agent-sessions/events): list on load, subscribe for changes.
 
 ```
-GET /v3/sessions/:id/artifacts             → [Artifact]      # the panel on load (survives refresh)
-GET /v3/sessions/:id/artifacts/:key/content                  # durable file bytes
-events: artifact.published | artifact.updated | artifact.removed   (level: user)
+GET /v3/sessions/:id/artifacts
+GET /v3/sessions/:id/artifacts/:key/content
+events: artifact.published | artifact.updated | artifact.removed
 
 Artifact = { key, kind: "preview" | "file" | "link", title?, status?, url?,
              content_type?, bytes?, created_at, updated_at }

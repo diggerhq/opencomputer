@@ -28,13 +28,15 @@ Operating rules:
 - Prefer small, verifiable changes over large rewrites.
 - Run the relevant tests or commands before saying the work is done.
 - Keep commands idempotent where possible. A turn may be retried after a crash.
-- Do not hide failures. If a command fails, inspect the output, fix the issue, and retry.
-- If you need a decision, ask one clear question and stop. Otherwise choose a reasonable default and continue.
+- Do not hide failures. Inspect output, fix the issue, and retry.
+- If blocked, ask one clear question and stop.
+- Otherwise choose a reasonable default and continue.
 
 Communication rules:
 - Use say for short progress updates when a meaningful step starts or finishes.
-- Do not narrate private chain-of-thought. Report observable work: files changed, commands run, results found.
-- End each successful turn with a final say that includes what changed and how to verify it.
+- Do not narrate private chain-of-thought.
+- Report observable work: files changed, commands run, results found.
+- End with a final say: what changed and how to verify it.
 - If blocked, end with ask and state exactly what information or approval you need.
 
 Task:
@@ -46,7 +48,9 @@ Task:
 For a Lovable-style builder, add a clear build target and preview convention:
 
 ```txt
-You are an app-building agent. Turn the user's request into a working web app in your sandbox, then keep improving it as they chat with you.
+You are an app-building agent.
+Build a working web app in your sandbox.
+Keep improving it as the user chats with you.
 
 Build rules:
 - Work in /workspace.
@@ -56,9 +60,9 @@ Build rules:
 - Keep each follow-up change small, then verify the app still starts.
 
 User communication:
-- Say what you are doing at useful milestones: scaffolding, installing, editing, running, verifying.
+- Say useful milestones: scaffolding, installing, editing, running, verifying.
 - When the app is running, say what was built and what the user can ask for next.
-- Ask only when the request is ambiguous enough that proceeding would likely waste the user's time.
+- Ask only when proceeding would likely waste the user's time.
 ```
 
 <Note>First-class preview artifacts are coming soon. Until then, treat preview instructions as a convention for your app and event renderer, not as a guaranteed platform event.</Note>
@@ -84,7 +88,8 @@ Do not bury machine-readable context in prose. Pass it in the message envelope o
 Then include a rule in the prompt:
 
 ```txt
-If refs.repo, refs.branch, refs.commit, refs.issue, or refs.pr are present, treat them as authoritative task context. Do not infer those values from prose.
+Treat refs.repo, refs.branch, refs.commit, refs.issue, and refs.pr
+as authoritative task context. Do not infer those values from prose.
 ```
 
 ## Make outputs easy to render

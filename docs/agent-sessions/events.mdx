@@ -46,11 +46,13 @@ The stable contract is the top-level **`type`** — **switch on it, don't parse 
 
 Every event carries a `level` saying **who it's for**. You filter the stream (and webhook deliveries) by it, so each surface shows the right amount of detail.
 
-| Level | What lands here | Reach for it when you want… |
+| Level | Contains | Use for |
 | --- | --- | --- |
-| `user` | What a person is meant to read — the answer, results, a question back to them. The default for webhook delivery. | a chat bubble, the final result, a notification |
-| `progress` | Plain-language step updates: "cloning the repo", "running tests", "found 3 failures". | a live "what's it doing right now" feed or status line |
-| `internal` | Tool calls and runtime detail — verbose, not meant for end users (the model's private reasoning is never surfaced). | debugging, an audit trail, your own internal console |
+| `user` | Answers, results, and questions. | Chat, final results, notifications. |
+| `progress` | Plain-language work updates. | Activity feeds and status lines. |
+| `internal` | Tool calls and runtime detail. | Debug consoles and audit trails. |
+
+The model's private reasoning is never surfaced. Webhooks default to `user`.
 
 Filtering is **cumulative** — `user` is the narrowest, `internal` is everything:
 

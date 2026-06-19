@@ -38,7 +38,7 @@ Content-Type: application/json
   "name": "quickstart-coder",
   "runtime": "claude",
   "model": "anthropic/claude-opus-4-8",
-  "prompt": "You are a coding agent. Work in /workspace. Use bash/read/write/ls for all work. Use say for concise progress and final results. Ask only when blocked.",
+  "prompt": "Work in /workspace. Say progress. Ask only when blocked.",
   "key": "sk-ant-...",
   "limits": { "turns": 4, "turn_seconds": 600 }
 }
@@ -81,15 +81,21 @@ Response:
 Use the `client_token` in the browser. Ask for `progress` for a good activity feed, or `internal` for an operator/debug view.
 
 ```http
-GET https://api.opencomputer.dev/v3/sessions/sess_.../events?stream=sse&level=progress&token=ct_...
+GET /v3/sessions/sess_.../events?stream=sse&level=progress&token=ct_...
+Host: api.opencomputer.dev
 ```
 
 In a browser:
 
 ```js
-const events = new EventSource(
-  `${OC}/v3/sessions/${sessionId}/events?stream=sse&level=progress&token=${clientToken}`,
-);
+const url = new URL(`${OC}/v3/sessions/${sessionId}/events`);
+url.search = new URLSearchParams({
+  stream: "sse",
+  level: "progress",
+  token: clientToken,
+});
+
+const events = new EventSource(url.toString());
 
 events.onmessage = (message) => {
   const event = JSON.parse(message.data);
@@ -104,10 +110,12 @@ Each event's `seq` is sent as the SSE `id`, so `EventSource` resumes automatical
 Switch on the event `type`. Do not parse prose to decide whether work finished or failed.
 
 ```json
-{ "type": "agent.message", "level": "user", "body": { "text": "Done. I built..." } }
-{ "type": "tool.call", "level": "progress", "body": { "tool": "bash", "args_summary": "npm test" } }
-{ "type": "exec.completed", "level": "progress", "body": { "exit_code": 0, "summary": "12 tests passed" } }
-{ "type": "turn.completed", "level": "user", "body": { "yield_reason": "completed", "result_event_id": "evt_..." } }
+[
+  { "type": "agent.message", "body": { "text": "Done." } },
+  { "type": "tool.call", "body": { "args_summary": "npm test" } },
+  { "type": "exec.completed", "body": { "exit_code": 0 } },
+  { "type": "turn.completed", "body": { "yield_reason": "completed" } }
+]
 ```
 
 Handle `turn.completed.body.yield_reason` explicitly:

@@ -52,10 +52,12 @@ What's guaranteed today, and what isn't:
 | --- | --- |
 | Client disconnects | Reconnect from your cursor; nothing lost. |
 | Session idles | Sandbox hibernates; resumes intact on the next message. |
-| Runtime **crashes** | **Auto-restarted in the same sandbox; continues from the on-box journal** — work since the last journaled step may repeat (make side effects idempotent). |
+| Runtime **crashes** | Auto-restarted; continues from the on-box journal. |
 | Runtime **hangs** | Bounded by the turn deadline; the turn ends `deadline_exceeded` — steer to continue. |
-| Sandbox lost **while idle** | Recreated and **restored from the last checkpoint**; conversation resumes from the last completed turn. **Uncommitted hands-sandbox files are not restored** — commit/push to keep them. |
-| Sandbox lost **mid-turn** | That one turn **re-runs** from the log. Only **logged / committed / delivered** work product is guaranteed. |
+| Sandbox lost **while idle** | Recreated from the last checkpoint. |
+| Sandbox lost **mid-turn** | That turn re-runs from the log. |
+
+Work since the last journaled step may repeat, so make side effects idempotent. Uncommitted hands-sandbox files are not restored after sandbox loss; commit or push to keep them.
 
 <Warning>
   The one edge not yet covered: a sandbox lost **mid-turn** re-runs that turn rather than resuming mid-thought — so in-flight, unlogged work can be redone. Build idempotent side effects, and treat the event log (and delivered webhooks) as your durable record. Byte-exact **mid-turn** resume is coming in a later release.
