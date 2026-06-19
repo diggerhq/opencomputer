@@ -2152,6 +2152,10 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				// error_msg/failed_at columns added in migration 039.
 				// Pre-fix the reason was silently discarded.
 				_ = s.store.SetCheckpointFailed(context.Background(), checkpointID, err.Error())
+				s.publishCheckpointEvent(context.Background(), "checkpoint_failed", checkpointID, sandboxID, orgID, session.WorkerID, map[string]any{
+					"name":      req.Name,
+					"error_msg": err.Error(),
+				})
 				return
 			}
 			// Persist the actual archive size from the worker's response.
@@ -2190,6 +2194,10 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 			if err != nil {
 				log.Printf("api: async checkpoint %s failed: %v", checkpointID, err)
 				_ = s.store.SetCheckpointFailed(context.Background(), checkpointID, err.Error())
+				s.publishCheckpointEvent(context.Background(), "checkpoint_failed", checkpointID, sandboxID, orgID, session.WorkerID, map[string]any{
+					"name":      req.Name,
+					"error_msg": err.Error(),
+				})
 				return
 			}
 			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, rootfsKey, workspaceKey, sizeBytes)

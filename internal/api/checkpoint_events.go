@@ -20,6 +20,7 @@ import (
 //
 // Event types:
 //   checkpoint_ready    — checkpoint upload finished; UPSERT row in D1
+//   checkpoint_failed   — async checkpoint failed; UPSERT failed row in D1
 //   checkpoint_deleted  — checkpoint dropped from cell PG; DELETE row in D1
 //
 // Best-effort: failure to XADD is logged but doesn't fail the caller. The
