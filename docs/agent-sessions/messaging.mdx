@@ -34,7 +34,6 @@ Every inbound and outbound message normalizes to this shape. The core fields are
   "actor": { "id": "client:user-7", "display": "Ada", "type": "human" },
   "conversation": { "source": "client", "ref": "thread-42" },
   "text": "also check the CI config",
-  "refs": {},
   "ts": "2026-06-18T12:00:00Z",
   "raw": {}
 }
@@ -44,7 +43,6 @@ Every inbound and outbound message normalizes to this shape. The core fields are
 - **`actor`** — who sent it (`human` | `agent` | `system`), namespaced.
 - **`conversation`** — an opaque reply/routing anchor.
 - **`text`** — the content the agent reads (or that you receive).
-- **`refs`** — structured context the agent shouldn't have to infer from prose. Blessed keys: `repo`, `branch`, `commit`, `ref`, `issue`, `pr` (plus your own). Pass them on the initial `input` so a coding agent knows its target.
 - **`raw`** — untouched original payload; optional, never read by the core.
 
 To deliver a session's output, register a webhook destination. Deliveries carry the full [Event](/agent-sessions/events) (a message event's `body` is this envelope) — see [Webhooks](/agent-sessions/webhooks).
