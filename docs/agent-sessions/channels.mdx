@@ -1,4 +1,5 @@
 ---
+mode: "wide"
 title: "Channels"
 description: "Talk to a session where people already work — Slack, GitHub (coming soon)"
 ---
@@ -9,6 +10,6 @@ A **channel** binds a session's thread to a place people already work, so the sa
 
 - **Inbound.** A Slack `@mention` or thread reply is verified, de-duplicated, and appended to the session as a [steer](/agent-sessions/messaging) — the same inbound message you can post over the API.
 - **Outbound.** The platform projects the session's `user` and `progress` [events](/agent-sessions/events#visibility-levels) back to the thread. The agent never calls Slack itself — it appends events; the platform delivers them, durably and idempotently.
-- **Additive bindings.** A session has a set of bindings added over its life; it is never typed as "a Slack session" or "a GitHub session." A chat-born session that opens a PR gains a binding to that PR. Routing follows event level — conversation goes to conversation bindings, work product to delivery targets.
+- **Bindings accumulate.** A session gains bindings over its life; it is never typed as "a Slack session" or "a GitHub session." A chat-born session that opens a PR gains a binding to that PR. Routing follows event level — conversation goes to conversation bindings, work product to delivery targets.
 
 A channel is one consumer of the same public API a custom UI uses: post messages in, render the [event stream](/agent-sessions/events) at the level you want, and optionally bind a thread so the platform projects for you.

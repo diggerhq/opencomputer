@@ -1,4 +1,5 @@
 ---
+mode: "wide"
 title: "Runtimes"
 description: "The engine that runs your agent — claude today, more soon"
 ---
@@ -37,16 +38,16 @@ Each **turn is one bounded run**, invoke-style — it:
 
 Across turns it continues an on-box **journal**; the durable record is the event log *plus* that journal, which the platform checkpoints at each boundary and restores on recovery (see [Failure behavior](#failure-behavior)).
 
-### Supervision and recovery
+### Recovery
 
-A regional **supervisor** owns each running session and keeps the runtime healthy — you never restart anything:
+Sessions are fully managed — you never restart anything yourself:
 
-- **One driver at a time.** The supervisor holds a **fenced lease** on the session: exactly one runtime instance can write at a time, and the fence rejects writes from a stale instance (e.g. a slow machine that returns after it was given up), so a session never has two concurrent writers.
-- **Liveness.** The lease is renewed while a turn runs. If the runtime's machine dies, the lease lapses and the supervisor **re-claims the turn and continues it** from the journal.
-- **Crash / hang / lost machine.** A bad exit restarts the turn in place (bounded attempts, with crash-loop backoff); a hung turn is bounded by a **deadline** and ends `deadline_exceeded`; a lost machine is recreated and **restored from the last checkpoint**. Full matrix [below](#failure-behavior).
-- **A turn that can't start fails cleanly.** If the model key can't be resolved or the runtime image can't be fetched, the turn ends with an **`error` event carrying the reason** and the session returns to idle, rather than hanging.
-- **Backstop reconciler.** A periodic sweep re-dispatches work whose wake-up was missed, re-claims turns whose lease expired, and resets sessions left `running` after a crash, so stranded work is picked up.
-- **Observable.** Every turn and machine transition — turn start / complete / error, sandbox create / provision / hibernate, lease renew / fence — is recorded, so the platform can show exactly where a session is and why a turn ended the way it did.
+- **One writer at a time.** Only one runtime instance advances a session at any moment; a stale or slow instance that returns after it was replaced is rejected, so a session never has two concurrent writers and the log never forks.
+- **A lost machine is picked back up.** If the machine running a turn dies, the turn is continued from where it left off, not restarted from scratch.
+- **Crash, hang, lost machine.** A bad exit restarts the turn in place (bounded retries); a hung turn is cut off by a **deadline** and ends `deadline_exceeded`; a lost machine is recreated and **restored from its last checkpoint**. Full matrix [below](#failure-behavior).
+- **A turn that can't start fails cleanly.** If the model key can't be resolved or the runtime image can't be fetched, the turn ends with an **`error` event carrying the reason** and the session returns to idle — it doesn't hang.
+- **Nothing gets stranded.** A periodic safety sweep picks up any session whose work was missed or left mid-flight, so nothing stays stuck silently.
+- **Everything is recorded.** Every turn and sandbox transition is logged, so you can see where a session is and why a turn ended the way it did.
 
 ### Failure behavior
 
