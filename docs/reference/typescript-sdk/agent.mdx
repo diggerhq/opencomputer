@@ -1,7 +1,14 @@
 ---
-title: "Agent"
-description: "Start and manage Claude agent sessions"
+title: "Sandbox agent"
+description: "Start and manage an agent session inside a sandbox (low-level)"
 ---
+
+<Warning>
+The in-sandbox agent (`sandbox.agent`, exported as `SandboxAgent`) is a low-level
+primitive and is **deprecated**. For most use cases prefer managed **[Durable Agent
+Sessions](/agent-sessions/overview)** — the `OpenComputer` client gives you durable,
+streamable, steerable sessions without managing the sandbox yourself.
+</Warning>
 
 Accessed via `sandbox.agent`.
 
@@ -45,7 +52,7 @@ Start an agent session. [HTTP API →](/api-reference/agent/create)
   Resume session ID
 </ParamField>
 
-<ParamField body="onEvent" type="(event: AgentEvent) => void">
+<ParamField body="onEvent" type="(event: SandboxAgentEvent) => void">
   Event callback
 </ParamField>
 
@@ -61,7 +68,7 @@ Start an agent session. [HTTP API →](/api-reference/agent/create)
   Scrollback done callback
 </ParamField>
 
-**Returns:** `Promise<AgentSession>`
+**Returns:** `Promise<SandboxAgentSession>`
 
 ```typescript
 const session = await sandbox.agent.start({
@@ -76,7 +83,7 @@ const session = await sandbox.agent.start({
 
 Reconnect to a running agent session. Accepts `onEvent`, `onError`, `onExit`, `onScrollbackEnd`.
 
-**Returns:** `Promise<AgentSession>`
+**Returns:** `Promise<SandboxAgentSession>`
 
 ---
 
@@ -84,11 +91,11 @@ Reconnect to a running agent session. Accepts `onEvent`, `onError`, `onExit`, `o
 
 List all agent sessions. [HTTP API →](/api-reference/agent/list)
 
-**Returns:** `Promise<AgentSessionInfo[]>`
+**Returns:** `Promise<SandboxAgentSessionInfo[]>`
 
 ---
 
-## AgentSession
+## SandboxAgentSession
 
 | Member | Type | Description |
 | --- | --- | --- |
@@ -104,9 +111,9 @@ List all agent sessions. [HTTP API →](/api-reference/agent/list)
 
 ## Types
 
-<Accordion title="AgentEvent">
+<Accordion title="SandboxAgentEvent">
 ```typescript
-interface AgentEvent {
+interface SandboxAgentEvent {
   type: string;
   [key: string]: unknown;
 }

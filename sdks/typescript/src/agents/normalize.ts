@@ -27,3 +27,20 @@ export function normalize<T = any>(value: unknown): T {
   }
   return value as T;
 }
+
+// Inverse of normalize: camelCase keys → snake_case for REQUEST bodies (the API reads
+// snake_case). Values are left untouched, and an opaque `raw` payload is not recursed into.
+const snakeKey = (k: string): string => k.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase());
+
+export function serialize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((v) => serialize(v));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const sk = snakeKey(k);
+      out[sk] = sk === "raw" ? v : serialize(v);
+    }
+    return out;
+  }
+  return value;
+}

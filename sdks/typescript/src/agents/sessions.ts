@@ -11,8 +11,10 @@ export interface CreateSessionParams {
   /** get-or-create idempotency/routing key — one session per key. */
   key?: string;
   webhook?: string;
-  destinations?: Array<{ url: string; secret?: string; level?: Level }>;
+  destinations?: Array<{ url: string; secret?: string; level?: Level; types?: string[]; includeRaw?: boolean; enabled?: boolean }>;
   limits?: Limits;
+  /** Makes a keyless create retry-safe (sent as the Idempotency-Key header). */
+  idempotencyKey?: string;
 }
 
 export interface StreamOptions {
@@ -32,15 +34,22 @@ export class Sessions {
   constructor(private readonly http: Http) {}
 
   async create(params: CreateSessionParams): Promise<Session> {
+    const { idempotencyKey, destinations, ...rest } = params;
+    const body = {
+      ...rest,
+      // inline destinations on create take `secret_ref`; the standalone API takes `secret`.
+      destinations: destinations?.map(({ secret, ...d }) => ({ ...d, secretRef: secret })),
+    };
     const r = await this.http.request<{ session: SessionData; clientToken?: string }>(
-      "POST", "/sessions", { body: params },
+      "POST", "/sessions",
+      { body, idempotencyKey, idempotent: Boolean(idempotencyKey || rest.key) },
     );
     return new Session(this.http, r.session, r.clientToken);
   }
   async get(id: string): Promise<Session> {
     return new Session(this.http, await this.http.request<SessionData>("GET", `/sessions/${id}`));
   }
-  list(params: { agent?: string; status?: SessionStatus; key?: string; limit?: number; cursor?: string } = {}): Promise<ListPage<SessionData>> {
+  list(params: { agent?: string; status?: SessionStatus; key?: string; after?: string; before?: string; limit?: number; cursor?: string } = {}): Promise<ListPage<SessionData>> {
     return this.http.request("GET", "/sessions", { query: params as Query });
   }
 }
@@ -109,7 +118,7 @@ export class Session {
   }
 
   /** Read a page of events without streaming. */
-  listEvents(opts: { after?: number; level?: Level; type?: string; limit?: number } = {}): Promise<ListPage<Event>> {
+  listEvents(opts: { after?: number; level?: Level; type?: string; turnId?: string; limit?: number } = {}): Promise<ListPage<Event>> {
     return this.http.request("GET", `/sessions/${this.id}/events`, { query: opts as Query });
   }
 
@@ -142,13 +151,13 @@ export class Session {
   async steer(text: string, opts: { idempotencyKey?: string } = {}): Promise<{ id: string; seq: number }> {
     const r = await this.http.request<{ event: { id: string; seq: number } }>(
       "POST", `/sessions/${this.id}/messages`,
-      { body: { text }, idempotencyKey: opts.idempotencyKey },
+      { body: { text, idempotencyKey: opts.idempotencyKey }, idempotent: Boolean(opts.idempotencyKey) },
     );
     return r.event;
   }
 
   /** The resolved final result + last-turn summary. */
-  result(): Promise<{ lastTurn?: LastTurn; result?: Event }> {
+  result(): Promise<{ lastTurn?: LastTurn | null; result?: Event | null }> {
     return this.http.request("GET", `/sessions/${this.id}/result`);
   }
   cancel(): Promise<void> { return this.http.request("POST", `/sessions/${this.id}/cancel`); }

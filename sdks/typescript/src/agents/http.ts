@@ -1,5 +1,5 @@
 import { errorFromResponse } from "./errors.js";
-import { normalize } from "./normalize.js";
+import { normalize, serialize } from "./normalize.js";
 
 /** Either an org API key (server) or a session-scoped client token (browser/edge). */
 export type Auth = { apiKey: string } | { token: string };
@@ -14,7 +14,7 @@ export interface HttpOptions {
 }
 
 export type Query = Record<string, string | number | boolean | undefined | null>;
-interface RequestOptions { query?: Query; body?: unknown; idempotencyKey?: string; signal?: AbortSignal; }
+interface RequestOptions { query?: Query; body?: unknown; idempotencyKey?: string; signal?: AbortSignal; idempotent?: boolean; }
 
 const DEFAULT_BASE = "https://api.opencomputer.dev/v3";
 
@@ -40,7 +40,9 @@ export class Http {
 
   url(path: string, query?: Query): string {
     const u = new URL(this.base + path);
-    if (query) for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== null) u.searchParams.set(k, String(v));
+    if (query) for (const [k, v] of Object.entries(query)) {
+      if (v !== undefined && v !== null) u.searchParams.set(k.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase()), String(v));
+    }
     return u.toString();
   }
 
@@ -48,19 +50,24 @@ export class Http {
     const headers = this.headers(opts.body !== undefined ? { "Content-Type": "application/json" } : undefined);
     if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
     const init: RequestInit = { method, headers, signal: opts.signal };
-    if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
+    // The SDK owns serialization both ways: camelCase → snake_case on the way out
+    // (the API reads turn_seconds, include_raw, idempotency_key, …), camelCase back in.
+    if (opts.body !== undefined) init.body = JSON.stringify(serialize(opts.body));
     const url = this.url(path, opts.query);
+    // Only retry when the call is safe to repeat: reads, or writes that carry an
+    // idempotency key. Otherwise a retried POST could duplicate work or messages.
+    const canRetry = method === "GET" || method === "HEAD" || opts.idempotent === true;
 
     for (let attempt = 0; ; attempt++) {
       let res: Response;
       try {
         res = await this.doFetch(url, init);
       } catch (e) {
-        if (attempt < this.maxRetries && !opts.signal?.aborted) { await sleep(backoff(attempt)); continue; }
+        if (canRetry && attempt < this.maxRetries && !opts.signal?.aborted) { await sleep(backoff(attempt)); continue; }
         throw e;
       }
       if (res.ok) return res.status === 204 ? (undefined as T) : normalize<T>(await res.json());
-      if ((res.status === 429 || res.status >= 500) && attempt < this.maxRetries) {
+      if (canRetry && (res.status === 429 || res.status >= 500) && attempt < this.maxRetries) {
         await sleep(retryAfterMs(res) ?? backoff(attempt));
         continue;
       }

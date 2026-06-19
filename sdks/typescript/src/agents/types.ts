@@ -1,7 +1,7 @@
 // Domain types for the Durable Agent Sessions API (v3). Field names are camelCase —
 // the client normalizes the API's snake_case at the boundary.
 
-export type SessionStatus = "queued" | "running" | "idle" | "failed" | "archived";
+export type SessionStatus = "queued" | "running" | "awaiting_input" | "idle" | "failed" | "archived";
 export type Level = "user" | "progress" | "internal";
 export type YieldReason =
   | "completed" | "needs_input" | "error"
@@ -29,7 +29,7 @@ export interface Agent {
 }
 
 export interface LastTurn {
-  state?: "queued" | "running" | "ok" | "error";
+  state?: "queued" | "accepted" | "running" | "ok" | "error";
   yieldReason?: YieldReason;
   turnId?: string;
   startedAt?: string;
@@ -40,7 +40,7 @@ export interface LastTurn {
 
 export interface Turn {
   id: string;
-  state?: "queued" | "running" | "ok" | "error";
+  state?: "queued" | "accepted" | "running" | "ok" | "error";
   yieldReason?: YieldReason;
   resultEventId?: string;
   error?: unknown;
@@ -54,6 +54,7 @@ export interface SessionData {
   head?: number;
   inputCursor?: number;
   agentSnapshot?: { promptHash?: string; model?: string; runtime?: string; revision?: number };
+  agentId?: string;
   credentialId?: string;
   lastTurn?: LastTurn;
   limits?: Limits;
@@ -71,25 +72,34 @@ export interface Credential {
 
 export interface Destination {
   id: string;
+  session: string;
+  kind: string;
   url: string;
   level: Level;
-  types?: string[];
+  types?: string[] | null;
   includeRaw: boolean;
   enabled: boolean;
+  hasSecret: boolean;
+  createdAfterSeq?: number;
   createdAt?: string;
+  updatedAt?: string;
 }
 
 export type DeliveryStatus = "pending" | "delivering" | "delivered" | "failed" | "dead_letter";
 
 export interface Delivery {
   id: string;
-  destinationId: string;
+  session: string;
+  destination: string;
   eventId: string;
+  eventSeq?: number;
   status: DeliveryStatus;
   attempts: number;
   lastAttemptAt?: string;
   responseCode?: number;
   error?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 // ── Events ─────────────────────────────────────────────────────────────────────
@@ -103,6 +113,10 @@ export interface EventBase {
   session: string;
   actor: Actor;
   level: Level;
+  turnId?: string;
+  contentRef?: string;
+  bodyTruncated?: boolean;
+  bodyBytes?: number;
   refs: Record<string, unknown>;
 }
 
