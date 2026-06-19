@@ -9,25 +9,14 @@ description: "Steer a session, and the shared message envelope"
 
 Send a message to a running or idle session; it wakes and continues with its prior context. Minimal form is just text:
 
-```ts
-async function steer(sessionId: string, clientToken: string, text: string) {
-  const res = await fetch(
-    `https://api.opencomputer.dev/v3/sessions/${sessionId}/messages`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${clientToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text,
-        idempotency_key: crypto.randomUUID(),
-      }),
-    },
-  );
+```http
+POST https://api.opencomputer.dev/v3/sessions/sess_.../messages
+Authorization: Bearer $CLIENT_TOKEN
+Content-Type: application/json
 
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+{
+  "text": "also check the CI config",
+  "idempotency_key": "msg_01"
 }
 ```
 

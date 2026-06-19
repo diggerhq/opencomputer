@@ -11,8 +11,7 @@ Use a prompt that tells the agent how to work in the sandbox, how to communicate
 
 This is a production-minded baseline for coding agents. Adapt the product-specific section, but keep the operating rules explicit.
 
-```ts
-export const CODING_AGENT_PROMPT = `
+```txt
 You are a coding agent running in an OpenComputer Durable Agent Session.
 
 You work in a remote Linux sandbox. You cannot access the user's machine.
@@ -40,15 +39,13 @@ Communication rules:
 
 Task:
 {{TASK}}
-`.trim();
 ```
 
 ## App-builder variant
 
 For a Lovable-style builder, add a clear build target and preview convention:
 
-```ts
-export const APP_BUILDER_PROMPT = `
+```txt
 You are an app-building agent. Turn the user's request into a working web app in your sandbox, then keep improving it as they chat with you.
 
 Build rules:
@@ -62,7 +59,6 @@ User communication:
 - Say what you are doing at useful milestones: scaffolding, installing, editing, running, verifying.
 - When the app is running, say what was built and what the user can ask for next.
 - Ask only when the request is ambiguous enough that proceeding would likely waste the user's time.
-`.trim();
 ```
 
 <Note>First-class preview artifacts are coming soon. Until then, treat preview instructions as a convention for your app and event renderer, not as a guaranteed platform event.</Note>
@@ -71,21 +67,18 @@ User communication:
 
 Do not bury machine-readable context in prose. Pass it in the message envelope or session input so your prompt can tell the agent to rely on it.
 
-```ts
-await oc("/sessions", {
-  method: "POST",
-  body: JSON.stringify({
-    agent,
-    input: {
-      text: "Review this pull request and summarize risky changes.",
-      refs: {
-        repo: "https://github.com/acme/app",
-        branch: "feature/billing",
-        pr: "128",
-      },
-    },
-  }),
-});
+```json
+{
+  "agent": "agt_...",
+  "input": {
+    "text": "Review this pull request and summarize risky changes.",
+    "refs": {
+      "repo": "https://github.com/acme/app",
+      "branch": "feature/billing",
+      "pr": "128"
+    }
+  }
+}
 ```
 
 Then include a rule in the prompt:

@@ -1,13 +1,13 @@
 ---
 title: "Quickstart"
-description: "Build a streaming agent UI in TypeScript"
+description: "Start a session, stream it live, and steer it"
 ---
 
-Build the smallest useful Durable Agent Sessions app: your backend starts a session with an org key, then your browser streams and steers that one session with a scoped `client_token`.
+Build the smallest useful Durable Agent Sessions integration: define an agent, start a session, stream its event log, then send follow-up messages with a scoped client token.
 
 <CardGroup cols={2}>
   <Card title="Complete example app" icon="github" href="https://github.com/diggerhq/oc-sessions-demos">
-    A Lovable-style app builder using the same pattern.
+    A Lovable-style app builder using the same API calls.
   </Card>
   <Card title="Prompt template" icon="file-lines" href="/agent-sessions/prompting">
     A production-minded Claude runtime prompt you can adapt.
@@ -16,7 +16,7 @@ Build the smallest useful Durable Agent Sessions app: your backend starts a sess
 
 ## Prerequisites
 
-Set two server-side environment variables:
+You need an OpenComputer API key and an Anthropic key:
 
 ```bash
 OPENCOMPUTER_API_KEY=osb_...
@@ -25,232 +25,131 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 <Tip>Grab your OpenComputer API key from [app.opencomputer.dev](https://app.opencomputer.dev). Sessions run the model on your Anthropic key.</Tip>
 
-## 1. Add the server helper
+## 1. Create an agent
 
-Keep all management calls server-side. This helper creates the reusable agent, starts sessions, and mints fresh browser tokens.
+An agent is the reusable definition of what runs: name, runtime, model, prompt, and model credential.
 
-```ts
-// src/oc.ts
-const OC = process.env.OC_API_URL ?? "https://api.opencomputer.dev";
-const ORG_KEY = process.env.OPENCOMPUTER_API_KEY;
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+```http
+POST https://api.opencomputer.dev/v3/agents
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
 
-const PROMPT = `
-You are a coding agent working in an OpenComputer sandbox.
-
-Use bash/read/write/ls for all filesystem and command work.
-Emit short progress updates with say as you work.
-Ask only when blocked. Otherwise make a reasonable choice and continue.
-When done, say exactly what changed and how to verify it.
-`.trim();
-
-export async function oc<T>(path: string, init: RequestInit = {}): Promise<T> {
-  if (!ORG_KEY) throw new Error("OPENCOMPUTER_API_KEY is not set");
-
-  const res = await fetch(`${OC}/v3${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${ORG_KEY}`,
-      "Content-Type": "application/json",
-      ...init.headers,
-    },
-  });
-
-  if (!res.ok) {
-    throw new Error(`OpenComputer ${res.status}: ${await res.text()}`);
-  }
-
-  return res.json() as Promise<T>;
-}
-
-let agentId: Promise<string> | undefined;
-
-export function ensureAgent() {
-  if (!ANTHROPIC_KEY) throw new Error("ANTHROPIC_API_KEY is not set");
-
-  agentId ??= oc<{ id: string }>("/agents", {
-    method: "POST",
-    body: JSON.stringify({
-      name: "quickstart-coder",
-      runtime: "claude",
-      model: "anthropic/claude-opus-4-8",
-      prompt: PROMPT,
-      key: ANTHROPIC_KEY,
-      limits: { turns: 4, turn_seconds: 600 },
-    }),
-  })
-    .then((agent) => agent.id)
-    .catch((err) => {
-      agentId = undefined;
-      throw err;
-    });
-
-  return agentId;
-}
-
-export async function startSession(input: string) {
-  const agent = await ensureAgent();
-
-  return oc<{
-    session: { id: string; status: string; head: number };
-    client_token: string;
-  }>("/sessions", {
-    method: "POST",
-    body: JSON.stringify({ agent, input }),
-  });
-}
-
-export async function mintClientToken(sessionId: string) {
-  return oc<{ client_token: string; expires_at: string }>(
-    `/sessions/${sessionId}/client-tokens`,
-    {
-      method: "POST",
-      body: JSON.stringify({ scopes: ["read", "steer"], ttl: 3600 }),
-    },
-  );
+{
+  "name": "quickstart-coder",
+  "runtime": "claude",
+  "model": "anthropic/claude-opus-4-8",
+  "prompt": "You are a coding agent. Work in /workspace. Use bash/read/write/ls for all work. Use say for concise progress and final results. Ask only when blocked.",
+  "key": "sk-ant-...",
+  "limits": { "turns": 4, "turn_seconds": 600 }
 }
 ```
 
-## 2. Start a session from your backend
+Response:
 
-In a Next.js route, accept a user task and return only the session plus its scoped token. The org key never reaches the browser.
+```json
+{ "id": "agt_...", "name": "quickstart-coder", "revision": 1 }
+```
 
-```ts
-// app/api/sessions/route.ts
-import { startSession } from "@/oc";
+<Tip>`POST /agents` is idempotent by agent name, so it is fine to call this during application startup.</Tip>
 
-export async function POST(req: Request) {
-  const { input } = await req.json();
+## 2. Start a session
 
-  if (typeof input !== "string" || !input.trim()) {
-    return Response.json({ error: "input is required" }, { status: 400 });
-  }
+A session starts work immediately and returns a browser-safe `client_token` for that one session.
 
-  try {
-    return Response.json(await startSession(input));
-  } catch (err) {
-    return Response.json({ error: (err as Error).message }, { status: 502 });
-  }
+```http
+POST https://api.opencomputer.dev/v3/sessions
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "agent": "agt_...",
+  "input": "Create a todo app with local storage and a clean dark UI."
 }
 ```
 
-## 3. Stream events in the browser
+Response:
 
-Use the `client_token` with native `EventSource`. Ask for `progress` when you want a good user-facing activity feed, or `internal` for a debugging console.
+```json
+{
+  "session": { "id": "sess_...", "status": "queued", "head": 1 },
+  "client_token": "ct_..."
+}
+```
 
-```tsx
-const OC = process.env.NEXT_PUBLIC_OC_API_URL ?? "https://api.opencomputer.dev";
+## 3. Stream events
 
-type SessionEvent = {
-  id: string;
-  seq: number;
-  type: string;
-  level: "user" | "progress" | "internal";
-  body?: Record<string, unknown>;
+Use the `client_token` in the browser. Ask for `progress` for a good activity feed, or `internal` for an operator/debug view.
+
+```http
+GET https://api.opencomputer.dev/v3/sessions/sess_.../events?stream=sse&level=progress&token=ct_...
+```
+
+In a browser:
+
+```js
+const events = new EventSource(
+  `${OC}/v3/sessions/${sessionId}/events?stream=sse&level=progress&token=${clientToken}`,
+);
+
+events.onmessage = (message) => {
+  const event = JSON.parse(message.data);
+  render(event);
 };
-
-async function createSession(input: string) {
-  const res = await fetch("/api/sessions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ input }),
-  });
-
-  if (!res.ok) throw new Error(await res.text());
-  return res.json() as Promise<{
-    session: { id: string };
-    client_token: string;
-  }>;
-}
-
-function streamSession(
-  sessionId: string,
-  clientToken: string,
-  onEvent: (event: SessionEvent) => void,
-) {
-  const url = new URL(`${OC}/v3/sessions/${sessionId}/events`);
-  url.searchParams.set("stream", "sse");
-  url.searchParams.set("level", "progress");
-  url.searchParams.set("token", clientToken);
-
-  const es = new EventSource(url.toString());
-  es.onmessage = (message) => onEvent(JSON.parse(message.data));
-  es.onerror = () => {
-    // EventSource reconnects automatically. Each event seq is sent as the SSE id,
-    // so the browser resumes with Last-Event-ID after a dropped connection.
-  };
-
-  return () => es.close();
-}
 ```
 
-## 4. Render by event type
+Each event's `seq` is sent as the SSE `id`, so `EventSource` resumes automatically with `Last-Event-ID` after a dropped connection.
 
-The stable discriminator is `type`. Do not parse prose to decide whether a turn finished or failed.
+## 4. Render by `type`
 
-```tsx
-function EventRow({ event }: { event: SessionEvent }) {
-  const body = event.body ?? {};
+Switch on the event `type`. Do not parse prose to decide whether work finished or failed.
 
-  switch (event.type) {
-    case "agent.message":
-      return <p>{String(body.text ?? "")}</p>;
-
-    case "tool.call":
-      return <code>$ {String(body.args_summary ?? body.tool ?? "tool")}</code>;
-
-    case "exec.completed":
-      return (
-        <pre>
-          exit {String(body.exit_code)}
-          {"\n"}
-          {String(body.summary ?? "")}
-        </pre>
-      );
-
-    case "turn.completed": {
-      const reason = String(body.yield_reason ?? "completed");
-      if (reason === "completed") return <p>Done</p>;
-      if (reason === "needs_input") return <p>Waiting for input</p>;
-      return <p>Stopped: {reason}</p>;
-    }
-
-    default:
-      return body.text || body.summary ? <p>{String(body.text ?? body.summary)}</p> : null;
-  }
-}
+```json
+{ "type": "agent.message", "level": "user", "body": { "text": "Done. I built..." } }
+{ "type": "tool.call", "level": "progress", "body": { "tool": "bash", "args_summary": "npm test" } }
+{ "type": "exec.completed", "level": "progress", "body": { "exit_code": 0, "summary": "12 tests passed" } }
+{ "type": "turn.completed", "level": "user", "body": { "yield_reason": "completed", "result_event_id": "evt_..." } }
 ```
+
+Handle `turn.completed.body.yield_reason` explicitly:
+
+| `yield_reason` | UI behavior |
+| --- | --- |
+| `completed` | Show the final result. |
+| `needs_input` | Show the agent's question and enable reply. |
+| `deadline_exceeded`, `budget_exceeded`, `max_turns` | Explain which limit stopped the turn. |
+| `error`, `canceled` | Show a stopped/error state. |
 
 ## 5. Steer the session
 
-Post follow-up messages directly from the browser with the same `client_token`. The session wakes if it was idle and continues with its prior context.
+Post follow-up messages with the same `client_token`. An idle session wakes and continues with its prior context.
 
-```ts
-async function steer(sessionId: string, clientToken: string, text: string) {
-  const res = await fetch(`${OC}/v3/sessions/${sessionId}/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${clientToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      text,
-      idempotency_key: crypto.randomUUID(),
-    }),
-  });
+```http
+POST https://api.opencomputer.dev/v3/sessions/sess_.../messages
+Authorization: Bearer $CLIENT_TOKEN
+Content-Type: application/json
 
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+{
+  "text": "Add a filter for completed tasks.",
+  "idempotency_key": "msg_01"
+}
+```
+
+Response:
+
+```json
+{
+  "event": { "id": "evt_...", "seq": 14 },
+  "session": { "id": "sess_...", "status": "queued", "head": 14 }
 }
 ```
 
 ## Production checklist
 
+- Keep the org API key and Anthropic key server-side.
 - Add app auth before minting or returning a `client_token`.
-- Set `limits` on the agent or session to bound tokens, wall-clock time, and auto-run count.
-- Render every non-`completed` `yield_reason` explicitly, especially `error`, `deadline_exceeded`, `budget_exceeded`, and `canceled`.
+- Set `limits` on the agent or session.
 - Use `idempotency_key` for every user action you might retry.
-- Use `level=user` for customer-facing chat, `level=progress` for activity feeds, and `level=internal` only for operator/debug views.
+- Use `level=user` for customer-facing chat, `level=progress` for activity feeds, and `level=internal` only for debugging.
 - Register a [webhook](/agent-sessions/webhooks) when your backend needs push delivery after the tab closes.
 
 ## Next steps

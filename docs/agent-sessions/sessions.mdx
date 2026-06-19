@@ -31,18 +31,26 @@ A session also carries `last_turn = { id, state, yield_reason?, result_event_id?
 
 Don't sniff prose for "is it done." Await the **`turn.completed`** event (on the [stream](/agent-sessions/events) or a [webhook](/agent-sessions/webhooks)), then fetch the answer:
 
-<Tip>This example uses the server-side `oc()` helper from the [quickstart](/agent-sessions/quickstart#1-add-the-server-helper).</Tip>
+```http
+GET https://api.opencomputer.dev/v3/sessions/sess_.../result
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+```
 
-```ts
-const result = await oc<{
-  last_turn: { yield_reason?: string };
-  result?: { body?: { text?: string } };
-}>(`/sessions/${sessionId}/result`);
+Response:
 
-if (result.last_turn.yield_reason === "completed") {
-  console.log(result.result?.body?.text);
-} else {
-  console.log(`turn ended: ${result.last_turn.yield_reason}`);
+```json
+{
+  "last_turn": {
+    "id": "trn_...",
+    "state": "ok",
+    "yield_reason": "completed",
+    "result_event_id": "evt_..."
+  },
+  "result": {
+    "type": "agent.message",
+    "level": "user",
+    "body": { "text": "Done. I found..." }
+  }
 }
 ```
 
