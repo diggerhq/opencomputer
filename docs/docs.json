@@ -68,7 +68,6 @@
           "agent-sessions/sessions",
           "agent-sessions/events",
           "agent-sessions/authentication",
-          "agent-sessions/durability",
           "agent-sessions/messaging",
           "agent-sessions/webhooks",
           "agent-sessions/runtimes",

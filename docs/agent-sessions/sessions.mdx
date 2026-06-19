@@ -9,10 +9,10 @@ A **session** is the durable unit of an [agent](/agent-sessions/agents) at work:
 
 1. You create a session from an [agent](/agent-sessions/agents) (and an [Anthropic credential](/agent-sessions/authentication#model-credentials) — both required). The session starts immediately.
 2. The [runtime](/agent-sessions/runtimes) executes the agent in a sandbox, appending [events](/agent-sessions/events) to the log as it works.
-3. With nothing left to do, the session goes **idle** and the sandbox **hibernates** (see [durability](/agent-sessions/durability)).
+3. With nothing left to do, the session goes **idle** and the sandbox **hibernates**.
 4. A [steer](/agent-sessions/messaging) message wakes it; it resumes with its prior context. Repeat.
 
-<Note>The runtime is **managed and self-healing**: if it **crashes** we restart it and it continues from its on-box state; if it **hangs**, a turn deadline ends the turn and you steer to continue; an idle session survives even if its sandbox is reclaimed. In-flight work since the last logged event may repeat, so make side effects idempotent. Details: [durability](/agent-sessions/durability).</Note>
+<Note>The runtime is **managed and self-healing**: if it **crashes** we restart it and it continues from its on-box state; if it **hangs**, a turn deadline ends the turn and you steer to continue; an idle session survives even if its sandbox is reclaimed. In-flight work since the last logged event may repeat, so make side effects idempotent. Details: [runtime recovery](/agent-sessions/runtimes#failure-behavior).</Note>
 
 ## Lifecycle
 
