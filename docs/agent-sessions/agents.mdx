@@ -7,7 +7,7 @@ An **agent** is reusable configuration: `name`, `prompt`, `model`, and [`runtime
 
 <CodeGroup>
 
-```ts TypeScript
+```ts TypeScript SDK
 import { OpenComputer } from "@opencomputer/sdk";
 
 const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
@@ -21,7 +21,7 @@ const agent = await oc.agents.create({
 });
 ```
 
-```http REST
+```http REST API
 POST https://api.opencomputer.dev/v3/agents
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json

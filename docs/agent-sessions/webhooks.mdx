@@ -9,7 +9,7 @@ Register a **destination** and a session's [events](/agent-sessions/events) are 
 
 <CodeGroup>
 
-```ts TypeScript
+```ts TypeScript SDK
 import { OpenComputer } from "@opencomputer/sdk";
 
 const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
@@ -23,7 +23,7 @@ await session.destinations.create({
 });
 ```
 
-```http REST
+```http REST API
 POST https://api.opencomputer.dev/v3/sessions/sess_.../destinations
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json

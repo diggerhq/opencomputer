@@ -11,7 +11,7 @@ Your account key. Use it server-side for all **management** calls — creating a
 
 <CodeGroup>
 
-```ts TypeScript
+```ts TypeScript SDK
 import { OpenComputer } from "@opencomputer/sdk";
 
 const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! }); // org key, server-side only
@@ -22,7 +22,7 @@ const session = await oc.sessions.create({
 });
 ```
 
-```http REST
+```http REST API
 POST https://api.opencomputer.dev/v3/sessions
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
@@ -42,7 +42,7 @@ You get one back from `POST /v3/sessions`, and can mint more:
 
 <CodeGroup>
 
-```ts TypeScript
+```ts TypeScript SDK
 const session = await oc.sessions.get("sess_...");
 
 const clientToken = await session.mintClientToken({
@@ -51,7 +51,7 @@ const clientToken = await session.mintClientToken({
 });
 ```
 
-```http REST
+```http REST API
 POST https://api.opencomputer.dev/v3/sessions/sess_.../client-tokens
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
@@ -82,7 +82,7 @@ The easiest way to add one is inline when you [create an agent](/agent-sessions/
 
 <CodeGroup>
 
-```ts TypeScript
+```ts TypeScript SDK
 await oc.credentials.create({
   provider: "anthropic",
   key: "sk-ant-...",
@@ -90,7 +90,7 @@ await oc.credentials.create({
 });
 ```
 
-```http REST
+```http REST API
 POST https://api.opencomputer.dev/v3/credentials
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
@@ -102,14 +102,14 @@ Content-Type: application/json
 
 <CodeGroup>
 
-```ts TypeScript
+```ts TypeScript SDK
 await oc.credentials.setDefault({
   provider: "anthropic",
   credential: "cred_...",
 });
 ```
 
-```http REST
+```http REST API
 PUT https://api.opencomputer.dev/v3/credentials/default
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json

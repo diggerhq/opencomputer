@@ -33,7 +33,7 @@ Do not infer completion from prose. Await the **`turn.completed`** event (on the
 
 <CodeGroup>
 
-```ts TypeScript
+```ts TypeScript SDK
 import { OpenComputer } from "@opencomputer/sdk";
 
 const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
@@ -41,7 +41,7 @@ const session = await oc.sessions.get("sess_...");
 const { lastTurn, result } = await session.result();
 ```
 
-```http REST
+```http REST API
 GET https://api.opencomputer.dev/v3/sessions/sess_.../result
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 ```

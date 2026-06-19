@@ -11,14 +11,14 @@ Send a message to a running or idle session; it wakes and continues with its pri
 
 <CodeGroup>
 
-```ts TypeScript
+```ts TypeScript SDK
 import { connectSession } from "@opencomputer/sdk";
 
 const live = await connectSession({ sessionId, clientToken });
 await live.steer("also check the CI config", { idempotencyKey: "msg_01" });
 ```
 
-```http REST
+```http REST API
 POST https://api.opencomputer.dev/v3/sessions/sess_.../messages
 Authorization: Bearer $CLIENT_TOKEN
 Content-Type: application/json
