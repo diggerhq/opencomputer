@@ -25,16 +25,28 @@ A **session** is the durable unit of an [agent](/agent-sessions/agents) at work:
 | `failed` | The session errored out. |
 | `archived` | Closed; read-only. |
 
-A session also carries `last_turn = { id, state, yield_reason?, result_event_id? }` and `usage`; the fuller turn record (`started_at`, `completed_at`, `error`, `active_seconds`, `usage`) comes from [`GET …/result`](/agent-sessions/api-reference) and `…/turns`. The **`yield_reason`** tells you *why* the last turn ended — `completed`, `needs_input` (the agent asked a question — the session is now `awaiting_input`; answer by [steering](/agent-sessions/messaging)), `budget_exceeded` / `deadline_exceeded` / `max_turns` (a [limit](#limits) tripped), or `canceled`.
+A session also carries `last_turn = { id, state, yield_reason?, result_event_id? }`; the fuller turn record (`started_at`, `completed_at`, `error`) comes from [`GET …/result`](/agent-sessions/api-reference) and `…/turns`. The **`yield_reason`** tells you *why* the last turn ended — `completed`, `needs_input` (the agent asked a question — the session is now `awaiting_input`; answer by [steering](/agent-sessions/messaging)), `budget_exceeded` / `deadline_exceeded` / `max_turns` (a [limit](#limits) tripped), or `canceled`.
 
 ## Fetch the result
 
 Do not infer completion from prose. Await the **`turn.completed`** event (on the [stream](/agent-sessions/events) or a [webhook](/agent-sessions/webhooks)), then fetch the answer:
 
-```http
+<CodeGroup>
+
+```ts TypeScript SDK
+import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const session = await oc.sessions.get("sess_...");
+const { lastTurn, result } = await session.result();
+```
+
+```http REST API
 GET https://api.opencomputer.dev/v3/sessions/sess_.../result
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 ```
+
+</CodeGroup>
 
 Response:
 
@@ -56,7 +68,7 @@ Response:
 
 ## Limits
 
-Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are **non-monetary** (no dollar caps — we don't bill model usage yet; you run on your own key). Hitting one ends the turn with the matching `yield_reason`. (`usage` is observed-only.)
+Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are **non-monetary** (no dollar caps — we don't bill model usage yet; you run on your own key). Hitting one ends the turn with the matching `yield_reason`.
 
 ## Stop a session
 

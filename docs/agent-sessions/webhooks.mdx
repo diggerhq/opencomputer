@@ -7,7 +7,23 @@ Register a **destination** and a session's [events](/agent-sessions/events) are 
 
 ## Destinations
 
-```http
+<CodeGroup>
+
+```ts TypeScript SDK
+import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const session = await oc.sessions.get(sessionId);
+
+await session.destinations.create({
+  url: "https://your.app/oc-webhook",
+  secret: "whsec_...",
+  level: "user",
+  includeRaw: false,
+});
+```
+
+```http REST API
 POST https://api.opencomputer.dev/v3/sessions/sess_.../destinations
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
@@ -19,6 +35,8 @@ Content-Type: application/json
   "include_raw": false
 }
 ```
+
+</CodeGroup>
 
 `level` is the visibility threshold (`user` default, or `progress`); `types` is an optional event-type allow-list (default: all — which **includes the terminal `turn.completed`**); `include_raw: false` strips `body.raw` from the delivered Event. To get only completions, set `types: ["turn.completed"]`.
 
