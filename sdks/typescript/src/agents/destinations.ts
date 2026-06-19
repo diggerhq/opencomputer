@@ -15,7 +15,10 @@ export interface CreateDestinationParams {
 export interface UpdateDestinationParams {
   enabled?: boolean;
   level?: Level;
-  types?: string[];
+  /** Pass `null` to clear the allow-list (deliver all types). */
+  types?: string[] | null;
+  url?: string;
+  includeRaw?: boolean;
   secret?: string;
 }
 
@@ -45,7 +48,7 @@ export class Destinations {
 export class Deliveries {
   constructor(private readonly http: Http, private readonly sessionId: string) {}
 
-  async list(params: { destination?: string; status?: DeliveryStatus } = {}): Promise<Delivery[]> {
+  async list(params: { destination?: string; status?: DeliveryStatus; after?: string; limit?: number } = {}): Promise<Delivery[]> {
     const r = await this.http.request<{ data?: Delivery[] } | Delivery[]>(
       "GET", `/sessions/${this.sessionId}/deliveries`, { query: params as Query },
     );

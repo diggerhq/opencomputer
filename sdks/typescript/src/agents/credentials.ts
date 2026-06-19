@@ -2,7 +2,8 @@ import type { Http } from "./http.js";
 import type { Credential } from "./types.js";
 
 export interface CreateCredentialParams {
-  provider: "anthropic" | (string & {});
+  /** Defaults to `anthropic`. */
+  provider?: "anthropic" | (string & {});
   /** Write-only — never returned by the API. */
   key: string;
   name?: string;
@@ -22,7 +23,7 @@ export class Credentials {
   delete(id: string): Promise<void> {
     return this.http.request("DELETE", `/credentials/${id}`);
   }
-  setDefault(params: { provider: string; credential: string }): Promise<void> {
+  setDefault(params: { credential: string; provider?: string }): Promise<void> {
     return this.http.request("PUT", "/credentials/default", { body: params });
   }
 }

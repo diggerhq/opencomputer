@@ -21,7 +21,7 @@ The turn token is fenced: writes from a superseded runtime instance are rejected
 
 ## Journal and recovery
 
-The image should be stateless. Store resumable state in the provided journal directory. The durable record is the event log plus that journal, so crashes, idle hibernation, and machine restore follow the same [durability](/agent-sessions/durability) behavior as `claude`.
+The image should be stateless. Store resumable state in the provided journal directory. The durable record is the event log plus that journal, so crashes, idle hibernation, and machine restore follow the same [recovery](/agent-sessions/runtimes#failure-behavior) behavior as `claude`.
 
 ## Model configuration
 

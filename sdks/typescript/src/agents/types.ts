@@ -11,7 +11,7 @@ export interface Limits { tokens?: number; turnSeconds?: number; turns?: number;
 
 export interface Actor {
   id?: string;
-  kind?: "human" | "agent" | "system" | (string & {});
+  type?: "human" | "agent" | "system" | (string & {});
   display?: string;
 }
 
@@ -67,6 +67,7 @@ export interface Credential {
   provider: string;
   name?: string;
   last4?: string;
+  isDefault?: boolean;
   createdAt?: string;
 }
 

@@ -29,8 +29,10 @@ export function normalize<T = any>(value: unknown): T {
 }
 
 // Inverse of normalize: camelCase keys → snake_case for REQUEST bodies (the API reads
-// snake_case). Values are left untouched, and an opaque `raw` payload is not recursed into.
+// snake_case). Values are left untouched, and opaque/user-owned subtrees (raw, body,
+// metadata, refs, input) are passed through without key-mangling.
 const snakeKey = (k: string): string => k.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase());
+const OPAQUE = new Set(["raw", "body", "metadata", "refs", "input"]);
 
 export function serialize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((v) => serialize(v));
@@ -38,7 +40,7 @@ export function serialize(value: unknown): unknown {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       const sk = snakeKey(k);
-      out[sk] = sk === "raw" ? v : serialize(v);
+      out[sk] = OPAQUE.has(sk) ? v : serialize(v);
     }
     return out;
   }
