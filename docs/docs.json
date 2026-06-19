@@ -331,7 +331,7 @@
   "fonts": {
     "heading": {
       "family": "Newsreader",
-      "weight": 400
+      "weight": 600
     },
     "body": {
       "family": "Inter",
