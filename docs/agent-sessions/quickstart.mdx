@@ -29,7 +29,24 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 An agent stores reusable configuration: name, runtime, model, prompt, and model credential.
 
-```http
+<CodeGroup>
+
+```ts TypeScript
+import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+
+const agent = await oc.agents.create({
+  name: "quickstart-coder",
+  runtime: "claude",
+  model: "anthropic/claude-opus-4-8",
+  prompt: "Work in /workspace. Say progress. Ask only when blocked.",
+  key: process.env.ANTHROPIC_API_KEY,
+  limits: { turns: 4, turnSeconds: 600 },
+});
+```
+
+```http REST
 POST https://api.opencomputer.dev/v3/agents
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
@@ -44,6 +61,8 @@ Content-Type: application/json
 }
 ```
 
+</CodeGroup>
+
 Response:
 
 ```json
@@ -56,7 +75,18 @@ Response:
 
 A session starts work immediately and returns a browser-safe `client_token` for that one session.
 
-```http
+<CodeGroup>
+
+```ts TypeScript
+const session = await oc.sessions.create({
+  agent: agent.id,
+  input: "Create a todo app with local storage and a clean dark UI.",
+});
+
+// session.id + session.clientToken — hand the token to your frontend
+```
+
+```http REST
 POST https://api.opencomputer.dev/v3/sessions
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
@@ -66,6 +96,8 @@ Content-Type: application/json
   "input": "Create a todo app with local storage and a clean dark UI."
 }
 ```
+
+</CodeGroup>
 
 Response:
 
@@ -80,28 +112,28 @@ Response:
 
 Use the `client_token` in the browser. Ask for `progress` for a good activity feed, or `internal` for an operator/debug view.
 
-```http
-GET /v3/sessions/sess_.../events?stream=sse&level=progress&token=ct_...
-Host: api.opencomputer.dev
+<CodeGroup>
+
+```ts TypeScript
+import { connectSession } from "@opencomputer/sdk";
+
+// in your frontend, with the session's client token
+const live = await connectSession({ sessionId, clientToken });
+
+for await (const event of live.events({ level: "progress" })) {
+  render(event); // reconnects from the last seq automatically
+}
 ```
 
-In a browser:
-
-```js
+```js EventSource
 const url = new URL(`${OC}/v3/sessions/${sessionId}/events`);
-url.search = new URLSearchParams({
-  stream: "sse",
-  level: "progress",
-  token: clientToken,
-});
+url.search = new URLSearchParams({ stream: "sse", level: "progress", token: clientToken });
 
 const events = new EventSource(url.toString());
-
-events.onmessage = (message) => {
-  const event = JSON.parse(message.data);
-  render(event);
-};
+events.onmessage = (message) => render(JSON.parse(message.data));
 ```
+
+</CodeGroup>
 
 Each event's `seq` is sent as the SSE `id`, so `EventSource` resumes automatically with `Last-Event-ID` after a dropped connection.
 
@@ -131,7 +163,13 @@ Handle `turn.completed.body.yield_reason` explicitly:
 
 Post follow-up messages with the same `client_token`. An idle session wakes and continues with its prior context.
 
-```http
+<CodeGroup>
+
+```ts TypeScript
+await live.steer("Add a filter for completed tasks.", { idempotencyKey: "msg_01" });
+```
+
+```http REST
 POST https://api.opencomputer.dev/v3/sessions/sess_.../messages
 Authorization: Bearer $CLIENT_TOKEN
 Content-Type: application/json
@@ -141,6 +179,8 @@ Content-Type: application/json
   "idempotency_key": "msg_01"
 }
 ```
+
+</CodeGroup>
 
 Response:
 
