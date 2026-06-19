@@ -9,11 +9,19 @@ A **runtime** is the engine that executes the agent loop. You pick one per agent
 
 The managed Claude agent loop. It works in a sandbox through remote tools, streams its steps into the session as events, and runs Claude models on your [Anthropic key](/agent-sessions/authentication#model-credentials).
 
-```bash
-curl https://api.opencomputer.dev/v3/agents \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "name": "reviewer", "model": "anthropic/claude-opus-4-8",
-        "prompt": "You review code.", "runtime": "claude" }'
+<Tip>This example uses the server-side `oc()` helper from the [quickstart](/agent-sessions/quickstart#1-add-the-server-helper).</Tip>
+
+```ts
+await oc("/agents", {
+  method: "POST",
+  body: JSON.stringify({
+    name: "reviewer",
+    runtime: "claude",
+    model: "anthropic/claude-opus-4-8",
+    prompt: "Review code in the sandbox. Run tests, explain risks, and say the final result.",
+    credential: "cred_...",
+  }),
+});
 ```
 
 ### How it's structured

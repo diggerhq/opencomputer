@@ -7,13 +7,18 @@ Register a **destination** and a session's [events](/agent-sessions/events) are 
 
 ## Destinations
 
-```bash
-curl https://api.opencomputer.dev/v3/sessions/$ID/destinations \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "url": "https://your.app/oc-webhook",
-        "secret": "whsec_…",
-        "level": "user",
-        "include_raw": false }'
+<Tip>This example uses the server-side `oc()` helper from the [quickstart](/agent-sessions/quickstart#1-add-the-server-helper).</Tip>
+
+```ts
+const destination = await oc<{ id: string }>(`/sessions/${sessionId}/destinations`, {
+  method: "POST",
+  body: JSON.stringify({
+    url: "https://your.app/oc-webhook",
+    secret: process.env.OC_WEBHOOK_SECRET,
+    level: "user",
+    include_raw: false,
+  }),
+});
 ```
 
 `level` is the visibility threshold (`user` default, or `progress`); `types` is an optional event-type allow-list (default: all — which **includes the terminal `turn.completed`**); `include_raw: false` strips `body.raw` from the delivered Event. To get only completions, set `types: ["turn.completed"]`.

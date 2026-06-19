@@ -31,14 +31,14 @@ Give an agent a prompt and a task; OpenComputer runs it on a managed runtime and
 ## Get started
 
 <Steps>
-  <Step title="Define an agent (with your key)">
-    A reusable `{ name, model, prompt, runtime }` — `POST /v3/agents`. Pass your Anthropic `key` inline; it's stored as a [credential](/agent-sessions/authentication#model-credentials). ([Agents](/agent-sessions/agents))
+  <Step title="Define an agent">
+    Create a reusable `{ name, model, prompt, runtime }` from your backend. Pass your Anthropic `key` inline, or reference a saved [credential](/agent-sessions/authentication#model-credentials). ([Agents](/agent-sessions/agents))
   </Step>
   <Step title="Start a session">
-    `POST /v3/sessions { agent, input }` — the agent starts immediately; you get the session and a browser-safe `client_token`.
+    Start a session with `{ agent, input }`. The agent starts immediately and returns a browser-safe `client_token`.
   </Step>
   <Step title="Watch, steer, get notified">
-    Stream `GET …/events?stream=sse` ([resume](/agent-sessions/events) from any cursor), `POST …/messages` to [steer](/agent-sessions/messaging), and register a [webhook](/agent-sessions/webhooks) for push.
+    Stream events with `EventSource`, [steer](/agent-sessions/messaging) with the client token, and register a [webhook](/agent-sessions/webhooks) when your backend needs push delivery.
   </Step>
 </Steps>
 
@@ -58,7 +58,10 @@ Reach for sessions when you want a long-running or interactive agent and don't w
 
 <CardGroup cols={2}>
   <Card title="Quickstart" icon="bolt" href="/agent-sessions/quickstart">
-    Start a session, stream it, and steer it in a few minutes.
+    Build a streaming TypeScript UI with a server-side helper and client token.
+  </Card>
+  <Card title="Prompting" icon="file-lines" href="/agent-sessions/prompting">
+    Start from a prompt template designed for useful event streams and final results.
   </Card>
   <Card title="How sessions work" icon="book" href="/agent-sessions/sessions">
     How a session works — lifecycle and events.

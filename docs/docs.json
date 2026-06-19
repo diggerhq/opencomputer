@@ -64,6 +64,7 @@
         "pages": [
           "agent-sessions/overview",
           "agent-sessions/quickstart",
+          "agent-sessions/prompting",
           "agent-sessions/agents",
           "agent-sessions/sessions",
           "agent-sessions/events",

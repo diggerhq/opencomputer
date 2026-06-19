@@ -5,13 +5,23 @@ description: "Org keys, browser-safe client tokens, and bring-your-own model key
 
 Three credentials, each with a job.
 
+<Tip>Examples that call `oc()` use the server-side helper from the [quickstart](/agent-sessions/quickstart#1-add-the-server-helper).</Tip>
+
 ## Org API key
 
 Your account key. Use it server-side for all **management** calls — creating agents, starting sessions, registering webhooks, managing credentials.
 
-```bash
-curl https://api.opencomputer.dev/v3/sessions \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" -d '{ … }'
+```ts
+const res = await fetch("https://api.opencomputer.dev/v3/sessions", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.OPENCOMPUTER_API_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ agent, input }),
+});
+
+if (!res.ok) throw new Error(await res.text());
 ```
 
 <Warning>Never ship the org API key to a browser or mobile client — it can do anything on your account. Use a client token instead.</Warning>
@@ -22,10 +32,11 @@ A **session-scoped, short-lived** token with `read` + `steer` scope — safe to 
 
 You get one back from `POST /v3/sessions`, and can mint more:
 
-```bash
-curl https://api.opencomputer.dev/v3/sessions/$ID/client-tokens \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "scopes": ["read", "steer"], "ttl": 3600 }'
+```ts
+const token = await oc(`/sessions/${sessionId}/client-tokens`, {
+  method: "POST",
+  body: JSON.stringify({ scopes: ["read", "steer"], ttl: 3600 }),
+});
 ```
 
 The pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
@@ -46,16 +57,20 @@ Sessions run the model on **your own Anthropic key**. It's held in OpenComputer'
 
 The easiest way to add one is inline when you [create an agent](/agent-sessions/agents) (`"key": "sk-ant-…"`). The standalone resource below is for reusing one key across agents, setting an org default, and rotating/removing keys:
 
-```bash
-curl https://api.opencomputer.dev/v3/credentials \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "provider": "anthropic", "key": "sk-ant-…", "name": "prod" }'
-# → { "id": "cred_…", "provider": "anthropic", "last4": "…", … }
+```ts
+const credential = await oc<{ id: string }>("/credentials", {
+  method: "POST",
+  body: JSON.stringify({
+    provider: "anthropic",
+    key: process.env.ANTHROPIC_API_KEY,
+    name: "prod",
+  }),
+});
 
-# make it the default for this provider
-curl -X PUT https://api.opencomputer.dev/v3/credentials/default \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "credential": "cred_…" }'
+await oc("/credentials/default", {
+  method: "PUT",
+  body: JSON.stringify({ credential: credential.id }),
+});
 ```
 
 **Resolution** per session: the agent's credential → your org default for the provider. (No platform-billed fallback yet — bring a key.)

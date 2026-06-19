@@ -38,3 +38,5 @@ These map to events you can stream: a `bash` run surfaces as an [`exec.completed
 - To work on a repo, point it at a **public** one (`use_repo`, or `bash` + `git clone`); pass the target in [`input.refs`](/agent-sessions/messaging) (`repo`, `branch`, `commit`) rather than burying it in prose. (Private-repo connections are coming soon.)
 - Have it `say` a clear final result — that's what `GET /sessions/:id/result` returns.
 - Have it `ask` only when it genuinely needs a decision; otherwise it should proceed.
+
+For a complete starting point, use the [prompt template](/agent-sessions/prompting). It includes operating rules for progress updates, verification, idempotency, and final results.

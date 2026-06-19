@@ -5,14 +5,22 @@ description: "The reusable definition of what runs"
 
 An **agent** is a first-class, reusable definition of *what* runs — a `name`, a `prompt` (its instructions), a `model`, and a [`runtime`](/agent-sessions/runtimes). Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like.
 
-```bash
-curl https://api.opencomputer.dev/v3/agents \
-  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
-  -d '{ "name": "reviewer", "model": "anthropic/claude-opus-4-8",
-        "prompt": "You review code.", "runtime": "claude", "key": "sk-ant-…" }'
+```ts
+const agent = await oc("/agents", {
+  method: "POST",
+  body: JSON.stringify({
+    name: "reviewer",
+    runtime: "claude",
+    model: "anthropic/claude-opus-4-8",
+    prompt: "Review the target repo. Run tests, summarize risks, and say the final result.",
+    key: process.env.ANTHROPIC_API_KEY,
+  }),
+});
 ```
 
 Pass your Anthropic `key` inline and it's stored as a [credential](/agent-sessions/authentication#model-credentials) and attached to the agent — sessions run the model on it. Already have a credential? Reference it with `credential: "cred_…"` instead, or omit both to use your org default. Optionally set default [`limits`](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) too; sessions inherit them.
+
+<Tip>Use the server-side `oc()` helper from the [quickstart](/agent-sessions/quickstart#1-add-the-server-helper). Keep the org key and model key on your backend.</Tip>
 
 ## Pinned snapshot
 
