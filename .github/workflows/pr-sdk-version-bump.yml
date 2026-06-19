@@ -1,0 +1,50 @@
+name: SDK version bump
+
+# Guards against shipping TypeScript SDK source changes without a version bump.
+# publish-ts-sdk.yml only publishes when package.json's version differs from what's on
+# npm — so a PR that changes sdks/typescript/src without bumping the version would merge
+# but never publish (the changed code silently never ships). This check fails such PRs.
+on:
+  pull_request:
+    paths:
+      - 'sdks/typescript/**'
+
+jobs:
+  version-bump:
+    name: Require version bump + lockfile sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch -q origin "$BASE_REF"
+
+          # Only require a bump when SDK *source* changes — docs/README-only PRs are exempt.
+          if git diff --quiet "origin/$BASE_REF"...HEAD -- sdks/typescript/src; then
+            echo "No sdks/typescript/src changes — version bump not required."
+            exit 0
+          fi
+
+          ver() { grep -m1 '"version"' "$1" | sed -E 's/.*"version": *"([^"]+)".*/\1/'; }
+          base_ver=$(git show "origin/$BASE_REF:sdks/typescript/package.json" \
+            | grep -m1 '"version"' | sed -E 's/.*"version": *"([^"]+)".*/\1/')
+          head_ver=$(ver sdks/typescript/package.json)
+          lock_ver=$(ver sdks/typescript/package-lock.json)
+          echo "base=$base_ver  head=$head_ver  lock=$lock_ver"
+
+          rc=0
+          if [ "$base_ver" = "$head_ver" ]; then
+            echo "::error file=sdks/typescript/package.json::sdks/typescript/src changed but package.json version is still $head_ver — bump it so publish-ts-sdk ships the change."
+            rc=1
+          fi
+          if [ "$lock_ver" != "$head_ver" ]; then
+            echo "::error file=sdks/typescript/package-lock.json::package-lock.json ($lock_ver) != package.json ($head_ver) — run 'npm install' in sdks/typescript to sync the lockfile."
+            rc=1
+          fi
+          if [ "$rc" -eq 0 ]; then echo "✓ version bumped to $head_ver and lockfile in sync"; fi
+          exit $rc
