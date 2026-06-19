@@ -13,7 +13,9 @@ export {
   type ScalingLockStatus,
   type AllowedHostsInfo,
 } from "./sandbox.js";
-export { Agent, type AgentEvent, type AgentConfig, type AgentStartOpts, type AgentSession, type McpServerConfig } from "./agent.js";
+export { SandboxAgent, type SandboxAgentEvent, type SandboxAgentConfig, type SandboxAgentStartOpts, type SandboxAgentSession, type McpServerConfig } from "./agent.js";
+// Managed Durable Agent Sessions (the OpenComputer client + Session handle).
+export * from "./agents/index.js";
 export { Filesystem, type EntryInfo } from "./filesystem.js";
 export { Exec, type ProcessResult, type RunOpts, type ExecSession, type ExecSessionInfo, type ExecStartOpts, type ExecAttachOpts } from "./exec.js";
 export { Mounts, type AddMountOpts, type MountInfo, type MountBackend } from "./mounts.js";

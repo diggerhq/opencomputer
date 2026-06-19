@@ -1,4 +1,4 @@
-import { Agent } from "./agent.js";
+import { SandboxAgent } from "./agent.js";
 import { Filesystem } from "./filesystem.js";
 import { Exec } from "./exec.js";
 import { Mounts } from "./mounts.js";
@@ -228,7 +228,8 @@ export interface AllowedHostsInfo {
 export class Sandbox {
   readonly sandboxId: string;
   readonly id: string;
-  readonly agent: Agent;
+  /** @deprecated The in-sandbox agent is legacy — prefer managed agents (the `OpenComputer` client). */
+  readonly agent: SandboxAgent;
   readonly files: Filesystem;
   readonly exec: Exec;
   readonly mounts: Mounts;
@@ -268,7 +269,7 @@ export class Sandbox {
     this._sandboxDomain = data.sandboxDomain || "";
 
     // Always route through the CP — it handles readiness waiting and proxies to workers.
-    this.agent = new Agent(apiUrl, apiKey, this.sandboxId, "");
+    this.agent = new SandboxAgent(apiUrl, apiKey, this.sandboxId, "");
     this.files = new Filesystem(apiUrl, apiKey, this.sandboxId, "");
     this.exec = new Exec(apiUrl, apiKey, this.sandboxId, "");
     this.commands = this.exec; // backwards-compatible alias
@@ -456,7 +457,7 @@ export class Sandbox {
     this.token = data.token || "";
 
     // Always route through the CP
-    (this as any).agent = new Agent(this.apiUrl, this.apiKey, this.sandboxId, "");
+    (this as any).agent = new SandboxAgent(this.apiUrl, this.apiKey, this.sandboxId, "");
     (this as any).files = new Filesystem(this.apiUrl, this.apiKey, this.sandboxId, "");
     (this as any).exec = new Exec(this.apiUrl, this.apiKey, this.sandboxId, "");
     (this as any).mounts = new Mounts(this.apiUrl, this.apiKey, this.sandboxId, "");
@@ -724,7 +725,7 @@ export class Sandbox {
     this.token = data.token || "";
 
     // Always route through the CP
-    (this as any).agent = new Agent(this.apiUrl, this.apiKey, this.sandboxId, "");
+    (this as any).agent = new SandboxAgent(this.apiUrl, this.apiKey, this.sandboxId, "");
     (this as any).files = new Filesystem(this.apiUrl, this.apiKey, this.sandboxId, "");
     (this as any).exec = new Exec(this.apiUrl, this.apiKey, this.sandboxId, "");
     (this as any).mounts = new Mounts(this.apiUrl, this.apiKey, this.sandboxId, "");

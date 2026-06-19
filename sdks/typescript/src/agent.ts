@@ -1,4 +1,4 @@
-export interface AgentEvent {
+export interface SandboxAgentEvent {
   type:
     | "ready"
     | "configured"
@@ -19,7 +19,7 @@ export interface McpServerConfig {
   env?: Record<string, string>;
 }
 
-export interface AgentConfig {
+export interface SandboxAgentConfig {
   model?: string;
   systemPrompt?: string;
   allowedTools?: string[];
@@ -30,25 +30,29 @@ export interface AgentConfig {
   resume?: string;
 }
 
-export interface AgentStartOpts extends AgentConfig {
+export interface SandboxAgentStartOpts extends SandboxAgentConfig {
   prompt?: string;
-  onEvent?: (event: AgentEvent) => void;
+  onEvent?: (event: SandboxAgentEvent) => void;
   onError?: (data: string) => void;
   onExit?: (exitCode: number) => void;
   onScrollbackEnd?: () => void;
 }
 
-export interface AgentSession {
+export interface SandboxAgentSession {
   sessionId: string;
   done: Promise<number>;
   sendPrompt(text: string): void;
   interrupt(): void;
-  configure(config: AgentConfig): void;
+  configure(config: SandboxAgentConfig): void;
   kill(signal?: number): Promise<void>;
   close(): void;
 }
 
-export class Agent {
+/**
+ * @deprecated The in-sandbox agent is a low-level primitive and is being phased out.
+ * Prefer managed agents via the `OpenComputer` client — durable, streamable sessions.
+ */
+export class SandboxAgent {
   constructor(
     private apiUrl: string,
     private apiKey: string,
@@ -66,7 +70,7 @@ export class Agent {
     return h;
   }
 
-  async start(opts: AgentStartOpts = {}): Promise<AgentSession> {
+  async start(opts: SandboxAgentStartOpts = {}): Promise<SandboxAgentSession> {
     const body: Record<string, unknown> = {};
     if (opts.prompt) body.prompt = opts.prompt;
     if (opts.model) body.model = opts.model;
@@ -95,7 +99,7 @@ export class Agent {
     return this.attach(sessionId, opts);
   }
 
-  async attach(sessionId: string, opts: Omit<AgentStartOpts, "prompt" | keyof AgentConfig> = {}): Promise<AgentSession> {
+  async attach(sessionId: string, opts: Omit<SandboxAgentStartOpts, "prompt" | keyof SandboxAgentConfig> = {}): Promise<SandboxAgentSession> {
     // Connect via the existing exec session WebSocket endpoint
     const wsUrl = this.apiUrl
       .replace("http://", "ws://")
@@ -126,7 +130,7 @@ export class Agent {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
-          const event: AgentEvent = JSON.parse(trimmed);
+          const event: SandboxAgentEvent = JSON.parse(trimmed);
           opts.onEvent?.(event);
         } catch {
           // Not JSON — treat as raw output
@@ -173,7 +177,7 @@ export class Agent {
       // Flush remaining line buffer
       if (lineBuf.trim()) {
         try {
-          const event: AgentEvent = JSON.parse(lineBuf.trim());
+          const event: SandboxAgentEvent = JSON.parse(lineBuf.trim());
           opts.onEvent?.(event);
         } catch {
           opts.onError?.(`non-JSON stdout: ${lineBuf.trim()}`);
@@ -213,7 +217,7 @@ export class Agent {
       interrupt(): void {
         sendStdin(JSON.stringify({ type: "interrupt" }) + "\n");
       },
-      configure(config: AgentConfig): void {
+      configure(config: SandboxAgentConfig): void {
         sendStdin(JSON.stringify({ type: "configure", ...config }) + "\n");
       },
       async kill(signal?: number): Promise<void> {
