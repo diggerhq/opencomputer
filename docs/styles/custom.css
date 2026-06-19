@@ -71,3 +71,11 @@ pre code {
   --rounded-2xl: var(--oc-radius);
   --rounded-3xl: var(--oc-radius);
 }
+
+/* In a tabbed code group the content sits flush under the tab bar — square its top corners
+   so it reads as one unit (bottom corners keep the brand radius). */
+[data-component-part="code-group-tab-content"],
+[data-component-part="code-group-tab-content"] [data-component-part="code-block-root"] {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
