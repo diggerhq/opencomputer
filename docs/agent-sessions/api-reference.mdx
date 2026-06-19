@@ -1,26 +1,61 @@
 ---
-title: "API reference"
-description: "Every endpoint in the Durable Agent Sessions API"
+title: "API / SDK reference"
+description: "Every endpoint in the Durable Agent Sessions API, with its TypeScript SDK call"
 ---
 
 Base URL `https://api.opencomputer.dev/v3`. Management calls authenticate with your **org API key**; stream and steer also accept a **[client token](/agent-sessions/authentication#client-tokens)**.
 
+Each section toggles between the **TypeScript** SDK (`@opencomputer/sdk`) and **REST** — pick one and the whole page follows. In the SDK calls, `oc` is the client and `session` is a handle:
+
+```ts
+import { OpenComputer, connectSession } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const session = await oc.sessions.get("sess_...");        // server, org key
+// or, in a browser:  await connectSession({ sessionId, clientToken })
+```
+
+<Note>The SDK returns the same objects with **camelCase** fields (`client_token` → `session.clientToken`, `created_at` → `createdAt`, `yield_reason` → `yieldReason`, …). The wire shapes below are the raw JSON.</Note>
+
 ## Sessions
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.sessions.create(params)` | Start a session → a `Session` handle (carries `.clientToken`). |
+| `oc.sessions.get(id)` | Fetch a session. |
+| `oc.sessions.list(params)` | List sessions (filtered, paginated). |
+| `session.archive()` | Cancel any active turn, then close (read-only). |
+| `session.cancel()` | Cooperatively stop the active turn (no-op if not running). |
+| `session.result()` | `{ lastTurn, result? }` — the resolved final event. |
+| `session.turns()` · `session.turn(id)` | Per-turn history: timing, error. |
+| `session.mintClientToken(opts)` | Mint a client token. |
+
+</Tab>
+
+<Tab title="REST API">
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /sessions` | Start a session. Returns `{ session, client_token }`. |
+| `POST /sessions` | Start a session → `{ session, client_token }`. |
 | `GET /sessions/:id` | Fetch a session. |
 | `GET /sessions?status=&agent=&key=&after=&before=&limit=` | List sessions (filtered, paginated). |
 | `POST /sessions/:id/archive` | Cancel any active turn, then close (read-only). |
 | `POST /sessions/:id/cancel` | Cooperatively stop the active turn (no-op if not running). |
-| `GET /sessions/:id/result` | The result helper — `{ last_turn, result? }` (the resolved final event). |
-| `GET /sessions/:id/turns` · `GET …/turns/:turnId` | Per-turn history: timing, error. |
+| `GET /sessions/:id/result` | The result helper — `{ last_turn, result? }`. |
+| `GET /sessions/:id/turns` · `…/turns/:turnId` | Per-turn history: timing, error. |
 | `POST /sessions/:id/client-tokens` | Mint a client token. |
+
+</Tab>
+
+</Tabs>
 
 `agent` is **required** (create a saved [agent](#agents) first); a resolvable Anthropic [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-envelope). For the managed `claude` runtime, put all task-critical context in the task text. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations).
 
-Client tokens accept `scopes?` (subset of `read`, `steer`) and `ttl?` seconds, clamped to 60–86400.
+Client tokens accept `scopes?` (subset of `read`, `steer`) and `ttl?` seconds, clamped to 60–86400 (SDK: `ttlSeconds`).
 
 ```
 Session = { id, status, head, input_cursor,
@@ -39,15 +74,35 @@ Turn = {
 
 ## Events
 
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `session.listEvents(opts)` | Read events since a cursor. |
+| `session.events(opts)` | Live stream from a cursor — an async iterator that resumes itself. |
+| `session.event(id)` | Fetch one event (resolve `resultEventId`). |
+| `session.eventContent(id)` | Fetch a blob-backed body (large outputs). |
+| `session.messages(opts)` | User-message history. |
+
+</Tab>
+
+<Tab title="REST API">
+
 | Method · Path | Purpose |
 | --- | --- |
 | `GET /sessions/:id/events?after=<seq>&level=<lvl>` | Read events since a cursor. |
-| `GET /sessions/:id/events?after=<seq>&level=<lvl>&stream=sse` | Live SSE stream from a cursor. |
+| `GET /sessions/:id/events?…&stream=sse` | Live SSE stream from a cursor. |
 | `GET /sessions/:id/events/:eventId` | Fetch one event (resolve `result_event_id`). |
 | `GET /sessions/:id/events/:eventId/content` | Fetch a blob-backed body (large outputs). |
 | `GET /sessions/:id/messages` | User-message history. |
 
-Filter events by `type` (exact or `prefix.*`), `turn_id`, and `limit`. `GET …/messages` is an alias for `level=user` + `type=*.message`.
+</Tab>
+
+</Tabs>
+
+Filter events by `type` (exact or `prefix.*`), `turn_id`, and `limit`. `…/messages` is an alias for `level=user` + `type=*.message`.
 
 `after` resumes from a `seq`; `level` is a **visibility threshold** — `user` returns only user-facing events, `progress` adds work updates, `internal` adds everything (see [visibility levels](/agent-sessions/events#visibility-levels)). Omitting `level` defaults to `internal` (you get everything). Switch on [`type`](/agent-sessions/events#event-shape), don't parse prose.
 
@@ -60,30 +115,83 @@ Event = {
 
 ## Steer
 
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `session.steer(text, { idempotencyKey })` | Append an input message; wakes the session. |
+
+</Tab>
+
+<Tab title="REST API">
+
 | Method · Path | Purpose |
 | --- | --- |
 | `POST /sessions/:id/messages` | Append an input message; wakes the session. |
+
+</Tab>
+
+</Tabs>
 
 Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on idempotent replay) with `{ event: { id, seq }, session: { id, status, head } }`.
 
 ## Destinations
 
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `session.destinations.create(params)` | Register a webhook destination. |
+| `session.destinations.list()` · `.get(did)` | List / fetch. |
+| `session.destinations.update(did, params)` | Pause/resume (`enabled`), retune `level`/`types`, rotate `secret`. |
+| `session.destinations.delete(did)` | Remove. |
+
+</Tab>
+
+<Tab title="REST API">
+
 | Method · Path | Purpose |
 | --- | --- |
 | `POST /sessions/:id/destinations` | Register a webhook destination. |
-| `GET /sessions/:id/destinations` · `GET …/:did` | List / fetch. |
+| `GET /sessions/:id/destinations` · `…/:did` | List / fetch. |
 | `PATCH /sessions/:id/destinations/:did` | Pause/resume (`enabled`), retune `level`/`types`, rotate `secret`. |
 | `DELETE /sessions/:id/destinations/:did` | Remove. |
 
-Destination body: `url`, `secret?`, `level?` (`user`), `types?[]`, `include_raw?` (`false`), `enabled?` (`true`). `types` accepts exact event types or `prefix.*`.
+</Tab>
+
+</Tabs>
+
+Destination body: `url`, `secret?`, `level?` (`user`), `types?[]`, `include_raw?` (`false`, SDK: `includeRaw`), `enabled?` (`true`). `types` accepts exact event types or `prefix.*`.
 
 ## Deliveries
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `session.deliveries.list(opts)` | List deliveries — status, attempts, last response/error. |
+| `session.deliveries.get(id)` | One delivery, in detail. |
+| `session.deliveries.redeliver(id)` | Re-send any delivery (not just dead-lettered). |
+
+</Tab>
+
+<Tab title="REST API">
 
 | Method · Path | Purpose |
 | --- | --- |
 | `GET /sessions/:id/deliveries?destination=&status=` | List deliveries — status, attempts, last response/error. |
 | `GET /sessions/:id/deliveries/:id` | One delivery, in detail. |
 | `POST /sessions/:id/deliveries/:id/redeliver` | Re-send any delivery (not just dead-lettered). |
+
+</Tab>
+
+</Tabs>
 
 See [Webhooks](/agent-sessions/webhooks#signing-retries-and-dedupe) for signing, retries, and dedupe.
 
@@ -100,11 +208,29 @@ Delivery = {
 
 ## Agents
 
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.create(params)` | Create a reusable agent. |
+| `oc.agents.get(id)` · `oc.agents.list()` | Fetch / list. |
+| `oc.agents.update(id, params)` | Update the agent for future sessions. |
+
+</Tab>
+
+<Tab title="REST API">
+
 | Method · Path | Purpose |
 | --- | --- |
 | `POST /agents` | Create a reusable agent. |
 | `GET /agents/:id` · `GET /agents` | Fetch / list. |
 | `PATCH /agents/:id` | Update the agent for future sessions. |
+
+</Tab>
+
+</Tabs>
 
 Create body: `name`, `prompt`, `model`, `runtime?` (`claude`), `key?`, `credential?`, `limits?`. Patch accepts `prompt?`, `model?`, `key?`, `credential?`, and `limits?`.
 
@@ -112,11 +238,29 @@ Pass `key` **or** `credential` (or neither → org default). The agent's `limits
 
 ## Credentials
 
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.credentials.create(params)` | Add a provider key. |
+| `oc.credentials.list()` · `oc.credentials.delete(id)` | List / remove. |
+| `oc.credentials.setDefault(params)` | Set the org default to a credential. |
+
+</Tab>
+
+<Tab title="REST API">
+
 | Method · Path | Purpose |
 | --- | --- |
 | `POST /credentials` | Add a provider key. |
 | `GET /credentials` · `DELETE /credentials/:id` | List / remove. |
-| `PUT /credentials/default` | Set the org default to a credential (its provider is derived). Body: `credential`. |
+| `PUT /credentials/default` | Set the org default to a credential (its provider is derived). |
+
+</Tab>
+
+</Tabs>
 
 Credential body: `provider`, `key`, `name?`, `is_default?`. Keys are write-only. A credential is **required**; sessions run on your key (no platform billing yet).
 
@@ -127,4 +271,4 @@ ClientToken = { token, scopes, expires_at }
 
 ## Errors & rate limits
 
-Errors use one envelope: `{ "error": { "type", "message" } }`. Cross-owner resources return `404` (not `403`). Rate and concurrency limits are not enforced at launch (a `429` with a `Retry-After` header may be introduced later).
+Errors use one envelope: `{ "error": { "type", "message" } }`; the SDK throws them as typed `OpenComputerError` subclasses (`AuthError`, `NotFoundError`, `ConflictError`, `ValidationError`, `RateLimitError`). Cross-owner resources return `404` (not `403`). Rate and concurrency limits are not enforced at launch (a `429` with a `Retry-After` header may be introduced later; the SDK retries it automatically).
