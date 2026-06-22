@@ -48,10 +48,10 @@ Give an agent a prompt and a task; OpenComputer runs it on a managed runtime and
 ## Architecture
 
 <Frame>
-  <img src="/images/durable-agent-sessions-architecture.svg" alt="Durable Agent Sessions architecture: your app starts/steers and streams a durable event-log session; a runtime (the brain) reads and appends to it and acts in a sandbox (the hands); the model runs on your key from the secret store, which never enters a sandbox; user-level events are delivered out via your webhook." />
+  <img src="/images/durable-agent-sessions-architecture.svg" alt="Durable Agent Sessions architecture: your app starts, steers, and streams a durable event-log session; a managed runtime adapter commits events while the brain drives the agent loop and acts through the hands sandbox; the model runs on your key from the secret store, which never enters a sandbox; user-level events are delivered out via your webhook." />
 </Frame>
 
-The event log is the durable record. Your app starts sessions, streams events, and steers with messages. The runtime reads and appends to the log, drives the hands sandbox for file and command work, and delivers user-level events to your webhook. Your model key stays in the secret store.
+The event log is the durable record. Your app starts sessions, streams events, and steers with messages. The runtime drives the agent loop, acts through the hands sandbox for file and command work, and commits user-level events for webhook delivery. Your model key stays in the secret store.
 
 ## Use cases
 
