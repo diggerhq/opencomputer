@@ -4,7 +4,20 @@ title: "Webhooks"
 description: "Deliver a session's output, and control deliveries"
 ---
 
-Register a **destination** and a session's [events](/agent-sessions/events) are delivered to it as **`Event` objects — the same shape the [SSE stream](/agent-sessions/events) emits** — at-least-once, signed, and retried. (Webhooks carry every event `type` — `turn.completed`, `exec.completed`, messages, … — not just messages.) Filter what you receive to avoid internal runtime detail.
+Register a **destination** and a session's [events](/agent-sessions/events) are delivered to it as a small **delivery envelope** — at-least-once, signed, and retried. The envelope carries top-level routing fields plus your session [`metadata`](/agent-sessions/api-reference#sessions), with the full event nested under `event`:
+
+```json
+{
+  "type": "turn.completed",          // the event type (route on this)
+  "sessionId": "ses_…",
+  "eventId": "evt_…",                 // == webhook-id (dedupe on it)
+  "metadata": { "owner": "acme", "repo": "widgets", "pullNumber": 42 },
+  "event": { "id": "evt_…", "seq": 12, "type": "turn.completed",
+             "level": "user", "actor": {…}, "body": {…}, "ts": "…" }
+}
+```
+
+`event` is the full [Event](/agent-sessions/events) — the same shape the [SSE stream](/agent-sessions/events) emits (the SSE stream delivers that bare Event; webhooks wrap it in this envelope). `metadata` is the opaque routing state you set at [create](/agent-sessions/api-reference#sessions), delivered **verbatim on every send and redelivery** (so a handler can route the callback without a lookup); it's `null` if unset. (Webhooks carry every event `type` — `turn.completed`, `exec.completed`, messages, … — not just messages.) Filter what you receive to avoid internal runtime detail.
 
 ## Destinations
 
@@ -39,7 +52,7 @@ Content-Type: application/json
 
 </CodeGroup>
 
-`level` is the visibility threshold (`user` default, or `progress`); `types` is an optional event-type allow-list (default: all — which **includes the terminal `turn.completed`**); `include_raw: false` strips `body.raw` from the delivered Event. To get only completions, set `types: ["turn.completed"]`.
+`level` is the visibility threshold (`user` default, or `progress`); `types` is an optional event-type allow-list (default: all — which **includes the terminal `turn.completed`**); `include_raw: false` strips `body.raw` from the delivered event (the envelope's `event.body.raw`). To get only completions, set `types: ["turn.completed"]`.
 
 <Tabs>
 
