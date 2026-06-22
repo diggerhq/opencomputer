@@ -35,7 +35,7 @@ Give an agent a prompt and a task; OpenComputer runs it on a managed runtime and
 
 <Steps>
   <Step title="Define an agent">
-    Create a reusable `{ name, model, prompt, runtime }` from your backend. Pass your Anthropic `key` inline, or reference a saved [credential](/agent-sessions/authentication#model-credentials). ([Agents](/agent-sessions/agents))
+    Create a reusable `{ name, model, prompt, runtime }` from your backend — `runtime: "claude"` (Anthropic models) or `"codex"` (OpenAI models). Pass your model `key` inline, or reference a saved [credential](/agent-sessions/authentication#model-credentials). ([Agents](/agent-sessions/agents))
   </Step>
   <Step title="Start a session">
     Start a session with `{ agent, input }`. The agent starts immediately and returns a browser-safe `client_token`.

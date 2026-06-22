@@ -38,7 +38,7 @@ Content-Type: application/json
 
 </CodeGroup>
 
-Pass your Anthropic `key` inline and it's stored as a [credential](/agent-sessions/authentication#model-credentials) and attached to the agent — sessions run the model on it. Already have a credential? Reference it with `credential: "cred_…"` instead, or omit both to use your org default. Optionally set default [`limits`](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) too; sessions inherit them.
+Pass your model `key` inline and it's stored as a [credential](/agent-sessions/authentication#model-credentials) and attached to the agent — sessions run the model on it. The provider is taken from `model` (Anthropic for `anthropic/…`, OpenAI for `openai/…`), so the key has to be for that provider. Already have a credential? Reference it with `credential: "cred_…"` instead, or omit both to use your org default for that provider. Optionally set default [`limits`](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) too; sessions inherit them.
 
 <Tip>Keep the org key and model key on your backend. Only return session-scoped client tokens to browsers.</Tip>
 
@@ -48,6 +48,6 @@ When a session is created it **freezes** the agent's `prompt`, `model`, `runtime
 
 ## Model
 
-`model` is a `provider/model` id (e.g. `anthropic/claude-opus-4-8`); the chosen [runtime](/agent-sessions/runtimes) determines which models are valid. The model runs on [your Anthropic key](/agent-sessions/authentication#model-credentials) (required). Today the only callable runtime is `claude`.
+`model` is a `provider/model` id, and its provider must match the [runtime](/agent-sessions/runtimes): `claude` runs `anthropic/…` (e.g. `anthropic/claude-opus-4-8`), `codex` runs `openai/…` (e.g. `openai/gpt-5-codex`). The model runs on [your own key](/agent-sessions/authentication#model-credentials) for that provider (required). A `runtime` / `model` / credential mismatch is rejected when you create or edit the agent, never mid-session.
 
-<Note>Additional model providers, and switching a session's model mid-session, are coming soon.</Note>
+<Note>Switching a session's model or runtime mid-session is coming soon; for now, new sessions pick up the agent's current `runtime` and `model`.</Note>

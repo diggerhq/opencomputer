@@ -4,9 +4,9 @@ title: "Custom runtimes"
 description: "Package any agent harness as a runtime (coming soon)"
 ---
 
-<Note>**Planned.** This page describes planned API shape, not shipped behavior. Today the only callable [runtime](/agent-sessions/runtimes) is `claude`.</Note>
+<Note>**Planned.** This page describes planned API shape, not shipped behavior. Today the built-in [runtimes](/agent-sessions/runtimes) are `claude` and `codex`; bringing your own is on the roadmap.</Note>
 
-A custom runtime is a container image for your agent harness. Once registered, select it per agent with `runtime: "<name>"`; sessions, events, steering, and webhooks work the same way.
+A custom runtime is a container image for your own agent harness — anything beyond the built-in `claude` and `codex` runtimes. Once registered, select it per agent with `runtime: "<name>"`; sessions, events, steering, and webhooks work the same way.
 
 ## Runtime invocation
 

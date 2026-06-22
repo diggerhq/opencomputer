@@ -1,10 +1,10 @@
 ---
 mode: "wide"
-title: "Claude runtime tools"
-description: "The tools the claude runtime can use — what to rely on when you write prompts"
+title: "Runtime tools"
+description: "The tools a runtime can use — what to rely on when you write prompts"
 ---
 
-When you write a prompt for the `claude` [runtime](/agent-sessions/runtimes), it's useful to know exactly what the agent can do. Every side effect runs through a fixed set of tools against the session's **sandbox** — the agent has no direct filesystem, shell, or network of its own. The built-in local tools are disabled; only these remote tools are available.
+When you write a prompt for a [runtime](/agent-sessions/runtimes) (`claude` or `codex`), it's useful to know exactly what the agent can do. Both runtimes act through the same fixed set of tools against the session's **sandbox** — the agent has no direct filesystem, shell, or network of its own. The runtime's built-in local tools are disabled; only these remote tools are available.
 
 ## Sandbox tools
 

@@ -53,7 +53,7 @@ const session = await oc.sessions.get("sess_...");        // server, org key
 
 </Tabs>
 
-`agent` is **required** (create a saved [agent](#agents) first); a resolvable Anthropic [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-envelope). For the managed `claude` runtime, put all task-critical context in the task text. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations).
+`agent` is **required** (create a saved [agent](#agents) first); a resolvable model [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-envelope). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations).
 
 Client tokens accept `scopes?` (subset of `read`, `steer`) and `ttl?` seconds, clamped to 60–86400 (SDK: `ttlSeconds`).
 
@@ -232,7 +232,7 @@ Delivery = {
 
 </Tabs>
 
-Create body: `name`, `prompt`, `model`, `runtime?` (`claude`), `key?`, `credential?`, `limits?`. Patch accepts `prompt?`, `model?`, `key?`, `credential?`, and `limits?`.
+Create body: `name`, `prompt`, `model`, `runtime?` (`claude` | `codex`), `key?`, `credential?`, `limits?`. Patch accepts `prompt?`, `model?`, `runtime?`, `key?`, `credential?`, and `limits?`. The `runtime` / `model` / credential provider must agree (`claude`↔`anthropic/…`, `codex`↔`openai/…`) — a mismatch is rejected at create or patch.
 
 Pass `key` **or** `credential` (or neither → org default). The agent's `limits` are the defaults for its sessions; a session's own `limits` override. Each agent has a monotonic `revision` (bumped on PATCH) that sessions pin in `agent_snapshot.revision`, so you can tell which version produced a run.
 

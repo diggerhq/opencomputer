@@ -8,7 +8,7 @@ A **session** is the durable unit of an [agent](/agent-sessions/agents) at work:
 
 ## Session flow
 
-1. You create a session from an [agent](/agent-sessions/agents) (and an [Anthropic credential](/agent-sessions/authentication#model-credentials) — both required). The session starts immediately.
+1. You create a session from an [agent](/agent-sessions/agents) (and a [model credential](/agent-sessions/authentication#model-credentials) — both required). The session starts immediately.
 2. The [runtime](/agent-sessions/runtimes) executes the agent in a sandbox, appending [events](/agent-sessions/events) to the log as it works.
 3. With nothing left to do, the session goes **idle** and the sandbox **hibernates**.
 4. A [steer](/agent-sessions/messaging) message wakes it; it resumes with its prior context. Repeat.
