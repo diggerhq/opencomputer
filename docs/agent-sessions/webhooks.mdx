@@ -130,22 +130,26 @@ Delivery = {
 - **Signed with [Standard Webhooks](https://www.standardwebhooks.com).** Every request carries `webhook-id`, `webhook-timestamp`, and `webhook-signature` — so you can verify with an off-the-shelf library instead of hand-rolling. `webhook-signature` = `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; `webhook-timestamp` guards replay; your `secret` (`whsec_…`) is write-only — set once, never returned. Plus `X-OC-Delivery-ID` and `X-OC-Session-ID` for correlation.
 - A delivery succeeds on HTTP `2xx`.
 
-### Verify a webhook
+### Verify, route on `metadata`, fetch the result
 
-Use a [Standard Webhooks](https://www.standardwebhooks.com) library:
+Verify against the **raw body before parsing** (a [Standard Webhooks](https://www.standardwebhooks.com) library does this), then route on the envelope's `metadata` — the routing state you set at create, returned verbatim — and read the durable result:
 
 ```js
 import { Webhook } from "standardwebhooks";
 
-// rawBody = the RAW request body string, read BEFORE JSON.parse
-function verify(headers, rawBody, secret) {
-  // throws on a missing/expired/invalid signature
-  return new Webhook(secret).verify(rawBody, {
-    "webhook-id":        headers["webhook-id"],
-    "webhook-timestamp": headers["webhook-timestamp"],
-    "webhook-signature": headers["webhook-signature"],
-  });
-}
+app.post("/webhooks/oc", express.raw({ type: "*/*" }), async (req, res) => {
+  let evt;
+  try { evt = new Webhook(secret).verify(req.body, req.headers); } // raw bytes; throws on bad/expired sig
+  catch { return res.sendStatus(400); }
+  if (evt.type !== "turn.completed") return res.sendStatus(204);
+
+  const { owner, repo, pullNumber } = evt.metadata;               // no DB lookup needed
+  const { result } = await (await oc.sessions.get(evt.sessionId)).result();
+  await postPRComment(owner, repo, pullNumber, result?.body?.text);
+  res.sendStatus(200);                                            // dedupe on webhook-id
+});
 ```
+
+Set it at create: `oc.sessions.create({ agent, input, metadata: { owner, repo, pullNumber } })`.
 
 <Note>Today, delivery is over **generic webhooks**. Slack, GitHub comments, Jira, and email are coming soon — all on this same event and delivery model.</Note>
