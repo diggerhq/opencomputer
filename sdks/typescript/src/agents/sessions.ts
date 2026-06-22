@@ -17,6 +17,14 @@ export interface CreateSessionParams {
    */
   destinations?: Array<{ url: string; level?: Level; types?: string[]; includeRaw?: boolean; enabled?: boolean }>;
   limits?: Limits;
+  /**
+   * Opaque application routing state stored on the session — a JSON object (≤ 16 KB).
+   * Returned on `get`/`list` (as `session.snapshot.metadata`) and delivered verbatim in
+   * webhooks, so a callback handler can route to the right record without a lookup. It is
+   * never shown to the model and not indexed/queryable. Distinct from `key`
+   * (get-or-create) and `idempotencyKey` (dedupe).
+   */
+  metadata?: Record<string, unknown>;
   /** Makes a keyless create retry-safe (sent as the Idempotency-Key header). */
   idempotencyKey?: string;
 }
