@@ -8,6 +8,8 @@ description: "Package any agent harness as a runtime (coming soon)"
 
 A custom runtime is a container image for your own agent harness — anything beyond the built-in `claude` and `codex` runtimes. Once registered, select it per agent with `runtime: "<name>"`; sessions, events, steering, and webhooks work the same way.
 
+The built-in runtimes are themselves thin wrappers around a provider's agent SDK (the Claude Agent SDK, the OpenAI Codex SDK) that conform to the contract below — a custom runtime is the same idea around any harness or SDK you choose.
+
 ## Runtime invocation
 
 For each turn, the platform starts your image with the session id, read cursor, events API URL, and a fenced **turn token**. The image must:

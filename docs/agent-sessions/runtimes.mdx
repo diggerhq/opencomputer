@@ -55,6 +55,8 @@ The runtime, model, and credential have to agree: `runtime: "codex"` needs an `o
 
 The model is configuration, not part of the runtime image. Each runtime drives one provider — `claude` drives Anthropic, `codex` drives OpenAI — and you choose the exact `provider/model` and the key it runs on. Because the model is config, the rest of your integration is identical across runtimes; the runtime is the one thing that changes.
 
+A runtime is a thin **wrapper around a provider's agent SDK**: `claude` wraps the **Claude Agent SDK**, `codex` wraps the **OpenAI Codex SDK**. The wrapper does the same small job in both cases — read the new input, drive the SDK's loop, translate each step into [session events](/agent-sessions/events), act only through the [sandbox tools](/agent-sessions/runtime-tools), and exit when there's nothing left to do. The built-in runtimes are built exactly this way, and a [custom runtime](/agent-sessions/custom-runtimes) is the same wrapper around any harness you choose.
+
 A runtime also **starts fast**: the engine is prepared ahead of time and baked into the image, so a new or recreated session doesn't wait on a per-session download before its first step.
 
 ### Brain and hands sandboxes
