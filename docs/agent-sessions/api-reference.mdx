@@ -53,7 +53,7 @@ const session = await oc.sessions.get("sess_...");        // server, org key
 
 </Tabs>
 
-`agent` is **required** (create a saved [agent](#agents) first); a resolvable model [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-envelope). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations).
+`agent` is **required** (create a saved [agent](#agents) first); a resolvable model [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks** so a callback handler can route to the right external record without a lookup; it is **never** shown to the model, **not** indexed/queryable, and distinct from `key` (get-or-create) and `Idempotency-Key` (dedupe). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-envelope). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations).
 
 Client tokens accept `scopes?` (subset of `read`, `steer`) and `ttl?` seconds, clamped to 60–86400 (SDK: `ttlSeconds`).
 
@@ -62,7 +62,9 @@ Session = { id, status, head, input_cursor,
             agent_snapshot: { prompt_hash, model, runtime, revision },
             agent_id, credential_id,   // resolved + pinned at create
             last_turn: { id, state, yield_reason?, result_event_id? },
-            limits: { tokens?, turn_seconds?, turns? }, key?, created_at }
+            limits: { tokens?, turn_seconds?, turns? },
+            metadata?,                 // opaque app routing state (null when unset)
+            key?, created_at }
 
 Turn = {
   id, state, yield_reason?, result_event_id?, error?,
