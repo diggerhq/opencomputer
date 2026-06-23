@@ -234,7 +234,7 @@ Delivery = {
 
 </Tabs>
 
-Create body: `name`, `prompt`, `model`, `runtime?` (`claude` | `codex`), `key?`, `credential?`, `limits?`. Patch accepts `prompt?`, `model?`, `runtime?`, `key?`, `credential?`, and `limits?`. The `runtime` / `model` / credential provider must agree (`claude`↔`anthropic/…`, `codex`↔`openai/…`) — a mismatch is rejected at create or patch.
+Create body: `name`, `prompt`, `model`, `runtime?` (`claude` | `codex`), `key?`, `credential?`, `limits?`. Patch accepts `prompt?`, `model?`, `key?`, `credential?`, and `limits?` — **not `runtime`, which is fixed at creation**. The `runtime` / `model` / credential provider must agree (`claude`↔`anthropic/…`, `codex`↔`openai/…`); this is validated at create, and a patched `model`/`credential` must stay within the runtime's provider.
 
 Pass `key` **or** `credential` (or neither → org default). The agent's `limits` are the defaults for its sessions; a session's own `limits` override. Each agent has a monotonic `revision` (bumped on PATCH) that sessions pin in `agent_snapshot.revision`, so you can tell which version produced a run.
 

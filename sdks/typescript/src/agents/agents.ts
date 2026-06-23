@@ -6,7 +6,7 @@ export interface CreateAgentParams {
   prompt: string;
   model: string;
   runtime?: string;
-  /** Anthropic key, stored as a sealed credential. Or pass `credential`, or rely on the org default. */
+  /** Model provider key for the runtime (Anthropic for `claude`, OpenAI for `codex`), stored as a sealed credential. Or pass `credential`, or rely on the org default. */
   key?: string;
   credential?: string;
   limits?: Limits;

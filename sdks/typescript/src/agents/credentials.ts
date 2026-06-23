@@ -2,14 +2,14 @@ import type { Http } from "./http.js";
 import type { Credential } from "./types.js";
 
 export interface CreateCredentialParams {
-  /** Defaults to `anthropic`. */
-  provider?: "anthropic" | (string & {});
+  /** The model provider this key is for (`anthropic` for the `claude` runtime, `openai` for `codex`). Defaults to `anthropic`. */
+  provider?: "anthropic" | "openai" | (string & {});
   /** Write-only — never returned by the API. */
   key: string;
   name?: string;
 }
 
-/** Provider keys (e.g. Anthropic), stored in the secret store; sessions run on them. */
+/** Provider keys (e.g. Anthropic, OpenAI), stored in the secret store; sessions run on them. */
 export class Credentials {
   constructor(private readonly http: Http) {}
 
