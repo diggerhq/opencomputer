@@ -11,6 +11,7 @@
 // request body, BEFORE JSON-parsing it.
 
 import type { Event } from "./types.js";
+import { normalize } from "./normalize.js";
 
 /** The envelope OpenComputer POSTs to a destination (see the Webhooks docs). */
 export interface WebhookDelivery<E = Event> {
@@ -138,7 +139,9 @@ export async function verifyWebhook<E = Event>(
   if (!matched) throw new WebhookVerificationError("no matching webhook signature");
 
   try {
-    return JSON.parse(rawBody) as WebhookDelivery<E>;
+    // Normalize so the returned envelope + nested event match the SDK's camelCase types
+    // (the wire event is snake-cased, e.g. `turn_id`); `metadata` stays verbatim (opaque).
+    return normalize(JSON.parse(rawBody)) as WebhookDelivery<E>;
   } catch {
     throw new WebhookVerificationError("signature valid but body is not JSON");
   }

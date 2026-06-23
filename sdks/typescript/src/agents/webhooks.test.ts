@@ -30,7 +30,7 @@ describe("verifyWebhook", () => {
   const ts = 1_700_000_000;
   const body = JSON.stringify({
     type: "turn.completed", sessionId: "ses_1", eventId: "msg_1",
-    metadata: { pull_number: 7 }, event: { id: "evt_1", type: "turn.completed" },
+    metadata: { pull_number: 7 }, event: { id: "evt_1", type: "turn.completed", turn_id: "trn_1" },
   });
   const hdr = (sig: string) => ({ "webhook-id": id, "webhook-timestamp": String(ts), "webhook-signature": sig });
 
@@ -38,7 +38,8 @@ describe("verifyWebhook", () => {
     const delivery = await verifyWebhook(body, hdr(await sign(id, ts, body, SECRET)), SECRET, { nowSeconds: ts });
     expect(delivery.type).toBe("turn.completed");
     expect(delivery.eventId).toBe("msg_1");
-    expect(delivery.metadata).toEqual({ pull_number: 7 });
+    expect(delivery.metadata).toEqual({ pull_number: 7 });   // opaque — verbatim
+    expect((delivery.event as { turnId?: string }).turnId).toBe("trn_1");   // wire turn_id → camelCase
   });
 
   it("rejects a tampered body", async () => {

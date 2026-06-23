@@ -32,7 +32,7 @@ export interface CreateSessionParams {
 export interface StreamOptions {
   /** Visibility threshold; default `internal` (the full build trace). */
   level?: Level;
-  /** Filter by event type (exact or `prefix.*`). */
+  /** Filter by event type (exact or `prefix.*`). Applied client-side as the stream arrives. */
   type?: string;
   /** Resume from this seq (default 0 — replays the whole log). */
   after?: number;
@@ -89,7 +89,9 @@ export class ClientSession {
       }
       try {
         for await (const ev of parseEventStream(res)) {
-          after = ev.seq;
+          after = ev.seq;   // advance the cursor on every event, even filtered-out ones
+          // The SSE endpoint streams by level+seq; apply the type filter here (exact or `prefix.*`).
+          if (opts.type && !(opts.type.endsWith(".*") ? ev.type.startsWith(opts.type.slice(0, -1)) : ev.type === opts.type)) continue;
           yield ev;
         }
       } catch {
