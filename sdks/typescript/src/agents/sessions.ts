@@ -151,6 +151,8 @@ export class Session extends ClientSession {
 
   get status(): SessionStatus { return this.data.status; }
   get lastTurn(): LastTurn | undefined { return this.data.lastTurn; }
+  /** Opaque app routing state set at create (`null` when unset). See {@link CreateSessionParams.metadata}. */
+  get metadata(): Record<string, unknown> | null { return this.data.metadata ?? null; }
   /** The latest fetched session record. */
   get snapshot(): SessionData { return this.data; }
 
