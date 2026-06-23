@@ -101,8 +101,8 @@ Response:
 
 ```json
 {
-  "session": { "id": "sess_...", "status": "queued", "head": 1 },
-  "client_token": "ct_..."
+  "session": { "id": "ses_...", "status": "queued", "head": 1 },
+  "client_token": "eyJ..."
 }
 ```
 
@@ -168,7 +168,7 @@ await live.steer("Add a filter for completed tasks.", { idempotencyKey: "msg_01"
 ```
 
 ```http REST API
-POST https://api.opencomputer.dev/v3/sessions/sess_.../messages
+POST https://api.opencomputer.dev/v3/sessions/ses_.../messages
 Authorization: Bearer $CLIENT_TOKEN
 Content-Type: application/json
 
@@ -185,7 +185,7 @@ Response:
 ```json
 {
   "event": { "id": "evt_...", "seq": 14 },
-  "session": { "id": "sess_...", "status": "queued", "head": 14 }
+  "session": { "id": "ses_...", "status": "queued", "head": 14 }
 }
 ```
 

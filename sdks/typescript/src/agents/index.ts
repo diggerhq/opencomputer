@@ -9,6 +9,8 @@ export { Credentials } from "./credentials.js";
 export type { CreateCredentialParams } from "./credentials.js";
 export { Destinations, Deliveries } from "./destinations.js";
 export type { CreateDestinationParams, UpdateDestinationParams } from "./destinations.js";
+export { verifyWebhook, WebhookVerificationError } from "./webhooks.js";
+export type { WebhookDelivery, VerifyWebhookOptions } from "./webhooks.js";
 
 export * from "./types.js";
 export * from "./errors.js";

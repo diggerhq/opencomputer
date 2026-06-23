@@ -27,7 +27,8 @@ export class Agents {
   constructor(private readonly http: Http) {}
 
   create(params: CreateAgentParams): Promise<Agent> {
-    return this.http.request("POST", "/agents", { body: params });
+    // Idempotent by name server-side → safe to auto-retry transient failures.
+    return this.http.request("POST", "/agents", { body: params, idempotent: true });
   }
   get(id: string): Promise<Agent> {
     return this.http.request("GET", `/agents/${id}`);

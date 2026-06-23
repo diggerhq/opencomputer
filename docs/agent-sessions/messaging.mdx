@@ -20,7 +20,7 @@ await live.steer("also check the CI config", { idempotencyKey: "msg_01" });
 ```
 
 ```http REST API
-POST https://api.opencomputer.dev/v3/sessions/sess_.../messages
+POST https://api.opencomputer.dev/v3/sessions/ses_.../messages
 Authorization: Bearer $CLIENT_TOKEN
 Content-Type: application/json
 
@@ -34,29 +34,35 @@ Content-Type: application/json
 
 Pass `idempotency_key` so retries (flaky network, double-click) are de-duplicated — applied at most once **per session**, so the same key is safe to reuse across different sessions.
 
-## Message envelope
+## Message input
 
-Every inbound and outbound message normalizes to this shape. The core fields are fixed; anything source-specific lives under `raw`, which the platform never interprets.
+Steer with `{ text, idempotency_key? }`, or a fuller **envelope** when you need a source or a threading anchor:
 
 ```json
 {
-  "id": "client:abc123",
-  "source": "client",
-  "kind": "message",
-  "actor": { "id": "client:user-7", "display": "Ada", "type": "human" },
-  "conversation": { "source": "client", "ref": "thread-42" },
-  "text": "also check the CI config",
-  "ts": "2026-06-18T12:00:00Z",
-  "raw": {}
+  "envelope": {
+    "id": "client:abc123",
+    "source": "client",
+    "conversation": { "source": "client", "ref": "thread-42" },
+    "text": "also check the CI config",
+    "refs": {},
+    "raw": {}
+  }
 }
 ```
 
-- **`id`** — the idempotency key, deduped **per session** (not global).
-- **`actor`** — who sent it (`human` | `agent` | `system`), namespaced.
-- **`conversation`** — an opaque reply/routing anchor.
-- **`text`** — the content the agent reads (or that you receive).
-- **`raw`** — untouched original payload; optional, never read by the core.
+These fields don't all land in one place — the appended [event](/agent-sessions/events) splits them:
 
-To deliver a session's output, register a webhook destination. Deliveries carry the full [Event](/agent-sessions/events) (a message event's `body` is this envelope) — see [Webhooks](/agent-sessions/webhooks).
+| You send | Lands on the event as |
+| --- | --- |
+| `text` | `body.text` — the content the agent reads |
+| `raw` | `body.raw` — untouched original payload (optional; never interpreted) |
+| `id` (or top-level `idempotency_key`) | the idempotency key, deduped **per session** |
+| `source`, `conversation`, `refs` | merged into the event's top-level `refs` — opaque routing/threading anchors |
+| (the sender) | the event's `actor` — `human` \| `agent` \| `system`, namespaced |
+
+So a `*.message` event's `body` is just `{ text, raw? }` — `source`/`conversation`/`refs` live under the event's top-level `refs`, and the sender under `actor` (not inside `body`). Outbound `agent.message` bodies are likewise `{ text }`.
+
+To deliver a session's output, register a webhook destination — deliveries carry the full [Event](/agent-sessions/events); see [Webhooks](/agent-sessions/webhooks).
 
 <Note>[Inbound channels](/agent-sessions/channels) (Slack, GitHub, Jira, email) are coming soon — they map onto this same envelope; today you steer in via the API.</Note>

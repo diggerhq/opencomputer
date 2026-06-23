@@ -44,7 +44,7 @@ You get one back from `POST /v3/sessions`, and can mint more:
 <CodeGroup>
 
 ```ts TypeScript SDK
-const session = await oc.sessions.get("sess_...");
+const session = await oc.sessions.get("ses_...");
 
 const clientToken = await session.mintClientToken({
   scopes: ["read", "steer"],
@@ -53,7 +53,7 @@ const clientToken = await session.mintClientToken({
 ```
 
 ```http REST API
-POST https://api.opencomputer.dev/v3/sessions/sess_.../client-tokens
+POST https://api.opencomputer.dev/v3/sessions/ses_.../client-tokens
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
 

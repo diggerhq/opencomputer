@@ -38,7 +38,7 @@ await session.destinations.create({
 ```
 
 ```http REST API
-POST https://api.opencomputer.dev/v3/sessions/sess_.../destinations
+POST https://api.opencomputer.dev/v3/sessions/ses_.../destinations
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
 
@@ -127,12 +127,25 @@ Delivery = {
 
 - **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused.
 - **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it above). A duplicate can still arrive — a delivery interrupted after it reached you, or a replayed turn — so **dedupe on `webhook-id`** (it equals the event id).
-- **Signed with [Standard Webhooks](https://www.standardwebhooks.com).** Every request carries `webhook-id`, `webhook-timestamp`, and `webhook-signature` — so you can verify with an off-the-shelf library instead of hand-rolling. `webhook-signature` = `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; `webhook-timestamp` guards replay; your `secret` (`whsec_…`) is write-only — set once, never returned. Plus `X-OC-Delivery-ID` and `X-OC-Session-ID` for correlation.
+- **Signed with [Standard Webhooks](https://www.standardwebhooks.com) — when the destination has a `secret`.** Every request carries `webhook-id` and `webhook-timestamp`; if the destination was created with a `secret`, it also carries `webhook-signature` (= `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`). **Set a `secret` to get signed deliveries** — without one, requests are unsigned. Verify against the **raw request body, before parsing it**; `webhook-timestamp` guards replay; your `secret` (`whsec_…`) is write-only — set once, never returned. Plus `X-OC-Delivery-ID` and `X-OC-Session-ID` for correlation.
 - A delivery succeeds on HTTP `2xx`.
 
 ### Verify a webhook
 
-Use a [Standard Webhooks](https://www.standardwebhooks.com) library:
+The SDK ships a verifier — no extra dependency, runs in Node / Cloudflare Workers / browsers — that checks the signature and returns the parsed envelope:
+
+```ts
+import { verifyWebhook } from "@opencomputer/sdk";
+
+// rawBody = the RAW request body string, read BEFORE JSON.parse.
+// Throws on a missing / expired / invalid signature.
+const delivery = await verifyWebhook(rawBody, request.headers, process.env.OC_WEBHOOK_SECRET!);
+if (delivery.type === "turn.completed") {
+  // route on delivery.metadata, then fetch the result
+}
+```
+
+Or verify with any [Standard Webhooks](https://www.standardwebhooks.com) library directly:
 
 ```js
 import { Webhook } from "standardwebhooks";

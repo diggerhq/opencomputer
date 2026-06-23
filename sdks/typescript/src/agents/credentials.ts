@@ -7,6 +7,8 @@ export interface CreateCredentialParams {
   /** Write-only — never returned by the API. */
   key: string;
   name?: string;
+  /** Make this the org default for its provider (sent as `is_default`). */
+  isDefault?: boolean;
 }
 
 /** Provider keys (e.g. Anthropic, OpenAI), stored in the secret store; sessions run on them. */
