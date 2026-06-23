@@ -4,6 +4,8 @@
 
 # OpenComputer
 
+<!-- Hello, World! -->
+
 Long-running cloud infrastructure for AI agents. Real computers, not sandboxes.
 
 Every OpenComputer is a real VM - a real computer with a real filesystem, full OS access, and persistent state. Not a container. A full Linux machine with root access.
