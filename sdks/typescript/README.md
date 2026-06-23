@@ -81,6 +81,10 @@ if (delivery.type === "turn.completed") {
 | `baseUrl` | —                      | `https://api.opencomputer.dev/v3`  |
 | `apiKey`  | `OPENCOMPUTER_API_KEY` | (none)                             |
 
+## Releasing
+
+**Bump the `version` in `package.json` (and `package-lock.json`) in any PR that changes the SDK.** Publishing only fires on a version change — a change merged without a bump silently won't release. One bump per PR is enough.
+
 ## License
 
 MIT
