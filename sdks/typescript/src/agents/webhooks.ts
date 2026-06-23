@@ -63,6 +63,23 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
+/**
+ * Derive the HMAC key bytes EXACTLY as the backend does (delivery signing): strip the
+ * `whsec_` prefix, use the base64-decoded bytes if the remainder round-trips as base64,
+ * otherwise fall back to the raw UTF-8 bytes of the ORIGINAL secret. So a destination made
+ * with a non-base64 secret (e.g. `"testsecret"`) verifies, matching what the server signed.
+ */
+function secretKeyBytes(secret: string): Uint8Array<ArrayBuffer> {
+  const s = secret.startsWith("whsec_") ? secret.slice("whsec_".length) : secret;
+  try {
+    const decoded = base64ToBytes(s);
+    if (decoded.length > 0 && bytesToBase64(decoded).replace(/=+$/, "") === s.replace(/=+$/, "")) return decoded;
+  } catch {
+    /* not base64 → raw bytes below */
+  }
+  return new Uint8Array(new TextEncoder().encode(secret));
+}
+
 /** Constant-time string compare (equal length → no early-exit on content). */
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -103,11 +120,14 @@ export async function verifyWebhook<E = Event>(
     throw new WebhookVerificationError("webhook-timestamp outside tolerance (possible replay)");
   }
 
-  const keyBytes = base64ToBytes(secret.startsWith("whsec_") ? secret.slice("whsec_".length) : secret);
-  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const msg = new Uint8Array(new TextEncoder().encode(`${id}.${ts}.${rawBody}`));
-  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, msg));
-  const expected = bytesToBase64(mac);
+  let expected: string;
+  try {
+    const cryptoKey = await crypto.subtle.importKey("raw", secretKeyBytes(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const msg = new Uint8Array(new TextEncoder().encode(`${id}.${ts}.${rawBody}`));
+    expected = bytesToBase64(new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, msg)));
+  } catch (err) {
+    throw new WebhookVerificationError(`could not compute signature: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Header is space-separated "v1,<sig>" entries (multiple during secret rotation).
   const matched = sigHeader.split(" ").some((entry) => {

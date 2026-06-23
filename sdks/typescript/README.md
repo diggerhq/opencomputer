@@ -48,13 +48,14 @@ const agent = await oc.agents.create({
 });
 
 // Per request — hand off durable work, route the callback via metadata:
-await oc.sessions.create({
+const session = await oc.sessions.create({
   agent: agent.id,
   input: "Review PR #42",
   metadata: { pullNumber: 42 },            // echoed back verbatim in the webhook
   idempotencyKey: deliveryId,              // retry-safe
-  destinations: [{ url: "https://app.example.com/oc-callback", secret: process.env.OC_WEBHOOK_SECRET! }],
 });
+// Register a SIGNED callback (inline create-time destinations can't carry a secret):
+await session.destinations.create({ url: "https://app.example.com/oc-callback", secret: process.env.OC_WEBHOOK_SECRET! });
 
 // In your webhook handler — verify the signature, then fetch the result:
 const delivery = await verifyWebhook(rawBody, request.headers, process.env.OC_WEBHOOK_SECRET!);
@@ -66,10 +67,19 @@ if (delivery.type === "turn.completed") {
 
 ## Configuration
 
-| Option    | Env Variable            | Default                  |
-|-----------|------------------------|--------------------------|
-| `apiUrl`  | `OPENCOMPUTER_API_URL`  | `https://app.opencomputer.dev`  |
-| `apiKey`  | `OPENCOMPUTER_API_KEY`  | (none)                   |
+**Sandboxes** (`Sandbox`):
+
+| Option   | Env Variable           | Default                          |
+|----------|------------------------|----------------------------------|
+| `apiUrl` | `OPENCOMPUTER_API_URL` | `https://app.opencomputer.dev`   |
+| `apiKey` | `OPENCOMPUTER_API_KEY` | (none)                           |
+
+**Durable Agent Sessions** (`OpenComputer`):
+
+| Option    | Env Variable           | Default                            |
+|-----------|------------------------|------------------------------------|
+| `baseUrl` | —                      | `https://api.opencomputer.dev/v3`  |
+| `apiKey`  | `OPENCOMPUTER_API_KEY` | (none)                             |
 
 ## License
 
