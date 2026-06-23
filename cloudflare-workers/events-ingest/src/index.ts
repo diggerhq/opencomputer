@@ -234,8 +234,9 @@ export default {
       });
 
     // Checkpoint lifecycle: keep D1 checkpoints_index in sync with cell PG
-    // sandbox_checkpoints. CP emits checkpoint_ready after SetCheckpointReady
-    // (UPSERT all fields) and checkpoint_deleted after DeleteCheckpoint. The
+    // sandbox_checkpoints. CP emits checkpoint_ready after SetCheckpointReady,
+    // checkpoint_failed after SetCheckpointFailed, and checkpoint_deleted after
+    // DeleteCheckpoint. The
     // dashboard cross-cell list + the edge's spawn-from-checkpoint routing
     // both depend on this table being populated. golden_hash is write-once:
     // it pins the checkpoint to its base golden, so the upsert fills a
@@ -250,14 +251,29 @@ export default {
          owner_cell_id = excluded.owner_cell_id,
          s3_url        = excluded.s3_url,
          size_bytes    = excluded.size_bytes,
+         status        = 'ready',
+         error_msg     = NULL,
+         failed_at     = NULL,
          golden_hash   = CASE WHEN checkpoints_index.golden_hash = '' THEN excluded.golden_hash ELSE checkpoints_index.golden_hash END,
+         name          = CASE WHEN excluded.name IS NULL OR excluded.name = '' THEN checkpoints_index.name ELSE excluded.name END`,
+    );
+    const checkpointFailedUpsert = env.OPENCOMPUTER_DB.prepare(
+      `INSERT INTO checkpoints_index
+         (id, sandbox_id, org_id, owner_cell_id, s3_url, size_bytes, golden_hash, workspace_size, created_at, name, status, error_msg, failed_at)
+       VALUES (?1, ?2, ?3, ?4, '', 0, '', NULL, ?5, ?6, 'failed', ?7, ?8)
+       ON CONFLICT(id) DO UPDATE SET
+         sandbox_id    = excluded.sandbox_id,
+         owner_cell_id = excluded.owner_cell_id,
+         status        = 'failed',
+         error_msg     = excluded.error_msg,
+         failed_at     = excluded.failed_at,
          name          = CASE WHEN excluded.name IS NULL OR excluded.name = '' THEN checkpoints_index.name ELSE excluded.name END`,
     );
     const checkpointDelete = env.OPENCOMPUTER_DB.prepare(
       `DELETE FROM checkpoints_index WHERE id = ?1`,
     );
     const checkpointBatches = fresh
-      .filter((e) => e.type === "checkpoint_ready" || e.type === "checkpoint_deleted")
+      .filter((e) => e.type === "checkpoint_ready" || e.type === "checkpoint_failed" || e.type === "checkpoint_deleted")
       .flatMap((e) => {
         const p = (e.payload ?? {}) as {
           checkpoint_id?: string;
@@ -266,17 +282,32 @@ export default {
           size_bytes?: number;
           golden_hash?: string;
           name?: string;
+          error_msg?: string;
         };
         if (!p.checkpoint_id) return [];
         if (e.type === "checkpoint_deleted") {
           return [checkpointDelete.bind(p.checkpoint_id)];
+        }
+        const tsSec = Math.floor((Date.parse(e.timestamp) || Date.now()) / 1000);
+        if (e.type === "checkpoint_failed") {
+          return [
+            checkpointFailedUpsert.bind(
+              p.checkpoint_id,
+              e.sandbox_id ?? "",
+              e.org_id ?? "",
+              e.cell_id,
+              tsSec,
+              p.name ?? null,
+              p.error_msg ?? "checkpoint failed",
+              tsSec,
+            ),
+          ];
         }
         // checkpoint_ready — use rootfs_s3_key as the canonical s3_url since
         // it's the rootfs delta the worker pulls at spawn time. The workspace
         // key is reachable from the rootfs metadata. `name` is the user-set
         // label; pre-fix the dashboard derived it from rootfs_s3_key, which
         // always ended in "rootfs.tar.zst".
-        const tsSec = Math.floor((Date.parse(e.timestamp) || Date.now()) / 1000);
         return [
           checkpointUpsert.bind(
             p.checkpoint_id,

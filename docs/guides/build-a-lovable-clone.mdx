@@ -5,9 +5,16 @@ description: "Build an open-source AI app builder using OpenComputer sandboxes"
 
 In this guide you'll build a fully functional **Lovable clone** — an AI-powered web app builder where users describe an app in plain English and get a live, running React application in seconds. The entire project is open-source and uses OpenComputer sandboxes as the execution engine.
 
+<Note>
+For new app-builder projects, start with [Durable Agent Sessions](/agent-sessions/quickstart) and the [app-builder example](https://github.com/diggerhq/oc-sessions-demos). This guide shows the older raw-sandbox orchestration pattern, which is still useful when you want to own the agent loop yourself.
+</Note>
+
 <CardGroup cols={2}>
   <Card title="GitHub Repository" icon="github" href="https://github.com/diggerhq/osslovable">
     Source code for the complete project.
+  </Card>
+  <Card title="Durable sessions example" icon="github" href="https://github.com/diggerhq/oc-sessions-demos">
+    The recommended app-builder architecture for new projects.
   </Card>
   <Card title="Live Demo" icon="globe" href="https://openlovable.cc">
     Try the running app at openlovable.cc.
@@ -169,7 +176,7 @@ This makes the deployment model practical for sharing prototypes and demos witho
 
 Several features mentioned as limitations now exist in OpenComputer:
 
-- **In-sandbox agent loop** — [Agent sessions](/agents/overview) now run the Claude Agent SDK inside the sandbox. The agent reads files, runs commands, and iterates on errors locally without leaving the VM. This is the recommended approach for new projects.
+- **In-sandbox agent loop** — [Agent sessions](/agent-sessions/overview) now run the Claude Agent SDK inside the sandbox. The agent reads files, runs commands, and iterates on errors locally without leaving the VM. This is the recommended approach for new projects.
 - **Preview URL authentication** — `authConfig` on [preview URLs](/sandboxes/preview-urls) supports restricting access. Not full private link sharing yet, but a step toward it.
 - **Checkpoints** — [Checkpoint and fork](/sandboxes/checkpoints) workflows are available for snapshotting sandbox state, restoring, and branching.
 - **Custom templates** — Define [custom environments](/sandboxes/templates) with the Image builder and pre-built snapshots.

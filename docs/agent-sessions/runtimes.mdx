@@ -1,0 +1,121 @@
+---
+mode: "wide"
+title: "Runtimes"
+description: "The engine that runs your agent — claude or codex, picked per agent"
+---
+
+A **runtime** is the engine that executes the agent loop — what's often called an **agent harness** (the loop plus its tools that drive the model). The two terms map 1:1; this doc says "runtime" because it's the API field. You pick one per agent with `runtime`; it defaults to `claude`. The runtime image is stateless and interchangeable, and the model it runs is separate configuration — so an agent is just a runtime, a `provider/model`, and a matching [credential](/agent-sessions/authentication#model-credentials).
+
+| Runtime | Models | Credential |
+| --- | --- | --- |
+| `claude` | `anthropic/…` (e.g. `anthropic/claude-opus-4-8`) | Anthropic key |
+| `codex` | `openai/…` (e.g. `openai/gpt-5-codex`) | OpenAI key |
+
+Sessions, [events](/agent-sessions/events), [steering](/agent-sessions/messaging), [tools](/agent-sessions/runtime-tools), and [webhooks](/agent-sessions/webhooks) work the same way whatever runtime you pick — `runtime` is a single field on the [agent](/agent-sessions/agents), so the rest of your integration is identical across runtimes. (It's fixed once the agent exists; to switch engines, create a new agent with a different `runtime`.)
+
+## `claude`
+
+The managed Claude agent loop (Claude Agent SDK / Claude Code). It works in a sandbox through remote tools, streams its steps into the session as events, and runs Claude models on your [Anthropic key](/agent-sessions/authentication#model-credentials).
+
+```http
+POST https://api.opencomputer.dev/v3/agents
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "name": "reviewer",
+  "runtime": "claude",
+  "model": "anthropic/claude-opus-4-8",
+  "prompt": "Review code in the sandbox. Run tests. Explain risks.",
+  "key": "sk-ant-..."
+}
+```
+
+## `codex`
+
+The managed Codex agent loop (OpenAI Codex SDK). It runs OpenAI models on your [OpenAI key](/agent-sessions/authentication#model-credentials), and drives the same sandbox tools and event stream as `claude` — only the engine and the provider change.
+
+```http
+POST https://api.opencomputer.dev/v3/agents
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "name": "reviewer",
+  "runtime": "codex",
+  "model": "openai/gpt-5-codex",
+  "prompt": "Review code in the sandbox. Run tests. Explain risks.",
+  "key": "sk-..."
+}
+```
+
+The runtime, model, and credential have to agree: `runtime: "codex"` needs an `openai/…` model and an OpenAI key, and `runtime: "claude"` needs an `anthropic/…` model and an Anthropic key. A mismatch is rejected when you create the agent, with a clear error — so a session never starts on a broken pairing. See [model credentials](/agent-sessions/authentication#model-credentials).
+
+## How runtimes work
+
+The model is configuration, not part of the runtime image. Each runtime drives one provider — `claude` drives Anthropic, `codex` drives OpenAI — and you choose the exact `provider/model` and the key it runs on. Because the model is config, the rest of your integration is identical across runtimes; the runtime is the one thing that changes.
+
+A runtime has two pieces:
+
+- the **brain**, a resident server around the provider's agent SDK;
+- the **adapter**, managed by OpenComputer, which connects that brain to the durable session log.
+
+The brain knows the SDK, the model, the prompt, its resumable state directory, and the sandbox tools exposed to it. It does **not** write OpenComputer events directly and does not call the sandbox API itself. The adapter reads new input from the [event log](/agent-sessions/events), sends a bounded turn to the brain, translates the brain's stream into session events, handles fencing/idempotency, and only declares the turn done after committed output is durable.
+
+The built-in runtimes are built this way, and [custom runtimes](/agent-sessions/custom-runtimes) follow the same split. See [example runtimes](https://github.com/diggerhq/oc-runtime-examples) for `claude` and `codex` brain servers side by side.
+
+A runtime also **starts fast**: the engine is prepared ahead of time and baked into the image, so a new or recreated session doesn't wait on a per-session download before its first step.
+
+### Brain and hands sandboxes
+
+The runtime runs the agent loop in its **own per-session sandbox** (the *brain*). The agent's file and shell tools don't run there — they run in a **separate sandbox** (the *hands*) exposed to the brain through tools, so commands and file edits stay isolated from the model loop. The brain carries the [sealed model key](/agent-sessions/authentication#model-credentials) (egress-allowlisted to the model API, swapped in by a host proxy so the key never enters the VM); the hands sandbox holds no secrets.
+
+### Each turn is bounded
+
+A turn is one bounded request from the adapter to the brain:
+
+1. the adapter reads new input from the [event log](/agent-sessions/events);
+2. it sends that input, the model, prompt, tool endpoint, and state directory to the brain;
+3. the brain drives the provider SDK and acts only through [runtime tools](/agent-sessions/runtime-tools);
+4. the adapter commits the brain's stream as session events with stable ids;
+5. the turn ends when the brain returns `done`, asks for input, hits a deadline, or crashes.
+
+Across turns the brain keeps provider-specific state under a checkpointed state directory — for example a local Claude journal or a Codex thread id. The durable record is the event log plus that state directory, which the platform checkpoints at each boundary and restores on recovery.
+
+### Pinned per session
+
+When a session starts it pins the runtime and version it began on (alongside the rest of the [agent snapshot](/agent-sessions/agents#session-pinned-config)). `runtime` is fixed at agent creation — to run a different engine, create a new agent. Other agent edits (`model`, `prompt`, `limits`) never affect a running or resumed session: new sessions pick up the change, in-flight ones keep what they started with.
+
+## Supervision and recovery
+
+Sessions are fully managed — you never restart anything yourself:
+
+- **One writer at a time.** Only one adapter advances a session at any moment; a stale or slow writer is rejected, so the log never forks.
+- **The brain is supervised.** If the resident brain crashes or stops answering health checks, it is restarted and the turn is retried from durable state.
+- **Hangs are bounded.** A turn has a deadline; a stuck model or tool path ends `deadline_exceeded` instead of staying stuck.
+- **A lost machine is restored.** If the brain sandbox is lost, OpenComputer recreates it, restores the checkpointed state directory, and replays from the durable log.
+- **A turn that can't start fails cleanly.** If the model key can't be resolved or the runtime image can't start, the turn ends with an **`error` event carrying the reason** and the session returns to idle — it doesn't hang.
+- **Nothing gets stranded.** A periodic safety sweep picks up any session whose work was missed or left mid-flight, so nothing stays stuck silently.
+- **Everything is recorded.** Every turn and sandbox transition is logged, so you can see where a session is and why a turn ended the way it did.
+
+### Failure behavior
+
+What's guaranteed today, and what isn't:
+
+| Failure | What happens |
+| --- | --- |
+| Client disconnects | Reconnect from your cursor ([events](/agent-sessions/events)); nothing lost. |
+| Session idles | Sandbox hibernates; resumes intact on the next message. |
+| Brain **crashes** | Restarted; the turn resumes from committed events and checkpointed state. |
+| Brain **hangs** | Bounded by the turn deadline; the turn ends `deadline_exceeded` — steer to continue. |
+| Sandbox lost **while idle** | Recreated from the last checkpoint before the next turn. |
+| Sandbox lost **mid-turn** | Recreated, restored from checkpointed state, and replayed from the durable log. |
+
+Work since the last committed step may repeat, so **make side effects idempotent** and treat the event log (and delivered webhooks) as the durable record. Uncommitted hands-sandbox files are not restored after sandbox loss — commit or push to keep them. Byte-exact **mid-turn** resume is coming in a later release.
+
+## What's coming
+
+More engines are on the way, each picked the same one-line way — your setup won't change:
+
+- **More prebuilt runtimes and providers** — additional managed engines, selected by setting `runtime` to its name.
+- **Custom runtimes** — package any agent harness as a runtime image and run it on the same sessions, events, and recovery as the built-ins. See [Custom runtimes](/agent-sessions/custom-runtimes) in Labs for the shape this takes.

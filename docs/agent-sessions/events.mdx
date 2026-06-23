@@ -1,0 +1,87 @@
+---
+title: "Events"
+description: "The append-only log: read, stream, filter by level, and resume"
+---
+
+A session is an **append-only log of events**: every step the agent takes is appended in order. You **read** it, **stream** it live, **filter** it by who should see each event (`level`), and **resume** from any point. Switch on the event **`type`**, don't parse prose.
+
+## Events in a turn
+
+When a turn runs it appends events in order — here, the agent runs the tests, sees them fail, and replies:
+
+```text
+turn.started
+  tool.call         npm test
+  exec.completed    exit 1
+  agent.message     "3 tests fail"   (level: user)
+turn.completed      needs_input
+```
+
+Everything between `turn.started` and `turn.completed` is that turn's work. **`turn.completed` is the "done" signal — await it** and read its `yield_reason` (here, `needs_input`). The `body` each type carries is in the table below.
+
+Each event is one envelope:
+
+```json
+{ "id": "evt_…", "seq": 12, "ts": "…", "session": "sess_…",
+  "actor": { "id": "agent", "type": "agent" },
+  "type": "agent.message", "level": "user",
+  "body": { "text": "3 tests fail in auth.spec.ts" } }
+```
+
+The two fields you act on are **`type`** (what happened — the discriminator) and **`level`** (who should see it). `seq` orders and resumes the log, `body` is the payload, and `actor` is who produced it (`{ id, display?, type: "human" | "agent" | "system" }`). The full field reference lives in the [API reference](/agent-sessions/api-reference); inbound and outbound messages share one [envelope](/agent-sessions/messaging#message-envelope) shape.
+
+## Event types
+
+Treat **`type`** as the stable discriminator — switch on it, don't parse prose. Unknown types render fine from their `text`/`summary`, so new ones won't break your UI. Match a prefix like `turn.*` or `agent.*` for coarse buckets.
+
+| `type` | `body` shape | Use it for |
+| --- | --- | --- |
+| `agent.message` | `{ text }` | agent output (the result is whichever one `turn.completed` points to) |
+| `user.message` | `{ text }` | a steer you sent |
+| `turn.started` | `{ turn_id, input_from_seq, input_to_seq }` | a turn began, consuming input events in `[from,to]` |
+| `turn.completed` | `{ turn_id, yield_reason, result_event_id? }` | **the "done" signal — await this** |
+| `tool.call` | `{ tool, args_summary }` | the agent invoked a tool |
+| `exec.completed` | `{ command, exit_code, summary, content_ref?, bytes? }` | a finished command |
+| `error.runtime` · `error.model` · `error.task` | `{ code, message, retriable? }` | a failure |
+
+**Coming soon**: `test.results`, `diff`/`patch`, `pr.result`, `preview.url`, `action.required` (agent needs an approval / tool result).
+
+## Visibility levels
+
+Every event carries a `level` — use it to choose how much detail each surface receives.
+
+| Level | Contains | Use for |
+| --- | --- | --- |
+| `user` | Answers, results, and questions. | Chat, final results, notifications. |
+| `progress` | Plain-language work updates. | Activity feeds and status lines. |
+| `internal` | Tool calls and runtime detail. | Debug consoles and audit trails. |
+
+Filtering is **cumulative** — `user` is the narrowest, `internal` is everything:
+
+- `?level=user` → just `user`
+- `?level=progress` → `progress` + `user`
+- `?level=internal` → everything
+
+So customer-facing chat asks for `user`, an agent-activity view for `progress`, and debugging for `internal`. The model's private reasoning is never surfaced; webhooks default to `user`.
+
+## Cursors and resume
+
+- **`seq`** — a monotonic id assigned to each event.
+- **`head`** — the highest `seq` in the session.
+- **`input_cursor`** — how far the *runtime* has consumed (a session field). As a **reader** you ignore it and just pass `after=<seq>`.
+
+Read or stream with `after=<seq>` to get everything since that point — this is how **resume** works: reconnect with the last `seq` you saw and you miss nothing and get no duplicates. In the browser, native `EventSource` does this for you — each event's `seq` is the SSE `id`, so it resumes via `Last-Event-ID` on reconnect (see the [quickstart](/agent-sessions/quickstart)).
+
+## Details
+
+<AccordionGroup>
+  <Accordion title="Correlate a steer to its turn">
+    Steers coalesce — one turn can pick up several — so [`POST /messages`](/agent-sessions/messaging) returns the *event* `seq`, not a turn. The turn that consumes your steer emits `turn.started` with `input_from_seq ≤ your_seq ≤ input_to_seq`; await its `turn.completed`, then `GET …/events?turn_id=` for everything it produced.
+  </Accordion>
+  <Accordion title="Large output and artifacts">
+    A large `body` is offloaded to a `content_ref`; fetch the bytes with `GET /sessions/:id/events/:eventId/content` (e.g. full `exec.completed` output). Richer **artifacts** (named files, diffs, screenshots, reports) get a first-class [artifacts & previews API](/agent-sessions/artifacts) **coming soon**.
+  </Accordion>
+  <Accordion title="id, turn_id, and idempotency keys">
+    **`id`** is the event's own unique id (`evt_…`). **`turn_id`** is the turn that produced the event, when applicable — filter a turn's output with `?turn_id=`. The client idempotency key for steering is separate from both (deduped per session — see [steering](/agent-sessions/messaging)).
+  </Accordion>
+</AccordionGroup>

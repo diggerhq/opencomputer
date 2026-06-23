@@ -1,0 +1,99 @@
+---
+title: "Workspaces"
+description: "Prepared environments for one or more repos, rebuilt on every push"
+---
+
+<Note>**Preview** — workspaces are not built in v0 yet. Today a session clones
+its repo on demand; the prepared-environment model below describes the
+designed behavior. See the [overview](/background-agents/overview).</Note>
+
+Cloning, installing, and building take minutes. A workspace does that work
+ahead of time — on every push — and snapshots the result, so sessions boot
+into a ready machine in seconds.
+
+A workspace is a first-class resource, not an agent attribute: it prepares
+**one or more repos** (each at an optional ref or branch) and is shared by
+every agent and session that lands on those repos.
+
+```bash
+oc workspace create web \
+  --repo github.com/acme/web \
+  --setup "pnpm i && pnpm build" \
+  --warm "pnpm test --filter smoke" \
+  --pool 1
+```
+
+## Recipe
+
+- **repo** — one or more repos, cloned via your GitHub connection (read
+  access). Each may pin an optional ref or branch; pass `--repo` again to
+  span several repos in one environment.
+- **setup** — install, build, generate.
+- **warm** *(optional)* — run once to heat caches, e.g. a smoke test.
+
+## Builds
+
+The workspace rebuilds on every push to the default branch — clone, setup,
+warm, snapshot — so the latest build matches the latest code. `--refresh
+30m` switches to interval rebuilds instead: useful at commit volumes where
+per-push builds would pile up, or to pick up floating dependencies on a
+quiet repo. Builds form an immutable lineage:
+
+```bash
+oc workspace builds web
+# #14  4 minutes ago   main@9f3c21  ok   6m12s
+# #13  34 minutes ago  main@8e1d09  ok   6m05s
+```
+
+Sessions boot from the latest successful build and pin it. A failed build
+never becomes latest.
+
+Builds run on ordinary sandboxes and bill as build minutes. On-push refresh
+costs nothing while the repo is quiet; `--refresh 30m` runs ~48 builds a day
+whether or not anything changed.
+
+`--pool N` keeps N machines pre-booted from the latest build, removing even
+the boot seconds for busy agents.
+
+## Resolution and sharing
+
+A session is **not bound to a repo** — it *resolves* which repo(s) to work in,
+from one of several sources:
+
+- the **triggering event** (a labeled issue's repo) — one source, not the only
+  one;
+- the **conversation** — a chat-born session has no triggering repo, so the
+  agent picks one from the repos its connection covers (see below);
+- a **configured default** on the agent;
+- or it **asks** the human.
+
+Resolution can be **lazy** (deferred until first needed) and **re-resolvable**:
+a session can switch repos mid-thread, or open several at once — each is checked
+out as its own directory inside the session's single sandbox.
+
+The agent drives this at runtime with a **`use_repo`** tool: it lists the repos
+its [connection](/background-agents/triggers#connections) scopes, checks one
+out, and calls again to switch or to add a second checkout. Where a prepared
+workspace covers the resolved repo/ref, the session boots from its latest build
+(fast); otherwise it **clones on demand**.
+
+Workspaces are not 1:1 with a repo: a repo can have more than one (e.g. per
+branch), and a single workspace can span multiple repos. Any workspace covering
+a session's repo/ref is shared by every agent and session that lands there,
+independent of which agent runs.
+
+## During a session
+
+The workspace defines the machine at session start; after that the session's
+sandbox evolves freely. Work in progress is protected independently — if a
+session's machine is lost, it is restored with its recent state, not rebuilt
+from the workspace (see [Sessions](/background-agents/sessions)).
+
+## API
+
+```bash
+POST /v2/workspaces              # create (recipe, refresh, pool)
+GET  /v2/workspaces/:id          # recipe, pool status, latest build
+GET  /v2/workspaces/:id/builds   # lineage
+POST /v2/workspaces/:id/builds   # build now
+```

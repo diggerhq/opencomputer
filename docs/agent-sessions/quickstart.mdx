@@ -1,0 +1,216 @@
+---
+mode: "wide"
+title: "Quickstart"
+description: "Start a session, stream it live, and steer it"
+---
+
+Build the smallest useful Durable Agent Sessions integration: define an agent, start a session, stream its event log, then send follow-up messages with a scoped client token.
+
+For the finished version, see the [example app](https://github.com/diggerhq/oc-sessions-demos); for every endpoint, the [API / SDK reference](/agent-sessions/api-reference).
+
+## Prerequisites
+
+You need an OpenComputer API key and an Anthropic key:
+
+```bash
+OPENCOMPUTER_API_KEY=osb_...
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+<Tip>Grab your OpenComputer API key from [app.opencomputer.dev](https://app.opencomputer.dev). Sessions run the model on your own provider key — Anthropic for the default `claude` runtime.</Tip>
+
+## 1. Create an agent
+
+An agent stores reusable configuration: name, runtime, model, prompt, and model credential.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+
+const agent = await oc.agents.create({
+  name: "quickstart-coder",
+  runtime: "claude",
+  model: "anthropic/claude-opus-4-8",
+  prompt: "Work in /workspace. Say progress. Ask only when blocked.",
+  key: process.env.ANTHROPIC_API_KEY,
+  limits: { turns: 4, turnSeconds: 600 },
+});
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/agents
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "name": "quickstart-coder",
+  "runtime": "claude",
+  "model": "anthropic/claude-opus-4-8",
+  "prompt": "Work in /workspace. Say progress. Ask only when blocked.",
+  "key": "sk-ant-...",
+  "limits": { "turns": 4, "turn_seconds": 600 }
+}
+```
+
+</CodeGroup>
+
+Response:
+
+```json
+{ "id": "agt_...", "name": "quickstart-coder", "revision": 1 }
+```
+
+<Note>Your model `key` is held in OpenComputer's [secret store](/sandboxes/secrets) (encrypted, write-only) and **never enters the sandbox**. The agent runs with a placeholder; an **egress proxy substitutes the real key in-flight** on the outbound call to the model provider — so neither the model nor your agent's code ever sees it. Reuse one key across agents via a [credential](/agent-sessions/authentication#model-credentials).</Note>
+
+<Tip>`POST /agents` is idempotent by agent name, so it is fine to call this during application startup.</Tip>
+
+<Tip>Prefer OpenAI? Set `runtime: "codex"` and `model: "openai/gpt-5-codex"` with an OpenAI `key` — every other step in this guide is identical. See [Runtimes](/agent-sessions/runtimes).</Tip>
+
+## 2. Start a session
+
+A session starts work immediately and returns a browser-safe `client_token` for that one session.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const session = await oc.sessions.create({
+  agent: agent.id,
+  input: "Create a todo app with local storage and a clean dark UI.",
+});
+
+// session.id + session.clientToken — hand the token to your frontend
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/sessions
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "agent": "agt_...",
+  "input": "Create a todo app with local storage and a clean dark UI."
+}
+```
+
+</CodeGroup>
+
+Response:
+
+```json
+{
+  "session": { "id": "sess_...", "status": "queued", "head": 1 },
+  "client_token": "ct_..."
+}
+```
+
+## 3. Stream events
+
+Use the `client_token` in the browser. Ask for `progress` for a good activity feed, or `internal` for an operator/debug view.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+import { connectSession } from "@opencomputer/sdk";
+
+// in your frontend, with the session's client token
+const live = await connectSession({ sessionId, clientToken });
+
+for await (const event of live.events({ level: "progress" })) {
+  render(event); // reconnects from the last seq automatically
+}
+```
+
+```js EventSource
+const url = new URL(`${OC}/v3/sessions/${sessionId}/events`);
+url.search = new URLSearchParams({ stream: "sse", level: "progress", token: clientToken });
+
+const events = new EventSource(url.toString());
+events.onmessage = (message) => render(JSON.parse(message.data));
+```
+
+</CodeGroup>
+
+Each event's `seq` is sent as the SSE `id`, so `EventSource` resumes automatically with `Last-Event-ID` after a dropped connection.
+
+## 4. Render by `type`
+
+Switch on the event `type`. Do not parse prose to decide whether work finished or failed.
+
+```json
+[
+  { "type": "agent.message", "body": { "text": "Done." } },
+  { "type": "tool.call", "body": { "args_summary": "npm test" } },
+  { "type": "exec.completed", "body": { "exit_code": 0 } },
+  { "type": "turn.completed", "body": { "yield_reason": "completed" } }
+]
+```
+
+Handle `turn.completed.body.yield_reason` explicitly:
+
+| `yield_reason` | UI behavior |
+| --- | --- |
+| `completed` | Show the final result. |
+| `needs_input` | Show the agent's question and enable reply. |
+| `deadline_exceeded`, `budget_exceeded`, `max_turns` | Explain which limit stopped the turn. |
+| `error`, `canceled` | Show a stopped/error state. |
+
+## 5. Steer the session
+
+Post follow-up messages with the same `client_token`. An idle session wakes and continues with its prior context.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+await live.steer("Add a filter for completed tasks.", { idempotencyKey: "msg_01" });
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/sessions/sess_.../messages
+Authorization: Bearer $CLIENT_TOKEN
+Content-Type: application/json
+
+{
+  "text": "Add a filter for completed tasks.",
+  "idempotency_key": "msg_01"
+}
+```
+
+</CodeGroup>
+
+Response:
+
+```json
+{
+  "event": { "id": "evt_...", "seq": 14 },
+  "session": { "id": "sess_...", "status": "queued", "head": 14 }
+}
+```
+
+## Production checklist
+
+- Keep the org API key and your model key server-side.
+- Add app auth before minting or returning a `client_token`.
+- Set `limits` on the agent or session.
+- Use `idempotency_key` for every user action you might retry.
+- Use `level=user` for customer-facing chat, `level=progress` for activity feeds, and `level=internal` only for debugging.
+- Register a [webhook](/agent-sessions/webhooks) when your backend needs push delivery after the tab closes.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Events" icon="timeline" href="/agent-sessions/events">
+    Event shape, levels, cursors, and resume behavior.
+  </Card>
+  <Card title="Runtime tools" icon="toolbox" href="/agent-sessions/runtime-tools">
+    The tools a runtime can use in the sandbox.
+  </Card>
+  <Card title="Example app" icon="github" href="https://github.com/diggerhq/oc-sessions-demos">
+    Fork a complete app-builder implementation.
+  </Card>
+  <Card title="API reference" icon="code" href="/agent-sessions/api-reference">
+    Endpoint details and response shapes.
+  </Card>
+</CardGroup>

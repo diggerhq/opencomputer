@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "willow",
+  "theme": "mint",
   "name": "OpenComputer",
   "description": "Cloud sandboxes for running AI agents",
   "contextual": {
@@ -59,7 +59,37 @@
         ]
       },
       {
+        "group": "Durable Agent Sessions",
+        "tag": "Preview",
+        "pages": [
+          "agent-sessions/overview",
+          "agent-sessions/quickstart",
+          "agent-sessions/agents",
+          "agent-sessions/sessions",
+          "agent-sessions/events",
+          "agent-sessions/authentication",
+          "agent-sessions/messaging",
+          "agent-sessions/webhooks",
+          "agent-sessions/runtimes",
+          "agent-sessions/runtime-tools",
+          "agent-sessions/api-reference",
+          {
+            "group": "Labs",
+            "tag": "Coming soon",
+            "expanded": true,
+            "pages": [
+              "agent-sessions/custom-runtimes",
+              "agent-sessions/triggers",
+              "agent-sessions/channels",
+              "agent-sessions/workspaces",
+              "agent-sessions/artifacts"
+            ]
+          }
+        ]
+      },
+      {
         "group": "Reserved Capacity",
+        "tag": "Preview",
         "pages": [
           "reserved-capacity/overview",
           "reserved-capacity/concepts",
@@ -69,53 +99,9 @@
         ]
       },
       {
-        "group": "Agent SDK",
-        "pages": [
-          "agents/overview",
-          "agents/tools",
-          "agents/events",
-          "agents/multi-turn"
-        ]
-      },
-      {
-        "group": "Hosted Agents",
-        "pages": [
-          "agents-api/overview",
-          {
-            "group": "Cores",
-            "pages": [
-              "agents/cores/hermes",
-              "agents/cores/openclaw"
-            ]
-          },
-          {
-            "group": "Packages",
-            "pages": [
-              "agents/packages/gbrain"
-            ]
-          },
-          {
-            "group": "Channels",
-            "pages": [
-              "agents/channels/telegram"
-            ]
-          },
-          "cli/agents",
-          {
-            "group": "REST API",
-            "pages": [
-              "agents/rest/agents",
-              "agents/rest/instances",
-              "agents/rest/sessions"
-            ]
-          }
-        ]
-      },
-      {
         "group": "CLI",
         "pages": [
           "cli/overview",
-          "cli/agents",
           "cli/sandbox",
           "cli/exec",
           "cli/shell",
@@ -128,12 +114,9 @@
       {
         "group": "Guides",
         "pages": [
-          "guides/create-hermes-agent",
-          "guides/create-openclaw-agent",
           "guides/build-a-lovable-clone",
           "guides/browser-automation",
-          "guides/agent-skill",
-          "guides/deploy-openclaw"
+          "guides/agent-skill"
         ]
       },
       {
@@ -176,7 +159,6 @@
         "group": "CLI Reference",
         "pages": [
           "reference/cli/overview",
-          "reference/cli/agent",
           "reference/cli/sandbox",
           "reference/cli/scaling",
           "reference/cli/exec",
@@ -191,44 +173,6 @@
         "group": "API Reference",
         "pages": [
           "api-reference/overview",
-          {
-            "group": "Agents",
-            "pages": [
-              "api-reference/agents/create",
-              "api-reference/agents/list",
-              "api-reference/agents/get",
-              "api-reference/agents/update",
-              "api-reference/agents/delete",
-              "api-reference/agents/set-secret",
-              "api-reference/agents/list-secrets",
-              "api-reference/agents/delete-secret",
-              "api-reference/agents/connect-channel",
-              "api-reference/agents/disconnect-channel",
-              "api-reference/agents/list-channels",
-              "api-reference/agents/install-package",
-              "api-reference/agents/uninstall-package",
-              "api-reference/agents/list-packages"
-            ]
-          },
-          {
-            "group": "Instances",
-            "pages": [
-              "api-reference/agents/create-instance",
-              "api-reference/agents/list-instances",
-              "api-reference/agents/get-instance",
-              "api-reference/agents/delete-instance",
-              "api-reference/agents/send-message"
-            ]
-          },
-          {
-            "group": "Sessions",
-            "pages": [
-              "api-reference/agents/create-session",
-              "api-reference/agents/get-session",
-              "api-reference/agents/delete-session",
-              "api-reference/agents/get-session-result"
-            ]
-          },
           {
             "group": "Sandboxes",
             "pages": [
@@ -387,7 +331,7 @@
   "fonts": {
     "heading": {
       "family": "Newsreader",
-      "weight": 400
+      "weight": 600
     },
     "body": {
       "family": "Inter",

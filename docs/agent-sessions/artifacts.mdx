@@ -1,0 +1,40 @@
+---
+mode: "wide"
+title: "Artifacts & previews"
+description: "A session's published outputs — live previews and durable files (coming soon)"
+---
+
+<Note>**Coming soon.** This page is design direction, not a shipped API. Today, large event bodies can spill to a [`content_ref`](/agent-sessions/events).</Note>
+
+**Artifacts** are session outputs your UI can load later: files, links, reports, and live previews. A **preview** is a URL to something the agent is running, such as a dev server or built app.
+
+## Artifact kinds
+
+- **`file` / `link`**: snapshotted to storage at publish; fetchable after the machine is gone.
+- **`preview`**: a durable entry for a live URL into the session machine. The served app depends on machine state, so it carries a `status` (`live` / `cold`).
+
+## Publish from the runtime
+
+The runtime would get two tools:
+
+- `oc.preview(port)` — expose a port of the session's machine as a preview URL.
+- `oc.publish(path)` — snapshot a file as a durable artifact.
+
+Each publish appends a `user`-level event and upserts the artifact, so it reaches your UI as soon as it's produced.
+
+## Read artifacts in your app
+
+Use the same snapshot-plus-stream pattern as [events](/agent-sessions/events): list on load, subscribe for changes.
+
+```
+GET /v3/sessions/:id/artifacts
+GET /v3/sessions/:id/artifacts/:key/content
+events: artifact.published | artifact.updated | artifact.removed
+
+Artifact = { key, kind: "preview" | "file" | "link", title?, status?, url?,
+             content_type?, bytes?, created_at, updated_at }
+```
+
+A preview URL is a public capability — the browser loads it directly; a [client token](/agent-sessions/authentication#client-tokens) only gates *learning* the URL (via the user-level event), so you can stream the whole build *and* embed the running app from the same front-end.
+
+<Note>Actively being designed — if you have a shape in mind or want it sooner, tell us how you'd use it.</Note>

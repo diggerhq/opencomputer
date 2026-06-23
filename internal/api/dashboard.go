@@ -1095,6 +1095,44 @@ func (s *Server) dashboardPowerCycleSession(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// dashboardDeleteSession stops a running or hibernated sandbox owned by the
+// authenticated org. The underlying kill path marks the session stopped,
+// removes preview URLs, and best-effort destroys any live VM.
+func (s *Server) dashboardDeleteSession(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "database not configured",
+		})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{
+			"error": "org context required",
+		})
+	}
+
+	sandboxID := c.Param("sandboxId")
+	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": "session not found",
+		})
+	}
+	if session.OrgID != orgID {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "session does not belong to this organization",
+		})
+	}
+	if session.Status != "running" && session.Status != "hibernated" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "only running or hibernated sandboxes can be deleted",
+		})
+	}
+
+	return s.killSandboxByID(c, sandboxID)
+}
+
 // dashboardResolveSandbox validates the sandbox belongs to the authenticated org and is running.
 func (s *Server) dashboardResolveSandbox(c echo.Context) (string, *db.SandboxSession, error) {
 	if s.store == nil {

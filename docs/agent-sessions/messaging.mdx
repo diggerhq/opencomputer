@@ -1,0 +1,62 @@
+---
+mode: "wide"
+title: "Messaging"
+description: "Steer a session, and the shared message envelope"
+---
+
+**Steer** sends a message into a session. Inbound and outbound messages share one channel-agnostic **envelope** — so you handle every message the same way, wherever it came from or goes. Outbound delivery has its own page: [Webhooks](/agent-sessions/webhooks).
+
+## Steer (inbound)
+
+Send a message to a running or idle session; it wakes and continues with its prior context. Minimal form is just text:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+import { connectSession } from "@opencomputer/sdk";
+
+const live = await connectSession({ sessionId, clientToken });
+await live.steer("also check the CI config", { idempotencyKey: "msg_01" });
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/sessions/sess_.../messages
+Authorization: Bearer $CLIENT_TOKEN
+Content-Type: application/json
+
+{
+  "text": "also check the CI config",
+  "idempotency_key": "msg_01"
+}
+```
+
+</CodeGroup>
+
+Pass `idempotency_key` so retries (flaky network, double-click) are de-duplicated — applied at most once **per session**, so the same key is safe to reuse across different sessions.
+
+## Message envelope
+
+Every inbound and outbound message normalizes to this shape. The core fields are fixed; anything source-specific lives under `raw`, which the platform never interprets.
+
+```json
+{
+  "id": "client:abc123",
+  "source": "client",
+  "kind": "message",
+  "actor": { "id": "client:user-7", "display": "Ada", "type": "human" },
+  "conversation": { "source": "client", "ref": "thread-42" },
+  "text": "also check the CI config",
+  "ts": "2026-06-18T12:00:00Z",
+  "raw": {}
+}
+```
+
+- **`id`** — the idempotency key, deduped **per session** (not global).
+- **`actor`** — who sent it (`human` | `agent` | `system`), namespaced.
+- **`conversation`** — an opaque reply/routing anchor.
+- **`text`** — the content the agent reads (or that you receive).
+- **`raw`** — untouched original payload; optional, never read by the core.
+
+To deliver a session's output, register a webhook destination. Deliveries carry the full [Event](/agent-sessions/events) (a message event's `body` is this envelope) — see [Webhooks](/agent-sessions/webhooks).
+
+<Note>[Inbound channels](/agent-sessions/channels) (Slack, GitHub, Jira, email) are coming soon — they map onto this same envelope; today you steer in via the API.</Note>

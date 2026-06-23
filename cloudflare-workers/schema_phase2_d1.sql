@@ -27,7 +27,11 @@ CREATE TABLE IF NOT EXISTS checkpoints_index (
   workspace_size   INTEGER,
   created_at       INTEGER NOT NULL,
   expires_at       INTEGER,
-  replicated_to    TEXT NOT NULL DEFAULT '[]'
+  replicated_to    TEXT NOT NULL DEFAULT '[]',
+  name             TEXT,
+  status           TEXT NOT NULL DEFAULT 'ready',
+  error_msg        TEXT,
+  failed_at        INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_checkpoints_org      ON checkpoints_index(org_id);

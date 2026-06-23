@@ -1,0 +1,44 @@
+---
+mode: "wide"
+title: "Runtime tools"
+description: "The tools a runtime can use — what to rely on when you write prompts"
+---
+
+When you write a prompt for a [runtime](/agent-sessions/runtimes) (`claude` or `codex`), it's useful to know exactly what the agent can do. Both runtimes act through the same fixed set of tools against the session's **sandbox** — the agent has no direct filesystem, shell, or network of its own. The runtime's built-in local tools are disabled; only these remote tools are available.
+
+## Sandbox tools
+
+| Tool | What it does |
+| --- | --- |
+| `bash` | Run a shell command in the sandbox. |
+| `read` | Read a file from the sandbox. |
+| `write` | Write a file to the sandbox. |
+| `ls` | List a directory in the sandbox. |
+
+`bash` is the only place commands run. Each call is a fresh shell, so use absolute paths or `cd /workspace && ...`. A run surfaces as an [`exec.completed`](/agent-sessions/events#event-shape) event (`{ command, exit_code, summary }`), with large output available via `content_ref`.
+
+To work on a repo, the agent `git clone`s it via `bash` — the sandbox has open outbound internet (below). Prepared [workspaces](/agent-sessions/workspaces) and private-repo access are coming soon.
+
+<Note>**Network:** the sandbox has **open outbound internet** by default (so `git clone`, package installs, and API calls just work), with private, loopback, link-local, and cloud-metadata addresses blocked. Per-agent egress allowlists are coming.</Note>
+
+## User-facing tools
+
+| Tool | What it does |
+| --- | --- |
+| `say` | Emit a `user`-level message. |
+| `ask` | Ask a question and pause the turn. |
+
+The agent's final `say` is the session result. `ask` ends the turn with `yield_reason: "needs_input"`; answer by [steering](/agent-sessions/messaging) a reply, which wakes the session.
+
+<Note>The formal blocking `ask` state is coming soon. Today the turn yields rather than blocking.</Note>
+
+## External delivery tools
+
+`deliver` (open/update a pull request or post a comment) and `reconcile` (declare the desired end state and let the platform converge to it) are how an agent acts **outside** the sandbox. They land with the channel launches (GitHub, etc.); until then, get a session's output out via [webhooks](/agent-sessions/webhooks) — the agent's `user`-level messages and results are delivered there.
+
+## Prompt guidance
+
+- Tell the agent to do all work in the sandbox via `bash`/`read`/`write` — it can't touch your machine.
+- To work on a repo, include the repo URL and branch or commit in the task text, then have the agent `git clone` it with `bash`. Public repos work today; private-repo connections are coming soon.
+- Have it `say` a clear final result — that's what `GET /sessions/:id/result` returns.
+- Have it `ask` only when it genuinely needs a decision; otherwise it should proceed.

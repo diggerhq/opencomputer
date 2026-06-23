@@ -1,0 +1,86 @@
+---
+title: "How it works"
+description: "The moving parts, how they interact, and why they're split this way"
+---
+
+<Note>**Preview** — see the [overview](/background-agents/overview); some
+capabilities below are still rolling out.</Note>
+
+<Frame>
+  <img src="/images/background-agents-architecture.svg" alt="Background Agents architecture: triggers feed a durable session timeline; a disposable runtime reads and appends to it, calls models through the gateway, and acts in a disposable sandbox; deliveries carry results back to GitHub" />
+</Frame>
+
+## The moving parts
+
+| Part | What it is | Durability | Responsibility |
+|---|---|---|---|
+| Session timeline | Append-only event record in the platform | **Durable** — it *is* the session | Holds everything that happened; wakes the runtime when new events arrive |
+| Runtime | A VM running the agent loop | Disposable | Read timeline → call model → decide → act. Holds no state, no credentials |
+| Model gateway *(Preview)* | Proxy between runtimes and providers | **Durable** (its records) | As designed: applies the configured model per call, holds provider keys, meters tokens, records every request and response as they stream — encrypted, used only to resume the session, never exposed unless capture is opted in. Not built in v0 |
+| Sandbox | A VM booted from the workspace's latest build | Disposable (snapshotted periodically) | Where the agent acts: commands, edits, tests. One per session, never shared |
+| Connectors & outbox | Platform-side GitHub/Slack integration | **Durable** (delivery state) | Carry events out — open PRs and post comments, project the agent's messages into Slack/PR threads — at-least-once and idempotent, attributed to the requesting user. Also bring inbound messages in as steers |
+
+## How a task flows
+
+1. Someone labels an issue. The trigger event is stored on a session's
+   timeline (new session, or the existing one for that issue).
+2. The platform starts a runtime and attaches the session's sandbox.
+3. The runtime reads the timeline from where it left off and calls the
+   model — through the gateway, which substitutes the configured model and
+   records the exchange.
+4. The agent acts in the sandbox; each action is appended to the timeline
+   as it happens.
+5. To open a PR, the runtime appends a delivery request; a connector
+   performs it and records the PR number.
+6. Nothing left to do: the runtime exits, the sandbox sleeps. The session is
+   dormant — just the record, no machines; storage only.
+7. A comment on the PR routes back to this session (step 5 recorded the PR),
+   and the cycle repeats with full context.
+
+## Two-way flow
+
+The timeline is a bus in both directions, not just an output log:
+
+- **In.** Any inbound message — a Slack reply, a PR comment, an API call — is a
+  **steer**: appended to the timeline (de-duplicated by the provider's event id)
+  and consumed at the next turn. A **channel binding** ties the session to an
+  external thread (a Slack `thread_ts`, a PR number) so follow-ups land on the
+  same session. Bindings are additive — a session is never typed by surface.
+- **Out.** The agent speaks with `say` (a message) and `ask` (a question that
+  pauses the turn until answered). The **outbox** projects these — and
+  deliveries — to the bound channels, at-least-once and idempotent, so a
+  replayed turn after a crash never double-posts and a provider blip never drops
+  a message. The agent only appends events; it never calls Slack or GitHub
+  itself.
+
+See [Channels](/background-agents/channels) and the
+[conversation model](/background-agents/sessions#conversation).
+
+## Why it's split this way
+
+Both machines are disposable because no state lives in them — it has already
+left by the time it could be lost:
+
+- events are stored as they are produced (step 4);
+- the conversation is recorded at the gateway (step 3) — provider APIs carry
+  the full context on every call, so the latest recorded exchange is the
+  agent's complete working memory *(gateway recording is Preview; see the
+  note above)*;
+- sandbox files are snapshotted periodically while work is in progress.
+
+What this buys (gateway-dependent points are Preview, not built in v0):
+
+- **Crash-proof.** Kill either machine mid-task and the session resumes where
+  it was on fresh machines. As designed, even a kill mid-model-call recovers:
+  the in-flight response is still recorded at the gateway, and not re-billed.
+- **Free dormancy.** Waiting detaches both machines; a session can sleep for
+  months for ~storage cost and wake in seconds.
+- **Model switching as configuration.** As designed, the gateway applies
+  model config on each request — no restart. Within a provider, a change is
+  effective on the next call; switching providers is effective on the next
+  turn, when the runtime reconnects. Keys never enter the machines.
+- **Risk isolation.** The sandbox runs arbitrary code, so it's per-session
+  and replaceable; the loop carries neither that risk nor that lifecycle. A
+  one-hour build in the sandbox doesn't keep a loop machine running.
+- **Safe upgrades.** Sessions pin their agent version, workspace build, and
+  runtime at start; changes apply to new sessions.

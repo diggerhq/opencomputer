@@ -1,11 +1,12 @@
 import { useState, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { getSessions, type Session } from '../api/client'
+import { deleteSession, getSessions, type Session } from '../api/client'
 
 const statusFilters = ['', 'running', 'stopped', 'hibernated', 'error'] as const
 
 export default function Sessions() {
+  const queryClient = useQueryClient()
   const [status, setStatus] = useState<string>('')
   const { data: sessions, isLoading } = useQuery({
     queryKey: ['sessions', status],
@@ -17,6 +18,29 @@ export default function Sessions() {
     queryKey: ['sessions', ''],
     queryFn: () => getSessions(),
   })
+
+  const deleteMutation = useMutation({
+    mutationFn: (sandboxId: string) => deleteSession(sandboxId),
+    onMutate: async (sandboxId) => {
+      await queryClient.cancelQueries({ queryKey: ['sessions'] })
+      const stoppedAt = new Date().toISOString()
+      queryClient.setQueriesData<Session[]>({ queryKey: ['sessions'] }, (old) =>
+        old?.map((session) =>
+          session.sandboxId === sandboxId
+            ? { ...session, status: 'stopped', stoppedAt }
+            : session
+        )
+      )
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] })
+    },
+  })
+
+  const handleDelete = (sandboxId: string) => {
+    if (!confirm(`Delete sandbox ${sandboxId}?\n\nThe sandbox will be stopped and its preview URLs removed.`)) return
+    deleteMutation.mutate(sandboxId)
+  }
 
   return (
     <div>
@@ -53,6 +77,7 @@ export default function Sessions() {
                 <th>Status</th>
                 <th>Started</th>
                 <th>Stopped</th>
+                <th style={{ width: 96 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -63,17 +88,41 @@ export default function Sessions() {
                   <td><StatusBadge status={s.status} /></td>
                   <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{new Date(s.startedAt).toLocaleString()}</td>
                   <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{s.stoppedAt ? new Date(s.stoppedAt).toLocaleString() : '\u2014'}</td>
+                  <td>
+                    {canDeleteSession(s) && (
+                      <button
+                        className="btn-danger"
+                        disabled={deleteMutation.isPending && deleteMutation.variables === s.sandboxId}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleDelete(s.sandboxId)
+                        }}
+                      >
+                        {deleteMutation.isPending && deleteMutation.variables === s.sandboxId ? 'Deleting...' : 'Delete'}
+                      </button>
+                    )}
+                  </td>
                 </ClickableRow>
               ))}
               {(sessions ?? []).length === 0 && (
                 <tr>
-                  <td colSpan={5} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>
+                  <td colSpan={6} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>
                     No sessions found
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+          {deleteMutation.isError && (
+            <div style={{
+              padding: '10px 16px',
+              borderTop: '1px solid var(--border-subtle)',
+              color: 'var(--accent-rose)',
+              fontSize: 13,
+            }}>
+              Delete failed: {deleteMutation.error instanceof Error ? deleteMutation.error.message : String(deleteMutation.error)}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -222,6 +271,10 @@ function LegendItem({ color, label }: { color: string; label: string }) {
       <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>{label}</span>
     </div>
   )
+}
+
+function canDeleteSession(session: Session) {
+  return session.status === 'running' || session.status === 'hibernated'
 }
 
 function ClickableRow({ sandboxId, children }: { sandboxId: string; children: React.ReactNode }) {

@@ -1,0 +1,75 @@
+---
+mode: "wide"
+title: "Durable Agent Sessions"
+description: "Define an agent, then run resumable, steerable sessions"
+---
+
+Give an agent a prompt and a task; OpenComputer runs it on a managed runtime and records every step as a **durable, streamable, resumable session** — stream it live, steer it with a message, and get results by webhook.
+
+## Built into every session
+
+<CardGroup cols={2}>
+  <Card title="Self-healing runtime" icon="heart-pulse">
+    - Runtime crashes restart automatically
+    - Idle sessions hibernate and wake on the next message
+    - Hung runs stop cleanly instead of staying stuck
+  </Card>
+  <Card title="Brain / hands sandboxing" icon="shield-halved">
+    - **Brain**: agent loop. **Hands**: files and commands.
+    - Untrusted work stays contained in the hands sandbox
+    - Your model key stays in the [secret store](/sandboxes/secrets), never in a sandbox
+  </Card>
+  <Card title="Live streaming and steering" icon="radio">
+    - Stream events directly from the browser with a session token
+    - Reconnect from any `seq` without gaps
+    - Send follow-up messages without exposing your org key
+  </Card>
+  <Card title="Reliable backend delivery" icon="paper-plane">
+    - Deliver user-level events to your webhook
+    - Signed with [Standard Webhooks](https://www.standardwebhooks.com)
+    - Retried, dead-lettered, inspectable, and redeliverable
+  </Card>
+</CardGroup>
+
+## Get started
+
+<Steps>
+  <Step title="Define an agent">
+    Create a reusable `{ name, model, prompt, runtime }` from your backend — `runtime: "claude"` (Anthropic models) or `"codex"` (OpenAI models). Pass your model `key` inline, or reference a saved [credential](/agent-sessions/authentication#model-credentials). ([Agents](/agent-sessions/agents))
+  </Step>
+  <Step title="Start a session">
+    Start a session with `{ agent, input }`. The agent starts immediately and returns a browser-safe `client_token`.
+  </Step>
+  <Step title="Watch, steer, get notified">
+    Stream events with `EventSource`, [steer](/agent-sessions/messaging) with the client token, and register a [webhook](/agent-sessions/webhooks) when your backend needs push delivery.
+  </Step>
+</Steps>
+
+## Architecture
+
+<Frame>
+  <img src="/images/durable-agent-sessions-architecture.svg" alt="Durable Agent Sessions architecture: your app starts, steers, and streams a durable event-log session; a managed runtime adapter commits events while the brain drives the agent loop and acts through the hands sandbox; the model runs on your key from the secret store, which never enters a sandbox; user-level events are delivered out via your webhook." />
+</Frame>
+
+The event log is the durable record. Your app starts sessions, streams events, and steers with messages. The runtime drives the agent loop, acts through the hands sandbox for file and command work, and commits user-level events for webhook delivery. Your model key stays in the secret store.
+
+## Use cases
+
+Use sessions for long-running or interactive agents. For a one-shot command in a raw box, use a [sandbox](/sandboxes/overview) directly.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/agent-sessions/quickstart">
+    Start a session, stream events, and steer it with concise REST examples.
+  </Card>
+  <Card title="Events" icon="timeline" href="/agent-sessions/events">
+    Event shape, visibility levels, cursors, and resume behavior.
+  </Card>
+  <Card title="Session lifecycle" icon="book" href="/agent-sessions/sessions">
+    Statuses, events, results, and limits.
+  </Card>
+  <Card title="Example apps" icon="github" href="https://github.com/diggerhq/oc-sessions-demos">
+    A repo of examples built on this API.
+  </Card>
+</CardGroup>

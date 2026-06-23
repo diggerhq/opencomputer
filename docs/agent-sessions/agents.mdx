@@ -1,0 +1,53 @@
+---
+mode: "wide"
+title: "Agents"
+description: "Reusable agent configuration"
+---
+
+An **agent** is reusable configuration: `name`, `prompt`, `model`, and [`runtime`](/agent-sessions/runtimes). Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+
+const agent = await oc.agents.create({
+  name: "reviewer",
+  runtime: "claude",
+  model: "anthropic/claude-opus-4-8",
+  prompt: "Review the repo. Run tests. Summarize risks.",
+  key: "sk-ant-...",
+});
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/agents
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "name": "reviewer",
+  "runtime": "claude",
+  "model": "anthropic/claude-opus-4-8",
+  "prompt": "Review the repo. Run tests. Summarize risks.",
+  "key": "sk-ant-..."
+}
+```
+
+</CodeGroup>
+
+Pass your model `key` inline and it's stored as a [credential](/agent-sessions/authentication#model-credentials) and attached to the agent — sessions run the model on it. The provider is taken from `model` (Anthropic for `anthropic/…`, OpenAI for `openai/…`), so the key has to be for that provider. Already have a credential? Reference it with `credential: "cred_…"` instead, or omit both to use your org default for that provider. Optionally set default [`limits`](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) too; sessions inherit them.
+
+<Tip>Keep the org key and model key on your backend. Only return session-scoped client tokens to browsers.</Tip>
+
+## Session-pinned config
+
+When a session is created it **freezes** the agent's `prompt`, `model`, `runtime`, and `revision` (a number that bumps on every edit) into the session — and pins the resolved credential too. Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change. (Rotating a credential's **key value** is the exception — that flows to running sessions, so a compromised key can be replaced; see [authentication](/agent-sessions/authentication#model-credentials).)
+
+## Model
+
+`model` is a `provider/model` id, and its provider must match the [runtime](/agent-sessions/runtimes): `claude` runs `anthropic/…` (e.g. `anthropic/claude-opus-4-8`), `codex` runs `openai/…` (e.g. `openai/gpt-5-codex`). The model runs on [your own key](/agent-sessions/authentication#model-credentials) for that provider (required). The `runtime` / `model` / credential pairing is validated when you **create** the agent. `runtime` is fixed at creation — to switch engines, create a new agent; you can still update `model` later, but keep it within the runtime's provider.
+
+<Note>Switching a session's model mid-session is coming soon; for now, new sessions pick up the agent's current `model`.</Note>

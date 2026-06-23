@@ -848,11 +848,13 @@ func (s *Server) getSandboxRemote(c echo.Context, sandboxID string) error {
 }
 
 func (s *Server) killSandbox(c echo.Context) error {
-	id := c.Param("id")
+	return s.killSandboxByID(c, c.Param("id"))
+}
 
+func (s *Server) killSandboxByID(c echo.Context, sandboxID string) error {
 	// Server mode with worker registry: dispatch destroy via gRPC
 	if s.workerRegistry != nil {
-		return s.killSandboxRemote(c, id)
+		return s.killSandboxRemote(c, sandboxID)
 	}
 
 	// Combined/worker mode: kill locally
@@ -862,11 +864,11 @@ func (s *Server) killSandbox(c echo.Context) error {
 
 	// Mark stopped immediately so it no longer counts toward concurrency limits.
 	if s.store != nil {
-		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), id, "stopped", nil)
-		s.cleanupPreviewURLs(c.Request().Context(), id)
+		_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "stopped", nil)
+		s.cleanupPreviewURLs(c.Request().Context(), sandboxID)
 	}
 
-	if err := s.manager.Kill(c.Request().Context(), id); err != nil {
+	if err := s.manager.Kill(c.Request().Context(), sandboxID); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": err.Error(),
 		})
@@ -874,11 +876,11 @@ func (s *Server) killSandbox(c echo.Context) error {
 
 	// Unregister from sandbox router
 	if s.router != nil {
-		s.router.Unregister(id)
+		s.router.Unregister(sandboxID)
 	}
 
 	if s.sandboxDBs != nil {
-		_ = s.sandboxDBs.Remove(id)
+		_ = s.sandboxDBs.Remove(sandboxID)
 	}
 
 	return c.NoContent(http.StatusNoContent)
@@ -1125,7 +1127,6 @@ func (s *Server) migrateSandbox(c echo.Context) error {
 		"elapsedMs":    elapsed,
 	})
 }
-
 
 // effectivePlan returns the org's billing plan for billing gates, resolving it
 // from the most authoritative source available. Plan is a GLOBAL signal: it
@@ -2176,6 +2177,10 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				// error_msg/failed_at columns added in migration 039.
 				// Pre-fix the reason was silently discarded.
 				_ = s.store.SetCheckpointFailed(context.Background(), checkpointID, err.Error())
+				s.publishCheckpointEvent(context.Background(), "checkpoint_failed", checkpointID, sandboxID, orgID, session.WorkerID, map[string]any{
+					"name":      req.Name,
+					"error_msg": err.Error(),
+				})
 				return
 			}
 			// Persist the actual archive size from the worker's response.
@@ -2214,6 +2219,10 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 			if err != nil {
 				log.Printf("api: async checkpoint %s failed: %v", checkpointID, err)
 				_ = s.store.SetCheckpointFailed(context.Background(), checkpointID, err.Error())
+				s.publishCheckpointEvent(context.Background(), "checkpoint_failed", checkpointID, sandboxID, orgID, session.WorkerID, map[string]any{
+					"name":      req.Name,
+					"error_msg": err.Error(),
+				})
 				return
 			}
 			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, rootfsKey, workspaceKey, sizeBytes)

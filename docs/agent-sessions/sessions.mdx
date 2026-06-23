@@ -1,0 +1,82 @@
+---
+mode: "wide"
+title: "Sessions"
+description: "The durable, resumable unit of an agent's work"
+---
+
+A **session** is the durable unit of an [agent](/agent-sessions/agents) at work: an append-only [event log](/agent-sessions/events), the pinned agent snapshot, and a lifecycle status. Compute attaches to it, detaches when idle, and reattaches on the next message — the log is what persists.
+
+## Session flow
+
+1. You create a session from an [agent](/agent-sessions/agents) (and a [model credential](/agent-sessions/authentication#model-credentials) — both required). The session starts immediately.
+2. The [runtime](/agent-sessions/runtimes) executes the agent in a sandbox, appending [events](/agent-sessions/events) to the log as it works.
+3. With nothing left to do, the session goes **idle** and the sandbox **hibernates**.
+4. A [steer](/agent-sessions/messaging) message wakes it; it resumes with its prior context. Repeat.
+
+<Note>The runtime is **managed and self-healing**: if it **crashes** we restart it and it continues from its on-box state; if it **hangs**, a turn deadline ends the turn and you steer to continue; an idle session survives even if its sandbox is reclaimed. In-flight work since the last logged event may repeat, so make side effects idempotent. Details: [runtime recovery](/agent-sessions/runtimes#failure-behavior).</Note>
+
+## Lifecycle
+
+| Status | Meaning |
+| --- | --- |
+| `queued` | Scheduled; a turn hasn't started running yet. |
+| `running` | A turn is executing. |
+| `awaiting_input` | A turn ended asking you a question — steerable; reply to continue. |
+| `idle` | Done for now; quiescent and steerable; the sandbox is hibernated. |
+| `failed` | The session errored out. |
+| `archived` | Closed; read-only. |
+
+A session also carries `last_turn = { id, state, yield_reason?, result_event_id? }`; the fuller turn record (`started_at`, `completed_at`, `error`) comes from [`GET …/result`](/agent-sessions/api-reference) and `…/turns`. The **`yield_reason`** tells you *why* the last turn ended — `completed`, `needs_input` (the agent asked a question — the session is now `awaiting_input`; answer by [steering](/agent-sessions/messaging)), `budget_exceeded` / `deadline_exceeded` / `max_turns` (a [limit](#limits) tripped), or `canceled`.
+
+## Fetch the result
+
+Do not infer completion from prose. Await the **`turn.completed`** event (on the [stream](/agent-sessions/events) or a [webhook](/agent-sessions/webhooks)), then fetch the answer:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const session = await oc.sessions.get("sess_...");
+const { lastTurn, result } = await session.result();
+```
+
+```http REST API
+GET https://api.opencomputer.dev/v3/sessions/sess_.../result
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+```
+
+</CodeGroup>
+
+Response:
+
+```json
+{
+  "last_turn": {
+    "id": "trn_...",
+    "state": "ok",
+    "yield_reason": "completed",
+    "result_event_id": "evt_..."
+  },
+  "result": {
+    "type": "agent.message",
+    "level": "user",
+    "body": { "text": "Done. I found..." }
+  }
+}
+```
+
+## Limits
+
+Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are **non-monetary** (no dollar caps — we don't bill model usage yet; you run on your own key). Hitting one ends the turn with the matching `yield_reason`.
+
+## Stop a session
+
+`POST /sessions/:id/cancel` **requests** a cooperative stop: the turn ends at its next checkpoint with a `turn.completed` (`yield_reason: "canceled"`), so an in-flight model call may run to its timeout — billing for that turn stops when it actually exits, not the instant you call. `POST /sessions/:id/archive` cancels any active turn, then closes the session read-only.
+
+**`archive` is not delete** — the session's log is retained, just read-only. Hard delete (`DELETE /sessions/:id`) and export are coming soon.
+
+<Note>Blocking on input *mid-turn* (the formal `ask` loop) is coming soon. Today the agent signals it needs input by ending the turn with `yield_reason: "needs_input"` (status `awaiting_input`); you reply by [steering](/agent-sessions/messaging).</Note>
+
+<Note>**No cross-session memory (yet).** Each session starts fresh from the agent's prompt + that session's `input` — a durable log is *session history*, not memory the agent carries between sessions. A dedicated memory surface is on the roadmap.</Note>

@@ -1,37 +1,18 @@
--- Phase 6: Autumn billing — per-org billing_provider selector on D1.
+-- Phase 6: checkpoint failure details in the global D1 checkpoint index.
 --
--- The edge is authoritative for billing_provider: signup sets it, the cutover
--- backfill flips existing orgs, and the cap-token carries it to each cell's
--- Postgres mirror (like `plan`). The create/wake gates + the dashboard billing
--- read it directly from D1, so this column MUST exist before the new api-edge
--- code is deployed.
+-- The edge dashboard reads /checkpoints from checkpoints_index, not from each
+-- cell's local Postgres. Before this phase, failed async checkpoints stayed in
+-- cell PG only, so the dashboard could show "No checkpoints yet" while
+-- `oc checkpoint list` showed a failed checkpoint with an error reason.
 --
--- Apply with:
+-- Apply before deploying api-edge/events-ingest/control-plane code that reads
+-- or writes these columns:
 --   wrangler d1 execute opencomputer-dev --remote --file cloudflare-workers/schema_phase6.sql
 --
--- SQLite/D1 has no `ADD COLUMN IF NOT EXISTS`, so this is one-shot like the
--- earlier phases.
---
--- ROLLOUT ORDER MATTERS. Run this migration BEFORE deploying the new api-edge
--- code: loadOrgPolicy + GET /api/dashboard/billing now SELECT billing_provider
--- for every org, and a missing column makes those reads error for ALL orgs
--- (not just Autumn ones).
---
---   'legacy' — in-house pipeline (CreditAccount DO / usage_reporter).
---   'autumn' — Autumn owns the credit ledger, metering, top-ups, concurrency.
---
--- Defaults to 'legacy' so every existing org is unaffected until explicitly
--- flipped. Mirrors internal/db/migrations/047 on the cell.
-ALTER TABLE orgs ADD COLUMN billing_provider TEXT NOT NULL DEFAULT 'legacy';
+-- SQLite/D1 has no `ADD COLUMN IF NOT EXISTS`, so this ALTER fails on re-run —
+-- one-shot, like earlier phase files.
 
--- Cutover backfill / dashboard reads filter on it; partial index keeps the
--- "which orgs are on Autumn" sweep tight while almost everyone is still legacy.
-CREATE INDEX IF NOT EXISTS idx_orgs_billing_provider ON orgs(billing_provider) WHERE billing_provider = 'autumn';
-
--- Per-org watermark (unix seconds) for the edge autumn meter loop: the end of
--- the last fully-tracked 5-minute bucket. 0 = unseeded; the first cron sight
--- seeds it to "now" and bills forward only (never retroactively charges usage
--- accrued before the org moved to Autumn). This is the edge-native replacement
--- for the cell's orgs.last_usage_synced_at — billing is one place (the edge),
--- off usage_samples, not per-cell.
-ALTER TABLE orgs ADD COLUMN autumn_usage_watermark INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE checkpoints_index ADD COLUMN name TEXT;
+ALTER TABLE checkpoints_index ADD COLUMN status TEXT NOT NULL DEFAULT 'ready';
+ALTER TABLE checkpoints_index ADD COLUMN error_msg TEXT;
+ALTER TABLE checkpoints_index ADD COLUMN failed_at INTEGER;

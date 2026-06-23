@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getCheckpoints, deleteCheckpointDashboard, type CheckpointItem } from '../api/client'
 
 export default function Checkpoints() {
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
+  const [showFailed, setShowFailed] = useState(false)
   const perPage = 20
 
   const { data, isLoading } = useQuery({
@@ -20,6 +21,21 @@ export default function Checkpoints() {
   })
 
   const checkpoints = data?.checkpoints ?? []
+  const visibleCheckpoints = useMemo(() => {
+    if (!showFailed) {
+      return checkpoints.filter((cp) => cp.status !== 'failed')
+    }
+
+    return checkpoints
+      .map((cp, index) => ({ cp, index }))
+      .sort((a, b) => {
+        const aFailed = a.cp.status === 'failed'
+        const bFailed = b.cp.status === 'failed'
+        if (aFailed !== bFailed) return aFailed ? 1 : -1
+        return a.index - b.index
+      })
+      .map(({ cp }) => cp)
+  }, [checkpoints, showFailed])
   const total = data?.total ?? 0
   const totalPages = Math.ceil(total / perPage)
 
@@ -30,6 +46,25 @@ export default function Checkpoints() {
         <h1 className="page-title">Checkpoints</h1>
         <p className="page-subtitle">Sandbox snapshots across your organization</p>
       </div>
+
+      <label
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 8,
+          marginBottom: 12,
+          fontSize: 13,
+          color: 'var(--text-secondary)',
+          cursor: 'pointer',
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={showFailed}
+          onChange={(event) => setShowFailed(event.target.checked)}
+        />
+        Show failed checkpoints
+      </label>
 
       {/* Table */}
       {isLoading ? (
@@ -51,74 +86,99 @@ export default function Checkpoints() {
               </tr>
             </thead>
             <tbody>
-              {checkpoints.map((cp: CheckpointItem) => (
-                <tr key={cp.id}>
-                  <td style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{cp.name}</td>
-                  <td>
-                    <code style={{ fontSize: 12 }}>{cp.sandboxId}</code>
-                  </td>
-                  <td>
-                    <span
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 600,
-                        padding: '2px 8px',
-                        borderRadius: 10,
-                        background: cp.status === 'ready'
-                          ? 'rgba(34, 197, 94, 0.08)'
-                          : cp.status === 'failed'
-                            ? 'rgba(251, 113, 133, 0.08)'
-                            : 'rgba(234, 179, 8, 0.08)',
-                        color: cp.status === 'ready'
-                          ? 'var(--accent-green)'
-                          : cp.status === 'failed'
-                            ? 'var(--accent-rose)'
-                            : '#eab308',
-                        border: `1px solid ${
-                          cp.status === 'ready'
-                            ? 'rgba(34, 197, 94, 0.15)'
+              {visibleCheckpoints.map((cp: CheckpointItem) => (
+                <Fragment key={cp.id}>
+                  <tr>
+                    <td style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{cp.name}</td>
+                    <td>
+                      <code style={{ fontSize: 12 }}>{cp.sandboxId}</code>
+                    </td>
+                    <td>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: '2px 8px',
+                          borderRadius: 10,
+                          background: cp.status === 'ready'
+                            ? 'rgba(34, 197, 94, 0.08)'
                             : cp.status === 'failed'
-                              ? 'rgba(251, 113, 133, 0.15)'
-                              : 'rgba(234, 179, 8, 0.15)'
-                        }`,
-                        cursor: cp.status === 'failed' && cp.errorMsg ? 'help' : 'default',
-                      }}
-                      title={cp.status === 'failed' && cp.errorMsg ? cp.errorMsg : undefined}
-                    >
-                      {cp.status === 'ready' ? 'Ready' : cp.status === 'failed' ? 'Failed' : 'Processing'}
-                    </span>
-                  </td>
-                  <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                    {cp.activeForks > 0 ? (
-                      <span style={{ color: 'var(--accent-emerald)' }}>{cp.activeForks}</span>
-                    ) : (
-                      <span style={{ color: 'var(--text-tertiary)' }}>0</span>
-                    )}
-                  </td>
-                  <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-secondary)' }}>
-                    {cp.totalForks}
-                  </td>
-                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                    {new Date(cp.createdAt).toLocaleString()}
-                  </td>
-                  <td>
-                    <button
-                      className="btn-danger"
-                      onClick={() => {
-                        if (confirm(`Delete checkpoint "${cp.name}"? Active forks will not be affected.`)) {
-                          deleteMutation.mutate(cp.id)
-                        }
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
+                              ? 'rgba(251, 113, 133, 0.08)'
+                              : 'rgba(234, 179, 8, 0.08)',
+                          color: cp.status === 'ready'
+                            ? 'var(--accent-green)'
+                            : cp.status === 'failed'
+                              ? 'var(--accent-rose)'
+                              : '#eab308',
+                          border: `1px solid ${
+                            cp.status === 'ready'
+                              ? 'rgba(34, 197, 94, 0.15)'
+                              : cp.status === 'failed'
+                                ? 'rgba(251, 113, 133, 0.15)'
+                                : 'rgba(234, 179, 8, 0.15)'
+                          }`,
+                        }}
+                      >
+                        {cp.status === 'ready' ? 'Ready' : cp.status === 'failed' ? 'Failed' : 'Processing'}
+                      </span>
+                    </td>
+                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {cp.activeForks > 0 ? (
+                        <span style={{ color: 'var(--accent-emerald)' }}>{cp.activeForks}</span>
+                      ) : (
+                        <span style={{ color: 'var(--text-tertiary)' }}>0</span>
+                      )}
+                    </td>
+                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-secondary)' }}>
+                      {cp.totalForks}
+                    </td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {new Date(cp.createdAt).toLocaleString()}
+                    </td>
+                    <td>
+                      <button
+                        className="btn-danger"
+                        onClick={() => {
+                          if (confirm(`Delete checkpoint "${cp.name}"? Active forks will not be affected.`)) {
+                            deleteMutation.mutate(cp.id)
+                          }
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                  {cp.status === 'failed' && cp.errorMsg && (
+                    <tr key={`${cp.id}-error`}>
+                      <td colSpan={7} style={{ paddingTop: 0 }}>
+                        <div
+                          style={{
+                            border: '1px solid rgba(251, 113, 133, 0.16)',
+                            borderRadius: 8,
+                            padding: '10px 12px',
+                            background: 'rgba(251, 113, 133, 0.06)',
+                            color: 'var(--accent-rose)',
+                            fontSize: 12,
+                            lineHeight: 1.45,
+                            overflowWrap: 'anywhere',
+                          }}
+                        >
+                          {cp.errorMsg}
+                          {cp.failedAt && (
+                            <div style={{ color: 'var(--text-tertiary)', marginTop: 4 }}>
+                              Failed {new Date(cp.failedAt).toLocaleString()}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
-              {checkpoints.length === 0 && (
+              {visibleCheckpoints.length === 0 && (
                 <tr>
                   <td colSpan={7} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>
-                    No checkpoints yet
+                    {checkpoints.length === 0 ? 'No checkpoints yet' : 'No checkpoints to show'}
                   </td>
                 </tr>
               )}
