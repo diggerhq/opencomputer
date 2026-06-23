@@ -25,12 +25,14 @@ GET /healthz
 ```json
 {
   "status": "ready",
-  "contract_version": "oc-runtime-http-2026-06-22",
+  "contract_version": "1",
   "busy": false
 }
 ```
 
 Return `busy: true` while a turn is running. A second turn should return `409`; OpenComputer already serializes real turns, so this is a safety check.
+
+<Note>`contract_version` (`"1"` today) is the internal runtime↔adapter version the built-ins use. The public custom-runtime contract isn't finalized yet, so this value may change when custom runtimes ship.</Note>
 
 ## Turn request
 
@@ -43,7 +45,7 @@ Content-Type: application/json
 
 ```json
 {
-  "contract_version": "oc-runtime-http-2026-06-22",
+  "contract_version": "1",
   "turn_id": "turn_...",
   "input": [
     { "role": "user", "content": "Review this repository." }
@@ -51,7 +53,7 @@ Content-Type: application/json
   "config": {
     "model": "anthropic/claude-opus-4-8",
     "system_prompt": "Run tests and explain risks.",
-    "mcp_endpoint": "http://127.0.0.1:4317/mcp",
+    "mcp_endpoint": "http://127.0.0.1:8765/mcp",
     "state_dir": "/home/sandbox/.oc/runtime-state"
   },
   "deadline_s": 600
@@ -62,22 +64,18 @@ The adapter has already read the event log. Your brain receives the new turn inp
 
 ## Step stream
 
-`POST /turn` responds with newline-delimited JSON. Each line is one step:
+`POST /turn` responds with newline-delimited JSON. The brain streams its SDK's **native** events verbatim, one per line, then a terminal `done`:
 
 ```jsonl
-{"seq":1,"kind":"message","visibility":"progress","text":"Reading files..."}
-{"seq":2,"kind":"message","visibility":"progress","text":"Running tests..."}
-{"seq":3,"kind":"done","reason":"quiescent"}
+{"seq":0,"kind":"assistant","msg":{ "...native SDK message..." }}
+{"seq":1,"kind":"user","msg":{ "...native SDK message, e.g. a tool result..." }}
+{"kind":"done","reason":"quiescent"}
 ```
 
-The adapter maps these steps to [session events](/agent-sessions/events), assigns stable idempotency keys, and flushes committed output before ending the turn.
+- `kind` is the SDK's message/event type; `msg` is the native object, unchanged.
+- `done.reason` is `quiescent` (nothing left to do), `awaiting_input` (the agent called `ask` and is paused for a reply), or `error` (with an `error`).
 
-Core step kinds:
-
-| Step | Purpose |
-| --- | --- |
-| `message` | Activity from the agent. Use `say` or `ask` for human-visible output. |
-| `done` | Terminal step. `reason` is `quiescent`, `awaiting_input`, or `error`. |
+The platform ships a **per-SDK adapter** that knows each SDK's shape: it maps these native events to [session events](/agent-sessions/events) with stable idempotency keys, and flushes committed output before ending the turn. (A single SDK-agnostic step protocol for fully custom runtimes is planned; until then, custom runtimes target an SDK the platform has an adapter for.)
 
 Tool calls, including user-visible `say` and `ask`, are made through MCP, not by emitting HTTP requests to OpenComputer.
 

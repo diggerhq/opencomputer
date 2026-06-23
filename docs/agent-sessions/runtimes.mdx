@@ -4,14 +4,14 @@ title: "Runtimes"
 description: "The engine that runs your agent — claude or codex, picked per agent"
 ---
 
-A **runtime** is the engine that executes the agent loop. You pick one per agent with `runtime`; it defaults to `claude`. The runtime image is stateless and interchangeable, and the model it runs is separate configuration — so an agent is just a runtime, a `provider/model`, and a matching [credential](/agent-sessions/authentication#model-credentials).
+A **runtime** is the engine that executes the agent loop — what's often called an **agent harness** (the loop plus its tools that drive the model). The two terms map 1:1; this doc says "runtime" because it's the API field. You pick one per agent with `runtime`; it defaults to `claude`. The runtime image is stateless and interchangeable, and the model it runs is separate configuration — so an agent is just a runtime, a `provider/model`, and a matching [credential](/agent-sessions/authentication#model-credentials).
 
 | Runtime | Models | Credential |
 | --- | --- | --- |
 | `claude` | `anthropic/…` (e.g. `anthropic/claude-opus-4-8`) | Anthropic key |
 | `codex` | `openai/…` (e.g. `openai/gpt-5-codex`) | OpenAI key |
 
-Sessions, [events](/agent-sessions/events), [steering](/agent-sessions/messaging), [tools](/agent-sessions/runtime-tools), and [webhooks](/agent-sessions/webhooks) work the same way whatever runtime you pick — switching is a one-line `runtime` change.
+Sessions, [events](/agent-sessions/events), [steering](/agent-sessions/messaging), [tools](/agent-sessions/runtime-tools), and [webhooks](/agent-sessions/webhooks) work the same way whatever runtime you pick — `runtime` is a single field on the [agent](/agent-sessions/agents), so the rest of your integration is identical across runtimes. (It's fixed once the agent exists; to switch engines, create a new agent with a different `runtime`.)
 
 ## `claude`
 
@@ -84,7 +84,7 @@ Across turns the brain keeps provider-specific state under a checkpointed state 
 
 ### Pinned per session
 
-When a session starts it pins the runtime and version it began on (alongside the rest of the [agent snapshot](/agent-sessions/agents#session-pinned-config)). Changing the agent's `runtime` afterwards never affects a running or resumed session — new sessions pick up the change; in-flight ones keep what they started with.
+When a session starts it pins the runtime and version it began on (alongside the rest of the [agent snapshot](/agent-sessions/agents#session-pinned-config)). `runtime` is fixed at agent creation — to run a different engine, create a new agent. Other agent edits (`model`, `prompt`, `limits`) never affect a running or resumed session: new sessions pick up the change, in-flight ones keep what they started with.
 
 ## Supervision and recovery
 

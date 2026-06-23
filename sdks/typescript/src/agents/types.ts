@@ -29,9 +29,10 @@ export interface Agent {
 }
 
 export interface LastTurn {
+  /** The turn id (the API/SSE field is `last_turn.id`). */
+  id?: string;
   state?: "queued" | "accepted" | "running" | "ok" | "error";
   yieldReason?: YieldReason;
-  turnId?: string;
   startedAt?: string;
   completedAt?: string;
   resultEventId?: string;
