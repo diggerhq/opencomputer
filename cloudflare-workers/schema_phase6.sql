@@ -27,3 +27,11 @@ ALTER TABLE orgs ADD COLUMN billing_provider TEXT NOT NULL DEFAULT 'legacy';
 -- Cutover backfill / dashboard reads filter on it; partial index keeps the
 -- "which orgs are on Autumn" sweep tight while almost everyone is still legacy.
 CREATE INDEX IF NOT EXISTS idx_orgs_billing_provider ON orgs(billing_provider) WHERE billing_provider = 'autumn';
+
+-- Per-org watermark (unix seconds) for the edge autumn meter loop: the end of
+-- the last fully-tracked 5-minute bucket. 0 = unseeded; the first cron sight
+-- seeds it to "now" and bills forward only (never retroactively charges usage
+-- accrued before the org moved to Autumn). This is the edge-native replacement
+-- for the cell's orgs.last_usage_synced_at — billing is one place (the edge),
+-- off usage_samples, not per-cell.
+ALTER TABLE orgs ADD COLUMN autumn_usage_watermark INTEGER NOT NULL DEFAULT 0;

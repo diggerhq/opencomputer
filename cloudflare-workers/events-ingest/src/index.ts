@@ -408,8 +408,22 @@ export default {
       }
       return true;
     };
+    // usage_samples is the single billing source. Pro orgs are rolled up to
+    // Stripe (billing-rollup); autumn orgs are metered to Autumn by the edge
+    // autumn-meter cron (api-edge) off these same rows. So both land samples —
+    // free orgs are debited via the DO fan-out below and need none. The two
+    // consumers don't collide: the Stripe rollup keys off rolled_up, the autumn
+    // meter keys off a per-org watermark (ts), and billing-rollup excludes
+    // autumn from its aggregation so a row never bills twice.
     const usageSampleBatches = fresh
-      .filter((e) => e.type === "usage_tick" && planFor(e) === "pro" && e.org_id && e.sandbox_id && tickFromCurrentWorker(e))
+      .filter(
+        (e) =>
+          e.type === "usage_tick" &&
+          (planFor(e) === "pro" || providerFor(e) === "autumn") &&
+          e.org_id &&
+          e.sandbox_id &&
+          tickFromCurrentWorker(e),
+      )
       .map((e) => {
         const p = (e.payload ?? {}) as {
           memory_mb?: number;

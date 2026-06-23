@@ -57,6 +57,12 @@ new_sqlite_classes = ["CreditAccount"]
 #                            (must match Infisical /shared/ key the CPs use, so
 #                            plaintext stays in sync across edge ↔ cells)
 
+# Edge-native autumn billing: every 5 min, meter autumn orgs' usage_samples to
+# Autumn + halt on exhaustion (src/autumn_meter.ts). One place, not per-cell.
+# No-ops unless AUTUMN_SECRET_KEY is set, so it's dormant until cutover.
+[triggers]
+crons = ["*/5 * * * *"]
+
 [vars]
 WORKER_ENV = "prod"
 # Cells eligible for new-org home assignment live in the D1 `cells` table

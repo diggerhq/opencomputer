@@ -25,6 +25,7 @@ import {
   selfHealHalt,
   createAutumnCustomer,
 } from "./autumn_webhook";
+import { runAutumnMeter } from "./autumn_meter";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
 import * as templates from "./templates";
@@ -404,7 +405,8 @@ async function enforceCreatePolicy(
   // Autumn orgs: Autumn owns the balance, so the credit gate is purely the
   // is_halted projection — no CreditAccount DO. On a halt, self-heal (re-check
   // Autumn) so a just-topped-up user isn't stuck behind a lagging webhook. The
-  // free-tier size ceilings below still apply by plan.
+  // free-tier memory/CPU/disk ceilings below are skipped for autumn orgs (they
+  // pay per GB-second); only the per-org max_disk_mb cap applies.
   if (org.billing_provider === "autumn") {
     if (org.is_halted === 1 && (await selfHealHalt(env, orgID))) {
       return json({ error: "credits exhausted — top up to resume" }, 402);
@@ -428,8 +430,10 @@ async function enforceCreatePolicy(
     }
   }
 
-  // Free-tier ceilings: 4GB / 1 vCPU, 20GB disk.
-  if (plan === "free") {
+  // Free-tier ceilings: 4GB / 1 vCPU, 20GB disk. Legacy only — autumn (prepaid)
+  // orgs pay per GB-second and are gated by balance/halt, so they may launch any
+  // size. Disk is still bounded for everyone by the per-org max_disk_mb check below.
+  if (org.billing_provider !== "autumn" && plan === "free") {
     if (sizes.memoryMB > 4096 || sizes.cpuCount > 1) {
       return json({ error: "upgrade to pro for larger instances" }, 402);
     }
@@ -1605,6 +1609,13 @@ export default {
       if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
       return autumnSetProviderInternal(req, env);
     }
+    // Dev-only: force an autumn-meter run (the cron is */5). 404 in prod so only
+    // the scheduled trigger moves money there. Deterministic testing aid.
+    if (path === "/internal/run-autumn-meter" && req.method === "POST") {
+      if (env.WORKER_ENV === "prod") return new Response("not found", { status: 404 });
+      await runAutumnMeter(env, Date.now());
+      return json({ ok: true });
+    }
 
     if (path === "/internal/org-policy") {
       if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
@@ -1901,5 +1912,16 @@ export default {
     // "single-page-application" serves index.html for client-side routes.
     if (env.ASSETS) return env.ASSETS.fetch(req);
     return new Response("not found", { status: 404 });
+  },
+
+  // Cron (*/5): edge-native autumn billing. Meters autumn orgs' usage_samples to
+  // Autumn and halts on exhaustion — one place, not per-cell. Legacy orgs bill
+  // via the separate billing-rollup worker; this no-ops unless AUTUMN_SECRET_KEY
+  // is set (dormant until the cutover switch is flipped).
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (!env.AUTUMN_SECRET_KEY) return;
+    ctx.waitUntil(
+      runAutumnMeter(env, Date.now()).catch((err) => console.error("autumn-meter: run failed", err)),
+    );
   },
 } satisfies ExportedHandler<Env>;

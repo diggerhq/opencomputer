@@ -69,6 +69,11 @@ export interface AutumnAutoTopup {
 export interface AutumnCustomer {
   id: string;
   subscriptions?: AutumnSubscription[];
+  // Completed one-off purchases. A `top_up` here means the customer has charged a
+  // top-up — and since every top-up goes through the off-session flow
+  // (autumnTopUpCharge), that's also when auto-recharge becomes armed. So it's our
+  // "auto-recharge will fire" signal (Autumn exposes no payment-method field).
+  purchases?: Array<{ plan_id: string }>;
   balances?: Record<string, { remaining?: number }>;
   billing_controls?: { auto_topups?: AutumnAutoTopup[] };
 }
@@ -267,14 +272,14 @@ export async function autumnSetProviderInternal(req: Request, env: AutumnEnv): P
 // do NOT dispatch — D1.is_halted is already cleared, which unblocks the gates;
 // hibernated boxes wake lazily on the next request. This is the locked "no
 // auto-wake for prepaid" decision: a top-up unblocks but never force-wakes.
-async function projectOrg(env: AutumnEnv, orgID: string): Promise<void> {
+export async function projectOrg(env: AutumnEnv, orgID: string): Promise<void> {
   const r = await syncAutumnToD1(env, orgID);
   if (!r || !r.halted) return;
   // Dispatch halt on the fresh transition, OR whenever a halted org STILL has
   // running sandboxes — so a halt is eventually complete even if a single
-  // hibernation flaked on the first dispatch. The reconciler calls projectOrg
-  // every 60s, so this is the straggler safety net (mirrors the legacy
-  // halt_reconciler, which re-issues HaltOrg for every halted org each sweep).
+  // hibernation flaked on the first dispatch. The autumn-meter cron + the
+  // webhook both call projectOrg, so this is the straggler safety net (a halted
+  // org with a leftover running box gets re-dispatched on the next sight).
   if (!r.wasHalted || (await hasRunningSandboxes(env, orgID))) {
     await dispatchToCells(env, orgID, "/admin/halt-org", { org_id: orgID, reason: "credits_exhausted" });
   }
@@ -328,6 +333,44 @@ export async function getAutumnCustomer(env: AutumnApiEnv, customerID: string): 
   return (await resp.json()) as AutumnCustomer;
 }
 
+// trackAutumnUsage records metered usage against a feature. Autumn dedupes on
+// idempotency_key across ALL customers, so the key must be globally unique and
+// stable across retries (see usageIdempotencyKey). Returns the post-track
+// `credits` balance so the caller can halt on exhaustion.
+//
+// A 409 duplicate_idempotency_key means this bucket already landed on an earlier
+// run (the watermark write failed after the track) — not an error. We re-read
+// the balance so the halt check still fires if this was the exhausting bucket.
+export async function trackAutumnUsage(
+  env: AutumnApiEnv,
+  p: { customerID: string; featureID: string; value: number; idempotencyKey: string },
+): Promise<number | null> {
+  const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
+  const resp = await fetch(`${base}/track`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      customer_id: p.customerID,
+      feature_id: p.featureID,
+      value: p.value,
+      idempotency_key: p.idempotencyKey,
+    }),
+  });
+  if (resp.ok) {
+    const body = (await resp.json()) as { balance?: { remaining?: number } };
+    return body.balance?.remaining ?? null;
+  }
+  if (resp.status === 409) {
+    const text = await resp.text();
+    if (text.includes("duplicate_idempotency_key")) {
+      const cust = await getAutumnCustomer(env, p.customerID);
+      return cust?.balances?.[CREDITS_FEATURE_ID]?.remaining ?? null;
+    }
+    throw new Error(`autumn track 409: ${text}`);
+  }
+  throw new Error(`autumn track ${resp.status}: ${await resp.text()}`);
+}
+
 // CheckoutOption sets a quantity for a priced feature in the product (e.g. the
 // number of $1 credits in a top-up).
 export interface AutumnCheckoutOption {
@@ -336,7 +379,9 @@ export interface AutumnCheckoutOption {
 }
 
 export interface AutumnCheckoutResult {
-  url: string;
+  // null when the customer already has a payment method on file — Autumn expects
+  // a direct /attach instead of a hosted checkout redirect (see autumnPurchase).
+  url: string | null;
   total?: number;
   currency?: string;
 }
@@ -363,6 +408,96 @@ export async function autumnCheckout(
   });
   if (!resp.ok) throw new Error(`autumn checkout ${resp.status}: ${await resp.text()}`);
   return (await resp.json()) as AutumnCheckoutResult;
+}
+
+// autumnAttach completes a purchase using the customer's existing payment method
+// — no hosted checkout. Used when /checkout returns url=null (a card is on file).
+export async function autumnAttach(
+  env: AutumnApiEnv,
+  params: { customerId: string; productId: string; options?: AutumnCheckoutOption[] },
+): Promise<void> {
+  const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
+  const body: Record<string, unknown> = { customer_id: params.customerId, product_id: params.productId };
+  if (params.options && params.options.length > 0) body.options = params.options;
+  const resp = await fetch(`${base}/attach`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`autumn attach ${resp.status}: ${await resp.text()}`);
+  // code=checkout_created means there was no chargeable card so Autumn made a
+  // hosted checkout instead of charging — for our "charge the card on file" path
+  // that's a failure, not success. Surface it rather than silently no-op'ing.
+  const d = (await resp.json()) as { code?: string };
+  if (d.code === "checkout_created") {
+    throw new Error("autumn attach: no payment method on file (got checkout_created)");
+  }
+}
+
+// autumnPurchase buys a product (top-up or concurrency tier), handling both
+// Autumn flows: a customer with NO card gets a hosted-checkout url to redirect
+// to; a customer WITH a card on file gets url=null from /checkout, so we charge
+// directly via /attach. Returns the url to redirect to, or null when the charge
+// already completed (caller should just refresh the balance — no redirect).
+export async function autumnPurchase(
+  env: AutumnApiEnv,
+  params: { customerId: string; productId: string; options?: AutumnCheckoutOption[]; successUrl: string },
+): Promise<{ url: string | null }> {
+  const co = await autumnCheckout(env, params);
+  if (co.url) return { url: co.url };
+  await autumnAttach(env, { customerId: params.customerId, productId: params.productId, options: params.options });
+  return { url: null };
+}
+
+// autumnSetupPayment creates a Stripe SETUP session that saves a card for future
+// OFF-SESSION use — POST /v1/billing.setup_payment. It does NOT charge (setup
+// mode), so arming auto-recharge takes a follow-up /attach once the card is on
+// file (see autumnTopUpCharge + the ?charge_topup return handler). Returns the
+// URL to redirect the customer to.
+export async function autumnSetupPayment(
+  env: AutumnApiEnv,
+  params: { customerId: string; successUrl: string },
+): Promise<{ url: string | null }> {
+  const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
+  const resp = await fetch(`${base}/billing.setup_payment`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify({ customer_id: params.customerId, success_url: params.successUrl }),
+  });
+  if (!resp.ok) throw new Error(`autumn setup_payment ${resp.status}: ${await resp.text()}`);
+  const d = (await resp.json()) as { url?: string };
+  return { url: d.url ?? null };
+}
+
+// autumnTopUpCharge buys `quantity` credits while ensuring the card ends up saved
+// OFF-SESSION — so a top-up also ARMS auto-recharge. No single Autumn hosted flow
+// does both (a /checkout top-up charges but leaves the card on-session-only;
+// setup_payment saves off-session but doesn't charge), so:
+//   - card already on file → /attach charges directly (no redirect), {url:null}.
+//   - no card → setup_payment saves the card off-session and returns a redirect
+//     URL; the CHARGE happens when the user returns — the caller's successUrl must
+//     carry ?charge_topup=<quantity> so the UI fires the /attach on return.
+export async function autumnTopUpCharge(
+  env: AutumnApiEnv,
+  params: { customerId: string; quantity: number; successUrl: string },
+): Promise<{ url: string | null }> {
+  // hasToppedUp = a top-up has been charged = a card is on file (reliable). We do
+  // NOT probe /checkout — it spuriously returns url=null for cardless customers.
+  if (await autumnHasToppedUp(env, params.customerId)) {
+    const options = [{ feature_id: "credits", quantity: params.quantity }];
+    await autumnAttach(env, { customerId: params.customerId, productId: "top_up", options });
+    return { url: null };
+  }
+  return autumnSetupPayment(env, { customerId: params.customerId, successUrl: params.successUrl });
+}
+
+// autumnHasToppedUp reports whether the customer has ever charged a top-up. Since
+// every top-up goes through autumnTopUpCharge (off-session), this doubles as the
+// "auto-recharge is armed" signal: true means enabling auto-recharge needs no new
+// charge; false means the first recharge must run to arm it.
+export async function autumnHasToppedUp(env: AutumnApiEnv, customerId: string): Promise<boolean> {
+  const cust = await getAutumnCustomer(env, customerId);
+  return (cust?.purchases ?? []).some((p) => p.plan_id === "top_up");
 }
 
 // autumnSetAutoTopup configures (or disables) automatic credit top-up for the

@@ -20,6 +20,11 @@ const (
 	// the request carried an edge-minted cap-token (which stamps the plan from
 	// D1 at mint time). Absent for direct API-key auth.
 	ContextKeyPlan contextKey = "plan"
+	// ContextKeyBillingProvider is the echo context key for the org's billing
+	// provider ("legacy" | "autumn"), stamped onto the cap-token from D1 at mint
+	// time. Autumn orgs pay per GB-second, so size gates that key off the legacy
+	// free-tier plan must not apply to them. Absent for direct API-key auth.
+	ContextKeyBillingProvider contextKey = "billing_provider"
 )
 
 // SetOrgID stores the org ID in the echo context.
@@ -56,6 +61,30 @@ func SetPlan(c echo.Context, plan string) {
 // auth), so callers can fall back to a cell-PG lookup.
 func GetPlan(c echo.Context) (string, bool) {
 	v := c.Get(string(ContextKeyPlan))
+	if v == nil {
+		return "", false
+	}
+	p, ok := v.(string)
+	if !ok || p == "" {
+		return "", false
+	}
+	return p, true
+}
+
+// SetBillingProvider stores the org's billing provider (from a cap-token) in the
+// echo context. Empty strings are ignored so a later authoritative value isn't
+// clobbered by an absent one.
+func SetBillingProvider(c echo.Context, provider string) {
+	if provider != "" {
+		c.Set(string(ContextKeyBillingProvider), provider)
+	}
+}
+
+// GetBillingProvider retrieves the cap-token-supplied billing provider from the
+// echo context. The bool is false when the request didn't carry one (e.g. direct
+// API-key auth), so callers can fall back to a cell-PG lookup.
+func GetBillingProvider(c echo.Context) (string, bool) {
+	v := c.Get(string(ContextKeyBillingProvider))
 	if v == nil {
 		return "", false
 	}
@@ -141,6 +170,7 @@ func PGAPIKeyMiddleware(store *db.Store, staticKey string, jwtIssuer *JWTIssuer,
 						// instead of the cell-PG copy, which goes stale on
 						// plan changes between sandbox creates.
 						SetPlan(c, claims.Plan)
+						SetBillingProvider(c, claims.BillingProvider)
 						return next(c)
 					}
 				}

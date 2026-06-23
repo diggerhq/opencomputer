@@ -53,6 +53,7 @@ func (s *Server) capTokenMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 		}
 		auth.SetPlan(c, claims.Plan)
+		auth.SetBillingProvider(c, claims.BillingProvider)
 		return next(c)
 	}
 }

@@ -278,15 +278,23 @@ function PrepaidPlan() {
     queryKey: ['autumn-billing'], queryFn: getAutumnBilling, refetchInterval: 30_000,
   })
   const [amount, setAmount] = useState<number>(25)
+  const queryClient = useQueryClient()
 
+  // url present → redirect to hosted checkout (collect a new card); url null →
+  // the existing card was charged server-side, so just refresh the balance.
+  const onPurchase = (data: { url: string | null }) => {
+    if (data.url) window.location.href = data.url
+    else queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
+  }
   const topupMutation = useMutation({
     mutationFn: () => autumnTopup(amount),
-    onSuccess: (data) => { window.location.href = data.url },
+    onSuccess: onPurchase,
   })
   const planMutation = useMutation({
     mutationFn: (plan: string) => autumnSubscribeConcurrency(plan),
-    onSuccess: (data) => { window.location.href = data.url },
+    onSuccess: onPurchase,
   })
+
 
   if (isLoading) {
     return (
@@ -377,7 +385,7 @@ function PrepaidPlan() {
         </div>
       </div>
 
-      <AutoTopupCard current={autumn?.autoTopup ?? null} />
+      <AutoTopupCard current={autumn?.autoTopup ?? null} hasToppedUp={autumn?.hasToppedUp ?? false} />
 
       {/* Concurrency plans */}
       <div className="glass-card animate-in stagger-3" style={{ padding: 28 }}>
@@ -519,7 +527,7 @@ const autoTopupInputStyle = {
   background: 'transparent', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: 13,
 }
 
-function AutoTopupCard({ current }: { current: AutumnBilling['autoTopup'] }) {
+function AutoTopupCard({ current, hasToppedUp }: { current: AutumnBilling['autoTopup']; hasToppedUp: boolean }) {
   const queryClient = useQueryClient()
   const [enabled, setEnabled] = useState(current?.enabled ?? false)
   const [threshold, setThreshold] = useState(current?.threshold ?? 5)
@@ -528,7 +536,11 @@ function AutoTopupCard({ current }: { current: AutumnBilling['autoTopup'] }) {
 
   const mutation = useMutation({
     mutationFn: () => setAutumnAutoTopup({ enabled, threshold, quantity }),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      // Auto-recharge needs a saved off-session card. If enabling without one, the
+      // server returns a no-charge Stripe setup URL — redirect to capture the card,
+      // after which auto-recharge is live. Otherwise just confirm the save.
+      if (data?.url) { window.location.href = data.url; return }
       queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
@@ -584,7 +596,8 @@ function AutoTopupCard({ current }: { current: AutumnBilling['autoTopup'] }) {
       </button>
       {enabled && (
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 10 }}>
-          Requires a payment method on file — added automatically on your first top-up.
+          Charges your saved card automatically when the balance drops below the threshold.
+          {!hasToppedUp && ` Since you haven't topped up yet, enabling runs your first $${quantity} recharge now to set up your card.`}
         </div>
       )}
       {mutation.isError && (

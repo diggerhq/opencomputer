@@ -17,7 +17,14 @@
 //   3. Fetch the cell's /internal/dashboard/{path} with Authorization: Bearer.
 //   4. Stream the response (or WebSocket pair) back to the browser.
 
-import { getAutumnCustomer, autumnCheckout, syncAutumnToD1, autumnSetAutoTopup } from "./autumn_webhook";
+import {
+  autumnPurchase,
+  autumnTopUpCharge,
+  autumnAttach,
+  autumnHasToppedUp,
+  syncAutumnToD1,
+  autumnSetAutoTopup,
+} from "./autumn_webhook";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -960,6 +967,9 @@ export async function handleDashboard(
   if (sub === "/billing/autumn/auto-topup" && method === "POST") {
     return handleAutumnAutoTopup(req, env, caller);
   }
+  if (sub === "/billing/autumn/finalize-arm" && method === "GET") {
+    return handleAutumnFinalizeArm(req, env, caller);
+  }
 
   return json({ error: `not found: ${method} ${sub}` }, 404);
 }
@@ -1192,11 +1202,17 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
 
   const at = r.customer.billing_controls?.auto_topups?.find((a) => a.feature_id === "credits");
 
+  // Has the customer charged a top-up? That's when auto-recharge becomes armed,
+  // so the UI uses it to tell whether enabling auto-recharge will run a first
+  // recharge or just save. Free — the customer is already loaded above.
+  const hasToppedUp = (r.customer.purchases ?? []).some((p) => p.plan_id === "top_up");
+
   return json({
     creditsRemainingCents: Math.round(r.creditsRemaining * 100),
     maxConcurrentSandboxes: r.maxConcurrent,
     concurrencyPlan,
     isHalted: r.halted,
+    hasToppedUp,
     autoTopup: at ? { enabled: at.enabled, threshold: at.threshold, quantity: at.quantity } : null,
   });
 }
@@ -1221,11 +1237,55 @@ async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { 
   }
   try {
     await autumnSetAutoTopup(env, caller.orgID, { enabled, threshold, quantity });
-    return json({ ok: true });
+
+    // Auto-recharge is armed once the customer has charged a top-up (a
+    // saved-but-never-charged card is unarmed). If they've already topped up, just
+    // save — no redundant charge. If not, run their first recharge now to arm it
+    // (no card → one hosted setup_payment flow saves the card off-session AND
+    // charges; card on file → /attach charges directly).
+    if (enabled && !(await autumnHasToppedUp(env, caller.orgID))) {
+      const origin = new URL(req.url).origin;
+      const co = await autumnTopUpCharge(env, {
+        customerId: caller.orgID,
+        quantity,
+        successUrl: `${origin}/api/dashboard/billing/autumn/finalize-arm?credits=${quantity}`,
+      });
+      return json({ ok: true, url: co.url });
+    }
+    return json({ ok: true, url: null });
   } catch (e) {
     console.error("billing/autumn auto-topup:", e);
     return json({ error: (e as Error).message }, 502);
   }
+}
+
+// GET /billing/autumn/finalize-arm?credits=N — the return target Stripe sends the
+// browser to after a setup_payment card setup. The card is now saved, so we
+// charge the deferred first recharge HERE (server-side, immune to browser cache /
+// dropped query params), which both adds the credits and arms auto-recharge, then
+// 302 back to the billing page. Authenticated by the session cookie carried on
+// the redirect.
+async function handleAutumnFinalizeArm(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  const origin = new URL(req.url).origin;
+  const billing = `${origin}/dashboard/billing`;
+  if (!env.AUTUMN_SECRET_KEY) return Response.redirect(billing, 302);
+  const credits = Math.floor(Number(new URL(req.url).searchParams.get("credits") ?? "0"));
+  // Idempotency: only charge if not already topped up — so a refresh / double
+  // redirect to this URL can't charge twice (after the first charge, hasToppedUp
+  // is true).
+  if (credits >= 1 && !(await autumnHasToppedUp(env, caller.orgID))) {
+    try {
+      await autumnAttach(env, {
+        customerId: caller.orgID,
+        productId: "top_up",
+        options: [{ feature_id: "credits", quantity: credits }],
+      });
+    } catch (e) {
+      console.error("billing/autumn finalize-arm:", e);
+      return Response.redirect(`${billing}?arm=failed`, 302);
+    }
+  }
+  return Response.redirect(`${billing}?arm=ok`, 302);
 }
 
 // POST /api/dashboard/billing/autumn/topup { credits } — one-off prepaid credit
@@ -1245,11 +1305,13 @@ async function handleAutumnTopup(req: Request, env: DashboardEnv, caller: { orgI
   }
   const origin = new URL(req.url).origin;
   try {
-    const co = await autumnCheckout(env, {
+    // Charge via the off-session-establishing flow so a top-up also arms
+    // auto-recharge. url present → redirect (hosted card setup, no card yet);
+    // url null → existing card charged directly. Frontend redirects or refreshes.
+    const co = await autumnTopUpCharge(env, {
       customerId: caller.orgID,
-      productId: "top_up",
-      options: [{ feature_id: "credits", quantity: credits }],
-      successUrl: `${origin}/dashboard/billing?topup=success`,
+      quantity: credits,
+      successUrl: `${origin}/api/dashboard/billing/autumn/finalize-arm?credits=${credits}`,
     });
     return json({ url: co.url });
   } catch (e) {
@@ -1274,7 +1336,9 @@ async function handleAutumnConcurrency(req: Request, env: DashboardEnv, caller: 
   }
   const origin = new URL(req.url).origin;
   try {
-    const co = await autumnCheckout(env, {
+    // Same dual flow as top-up: redirect for a new card, or attach the existing
+    // card directly (url null) when upgrading a tier with a payment method on file.
+    const co = await autumnPurchase(env, {
       customerId: caller.orgID,
       productId: plan,
       successUrl: `${origin}/dashboard/billing?plan=success`,

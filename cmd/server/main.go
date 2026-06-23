@@ -19,7 +19,6 @@ import (
 	"github.com/opensandbox/opensandbox/internal/api"
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/billing"
-	"github.com/opensandbox/opensandbox/internal/billing/autumn"
 	"github.com/opensandbox/opensandbox/internal/cloudflare"
 	"github.com/opensandbox/opensandbox/internal/compute"
 	"github.com/opensandbox/opensandbox/internal/config"
@@ -776,50 +775,10 @@ func main() {
 		log.Println("opensandbox: usage reporter started (interval=5m)")
 	}
 
-	// Start Autumn usage reporter (Phase 2: SHADOW). Ships per-org compute/disk
-	// usage to Autumn via track() for orgs flagged billing_provider='autumn',
-	// building the real ledger and logging a parity line against our local cost
-	// math — but never halting yet. Inert unless an Autumn API key is set.
-	if opts.Store != nil && cfg.AutumnSecretKey != "" {
-		var autumnOpts []autumn.Option
-		if cfg.AutumnBaseURL != "" {
-			autumnOpts = append(autumnOpts, autumn.WithBaseURL(cfg.AutumnBaseURL))
-		}
-		autumnClient := autumn.New(cfg.AutumnSecretKey, autumnOpts...)
-		autumnReporter := billing.NewAutumnReporter(opts.Store, autumnClient)
-
-		// Edge client for D1 projection (halt enforce + reconciler). Nil in
-		// combined dev mode where there's no separate edge.
-		var autumnEdge *edgeclient.Client
-		if cfg.CFEdgeBaseURL != "" && cfg.CFEventSecret != "" {
-			autumnEdge = edgeclient.New(cfg.CFEdgeBaseURL, cfg.CFEventSecret)
-		}
-
-		// Enforce mode (off by default): on balance exhaustion, hibernate the
-		// org's sandboxes on this cell AND ask the edge to re-check Autumn and
-		// project is_halted into D1 so create/wake gates reject it everywhere.
-		if cfg.AutumnEnforce {
-			var workers billing.WorkerClientSource
-			if redisRegistry != nil {
-				workers = redisRegistry
-			}
-			autumnReporter.SetEnforce(true)
-			autumnReporter.SetHaltFunc(func(ctx context.Context, orgID uuid.UUID) error {
-				if _, err := billing.EnforceCreditExhaustion(ctx, opts.Store, workers, orgID); err != nil {
-					log.Printf("autumn: local hibernate for %s: %v", orgID, err)
-				}
-				if autumnEdge != nil {
-					return autumnEdge.ProjectAutumnOrg(ctx, orgID)
-				}
-				return nil
-			})
-			log.Println("opensandbox: autumn usage reporter ENFORCING (halt on exhaustion)")
-		}
-
-		autumnReporter.Start()
-		defer autumnReporter.Stop()
-		log.Println("opensandbox: autumn usage reporter started (interval=5m)")
-	}
+	// Autumn billing is edge-native: the api-edge `autumn-meter` cron meters
+	// usage_samples to Autumn and halts on exhaustion (one place, not per-cell).
+	// The cell only EXECUTES halts dispatched to /admin/halt-org (HaltOrg). No
+	// per-cell Autumn reporter here anymore — that would double-track usage.
 
 	// Halt reconciler — safety net for missed CF halt webhooks. Pulls the
 	// authoritative halt-list from api-edge every 60s and re-issues halts
