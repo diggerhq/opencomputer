@@ -11,6 +11,11 @@ A **runtime** is the engine that executes the agent loop — what's often called
 | `claude` | `anthropic/…` (e.g. `anthropic/claude-opus-4-8`) | Anthropic key |
 | `codex` | `openai/…` (e.g. `openai/gpt-5-codex`) | OpenAI key |
 
+`model` is passed straight through to the provider, so any model that provider serves works — only the **`provider/` prefix** is validated against the runtime (a bad prefix is rejected at agent create, a model the provider doesn't recognize fails on the first turn). Common choices:
+
+- **`claude`:** `anthropic/claude-opus-4-8` (most capable), `anthropic/claude-sonnet-4-6` (balanced), `anthropic/claude-haiku-4-5` (fastest/cheapest).
+- **`codex`:** `openai/gpt-5-codex`.
+
 Sessions, [events](/agent-sessions/events), [steering](/agent-sessions/messaging), [tools](/agent-sessions/runtime-tools), and [webhooks](/agent-sessions/webhooks) work the same way whatever runtime you pick — `runtime` is a single field on the [agent](/agent-sessions/agents), so the rest of your integration is identical across runtimes. (It's fixed once the agent exists; to switch engines, create a new agent with a different `runtime`.)
 
 ## `claude`
