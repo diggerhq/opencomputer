@@ -132,7 +132,20 @@ Delivery = {
 
 ### Verify a webhook
 
-Use a [Standard Webhooks](https://www.standardwebhooks.com) library:
+The SDK ships a verifier — no extra dependency, runs in Node / Cloudflare Workers / browsers — that checks the signature and returns the parsed envelope:
+
+```ts
+import { verifyWebhook } from "@opencomputer/sdk";
+
+// rawBody = the RAW request body string, read BEFORE JSON.parse.
+// Throws on a missing / expired / invalid signature.
+const delivery = await verifyWebhook(rawBody, request.headers, process.env.OC_WEBHOOK_SECRET!);
+if (delivery.type === "turn.completed") {
+  // route on delivery.metadata, then fetch the result
+}
+```
+
+Or verify with any [Standard Webhooks](https://www.standardwebhooks.com) library directly:
 
 ```js
 import { Webhook } from "standardwebhooks";
