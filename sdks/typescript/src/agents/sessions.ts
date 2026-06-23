@@ -19,7 +19,7 @@ export interface CreateSessionParams {
   limits?: Limits;
   /**
    * Opaque application routing state stored on the session — a JSON object (≤ 16 KB).
-   * Returned on `get`/`list` (as `session.snapshot.metadata`) and delivered verbatim in
+   * Returned on `get`/`list` (as `session.metadata`) and delivered verbatim in
    * webhooks, so a callback handler can route to the right record without a lookup. It is
    * never shown to the model and not indexed/queryable. Distinct from `key`
    * (get-or-create) and `idempotencyKey` (dedupe).

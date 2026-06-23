@@ -1,33 +1,118 @@
 ---
 mode: "wide"
 title: "Custom runtimes"
-description: "Package any agent harness as a runtime (coming soon)"
+description: "Package your own agent harness as a runtime (coming soon)"
 ---
 
-<Note>**Planned.** This page describes planned API shape, not shipped behavior. Today the only callable [runtime](/agent-sessions/runtimes) is `claude`.</Note>
+<Note>**Planned.** This page describes the intended custom-runtime contract, not shipped behavior. Today the built-in [runtimes](/agent-sessions/runtimes) are `claude` and `codex`; bringing your own runtime is on the roadmap.</Note>
 
-A custom runtime is a container image for your agent harness. Once registered, select it per agent with `runtime: "<name>"`; sessions, events, steering, and webhooks work the same way.
+A custom runtime lets you run your own agent harness on Durable Agent Sessions. Once registered, you select it on an agent with `runtime: "<name>"`; sessions, events, steering, webhooks, recovery, and sandbox tools work the same way as the built-ins.
 
-## Runtime invocation
+The runtime image contains a **brain server**: a resident process around your agent SDK. OpenComputer supplies the platform adapter that reads the session log, owns fencing and idempotency, exposes tools, calls your brain over localhost, and commits the brain's stream as durable events.
 
-For each turn, the platform starts your image with the session id, read cursor, events API URL, and a fenced **turn token**. The image must:
+You implement the brain. You do **not** implement OpenComputer's event API, session cursors, turn-token auth, sandbox HTTP calls, or webhook delivery.
 
-1. read the new input from the [event log](/agent-sessions/events) at the cursor;
-2. drive its own agent loop;
-3. stream events back over the authenticated events API;
-4. perform side effects through the remote [sandbox tools](/agent-sessions/runtime-tools);
-5. exit 0 when it has nothing left to do.
+See [example runtimes](https://github.com/diggerhq/oc-runtime-examples) for minimal `claude` and `codex` brain servers.
 
-The turn token is fenced: writes from a superseded runtime instance are rejected. Non-zero exit is treated as a crash and the platform restarts the turn in place.
+## Runtime shape
 
-## Journal and recovery
+Your image starts an HTTP server on `127.0.0.1:$OC_BRAIN_PORT` (`8080` by default). The server stays warm across turns and handles one turn at a time.
 
-The image should be stateless. Store resumable state in the provided journal directory. The durable record is the event log plus that journal, so crashes, idle hibernation, and machine restore follow the same [recovery](/agent-sessions/runtimes#failure-behavior) behavior as `claude`.
+```http
+GET /healthz
+```
 
-## Model configuration
+```json
+{
+  "status": "ready",
+  "contract_version": "oc-runtime-http-2026-06-22",
+  "busy": false
+}
+```
 
-The model is configuration, not part of the image. A runtime declares which providers it can drive; switching providers requires a runtime image that supports the target provider.
+Return `busy: true` while a turn is running. A second turn should return `409`; OpenComputer already serializes real turns, so this is a safety check.
+
+## Turn request
+
+For each turn, the adapter sends the new input and run config:
+
+```http
+POST /turn
+Content-Type: application/json
+```
+
+```json
+{
+  "contract_version": "oc-runtime-http-2026-06-22",
+  "turn_id": "turn_...",
+  "input": [
+    { "role": "user", "content": "Review this repository." }
+  ],
+  "config": {
+    "model": "anthropic/claude-opus-4-8",
+    "system_prompt": "Run tests and explain risks.",
+    "mcp_endpoint": "http://127.0.0.1:4317/mcp",
+    "state_dir": "/home/sandbox/.oc/runtime-state"
+  },
+  "deadline_s": 600
+}
+```
+
+The adapter has already read the event log. Your brain receives the new turn input, not a session cursor.
+
+## Step stream
+
+`POST /turn` responds with newline-delimited JSON. Each line is one step:
+
+```jsonl
+{"seq":1,"kind":"message","visibility":"progress","text":"Reading files..."}
+{"seq":2,"kind":"message","visibility":"progress","text":"Running tests..."}
+{"seq":3,"kind":"done","reason":"quiescent"}
+```
+
+The adapter maps these steps to [session events](/agent-sessions/events), assigns stable idempotency keys, and flushes committed output before ending the turn.
+
+Core step kinds:
+
+| Step | Purpose |
+| --- | --- |
+| `message` | Activity from the agent. Use `say` or `ask` for human-visible output. |
+| `done` | Terminal step. `reason` is `quiescent`, `awaiting_input`, or `error`. |
+
+Tool calls, including user-visible `say` and `ask`, are made through MCP, not by emitting HTTP requests to OpenComputer.
+
+## Tools
+
+The adapter exposes tools at `config.mcp_endpoint`. Your brain connects through your SDK's MCP support.
+
+| Tool | What it does |
+| --- | --- |
+| `bash` | Run a shell command in the hands sandbox. |
+| `read` | Read a file from the hands sandbox. |
+| `write` | Write a file in the hands sandbox. |
+| `ls` | List a directory in the hands sandbox. |
+| `say` | Emit a user-visible message. |
+| `ask` | Ask for input and end the turn awaiting a reply. |
+
+The brain sandbox is for the model loop. The hands sandbox is where files and commands run.
+
+## State and recovery
+
+Store resumable state under `config.state_dir`. OpenComputer checkpoints that directory at turn boundaries and restores it after recovery.
+
+Examples:
+
+- Claude writes a local journal and continues from it.
+- Codex persists a server-side thread id and resumes that thread.
+
+Design your brain so replay is safe. If a crash happens after a step is emitted but before the turn finishes, the adapter may replay from durable state and dedupe already committed events.
 
 ## Register runtimes
 
-Register a runtime with `oc runtime push <image>` and select it with `runtime: "<name>"`. Runtimes are versioned; each session pins the version it starts with, so pushing a new build never changes in-flight sessions.
+Registration is planned:
+
+```bash
+oc runtime push
+```
+
+Runtimes will be versioned. Each session pins the runtime build it starts with, so publishing a new build affects new sessions only.

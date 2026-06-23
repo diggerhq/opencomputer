@@ -17,7 +17,7 @@ OPENCOMPUTER_API_KEY=osb_...
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-<Tip>Grab your OpenComputer API key from [app.opencomputer.dev](https://app.opencomputer.dev). Sessions run the model on your Anthropic key.</Tip>
+<Tip>Grab your OpenComputer API key from [app.opencomputer.dev](https://app.opencomputer.dev). Sessions run the model on your own provider key — Anthropic for the default `claude` runtime.</Tip>
 
 ## 1. Create an agent
 
@@ -63,9 +63,11 @@ Response:
 { "id": "agt_...", "name": "quickstart-coder", "revision": 1 }
 ```
 
-<Note>Your Anthropic `key` is held in OpenComputer's [secret store](/sandboxes/secrets) (encrypted, write-only) and **never enters the sandbox**. The agent runs with a placeholder; an **egress proxy substitutes the real key in-flight** on the outbound call to Anthropic — so neither the model nor your agent's code ever sees it. Reuse one key across agents via a [credential](/agent-sessions/authentication#model-credentials).</Note>
+<Note>Your model `key` is held in OpenComputer's [secret store](/sandboxes/secrets) (encrypted, write-only) and **never enters the sandbox**. The agent runs with a placeholder; an **egress proxy substitutes the real key in-flight** on the outbound call to the model provider — so neither the model nor your agent's code ever sees it. Reuse one key across agents via a [credential](/agent-sessions/authentication#model-credentials).</Note>
 
 <Tip>`POST /agents` is idempotent by agent name, so it is fine to call this during application startup.</Tip>
+
+<Tip>Prefer OpenAI? Set `runtime: "codex"` and `model: "openai/gpt-5-codex"` with an OpenAI `key` — every other step in this guide is identical. See [Runtimes](/agent-sessions/runtimes).</Tip>
 
 ## 2. Start a session
 
@@ -189,7 +191,7 @@ Response:
 
 ## Production checklist
 
-- Keep the org API key and Anthropic key server-side.
+- Keep the org API key and your model key server-side.
 - Add app auth before minting or returning a `client_token`.
 - Set `limits` on the agent or session.
 - Use `idempotency_key` for every user action you might retry.
@@ -203,7 +205,7 @@ Response:
     Event shape, levels, cursors, and resume behavior.
   </Card>
   <Card title="Runtime tools" icon="toolbox" href="/agent-sessions/runtime-tools">
-    The tools the managed Claude runtime can use.
+    The tools a runtime can use in the sandbox.
   </Card>
   <Card title="Example app" icon="github" href="https://github.com/diggerhq/oc-sessions-demos">
     Fork a complete app-builder implementation.

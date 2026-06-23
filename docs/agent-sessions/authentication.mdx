@@ -64,7 +64,7 @@ Content-Type: application/json
 
 Browser pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
 
-<Warning>A client token isn't free to hand out: each `steer` starts a turn, which **consumes tokens on your Anthropic key** for the session it's scoped to. Mint short-lived tokens, and rely on the session's [limits](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) to cap exposure.</Warning>
+<Warning>A client token isn't free to hand out: each `steer` starts a turn, which **consumes tokens on your model key** for the session it's scoped to. Mint short-lived tokens, and rely on the session's [limits](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) to cap exposure.</Warning>
 
 ```
 browser  -> your backend: create task
@@ -77,9 +77,9 @@ For the SSE stream the browser passes the client token as `?token=` (native `Eve
 
 ## Model credentials
 
-Sessions run the model on **your own Anthropic key**. It's held in OpenComputer's [secret store](/sandboxes/secrets) — encrypted at rest (AES-256-GCM) and write-only (**never returned** by the API). Crucially, **the real key never enters a sandbox at all**: it's sealed into an opaque token, and a host-side proxy swaps in the real value only on the outbound HTTPS call to `api.anthropic.com` (scoped by an egress allowlist). So it's **never exposed to the model, never in the agent's prompt or code, and never in the VM** — see [Secrets](/sandboxes/secrets). A credential is **required** — a session with no resolvable key fails to start (`422 no_credential`).
+Sessions run the model on **your own provider key** — Anthropic for the `claude` [runtime](/agent-sessions/runtimes), OpenAI for `codex`. It's held in OpenComputer's [secret store](/sandboxes/secrets) — encrypted at rest (AES-256-GCM) and write-only (**never returned** by the API). Crucially, **the real key never enters a sandbox at all**: it's sealed into an opaque token, and a host-side proxy swaps in the real value only on the outbound HTTPS call to the model provider (`api.anthropic.com` or `api.openai.com`, scoped by an egress allowlist). So it's **never exposed to the model, never in the agent's prompt or code, and never in the VM** — see [Secrets](/sandboxes/secrets). A credential is **required** — a session with no resolvable key fails to start (`422 no_credential`).
 
-The easiest way to add one is inline when you [create an agent](/agent-sessions/agents) (`"key": "sk-ant-…"`). The standalone resource below is for reusing one key across agents, setting an org default, and rotating/removing keys:
+The easiest way to add one is inline when you [create an agent](/agent-sessions/agents) (`"key": "…"`) — the provider is inferred from the agent's `model`. The standalone resource below is for reusing one key across agents, setting an org default, and rotating/removing keys. Set `provider` to `anthropic` or `openai`:
 
 <CodeGroup>
 
@@ -119,4 +119,4 @@ Content-Type: application/json
 
 **Resolution** per session: the agent's credential → your org default for the provider. (No platform-billed fallback yet — bring a key.)
 
-<Note>Additional model providers, model hot-swap, and platform-billed usage are coming soon — they use this same credential shape, so your setup won't change.</Note>
+<Note>Model hot-swap and platform-billed usage are coming soon — they use this same credential shape, so your setup won't change.</Note>
