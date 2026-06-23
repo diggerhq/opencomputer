@@ -195,6 +195,7 @@ async function rollBucket(
        FROM usage_samples s
        JOIN orgs o ON o.id = s.org_id
       WHERE s.rolled_up = 0 AND s.ts >= ?1 AND s.ts < ?2
+        AND o.billing_provider != 'autumn'
       GROUP BY s.org_id, s.memory_mb`,
   )
     .bind(startMs, endMs)
@@ -250,6 +251,11 @@ async function rollBucket(
   // replays: re-aggregating recomputes identical deterministic ids (deduped),
   // and the unmarked samples get picked up and marked next run. Marking first
   // would risk dropping samples whose meter rows never landed (underbilling).
+  // Mark the whole bucket window rolled — including autumn rows, which are
+  // excluded from the aggregation above (they bill to Autumn via the edge
+  // autumn-meter cron, keyed off a per-org watermark, not rolled_up). Marking
+  // them here just keeps autumn-only buckets from being rediscovered forever;
+  // it never affects autumn billing.
   const markRolled = env.OPENCOMPUTER_DB.prepare(
     `UPDATE usage_samples SET rolled_up = 1 WHERE rolled_up = 0 AND ts >= ?1 AND ts < ?2`,
   ).bind(startMs, endMs);

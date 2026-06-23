@@ -775,6 +775,11 @@ func main() {
 		log.Println("opensandbox: usage reporter started (interval=5m)")
 	}
 
+	// Autumn billing is edge-native: the api-edge `autumn-meter` cron meters
+	// usage_samples to Autumn and halts on exhaustion (one place, not per-cell).
+	// The cell only EXECUTES halts dispatched to /admin/halt-org (HaltOrg). No
+	// per-cell Autumn reporter here anymore — that would double-track usage.
+
 	// Halt reconciler — safety net for missed CF halt webhooks. Pulls the
 	// authoritative halt-list from api-edge every 60s and re-issues halts
 	// for anything that should be halted but isn't. Inert unless

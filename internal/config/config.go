@@ -150,6 +150,9 @@ type Config struct {
 	StripeSuccessURL    string
 	StripeCancelURL     string
 
+	// Autumn billing is edge-native (api-edge worker reads Autumn directly); the
+	// cell holds no Autumn client or secrets. See cloudflare-workers/api-edge.
+
 	// Per-agent paywalled-feature prices (set in Stripe dashboard, referenced
 	// by ID here). Empty = feature ungated on this deployment (dev mode).
 	StripeTelegramAgentPriceID string

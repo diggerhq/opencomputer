@@ -290,6 +290,23 @@ func (s *Store) UpdateLastUsageReportedAt(ctx context.Context, orgID uuid.UUID, 
 	return err
 }
 
+// SetBillingProvider flips an org's billing system selector in cell-PG. The
+// per-org migration (a follow-up tool) pairs this with the D1 flip for an
+// atomic-as-possible cutover; ordering across the two stores is chosen so the
+// legacy and Autumn chargers are never both live for the same org.
+func (s *Store) SetBillingProvider(ctx context.Context, orgID uuid.UUID, provider string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE orgs SET billing_provider = $2, updated_at = NOW() WHERE id = $1`,
+		orgID, provider)
+	return err
+}
+
+// Autumn billing moved to the edge (api-edge autumn-meter cron, off D1
+// usage_samples). The cell no longer ships Autumn usage, so the per-cell
+// watermark helpers (SetLastUsageSyncedAt / ListAutumnOrgIDsWithUsage) and the
+// orgs.last_usage_synced_at column they drove are retired — see
+// cloudflare-workers/src/autumn_meter.ts for the replacement.
+
 // ListBillableOrgIDs returns org IDs with plan="pro" AND
 // billing_mode='legacy' that have unreported usage: either a
 // currently-running sandbox or a scale event that ended after the last
@@ -303,6 +320,7 @@ func (s *Store) ListBillableOrgIDs(ctx context.Context) ([]uuid.UUID, error) {
 		 JOIN orgs o ON o.id = se.org_id
 		 WHERE o.plan = 'pro'
 		   AND o.billing_mode = 'legacy'
+		   AND o.billing_provider != 'autumn'
 		   AND (se.ended_at IS NULL OR se.ended_at > o.last_usage_reported_at)`)
 	if err != nil {
 		return nil, err
@@ -330,6 +348,7 @@ func (s *Store) ListFreeOrgIDsWithOpenUsage(ctx context.Context) ([]uuid.UUID, e
 		 FROM sandbox_scale_events se
 		 JOIN orgs o ON o.id = se.org_id
 		 WHERE o.plan = 'free'
+		   AND o.billing_provider != 'autumn'
 		   AND (se.ended_at IS NULL OR se.ended_at > o.last_usage_reported_at)`)
 	if err != nil {
 		return nil, err

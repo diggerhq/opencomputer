@@ -61,6 +61,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 	orgID, hasOrg := auth.GetOrgID(c)
 	var org *db.Org
 	var effPlan string
+	var effProvider string
 	if hasOrg && s.store != nil {
 		var err error
 		org, err = s.store.GetOrg(ctx, orgID)
@@ -69,6 +70,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 			// → D1 org-policy → cell-PG last resort), never trusting the stale
 			// cell-PG org row outright. See effectivePlan.
 			effPlan = s.effectivePlan(c, orgID)
+			effProvider = s.effectiveBillingProvider(c, orgID)
 
 			// Concurrent sandbox limit applies to all plans.
 			count, err := s.store.CountActiveSandboxes(ctx, orgID)
@@ -78,8 +80,12 @@ func (s *Server) createSandbox(c echo.Context) error {
 				})
 			}
 
-			// Free-tier: trial credits gate + machine-size restriction.
-			if effPlan == "free" {
+			// Free-tier gate (legacy only): trial-credit + machine-size limit.
+			// Autumn orgs pay per GB-second and are gated at the edge
+			// (balance/halt), so neither the credit check nor the size ceiling
+			// applies — they may launch any size (disk still bounded by the
+			// per-org MaxDiskMB knob below).
+			if effPlan == "free" && effProvider != "autumn" {
 				if org.FreeCreditsRemainingCents <= 0 {
 					return c.JSON(http.StatusPaymentRequired, map[string]string{
 						"error": "free trial credits exhausted — upgrade to pro to create new sandboxes",
@@ -115,7 +121,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 		})
 	}
 	if org != nil {
-		if effPlan == "free" && cfg.DiskMB > 20480 {
+		if effPlan == "free" && effProvider != "autumn" && cfg.DiskMB > 20480 {
 			return c.JSON(http.StatusPaymentRequired, map[string]string{
 				"error": "upgrade to pro for larger disk sizes",
 			})
@@ -1152,6 +1158,23 @@ func (s *Server) effectivePlan(c echo.Context, orgID uuid.UUID) string {
 	return ""
 }
 
+// effectiveBillingProvider resolves the org's billing provider ("legacy" |
+// "autumn") the same way effectivePlan resolves the plan: prefer the cap-token
+// value (edge-authoritative, stamped from D1 at mint time), falling back to the
+// cell-PG org row for direct API-key requests. Autumn orgs are exempt from the
+// legacy free-tier size ceilings — they pay per GB-second.
+func (s *Server) effectiveBillingProvider(c echo.Context, orgID uuid.UUID) string {
+	if bp, ok := auth.GetBillingProvider(c); ok {
+		return bp
+	}
+	if s.store != nil {
+		if org, err := s.store.GetOrg(c.Request().Context(), orgID); err == nil && org != nil {
+			return org.BillingProvider
+		}
+	}
+	return ""
+}
+
 func (s *Server) setLimits(c echo.Context) error {
 	id := c.Param("id")
 	ctx := c.Request().Context()
@@ -1180,7 +1203,7 @@ func (s *Server) setLimits(c echo.Context) error {
 	// Free tier: block scaling beyond 4GB / 1 vCPU. Plan comes from the
 	// cap-token (edge-authoritative) when present, else the cell-PG copy.
 	if orgID, hasOrg := auth.GetOrgID(c); hasOrg {
-		if s.effectivePlan(c, orgID) == "free" && (req.MemoryMB > 4096 || req.CPUPercent > 100) {
+		if s.effectivePlan(c, orgID) == "free" && s.effectiveBillingProvider(c, orgID) != "autumn" && (req.MemoryMB > 4096 || req.CPUPercent > 100) {
 			return c.JSON(http.StatusPaymentRequired, map[string]string{
 				"error": "upgrade to pro for larger instances",
 			})
@@ -1234,9 +1257,10 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 	}
 
 	// Free tier: block scaling beyond 4GB. Plan comes from the cap-token
-	// (edge-authoritative) when present, else the cell-PG copy.
+	// (edge-authoritative) when present, else the cell-PG copy. Autumn orgs are
+	// metered, not tiered, so the ceiling doesn't apply to them.
 	if orgID, hasOrg := auth.GetOrgID(c); hasOrg {
-		if s.effectivePlan(c, orgID) == "free" && req.MemoryMB > 4096 {
+		if s.effectivePlan(c, orgID) == "free" && s.effectiveBillingProvider(c, orgID) != "autumn" && req.MemoryMB > 4096 {
 			return c.JSON(http.StatusPaymentRequired, map[string]string{
 				"error": "upgrade to pro for larger instances",
 			})

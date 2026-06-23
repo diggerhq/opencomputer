@@ -87,6 +87,12 @@ new_sqlite_classes = ["CreditAccount"]
 #   WORKOS_CLIENT_ID       — WorkOS client identifier
 #   EVENT_SECRET           — HMAC for /internal/halt-list endpoint (shared with CP halt_reconciler)
 
+# Edge-native autumn billing: every 5 min, meter autumn orgs' usage_samples to
+# Autumn + halt on exhaustion (src/autumn_meter.ts). One place, not per-cell.
+# No-ops unless AUTUMN_SECRET_KEY is set, so it's dormant until cutover.
+[triggers]
+crons = ["*/5 * * * *"]
+
 [vars]
 WORKER_ENV = "dev"
 # Cells eligible for new-org home assignment are NOT configured here anymore —

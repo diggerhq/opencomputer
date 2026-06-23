@@ -345,6 +345,22 @@ export interface BillingState {
   maxConcurrentSandboxes: number
   hasPaymentMethod: boolean
   freeCreditsRemainingCents: number
+  billingProvider?: string // 'legacy' | 'autumn'
+}
+
+// Autumn prepaid billing
+export interface AutumnAutoTopup {
+  enabled: boolean
+  threshold: number
+  quantity: number
+}
+export interface AutumnBilling {
+  creditsRemainingCents: number
+  maxConcurrentSandboxes: number
+  concurrencyPlan: string // 'base' | 'concurrency_pro' | 'concurrency_pro_plus' | 'concurrency_pro_plus_plus'
+  isHalted: boolean
+  hasToppedUp: boolean // charged a top-up before → auto-recharge is armed (enabling won't re-charge)
+  autoTopup: AutumnAutoTopup | null
 }
 
 export interface StripeInvoice {
@@ -376,6 +392,47 @@ export const redeemPromoCode = (code: string) =>
     method: 'POST',
     body: JSON.stringify({ code }),
   })
+
+// Autumn prepaid billing API
+export const getAutumnBilling = () => apiFetch<AutumnBilling>('/billing/autumn')
+
+// url is non-null → redirect to a hosted Stripe flow (no card yet); null → the
+// existing card was charged server-side, so just refresh the balance.
+export const autumnTopup = (credits: number) =>
+  apiFetch<{ url: string | null }>('/billing/autumn/topup', {
+    method: 'POST',
+    body: JSON.stringify({ credits }),
+  })
+
+export const autumnSubscribeConcurrency = (plan: string) =>
+  apiFetch<{ url: string | null }>('/billing/autumn/concurrency', {
+    method: 'POST',
+    body: JSON.stringify({ plan }),
+  })
+
+// url is non-null when enabling auto-recharge requires capturing an off-session
+// card first — the caller redirects there (a no-charge Stripe setup session).
+export const setAutumnAutoTopup = (cfg: { enabled: boolean; threshold: number; quantity: number }) =>
+  apiFetch<{ ok: boolean; url?: string | null }>('/billing/autumn/auto-topup', {
+    method: 'POST',
+    body: JSON.stringify(cfg),
+  })
+
+// Per-sandbox usage breakdown (compute cost over a recent window)
+export interface SandboxUsageRow {
+  sandboxId: string
+  status: string
+  createdAt?: number
+  seconds: number
+  costCents: number
+}
+export interface SandboxUsage {
+  windowDays: number
+  totalCents: number
+  sandboxes: SandboxUsageRow[]
+}
+export const getSandboxUsage = (days = 30) =>
+  apiFetch<SandboxUsage>(`/usage/sandboxes?days=${days}`)
 
 // ── Agents (proxied to sessions-api at /api/dashboard/agents/*) ──
 

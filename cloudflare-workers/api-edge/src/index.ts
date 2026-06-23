@@ -18,6 +18,14 @@
 
 export { CreditAccount } from "../../shared/credit_account";
 import { handleDashboard, type DashboardEnv } from "./dashboard";
+import {
+  autumnWebhook,
+  autumnProjectInternal,
+  autumnSetProviderInternal,
+  selfHealHalt,
+  createAutumnCustomer,
+} from "./autumn_webhook";
+import { runAutumnMeter } from "./autumn_meter";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
 import * as templates from "./templates";
@@ -26,6 +34,10 @@ export interface Env extends DashboardEnv {
   CF_ADMIN_SECRET: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
+  // Autumn (useautumn.com) billing. AUTUMN_WEBHOOK_SECRET is the Svix signing
+  // secret (whsec_…) for /webhooks/autumn. AUTUMN_SECRET_KEY / AUTUMN_BASE_URL
+  // are inherited from DashboardEnv. Unset on deployments not yet on Autumn.
+  AUTUMN_WEBHOOK_SECRET: string;
   // Shared with every CP via Infisical /shared/ → per-cell KV/SM. Used for
   // envelope encryption of secret_store_entries.encrypted_value. Matches
   // internal/crypto.Encryptor key format (hex-encoded 32 bytes).
@@ -69,6 +81,7 @@ async function mintCapToken(
   orgID: string,
   cellID: string,
   plan: string,
+  billingProvider: string,
   userID: string | null,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
@@ -82,6 +95,9 @@ async function mintCapToken(
     cell_id: cellID,
     plan,
   };
+  // Only set when known; empty lets the cell keep its existing cell-PG value
+  // (so a wake/preview token never clobbers an autumn flag set at create time).
+  if (billingProvider) payload.billing_provider = billingProvider;
   if (userID) payload.user_id = userID;
   const enc = new TextEncoder();
   const signingInput =
@@ -352,13 +368,14 @@ interface OrgPolicy {
   is_halted: number;
   max_concurrent_sandboxes: number;
   max_disk_mb: number;
+  billing_provider: string;
 }
 
 // loadOrgPolicy reads an org's routing + policy fields from D1. Returns null
 // when the org doesn't exist (callers 401).
 async function loadOrgPolicy(env: Env, orgID: string): Promise<OrgPolicy | null> {
   return await env.OPENCOMPUTER_DB.prepare(
-    "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb FROM orgs WHERE id = ?1",
+    "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
     .first<OrgPolicy>();
@@ -385,9 +402,18 @@ async function enforceCreatePolicy(
 ): Promise<Response | null> {
   const plan = org.plan === "pro" ? "pro" : "free";
 
-  // Free-tier billing gate. is_halted is the D1 fast path; otherwise ask the
-  // CreditAccount DO for an authoritative balance read. Pro orgs skip this.
-  if (plan === "free") {
+  // Autumn orgs: Autumn owns the balance, so the credit gate is purely the
+  // is_halted projection — no CreditAccount DO. On a halt, self-heal (re-check
+  // Autumn) so a just-topped-up user isn't stuck behind a lagging webhook. The
+  // free-tier memory/CPU/disk ceilings below are skipped for autumn orgs (they
+  // pay per GB-second); only the per-org max_disk_mb cap applies.
+  if (org.billing_provider === "autumn") {
+    if (org.is_halted === 1 && (await selfHealHalt(env, orgID))) {
+      return json({ error: "credits exhausted — top up to resume" }, 402);
+    }
+  } else if (plan === "free") {
+    // Legacy free-tier gate. is_halted is the D1 fast path; otherwise ask the
+    // CreditAccount DO for an authoritative balance read. Pro orgs skip this.
     if (org.is_halted === 1) {
       return json({ error: "free trial credits exhausted — upgrade to resume" }, 402);
     }
@@ -402,7 +428,12 @@ async function enforceCreatePolicy(
     if (!check.allowed) {
       return json({ error: "free trial credits exhausted — upgrade to resume", balance_cents: check.balance_cents }, 402);
     }
-    // Free-tier ceilings: 4GB / 1 vCPU, 20GB disk.
+  }
+
+  // Free-tier ceilings: 4GB / 1 vCPU, 20GB disk. Legacy only — autumn (prepaid)
+  // orgs pay per GB-second and are gated by balance/halt, so they may launch any
+  // size. Disk is still bounded for everyone by the per-org max_disk_mb check below.
+  if (org.billing_provider !== "autumn" && plan === "free") {
     if (sizes.memoryMB > 4096 || sizes.cpuCount > 1) {
       return json({ error: "upgrade to pro for larger instances" }, 402);
     }
@@ -614,7 +645,7 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
     );
   }
 
-  const capToken = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, caller.userID);
+  const capToken = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, caller.userID);
 
   // SSE build streaming: image/snapshot creates can take minutes (apt installs,
   // etc.). Preserve live streaming, but index the final `result` event inline
@@ -766,7 +797,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // tokens and API keys), so the same handler chain that runs for SDK
   // X-API-Key auth runs here. cell_id in the token guards against replay
   // against a different cell.
-  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, row.cell_id, orgRow?.plan ?? "free", caller.userID);
+  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, row.cell_id, orgRow?.plan ?? "free", "", caller.userID);
 
   const headers = new Headers();
   for (const [k, v] of req.headers.entries()) {
@@ -798,15 +829,22 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
     // silently fell through, letting halted orgs wake. Mirror the create
     // flow's halt check here so wake gets the same treatment.
     const haltRow = await env.OPENCOMPUTER_DB.prepare(
-      "SELECT is_halted FROM orgs WHERE id = ?1",
+      "SELECT is_halted, billing_provider FROM orgs WHERE id = ?1",
     )
       .bind(caller.orgID)
-      .first<{ is_halted: number }>();
+      .first<{ is_halted: number; billing_provider: string }>();
     if (haltRow?.is_halted === 1) {
-      return json(
-        { error: "org is halted — upgrade to pro or wait for credit refill" },
-        402,
-      );
+      // Autumn orgs self-heal: re-check the authoritative balance before
+      // blocking a wake, so a just-topped-up user resumes without waiting for
+      // the webhook/reconciler. Legacy orgs stay hard-gated on the D1 flag.
+      const stillHalted =
+        haltRow.billing_provider === "autumn" ? await selfHealHalt(env, caller.orgID) : true;
+      if (stillHalted) {
+        return json(
+          { error: "org is halted — upgrade to pro or wait for credit refill" },
+          402,
+        );
+      }
     }
   }
 
@@ -878,7 +916,7 @@ async function proxyToCellAuthed(
     : await pickCell(env, org.home_cell, null);
   if (!cell) return json({ error: "no cell available to serve request" }, 503);
 
-  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, caller.userID);
+  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, "", caller.userID);
   const url = new URL(req.url);
   const target = cell.base_url.replace(/\/$/, "") + (opts.pathOverride ?? url.pathname) + url.search;
 
@@ -1168,11 +1206,25 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
     orgID = crypto.randomUUID();
     const homeCell = await pickHomeCell(env, req);
     orgPlan = "free";
+    // Stage 2: new signups go to Autumn when AUTUMN_NEW_ORGS is on. Create the
+    // Autumn customer first (it grants the $5 signup credit); only flag the org
+    // 'autumn' if that succeeds, so a transient Autumn failure falls back to the
+    // legacy trial rather than breaking signup. Existing orgs are untouched —
+    // they migrate later via cmd/migrate-to-autumn after notification.
+    let provider = "legacy";
+    if (env.AUTUMN_NEW_ORGS === "true" && env.AUTUMN_SECRET_KEY) {
+      try {
+        await createAutumnCustomer(env, { id: orgID, name: `${profile.email}'s workspace`, email: profile.email });
+        provider = "autumn";
+      } catch (e) {
+        console.error(`signup: autumn customer create failed for ${orgID}, falling back to legacy`, e);
+      }
+    }
     await env.OPENCOMPUTER_DB.prepare(
-      `INSERT INTO orgs (id, name, slug, plan, home_cell, is_personal, owner_user_id, created_at, updated_at)
-       VALUES (?1, ?2, ?3, 'free', ?4, 1, ?5, ?6, ?6)`,
+      `INSERT INTO orgs (id, name, slug, plan, home_cell, is_personal, owner_user_id, billing_provider, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 'free', ?4, 1, ?5, ?7, ?6, ?6)`,
     )
-      .bind(orgID, `${profile.email}'s workspace`, slugify(profile.email + "-" + orgID.slice(0, 6)), homeCell, userID, nowSec)
+      .bind(orgID, `${profile.email}'s workspace`, slugify(profile.email + "-" + orgID.slice(0, 6)), homeCell, userID, nowSec, provider)
       .run();
     await env.OPENCOMPUTER_DB.prepare(
       `INSERT INTO org_memberships (org_id, user_id, role, created_at) VALUES (?1, ?2, 'owner', ?3)`,
@@ -1547,6 +1599,24 @@ export default {
       return haltList(req, env);
     }
 
+    // Cell/reconciler trigger for the Autumn re-check+project (EVENT_SECRET HMAC).
+    if (path === "/internal/autumn-project") {
+      if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+      return autumnProjectInternal(req, env);
+    }
+    // Migrate tool: flip D1 billing_provider for one org (EVENT_SECRET HMAC).
+    if (path === "/internal/autumn-set-provider") {
+      if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+      return autumnSetProviderInternal(req, env);
+    }
+    // Dev-only: force an autumn-meter run (the cron is */5). 404 in prod so only
+    // the scheduled trigger moves money there. Deterministic testing aid.
+    if (path === "/internal/run-autumn-meter" && req.method === "POST") {
+      if (env.WORKER_ENV === "prod") return new Response("not found", { status: 404 });
+      await runAutumnMeter(env, Date.now());
+      return json({ ok: true });
+    }
+
     if (path === "/internal/org-policy") {
       if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
       return orgPolicy(req, env);
@@ -1694,6 +1764,10 @@ export default {
     // Stripe webhook (test mode in app2, live in app).
     if (path === "/webhooks/stripe" && req.method === "POST") return stripeWebhook(req, env);
 
+    // Autumn (useautumn.com) webhook — Svix-signed; projects authoritative
+    // balance/plans into D1 (is_halted, max_concurrent) + dispatches to cells.
+    if (path === "/webhooks/autumn" && req.method === "POST") return autumnWebhook(req, env);
+
     // Dashboard API — everything under /api/dashboard/*. Edge-native handlers
     // back D1 reads/writes; sandbox-runtime calls proxy to the sandbox's cell.
     // Auth via the oc_session cookie minted at /auth/callback.
@@ -1754,7 +1828,7 @@ export default {
         const fcGate = await enforceCreatePolicy(env, caller.orgID, org, { cpuCount: fcCpu, memoryMB: fcMem, diskMB: fcDisk });
         if (fcGate) return fcGate;
         const plan = org.plan === "pro" ? "pro" : "free";
-        const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cpRow.owner_cell_id, plan, caller.userID);
+        const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cpRow.owner_cell_id, plan, org.billing_provider, caller.userID);
         const fcResp = await fetch(cell.base_url.replace(/\/$/, "") + path, {
           method: "POST",
           headers: { authorization: "Bearer " + token, "content-type": "application/json" },
@@ -1838,5 +1912,16 @@ export default {
     // "single-page-application" serves index.html for client-side routes.
     if (env.ASSETS) return env.ASSETS.fetch(req);
     return new Response("not found", { status: 404 });
+  },
+
+  // Cron (*/5): edge-native autumn billing. Meters autumn orgs' usage_samples to
+  // Autumn and halts on exhaustion — one place, not per-cell. Legacy orgs bill
+  // via the separate billing-rollup worker; this no-ops unless AUTUMN_SECRET_KEY
+  // is set (dormant until the cutover switch is flipped).
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (!env.AUTUMN_SECRET_KEY) return;
+    ctx.waitUntil(
+      runAutumnMeter(env, Date.now()).catch((err) => console.error("autumn-meter: run failed", err)),
+    );
   },
 } satisfies ExportedHandler<Env>;

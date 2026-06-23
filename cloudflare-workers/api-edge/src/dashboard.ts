@@ -17,6 +17,15 @@
 //   3. Fetch the cell's /internal/dashboard/{path} with Authorization: Bearer.
 //   4. Stream the response (or WebSocket pair) back to the browser.
 
+import {
+  autumnPurchase,
+  autumnTopUpCharge,
+  autumnAttach,
+  autumnHasToppedUp,
+  syncAutumnToD1,
+  autumnSetAutoTopup,
+} from "./autumn_webhook";
+
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
   SESSIONS_KV: KVNamespace;
@@ -26,6 +35,13 @@ export interface DashboardEnv {
   WORKOS_CLIENT_ID: string;
   STRIPE_API_KEY: string;
   WORKER_ENV: string;
+  // Autumn billing — read customer state + create top-up/concurrency checkouts.
+  // Empty on deployments not yet on Autumn.
+  AUTUMN_SECRET_KEY: string;
+  AUTUMN_BASE_URL?: string;
+  // "true" → new signups are provisioned on Autumn (Stage 2 switch). Default
+  // off keeps merge dormant; existing orgs are never auto-migrated by this.
+  AUTUMN_NEW_ORGS?: string;
   // CF Custom Hostnames API token + zone (for /org/custom-domain). Optional —
   // if unset the custom-domain endpoints return 503 (feature disabled).
   CF_API_TOKEN?: string;
@@ -875,12 +891,12 @@ export async function handleDashboard(
   // dashboard renders instead of 404-erroring on a missing route.
   if (sub === "/billing" && method === "GET") {
     const org = await env.OPENCOMPUTER_DB.prepare(
-      `SELECT plan, stripe_customer_id, stripe_subscription_id, free_credits_remaining_cents, credit_balance_cents, is_halted, max_concurrent_sandboxes
+      `SELECT plan, stripe_customer_id, stripe_subscription_id, free_credits_remaining_cents, credit_balance_cents, is_halted, max_concurrent_sandboxes, billing_provider
          FROM orgs WHERE id = ?1`,
     ).bind(caller.orgID).first<{
       plan: string; stripe_customer_id: string | null; stripe_subscription_id: string | null;
       free_credits_remaining_cents: number; credit_balance_cents: number; is_halted: number;
-      max_concurrent_sandboxes: number;
+      max_concurrent_sandboxes: number; billing_provider: string;
     }>();
     if (!org) return json({ error: "org not found" }, 404);
     // Cross-check against the live DO state — the D1 mirror gets written by
@@ -913,6 +929,7 @@ export async function handleDashboard(
       creditBalanceCents: org.credit_balance_cents,
       isHalted: !!org.is_halted,
       maxConcurrentSandboxes: org.max_concurrent_sandboxes,
+      billingProvider: org.billing_provider,
       // Upcoming-invoice + meters would come from Stripe API on demand;
       // surface stubs for now so the UI has stable keys to render against.
       upcomingInvoice: null,
@@ -937,6 +954,24 @@ export async function handleDashboard(
   }
   if (sub === "/billing/invoices" && method === "GET") {
     return handleBillingInvoices(req, env, caller);
+  }
+  if (sub === "/usage/sandboxes" && method === "GET") {
+    return handleSandboxUsage(req, env, caller);
+  }
+  if (sub === "/billing/autumn" && method === "GET") {
+    return handleAutumnBilling(req, env, caller);
+  }
+  if (sub === "/billing/autumn/topup" && method === "POST") {
+    return handleAutumnTopup(req, env, caller);
+  }
+  if (sub === "/billing/autumn/concurrency" && method === "POST") {
+    return handleAutumnConcurrency(req, env, caller);
+  }
+  if (sub === "/billing/autumn/auto-topup" && method === "POST") {
+    return handleAutumnAutoTopup(req, env, caller);
+  }
+  if (sub === "/billing/autumn/finalize-arm" && method === "GET") {
+    return handleAutumnFinalizeArm(req, env, caller);
   }
 
   return json({ error: `not found: ${method} ${sub}` }, 404);
@@ -1066,6 +1101,255 @@ async function handleBillingPortal(req: Request, env: DashboardEnv, caller: { or
   } catch (e) {
     console.error("billing/portal:", e);
     return json({ error: (e as Error).message }, 500);
+  }
+}
+
+// ── Per-sandbox usage breakdown ──────────────────────────────────────────
+
+// Compute $/sec per memory tier. MUST stay in sync with
+// internal/billing/pricing.go TierPricePerSecond (and the Autumn credit
+// schema, which mirrors the same rates).
+const TIER_RATE_PER_SEC: Record<number, number> = {
+  1024: 0.000001080246914,
+  4096: 0.000005787037037,
+  8192: 0.00001350308642,
+  16384: 0.00002700617284,
+  32768: 0.0001929012346,
+  65536: 0.0005401234568,
+};
+
+// GET /api/dashboard/usage/sandboxes?days=N — per-sandbox compute cost over a
+// recent window, for billing transparency. Sourced from D1 usage_samples
+// (global across cells); disk overage is excluded (samples carry no disk size),
+// so this is compute cost only. usage_samples is short-lived, hence the window.
+async function handleSandboxUsage(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  const url = new URL(req.url);
+  let days = Number.parseInt(url.searchParams.get("days") ?? "30", 10);
+  if (!Number.isFinite(days) || days < 1) days = 30;
+  if (days > 90) days = 90;
+  const cutoffMs = (Math.floor(Date.now() / 1000) - days * 86400) * 1000;
+
+  const rows = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT u.sandbox_id AS sandbox_id, u.memory_mb AS memory_mb, SUM(u.interval_s) AS secs,
+            MAX(si.status) AS status, MAX(si.created_at) AS created_at
+       FROM usage_samples u
+       LEFT JOIN sandboxes_index si ON si.id = u.sandbox_id
+      WHERE u.org_id = ?1 AND u.ts >= ?2
+      GROUP BY u.sandbox_id, u.memory_mb`,
+  )
+    .bind(caller.orgID, cutoffMs)
+    .all<{ sandbox_id: string; memory_mb: number; secs: number; status: string | null; created_at: number | null }>();
+
+  // Fold per-(sandbox, tier) rows into per-sandbox totals.
+  const bySandbox = new Map<string, { costCents: number; seconds: number; status: string | null; createdAt: number | null }>();
+  for (const r of rows.results ?? []) {
+    const rate = TIER_RATE_PER_SEC[r.memory_mb] ?? 0;
+    const secs = r.secs ?? 0;
+    const cur = bySandbox.get(r.sandbox_id) ?? { costCents: 0, seconds: 0, status: r.status, createdAt: r.created_at };
+    cur.costCents += secs * rate * 100;
+    cur.seconds += secs;
+    if (cur.status == null) cur.status = r.status;
+    if (cur.createdAt == null) cur.createdAt = r.created_at;
+    bySandbox.set(r.sandbox_id, cur);
+  }
+
+  const sandboxes = [...bySandbox.entries()]
+    .map(([sandboxId, v]) => ({
+      sandboxId,
+      status: v.status ?? "deleted",
+      createdAt: v.createdAt ?? undefined,
+      seconds: Math.round(v.seconds),
+      costCents: Math.round(v.costCents),
+    }))
+    .sort((a, b) => b.costCents - a.costCents);
+
+  const totalCents = sandboxes.reduce((s, x) => s + x.costCents, 0);
+  return json({ windowDays: days, totalCents, sandboxes });
+}
+
+// ── Autumn prepaid billing ───────────────────────────────────────────────
+
+// Concurrency plans the user can self-serve subscribe to. Mirrors
+// autumn.ConcurrencyByPlan (the "base" tier is the free default, not purchasable).
+const AUTUMN_CONCURRENCY_PRODUCTS: Record<string, number> = {
+  concurrency_pro: 100,
+  concurrency_pro_plus: 600,
+  concurrency_pro_plus_plus: 1000,
+};
+
+// GET /api/dashboard/billing/autumn — prepaid credit balance + concurrency plan.
+// Re-syncs Autumn → D1 on the way (this is the checkout-return / page-view resume
+// trigger: a just-topped-up user's is_halted clears here even if the webhook lagged).
+async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+  let r;
+  try {
+    r = await syncAutumnToD1(env, caller.orgID);
+  } catch (e) {
+    console.error("billing/autumn sync:", e);
+    return json({ error: "autumn unavailable" }, 502);
+  }
+  if (!r) return json({ error: "no autumn customer for org" }, 404);
+
+  // The active concurrency plan = the highest non-base plan the customer holds.
+  let concurrencyPlan = "base";
+  let best = 0;
+  for (const s of r.customer.subscriptions ?? []) {
+    if (s.status && s.status !== "active") continue;
+    const v = AUTUMN_CONCURRENCY_PRODUCTS[s.plan_id];
+    if (v !== undefined && v > best) {
+      best = v;
+      concurrencyPlan = s.plan_id;
+    }
+  }
+
+  const at = r.customer.billing_controls?.auto_topups?.find((a) => a.feature_id === "credits");
+
+  // Has the customer charged a top-up? That's when auto-recharge becomes armed,
+  // so the UI uses it to tell whether enabling auto-recharge will run a first
+  // recharge or just save. Free — the customer is already loaded above.
+  const hasToppedUp = (r.customer.purchases ?? []).some((p) => p.plan_id === "top_up");
+
+  return json({
+    creditsRemainingCents: Math.round(r.creditsRemaining * 100),
+    maxConcurrentSandboxes: r.maxConcurrent,
+    concurrencyPlan,
+    isHalted: r.halted,
+    hasToppedUp,
+    autoTopup: at ? { enabled: at.enabled, threshold: at.threshold, quantity: at.quantity } : null,
+  });
+}
+
+// POST /api/dashboard/billing/autumn/auto-topup { enabled, threshold, quantity }
+// — configure automatic credit recharge. threshold/quantity are in credits ($1
+// each). A saved payment method is required for the charge to succeed; the
+// config itself persists regardless.
+async function handleAutumnAutoTopup(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+  let body: { enabled?: boolean; threshold?: number; quantity?: number };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  const enabled = !!body.enabled;
+  const threshold = Math.floor(body.threshold ?? 0);
+  const quantity = Math.floor(body.quantity ?? 0);
+  if (enabled && (threshold < 0 || quantity < 1)) {
+    return json({ error: "threshold ≥ 0 and quantity ≥ 1 required when enabling" }, 400);
+  }
+  try {
+    await autumnSetAutoTopup(env, caller.orgID, { enabled, threshold, quantity });
+
+    // Auto-recharge is armed once the customer has charged a top-up (a
+    // saved-but-never-charged card is unarmed). If they've already topped up, just
+    // save — no redundant charge. If not, run their first recharge now to arm it
+    // (no card → one hosted setup_payment flow saves the card off-session AND
+    // charges; card on file → /attach charges directly).
+    if (enabled && !(await autumnHasToppedUp(env, caller.orgID))) {
+      const origin = new URL(req.url).origin;
+      const co = await autumnTopUpCharge(env, {
+        customerId: caller.orgID,
+        quantity,
+        successUrl: `${origin}/api/dashboard/billing/autumn/finalize-arm?credits=${quantity}`,
+      });
+      return json({ ok: true, url: co.url });
+    }
+    return json({ ok: true, url: null });
+  } catch (e) {
+    console.error("billing/autumn auto-topup:", e);
+    return json({ error: (e as Error).message }, 502);
+  }
+}
+
+// GET /billing/autumn/finalize-arm?credits=N — the return target Stripe sends the
+// browser to after a setup_payment card setup. The card is now saved, so we
+// charge the deferred first recharge HERE (server-side, immune to browser cache /
+// dropped query params), which both adds the credits and arms auto-recharge, then
+// 302 back to the billing page. Authenticated by the session cookie carried on
+// the redirect.
+async function handleAutumnFinalizeArm(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  const origin = new URL(req.url).origin;
+  const billing = `${origin}/dashboard/billing`;
+  if (!env.AUTUMN_SECRET_KEY) return Response.redirect(billing, 302);
+  const credits = Math.floor(Number(new URL(req.url).searchParams.get("credits") ?? "0"));
+  // Idempotency: only charge if not already topped up — so a refresh / double
+  // redirect to this URL can't charge twice (after the first charge, hasToppedUp
+  // is true).
+  if (credits >= 1 && !(await autumnHasToppedUp(env, caller.orgID))) {
+    try {
+      await autumnAttach(env, {
+        customerId: caller.orgID,
+        productId: "top_up",
+        options: [{ feature_id: "credits", quantity: credits }],
+      });
+    } catch (e) {
+      console.error("billing/autumn finalize-arm:", e);
+      return Response.redirect(`${billing}?arm=failed`, 302);
+    }
+  }
+  return Response.redirect(`${billing}?arm=ok`, 302);
+}
+
+// POST /api/dashboard/billing/autumn/topup { credits } — one-off prepaid credit
+// purchase. Returns a Stripe checkout URL; success returns to the billing page
+// where handleAutumnBilling re-syncs the new balance.
+async function handleAutumnTopup(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+  let body: { credits?: number };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  const credits = Math.floor(body.credits ?? 0);
+  if (!Number.isFinite(credits) || credits < 1) {
+    return json({ error: "credits must be a positive integer" }, 400);
+  }
+  const origin = new URL(req.url).origin;
+  try {
+    // Charge via the off-session-establishing flow so a top-up also arms
+    // auto-recharge. url present → redirect (hosted card setup, no card yet);
+    // url null → existing card charged directly. Frontend redirects or refreshes.
+    const co = await autumnTopUpCharge(env, {
+      customerId: caller.orgID,
+      quantity: credits,
+      successUrl: `${origin}/api/dashboard/billing/autumn/finalize-arm?credits=${credits}`,
+    });
+    return json({ url: co.url });
+  } catch (e) {
+    console.error("billing/autumn topup:", e);
+    return json({ error: (e as Error).message }, 502);
+  }
+}
+
+// POST /api/dashboard/billing/autumn/concurrency { plan } — subscribe/upgrade a
+// monthly concurrency tier. Returns a Stripe subscription checkout URL.
+async function handleAutumnConcurrency(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+  let body: { plan?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  const plan = body.plan ?? "";
+  if (!(plan in AUTUMN_CONCURRENCY_PRODUCTS)) {
+    return json({ error: `unknown concurrency plan '${plan}'` }, 400);
+  }
+  const origin = new URL(req.url).origin;
+  try {
+    // Same dual flow as top-up: redirect for a new card, or attach the existing
+    // card directly (url null) when upgrading a tier with a payment method on file.
+    const co = await autumnPurchase(env, {
+      customerId: caller.orgID,
+      productId: plan,
+      successUrl: `${origin}/dashboard/billing?plan=success`,
+    });
+    return json({ url: co.url });
+  } catch (e) {
+    console.error("billing/autumn concurrency:", e);
+    return json({ error: (e as Error).message }, 502);
   }
 }
 
