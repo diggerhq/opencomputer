@@ -47,8 +47,6 @@ var kvMapping = map[string]string{
 	"server-cf-zone-id":             "OPENSANDBOX_CF_ZONE_ID",
 	"server-stripe-secret-key":      "STRIPE_SECRET_KEY",
 	"server-stripe-webhook-secret":  "STRIPE_WEBHOOK_SECRET",
-	"server-autumn-secret-key":      "AUTUMN_SECRET_KEY",
-	"server-autumn-webhook-secret":  "AUTUMN_WEBHOOK_SECRET",
 	"server-sentry-dsn":             "OPENSANDBOX_SENTRY_DSN",
 	// Machine-size fallback lists (PR #209). Comma-separated ranked
 	// instance types the autoscaler tries in order on quota / capacity

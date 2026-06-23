@@ -287,40 +287,6 @@ func (c *Client) UpdateTemplateStatus(ctx context.Context, id uuid.UUID, status 
 	return nil
 }
 
-// ── Autumn billing projection ──────────────────────────────────────────
-
-// ProjectAutumnOrg triggers the edge to re-read the org's authoritative Autumn
-// state and re-project it into D1 (is_halted / max_concurrent) + dispatch halt
-// to cells. Used by the cell's inline halt (off track()) so the cell never owns
-// Autumn reads or D1 writes — those stay at the edge, same as /webhooks/autumn.
-func (c *Client) ProjectAutumnOrg(ctx context.Context, orgID uuid.UUID) error {
-	body, _ := json.Marshal(map[string]string{"org_id": orgID.String()})
-	respBody, status, err := c.do(ctx, "POST", "/internal/autumn-project", body)
-	if err != nil {
-		return err
-	}
-	if status != 200 {
-		return fmt.Errorf("edge status %d: %s", status, string(respBody))
-	}
-	return nil
-}
-
-// SetAutumnProvider flips D1 orgs.billing_provider for one org (the migrate
-// tool's D1 half; the cell-PG half is a direct store write). On →autumn the
-// edge also projects is_halted/max_concurrent so the edge gates are correct the
-// instant the flag flips.
-func (c *Client) SetAutumnProvider(ctx context.Context, orgID uuid.UUID, provider string) error {
-	body, _ := json.Marshal(map[string]string{"org_id": orgID.String(), "provider": provider})
-	respBody, status, err := c.do(ctx, "POST", "/internal/autumn-set-provider", body)
-	if err != nil {
-		return err
-	}
-	if status != 200 {
-		return fmt.Errorf("edge status %d: %s", status, string(respBody))
-	}
-	return nil
-}
-
 // ── Secret stores ──────────────────────────────────────────────────────
 
 // edgeStore intentionally omits createdAt / updatedAt. The edge worker

@@ -150,16 +150,8 @@ type Config struct {
 	StripeSuccessURL    string
 	StripeCancelURL     string
 
-	// Autumn billing (useautumn.com) — the prepaid credit ledger + concurrency
-	// plans. AutumnSecretKey empty disables the Autumn path (orgs stay legacy).
-	// AutumnBaseURL is an optional override; empty uses autumn.DefaultBaseURL.
-	AutumnSecretKey     string
-	AutumnWebhookSecret string
-	AutumnBaseURL       string
-	// AutumnEnforce flips the Autumn usage reporter out of shadow: on balance
-	// exhaustion it hibernates the org locally and projects is_halted to the
-	// edge (D1). Default false — ship shadow first, then flip to go live.
-	AutumnEnforce bool
+	// Autumn billing is edge-native (api-edge worker reads Autumn directly); the
+	// cell holds no Autumn client or secrets. See cloudflare-workers/api-edge.
 
 	// Per-agent paywalled-feature prices (set in Stripe dashboard, referenced
 	// by ID here). Empty = feature ungated on this deployment (dev mode).
@@ -380,10 +372,6 @@ func Load() (*Config, error) {
 
 		StripeSecretKey:            os.Getenv("STRIPE_SECRET_KEY"),
 		StripeWebhookSecret:        os.Getenv("STRIPE_WEBHOOK_SECRET"),
-		AutumnSecretKey:            os.Getenv("AUTUMN_SECRET_KEY"),
-		AutumnWebhookSecret:        os.Getenv("AUTUMN_WEBHOOK_SECRET"),
-		AutumnBaseURL:              os.Getenv("AUTUMN_BASE_URL"),
-		AutumnEnforce:              os.Getenv("AUTUMN_ENFORCE") == "true",
 		StripeTelegramAgentPriceID: os.Getenv("STRIPE_TELEGRAM_AGENT_PRICE_ID"),
 		StripeSuccessURL:    envOrDefault("STRIPE_SUCCESS_URL", "http://localhost:3000/billing?success=true"),
 		StripeCancelURL:     envOrDefault("STRIPE_CANCEL_URL", "http://localhost:3000/billing?cancelled=true"),

@@ -145,9 +145,9 @@ type CapabilityClaims struct {
 	// debits for a now-pro org.
 	Plan string `json:"plan,omitempty"`
 	// BillingProvider mirrors orgs.billing_provider ("legacy" | "autumn") from
-	// D1 → cell-PG via UpsertOrgFromCapToken, so the cell's AutumnReporter sees
-	// which orgs it owns without a separate sync. Empty on older tokens / paths
-	// that don't carry it — the cell then leaves the existing value untouched.
+	// D1 → cell-PG via UpsertOrgFromCapToken, so the cell's size gates know which
+	// orgs are autumn (metered, no free-tier ceiling) vs legacy, without a
+	// separate sync. Empty on older tokens / paths — the cell leaves it untouched.
 	BillingProvider string `json:"billing_provider,omitempty"`
 }
 

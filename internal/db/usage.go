@@ -291,9 +291,9 @@ func (s *Store) UpdateLastUsageReportedAt(ctx context.Context, orgID uuid.UUID, 
 }
 
 // SetBillingProvider flips an org's billing system selector in cell-PG. The
-// migrate tool pairs this with edgeclient.SetAutumnProvider (D1) for an
-// atomic-as-possible per-org cutover; ordering across the two stores is chosen
-// so the legacy and Autumn chargers are never both live for the same org.
+// per-org migration (a follow-up tool) pairs this with the D1 flip for an
+// atomic-as-possible cutover; ordering across the two stores is chosen so the
+// legacy and Autumn chargers are never both live for the same org.
 func (s *Store) SetBillingProvider(ctx context.Context, orgID uuid.UUID, provider string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE orgs SET billing_provider = $2, updated_at = NOW() WHERE id = $1`,
