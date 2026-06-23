@@ -15,7 +15,7 @@ const session = await oc.sessions.get("sess_...");        // server, org key
 // or, in a browser:  await connectSession({ sessionId, clientToken })
 ```
 
-<Note>The SDK returns the same objects with **camelCase** fields (`client_token` → `session.clientToken`, `created_at` → `createdAt`, `yield_reason` → `yieldReason`, …). The wire shapes below are the raw JSON.</Note>
+<Note>The SDK returns the same objects with **camelCase** fields (`client_token` → `session.clientToken`, `created_at` → `createdAt`, `last_turn` → `lastTurn`, `yield_reason` → `yieldReason`, `turn_seconds` → `turnSeconds`, …) and takes camelCase params (`idempotency_key` → `idempotencyKey`). The wire shapes below are the raw JSON. Opaque blobs you own — `metadata`, event `body`, `refs` — pass through **verbatim** (keys untouched) in both directions.</Note>
 
 ## Sessions
 
@@ -53,7 +53,7 @@ const session = await oc.sessions.get("sess_...");        // server, org key
 
 </Tabs>
 
-`agent` is **required** (create a saved [agent](#agents) first); a resolvable model [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks** so a callback handler can route to the right external record without a lookup; it is **never** shown to the model, **not** indexed/queryable, and distinct from `key` (get-or-create) and `Idempotency-Key` (dedupe). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-envelope). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations).
+`agent` is **required** (create a saved [agent](#agents) first); a resolvable model [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks** so a callback handler can route to the right external record without a lookup; it is **never** shown to the model, **not** indexed/queryable, and distinct from `key` (get-or-create) and `Idempotency-Key` (dedupe). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-envelope). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. There's no fixed byte cap on `input`, but it counts against the model's context window — **truncate large inputs** (e.g. a PR diff) and have the agent pull the rest through its [sandbox tools](/agent-sessions/runtime-tools) (clone the repo, read files) rather than inlining it. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations).
 
 Client tokens accept `scopes?` (subset of `read`, `steer`) and `ttl?` seconds, clamped to 60–86400 (SDK: `ttlSeconds`).
 
@@ -235,6 +235,8 @@ Delivery = {
 </Tabs>
 
 Create body: `name`, `prompt`, `model`, `runtime?` (`claude` | `codex`), `key?`, `credential?`, `limits?`. Patch accepts `prompt?`, `model?`, `key?`, `credential?`, and `limits?` — **not `runtime`, which is fixed at creation**. The `runtime` / `model` / credential provider must agree (`claude`↔`anthropic/…`, `codex`↔`openai/…`); this is validated at create, and a patched `model`/`credential` must stay within the runtime's provider.
+
+`POST /agents` is **idempotent by `name`**: a repeat with matching non-secret config (`prompt`/`model`/`runtime`/`limits`) returns the existing agent with `created: false` (HTTP 200), while differing config returns **409** — so it's safe to call on every app startup or deploy. (`key` is ignored on an idempotent hit — it never silently rotates.)
 
 Pass `key` **or** `credential` (or neither → org default). The agent's `limits` are the defaults for its sessions; a session's own `limits` override. Each agent has a monotonic `revision` (bumped on PATCH) that sessions pin in `agent_snapshot.revision`, so you can tell which version produced a run.
 

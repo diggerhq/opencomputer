@@ -67,6 +67,16 @@ Response:
 }
 ```
 
+<Tip>**For background jobs, don't poll — register a [destination](/agent-sessions/webhooks).** Polling `GET /…/result` ties up a request and doesn't survive your process restarting. The durable pattern: hand off at create (with `metadata` for routing + a `destination`), return, and let OpenComputer call your webhook on `turn.completed` — then fetch the result. Reserve `result()` polling for synchronous/interactive flows.</Tip>
+
+## Idempotency & routing
+
+Three independent knobs — don't overload one for another:
+
+- **`key`** — *get-or-create*. One session per natural key (e.g. one per PR). A second create with the same `key` returns the same session; reusing a `key` with a **different** request body is rejected (`create key already used with a different request`).
+- **`Idempotency-Key`** (header) — *retry-safe create*. Makes a keyless create safe to retry (e.g. on a webhook redelivery) without spawning duplicates.
+- **`metadata`** — *routing / app state*. Opaque JSON (≤ 16 KB) echoed back on get/list and **verbatim in webhooks**, so your callback can route to the right record. Never use `key` for routing — that's what `metadata` is for.
+
 ## Limits
 
 Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are **non-monetary** (no dollar caps — we don't bill model usage yet; you run on your own key). Hitting one ends the turn with the matching `yield_reason`.
