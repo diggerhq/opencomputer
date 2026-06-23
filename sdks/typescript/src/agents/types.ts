@@ -58,6 +58,8 @@ export interface SessionData {
   credentialId?: string;
   lastTurn?: LastTurn;
   limits?: Limits;
+  /** Opaque app routing state set at create (`null` when unset). See {@link CreateSessionParams.metadata}. */
+  metadata?: Record<string, unknown> | null;
   key?: string;
   createdAt?: string;
 }
