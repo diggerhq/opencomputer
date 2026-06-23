@@ -22,13 +22,13 @@ Everything between `turn.started` and `turn.completed` is that turn's work. **`t
 Each event is one envelope:
 
 ```json
-{ "id": "evt_…", "seq": 12, "ts": "…", "session": "sess_…",
+{ "id": "evt_…", "seq": 12, "ts": "…", "session": "ses_…",
   "actor": { "id": "agent", "type": "agent" },
   "type": "agent.message", "level": "user",
   "body": { "text": "3 tests fail in auth.spec.ts" } }
 ```
 
-The two fields you act on are **`type`** (what happened — the discriminator) and **`level`** (who should see it). `seq` orders and resumes the log, `body` is the payload, and `actor` is who produced it (`{ id, display?, type: "human" | "agent" | "system" }`). The full field reference lives in the [API reference](/agent-sessions/api-reference); inbound and outbound messages share one [envelope](/agent-sessions/messaging#message-envelope) shape.
+The two fields you act on are **`type`** (what happened — the discriminator) and **`level`** (who should see it). `seq` orders and resumes the log, `body` is the payload, and `actor` is who produced it (`{ id, display?, type: "human" | "agent" | "system" }`). The full field reference lives in the [API reference](/agent-sessions/api-reference); for messages, see how input fields map onto an event in [Messaging](/agent-sessions/messaging#message-input).
 
 ## Event types
 
