@@ -137,6 +137,58 @@ func (s *Store) CurrentLifecycleSeq(ctx context.Context) (int64, error) {
 	return seq, err
 }
 
+// LifecycleOutboxRow is an unrelayed lifecycle event drained from the in-tx
+// outbox (sandbox_lifecycle_events) for publishing to the cell stream.
+type LifecycleOutboxRow struct {
+	ID        string
+	OrgID     uuid.UUID
+	SandboxID string
+	Type      string
+	Data      json.RawMessage
+	Ts        time.Time
+}
+
+// DrainLifecycleOutbox returns up to `batch` unrelayed lifecycle events (oldest
+// first by seq). The webhook re-architecture relays these to the events:{cell}
+// stream; MarkLifecycleOutboxSent then stamps them relayed. (Reuses the
+// sandbox_lifecycle_events.materialized_at column as the relayed marker.)
+// See .agents/work/sandbox-webhooks-rearchitecture.md.
+func (s *Store) DrainLifecycleOutbox(ctx context.Context, batch int) ([]LifecycleOutboxRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, org_id, sandbox_id, type, data, ts
+		   FROM sandbox_lifecycle_events
+		  WHERE materialized_at IS NULL
+		  ORDER BY seq
+		  LIMIT $1`, batch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LifecycleOutboxRow
+	for rows.Next() {
+		var r LifecycleOutboxRow
+		var data []byte
+		if err := rows.Scan(&r.ID, &r.OrgID, &r.SandboxID, &r.Type, &data, &r.Ts); err != nil {
+			return nil, err
+		}
+		r.Data = json.RawMessage(data)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// MarkLifecycleOutboxSent stamps the given events relayed (materialized_at=now()).
+// Idempotent: a re-publish of an already-relayed event is harmless (the edge and
+// Svix both dedupe on the stable event id).
+func (s *Store) MarkLifecycleOutboxSent(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_lifecycle_events SET materialized_at = now() WHERE id = ANY($1)`, ids)
+	return err
+}
+
 // ---------------------------------------------------------------------------
 // Destinations
 // ---------------------------------------------------------------------------
