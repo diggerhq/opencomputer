@@ -14,6 +14,60 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// LifecycleEvent is a fully-specified sandbox lifecycle event for the cell
+// stream. Used by the webhook lifecycle-outbox relay, where the CP knows the
+// stable (deterministic) event id and the clean public event data up front —
+// unlike PublishLifecycle, which generates a random id and a {reason}-only
+// payload for best-effort reconciliation emits.
+type LifecycleEvent struct {
+	// ID is the stable, deterministic event id (the webhook dedupe key and the
+	// Svix Idempotency-Key downstream). Required.
+	ID string
+	// Type is the internal stream event type (created, stopped, woke, migrated,
+	// scaled, forked, preview_url_changed, …) — mapped to the public
+	// sandbox.* type at the edge.
+	Type string
+	// SandboxID is required.
+	SandboxID string
+	OrgID     uuid.UUID
+	WorkerID  string
+	// Data is the PUBLIC event.data contract (clean camelCase, e.g.
+	// {cpuCount,memoryMB} for scaled). nil → {}.
+	Data map[string]any
+	// Ts is the event time; zero → now.
+	Ts time.Time
+}
+
+// PublishLifecycleEvent XADDs a fully-specified lifecycle event (stable id +
+// typed public data) to the cell's events stream. The webhook re-architecture
+// (.agents/work/sandbox-webhooks-rearchitecture.md) drains the in-tx
+// lifecycle_outbox through here so CP-origin events reach the edge → Svix on the
+// same stream worker-origin events already use. Returns true if the XADD landed.
+func PublishLifecycleEvent(ctx context.Context, rdb *redis.Client, cellID string, ev LifecycleEvent) bool {
+	if rdb == nil || cellID == "" || ev.SandboxID == "" || ev.ID == "" {
+		return false
+	}
+	ts := ev.Ts
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	data := ev.Data
+	if data == nil {
+		data = map[string]any{}
+	}
+	envelope := map[string]any{
+		"id":         ev.ID,
+		"type":       ev.Type,
+		"sandbox_id": ev.SandboxID,
+		"org_id":     ev.OrgID.String(),
+		"worker_id":  ev.WorkerID,
+		"cell_id":    cellID,
+		"payload":    data,
+		"timestamp":  ts.UTC().Format(time.RFC3339Nano),
+	}
+	return xaddEvent(ctx, rdb, cellID, ev.Type, ev.SandboxID, envelope)
+}
+
 // PublishLifecycle XADDs a sandbox lifecycle event (`stopped`, `hibernated`,
 // `migrated`, `woke`, `running`, `created`) to the cell's events stream.
 // Used for state changes where the canonical worker-side per-sandbox SQLite
@@ -37,6 +91,12 @@ func PublishLifecycle(ctx context.Context, rdb *redis.Client, cellID, eventType,
 		"payload":    map[string]any{"reason": reason},
 		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
 	}
+	return xaddEvent(ctx, rdb, cellID, eventType, sandboxID, envelope)
+}
+
+// xaddEvent marshals the envelope and XADDs it to events:{cellID}, retrying up
+// to 3 times with backoff. Shared by PublishLifecycle and PublishLifecycleEvent.
+func xaddEvent(ctx context.Context, rdb *redis.Client, cellID, eventType, sandboxID string, envelope map[string]any) bool {
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		log.Printf("cellevents: marshal %s: %v", eventType, err)
