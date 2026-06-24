@@ -810,19 +810,26 @@ func (s *Store) CreateSandboxSessionWithStatus(ctx context.Context, sandboxID st
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sandbox session: %w", err)
 	}
-	// Record sandbox.created in-tx (deterministic id → at most one per sandbox).
-	// This is the single webhook source for `created`: the worker's stream
-	// "created" feeds D1 sandboxes_index, not webhooks. The edge applies the
-	// dormancy gate. (sandbox-webhooks-rearchitecture.md)
-	createdData, _ := json.Marshal(map[string]string{"template": template})
-	if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
-		ID:        sandboxID + ":sandbox.created",
-		OrgID:     orgID,
-		SandboxID: sandboxID,
-		Type:      "sandbox.created",
-		Data:      createdData,
-	}); err != nil {
-		return nil, err
+	// Record sandbox.created in-tx (deterministic id → at most one per sandbox),
+	// but ONLY when the row is born already-created (status != "pending"). The
+	// combined/local path inserts the session AFTER the worker has spawned, so
+	// `created` is truthful here. The "pending" path (remote/fork: insert row →
+	// gRPC create → promote to running) must NOT emit `created` at insert: the
+	// create can still fail, and a consumer must never receive `created` for a
+	// sandbox whose API create then errored. That path emits `created` at the
+	// pending→running promotion (updateSandboxSessionStatus), so it fires only on
+	// success. (sandbox-webhooks-rearchitecture.md)
+	if status != "pending" {
+		createdData, _ := json.Marshal(map[string]string{"template": template})
+		if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+			ID:        sandboxID + ":sandbox.created",
+			OrgID:     orgID,
+			SandboxID: sandboxID,
+			Type:      "sandbox.created",
+			Data:      createdData,
+		}); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -898,8 +905,9 @@ func (s *Store) updateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 	// path, so this never doubles with the worker-origin `resumed`). Other
 	// worker-origin events (created/resumed/migrated) arrive via the ingress.
 	if affected && (terminal || status == "hibernated" || status == "running") {
+		var template string
 		_ = tx.QueryRow(ctx,
-			`SELECT org_id FROM sandbox_sessions WHERE sandbox_id = $1`, sandboxID).Scan(&orgID)
+			`SELECT org_id, template FROM sandbox_sessions WHERE sandbox_id = $1`, sandboxID).Scan(&orgID, &template)
 		if orgID != uuid.Nil {
 			var evType, evID string
 			var data json.RawMessage
@@ -924,6 +932,23 @@ func (s *Store) updateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 				evType = "sandbox.hibernated"
 				evID = fmt.Sprintf("%s:sandbox.hibernated:%d", sandboxID, n)
 			case "running":
+				// Pending→running promotion = the create actually succeeded, so
+				// emit sandbox.created HERE for the remote/fork paths (which insert
+				// the row as "pending" and DON'T emit created at insert). A consumer
+				// therefore never sees `created` for a create that then failed.
+				// Deterministic id → idempotent if the promote re-runs, and wake
+				// takes a different code path so this only ever fires on first boot.
+				// Recorded before `ready` below → smaller seq → relayed first.
+				createdData, _ := json.Marshal(map[string]string{"template": template})
+				if cerr := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+					ID:        sandboxID + ":sandbox.created",
+					OrgID:     orgID,
+					SandboxID: sandboxID,
+					Type:      "sandbox.created",
+					Data:      createdData,
+				}); cerr != nil {
+					return fmt.Errorf("record created event: %w", cerr)
+				}
 				// Boot promotion = ready. Deterministic id dedups a repeat
 				// "running" update on an already-running row (idempotent promote).
 				evType = "sandbox.ready"

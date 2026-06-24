@@ -31,10 +31,17 @@ export interface WebhookDelivery<E = Event> {
   /** The underlying event id — app-level correlation. */
   eventId: string;
   /**
-   * The delivery id, set by {@link verifyWebhook} from the `svix-id` (sandbox) / `webhook-id`
-   * (session) header — stable across retries and redelivery, so dedupe on it.
+   * The delivery id, set by {@link verifyWebhook}. **Sandbox** webhooks: the Svix message id
+   * (`svix-id`). **Session** webhooks: the delivery-row id (`X-OC-Delivery-ID` header) — note the
+   * session `webhook-id` header is the *eventId*, not a delivery id, so it is NOT used here.
    */
   deliveryId?: string;
+  /**
+   * The idempotency key to dedupe on — stable across retries and redelivery. **Sandbox**: the
+   * Svix message id (`svix-id`). **Session**: the `eventId`. Prefer this over {@link deliveryId}
+   * for "have I already processed this?" checks.
+   */
+  dedupeId?: string;
   /**
    * Opaque routing metadata. On **session** webhooks this is carried in the body. On **sandbox**
    * webhooks, per-destination metadata is delivered as custom HTTP **headers** (set at
@@ -159,10 +166,22 @@ export async function verifyWebhook<E = Event>(
 
   try {
     // Normalize so the returned envelope + nested event match the SDK's camelCase types
-    // (the wire event is snake-cased, e.g. `turn_id`). Set deliveryId from the verified id
-    // header (svix-id / webhook-id) — stable across retries + redelivery; dedupe on it.
+    // (the wire event is snake-cased, e.g. `turn_id`). The two products use different header
+    // dialects + delivery-id ownership, so resolve deliveryId/dedupeId by dialect:
+    //  - Sandbox (Svix): `svix-id` is BOTH the stable delivery id and the dedupe key.
+    //  - Session: the signed `webhook-id` is the *eventId* (dedupe on it); the delivery-row id
+    //    rides separately in `X-OC-Delivery-ID`.
     const delivery = normalize(JSON.parse(rawBody)) as WebhookDelivery<E>;
-    if (delivery.deliveryId == null) delivery.deliveryId = id;
+    const svixId = header(headers, "svix-id");
+    if (svixId) {
+      delivery.deliveryId = svixId;
+      delivery.dedupeId = svixId;
+    } else {
+      const deliveryRowId = header(headers, "x-oc-delivery-id");
+      if (deliveryRowId) delivery.deliveryId = deliveryRowId;
+      // webhook-id == eventId for sessions; prefer the body's eventId, fall back to the header.
+      delivery.dedupeId = delivery.eventId ?? id;
+    }
     return delivery;
   } catch {
     throw new WebhookVerificationError("signature valid but body is not JSON");

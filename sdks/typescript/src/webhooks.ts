@@ -2,15 +2,16 @@
 //
 // PREVIEW: newly available functionality; the surface may change.
 //
-// Register a destination and OpenComputer delivers sandbox lifecycle events to it as a
-// small, signed envelope — at-least-once, retried, dead-lettered, and redeliverable. This is
-// the management client (org API key, server-side); to VERIFY an incoming delivery in your
-// handler use `verifyWebhook` (exported from the package root, shared with session webhooks).
+// Register a destination and OpenComputer delivers sandbox lifecycle events to it as a small,
+// signed envelope — at-least-once, retried with managed backoff, and redeliverable (delivery is
+// handled by Svix). This is the management client (org API key, server-side); to VERIFY an
+// incoming delivery in your handler use `verifyWebhook` (exported from the package root, shared
+// with session webhooks).
 //
 //   import { Webhooks } from "@opencomputer/sdk";
 //   const webhooks = new Webhooks({ apiKey: process.env.OPENCOMPUTER_API_KEY });
 //   const { id, secret } = await webhooks.create({ url: "https://app.example.com/oc" });
-//   // `secret` is shown ONCE — store it now; you'll need it to verify deliveries.
+//   // `secret` verifies deliveries; it's returned here and re-fetchable via webhooks.getSecret(id).
 
 import type { WebhookDelivery } from "./agents/webhooks.js";
 
@@ -67,9 +68,9 @@ export type SandboxLifecycleEvent = SandboxLifecycleEventBase &
 
 /**
  * The delivered envelope for sandbox webhooks: the shared {@link WebhookDelivery} carrying a
- * {@link SandboxLifecycleEvent} under `event`. Delivered by Svix; `sandboxId` and `deliveryId`
- * are always set, and `deliveryId` equals the `svix-id` header (stable across retries — dedupe
- * on it). Per-destination registration metadata arrives as custom HTTP headers, not in the body.
+ * {@link SandboxLifecycleEvent} under `event`. Delivered by Svix; `sandboxId`, `deliveryId`, and
+ * `dedupeId` are always set, and all equal the `svix-id` header (stable across retries — dedupe on
+ * `dedupeId`). Per-destination registration metadata arrives as custom HTTP headers, not in the body.
  *
  * Verify an incoming request with: `verifyWebhook<SandboxLifecycleEvent>(rawBody, headers, secret)`.
  */
@@ -86,7 +87,7 @@ export interface WebhookDestination {
   /** Scoped to one sandbox, or `null` for all of the org's sandboxes. */
   sandboxId: string | null;
   enabled: boolean;
-  /** Whether a signing secret is set (the secret itself is never returned after create). */
+  /** Whether a signing secret is set; fetch the value any time with {@link Webhooks.getSecret}. */
   hasSecret: boolean;
   createdAt: string;
   updatedAt: string;
@@ -94,33 +95,33 @@ export interface WebhookDestination {
 
 export interface CreateWebhookParams {
   url: string;
-  /** Optional unique name (per org) — makes create get-or-create / idempotent. */
+  /** Optional display name for the destination. */
   name?: string;
-  /** Signing secret. Omit and OpenComputer generates a `whsec_…` one, returned ONCE on create. */
+  /** Signing secret. Omit and OpenComputer generates a `whsec_…` one (re-fetchable via {@link Webhooks.getSecret}). */
   secret?: string;
-  /** Event-type allow-list (exact or `prefix.*`); default all. */
+  /** Event-type allow-list (exact, e.g. `sandbox.stopped`, or `prefix.*`); default all. Unknown types are rejected. */
   eventTypes?: string[];
   /** Scope to one sandbox; omit for all of the org's sandboxes. */
   sandboxId?: string;
   enabled?: boolean;
-  /** Idempotency-Key header — a timed-out retry returns the same destination, never a duplicate. */
-  idempotencyKey?: string;
 }
 
-/** The create response — the only time `secret` is ever returned (and only when generated). */
+/** The create response — includes the signing `secret` (also re-fetchable later via {@link Webhooks.getSecret}). */
 export interface CreateWebhookResult extends WebhookDestination {
-  /** The signing secret (`whsec_…`). Returned ONCE, only when OpenComputer generated it. Store it now. */
+  /** The signing secret (`whsec_…`). Returned here on create, and re-fetchable any time via {@link Webhooks.getSecret}. */
   secret?: string;
 }
 
 export interface UpdateWebhookParams {
   url?: string;
-  /** Pass `null` to clear the allow-list (deliver all types). */
+  /** Pass `null` to clear the allow-list (deliver all types). Unknown types are rejected. */
   eventTypes?: string[] | null;
   enabled?: boolean;
-  /** Set a caller-supplied signing secret (you keep it; it isn't echoed back). */
-  secret?: string;
-  /** Generate a NEW signing secret — returned once on the response (see {@link CreateWebhookResult}). */
+  /**
+   * Rotate to a NEW Svix-generated signing secret — returned on the response (see
+   * {@link CreateWebhookResult}). The previous secret stays valid for a short rollover window so
+   * in-flight deliveries still verify. (To set a specific secret, create a new destination.)
+   */
   rotateSecret?: boolean;
   name?: string;
 }
@@ -253,32 +254,18 @@ export class Webhooks {
   }
 
   /**
-   * Register a destination. Returns HTTP 201 (new) or 200 (an existing destination
-   * matched by `name`). The response includes `secret` once iff OpenComputer
-   * generated it. With an `idempotencyKey`, a retried call returns the same
-   * destination + secret; if a same-key request is concurrently in flight the
-   * server replies 409 `idempotency_in_progress` (retryable) — this method
-   * automatically waits (honoring `Retry-After`) and retries a few times.
+   * Register a destination (HTTP 201). Each call creates a new destination — there is no
+   * get-or-create. The response includes the signing `secret` (also re-fetchable later via
+   * {@link getSecret}). Unknown `eventTypes` are rejected with a 400.
    */
   async create(params: CreateWebhookParams): Promise<CreateWebhookResult> {
-    const { idempotencyKey, ...body } = params;
-    for (let attempt = 0; ; attempt++) {
-      const resp = await fetch(`${this.apiUrl}/webhooks`, {
-        method: "POST",
-        headers: this.headers(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-        body: JSON.stringify(body),
-      });
-      if (resp.ok) return resp.json();
-      if (resp.status === 409 && attempt < 5) {
-        const body409 = (await resp.clone().json().catch(() => ({}))) as { code?: string };
-        if (body409.code === "idempotency_in_progress") {
-          const retryAfter = Number(resp.headers.get("Retry-After")) || 1;
-          await new Promise((r) => setTimeout(r, retryAfter * 1000));
-          continue;
-        }
-      }
-      return fail(resp, "create webhook");
-    }
+    const resp = await fetch(`${this.apiUrl}/webhooks`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(params),
+    });
+    if (!resp.ok) return fail(resp, "create webhook");
+    return resp.json();
   }
 
   async list(): Promise<WebhookDestination[]> {
@@ -294,6 +281,17 @@ export class Webhooks {
     return resp.json();
   }
 
+  /**
+   * Fetch the destination's current signing secret (`whsec_…`). Re-fetchable any time by the
+   * owner (API key) — use it to verify deliveries. Rotate with `update(id, { rotateSecret: true })`.
+   */
+  async getSecret(id: string): Promise<string> {
+    const resp = await fetch(`${this.apiUrl}/webhooks/${id}/secret`, { headers: this.headers() });
+    if (!resp.ok) return fail(resp, "get webhook secret");
+    const body = (await resp.json()) as { secret: string };
+    return body.secret;
+  }
+
   /** Update a destination — pause/resume (`enabled`), retune `eventTypes`, change `url`, or rotate `secret`. */
   async update(id: string, params: UpdateWebhookParams): Promise<CreateWebhookResult> {
     const resp = await fetch(`${this.apiUrl}/webhooks/${id}`, {
@@ -305,7 +303,7 @@ export class Webhooks {
     return resp.json();
   }
 
-  /** Soft-delete a destination. Its delivery history is retained; pending deliveries are canceled. */
+  /** Delete a destination (removes its Svix endpoint). Delivery history for a deleted destination is no longer queryable. */
   async delete(id: string): Promise<void> {
     const resp = await fetch(`${this.apiUrl}/webhooks/${id}`, { method: "DELETE", headers: this.headers() });
     if (!resp.ok) return fail(resp, "delete webhook");

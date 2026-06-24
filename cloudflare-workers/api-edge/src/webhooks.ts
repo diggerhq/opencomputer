@@ -131,6 +131,26 @@ const SANDBOX_EVENT_TYPES = [
   "sandbox.preview_url.changed",
 ];
 
+// invalidEventTypes returns the requested filters that aren't part of the fixed
+// sandbox taxonomy (after accounting for "prefix.*" wildcards). Registration
+// rejects these up front (400) rather than silently registering a type that can
+// never fire — and it keeps us from polluting the Svix account with arbitrary
+// event types. Empty/undefined ("all types") is always valid.
+function invalidEventTypes(filters?: string[] | null): string[] {
+  if (!filters || filters.length === 0) return [];
+  const known = new Set(SANDBOX_EVENT_TYPES);
+  const bad: string[] = [];
+  for (const f of filters) {
+    if (f.endsWith(".*")) {
+      const prefix = f.slice(0, -1); // keep the trailing "."
+      if (!SANDBOX_EVENT_TYPES.some((t) => t.startsWith(prefix))) bad.push(f);
+    } else if (!known.has(f)) {
+      bad.push(f);
+    }
+  }
+  return bad;
+}
+
 // expandEventTypes turns a user filter (which may use "prefix.*", e.g. "sandbox.*")
 // into concrete Svix filterTypes. undefined / empty → no filter (all types).
 function expandEventTypes(filters?: string[] | null): string[] | undefined {
@@ -249,6 +269,13 @@ export async function handleWebhooksAPI(
       return await testWebhook(env, sx, caller, id);
     }
 
+    // /api/webhooks/:id/secret — reveal the current signing secret (owner only,
+    // already authenticated by API key). Re-fetchable any time, like Svix's
+    // App Portal; rotation is PATCH {rotateSecret:true}.
+    if (seg.length === 2 && seg[1] === "secret" && method === "GET") {
+      return await getSecretWebhook(env, sx, caller, id);
+    }
+
     // /api/webhooks/:id/deliveries
     if (seg.length === 2 && seg[1] === "deliveries" && method === "GET") {
       return await listDeliveries(env, sx, caller, id);
@@ -286,6 +313,10 @@ async function createWebhook(req: Request, env: WebhookEnv, sx: SvixClient, call
     return json({ error: "invalid JSON body" }, 400);
   }
   if (!isHttpsURL(body.url)) return json({ error: "url must be a valid https URL" }, 400);
+  const badTypes = invalidEventTypes(body.eventTypes);
+  if (badTypes.length) {
+    return json({ error: `unknown event type(s): ${badTypes.join(", ")}` }, 400);
+  }
 
   const { wire, secret } = await createDestination(env, sx, caller.orgID, {
     url: body.url,
@@ -312,13 +343,17 @@ async function listWebhooks(env: WebhookEnv, caller: Caller): Promise<Response> 
 async function patchWebhook(req: Request, env: WebhookEnv, sx: SvixClient, caller: Caller, id: string): Promise<Response> {
   const row = await getDest(env, caller.orgID, id);
   if (!row) return json({ error: "webhook not found" }, 404);
-  let body: { url?: string; eventTypes?: string[] | null; enabled?: boolean; name?: string };
+  let body: { url?: string; eventTypes?: string[] | null; enabled?: boolean; name?: string; rotateSecret?: boolean };
   try {
     body = await req.json();
   } catch {
     return json({ error: "invalid JSON body" }, 400);
   }
   if (body.url !== undefined && !isHttpsURL(body.url)) return json({ error: "url must be a valid https URL" }, 400);
+  if (body.eventTypes) {
+    const badTypes = invalidEventTypes(body.eventTypes);
+    if (badTypes.length) return json({ error: `unknown event type(s): ${badTypes.join(", ")}` }, 400);
+  }
 
   // Index filter (original strings): null clears it, undefined keeps the stored
   // one. The Svix endpoint gets the expanded + registered concrete types.
@@ -346,6 +381,13 @@ async function patchWebhook(req: Request, env: WebhookEnv, sx: SvixClient, calle
 
   await sx.updateEndpoint(row.svix_app_id, row.svix_endpoint_id, ep);
 
+  // Optional secret rotation. Svix keeps the old secret valid for a rollover
+  // window, so in-flight deliveries still verify against the previous secret.
+  let rotatedSecret: string | undefined;
+  if (body.rotateSecret) {
+    rotatedSecret = await sx.rotateEndpointSecret(row.svix_app_id, row.svix_endpoint_id);
+  }
+
   await env.OPENCOMPUTER_DB.prepare(
     "UPDATE webhook_destinations SET url = ?1, event_types = ?2, name = ?3, disabled = ?4, updated_at = ?5 WHERE id = ?6",
   )
@@ -353,7 +395,10 @@ async function patchWebhook(req: Request, env: WebhookEnv, sx: SvixClient, calle
     .run();
 
   const updated = await getDest(env, caller.orgID, id);
-  return updated ? json(toWire(updated)) : json({ error: "webhook not found" }, 404);
+  if (!updated) return json({ error: "webhook not found" }, 404);
+  // Return the new secret once, on rotation only (the GET /secret route can
+  // re-fetch it later).
+  return json(rotatedSecret ? { ...toWire(updated), secret: rotatedSecret } : toWire(updated));
 }
 
 async function deleteWebhook(env: WebhookEnv, sx: SvixClient, caller: Caller, id: string): Promise<Response> {
@@ -391,6 +436,13 @@ async function testWebhook(env: WebhookEnv, sx: SvixClient, caller: Caller, id: 
     channels: row.sandbox_id ? [row.sandbox_id] : undefined,
   });
   return json({ ok: true, eventType, messageId: msg.id });
+}
+
+async function getSecretWebhook(env: WebhookEnv, sx: SvixClient, caller: Caller, id: string): Promise<Response> {
+  const row = await getDest(env, caller.orgID, id);
+  if (!row) return json({ error: "webhook not found" }, 404);
+  const secret = await sx.getEndpointSecret(row.svix_app_id, row.svix_endpoint_id);
+  return json({ secret });
 }
 
 async function listDeliveries(env: WebhookEnv, sx: SvixClient, caller: Caller, id: string): Promise<Response> {
@@ -479,7 +531,14 @@ export async function registerInlineWebhooksInternal(req: Request, env: WebhookE
 
   const out: Array<{ id: string; url: string; secret?: string }> = [];
   for (const spec of body.webhooks) {
-    if (!isHttpsURL(spec.url)) continue; // best-effort: skip invalid, like the shipped path
+    // best-effort: skip structurally-invalid specs (the CP also validates these
+    // up front, so this is a defense-in-depth guard, not the primary check).
+    if (!isHttpsURL(spec.url)) continue;
+    const badTypes = invalidEventTypes(spec.eventTypes);
+    if (badTypes.length) {
+      console.error(`registerInlineWebhooks: ${body.sandboxId}: skipping spec with unknown event type(s): ${badTypes.join(", ")}`);
+      continue;
+    }
     try {
       const { wire, secret } = await createDestination(env, sx, body.orgId, {
         url: spec.url,

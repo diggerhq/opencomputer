@@ -642,10 +642,10 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// session row, which must exist before the worker looks it up.
 	sandboxID := "sb-" + uuid.New().String()[:8]
 
-	// Register inline webhooks at the edge (Svix) BEFORE the session is created
-	// (CreateSandboxSessionWithStatus records sandbox.created) and before the
-	// worker boots, so the endpoint exists before `created` is relayed. Cleaned up
-	// below if the gRPC create fails.
+	// Register inline webhooks at the edge (Svix) BEFORE the session row and the
+	// worker boot, so the endpoint exists well before `created` is relayed. On
+	// this remote path `created` is emitted only at the pending→running promotion
+	// (i.e. on successful create), so a failed create relays no `created` at all.
 	var inlineWebhooks []types.SandboxWebhookResult
 	if hasOrg && len(cfg.Webhooks) > 0 {
 		inlineWebhooks = s.registerInlineWebhooksEdge(ctx, orgID, sandboxID, cfg.Webhooks)

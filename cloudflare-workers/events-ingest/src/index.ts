@@ -499,28 +499,35 @@ export default {
     // transient Svix error → 503 so the CP forwarder retries the batch (the
     // event id is the Idempotency-Key, so re-sends dedupe); a permanent (4xx)
     // error for one event is logged and skipped. (rearchitecture §3.1)
-    if (!env.SVIX_API_TOKEN) {
-      // Misconfiguration guard: api-edge can register webhooks while this Worker
-      // silently drops deliveries if the token is only set on one side.
-      if (fresh.some((e) => e.type.startsWith("sandbox."))) {
-        console.warn("events-ingest: SVIX_API_TOKEN unset — sandbox webhook events are NOT being delivered to Svix");
+    const webhookEvents = fresh.filter(
+      (e) => e.type.startsWith("sandbox.") && e.org_id && e.sandbox_id,
+    );
+    if (webhookEvents.length > 0) {
+      const whOrgIds = [...new Set(webhookEvents.map((e) => e.org_id as string))];
+      let hasWebhooks: Set<string>;
+      try {
+        hasWebhooks = await fetchHasWebhooks(env, whOrgIds);
+      } catch (err) {
+        console.error("events-ingest: has_webhooks lookup failed", err);
+        return jsonResponse({ error: "webhook org lookup failed" }, 503);
       }
-    } else {
-      const webhookEvents = fresh.filter(
-        (e) => e.type.startsWith("sandbox.") && e.org_id && e.sandbox_id,
-      );
-      if (webhookEvents.length > 0) {
-        const whOrgIds = [...new Set(webhookEvents.map((e) => e.org_id as string))];
-        let hasWebhooks: Set<string>;
-        try {
-          hasWebhooks = await fetchHasWebhooks(env, whOrgIds);
-        } catch (err) {
-          console.error("events-ingest: has_webhooks lookup failed", err);
-          return jsonResponse({ error: "webhook org lookup failed" }, 503);
+      // Only orgs with a registered destination are eligible (dormancy gate);
+      // dormant orgs cost zero Svix calls.
+      const eligible = webhookEvents.filter((e) => hasWebhooks.has(e.org_id as string));
+      if (eligible.length > 0) {
+        // Fail closed: webhook-eligible events but no Svix token on this Worker.
+        // api-edge can register destinations (which sets has_webhooks) while this
+        // Worker's token is unset — silently 202-ing here would be "configured
+        // management, dead delivery" and lose the events. 503 instead so the CP
+        // forwarder keeps the batch in its PEL and retries once the token is set.
+        if (!env.SVIX_API_TOKEN) {
+          console.error(
+            `events-ingest: SVIX_API_TOKEN unset but ${eligible.length} webhook-eligible event(s) present — returning 503 so the forwarder retries (set the token to recover)`,
+          );
+          return jsonResponse({ error: "webhook delivery not configured" }, 503);
         }
         const sx = new SvixClient(env.SVIX_API_TOKEN);
-        for (const e of webhookEvents) {
-          if (!hasWebhooks.has(e.org_id as string)) continue; // dormant org
+        for (const e of eligible) {
           try {
             await sx.createMessage(e.org_id as string, {
               eventType: e.type,

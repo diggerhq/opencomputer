@@ -159,6 +159,20 @@ export class SvixClient {
     return out.key;
   }
 
+  // Rotate the endpoint's signing secret. Pass `key` to set a specific secret
+  // (whsec_…); omit to have Svix generate one. Svix keeps the old secret valid
+  // for a rollover window so in-flight deliveries still verify. Returns the new
+  // current secret (re-fetched, since the rotate call itself returns no body).
+  async rotateEndpointSecret(appID: string, epID: string, key?: string): Promise<string> {
+    await this.do(
+      "rotate_endpoint_secret",
+      "POST",
+      `/api/v1/app/${appID}/endpoint/${epID}/secret/rotate/`,
+      key ? { key } : {},
+    );
+    return this.getEndpointSecret(appID, epID);
+  }
+
   // Custom headers delivered on every request to the endpoint — how
   // per-destination registration metadata rides each delivery.
   async setEndpointHeaders(appID: string, epID: string, headers: Record<string, string>): Promise<void> {
