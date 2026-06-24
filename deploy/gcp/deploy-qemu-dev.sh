@@ -347,6 +347,10 @@ OPENSANDBOX_MIN_WORKERS=1
 OPENSANDBOX_CF_EVENT_ENDPOINT=${OPENSANDBOX_CF_EVENT_ENDPOINT:-}
 OPENSANDBOX_CF_EVENT_SECRET=${OPENSANDBOX_CF_EVENT_SECRET:-}
 OPENSANDBOX_CF_EDGE_BASE_URL=${OPENSANDBOX_CF_EDGE_BASE_URL:-}
+# Shared edge↔CP capability-token secret. Must equal the api-edge SESSION_JWT_SECRET
+# for the edge's POST /api/sandboxes to reach the CP's /internal/sandboxes/create
+# (the CP only registers that route + validates cap-tokens when this is set).
+OPENSANDBOX_SESSION_JWT_SECRET=${OPENSANDBOX_SESSION_JWT_SECRET:-}
 WORKOS_API_KEY=${workos_api_key}
 WORKOS_CLIENT_ID=${workos_client_id}
 WORKOS_REDIRECT_URI=${workos_redirect_uri}

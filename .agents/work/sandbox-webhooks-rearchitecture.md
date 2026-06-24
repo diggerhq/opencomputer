@@ -492,3 +492,31 @@ Issues / gaps found:
 Bottom line for this retest: Svix handoff, signatures, metadata headers, attempt listing, and direct
 box lifecycle ingestion are working. The public edge sandbox create path and several webhook API
 contract details still need tightening before this can be treated as a clean launch E2E.
+
+### 9.8 §9.7 follow-ups — all resolved (2026-06-24)
+
+Every §9.7 issue is now addressed (commits `23e2496` + `65cb266`; dev D1/box state patched):
+
+- **Edge sandbox create — UNBLOCKED + inline-on-create validated.** Root causes were not webhooks:
+  (1) `schema.sql` `sandboxes_index` was missing `cpu_count`/`memory_mb` that api-edge selects (repo
+  drift; added) → fixed the `GET` 1101; (2) `cells` was empty → seed a row; (3) CF Workers can't
+  `fetch()` a **literal IP** (error 1003) → `cells.base_url` must be a hostname (`…nip.io:8080`);
+  (4) cap-token `org_id` must be a **UUID** (use a UUID-org api key, not `org-igor-dev-wh`); (5) D1
+  template **id must be a UUID** (CP parses it); (6) `OPENSANDBOX_SESSION_JWT_SECRET` must be set on
+  the box AND equal api-edge's `SESSION_JWT_SECRET` (the CP only registers
+  `/internal/sandboxes/create` + validates cap-tokens when set — deploy template now includes it).
+  With those: edge `POST /api/sandboxes` → 201 running; edge `POST /api/sandboxes {webhooks:[…]}` →
+  CP registers inline via the edge → **sandbox-scoped** Svix endpoint, inline receiver gets
+  `created`+`ready` (the §9.4 #3 live-edge path).
+- **Create idempotency — IMPLEMENTED.** `Idempotency-Key` → D1 `webhook_idempotency`
+  (check-first/atomic-claim/race-cleanup); same key → same destination (200), no key → new (201).
+  `name` is **not** get-or-create (by design, documented).
+- **Create response shape** now matches list/get (`hasSecret` + `updatedAt` included).
+- **Secret semantics** reconciled: re-fetchable via `GET /api/webhooks/:id/secret` + rotatable; the
+  "write-only" doc line was removed.
+- **Deleted-destination history** — docs now say it's not queryable after delete (matches behavior).
+- **`/test`** — now sends the **real** lifecycle envelope (`event.data.test=true`); documented as
+  app-level (not destination-isolated — Svix `send-example` would need per-type schemas+examples,
+  not worth it for a test ping).
+- **Delivery detail 404** — not a bug: the provider's attempt index is visible a few seconds before
+  `/msg/{id}` is fetchable (eventual consistency); reproduced clean with a wait; documented.
