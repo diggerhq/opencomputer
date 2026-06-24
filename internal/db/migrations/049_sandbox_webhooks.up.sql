@@ -25,6 +25,11 @@ CREATE INDEX IF NOT EXISTS webhook_dest_org_idx
     ON webhook_destinations (org_id) WHERE enabled AND deleted_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS webhook_dest_name_uq
     ON webhook_destinations (org_id, name) WHERE name IS NOT NULL AND deleted_at IS NULL;
+-- The dormancy gate: "does this org have ANY live destination (enabled OR paused)
+-- that could receive this event?" — leading org_id, sandbox_id for the scope test.
+-- (webhook_dest_org_idx above is enabled-only, for the dispatcher's claim.)
+CREATE INDEX IF NOT EXISTS webhook_dest_org_live_idx
+    ON webhook_destinations (org_id, sandbox_id) WHERE deleted_at IS NULL;
 
 -- Canonical lifecycle event store — the merge point for both origins. The single
 -- recordLifecycleEvent primitive inserts here (CP in-tx; worker via the stream

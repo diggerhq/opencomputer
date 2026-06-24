@@ -56,6 +56,23 @@ type LifecycleEvent struct {
 // exactly one place. Both origins call it (CP in-tx; worker via the ingress's
 // own tx through RecordLifecycleEvent).
 func recordLifecycleEvent(ctx context.Context, tx pgx.Tx, ev LifecycleEvent) error {
+	// Dormancy gate: only record an event if the org has a live destination that
+	// could receive it (org-wide, or scoped to this sandbox). A destination's
+	// watermark only ever delivers events created AFTER it, so skipping events
+	// for an org with no matching destination can never cause a miss — and it
+	// keeps sandbox_lifecycle_events empty for the (vast majority of) orgs not
+	// using webhooks. Paused (disabled) destinations count, since pause queues.
+	var relevant bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM webhook_destinations
+		   WHERE org_id = $1 AND deleted_at IS NULL
+		     AND (sandbox_id IS NULL OR sandbox_id = $2))`,
+		ev.OrgID, ev.SandboxID).Scan(&relevant); err != nil {
+		return fmt.Errorf("webhook destination check: %w", err)
+	}
+	if !relevant {
+		return nil // dormant: nothing could receive this event
+	}
 	if len(ev.Data) == 0 {
 		ev.Data = json.RawMessage("{}")
 	}
