@@ -45,7 +45,7 @@ Subscribe to all events, or filter with `eventTypes` (exact like `sandbox.stoppe
 
 ## Destinations
 
-A destination is **org-scoped** by default (all your sandboxes), or pinned to one sandbox with `sandboxId`. Set `enabled: false` to **pause** a destination — events that occur while paused are queued and delivered when you re-enable it, not dropped.
+A destination is **org-scoped** by default (all your sandboxes), or pinned to one sandbox with `sandboxId`. Set `enabled: false` to **pause** a destination — it stops receiving deliveries until you re-enable it; events that occur while it's paused aren't backfilled.
 
 <CodeGroup>
 
@@ -171,7 +171,7 @@ Redelivery re-sends the **same** message to the endpoint (same `svix-id`) — fo
 
 ## Signing, retries, and dedupe
 
-- **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused (at registration and at send).
+- **HTTPS only**, checked at registration. The delivery layer (Svix) additionally blocks private, loopback, link-local, and cloud-metadata addresses at send time.
 - **Always signed** with [Standard Webhooks](https://www.standardwebhooks.com) (delivery is by [Svix](https://www.svix.com)). Every request carries `svix-id`, `svix-timestamp`, and `svix-signature` = `v1,<base64(HMAC-SHA256(secret, "{svix-id}.{svix-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; the timestamp guards replay. Any custom headers you attached as destination `metadata` ride along too. Your `secret` is write-only.
 - **At-least-once.** Once an event is handed off it's retried until it succeeds or the delivery layer gives up. A duplicate can still arrive, so **dedupe on `svix-id`** (= `deliveryId`).
 - **Not strictly ordered.** Events for one sandbox can arrive out of order (e.g. `sandbox.ready` before `sandbox.created`). Treat each event independently and key off `event.type`; don't assume an ordering.

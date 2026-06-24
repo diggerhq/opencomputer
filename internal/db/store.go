@@ -197,7 +197,6 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{47, "migrations/047_orgs_billing_provider.up.sql"},
 		{48, "migrations/048_orgs_usage_sync_watermark.up.sql"},
 		{49, "migrations/049_sandbox_webhooks.up.sql"},
-		{50, "migrations/050_webhooks_edge_cleanup.up.sql"},
 	}
 
 	for _, m := range migrations {

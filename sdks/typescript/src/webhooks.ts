@@ -129,30 +129,25 @@ export interface UpdateWebhookParams {
 
 // ---- deliveries (the control surface behind a deliveries dashboard) ----
 
-export type WebhookDeliveryStatus =
-  | "pending"
-  | "delivering"
-  | "delivered"
-  | "failed"
-  | "dead_letter"
-  | "canceled";
+export type WebhookDeliveryStatus = "success" | "pending" | "failed";
 
+/** One Svix delivery attempt to the endpoint (from `deliveries.list`). */
 export interface WebhookDeliveryRecord {
+  /** The message id — the key for `get` / `redeliver`; equals the `svix-id` header. */
   id: string;
-  destination: string;
-  eventId: string;
-  eventType: string;
   status: WebhookDeliveryStatus;
-  /** Lifetime attempt count (audit). */
-  attempts: number;
-  /** Retry budget consumed since the last (re)enqueue; reset by a manual redeliver. */
-  retryCount: number;
-  lastAttemptAt: string | null;
-  responseCode: number | null;
-  error: string | null;
-  createdAt: string;
-  updatedAt: string;
-  deliveredAt: string | null;
+  /** The consumer's HTTP response code, when the attempt reached it. */
+  responseStatusCode?: number;
+  timestamp?: string;
+}
+
+/** A delivered message (from `deliveries.get`). */
+export interface WebhookMessage {
+  id: string;
+  eventType?: string;
+  eventId?: string;
+  payload?: unknown;
+  timestamp?: string;
 }
 
 export interface WebhookTestResult {
@@ -201,25 +196,18 @@ export class WebhookDeliveries {
     return h;
   }
 
-  /** List deliveries for a destination (cursor-paginated). */
-  async list(
-    destinationId: string,
-    params: { status?: WebhookDeliveryStatus; cursor?: string; limit?: number } = {},
-  ): Promise<ListPage<WebhookDeliveryRecord>> {
-    const q = new URLSearchParams();
-    if (params.status) q.set("status", params.status);
-    if (params.cursor) q.set("cursor", params.cursor);
-    if (params.limit != null) q.set("limit", String(params.limit));
-    const qs = q.toString();
-    const resp = await fetch(`${this.apiUrl}/webhooks/${destinationId}/deliveries${qs ? `?${qs}` : ""}`, {
+  /** List recent delivery attempts for a destination. */
+  async list(destinationId: string): Promise<WebhookDeliveryRecord[]> {
+    const resp = await fetch(`${this.apiUrl}/webhooks/${destinationId}/deliveries`, {
       headers: this.headers,
     });
     if (!resp.ok) return fail(resp, "list deliveries");
-    return resp.json();
+    const body = (await resp.json()) as { data?: WebhookDeliveryRecord[] };
+    return body.data ?? [];
   }
 
-  /** Fetch one delivery in detail. */
-  async get(destinationId: string, deliveryId: string): Promise<WebhookDeliveryRecord> {
+  /** Fetch one delivered message by id. */
+  async get(destinationId: string, deliveryId: string): Promise<WebhookMessage> {
     const resp = await fetch(`${this.apiUrl}/webhooks/${destinationId}/deliveries/${deliveryId}`, {
       headers: this.headers,
     });
@@ -228,12 +216,10 @@ export class WebhookDeliveries {
   }
 
   /**
-   * Re-send any delivery (not only dead-lettered ones). Gives the delivery a fresh retry
-   * budget and returns the re-enqueued record; the redelivery carries the **same** `webhook-id`,
-   * so a receiver that dedupes will treat it as the same message — redelivery is for cases
-   * where the original never landed.
+   * Re-send a message to the endpoint. The redelivery carries the **same** `svix-id`, so a
+   * receiver that dedupes treats it as the same message — for when the original never landed.
    */
-  async redeliver(destinationId: string, deliveryId: string): Promise<WebhookDeliveryRecord> {
+  async redeliver(destinationId: string, deliveryId: string): Promise<{ ok: boolean }> {
     const resp = await fetch(`${this.apiUrl}/webhooks/${destinationId}/deliveries/${deliveryId}/redeliver`, {
       method: "POST",
       headers: this.headers,

@@ -110,6 +110,14 @@ verify path exists here. The edge already has `org_id` on every event and an ide
 
 ## 3. Target architecture
 
+> **Note (post-implementation):** §3.1–§3.5 and §7 below predate the final
+> *all-Svix-at-edge* decision — they still describe an edge `webhook_outbox`, a CP
+> local index, and an older build order. The **authoritative** record is §0
+> (Decisions locked) + §8 (dev env) + the as-built code. As built: the CP keeps
+> only an in-tx outbox (`sandbox_lifecycle_events`) drained by the relay to the
+> stream (no edge outbox; delivery handoff is events-ingest's sync Svix create);
+> the destination index + `has_webhooks` live in **D1 at the edge**, not the CP.
+
 ```
 CP-origin transition (scaled/forked/preview/migrated/ready/cp-fallback stop)
    └─ write lifecycle_outbox row IN THE SAME DB TX as the state change   [origin durability]
