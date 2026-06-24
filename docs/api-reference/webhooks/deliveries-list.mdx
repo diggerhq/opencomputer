@@ -3,7 +3,7 @@ title: 'List Deliveries'
 api: 'GET /api/webhooks/{id}/deliveries'
 ---
 
-List a destination's deliveries, cursor-paginated. See [Webhooks](/sandboxes/webhooks#deliveries).
+List a destination's deliveries, cursor-paginated. Works for soft-deleted destinations too — delivery history is retained. See [Webhooks](/sandboxes/webhooks#deliveries).
 
 <ParamField path="id" type="string" required>
   Destination ID (`whk_…`).

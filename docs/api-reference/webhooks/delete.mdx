@@ -3,7 +3,7 @@ title: 'Delete Webhook'
 api: 'DELETE /api/webhooks/{id}'
 ---
 
-Soft-delete a destination. It stops receiving events and drops out of [list](/api-reference/webhooks/list), but its delivery history is retained; any non-terminal deliveries are moved to `canceled`. See [Webhooks](/sandboxes/webhooks).
+Soft-delete a destination. It stops receiving events and drops out of [list](/api-reference/webhooks/list), but its delivery history is retained and still queryable via [deliveries](/api-reference/webhooks/deliveries-list). Any non-terminal deliveries (`pending`, `delivering`, `failed`) are moved to `canceled`; terminal ones (`delivered`, `dead_letter`) are left as-is. See [Webhooks](/sandboxes/webhooks).
 
 <ParamField path="id" type="string" required>
   Destination ID (`whk_…`).

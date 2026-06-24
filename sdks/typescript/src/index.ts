@@ -33,8 +33,11 @@ export {
   type WebhookDeliveryRecord,
   type WebhookDeliveryStatus,
   type WebhookTestResult,
+  type ListPage,
   type SandboxWebhookDelivery,
   type SandboxLifecycleEvent,
+  type SandboxLifecycleEventBase,
+  type SandboxStopReason,
   type SandboxWebhookEventType,
 } from "./webhooks.js";
 export { SecretStore, type SecretStoreInfo, type SecretEntryInfo, type SecretStoreOpts, type CreateSecretStoreOpts, type UpdateSecretStoreOpts } from "./project.js";

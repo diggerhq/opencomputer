@@ -51,6 +51,8 @@ If both `cpuCount` and `memoryMB` are provided, they must match a platform tier.
   - `url` *(string, required)*: HTTPS endpoint.
   - `secret` *(string)*: signing secret; omit and one is generated and returned once on the response (`webhooks[].secret`).
   - `eventTypes` *(string[])*: event-type allow-list (default all).
+
+  Each spec is validated up-front (same rules as [`POST /api/webhooks`](/api-reference/webhooks/create)); an invalid `url` or `eventTypes` fails the whole create with `400` (the sandbox is not created). The response echoes `webhooks: [{ id, url, secret? }]`.
 </ParamField>
 
 <ParamField body="previewAuth" type="object">

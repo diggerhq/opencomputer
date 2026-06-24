@@ -18,7 +18,7 @@ Update a destination — pause/resume, retune filters, change the URL, or rotate
 </ParamField>
 
 <ParamField body="enabled" type="boolean">
-  Pause (`false`) or resume (`true`) delivery.
+  Pause (`false`) or resume (`true`) delivery. Pausing does **not** drop events — events that occur while paused are queued and delivered when you re-enable.
 </ParamField>
 
 <ParamField body="secret" type="string">

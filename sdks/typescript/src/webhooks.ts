@@ -34,16 +34,36 @@ export type SandboxWebhookEventType =
   | "sandbox.preview_url.changed"
   | "sandbox.test";
 
-/** The lifecycle event nested under `event` in a delivery. */
-export interface SandboxLifecycleEvent {
+/** Why a sandbox stopped (`sandbox.stopped` → `event.data.reason`). */
+export type SandboxStopReason = "user_requested" | "expired" | "crash";
+
+/** Fields common to every lifecycle event (nested under `event` in a delivery). */
+export interface SandboxLifecycleEventBase {
   id: string;
   ts: string;
   orgId: string;
   sandboxId: string;
-  type: SandboxWebhookEventType;
-  /** Event-specific fields, e.g. `{ reason }` on stopped, `{ parentId }` on forked. */
-  data: Record<string, unknown>;
 }
+
+/**
+ * The lifecycle event nested under `event` in a delivery — a discriminated union
+ * on `type`, so `event.data` is typed per event (e.g. narrow on
+ * `event.type === "sandbox.stopped"` to get `event.data.reason`).
+ */
+export type SandboxLifecycleEvent = SandboxLifecycleEventBase &
+  (
+    | { type: "sandbox.created"; data: { template?: string } }
+    | { type: "sandbox.ready"; data: Record<string, never> }
+    | { type: "sandbox.hibernated"; data: Record<string, never> }
+    | { type: "sandbox.resumed"; data: Record<string, never> }
+    | { type: "sandbox.stopped"; data: { reason: SandboxStopReason } }
+    | { type: "sandbox.migrated"; data: Record<string, never> }
+    | { type: "sandbox.checkpoint.created"; data: { checkpointId: string } }
+    | { type: "sandbox.forked"; data: { parentId: string } }
+    | { type: "sandbox.scaled"; data: { cpuCount: number; memoryMB: number } }
+    | { type: "sandbox.preview_url.changed"; data: { port: number; url: string | null } }
+    | { type: "sandbox.test"; data: Record<string, unknown> }
+  );
 
 /**
  * The delivered envelope for sandbox webhooks: the shared {@link WebhookDelivery} carrying a
@@ -242,16 +262,33 @@ export class Webhooks {
     return h;
   }
 
-  /** Register a destination. The response includes `secret` once iff OpenComputer generated it. */
+  /**
+   * Register a destination. Returns HTTP 201 (new) or 200 (an existing destination
+   * matched by `name`). The response includes `secret` once iff OpenComputer
+   * generated it. With an `idempotencyKey`, a retried call returns the same
+   * destination + secret; if a same-key request is concurrently in flight the
+   * server replies 409 `idempotency_in_progress` (retryable) — this method
+   * automatically waits (honoring `Retry-After`) and retries a few times.
+   */
   async create(params: CreateWebhookParams): Promise<CreateWebhookResult> {
     const { idempotencyKey, ...body } = params;
-    const resp = await fetch(`${this.apiUrl}/webhooks`, {
-      method: "POST",
-      headers: this.headers(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) return fail(resp, "create webhook");
-    return resp.json();
+    for (let attempt = 0; ; attempt++) {
+      const resp = await fetch(`${this.apiUrl}/webhooks`, {
+        method: "POST",
+        headers: this.headers(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+        body: JSON.stringify(body),
+      });
+      if (resp.ok) return resp.json();
+      if (resp.status === 409 && attempt < 5) {
+        const body409 = (await resp.clone().json().catch(() => ({}))) as { code?: string };
+        if (body409.code === "idempotency_in_progress") {
+          const retryAfter = Number(resp.headers.get("Retry-After")) || 1;
+          await new Promise((r) => setTimeout(r, retryAfter * 1000));
+          continue;
+        }
+      }
+      return fail(resp, "create webhook");
+    }
   }
 
   async list(): Promise<WebhookDestination[]> {

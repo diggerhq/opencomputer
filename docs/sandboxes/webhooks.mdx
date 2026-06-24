@@ -47,7 +47,7 @@ Subscribe to all events, or filter with `eventTypes` (exact like `sandbox.stoppe
 
 ## Destinations
 
-A destination is **org-scoped** by default (all your sandboxes), or pinned to one sandbox with `sandbox_id`.
+A destination is **org-scoped** by default (all your sandboxes), or pinned to one sandbox with `sandboxId`. Set `enabled: false` to **pause** a destination — events that occur while paused are queued and delivered when you re-enable it, not dropped.
 
 <CodeGroup>
 
@@ -177,9 +177,9 @@ Redelivery re-sends the **same** delivery (same `webhook-id`) with a fresh retry
 ## Signing, retries, and dedupe
 
 - **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused (at registration and at send).
-- **Always signed** with [Standard Webhooks](https://www.standardwebhooks.com). Every request carries `webhook-id` (= `deliveryId`), `webhook-timestamp`, and `webhook-signature` = `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; the timestamp guards replay. Plus `X-OC-Delivery-ID` and `X-OC-Sandbox-ID` for correlation. Your `secret` is write-only.
-- **At-least-once, once accepted.** Once an event is accepted for delivery, it's retried with exponential backoff and, after the max attempts, **dead-lettered** (inspect and redeliver it) — so it arrives at least once. A duplicate can still arrive, so **dedupe on `webhook-id`** (= `deliveryId`).
-- A delivery succeeds on HTTP `2xx`.
+- **Always signed** with [Standard Webhooks](https://www.standardwebhooks.com). Every request carries `webhook-id` (= `deliveryId`), `webhook-timestamp`, and `webhook-signature` = `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; the timestamp guards replay. Plus `X-OC-Delivery-ID`, `X-OC-Sandbox-ID` (correlation) and `User-Agent: OpenComputer-Webhooks/1`. Your `secret` is write-only.
+- **At-least-once, once accepted.** Once an event is accepted it's retried until it succeeds or is **dead-lettered** (inspect + redeliver it). A duplicate can still arrive, so **dedupe on `webhook-id`** (= `deliveryId`).
+- **Success / retry / give-up.** A delivery succeeds on HTTP `2xx`. A `5xx`, network error, or timeout is **retried** on a backoff of `10s, 30s, 60s, 5m, 15m` (capped), up to **12 attempts**, then **`dead_letter`**. A `429` is retried honoring its `Retry-After`. A `4xx` (other than 429), a `3xx` redirect, or an SSRF-blocked address is treated as **permanent → immediate `dead_letter`** (no retries). Redirects are not followed.
 
 ### Verify a webhook
 

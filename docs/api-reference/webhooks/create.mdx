@@ -29,7 +29,11 @@ Register a webhook destination for sandbox lifecycle events. See [Webhooks](/san
   Whether the destination is active. Default `true`. `false` pauses delivery.
 </ParamField>
 
-Pass an **`Idempotency-Key`** header to make a timed-out retry safe — it returns the same destination instead of creating a duplicate.
+Returns **`201`** for a new destination, or **`200`** when an existing destination matched by `name` (same config) — the `200` response does **not** include a `secret`.
+
+**Validation (all `400`):** `url` must be HTTPS and pass SSRF checks (private/loopback/link-local/cloud-metadata addresses are refused); each `eventTypes` entry must be a known type or a `prefix.*` wildcard; `sandboxId` must belong to your org.
+
+**Idempotency.** Pass an **`Idempotency-Key`** header to make a retry safe — a repeat returns the same destination (and the same one-time `secret`) instead of creating a duplicate. The same key with a *different* body returns `409`. If a same-key request is still in flight, you get `409` with `{"code":"idempotency_in_progress"}` and a `Retry-After` header — retryable; just retry after the delay (the SDK does this automatically).
 
 <ResponseExample>
 ```json 201
