@@ -155,6 +155,22 @@ func (s *Server) recordLifecycle(ctx context.Context, orgID uuid.UUID, sandboxID
 		fmt.Sprintf("%s:%s:%d", sandboxID, evType, time.Now().UnixNano()), data)
 }
 
+// registerInlineWebhooksEdge registers inline webhooks via the edge (Svix) at
+// create time — the all-Svix-at-edge replacement for registerInlineWebhooks.
+// Nil-safe + best-effort: returns nil (logging) if there's no edge client or the
+// edge call fails, so a webhook hiccup never fails the sandbox create.
+func (s *Server) registerInlineWebhooksEdge(ctx context.Context, orgID uuid.UUID, sandboxID string, specs []types.SandboxWebhookSpec) []types.SandboxWebhookResult {
+	if s.edge == nil || len(specs) == 0 {
+		return nil
+	}
+	res, err := s.edge.RegisterInlineWebhooks(ctx, orgID, sandboxID, specs)
+	if err != nil {
+		log.Printf("sandbox %s: inline webhook edge register failed: %v", sandboxID, err)
+		return nil
+	}
+	return res
+}
+
 // registerInlineWebhooks registers webhooks supplied inline on sandbox create,
 // each pinned to the sandbox with no watermark floor (created_after_event_seq=0
 // → full lifecycle from `created`). Best-effort: a bad URL or register error is

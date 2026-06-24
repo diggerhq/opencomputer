@@ -257,13 +257,14 @@ func (s *Server) createSandbox(c echo.Context) error {
 		if template == "" {
 			template = "default"
 		}
+		// Inline webhooks: register the Svix endpoints (via the edge) pinned to
+		// this sandbox BEFORE CreateSandboxSession records sandbox.created, so the
+		// endpoint exists before that event is relayed. Best-effort + nil-safe.
+		if len(cfg.Webhooks) > 0 {
+			sb.Webhooks = s.registerInlineWebhooksEdge(ctx, orgID, sb.ID, cfg.Webhooks)
+		}
 		_, _ = s.store.CreateSandboxSession(ctx, sb.ID, orgID, auth.GetUserID(c), template, region, workerID, cfgJSON, metadataJSON, secretStoreID)
 
-		// Inline webhooks: register them pinned to this sandbox so they catch
-		// created/ready. Best-effort (see registerInlineWebhooks).
-		if len(cfg.Webhooks) > 0 {
-			sb.Webhooks = s.registerInlineWebhooks(ctx, orgID, sb.ID, cfg.Webhooks)
-		}
 		// Combined-mode create writes the session directly as 'running' (no
 		// pending→running promotion), so emit sandbox.ready here; the remote
 		// path emits it in-tx on the promotion. Deterministic id → at most one.
@@ -674,8 +675,8 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// worker can't emit it before the destination exists). Cleaned up below if
 	// the gRPC create fails.
 	var inlineWebhooks []types.SandboxWebhookResult
-	if s.store != nil && hasOrg && len(cfg.Webhooks) > 0 {
-		inlineWebhooks = s.registerInlineWebhooks(ctx, orgID, sandboxID, cfg.Webhooks)
+	if hasOrg && len(cfg.Webhooks) > 0 {
+		inlineWebhooks = s.registerInlineWebhooksEdge(ctx, orgID, sandboxID, cfg.Webhooks)
 	}
 
 	grpcResp, err := grpcClient.CreateSandbox(grpcCtx, &pb.CreateSandboxRequest{

@@ -31,6 +31,7 @@ import (
 
 	"github.com/opensandbox/opensandbox/internal/crypto"
 	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
 // ErrNotFound — returned for any 404 from the edge so callers can match it
@@ -390,6 +391,46 @@ func (c *Client) LookupSecretStore(ctx context.Context, orgID uuid.UUID, name st
 // have the resolved ID (e.g. the secret-refresh fan-out path).
 func (c *Client) LookupSecretStoreByID(ctx context.Context, id uuid.UUID, enc *crypto.Encryptor) (*SecretStoreBundle, error) {
 	return c.lookupStoreByQuery(ctx, "/internal/secret-stores/"+escapeQuery(id.String()), enc)
+}
+
+// ── Webhooks (inline-on-create) ──────────────────────────────────────────
+
+// RegisterInlineWebhooks registers inline sandbox webhooks at the edge (Svix
+// endpoints + the D1 index) at sandbox-create time — before the sandbox emits
+// `created`. The CP never talks to Svix; it forwards the specs over the
+// HMAC-auth'd /internal/webhooks/register endpoint. The edge skips invalid specs
+// best-effort and returns whatever it created (secret present once iff generated).
+func (c *Client) RegisterInlineWebhooks(ctx context.Context, orgID uuid.UUID, sandboxID string, specs []types.SandboxWebhookSpec) ([]types.SandboxWebhookResult, error) {
+	wh := make([]map[string]any, 0, len(specs))
+	for _, s := range specs {
+		m := map[string]any{"url": s.URL}
+		if len(s.EventTypes) > 0 {
+			m["eventTypes"] = s.EventTypes
+		}
+		if s.Secret != "" {
+			m["secret"] = s.Secret
+		}
+		wh = append(wh, m)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"orgId":     orgID.String(),
+		"sandboxId": sandboxID,
+		"webhooks":  wh,
+	})
+	respBody, status, err := c.do(ctx, "POST", "/internal/webhooks/register", body)
+	if err != nil {
+		return nil, err
+	}
+	if status != 200 {
+		return nil, fmt.Errorf("edge status %d: %s", status, string(respBody))
+	}
+	var resp struct {
+		Webhooks []types.SandboxWebhookResult `json:"webhooks"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("decode webhooks: %w", err)
+	}
+	return resp.Webhooks, nil
 }
 
 // ── helpers ────────────────────────────────────────────────────────────
