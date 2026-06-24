@@ -3,32 +3,29 @@ title: 'Get Delivery'
 api: 'GET /api/webhooks/{id}/deliveries/{deliveryId}'
 ---
 
-Fetch one delivery in detail. See [Webhooks](/sandboxes/webhooks#deliveries).
+Fetch one delivered message by id. See [Webhooks](/sandboxes/webhooks#deliveries).
 
 <ParamField path="id" type="string" required>
   Destination ID (`whk_…`).
 </ParamField>
 
 <ParamField path="deliveryId" type="string" required>
-  Delivery ID (`whd_…`).
+  Message id (`msg_…`, the `id` from [list deliveries](/api-reference/webhooks/deliveries-list); equals the `svix-id` header).
 </ParamField>
 
 <ResponseExample>
 ```json 200
 {
-  "id": "whd_8c1d",
-  "destination": "whk_3f9a2c",
-  "eventId": "sb-3f9a…:3:142",
+  "id": "msg_2aB…",
   "eventType": "sandbox.stopped",
-  "status": "delivered",
-  "attempts": 1,
-  "retryCount": 0,
-  "lastAttemptAt": "2026-06-24T12:00:01Z",
-  "responseCode": 200,
-  "error": null,
-  "createdAt": "2026-06-24T12:00:00Z",
-  "updatedAt": "2026-06-24T12:00:01Z",
-  "deliveredAt": "2026-06-24T12:00:01Z"
+  "eventId": "sb-3f9a…:sandbox.stopped",
+  "payload": {
+    "type": "sandbox.stopped",
+    "sandboxId": "sb-3f9a…",
+    "eventId": "sb-3f9a…:sandbox.stopped",
+    "event": { "id": "sb-3f9a…:sandbox.stopped", "ts": "2026-06-24T12:00:00Z", "orgId": "org_…", "sandboxId": "sb-3f9a…", "type": "sandbox.stopped", "data": { "reason": "user_requested" } }
+  },
+  "timestamp": "2026-06-24T12:00:00Z"
 }
 ```
 </ResponseExample>

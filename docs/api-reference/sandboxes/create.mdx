@@ -46,13 +46,13 @@ If both `cpuCount` and `memoryMB` are provided, they must match a platform tier.
 </ParamField>
 
 <ParamField body="webhooks" type="object[]">
-  Register [webhook](/sandboxes/webhooks) destination(s) for this sandbox's lifecycle events, atomically with create — so you receive `sandbox.created` / `sandbox.ready` (which fire before a separate create call could know the id). Each is pinned to this sandbox.
+  Register [webhook](/sandboxes/webhooks) destination(s) for this sandbox's lifecycle events, pinned to this sandbox. Registering inline (rather than via a separate call) means the endpoints exist **before** `sandbox.created` / `sandbox.ready` are relayed, so you don't miss the first events.
 
   - `url` *(string, required)*: HTTPS endpoint.
-  - `secret` *(string)*: signing secret; omit and one is generated and returned once on the response (`webhooks[].secret`).
+  - `secret` *(string)*: signing secret; omit and one is generated and returned on the response (`webhooks[].secret`), also re-fetchable later.
   - `eventTypes` *(string[])*: event-type allow-list (default all).
 
-  Each spec is validated up-front (same rules as [`POST /api/webhooks`](/api-reference/webhooks/create)); an invalid `url` or `eventTypes` fails the whole create with `400` (the sandbox is not created). The response echoes `webhooks: [{ id, url, secret? }]`.
+  Each spec is validated up-front (same rules as [`POST /api/webhooks`](/api-reference/webhooks/create)): a non-HTTPS `url` or unknown `eventTypes` is rejected with `400`. Registration is otherwise **best-effort** — if a spec fails to register downstream, the sandbox is still created; inspect the echoed `webhooks: [{ id, url, secret? }]` to see what registered.
 </ParamField>
 
 <ParamField body="previewAuth" type="object">
@@ -80,5 +80,5 @@ If both `cpuCount` and `memoryMB` are provided, they must match a platform tier.
 }
 ```
 
-`previewAuthToken` is only present when `previewAuth` was set in the request. `webhooks` is present only when `webhooks` were requested; each `secret` (`whsec_…`) is returned here exactly once. Read both once and store them durably — the server will not return them again.
+`previewAuthToken` is only present when `previewAuth` was set in the request — read it once and store it durably; the server will not return it again. `webhooks` is present only when `webhooks` were requested; each `secret` (`whsec_…`) is returned here and stays re-fetchable via [`GET /api/webhooks/{id}/secret`](/api-reference/webhooks/get).
 </ResponseExample>

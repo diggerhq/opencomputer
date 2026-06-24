@@ -3,46 +3,41 @@ title: 'List Deliveries'
 api: 'GET /api/webhooks/{id}/deliveries'
 ---
 
-List a destination's deliveries, cursor-paginated. Works for soft-deleted destinations too — delivery history is retained. See [Webhooks](/sandboxes/webhooks#deliveries).
+List a destination's most recent delivery attempts (up to 50). Each entry is a delivery-provider
+attempt record. The attempt index lags actual delivery by a few seconds. See [Webhooks](/sandboxes/webhooks#deliveries).
 
 <ParamField path="id" type="string" required>
   Destination ID (`whk_…`).
 </ParamField>
 
-<ParamField query="status" type="string">
-  Filter by status: `pending`, `delivering`, `delivered`, `failed`, `dead_letter`, or `canceled`.
-</ParamField>
+<ResponseField name="data[].id" type="string">
+  The message id — the key for [get](/api-reference/webhooks/delivery-get) / [redeliver](/api-reference/webhooks/redeliver); equals the `svix-id` header on the delivery.
+</ResponseField>
 
-<ParamField query="cursor" type="string">
-  Opaque pagination cursor from a previous response's `nextCursor`.
-</ParamField>
+<ResponseField name="data[].attemptId" type="string">
+  The id of this specific attempt.
+</ResponseField>
 
-<ParamField query="limit" type="integer">
-  Page size (default 50).
-</ParamField>
+<ResponseField name="data[].status" type="string">
+  One of `success`, `pending`, or `failed`.
+</ResponseField>
+
+<ResponseField name="data[].responseStatusCode" type="integer">
+  The consumer's HTTP response code, when the attempt reached it.
+</ResponseField>
 
 <ResponseExample>
 ```json 200
 {
   "data": [
     {
-      "id": "whd_8c1d",
-      "destination": "whk_3f9a2c",
-      "eventId": "sb-3f9a…:3:142",
-      "eventType": "sandbox.stopped",
-      "status": "delivered",
-      "attempts": 1,
-      "retryCount": 0,
-      "lastAttemptAt": "2026-06-24T12:00:01Z",
-      "responseCode": 200,
-      "error": null,
-      "createdAt": "2026-06-24T12:00:00Z",
-      "updatedAt": "2026-06-24T12:00:01Z",
-      "deliveredAt": "2026-06-24T12:00:01Z"
+      "id": "msg_2aB…",
+      "attemptId": "atmpt_9fE…",
+      "status": "success",
+      "responseStatusCode": 200,
+      "timestamp": "2026-06-24T12:00:01Z"
     }
-  ],
-  "nextCursor": null,
-  "hasMore": false
+  ]
 }
 ```
 </ResponseExample>

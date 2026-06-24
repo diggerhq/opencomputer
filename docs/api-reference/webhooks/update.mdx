@@ -10,30 +10,26 @@ Update a destination — pause/resume, retune filters, change the URL, or rotate
 </ParamField>
 
 <ParamField body="url" type="string">
-  New HTTPS endpoint (re-validated against the SSRF rules).
+  New HTTPS endpoint.
 </ParamField>
 
 <ParamField body="eventTypes" type="string[]">
-  Replace the event-type allow-list. Pass `null` to clear it (deliver all types).
+  Replace the event-type allow-list (unknown types are rejected with `400`). Pass `null` to clear it (deliver all types).
 </ParamField>
 
 <ParamField body="enabled" type="boolean">
   Pause (`false`) or resume (`true`) delivery. Pausing does **not** drop events — events that occur while paused are queued and delivered when you re-enable.
 </ParamField>
 
-<ParamField body="secret" type="string">
-  Set a caller-supplied signing secret (you keep it; it isn't echoed back).
-</ParamField>
-
 <ParamField body="rotateSecret" type="boolean">
-  Generate a **new** signing secret. The new `whsec_…` is returned **once** in the response (like create). Use this instead of `secret` when you want OpenComputer to mint the secret.
+  Rotate to a **new** generated signing secret, returned as `secret` in the response. The previous secret stays valid for a short rollover window so in-flight deliveries still verify. (To set a specific secret, create a new destination.)
 </ParamField>
 
 <ParamField body="name" type="string">
   Rename the destination.
 </ParamField>
 
-`sandboxId` (scope) is **immutable** — set it at create; it can't be changed here.
+`sandboxId` (scope) is **immutable** — set it at create; it can't be changed here. The current signing secret is re-fetchable any time via [`GET /api/webhooks/{id}/secret`](/api-reference/webhooks/get).
 
 <ResponseExample>
 ```json 200

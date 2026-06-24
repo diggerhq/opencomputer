@@ -57,9 +57,9 @@ const webhooks = new Webhooks({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
 const { id, secret } = await webhooks.create({
   url: "https://app.example.com/oc-webhook",
   eventTypes: ["sandbox.stopped", "sandbox.ready"],
-  name: "prod",            // optional; makes create idempotent
+  name: "prod",            // optional display name
 });
-// `secret` (whsec_…) is returned ONCE — store it now; you need it to verify deliveries.
+// `secret` (whsec_…) verifies deliveries — returned here and re-fetchable via webhooks.getSecret(id).
 ```
 
 ```http REST API
@@ -76,7 +76,7 @@ Content-Type: application/json
 
 </CodeGroup>
 
-Every destination is **signed**. If you don't pass a `secret`, OpenComputer generates one (`whsec_…`) and returns it **once** on create — store it then; it's never shown again.
+Every destination is **signed**. If you don't pass a `secret`, OpenComputer generates one (`whsec_…`) and returns it on create. The secret is re-fetchable any time via `webhooks.getSecret(id)` (`GET /api/webhooks/:id/secret`), and rotatable via `webhooks.update(id, { rotateSecret: true })`.
 
 <Tabs>
 
@@ -84,12 +84,13 @@ Every destination is **signed**. If you don't pass a `secret`, OpenComputer gene
 
 | Call | Purpose |
 | --- | --- |
-| `webhooks.create(params)` | Register a destination (returns `secret` once if generated). |
+| `webhooks.create(params)` | Register a new destination (returns the `secret`). |
 | `webhooks.list()` | List destinations. |
-| `webhooks.get(id)` | Fetch one (`hasSecret`, never the secret). |
-| `webhooks.update(id, params)` | Pause/resume (`enabled`), retune `eventTypes`, change `url`, rotate `secret`. |
-| `webhooks.delete(id)` | Soft-delete — history is retained, pending deliveries canceled. |
-| `webhooks.test(id)` | Send a synthetic `sandbox.test` event and return the result inline. |
+| `webhooks.get(id)` | Fetch one (`hasSecret`, not the secret value). |
+| `webhooks.getSecret(id)` | Fetch the current signing secret (`whsec_…`). |
+| `webhooks.update(id, params)` | Pause/resume (`enabled`), retune `eventTypes`, change `url`, or `rotateSecret`. |
+| `webhooks.delete(id)` | Delete — removes the endpoint; deleted history isn't queryable. |
+| `webhooks.test(id)` | Enqueue a sample event (delivered asynchronously). |
 
 </Tab>
 
@@ -97,12 +98,13 @@ Every destination is **signed**. If you don't pass a `secret`, OpenComputer gene
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /api/webhooks` | Register a destination. |
+| `POST /api/webhooks` | Register a new destination. |
 | `GET /api/webhooks` | List destinations. |
 | `GET /api/webhooks/:id` | Fetch one. |
-| `PATCH /api/webhooks/:id` | Pause/resume, retune `eventTypes`, change `url`, rotate `secret`. |
-| `DELETE /api/webhooks/:id` | Soft-delete (history retained). |
-| `POST /api/webhooks/:id/test` | Send a synthetic `sandbox.test` event. |
+| `GET /api/webhooks/:id/secret` | Fetch the current signing secret. |
+| `PATCH /api/webhooks/:id` | Pause/resume, retune `eventTypes`, change `url`, or `rotateSecret`. |
+| `DELETE /api/webhooks/:id` | Delete (history not queryable afterward). |
+| `POST /api/webhooks/:id/test` | Enqueue a sample event (delivered asynchronously). |
 
 </Tab>
 
@@ -143,9 +145,9 @@ Every send and its outcome — the data behind a deliveries dashboard.
 
 | Call | Purpose |
 | --- | --- |
-| `webhooks.deliveries.list(id, opts)` | List a destination's deliveries (cursor-paginated). |
-| `webhooks.deliveries.get(id, deliveryId)` | One delivery, in detail. |
-| `webhooks.deliveries.redeliver(id, deliveryId)` | Re-send any delivery (not only dead-lettered). |
+| `webhooks.deliveries.list(id)` | List recent delivery attempts (up to 50). |
+| `webhooks.deliveries.get(id, messageId)` | One delivered message, in detail. |
+| `webhooks.deliveries.redeliver(id, messageId)` | Re-send a message (same `svix-id`). |
 
 </Tab>
 
@@ -153,15 +155,15 @@ Every send and its outcome — the data behind a deliveries dashboard.
 
 | Method · Path | Purpose |
 | --- | --- |
-| `GET /api/webhooks/:id/deliveries?status=&cursor=&limit=` | List deliveries (paginated). |
-| `GET /api/webhooks/:id/deliveries/:deliveryId` | One delivery, in detail. |
-| `POST /api/webhooks/:id/deliveries/:deliveryId/redeliver` | Re-send any delivery. |
+| `GET /api/webhooks/:id/deliveries` | List recent attempts (up to 50). |
+| `GET /api/webhooks/:id/deliveries/:messageId` | One delivered message, in detail. |
+| `POST /api/webhooks/:id/deliveries/:messageId/redeliver` | Re-send a message. |
 
 </Tab>
 
 </Tabs>
 
-Each record is a Svix delivery attempt with its `status` and the consumer's `responseStatusCode`; Svix retries failed attempts on its managed schedule and keeps the full attempt history.
+Each record is a Svix delivery attempt with its `status` and the consumer's `responseStatusCode`; Svix retries failed attempts on its managed schedule and retains recent attempt history (the attempt index lags a send by a few seconds). A deleted destination's history is no longer queryable.
 
 ```
 Delivery = { id, status: "success" | "pending" | "failed", responseStatusCode?, timestamp }
@@ -173,7 +175,7 @@ Redelivery re-sends the **same** message to the endpoint (same `svix-id`) — fo
 
 - **HTTPS only**, checked at registration. The delivery layer (Svix) additionally blocks private, loopback, link-local, and cloud-metadata addresses at send time.
 - **Always signed** with [Standard Webhooks](https://www.standardwebhooks.com) (delivery is by [Svix](https://www.svix.com)). Every request carries `svix-id`, `svix-timestamp`, and `svix-signature` = `v1,<base64(HMAC-SHA256(secret, "{svix-id}.{svix-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; the timestamp guards replay. Any custom headers you attached as destination `metadata` ride along too. Your `secret` is write-only.
-- **At-least-once.** Once an event is handed off it's retried until it succeeds or the delivery layer gives up. A duplicate can still arrive, so **dedupe on `svix-id`** (= `deliveryId`).
+- **At-least-once.** Once an event is handed off it's retried until it succeeds or the delivery layer gives up. A duplicate can still arrive, so **dedupe on `svix-id`** (the verifier exposes it as both `deliveryId` and `dedupeId`).
 - **Not strictly ordered.** Events for one sandbox can arrive out of order (e.g. `sandbox.ready` before `sandbox.created`). Treat each event independently and key off `event.type`; don't assume an ordering.
 - **Success / retry / give-up.** A delivery succeeds on HTTP `2xx`. Failures are retried on Svix's managed backoff (immediately, then 5s, 5m, 30m, 2h, 5h, 10h, 10h); an endpoint that keeps failing for ~5 days is auto-disabled. Inspect attempts and recover failed messages via the [deliveries API](#deliveries). Unsafe targets (private / loopback / cloud-metadata addresses) are blocked by the delivery layer.
 

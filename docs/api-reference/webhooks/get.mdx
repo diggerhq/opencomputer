@@ -3,7 +3,7 @@ title: 'Get Webhook'
 api: 'GET /api/webhooks/{id}'
 ---
 
-Fetch one webhook destination. The signing secret is never returned — only `hasSecret`. See [Webhooks](/sandboxes/webhooks).
+Fetch one webhook destination. The response carries `hasSecret` (not the secret itself); fetch the secret value any time via `GET /api/webhooks/{id}/secret` → `{ "secret": "whsec_…" }`. See [Webhooks](/sandboxes/webhooks).
 
 <ParamField path="id" type="string" required>
   Destination ID (`whk_…`).

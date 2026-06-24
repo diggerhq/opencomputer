@@ -3,7 +3,11 @@ title: 'Test Webhook'
 api: 'POST /api/webhooks/{id}/test'
 ---
 
-Send a synthetic `sandbox.test` event to the destination and return the result inline. It bypasses the `eventTypes` filter, is signed like a real delivery, is not retried, and does not appear in delivery history. See [Webhooks](/sandboxes/webhooks).
+Enqueue a sample event to the destination to exercise the endpoint. It sends a real, signed
+message of a concrete type the destination is subscribed to (the first of its `eventTypes`,
+defaulting to `sandbox.created`), so it respects the destination's filters. Delivery is
+**asynchronous** — this returns once the message is accepted; check
+[deliveries](/api-reference/webhooks/deliveries-list) for the outcome. See [Webhooks](/sandboxes/webhooks).
 
 <ParamField path="id" type="string" required>
   Destination ID (`whk_…`).
@@ -12,10 +16,11 @@ Send a synthetic `sandbox.test` event to the destination and return the result i
 <ResponseExample>
 ```json 200
 {
-  "delivered": true,
-  "responseCode": 200
+  "ok": true,
+  "eventType": "sandbox.created",
+  "messageId": "msg_2aB…"
 }
 ```
 </ResponseExample>
 
-`delivered` is `false` with an `error` string when the endpoint didn't return `2xx`.
+`messageId` is the delivery's message id — find its attempt under [deliveries](/api-reference/webhooks/deliveries-list).
