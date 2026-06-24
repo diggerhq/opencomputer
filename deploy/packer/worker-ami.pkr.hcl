@@ -55,6 +55,12 @@ variable "location" {
   default = "westus2"
 }
 
+variable "replication_regions" {
+  type        = list(string)
+  description = "Extra Azure regions to replicate the gallery image version to, beyond the build region. Must include EVERY cell region that runs workers — a cell whose region has no replica cannot boot the image. The build region (var.location) is always included automatically."
+  default     = []
+}
+
 variable "vm_size" {
   type        = string
   default     = "Standard_D4ads_v7"
@@ -184,7 +190,9 @@ source "azure-arm" "worker" {
     gallery_name   = var.gallery_name
     image_name     = "osb-worker-v7"
     image_version  = "1.0.${var.image_version_patch}"
-    replication_regions = [var.location]
+    # Always include the build region; add every other cell region so each
+    # cell can boot this version from a local replica (cross-region boots fail).
+    replication_regions = distinct(concat([var.location], var.replication_regions))
   }
 
   azure_tags = {
