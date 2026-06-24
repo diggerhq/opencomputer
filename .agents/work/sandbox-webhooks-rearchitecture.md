@@ -326,10 +326,14 @@ everything is prefixed `…-igor-dev`. The path under test:
    sessions, DO `CREDIT_ACCOUNT` (self), R2. Secrets: `SESSION_JWT_SECRET`, `EVENT_SECRET`,
    `SVIX_API_TOKEN`, `CF_ADMIN_SECRET` (WorkOS/Autumn left unset/stubbed — off the webhook path).
    New code: `/api/webhooks*` management + `/internal/webhooks/register`.
-4. **Worker `opencomputer-events-ingest-igor-dev`** (`account_id b8f23cb8`) — bindings: D1, R2, DO
-   `CREDIT_ACCOUNT` (`script_name = opencomputer-api-edge-igor-dev`). Secrets: `EVENT_SECRET`
-   (**must equal** the box's `OPENSANDBOX_CF_EVENT_SECRET`), `SVIX_API_TOKEN`, `CF_ADMIN_SECRET`.
-   New code: `SvixSink` + sync-handoff.
+4. **Worker `opencomputer-events-ingest-igor-dev`** (`account_id b8f23cb8`) — **stripped**: bindings
+   D1 + R2 + secrets only, **drop the `CREDIT_ACCOUNT` DO binding** (it's free-tier debit, off the
+   webhook path; without it `usage_tick` debit logs a harmless error in `waitUntil` and never blocks
+   the 202). This avoids needing api-edge's full DO/KV/WorkOS/Autumn/Stripe stack just to test
+   deliveries. Secrets: `EVENT_SECRET` (**must equal** the box's `OPENSANDBOX_CF_EVENT_SECRET`),
+   `SVIX_API_TOKEN`. New code: `SvixSink` + sync-handoff. (Confirmed Igor 2026-06-24: create resources
+   in **Mo's account `b8f23cb8`**, prefix `…-igor-dev`; the local `CLOUDFLARE_API_TOKEN` is Mo's so
+   `wrangler` lands there.)
 5. **Svix** — nothing to pre-create: apps are per-org-`uid`, created on demand by the mgmt API. The
    one `SVIX_API_TOKEN` (`/tmp/svix_token`) suffices; dev uses dev org uids so apps don't collide
    with prod.
