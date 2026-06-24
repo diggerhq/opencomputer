@@ -733,6 +733,58 @@ state + the SSH key set up locally** — confirm before relying on it. (The GitH
 **preview-env** workflow is currently **disabled** — "TODO: rewrite for Azure/QEMU" — so it
 isn't an option today.)
 
+### Dev-box test record (2026-06-24, what was actually run)
+
+**Box.** The full-pipeline env we used was **not** the EC2 path above but the **GCP QEMU dev host**
+`opensandbox-qemu-dev-igor` (project `prod-415611`, zone `us-east4-c`, `34.181.232.88:8080`) — it
+runs server + worker as separate systemd units in `server` mode with `redis:7` + Postgres in
+docker (`opensandbox-redis`, `opensandbox-postgres`), so worker-origin events flow. Deploy:
+`GCP_PROJECT=prod-415611 GCP_ZONE=us-east4-c bash deploy/gcp/deploy-qemu-dev.sh deploy`. Gotchas:
+(a) the script's "Installing env files" step fails on a stale instance name (`opensandbox-qemu-dev`
+vs `…-igor`) **after** the build but **before** the restart, so binaries install but services stay
+stopped → finish with `systemctl restart opensandbox-server opensandbox-worker`; (b) on a migration
+change, `DROP` the 4 webhook tables + `DELETE FROM schema_migrations WHERE version=49` so 049
+re-applies; (c) the box needed `OPENSANDBOX_SECRET_ENCRYPTION_KEY` (else create → 503) and
+`OPENSANDBOX_CELL_ID=dev-cell-1` (server **and** worker; else no worker-origin ingress) added to
+`/etc/opensandbox/{server,worker}.env`; (d) seeded org `test-org` + key `test-dev-key`
+(`api_keys.key_hash = sha256hex(key)`). Sinks: `httpbingo.org` (httpbin.org was down).
+
+**How.** A repeatable, self-cleaning smoke script (`/tmp/webhooks_smoke.sh` — unique per-run name
+suffixes + cleanup-on-exit, ~1s polls since the dispatcher delivers in ~1–2s, one sandbox boot
+reused, waits for `/health` first). Runs in ~16–20s; **19/19** on a settled server. (A run during
+the post-restart settling window false-fails on connection resets — hence the health-wait.)
+
+**Verified end-to-end (delivered through the real pipeline unless noted):**
+- SSRF + scheme rejects (metadata/loopback/private/non-https → 400); invalid `eventTypes` → 400;
+  invalid `sandboxId` → 400.
+- Create: secret returned once; `GET` hides it (`hasSecret`); `{data:[…]}` list shape.
+- Idempotency-Key: replay returns same id **and** same one-time secret; different body → 409.
+  Name reuse with different config → 409.
+- `/test`: synchronous 200.
+- **Worker-origin** `sandbox.created` delivered (Redis ingress), `event.data` confirmed
+  normalized to `{"template":"default"}` (no internal `sandbox_id`).
+- **CP-origin** `sandbox.ready`, `sandbox.scaled` ({cpuCount,memoryMB}),
+  `sandbox.preview_url.changed` ({port,url}), `sandbox.stopped` — all delivered (200) for a real
+  sandbox create→scale→preview→stop lifecycle.
+- Dead-letter: a 404 sink → `dead_letter` immediately (responseCode 404).
+- Redeliver → 202, status pending.
+- **Pause = queue:** a `enabled:false` destination accumulated `pending` rows while disabled
+  (nothing delivered), then delivered the backlog after `PATCH enabled:true`.
+- Soft-delete → `GET` 404 but `GET …/deliveries` still 200 (history retained).
+- **Dormancy:** create+stop a sandbox with **no destination** → `SELECT count(*) FROM
+  sandbox_lifecycle_events` = **0** (nothing recorded); with a destination, all events flow.
+
+**Not exercisable on this box (code in + builds clean on Linux, but the box can't trigger them):**
+`sandbox.hibernated`/`resumed` and `checkpoint.created`/`forked` (hibernation + checkpoints need
+S3, not configured here — hibernate 500s "hibernation not configured"); `sandbox.migrated` (needs
+a second worker to migrate to); `sandbox.stopped` reason `expired` (needs an idle-timeout kill); the
+P0 cross-org metadata case (needs two orgs sharing a sandbox id). `hibernated`/`resumed`/`stopped`
+use the same proven in-tx / ingress paths as the verified events.
+
+**Coverage gap:** no Go unit tests for the store/handler logic yet — coverage is the
+signing/SSRF unit tests (`internal/webhook`) + this dev-box e2e. Worth adding store-level tests
+(against a throwaway Postgres) before/with GA.
+
 ### Deployment
 Control plane deploys on **push to `main`** (`.github/workflows/deploy-server.yml`, AWS via
 OIDC); **migrations apply on server boot**. Sequence:
