@@ -145,6 +145,10 @@ CREATE TABLE IF NOT EXISTS sandboxes_index (
   worker_id     TEXT,
   status        TEXT NOT NULL,                    -- running | hibernated | stopped | error
   template_id   TEXT,
+  -- Requested resources, projected by api-edge's POST /api/sandboxes (SSE) path
+  -- and surfaced by GET /api/sandboxes. Nullable: not every create path sets them.
+  cpu_count     INTEGER,
+  memory_mb     INTEGER,
   created_at    INTEGER NOT NULL,
   last_event_at INTEGER,
   stopped_at    INTEGER

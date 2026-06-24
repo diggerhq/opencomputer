@@ -211,6 +211,8 @@ async function createDestination(
   await refreshHasWebhooks(env, orgID);
 
   return {
+    // Same shape as toWire (list/get) + the one-time secret, so create/list/get
+    // are consistent (hasSecret + updatedAt included).
     wire: {
       id,
       url: spec.url,
@@ -218,7 +220,9 @@ async function createDestination(
       sandboxId: spec.sandboxId ?? null,
       name: spec.name ?? null,
       enabled: disabled === 0,
+      hasSecret: true,
       createdAt: new Date(ts * 1000).toISOString(),
+      updatedAt: new Date(ts * 1000).toISOString(),
     },
     secret,
   };
@@ -429,10 +433,27 @@ async function testWebhook(env: WebhookEnv, sx: SvixClient, caller: Caller, id: 
   }
   const expanded = expandEventTypes(stored);
   const eventType = expanded && expanded.length ? expanded[0] : "sandbox.created";
+  const sandboxId = row.sandbox_id ?? "sb-test";
+  const eventId = `test.${id}.${randomHex(6)}`;
+  // Send the REAL delivered envelope (the WebhookDelivery<SandboxLifecycleEvent>
+  // shape verifyWebhook returns), marked with data.test=true, so a consumer
+  // exercises its actual parser — not a reduced synthetic body.
   const msg = await sx.createMessage(row.svix_app_id, {
     eventType,
-    payload: { type: eventType, sandboxId: row.sandbox_id ?? "sb-test", test: true },
-    eventId: `test.${id}.${randomHex(6)}`,
+    payload: {
+      type: eventType,
+      sandboxId,
+      eventId,
+      event: {
+        id: eventId,
+        ts: new Date().toISOString(),
+        orgId: caller.orgID,
+        sandboxId,
+        type: eventType,
+        data: { test: true },
+      },
+    },
+    eventId,
     channels: row.sandbox_id ? [row.sandbox_id] : undefined,
   });
   return json({ ok: true, eventType, messageId: msg.id });

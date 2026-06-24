@@ -5,6 +5,12 @@ api: 'GET /api/webhooks/{id}/deliveries/{deliveryId}'
 
 Fetch one delivered message by id. See [Webhooks](/sandboxes/webhooks#deliveries).
 
+<Note>
+The delivery provider's attempt index and message store are eventually consistent: a message id can
+appear in [list deliveries](/api-reference/webhooks/deliveries-list) a few seconds before this
+endpoint can fetch it, so a `404` immediately after a delivery is transient — retry shortly.
+</Note>
+
 <ParamField path="id" type="string" required>
   Destination ID (`whk_…`).
 </ParamField>
