@@ -30,20 +30,20 @@ The envelope is camelCase, with top-level routing fields, your sandbox [`metadat
 
 ## Events
 
-Subscribe to all events, or filter with `eventTypes` (exact like `sandbox.stopped`, or a prefix like `sandbox.*`).
+Subscribe to all events, or filter with `eventTypes` (exact like `sandbox.stopped`, or a prefix like `sandbox.*`). You can subscribe to a **Coming soon** type now; it simply won't deliver until that event ships.
 
-| Event | When | `event.data` |
-| --- | --- | --- |
-| `sandbox.created` | the sandbox resource is accepted | `template`, `cpuCount`, `memoryMB` |
-| `sandbox.ready` | the VM has booted and can run commands | — |
-| `sandbox.hibernated` | the sandbox was paused (disk persisted) | — |
-| `sandbox.resumed` | a hibernated sandbox woke | — |
-| `sandbox.stopped` | the sandbox stopped | `reason`: `user_requested` \| `expired` \| `crash` |
-| `sandbox.migrated` | the sandbox moved to new infrastructure | — |
-| `sandbox.checkpoint.created` | a checkpoint was taken | `checkpointId` |
-| `sandbox.forked` | a sandbox was forked from a checkpoint | `parentId` |
-| `sandbox.scaled` | the sandbox's resources changed | `cpuCount`, `memoryMB` |
-| `sandbox.preview_url.changed` | a preview-URL port mapping changed | `port`, `url` |
+| Event | When | `event.data` | Status |
+| --- | --- | --- | --- |
+| `sandbox.created` | the sandbox resource is accepted | `template`, `cpuCount`, `memoryMB` | Live |
+| `sandbox.stopped` | the sandbox stopped | `reason`: `user_requested` \| `expired` \| `crash` | Live |
+| `sandbox.hibernated` | the sandbox was paused (disk persisted) | — | Live |
+| `sandbox.resumed` | a hibernated sandbox woke | — | Live |
+| `sandbox.migrated` | the sandbox moved to new infrastructure | — | Live |
+| `sandbox.ready` | the VM has booted and can run commands | — | Coming soon |
+| `sandbox.checkpoint.created` | a checkpoint was taken | `checkpointId` | Coming soon |
+| `sandbox.forked` | a sandbox was forked from a checkpoint | `parentId` | Coming soon |
+| `sandbox.scaled` | the sandbox's resources changed | `cpuCount`, `memoryMB` | Coming soon |
+| `sandbox.preview_url.changed` | a preview-URL port mapping changed | `port`, `url` | Coming soon |
 
 ## Destinations
 

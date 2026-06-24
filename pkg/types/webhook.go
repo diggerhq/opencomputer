@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -21,6 +22,36 @@ const (
 	WebhookEventPreviewURLChanged = "sandbox.preview_url.changed"
 	WebhookEventTest              = "sandbox.test"
 )
+
+// WebhookEventTypes is the full set of subscribable lifecycle types (excludes
+// the synthetic sandbox.test, which is only sent by /test). Some are not emitted
+// yet (P3) but are valid to subscribe to in advance.
+var WebhookEventTypes = []string{
+	WebhookEventCreated, WebhookEventReady, WebhookEventHibernated, WebhookEventResumed,
+	WebhookEventStopped, WebhookEventMigrated, WebhookEventCheckpointCreated,
+	WebhookEventForked, WebhookEventScaled, WebhookEventPreviewURLChanged,
+}
+
+// ValidWebhookEventFilter reports whether s is a valid eventTypes entry: an exact
+// known type, or a "prefix.*" wildcard that matches at least one known type
+// (e.g. "sandbox.*", "sandbox.checkpoint.*").
+func ValidWebhookEventFilter(s string) bool {
+	if strings.HasSuffix(s, ".*") {
+		prefix := strings.TrimSuffix(s, "*") // keep the trailing dot, e.g. "sandbox."
+		for _, t := range WebhookEventTypes {
+			if strings.HasPrefix(t, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, t := range WebhookEventTypes {
+		if t == s {
+			return true
+		}
+	}
+	return false
+}
 
 // Delivery statuses. failed = retryable (future next_attempt_at); dead_letter &
 // canceled are terminal.

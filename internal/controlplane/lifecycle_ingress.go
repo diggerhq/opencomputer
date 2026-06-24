@@ -45,9 +45,14 @@ type LifecycleIngress struct {
 // ingressTypeMap maps the internal worker event strings to public lifecycle
 // types. Only these worker-origin events become webhooks via the ingress; every
 // other stream entry is acked and ignored by this consumer group.
+//
+// Note: there is intentionally NO "running" entry — the worker does not emit a
+// post-boot "running"/"ready" stream event (sessions are created directly as
+// running), so sandbox.ready has no producer yet (P3 gap). "woke" is the
+// worker's wake signal (grpc_server.go WakeSandbox) → sandbox.resumed.
 var ingressTypeMap = map[string]string{
 	"created":  types.WebhookEventCreated,
-	"running":  types.WebhookEventReady,
+	"woke":     types.WebhookEventResumed,
 	"migrated": types.WebhookEventMigrated,
 }
 

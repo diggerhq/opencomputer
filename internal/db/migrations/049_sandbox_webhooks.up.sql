@@ -79,12 +79,16 @@ CREATE INDEX IF NOT EXISTS webhook_deliveries_dest_idx
 -- → replay the stored ORIGINAL RESPONSE (incl. the one-time generated secret);
 -- same key + different request → 409. response_enc is the rendered create
 -- response, encrypted (it carries the plaintext secret). Prune past a ~24h TTL.
+-- Two-phase: a request first RESERVES (org_id,key,request_hash) atomically (so a
+-- concurrent same-key create can't double-create), then FINALIZES with the
+-- destination + encrypted response. destination_id/response_enc are therefore
+-- NULL between reserve and finalize (and a never-finalized claim is released).
 CREATE TABLE IF NOT EXISTS webhook_idempotency_keys (
     org_id         UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     key            TEXT        NOT NULL,                    -- caller's Idempotency-Key header
     request_hash   TEXT        NOT NULL,                    -- fingerprint of the create body
-    destination_id TEXT        NOT NULL REFERENCES webhook_destinations(id) ON DELETE CASCADE,
-    response_enc   BYTEA       NOT NULL,                    -- the original create response (incl. secret), encrypted
+    destination_id TEXT        REFERENCES webhook_destinations(id) ON DELETE CASCADE,
+    response_enc   BYTEA,                                   -- the original create response (incl. secret), encrypted; NULL until finalized
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (org_id, key)
 );

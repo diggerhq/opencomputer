@@ -1777,6 +1777,32 @@ func (s *Store) ReconcileWorkerSessions(ctx context.Context, workerID string) (h
 		return hibernated, stopped, fmt.Errorf("failed to close scale events: %w", err)
 	}
 
+	// Record canonical lifecycle events in THIS tx so webhooks fire for
+	// crash-recovery transitions too (worker restart while a sandbox was
+	// running). Without this, exactly the failure cases users want webhooks for
+	// would silently bypass the ledger.
+	for _, o := range hibernated {
+		if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+			ID:        fmt.Sprintf("%s:sandbox.hibernated:reconcile:%d", o.SandboxID, time.Now().UnixNano()),
+			OrgID:     o.OrgID,
+			SandboxID: o.SandboxID,
+			Type:      "sandbox.hibernated",
+		}); err != nil {
+			return nil, nil, fmt.Errorf("record reconcile hibernated event: %w", err)
+		}
+	}
+	for _, o := range stopped {
+		if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+			ID:        fmt.Sprintf("%s:sandbox.stopped:reconcile:%d", o.SandboxID, time.Now().UnixNano()),
+			OrgID:     o.OrgID,
+			SandboxID: o.SandboxID,
+			Type:      "sandbox.stopped",
+			Data:      json.RawMessage(`{"reason":"crash"}`),
+		}); err != nil {
+			return nil, nil, fmt.Errorf("record reconcile stopped event: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, nil, fmt.Errorf("failed to commit reconcile tx: %w", err)
 	}

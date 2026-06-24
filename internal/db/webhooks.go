@@ -381,36 +381,66 @@ func (s *Store) SoftDeleteWebhookDestination(ctx context.Context, orgID uuid.UUI
 // Idempotency-Key storage
 // ---------------------------------------------------------------------------
 
-// GetWebhookIdempotentResponse looks up a stored create response by (org,key).
-// found+matching hash → returns the decrypted response JSON. found+different
-// hash → ErrWebhookIdempotencyConflict. not found → (nil, false, nil).
-func (s *Store) GetWebhookIdempotentResponse(ctx context.Context, orgID uuid.UUID, key, requestHash string) ([]byte, bool, error) {
+// WebhookIdemOutcome is the result of reserving an Idempotency-Key.
+type WebhookIdemOutcome int
+
+const (
+	WebhookIdemClaimed    WebhookIdemOutcome = iota // we own a fresh claim; proceed to create + finalize
+	WebhookIdemReplay                               // a finalized response exists (same request) → return it
+	WebhookIdemInProgress                           // same key+request, claim held by a concurrent request, not finalized yet
+	WebhookIdemConflict                             // same key, different request body
+)
+
+// ReserveIdempotencyKey atomically claims (org_id, key) for this create request
+// BEFORE any destination is created, so two concurrent same-key requests can't
+// both create. The unique PK makes the claim INSERT the single arbiter:
+//   - we win the INSERT → WebhookIdemClaimed (caller must Finalize or Release)
+//   - row exists, different hash → WebhookIdemConflict
+//   - row exists, same hash, response stored → WebhookIdemReplay (+ decrypted body)
+//   - row exists, same hash, not finalized → WebhookIdemInProgress
+func (s *Store) ReserveIdempotencyKey(ctx context.Context, orgID uuid.UUID, key, requestHash string) (WebhookIdemOutcome, []byte, error) {
 	if s.encryptor == nil {
-		return nil, false, ErrEncryptionNotConfigured
+		return 0, nil, ErrEncryptionNotConfigured
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO webhook_idempotency_keys (org_id, key, request_hash)
+		 VALUES ($1, $2, $3) ON CONFLICT (org_id, key) DO NOTHING`,
+		orgID, key, requestHash)
+	if err != nil {
+		return 0, nil, err
+	}
+	if tag.RowsAffected() == 1 {
+		return WebhookIdemClaimed, nil, nil
 	}
 	var storedHash string
-	var enc []byte
-	err := s.pool.QueryRow(ctx,
+	var enc []byte // nullable until finalized
+	err = s.pool.QueryRow(ctx,
 		`SELECT request_hash, response_enc FROM webhook_idempotency_keys WHERE org_id = $1 AND key = $2`,
 		orgID, key).Scan(&storedHash, &enc)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, false, nil
+			return WebhookIdemInProgress, nil, nil // raced with a release; ask the client to retry
 		}
-		return nil, false, err
+		return 0, nil, err
 	}
 	if storedHash != requestHash {
-		return nil, false, ErrWebhookIdempotencyConflict
+		return WebhookIdemConflict, nil, nil
+	}
+	if enc == nil {
+		return WebhookIdemInProgress, nil, nil
 	}
 	plain, err := s.encryptor.Decrypt(enc)
 	if err != nil {
-		return nil, false, fmt.Errorf("decrypt idempotent response: %w", err)
+		return 0, nil, fmt.Errorf("decrypt idempotent response: %w", err)
 	}
-	return plain, true, nil
+	return WebhookIdemReplay, plain, nil
 }
 
-// PutWebhookIdempotentResponse stores the encrypted original create response.
-func (s *Store) PutWebhookIdempotentResponse(ctx context.Context, orgID uuid.UUID, key, requestHash, destinationID string, responseJSON []byte) error {
+// FinalizeIdempotencyKey attaches the destination + encrypted response to a claim
+// we own. Returns an error if the claim is missing or already finalized — the
+// caller MUST treat a finalize failure as fatal (the one-time secret would
+// otherwise be unrecoverable).
+func (s *Store) FinalizeIdempotencyKey(ctx context.Context, orgID uuid.UUID, key, destinationID string, responseJSON []byte) error {
 	if s.encryptor == nil {
 		return ErrEncryptionNotConfigured
 	}
@@ -418,11 +448,25 @@ func (s *Store) PutWebhookIdempotentResponse(ctx context.Context, orgID uuid.UUI
 	if err != nil {
 		return fmt.Errorf("encrypt idempotent response: %w", err)
 	}
-	_, err = s.pool.Exec(ctx,
-		`INSERT INTO webhook_idempotency_keys (org_id, key, request_hash, destination_id, response_enc)
-		 VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (org_id, key) DO NOTHING`,
-		orgID, key, requestHash, destinationID, enc)
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE webhook_idempotency_keys SET destination_id = $3, response_enc = $4
+		 WHERE org_id = $1 AND key = $2 AND response_enc IS NULL`,
+		orgID, key, destinationID, enc)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("idempotency claim missing or already finalized")
+	}
+	return nil
+}
+
+// ReleaseIdempotencyKey drops an unfinalized claim so a later retry can proceed
+// (used when create or finalize fails).
+func (s *Store) ReleaseIdempotencyKey(ctx context.Context, orgID uuid.UUID, key string) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM webhook_idempotency_keys WHERE org_id = $1 AND key = $2 AND response_enc IS NULL`,
+		orgID, key)
 	return err
 }
 
@@ -654,7 +698,8 @@ type DueDelivery struct {
 	URL        string
 	Secret     string
 	Payload    []byte
-	RetryCount int // post-claim value (already incremented)
+	RetryCount int    // post-claim value (already incremented)
+	LockedBy   string // this dispatcher's lock token; used to record results safely
 }
 
 // ClaimDueDeliveries atomically claims up to `batch` due deliveries for enabled,
@@ -729,6 +774,7 @@ func (s *Store) ClaimDueDeliveries(ctx context.Context, lockedBy string, batch i
 			Secret:     string(secret),
 			Payload:    c.payload,
 			RetryCount: c.retry + 1,
+			LockedBy:   lockedBy,
 		})
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -746,21 +792,28 @@ type DeliveryResult struct {
 }
 
 // RecordDeliveryResult writes the outcome of a send attempt and clears the lock.
-func (s *Store) RecordDeliveryResult(ctx context.Context, id string, r DeliveryResult) error {
+// It only updates a row THIS dispatcher still owns (status='delivering' AND
+// locked_by=lockedBy), so a stale sender can't revive a row that was meanwhile
+// canceled (destination deleted) or redelivered (reset to pending by a manual
+// redeliver or the reconciler). Returns whether the row was updated.
+func (s *Store) RecordDeliveryResult(ctx context.Context, id, lockedBy string, r DeliveryResult) (bool, error) {
 	var delivered *time.Time
 	if r.Status == "delivered" {
 		now := time.Now()
 		delivered = &now
 	}
-	_, err := s.pool.Exec(ctx,
+	tag, err := s.pool.Exec(ctx,
 		`UPDATE webhook_deliveries
-		 SET status = $2, response_code = $3, error = $4,
-		     next_attempt_at = COALESCE($5, next_attempt_at),
-		     delivered_at = COALESCE($6, delivered_at),
+		 SET status = $3, response_code = $4, error = $5,
+		     next_attempt_at = COALESCE($6, next_attempt_at),
+		     delivered_at = COALESCE($7, delivered_at),
 		     locked_by = NULL, locked_until = NULL, updated_at = now()
-		 WHERE id = $1`,
-		id, r.Status, r.ResponseCode, r.Error, r.NextAttemptAt, delivered)
-	return err
+		 WHERE id = $1 AND status = 'delivering' AND locked_by = $2`,
+		id, lockedBy, r.Status, r.ResponseCode, r.Error, r.NextAttemptAt, delivered)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // ReclaimStaleDeliveries returns deliveries stuck in 'delivering' past their
@@ -809,14 +862,42 @@ func (s *Store) GetWebhookDelivery(ctx context.Context, orgID uuid.UUID, destID,
 	return r, nil
 }
 
+// destinationOwnedByOrg verifies a destination belongs to the org, INCLUDING
+// soft-deleted ones (for delivery-history access after deletion). Returns
+// ErrWebhookNotFound if no such row exists for the org.
+func (s *Store) destinationOwnedByOrg(ctx context.Context, orgID uuid.UUID, id string) error {
+	var exists bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT true FROM webhook_destinations WHERE id = $1 AND org_id = $2`, id, orgID).Scan(&exists)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrWebhookNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+// SandboxBelongsToOrg reports whether sandboxID is owned by orgID — used to
+// validate a webhook's sandbox scope at registration.
+func (s *Store) SandboxBelongsToOrg(ctx context.Context, orgID uuid.UUID, sandboxID string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM sandbox_sessions WHERE sandbox_id = $1 AND org_id = $2)`,
+		sandboxID, orgID).Scan(&exists)
+	return exists, err
+}
+
 // ListWebhookDeliveries returns a destination's deliveries, newest first,
 // cursor-paginated on (created_at, id). An optional status filter narrows it.
 func (s *Store) ListWebhookDeliveries(ctx context.Context, orgID uuid.UUID, destID, status, cursor string, limit int) ([]*WebhookDeliveryRow, *string, bool, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	// Verify the destination belongs to the org (so an unknown id 404s, not empties).
-	if _, err := s.GetWebhookDestination(ctx, orgID, destID); err != nil {
+	// Verify the destination belongs to the org (so an unknown id 404s, not
+	// empties). Soft-deleted destinations are allowed here — their delivery
+	// history is retained and remains queryable.
+	if err := s.destinationOwnedByOrg(ctx, orgID, destID); err != nil {
 		return nil, nil, false, err
 	}
 

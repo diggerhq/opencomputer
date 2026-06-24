@@ -185,16 +185,41 @@ func (s *Server) createWebhook(c echo.Context) error {
 	if err := webhook.ValidateURL(ctx, req.URL); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid webhook url: " + err.Error()})
 	}
-
-	idemKey := c.Request().Header.Get("Idempotency-Key")
-	reqHash := webhookRequestHash(req)
-	if idemKey != "" {
-		stored, found, err := store.GetWebhookIdempotentResponse(ctx, orgID, idemKey, reqHash)
+	if bad := firstInvalidEventType(req.EventTypes); bad != "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "unknown event type: " + bad})
+	}
+	if req.SandboxID != nil {
+		owned, err := store.SandboxBelongsToOrg(ctx, orgID, *req.SandboxID)
 		if err != nil {
 			return webhookStoreError(c, err)
 		}
-		if found {
+		if !owned {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandboxId not found for this org"})
+		}
+	}
+
+	idemKey := c.Request().Header.Get("Idempotency-Key")
+	claimed := false
+	if idemKey != "" {
+		outcome, stored, err := store.ReserveIdempotencyKey(ctx, orgID, idemKey, webhookRequestHash(req))
+		if err != nil {
+			return webhookStoreError(c, err)
+		}
+		switch outcome {
+		case db.WebhookIdemReplay:
 			return c.JSONBlob(http.StatusCreated, stored)
+		case db.WebhookIdemConflict:
+			return c.JSON(http.StatusConflict, map[string]string{"error": "Idempotency-Key reused with a different request"})
+		case db.WebhookIdemInProgress:
+			return c.JSON(http.StatusConflict, map[string]string{"error": "a request with this Idempotency-Key is already in progress"})
+		case db.WebhookIdemClaimed:
+			claimed = true
+		}
+	}
+	// From here on, any early return must release the claim so a retry can proceed.
+	release := func() {
+		if claimed {
+			_ = store.ReleaseIdempotencyKey(ctx, orgID, idemKey)
 		}
 	}
 
@@ -203,6 +228,7 @@ func (s *Server) createWebhook(c echo.Context) error {
 	if secret == "" {
 		gen, err := webhook.GenerateSecret()
 		if err != nil {
+			release()
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to generate signing secret"})
 		}
 		secret = gen
@@ -214,6 +240,7 @@ func (s *Server) createWebhook(c echo.Context) error {
 	}
 	seq, err := store.CurrentLifecycleSeq(ctx)
 	if err != nil {
+		release()
 		return webhookStoreError(c, err)
 	}
 
@@ -228,23 +255,43 @@ func (s *Server) createWebhook(c echo.Context) error {
 		CreatedAfterEventSeq: seq,
 	})
 	if err != nil {
+		release()
 		return webhookStoreError(c, err)
-	}
-	if reused {
-		// Name matched an existing destination — return it without a secret.
-		return c.JSON(http.StatusOK, toWireDestination(row, ""))
 	}
 
 	echoSecret := ""
-	if generated {
+	status := http.StatusCreated
+	if reused {
+		status = http.StatusOK // existing destination matched by name — no secret echo
+	} else if generated {
 		echoSecret = secret
 	}
 	resp := toWireDestination(row, echoSecret)
-	if idemKey != "" {
+
+	if claimed {
 		body, _ := json.Marshal(resp)
-		_ = store.PutWebhookIdempotentResponse(ctx, orgID, idemKey, reqHash, row.ID, body)
+		if ferr := store.FinalizeIdempotencyKey(ctx, orgID, idemKey, row.ID, body); ferr != nil {
+			// The one-time secret would otherwise be unrecoverable — fail the
+			// request and clean up so the client can safely retry.
+			if !reused {
+				_ = store.SoftDeleteWebhookDestination(ctx, orgID, row.ID)
+			}
+			_ = store.ReleaseIdempotencyKey(ctx, orgID, idemKey)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to persist idempotent response; please retry"})
+		}
 	}
-	return c.JSON(http.StatusCreated, resp)
+	return c.JSON(status, resp)
+}
+
+// firstInvalidEventType returns the first eventTypes entry that isn't a valid
+// exact type or "prefix.*" wildcard, or "" if all are valid.
+func firstInvalidEventType(ets []string) string {
+	for _, e := range ets {
+		if !types.ValidWebhookEventFilter(e) {
+			return e
+		}
+	}
+	return ""
 }
 
 // GET /api/webhooks
@@ -261,7 +308,8 @@ func (s *Server) listWebhooks(c echo.Context) error {
 	for _, r := range rows {
 		out = append(out, toWireDestination(r, ""))
 	}
-	return c.JSON(http.StatusOK, out)
+	// Canonical shape: { "data": [...] } (matches the docs + deliveries list).
+	return c.JSON(http.StatusOK, map[string][]types.WebhookDestination{"data": out})
 }
 
 // GET /api/webhooks/:id
@@ -315,6 +363,9 @@ func (s *Server) updateWebhook(c echo.Context) error {
 			var et []string
 			if err := json.Unmarshal(v, &et); err != nil {
 				return badField("eventTypes")
+			}
+			if bad := firstInvalidEventType(et); bad != "" {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "unknown event type: " + bad})
 			}
 			if len(et) == 0 {
 				p.ClearEventTypes = true

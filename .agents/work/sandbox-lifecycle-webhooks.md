@@ -47,6 +47,18 @@ polish (per-type payload normalization at the ingress, LISTEN/NOTIFY latency) tr
   worker via a stream ingress), and **one materializer** creates delivery rows from it — no
   per-origin delivery logic to drift. Dedupe happens once (`sandbox_lifecycle_events.id`); the
   watermark unifies to a DB-assigned `seq` (drops the Redis-stream-id scheme).
+- **Rev 7 — post-build review fixes (2026-06-24).** (P0) inline webhooks now register on the
+  **remote** create path too (`createSandboxRemote`, before the gRPC call using the pre-generated
+  id → reliably catches `created`; cleaned up on create failure). (P1) `RecordDeliveryResult` now
+  guards `WHERE status='delivering' AND locked_by=$me` so a stale sender can't revive a
+  canceled/redelivered row; `Idempotency-Key` is now a transactional **reserve → create →
+  finalize/release** (no double-create, secret never silently lost). (P1) producers reconciled with
+  the taxonomy: `resumed` wired (worker `woke`→ingress), dead `running`→ready map removed, docs mark
+  unshipped types **Coming soon**. (P2) `ReconcileWorkerSessions` records canonical events in-tx
+  (crash-recovery stop/hibernate now fire webhooks); delivery **history survives soft-delete**
+  (list tolerates deleted dests); `eventTypes` validated against the taxonomy + `prefix.*` and
+  `sandboxId` validated to belong to the org. (P3) destinations list returns canonical
+  `{ data: [...] }`.
 
 ## Goal
 
@@ -203,7 +215,7 @@ double-delivery and no per-origin logic. Names are crisp (P2-g): `created` = res
 | `sandbox.created` | worker | ✅ (`"created"`) | worker create → `redis_event_publisher.go` | resource accepted; memory/cpu/template. **Verified delivered e2e (dev VM, 2026-06-24).** |
 | `sandbox.ready` | worker | ❌ **gap (P3)** | worker post-boot health (net-new) | **Corrected 2026-06-24:** the worker does NOT emit a post-boot event today — `CreateSandboxSession` inserts status `running` directly and the only worker stream event is `created`. A distinct "VM usable" signal needs a net-new worker emit (P3). Do NOT fake it at create (it would duplicate `created`). |
 | `sandbox.hibernated` | CP | ✅ (`"hibernated"`) | `api/sandbox.go:hibernateSandbox` (DB status write) + `OnSandboxHibernate` | durable capture (P2-b) |
-| `sandbox.resumed` | CP | ✅ (`"woke"`) | `api/sandbox.go:wakeSandbox` (DB status write) + `OnSandboxWake` | renamed from `woke`; durable capture (P2-b) |
+| `sandbox.resumed` | worker | ✅ (`"woke"`) | worker `grpc_server.go:WakeSandbox` emits `"woke"` → ingress maps `"woke"`→`sandbox.resumed` | **Corrected (review):** the worker emits `woke` on the stream (not a CP DB write), so this is worker-origin via the ingress, not CP in-tx. |
 | `sandbox.migrated` | worker | ✅ (`"migrated"`) | worker migrate | |
 | `sandbox.stopped` | CP | ✅ (`"stopped"`) | `db/store.go:UpdateSandboxSessionStatus` (record in-tx) | `data.reason` incl. `user_requested`, `expired`, `crash` (P2-g/O6: no separate `crashed` type). **Verified delivered e2e (dev VM, 2026-06-24).** |
 | `sandbox.checkpoint.created` | CP | ❌ **gap** | `api/sandbox.go:createCheckpoint` | net-new emit |

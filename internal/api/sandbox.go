@@ -645,6 +645,15 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		}
 	}
 
+	// Register inline webhooks BEFORE the worker boots, pinned to the
+	// pre-generated sandbox id — so they reliably catch sandbox.created (the
+	// worker can't emit it before the destination exists). Cleaned up below if
+	// the gRPC create fails.
+	var inlineWebhooks []types.SandboxWebhookResult
+	if s.store != nil && hasOrg && len(cfg.Webhooks) > 0 {
+		inlineWebhooks = s.registerInlineWebhooks(ctx, orgID, sandboxID, cfg.Webhooks)
+	}
+
 	grpcResp, err := grpcClient.CreateSandbox(grpcCtx, &pb.CreateSandboxRequest{
 		SandboxId:            sandboxID,
 		Template:             cfg.Template,
@@ -664,6 +673,10 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		if s.store != nil {
 			errMsg := err.Error()
 			_ = s.store.UpdateSandboxSessionStatus(ctx, sandboxID, "failed", &errMsg)
+			// Clean up inline webhooks registered for a sandbox that never started.
+			for _, w := range inlineWebhooks {
+				_ = s.store.SoftDeleteWebhookDestination(ctx, orgID, w.ID)
+			}
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "worker create failed: " + err.Error(),
@@ -752,6 +765,9 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	}
 	if previewAuthPlaintext != "" {
 		resp["previewAuthToken"] = previewAuthPlaintext
+	}
+	if len(inlineWebhooks) > 0 {
+		resp["webhooks"] = inlineWebhooks
 	}
 
 	return c.JSON(http.StatusCreated, resp)

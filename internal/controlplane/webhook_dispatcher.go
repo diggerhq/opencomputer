@@ -184,7 +184,7 @@ func (d *WebhookDispatcher) sendOne(ctx context.Context, dd db.DueDelivery) {
 	code := resp.StatusCode
 	switch {
 	case code >= 200 && code < 300:
-		if err := d.store.RecordDeliveryResult(ctx, dd.ID, db.DeliveryResult{
+		if _, err := d.store.RecordDeliveryResult(ctx, dd.ID, dd.LockedBy, db.DeliveryResult{
 			Status: "delivered", ResponseCode: &code,
 		}); err != nil {
 			log.Printf("webhook_dispatcher: record delivered %s: %v", dd.ID, err)
@@ -210,7 +210,7 @@ func (d *WebhookDispatcher) recordRetryable(ctx context.Context, dd db.DueDelive
 	}
 	next := time.Now().Add(wait)
 	e := capErr(msg)
-	if err := d.store.RecordDeliveryResult(ctx, dd.ID, db.DeliveryResult{
+	if _, err := d.store.RecordDeliveryResult(ctx, dd.ID, dd.LockedBy, db.DeliveryResult{
 		Status: "failed", ResponseCode: code, Error: &e, NextAttemptAt: &next,
 	}); err != nil {
 		log.Printf("webhook_dispatcher: record failed %s: %v", dd.ID, err)
@@ -223,7 +223,7 @@ func (d *WebhookDispatcher) recordTerminal(ctx context.Context, dd db.DueDeliver
 
 func (d *WebhookDispatcher) recordTerminalCode(ctx context.Context, dd db.DueDelivery, code *int, msg string) {
 	e := capErr(msg)
-	if err := d.store.RecordDeliveryResult(ctx, dd.ID, db.DeliveryResult{
+	if _, err := d.store.RecordDeliveryResult(ctx, dd.ID, dd.LockedBy, db.DeliveryResult{
 		Status: "dead_letter", ResponseCode: code, Error: &e,
 	}); err != nil {
 		log.Printf("webhook_dispatcher: record dead_letter %s: %v", dd.ID, err)
