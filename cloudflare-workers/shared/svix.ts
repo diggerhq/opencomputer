@@ -57,6 +57,7 @@ export interface EndpointParams {
   metadata?: Record<string, string>;
   disabled?: boolean;
   uid?: string;
+  secret?: string; // optional caller-provided signing secret (whsec_…); else Svix generates
 }
 
 export interface MessageParams {
@@ -157,6 +158,8 @@ export class SvixClient {
 
   // CreateMessage sends an event to the org's app; Svix fans it out to matching
   // endpoints. idempotencyKey makes retries safe (same key → same message).
+  // appID may be the Svix app id OR the app uid (Svix accepts uid in the path),
+  // so events-ingest can address an org's app by org_id without a lookup.
   async createMessage(appID: string, m: MessageParams): Promise<{ id: string; eventId?: string }> {
     const body: Record<string, unknown> = { eventType: m.eventType, payload: m.payload };
     if (m.eventId) body.eventId = sanitizeEventID(m.eventId);
@@ -164,4 +167,51 @@ export class SvixClient {
     const hdrs = m.idempotencyKey ? { "idempotency-key": m.idempotencyKey } : undefined;
     return this.do("create_message", "POST", `/api/v1/app/${appID}/msg/`, body, hdrs);
   }
+
+  // ListEndpointAttempts returns recent delivery attempts to an endpoint — backs
+  // GET /api/webhooks/:id/deliveries.
+  async listEndpointAttempts(appID: string, epID: string, limit = 50): Promise<MessageAttempt[]> {
+    const out = await this.do<{ data: MessageAttempt[] }>(
+      "list_endpoint_attempts",
+      "GET",
+      `/api/v1/app/${appID}/attempt/endpoint/${epID}/?limit=${limit}`,
+    );
+    return out?.data ?? [];
+  }
+
+  // GetMessage returns one message — backs GET /api/webhooks/:id/deliveries/:msgId.
+  async getMessage(appID: string, msgID: string): Promise<SvixMessage> {
+    return this.do("get_message", "GET", `/api/v1/app/${appID}/msg/${msgID}/`);
+  }
+
+  // ResendMessage re-delivers a message to one endpoint — backs
+  // POST /api/webhooks/:id/deliveries/:msgId/redeliver.
+  async resendMessage(appID: string, msgID: string, epID: string): Promise<void> {
+    await this.do(
+      "resend_message",
+      "POST",
+      `/api/v1/app/${appID}/msg/${msgID}/endpoint/${epID}/resend/`,
+      {},
+    );
+  }
+}
+
+// MessageAttempt status: 0 = success, 1 = pending, 2 = failed.
+export interface MessageAttempt {
+  id: string;
+  status: number;
+  responseStatusCode?: number;
+  timestamp?: string;
+  msgId?: string;
+  endpointId?: string;
+  url?: string;
+}
+
+export interface SvixMessage {
+  id: string;
+  eventType?: string;
+  eventId?: string;
+  channels?: string[];
+  payload?: unknown;
+  timestamp?: string;
 }

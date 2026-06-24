@@ -29,6 +29,7 @@ import { runAutumnMeter } from "./autumn_meter";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
 import * as templates from "./templates";
+import * as webhooks from "./webhooks";
 
 export interface Env extends DashboardEnv {
   CF_ADMIN_SECRET: string;
@@ -42,6 +43,8 @@ export interface Env extends DashboardEnv {
   // envelope encryption of secret_store_entries.encrypted_value. Matches
   // internal/crypto.Encryptor key format (hex-encoded 32 bytes).
   SECRET_ENCRYPTION_KEY: string;
+  // Svix API token (managed webhook delivery). Region is in the token suffix.
+  SVIX_API_TOKEN: string;
   // CF_API_TOKEN and CF_ZONE_ID are optional in DashboardEnv (custom domain
   // feature gates on them). Inherited.
   ASSETS?: Fetcher;
@@ -1681,6 +1684,14 @@ export default {
       }
     }
 
+    // /internal/webhooks/register — HMAC-auth'd, called by the CP at
+    // sandbox-create time to register inline webhooks (Svix endpoints) BEFORE
+    // the sandbox emits `created`. (.agents/work/sandbox-webhooks-rearchitecture.md)
+    if (path === "/internal/webhooks/register") {
+      if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+      return webhooks.registerInlineWebhooksInternal(req, env, url);
+    }
+
     // /api/secret-stores — org-scoped CRUD. Same X-API-Key auth as
     // /api/sandboxes; replaces the legacy CP-side PG routes (deleted in
     // the same PR as migration 041).
@@ -1899,6 +1910,15 @@ export default {
     // longer validate D1-only api_keys, and would mis-route in a multi-cell
     // world. proxyToCellAuthed streams the response (SSE-safe). This is a
     // backstop; prefer adding a native handler for high-traffic resources.
+    // /api/webhooks* — sandbox lifecycle webhook management (Svix-backed,
+    // all-at-edge). Same X-API-Key auth as the rest of the public API; must
+    // precede the proxy catch-all below.
+    if (path === "/api/webhooks" || path.startsWith("/api/webhooks/")) {
+      const caller = await authenticate(req, env);
+      if (!caller) return json({ error: "missing or invalid API key" }, 401);
+      return webhooks.handleWebhooksAPI(req, env, caller, url);
+    }
+
     if (path.startsWith("/api/")) {
       const caller = await authenticate(req, env);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
