@@ -4,15 +4,9 @@ Status: **rev 6 — P1 backend IMPLEMENTED (2026-06-24)**, not yet deployed. Bra
 `feat/sandbox-webhooks`. This is a **complete reference** — a future implementer should be able
 to work from this doc + the cited code without the conversation that produced it.
 
-**Dev-VM e2e PASSED (2026-06-24, 19/19)** on the GCP QEMU dev host (`opensandbox-qemu-dev-igor`,
-server mode + Redis + `cell_id=dev-cell-1`; reused `crypto.Encryptor` via a generated
-`OPENSANDBOX_SECRET_ENCRYPTION_KEY`). Verified end-to-end: SSRF reject (metadata/loopback/private/
-non-https), create + secret-once, get-hides-secret, `/test` 200, Idempotency-Key replay + conflict,
-name-conflict 409, **worker-origin `sandbox.created` delivered (Redis ingress)**, **CP-origin
-`sandbox.stopped` delivered (in-tx)**, dead-letter on a 404 sink (immediate), redeliver→202,
-soft-delete + 404. **Not exercised on this VM:** `sandbox.hibernated`/`resumed` (hibernation needs
-S3, not configured on the dev host — same proven in-tx path as `stopped`); `sandbox.ready` (P3 gap,
-see §3); `migrated`/checkpoint/scaled/preview_url (P3 emit gaps).
+**Testing source of truth:** see §16 at the end of this doc. It records the local/unit expectations,
+the GCP QEMU dev-box setup, the exact smoke commands, the 22/22 e2e result, manual probes, bugs
+found/fixed during probing, and the remaining unexercised paths.
 
 **P1 build landed** (migration `049_sandbox_webhooks`, `pkg/types/webhook.go`,
 `internal/webhook/{sign,ssrf}.go` + tests, `internal/db/webhooks.go` + the in-tx CP-origin
@@ -20,8 +14,8 @@ capture in `store.go:UpdateSandboxSessionStatus`, `internal/api/webhooks.go` + r
 inline-on-create, `internal/controlplane/{webhook_materializer,webhook_dispatcher,lifecycle_ingress}.go`,
 wired in `cmd/server/main.go`). Builds + `go vet` clean; signing/SSRF unit tests pass. Reuses
 the existing `crypto.Encryptor` (O5 ✓ — `OPENSANDBOX_SECRET_ENCRYPTION_KEY`). Remaining before
-prod: end-to-end test on the single-host dev VM (★O9), then deploy + publish SDK/docs. P2/P3
-polish (per-type payload normalization at the ingress, LISTEN/NOTIFY latency) tracked below.
+prod: deploy + publish SDK/docs. Remaining polish (LISTEN/NOTIFY latency, dashboard) is tracked
+below.
 
 - **Rev 2** resolved the plumbing blockers — signing-secret behavior, source durability (dual
   projection), Redis reclaim (XPENDING+XCLAIM), deterministic event IDs, the delivery state
@@ -697,104 +691,27 @@ lastAttemptAt, responseCode, error, createdAt, updatedAt, deliveredAt }`. List r
 
 ---
 
-## 15. Implementation readiness, testing, deployment & rollback
+## 15. Implementation readiness, deployment & rollback
 
-**Readiness: design-complete (rev 5) — ready to implement.** One canonical contract (§2b);
-schema, the canonical event pipeline (recordLifecycleEvent → materializer), dispatcher, signing, SSRF, API, and reliability are all specified
-with code sites (§12); build order = §13. The doc is current as of rev 5 (no known stale
-sections). Pre-build verifications still open: **O5** (secret key) and **★O9** (worker-origin transport).
+**Readiness: P1 backend implemented (rev 6).** One canonical contract (§2b), schema, canonical
+event pipeline (`recordLifecycleEvent` → materializer), dispatcher, signing, SSRF, API, and
+reliability semantics are specified with code sites (§12). Remaining launch work is deploy +
+publish-order coordination.
 
 ### What's net-new at runtime
 The **projector** (Redis consumer group) and **dispatcher** (Postgres poll loop) are new
 **background goroutines in the control plane** (`cmd/server/main.go`), beside the existing
-`billable_events_sender` / `event_forwarder`. New tables only (additive migration); no worker/
-agent change except the event-emission gaps (§3).
-
-### Testing
-**Local (the fast loop, default):** `make infra-up` (Postgres :5432 + NATS) → `make run-pg`
-(combined mode; **migrations run on server start**) → `make seed` (org `test-org`, key
-`test-key`). Hit `/api/webhooks` CRUD + `/test` + deliveries on `localhost` with `X-API-Key:
-test-key`; point a destination at a local sink and assert signing / retry / dead-letter /
-redeliver / soft-delete-cancel.
-- **Covers fully:** the API, the dispatcher (claim → SSRF → sign → classify → backoff →
-  dead-letter), the materializer, and **CP-origin** capture (stopped/hibernated/resumed +
-  gap events, recorded in-tx).
-- **Pure unit tests (no infra):** SSRF allow/deny vectors, Standard Webhooks signing (golden
-  vectors checked against the shipped TS `verifyWebhook`), `classify()`, `backoff()`, the
-  state machine, idempotency (name-409 + key-replay).
-- **Worker-origin events** (created/ready/migrated) need Redis — see ★O9.
-
-**Single-host dev (end-to-end, real sandboxes — the full-pipeline env):** `make deploy-dev`
-rsyncs the branch to a Terraform-provisioned EC2 host (`deploy/ec2/setup-single-host.sh`) and
-builds on-box → real sandbox create/hibernate/stop → real lifecycle events → real deliveries.
-It already runs **Redis + server mode** (separate server/worker systemd units), prod-like, so
-**worker-origin events flow here** (unlike the local combined/NATS stack — O9). **Needs AWS creds + Terraform
-state + the SSH key set up locally** — confirm before relying on it. (The GitHub
-**preview-env** workflow is currently **disabled** — "TODO: rewrite for Azure/QEMU" — so it
-isn't an option today.)
-
-### Dev-box test record (2026-06-24, what was actually run)
-
-**Box.** The full-pipeline env we used was **not** the EC2 path above but the **GCP QEMU dev host**
-`opensandbox-qemu-dev-igor` (project `prod-415611`, zone `us-east4-c`, `34.181.232.88:8080`) — it
-runs server + worker as separate systemd units in `server` mode with `redis:7` + Postgres in
-docker (`opensandbox-redis`, `opensandbox-postgres`), so worker-origin events flow. Deploy:
-`GCP_PROJECT=prod-415611 GCP_ZONE=us-east4-c bash deploy/gcp/deploy-qemu-dev.sh deploy`. Gotchas:
-(a) the script's "Installing env files" step fails on a stale instance name (`opensandbox-qemu-dev`
-vs `…-igor`) **after** the build but **before** the restart, so binaries install but services stay
-stopped → finish with `systemctl restart opensandbox-server opensandbox-worker`; (b) on a migration
-change, `DROP` the 4 webhook tables + `DELETE FROM schema_migrations WHERE version=49` so 049
-re-applies; (c) the box needed `OPENSANDBOX_SECRET_ENCRYPTION_KEY` (else create → 503) and
-`OPENSANDBOX_CELL_ID=dev-cell-1` (server **and** worker; else no worker-origin ingress) added to
-`/etc/opensandbox/{server,worker}.env`; (d) seeded org `test-org` + key `test-dev-key`
-(`api_keys.key_hash = sha256hex(key)`). Sinks: `httpbingo.org` (httpbin.org was down).
-
-**How.** A repeatable, self-cleaning smoke script (`/tmp/webhooks_smoke.sh` — unique per-run name
-suffixes + cleanup-on-exit, ~1s polls since the dispatcher delivers in ~1–2s, one sandbox boot
-reused, waits for `/health` first). Runs in ~16–20s; **19/19** on a settled server. (A run during
-the post-restart settling window false-fails on connection resets — hence the health-wait.)
-
-**Verified end-to-end (delivered through the real pipeline unless noted):**
-- SSRF + scheme rejects (metadata/loopback/private/non-https → 400); invalid `eventTypes` → 400;
-  invalid `sandboxId` → 400.
-- Create: secret returned once; `GET` hides it (`hasSecret`); `{data:[…]}` list shape.
-- Idempotency-Key: replay returns same id **and** same one-time secret; different body → 409.
-  Name reuse with different config → 409.
-- `/test`: synchronous 200.
-- **Worker-origin** `sandbox.created` delivered (Redis ingress), `event.data` confirmed
-  normalized to `{"template":"default"}` (no internal `sandbox_id`).
-- **CP-origin** `sandbox.ready`, `sandbox.scaled` ({cpuCount,memoryMB}),
-  `sandbox.preview_url.changed` ({port,url}), `sandbox.stopped` — all delivered (200) for a real
-  sandbox create→scale→preview→stop lifecycle.
-- Dead-letter: a 404 sink → `dead_letter` immediately (responseCode 404).
-- Redeliver → 202, status pending.
-- **Pause = queue:** a `enabled:false` destination accumulated `pending` rows while disabled
-  (nothing delivered), then delivered the backlog after `PATCH enabled:true`.
-- Soft-delete → `GET` 404 but `GET …/deliveries` still 200 (history retained).
-- **Dormancy:** create+stop a sandbox with **no destination** → `SELECT count(*) FROM
-  sandbox_lifecycle_events` = **0** (nothing recorded); with a destination, all events flow.
-
-**Not exercisable on this box (code in + builds clean on Linux, but the box can't trigger them):**
-`sandbox.hibernated`/`resumed` and `checkpoint.created`/`forked` (hibernation + checkpoints need
-S3, not configured here — hibernate 500s "hibernation not configured"); `sandbox.migrated` (needs
-a second worker to migrate to); `sandbox.stopped` reason `expired` (needs an idle-timeout kill); the
-P0 cross-org metadata case (needs two orgs sharing a sandbox id). `hibernated`/`resumed`/`stopped`
-use the same proven in-tx / ingress paths as the verified events.
-
-**Coverage gap:** no Go unit tests for the store/handler logic yet — coverage is the
-signing/SSRF unit tests (`internal/webhook`) + this dev-box e2e. Worth adding store-level tests
-(against a throwaway Postgres) before/with GA.
+`billable_events_sender` / `event_forwarder`. New tables only (additive migration); the only worker
+runtime change in this branch labels idle-timeout stops as `expired` for webhook reason taxonomy.
 
 ### Deployment
 Control plane deploys on **push to `main`** (`.github/workflows/deploy-server.yml`, AWS via
 OIDC); **migrations apply on server boot**. Sequence:
-1. Implement Go (§12) behind the additive migration.
-2. Merge → CP deploys + migration runs on boot (follow the prod-DB **gated-migration** rule,
+1. Merge → CP deploys + migration runs on boot (follow the prod-DB **gated-migration** rule,
    `AGENTS.md`).
-3. Land the event-emission gaps (§3).
-4. **Publish the SDK (`@opencomputer/sdk` 0.8.0, via `publish-ts-sdk.yml`) and flip the Preview
-   docs live only AFTER the backend is live** — until then the SDK 404s and the docs describe an
-   unbuilt API. The 0.8.0 bump is staged; do **not** publish early.
+2. **Publish the SDK (`@opencomputer/sdk` 0.8.0, via `publish-ts-sdk.yml`) and flip the Preview
+   docs live only AFTER the backend is live** — until then SDK calls 404. The 0.8.0 bump is staged;
+   do **not** publish early.
 
 ### Rollback — feasible and clean
 The feature is **dormant until a destination exists** (no destinations → projector matches
@@ -813,5 +730,127 @@ pointer. So:
   dormant-until-used to cap blast radius.
 - **Redis / worker-origin ingress (★O9).** Reclaim on Azure Redis 6.0 (XPENDING/XCLAIM, chosen) + the transport
   question above.
-- **Secret key management (O5).** Reuse `internal/crypto/encrypt.go`; confirm key config.
-- **Ahead of backend.** Docs + SDK exist; the Go impl doesn't yet — hold publish until it lands.
+- **Secret key management.** Reuses `internal/crypto/encrypt.go`; production must have
+  `OPENSANDBOX_SECRET_ENCRYPTION_KEY` configured.
+- **Ahead of backend.** Docs + SDK exist before deploy — hold publish until the backend is live.
+
+## 16. Testing record
+
+This is the single source of truth for what we expected to test and what was actually verified
+before launch.
+
+### Local / Unit Coverage
+
+**Local fast loop:** `make infra-up` (Postgres :5432 + NATS) → `make run-pg` (combined mode;
+migrations run on server start) → `make seed` (org `test-org`, key `test-key`). Exercise
+`/api/webhooks` CRUD, `/test`, deliveries, signing, retry/dead-letter, redelivery, and
+soft-delete-cancel against `localhost` with `X-API-Key: test-key`.
+
+Local combined mode covers the API, dispatcher, materializer, and CP-origin capture. It does not
+cover worker-origin events because the local stack is NATS-only and lacks the Redis lifecycle
+stream. Worker-origin coverage requires a server/worker split with Redis, which is why the dev-box
+test below matters.
+
+**Unit tests:** signing and SSRF vector coverage exists in `internal/webhook`; event taxonomy has
+unit coverage. Store/handler behavior is still primarily covered by the dev-box e2e path, not
+dedicated Go store tests. Add store-level tests against throwaway Postgres before/with GA.
+
+### Full-Pipeline Dev Box
+
+**Host:** GCP QEMU dev host `opensandbox-qemu-dev-igor` (project `prod-415611`, zone `us-east4-c`,
+API `http://34.181.232.88:8080`). It runs server + worker as separate systemd units in server mode,
+with Redis + Postgres in Docker (`opensandbox-redis`, `opensandbox-postgres`), so worker-origin
+events flow through the real Redis ingress.
+
+**Deploy command:**
+
+```bash
+GCP_PROJECT=prod-415611 \
+  GCP_ZONE=us-east4-c \
+  bash deploy/gcp/deploy-qemu-dev.sh deploy
+```
+
+Dev-box gotchas:
+
+- The deploy script's "Installing env files" step hardcodes the stale instance name
+  `opensandbox-qemu-dev` instead of `opensandbox-qemu-dev-igor`. It fails after build/install but
+  before restart, so finish with `sudo systemctl restart opensandbox-server opensandbox-worker`.
+- On migration changes, drop the four webhook tables and delete `schema_migrations.version = 49`
+  so migration 049 re-applies.
+- Required envs: `OPENSANDBOX_SECRET_ENCRYPTION_KEY` (else webhook create returns 503) and
+  `OPENSANDBOX_CELL_ID=dev-cell-1` in both `server.env` and `worker.env`.
+- Seeded org/key: org `test-org`, API key `test-dev-key` (`api_keys.key_hash = sha256hex(key)`).
+- Sinks used `httpbingo.org`; `httpbin.org` was down during testing.
+
+### Exact Commands Run
+
+```bash
+curl -s http://34.181.232.88:8080/health
+curl -s -H 'X-API-Key: test-dev-key' \
+  http://34.181.232.88:8080/api/webhooks
+BASE_URL=http://34.181.232.88:8080 \
+  API_KEY=test-dev-key \
+  bash /tmp/webhooks_e2e.sh
+```
+
+Results:
+
+- `/health` returned `{"status":"ok"}`.
+- Initial webhook list returned `[]` on the cleaned test org.
+- `/tmp/webhooks_e2e.sh` passed **22/22** on the redeployed box.
+
+The script is repeatable and self-cleaning: unique per-run names, cleanup-on-exit, one reused real
+sandbox boot, `/health` wait before assertions, and ~1s polling because dispatcher delivery is
+usually ~1-2s. A run during the immediate post-restart settling window can false-fail on connection
+resets; wait for health first.
+
+### Verified End-To-End
+
+Delivered through the real pipeline unless explicitly noted:
+
+- Validation: SSRF/scheme rejects for metadata, loopback, private, and non-HTTPS URLs; invalid
+  `eventTypes`; invalid `sandboxId`.
+- Destination create/read/list/update/delete: generated secret returned once; `GET` hides secret
+  and returns `hasSecret`; list shape is `{data:[...]}`.
+- Idempotency: replay returns the same destination and the same one-time secret; different body
+  conflicts; same `name` with different config conflicts.
+- `/test`: synchronous signed POST returns 200 and bypasses history/retry.
+- Worker-origin event: `sandbox.created` delivered via Redis ingress; public `event.data` normalized
+  to `{"template":"default"}` with no internal `sandbox_id`.
+- CP-origin events: `sandbox.ready`, `sandbox.scaled` (`cpuCount`, `memoryMB`),
+  `sandbox.preview_url.changed` (`port`, `url`), and `sandbox.stopped` delivered for a real
+  create→scale→preview→stop lifecycle.
+- Dead-letter: 404 sink moves immediately to `dead_letter` with responseCode 404.
+- Manual redelivery: returns 202 and re-enqueues the same delivery id.
+- Pause/resume: `enabled:false` materializes pending rows without dispatching; `enabled:true`
+  drains the backlog.
+- Soft-delete: destination `GET` returns 404, but deliveries remain queryable.
+- Dormancy: create+stop with no destination leaves `sandbox_lifecycle_events` at count 0; with a
+  destination, events are recorded and delivered.
+- Watermark: a destination created after an event does not receive that older event.
+- Filtering: exact `eventTypes` and `sandbox.*` prefix filtering work.
+- SDK build: `npm run build` in `sdks/typescript` passes after the `0.8.0` bump.
+
+### Bugs Found During Probing And Fixed
+
+- `sandbox.scaled` initially did not fire for explicit scale-to-4096 because it reused the admin
+  SSE "default-size noise" guard. Fixed by recording the webhook for every successful explicit
+  scale request while keeping the admin SSE guard separate.
+- `sandbox.migrated` needed to be recorded in `CompleteMigration`, not only via Redis/admin paths.
+  Fixed so manual and scale-triggered migrations share the same CP-side completion funnel.
+- Metadata hydration was by `sandbox_id` only. Fixed to hydrate by `(org_id, sandbox_id)`.
+- Worker payloads leaked internal fields into public `event.data`. Fixed ingress normalization:
+  `sandbox.created` exposes `{template}` and `sandbox.resumed` exposes `{}`.
+- Stop reasons were too coarse. Fixed idle-timeout kills to use `expired`, crash/orphan paths to
+  use `crash`, and user/API stops to default to `user_requested`.
+
+### Not Exercised On This Box
+
+- S3-backed hibernate/resume, checkpoint, and fork paths. S3 was not configured; hibernate returned
+  "hibernation not configured".
+- Real two-worker migration. The `CompleteMigration` webhook path was reviewed and build-tested,
+  but no live migration ran on this single-worker host.
+- Idle-timeout `expired` delivery. The worker timeout-reason path was reviewed and changed, but not
+  waited out in the e2e run.
+- Cross-org sandbox-id collision. The metadata fix was verified by code review against the
+  established `(org_id, sandbox_id)` rule, not by constructing colliding test data.
