@@ -12,6 +12,12 @@ without the conversation that produced it.
   casing, `webhook-id` meaning, generated secrets, metadata in the body, a creation watermark,
   idempotent destination creation, soft-delete; plus per-path event-id ownership (no
   cross-path double-delivery), a split retry budget, and taxonomy naming.
+- **Rev 4** closes the third review's user-facing gaps: **subscribe-at-create** (inline webhooks
+  on `POST /api/sandboxes`, so a per-sandbox integrator catches `created`/`ready`); **exact
+  idempotency** (`name` conflict→409 + an `Idempotency-Key` table); **verifier compatibility**
+  (base64 secret, SDK/docs convergence); **deletion cancels** non-terminal deliveries (new
+  `canceled` terminal status); a **skew-free watermark** (Redis stream id, not producer ts);
+  `hibernated`/`resumed` moved to the durable path; `/test` + redelivery semantics; P3 leftovers.
 
 ## Goal
 
@@ -108,12 +114,13 @@ adopts the stronger form; where sessions-api differs today, a follow-up brings i
 | Aspect | The contract (core, the new standard) | sessions-api today | Action |
 |---|---|---|---|
 | **Envelope casing** | body is **camelCase** (`type`, `sandboxId`/`sessionId`, `eventId`, `metadata`, `event{…}`); the REST *management* API stays snake_case | camelCase already (`sessionId`, `eventId`) | core match; consistent |
-| **`webhook-id` meaning** | = **`delivery.id`** (the message; stable across retries *and* manual redelivery of that delivery); `eventId` lives in the body | uses `event_id` | **sessions-api follow-up**: switch to delivery id |
+| **`webhook-id` meaning** | = **`delivery.id`** (the message; stable across retries *and* manual redelivery); `eventId` lives in the body | uses `event_id` | **sessions-api follow-up** + **SDK/docs**: switch to delivery id and update the `WebhookDelivery` type + verifier comment (until then the two products differ — "one verifier" is true only *after* this lands, P2-c) |
 | **Signing** | every delivery signed; secret **auto-generated** (`whsec_…`) if none supplied, returned **once**; no unsigned path | unsigned allowed when no secret | **sessions-api follow-up** |
 | **Secret echo** | return the secret **only when we generated it**; never echo a caller-supplied one | n/a | core decides |
 | **Metadata** | sandbox/session `metadata` included **top-level in the body** (capped) so receivers route without a lookup | included | core match |
-| **Creation watermark** | a destination only receives events **after** it was created (no historical backfill) | `created_after_seq` | core uses `created_after` timestamp |
-| **Idempotent creation** | `POST` is get-or-create by optional unique `name` per org, and honors an `Idempotency-Key` header | idempotency-key on session create | core adds both |
+| **Creation watermark** | a destination only receives events **after** it was created (no historical backfill) | `created_after_seq` | core uses a **Redis stream-id** watermark (skew-free, P2-a), not a producer timestamp |
+| **Idempotent creation** | get-or-create by optional unique `name` (same config → existing; **different config → 409**) **and** an `Idempotency-Key` header (stored + fingerprinted) | idempotency-key on session create | core adds both, with explicit conflict semantics (P1-b) |
+| **Subscribe at create** | inline `webhooks` on `POST /api/sandboxes` so a per-sandbox integrator catches `created`/`ready` (which fire before they'd know the id) | `webhook` on session create | core adds it (P1-a) |
 | **Deletion** | **soft-delete** (tombstone); delivery history retained; `enabled=false` = pause | hard delete | core improves; sessions-api follow-up optional |
 
 The sessions-api follow-ups (delivery-id `webhook-id`, mandatory generated secrets, soft-delete)
@@ -135,8 +142,8 @@ booted and usable for exec; `resumed` (not "woke") pairs with `hibernated`.
 |---|---|---|---|---|
 | `sandbox.created` | B | ✅ (`"created"`) | worker create → `redis_event_publisher.go` | resource accepted; memory/cpu/template |
 | `sandbox.ready` | B | ✅ (`"running"`) | worker, post-boot | VM usable for exec (renamed from `running`) |
-| `sandbox.hibernated` | B | ✅ (`"hibernated"`) | worker + `OnSandboxHibernate` | |
-| `sandbox.resumed` | B | ✅ (`"woke"`) | worker + `OnSandboxWake` | renamed from `woke` |
+| `sandbox.hibernated` | A | ✅ (`"hibernated"`) | `api/sandbox.go:hibernateSandbox` (DB status write) + `OnSandboxHibernate` | core lifecycle signal → durable path (P2-b) |
+| `sandbox.resumed` | A | ✅ (`"woke"`) | `api/sandbox.go:wakeSandbox` (DB status write) + `OnSandboxWake` | renamed from `woke`; durable path (P2-b) |
 | `sandbox.migrated` | B | ✅ (`"migrated"`) | worker migrate | |
 | `sandbox.stopped` | A | ✅ (`"stopped"`) | `db/store.go:UpdateSandboxSessionStatus` (project in-tx) | `data.reason` incl. `user_requested`, `expired`, `crash` (P2-g/O6: no separate `crashed` type) |
 | `sandbox.checkpoint.created` | A | ❌ **gap** | `api/sandbox.go:createCheckpoint` | net-new emit |
@@ -203,7 +210,8 @@ CREATE TABLE webhook_destinations (
   -- nonce‖ciphertext in a single bytea (do NOT model iv/tag as separate columns — D11).
   secret_enc    bytea NOT NULL,
   enabled       boolean NOT NULL DEFAULT true,    -- false = paused (pending rows not claimed)
-  created_after timestamptz NOT NULL DEFAULT now(),  -- watermark: only events with ts > this (P1-d; no backfill)
+  created_after_stream_id text,                    -- Path-B watermark = Redis stream id at creation
+                                                   -- (skew-free, P2-a). NULL = no floor (inline-on-create / pinned sandbox)
   deleted_at    timestamptz,                      -- soft-delete tombstone (P2-f); history retained
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now()
@@ -222,6 +230,7 @@ CREATE TABLE webhook_deliveries (
   -- pending: scheduled, not yet attempted | delivering: claimed, in flight
   -- delivered: 2xx (terminal) | failed: RETRYABLE, carries a future next_attempt_at (due index)
   -- dead_letter: TERMINAL — permanent failure (4xx/SSRF) OR exhausted MAX_ATTEMPTS (never due)
+  -- canceled: TERMINAL — destination soft-deleted while non-terminal (error='destination_deleted'); never due (P1-d)
   status        text NOT NULL DEFAULT 'pending',
   attempts      int  NOT NULL DEFAULT 0,           -- lifetime total (audit; never reset)
   retry_count   int  NOT NULL DEFAULT 0,           -- retry BUDGET vs MAX_ATTEMPTS; reset to 0 on manual redeliver
@@ -240,15 +249,27 @@ CREATE TABLE webhook_deliveries (
 CREATE INDEX webhook_deliveries_due_idx ON webhook_deliveries(next_attempt_at)
   WHERE status IN ('pending','failed');
 CREATE INDEX webhook_deliveries_dest_idx ON webhook_deliveries(destination_id, created_at DESC);
+
+-- Idempotency-Key storage for POST /api/webhooks (P1-b). Same (org,key) + same request → replay
+-- the stored result; same key + different request → 409. Prune rows older than the TTL (~24h).
+CREATE TABLE webhook_idempotency_keys (
+  org_id        uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  key           text NOT NULL,                    -- caller's Idempotency-Key header
+  request_hash  text NOT NULL,                    -- fingerprint of the create body (url+event_types+sandbox_id+name)
+  destination_id text NOT NULL REFERENCES webhook_destinations(id) ON DELETE CASCADE,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (org_id, key)
+);
 ```
 
 **Secret storage.** Encrypt with the existing core helper `internal/crypto/encrypt.go:43`
 (it stores `nonce‖ciphertext` in one bytea — match it; do not reinvent iv/tag columns, D11).
 The secret is **mandatory and auto-generated**: on create, if the caller supplies none, mint
-`whsec_` + base64url(32 random bytes); return it **once** in the create response and never
-again (reads return only `has_secret: true`). Rotation (`PATCH`) mints/accepts a new secret
-and likewise returns it once. For HMAC, strip the `whsec_` prefix and base64-decode to key
-bytes (Standard Webhooks convention). Master key: reuse whatever key `internal/crypto`
+`whsec_` + **standard base64**(32 random bytes) — **not base64url** (P1-c): the shipped TS
+verifier decodes with `atob`, which doesn't reliably accept base64url, and Standard Webhooks
+secrets are base64. Return it **once** in the create response and never again (reads return
+only `has_secret: true`). Rotation (`PATCH`) mints/accepts a new secret and likewise returns
+it once. For HMAC, strip the `whsec_` prefix and base64-decode to key bytes. Master key: reuse whatever key `internal/crypto`
 already uses; only add a dedicated `WEBHOOK_SECRET_KEY` if that helper isn't key-configurable
 (confirm at implementation — O5).
 
@@ -261,24 +282,29 @@ destinations → idempotent insert* — factored into one `projectDeliveries(tx,
 ```
 1. Map the bare worker type ("stopped") → the public type ("sandbox.stopped").
 2. SELECT live destinations for event.org_id WHERE enabled AND deleted_at IS NULL
-   AND event.ts > created_after                              -- creation watermark (P1-d)
    AND event_types-filter matches (empty = all; exact or 'prefix.*')
-   AND (sandbox_id IS NULL OR sandbox_id = event.sandbox_id).
+   AND (sandbox_id IS NULL OR sandbox_id = event.sandbox_id)
+   -- watermark (P1-d/P2-a), Path B ONLY: compare Redis STREAM IDs (skew-free), not timestamps:
+   AND (created_after_stream_id IS NULL OR event.stream_id > created_after_stream_id).
+   -- Path A events are written in the same tx as the state change, so they are inherently
+   -- "after" any already-created destination — no watermark term needed.
 3. Render the camelCase envelope (incl. top-level metadata from sandbox_sessions.metadata),
    then for each destination: INSERT INTO webhook_deliveries (..., payload, status='pending',
    next_attempt_at=now()) ON CONFLICT (destination_id, event_id) DO NOTHING.  -- replay-safe
 4. pg_notify('webhook_due', '') after commit to wake the dispatcher.
 ```
 
-**Path A — CP-DB transitions (durable, v1).** For transitions that already happen inside a
-DB transaction (the terminal-status write in `UpdateSandboxSessionStatus`, and the CP-side
-gap emitters in §3), call `projectDeliveries` **in that same transaction**. The delivery row
-is then as durable as the state change itself, with a deterministic `event_id` from the
-source row — no Redis in the path. This covers the events users care most about
-(`stopped`/`crash`, and the gap events we add CP-side).
+**Path A — CP-DB transitions (durable, v1).** For transitions that happen inside a DB
+transaction — the terminal-status write in `UpdateSandboxSessionStatus` (`stopped`), the
+hibernate/wake status writes (`hibernated`/`resumed`, P2-b), and the CP-side gap emitters in
+§3 — call `projectDeliveries` **in that same transaction**. The delivery row is then as durable
+as the state change itself, with a deterministic `event_id` from the source row — no Redis in
+the path. This covers the events users care most about (the core lifecycle transitions plus
+the gap events we add CP-side). Confirm at implementation that hibernate/wake have a single
+DB-write site to hook; if not, move them to Path B with `PublishLifecycleWithID`.
 
-**Path B — worker-published transitions (best-effort source).** `created`/`ready`/
-`hibernated`/`resumed`/`migrated` originate on the worker and reach the CP only via the
+**Path B — worker-published transitions (best-effort source).** `created`/`ready`/`migrated`
+originate on the worker and reach the CP only via the
 lifecycle **Redis stream**. A new control-plane consumer, **`webhook-projector`**, joins that
 stream as its **own consumer group** (independent of the existing `cf-forwarder` consumer) and
 runs `projectDeliveries` **only for Path-B-owned types** — it **ignores Path-A types it sees on
@@ -338,7 +364,7 @@ time ≈ ceil(batch/pool)·15s ≪ 2 min for a batch of 20. (Equivalently: claim
 claim 50 and send sequentially with a 60s lock — later rows get reclaimed mid-flight.) The
 reconciler (§9) reclaims a `delivering` row only after `locked_until` has passed.
 
-**Backoff** (`backoff(attempts)`, mirror sessions-api): 10s, 30s, 60s, 5m, 15m (capped).
+**Backoff** (`backoff(retry_count)`, mirror sessions-api): 10s, 30s, 60s, 5m, 15m (capped).
 **`MAX_ATTEMPTS` / total window** is ours to set (D1) — proposed 12 attempts (~a few hours)
 → `dead_letter`; confirm in O2.
 
@@ -388,8 +414,10 @@ A periodic sweep (can be a slower tick in the same dispatcher process, mirror
 `reconcile.ts` but smaller — no outbox to republish):
 - **Reclaim crashed senders:** `status='delivering'` AND `locked_until < now()-30s` →
   `status='failed'`, clear lock (the poll loop requeues it).
-- **Alert only:** count non-terminal rows with `updated_at < now()-1h` → emit an alert
-  metric (no write).
+- **Alert only:** count rows `status IN ('pending','failed','delivering')` with `updated_at <
+  now()-1h` → emit an alert metric (no write). Terminal rows (`delivered`/`dead_letter`/
+  `canceled`) are excluded, so a soft-deleted destination's canceled rows never read as stuck
+  (P1-d).
 
 ## 10. Public API
 
@@ -400,15 +428,35 @@ Echo handlers in `internal/api/webhooks.go`, wired in `router.go`, store methods
 
 | Method · Path | Purpose |
 |---|---|
-| `POST /api/webhooks` | Register: `{ url, name?, secret?, event_types?, sandbox_id?, enabled? }` → SSRF-validate. **Idempotent (P2-c):** get-or-create by `name` (unique per org) and honors an `Idempotency-Key` header, so a timed-out retry returns the same destination instead of a duplicate. **Secret echo (P2-d):** return `secret` **only when we generated it** (caller supplied none); if the caller supplied one, don't echo it (`has_secret: true`). |
+| `POST /api/webhooks` | Register a standalone destination: `{ url, name?, secret?, event_types?, sandbox_id?, enabled? }` → SSRF-validate. Idempotency + secret-echo below. |
 | `GET /api/webhooks` | List org destinations (excludes soft-deleted) |
 | `GET /api/webhooks/:id` | One destination (no secret; `has_secret: true`) |
 | `PATCH /api/webhooks/:id` | Update url/event_types/sandbox_id/enabled; rotate secret. A **generated** rotation returns the new value once; a caller-supplied one is not echoed. |
-| `DELETE /api/webhooks/:id` | **Soft-delete** (P2-f): set `deleted_at`, disable; the destination drops out of `GET`, but its delivery history is retained. |
+| `DELETE /api/webhooks/:id` | **Soft-delete** (P2-f): set `deleted_at`, disable, and **cancel non-terminal deliveries** for it (`status='canceled'`, `error='destination_deleted'` — P1-d). History is retained; the destination drops out of `GET`. |
 | `GET /api/webhooks/:id/deliveries?status=&cursor=&limit=` | Delivery history (paginated, see below) |
 | `GET /api/webhooks/:id/deliveries/:deliveryId` | One delivery, detail |
-| `POST /api/webhooks/:id/deliveries/:deliveryId/redeliver` | Re-enqueue **any** delivery: `status='pending'`, `next_attempt_at=now()`, clear lock, **reset `retry_count=0`** (fresh budget) while **preserving lifetime `attempts`** (P1-c). |
-| `POST /api/webhooks/:id/test` | Send a synthetic `sandbox.test` event to validate the endpoint+secret |
+| `POST /api/webhooks/:id/deliveries/:deliveryId/redeliver` | Re-enqueue **any** delivery: `status='pending'`, `next_attempt_at=now()`, clear lock, **reset `retry_count=0`** (fresh budget), **preserve lifetime `attempts`** (P1-c). **Same `webhook-id` (= delivery id)** — so a receiver that dedupes will treat it as the *same* message; redelivery means "send this delivery again," for when the original never landed, not "emit a new logical event" (P2-e). |
+| `POST /api/webhooks/:id/test` | **Synchronous** connectivity check: signs + POSTs a synthetic `sandbox.test` event to the URL and returns the HTTP status inline. It **bypasses `event_types`**, does **not** create a delivery row, does **not** appear in history, and is **not** retried/dead-lettered (P2-d). |
+
+**Subscribe at create (P1-a).** A per-sandbox integrator usually doesn't know `sandbox_id`
+until `POST /api/sandboxes` returns — by then `sandbox.created`/`sandbox.ready` have already
+fired. So **`POST /api/sandboxes` accepts inline `webhooks: [{ url, secret?, event_types? }]`**
+(mirrors sessions-api's `webhook` on session create): each is registered atomically with the
+sandbox, pinned to its `sandbox_id`, with `created_after_stream_id = NULL` (no floor → it
+receives that sandbox's full lifecycle from `created` on). Alternative for fleet-wide use:
+an **org-wide** destination (no `sandbox_id`) + route on the body's `sandboxId`/`metadata`.
+(Public sandbox-ID preallocation was considered and rejected — more surface, no extra benefit.)
+
+**Idempotent create (P1-b).** Two mechanisms, explicit conflict semantics:
+- **`name`** (unique per org): `POST` with an existing `name` whose incoming config (url +
+  event_types + sandbox_id) **matches** → `200` with the existing destination; config
+  **differs** → **`409 Conflict`** (never silently reuse or overwrite).
+- **`Idempotency-Key` header**: stored in `webhook_idempotency_keys` with a request fingerprint
+  (§4). Same key + same fingerprint → replay the original result; same key + **different**
+  fingerprint → **`409`**. Prune keys past a ~24h TTL.
+
+**Secret echo (P2-d).** Return `secret` **only when we generated it** (caller supplied none),
+on create or a generated rotation; never echo a caller-supplied secret (`has_secret: true`).
 
 **Pagination (P3).** List endpoints return `{ data, next_cursor, has_more }`; `cursor` is an
 **opaque stable cursor** (encodes `(created_at, id)`), not a bare timestamp. `next_cursor` is
@@ -441,24 +489,29 @@ delivered_at }` (all backed by columns — §4; `updated_at` included per P3).
   no strict per-sandbox ordering (parallel, bounded-pool sends) — document it.
 - **Source of truth** is the `webhook_deliveries` row.
 - **State machine** (D9): `failed` is always retryable with a future `next_attempt_at`;
-  `dead_letter` is terminal (permanent failure or exhausted **`retry_count`**). `redeliver`
-  resets `retry_count` (fresh budget) and re-enqueues, preserving lifetime `attempts` (P1-c).
-- **Creation watermark (P1-d).** A destination only receives events with `ts > created_after`;
-  there is **no historical backfill** (a stream replay/backlog cannot fire old events at a
-  newly created destination).
+  `dead_letter` (permanent failure or exhausted `retry_count`) and `canceled` (destination
+  deleted) are terminal. `redeliver` resets `retry_count` (fresh budget) and re-enqueues,
+  preserving lifetime `attempts` (P1-c); it re-sends the **same** delivery (same `webhook-id`),
+  so a deduping receiver treats it as a duplicate (P2-e, §10).
+- **Creation watermark (P1-d/P2-a).** A destination only receives events produced **after** it
+  was created — enforced on Path B by **Redis stream id** (`event.stream_id >
+  created_after_stream_id`), which is skew-free, *not* a producer/DB timestamp. Path A events
+  are inherently after (same-tx). No historical backfill. An inline-on-create destination
+  (`created_after_stream_id = NULL`) gets its sandbox's full lifecycle from `created`.
 - **Destination mutations (P2-c).** Sends load the **live** destination, so a URL fix or
   secret rotation applies to already-pending deliveries (intended — lets a user repair a
   broken endpoint and replay). `enabled=false` **pauses** (pending rows not claimed; resume on
-  re-enable). **Delete is soft (P2-f):** `deleted_at` tombstones the destination and hides it
-  from `GET`, but delivery history is **retained** for audit/support; deliveries for a deleted
-  destination are no longer claimed (the claim joins `deleted_at IS NULL`).
+  re-enable). **Delete is soft (P2-f):** `deleted_at` tombstones the destination, hides it from
+  `GET`, retains history, and **transitions its non-terminal deliveries to `canceled`** (P1-d)
+  so nothing lingers as "stuck"; the claim also joins `deleted_at IS NULL`.
 
 ## 12. Implementation map (files)
 
 | Area | New / changed |
 |---|---|
-| Migration | `internal/db/migrations/0NN_sandbox_webhooks.{up,down}.sql` |
-| Store | `internal/db/store.go` — `CreateWebhookDestination` (get-or-create by `name`/`Idempotency-Key`), `List`(excl. soft-deleted)`/Get/Update/SoftDelete`, delivery list (cursor-paginated)/get, `ClaimDueDeliveries` (joins `dst.enabled AND deleted_at IS NULL`), `RecordDeliveryResult`, `RedeliverDelivery` (reset `retry_count`), `ReclaimStaleDeliveries`, `projectDeliveries(tx, event)` (watermark + metadata; Path-A in-tx, Path-B from stream) |
+| Migration | `internal/db/migrations/0NN_sandbox_webhooks.{up,down}.sql` (destinations, deliveries, `webhook_idempotency_keys`) |
+| Store | `internal/db/store.go` — `CreateWebhookDestination` (get-or-create by `name`→409 on config mismatch; `Idempotency-Key` via `webhook_idempotency_keys`), `List`(excl. soft-deleted)`/Get/Update/SoftDelete` (cancels non-terminal deliveries), delivery list (cursor-paginated)/get, `ClaimDueDeliveries` (joins `dst.enabled AND deleted_at IS NULL`), `RecordDeliveryResult`, `RedeliverDelivery` (reset `retry_count`), `ReclaimStaleDeliveries`, `projectDeliveries(tx, event)` (stream-id watermark + metadata; Path-A in-tx, Path-B from stream) |
+| Inline-on-create | `internal/api/sandbox.go:createSandbox` accepts `webhooks: [...]` and registers them atomically (pinned `sandbox_id`, `created_after_stream_id=NULL`) — P1-a |
 | Types | `pkg/types/webhook.go` |
 | API | `internal/api/webhooks.go` (handlers; secret returned once) + routes in `internal/api/router.go` — **no scopes** (D10) |
 | Projector (Path B) | `internal/controlplane/webhook_projector.go` — new Redis consumer group; reclaim via **`XPENDING`+`XCLAIM`** copied from `event_forwarder.go:171` (not `XAUTOCLAIM`) |
@@ -469,14 +522,16 @@ delivered_at }` (all backed by columns — §4; `updated_at` included per P3).
 | Secret crypto | **reuse `internal/crypto/encrypt.go`** (`nonce‖ciphertext` bytea) + a `whsec_` generator; no bespoke columns (D11) |
 | Deterministic-id helper | add `cellevents.PublishLifecycleWithID(id, …)` (or require a stable id) — `publish.go:30` uses `uuid.NewString()` today (P1-c) |
 | Event emission gaps | emit `sandbox.checkpoint.created` / `sandbox.scaled` / `sandbox.preview_url.changed` / explicit `sandbox.forked` at their `api/sandbox.go` sites — prefer the **same-tx (Path A) insert** where a DB write exists; else `PublishLifecycleWithID` |
-| Docs | `docs/sandboxes/webhooks.mdx` (mirror `docs/agent-sessions/webhooks.mdx`), incl. a verifier snippet |
+| Docs | `docs/sandboxes/webhooks.mdx` (mirror `docs/agent-sessions/webhooks.mdx`), incl. a base64 verifier snippet |
+| SDK/docs convergence (P2-c) | `sdks/typescript/src/agents/webhooks.ts` — add `deliveryId` to `WebhookDelivery`, update the verifier comment (`webhook-id` = delivery id); update session webhook docs. Until sessions-api also moves (O8), the products differ on `webhook-id` — version it, don't claim "one verifier" yet |
 | Wiring | start projector + dispatcher in `cmd/server/main.go`; ensure the worker metadata resolver (org/sandbox) is wired for webhook-eligible events (P2-d) |
 
 ## 13. Phasing
 
-- **P1 — subscribe + send (happy path).** Migration + 2 tables, CRUD API, encrypted
-  secret, projector off the lifecycle stream (the events that emit today), dispatcher with
-  signing + SSRF + classify. Delivers value for `created/stopped/hibernated/woke/migrated`.
+- **P1 — subscribe + send (happy path).** Migrations (destinations, deliveries, idempotency),
+  CRUD API + **inline `webhooks` on sandbox create** (P1-a), encrypted secret, dual-path
+  projection for the events that emit today, dispatcher with signing + SSRF + classify.
+  Delivers value for `created/ready/hibernated/resumed/stopped/migrated`.
 - **P2 — reliability parity ("redeliveries and all").** Backoff + dead-letter, `locked_until`
   + reconciler reclaim, redelivery + delivery list/get, `/test`.
 - **P3 — taxonomy completeness.** Emit the gap events (checkpoint/scale/preview-url/explicit
@@ -500,7 +555,9 @@ delivered_at }` (all backed by columns — §4; `updated_at` included per P3).
 - **O7 — prod DB rule.** Per `AGENTS.md`, prod DB mutations need approval and migrations are
   gated; the migration + any backfill must follow that process (this doc adds tables only,
   no backfill).
-- **O8 — sessions-api convergence (file as follow-ups, §2a).** Bring sessions-api in line with
-  the shared contract: `webhook-id` = delivery id, mandatory generated secrets (no unsigned
-  path), and optionally soft-delete. Out of scope for this branch; track so the two products
-  don't drift.
+- **O8 — sessions-api + SDK/docs convergence (file as follow-ups, §2a / P2-c).** Bring
+  sessions-api in line with the shared contract: `webhook-id` = delivery id, mandatory
+  generated secrets (no unsigned path), optionally soft-delete; **and** update the TS SDK
+  (`webhooks.ts`: add `deliveryId` to `WebhookDelivery`, fix the verifier comment) + session
+  webhook docs. Until this lands the two products differ on `webhook-id`, so the "one verifier"
+  claim is versioned, not yet true. Out of scope for this branch; track so they don't drift.
