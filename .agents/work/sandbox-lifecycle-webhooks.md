@@ -4,6 +4,16 @@ Status: **rev 6 — P1 backend IMPLEMENTED (2026-06-24)**, not yet deployed. Bra
 `feat/sandbox-webhooks`. This is a **complete reference** — a future implementer should be able
 to work from this doc + the cited code without the conversation that produced it.
 
+**Dev-VM e2e PASSED (2026-06-24, 19/19)** on the GCP QEMU dev host (`opensandbox-qemu-dev-igor`,
+server mode + Redis + `cell_id=dev-cell-1`; reused `crypto.Encryptor` via a generated
+`OPENSANDBOX_SECRET_ENCRYPTION_KEY`). Verified end-to-end: SSRF reject (metadata/loopback/private/
+non-https), create + secret-once, get-hides-secret, `/test` 200, Idempotency-Key replay + conflict,
+name-conflict 409, **worker-origin `sandbox.created` delivered (Redis ingress)**, **CP-origin
+`sandbox.stopped` delivered (in-tx)**, dead-letter on a 404 sink (immediate), redeliver→202,
+soft-delete + 404. **Not exercised on this VM:** `sandbox.hibernated`/`resumed` (hibernation needs
+S3, not configured on the dev host — same proven in-tx path as `stopped`); `sandbox.ready` (P3 gap,
+see §3); `migrated`/checkpoint/scaled/preview_url (P3 emit gaps).
+
 **P1 build landed** (migration `049_sandbox_webhooks`, `pkg/types/webhook.go`,
 `internal/webhook/{sign,ssrf}.go` + tests, `internal/db/webhooks.go` + the in-tx CP-origin
 capture in `store.go:UpdateSandboxSessionStatus`, `internal/api/webhooks.go` + routes +
@@ -190,12 +200,12 @@ double-delivery and no per-origin logic. Names are crisp (P2-g): `created` = res
 
 | Public type | Origin | Emits today? | Source site | Notes |
 |---|---|---|---|---|
-| `sandbox.created` | worker | ✅ (`"created"`) | worker create → `redis_event_publisher.go` | resource accepted; memory/cpu/template |
-| `sandbox.ready` | worker | ✅ (`"running"`) | worker, post-boot | VM usable for exec (renamed from `running`) |
+| `sandbox.created` | worker | ✅ (`"created"`) | worker create → `redis_event_publisher.go` | resource accepted; memory/cpu/template. **Verified delivered e2e (dev VM, 2026-06-24).** |
+| `sandbox.ready` | worker | ❌ **gap (P3)** | worker post-boot health (net-new) | **Corrected 2026-06-24:** the worker does NOT emit a post-boot event today — `CreateSandboxSession` inserts status `running` directly and the only worker stream event is `created`. A distinct "VM usable" signal needs a net-new worker emit (P3). Do NOT fake it at create (it would duplicate `created`). |
 | `sandbox.hibernated` | CP | ✅ (`"hibernated"`) | `api/sandbox.go:hibernateSandbox` (DB status write) + `OnSandboxHibernate` | durable capture (P2-b) |
 | `sandbox.resumed` | CP | ✅ (`"woke"`) | `api/sandbox.go:wakeSandbox` (DB status write) + `OnSandboxWake` | renamed from `woke`; durable capture (P2-b) |
 | `sandbox.migrated` | worker | ✅ (`"migrated"`) | worker migrate | |
-| `sandbox.stopped` | CP | ✅ (`"stopped"`) | `db/store.go:UpdateSandboxSessionStatus` (record in-tx) | `data.reason` incl. `user_requested`, `expired`, `crash` (P2-g/O6: no separate `crashed` type) |
+| `sandbox.stopped` | CP | ✅ (`"stopped"`) | `db/store.go:UpdateSandboxSessionStatus` (record in-tx) | `data.reason` incl. `user_requested`, `expired`, `crash` (P2-g/O6: no separate `crashed` type). **Verified delivered e2e (dev VM, 2026-06-24).** |
 | `sandbox.checkpoint.created` | CP | ❌ **gap** | `api/sandbox.go:createCheckpoint` | net-new emit |
 | `sandbox.forked` | CP | ⚠️ partial | `api/sandbox.go:forkSandbox` | child also emits `created`; this carries `data.parentId` |
 | `sandbox.scaled` | CP | ❌ **gap** | `api/sandbox.go:setSandboxResourceLimits` + `OnSandboxScale` | net-new emit |
