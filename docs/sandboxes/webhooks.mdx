@@ -1,0 +1,202 @@
+---
+mode: "wide"
+title: "Webhooks"
+description: "Subscribe to sandbox lifecycle events — signed, retried, and redeliverable"
+tag: "Preview"
+---
+
+<Note>**Preview** — sandbox webhooks are newly available and still evolving; the shape may change. We'd love your feedback.</Note>
+
+Register a **destination** and OpenComputer delivers a sandbox's lifecycle events to it as a small, signed **delivery envelope** — at-least-once, retried, and redeliverable. Use it to react when a sandbox boots, hibernates, stops, or scales, without polling.
+
+The envelope is camelCase, with top-level routing fields, your sandbox [`metadata`](/api-reference/sandboxes/create), and the full event nested under `event`:
+
+```json
+{
+  "type": "sandbox.stopped",
+  "sandboxId": "sb-3f9a…",
+  "eventId": "sb-3f9a…:3:142",
+  "deliveryId": "whd_…",            // == webhook-id (dedupe on it)
+  "metadata": { "team": "acme", "job": "build-1421" },
+  "event": {
+    "id": "sb-3f9a…:3:142", "ts": "2026-06-24T12:00:00Z",
+    "orgId": "…", "sandboxId": "sb-3f9a…",
+    "type": "sandbox.stopped", "data": { "reason": "user_requested" }
+  }
+}
+```
+
+`metadata` is the sandbox's metadata, delivered **verbatim on every send and redelivery**, so a handler can route the callback without a second lookup. Dedupe on **`deliveryId`** (it equals the `webhook-id` header).
+
+## Events
+
+Subscribe to all events, or filter with `event_types` (exact like `sandbox.stopped`, or a prefix like `sandbox.*`).
+
+| Event | When | `event.data` |
+| --- | --- | --- |
+| `sandbox.created` | the sandbox resource is accepted | `template`, `cpuCount`, `memoryMB` |
+| `sandbox.ready` | the VM has booted and can run commands | — |
+| `sandbox.hibernated` | the sandbox was paused (disk persisted) | — |
+| `sandbox.resumed` | a hibernated sandbox woke | — |
+| `sandbox.stopped` | the sandbox stopped | `reason`: `user_requested` \| `expired` \| `crash` |
+| `sandbox.migrated` | the sandbox moved to new infrastructure | — |
+| `sandbox.checkpoint.created` | a checkpoint was taken | `checkpointId` |
+| `sandbox.forked` | a sandbox was forked from a checkpoint | `parentId` |
+| `sandbox.scaled` | the sandbox's resources changed | `cpuCount`, `memoryMB` |
+| `sandbox.preview_url.changed` | a preview-URL port mapping changed | `port`, `url` |
+
+## Destinations
+
+A destination is **org-scoped** by default (all your sandboxes), or pinned to one sandbox with `sandbox_id`.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+import { Webhooks } from "@opencomputer/sdk";
+
+const webhooks = new Webhooks({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+
+const { id, secret } = await webhooks.create({
+  url: "https://app.example.com/oc-webhook",
+  eventTypes: ["sandbox.stopped", "sandbox.ready"],
+  name: "prod",            // optional; makes create idempotent
+});
+// `secret` (whsec_…) is returned ONCE — store it now; you need it to verify deliveries.
+```
+
+```http REST API
+POST https://app.opencomputer.dev/api/webhooks
+X-API-Key: $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "url": "https://app.example.com/oc-webhook",
+  "event_types": ["sandbox.stopped", "sandbox.ready"],
+  "name": "prod"
+}
+```
+
+</CodeGroup>
+
+Every destination is **signed**. If you don't pass a `secret`, OpenComputer generates one (`whsec_…`) and returns it **once** on create — store it then; it's never shown again (reads return only `has_secret`). Pass `name` (unique per org) or an `Idempotency-Key` header to make create safe to retry: the same request returns the same destination instead of a duplicate; a different config under the same `name` is rejected with `409`.
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `webhooks.create(params)` | Register a destination (returns `secret` once if generated). |
+| `webhooks.list()` | List destinations. |
+| `webhooks.get(id)` | Fetch one (`has_secret`, never the secret). |
+| `webhooks.update(id, params)` | Pause/resume (`enabled`), retune `eventTypes`, change `url`, rotate `secret`. |
+| `webhooks.delete(id)` | Soft-delete — history is retained, pending deliveries canceled. |
+| `webhooks.test(id)` | Send a synthetic `sandbox.test` event and return the result inline. |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /api/webhooks` | Register a destination. |
+| `GET /api/webhooks` | List destinations. |
+| `GET /api/webhooks/:id` | Fetch one. |
+| `PATCH /api/webhooks/:id` | Pause/resume, retune `event_types`, change `url`, rotate `secret`. |
+| `DELETE /api/webhooks/:id` | Soft-delete (history retained). |
+| `POST /api/webhooks/:id/test` | Send a synthetic `sandbox.test` event. |
+
+</Tab>
+
+</Tabs>
+
+### Subscribe at create
+
+`sandbox.created` and `sandbox.ready` fire before a separate `webhooks.create` call could know the sandbox id. To capture a sandbox's **full** lifecycle, register the webhook **with** the sandbox — it's pinned to that sandbox and gets every event from `created` on:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create({
+  webhooks: [{ url: "https://app.example.com/oc-webhook" }],
+});
+// the generated signing secret is on the create response: sandbox.webhooks[0].secret
+```
+
+```http REST API
+POST https://app.opencomputer.dev/api/sandboxes
+X-API-Key: $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "template": "base", "webhooks": [{ "url": "https://app.example.com/oc-webhook" }] }
+```
+
+</CodeGroup>
+
+## Deliveries
+
+Every send and its outcome — the data behind a deliveries dashboard.
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `webhooks.deliveries.list(id, opts)` | List a destination's deliveries (cursor-paginated). |
+| `webhooks.deliveries.get(id, deliveryId)` | One delivery, in detail. |
+| `webhooks.deliveries.redeliver(id, deliveryId)` | Re-send any delivery (not only dead-lettered). |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `GET /api/webhooks/:id/deliveries?status=&cursor=&limit=` | List deliveries (paginated). |
+| `GET /api/webhooks/:id/deliveries/:deliveryId` | One delivery, in detail. |
+| `POST /api/webhooks/:id/deliveries/:deliveryId/redeliver` | Re-send any delivery. |
+
+</Tab>
+
+</Tabs>
+
+A delivery moves `pending → delivering → delivered`, or `failed` (retrying) → `dead_letter` after the max attempts. Deleting a destination moves its in-flight deliveries to `canceled`. List responses are cursor-paginated: `{ data, next_cursor, has_more }`.
+
+```
+Delivery = {
+  id, destination, event_id, event_type, status, attempts, retry_count,
+  last_attempt_at, response_code?, error?, created_at, updated_at, delivered_at?
+}
+```
+
+Redelivery re-sends the **same** delivery (same `webhook-id`) with a fresh retry budget — for when the original never landed. A receiver that dedupes on `webhook-id` will treat it as the same message.
+
+## Signing, retries, and dedupe
+
+- **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused (at registration and at send).
+- **Always signed** with [Standard Webhooks](https://www.standardwebhooks.com). Every request carries `webhook-id` (= `deliveryId`), `webhook-timestamp`, and `webhook-signature` = `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; the timestamp guards replay. Plus `X-OC-Delivery-ID` and `X-OC-Sandbox-ID` for correlation. Your `secret` is write-only.
+- **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it). A duplicate can still arrive, so **dedupe on `webhook-id`** (= `deliveryId`).
+- A delivery succeeds on HTTP `2xx`.
+
+### Verify a webhook
+
+The SDK ships a verifier — no extra dependency, runs in Node / Cloudflare Workers / browsers — that checks the signature and returns the parsed envelope. It's the **same `verifyWebhook`** used for [session webhooks](/agent-sessions/webhooks); pass `SandboxLifecycleEvent` to type the nested event:
+
+```ts
+import { verifyWebhook, type SandboxLifecycleEvent } from "@opencomputer/sdk";
+
+// rawBody = the RAW request body string, read BEFORE JSON.parse.
+// Throws on a missing / expired / invalid signature.
+const delivery = await verifyWebhook<SandboxLifecycleEvent>(rawBody, request.headers, process.env.OC_WEBHOOK_SECRET!);
+
+if (delivery.type === "sandbox.stopped") {
+  console.log(delivery.sandboxId, delivery.event.data.reason); // route via delivery.metadata
+}
+```
+
+Or verify with any [Standard Webhooks](https://www.standardwebhooks.com) library directly, against the raw body and the `webhook-id` / `webhook-timestamp` / `webhook-signature` headers.
+
+<Note>Webhooks here cover **sandbox lifecycle**. To deliver an agent's *session* events (turns, messages, results), see [Agent Sessions webhooks](/agent-sessions/webhooks) — same envelope shape, signing, and verifier.</Note>

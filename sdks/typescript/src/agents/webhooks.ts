@@ -1,4 +1,5 @@
-// Webhook verification for Durable Agent Sessions destinations.
+// Webhook verification for OpenComputer destinations — shared across **session** webhooks
+// (Durable Agent Sessions) and **sandbox lifecycle** webhooks. One verifier, one envelope.
 //
 // Deliveries are signed with the Standard Webhooks scheme (https://www.standardwebhooks.com):
 // headers `webhook-id`, `webhook-timestamp`, `webhook-signature`, where
@@ -13,16 +14,29 @@
 import type { Event } from "./types.js";
 import { normalize } from "./normalize.js";
 
-/** The envelope OpenComputer POSTs to a destination (see the Webhooks docs). */
+/**
+ * The envelope OpenComputer POSTs to a destination (camelCase). One shape for both products;
+ * the product-specific id is set accordingly. `E` is the nested event type — pass
+ * `SandboxLifecycleEvent` for sandbox webhooks, leave it as the session `Event` otherwise.
+ */
 export interface WebhookDelivery<E = Event> {
-  /** The event type — route on this (e.g. `turn.completed`). */
+  /** The event type — route on this (e.g. `turn.completed`, `sandbox.stopped`). */
   type: string;
-  sessionId: string;
-  /** Equals the `webhook-id` header — dedupe on it. */
+  /** Set on **session** webhooks. */
+  sessionId?: string;
+  /** Set on **sandbox lifecycle** webhooks. */
+  sandboxId?: string;
+  /** The underlying event id — app-level correlation. */
   eventId: string;
-  /** The session's opaque routing state, verbatim (`null` when unset). */
+  /**
+   * The delivery id. On **sandbox** webhooks this equals the `webhook-id` header — dedupe on
+   * it (stable across retries and redelivery). On **session** webhooks today `webhook-id`
+   * equals `eventId`; `deliveryId` is also provided via the `X-OC-Delivery-ID` header.
+   */
+  deliveryId?: string;
+  /** Opaque routing metadata, verbatim (`null` when unset). */
   metadata: Record<string, unknown> | null;
-  /** The full event — the same shape the SSE stream emits. */
+  /** The full event — the same shape the SSE stream emits (session) or the lifecycle event (sandbox). */
   event: E;
 }
 

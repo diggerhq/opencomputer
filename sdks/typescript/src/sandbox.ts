@@ -60,6 +60,15 @@ export interface SandboxOpts {
    * one (the old one stops working immediately).
    */
   previewAuth?: { scheme?: "bearer"; token?: "auto" | string };
+  /**
+   * Register webhook destination(s) for this sandbox's lifecycle events, atomically with
+   * create — so you receive `sandbox.created` / `sandbox.ready`, which fire before a separate
+   * `webhooks.create` call could know the sandbox id. Each is pinned to this sandbox and
+   * receives its full lifecycle. A generated signing secret is returned once on the create
+   * response (`webhooks[].secret`). For fleet-wide subscriptions, use a standalone org
+   * destination (`new Webhooks().create(...)`) instead.
+   */
+  webhooks?: Array<{ url: string; secret?: string; eventTypes?: string[] }>;
 }
 
 interface SandboxData {
@@ -312,6 +321,7 @@ export class Sandbox {
     if (opts.secretStore) body.secretStore = opts.secretStore;
     if (opts.image) body.image = opts.image.toJSON();
     if (opts.snapshot) body.snapshot = opts.snapshot;
+    if (opts.webhooks?.length) body.webhooks = opts.webhooks;
     if (opts.previewAuth) {
       body.previewAuth = {
         scheme: opts.previewAuth.scheme ?? "bearer",

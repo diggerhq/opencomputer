@@ -22,6 +22,21 @@ export { Mounts, type AddMountOpts, type MountInfo, type MountBackend } from "./
 export { type Shell, type ShellOpts, type ShellRunOpts, ShellBusyError, ShellClosedError } from "./shell.js";
 export { Pty, type PtySession, type PtyOpts } from "./pty.js";
 export { Templates, type TemplateInfo } from "./template.js";
+export {
+  Webhooks,
+  WebhookDeliveries,
+  type WebhooksOptions,
+  type CreateWebhookParams,
+  type CreateWebhookResult,
+  type UpdateWebhookParams,
+  type WebhookDestination,
+  type WebhookDeliveryRecord,
+  type WebhookDeliveryStatus,
+  type WebhookTestResult,
+  type SandboxWebhookDelivery,
+  type SandboxLifecycleEvent,
+  type SandboxWebhookEventType,
+} from "./webhooks.js";
 export { SecretStore, type SecretStoreInfo, type SecretEntryInfo, type SecretStoreOpts, type CreateSecretStoreOpts, type UpdateSecretStoreOpts } from "./project.js";
 export {
   Usage,
