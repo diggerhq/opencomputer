@@ -607,12 +607,17 @@ lastAttemptAt, responseCode, error, createdAt, updatedAt, deliveredAt }`. List r
   (`webhooks.ts`: add `deliveryId` to `WebhookDelivery`, fix the verifier comment) + session
   webhook docs. Until this lands the two products differ on `webhook-id`, so the "one verifier"
   claim is versioned, not yet true. Out of scope for this branch; track so they don't drift.
-- **★O9 — confirm the Path-B lifecycle-event transport per environment (blocks Path B).** §5
-  Path B consumes the **Redis** lifecycle stream (`event_forwarder.go` XPENDING/XCLAIM), but the
-  local stack (`deploy/docker-compose.yml`) ships **NATS, not Redis**. Verify what carries
-  worker-published lifecycle events to the CP in each env (prod = Redis?), then either (a) add
-  Redis to the local compose so Path B is testable locally, or (b) point the projector at the
-  transport the CP already consumes. Path A (CP-DB, in-tx) is unaffected and testable now.
+- **O9 — Path-B test environment (mostly resolved).** §5 Path B consumes the **Redis**
+  lifecycle stream, which engages only in **`server` mode with `OPENSANDBOX_REDIS_URL` set**
+  (`main.go:193`; combined mode → `redisRegistry` nil → no stream). Findings:
+  - **Single cloud VM dev (`make deploy-dev`) already supports it:** `setup-single-host.sh` runs
+    a `redis:7-alpine` container + server & worker as **separate systemd units (server mode)** —
+    prod-like. **This is where Path B (and full e2e) is tested.**
+  - **Local docker-compose can't:** it's combined mode + NATS-only, no Redis stream — so Path B
+    doesn't run there regardless. Local = Path A + dispatcher + API + unit tests only.
+  - **At impl, verify** `/etc/opensandbox/server.env` on the dev VM sets `OPENSANDBOX_MODE=server`,
+    `OPENSANDBOX_REDIS_URL`, and `OPENSANDBOX_CELL_ID` (the forwarder also needs the cell id), so
+    the stream + projector actually activate.
 
 ---
 
@@ -643,10 +648,12 @@ redeliver / soft-delete-cancel.
   state machine, idempotency (name-409 + key-replay).
 - **Path B** needs Redis — see ★O9.
 
-**Single-host dev (end-to-end, real sandboxes):** `make deploy-dev` rsyncs the branch to a
-Terraform-provisioned EC2 host (`deploy/ec2/setup-single-host.sh`) and builds on-box → real
-sandbox create/hibernate/stop → real lifecycle events → real deliveries. **Needs AWS creds +
-Terraform state + the SSH key set up locally** — confirm before relying on it. (The GitHub
+**Single-host dev (end-to-end, real sandboxes — the Path-B / full-e2e env):** `make deploy-dev`
+rsyncs the branch to a Terraform-provisioned EC2 host (`deploy/ec2/setup-single-host.sh`) and
+builds on-box → real sandbox create/hibernate/stop → real lifecycle events → real deliveries.
+It already runs **Redis + server mode** (separate server/worker systemd units), prod-like, so
+**Path B works here** (unlike the local combined/NATS stack — O9). **Needs AWS creds + Terraform
+state + the SSH key set up locally** — confirm before relying on it. (The GitHub
 **preview-env** workflow is currently **disabled** — "TODO: rewrite for Azure/QEMU" — so it
 isn't an option today.)
 
