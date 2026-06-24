@@ -45,6 +45,14 @@ If both `cpuCount` and `memoryMB` are provided, they must match a platform tier.
   Name of a pre-built snapshot for instant boot
 </ParamField>
 
+<ParamField body="webhooks" type="object[]">
+  Register [webhook](/sandboxes/webhooks) destination(s) for this sandbox's lifecycle events, atomically with create — so you receive `sandbox.created` / `sandbox.ready` (which fire before a separate create call could know the id). Each is pinned to this sandbox.
+
+  - `url` *(string, required)*: HTTPS endpoint.
+  - `secret` *(string)*: signing secret; omit and one is generated and returned once on the response (`webhooks[].secret`).
+  - `eventTypes` *(string[])*: event-type allow-list (default all).
+</ParamField>
+
 <ParamField body="previewAuth" type="object">
   Opt in to bearer-token authentication on the sandbox's preview URLs. When set, every request to `https://sb-<id>-p<port>.<domain>` must include an `Authorization: Bearer <token>` (or `X-OC-Preview-Token: <token>`) header; missing or wrong → 401.
 

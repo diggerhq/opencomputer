@@ -1,0 +1,46 @@
+---
+title: 'Update Webhook'
+api: 'PATCH /api/webhooks/{id}'
+---
+
+Update a destination — pause/resume, retune filters, change the URL, or rotate the secret. See [Webhooks](/sandboxes/webhooks).
+
+<ParamField path="id" type="string" required>
+  Destination ID (`whk_…`).
+</ParamField>
+
+<ParamField body="url" type="string">
+  New HTTPS endpoint (re-validated against the SSRF rules).
+</ParamField>
+
+<ParamField body="eventTypes" type="string[]">
+  Replace the event-type allow-list. Pass `null` to clear it (deliver all types).
+</ParamField>
+
+<ParamField body="enabled" type="boolean">
+  Pause (`false`) or resume (`true`) delivery.
+</ParamField>
+
+<ParamField body="secret" type="string">
+  Rotate the signing secret. A generated rotation is returned once (like create).
+</ParamField>
+
+<ParamField body="name" type="string">
+  Rename the destination.
+</ParamField>
+
+<ResponseExample>
+```json 200
+{
+  "id": "whk_3f9a2c",
+  "name": "prod",
+  "url": "https://app.example.com/oc-webhook",
+  "eventTypes": ["sandbox.stopped", "sandbox.ready"],
+  "sandboxId": null,
+  "enabled": true,
+  "hasSecret": true,
+  "createdAt": "2026-06-24T12:00:00Z",
+  "updatedAt": "2026-06-24T12:05:00Z"
+}
+```
+</ResponseExample>

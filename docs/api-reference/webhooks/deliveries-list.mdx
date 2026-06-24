@@ -1,0 +1,48 @@
+---
+title: 'List Deliveries'
+api: 'GET /api/webhooks/{id}/deliveries'
+---
+
+List a destination's deliveries, cursor-paginated. See [Webhooks](/sandboxes/webhooks#deliveries).
+
+<ParamField path="id" type="string" required>
+  Destination ID (`whk_…`).
+</ParamField>
+
+<ParamField query="status" type="string">
+  Filter by status: `pending`, `delivering`, `delivered`, `failed`, `dead_letter`, or `canceled`.
+</ParamField>
+
+<ParamField query="cursor" type="string">
+  Opaque pagination cursor from a previous response's `nextCursor`.
+</ParamField>
+
+<ParamField query="limit" type="integer">
+  Page size (default 50).
+</ParamField>
+
+<ResponseExample>
+```json 200
+{
+  "data": [
+    {
+      "id": "whd_8c1d",
+      "destination": "whk_3f9a2c",
+      "eventId": "sb-3f9a…:3:142",
+      "eventType": "sandbox.stopped",
+      "status": "delivered",
+      "attempts": 1,
+      "retryCount": 0,
+      "lastAttemptAt": "2026-06-24T12:00:01Z",
+      "responseCode": 200,
+      "error": null,
+      "createdAt": "2026-06-24T12:00:00Z",
+      "updatedAt": "2026-06-24T12:00:01Z",
+      "deliveredAt": "2026-06-24T12:00:01Z"
+    }
+  ],
+  "nextCursor": null,
+  "hasMore": false
+}
+```
+</ResponseExample>

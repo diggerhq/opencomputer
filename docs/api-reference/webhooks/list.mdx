@@ -1,0 +1,26 @@
+---
+title: 'List Webhooks'
+api: 'GET /api/webhooks'
+---
+
+List the org's webhook destinations. Soft-deleted destinations are excluded. See [Webhooks](/sandboxes/webhooks).
+
+<ResponseExample>
+```json 200
+{
+  "data": [
+    {
+      "id": "whk_3f9a2c",
+      "name": "prod",
+      "url": "https://app.example.com/oc-webhook",
+      "eventTypes": ["sandbox.stopped"],
+      "sandboxId": null,
+      "enabled": true,
+      "hasSecret": true,
+      "createdAt": "2026-06-24T12:00:00Z",
+      "updatedAt": "2026-06-24T12:00:00Z"
+    }
+  ]
+}
+```
+</ResponseExample>

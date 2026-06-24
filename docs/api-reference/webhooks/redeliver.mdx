@@ -1,0 +1,23 @@
+---
+title: 'Redeliver'
+api: 'POST /api/webhooks/{id}/deliveries/{deliveryId}/redeliver'
+---
+
+Re-send any delivery (not only dead-lettered). Re-enqueues it with a fresh retry budget; the redelivery carries the **same** `webhook-id`, so a receiver that dedupes treats it as the same message. Use it when the original never landed. See [Webhooks](/sandboxes/webhooks#deliveries).
+
+<ParamField path="id" type="string" required>
+  Destination ID (`whk_…`).
+</ParamField>
+
+<ParamField path="deliveryId" type="string" required>
+  Delivery ID (`whd_…`).
+</ParamField>
+
+<ResponseExample>
+```json 202
+{
+  "id": "whd_8c1d",
+  "status": "pending"
+}
+```
+</ResponseExample>

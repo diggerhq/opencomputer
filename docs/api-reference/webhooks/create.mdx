@@ -1,0 +1,51 @@
+---
+title: 'Create Webhook'
+api: 'POST /api/webhooks'
+---
+
+Register a webhook destination for sandbox lifecycle events. See [Webhooks](/sandboxes/webhooks).
+
+<ParamField body="url" type="string" required>
+  HTTPS endpoint to deliver to. Private, loopback, link-local, and cloud-metadata addresses are refused.
+</ParamField>
+
+<ParamField body="eventTypes" type="string[]">
+  Event-type allow-list — exact (`sandbox.stopped`) or prefix (`sandbox.*`). Default: all event types.
+</ParamField>
+
+<ParamField body="sandboxId" type="string">
+  Scope to a single sandbox. Omit to receive events for all of the org's sandboxes.
+</ParamField>
+
+<ParamField body="secret" type="string">
+  Signing secret. Omit and one is generated (`whsec_…`) and returned **once** in the response.
+</ParamField>
+
+<ParamField body="name" type="string">
+  Optional unique name (per org). Makes create get-or-create: the same `name` with the same config returns the existing destination; a different config under that name returns `409`.
+</ParamField>
+
+<ParamField body="enabled" type="boolean">
+  Whether the destination is active. Default `true`. `false` pauses delivery.
+</ParamField>
+
+Pass an **`Idempotency-Key`** header to make a timed-out retry safe — it returns the same destination instead of creating a duplicate.
+
+<ResponseExample>
+```json 201
+{
+  "id": "whk_3f9a2c",
+  "name": "prod",
+  "url": "https://app.example.com/oc-webhook",
+  "eventTypes": ["sandbox.stopped"],
+  "sandboxId": null,
+  "enabled": true,
+  "hasSecret": true,
+  "secret": "whsec_Hk9…",
+  "createdAt": "2026-06-24T12:00:00Z",
+  "updatedAt": "2026-06-24T12:00:00Z"
+}
+```
+
+`secret` is present **only** when OpenComputer generated it (you passed none). Read it once and store it — it is never returned again.
+</ResponseExample>

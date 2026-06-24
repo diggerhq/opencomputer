@@ -1,0 +1,15 @@
+---
+title: 'Delete Webhook'
+api: 'DELETE /api/webhooks/{id}'
+---
+
+Soft-delete a destination. It stops receiving events and drops out of [list](/api-reference/webhooks/list), but its delivery history is retained; any non-terminal deliveries are moved to `canceled`. See [Webhooks](/sandboxes/webhooks).
+
+<ParamField path="id" type="string" required>
+  Destination ID (`whk_…`).
+</ParamField>
+
+<ResponseExample>
+```json 204
+```
+</ResponseExample>
