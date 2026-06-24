@@ -79,7 +79,9 @@ function toWire(r: DestRow): Record<string, unknown> {
     sandboxId: r.sandbox_id,
     name: r.name,
     enabled: r.disabled === 0,
+    hasSecret: true, // Svix always generates a signing secret
     createdAt: new Date(r.created_at * 1000).toISOString(),
+    updatedAt: new Date(r.updated_at * 1000).toISOString(),
   };
 }
 
@@ -114,20 +116,56 @@ function isHttpsURL(u: unknown): u is string {
   }
 }
 
+// The concrete sandbox lifecycle event types. Svix filterTypes are exact (no
+// wildcards) and must be registered before use — keep in sync with the docs/SDK.
+const SANDBOX_EVENT_TYPES = [
+  "sandbox.created",
+  "sandbox.ready",
+  "sandbox.hibernated",
+  "sandbox.resumed",
+  "sandbox.stopped",
+  "sandbox.migrated",
+  "sandbox.checkpoint.created",
+  "sandbox.forked",
+  "sandbox.scaled",
+  "sandbox.preview_url.changed",
+];
+
+// expandEventTypes turns a user filter (which may use "prefix.*", e.g. "sandbox.*")
+// into concrete Svix filterTypes. undefined / empty → no filter (all types).
+function expandEventTypes(filters?: string[] | null): string[] | undefined {
+  if (!filters || filters.length === 0) return undefined;
+  const out = new Set<string>();
+  for (const f of filters) {
+    if (f.endsWith(".*")) {
+      const prefix = f.slice(0, -1); // keep the trailing "."
+      for (const t of SANDBOX_EVENT_TYPES) if (t.startsWith(prefix)) out.add(t);
+    } else {
+      out.add(f);
+    }
+  }
+  return out.size ? [...out] : undefined;
+}
+
 // Create a Svix endpoint for (org, optional sandbox) + persist the index row.
 // Shared by POST /api/webhooks and the inline-create internal endpoint.
 async function createDestination(
   env: WebhookEnv,
   sx: SvixClient,
   orgID: string,
-  spec: { url: string; eventTypes?: string[]; sandboxId?: string | null; name?: string | null; secret?: string; metadata?: Record<string, string> },
+  spec: { url: string; eventTypes?: string[]; sandboxId?: string | null; name?: string | null; secret?: string; metadata?: Record<string, string>; enabled?: boolean },
 ): Promise<{ wire: Record<string, unknown>; secret: string }> {
   const app = await sx.ensureApplication(orgID, `org:${orgID}`);
+  // Svix filterTypes are exact + must exist: expand wildcards and register each.
+  const filterTypes = expandEventTypes(spec.eventTypes);
+  if (filterTypes) await Promise.all(filterTypes.map((t) => sx.ensureEventType(t)));
+
   const epParams: EndpointParams = { url: spec.url };
   if (spec.name) epParams.description = spec.name;
-  if (spec.eventTypes && spec.eventTypes.length) epParams.filterTypes = spec.eventTypes;
+  if (filterTypes) epParams.filterTypes = filterTypes;
   if (spec.sandboxId) epParams.channels = [spec.sandboxId];
   if (spec.secret) epParams.secret = spec.secret;
+  if (spec.enabled === false) epParams.disabled = true;
   const ep = await sx.createEndpoint(app.id, epParams);
   if (spec.metadata && Object.keys(spec.metadata).length) {
     await sx.setEndpointHeaders(app.id, ep.id, spec.metadata);
@@ -136,23 +174,20 @@ async function createDestination(
 
   const id = "whk_" + randomHex(12);
   const ts = nowSec();
-  await env.OPENCOMPUTER_DB.prepare(
-    `INSERT INTO webhook_destinations
-       (id, org_id, svix_app_id, svix_endpoint_id, url, event_types, sandbox_id, name, disabled, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?9)`,
-  )
-    .bind(
-      id,
-      orgID,
-      app.id,
-      ep.id,
-      spec.url,
-      JSON.stringify(spec.eventTypes ?? []),
-      spec.sandboxId ?? null,
-      spec.name ?? null,
-      ts,
+  const disabled = spec.enabled === false ? 1 : 0;
+  try {
+    await env.OPENCOMPUTER_DB.prepare(
+      `INSERT INTO webhook_destinations
+         (id, org_id, svix_app_id, svix_endpoint_id, url, event_types, sandbox_id, name, disabled, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)`,
     )
-    .run();
+      .bind(id, orgID, app.id, ep.id, spec.url, JSON.stringify(spec.eventTypes ?? []), spec.sandboxId ?? null, spec.name ?? null, disabled, ts)
+      .run();
+  } catch (e) {
+    // Roll back the Svix endpoint so a D1 failure doesn't leave an orphan.
+    await sx.deleteEndpoint(app.id, ep.id).catch(() => {});
+    throw e;
+  }
   await refreshHasWebhooks(env, orgID);
 
   return {
@@ -162,7 +197,7 @@ async function createDestination(
       eventTypes: spec.eventTypes ?? [],
       sandboxId: spec.sandboxId ?? null,
       name: spec.name ?? null,
-      enabled: true,
+      enabled: disabled === 0,
       createdAt: new Date(ts * 1000).toISOString(),
     },
     secret,
@@ -236,7 +271,15 @@ export async function handleWebhooksAPI(
 }
 
 async function createWebhook(req: Request, env: WebhookEnv, sx: SvixClient, caller: Caller): Promise<Response> {
-  let body: { url?: string; eventTypes?: string[]; sandboxId?: string; name?: string; metadata?: Record<string, string> };
+  let body: {
+    url?: string;
+    eventTypes?: string[];
+    sandboxId?: string;
+    name?: string;
+    metadata?: Record<string, string>;
+    secret?: string;
+    enabled?: boolean;
+  };
   try {
     body = await req.json();
   } catch {
@@ -250,6 +293,8 @@ async function createWebhook(req: Request, env: WebhookEnv, sx: SvixClient, call
     sandboxId: body.sandboxId ?? null,
     name: body.name ?? null,
     metadata: body.metadata,
+    secret: body.secret,
+    enabled: body.enabled,
   });
   // Secret is returned once on create (Svix-generated; always re-fetchable via Svix).
   return json({ ...wire, secret }, 201);
@@ -267,32 +312,44 @@ async function listWebhooks(env: WebhookEnv, caller: Caller): Promise<Response> 
 async function patchWebhook(req: Request, env: WebhookEnv, sx: SvixClient, caller: Caller, id: string): Promise<Response> {
   const row = await getDest(env, caller.orgID, id);
   if (!row) return json({ error: "webhook not found" }, 404);
-  let body: { url?: string; eventTypes?: string[]; enabled?: boolean };
+  let body: { url?: string; eventTypes?: string[] | null; enabled?: boolean; name?: string };
   try {
     body = await req.json();
   } catch {
     return json({ error: "invalid JSON body" }, 400);
   }
-  const ep: EndpointParams = { url: body.url ?? row.url };
-  if (body.eventTypes !== undefined) ep.filterTypes = body.eventTypes;
+  if (body.url !== undefined && !isHttpsURL(body.url)) return json({ error: "url must be a valid https URL" }, 400);
+
+  // Index filter (original strings): null clears it, undefined keeps the stored
+  // one. The Svix endpoint gets the expanded + registered concrete types.
+  let originalTypes: string[];
+  if (body.eventTypes === null) originalTypes = [];
+  else if (body.eventTypes !== undefined) originalTypes = body.eventTypes;
   else {
     try {
-      ep.filterTypes = JSON.parse(row.event_types || "[]");
+      originalTypes = JSON.parse(row.event_types || "[]");
     } catch {
-      ep.filterTypes = [];
+      originalTypes = [];
     }
   }
+  const filterTypes = expandEventTypes(originalTypes);
+  if (filterTypes) await Promise.all(filterTypes.map((t) => sx.ensureEventType(t)));
+
+  // updateEndpoint is a full PUT replace — send the complete desired state so
+  // untouched fields (enabled, name, scope) aren't reset.
+  const disabledNum = body.enabled !== undefined ? (body.enabled ? 0 : 1) : row.disabled;
+  const newName = body.name !== undefined ? body.name : row.name;
+  const ep: EndpointParams = { url: body.url ?? row.url, disabled: disabledNum === 1 };
+  if (filterTypes) ep.filterTypes = filterTypes; // omit → all types
   if (row.sandbox_id) ep.channels = [row.sandbox_id];
-  if (body.enabled !== undefined) ep.disabled = !body.enabled;
-  if (body.url !== undefined && !isHttpsURL(body.url)) return json({ error: "url must be a valid https URL" }, 400);
+  if (newName) ep.description = newName;
 
   await sx.updateEndpoint(row.svix_app_id, row.svix_endpoint_id, ep);
 
-  const disabled = body.enabled === undefined ? row.disabled : body.enabled ? 0 : 1;
   await env.OPENCOMPUTER_DB.prepare(
-    "UPDATE webhook_destinations SET url = ?1, event_types = ?2, disabled = ?3, updated_at = ?4 WHERE id = ?5",
+    "UPDATE webhook_destinations SET url = ?1, event_types = ?2, name = ?3, disabled = ?4, updated_at = ?5 WHERE id = ?6",
   )
-    .bind(ep.url, JSON.stringify(ep.filterTypes ?? []), disabled, nowSec(), id)
+    .bind(ep.url, JSON.stringify(originalTypes), newName, disabledNum, nowSec(), id)
     .run();
 
   const updated = await getDest(env, caller.orgID, id);
@@ -318,13 +375,15 @@ async function deleteWebhook(env: WebhookEnv, sx: SvixClient, caller: Caller, id
 async function testWebhook(env: WebhookEnv, sx: SvixClient, caller: Caller, id: string): Promise<Response> {
   const row = await getDest(env, caller.orgID, id);
   if (!row) return json({ error: "webhook not found" }, 404);
-  let eventType = "sandbox.created";
+  // Pick a concrete type the endpoint will accept (expand any wildcard filter).
+  let stored: string[] = [];
   try {
-    const types: string[] = JSON.parse(row.event_types || "[]");
-    if (types.length) eventType = types[0];
+    stored = JSON.parse(row.event_types || "[]");
   } catch {
-    /* keep default */
+    /* none */
   }
+  const expanded = expandEventTypes(stored);
+  const eventType = expanded && expanded.length ? expanded[0] : "sandbox.created";
   const msg = await sx.createMessage(row.svix_app_id, {
     eventType,
     payload: { type: eventType, sandboxId: row.sandbox_id ?? "sb-test", test: true },

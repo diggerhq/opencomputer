@@ -642,6 +642,15 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// session row, which must exist before the worker looks it up.
 	sandboxID := "sb-" + uuid.New().String()[:8]
 
+	// Register inline webhooks at the edge (Svix) BEFORE the session is created
+	// (CreateSandboxSessionWithStatus records sandbox.created) and before the
+	// worker boots, so the endpoint exists before `created` is relayed. Cleaned up
+	// below if the gRPC create fails.
+	var inlineWebhooks []types.SandboxWebhookResult
+	if hasOrg && len(cfg.Webhooks) > 0 {
+		inlineWebhooks = s.registerInlineWebhooksEdge(ctx, orgID, sandboxID, cfg.Webhooks)
+	}
+
 	// Create session with "pending" status before dispatching to worker.
 	if s.store != nil && hasOrg {
 		template := cfg.Template
@@ -668,15 +677,6 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		if templateID != nil {
 			_ = s.store.UpdateSandboxSessionTemplate(ctx, sandboxID, *templateID)
 		}
-	}
-
-	// Register inline webhooks BEFORE the worker boots, pinned to the
-	// pre-generated sandbox id — so they reliably catch sandbox.created (the
-	// worker can't emit it before the destination exists). Cleaned up below if
-	// the gRPC create fails.
-	var inlineWebhooks []types.SandboxWebhookResult
-	if hasOrg && len(cfg.Webhooks) > 0 {
-		inlineWebhooks = s.registerInlineWebhooksEdge(ctx, orgID, sandboxID, cfg.Webhooks)
 	}
 
 	grpcResp, err := grpcClient.CreateSandbox(grpcCtx, &pb.CreateSandboxRequest{

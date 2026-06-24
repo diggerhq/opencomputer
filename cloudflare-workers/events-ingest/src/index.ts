@@ -499,7 +499,13 @@ export default {
     // transient Svix error → 503 so the CP forwarder retries the batch (the
     // event id is the Idempotency-Key, so re-sends dedupe); a permanent (4xx)
     // error for one event is logged and skipped. (rearchitecture §3.1)
-    if (env.SVIX_API_TOKEN) {
+    if (!env.SVIX_API_TOKEN) {
+      // Misconfiguration guard: api-edge can register webhooks while this Worker
+      // silently drops deliveries if the token is only set on one side.
+      if (fresh.some((e) => e.type.startsWith("sandbox."))) {
+        console.warn("events-ingest: SVIX_API_TOKEN unset — sandbox webhook events are NOT being delivered to Svix");
+      }
+    } else {
       const webhookEvents = fresh.filter(
         (e) => e.type.startsWith("sandbox.") && e.org_id && e.sandbox_id,
       );

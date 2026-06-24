@@ -113,6 +113,17 @@ export class SvixClient {
     return this.do("ensure_application", "POST", "/api/v1/app/?get_if_exists=true", { uid, name });
   }
 
+  // EnsureEventType registers an event type (idempotent). Svix requires every
+  // type referenced by an endpoint's filterTypes to exist first, else create 422s.
+  async ensureEventType(name: string): Promise<void> {
+    try {
+      await this.do("ensure_event_type", "POST", "/api/v1/event-type/", { name, description: name });
+    } catch (e) {
+      if (e instanceof SvixError && e.status === 409) return; // already exists
+      throw e;
+    }
+  }
+
   async createEndpoint(appID: string, p: EndpointParams): Promise<Endpoint> {
     return this.do("create_endpoint", "POST", `/api/v1/app/${appID}/endpoint/`, p);
   }
