@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getBilling, billingSetup, billingPortal, getBillingInvoices, redeemPromoCode,
@@ -270,11 +270,61 @@ const CONCURRENCY_TIERS = [
   { id: 'concurrency_pro_plus_plus', label: 'Pro++', limit: 1000, price: 1000 },
 ]
 
+// Confirmation gate shown before any action that charges a card. The purchase
+// flows (top-up, concurrency upgrade, first auto-recharge) charge immediately
+// when a card is on file, so a misclick = a real charge — this is the guard.
+function ConfirmModal({
+  title, body, confirmLabel, pending, error, onConfirm, onCancel,
+}: {
+  title: string
+  body: ReactNode
+  confirmLabel: string
+  pending: boolean
+  error?: string | null
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div
+      onClick={() => { if (!pending) onCancel() }}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000, padding: 20,
+        background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="glass-card animate-in"
+        style={{ padding: 28, maxWidth: 440, width: '100%' }}
+      >
+        <span className="section-title" style={{ marginBottom: 12, display: 'block' }}>{title}</span>
+        <div style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 22 }}>
+          {body}
+        </div>
+        {error && (
+          <div style={{ fontSize: 12, color: 'var(--accent-rose)', marginBottom: 16 }}>{error}</div>
+        )}
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button className="btn-secondary" onClick={onCancel} disabled={pending} style={{ padding: '8px 18px' }}>
+            Cancel
+          </button>
+          <button className="btn-primary" onClick={onConfirm} disabled={pending} style={{ padding: '8px 18px' }}>
+            {pending ? 'Processing…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PrepaidPlan() {
   const { data: autumn, isLoading } = useQuery({
     queryKey: ['autumn-billing'], queryFn: getAutumnBilling, refetchInterval: 30_000,
   })
   const [amount, setAmount] = useState<number>(25)
+  const [confirmTopup, setConfirmTopup] = useState(false)
+  const [confirmPlanId, setConfirmPlanId] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   // url present → redirect to hosted checkout (collect a new card); url null →
@@ -285,11 +335,11 @@ function PrepaidPlan() {
   }
   const topupMutation = useMutation({
     mutationFn: () => autumnTopup(amount),
-    onSuccess: onPurchase,
+    onSuccess: (d) => { setConfirmTopup(false); onPurchase(d) },
   })
   const planMutation = useMutation({
     mutationFn: (plan: string) => autumnSubscribeConcurrency(plan),
-    onSuccess: onPurchase,
+    onSuccess: (d) => { setConfirmPlanId(null); onPurchase(d) },
   })
 
 
@@ -368,17 +418,12 @@ function PrepaidPlan() {
           </div>
           <button
             className="btn-primary"
-            disabled={topupMutation.isPending || amount < 1}
-            onClick={() => topupMutation.mutate()}
+            disabled={amount < 1}
+            onClick={() => setConfirmTopup(true)}
             style={{ padding: '10px 20px' }}
           >
-            {topupMutation.isPending ? 'Redirecting…' : `Top up $${amount}`}
+            {`Top up $${amount}`}
           </button>
-          {topupMutation.isError && (
-            <div style={{ fontSize: 12, color: 'var(--accent-rose)', marginTop: 8 }}>
-              {(topupMutation.error as Error).message}
-            </div>
-          )}
         </div>
       </div>
 
@@ -416,8 +461,8 @@ function PrepaidPlan() {
                 </div>
                 <button
                   className="btn-secondary"
-                  disabled={active || planMutation.isPending}
-                  onClick={() => planMutation.mutate(tier.id)}
+                  disabled={active}
+                  onClick={() => setConfirmPlanId(tier.id)}
                   style={{ padding: '8px 16px' }}
                 >
                   {active ? 'Current' : 'Subscribe'}
@@ -429,14 +474,36 @@ function PrepaidPlan() {
             Need more than 1000? <a href="mailto:support@digger.dev" style={{ color: 'var(--accent-indigo)' }}>Contact us</a>.
           </div>
         </div>
-        {planMutation.isError && (
-          <div style={{ fontSize: 12, color: 'var(--accent-rose)', marginTop: 10 }}>
-            {(planMutation.error as Error).message}
-          </div>
-        )}
       </div>
 
       <UsageBreakdown />
+
+      {confirmTopup && (
+        <ConfirmModal
+          title="Confirm top-up"
+          body={<>Add <strong style={{ color: 'var(--text-primary)' }}>${amount}</strong> in prepaid credits. If a payment method is on file you&apos;ll be charged <strong style={{ color: 'var(--text-primary)' }}>${amount}</strong> now; otherwise you&apos;ll continue to checkout to add one.</>}
+          confirmLabel={`Top up $${amount}`}
+          pending={topupMutation.isPending}
+          error={topupMutation.isError ? (topupMutation.error as Error).message : null}
+          onConfirm={() => topupMutation.mutate()}
+          onCancel={() => setConfirmTopup(false)}
+        />
+      )}
+      {confirmPlanId && (() => {
+        const tier = CONCURRENCY_TIERS.find((t) => t.id === confirmPlanId)
+        if (!tier) return null
+        return (
+          <ConfirmModal
+            title="Confirm subscription"
+            body={<>Subscribe to <strong style={{ color: 'var(--text-primary)' }}>{tier.label}</strong> ({tier.limit} concurrent sandboxes) for <strong style={{ color: 'var(--text-primary)' }}>${tier.price}/mo</strong>. If a payment method is on file you&apos;ll be charged now and monthly; otherwise you&apos;ll continue to checkout.</>}
+            confirmLabel={`Subscribe — $${tier.price}/mo`}
+            pending={planMutation.isPending}
+            error={planMutation.isError ? (planMutation.error as Error).message : null}
+            onConfirm={() => planMutation.mutate(tier.id)}
+            onCancel={() => setConfirmPlanId(null)}
+          />
+        )
+      })()}
     </>
   )
 }
@@ -493,7 +560,7 @@ function UsageBreakdown() {
                 {formatDuration(r.seconds)}
               </span>
               <span style={{ textAlign: 'right', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
-                ${(r.costCents / 100).toFixed(2)}
+                {formatCost(r.costCents)}
               </span>
             </div>
           ))}
@@ -504,7 +571,7 @@ function UsageBreakdown() {
           }}>
             <span style={{ color: 'var(--text-secondary)' }}>Total</span>
             <span style={{ textAlign: 'right', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
-              ${((data?.totalCents ?? 0) / 100).toFixed(2)}
+              {formatCost(data?.totalCents ?? 0)}
             </span>
           </div>
         </div>
@@ -519,6 +586,15 @@ function formatDuration(seconds: number): string {
   return `${(seconds / 3600).toFixed(1)}h`
 }
 
+// Cost can be fractional cents (cheap tiers / short runs). Show the real value
+// at higher precision below a cent rather than rounding it down to $0.00.
+function formatCost(cents: number): string {
+  const dollars = cents / 100
+  if (dollars <= 0) return '$0.00'
+  if (dollars < 0.01) return `$${dollars.toFixed(4)}`
+  return `$${dollars.toFixed(2)}`
+}
+
 const autoTopupInputStyle = {
   width: 80, padding: '6px 10px', borderRadius: 8, border: '1px solid var(--border-subtle)',
   background: 'transparent', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: 13,
@@ -530,6 +606,7 @@ function AutoTopupCard({ current, hasToppedUp }: { current: AutumnBilling['autoT
   const [threshold, setThreshold] = useState(current?.threshold ?? 5)
   const [quantity, setQuantity] = useState(current?.quantity ?? 25)
   const [saved, setSaved] = useState(false)
+  const [confirm, setConfirm] = useState(false)
 
   const mutation = useMutation({
     mutationFn: () => setAutumnAutoTopup({ enabled, threshold, quantity }),
@@ -537,12 +614,19 @@ function AutoTopupCard({ current, hasToppedUp }: { current: AutumnBilling['autoT
       // Auto-recharge needs a saved off-session card. If enabling without one, the
       // server returns a no-charge Stripe setup URL — redirect to capture the card,
       // after which auto-recharge is live. Otherwise just confirm the save.
+      setConfirm(false)
       if (data?.url) { window.location.href = data.url; return }
       queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     },
   })
+
+  // Saving only charges when enabling WITHOUT a card on file (the first recharge
+  // arms the card). That's the one path we gate behind a confirm; disabling or
+  // editing thresholds with a card already saved is just config — save directly.
+  const willCharge = enabled && !hasToppedUp
+  const onSave = () => { if (willCharge) setConfirm(true); else mutation.mutate() }
 
   return (
     <div className="glass-card animate-in stagger-2" style={{ padding: 28, marginBottom: 14 }}>
@@ -586,11 +670,22 @@ function AutoTopupCard({ current, hasToppedUp }: { current: AutumnBilling['autoT
       <button
         className="btn-secondary"
         disabled={mutation.isPending}
-        onClick={() => mutation.mutate()}
+        onClick={onSave}
         style={{ padding: '8px 16px' }}
       >
         {mutation.isPending ? 'Saving…' : saved ? 'Saved ✓' : 'Save'}
       </button>
+      {confirm && (
+        <ConfirmModal
+          title="Enable automatic top-up"
+          body={<>You don&apos;t have a saved card yet, so enabling runs your first <strong style={{ color: 'var(--text-primary)' }}>${quantity}</strong> recharge now to set it up — you&apos;ll be charged <strong style={{ color: 'var(--text-primary)' }}>${quantity}</strong>. After that we top up automatically whenever your balance drops below ${threshold}.</>}
+          confirmLabel={`Charge $${quantity} & enable`}
+          pending={mutation.isPending}
+          error={mutation.isError ? (mutation.error as Error).message : null}
+          onConfirm={() => mutation.mutate()}
+          onCancel={() => setConfirm(false)}
+        />
+      )}
       {enabled && (
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 10 }}>
           Charges your saved card automatically when the balance drops below the threshold.

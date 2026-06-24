@@ -434,19 +434,26 @@ export async function autumnAttach(
   }
 }
 
-// autumnPurchase buys a product (top-up or concurrency tier), handling both
-// Autumn flows: a customer with NO card gets a hosted-checkout url to redirect
-// to; a customer WITH a card on file gets url=null from /checkout, so we charge
-// directly via /attach. Returns the url to redirect to, or null when the charge
-// already completed (caller should just refresh the balance — no redirect).
+// autumnPurchase buys a product (concurrency tier), handling both Autumn flows.
+// It gates the direct /attach on hasToppedUp — a real prior charge means a card
+// is RELIABLY on file. We deliberately do NOT use the /checkout `url` probe to
+// detect a card: it can spuriously return null for a CARDLESS org, which then
+// takes the attach path → Autumn returns checkout_created → autumnAttach throws
+// → 502 (the same failure we fixed for top-up via autumnTopUpCharge). So:
+//   card on file (hasToppedUp) → /attach, immediate charge, return url=null
+//   no card                    → hosted checkout to collect a card + purchase
+// Returns the url to redirect to, or null when the charge already completed
+// (caller should just refresh the balance — no redirect).
 export async function autumnPurchase(
   env: AutumnApiEnv,
   params: { customerId: string; productId: string; options?: AutumnCheckoutOption[]; successUrl: string },
 ): Promise<{ url: string | null }> {
+  if (await autumnHasToppedUp(env, params.customerId)) {
+    await autumnAttach(env, { customerId: params.customerId, productId: params.productId, options: params.options });
+    return { url: null };
+  }
   const co = await autumnCheckout(env, params);
-  if (co.url) return { url: co.url };
-  await autumnAttach(env, { customerId: params.customerId, productId: params.productId, options: params.options });
-  return { url: null };
+  return { url: co.url };
 }
 
 // autumnSetupPayment creates a Stripe SETUP session that saves a card for future
