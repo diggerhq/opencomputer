@@ -24,6 +24,11 @@ without the conversation that produced it.
   the original response incl. the one-time secret; `sandboxId` scope is **immutable**; secret
   rotation is `rotateSecret: true`; redeliver returns the delivery; event `data` is camelCase;
   at-least-once is scoped to "once accepted."
+- **Rev 6** collapses the two delivery paths into **two origins, one pipeline** (§5): a single
+  `recordLifecycleEvent` primitive writes a canonical `sandbox_lifecycle_events` row (CP in-tx;
+  worker via a stream ingress), and **one materializer** creates delivery rows from it — no
+  per-origin delivery logic to drift. Dedupe happens once (`sandbox_lifecycle_events.id`); the
+  watermark unifies to a DB-assigned `seq` (drops the Redis-stream-id scheme).
 
 ## Goal
 
@@ -101,7 +106,7 @@ column and a poll loop. Consequences, all simplifications:
 |---|---|---|
 | D1 | Delivery = Postgres-backed Go poller (mirror `BillableEventsSender`), **not** CF Queues | Fits core's stack; no new infra; self-contained |
 | D2 | `webhook_deliveries` ledger doubles as the work queue (`next_attempt_at`); no outbox table | The outbox in sessions-api exists only to bridge to CF Queues |
-| D3 | **Dual projection.** CP-DB transitions (terminal hook + CP-side gap emitters) insert delivery rows **in the same DB transaction** as the state write (durable, deterministic id, no Redis). Worker-published transitions are projected by a **new Redis consumer group** on the lifecycle stream, reclaiming via **`XPENDING`+`XCLAIM`** (NOT `XAUTOCLAIM` — Azure Redis 6.0 lacks it; copy `event_forwarder.go:171`) | The DB path makes the important events (stopped/crash) fully durable; the stream path covers worker-only events; both dedupe on `UNIQUE(dest,event_id)` |
+| D3 | **Two origins, one delivery path** (§5). Both origins call **one primitive `recordLifecycleEvent(tx, …)`** that writes a canonical row to `sandbox_lifecycle_events`: CP transitions call it **in their existing DB tx** (durable from the state change); worker events are materialized in via a thin Redis-stream **ingress** (`XPENDING`+`XCLAIM`, NOT `XAUTOCLAIM` — Azure Redis 6.0). **One materializer** then creates delivery rows from the canonical events. | Two delivery implementations drift (different filtering/metadata/idempotency/observability). Merge after capture: strong guarantee where we can have it, single pipeline. Dedupe once at `sandbox_lifecycle_events.id`. |
 | D4 | Subscriptions are **org-scoped** with optional filters (`event_types`, `sandbox_id`) | Core has no "session"; org is the tenancy unit |
 | D5 | Signing = **Standard Webhooks** (`webhook-id`/`webhook-timestamp`/`webhook-signature`), identical to sessions-api | Consistency; recipients can reuse the same verifier across both products |
 | D6 | At-least-once; the **delivery row is source of truth**; recipients dedupe on `webhook-id` | Same contract as sessions-api |
@@ -169,29 +174,29 @@ Event `data` is camelCase too:
 Each delivered event is one sandbox lifecycle moment. **Several already emit on the Redis
 stream; several do not yet and must be added — the largest non-plumbing line item.**
 
-**Each type is owned by exactly one projection path (P1-a).** A Path-A type is projected
-in-transaction (§5) and the Redis projector **ignores** it even though it may also appear on
-the stream (e.g. `stopped` still streams for billing); a Path-B type is projected only from
-the stream. This — not the unique index alone — is what prevents cross-path double-delivery.
-Names are chosen so semantics are crisp (P2-g): `created` = resource accepted; `ready` = VM
-booted and usable for exec; `resumed` (not "woke") pairs with `hibernated`.
+**Origin** is where the event is born — **CP** (recorded in a control-plane DB transaction) or
+**worker** (materialized in via the Redis-stream ingress, §5). Origin only decides *how the
+canonical event is captured*; **delivery is one shared path** afterward, so there's no
+double-delivery and no per-origin logic. Names are crisp (P2-g): `created` = resource accepted;
+`ready` = VM booted and usable for exec; `resumed` (not "woke") pairs with `hibernated`.
 
-| Public type | Owner | Emits today? | Source site | Notes |
+| Public type | Origin | Emits today? | Source site | Notes |
 |---|---|---|---|---|
-| `sandbox.created` | B | ✅ (`"created"`) | worker create → `redis_event_publisher.go` | resource accepted; memory/cpu/template |
-| `sandbox.ready` | B | ✅ (`"running"`) | worker, post-boot | VM usable for exec (renamed from `running`) |
-| `sandbox.hibernated` | A | ✅ (`"hibernated"`) | `api/sandbox.go:hibernateSandbox` (DB status write) + `OnSandboxHibernate` | core lifecycle signal → durable path (P2-b) |
-| `sandbox.resumed` | A | ✅ (`"woke"`) | `api/sandbox.go:wakeSandbox` (DB status write) + `OnSandboxWake` | renamed from `woke`; durable path (P2-b) |
-| `sandbox.migrated` | B | ✅ (`"migrated"`) | worker migrate | |
-| `sandbox.stopped` | A | ✅ (`"stopped"`) | `db/store.go:UpdateSandboxSessionStatus` (project in-tx) | `data.reason` incl. `user_requested`, `expired`, `crash` (P2-g/O6: no separate `crashed` type) |
-| `sandbox.checkpoint.created` | A | ❌ **gap** | `api/sandbox.go:createCheckpoint` | net-new emit |
-| `sandbox.forked` | A | ⚠️ partial | `api/sandbox.go:forkSandbox` | child also emits `created`; this carries `data.parentId` |
-| `sandbox.scaled` | A | ❌ **gap** | `api/sandbox.go:setSandboxResourceLimits` + `OnSandboxScale` | net-new emit |
-| `sandbox.preview_url.changed` | A | ❌ **gap** | `api/sandbox.go:updateSandboxPort` | net-new emit |
+| `sandbox.created` | worker | ✅ (`"created"`) | worker create → `redis_event_publisher.go` | resource accepted; memory/cpu/template |
+| `sandbox.ready` | worker | ✅ (`"running"`) | worker, post-boot | VM usable for exec (renamed from `running`) |
+| `sandbox.hibernated` | CP | ✅ (`"hibernated"`) | `api/sandbox.go:hibernateSandbox` (DB status write) + `OnSandboxHibernate` | durable capture (P2-b) |
+| `sandbox.resumed` | CP | ✅ (`"woke"`) | `api/sandbox.go:wakeSandbox` (DB status write) + `OnSandboxWake` | renamed from `woke`; durable capture (P2-b) |
+| `sandbox.migrated` | worker | ✅ (`"migrated"`) | worker migrate | |
+| `sandbox.stopped` | CP | ✅ (`"stopped"`) | `db/store.go:UpdateSandboxSessionStatus` (record in-tx) | `data.reason` incl. `user_requested`, `expired`, `crash` (P2-g/O6: no separate `crashed` type) |
+| `sandbox.checkpoint.created` | CP | ❌ **gap** | `api/sandbox.go:createCheckpoint` | net-new emit |
+| `sandbox.forked` | CP | ⚠️ partial | `api/sandbox.go:forkSandbox` | child also emits `created`; this carries `data.parentId` |
+| `sandbox.scaled` | CP | ❌ **gap** | `api/sandbox.go:setSandboxResourceLimits` + `OnSandboxScale` | net-new emit |
+| `sandbox.preview_url.changed` | CP | ❌ **gap** | `api/sandbox.go:updateSandboxPort` | net-new emit |
 
-Path-B types are exactly the set the projector handles; everything else is Path A. Confirm at
-implementation that each Path-A type genuinely has a DB-write site to hook (else move it to B
-with a deterministic id via `PublishLifecycleWithID`).
+A **CP-origin** event calls `recordLifecycleEvent` in its own DB tx (durable from the state
+change); a **worker-origin** event is materialized in by the ingress. Confirm at implementation
+that each CP-origin type genuinely has a single DB-write site to hook; otherwise treat it as
+worker-origin (record it from the stream via `recordLifecycleEvent`).
 
 **Event id (dedup key) — must be deterministic.** Worker-published events already carry a
 deterministic envelope id (`{sandboxID}:{generation}:{row_id}` — `redis_event_publisher.go`),
@@ -248,14 +253,31 @@ CREATE TABLE webhook_destinations (
   -- nonce‖ciphertext in a single bytea (do NOT model iv/tag as separate columns — D11).
   secret_enc    bytea NOT NULL,
   enabled       boolean NOT NULL DEFAULT true,    -- false = paused (pending rows not claimed)
-  created_after_stream_id text,                    -- Path-B watermark = Redis stream id at creation
-                                                   -- (skew-free, P2-a). NULL = no floor (inline-on-create / pinned sandbox)
+  created_after_event_seq bigint NOT NULL DEFAULT 0,  -- watermark = sandbox_lifecycle_events.seq at
+                                                   -- creation (skew-free, unified across origins, P2-a);
+                                                   -- 0 = no floor (inline-on-create → full lifecycle)
   deleted_at    timestamptz,                      -- soft-delete tombstone (P2-f); history retained
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX  webhook_dest_org_idx  ON webhook_destinations(org_id) WHERE enabled AND deleted_at IS NULL;
 CREATE UNIQUE INDEX webhook_dest_name_uq ON webhook_destinations(org_id, name) WHERE name IS NOT NULL AND deleted_at IS NULL;
+
+-- Canonical lifecycle event store — the merge point for both origins (§5). recordLifecycleEvent
+-- inserts here (CP in-tx; worker via the stream ingress); the materializer reads it and creates
+-- delivery rows. `id` is the deterministic event id → replays dedupe in ONE place. `seq` is the
+-- monotonic, skew-free watermark basis used by every destination.
+CREATE TABLE sandbox_lifecycle_events (
+  id            text PRIMARY KEY,                 -- deterministic event id (e.g. {sandbox}:{gen}:{n})
+  seq           bigserial NOT NULL,              -- monotonic; the unified watermark
+  org_id        uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  sandbox_id    text NOT NULL,
+  type          text NOT NULL,                    -- public type, e.g. 'sandbox.stopped'
+  data          jsonb NOT NULL DEFAULT '{}',
+  ts            timestamptz NOT NULL DEFAULT now(),
+  materialized_at timestamptz                     -- NULL until the materializer has created deliveries
+);
+CREATE INDEX sandbox_lifecycle_events_unmat_idx ON sandbox_lifecycle_events(seq) WHERE materialized_at IS NULL;
 
 -- Delivery ledger (also the work queue).
 CREATE TABLE webhook_deliveries (
@@ -315,56 +337,62 @@ it once. For HMAC, strip the `whsec_` prefix and base64-decode to key bytes. Mas
 already uses; only add a dedicated `WEBHOOK_SECRET_KEY` if that helper isn't key-configurable
 (confirm at implementation — O5).
 
-## 5. Projection: lifecycle event → delivery rows
+## 5. Pipeline: two origins, one delivery path
 
-Projection has **two paths** (D3), because the two classes of event have different
-durability and id properties. Both run the same core step — *map type → select matching
-destinations → idempotent insert* — factored into one `projectDeliveries(tx, event)` helper:
+The two event **origins** are inherent; the delivery path is **not** doubled. They merge at a
+**canonical event record**, after capture — so there is exactly **one** matching / filtering /
+metadata / idempotency / observability implementation, and no drift between "CP delivery logic"
+and "worker delivery logic" (D3).
 
 ```
-1. Map the bare worker type ("stopped") → the public type ("sandbox.stopped").
-2. SELECT live destinations for event.org_id WHERE enabled AND deleted_at IS NULL
-   AND event_types-filter matches (empty = all; exact or 'prefix.*')
-   AND (sandbox_id IS NULL OR sandbox_id = event.sandbox_id)
-   -- watermark (P1-d/P2-a), Path B ONLY: compare Redis STREAM IDs (skew-free), not timestamps:
-   AND (created_after_stream_id IS NULL OR event.stream_id > created_after_stream_id).
-   -- Path A events are written in the same tx as the state change, so they are inherently
-   -- "after" any already-created destination — no watermark term needed.
-3. Render the camelCase envelope (incl. top-level metadata from sandbox_sessions.metadata),
-   then for each destination: INSERT INTO webhook_deliveries (..., payload, status='pending',
-   next_attempt_at=now()) ON CONFLICT (destination_id, event_id) DO NOTHING.  -- replay-safe
-4. pg_notify('webhook_due', '') after commit to wake the dispatcher.
+CP state change ─┐
+                 ├─► recordLifecycleEvent() ─► sandbox_lifecycle_events ─► materializer ─► webhook_deliveries ─► dispatcher
+worker signal   ─┘
 ```
 
-**Path A — CP-DB transitions (durable, v1).** For transitions that happen inside a DB
-transaction — the terminal-status write in `UpdateSandboxSessionStatus` (`stopped`), the
-hibernate/wake status writes (`hibernated`/`resumed`, P2-b), and the CP-side gap emitters in
-§3 — call `projectDeliveries` **in that same transaction**. The delivery row is then as durable
-as the state change itself, with a deterministic `event_id` from the source row — no Redis in
-the path. This covers the events users care most about (the core lifecycle transitions plus
-the gap events we add CP-side). Confirm at implementation that hibernate/wake have a single
-DB-write site to hook; if not, move them to Path B with `PublishLifecycleWithID`.
+**The single primitive — `recordLifecycleEvent(tx, event)`.** Inserts one canonical row into
+`sandbox_lifecycle_events` (§4); `id` = the deterministic event id, `UNIQUE` so replays dedupe
+in **one** place. Both origins call it:
+- **CP-origin events** (`stopped`, `hibernated`, `resumed`, and the §3 gap events) call it
+  **inside their existing DB transaction** (the terminal-status write, the hibernate/wake
+  writes, the gap-emit sites). The canonical event is then as durable as the state change — the
+  strong guarantee, where we can have it.
+- **Worker-origin events** (`created`, `ready`, `migrated`) arrive over the lifecycle **Redis
+  stream**; a thin **ingress** consumer materializes each into `sandbox_lifecycle_events` via
+  the same `recordLifecycleEvent` (own tx). Reclaim of pending stream entries uses `XPENDING` +
+  `XCLAIM` (**NOT `XAUTOCLAIM`** — Azure Redis 6.0 lacks it; copy `event_forwarder.go:171`).
 
-**Path B — worker-published transitions (best-effort source).** `created`/`ready`/`migrated`
-originate on the worker and reach the CP only via the
-lifecycle **Redis stream**. A new control-plane consumer, **`webhook-projector`**, joins that
-stream as its **own consumer group** (independent of the existing `cf-forwarder` consumer) and
-runs `projectDeliveries` **only for Path-B-owned types** — it **ignores Path-A types it sees on
-the stream** (e.g. `stopped` still streams for billing but is webhook-projected in-tx by Path
-A), so the two paths never both create a row for the same logical event (P1-a). **Reclaim of
-pending entries from crashed consumers uses
-`XPENDING` + `XCLAIM`, NOT `XAUTOCLAIM`** — Azure Redis 6.0 (prod) does not support
-`XAUTOCLAIM`, and `event_forwarder.go:171` already implements the `XPENDING`+`XCLAIM`
-pattern to copy. Once `projectDeliveries` commits the row, delivery is at-least-once; before
-that, Path B inherits the stream's guarantees (see §11 — the source is best-effort, with a
-bounded loss window).
+**The single materializer** turns canonical events into deliveries — the **only** place
+matching/filtering/watermark/metadata live. It claims unmaterialized events
+(`materialized_at IS NULL`) and, per event, in one tx:
+```
+1. SELECT live destinations for event.orgId WHERE enabled AND deleted_at IS NULL
+   AND eventTypes-filter matches (empty = all; exact or 'prefix.*')
+   AND (sandboxId IS NULL OR sandboxId = event.sandboxId)
+   AND event.seq > destination.created_after_event_seq        -- watermark (DB seq, skew-free)
+2. Render the camelCase envelope (+ top-level metadata from sandbox_sessions.metadata).
+3. For each destination: INSERT INTO webhook_deliveries (..., payload, status='pending',
+   next_attempt_at=now()) ON CONFLICT (destination_id, event_id) DO NOTHING.
+4. Mark the event materialized; pg_notify('webhook_due','') to wake the dispatcher.
+```
 
-**Missing/blank tenancy (P2-d).** Both paths key destination selection on `event.org_id`. A
-lifecycle envelope can arrive with a blank `org_id` if the worker's metadata resolver wasn't
-wired (`redis_event_publisher.go:31`). The projector must: **skip** projection for an event
-with no resolvable `org_id`/`sandbox_id`, **emit a metric + warn log** (don't crash the
-consumer, don't ack-drop silently), and the resolver wiring must be **mandatory** for any
-webhook-eligible event. Treat a malformed envelope as skip-with-metric, never a panic.
+**Unified watermark (P1-d/P2-a).** Every canonical event gets a monotonic DB-assigned `seq`; a
+destination records the table's current max seq at creation (`created_after_event_seq`), and
+the materializer delivers only `event.seq > that`. **One** mechanism for both origins,
+skew-free — no Redis stream ids, no timestamps. Inline-on-create destinations use `0` (no
+floor → full lifecycle from `created`).
+
+**Missing/blank tenancy (P2-d).** `recordLifecycleEvent` requires a resolvable `org_id` /
+`sandbox_id` — the worker metadata resolver (`redis_event_publisher.go:31`) must be wired for
+webhook-eligible events. A malformed worker envelope is **skipped + metric + warn** at the
+ingress, never persisted, never a panic. CP-origin events always carry tenancy (they're in the
+CP tx).
+
+**Durability boundary (precise).** A delivery is at-least-once **once its canonical event is
+recorded**. CP-origin events are recorded in-tx → fully durable from the state change.
+Worker-origin events are durable once the ingress persists them; the worker→Redis→ingress hop
+is best-effort at the source (stream trim / a failed `XADD`) — the one bounded loss window, and
+the *only* difference between origins, **contained to capture, not delivery**.
 
 ## 6. Delivery worker (the dispatcher)
 
@@ -484,7 +512,7 @@ Echo handlers in `internal/api/webhooks.go`, wired in `router.go`, store methods
 until `POST /api/sandboxes` returns — by then `sandbox.created`/`sandbox.ready` have already
 fired. So **`POST /api/sandboxes` accepts inline `webhooks: [{ url, secret?, event_types? }]`**
 (mirrors sessions-api's `webhook` on session create): each is registered atomically with the
-sandbox, pinned to its `sandbox_id`, with `created_after_stream_id = NULL` (no floor → it
+sandbox, pinned to its `sandbox_id`, with `created_after_event_seq = 0` (no floor → it
 receives that sandbox's full lifecycle from `created` on). Alternative for fleet-wide use:
 an **org-wide** destination (no `sandbox_id`) + route on the body's `sandboxId`/`metadata`.
 (Public sandbox-ID preallocation was considered and rejected — more surface, no extra benefit.)
@@ -516,21 +544,19 @@ lastAttemptAt, responseCode, error, createdAt, updatedAt, deliveredAt }`. List r
 
 ## 11. Reliability semantics (the contract we're promising)
 
-- **At-least-once — *from the delivery row onward*.** Once a `webhook_deliveries` row exists
-  it is durable and will be delivered or dead-lettered; retries can duplicate, so recipients
-  dedupe on `webhook-id` (= `deliveryId`, §7) — **per-delivery**, so distinct destinations
-  matching one event are correctly distinct messages (P1-b). **Before** the row exists the
-  guarantee depends on the projection
-  path (P1-d): **Path A (CP-DB transitions) is fully durable** — the row is written in the
-  same transaction as the state change. **Path B (worker→Redis events) is best-effort at the
-  source** — the lifecycle stream uses approximate `MAXLEN` trimming and `PublishLifecycle`
-  can return `false` after 3 failed `XADD`s (`publish.go:23`), so a worker event can be lost
-  before projection under a Redis outage. The worker's per-sandbox SQLite + retrying publisher
-  (`redis_event_publisher.go`) narrows this to a small window; document it as a known limit,
-  and the most important events ride Path A. (Hardening Path B with a worker-side durable
-  outbox is future work — O4.)
-- **Idempotent projection.** `UNIQUE(destination_id, event_id)` — one delivery row per
-  destination+event regardless of stream replay *or* an event appearing on both paths.
+- **At-least-once — from the canonical event onward.** Once a `sandbox_lifecycle_events` row
+  exists, the single materializer reliably creates its delivery rows, and each delivery is then
+  delivered-or-dead-lettered; retries can duplicate, so recipients dedupe on `webhook-id`
+  (= `deliveryId`, §7) — **per-delivery**, so distinct destinations matching one event are
+  correctly distinct messages (P1-b). The only place capture can be lost is the **worker→Redis→
+  ingress** hop (approximate `MAXLEN` trim / a failed `XADD`, `publish.go:23`) — best-effort at
+  the source, narrowed by the worker's per-sandbox SQLite + retrying publisher
+  (`redis_event_publisher.go`), and **contained to capture, not delivery**. CP-origin events are
+  recorded in-tx → no loss window. (Hardening the worker hop with a durable worker-side outbox
+  is future work — O4.)
+- **Idempotent capture, once.** `sandbox_lifecycle_events.id` (`UNIQUE`) dedupes stream
+  replays in one place; the materializer's `ON CONFLICT (destination_id, event_id)` is a second
+  belt-and-suspenders for delivery rows. No per-origin idempotency logic to drift.
 - **Ordering.** Per destination, claimed in `next_attempt_at` order; no cross-destination and
   no strict per-sandbox ordering (parallel, bounded-pool sends) — document it.
 - **Source of truth** is the `webhook_deliveries` row.
@@ -539,11 +565,11 @@ lastAttemptAt, responseCode, error, createdAt, updatedAt, deliveredAt }`. List r
   deleted) are terminal. `redeliver` resets `retry_count` (fresh budget) and re-enqueues,
   preserving lifetime `attempts` (P1-c); it re-sends the **same** delivery (same `webhook-id`),
   so a deduping receiver treats it as a duplicate (P2-e, §10).
-- **Creation watermark (P1-d/P2-a).** A destination only receives events produced **after** it
-  was created — enforced on Path B by **Redis stream id** (`event.stream_id >
-  created_after_stream_id`), which is skew-free, *not* a producer/DB timestamp. Path A events
-  are inherently after (same-tx). No historical backfill. An inline-on-create destination
-  (`created_after_stream_id = NULL`) gets its sandbox's full lifecycle from `created`.
+- **Creation watermark (P1-d/P2-a).** A destination only receives events **after** it was
+  created — enforced uniformly by the canonical **`sandbox_lifecycle_events.seq`**
+  (`event.seq > created_after_event_seq`): a monotonic DB-assigned sequence, skew-free, one
+  mechanism for both origins. No historical backfill. An inline-on-create destination
+  (`created_after_event_seq = 0`) gets its sandbox's full lifecycle from `created`.
 - **Destination mutations (P2-c).** Sends load the **live** destination, so a URL fix or
   secret rotation applies to already-pending deliveries (intended — lets a user repair a
   broken endpoint and replay). `enabled=false` **pauses** (pending rows not claimed; resume on
@@ -555,29 +581,32 @@ lastAttemptAt, responseCode, error, createdAt, updatedAt, deliveredAt }`. List r
 
 | Area | New / changed |
 |---|---|
-| Migration | `internal/db/migrations/0NN_sandbox_webhooks.{up,down}.sql` (destinations, deliveries, `webhook_idempotency_keys`) |
-| Store | `internal/db/store.go` — `CreateWebhookDestination` (get-or-create by `name`→409 on config mismatch; `Idempotency-Key` via `webhook_idempotency_keys`), `List`(excl. soft-deleted)`/Get/Update/SoftDelete` (cancels non-terminal deliveries), delivery list (cursor-paginated)/get, `ClaimDueDeliveries` (joins `dst.enabled AND deleted_at IS NULL`), `RecordDeliveryResult`, `RedeliverDelivery` (reset `retry_count`), `ReclaimStaleDeliveries`, `projectDeliveries(tx, event)` (stream-id watermark + metadata; Path-A in-tx, Path-B from stream) |
-| Inline-on-create | `internal/api/sandbox.go:createSandbox` accepts `webhooks: [...]` and registers them atomically (pinned `sandbox_id`, `created_after_stream_id=NULL`) — P1-a |
+| Migration | `internal/db/migrations/0NN_sandbox_webhooks.{up,down}.sql` (`sandbox_lifecycle_events`, destinations, deliveries, `webhook_idempotency_keys`) |
+| Event primitive | `recordLifecycleEvent(tx, …)` (in `store.go` / a `lifecycle` pkg) — inserts the canonical `sandbox_lifecycle_events` row; the ONE call both origins use |
+| Store | `internal/db/store.go` — `CreateWebhookDestination` (get-or-create by `name`→409 on config mismatch; `Idempotency-Key` via `webhook_idempotency_keys`, replays stored response), `List`(excl. soft-deleted)`/Get/Update/SoftDelete` (cancels non-terminal deliveries), delivery list (cursor-paginated)/get, `ClaimUnmaterialized` + `MaterializeDeliveries(event)` (the single materializer: match dests + insert delivery rows), `ClaimDueDeliveries` (joins `dst.enabled AND deleted_at IS NULL`), `RecordDeliveryResult`, `RedeliverDelivery` (reset `retry_count`), `ReclaimStaleDeliveries` |
+| Inline-on-create | `internal/api/sandbox.go:createSandbox` accepts `webhooks: [...]` and registers them atomically (pinned `sandbox_id`, `created_after_event_seq=0`) — P1-a |
 | Types | `pkg/types/webhook.go` |
 | API | `internal/api/webhooks.go` (handlers; secret returned once) + routes in `internal/api/router.go` — **no scopes** (D10) |
-| Projector (Path B) | `internal/controlplane/webhook_projector.go` — new Redis consumer group; reclaim via **`XPENDING`+`XCLAIM`** copied from `event_forwarder.go:171` (not `XAUTOCLAIM`) |
-| Projector (Path A) | call `projectDeliveries` in the same tx as the terminal write in `db/store.go:UpdateSandboxSessionStatus` and in the CP-side gap emitters |
+| Worker-event ingress | `internal/controlplane/lifecycle_ingress.go` — Redis-stream consumer group; per message calls `recordLifecycleEvent`; reclaim via **`XPENDING`+`XCLAIM`** copied from `event_forwarder.go:171` (not `XAUTOCLAIM`) |
+| CP-origin capture | call `recordLifecycleEvent` in the same tx as the terminal write in `db/store.go:UpdateSandboxSessionStatus`, the hibernate/wake writes, and the CP-side gap emitters |
+| Materializer | `internal/controlplane/webhook_materializer.go` — claims unmaterialized `sandbox_lifecycle_events`, runs the single match+insert (filter/watermark/metadata), marks materialized, notifies the dispatcher |
 | Dispatcher + reconciler | `internal/controlplane/webhook_dispatcher.go` (claim → bounded-pool concurrent send → classify; + stale-lock reclaim sweep) |
 | Signing | `internal/webhook/sign.go` (Standard Webhooks) |
 | SSRF | `internal/webhook/ssrf.go` (port of `ssrf.ts`) |
 | Secret crypto | **reuse `internal/crypto/encrypt.go`** (`nonce‖ciphertext` bytea) + a `whsec_` generator; no bespoke columns (D11) |
 | Deterministic-id helper | add `cellevents.PublishLifecycleWithID(id, …)` (or require a stable id) — `publish.go:30` uses `uuid.NewString()` today (P1-c) |
-| Event emission gaps | emit `sandbox.checkpoint.created` / `sandbox.scaled` / `sandbox.preview_url.changed` / explicit `sandbox.forked` at their `api/sandbox.go` sites — prefer the **same-tx (Path A) insert** where a DB write exists; else `PublishLifecycleWithID` |
+| Event emission gaps | emit `sandbox.checkpoint.created` / `sandbox.scaled` / `sandbox.preview_url.changed` / explicit `sandbox.forked` at their `api/sandbox.go` sites — CP-origin: `recordLifecycleEvent` in the existing tx; worker-origin: a deterministic-id stream emit (`PublishLifecycleWithID`) |
 | Docs | `docs/sandboxes/webhooks.mdx` (mirror `docs/agent-sessions/webhooks.mdx`), incl. a base64 verifier snippet |
 | SDK/docs convergence (P2-c) | `sdks/typescript/src/agents/webhooks.ts` — add `deliveryId` to `WebhookDelivery`, update the verifier comment (`webhook-id` = delivery id); update session webhook docs. Until sessions-api also moves (O8), the products differ on `webhook-id` — version it, don't claim "one verifier" yet |
-| Wiring | start projector + dispatcher in `cmd/server/main.go`; ensure the worker metadata resolver (org/sandbox) is wired for webhook-eligible events (P2-d) |
+| Wiring | start the worker-event ingress + materializer + dispatcher in `cmd/server/main.go`; ensure the worker metadata resolver (org/sandbox) is wired for webhook-eligible events (P2-d) |
 
 ## 13. Phasing
 
-- **P1 — subscribe + send (happy path).** Migrations (destinations, deliveries, idempotency),
-  CRUD API + **inline `webhooks` on sandbox create** (P1-a), encrypted secret, dual-path
-  projection for the events that emit today, dispatcher with signing + SSRF + classify.
-  Delivers value for `created/ready/hibernated/resumed/stopped/migrated`.
+- **P1 — subscribe + send (happy path).** Migrations (lifecycle events, destinations,
+  deliveries, idempotency), CRUD API + **inline `webhooks` on sandbox create** (P1-a),
+  encrypted secret, the canonical pipeline (`recordLifecycleEvent` → materializer) for the
+  events that emit today + the dispatcher (signing + SSRF + classify). Delivers value for
+  `created/ready/hibernated/resumed/stopped/migrated`.
 - **P2 — reliability parity ("redeliveries and all").** Backoff + dead-letter, `locked_until`
   + reconciler reclaim, redelivery + delivery list/get, `/test`.
 - **P3 — taxonomy completeness.** Emit the gap events (checkpoint/scale/preview-url/explicit
@@ -593,7 +622,7 @@ lastAttemptAt, responseCode, error, createdAt, updatedAt, deliveredAt }`. List r
   exec) are distinct with crisp semantics; `running` is renamed `ready`, `woke`→`resumed`.
 - **O4 — RESOLVED into D3 (dual path).** CP-DB transitions project in-transaction (durable,
   v1); worker events via the Redis consumer. *Remaining* sub-question, deferred: hardening
-  Path B with a worker-side durable outbox (vs. the documented best-effort source, §11).
+  the worker→ingress capture hop with a durable worker-side outbox (vs. the best-effort source, §11).
 - **O5 — secret key management.** Confirm `internal/crypto/encrypt.go` is key-configurable and
   reuse its master key; only add `WEBHOOK_SECRET_KEY` if it isn't.
 - **O6 — RESOLVED (rev 3, P2-g).** No separate `crashed` type; `sandbox.stopped` carries
@@ -607,14 +636,15 @@ lastAttemptAt, responseCode, error, createdAt, updatedAt, deliveredAt }`. List r
   (`webhooks.ts`: add `deliveryId` to `WebhookDelivery`, fix the verifier comment) + session
   webhook docs. Until this lands the two products differ on `webhook-id`, so the "one verifier"
   claim is versioned, not yet true. Out of scope for this branch; track so they don't drift.
-- **O9 — Path-B test environment (mostly resolved).** §5 Path B consumes the **Redis**
-  lifecycle stream, which engages only in **`server` mode with `OPENSANDBOX_REDIS_URL` set**
-  (`main.go:193`; combined mode → `redisRegistry` nil → no stream). Findings:
+- **O9 — worker-origin test environment (mostly resolved).** The worker-event **ingress** (§5)
+  consumes the **Redis** lifecycle stream, which engages only in **`server` mode with
+  `OPENSANDBOX_REDIS_URL` set** (`main.go:193`; combined mode → `redisRegistry` nil → no stream).
+  Findings:
   - **Single cloud VM dev (`make deploy-dev`) already supports it:** `setup-single-host.sh` runs
     a `redis:7-alpine` container + server & worker as **separate systemd units (server mode)** —
-    prod-like. **This is where Path B (and full e2e) is tested.**
-  - **Local docker-compose can't:** it's combined mode + NATS-only, no Redis stream — so Path B
-    doesn't run there regardless. Local = Path A + dispatcher + API + unit tests only.
+    prod-like. **This is where worker-origin events (created/ready/migrated) and full e2e are tested.**
+  - **Local docker-compose can't:** combined mode + NATS-only, no Redis stream — so worker-origin
+    events don't flow there. Local = CP-origin events + materializer + dispatcher + API + unit tests.
   - **At impl, verify** `/etc/opensandbox/server.env` on the dev VM sets `OPENSANDBOX_MODE=server`,
     `OPENSANDBOX_REDIS_URL`, and `OPENSANDBOX_CELL_ID` (the forwarder also needs the cell id), so
     the stream + projector actually activate.
@@ -624,9 +654,9 @@ lastAttemptAt, responseCode, error, createdAt, updatedAt, deliveredAt }`. List r
 ## 15. Implementation readiness, testing, deployment & rollback
 
 **Readiness: design-complete (rev 5) — ready to implement.** One canonical contract (§2b);
-schema, dual-path projection, dispatcher, signing, SSRF, API, and reliability are all specified
+schema, the canonical event pipeline (recordLifecycleEvent → materializer), dispatcher, signing, SSRF, API, and reliability are all specified
 with code sites (§12); build order = §13. The doc is current as of rev 5 (no known stale
-sections). Pre-build verifications still open: **O5** (secret key) and **★O9** (Path-B transport).
+sections). Pre-build verifications still open: **O5** (secret key) and **★O9** (worker-origin transport).
 
 ### What's net-new at runtime
 The **projector** (Redis consumer group) and **dispatcher** (Postgres poll loop) are new
@@ -641,18 +671,18 @@ agent change except the event-emission gaps (§3).
 test-key`; point a destination at a local sink and assert signing / retry / dead-letter /
 redeliver / soft-delete-cancel.
 - **Covers fully:** the API, the dispatcher (claim → SSRF → sign → classify → backoff →
-  dead-letter), and **Path-A** projection (stopped/hibernated/resumed + CP-side gap events,
-  projected in-tx).
+  dead-letter), the materializer, and **CP-origin** capture (stopped/hibernated/resumed +
+  gap events, recorded in-tx).
 - **Pure unit tests (no infra):** SSRF allow/deny vectors, Standard Webhooks signing (golden
   vectors checked against the shipped TS `verifyWebhook`), `classify()`, `backoff()`, the
   state machine, idempotency (name-409 + key-replay).
-- **Path B** needs Redis — see ★O9.
+- **Worker-origin events** (created/ready/migrated) need Redis — see ★O9.
 
-**Single-host dev (end-to-end, real sandboxes — the Path-B / full-e2e env):** `make deploy-dev`
+**Single-host dev (end-to-end, real sandboxes — the full-pipeline env):** `make deploy-dev`
 rsyncs the branch to a Terraform-provisioned EC2 host (`deploy/ec2/setup-single-host.sh`) and
 builds on-box → real sandbox create/hibernate/stop → real lifecycle events → real deliveries.
 It already runs **Redis + server mode** (separate server/worker systemd units), prod-like, so
-**Path B works here** (unlike the local combined/NATS stack — O9). **Needs AWS creds + Terraform
+**worker-origin events flow here** (unlike the local combined/NATS stack — O9). **Needs AWS creds + Terraform
 state + the SSH key set up locally** — confirm before relying on it. (The GitHub
 **preview-env** workflow is currently **disabled** — "TODO: rewrite for Azure/QEMU" — so it
 isn't an option today.)
@@ -683,7 +713,7 @@ pointer. So:
   vector-tested before prod.
 - **New CP background workers.** A bug could hot-loop or lag; bound batches, add metrics, lean on
   dormant-until-used to cap blast radius.
-- **Redis / Path B (★O9).** Reclaim on Azure Redis 6.0 (XPENDING/XCLAIM, chosen) + the transport
+- **Redis / worker-origin ingress (★O9).** Reclaim on Azure Redis 6.0 (XPENDING/XCLAIM, chosen) + the transport
   question above.
 - **Secret key management (O5).** Reuse `internal/crypto/encrypt.go`; confirm key config.
 - **Ahead of backend.** Docs + SDK exist; the Go impl doesn't yet — hold publish until it lands.
