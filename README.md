@@ -138,6 +138,7 @@ VMs hibernate instead of dying. State survives across sessions without manual sn
 
 ## Guides
 
+- [Self-hosting OpenComputer](SELFHOSTING.md) - Run OpenComputer in your own Azure or AWS account
 - [Building an Open Lovable - part 1](https://opencomputer.dev/guides/building-open-lovable-part-1) — Build a Lovable clone using Claude Agent SDK and OpenComputer
 
 ## Links
@@ -150,5 +151,3 @@ VMs hibernate instead of dying. State survives across sessions without manual sn
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
-
-
