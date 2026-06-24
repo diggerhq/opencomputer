@@ -22,12 +22,18 @@ Update a destination — pause/resume, retune filters, change the URL, or rotate
 </ParamField>
 
 <ParamField body="secret" type="string">
-  Rotate the signing secret. A generated rotation is returned once (like create).
+  Set a caller-supplied signing secret (you keep it; it isn't echoed back).
+</ParamField>
+
+<ParamField body="rotateSecret" type="boolean">
+  Generate a **new** signing secret. The new `whsec_…` is returned **once** in the response (like create). Use this instead of `secret` when you want OpenComputer to mint the secret.
 </ParamField>
 
 <ParamField body="name" type="string">
   Rename the destination.
 </ParamField>
+
+`sandboxId` (scope) is **immutable** — set it at create; it can't be changed here.
 
 <ResponseExample>
 ```json 200

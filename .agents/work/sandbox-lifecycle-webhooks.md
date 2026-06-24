@@ -18,6 +18,12 @@ without the conversation that produced it.
   (base64 secret, SDK/docs convergence); **deletion cancels** non-terminal deliveries (new
   `canceled` terminal status); a **skew-free watermark** (Redis stream id, not producer ts);
   `hibernated`/`resumed` moved to the durable path; `/test` + redelivery semantics; P3 leftovers.
+- **Rev 5** makes **one canonical public JSON contract** (new §2b) and forces the design doc,
+  docs, API reference, and SDK to use it verbatim — the whole wire is **camelCase** (matching
+  core: `templateID`/`sandboxID`), DB columns stay snake_case. Plus: idempotent replay returns
+  the original response incl. the one-time secret; `sandboxId` scope is **immutable**; secret
+  rotation is `rotateSecret: true`; redeliver returns the delivery; event `data` is camelCase;
+  at-least-once is scoped to "once accepted."
 
 ## Goal
 
@@ -113,7 +119,7 @@ adopts the stronger form; where sessions-api differs today, a follow-up brings i
 
 | Aspect | The contract (core, the new standard) | sessions-api today | Action |
 |---|---|---|---|
-| **Envelope casing** | body is **camelCase** (`type`, `sandboxId`/`sessionId`, `eventId`, `metadata`, `event{…}`); the REST *management* API stays snake_case | camelCase already (`sessionId`, `eventId`) | core match; consistent |
+| **Wire casing** | the **whole** wire JSON is **camelCase** — envelope *and* management request/response (`eventTypes`, `sandboxId`, `hasSecret`, `retryCount`, …), matching core (`templateID`/`sandboxID`). DB columns stay snake_case; the API maps. See §2b. | camelCase already (`sessionId`, `eventId`) | core match; consistent |
 | **`webhook-id` meaning** | = **`delivery.id`** (the message; stable across retries *and* manual redelivery); `eventId` lives in the body | uses `event_id` | **sessions-api follow-up** + **SDK/docs**: switch to delivery id and update the `WebhookDelivery` type + verifier comment (until then the two products differ — "one verifier" is true only *after* this lands, P2-c) |
 | **Signing** | every delivery signed; secret **auto-generated** (`whsec_…`) if none supplied, returned **once**; no unsigned path | unsigned allowed when no secret | **sessions-api follow-up** |
 | **Secret echo** | return the secret **only when we generated it**; never echo a caller-supplied one | n/a | core decides |
@@ -125,6 +131,38 @@ adopts the stronger form; where sessions-api differs today, a follow-up brings i
 
 The sessions-api follow-ups (delivery-id `webhook-id`, mandatory generated secrets, soft-delete)
 are **out of scope for this branch** but should be filed so the two products converge.
+
+## 2b. The canonical public JSON contract
+
+**This is the single source of truth for the wire JSON** — request bodies, responses, and the
+delivered envelope. It is **camelCase**, matching the rest of the OpenComputer API. **DB
+columns are snake_case (§4); the API layer maps between them.** The design doc, user docs, API
+reference, SDK types, and every example MUST use these field names verbatim. (sessions-api is
+snake_case on its wire — a separate, pre-existing product; the SDKs present camelCase for both.)
+
+```
+Destination (response)
+  { id, name, url, eventTypes, sandboxId, enabled, hasSecret, createdAt, updatedAt }
+  + secret   ← present ONCE, only on create or a generated rotation
+
+Create request   { url, name?, secret?, eventTypes?, sandboxId?, enabled? }   + Idempotency-Key header
+Update request   { url?, eventTypes? (null = clear), enabled?, secret?, rotateSecret? }
+                 — sandboxId (scope) is IMMUTABLE; not accepted here
+
+Delivery (record)
+  { id, destination, eventId, eventType, status, attempts, retryCount,
+    lastAttemptAt, responseCode?, error?, createdAt, updatedAt, deliveredAt? }
+Delivery list    { data, nextCursor, hasMore }
+Test result      { delivered, responseCode?, error? }
+
+Envelope (delivered body; webhook-id header == deliveryId)
+  { type, sandboxId, eventId, deliveryId, metadata,
+    event: { id, ts, orgId, sandboxId, type, data } }
+
+Event `data` is camelCase too:
+  sandbox.stopped → { reason }   sandbox.forked → { parentId }
+  sandbox.scaled  → { cpuCount, memoryMB }   sandbox.preview_url.changed → { port, url }
+```
 
 ## 3. Event taxonomy (the public surface)
 
@@ -147,7 +185,7 @@ booted and usable for exec; `resumed` (not "woke") pairs with `hibernated`.
 | `sandbox.migrated` | B | ✅ (`"migrated"`) | worker migrate | |
 | `sandbox.stopped` | A | ✅ (`"stopped"`) | `db/store.go:UpdateSandboxSessionStatus` (project in-tx) | `data.reason` incl. `user_requested`, `expired`, `crash` (P2-g/O6: no separate `crashed` type) |
 | `sandbox.checkpoint.created` | A | ❌ **gap** | `api/sandbox.go:createCheckpoint` | net-new emit |
-| `sandbox.forked` | A | ⚠️ partial | `api/sandbox.go:forkSandbox` | child also emits `created`; this carries `data.parent_id` |
+| `sandbox.forked` | A | ⚠️ partial | `api/sandbox.go:forkSandbox` | child also emits `created`; this carries `data.parentId` |
 | `sandbox.scaled` | A | ❌ **gap** | `api/sandbox.go:setSandboxResourceLimits` + `OnSandboxScale` | net-new emit |
 | `sandbox.preview_url.changed` | A | ❌ **gap** | `api/sandbox.go:updateSandboxPort` | net-new emit |
 
@@ -251,12 +289,16 @@ CREATE INDEX webhook_deliveries_due_idx ON webhook_deliveries(next_attempt_at)
 CREATE INDEX webhook_deliveries_dest_idx ON webhook_deliveries(destination_id, created_at DESC);
 
 -- Idempotency-Key storage for POST /api/webhooks (P1-b). Same (org,key) + same request → replay
--- the stored result; same key + different request → 409. Prune rows older than the TTL (~24h).
+-- the stored ORIGINAL RESPONSE (incl. the one-time generated secret) so a client that lost the
+-- first response still gets the secret it needs to verify; same key + different request → 409.
+-- response_enc holds the rendered create response, encrypted (it carries the plaintext secret);
+-- it (and the replayability of the secret) expires with the row at the TTL (~24h). Prune past TTL.
 CREATE TABLE webhook_idempotency_keys (
   org_id        uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   key           text NOT NULL,                    -- caller's Idempotency-Key header
-  request_hash  text NOT NULL,                    -- fingerprint of the create body (url+event_types+sandbox_id+name)
+  request_hash  text NOT NULL,                    -- fingerprint of the create body (url+eventTypes+sandboxId+name)
   destination_id text NOT NULL REFERENCES webhook_destinations(id) ON DELETE CASCADE,
+  response_enc  bytea NOT NULL,                    -- the original create response (incl. secret), encrypted
   created_at    timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (org_id, key)
 );
@@ -428,14 +470,14 @@ Echo handlers in `internal/api/webhooks.go`, wired in `router.go`, store methods
 
 | Method · Path | Purpose |
 |---|---|
-| `POST /api/webhooks` | Register a standalone destination: `{ url, name?, secret?, event_types?, sandbox_id?, enabled? }` → SSRF-validate. Idempotency + secret-echo below. |
+| `POST /api/webhooks` | Register a standalone destination: `{ url, name?, secret?, eventTypes?, sandboxId?, enabled? }` → SSRF-validate. Idempotency + secret-echo below. |
 | `GET /api/webhooks` | List org destinations (excludes soft-deleted) |
 | `GET /api/webhooks/:id` | One destination (no secret; `has_secret: true`) |
-| `PATCH /api/webhooks/:id` | Update url/event_types/sandbox_id/enabled; rotate secret. A **generated** rotation returns the new value once; a caller-supplied one is not echoed. |
+| `PATCH /api/webhooks/:id` | Update `url`/`eventTypes`/`enabled`; set a caller-supplied `secret`, or `rotateSecret: true` to mint a new one (returned once). **`sandboxId` (scope) is immutable** — not accepted here. A generated rotation returns the new value once; a caller-supplied one is not echoed. |
 | `DELETE /api/webhooks/:id` | **Soft-delete** (P2-f): set `deleted_at`, disable, and **cancel non-terminal deliveries** for it (`status='canceled'`, `error='destination_deleted'` — P1-d). History is retained; the destination drops out of `GET`. |
 | `GET /api/webhooks/:id/deliveries?status=&cursor=&limit=` | Delivery history (paginated, see below) |
 | `GET /api/webhooks/:id/deliveries/:deliveryId` | One delivery, detail |
-| `POST /api/webhooks/:id/deliveries/:deliveryId/redeliver` | Re-enqueue **any** delivery: `status='pending'`, `next_attempt_at=now()`, clear lock, **reset `retry_count=0`** (fresh budget), **preserve lifetime `attempts`** (P1-c). **Same `webhook-id` (= delivery id)** — so a receiver that dedupes will treat it as the *same* message; redelivery means "send this delivery again," for when the original never landed, not "emit a new logical event" (P2-e). |
+| `POST /api/webhooks/:id/deliveries/:deliveryId/redeliver` | Re-enqueue **any** delivery: `status='pending'`, `next_attempt_at=now()`, clear lock, **reset `retry_count=0`** (fresh budget), **preserve lifetime `attempts`** (P1-c). **Same `webhook-id` (= delivery id)** — so a receiver that dedupes will treat it as the *same* message; redelivery means "send this delivery again," for when the original never landed, not "emit a new logical event" (P2-e). **Returns the re-enqueued delivery record.** |
 | `POST /api/webhooks/:id/test` | **Synchronous** connectivity check: signs + POSTs a synthetic `sandbox.test` event to the URL and returns the HTTP status inline. It **bypasses `event_types`**, does **not** create a delivery row, does **not** appear in history, and is **not** retried/dead-lettered (P2-d). |
 
 **Subscribe at create (P1-a).** A per-sandbox integrator usually doesn't know `sandbox_id`
@@ -449,11 +491,15 @@ an **org-wide** destination (no `sandbox_id`) + route on the body's `sandboxId`/
 
 **Idempotent create (P1-b).** Two mechanisms, explicit conflict semantics:
 - **`name`** (unique per org): `POST` with an existing `name` whose incoming config (url +
-  event_types + sandbox_id) **matches** → `200` with the existing destination; config
-  **differs** → **`409 Conflict`** (never silently reuse or overwrite).
-- **`Idempotency-Key` header**: stored in `webhook_idempotency_keys` with a request fingerprint
-  (§4). Same key + same fingerprint → replay the original result; same key + **different**
-  fingerprint → **`409`**. Prune keys past a ~24h TTL.
+  eventTypes + sandboxId) **matches** → `200` with the existing destination; config
+  **differs** → **`409 Conflict`** (never silently reuse or overwrite). NB: a `name`-only
+  match returns the destination *without* the secret (it's write-only) — so a client that
+  needs guaranteed secret recovery should use an `Idempotency-Key` (below) or supply its own.
+- **`Idempotency-Key` header**: the **original create response is stored encrypted**
+  (`webhook_idempotency_keys.response_enc`, §4) with a request fingerprint. Same key + same
+  fingerprint → **replay that exact response, including the one-time generated `secret`** (so a
+  client that lost the first response still gets it); same key + **different** fingerprint →
+  **`409`**. Both the stored response and the secret-replay expire with the row at a ~24h TTL.
 
 **Secret echo (P2-d).** Return `secret` **only when we generated it** (caller supplied none),
 on create or a generated rotation; never echo a caller-supplied secret (`has_secret: true`).
@@ -462,11 +508,11 @@ on create or a generated rotation; never echo a caller-supplied secret (`has_sec
 **opaque stable cursor** (encodes `(created_at, id)`), not a bare timestamp. `next_cursor` is
 `null` when `has_more` is false.
 
-Destination response: `{ id, name, url, event_types, sandbox_id, enabled, has_secret,
-created_at, updated_at }` — plus `secret` **only** when freshly generated (create, or a
-generated rotation). Delivery response: `{ id, destination, event_id, event_type, status,
-attempts, retry_count, last_attempt_at, response_code, error, created_at, updated_at,
-delivered_at }` (all backed by columns — §4; `updated_at` included per P3).
+Destination response: `{ id, name, url, eventTypes, sandboxId, enabled, hasSecret, createdAt,
+updatedAt }` — plus `secret` **only** when freshly generated (create, or a generated rotation).
+Delivery response: `{ id, destination, eventId, eventType, status, attempts, retryCount,
+lastAttemptAt, responseCode, error, createdAt, updatedAt, deliveredAt }`. List responses:
+`{ data, nextCursor, hasMore }`. (camelCase wire per §2b; backed by snake_case columns in §4.)
 
 ## 11. Reliability semantics (the contract we're promising)
 

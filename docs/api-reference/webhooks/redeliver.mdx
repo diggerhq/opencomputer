@@ -17,7 +17,20 @@ Re-send any delivery (not only dead-lettered). Re-enqueues it with a fresh retry
 ```json 202
 {
   "id": "whd_8c1d",
-  "status": "pending"
+  "destination": "whk_3f9a2c",
+  "eventId": "sb-3f9a…:3:142",
+  "eventType": "sandbox.stopped",
+  "status": "pending",
+  "attempts": 2,
+  "retryCount": 0,
+  "lastAttemptAt": "2026-06-24T12:00:01Z",
+  "responseCode": null,
+  "error": null,
+  "createdAt": "2026-06-24T12:00:00Z",
+  "updatedAt": "2026-06-24T12:10:00Z",
+  "deliveredAt": null
 }
 ```
 </ResponseExample>
+
+Returns the re-enqueued delivery — `status: "pending"`, `retryCount` reset, lifetime `attempts` preserved.

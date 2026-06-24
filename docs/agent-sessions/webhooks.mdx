@@ -161,6 +161,6 @@ function verify(headers, rawBody, secret) {
 }
 ```
 
-<Note>These deliver a **session's** events (turns, messages, results). To react to **sandbox lifecycle** — boot, hibernate, stop, scale — see [Sandbox webhooks](/sandboxes/webhooks): the same envelope shape, Standard Webhooks signing, and the same `verifyWebhook` helper.</Note>
+<Note>These deliver a **session's** events (turns, messages, results). To react to **sandbox lifecycle** — boot, hibernate, stop, scale — see [Sandbox webhooks](/sandboxes/webhooks): verified with the same `verifyWebhook` helper. (Sandbox webhooks are always signed and use the delivery id as `webhook-id`.)</Note>
 
 <Note>Today, delivery is over **generic webhooks**. Slack, GitHub comments, Jira, and email are coming soon — all on this same event and delivery model.</Note>

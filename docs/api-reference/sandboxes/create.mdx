@@ -71,9 +71,12 @@ If both `cpuCount` and `memoryMB` are provided, they must match a platform tier.
   "status": "running",
   "region": "use2",
   "workerID": "w-use2-abc123",
-  "previewAuthToken": "qx2sSi5IYXWBvnnRqwK9Ky_cIAI-x0Vx1bPCt0XMxsI"
+  "previewAuthToken": "qx2sSi5IYXWBvnnRqwK9Ky_cIAI-x0Vx1bPCt0XMxsI",
+  "webhooks": [
+    { "id": "whk_3f9a2c", "url": "https://app.example.com/oc-webhook", "secret": "whsec_Hk9…" }
+  ]
 }
 ```
 
-`previewAuthToken` is only present when `previewAuth` was set in the request. Read it once and store it durably — the server will not return it again.
+`previewAuthToken` is only present when `previewAuth` was set in the request. `webhooks` is present only when `webhooks` were requested; each `secret` (`whsec_…`) is returned here exactly once. Read both once and store them durably — the server will not return them again.
 </ResponseExample>

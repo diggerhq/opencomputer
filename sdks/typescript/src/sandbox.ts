@@ -83,6 +83,9 @@ interface SandboxData {
   /** Plaintext preview-URL bearer token. Returned exactly once on the create
    *  or rotate response when `previewAuth` was requested. */
   previewAuthToken?: string;
+  /** Destinations registered via `create({ webhooks })`. A generated `secret` (`whsec_…`)
+   *  is present once here — store it; it isn't returned again. */
+  webhooks?: Array<{ id: string; url: string; secret?: string }>;
 }
 
 export interface CheckpointInfo {
@@ -266,6 +269,13 @@ export class Sandbox {
    */
   previewAuthToken: string;
 
+  /**
+   * Webhook destinations registered inline via `Sandbox.create({ webhooks: [...] })`. Each
+   * generated signing `secret` (`whsec_…`) is present here exactly once — read and store it
+   * now; the server won't return it again. Empty when none were requested or after `connect()`.
+   */
+  readonly webhooks: Array<{ id: string; url: string; secret?: string }>;
+
   private constructor(data: SandboxData, apiUrl: string, apiKey: string) {
     this.sandboxId = data.sandboxID;
     this.id = this.sandboxId;
@@ -275,6 +285,7 @@ export class Sandbox {
     this.connectUrl = data.connectURL || "";
     this.token = data.token || "";
     this.previewAuthToken = data.previewAuthToken || "";
+    this.webhooks = data.webhooks ?? [];
     this._sandboxDomain = data.sandboxDomain || "";
 
     // Always route through the CP — it handles readiness waiting and proxies to workers.

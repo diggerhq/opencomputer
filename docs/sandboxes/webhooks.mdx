@@ -7,7 +7,7 @@ tag: "Preview"
 
 <Note>**Preview** — sandbox webhooks are newly available and still evolving; the shape may change. We'd love your feedback.</Note>
 
-Register a **destination** and OpenComputer delivers a sandbox's lifecycle events to it as a small, signed **delivery envelope** — at-least-once, retried, and redeliverable. Use it to react when a sandbox boots, hibernates, stops, or scales, without polling.
+Register a **destination** and OpenComputer delivers a sandbox's lifecycle events to it as a small, signed **delivery envelope** — signed, retried, and redeliverable. Use it to react when a sandbox boots, hibernates, stops, or scales, without polling.
 
 The envelope is camelCase, with top-level routing fields, your sandbox [`metadata`](/api-reference/sandboxes/create), and the full event nested under `event`:
 
@@ -178,7 +178,7 @@ Redelivery re-sends the **same** delivery (same `webhook-id`) with a fresh retry
 
 - **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused (at registration and at send).
 - **Always signed** with [Standard Webhooks](https://www.standardwebhooks.com). Every request carries `webhook-id` (= `deliveryId`), `webhook-timestamp`, and `webhook-signature` = `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; the timestamp guards replay. Plus `X-OC-Delivery-ID` and `X-OC-Sandbox-ID` for correlation. Your `secret` is write-only.
-- **At-least-once.** Retried with exponential backoff; after the max attempts a delivery is **dead-lettered** (inspect and redeliver it). A duplicate can still arrive, so **dedupe on `webhook-id`** (= `deliveryId`).
+- **At-least-once, once accepted.** Once an event is accepted for delivery, it's retried with exponential backoff and, after the max attempts, **dead-lettered** (inspect and redeliver it) — so it arrives at least once. A duplicate can still arrive, so **dedupe on `webhook-id`** (= `deliveryId`).
 - A delivery succeeds on HTTP `2xx`.
 
 ### Verify a webhook
@@ -199,4 +199,4 @@ if (delivery.type === "sandbox.stopped") {
 
 Or verify with any [Standard Webhooks](https://www.standardwebhooks.com) library directly, against the raw body and the `webhook-id` / `webhook-timestamp` / `webhook-signature` headers.
 
-<Note>Webhooks here cover **sandbox lifecycle**. To deliver an agent's *session* events (turns, messages, results), see [Agent Sessions webhooks](/agent-sessions/webhooks) — same envelope shape, signing, and verifier.</Note>
+<Note>Webhooks here cover **sandbox lifecycle**. To deliver an agent's *session* events (turns, messages, results), see [Agent Sessions webhooks](/agent-sessions/webhooks) — verified with the same `verifyWebhook` helper. Session webhooks differ in a couple of specifics today: their `webhook-id` is the event id, and signing is opt-in (set a `secret`).</Note>

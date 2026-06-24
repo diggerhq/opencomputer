@@ -97,10 +97,14 @@ export interface UpdateWebhookParams {
   /** Pass `null` to clear the allow-list (deliver all types). */
   eventTypes?: string[] | null;
   enabled?: boolean;
-  /** Rotate the signing secret; a generated rotation is returned once (see {@link CreateWebhookResult}). */
+  /** Set a caller-supplied signing secret (you keep it; it isn't echoed back). */
   secret?: string;
+  /** Generate a NEW signing secret — returned once on the response (see {@link CreateWebhookResult}). */
+  rotateSecret?: boolean;
   name?: string;
 }
+
+/** Scope (`sandboxId`) is immutable — set it at create; it can't be changed by update. */
 
 // ---- deliveries (the control surface behind a deliveries dashboard) ----
 
@@ -201,15 +205,17 @@ export class WebhookDeliveries {
 
   /**
    * Re-send any delivery (not only dead-lettered ones). Gives the delivery a fresh retry
-   * budget; the redelivery carries the **same** `webhook-id`, so a receiver that dedupes will
-   * treat it as the same message — redelivery is for cases where the original never landed.
+   * budget and returns the re-enqueued record; the redelivery carries the **same** `webhook-id`,
+   * so a receiver that dedupes will treat it as the same message — redelivery is for cases
+   * where the original never landed.
    */
-  async redeliver(destinationId: string, deliveryId: string): Promise<void> {
+  async redeliver(destinationId: string, deliveryId: string): Promise<WebhookDeliveryRecord> {
     const resp = await fetch(`${this.apiUrl}/webhooks/${destinationId}/deliveries/${deliveryId}/redeliver`, {
       method: "POST",
       headers: this.headers,
     });
     if (!resp.ok) return fail(resp, "redeliver");
+    return resp.json();
   }
 }
 
