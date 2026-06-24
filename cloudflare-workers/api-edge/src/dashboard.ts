@@ -1106,16 +1106,22 @@ async function handleBillingPortal(req: Request, env: DashboardEnv, caller: { or
 
 // ── Per-sandbox usage breakdown ──────────────────────────────────────────
 
-// Compute $/sec per memory tier. MUST stay in sync with
-// internal/billing/pricing.go TierPricePerSecond (and the Autumn credit
-// schema, which mirrors the same rates).
-const TIER_RATE_PER_SEC: Record<number, number> = {
-  1024: 0.000001080246914,
-  4096: 0.000005787037037,
-  8192: 0.00001350308642,
-  16384: 0.00002700617284,
-  32768: 0.0001929012346,
-  65536: 0.0005401234568,
+// Per-sandbox DISPLAY rate for PREPAID (autumn) orgs only — this breakdown is
+// rendered solely in the autumn billing view, and this constant has exactly one
+// consumer (handleSandboxUsage below). It is intentionally decoupled from
+// internal/billing/pricing.go (legacy billing): the source of truth for prepaid
+// charges is the Autumn `credits` credit-schema (credit_cost per compute
+// feature), and these values MUST mirror it exactly or the breakdown won't
+// reconcile with what's actually deducted. Current basis: $0.06/GB-hour
+// (0.00001666666666 per GB-second × the tier's GB). Change the Autumn schema →
+// change these too.
+const AUTUMN_TIER_RATE_PER_SEC: Record<number, number> = {
+  1024: 0.00001666666666,
+  4096: 0.00006666666664,
+  8192: 0.00013333333328,
+  16384: 0.00026666666656,
+  32768: 0.00053333333312,
+  65536: 0.00106666666624,
 };
 
 // GET /api/dashboard/usage/sandboxes?days=N — per-sandbox compute cost over a
@@ -1143,7 +1149,7 @@ async function handleSandboxUsage(req: Request, env: DashboardEnv, caller: { org
   // Fold per-(sandbox, tier) rows into per-sandbox totals.
   const bySandbox = new Map<string, { costCents: number; seconds: number; status: string | null; createdAt: number | null }>();
   for (const r of rows.results ?? []) {
-    const rate = TIER_RATE_PER_SEC[r.memory_mb] ?? 0;
+    const rate = AUTUMN_TIER_RATE_PER_SEC[r.memory_mb] ?? 0;
     const secs = r.secs ?? 0;
     const cur = bySandbox.get(r.sandbox_id) ?? { costCents: 0, seconds: 0, status: r.status, createdAt: r.created_at };
     cur.costCents += secs * rate * 100;
@@ -1159,7 +1165,11 @@ async function handleSandboxUsage(req: Request, env: DashboardEnv, caller: { org
       status: v.status ?? "deleted",
       createdAt: v.createdAt ?? undefined,
       seconds: Math.round(v.seconds),
-      costCents: Math.round(v.costCents),
+      // Keep FRACTIONAL cents. Rounding each sandbox to whole cents here meant a
+      // cheap/short sandbox (e.g. 4GB for ~15 min ≈ 0.5¢) showed $0.00, and the
+      // total summed already-zeroed rows — so a page of real usage read $0.00.
+      // The frontend formats the precision for display.
+      costCents: v.costCents,
     }))
     .sort((a, b) => b.costCents - a.costCents);
 

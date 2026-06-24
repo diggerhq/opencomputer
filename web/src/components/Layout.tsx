@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../hooks/useAuth'
-import { logout } from '../api/client'
+import { logout, getAutumnBilling } from '../api/client'
 
 /* ── SVG Icons (inline, no extra deps) ────────────────────── */
 const icons = {
@@ -68,6 +69,43 @@ const navItems = [
   { to: '/billing', label: 'Billing', icon: icons.creditCard },
   { to: '/settings', label: 'Settings', icon: icons.gear },
 ]
+
+// Org-wide halt notice. Prepaid (autumn) orgs that exhaust their credits get
+// halted — sandboxes hibernate — so show a small banner on every page except
+// Billing (where the fix already lives) so they understand why things paused
+// and where to resolve it. Legacy orgs 404 on /billing/autumn → no data → no
+// banner, which is the desired behavior.
+function HaltBanner() {
+  const location = useLocation()
+  const { data } = useQuery({
+    queryKey: ['autumn-billing'],
+    queryFn: getAutumnBilling,
+    retry: false,
+    refetchInterval: (q) => (q.state.error ? false : 30_000),
+  })
+  const halted = data?.isHalted ?? false
+  if (!halted || location.pathname.startsWith('/billing')) return null
+  return (
+    <div style={{
+      margin: '-32px -36px 28px',
+      padding: '9px 36px',
+      background: 'var(--accent-indigo)',
+      color: '#fff',
+      fontSize: 13,
+      fontWeight: 500,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      textAlign: 'center',
+    }}>
+      <span>
+        Your sandboxes are paused — you&apos;re out of prepaid credits.{' '}
+        <Link to="/billing" style={{ color: '#fff', fontWeight: 700, textDecoration: 'underline' }}>
+          Top up &amp; turn on auto-recharge
+        </Link>{' '}
+        to resume now and prevent future pauses.
+      </span>
+    </div>
+  )
+}
 
 export default function Layout() {
   const { user, switchOrg } = useAuth()
@@ -253,6 +291,7 @@ export default function Layout() {
         minHeight: '100vh',
         background: 'radial-gradient(ellipse 80% 50% at 50% -10%, rgba(99,102,241,0.04) 0%, transparent 70%)',
       }}>
+        <HaltBanner />
         <Outlet />
       </main>
     </div>
