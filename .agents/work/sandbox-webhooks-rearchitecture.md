@@ -20,20 +20,31 @@ and a precise compatibility story for headers, SDK, metadata, filtering, and inl
 owns everything *after* that boundary (fan-out, retries, signing, SSRF, logs, portal).
 
 **Decisions locked (Igor, 2026-06-24):**
-- **D1 = Svix Cloud** to start (swappable to self-host later).
-- **D2 = drop the metadata promise.** Remove `metadata` from the envelope/docs/SDK; consumers look
-  it up via the sandbox API using the event's `sandboxId`. ⇒ publishers do NOT snapshot metadata
-  (simplifies the publisher + keeps payloads small).
-- **D4 = OC API proxy only.** Keep a first-class OC `/api/webhooks` (CRUD + `/deliveries` view +
-  `/redeliver` + `/test`) and the SDK `Webhooks` client — but back it **entirely with live Svix
-  calls** (create/list/delete endpoints, read attempt logs, resend). Svix is the engine; OC owns the
-  API shape so the dev experience matches the rest of `/api/*`. **Not** the App Portal.
-- Proceeding on recommendations (revisit only if they bite): D3 trigger at the edge, D6 sandbox-scope
-  via Svix channels, D7 outbox handoff, D8 in-tx `lifecycle_outbox`.
+- **ALL SVIX AT THE EDGE.** The CP is a pure lifecycle **source** (emits facts to the stream/outbox);
+  it holds **no** Svix client, delivery state, or endpoint management. Both Svix-facing roles live in
+  Cloudflare: **events-ingest** does the delivery push (consume lifecycle events → `svix.message.create`,
+  sync-handoff before ack), and **api-edge** owns `/api/webhooks` management (Svix App/Endpoint/App
+  Portal + `/test`) + the small D1 index (`has_webhooks`, OC↔Svix id map) that events-ingest reads.
+  Keeps third-party webhook concerns in one place; CP stays a source of truth, not a webhook product.
+- **D4 refined → serve `/api/webhooks` from api-edge (TS).** Decision rule (match the *rest* of the
+  public API) is satisfied: api-edge already auths every `/api/*` uniformly (X-API-Key→D1 `api_keys`→org)
+  and uses the same `{"error":…}`+status envelope; the rest of the public API has **no** Idempotency-Key,
+  so dropping the shipped CP two-phase idempotency *increases* consistency (and Svix makes the signing
+  secret always-retrievable, removing the once-only-secret reason). Add explicit `/api/webhooks*` edge
+  handlers before api-edge's existing catch-all (which proxies unknowns to the CP). The shipped CP
+  `/api/webhooks` handler + store + the Go `internal/svix` client are **deleted** (Go client = throwaway
+  discovery that validated the API + gotchas).
+- **Inline-on-create = CP → edge `/internal/webhooks/register`** (HMAC `EVENT_SECRET`, like existing
+  `/internal/secret-stores`,`/internal/templates`): CP calls it **synchronously before spawn/emitting
+  `created`** so the Svix endpoint exists first. (Edge fronts create but the CP assigns `sandbox_id`,
+  so the edge can't pre-create the sandbox-scoped endpoint — hence the CP-initiated internal call. CP
+  still never touches Svix.)
+- **D1 = Svix Cloud**; **D2 = drop the sandbox-metadata snapshot** (keep per-destination registration
+  metadata as Svix endpoint custom headers, §4); **D3 = edge trigger**; **D6 = sandbox-scope via Svix
+  channels**; **D7 = sync create-before-ack** (§3.1); **D8 = in-tx `lifecycle_outbox`** (§3.2).
 
-**External dependency (Igor must provision — blocks the Svix path):** a **Svix Cloud account + API
-token**, set as a Worker secret (`SVIX_API_TOKEN`) for the edge relay and available for dev-box
-testing. The CP-side foundation (below) can be built + tested without it.
+**External dependency (Igor):** the **Svix Cloud token** (`/tmp/svix_token`) — set as a Worker secret
+on the edge workers. **Dev testing** uses a one-off `igor-dev` edge stack in Mo's CF account — see §8.
 
 ## 1. What we shipped, and the two redundancies
 
@@ -288,7 +299,66 @@ ripping them out has no prod blast radius. Phasing:
 - **Future (not now, behind the seam):** the durable-outbox escalation (§3.1 option 2); an `EdgeSink`
   self-built delivery adapter; sessions-api convergence (D5).
 
-## 8. References
+## 8. Dev test environment (`igor-dev`) — prod parity to test before merge
+
+We test the **real** path around the existing GCP dev box (`opensandbox-qemu-dev-igor`,
+34.181.232.88) by standing up a one-off, clearly-labeled `igor-dev` edge stack in **Mo's CF account
+`b8f23cb8`** (the local `CLOUDFLARE_API_TOKEN` is Mo's, so deploys work; the repo tomls' `1241f114`
+is stale/inaccessible — the dev tomls must set `account_id = b8f23cb8`). Tear down after, or leave —
+everything is prefixed `…-igor-dev`. The path under test:
+`client → api-edge-igor-dev → (mgmt→Svix; create→dev-box CP) → events:{cell} → events-ingest-igor-dev → Svix → sink`.
+
+### 8.1 Create in CF (Mo's account `b8f23cb8`)
+1. **D1 `opencomputer-igor-dev`** — apply `cloudflare-workers/schema*.sql` + the new webhook-index
+   migration. Seed minimal rows: one `orgs` row; one `api_keys` row (`key_hash` = sha256 of a dev
+   API key); one `cells` row (`base_url = http://34.181.232.88:8080`, healthy) so api-edge can auth +
+   route create to the dev box.
+2. **R2 `events-archive-igor-dev`**.
+3. **Worker `opencomputer-api-edge-igor-dev`** (`account_id b8f23cb8`) — bindings: D1 (above), KV
+   sessions, DO `CREDIT_ACCOUNT` (self), R2. Secrets: `SESSION_JWT_SECRET`, `EVENT_SECRET`,
+   `SVIX_API_TOKEN`, `CF_ADMIN_SECRET` (WorkOS/Autumn left unset/stubbed — off the webhook path).
+   New code: `/api/webhooks*` management + `/internal/webhooks/register`.
+4. **Worker `opencomputer-events-ingest-igor-dev`** (`account_id b8f23cb8`) — bindings: D1, R2, DO
+   `CREDIT_ACCOUNT` (`script_name = opencomputer-api-edge-igor-dev`). Secrets: `EVENT_SECRET`
+   (**must equal** the box's `OPENSANDBOX_CF_EVENT_SECRET`), `SVIX_API_TOKEN`, `CF_ADMIN_SECRET`.
+   New code: `SvixSink` + sync-handoff.
+5. **Svix** — nothing to pre-create: apps are per-org-`uid`, created on demand by the mgmt API. The
+   one `SVIX_API_TOKEN` (`/tmp/svix_token`) suffices; dev uses dev org uids so apps don't collide
+   with prod.
+
+### 8.2 Wire the dev box (`/etc/opensandbox/server.env`, then `systemctl restart opensandbox-server`)
+- `OPENSANDBOX_CF_EVENT_ENDPOINT` = `https://opencomputer-events-ingest-igor-dev.<subdomain>.workers.dev/ingest`
+- `OPENSANDBOX_CF_EVENT_SECRET` = the worker's `EVENT_SECRET` (so the forwarder's HMAC verifies).
+- The CP's **edge-internal base URL** (used for `/internal/*` calls — halt-list, org-policy,
+  secret-stores, and the new `/internal/webhooks/register`) → `api-edge-igor-dev`.
+- The CP needs **no** `SVIX_API_TOKEN` (all-Svix-at-edge); the earlier CP token wiring is now unused
+  (leave or remove).
+
+### 8.3 Parity caveats (not replicated — and why it's fine)
+- Single cell / single CP (the box): multi-cell fan-out is Svix's job; the consumer-group + outbox
+  `SKIP LOCKED` multi-CP safety is covered by unit tests, not this env.
+- No real billing/Autumn/WorkOS: off the webhook path; stub/skip.
+- DO `/debit` fan-out won't fire (lifecycle events aren't `usage_tick`): irrelevant to webhooks.
+- Svix Cloud is shared with prod: isolated by dev org `uid`s.
+
+### 8.4 E2E procedure (the merge gate)
+1. **Mgmt:** `POST /api/webhooks` (dev key) `{url: <webhook.site>}` → 201; assert the Svix endpoint
+   exists (Svix API) and D1 `has_webhooks=true`.
+2. **Lifecycle:** `POST /api/sandboxes` → `sandbox.created` lands at the sink + Svix attempt
+   `status=0`. Then scale + stop → `sandbox.scaled` / `sandbox.stopped` delivered.
+3. **Inline-on-create:** `POST /api/sandboxes {webhooks:[…]}` → endpoint registered (CP→edge
+   `/internal/webhooks/register`) **before** `created` → `created` delivered, no race.
+4. **Dormancy:** a second org with no webhooks → create a sandbox → events-ingest sends **nothing**
+   to Svix (`has_webhooks=false`).
+5. **Durable handoff:** break Svix reachability (bad token) → events-ingest returns 503 → forwarder
+   retries (PEL) → recovers when restored (no lost event).
+6. **`/test`, `/deliveries`, `/redeliver`** via api-edge → Svix.
+
+### 8.5 Teardown
+Delete the two workers + D1 + R2 (or leave, clearly labeled). Optionally delete dev Svix apps by
+`uid` prefix.
+
+## 9. References
 
 - Shipped design + decision log: `sandbox-lifecycle-webhooks.md` (same dir). PR body: `/tmp/pr410_body.md`.
 - Durable boundary: `internal/controlplane/event_forwarder.go:331-340` (XACK-on-2xx),
