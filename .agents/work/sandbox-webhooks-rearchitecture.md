@@ -373,6 +373,38 @@ everything is prefixed `…-igor-dev`. The path under test:
 Delete the two workers + D1 + R2 (or leave, clearly labeled). Optionally delete dev Svix apps by
 `uid` prefix.
 
+### 8.6 Results (2026-06-24) — STOOD UP + PASSED
+Live stack in Mo's acct `b8f23cb87a7a6c64040d3134643da448`: D1 `opencomputer-igor-dev`
+(`d5bbb12a-…`), R2 `events-archive-igor-dev`, workers `opencomputer-events-ingest-igor-dev` +
+`opencomputer-api-edge-igor-dev` (dev tomls: `events-ingest/wrangler.igor-dev.toml`,
+`api-edge/wrangler.igor-dev.toml`). Validated end-to-end against **real Svix Cloud**:
+- **Delivery path** (synthetic HMAC `/ingest` batch, no box): HMAC verify; `sandbox.*` filter;
+  dormancy gate both ways (`has_webhooks` 1→delivers, 0→0 Svix msgs even with an app present);
+  createMessage→Svix→webhook.site attempt status=0; envelope = SDK
+  `WebhookDelivery<SandboxLifecycleEvent>` + `svix-*` headers; eventId `:`→`.` sanitize + raw-id
+  idempotency dedup.
+- **Management/inline** (api-edge): API-key auth (401 on bad key); POST/GET/PATCH `/api/webhooks`
+  (create returns secret once, writes Svix endpoint + D1 row + flips `has_webhooks`); `/test`,
+  `/deliveries` (Svix attempt index lags ~5–8 s; status 0→`success`), `/redeliver`; HMAC
+  `/internal/webhooks/register` → channel-scoped endpoint (`channels=[sandboxId]`).
+- **Real CP lifecycle** (branch deployed to the box): live sandbox `sb-2a8594a9` →
+  `sandbox.created` + `sandbox.ready` + `sandbox.stopped` all delivered; box outbox drains to 0
+  after each (relay deletes after publish — the transient-outbox guarantee).
+
+**Deploy gotchas (for next time):** (1) the deploy `rsync` needed `--delete` (now added) or
+in-branch-deleted files linger on the box and break the build. (2) pass
+`INSTANCE_NAME=opensandbox-qemu-dev-igor` (the script default doesn't match this box, and the
+mismatch aborts the deploy *after* it stops services). (3) the box PG had migration **v49** already
+applied (old 4-table 049) — for the table rename, drop the old `webhook_*`/`sandbox_lifecycle_*`
+tables + `DELETE FROM schema_migrations WHERE version=49` so the renamed 049 re-creates
+`sandbox_lifecycle_outbox`. (4) with `OPENSANDBOX_CF_EDGE_BASE_URL` set, the CP resolves *templates*
+via the edge (`LookupTemplate`→D1, empty here) → "template not found"; blank it on the box to use
+local public templates (the lifecycle path via `CF_EVENT_ENDPOINT` is independent).
+
+**Optional follow-ups (non-blocking):** §8.4 #3 inline-on-create via the *live* CP (seed D1
+templates + re-wire the edge URL on the box); §8.4 #5 durable-handoff 503-retry (break the Svix
+token, confirm the forwarder PEL retries).
+
 ## 9. References
 
 - Shipped design + decision log: `sandbox-lifecycle-webhooks.md` (same dir). PR body: `/tmp/pr410_body.md`.

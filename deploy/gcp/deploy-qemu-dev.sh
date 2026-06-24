@@ -216,7 +216,10 @@ cmd_deploy() {
     log "Deploying branch '$branch' to $public_ip..."
 
     log "Syncing code..."
-    rsync -az --progress \
+    # --delete mirrors the tree so files removed in the local branch (e.g. a
+    # deleted .go file) are also removed on the box. Without it, a stale source
+    # file referencing now-deleted symbols lingers and breaks the on-box build.
+    rsync -az --progress --delete \
         -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $SSH_KEY" \
         --exclude '.git' --exclude 'bin/' --exclude 'node_modules/' \
         --exclude '.claude/' --exclude '*.ext4' \
