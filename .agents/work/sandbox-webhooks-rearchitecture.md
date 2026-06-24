@@ -218,8 +218,15 @@ Preview/not-live, so there are **zero existing consumers** to break — but we m
 - **Headers:** Svix emits `svix-id` / `svix-timestamp` / `svix-signature`. Update the SDK
   `verifyWebhook` to accept `svix-*` (the signature math is identical — Standard Webhooks). Decide
   whether to also accept legacy `webhook-*` (probably no — nothing shipped).
-- **Metadata removed (D2):** drop `metadata` from the envelope, `pkg/types/webhook.go`, the SDK
-  types, and the docs. Consumers look it up via the sandbox API using `sandboxId`.
+- **Metadata (D2) — two different things; only the sandbox snapshot is dropped:**
+  - *Drop:* the **sandbox's** `metadata` snapshot in the event body (`pkg/types/webhook.go` envelope,
+    SDK types, docs) — the edge doesn't have CP `sandbox_sessions.metadata`, and it was the leak P0.
+    Consumers look up sandbox metadata via the sandbox API using `sandboxId`.
+  - *Keep:* **per-destination registration metadata** — `POST /api/webhooks` still accepts a
+    `metadata`/`headers` map; we store it in the local index and set it as the Svix endpoint's
+    **custom headers** (Svix sends them on every delivery to that endpoint). This is the cleaner
+    replacement: subscriber-controlled, static, no edge dependency. (For body-injection instead of
+    headers, use a per-endpoint Svix transformation; headers is the default.)
 - **Retry schedule + delivery semantics:** Svix's schedule (not our 10s/30s/60s/5m/15m), Svix
   dead-letter/replay, Svix `svix-id` as the stable delivery id. Docs must be rewritten to Svix's
   model, including ordering-not-guaranteed.
@@ -243,7 +250,9 @@ events**, so nothing relevant is lost.
 
 **Resolved (Igor, 2026-06-24):**
 - **D1 = Svix Cloud** to start; swappable to self-host later if residency demands.
-- **D2 = drop the metadata promise** (remove from envelope/types/SDK/docs; consumers look it up). §4.
+- **D2 = drop the *sandbox* metadata snapshot** from the event body (consumers look it up via the
+  sandbox API). **Keep** per-destination registration `metadata`, delivered as Svix endpoint custom
+  headers. §4.
 - **D4 = OC API proxy only** — keep `/api/webhooks` CRUD + `/deliveries` + `/redeliver` + `/test` and
   the SDK, all backed by live Svix calls; no App Portal, no local delivery ledger. §3.3, §4.
 - **D7 = option 1, synchronous Svix create before ack** (escalate to the outbox only if a sustained
