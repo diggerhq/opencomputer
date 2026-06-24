@@ -116,11 +116,11 @@ func webhookRequestHash(req types.CreateWebhookRequest) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// recordLifecycle records a CP-origin lifecycle event for a sandbox in its own
-// transaction. Best-effort: a failure is logged, never fails the request. Used
-// for the events the control plane emits directly (ready on the local create
-// path, checkpoint.created, forked, scaled, preview_url.changed).
-func (s *Server) recordLifecycle(ctx context.Context, orgID uuid.UUID, sandboxID, evType string, data map[string]any) {
+// recordLifecycleID records a CP-origin lifecycle event with an explicit,
+// caller-supplied event id (use a deterministic id for once-per-entity events so
+// ON CONFLICT dedups replays). Own transaction; best-effort (logged, never fails
+// the request).
+func (s *Server) recordLifecycleID(ctx context.Context, orgID uuid.UUID, sandboxID, evType, id string, data map[string]any) {
 	if s.store == nil || orgID == uuid.Nil || sandboxID == "" {
 		return
 	}
@@ -129,7 +129,7 @@ func (s *Server) recordLifecycle(ctx context.Context, orgID uuid.UUID, sandboxID
 		raw, _ = json.Marshal(data)
 	}
 	if err := s.store.RecordLifecycleEvent(ctx, db.LifecycleEvent{
-		ID:        fmt.Sprintf("%s:%s:%d", sandboxID, evType, time.Now().UnixNano()),
+		ID:        id,
 		OrgID:     orgID,
 		SandboxID: sandboxID,
 		Type:      evType,
@@ -137,6 +137,14 @@ func (s *Server) recordLifecycle(ctx context.Context, orgID uuid.UUID, sandboxID
 	}); err != nil {
 		log.Printf("recordLifecycle %s for %s: %v", evType, sandboxID, err)
 	}
+}
+
+// recordLifecycle records a recurring CP-origin event (scaled, preview_url.changed)
+// — each occurrence is a distinct delivery, so the id is made unique per call.
+// (Once-per-entity events use recordLifecycleID with a deterministic id.)
+func (s *Server) recordLifecycle(ctx context.Context, orgID uuid.UUID, sandboxID, evType string, data map[string]any) {
+	s.recordLifecycleID(ctx, orgID, sandboxID, evType,
+		fmt.Sprintf("%s:%s:%d", sandboxID, evType, time.Now().UnixNano()), data)
 }
 
 // registerInlineWebhooks registers webhooks supplied inline on sandbox create,
@@ -234,7 +242,13 @@ func (s *Server) createWebhook(c echo.Context) error {
 		case db.WebhookIdemConflict:
 			return c.JSON(http.StatusConflict, map[string]string{"error": "Idempotency-Key reused with a different request"})
 		case db.WebhookIdemInProgress:
-			return c.JSON(http.StatusConflict, map[string]string{"error": "a request with this Idempotency-Key is already in progress"})
+			// Transient: another request holds the claim. Signal retryability so
+			// clients/agents don't treat it as fatal.
+			c.Response().Header().Set("Retry-After", "1")
+			return c.JSON(http.StatusConflict, map[string]string{
+				"error": "a request with this Idempotency-Key is already in progress; retry shortly",
+				"code":  "idempotency_in_progress",
+			})
 		case db.WebhookIdemClaimed:
 			claimed = true
 		}
@@ -304,6 +318,24 @@ func (s *Server) createWebhook(c echo.Context) error {
 		}
 	}
 	return c.JSON(status, resp)
+}
+
+// validateInlineWebhooks checks inline webhook specs up-front (URL + event
+// types) so a bad spec fails sandbox creation rather than being silently skipped
+// (P2 review). Returns nil if all are valid (or none supplied).
+func validateInlineWebhooks(ctx context.Context, specs []types.SandboxWebhookSpec) error {
+	for _, w := range specs {
+		if w.URL == "" {
+			return fmt.Errorf("webhooks[].url is required")
+		}
+		if err := webhook.ValidateURL(ctx, w.URL); err != nil {
+			return fmt.Errorf("invalid webhook url: %w", err)
+		}
+		if bad := firstInvalidEventType(w.EventTypes); bad != "" {
+			return fmt.Errorf("unknown event type: %s", bad)
+		}
+	}
+	return nil
 }
 
 // firstInvalidEventType returns the first eventTypes entry that isn't a valid

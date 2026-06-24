@@ -89,6 +89,29 @@ func (s *Store) RecordLifecycleEvent(ctx context.Context, ev LifecycleEvent) err
 	return tx.Commit(ctx)
 }
 
+// recordOrphanStoppedTx records sandbox.stopped (reason crash) for sandboxes
+// moved to a terminal failure state OUTSIDE UpdateSandboxSessionStatus (migration
+// failure, orphan/dead-worker sweeps), within the caller's tx so the webhook is
+// durable with the state change. The id matches the normal stopped id so a
+// sandbox can never get two stopped events.
+func recordOrphanStoppedTx(ctx context.Context, tx pgx.Tx, orphans []OrphanedSandbox) error {
+	for _, o := range orphans {
+		if o.OrgID == uuid.Nil || o.SandboxID == "" {
+			continue
+		}
+		if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+			ID:        o.SandboxID + ":sandbox.stopped",
+			OrgID:     o.OrgID,
+			SandboxID: o.SandboxID,
+			Type:      "sandbox.stopped",
+			Data:      json.RawMessage(`{"reason":"crash"}`),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // CurrentLifecycleSeq returns the current max event seq, used as a destination's
 // creation watermark (it then receives only strictly-later events).
 func (s *Store) CurrentLifecycleSeq(ctx context.Context) (int64, error) {
@@ -566,9 +589,13 @@ type matchedDest struct {
 }
 
 func matchDestinationsTx(ctx context.Context, tx pgx.Tx, e lifecycleEventRow) ([]matchedDest, error) {
+	// Match disabled destinations too: enabled=false means PAUSE, not drop, so we
+	// create the delivery rows now and let them queue. The dispatcher's claim
+	// (ClaimDueDeliveries) is what skips disabled destinations, so paused rows
+	// simply wait and deliver on re-enable.
 	rows, err := tx.Query(ctx,
 		`SELECT id, event_types FROM webhook_destinations
-		 WHERE org_id = $1 AND enabled AND deleted_at IS NULL
+		 WHERE org_id = $1 AND deleted_at IS NULL
 		   AND (sandbox_id IS NULL OR sandbox_id = $2)
 		   AND created_after_event_seq < $3`,
 		e.OrgID, e.SandboxID, e.Seq)

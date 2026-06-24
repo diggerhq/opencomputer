@@ -867,23 +867,33 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 		_ = tx.QueryRow(ctx,
 			`SELECT org_id FROM sandbox_sessions WHERE sandbox_id = $1`, sandboxID).Scan(&orgID)
 		if orgID != uuid.Nil {
-			var evType string
+			var evType, evID string
 			var data json.RawMessage
 			switch status {
 			case "stopped":
 				evType = "sandbox.stopped"
+				evID = sandboxID + ":sandbox.stopped" // terminal: once per sandbox
 				data = json.RawMessage(`{"reason":"user_requested"}`)
 			case "error":
 				evType = "sandbox.stopped"
+				evID = sandboxID + ":sandbox.stopped"
 				data = json.RawMessage(`{"reason":"crash"}`)
 			case "hibernated":
+				// Recurs across hibernate/wake cycles — namespace by the
+				// hibernation count so each cycle is a distinct, deterministic id.
+				var n int
+				_ = tx.QueryRow(ctx, `SELECT count(*) FROM sandbox_hibernations WHERE sandbox_id = $1`, sandboxID).Scan(&n)
 				evType = "sandbox.hibernated"
+				evID = fmt.Sprintf("%s:sandbox.hibernated:%d", sandboxID, n)
 			case "running":
+				// Boot promotion = ready. Deterministic id dedups a repeat
+				// "running" update on an already-running row (idempotent promote).
 				evType = "sandbox.ready"
+				evID = sandboxID + ":sandbox.ready"
 			}
 			if evType != "" {
 				if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
-					ID:        fmt.Sprintf("%s:%s:%d", sandboxID, evType, time.Now().UnixNano()),
+					ID:        evID,
 					OrgID:     orgID,
 					SandboxID: sandboxID,
 					Type:      evType,
@@ -989,17 +999,23 @@ func (s *Store) FailMigrationPostQMP(ctx context.Context, sandboxID, errorMsg st
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx,
+	var orgID uuid.UUID
+	err = tx.QueryRow(ctx,
 		`UPDATE sandbox_sessions SET status = 'error', migrating_to_worker = '', stopped_at = now(), error_msg = $2
-		 WHERE sandbox_id = $1 AND status = 'migrating'`,
-		sandboxID, errorMsg)
+		 WHERE sandbox_id = $1 AND status = 'migrating'
+		 RETURNING org_id`,
+		sandboxID, errorMsg).Scan(&orgID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tx.Commit(ctx) // not migrating — nothing to do
+		}
 		return err
 	}
-	if tag.RowsAffected() > 0 {
-		if err := closeOpenScaleEventsForSandboxes(ctx, tx, []string{sandboxID}); err != nil {
-			return fmt.Errorf("close scale events: %w", err)
-		}
+	if err := closeOpenScaleEventsForSandboxes(ctx, tx, []string{sandboxID}); err != nil {
+		return fmt.Errorf("close scale events: %w", err)
+	}
+	if err := recordOrphanStoppedTx(ctx, tx, []OrphanedSandbox{{SandboxID: sandboxID, OrgID: orgID}}); err != nil {
+		return fmt.Errorf("record stopped event: %w", err)
 	}
 	return tx.Commit(ctx)
 }
@@ -1058,6 +1074,9 @@ func (s *Store) MarkOrphanedOnWorker(ctx context.Context, workerID, errorMsg str
 		if err := closeOpenScaleEventsForSandboxes(ctx, tx, ids); err != nil {
 			return nil, fmt.Errorf("close scale events: %w", err)
 		}
+	}
+	if err := recordOrphanStoppedTx(ctx, tx, orphans); err != nil {
+		return nil, fmt.Errorf("record stopped events: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -1142,6 +1161,11 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 				tx.Rollback(ctx)
 				continue
 			}
+		}
+		if err := recordOrphanStoppedTx(ctx, tx, batchOrphans); err != nil {
+			log.Printf("MarkOrphanedSandboxes: record stopped events for worker %s: %v", workerID, err)
+			tx.Rollback(ctx)
+			continue
 		}
 		if err := tx.Commit(ctx); err != nil {
 			continue

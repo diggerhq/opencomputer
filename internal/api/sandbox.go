@@ -43,6 +43,12 @@ func (s *Server) createSandbox(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
+	// Validate inline webhook specs up-front so a typo fails the create instead
+	// of silently producing a sandbox without the requested callback (P2 review).
+	if err := validateInlineWebhooks(ctx, cfg.Webhooks); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
 	// When the edge is the Pro-billing authority (PRO_BILLING_AUTHORITY=edge),
 	// a billing-relevant create must arrive via the edge (cap-token), not a raw
 	// API key hitting the CP directly — the direct path bypasses the edge's
@@ -260,8 +266,8 @@ func (s *Server) createSandbox(c echo.Context) error {
 		}
 		// Combined-mode create writes the session directly as 'running' (no
 		// pending→running promotion), so emit sandbox.ready here; the remote
-		// path emits it in-tx on the promotion.
-		s.recordLifecycle(ctx, orgID, sb.ID, types.WebhookEventReady, nil)
+		// path emits it in-tx on the promotion. Deterministic id → at most one.
+		s.recordLifecycleID(ctx, orgID, sb.ID, types.WebhookEventReady, sb.ID+":sandbox.ready", nil)
 	}
 
 	// Preview-URL auth: same flow as createSandboxRemote — validate the
@@ -534,6 +540,20 @@ func flattenSecretAllowedHosts(m map[string][]string) map[string]string {
 	return out
 }
 
+// isTransientWorkerErr reports whether a worker gRPC error is transient (worker
+// restarting / unreachable) and the create should be retried rather than 500'd.
+func isTransientWorkerErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "Unavailable") ||
+		strings.Contains(s, "transport is closing") ||
+		strings.Contains(s, "no such host") ||
+		strings.Contains(s, "i/o timeout")
+}
+
 // createSandboxRemote dispatches sandbox creation to a remote worker via gRPC.
 // secretStoreID is the resolved store UUID (or nil) from resolveSecretStoreInto;
 // passed straight to CreateSandboxSessionWithStatus so the row's secret_store_id
@@ -681,6 +701,16 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 			for _, w := range inlineWebhooks {
 				_ = s.store.SoftDeleteWebhookDestination(ctx, orgID, w.ID)
 			}
+		}
+		// A worker that is restarting/unreachable is transient — return a
+		// retryable 503 (with Retry-After) instead of a raw 500 so callers retry
+		// and the edge can reselect a worker.
+		if isTransientWorkerErr(err) {
+			c.Response().Header().Set("Retry-After", "2")
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{
+				"error": "worker temporarily unavailable, please retry: " + err.Error(),
+				"code":  "worker_unavailable",
+			})
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "worker create failed: " + err.Error(),
@@ -2214,11 +2244,14 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 			}
 			// Persist the actual archive size from the worker's response.
 			// Pre-fix this was hardcoded to 0, leaving size_bytes meaningless.
-			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key, grpcResp.SizeBytes)
-			log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, grpcResp.SizeBytes)
-			s.recordLifecycle(context.Background(), orgID, sandboxID, types.WebhookEventCheckpointCreated, map[string]any{
-				"checkpointId": checkpointID.String(),
-			})
+			if cperr := s.store.SetCheckpointReady(context.Background(), checkpointID, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key, grpcResp.SizeBytes); cperr != nil {
+				log.Printf("api: checkpoint %s SetCheckpointReady failed: %v", checkpointID, cperr)
+			} else {
+				log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, grpcResp.SizeBytes)
+				s.recordLifecycleID(context.Background(), orgID, sandboxID, types.WebhookEventCheckpointCreated,
+					sandboxID+":sandbox.checkpoint.created:"+checkpointID.String(),
+					map[string]any{"checkpointId": checkpointID.String()})
+			}
 			golden := ""
 			if session.GoldenVersion != nil {
 				golden = *session.GoldenVersion
@@ -2257,8 +2290,14 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				})
 				return
 			}
-			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, rootfsKey, workspaceKey, sizeBytes)
-			log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, sizeBytes)
+			if cperr := s.store.SetCheckpointReady(context.Background(), checkpointID, rootfsKey, workspaceKey, sizeBytes); cperr != nil {
+				log.Printf("api: checkpoint %s SetCheckpointReady failed: %v", checkpointID, cperr)
+			} else {
+				log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, sizeBytes)
+				s.recordLifecycleID(context.Background(), orgID, sandboxID, types.WebhookEventCheckpointCreated,
+					sandboxID+":sandbox.checkpoint.created:"+checkpointID.String(),
+					map[string]any{"checkpointId": checkpointID.String()})
+			}
 			golden := ""
 			if session.GoldenVersion != nil {
 				golden = *session.GoldenVersion
@@ -2781,9 +2820,9 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 		// Emit sandbox.forked on the child, carrying the parent sandbox id (the
 		// sandbox the checkpoint was taken from). The child also gets created
 		// (worker) + ready (the running promotion above).
-		s.recordLifecycle(ctx, orgID, sandboxID, types.WebhookEventForked, map[string]any{
-			"parentId": cp.SandboxID,
-		})
+		s.recordLifecycleID(ctx, orgID, sandboxID, types.WebhookEventForked,
+			sandboxID+":sandbox.forked",
+			map[string]any{"parentId": cp.SandboxID})
 	}
 
 	s.applyPendingPatches(sandboxID, workerID)
@@ -3366,6 +3405,11 @@ func (s *Server) deletePreviewURL(c echo.Context) error {
 
 	_ = s.store.DeletePreviewURL(ctx, previewURL.ID)
 
+	if orgID, ok := auth.GetOrgID(c); ok {
+		s.recordLifecycle(ctx, orgID, sandboxID, types.WebhookEventPreviewURLChanged, map[string]any{
+			"port": port, "url": nil,
+		})
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 
