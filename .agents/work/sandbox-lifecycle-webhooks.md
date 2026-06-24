@@ -607,3 +607,76 @@ lastAttemptAt, responseCode, error, createdAt, updatedAt, deliveredAt }`. List r
   (`webhooks.ts`: add `deliveryId` to `WebhookDelivery`, fix the verifier comment) + session
   webhook docs. Until this lands the two products differ on `webhook-id`, so the "one verifier"
   claim is versioned, not yet true. Out of scope for this branch; track so they don't drift.
+- **★O9 — confirm the Path-B lifecycle-event transport per environment (blocks Path B).** §5
+  Path B consumes the **Redis** lifecycle stream (`event_forwarder.go` XPENDING/XCLAIM), but the
+  local stack (`deploy/docker-compose.yml`) ships **NATS, not Redis**. Verify what carries
+  worker-published lifecycle events to the CP in each env (prod = Redis?), then either (a) add
+  Redis to the local compose so Path B is testable locally, or (b) point the projector at the
+  transport the CP already consumes. Path A (CP-DB, in-tx) is unaffected and testable now.
+
+---
+
+## 15. Implementation readiness, testing, deployment & rollback
+
+**Readiness: design-complete (rev 5) — ready to implement.** One canonical contract (§2b);
+schema, dual-path projection, dispatcher, signing, SSRF, API, and reliability are all specified
+with code sites (§12); build order = §13. The doc is current as of rev 5 (no known stale
+sections). Pre-build verifications still open: **O5** (secret key) and **★O9** (Path-B transport).
+
+### What's net-new at runtime
+The **projector** (Redis consumer group) and **dispatcher** (Postgres poll loop) are new
+**background goroutines in the control plane** (`cmd/server/main.go`), beside the existing
+`billable_events_sender` / `event_forwarder`. New tables only (additive migration); no worker/
+agent change except the event-emission gaps (§3).
+
+### Testing
+**Local (the fast loop, default):** `make infra-up` (Postgres :5432 + NATS) → `make run-pg`
+(combined mode; **migrations run on server start**) → `make seed` (org `test-org`, key
+`test-key`). Hit `/api/webhooks` CRUD + `/test` + deliveries on `localhost` with `X-API-Key:
+test-key`; point a destination at a local sink and assert signing / retry / dead-letter /
+redeliver / soft-delete-cancel.
+- **Covers fully:** the API, the dispatcher (claim → SSRF → sign → classify → backoff →
+  dead-letter), and **Path-A** projection (stopped/hibernated/resumed + CP-side gap events,
+  projected in-tx).
+- **Pure unit tests (no infra):** SSRF allow/deny vectors, Standard Webhooks signing (golden
+  vectors checked against the shipped TS `verifyWebhook`), `classify()`, `backoff()`, the
+  state machine, idempotency (name-409 + key-replay).
+- **Path B** needs Redis — see ★O9.
+
+**Single-host dev (end-to-end, real sandboxes):** `make deploy-dev` rsyncs the branch to a
+Terraform-provisioned EC2 host (`deploy/ec2/setup-single-host.sh`) and builds on-box → real
+sandbox create/hibernate/stop → real lifecycle events → real deliveries. **Needs AWS creds +
+Terraform state + the SSH key set up locally** — confirm before relying on it. (The GitHub
+**preview-env** workflow is currently **disabled** — "TODO: rewrite for Azure/QEMU" — so it
+isn't an option today.)
+
+### Deployment
+Control plane deploys on **push to `main`** (`.github/workflows/deploy-server.yml`, AWS via
+OIDC); **migrations apply on server boot**. Sequence:
+1. Implement Go (§12) behind the additive migration.
+2. Merge → CP deploys + migration runs on boot (follow the prod-DB **gated-migration** rule,
+   `AGENTS.md`).
+3. Land the event-emission gaps (§3).
+4. **Publish the SDK (`@opencomputer/sdk` 0.8.0, via `publish-ts-sdk.yml`) and flip the Preview
+   docs live only AFTER the backend is live** — until then the SDK 404s and the docs describe an
+   unbuilt API. The 0.8.0 bump is staged; do **not** publish early.
+
+### Rollback — feasible and clean
+The feature is **dormant until a destination exists** (no destinations → projector matches
+nothing, dispatcher finds no due rows → no-op), the same safety property as the runtime
+pointer. So:
+- **Code rollback** = redeploy the prior server binary (revert the commit / deploy an older SHA).
+  The background workers stop; no existing endpoint or sandbox behavior is touched.
+- **Migration** is additive (new tables; no changes to existing columns) → no down-migration on
+  rollback; the tables sit inert.
+- No data to unwind. Existing destinations simply stop delivering until redeployed.
+
+### Risks
+- **SSRF (highest).** User-controlled URLs — the resolve-pin-block module (§8) must be solid and
+  vector-tested before prod.
+- **New CP background workers.** A bug could hot-loop or lag; bound batches, add metrics, lean on
+  dormant-until-used to cap blast radius.
+- **Redis / Path B (★O9).** Reclaim on Azure Redis 6.0 (XPENDING/XCLAIM, chosen) + the transport
+  question above.
+- **Secret key management (O5).** Reuse `internal/crypto/encrypt.go`; confirm key config.
+- **Ahead of backend.** Docs + SDK exist; the Go impl doesn't yet — hold publish until it lands.
