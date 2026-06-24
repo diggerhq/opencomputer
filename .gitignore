@@ -18,6 +18,9 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+# Cloudflare Worker local secrets (wrangler dev)
+.dev.vars
+.dev.vars.*
 
 # Per-developer dev-box lifecycle state (written by deploy/*/deploy-qemu-dev.sh)
 deploy/**/.qemu-dev-state-*
