@@ -338,7 +338,12 @@ OPENSANDBOX_S3_REGION=${s3_region}
 OPENSANDBOX_S3_ACCESS_KEY_ID=${s3_ak}
 OPENSANDBOX_S3_SECRET_ACCESS_KEY=${s3_sk}
 OPENSANDBOX_MIN_WORKERS=1
-SVIX_API_TOKEN=${SVIX_API_TOKEN:-}
+# Webhooks (all-Svix-at-edge): forward lifecycle events to the edge events-ingest
+# Worker and reach the edge for inline-on-create registration. Set these to the
+# igor-dev edge stack to exercise webhooks end-to-end (sandbox-webhooks-rearchitecture.md §8).
+OPENSANDBOX_CF_EVENT_ENDPOINT=${OPENSANDBOX_CF_EVENT_ENDPOINT:-}
+OPENSANDBOX_CF_EVENT_SECRET=${OPENSANDBOX_CF_EVENT_SECRET:-}
+OPENSANDBOX_CF_EDGE_BASE_URL=${OPENSANDBOX_CF_EDGE_BASE_URL:-}
 WORKOS_API_KEY=${workos_api_key}
 WORKOS_CLIENT_ID=${workos_client_id}
 WORKOS_REDIRECT_URI=${workos_redirect_uri}

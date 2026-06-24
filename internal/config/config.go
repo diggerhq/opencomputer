@@ -203,13 +203,6 @@ type Config struct {
 	CFEventEndpoint string
 	CFEventSecret   string // HMAC secret shared with events-ingest Worker
 
-	// SVIXAPIToken authenticates calls to Svix (managed webhook delivery). The
-	// /api/webhooks proxy uses it to create the org's Svix app + endpoints; the
-	// edge events-ingest Worker uses the same token to send messages. The Svix
-	// region is encoded in the token suffix (e.g. "….us").
-	// (.agents/work/sandbox-webhooks-rearchitecture.md)
-	SVIXAPIToken string
-
 	// CF admin callback secret. Verifies HMAC signatures on /admin/halt-org and
 	// /admin/resume-org webhooks dispatched from the CreditAccount DO.
 	CFAdminSecret string
@@ -401,7 +394,6 @@ func Load() (*Config, error) {
 		CellID:           os.Getenv("OPENSANDBOX_CELL_ID"),
 		CFEventEndpoint:  os.Getenv("OPENSANDBOX_CF_EVENT_ENDPOINT"),
 		CFEventSecret:    os.Getenv("OPENSANDBOX_CF_EVENT_SECRET"),
-		SVIXAPIToken:     os.Getenv("SVIX_API_TOKEN"),
 		CFAdminSecret:    os.Getenv("OPENSANDBOX_CF_ADMIN_SECRET"),
 		SessionJWTSecret: os.Getenv("OPENSANDBOX_SESSION_JWT_SECRET"),
 		HaltListURL:      os.Getenv("OPENSANDBOX_HALT_LIST_URL"),

@@ -698,11 +698,11 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		if s.store != nil {
 			errMsg := err.Error()
 			_ = s.store.UpdateSandboxSessionStatus(ctx, sandboxID, "failed", &errMsg)
-			// Clean up inline webhooks registered for a sandbox that never started.
-			for _, w := range inlineWebhooks {
-				_ = s.store.SoftDeleteWebhookDestination(ctx, orgID, w.ID)
-			}
 		}
+		// Inline webhooks were registered at the edge (Svix); a sandbox that never
+		// started simply emits no events, so the endpoints sit idle. Edge-side
+		// orphan cleanup is a future nicety, not worth a synchronous edge call on
+		// the create-failure path.
 		// A worker that is restarting/unreachable is transient — return a
 		// retryable 503 (with Retry-After) instead of a raw 500 so callers retry
 		// and the edge can reselect a worker.
