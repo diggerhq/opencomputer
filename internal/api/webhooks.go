@@ -116,6 +116,29 @@ func webhookRequestHash(req types.CreateWebhookRequest) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// recordLifecycle records a CP-origin lifecycle event for a sandbox in its own
+// transaction. Best-effort: a failure is logged, never fails the request. Used
+// for the events the control plane emits directly (ready on the local create
+// path, checkpoint.created, forked, scaled, preview_url.changed).
+func (s *Server) recordLifecycle(ctx context.Context, orgID uuid.UUID, sandboxID, evType string, data map[string]any) {
+	if s.store == nil || orgID == uuid.Nil || sandboxID == "" {
+		return
+	}
+	var raw json.RawMessage
+	if len(data) > 0 {
+		raw, _ = json.Marshal(data)
+	}
+	if err := s.store.RecordLifecycleEvent(ctx, db.LifecycleEvent{
+		ID:        fmt.Sprintf("%s:%s:%d", sandboxID, evType, time.Now().UnixNano()),
+		OrgID:     orgID,
+		SandboxID: sandboxID,
+		Type:      evType,
+		Data:      raw,
+	}); err != nil {
+		log.Printf("recordLifecycle %s for %s: %v", evType, sandboxID, err)
+	}
+}
+
 // registerInlineWebhooks registers webhooks supplied inline on sandbox create,
 // each pinned to the sandbox with no watermark floor (created_after_event_seq=0
 // → full lifecycle from `created`). Best-effort: a bad URL or register error is

@@ -258,6 +258,10 @@ func (s *Server) createSandbox(c echo.Context) error {
 		if len(cfg.Webhooks) > 0 {
 			sb.Webhooks = s.registerInlineWebhooks(ctx, orgID, sb.ID, cfg.Webhooks)
 		}
+		// Combined-mode create writes the session directly as 'running' (no
+		// pending→running promotion), so emit sandbox.ready here; the remote
+		// path emits it in-tx on the promotion.
+		s.recordLifecycle(ctx, orgID, sb.ID, types.WebhookEventReady, nil)
 	}
 
 	// Preview-URL auth: same flow as createSandboxRemote — validate the
@@ -1488,6 +1492,9 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 	// Only emit scale events for non-default sizes (4096MB is the creation default)
 	if requestedMemMB != 4096 || migrated {
 		s.emitEvent("scale", sandboxID, workerID, fmt.Sprintf("scaled to %dMB (migrated=%v)", requestedMemMB, migrated))
+		s.recordLifecycle(ctx, session.OrgID, sandboxID, types.WebhookEventScaled, map[string]any{
+			"cpuCount": requestedCPUs, "memoryMB": requestedMemMB,
+		})
 	}
 
 	resp := map[string]any{
@@ -2209,6 +2216,9 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 			// Pre-fix this was hardcoded to 0, leaving size_bytes meaningless.
 			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key, grpcResp.SizeBytes)
 			log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, grpcResp.SizeBytes)
+			s.recordLifecycle(context.Background(), orgID, sandboxID, types.WebhookEventCheckpointCreated, map[string]any{
+				"checkpointId": checkpointID.String(),
+			})
 			golden := ""
 			if session.GoldenVersion != nil {
 				golden = *session.GoldenVersion
@@ -2768,6 +2778,12 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 		}
 		// Track checkpoint lineage for patch system
 		_ = s.store.SetSandboxCheckpointID(ctx, sandboxID, checkpointID)
+		// Emit sandbox.forked on the child, carrying the parent sandbox id (the
+		// sandbox the checkpoint was taken from). The child also gets created
+		// (worker) + ready (the running promotion above).
+		s.recordLifecycle(ctx, orgID, sandboxID, types.WebhookEventForked, map[string]any{
+			"parentId": cp.SandboxID,
+		})
 	}
 
 	s.applyPendingPatches(sandboxID, workerID)
@@ -3281,6 +3297,9 @@ func (s *Server) createPreviewURL(c echo.Context) error {
 		})
 	}
 
+	s.recordLifecycle(ctx, orgID, sandboxID, types.WebhookEventPreviewURLChanged, map[string]any{
+		"port": req.Port, "url": "https://" + hostname,
+	})
 	return c.JSON(http.StatusCreated, previewURLToMap(*previewURL, customDomain))
 }
 

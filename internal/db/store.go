@@ -849,20 +849,23 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 	// usage reporter can never observe a stopped/hibernated/failed session with
 	// an ended_at IS NULL scale_event (which would keep billing the window).
 	var orgID uuid.UUID
-	if tag.RowsAffected() > 0 && (terminal || status == "hibernated") {
+	affected := tag.RowsAffected() > 0
+	if affected && (terminal || status == "hibernated") {
 		if _, err := tx.Exec(ctx,
 			`UPDATE sandbox_scale_events SET ended_at = now()
 			 WHERE sandbox_id = $1 AND ended_at IS NULL`, sandboxID); err != nil {
 			return fmt.Errorf("failed to close scale events: %w", err)
 		}
-		// Capture org for the lifecycle publish below (same tx; cheap).
+	}
+
+	// Record the canonical lifecycle event in THIS tx (CP-origin → durable from
+	// the state change) so sandbox webhooks fire. `running` here is the
+	// pending→running boot promotion = sandbox.ready (wake takes a different code
+	// path, so this never doubles with the worker-origin `resumed`). Other
+	// worker-origin events (created/resumed/migrated) arrive via the ingress.
+	if affected && (terminal || status == "hibernated" || status == "running") {
 		_ = tx.QueryRow(ctx,
 			`SELECT org_id FROM sandbox_sessions WHERE sandbox_id = $1`, sandboxID).Scan(&orgID)
-
-		// Record the canonical lifecycle event in THIS tx (CP-origin → durable
-		// from the state change) so sandbox webhooks fire. Only the public
-		// moments owned by the control plane; worker-origin events
-		// (created/ready/migrated) arrive via the Redis stream ingress.
 		if orgID != uuid.Nil {
 			var evType string
 			var data json.RawMessage
@@ -875,6 +878,8 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 				data = json.RawMessage(`{"reason":"crash"}`)
 			case "hibernated":
 				evType = "sandbox.hibernated"
+			case "running":
+				evType = "sandbox.ready"
 			}
 			if evType != "" {
 				if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
