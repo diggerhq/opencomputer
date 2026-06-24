@@ -3,7 +3,7 @@
 -- each row to the cell stream (→ edge → Svix) and deletes it. Destination
 -- management + delivery state live at the edge (Svix + the D1 index), not here.
 -- See .agents/work/sandbox-webhooks-rearchitecture.md.
-CREATE TABLE IF NOT EXISTS sandbox_lifecycle_events (
+CREATE TABLE IF NOT EXISTS sandbox_lifecycle_outbox (
     id         TEXT        PRIMARY KEY,                 -- stable/deterministic event id (dedupe key)
     seq        BIGSERIAL   NOT NULL,                    -- FIFO ordering for the relay drain
     org_id     UUID        NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -12,4 +12,4 @@ CREATE TABLE IF NOT EXISTS sandbox_lifecycle_events (
     data       JSONB       NOT NULL DEFAULT '{}',
     ts         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS sandbox_lifecycle_events_seq_idx ON sandbox_lifecycle_events (seq);
+CREATE INDEX IF NOT EXISTS sandbox_lifecycle_outbox_seq_idx ON sandbox_lifecycle_outbox (seq);

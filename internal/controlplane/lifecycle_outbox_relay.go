@@ -12,7 +12,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/db"
 )
 
-// LifecycleOutboxRelay drains the in-tx lifecycle outbox (sandbox_lifecycle_events,
+// LifecycleOutboxRelay drains the in-tx lifecycle outbox (sandbox_lifecycle_outbox,
 // written transactionally by CP-origin transitions) and publishes each event to
 // the cell's events:{cell} stream, where it reaches the edge → Svix exactly like
 // worker-origin events. Only events that successfully publish are marked relayed,

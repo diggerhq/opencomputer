@@ -11,16 +11,21 @@ import (
 )
 
 // Sandbox lifecycle webhooks — CP source layer. All-Svix-at-edge: the CP only
-// CAPTURES lifecycle events into the outbox (sandbox_lifecycle_events); the relay
+// CAPTURES lifecycle events into the outbox (sandbox_lifecycle_outbox); the relay
 // publishes them to the cell stream and the edge delivers via Svix. Destination
 // management + delivery state live at the edge (Svix + D1), not here.
+//
+// sandbox_lifecycle_outbox is a TRANSACTIONAL OUTBOX, not an event log: rows are
+// inserted in the same tx as the state change (so a CP crash between COMMIT and
+// publish can't drop a webhook), the relay publishes each row to events:{cell} and
+// then DELETES it. It is never read as history — don't treat it as one.
 // See .agents/work/sandbox-webhooks-rearchitecture.md.
 
 // ---------------------------------------------------------------------------
 // Lifecycle events (the in-tx outbox capture)
 // ---------------------------------------------------------------------------
 
-// LifecycleEvent is one canonical sandbox lifecycle moment.
+// LifecycleEvent is one sandbox lifecycle moment captured into the outbox.
 type LifecycleEvent struct {
 	ID        string // deterministic (once-only) or unique (recurring) event id
 	OrgID     uuid.UUID
@@ -48,7 +53,7 @@ func recordLifecycleEvent(ctx context.Context, tx pgx.Tx, ev LifecycleEvent) err
 		ts = time.Now().UTC()
 	}
 	_, err := tx.Exec(ctx,
-		`INSERT INTO sandbox_lifecycle_events (id, org_id, sandbox_id, type, data, ts)
+		`INSERT INTO sandbox_lifecycle_outbox (id, org_id, sandbox_id, type, data, ts)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (id) DO NOTHING`,
 		ev.ID, ev.OrgID, ev.SandboxID, ev.Type, string(ev.Data), ts)
@@ -118,7 +123,7 @@ type LifecycleOutboxRow struct {
 func (s *Store) DrainLifecycleOutbox(ctx context.Context, batch int) ([]LifecycleOutboxRow, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, org_id, sandbox_id, type, data, ts
-		   FROM sandbox_lifecycle_events
+		   FROM sandbox_lifecycle_outbox
 		  ORDER BY seq
 		  LIMIT $1`, batch)
 	if err != nil {
@@ -146,6 +151,6 @@ func (s *Store) DeleteLifecycleOutbox(ctx context.Context, ids []string) error {
 		return nil
 	}
 	_, err := s.pool.Exec(ctx,
-		`DELETE FROM sandbox_lifecycle_events WHERE id = ANY($1)`, ids)
+		`DELETE FROM sandbox_lifecycle_outbox WHERE id = ANY($1)`, ids)
 	return err
 }

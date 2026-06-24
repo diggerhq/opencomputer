@@ -287,7 +287,7 @@ func main() {
 			defer cr.Stop()
 		}
 
-		// CP-origin lifecycle outbox relay — drains sandbox_lifecycle_events
+		// CP-origin lifecycle outbox relay — drains sandbox_lifecycle_outbox
 		// (written in-tx by CP transitions) to the events:{cell} stream, where it
 		// reaches the edge → Svix like worker-origin events. Worker-origin events
 		// already flow to the edge directly, so no CP ingestion is needed.

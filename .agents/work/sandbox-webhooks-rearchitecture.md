@@ -114,7 +114,10 @@ verify path exists here. The edge already has `org_id` on every event and an ide
 > *all-Svix-at-edge* decision — they still describe an edge `webhook_outbox`, a CP
 > local index, and an older build order. The **authoritative** record is §0
 > (Decisions locked) + §8 (dev env) + the as-built code. As built: the CP keeps
-> only an in-tx outbox (`sandbox_lifecycle_events`) drained by the relay to the
+> only an in-tx **transactional outbox** (`sandbox_lifecycle_outbox` — renamed from
+> the earlier `sandbox_lifecycle_events`, which misleadingly read as an event log;
+> rows are inserted in the same tx as the state change, published to the stream by
+> the relay, then **deleted** — never read as history) drained by the relay to the
 > stream (no edge outbox; delivery handoff is events-ingest's sync Svix create);
 > the destination index + `has_webhooks` live in **D1 at the edge**, not the CP.
 

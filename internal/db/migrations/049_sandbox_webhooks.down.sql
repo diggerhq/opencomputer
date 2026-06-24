@@ -1,1 +1,1 @@
-DROP TABLE IF EXISTS sandbox_lifecycle_events;
+DROP TABLE IF EXISTS sandbox_lifecycle_outbox;
