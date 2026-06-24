@@ -19,6 +19,22 @@ shipped. OC still owns one durable boundary — **"this event is accepted for we
 and a precise compatibility story for headers, SDK, metadata, filtering, and inline ordering. Svix
 owns everything *after* that boundary (fan-out, retries, signing, SSRF, logs, portal).
 
+**Decisions locked (Igor, 2026-06-24):**
+- **D1 = Svix Cloud** to start (swappable to self-host later).
+- **D2 = drop the metadata promise.** Remove `metadata` from the envelope/docs/SDK; consumers look
+  it up via the sandbox API using the event's `sandboxId`. ⇒ publishers do NOT snapshot metadata
+  (simplifies the publisher + keeps payloads small).
+- **D4 = OC API proxy only.** Keep a first-class OC `/api/webhooks` (CRUD + `/deliveries` view +
+  `/redeliver` + `/test`) and the SDK `Webhooks` client — but back it **entirely with live Svix
+  calls** (create/list/delete endpoints, read attempt logs, resend). Svix is the engine; OC owns the
+  API shape so the dev experience matches the rest of `/api/*`. **Not** the App Portal.
+- Proceeding on recommendations (revisit only if they bite): D3 trigger at the edge, D6 sandbox-scope
+  via Svix channels, D7 outbox handoff, D8 in-tx `lifecycle_outbox`.
+
+**External dependency (Igor must provision — blocks the Svix path):** a **Svix Cloud account + API
+token**, set as a Worker secret (`SVIX_API_TOKEN`) for the edge relay and available for dev-box
+testing. The CP-side foundation (below) can be built + tested without it.
+
 ## 1. What we shipped, and the two redundancies
 
 The shipped P1 is a **full, self-contained webhook stack inside the regional CP** (Go):
@@ -111,22 +127,37 @@ local index (PG): org_id → has_webhooks / svix_app_uid + sandbox-scoped endpoi
   outbox). A future `EdgeSink` (self-built CF-Queues delivery, à la sessions-api) implements the
   same interface with zero change to the trigger or the outbox. **Do not build EdgeSink now.**
 
-### 3.1 The durable "accepted for delivery" boundary (P0 — was wrong in rev1)
+### 3.1 The handoff boundary — synchronous create before ack (P0; rev1 said `waitUntil`, which is wrong)
 
-rev1 said "one more `waitUntil` fan-out." **That is incorrect** — a Svix failure after the 202 is
-lost (§2). The fix: make acceptance atomic with the existing durable write.
+**Premise (Igor):** Svix is fire-and-forget — it owns *consumer* delivery state (retries, attempts,
+dead-letter, replay, endpoint logs, signing, endpoint disablement). OC keeps **no** `webhook_deliveries`
+and **no** dispatcher. The only thing OC must get right is the **handoff**: an event isn't "handed
+off" until **Svix has accepted the message**. rev1's `waitUntil` was fire-and-forget *before* the
+managed service accepted — that's the bug, not synchronicity.
 
-- At the edge, **write webhook-eligible events into a `webhook_outbox` D1 table inside the same
-  `env.OPENCOMPUTER_DB.batch([...])`** that already persists `events` (`index.ts:481`). Now
-  "durably recorded" and "accepted for webhook delivery" commit together, before the 202/XACK.
-- A **separate relay drains `webhook_outbox` → Svix** (idempotent create), decoupled from Svix
-  uptime. Two acceptable mechanisms (decision **D7**): (a) a CF **Queue** — enqueue is durable, the
-  consumer gets native retry/DLQ (sessions-api precedent); or (b) keep the **D1 outbox** + a CF
-  **cron** relay that claims rows (`status=pending`, dedup on event id) and marks them sent. Either
-  is thin (no signing/SSRF/ledger — Svix owns those).
-- **Reject** the tempting "synchronous Svix create inside /ingest, return 5xx on failure" option:
-  it couples the *whole* event pipeline (billing/D1 projections) to Svix uptime — a Svix outage
-  would stall the forwarder and back-pressure billing. The outbox decouples them.
+**Primary path (decision D7 = option 1, synchronous-before-ack):** in `/ingest`, after the durable
+D1 batch (`index.ts:481`), for each webhook-eligible event (gated by the edge dormancy flag, §3.3)
+call `svix.message.create(...)` with **`Idempotency-Key` = the event's stable id** (so forwarder
+retries don't duplicate). **Only return 202 once Svix has accepted**; on a *transient* Svix error
+(5xx/network/429) **return 503**, so the EventForwarder leaves the batch in the PEL and retries
+(the same already-correct path used for D1 failures, `event_forwarder.go:339`). A Svix **4xx for one
+message** (malformed/permanent) is logged + dropped, never failing the batch. No OC delivery rows;
+from acceptance on, we forget it.
+
+**The one real caveat to do with eyes open:** webhook events share Redis batches with **billing
+(`usage_tick`) and D1-projection** events, so 503-on-Svix-failure back-pressures *those too* — a
+*sustained* Svix outage would grow the PEL and risk stream-trim (`MaxLen ~100k`) of billing/lifecycle
+events. Mitigation kept minimal: only 503 on *transient* Svix errors (above); D1 writes already
+committed before the Svix call, so state/billing data is in D1 regardless (only the *ack* waits).
+If a sustained Svix outage ever proves to threaten billing, escalate to the outbox (below) — the
+`WebhookSink` seam means that swap doesn't touch the trigger. Given Svix Cloud's SLA, option 1 is
+the right launch shape.
+
+**Escalation (not built now) = option 2, durable outbox:** write webhook-eligible events into a
+`webhook_outbox` (its own D1 table, or a CF Queue) **inside the same atomic `batch([...])`**, return
+202 immediately, and a separate sender drains → Svix. This fully isolates ingest/billing latency +
+availability from Svix, at the cost of one table + a relay. Behind the seam; add only if option 1
+bites.
 
 ### 3.2 CP-origin durability — keep the transactional capture (P0 — was a silent regression)
 
@@ -147,16 +178,20 @@ Alternative if we accept weaker guarantees: **explicitly downgrade the public co
 ### 3.3 Filtering / scoping / dormancy — keep a tiny local index (P1)
 
 Deleting `webhook_destinations` outright loses (a) the **dormancy gate** (today
-`webhooks.go:59` — don't record/deliver for orgs with no live destination) and (b) local knowledge
-of **sandbox-scoped** destinations. Keep a **small local index** instead:
-- per-org row: `has_webhooks` (drives the edge dormancy gate — don't enqueue if false) and the Svix
-  `app_uid` (= org_id, so effectively just an existence flag);
-- inline **sandbox-scoped** endpoint mappings (sandbox_id → Svix endpoint/channel).
+`webhooks.go:59` — don't deliver for orgs with no live destination) and (b) local knowledge of
+**sandbox-scoped** destinations and the OC↔Svix id mapping the proxy API (D4) needs. Keep a **small
+local index** in **two places**:
+- **CP Postgres** (backs the `/api/webhooks` proxy): OC destination id ↔ Svix endpoint id, name,
+  event-type filter, optional `sandbox_id` scope. CRUD here writes through to Svix endpoints; reads
+  of `/deliveries` proxy Svix attempt logs live (no local ledger).
+- **D1 at the edge** (`orgs.has_webhooks` flag, or a `webhook_orgs` table): set when the org's first
+  endpoint is created, cleared when the last is deleted. The edge **already** does a per-batch D1
+  `orgs` lookup (`planFor`), so the gate is ~free — **skip the Svix call entirely for orgs with no
+  webhooks** (the vast majority), saving cost + latency.
 
-Scoping model in Svix (**D6**): org-level destinations = endpoint under the org app subscribed by
-`filterTypes`; **sandbox-scoped** = endpoint subscribed to **channel = sandbox_id** and we publish
-each sandbox event on that channel. The edge consults the index (cached) before enqueuing so an org
-with zero endpoints sends nothing to Svix.
+Scoping model in Svix (**D6**): org-level destinations = endpoint subscribed by `filterTypes`;
+**sandbox-scoped** = endpoint subscribed to **channel = sandbox_id**, and the edge posts each sandbox
+event on that channel.
 
 ### 3.4 Typed publish, not the generic helper (P1)
 
@@ -183,13 +218,15 @@ Preview/not-live, so there are **zero existing consumers** to break — but we m
 - **Headers:** Svix emits `svix-id` / `svix-timestamp` / `svix-signature`. Update the SDK
   `verifyWebhook` to accept `svix-*` (the signature math is identical — Standard Webhooks). Decide
   whether to also accept legacy `webhook-*` (probably no — nothing shipped).
+- **Metadata removed (D2):** drop `metadata` from the envelope, `pkg/types/webhook.go`, the SDK
+  types, and the docs. Consumers look it up via the sandbox API using `sandboxId`.
 - **Retry schedule + delivery semantics:** Svix's schedule (not our 10s/30s/60s/5m/15m), Svix
   dead-letter/replay, Svix `svix-id` as the stable delivery id. Docs must be rewritten to Svix's
   model, including ordering-not-guaranteed.
-- **Removed surface:** OC `/deliveries` list/get/**redeliver** endpoints and OC-issued delivery ids
-  go away → replaced by the **Svix App Portal** (consumer self-serve logs + replay). Decision **D4**
-  determines whether any thin `/api/webhooks` shape survives over Svix or we expose the Portal
-  directly.
+- **`/deliveries` + `/redeliver` + `/test` KEPT but re-backed by Svix (D4):** the OC API shape and
+  SDK stay; under the hood, list/get **proxy Svix attempt logs**, `/redeliver` calls **Svix resend**,
+  `/test` sends a Svix test/example message. **No OC delivery ledger.** Delivery ids surfaced are
+  Svix's (`svix-id`).
 - **`verifyWebhook` stays** as the one helper consumers use — re-pointed at `svix-*` headers.
 
 ## 5. Event coverage on the stream (what's there vs missing)
@@ -202,42 +239,45 @@ signal today — same gap as shipped). `checkpoint.created` maps from `checkpoin
 webhooks to the lifecycle subset loses only usage_tick/capacity/audit — **none are customer webhook
 events**, so nothing relevant is lost.
 
-## 6. Open decisions / tradeoffs (resolve before build)
+## 6. Decisions
 
-- **D1 — Svix Cloud vs self-host.** Cloud = zero-ops, payloads transit Svix. Self-host =
-  Postgres+Redis + ops, data stays in-house. **Rec: Cloud to start** (matches the Autumn precedent),
-  self-host later if residency demands.
-- **D2 — metadata-in-envelope (BLOCKING contract decision, P1).** Public docs promise sandbox
-  `metadata` verbatim on **every** delivery (`docs/sandboxes/webhooks.mdx`, `pkg/types/webhook.go`).
-  The edge does **not** have CP `sandbox_sessions.metadata`. Either (a) **snapshot metadata onto
-  every webhook-eligible event at publish time** (worker + CP outbox) so it rides the stream — keeps
-  the promise, costs payload size (apply the existing cap); or (b) **drop the metadata promise**
-  from docs/types/SDK. Pick one; "created only" is not a coherent contract. **Rec: (a)**.
-- **D3 — where the trigger lives.** Edge `events-ingest` (**rec** — convergence + managed
-  integration already there) vs a thin CP→Svix call. Edge keeps the CP thinnest.
-- **D4 — management API shape.** Expose Svix **App Portal** directly (least code) vs keep a thin
-  OC `/api/webhooks` proxy over Svix endpoints (our API shape + SDK, more glue). Drives how much of
-  the local index (§3.3) is user-visible.
-- **D5 — sessions-api convergence.** Out of scope now; the same `WebhookSink`/Svix move would later
-  unify both products' delivery.
-- **D6 — sandbox-scoping** via Svix **channels** (= sandbox_id) vs endpoint `filterTypes` (§3.3).
-- **D7 — durable edge→Svix handoff:** CF **Queue** vs D1 **outbox + cron relay** (§3.1).
-- **D8 — CP-origin durability:** in-tx **`lifecycle_outbox`** (**rec**) vs explicitly **downgraded**
-  contract (§3.2).
+**Resolved (Igor, 2026-06-24):**
+- **D1 = Svix Cloud** to start; swappable to self-host later if residency demands.
+- **D2 = drop the metadata promise** (remove from envelope/types/SDK/docs; consumers look it up). §4.
+- **D4 = OC API proxy only** — keep `/api/webhooks` CRUD + `/deliveries` + `/redeliver` + `/test` and
+  the SDK, all backed by live Svix calls; no App Portal, no local delivery ledger. §3.3, §4.
+- **D7 = option 1, synchronous Svix create before ack** (escalate to the outbox only if a sustained
+  Svix outage threatens billing — behind the `WebhookSink` seam). §3.1.
+
+**Proceeding on recommendation (revisit only if it bites):**
+- **D3 = trigger at the edge** (`events-ingest`) — convergence + managed integration already there.
+- **D6 = sandbox-scoping via Svix channels** (channel = sandbox_id); org-level via `filterTypes`.
+- **D8 = in-tx `lifecycle_outbox`** for CP-origin durability (the remaining durability question now
+  the edge→Svix handoff is settled) vs explicitly downgrading the contract. §3.2.
+
+**Out of scope now:**
+- **D5 — sessions-api convergence:** the same `WebhookSink`/Svix move would later unify both products'
+  delivery; not part of this launch.
 
 ## 7. Migration path (same PR/branch #410) + phasing
 
 The shipped CP webhooks are **dormant until a destination exists** and **unpublished/undeployed**, so
 ripping them out has no prod blast radius. Phasing:
-- **P0** — land the local index (§3.3), the CP `lifecycle_outbox` + typed publish (§3.2/3.4) for the
-  missing events, the edge `webhook_outbox`-in-batch + relay + `SvixSink` (§3.1), Svix app-per-org +
-  inline endpoint create with correct ordering (§3.5). Cloud Svix. Verify e2e on the dev box (Svix
-  Cloud test app) — adapt the existing smoke (`/tmp/webhooks_smoke.sh`) to assert Svix delivery.
-- **P1** — delete the shipped CP dispatcher/materializer/ingress/signing/ssrf/ledger + the
+
+**Build order — CP-side first (no Svix creds needed), then the edge (needs `SVIX_API_TOKEN`):**
+- **P0a (no Svix dependency):** the local index in CP Postgres + the D1 `has_webhooks` flag (§3.3);
+  the in-tx `lifecycle_outbox` + typed `PublishWebhookLifecycle` (§3.2/3.4) so `scaled`/`forked`/
+  `preview_url.changed` reach the stream; drop `metadata` from types/SDK/docs (§4, D2). Builds +
+  unit-testable without Svix.
+- **P0b (needs Svix Cloud token):** the `SvixSink` + synchronous create-before-ack in `events-ingest`
+  (§3.1, D7 option 1) gated by `has_webhooks`; rework `/api/webhooks` CRUD + `/deliveries`/`/redeliver`/
+  `/test` into a **Svix proxy** (D4) with the inline-create ordering (§3.5). Verify e2e on the dev box
+  (Svix Cloud test app) — adapt the existing smoke (`/tmp/webhooks_smoke.sh`) to assert Svix delivery.
+- **P1 (cleanup):** delete the shipped CP dispatcher/materializer/ingress/signing/ssrf/ledger + the
   `sandbox_lifecycle_events`/`webhook_deliveries`/`webhook_idempotency_keys` tables; reduce migration
-  049 to the local index + outbox; rewrite docs + SDK `verifyWebhook` to the Svix contract (§4).
-- **Future (not now, behind the seam):** an `EdgeSink` self-built delivery adapter (only if we ever
-  need to drop the managed dependency); sessions-api convergence (D5).
+  049 to the local index; finish the docs + SDK `verifyWebhook` Svix-contract rewrite (§4).
+- **Future (not now, behind the seam):** the durable-outbox escalation (§3.1 option 2); an `EdgeSink`
+  self-built delivery adapter; sessions-api convergence (D5).
 
 ## 8. References
 
