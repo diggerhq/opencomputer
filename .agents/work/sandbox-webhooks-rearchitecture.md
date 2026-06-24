@@ -44,7 +44,7 @@ owns everything *after* that boundary (fan-out, retries, signing, SSRF, logs, po
   channels**; **D7 = sync create-before-ack** (§3.1); **D8 = in-tx `lifecycle_outbox`** (§3.2).
 
 **External dependency (Igor):** the **Svix Cloud token** (`/tmp/svix_token`) — set as a Worker secret
-on the edge workers. **Dev testing** uses a one-off `igor-dev` edge stack in Mo's CF account — see §8.
+on the edge workers. **Dev testing** uses a one-off `igor-dev` edge stack in Mo's CF account — see §9.
 
 ## 1. What we shipped, and the two redundancies
 
@@ -113,7 +113,7 @@ verify path exists here. The edge already has `org_id` on every event and an ide
 > **Note (post-implementation):** §3.1–§3.5 and §7 below predate the final
 > *all-Svix-at-edge* decision — they still describe an edge `webhook_outbox`, a CP
 > local index, and an older build order. The **authoritative** record is §0
-> (Decisions locked) + §8 (dev env) + the as-built code. As built: the CP keeps
+> (Decisions locked) + §9 (testing/dev env) + the as-built code. As built: the CP keeps
 > only an in-tx **transactional outbox** (`sandbox_lifecycle_outbox` — renamed from
 > the earlier `sandbox_lifecycle_events`, which misleadingly read as an event log;
 > rows are inserted in the same tx as the state change, published to the stream by
@@ -310,7 +310,15 @@ ripping them out has no prod blast radius. Phasing:
 - **Future (not now, behind the seam):** the durable-outbox escalation (§3.1 option 2); an `EdgeSink`
   self-built delivery adapter; sessions-api convergence (D5).
 
-## 8. Dev test environment (`igor-dev`) — prod parity to test before merge
+## 8. References
+
+- Shipped design + decision log: `sandbox-lifecycle-webhooks.md` (same dir). PR body: `/tmp/pr410_body.md`.
+- Durable boundary: `internal/controlplane/event_forwarder.go:331-340` (XACK-on-2xx),
+  `cloudflare-workers/events-ingest/src/index.ts:481-522` (atomic batch = durable record; 202).
+- Stream/edge code: `internal/{worker/redis_event_publisher,cellevents/publish,controlplane/cf_event_client}.go`; `cloudflare-workers/api-edge/src/autumn_webhook.ts` (Svix-verify precedent).
+- Svix: docs.svix.com (overview/quickstart/retries/security/app-portal/channels/idempotency), `github.com/svix/svix-webhooks` (OSS), standardwebhooks.com (signing — identical to ours).
+
+## 9. Testing
 
 We test the **real** path around the existing GCP dev box (`opensandbox-qemu-dev-igor`,
 34.181.232.88) by standing up a one-off, clearly-labeled `igor-dev` edge stack in **Mo's CF account
@@ -319,7 +327,7 @@ is stale/inaccessible — the dev tomls must set `account_id = b8f23cb8`). Tear 
 everything is prefixed `…-igor-dev`. The path under test:
 `client → api-edge-igor-dev → (mgmt→Svix; create→dev-box CP) → events:{cell} → events-ingest-igor-dev → Svix → sink`.
 
-### 8.1 Create in CF (Mo's account `b8f23cb8`)
+### 9.1 Create in CF (Mo's account `b8f23cb8`)
 1. **D1 `opencomputer-igor-dev`** — apply `cloudflare-workers/schema*.sql` + the new webhook-index
    migration. Seed minimal rows: one `orgs` row; one `api_keys` row (`key_hash` = sha256 of a dev
    API key); one `cells` row (`base_url = http://34.181.232.88:8080`, healthy) so api-edge can auth +
@@ -341,7 +349,7 @@ everything is prefixed `…-igor-dev`. The path under test:
    one `SVIX_API_TOKEN` (`/tmp/svix_token`) suffices; dev uses dev org uids so apps don't collide
    with prod.
 
-### 8.2 Wire the dev box (`/etc/opensandbox/server.env`, then `systemctl restart opensandbox-server`)
+### 9.2 Wire the dev box (`/etc/opensandbox/server.env`, then `systemctl restart opensandbox-server`)
 - `OPENSANDBOX_CF_EVENT_ENDPOINT` = `https://opencomputer-events-ingest-igor-dev.<subdomain>.workers.dev/ingest`
 - `OPENSANDBOX_CF_EVENT_SECRET` = the worker's `EVENT_SECRET` (so the forwarder's HMAC verifies).
 - The CP's **edge-internal base URL** (used for `/internal/*` calls — halt-list, org-policy,
@@ -349,14 +357,14 @@ everything is prefixed `…-igor-dev`. The path under test:
 - The CP needs **no** `SVIX_API_TOKEN` (all-Svix-at-edge); the earlier CP token wiring is now unused
   (leave or remove).
 
-### 8.3 Parity caveats (not replicated — and why it's fine)
+### 9.3 Parity caveats (not replicated — and why it's fine)
 - Single cell / single CP (the box): multi-cell fan-out is Svix's job; the consumer-group + outbox
   `SKIP LOCKED` multi-CP safety is covered by unit tests, not this env.
 - No real billing/Autumn/WorkOS: off the webhook path; stub/skip.
 - DO `/debit` fan-out won't fire (lifecycle events aren't `usage_tick`): irrelevant to webhooks.
 - Svix Cloud is shared with prod: isolated by dev org `uid`s.
 
-### 8.4 E2E procedure (the merge gate)
+### 9.4 E2E procedure (the merge gate)
 1. **Mgmt:** `POST /api/webhooks` (dev key) `{url: <webhook.site>}` → 201; assert the Svix endpoint
    exists (Svix API) and D1 `has_webhooks=true`.
 2. **Lifecycle:** `POST /api/sandboxes` → `sandbox.created` lands at the sink + Svix attempt
@@ -369,11 +377,11 @@ everything is prefixed `…-igor-dev`. The path under test:
    retries (PEL) → recovers when restored (no lost event).
 6. **`/test`, `/deliveries`, `/redeliver`** via api-edge → Svix.
 
-### 8.5 Teardown
+### 9.5 Teardown
 Delete the two workers + D1 + R2 (or leave, clearly labeled). Optionally delete dev Svix apps by
 `uid` prefix.
 
-### 8.6 Results (2026-06-24) — STOOD UP + PASSED
+### 9.6 Results (2026-06-24) — STOOD UP + PASSED
 Live stack in Mo's acct `b8f23cb87a7a6c64040d3134643da448`: D1 `opencomputer-igor-dev`
 (`d5bbb12a-…`), R2 `events-archive-igor-dev`, workers `opencomputer-events-ingest-igor-dev` +
 `opencomputer-api-edge-igor-dev` (dev tomls: `events-ingest/wrangler.igor-dev.toml`,
@@ -401,14 +409,86 @@ tables + `DELETE FROM schema_migrations WHERE version=49` so the renamed 049 re-
 via the edge (`LookupTemplate`→D1, empty here) → "template not found"; blank it on the box to use
 local public templates (the lifecycle path via `CF_EVENT_ENDPOINT` is independent).
 
-**Optional follow-ups (non-blocking):** §8.4 #3 inline-on-create via the *live* CP (seed D1
-templates + re-wire the edge URL on the box); §8.4 #5 durable-handoff 503-retry (break the Svix
+**Optional follow-ups (non-blocking):** §9.4 #3 inline-on-create via the *live* CP (seed D1
+templates + re-wire the edge URL on the box); §9.4 #5 durable-handoff 503-retry (break the Svix
 token, confirm the forwarder PEL retries).
 
-## 9. References
+### 9.7 Fresh-eye dev retest (2026-06-24) — edge delivery works, edge sandbox create blocked
 
-- Shipped design + decision log: `sandbox-lifecycle-webhooks.md` (same dir). PR body: `/tmp/pr410_body.md`.
-- Durable boundary: `internal/controlplane/event_forwarder.go:331-340` (XACK-on-2xx),
-  `cloudflare-workers/events-ingest/src/index.ts:481-522` (atomic batch = durable record; 202).
-- Stream/edge code: `internal/{worker/redis_event_publisher,cellevents/publish,controlplane/cf_event_client}.go`; `cloudflare-workers/api-edge/src/autumn_webhook.ts` (Svix-verify precedent).
-- Svix: docs.svix.com (overview/quickstart/retries/security/app-portal/channels/idempotency), `github.com/svix/svix-webhooks` (OSS), standardwebhooks.com (signing — identical to ours).
+Retested the live `igor-dev` stack after additional code/doc iterations, using the real edge hosts:
+
+- `api-edge`: `https://opencomputer-api-edge-igor-dev.mo-b8f.workers.dev`
+- `events-ingest`: `https://opencomputer-events-ingest-igor-dev.mo-b8f.workers.dev`
+- direct dev box: `http://34.181.232.88:8080`
+- edge API key: existing value in `/tmp/igordev_api_key` (do not print); direct box key:
+  `test-dev-key`.
+
+Probe artifacts from this run were written under `/tmp/oc-webhook-*`. All probe destinations created
+by the retest were deleted; final `GET /api/webhooks` showed only the pre-existing dev destinations
+(`whk_c871...`, `whk_80b...`, `whk_749...`) live. One direct sandbox was created for lifecycle
+verification (`sb-5ecb4356`) and deleted (`DELETE` returned 204).
+
+What passed:
+
+- **Health/auth:** direct box `/health` returned `{"status":"ok"}`; both edge Workers returned
+  `{"ok":true,"env":"igor-dev"}`. Bad edge API key returned 401; the edge dev key authenticated.
+- **Webhook validation:** `POST /api/webhooks` with typo `eventTypes:["sandbox.stoped"]` now returns
+  `400 {"error":"unknown event type(s): sandbox.stoped"}`. `PATCH` with `sandbox.nope` also returns
+  400.
+- **Basic webhook management:** create/list/get/update/delete worked for normal destinations. Pause
+  and resume returned updated `enabled:false/true` records. `PATCH {rotateSecret:true}` returned a
+  new secret.
+- **Svix delivery path:** `/api/webhooks/:id/test` created a Svix message; webhook.site received the
+  POST with `svix-id`, `svix-timestamp`, `svix-signature`, and custom metadata as an HTTP header.
+  Local verification against the returned `whsec_...` secret succeeded.
+- **Delivery attempts:** for a fresh destination backed by `https://httpbingo.org/post`,
+  `/deliveries` showed the Svix attempt after a short delay: `status:"success"`,
+  `responseStatusCode:200`.
+- **Direct box lifecycle → edge ingest:** direct `POST /api/sandboxes` to the box returned 201, direct
+  `DELETE` returned 204, and D1 `events` recorded `created`, `sandbox.created`, `sandbox.ready`,
+  `sandbox.stopped`, `stopped`, and usage ticks. `sandboxes_index` was updated to `status='stopped'`.
+
+Issues / gaps found:
+
+- **Edge sandbox create is currently blocked by dev D1 state/projection.** `POST /api/sandboxes`
+  through api-edge returns `503 {"error":"no cells available with capacity"}` and
+  `GET /api/sandboxes` returns Cloudflare 1101. `cell_capacity` events are landing in D1, but
+  `cells` is empty. The current projection only `UPDATE`s `cells`; if the seed row is missing,
+  capacity never creates it and api-edge cannot route creates. Separately, the current D1
+  `sandboxes_index` schema in dev lacks columns the checked-out api-edge selects (`cpu_count`,
+  `memory_mb`), which likely explains the 1101 on list. Fix by either making the projection an
+  upsert and applying the latest schema, or by making the seed/migration invariant explicit and
+  validating it before E2E.
+- **Inline-on-create is still unvalidated on the public edge path.** Because edge
+  `POST /api/sandboxes` cannot route to a cell, the run could not validate
+  `webhooks:[...]` registration through the public create API. Earlier box env inspection also showed
+  `OPENSANDBOX_CF_EDGE_BASE_URL=` blank, so CP→edge `/internal/webhooks/register` is not wired on
+  this box right now.
+- **Create idempotency is missing.** Same `name` + body created two different destinations (both
+  201), despite docs saying name makes create idempotent. Same request body with the same
+  `Idempotency-Key` also created two different destinations. Decide whether to implement both,
+  document only one, or remove the promise.
+- **Create response shape differs from list/get.** `POST /api/webhooks` returns `id`, `url`,
+  `eventTypes`, `sandboxId`, `name`, `enabled`, `createdAt`, and `secret`, but omits `hasSecret` and
+  `updatedAt`; list/get include both. Stabilize the wire shape if SDK/docs expose one type.
+- **Secret semantics conflict with docs.** Docs currently say the secret is write-only / returned
+  once, but the API has `GET /api/webhooks/:id/secret`, and create echoed a caller-supplied secret.
+  Pick one product contract and make docs/API/SDK agree.
+- **Deleted destination history is not available via API.** After `DELETE`, `GET
+  /api/webhooks/:id/deliveries` returned 404, despite docs saying history is retained. This may be
+  acceptable with Svix-backed deletion, but then docs should not promise history after delete.
+- **`/test` is not destination-isolated.** It creates a Svix app-level message using the destination's
+  accepted event type; other matching org endpoints also receive it. If `/test` is meant to test one
+  endpoint, send via a destination-specific path/feature or use an isolated channel/event type.
+- **`/test` payload is not the full lifecycle envelope.** The captured body was
+  `{"sandboxId":"sb-test","test":true,"type":"sandbox.created"}`. That is fine if intentional, but
+  docs should distinguish the synthetic test payload from the real lifecycle envelope.
+- **Delivery detail/redelivery surface is inconsistent.** `/deliveries` returned a successful attempt
+  for a message, but `GET /deliveries/:messageId` returned provider 404 (`message not found`).
+  `POST /redeliver` for the same id returned 200, but no new attempt appeared in a short poll window.
+  Recheck the Svix endpoint used for message detail and what identifier the public API should call
+  `deliveryId` vs `messageId` vs `attemptId`.
+
+Bottom line for this retest: Svix handoff, signatures, metadata headers, attempt listing, and direct
+box lifecycle ingestion are working. The public edge sandbox create path and several webhook API
+contract details still need tightening before this can be treated as a clean launch E2E.
