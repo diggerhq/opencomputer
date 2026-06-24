@@ -1,0 +1,4 @@
+-- Irreversible cleanup: the dropped tables (webhook_destinations,
+-- webhook_deliveries, webhook_idempotency_keys) belonged to the retired CP-side
+-- webhook stack. Webhook management + delivery now live at the edge (Svix + D1),
+-- so there is nothing to restore here. To re-bootstrap, re-run migration 049.
