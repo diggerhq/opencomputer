@@ -9,15 +9,13 @@ tag: "Preview"
 
 Register a **destination** and OpenComputer delivers a sandbox's lifecycle events to it as a small, signed **delivery envelope** — signed, retried, and redeliverable. Use it to react when a sandbox boots, hibernates, stops, or scales, without polling.
 
-The envelope is camelCase, with top-level routing fields, your sandbox [`metadata`](/api-reference/sandboxes/create), and the full event nested under `event`:
+The envelope is camelCase, with top-level routing fields and the full event nested under `event`:
 
 ```json
 {
   "type": "sandbox.stopped",
   "sandboxId": "sb-3f9a…",
   "eventId": "sb-3f9a…:3:142",
-  "deliveryId": "whd_…",            // == webhook-id (dedupe on it)
-  "metadata": { "team": "acme", "job": "build-1421" },
   "event": {
     "id": "sb-3f9a…:3:142", "ts": "2026-06-24T12:00:00Z",
     "orgId": "…", "sandboxId": "sb-3f9a…",
@@ -26,7 +24,7 @@ The envelope is camelCase, with top-level routing fields, your sandbox [`metadat
 }
 ```
 
-`metadata` is the sandbox's metadata, delivered **verbatim on every send and redelivery**, so a handler can route the callback without a second lookup. Dedupe on **`deliveryId`** (it equals the `webhook-id` header).
+Dedupe on **`deliveryId`** — `verifyWebhook` sets it from the `svix-id` header (stable across retries and redelivery). Need to route on your own metadata? Attach `metadata` when you register the destination and it rides as **custom HTTP headers** on every request — there's no metadata in the body.
 
 ## Events
 
@@ -78,7 +76,7 @@ Content-Type: application/json
 
 </CodeGroup>
 
-Every destination is **signed**. If you don't pass a `secret`, OpenComputer generates one (`whsec_…`) and returns it **once** on create — store it then; it's never shown again (reads return only `hasSecret`). Pass `name` (unique per org) or an `Idempotency-Key` header to make create safe to retry: the same request returns the same destination instead of a duplicate; a different config under the same `name` is rejected with `409`.
+Every destination is **signed**. If you don't pass a `secret`, OpenComputer generates one (`whsec_…`) and returns it **once** on create — store it then; it's never shown again.
 
 <Tabs>
 
@@ -163,24 +161,21 @@ Every send and its outcome — the data behind a deliveries dashboard.
 
 </Tabs>
 
-A delivery moves `pending → delivering → delivered`, or `failed` (retrying) → `dead_letter` after the max attempts. Deleting a destination moves its in-flight deliveries to `canceled`. List responses are cursor-paginated: `{ data, nextCursor, hasMore }`.
+Each record is a Svix delivery attempt with its `status` and the consumer's `responseStatusCode`; Svix retries failed attempts on its managed schedule and keeps the full attempt history.
 
 ```
-Delivery = {
-  id, destination, eventId, eventType, status, attempts, retryCount,
-  lastAttemptAt, responseCode?, error?, createdAt, updatedAt, deliveredAt?
-}
+Delivery = { id, status: "success" | "pending" | "failed", responseStatusCode?, timestamp }
 ```
 
-Redelivery re-sends the **same** delivery (same `webhook-id`) with a fresh retry budget — for when the original never landed. A receiver that dedupes on `webhook-id` will treat it as the same message.
+Redelivery re-sends the **same** message to the endpoint (same `svix-id`) — for when the original never landed. A receiver that dedupes on `svix-id` treats it as the same message.
 
 ## Signing, retries, and dedupe
 
 - **HTTPS only.** Private, loopback, link-local, and cloud-metadata addresses are refused (at registration and at send).
-- **Always signed** with [Standard Webhooks](https://www.standardwebhooks.com). Every request carries `webhook-id` (= `deliveryId`), `webhook-timestamp`, and `webhook-signature` = `v1,<base64(HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; the timestamp guards replay. Plus `X-OC-Delivery-ID`, `X-OC-Sandbox-ID` (correlation) and `User-Agent: OpenComputer-Webhooks/1`. Your `secret` is write-only.
-- **At-least-once, once accepted.** Once an event is accepted it's retried until it succeeds or is **dead-lettered** (inspect + redeliver it). A duplicate can still arrive, so **dedupe on `webhook-id`** (= `deliveryId`).
-- **Not strictly ordered.** Deliveries are sent in parallel, so events for one sandbox can arrive out of order (e.g. `sandbox.ready` before `sandbox.created`). Treat each event independently and key off `event.type`; don't assume an ordering.
-- **Success / retry / give-up.** A delivery succeeds on HTTP `2xx`. A `5xx`, network error, or timeout is **retried** on a backoff of `10s, 30s, 60s, 5m, 15m` (capped), up to **12 attempts**, then **`dead_letter`**. A `429` is retried honoring its `Retry-After`. A `4xx` (other than 429), a `3xx` redirect, or an SSRF-blocked address is treated as **permanent → immediate `dead_letter`** (no retries). Redirects are not followed.
+- **Always signed** with [Standard Webhooks](https://www.standardwebhooks.com) (delivery is by [Svix](https://www.svix.com)). Every request carries `svix-id`, `svix-timestamp`, and `svix-signature` = `v1,<base64(HMAC-SHA256(secret, "{svix-id}.{svix-timestamp}.{rawBody}"))>`. Verify against the **raw request body, before parsing it**; the timestamp guards replay. Any custom headers you attached as destination `metadata` ride along too. Your `secret` is write-only.
+- **At-least-once.** Once an event is handed off it's retried until it succeeds or the delivery layer gives up. A duplicate can still arrive, so **dedupe on `svix-id`** (= `deliveryId`).
+- **Not strictly ordered.** Events for one sandbox can arrive out of order (e.g. `sandbox.ready` before `sandbox.created`). Treat each event independently and key off `event.type`; don't assume an ordering.
+- **Success / retry / give-up.** A delivery succeeds on HTTP `2xx`. Failures are retried on Svix's managed backoff (immediately, then 5s, 5m, 30m, 2h, 5h, 10h, 10h); an endpoint that keeps failing for ~5 days is auto-disabled. Inspect attempts and recover failed messages via the [deliveries API](#deliveries). Unsafe targets (private / loopback / cloud-metadata addresses) are blocked by the delivery layer.
 
 ### Verify a webhook
 
@@ -194,10 +189,10 @@ import { verifyWebhook, type SandboxLifecycleEvent } from "@opencomputer/sdk";
 const delivery = await verifyWebhook<SandboxLifecycleEvent>(rawBody, request.headers, process.env.OC_WEBHOOK_SECRET!);
 
 if (delivery.type === "sandbox.stopped") {
-  console.log(delivery.sandboxId, delivery.event.data.reason); // route via delivery.metadata
+  console.log(delivery.sandboxId, delivery.event.data.reason); // event.data is typed per event
 }
 ```
 
-Or verify with any [Standard Webhooks](https://www.standardwebhooks.com) library directly, against the raw body and the `webhook-id` / `webhook-timestamp` / `webhook-signature` headers.
+Or verify with any [Standard Webhooks](https://www.standardwebhooks.com) / Svix library directly, against the raw body and the `svix-id` / `svix-timestamp` / `svix-signature` headers.
 
 <Note>Webhooks here cover **sandbox lifecycle**. To deliver an agent's *session* events (turns, messages, results), see [Agent Sessions webhooks](/agent-sessions/webhooks) — verified with the same `verifyWebhook` helper. Session webhooks differ in a couple of specifics today: their `webhook-id` is the event id, and signing is opt-in (set a `secret`).</Note>
