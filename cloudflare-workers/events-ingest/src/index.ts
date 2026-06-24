@@ -521,7 +521,22 @@ export default {
               eventId: e.id,
               idempotencyKey: e.id,
               channels: [e.sandbox_id],
-              payload: { type: e.type, sandboxId: e.sandbox_id, data: e.payload ?? {}, ts: e.timestamp },
+              // The delivered body = the SDK's WebhookDelivery<SandboxLifecycleEvent>
+              // envelope (verifyWebhook returns this shape). Per-destination metadata
+              // rides as Svix endpoint custom headers, not in the body.
+              payload: {
+                type: e.type,
+                sandboxId: e.sandbox_id,
+                eventId: e.id,
+                event: {
+                  id: e.id,
+                  ts: e.timestamp,
+                  orgId: e.org_id,
+                  sandboxId: e.sandbox_id,
+                  type: e.type,
+                  data: e.payload ?? {},
+                },
+              },
             });
           } catch (err) {
             if (err instanceof SvixError && !err.transient) {

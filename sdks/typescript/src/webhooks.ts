@@ -67,8 +67,9 @@ export type SandboxLifecycleEvent = SandboxLifecycleEventBase &
 
 /**
  * The delivered envelope for sandbox webhooks: the shared {@link WebhookDelivery} carrying a
- * {@link SandboxLifecycleEvent} under `event`. On these deliveries `sandboxId` and `deliveryId`
- * are always set, and `deliveryId` equals the `webhook-id` header (dedupe on it).
+ * {@link SandboxLifecycleEvent} under `event`. Delivered by Svix; `sandboxId` and `deliveryId`
+ * are always set, and `deliveryId` equals the `svix-id` header (stable across retries — dedupe
+ * on it). Per-destination registration metadata arrives as custom HTTP headers, not in the body.
  *
  * Verify an incoming request with: `verifyWebhook<SandboxLifecycleEvent>(rawBody, headers, secret)`.
  */
@@ -155,9 +156,12 @@ export interface WebhookDeliveryRecord {
 }
 
 export interface WebhookTestResult {
-  delivered: boolean;
-  responseCode: number | null;
-  error?: string;
+  /** The test message was accepted by Svix for delivery (delivery itself is async). */
+  ok: boolean;
+  /** The event type sent — a type the destination is subscribed to. */
+  eventType?: string;
+  /** The Svix message id; find its attempt under `deliveries`. */
+  messageId?: string;
 }
 
 export interface ListPage<T> {
@@ -322,8 +326,8 @@ export class Webhooks {
   }
 
   /**
-   * Send a synthetic `sandbox.test` event to the destination and return the result inline.
-   * It bypasses the `eventTypes` filter, is not retried, and does not appear in delivery history.
+   * Send a sample event (of a type the destination is subscribed to) to exercise the endpoint.
+   * Returns the queued Svix message; delivery is asynchronous — check `deliveries` for the result.
    */
   async test(id: string): Promise<WebhookTestResult> {
     const resp = await fetch(`${this.apiUrl}/webhooks/${id}/test`, { method: "POST", headers: this.headers() });
