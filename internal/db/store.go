@@ -196,6 +196,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{46, "migrations/046_preview_auth.up.sql"},
 		{47, "migrations/047_orgs_billing_provider.up.sql"},
 		{48, "migrations/048_orgs_usage_sync_watermark.up.sql"},
+		{49, "migrations/049_sandbox_webhooks.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -792,8 +793,13 @@ func (s *Store) CreateSandboxSession(ctx context.Context, sandboxID string, orgI
 // and meant a customer's PUT to /secret-stores/:id/entries/:name didn't
 // propagate to running sandboxes — they kept the value from create-time.
 func (s *Store) CreateSandboxSessionWithStatus(ctx context.Context, sandboxID string, orgID uuid.UUID, userID *uuid.UUID, template, region, workerID string, config, metadata json.RawMessage, status string, secretStoreID *uuid.UUID) (*SandboxSession, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
 	session := &SandboxSession{}
-	err := s.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO sandbox_sessions (sandbox_id, org_id, user_id, template, region, worker_id, config, metadata, status, secret_store_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 RETURNING id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version`,
@@ -804,10 +810,46 @@ func (s *Store) CreateSandboxSessionWithStatus(ctx context.Context, sandboxID st
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sandbox session: %w", err)
 	}
+	// Record sandbox.created in-tx (deterministic id → at most one per sandbox),
+	// but ONLY when the row is born already-created (status != "pending"). The
+	// combined/local path inserts the session AFTER the worker has spawned, so
+	// `created` is truthful here. The "pending" path (remote/fork: insert row →
+	// gRPC create → promote to running) must NOT emit `created` at insert: the
+	// create can still fail, and a consumer must never receive `created` for a
+	// sandbox whose API create then errored. That path emits `created` at the
+	// pending→running promotion (updateSandboxSessionStatus), so it fires only on
+	// success. (sandbox-webhooks-rearchitecture.md)
+	if status != "pending" {
+		createdData, _ := json.Marshal(map[string]string{"template": template})
+		if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+			ID:        sandboxID + ":sandbox.created",
+			OrgID:     orgID,
+			SandboxID: sandboxID,
+			Type:      "sandbox.created",
+			Data:      createdData,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return session, nil
 }
 
 func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, status string, errorMsg *string) error {
+	return s.updateSandboxSessionStatus(ctx, sandboxID, status, errorMsg, "")
+}
+
+// UpdateSandboxSessionStatusReason is UpdateSandboxSessionStatus with an explicit
+// sandbox.stopped reason (one of user_requested | expired | crash). Use it where
+// the reason is known — e.g. "expired" for an idle-timeout kill. An empty reason
+// defaults by status (stopped→user_requested, error→crash).
+func (s *Store) UpdateSandboxSessionStatusReason(ctx context.Context, sandboxID, status string, errorMsg *string, reason string) error {
+	return s.updateSandboxSessionStatus(ctx, sandboxID, status, errorMsg, reason)
+}
+
+func (s *Store) updateSandboxSessionStatus(ctx context.Context, sandboxID, status string, errorMsg *string, reason string) error {
 	var query string
 	var args []interface{}
 	if status == "stopped" || status == "error" {
@@ -848,15 +890,82 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 	// usage reporter can never observe a stopped/hibernated/failed session with
 	// an ended_at IS NULL scale_event (which would keep billing the window).
 	var orgID uuid.UUID
-	if tag.RowsAffected() > 0 && (terminal || status == "hibernated") {
+	affected := tag.RowsAffected() > 0
+	if affected && (terminal || status == "hibernated") {
 		if _, err := tx.Exec(ctx,
 			`UPDATE sandbox_scale_events SET ended_at = now()
 			 WHERE sandbox_id = $1 AND ended_at IS NULL`, sandboxID); err != nil {
 			return fmt.Errorf("failed to close scale events: %w", err)
 		}
-		// Capture org for the lifecycle publish below (same tx; cheap).
+	}
+
+	// Record the canonical lifecycle event in THIS tx (CP-origin → durable from
+	// the state change) so sandbox webhooks fire. `running` here is the
+	// pending→running boot promotion = sandbox.ready (wake takes a different code
+	// path, so this never doubles with the worker-origin `resumed`). Other
+	// worker-origin events (created/resumed/migrated) arrive via the ingress.
+	if affected && (terminal || status == "hibernated" || status == "running") {
+		var template string
 		_ = tx.QueryRow(ctx,
-			`SELECT org_id FROM sandbox_sessions WHERE sandbox_id = $1`, sandboxID).Scan(&orgID)
+			`SELECT org_id, template FROM sandbox_sessions WHERE sandbox_id = $1`, sandboxID).Scan(&orgID, &template)
+		if orgID != uuid.Nil {
+			var evType, evID string
+			var data json.RawMessage
+			switch status {
+			case "stopped":
+				r := reason
+				if r != "expired" && r != "crash" {
+					r = "user_requested" // default / sanitize
+				}
+				evType = "sandbox.stopped"
+				evID = sandboxID + ":sandbox.stopped" // terminal: once per sandbox
+				data, _ = json.Marshal(map[string]string{"reason": r})
+			case "error":
+				evType = "sandbox.stopped"
+				evID = sandboxID + ":sandbox.stopped"
+				data = json.RawMessage(`{"reason":"crash"}`)
+			case "hibernated":
+				// Recurs across hibernate/wake cycles — namespace by the
+				// hibernation count so each cycle is a distinct, deterministic id.
+				var n int
+				_ = tx.QueryRow(ctx, `SELECT count(*) FROM sandbox_hibernations WHERE sandbox_id = $1`, sandboxID).Scan(&n)
+				evType = "sandbox.hibernated"
+				evID = fmt.Sprintf("%s:sandbox.hibernated:%d", sandboxID, n)
+			case "running":
+				// Pending→running promotion = the create actually succeeded, so
+				// emit sandbox.created HERE for the remote/fork paths (which insert
+				// the row as "pending" and DON'T emit created at insert). A consumer
+				// therefore never sees `created` for a create that then failed.
+				// Deterministic id → idempotent if the promote re-runs, and wake
+				// takes a different code path so this only ever fires on first boot.
+				// Recorded before `ready` below → smaller seq → relayed first.
+				createdData, _ := json.Marshal(map[string]string{"template": template})
+				if cerr := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+					ID:        sandboxID + ":sandbox.created",
+					OrgID:     orgID,
+					SandboxID: sandboxID,
+					Type:      "sandbox.created",
+					Data:      createdData,
+				}); cerr != nil {
+					return fmt.Errorf("record created event: %w", cerr)
+				}
+				// Boot promotion = ready. Deterministic id dedups a repeat
+				// "running" update on an already-running row (idempotent promote).
+				evType = "sandbox.ready"
+				evID = sandboxID + ":sandbox.ready"
+			}
+			if evType != "" {
+				if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+					ID:        evID,
+					OrgID:     orgID,
+					SandboxID: sandboxID,
+					Type:      evType,
+					Data:      data,
+				}); err != nil {
+					return fmt.Errorf("record lifecycle event: %w", err)
+				}
+			}
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -883,22 +992,40 @@ func (s *Store) SetMigrating(ctx context.Context, sandboxID, targetWorkerID stri
 	return err
 }
 
-// CompleteMigration marks a sandbox as running on the new worker after successful migration.
+// CompleteMigration marks a sandbox as running on the new worker after successful
+// migration, and records sandbox.migrated in the same tx (the worker does not emit
+// it; this is the single migration-completion funnel for both manual and
+// scale-triggered migrations).
 func (s *Store) CompleteMigration(ctx context.Context, sandboxID, newWorkerID string) error {
-	// Use status IN ('migrating', 'running', 'stopped') — a race with the source
-	// worker's cleanup may have already set it to 'stopped' or reverted to 'running'.
-	// The migration DID succeed (QEMU is running on the target), so force the update.
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE sandbox_sessions SET status = 'running', worker_id = $1, migrating_to_worker = '', stopped_at = NULL, error_msg = NULL
-		 WHERE sandbox_id = $2 AND status IN ('migrating', 'running', 'stopped')`,
-		newWorkerID, sandboxID)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no session found for %s in migrating/running/stopped state", sandboxID)
+	defer tx.Rollback(ctx)
+	// Use status IN ('migrating', 'running', 'stopped') — a race with the source
+	// worker's cleanup may have already set it to 'stopped' or reverted to 'running'.
+	// The migration DID succeed (QEMU is running on the target), so force the update.
+	var orgID uuid.UUID
+	err = tx.QueryRow(ctx,
+		`UPDATE sandbox_sessions SET status = 'running', worker_id = $1, migrating_to_worker = '', stopped_at = NULL, error_msg = NULL
+		 WHERE sandbox_id = $2 AND status IN ('migrating', 'running', 'stopped')
+		 RETURNING org_id`,
+		newWorkerID, sandboxID).Scan(&orgID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no session found for %s in migrating/running/stopped state", sandboxID)
+		}
+		return err
 	}
-	return nil
+	if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+		ID:        fmt.Sprintf("%s:sandbox.migrated:%s", sandboxID, newWorkerID),
+		OrgID:     orgID,
+		SandboxID: sandboxID,
+		Type:      "sandbox.migrated",
+	}); err != nil {
+		return fmt.Errorf("record migrated event: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // FailMigration reverts a sandbox to running on its original worker after a failed migration.
@@ -953,17 +1080,23 @@ func (s *Store) FailMigrationPostQMP(ctx context.Context, sandboxID, errorMsg st
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx,
+	var orgID uuid.UUID
+	err = tx.QueryRow(ctx,
 		`UPDATE sandbox_sessions SET status = 'error', migrating_to_worker = '', stopped_at = now(), error_msg = $2
-		 WHERE sandbox_id = $1 AND status = 'migrating'`,
-		sandboxID, errorMsg)
+		 WHERE sandbox_id = $1 AND status = 'migrating'
+		 RETURNING org_id`,
+		sandboxID, errorMsg).Scan(&orgID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tx.Commit(ctx) // not migrating — nothing to do
+		}
 		return err
 	}
-	if tag.RowsAffected() > 0 {
-		if err := closeOpenScaleEventsForSandboxes(ctx, tx, []string{sandboxID}); err != nil {
-			return fmt.Errorf("close scale events: %w", err)
-		}
+	if err := closeOpenScaleEventsForSandboxes(ctx, tx, []string{sandboxID}); err != nil {
+		return fmt.Errorf("close scale events: %w", err)
+	}
+	if err := recordOrphanStoppedTx(ctx, tx, []OrphanedSandbox{{SandboxID: sandboxID, OrgID: orgID}}); err != nil {
+		return fmt.Errorf("record stopped event: %w", err)
 	}
 	return tx.Commit(ctx)
 }
@@ -1022,6 +1155,9 @@ func (s *Store) MarkOrphanedOnWorker(ctx context.Context, workerID, errorMsg str
 		if err := closeOpenScaleEventsForSandboxes(ctx, tx, ids); err != nil {
 			return nil, fmt.Errorf("close scale events: %w", err)
 		}
+	}
+	if err := recordOrphanStoppedTx(ctx, tx, orphans); err != nil {
+		return nil, fmt.Errorf("record stopped events: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -1106,6 +1242,11 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 				tx.Rollback(ctx)
 				continue
 			}
+		}
+		if err := recordOrphanStoppedTx(ctx, tx, batchOrphans); err != nil {
+			log.Printf("MarkOrphanedSandboxes: record stopped events for worker %s: %v", workerID, err)
+			tx.Rollback(ctx)
+			continue
 		}
 		if err := tx.Commit(ctx); err != nil {
 			continue
@@ -1666,11 +1807,37 @@ func (s *Store) MarkHibernationUploadFailed(ctx context.Context, hibernationKey,
 
 // UpdateSandboxSessionForWake changes a hibernated session back to running on a new worker.
 func (s *Store) UpdateSandboxSessionForWake(ctx context.Context, sandboxID, newWorkerID string) error {
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var orgID uuid.UUID
+	err = tx.QueryRow(ctx,
 		`UPDATE sandbox_sessions SET status = 'running', worker_id = $1, stopped_at = NULL
-		 WHERE sandbox_id = $2 AND status = 'hibernated'`,
-		newWorkerID, sandboxID)
-	return err
+		 WHERE sandbox_id = $2 AND status = 'hibernated'
+		 RETURNING org_id`,
+		newWorkerID, sandboxID).Scan(&orgID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Not hibernated (already running/gone) — nothing to wake, no resumed event.
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	// Record sandbox.resumed in-tx. Recurring (hibernate→wake cycles) → unique id;
+	// the status='hibernated' guard above ensures exactly one per actual wake.
+	// This is the single webhook source for `resumed` (the worker's stream "woke"
+	// feeds D1 sandboxes_index, not webhooks). (sandbox-webhooks-rearchitecture.md)
+	if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+		ID:        sandboxID + ":sandbox.resumed:" + uuid.NewString(),
+		OrgID:     orgID,
+		SandboxID: sandboxID,
+		Type:      "sandbox.resumed",
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ReconcileWorkerSessions marks stale "running" sessions for a worker on startup.
@@ -1744,6 +1911,32 @@ func (s *Store) ReconcileWorkerSessions(ctx context.Context, workerID string) (h
 		       WHERE worker_id = $1 AND status IN ('hibernated', 'stopped')
 		   )`, workerID); err != nil {
 		return hibernated, stopped, fmt.Errorf("failed to close scale events: %w", err)
+	}
+
+	// Record canonical lifecycle events in THIS tx so webhooks fire for
+	// crash-recovery transitions too (worker restart while a sandbox was
+	// running). Without this, exactly the failure cases users want webhooks for
+	// would silently bypass the ledger.
+	for _, o := range hibernated {
+		if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+			ID:        fmt.Sprintf("%s:sandbox.hibernated:reconcile:%d", o.SandboxID, time.Now().UnixNano()),
+			OrgID:     o.OrgID,
+			SandboxID: o.SandboxID,
+			Type:      "sandbox.hibernated",
+		}); err != nil {
+			return nil, nil, fmt.Errorf("record reconcile hibernated event: %w", err)
+		}
+	}
+	for _, o := range stopped {
+		if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+			ID:        fmt.Sprintf("%s:sandbox.stopped:reconcile:%d", o.SandboxID, time.Now().UnixNano()),
+			OrgID:     o.OrgID,
+			SandboxID: o.SandboxID,
+			Type:      "sandbox.stopped",
+			Data:      json.RawMessage(`{"reason":"crash"}`),
+		}); err != nil {
+			return nil, nil, fmt.Errorf("record reconcile stopped event: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

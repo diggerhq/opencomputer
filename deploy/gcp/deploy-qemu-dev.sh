@@ -216,7 +216,10 @@ cmd_deploy() {
     log "Deploying branch '$branch' to $public_ip..."
 
     log "Syncing code..."
-    rsync -az --progress \
+    # --delete mirrors the tree so files removed in the local branch (e.g. a
+    # deleted .go file) are also removed on the box. Without it, a stale source
+    # file referencing now-deleted symbols lingers and breaks the on-box build.
+    rsync -az --progress --delete \
         -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $SSH_KEY" \
         --exclude '.git' --exclude 'bin/' --exclude 'node_modules/' \
         --exclude '.claude/' --exclude '*.ext4' \
@@ -338,6 +341,16 @@ OPENSANDBOX_S3_REGION=${s3_region}
 OPENSANDBOX_S3_ACCESS_KEY_ID=${s3_ak}
 OPENSANDBOX_S3_SECRET_ACCESS_KEY=${s3_sk}
 OPENSANDBOX_MIN_WORKERS=1
+# Webhooks (all-Svix-at-edge): forward lifecycle events to the edge events-ingest
+# Worker and reach the edge for inline-on-create registration. Set these to the
+# igor-dev edge stack to exercise webhooks end-to-end (sandbox-webhooks-rearchitecture.md §8).
+OPENSANDBOX_CF_EVENT_ENDPOINT=${OPENSANDBOX_CF_EVENT_ENDPOINT:-}
+OPENSANDBOX_CF_EVENT_SECRET=${OPENSANDBOX_CF_EVENT_SECRET:-}
+OPENSANDBOX_CF_EDGE_BASE_URL=${OPENSANDBOX_CF_EDGE_BASE_URL:-}
+# Shared edge↔CP capability-token secret. Must equal the api-edge SESSION_JWT_SECRET
+# for the edge's POST /api/sandboxes to reach the CP's /internal/sandboxes/create
+# (the CP only registers that route + validates cap-tokens when this is set).
+OPENSANDBOX_SESSION_JWT_SECRET=${OPENSANDBOX_SESSION_JWT_SECRET:-}
 WORKOS_API_KEY=${workos_api_key}
 WORKOS_CLIENT_ID=${workos_client_id}
 WORKOS_REDIRECT_URI=${workos_redirect_uri}

@@ -60,8 +60,30 @@ await session.destinations.create({ url: "https://app.example.com/oc-callback", 
 // In your webhook handler — verify the signature, then fetch the result:
 const delivery = await verifyWebhook(rawBody, request.headers, process.env.OC_WEBHOOK_SECRET!);
 if (delivery.type === "turn.completed") {
-  const session = await oc.sessions.get(delivery.sessionId);
+  const session = await oc.sessions.get(delivery.sessionId!);
   const { result } = await session.result();
+}
+```
+
+## Sandbox webhooks (Preview)
+
+Subscribe to sandbox lifecycle events (`sandbox.ready`, `sandbox.stopped`, …) — signed, retried, and redeliverable. The same `verifyWebhook` helper verifies both session and sandbox deliveries. **Preview: newly available; the surface may change.**
+
+```typescript
+import { Webhooks, verifyWebhook, type SandboxLifecycleEvent } from "@opencomputer/sdk";
+
+const webhooks = new Webhooks({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+
+// `secret` (whsec_…) is returned ONCE on create — store it; you need it to verify.
+const { secret } = await webhooks.create({
+  url: "https://app.example.com/oc-webhook",
+  eventTypes: ["sandbox.stopped"],
+});
+
+// In your handler — verify against the RAW body, then route:
+const delivery = await verifyWebhook<SandboxLifecycleEvent>(rawBody, request.headers, secret);
+if (delivery.type === "sandbox.stopped") {
+  console.log(delivery.sandboxId, delivery.event.data.reason);
 }
 ```
 

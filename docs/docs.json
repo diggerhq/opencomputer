@@ -46,6 +46,7 @@
           "sandboxes/secrets",
           "sandboxes/patches",
           "sandboxes/preview-urls",
+          "sandboxes/webhooks",
           "sandboxes/elasticity",
           "sandboxes/burst-sandboxes",
           {
@@ -189,6 +190,26 @@
                 "pages": [
                   "api-reference/sandboxes/get-tags",
                   "api-reference/sandboxes/set-tags"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Webhooks",
+            "tag": "Preview",
+            "pages": [
+              "api-reference/webhooks/create",
+              "api-reference/webhooks/list",
+              "api-reference/webhooks/get",
+              "api-reference/webhooks/update",
+              "api-reference/webhooks/delete",
+              "api-reference/webhooks/test",
+              {
+                "group": "Deliveries",
+                "pages": [
+                  "api-reference/webhooks/deliveries-list",
+                  "api-reference/webhooks/delivery-get",
+                  "api-reference/webhooks/redeliver"
                 ]
               }
             ]

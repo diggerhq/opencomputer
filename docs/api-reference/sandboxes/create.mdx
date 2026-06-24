@@ -45,6 +45,16 @@ If both `cpuCount` and `memoryMB` are provided, they must match a platform tier.
   Name of a pre-built snapshot for instant boot
 </ParamField>
 
+<ParamField body="webhooks" type="object[]">
+  Register [webhook](/sandboxes/webhooks) destination(s) for this sandbox's lifecycle events, pinned to this sandbox. Registering inline (rather than via a separate call) means the endpoints exist **before** `sandbox.created` / `sandbox.ready` are relayed, so you don't miss the first events.
+
+  - `url` *(string, required)*: HTTPS endpoint.
+  - `secret` *(string)*: signing secret; omit and one is generated and returned on the response (`webhooks[].secret`), also re-fetchable later.
+  - `eventTypes` *(string[])*: event-type allow-list (default all).
+
+  Each spec is validated up-front (same rules as [`POST /api/webhooks`](/api-reference/webhooks/create)): a non-HTTPS `url` or unknown `eventTypes` is rejected with `400`. Registration is otherwise **best-effort** — if a spec fails to register downstream, the sandbox is still created; inspect the echoed `webhooks: [{ id, url, secret? }]` to see what registered.
+</ParamField>
+
 <ParamField body="previewAuth" type="object">
   Opt in to bearer-token authentication on the sandbox's preview URLs. When set, every request to `https://sb-<id>-p<port>.<domain>` must include an `Authorization: Bearer <token>` (or `X-OC-Preview-Token: <token>`) header; missing or wrong → 401.
 
@@ -63,9 +73,12 @@ If both `cpuCount` and `memoryMB` are provided, they must match a platform tier.
   "status": "running",
   "region": "use2",
   "workerID": "w-use2-abc123",
-  "previewAuthToken": "qx2sSi5IYXWBvnnRqwK9Ky_cIAI-x0Vx1bPCt0XMxsI"
+  "previewAuthToken": "qx2sSi5IYXWBvnnRqwK9Ky_cIAI-x0Vx1bPCt0XMxsI",
+  "webhooks": [
+    { "id": "whk_3f9a2c", "url": "https://app.example.com/oc-webhook", "secret": "whsec_Hk9…" }
+  ]
 }
 ```
 
-`previewAuthToken` is only present when `previewAuth` was set in the request. Read it once and store it durably — the server will not return it again.
+`previewAuthToken` is only present when `previewAuth` was set in the request — read it once and store it durably; the server will not return it again. `webhooks` is present only when `webhooks` were requested; each `secret` (`whsec_…`) is returned here and stays re-fetchable via [`GET /api/webhooks/{id}/secret`](/api-reference/webhooks/get).
 </ResponseExample>

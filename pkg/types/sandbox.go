@@ -39,6 +39,10 @@ type Sandbox struct {
 	// preview URL, returned exactly once on create when previewAuth was
 	// requested. Empty otherwise. Mirrors the SDK field by the same name.
 	PreviewAuthToken string `json:"previewAuthToken,omitempty"`
+	// Webhooks echoes inline webhooks registered on create (see
+	// SandboxConfig.Webhooks). Each entry's signing secret is present once,
+	// only when OpenComputer generated it. Empty unless webhooks were requested.
+	Webhooks []SandboxWebhookResult `json:"webhooks,omitempty"`
 }
 
 // SandboxPreviewAuth controls the per-sandbox bearer-token gate that the CP
@@ -65,6 +69,11 @@ type SandboxConfig struct {
 	DiskMB      int                 `json:"diskMB,omitempty"`    // workspace disk in MB (default 20480)
 	Envs        map[string]string   `json:"envs,omitempty"`
 	PreviewAuth *SandboxPreviewAuth `json:"previewAuth,omitempty"`
+	// Webhooks registers sandbox lifecycle webhooks atomically with the
+	// sandbox, pinned to it — so they catch created/ready (which fire before a
+	// separate webhooks.create could know the sandbox id). See
+	// .agents/work/sandbox-lifecycle-webhooks.md.
+	Webhooks []SandboxWebhookSpec `json:"webhooks,omitempty"`
 	Port       int               `json:"port,omitempty"`       // container port to expose via subdomain (default 80)
 	// NetworkEnabled is a pointer so we can distinguish "unset" from
 	// "explicitly false". Unset defaults to true (see IsNetworkEnabled).

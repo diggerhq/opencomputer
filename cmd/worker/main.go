@@ -565,7 +565,8 @@ func main() {
 			log.Printf("opensandbox-worker: sandbox %s killed on timeout", sandboxID)
 			execMgr.RemoveSessions(sandboxID)
 			if store != nil {
-				_ = store.UpdateSandboxSessionStatus(context.Background(), sandboxID, "stopped", nil)
+				// Idle-timeout kill → sandbox.stopped reason "expired".
+				_ = store.UpdateSandboxSessionStatusReason(context.Background(), sandboxID, "stopped", nil, "expired")
 			}
 			// Same fix as OnHibernate above — D1 needs a "stopped" event so
 			// the dashboard doesn't keep the row at "running" forever.

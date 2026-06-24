@@ -1,8 +1,11 @@
-// Webhook verification for Durable Agent Sessions destinations.
+// Webhook verification for OpenComputer destinations — shared across **session** webhooks
+// (Durable Agent Sessions) and **sandbox lifecycle** webhooks. One verifier, one envelope.
 //
-// Deliveries are signed with the Standard Webhooks scheme (https://www.standardwebhooks.com):
-// headers `webhook-id`, `webhook-timestamp`, `webhook-signature`, where
-//   webhook-signature = "v1,<base64(HMAC-SHA256(secret, `${id}.${timestamp}.${rawBody}`))>"
+// Deliveries are signed with the Standard Webhooks scheme (https://www.standardwebhooks.com).
+// Sandbox webhooks are delivered by Svix, which uses the same scheme under `svix-`-prefixed
+// headers; session webhooks use the `webhook-`-prefixed names. This verifier accepts EITHER:
+//   {svix,webhook}-id, {svix,webhook}-timestamp, {svix,webhook}-signature, where
+//   signature = "v1,<base64(HMAC-SHA256(secret, `${id}.${timestamp}.${rawBody}`))>"
 // and the secret is the destination's `whsec_…` value. The header may carry several
 // space-separated signatures (key rotation); any match passes.
 //
@@ -13,16 +16,39 @@
 import type { Event } from "./types.js";
 import { normalize } from "./normalize.js";
 
-/** The envelope OpenComputer POSTs to a destination (see the Webhooks docs). */
+/**
+ * The envelope OpenComputer POSTs to a destination (camelCase). One shape for both products;
+ * the product-specific id is set accordingly. `E` is the nested event type — pass
+ * `SandboxLifecycleEvent` for sandbox webhooks, leave it as the session `Event` otherwise.
+ */
 export interface WebhookDelivery<E = Event> {
-  /** The event type — route on this (e.g. `turn.completed`). */
+  /** The event type — route on this (e.g. `turn.completed`, `sandbox.stopped`). */
   type: string;
-  sessionId: string;
-  /** Equals the `webhook-id` header — dedupe on it. */
+  /** Set on **session** webhooks. */
+  sessionId?: string;
+  /** Set on **sandbox lifecycle** webhooks. */
+  sandboxId?: string;
+  /** The underlying event id — app-level correlation. */
   eventId: string;
-  /** The session's opaque routing state, verbatim (`null` when unset). */
-  metadata: Record<string, unknown> | null;
-  /** The full event — the same shape the SSE stream emits. */
+  /**
+   * The delivery id, set by {@link verifyWebhook}. **Sandbox** webhooks: the Svix message id
+   * (`svix-id`). **Session** webhooks: the delivery-row id (`X-OC-Delivery-ID` header) — note the
+   * session `webhook-id` header is the *eventId*, not a delivery id, so it is NOT used here.
+   */
+  deliveryId?: string;
+  /**
+   * The idempotency key to dedupe on — stable across retries and redelivery. **Sandbox**: the
+   * Svix message id (`svix-id`). **Session**: the `eventId`. Prefer this over {@link deliveryId}
+   * for "have I already processed this?" checks.
+   */
+  dedupeId?: string;
+  /**
+   * Opaque routing metadata. On **session** webhooks this is carried in the body. On **sandbox**
+   * webhooks, per-destination metadata is delivered as custom HTTP **headers** (set at
+   * registration), not in the body, so this is absent — read it from the request headers.
+   */
+  metadata?: Record<string, unknown> | null;
+  /** The full event — the same shape the SSE stream emits (session) or the lifecycle event (sandbox). */
   event: E;
 }
 
@@ -106,11 +132,11 @@ export async function verifyWebhook<E = Event>(
   secret: string,
   opts: VerifyWebhookOptions = {},
 ): Promise<WebhookDelivery<E>> {
-  const id = header(headers, "webhook-id");
-  const ts = header(headers, "webhook-timestamp");
-  const sigHeader = header(headers, "webhook-signature");
+  const id = header(headers, "svix-id") ?? header(headers, "webhook-id");
+  const ts = header(headers, "svix-timestamp") ?? header(headers, "webhook-timestamp");
+  const sigHeader = header(headers, "svix-signature") ?? header(headers, "webhook-signature");
   if (!id || !ts || !sigHeader) {
-    throw new WebhookVerificationError("missing webhook-id / webhook-timestamp / webhook-signature header");
+    throw new WebhookVerificationError("missing {svix,webhook}-id / -timestamp / -signature header");
   }
 
   const tolerance = opts.toleranceSeconds ?? 300;
@@ -140,8 +166,23 @@ export async function verifyWebhook<E = Event>(
 
   try {
     // Normalize so the returned envelope + nested event match the SDK's camelCase types
-    // (the wire event is snake-cased, e.g. `turn_id`); `metadata` stays verbatim (opaque).
-    return normalize(JSON.parse(rawBody)) as WebhookDelivery<E>;
+    // (the wire event is snake-cased, e.g. `turn_id`). The two products use different header
+    // dialects + delivery-id ownership, so resolve deliveryId/dedupeId by dialect:
+    //  - Sandbox (Svix): `svix-id` is BOTH the stable delivery id and the dedupe key.
+    //  - Session: the signed `webhook-id` is the *eventId* (dedupe on it); the delivery-row id
+    //    rides separately in `X-OC-Delivery-ID`.
+    const delivery = normalize(JSON.parse(rawBody)) as WebhookDelivery<E>;
+    const svixId = header(headers, "svix-id");
+    if (svixId) {
+      delivery.deliveryId = svixId;
+      delivery.dedupeId = svixId;
+    } else {
+      const deliveryRowId = header(headers, "x-oc-delivery-id");
+      if (deliveryRowId) delivery.deliveryId = deliveryRowId;
+      // webhook-id == eventId for sessions; prefer the body's eventId, fall back to the header.
+      delivery.dedupeId = delivery.eventId ?? id;
+    }
+    return delivery;
   } catch {
     throw new WebhookVerificationError("signature valid but body is not JSON");
   }

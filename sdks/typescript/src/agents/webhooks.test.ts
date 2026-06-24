@@ -73,4 +73,28 @@ describe("verifyWebhook", () => {
     const delivery = await verifyWebhook(body, hdr(await sign(id, ts, body, raw)), raw, { nowSeconds: ts });
     expect(delivery.type).toBe("turn.completed");
   });
+
+  it("sandbox dialect: deliveryId + dedupeId both come from svix-id", async () => {
+    const svixId = "msg_svix_1";
+    const sbBody = JSON.stringify({
+      type: "sandbox.created", sandboxId: "sb_1", eventId: "sb_1:sandbox.created",
+      event: { id: "sb_1:sandbox.created", type: "sandbox.created", data: {} },
+    });
+    const sig = await sign(svixId, ts, sbBody, SECRET);
+    const headers = { "svix-id": svixId, "svix-timestamp": String(ts), "svix-signature": sig };
+    const delivery = await verifyWebhook(sbBody, headers, SECRET, { nowSeconds: ts });
+    expect(delivery.deliveryId).toBe(svixId);
+    expect(delivery.dedupeId).toBe(svixId);
+  });
+
+  it("session dialect: deliveryId = X-OC-Delivery-ID, dedupeId = eventId (webhook-id is the eventId)", async () => {
+    const sig = await sign(id, ts, body, SECRET); // id == eventId == "msg_1"
+    const headers = {
+      "webhook-id": id, "webhook-timestamp": String(ts), "webhook-signature": sig,
+      "x-oc-delivery-id": "dlv_99",
+    };
+    const delivery = await verifyWebhook(body, headers, SECRET, { nowSeconds: ts });
+    expect(delivery.deliveryId).toBe("dlv_99"); // the delivery-row id, NOT webhook-id
+    expect(delivery.dedupeId).toBe("msg_1"); // eventId
+  });
 });

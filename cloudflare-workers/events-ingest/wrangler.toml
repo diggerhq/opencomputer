@@ -42,6 +42,9 @@ script_name = "opensandbox-edge-dev"
 #   EVENT_SECRET    — HMAC for /ingest
 #   CF_ADMIN_SECRET — HMAC the DO uses when dispatching halt webhooks (so the
 #                     events-ingest Worker can sign DO-initiated callbacks too)
+#   SVIX_API_TOKEN  — Svix (managed webhook delivery). Set via:
+#                     echo "$TOKEN" | npx wrangler secret put SVIX_API_TOKEN
+#                     Region is encoded in the token suffix (e.g. ".us").
 
 [vars]
 WORKER_ENV = "dev"

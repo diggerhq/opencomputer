@@ -161,4 +161,6 @@ function verify(headers, rawBody, secret) {
 }
 ```
 
+<Note>These deliver a **session's** events (turns, messages, results). To react to **sandbox lifecycle** — boot, hibernate, stop, scale — see [Sandbox webhooks](/sandboxes/webhooks): the **same** Standard Webhooks `verifyWebhook` helper, but a different header dialect and delivery ownership. Sessions use `webhook-*` headers (where `webhook-id` is the *event id*) with the delivery-row id in `X-OC-Delivery-ID`, and signing is opt-in. Sandbox webhooks are delivered by Svix, always signed, under `svix-*` headers where `svix-id` is the delivery/dedupe id, with per-destination metadata as custom headers.</Note>
+
 <Note>Today, delivery is over **generic webhooks**. Slack, GitHub comments, Jira, and email are coming soon — all on this same event and delivery model.</Note>

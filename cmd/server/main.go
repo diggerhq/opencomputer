@@ -286,6 +286,18 @@ func main() {
 			cr.Start(context.Background())
 			defer cr.Stop()
 		}
+
+		// CP-origin lifecycle outbox relay — drains sandbox_lifecycle_outbox
+		// (written in-tx by CP transitions) to the events:{cell} stream, where it
+		// reaches the edge → Svix like worker-origin events. Worker-origin events
+		// already flow to the edge directly, so no CP ingestion is needed.
+		// (.agents/work/sandbox-webhooks-rearchitecture.md)
+		if opts.Store != nil && cfg.CellID != "" {
+			relay := controlplane.NewLifecycleOutboxRelay(opts.Store, redisRegistry.RedisClient(), cfg.CellID)
+			relay.Start()
+			defer relay.Stop()
+			log.Printf("opensandbox: webhook lifecycle outbox relay started (cell=%s)", cfg.CellID)
+		}
 	}
 
 	// Hoisted at function scope so the per-sandbox autoscaler (created
@@ -858,6 +870,11 @@ func main() {
 		log.Printf("opensandbox: billable events sender started (interval=%s, batch=%d)",
 			senderOpts.Interval, senderOpts.Batch)
 	}
+
+	// Sandbox webhooks: delivery is owned by Svix (managed). OC only relays
+	// CP-origin lifecycle events to the cell stream (the outbox relay, started
+	// above in the server-mode block) → edge → Svix. No CP fan-out/dispatcher.
+	// (.agents/work/sandbox-webhooks-rearchitecture.md)
 
 	// Start NATS sync consumer if both PG and NATS are configured
 	if opts.Store != nil && cfg.NATSURL != "" {

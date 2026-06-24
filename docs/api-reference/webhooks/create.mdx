@@ -1,0 +1,57 @@
+---
+title: 'Create Webhook'
+api: 'POST /api/webhooks'
+---
+
+Register a webhook destination for sandbox lifecycle events. See [Webhooks](/sandboxes/webhooks).
+
+<ParamField body="url" type="string" required>
+  HTTPS endpoint to deliver to. (SSRF protection is applied by the delivery provider at send time, not at registration.)
+</ParamField>
+
+<ParamField body="eventTypes" type="string[]">
+  Event-type allow-list — exact (`sandbox.stopped`) or prefix (`sandbox.*`). Default: all event types. Types outside the sandbox taxonomy are rejected with `400`.
+</ParamField>
+
+<ParamField body="sandboxId" type="string">
+  Scope to a single sandbox. Omit to receive events for all of the org's sandboxes.
+</ParamField>
+
+<ParamField body="secret" type="string">
+  Signing secret. Omit and one is generated (`whsec_…`). The secret is returned in the create response and is re-fetchable any time via [`GET /api/webhooks/{id}/secret`](/api-reference/webhooks/get).
+</ParamField>
+
+<ParamField body="name" type="string">
+  Optional display name for the destination.
+</ParamField>
+
+<ParamField body="enabled" type="boolean">
+  Whether the destination is active. Default `true`. `false` pauses delivery.
+</ParamField>
+
+<ParamField header="Idempotency-Key" type="string">
+  Optional. A retried create with the same key returns the **same** destination (`200`) instead of creating a duplicate.
+</ParamField>
+
+Without an `Idempotency-Key`, each call creates a **new** destination and returns **`201`** — there is no get-or-create by `name`. With one, a retried call returns the same destination with **`200`**.
+
+**Validation (all `400`):** `url` must be HTTPS; each `eventTypes` entry must be a known sandbox event type or a `prefix.*` wildcard.
+
+<ResponseExample>
+```json 201
+{
+  "id": "whk_3f9a2c",
+  "name": "prod",
+  "url": "https://app.example.com/oc-webhook",
+  "eventTypes": ["sandbox.stopped"],
+  "sandboxId": null,
+  "enabled": true,
+  "hasSecret": true,
+  "secret": "whsec_Hk9…",
+  "createdAt": "2026-06-24T12:00:00Z",
+  "updatedAt": "2026-06-24T12:00:00Z"
+}
+```
+
+The `secret` is returned here and stays re-fetchable via [`GET /api/webhooks/{id}/secret`](/api-reference/webhooks/get) — store it to verify deliveries.
+</ResponseExample>

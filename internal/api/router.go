@@ -430,6 +430,12 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	api.GET("/sandboxes/:id/tags", s.getSandboxTags)
 	api.PUT("/sandboxes/:id/tags", s.putSandboxTags)
 
+	// Sandbox lifecycle webhooks are served by the api-edge Worker (all-Svix-at-edge):
+	// the edge handles /api/webhooks* before its proxy catch-all, so the CP no longer
+	// mounts these routes. The CP only sources lifecycle events (the outbox + relay)
+	// and registers inline webhooks via the edge internal API.
+	// (.agents/work/sandbox-webhooks-rearchitecture.md)
+
 	// Hibernation
 	api.POST("/sandboxes/:id/hibernate", s.hibernateSandbox)
 	api.POST("/sandboxes/:id/wake", s.wakeSandbox)

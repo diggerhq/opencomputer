@@ -1,0 +1,43 @@
+---
+title: 'List Deliveries'
+api: 'GET /api/webhooks/{id}/deliveries'
+---
+
+List a destination's most recent delivery attempts (up to 50). Each entry is a delivery-provider
+attempt record. The attempt index lags actual delivery by a few seconds. See [Webhooks](/sandboxes/webhooks#deliveries).
+
+<ParamField path="id" type="string" required>
+  Destination ID (`whk_…`).
+</ParamField>
+
+<ResponseField name="data[].id" type="string">
+  The message id — the key for [get](/api-reference/webhooks/delivery-get) / [redeliver](/api-reference/webhooks/redeliver); equals the `svix-id` header on the delivery.
+</ResponseField>
+
+<ResponseField name="data[].attemptId" type="string">
+  The id of this specific attempt.
+</ResponseField>
+
+<ResponseField name="data[].status" type="string">
+  One of `success`, `pending`, or `failed`.
+</ResponseField>
+
+<ResponseField name="data[].responseStatusCode" type="integer">
+  The consumer's HTTP response code, when the attempt reached it.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "data": [
+    {
+      "id": "msg_2aB…",
+      "attemptId": "atmpt_9fE…",
+      "status": "success",
+      "responseStatusCode": 200,
+      "timestamp": "2026-06-24T12:00:01Z"
+    }
+  ]
+}
+```
+</ResponseExample>

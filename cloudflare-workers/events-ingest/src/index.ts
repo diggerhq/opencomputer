@@ -12,6 +12,8 @@
 //      cross-DO traffic latency)
 //   6. Return 202 {accepted}
 
+import { SvixClient, SvixError } from "../../shared/svix";
+
 export interface Env {
   OPENCOMPUTER_DB: D1Database;
   EVENTS_ARCHIVE: R2Bucket;
@@ -19,6 +21,9 @@ export interface Env {
   EVENT_SECRET: string;
   CF_ADMIN_SECRET: string;
   WORKER_ENV: string;
+  // Svix API token (managed webhook delivery); region in the token suffix.
+  // Optional: unset → webhook delivery is a no-op (dormant deployments).
+  SVIX_API_TOKEN?: string;
 }
 
 interface SandboxEventEnvelope {
@@ -486,6 +491,80 @@ export default {
       return jsonResponse({ error: "db insert failed" }, 503);
     }
 
+    // Webhook delivery — synchronous handoff to Svix BEFORE the ack. Only the CP
+    // relay's lifecycle events (type "sandbox.*") are webhook-eligible; the
+    // worker's internal-type events (created/stopped/…) feed sandboxes_index
+    // above, NOT webhooks — disjoint namespaces, so no double-emission. Gated by
+    // the org's has_webhooks flag (dormant orgs cost zero Svix calls). A
+    // transient Svix error → 503 so the CP forwarder retries the batch (the
+    // event id is the Idempotency-Key, so re-sends dedupe); a permanent (4xx)
+    // error for one event is logged and skipped. (rearchitecture §3.1)
+    const webhookEvents = fresh.filter(
+      (e) => e.type.startsWith("sandbox.") && e.org_id && e.sandbox_id,
+    );
+    if (webhookEvents.length > 0) {
+      const whOrgIds = [...new Set(webhookEvents.map((e) => e.org_id as string))];
+      let hasWebhooks: Set<string>;
+      try {
+        hasWebhooks = await fetchHasWebhooks(env, whOrgIds);
+      } catch (err) {
+        console.error("events-ingest: has_webhooks lookup failed", err);
+        return jsonResponse({ error: "webhook org lookup failed" }, 503);
+      }
+      // Only orgs with a registered destination are eligible (dormancy gate);
+      // dormant orgs cost zero Svix calls.
+      const eligible = webhookEvents.filter((e) => hasWebhooks.has(e.org_id as string));
+      if (eligible.length > 0) {
+        // Fail closed: webhook-eligible events but no Svix token on this Worker.
+        // api-edge can register destinations (which sets has_webhooks) while this
+        // Worker's token is unset — silently 202-ing here would be "configured
+        // management, dead delivery" and lose the events. 503 instead so the CP
+        // forwarder keeps the batch in its PEL and retries once the token is set.
+        if (!env.SVIX_API_TOKEN) {
+          console.error(
+            `events-ingest: SVIX_API_TOKEN unset but ${eligible.length} webhook-eligible event(s) present — returning 503 so the forwarder retries (set the token to recover)`,
+          );
+          return jsonResponse({ error: "webhook delivery not configured" }, 503);
+        }
+        const sx = new SvixClient(env.SVIX_API_TOKEN);
+        for (const e of eligible) {
+          try {
+            await sx.createMessage(e.org_id as string, {
+              eventType: e.type,
+              eventId: e.id,
+              idempotencyKey: e.id,
+              channels: [e.sandbox_id],
+              // The delivered body = the SDK's WebhookDelivery<SandboxLifecycleEvent>
+              // envelope (verifyWebhook returns this shape). Per-destination metadata
+              // rides as Svix endpoint custom headers, not in the body.
+              payload: {
+                type: e.type,
+                sandboxId: e.sandbox_id,
+                eventId: e.id,
+                event: {
+                  id: e.id,
+                  ts: e.timestamp,
+                  orgId: e.org_id,
+                  sandboxId: e.sandbox_id,
+                  type: e.type,
+                  data: e.payload ?? {},
+                },
+              },
+            });
+          } catch (err) {
+            if (err instanceof SvixError && !err.transient) {
+              console.error(`events-ingest: svix permanent error for ${e.id}: ${err.message}`);
+              continue;
+            }
+            console.error(
+              `events-ingest: svix transient error for ${e.id}: ${err instanceof Error ? err.message : err}`,
+            );
+            return jsonResponse({ error: "webhook handoff failed" }, 503);
+          }
+        }
+      }
+    }
+
     // R2 archive — gzipped raw batch. Best effort: archive failure does not
     // block the ack (events are already in D1, which is the durable record).
     try {
@@ -605,6 +684,22 @@ async function resolvePlans(
     console.error("events-ingest: org plan lookup failed — falling back to envelope plan", err);
     return { ok: false, byOrg };
   }
+}
+
+// fetchHasWebhooks returns the subset of orgIds with has_webhooks=1 — the
+// dormancy gate for webhook delivery (skip Svix entirely for orgs with none).
+// Throws on D1 error so the caller can 503 (retry) rather than drop events.
+async function fetchHasWebhooks(env: Env, orgIds: string[]): Promise<Set<string>> {
+  const has = new Set<string>();
+  if (orgIds.length === 0) return has;
+  const placeholders = orgIds.map((_, i) => `?${i + 1}`).join(",");
+  const res = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT id FROM orgs WHERE id IN (${placeholders}) AND has_webhooks = 1`,
+  )
+    .bind(...orgIds)
+    .all<{ id: string }>();
+  for (const r of res.results ?? []) has.add(r.id);
+  return has;
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

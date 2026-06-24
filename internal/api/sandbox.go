@@ -43,6 +43,12 @@ func (s *Server) createSandbox(c echo.Context) error {
 
 	ctx := c.Request().Context()
 
+	// Validate inline webhook specs up-front so a typo fails the create instead
+	// of silently producing a sandbox without the requested callback (P2 review).
+	if err := validateInlineWebhooks(ctx, cfg.Webhooks); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
 	// When the edge is the Pro-billing authority (PRO_BILLING_AUTHORITY=edge),
 	// a billing-relevant create must arrive via the edge (cap-token), not a raw
 	// API key hitting the CP directly — the direct path bypasses the edge's
@@ -251,7 +257,18 @@ func (s *Server) createSandbox(c echo.Context) error {
 		if template == "" {
 			template = "default"
 		}
+		// Inline webhooks: register the Svix endpoints (via the edge) pinned to
+		// this sandbox BEFORE CreateSandboxSession records sandbox.created, so the
+		// endpoint exists before that event is relayed. Best-effort + nil-safe.
+		if len(cfg.Webhooks) > 0 {
+			sb.Webhooks = s.registerInlineWebhooksEdge(ctx, orgID, sb.ID, cfg.Webhooks)
+		}
 		_, _ = s.store.CreateSandboxSession(ctx, sb.ID, orgID, auth.GetUserID(c), template, region, workerID, cfgJSON, metadataJSON, secretStoreID)
+
+		// Combined-mode create writes the session directly as 'running' (no
+		// pending→running promotion), so emit sandbox.ready here; the remote
+		// path emits it in-tx on the promotion. Deterministic id → at most one.
+		s.recordLifecycleID(ctx, orgID, sb.ID, types.WebhookEventReady, sb.ID+":sandbox.ready", nil)
 	}
 
 	// Preview-URL auth: same flow as createSandboxRemote — validate the
@@ -524,6 +541,20 @@ func flattenSecretAllowedHosts(m map[string][]string) map[string]string {
 	return out
 }
 
+// isTransientWorkerErr reports whether a worker gRPC error is transient (worker
+// restarting / unreachable) and the create should be retried rather than 500'd.
+func isTransientWorkerErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "Unavailable") ||
+		strings.Contains(s, "transport is closing") ||
+		strings.Contains(s, "no such host") ||
+		strings.Contains(s, "i/o timeout")
+}
+
 // createSandboxRemote dispatches sandbox creation to a remote worker via gRPC.
 // secretStoreID is the resolved store UUID (or nil) from resolveSecretStoreInto;
 // passed straight to CreateSandboxSessionWithStatus so the row's secret_store_id
@@ -611,6 +642,15 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// session row, which must exist before the worker looks it up.
 	sandboxID := "sb-" + uuid.New().String()[:8]
 
+	// Register inline webhooks at the edge (Svix) BEFORE the session row and the
+	// worker boot, so the endpoint exists well before `created` is relayed. On
+	// this remote path `created` is emitted only at the pending→running promotion
+	// (i.e. on successful create), so a failed create relays no `created` at all.
+	var inlineWebhooks []types.SandboxWebhookResult
+	if hasOrg && len(cfg.Webhooks) > 0 {
+		inlineWebhooks = s.registerInlineWebhooksEdge(ctx, orgID, sandboxID, cfg.Webhooks)
+	}
+
 	// Create session with "pending" status before dispatching to worker.
 	if s.store != nil && hasOrg {
 		template := cfg.Template
@@ -658,6 +698,20 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		if s.store != nil {
 			errMsg := err.Error()
 			_ = s.store.UpdateSandboxSessionStatus(ctx, sandboxID, "failed", &errMsg)
+		}
+		// Inline webhooks were registered at the edge (Svix); a sandbox that never
+		// started simply emits no events, so the endpoints sit idle. Edge-side
+		// orphan cleanup is a future nicety, not worth a synchronous edge call on
+		// the create-failure path.
+		// A worker that is restarting/unreachable is transient — return a
+		// retryable 503 (with Retry-After) instead of a raw 500 so callers retry
+		// and the edge can reselect a worker.
+		if isTransientWorkerErr(err) {
+			c.Response().Header().Set("Retry-After", "2")
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{
+				"error": "worker temporarily unavailable, please retry: " + err.Error(),
+				"code":  "worker_unavailable",
+			})
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{
 			"error": "worker create failed: " + err.Error(),
@@ -746,6 +800,9 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	}
 	if previewAuthPlaintext != "" {
 		resp["previewAuthToken"] = previewAuthPlaintext
+	}
+	if len(inlineWebhooks) > 0 {
+		resp["webhooks"] = inlineWebhooks
 	}
 
 	return c.JSON(http.StatusCreated, resp)
@@ -1463,10 +1520,15 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 	if migrated {
 		s.emitEvent("migrate", sandboxID, workerID, fmt.Sprintf("auto-migrated for scale to %dMB", requestedMemMB))
 	}
-	// Only emit scale events for non-default sizes (4096MB is the creation default)
+	// Only emit the admin SSE scale event for non-default sizes (4096MB is the
+	// creation default — avoids noise on the implicit create-time scale).
 	if requestedMemMB != 4096 || migrated {
 		s.emitEvent("scale", sandboxID, workerID, fmt.Sprintf("scaled to %dMB (migrated=%v)", requestedMemMB, migrated))
 	}
+	// The sandbox.scaled webhook fires on every successful explicit scale request.
+	s.recordLifecycle(ctx, session.OrgID, sandboxID, types.WebhookEventScaled, map[string]any{
+		"cpuCount": requestedCPUs, "memoryMB": requestedMemMB,
+	})
 
 	resp := map[string]any{
 		"sandboxID":  sandboxID,
@@ -2185,8 +2247,14 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 			}
 			// Persist the actual archive size from the worker's response.
 			// Pre-fix this was hardcoded to 0, leaving size_bytes meaningless.
-			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key, grpcResp.SizeBytes)
-			log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, grpcResp.SizeBytes)
+			if cperr := s.store.SetCheckpointReady(context.Background(), checkpointID, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key, grpcResp.SizeBytes); cperr != nil {
+				log.Printf("api: checkpoint %s SetCheckpointReady failed: %v", checkpointID, cperr)
+			} else {
+				log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, grpcResp.SizeBytes)
+				s.recordLifecycleID(context.Background(), orgID, sandboxID, types.WebhookEventCheckpointCreated,
+					sandboxID+":sandbox.checkpoint.created:"+checkpointID.String(),
+					map[string]any{"checkpointId": checkpointID.String()})
+			}
 			golden := ""
 			if session.GoldenVersion != nil {
 				golden = *session.GoldenVersion
@@ -2225,8 +2293,14 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				})
 				return
 			}
-			_ = s.store.SetCheckpointReady(context.Background(), checkpointID, rootfsKey, workspaceKey, sizeBytes)
-			log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, sizeBytes)
+			if cperr := s.store.SetCheckpointReady(context.Background(), checkpointID, rootfsKey, workspaceKey, sizeBytes); cperr != nil {
+				log.Printf("api: checkpoint %s SetCheckpointReady failed: %v", checkpointID, cperr)
+			} else {
+				log.Printf("api: checkpoint %s ready (size=%d bytes)", checkpointID, sizeBytes)
+				s.recordLifecycleID(context.Background(), orgID, sandboxID, types.WebhookEventCheckpointCreated,
+					sandboxID+":sandbox.checkpoint.created:"+checkpointID.String(),
+					map[string]any{"checkpointId": checkpointID.String()})
+			}
 			golden := ""
 			if session.GoldenVersion != nil {
 				golden = *session.GoldenVersion
@@ -2746,6 +2820,12 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 		}
 		// Track checkpoint lineage for patch system
 		_ = s.store.SetSandboxCheckpointID(ctx, sandboxID, checkpointID)
+		// Emit sandbox.forked on the child, carrying the parent sandbox id (the
+		// sandbox the checkpoint was taken from). The child also gets created
+		// (worker) + ready (the running promotion above).
+		s.recordLifecycleID(ctx, orgID, sandboxID, types.WebhookEventForked,
+			sandboxID+":sandbox.forked",
+			map[string]any{"parentId": cp.SandboxID})
 	}
 
 	s.applyPendingPatches(sandboxID, workerID)
@@ -3259,6 +3339,9 @@ func (s *Server) createPreviewURL(c echo.Context) error {
 		})
 	}
 
+	s.recordLifecycle(ctx, orgID, sandboxID, types.WebhookEventPreviewURLChanged, map[string]any{
+		"port": req.Port, "url": "https://" + hostname,
+	})
 	return c.JSON(http.StatusCreated, previewURLToMap(*previewURL, customDomain))
 }
 
@@ -3323,8 +3406,16 @@ func (s *Server) deletePreviewURL(c echo.Context) error {
 		}
 	}
 
-	_ = s.store.DeletePreviewURL(ctx, previewURL.ID)
+	if err := s.store.DeletePreviewURL(ctx, previewURL.ID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
 
+	// Emit only after the delete commits; url is null for a removed mapping.
+	if orgID, ok := auth.GetOrgID(c); ok {
+		s.recordLifecycle(ctx, orgID, sandboxID, types.WebhookEventPreviewURLChanged, map[string]any{
+			"port": port, "url": nil,
+		})
+	}
 	return c.NoContent(http.StatusNoContent)
 }
 

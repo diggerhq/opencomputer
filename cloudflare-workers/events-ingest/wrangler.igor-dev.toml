@@ -1,0 +1,28 @@
+# events-ingest — one-off `igor-dev` dev stack for the sandbox-webhooks
+# rearchitecture e2e (PR #410). Lives in **Mo's CF account b8f23cb8** (the local
+# CLOUDFLARE_API_TOKEN/OAuth can reach it). STRIPPED vs prod: no CreditAccount DO
+# binding (free-tier debit is off the webhook path; usage_tick debit would log a
+# harmless waitUntil error and never blocks the 202) and no tail_consumer (the
+# Axiom log-tail service only exists in the prod account). Deploy with:
+#   wrangler deploy   --config wrangler.igor-dev.toml
+#   wrangler secret put EVENT_SECRET   --config wrangler.igor-dev.toml
+#   wrangler secret put SVIX_API_TOKEN --config wrangler.igor-dev.toml
+# See .agents/work/sandbox-webhooks-rearchitecture.md §8.
+
+name = "opencomputer-events-ingest-igor-dev"
+main = "src/index.ts"
+compatibility_date = "2026-04-28"
+compatibility_flags = ["nodejs_compat"]
+account_id = "b8f23cb87a7a6c64040d3134643da448"
+
+[[d1_databases]]
+binding = "OPENCOMPUTER_DB"
+database_name = "opencomputer-igor-dev"
+database_id = "d5bbb12a-0491-4a95-9d7d-32ed8c3ce15d"
+
+[[r2_buckets]]
+binding = "EVENTS_ARCHIVE"
+bucket_name = "events-archive-igor-dev"
+
+[vars]
+WORKER_ENV = "igor-dev"
