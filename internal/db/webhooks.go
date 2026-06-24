@@ -56,23 +56,13 @@ type LifecycleEvent struct {
 // exactly one place. Both origins call it (CP in-tx; worker via the ingress's
 // own tx through RecordLifecycleEvent).
 func recordLifecycleEvent(ctx context.Context, tx pgx.Tx, ev LifecycleEvent) error {
-	// Dormancy gate: only record an event if the org has a live destination that
-	// could receive it (org-wide, or scoped to this sandbox). A destination's
-	// watermark only ever delivers events created AFTER it, so skipping events
-	// for an org with no matching destination can never cause a miss — and it
-	// keeps sandbox_lifecycle_events empty for the (vast majority of) orgs not
-	// using webhooks. Paused (disabled) destinations count, since pause queues.
-	var relevant bool
-	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM webhook_destinations
-		   WHERE org_id = $1 AND deleted_at IS NULL
-		     AND (sandbox_id IS NULL OR sandbox_id = $2))`,
-		ev.OrgID, ev.SandboxID).Scan(&relevant); err != nil {
-		return fmt.Errorf("webhook destination check: %w", err)
-	}
-	if !relevant {
-		return nil // dormant: nothing could receive this event
-	}
+	// All-Svix-at-edge: the CP records every CP-origin lifecycle event to the
+	// outbox unconditionally; the relay publishes them to the cell stream and the
+	// EDGE applies the dormancy gate (orgs.has_webhooks in D1) before calling
+	// Svix. There is no CP-side gate — the CP no longer knows which orgs have
+	// webhooks; that index lives at the edge. The outbox is a transient queue
+	// (the relay deletes rows after publishing), so it stays bounded.
+	// (sandbox-webhooks-rearchitecture.md)
 	if len(ev.Data) == 0 {
 		ev.Data = json.RawMessage("{}")
 	}
@@ -148,16 +138,15 @@ type LifecycleOutboxRow struct {
 	Ts        time.Time
 }
 
-// DrainLifecycleOutbox returns up to `batch` unrelayed lifecycle events (oldest
-// first by seq). The webhook re-architecture relays these to the events:{cell}
-// stream; MarkLifecycleOutboxSent then stamps them relayed. (Reuses the
-// sandbox_lifecycle_events.materialized_at column as the relayed marker.)
-// See .agents/work/sandbox-webhooks-rearchitecture.md.
+// DrainLifecycleOutbox returns up to `batch` lifecycle events (oldest first by
+// seq). The relay publishes these to the events:{cell} stream, then deletes them
+// via DeleteLifecycleOutbox. The outbox is a transient queue — the stream + edge
+// + Svix are the durable downstream (and dedupe on the stable event id), so rows
+// don't need to be retained. See .agents/work/sandbox-webhooks-rearchitecture.md.
 func (s *Store) DrainLifecycleOutbox(ctx context.Context, batch int) ([]LifecycleOutboxRow, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, org_id, sandbox_id, type, data, ts
 		   FROM sandbox_lifecycle_events
-		  WHERE materialized_at IS NULL
 		  ORDER BY seq
 		  LIMIT $1`, batch)
 	if err != nil {
@@ -177,15 +166,15 @@ func (s *Store) DrainLifecycleOutbox(ctx context.Context, batch int) ([]Lifecycl
 	return out, rows.Err()
 }
 
-// MarkLifecycleOutboxSent stamps the given events relayed (materialized_at=now()).
-// Idempotent: a re-publish of an already-relayed event is harmless (the edge and
-// Svix both dedupe on the stable event id).
-func (s *Store) MarkLifecycleOutboxSent(ctx context.Context, ids []string) error {
+// DeleteLifecycleOutbox removes the given events after they've been published to
+// the stream. A row left behind (delete fails) is harmlessly re-published next
+// tick — the edge and Svix dedupe on the stable event id.
+func (s *Store) DeleteLifecycleOutbox(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	_, err := s.pool.Exec(ctx,
-		`UPDATE sandbox_lifecycle_events SET materialized_at = now() WHERE id = ANY($1)`, ids)
+		`DELETE FROM sandbox_lifecycle_events WHERE id = ANY($1)`, ids)
 	return err
 }
 

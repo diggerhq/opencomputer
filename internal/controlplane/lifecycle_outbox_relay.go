@@ -100,8 +100,8 @@ func (r *LifecycleOutboxRelay) drainSafe() {
 			}
 		}
 		if len(sent) > 0 {
-			if err := r.store.MarkLifecycleOutboxSent(ctx, sent); err != nil {
-				log.Printf("lifecycle_outbox_relay: mark sent (%d): %v", len(sent), err)
+			if err := r.store.DeleteLifecycleOutbox(ctx, sent); err != nil {
+				log.Printf("lifecycle_outbox_relay: delete relayed (%d): %v", len(sent), err)
 				return // retry next tick; the re-publish is idempotent via the stable id
 			}
 		}

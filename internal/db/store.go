@@ -793,8 +793,13 @@ func (s *Store) CreateSandboxSession(ctx context.Context, sandboxID string, orgI
 // and meant a customer's PUT to /secret-stores/:id/entries/:name didn't
 // propagate to running sandboxes — they kept the value from create-time.
 func (s *Store) CreateSandboxSessionWithStatus(ctx context.Context, sandboxID string, orgID uuid.UUID, userID *uuid.UUID, template, region, workerID string, config, metadata json.RawMessage, status string, secretStoreID *uuid.UUID) (*SandboxSession, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
 	session := &SandboxSession{}
-	err := s.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO sandbox_sessions (sandbox_id, org_id, user_id, template, region, worker_id, config, metadata, status, secret_store_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 RETURNING id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version`,
@@ -804,6 +809,23 @@ func (s *Store) CreateSandboxSessionWithStatus(ctx context.Context, sandboxID st
 		&session.BasedOnCheckpointID, &session.LastPatchSequence, &session.PatchError, &session.GoldenVersion)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sandbox session: %w", err)
+	}
+	// Record sandbox.created in-tx (deterministic id → at most one per sandbox).
+	// This is the single webhook source for `created`: the worker's stream
+	// "created" feeds D1 sandboxes_index, not webhooks. The edge applies the
+	// dormancy gate. (sandbox-webhooks-rearchitecture.md)
+	createdData, _ := json.Marshal(map[string]string{"template": template})
+	if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+		ID:        sandboxID + ":sandbox.created",
+		OrgID:     orgID,
+		SandboxID: sandboxID,
+		Type:      "sandbox.created",
+		Data:      createdData,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return session, nil
 }
@@ -1760,11 +1782,37 @@ func (s *Store) MarkHibernationUploadFailed(ctx context.Context, hibernationKey,
 
 // UpdateSandboxSessionForWake changes a hibernated session back to running on a new worker.
 func (s *Store) UpdateSandboxSessionForWake(ctx context.Context, sandboxID, newWorkerID string) error {
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var orgID uuid.UUID
+	err = tx.QueryRow(ctx,
 		`UPDATE sandbox_sessions SET status = 'running', worker_id = $1, stopped_at = NULL
-		 WHERE sandbox_id = $2 AND status = 'hibernated'`,
-		newWorkerID, sandboxID)
-	return err
+		 WHERE sandbox_id = $2 AND status = 'hibernated'
+		 RETURNING org_id`,
+		newWorkerID, sandboxID).Scan(&orgID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Not hibernated (already running/gone) — nothing to wake, no resumed event.
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	// Record sandbox.resumed in-tx. Recurring (hibernate→wake cycles) → unique id;
+	// the status='hibernated' guard above ensures exactly one per actual wake.
+	// This is the single webhook source for `resumed` (the worker's stream "woke"
+	// feeds D1 sandboxes_index, not webhooks). (sandbox-webhooks-rearchitecture.md)
+	if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+		ID:        sandboxID + ":sandbox.resumed:" + uuid.NewString(),
+		OrgID:     orgID,
+		SandboxID: sandboxID,
+		Type:      "sandbox.resumed",
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ReconcileWorkerSessions marks stale "running" sessions for a worker on startup.
