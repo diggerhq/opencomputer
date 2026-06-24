@@ -227,7 +227,7 @@ func (s *Store) CreateWebhookDestination(ctx context.Context, p CreateDestinatio
 			return nil, false, ferr
 		}
 		if found {
-			if existing.URL == p.URL && sameStrSlice(existing.EventTypes, p.EventTypes) && samePtrStr(existing.SandboxID, p.SandboxID) {
+			if existing.URL == p.URL && sameStrSlice(existing.EventTypes, p.EventTypes) && samePtrStr(existing.SandboxID, p.SandboxID) && existing.Enabled == p.Enabled {
 				return existing, true, nil
 			}
 			return nil, false, ErrWebhookNameConflict
@@ -563,7 +563,7 @@ func (s *Store) MaterializePendingLifecycleEvents(ctx context.Context, batch int
 	}
 
 	for _, e := range events {
-		metadata, err := getSandboxMetadataTx(ctx, tx, e.SandboxID)
+		metadata, err := getSandboxMetadataTx(ctx, tx, e.OrgID, e.SandboxID)
 		if err != nil {
 			return 0, err
 		}
@@ -631,11 +631,13 @@ func matchDestinationsTx(ctx context.Context, tx pgx.Tx, e lifecycleEventRow) ([
 	return out, rows.Err()
 }
 
-func getSandboxMetadataTx(ctx context.Context, tx pgx.Tx, sandboxID string) (map[string]string, error) {
+func getSandboxMetadataTx(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sandboxID string) (map[string]string, error) {
 	var raw []byte
+	// Scope by org too: sandbox ids are NOT globally unique, so a sandbox_id-only
+	// lookup could pull another org's metadata into this org's webhook payload.
 	err := tx.QueryRow(ctx,
-		`SELECT metadata FROM sandbox_sessions WHERE sandbox_id = $1 ORDER BY started_at DESC LIMIT 1`,
-		sandboxID).Scan(&raw)
+		`SELECT metadata FROM sandbox_sessions WHERE org_id = $1 AND sandbox_id = $2 ORDER BY started_at DESC LIMIT 1`,
+		orgID, sandboxID).Scan(&raw)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -875,13 +877,17 @@ func (s *Store) ReclaimStaleDeliveries(ctx context.Context) (int64, error) {
 
 // RedeliverDelivery re-enqueues any delivery with a fresh retry budget
 // (retry_count=0), preserving lifetime attempts, and returns the updated row.
-// Org+destination scoped.
+// Org+destination scoped. Refuses a soft-deleted destination — the dispatcher
+// would never claim it (its claim filters deleted), so re-enqueuing would just
+// strand the row in pending; callers should treat this as 404.
 func (s *Store) RedeliverDelivery(ctx context.Context, orgID uuid.UUID, destID, deliveryID string) (*WebhookDeliveryRow, error) {
 	r, err := scanDelivery(s.pool.QueryRow(ctx,
-		`UPDATE webhook_deliveries
+		`UPDATE webhook_deliveries d
 		 SET status = 'pending', next_attempt_at = now(), retry_count = 0,
 		     response_code = NULL, error = NULL, locked_by = NULL, locked_until = NULL, updated_at = now()
-		 WHERE id = $1 AND destination_id = $2 AND org_id = $3
+		 WHERE d.id = $1 AND d.destination_id = $2 AND d.org_id = $3
+		   AND EXISTS (SELECT 1 FROM webhook_destinations dst
+		               WHERE dst.id = d.destination_id AND dst.deleted_at IS NULL)
 		 RETURNING `+deliveryCols, deliveryID, destID, orgID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

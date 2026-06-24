@@ -809,6 +809,18 @@ func (s *Store) CreateSandboxSessionWithStatus(ctx context.Context, sandboxID st
 }
 
 func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, status string, errorMsg *string) error {
+	return s.updateSandboxSessionStatus(ctx, sandboxID, status, errorMsg, "")
+}
+
+// UpdateSandboxSessionStatusReason is UpdateSandboxSessionStatus with an explicit
+// sandbox.stopped reason (one of user_requested | expired | crash). Use it where
+// the reason is known — e.g. "expired" for an idle-timeout kill. An empty reason
+// defaults by status (stopped→user_requested, error→crash).
+func (s *Store) UpdateSandboxSessionStatusReason(ctx context.Context, sandboxID, status string, errorMsg *string, reason string) error {
+	return s.updateSandboxSessionStatus(ctx, sandboxID, status, errorMsg, reason)
+}
+
+func (s *Store) updateSandboxSessionStatus(ctx context.Context, sandboxID, status string, errorMsg *string, reason string) error {
 	var query string
 	var args []interface{}
 	if status == "stopped" || status == "error" {
@@ -871,9 +883,13 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 			var data json.RawMessage
 			switch status {
 			case "stopped":
+				r := reason
+				if r != "expired" && r != "crash" {
+					r = "user_requested" // default / sanitize
+				}
 				evType = "sandbox.stopped"
 				evID = sandboxID + ":sandbox.stopped" // terminal: once per sandbox
-				data = json.RawMessage(`{"reason":"user_requested"}`)
+				data, _ = json.Marshal(map[string]string{"reason": r})
 			case "error":
 				evType = "sandbox.stopped"
 				evID = sandboxID + ":sandbox.stopped"
@@ -929,22 +945,40 @@ func (s *Store) SetMigrating(ctx context.Context, sandboxID, targetWorkerID stri
 	return err
 }
 
-// CompleteMigration marks a sandbox as running on the new worker after successful migration.
+// CompleteMigration marks a sandbox as running on the new worker after successful
+// migration, and records sandbox.migrated in the same tx (the worker does not emit
+// it; this is the single migration-completion funnel for both manual and
+// scale-triggered migrations).
 func (s *Store) CompleteMigration(ctx context.Context, sandboxID, newWorkerID string) error {
-	// Use status IN ('migrating', 'running', 'stopped') — a race with the source
-	// worker's cleanup may have already set it to 'stopped' or reverted to 'running'.
-	// The migration DID succeed (QEMU is running on the target), so force the update.
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE sandbox_sessions SET status = 'running', worker_id = $1, migrating_to_worker = '', stopped_at = NULL, error_msg = NULL
-		 WHERE sandbox_id = $2 AND status IN ('migrating', 'running', 'stopped')`,
-		newWorkerID, sandboxID)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no session found for %s in migrating/running/stopped state", sandboxID)
+	defer tx.Rollback(ctx)
+	// Use status IN ('migrating', 'running', 'stopped') — a race with the source
+	// worker's cleanup may have already set it to 'stopped' or reverted to 'running'.
+	// The migration DID succeed (QEMU is running on the target), so force the update.
+	var orgID uuid.UUID
+	err = tx.QueryRow(ctx,
+		`UPDATE sandbox_sessions SET status = 'running', worker_id = $1, migrating_to_worker = '', stopped_at = NULL, error_msg = NULL
+		 WHERE sandbox_id = $2 AND status IN ('migrating', 'running', 'stopped')
+		 RETURNING org_id`,
+		newWorkerID, sandboxID).Scan(&orgID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no session found for %s in migrating/running/stopped state", sandboxID)
+		}
+		return err
 	}
-	return nil
+	if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+		ID:        fmt.Sprintf("%s:sandbox.migrated:%s", sandboxID, newWorkerID),
+		OrgID:     orgID,
+		SandboxID: sandboxID,
+		Type:      "sandbox.migrated",
+	}); err != nil {
+		return fmt.Errorf("record migrated event: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // FailMigration reverts a sandbox to running on its original worker after a failed migration.

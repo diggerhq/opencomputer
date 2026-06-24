@@ -113,6 +113,14 @@ func webhookRequestHash(req types.CreateWebhookRequest) string {
 		nm = *req.Name
 	}
 	fmt.Fprintf(h, "name=%s\n", nm)
+	// Include enabled + secret so the same key with a different paused state or
+	// signing secret is a different request (→ 409), not a silent reuse.
+	en := "unset"
+	if req.Enabled != nil {
+		en = fmt.Sprintf("%t", *req.Enabled)
+	}
+	fmt.Fprintf(h, "enabled=%s\n", en)
+	fmt.Fprintf(h, "secret=%s\n", req.Secret)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

@@ -47,6 +47,22 @@ polish (per-type payload normalization at the ingress, LISTEN/NOTIFY latency) tr
   worker via a stream ingress), and **one materializer** creates delivery rows from it — no
   per-origin delivery logic to drift. Dedupe happens once (`sandbox_lifecycle_events.id`); the
   watermark unifies to a DB-assigned `seq` (drops the Redis-stream-id scheme).
+- **Rev 8 — review round 3 (2026-06-24).** (P0) metadata hydration is org-scoped
+  (`getSandboxMetadataTx` keys on `(org_id, sandbox_id)`) — sandbox ids aren't globally
+  unique, so a sandbox_id-only lookup could leak another org's metadata. (P1) worker-origin
+  `event.data` is normalized in the ingress to the public contract (`created`→`{template}`,
+  `resumed`→`{}`); `migrated` is now recorded CP-side in `CompleteMigration` (the worker never
+  emits it — the old ingress mapping was dead) and dropped from the ingress; `scaled` fires on
+  every successful scale (not gated on the 4096 default); stop reasons are explicit
+  (`UpdateSandboxSessionStatusReason` — idle-timeout `OnKill`→`expired`, crashes/orphans→`crash`,
+  user/API→`user_requested`); idempotency hash + name get-or-create now include `enabled` (+ the
+  hash includes `secret`) so a different paused-state/secret isn't a silent reuse. (P2) redeliver
+  refuses a soft-deleted destination (would strand pending). (P3) preview-delete emits only after
+  the DB delete commits (`url:null`); docs say `url` is nullable. **Ordering:** deliveries are
+  parallel and NOT strictly ordered (e.g. `ready` can precede `created`) — documented; strict
+  per-sandbox ordering would need serialized delivery (deferred, out of scope). **Failed creates
+  don't emit:** a never-started sandbox (pending→failed, e.g. `ReapStalePendingSessions`) records
+  no lifecycle event — only sandboxes that reached `created` emit a terminal event.
 - **Rev 7 — post-build review fixes (2026-06-24).** (P0) inline webhooks now register on the
   **remote** create path too (`createSandboxRemote`, before the gRPC call using the pre-generated
   id → reliably catches `created`; cleaned up on create failure). (P1) `RecordDeliveryResult` now

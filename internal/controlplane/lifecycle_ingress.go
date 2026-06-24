@@ -46,14 +46,30 @@ type LifecycleIngress struct {
 // types. Only these worker-origin events become webhooks via the ingress; every
 // other stream entry is acked and ignored by this consumer group.
 //
-// Note: there is intentionally NO "running" entry — the worker does not emit a
-// post-boot "running"/"ready" stream event (sessions are created directly as
-// running), so sandbox.ready has no producer yet (P3 gap). "woke" is the
-// worker's wake signal (grpc_server.go WakeSandbox) → sandbox.resumed.
+// Notes:
+//   - No "running" entry: the worker emits no post-boot stream event (sessions
+//     are created directly as running), so sandbox.ready is recorded CP-side.
+//   - No "migrated" entry: the worker never emits "migrated"; it's recorded
+//     CP-side in CompleteMigration (the migration-completion funnel).
+//   - "woke" is the worker's wake signal (grpc_server.go WakeSandbox) → resumed.
 var ingressTypeMap = map[string]string{
-	"created":  types.WebhookEventCreated,
-	"woke":     types.WebhookEventResumed,
-	"migrated": types.WebhookEventMigrated,
+	"created": types.WebhookEventCreated,
+	"woke":    types.WebhookEventResumed,
+}
+
+// normalizeIngressData maps an internal worker payload to the PUBLIC event.data
+// contract (the worker logs include internal fields like sandbox_id; the public
+// data is clean camelCase per docs). created → {template}; everything else → {}.
+func normalizeIngressData(publicType string, payload json.RawMessage) json.RawMessage {
+	if publicType == types.WebhookEventCreated {
+		var p struct {
+			Template string `json:"template"`
+		}
+		_ = json.Unmarshal(payload, &p)
+		b, _ := json.Marshal(map[string]string{"template": p.Template})
+		return b
+	}
+	return json.RawMessage("{}")
 }
 
 // streamLifecycleEnvelope is the subset of the stream "event" payload we need.
@@ -271,12 +287,8 @@ func (g *LifecycleIngress) process(ctx context.Context, m redis.XMessage) {
 	if id == "" {
 		id = fmt.Sprintf("%s:%s:%s", env.SandboxID, env.Type, m.ID)
 	}
-	// P3 normalizes worker payload keys to the documented camelCase taxonomy
-	// (e.g. created → {template,cpuCount,memoryMB}); for now we pass it through.
-	data := env.Payload
-	if len(data) == 0 {
-		data = json.RawMessage("{}")
-	}
+	// Map the internal worker payload to the public event.data contract.
+	data := normalizeIngressData(publicType, env.Payload)
 	if err := g.store.RecordLifecycleEvent(ctx, db.LifecycleEvent{
 		ID:        id,
 		OrgID:     orgID,

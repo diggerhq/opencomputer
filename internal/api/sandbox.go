@@ -1519,13 +1519,15 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 	if migrated {
 		s.emitEvent("migrate", sandboxID, workerID, fmt.Sprintf("auto-migrated for scale to %dMB", requestedMemMB))
 	}
-	// Only emit scale events for non-default sizes (4096MB is the creation default)
+	// Only emit the admin SSE scale event for non-default sizes (4096MB is the
+	// creation default — avoids noise on the implicit create-time scale).
 	if requestedMemMB != 4096 || migrated {
 		s.emitEvent("scale", sandboxID, workerID, fmt.Sprintf("scaled to %dMB (migrated=%v)", requestedMemMB, migrated))
-		s.recordLifecycle(ctx, session.OrgID, sandboxID, types.WebhookEventScaled, map[string]any{
-			"cpuCount": requestedCPUs, "memoryMB": requestedMemMB,
-		})
 	}
+	// The sandbox.scaled webhook fires on every successful explicit scale request.
+	s.recordLifecycle(ctx, session.OrgID, sandboxID, types.WebhookEventScaled, map[string]any{
+		"cpuCount": requestedCPUs, "memoryMB": requestedMemMB,
+	})
 
 	resp := map[string]any{
 		"sandboxID":  sandboxID,
@@ -3403,8 +3405,11 @@ func (s *Server) deletePreviewURL(c echo.Context) error {
 		}
 	}
 
-	_ = s.store.DeletePreviewURL(ctx, previewURL.ID)
+	if err := s.store.DeletePreviewURL(ctx, previewURL.ID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
 
+	// Emit only after the delete commits; url is null for a removed mapping.
 	if orgID, ok := auth.GetOrgID(c); ok {
 		s.recordLifecycle(ctx, orgID, sandboxID, types.WebhookEventPreviewURLChanged, map[string]any{
 			"port": port, "url": nil,
