@@ -104,6 +104,8 @@ export interface CreateWebhookParams {
   /** Scope to one sandbox; omit for all of the org's sandboxes. */
   sandboxId?: string;
   enabled?: boolean;
+  /** Idempotency-Key: a retried create with the same key returns the same destination (200), never a duplicate. */
+  idempotencyKey?: string;
 }
 
 /** The create response — includes the signing `secret` (also re-fetchable later via {@link Webhooks.getSecret}). */
@@ -254,15 +256,17 @@ export class Webhooks {
   }
 
   /**
-   * Register a destination (HTTP 201). Each call creates a new destination — there is no
-   * get-or-create. The response includes the signing `secret` (also re-fetchable later via
-   * {@link getSecret}). Unknown `eventTypes` are rejected with a 400.
+   * Register a destination (HTTP 201). Without an `idempotencyKey`, each call creates a new
+   * destination — there is no get-or-create. With one, a retried call returns the same destination
+   * (HTTP 200) instead of a duplicate. The response includes the signing `secret` (also re-fetchable
+   * later via {@link getSecret}). Unknown `eventTypes` are rejected with a 400.
    */
   async create(params: CreateWebhookParams): Promise<CreateWebhookResult> {
+    const { idempotencyKey, ...body } = params;
     const resp = await fetch(`${this.apiUrl}/webhooks`, {
       method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(params),
+      headers: this.headers(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined),
+      body: JSON.stringify(body),
     });
     if (!resp.ok) return fail(resp, "create webhook");
     return resp.json();

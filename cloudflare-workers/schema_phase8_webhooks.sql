@@ -27,3 +27,15 @@ CREATE INDEX IF NOT EXISTS webhook_dest_org_idx
   ON webhook_destinations (org_id) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS webhook_dest_svix_ep_idx
   ON webhook_destinations (svix_endpoint_id);
+
+-- Create idempotency: a (org, Idempotency-Key) → destination map so a retried
+-- POST /api/webhooks returns the SAME destination instead of a duplicate. The
+-- PK makes the claim atomic; a concurrent loser deletes its just-created dup and
+-- returns the winner's row (see api-edge createWebhook).
+CREATE TABLE IF NOT EXISTS webhook_idempotency (
+  org_id          TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  destination_id  TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  PRIMARY KEY (org_id, idempotency_key)
+);

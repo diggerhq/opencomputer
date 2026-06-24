@@ -322,6 +322,18 @@ async function createWebhook(req: Request, env: WebhookEnv, sx: SvixClient, call
     return json({ error: `unknown event type(s): ${badTypes.join(", ")}` }, 400);
   }
 
+  // Idempotency: a retried create with the same Idempotency-Key returns the same
+  // destination (200) instead of a duplicate. Fast path — replay a prior claim.
+  const idemKey = req.headers.get("Idempotency-Key") ?? undefined;
+  if (idemKey) {
+    const prior = await env.OPENCOMPUTER_DB.prepare(
+      "SELECT destination_id FROM webhook_idempotency WHERE org_id = ?1 AND idempotency_key = ?2",
+    )
+      .bind(caller.orgID, idemKey)
+      .first<{ destination_id: string }>();
+    if (prior) return idempotentReplay(env, sx, caller, prior.destination_id);
+  }
+
   const { wire, secret } = await createDestination(env, sx, caller.orgID, {
     url: body.url,
     eventTypes: body.eventTypes,
@@ -331,8 +343,57 @@ async function createWebhook(req: Request, env: WebhookEnv, sx: SvixClient, call
     secret: body.secret,
     enabled: body.enabled,
   });
-  // Secret is returned once on create (Svix-generated; always re-fetchable via Svix).
+
+  if (idemKey) {
+    // Claim the key atomically (PK conflict = a concurrent create already won).
+    await env.OPENCOMPUTER_DB.prepare(
+      "INSERT INTO webhook_idempotency (org_id, idempotency_key, destination_id, created_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(org_id, idempotency_key) DO NOTHING",
+    )
+      .bind(caller.orgID, idemKey, wire.id, nowSec())
+      .run();
+    const winner = await env.OPENCOMPUTER_DB.prepare(
+      "SELECT destination_id FROM webhook_idempotency WHERE org_id = ?1 AND idempotency_key = ?2",
+    )
+      .bind(caller.orgID, idemKey)
+      .first<{ destination_id: string }>();
+    if (winner && winner.destination_id !== wire.id) {
+      // Lost a concurrent race — drop our just-created duplicate, return the winner.
+      await deleteDestinationById(env, sx, caller.orgID, wire.id as string);
+      return idempotentReplay(env, sx, caller, winner.destination_id);
+    }
+  }
+  // Secret is returned on create (Svix-generated unless supplied; re-fetchable via GET /:id/secret).
   return json({ ...wire, secret }, 201);
+}
+
+// idempotentReplay returns an existing destination + its (re-fetched) signing
+// secret with 200 — the response to a retried idempotent create.
+async function idempotentReplay(env: WebhookEnv, sx: SvixClient, caller: Caller, destId: string): Promise<Response> {
+  const row = await getDest(env, caller.orgID, destId);
+  if (!row) return json({ error: "webhook not found" }, 404); // tombstoned/cross-org — shouldn't happen
+  let secret: string | undefined;
+  try {
+    secret = await sx.getEndpointSecret(row.svix_app_id, row.svix_endpoint_id);
+  } catch {
+    /* best-effort: omit secret, it's re-fetchable via GET /:id/secret */
+  }
+  return json(secret ? { ...toWire(row), secret } : toWire(row), 200);
+}
+
+// deleteDestinationById removes the Svix endpoint + soft-deletes the row. Used to
+// clean up the loser of a concurrent idempotent-create race.
+async function deleteDestinationById(env: WebhookEnv, sx: SvixClient, orgID: string, id: string): Promise<void> {
+  const row = await getDest(env, orgID, id);
+  if (!row) return;
+  try {
+    await sx.deleteEndpoint(row.svix_app_id, row.svix_endpoint_id);
+  } catch {
+    /* best-effort */
+  }
+  await env.OPENCOMPUTER_DB.prepare("UPDATE webhook_destinations SET deleted_at = ?1 WHERE id = ?2")
+    .bind(nowSec(), id)
+    .run();
+  await refreshHasWebhooks(env, orgID);
 }
 
 async function listWebhooks(env: WebhookEnv, caller: Caller): Promise<Response> {

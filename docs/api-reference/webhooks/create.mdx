@@ -29,7 +29,11 @@ Register a webhook destination for sandbox lifecycle events. See [Webhooks](/san
   Whether the destination is active. Default `true`. `false` pauses delivery.
 </ParamField>
 
-Each call creates a **new** destination and returns **`201`** — there is no get-or-create and no `Idempotency-Key` support.
+<ParamField header="Idempotency-Key" type="string">
+  Optional. A retried create with the same key returns the **same** destination (`200`) instead of creating a duplicate.
+</ParamField>
+
+Without an `Idempotency-Key`, each call creates a **new** destination and returns **`201`** — there is no get-or-create by `name`. With one, a retried call returns the same destination with **`200`**.
 
 **Validation (all `400`):** `url` must be HTTPS; each `eventTypes` entry must be a known sandbox event type or a `prefix.*` wildcard.
 
