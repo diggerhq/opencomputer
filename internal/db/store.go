@@ -196,6 +196,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{46, "migrations/046_preview_auth.up.sql"},
 		{47, "migrations/047_orgs_billing_provider.up.sql"},
 		{48, "migrations/048_orgs_usage_sync_watermark.up.sql"},
+		{49, "migrations/049_sandbox_webhooks.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -857,6 +858,36 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 		// Capture org for the lifecycle publish below (same tx; cheap).
 		_ = tx.QueryRow(ctx,
 			`SELECT org_id FROM sandbox_sessions WHERE sandbox_id = $1`, sandboxID).Scan(&orgID)
+
+		// Record the canonical lifecycle event in THIS tx (CP-origin → durable
+		// from the state change) so sandbox webhooks fire. Only the public
+		// moments owned by the control plane; worker-origin events
+		// (created/ready/migrated) arrive via the Redis stream ingress.
+		if orgID != uuid.Nil {
+			var evType string
+			var data json.RawMessage
+			switch status {
+			case "stopped":
+				evType = "sandbox.stopped"
+				data = json.RawMessage(`{"reason":"user_requested"}`)
+			case "error":
+				evType = "sandbox.stopped"
+				data = json.RawMessage(`{"reason":"crash"}`)
+			case "hibernated":
+				evType = "sandbox.hibernated"
+			}
+			if evType != "" {
+				if err := recordLifecycleEvent(ctx, tx, LifecycleEvent{
+					ID:        fmt.Sprintf("%s:%s:%d", sandboxID, evType, time.Now().UnixNano()),
+					OrgID:     orgID,
+					SandboxID: sandboxID,
+					Type:      evType,
+					Data:      data,
+				}); err != nil {
+					return fmt.Errorf("record lifecycle event: %w", err)
+				}
+			}
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err

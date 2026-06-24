@@ -286,6 +286,26 @@ func main() {
 			cr.Start(context.Background())
 			defer cr.Stop()
 		}
+
+		// Worker-origin webhook ingress — consumes the events:{cell_id} stream
+		// and records canonical lifecycle events (created/ready/migrated) for
+		// sandbox webhooks. CP-origin events (stopped/hibernated) are recorded
+		// in-tx and don't need this. (.agents/work/sandbox-lifecycle-webhooks.md §5)
+		if opts.Store != nil && cfg.CellID != "" {
+			ingress, err := controlplane.NewLifecycleIngress(redisRegistry.RedisClient(), opts.Store, cfg.CellID)
+			if err != nil {
+				log.Fatalf("lifecycle_ingress: %v", err)
+			}
+			if err := ingress.Start(context.Background()); err != nil {
+				log.Fatalf("lifecycle_ingress start: %v", err)
+			}
+			defer func() {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer stopCancel()
+				_ = ingress.Stop(stopCtx)
+			}()
+			log.Printf("opensandbox: webhook lifecycle ingress started (cell=%s)", cfg.CellID)
+		}
 	}
 
 	// Hoisted at function scope so the per-sandbox autoscaler (created
@@ -857,6 +877,21 @@ func main() {
 		defer sender.Stop()
 		log.Printf("opensandbox: billable events sender started (interval=%s, batch=%d)",
 			senderOpts.Interval, senderOpts.Batch)
+	}
+
+	// Sandbox webhooks — the materializer (canonical events → delivery rows) and
+	// the dispatcher (send/retry/dead-letter) need only Postgres, so they run in
+	// any mode; the worker-origin ingress (started above, server mode) feeds them
+	// the worker events. Dormant until a destination exists.
+	// (.agents/work/sandbox-lifecycle-webhooks.md)
+	if opts.Store != nil {
+		mat := controlplane.NewWebhookMaterializer(opts.Store)
+		mat.Start()
+		defer mat.Stop()
+		disp := controlplane.NewWebhookDispatcher(opts.Store, cfg.CellID)
+		disp.Start()
+		defer disp.Stop()
+		log.Printf("opensandbox: sandbox webhook materializer + dispatcher started")
 	}
 
 	// Start NATS sync consumer if both PG and NATS are configured

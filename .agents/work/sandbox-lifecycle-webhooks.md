@@ -1,9 +1,17 @@
 # Sandbox lifecycle webhooks — implementation plan
 
-Status: **design draft, rev 3 (second review folded in 2026-06-24), implementation not
-started** (off `main` @ `6ed835c`). Branch: `feat/sandbox-webhooks`. This is a **complete
-reference** — a future implementer should be able to work from this doc + the cited code
-without the conversation that produced it.
+Status: **rev 6 — P1 backend IMPLEMENTED (2026-06-24)**, not yet deployed. Branch:
+`feat/sandbox-webhooks`. This is a **complete reference** — a future implementer should be able
+to work from this doc + the cited code without the conversation that produced it.
+
+**P1 build landed** (migration `049_sandbox_webhooks`, `pkg/types/webhook.go`,
+`internal/webhook/{sign,ssrf}.go` + tests, `internal/db/webhooks.go` + the in-tx CP-origin
+capture in `store.go:UpdateSandboxSessionStatus`, `internal/api/webhooks.go` + routes +
+inline-on-create, `internal/controlplane/{webhook_materializer,webhook_dispatcher,lifecycle_ingress}.go`,
+wired in `cmd/server/main.go`). Builds + `go vet` clean; signing/SSRF unit tests pass. Reuses
+the existing `crypto.Encryptor` (O5 ✓ — `OPENSANDBOX_SECRET_ENCRYPTION_KEY`). Remaining before
+prod: end-to-end test on the single-host dev VM (★O9), then deploy + publish SDK/docs. P2/P3
+polish (per-type payload normalization at the ingress, LISTEN/NOTIFY latency) tracked below.
 
 - **Rev 2** resolved the plumbing blockers — signing-secret behavior, source durability (dual
   projection), Redis reclaim (XPENDING+XCLAIM), deterministic event IDs, the delivery state

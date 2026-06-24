@@ -252,6 +252,12 @@ func (s *Server) createSandbox(c echo.Context) error {
 			template = "default"
 		}
 		_, _ = s.store.CreateSandboxSession(ctx, sb.ID, orgID, auth.GetUserID(c), template, region, workerID, cfgJSON, metadataJSON, secretStoreID)
+
+		// Inline webhooks: register them pinned to this sandbox so they catch
+		// created/ready. Best-effort (see registerInlineWebhooks).
+		if len(cfg.Webhooks) > 0 {
+			sb.Webhooks = s.registerInlineWebhooks(ctx, orgID, sb.ID, cfg.Webhooks)
+		}
 	}
 
 	// Preview-URL auth: same flow as createSandboxRemote — validate the
