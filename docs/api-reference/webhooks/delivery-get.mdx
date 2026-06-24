@@ -7,8 +7,10 @@ Fetch one delivered message by id. See [Webhooks](/sandboxes/webhooks#deliveries
 
 <Note>
 The delivery provider's attempt index and message store are eventually consistent: a message id can
-appear in [list deliveries](/api-reference/webhooks/deliveries-list) a few seconds before this
-endpoint can fetch it, so a `404` immediately after a delivery is transient — retry shortly.
+appear in [list deliveries](/api-reference/webhooks/deliveries-list) **before** this endpoint (and
+[redeliver](/api-reference/webhooks/redeliver)) can resolve it — observed up to ~30s+ after the
+attempt. So a `404` shortly after a delivery is transient — **retry with backoff** rather than
+treating it as final.
 </Note>
 
 <ParamField path="id" type="string" required>

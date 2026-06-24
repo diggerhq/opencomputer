@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS webhook_idempotency (
   org_id          TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
   destination_id  TEXT NOT NULL,
+  request_hash    TEXT,                        -- sha256 of the create body; reuse with a different body → 409
   created_at      INTEGER NOT NULL,
   PRIMARY KEY (org_id, idempotency_key)
 );

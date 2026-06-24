@@ -114,6 +114,14 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 	// so forks of that sandbox inherited a no-network config.
 	cfg.EnsureNetworkEnabledDefault()
 
+	// Validate inline webhook specs up-front, exactly as the public createSandbox
+	// handler does at its entry. Without this the edge→CP create path skips
+	// validation, so a bad url or unknown event type 201s (and spawns a sandbox)
+	// instead of returning 400. (Prod E2E caught this.)
+	if err := validateInlineWebhooks(c.Request().Context(), cfg.Webhooks); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
 	// Same memory/cpu defaults the public POST /api/sandboxes applies.
 	if cfg.MemoryMB == 0 {
 		cfg.MemoryMB = 4096
