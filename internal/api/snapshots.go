@@ -53,15 +53,67 @@ func (s *Server) createSnapshot(c echo.Context) error {
 		return s.createSnapshotWithSSE(c, ctx, orgID, req.Name, req.Image)
 	}
 
-	// Non-streaming path
-	ic, err := s.createSnapshotCore(ctx, orgID, req.Name, req.Image, nil)
-	if err != nil {
-		log.Printf("snapshot: build failed for %q: %v", req.Name, err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	// Non-streaming path: build asynchronously. Pre-create the named snapshot
+	// row as "building" and run the (potentially multi-minute) build in the
+	// background, returning immediately. Callers poll GET /snapshots/:name until
+	// status is "ready" or "failed". This keeps the request sub-second so the
+	// edge proxy never 524s on a long build.
+	return s.createSnapshotAsync(c, orgID, req.Name, req.Image)
+}
+
+// createSnapshotAsync pre-creates a named "building" snapshot row, dispatches
+// the image build in a background goroutine, and returns the building row
+// immediately. Mirrors the SSE path's background dispatch but without a
+// streaming connection. The inflightBuilds dedup in resolveImageManifest
+// prevents duplicate concurrent builds of the same underlying image.
+func (s *Server) createSnapshotAsync(c echo.Context, orgID uuid.UUID, name string, imageJSON json.RawMessage) error {
+	var manifest ImageManifest
+	_ = json.Unmarshal(imageJSON, &manifest)
+	contentHash := computeManifestHash(&manifest)
+
+	n := name
+	ic := &db.ImageCache{
+		ID:    uuid.New(),
+		OrgID: orgID,
+		// Suffix the hash so the named row never collides with the unnamed
+		// content-hash build row that resolveImageManifest creates/reuses.
+		ContentHash: contentHash + ":named:" + name,
+		Name:        &n,
+		Manifest:    imageJSON,
+		Status:      "building",
+	}
+	if err := s.store.CreateImageCache(c.Request().Context(), ic); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create snapshot: " + err.Error()})
 	}
 
-	log.Printf("snapshot: created %q", req.Name)
-	return c.JSON(http.StatusCreated, ic)
+	// Background build — context.Background() so it survives the HTTP response.
+	go func() {
+		ctx := context.Background()
+		tBuild := time.Now()
+		checkpointID, err := s.resolveImageManifest(ctx, orgID, imageJSON, nil)
+		buildMs := time.Since(tBuild).Milliseconds()
+		if err != nil {
+			log.Printf("snapshot: async build failed for %q after %dms: %v", name, buildMs, err)
+			_ = s.store.SetImageCacheFailed(ctx, ic.ID)
+			// Mirror the failed status to D1 so GET /snapshots/:name returns
+			// status=failed (not 404), letting SDK waitUntilReady throw instead
+			// of polling to timeout. publishImageCacheReadyFrom mirrors whatever
+			// ic.Status is — here, "failed".
+			ic.Status = "failed"
+			s.publishImageCacheReadyFrom(ctx, ic)
+			return
+		}
+		if err := s.store.SetImageCacheReady(ctx, ic.ID, checkpointID); err != nil {
+			log.Printf("snapshot: failed to mark %q ready: %v", name, err)
+			return
+		}
+		ic.Status = "ready"
+		ic.CheckpointID = &checkpointID
+		s.publishImageCacheReadyFrom(ctx, ic)
+		log.Printf("snapshot: created %q (checkpoint=%s, build_ms=%d)", name, checkpointID, buildMs)
+	}()
+
+	return c.JSON(http.StatusAccepted, ic)
 }
 
 // createSnapshotCore contains the shared snapshot creation logic.

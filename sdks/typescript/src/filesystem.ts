@@ -18,8 +18,27 @@ export class Filesystem {
     return this.apiKey ? { "X-API-Key": this.apiKey } : {};
   }
 
+  // wfetch transparently rides out a cold-start wake. If the sandbox is
+  // hibernated, the control plane wakes it in the background and returns
+  // 503 { waking: true } immediately (rather than restoring on the connection
+  // and risking a proxy 524). We retry until the box is up. Bounded so a wake
+  // that can't complete eventually surfaces the 503 instead of hanging forever.
+  private async wfetch(url: string, init?: RequestInit): Promise<Response> {
+    const deadline = Date.now() + 120_000;
+    let delay = 500;
+    for (;;) {
+      const resp = await fetch(url, init);
+      if (resp.status !== 503) return resp;
+      let waking = false;
+      try { waking = (await resp.clone().json())?.waking === true; } catch { /* not JSON */ }
+      if (!waking || Date.now() >= deadline) return resp;
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 2, 3000);
+    }
+  }
+
   async read(path: string): Promise<string> {
-    const resp = await fetch(
+    const resp = await this.wfetch(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/files?path=${encodeURIComponent(path)}`,
       { headers: this.headers },
     );
@@ -28,7 +47,7 @@ export class Filesystem {
   }
 
   async readBytes(path: string): Promise<Uint8Array> {
-    const resp = await fetch(
+    const resp = await this.wfetch(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/files?path=${encodeURIComponent(path)}`,
       { headers: this.headers },
     );
@@ -44,18 +63,18 @@ export class Filesystem {
     };
     // duplex: "half" is required for ReadableStream bodies in Node.js fetch,
     // but must NOT be set for Uint8Array/Buffer/string bodies.
-    if (content instanceof ReadableStream) {
+    const isStream = content instanceof ReadableStream;
+    if (isStream) {
       opts.duplex = "half";
     }
-    const resp = await fetch(
-      `${this.apiUrl}/sandboxes/${this.sandboxId}/files?path=${encodeURIComponent(path)}`,
-      opts,
-    );
+    const url = `${this.apiUrl}/sandboxes/${this.sandboxId}/files?path=${encodeURIComponent(path)}`;
+    // A stream body can't be replayed across a wake retry; string/bytes can.
+    const resp = isStream ? await fetch(url, opts) : await this.wfetch(url, opts);
     if (!resp.ok) throw new Error(`Failed to write ${path}: ${resp.status}`);
   }
 
   async list(path: string = "/"): Promise<EntryInfo[]> {
-    const resp = await fetch(
+    const resp = await this.wfetch(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/files/list?path=${encodeURIComponent(path)}`,
       { headers: this.headers },
     );
@@ -65,7 +84,7 @@ export class Filesystem {
   }
 
   async makeDir(path: string): Promise<void> {
-    const resp = await fetch(
+    const resp = await this.wfetch(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/files/mkdir?path=${encodeURIComponent(path)}`,
       { method: "POST", headers: this.headers },
     );
@@ -73,7 +92,7 @@ export class Filesystem {
   }
 
   async remove(path: string): Promise<void> {
-    const resp = await fetch(
+    const resp = await this.wfetch(
       `${this.apiUrl}/sandboxes/${this.sandboxId}/files?path=${encodeURIComponent(path)}`,
       { method: "DELETE", headers: this.headers },
     );
@@ -82,7 +101,7 @@ export class Filesystem {
 
   async exists(path: string): Promise<boolean> {
     try {
-      const resp = await fetch(
+      const resp = await this.wfetch(
         `${this.apiUrl}/sandboxes/${this.sandboxId}/files?path=${encodeURIComponent(path)}`,
         { headers: this.headers },
       );

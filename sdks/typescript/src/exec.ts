@@ -7,9 +7,72 @@ export interface ProcessResult {
 }
 
 export interface RunOpts {
+  /** Server-side command timeout in seconds (default 60). */
   timeout?: number;
   env?: Record<string, string>;
   cwd?: string;
+  /**
+   * Abort the client-side wait for the result. The command keeps running on the
+   * worker and stays retrievable by execId (exposed on the thrown error).
+   */
+  signal?: AbortSignal;
+  /**
+   * Max time to wait client-side for the command to finish, in milliseconds.
+   * On expiry, run() throws an ExecTimeoutError but the command keeps running.
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * Thrown when run()'s client-side wait is aborted or times out. The command is
+ * still running on the worker; re-poll or attach via execId to recover it.
+ */
+export class ExecTimeoutError extends Error {
+  constructor(public readonly execId: string, message: string) {
+    super(message);
+    this.name = "ExecTimeoutError";
+  }
+}
+
+interface ExecRunHandle {
+  execId?: string;
+  running?: boolean;
+  startedAt?: string;
+  // Back-compat: a pre-async origin returns the full result synchronously.
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+}
+
+interface ExecRunResult {
+  running: boolean;
+  waking?: boolean;
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+  truncated?: boolean;
+  error?: string;
+  // Timing breakdown (524 attribution), observable per-request.
+  wakeMs?: number;
+  createMs?: number;
+  commandMs?: number;
+}
+
+/** Sleep that resolves early (does not reject) when the signal aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort);
+  });
 }
 
 export interface ExecStartOpts {
@@ -281,6 +344,20 @@ export class Exec {
     return impl;
   }
 
+  /**
+   * Run a command and wait for it to finish, returning its result.
+   *
+   * Transparently async: POSTs to /exec/run (which returns a handle
+   * immediately) then polls /exec/:execId/result until the command exits. Each
+   * HTTP request is sub-second, so there is no proxy 524 regardless of how long
+   * the command runs, and a dropped poll simply retries — the result persists
+   * on the worker independent of the connection.
+   *
+   * Pass `timeoutMs`/`signal` to bound the client-side wait; on expiry an
+   * {@link ExecTimeoutError} is thrown (carrying execId) while the command
+   * keeps running. For live output instead of wait-for-result, use
+   * {@link start}/{@link background} + {@link attach}.
+   */
   async run(command: string, opts: RunOpts = {}): Promise<ProcessResult> {
     const body: Record<string, unknown> = {
       cmd: "sh",
@@ -288,8 +365,7 @@ export class Exec {
     };
     if (opts.env) body.envs = opts.env;
     if (opts.cwd) body.cwd = opts.cwd;
-    if (opts.timeout != null) body.timeout = opts.timeout;
-    else body.timeout = 60;
+    body.timeout = opts.timeout != null ? opts.timeout : 60;
 
     const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/run`, {
       method: "POST",
@@ -300,6 +376,59 @@ export class Exec {
     if (!resp.ok) {
       const text = await resp.text();
       throw new Error(`Failed to run command: ${resp.status} ${text}`);
+    }
+
+    const handle = (await resp.json()) as ExecRunHandle;
+
+    // Back-compat: an older (synchronous) origin returns the full result.
+    if (handle.execId == null && handle.exitCode != null) {
+      return {
+        exitCode: handle.exitCode,
+        stdout: handle.stdout ?? "",
+        stderr: handle.stderr ?? "",
+      };
+    }
+
+    const execId = handle.execId!;
+    const deadline = opts.timeoutMs != null ? Date.now() + opts.timeoutMs : null;
+    let delay = 200;
+    const maxDelay = 2000;
+
+    for (;;) {
+      if (opts.signal?.aborted) {
+        throw new ExecTimeoutError(execId, `exec.run aborted; command still running (execId=${execId})`);
+      }
+      if (deadline != null && Date.now() >= deadline) {
+        throw new ExecTimeoutError(execId, `exec.run timed out after ${opts.timeoutMs}ms; command still running (execId=${execId})`);
+      }
+
+      const result = await this.result(execId);
+      if (!result.running) {
+        if (result.error) {
+          // Wake/restore or session creation failed on the worker.
+          throw new Error(`exec.run failed: ${result.error}`);
+        }
+        return {
+          exitCode: result.exitCode ?? 0,
+          stdout: result.stdout ?? "",
+          stderr: result.stderr ?? "",
+        };
+      }
+
+      await sleep(delay, opts.signal);
+      delay = Math.min(delay * 2, maxDelay);
+    }
+  }
+
+  /** Fetch the current result of an exec session (poll target for run()). */
+  private async result(execId: string): Promise<ExecRunResult> {
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/${execId}/result`, {
+      headers: this.headers,
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Failed to fetch exec result: ${resp.status} ${text}`);
     }
 
     return resp.json();

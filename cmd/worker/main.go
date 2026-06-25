@@ -1123,8 +1123,13 @@ func consumeExecOutput(stream agentpb.SandboxAgent_ExecSessionAttachClient, scro
 			scrollback.Write(2, msg.Data)
 		case agentpb.ExecSessionOutput_EXIT:
 			exitCode := int(msg.ExitCode)
+			handle.ExitedAt = time.Now()
 			handle.ExitCode = &exitCode
 			handle.Running = false
+			slog.Info("exec_session_exit",
+				"sandbox", handle.SandboxID, "session", handle.ID,
+				"exit_code", exitCode,
+				"command_ms", time.Since(handle.StartedAt).Milliseconds())
 			return
 		case agentpb.ExecSessionOutput_SCROLLBACK_END:
 			// Transition from scrollback replay to live

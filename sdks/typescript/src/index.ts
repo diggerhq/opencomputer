@@ -17,7 +17,7 @@ export { SandboxAgent, type SandboxAgentEvent, type SandboxAgentConfig, type San
 // Managed Durable Agent Sessions (the OpenComputer client + Session handle).
 export * from "./agents/index.js";
 export { Filesystem, type EntryInfo } from "./filesystem.js";
-export { Exec, type ProcessResult, type RunOpts, type ExecSession, type ExecSessionInfo, type ExecStartOpts, type ExecAttachOpts } from "./exec.js";
+export { Exec, ExecTimeoutError, type ProcessResult, type RunOpts, type ExecSession, type ExecSessionInfo, type ExecStartOpts, type ExecAttachOpts } from "./exec.js";
 export { Mounts, type AddMountOpts, type MountInfo, type MountBackend } from "./mounts.js";
 export { type Shell, type ShellOpts, type ShellRunOpts, ShellBusyError, ShellClosedError } from "./shell.js";
 export { Pty, type PtySession, type PtyOpts } from "./pty.js";
@@ -59,4 +59,4 @@ export {
 } from "./usage.js";
 // Node.js-only modules (use crypto, fs, path) — import via "@opencomputer/sdk/node".
 export type { ImageManifest, ImageStep } from "./image.js";
-export type { SnapshotInfo, CreateSnapshotOpts } from "./snapshot.js";
+export type { SnapshotInfo, CreateSnapshotOpts, WaitForReadyOpts } from "./snapshot.js";

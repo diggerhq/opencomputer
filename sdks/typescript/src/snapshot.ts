@@ -29,6 +29,32 @@ export interface SnapshotOpts {
   apiUrl?: string;
 }
 
+export interface WaitForReadyOpts {
+  /** Abort the wait. */
+  signal?: AbortSignal;
+  /** Max time to wait before throwing, in milliseconds. */
+  timeoutMs?: number;
+  /** Initial poll interval in ms (default 1000, backs off to 5000). */
+  pollIntervalMs?: number;
+}
+
+/** Sleep that resolves early (does not reject) when the signal aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort);
+  });
+}
+
 /**
  * Manage pre-built snapshots (named, persistent image checkpoints).
  */
@@ -109,6 +135,50 @@ export class Snapshots {
     }
 
     return resp.json();
+  }
+
+  /**
+   * Poll a snapshot until its build reaches a terminal state, resolving with
+   * the ready SnapshotInfo. Throws if the build fails or the wait times out.
+   *
+   * Useful when a snapshot was created via the async (non-SSE) endpoint, which
+   * returns a `building` row immediately. The SSE `create()` already waits for
+   * completion via the build-log stream, so this is not needed after it.
+   *
+   * Note: a still-building snapshot is not yet mirrored to the read store, so
+   * `get()` 404s until it reaches a terminal state. We treat that 404 as
+   * "still building" and keep polling; `failed` is mirrored, so it surfaces as
+   * a thrown error rather than a poll-to-timeout.
+   */
+  async waitUntilReady(name: string, opts: WaitForReadyOpts = {}): Promise<SnapshotInfo> {
+    const deadline = opts.timeoutMs != null ? Date.now() + opts.timeoutMs : null;
+    let delay = opts.pollIntervalMs ?? 1000;
+    const maxDelay = 5000;
+
+    for (;;) {
+      if (opts.signal?.aborted) {
+        throw new Error(`waitUntilReady aborted for snapshot ${name}`);
+      }
+      if (deadline != null && Date.now() >= deadline) {
+        throw new Error(`Snapshot ${name} not ready after ${opts.timeoutMs}ms`);
+      }
+
+      const resp = await fetch(`${this.apiUrl}/snapshots/${encodeURIComponent(name)}`, {
+        headers: this.headers,
+      });
+      if (resp.ok) {
+        const snap = (await resp.json()) as SnapshotInfo;
+        if (snap.status === "ready") return snap;
+        if (snap.status === "failed") throw new Error(`Snapshot ${name} build failed`);
+        // any other status (e.g. "building") → keep polling
+      } else if (resp.status !== 404) {
+        // 404 = not yet mirrored (still building); anything else is a real error
+        throw new Error(`Failed to get snapshot ${name}: ${resp.status}`);
+      }
+
+      await sleep(delay, opts.signal);
+      delay = Math.min(delay * 2, maxDelay);
+    }
   }
 
   /**

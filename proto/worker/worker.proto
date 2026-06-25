@@ -23,6 +23,7 @@ service SandboxWorker {
   rpc ExecSessionCreate(ExecSessionCreateRequest) returns (ExecSessionCreateResponse);
   rpc ExecSessionList(ExecSessionListRequest) returns (ExecSessionListResponse);
   rpc ExecSessionKill(ExecSessionKillRequest) returns (ExecSessionKillResponse);
+  rpc ExecSessionResult(ExecSessionResultRequest) returns (ExecSessionResultResponse);
 
   rpc HibernateSandbox(HibernateSandboxRequest) returns (HibernateSandboxResponse);
   rpc WakeSandbox(WakeSandboxRequest) returns (WakeSandboxResponse);
@@ -318,6 +319,19 @@ message ExecSessionKillRequest {
 }
 
 message ExecSessionKillResponse {}
+
+message ExecSessionResultRequest {
+  string sandbox_id = 1;
+  string session_id = 2;
+}
+
+message ExecSessionResultResponse {
+  bool running = 1;
+  int32 exit_code = 2; // valid only when running = false
+  bytes stdout = 3;
+  bytes stderr = 4;
+  bool truncated = 5;
+}
 
 // --- Stats ---
 

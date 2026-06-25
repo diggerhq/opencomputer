@@ -10,6 +10,18 @@ type ExecSessionCreateRequest struct {
 	MaxRunAfterDisconnect int               `json:"maxRunAfterDisconnect,omitempty"`
 }
 
+// ExecSessionResult is the terminal/intermediate result of an exec session,
+// fetched without attaching a live stream. Used by the async exec/run poll
+// path. Stdout/Stderr are the scrollback snapshot split by frame tag.
+type ExecSessionResult struct {
+	Running   bool   `json:"running"`
+	ExitCode  *int   `json:"exitCode,omitempty"`
+	Stdout    []byte `json:"stdout,omitempty"`
+	Stderr    []byte `json:"stderr,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+	CommandMs int64  `json:"commandMs,omitempty"` // command wall-clock (start→exit/now)
+}
+
 // ExecSessionInfo is the response body for exec session metadata.
 type ExecSessionInfo struct {
 	SessionID       string   `json:"sessionID"`

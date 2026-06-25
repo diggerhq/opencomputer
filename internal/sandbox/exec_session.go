@@ -29,6 +29,7 @@ type ExecSessionHandle struct {
 	Running     bool
 	ExitCode    *int
 	StartedAt   time.Time
+	ExitedAt    time.Time // zero until the command exits; for command_ms timing
 	Done        chan struct{}
 	Scrollback  *ScrollbackBuffer
 	StdinWriter io.Writer
@@ -122,6 +123,55 @@ func (m *ExecSessionManager) GetSession(sessionID string) (*ExecSessionHandle, e
 		return nil, fmt.Errorf("exec session %s not found", sessionID)
 	}
 	return session, nil
+}
+
+// GetResult returns the current result of an exec session from its local
+// handle — the scrollback (split by stream) plus the exit code captured by the
+// worker's attach stream. This is the load-bearing call behind the async
+// exec/run poll endpoint. If the local map missed (live migration or worker
+// restart moved the still-alive in-VM session), it rebinds from the agent
+// first, reusing the same recovery path as the WS attach handler.
+//
+// Running is derived from the captured exit code rather than the handle's
+// Running flag: consumeExecOutput sets ExitCode before clearing Running, so
+// gating on ExitCode==nil never reports a finished command without its code.
+func (m *ExecSessionManager) GetResult(sandboxID, sessionID string) (*types.ExecSessionResult, error) {
+	m.mu.RLock()
+	sess, ok := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if !ok {
+		var err error
+		sess, err = m.RebindFromAgent(sandboxID, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("exec session %s not found", sessionID)
+		}
+	}
+
+	res := &types.ExecSessionResult{Running: sess.ExitCode == nil}
+	if sess.ExitCode != nil {
+		ec := *sess.ExitCode
+		res.ExitCode = &ec
+	}
+	// command_ms: wall-clock of the command itself (start → exit, or → now if
+	// still running). Feeds the 524 attribution (command duration vs wake).
+	if !sess.StartedAt.IsZero() {
+		end := sess.ExitedAt
+		if end.IsZero() {
+			end = time.Now()
+		}
+		res.CommandMs = end.Sub(sess.StartedAt).Milliseconds()
+	}
+	if sess.Scrollback != nil {
+		for _, ch := range sess.Scrollback.Snapshot() {
+			if ch.Stream == 2 {
+				res.Stderr = append(res.Stderr, ch.Data...)
+			} else {
+				res.Stdout = append(res.Stdout, ch.Data...)
+			}
+		}
+		res.Truncated = sess.Scrollback.Truncated()
+	}
+	return res, nil
 }
 
 // ListSessions returns info for all sessions belonging to a sandbox.

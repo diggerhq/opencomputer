@@ -33,6 +33,7 @@ const (
 	SandboxWorker_ExecSessionCreate_FullMethodName         = "/worker.SandboxWorker/ExecSessionCreate"
 	SandboxWorker_ExecSessionList_FullMethodName           = "/worker.SandboxWorker/ExecSessionList"
 	SandboxWorker_ExecSessionKill_FullMethodName           = "/worker.SandboxWorker/ExecSessionKill"
+	SandboxWorker_ExecSessionResult_FullMethodName         = "/worker.SandboxWorker/ExecSessionResult"
 	SandboxWorker_HibernateSandbox_FullMethodName          = "/worker.SandboxWorker/HibernateSandbox"
 	SandboxWorker_WakeSandbox_FullMethodName               = "/worker.SandboxWorker/WakeSandbox"
 	SandboxWorker_RebootSandbox_FullMethodName             = "/worker.SandboxWorker/RebootSandbox"
@@ -69,6 +70,7 @@ type SandboxWorkerClient interface {
 	ExecSessionCreate(ctx context.Context, in *ExecSessionCreateRequest, opts ...grpc.CallOption) (*ExecSessionCreateResponse, error)
 	ExecSessionList(ctx context.Context, in *ExecSessionListRequest, opts ...grpc.CallOption) (*ExecSessionListResponse, error)
 	ExecSessionKill(ctx context.Context, in *ExecSessionKillRequest, opts ...grpc.CallOption) (*ExecSessionKillResponse, error)
+	ExecSessionResult(ctx context.Context, in *ExecSessionResultRequest, opts ...grpc.CallOption) (*ExecSessionResultResponse, error)
 	HibernateSandbox(ctx context.Context, in *HibernateSandboxRequest, opts ...grpc.CallOption) (*HibernateSandboxResponse, error)
 	WakeSandbox(ctx context.Context, in *WakeSandboxRequest, opts ...grpc.CallOption) (*WakeSandboxResponse, error)
 	// Reboot performs a soft, in-place guest reset (QMP system_reset). The
@@ -264,6 +266,16 @@ func (c *sandboxWorkerClient) ExecSessionKill(ctx context.Context, in *ExecSessi
 	return out, nil
 }
 
+func (c *sandboxWorkerClient) ExecSessionResult(ctx context.Context, in *ExecSessionResultRequest, opts ...grpc.CallOption) (*ExecSessionResultResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExecSessionResultResponse)
+	err := c.cc.Invoke(ctx, SandboxWorker_ExecSessionResult_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *sandboxWorkerClient) HibernateSandbox(ctx context.Context, in *HibernateSandboxRequest, opts ...grpc.CallOption) (*HibernateSandboxResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HibernateSandboxResponse)
@@ -442,6 +454,7 @@ type SandboxWorkerServer interface {
 	ExecSessionCreate(context.Context, *ExecSessionCreateRequest) (*ExecSessionCreateResponse, error)
 	ExecSessionList(context.Context, *ExecSessionListRequest) (*ExecSessionListResponse, error)
 	ExecSessionKill(context.Context, *ExecSessionKillRequest) (*ExecSessionKillResponse, error)
+	ExecSessionResult(context.Context, *ExecSessionResultRequest) (*ExecSessionResultResponse, error)
 	HibernateSandbox(context.Context, *HibernateSandboxRequest) (*HibernateSandboxResponse, error)
 	WakeSandbox(context.Context, *WakeSandboxRequest) (*WakeSandboxResponse, error)
 	// Reboot performs a soft, in-place guest reset (QMP system_reset). The
@@ -526,6 +539,9 @@ func (UnimplementedSandboxWorkerServer) ExecSessionList(context.Context, *ExecSe
 }
 func (UnimplementedSandboxWorkerServer) ExecSessionKill(context.Context, *ExecSessionKillRequest) (*ExecSessionKillResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ExecSessionKill not implemented")
+}
+func (UnimplementedSandboxWorkerServer) ExecSessionResult(context.Context, *ExecSessionResultRequest) (*ExecSessionResultResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExecSessionResult not implemented")
 }
 func (UnimplementedSandboxWorkerServer) HibernateSandbox(context.Context, *HibernateSandboxRequest) (*HibernateSandboxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method HibernateSandbox not implemented")
@@ -826,6 +842,24 @@ func _SandboxWorker_ExecSessionKill_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SandboxWorkerServer).ExecSessionKill(ctx, req.(*ExecSessionKillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SandboxWorker_ExecSessionResult_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExecSessionResultRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxWorkerServer).ExecSessionResult(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxWorker_ExecSessionResult_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxWorkerServer).ExecSessionResult(ctx, req.(*ExecSessionResultRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1172,6 +1206,10 @@ var SandboxWorker_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ExecSessionKill",
 			Handler:    _SandboxWorker_ExecSessionKill_Handler,
+		},
+		{
+			MethodName: "ExecSessionResult",
+			Handler:    _SandboxWorker_ExecSessionResult_Handler,
 		},
 		{
 			MethodName: "HibernateSandbox",

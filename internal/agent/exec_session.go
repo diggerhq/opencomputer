@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -116,7 +117,15 @@ func (s *Server) ExecSessionCreate(ctx context.Context, req *pb.ExecSessionCreat
 		log.Printf("exec-session: start failed: %v (cmd=%s)", err, req.Command)
 		return nil, fmt.Errorf("start command: %w", err)
 	}
-	moveToCgroup(cmd.Process.Pid)
+	pid := cmd.Process.Pid
+	// Register with the SIGCHLD reaper BEFORE the child can exit. For
+	// fast-exiting commands the reaper's Wait4(-1) can reap the child before
+	// our cmd.Wait() runs, making cmd.Wait() return ECHILD and
+	// ProcessState.ExitCode() report -1. We recover the real status from this
+	// channel instead. Same coordination as the one-shot Exec path; see
+	// reap_registry.go.
+	exitCh := RegisterReap(pid)
+	moveToCgroup(pid)
 
 	s.execMu.Lock()
 	s.execSessions[sessionID] = sess
@@ -162,10 +171,30 @@ func (s *Server) ExecSessionCreate(ctx context.Context, req *pb.ExecSessionCreat
 
 	// Wait for command exit — ensure all pipe output is collected first
 	go func() {
-		_ = cmd.Wait()
+		waitErr := cmd.Wait()
 		// Wait for stdout/stderr goroutines to finish reading remaining pipe data
 		pipeWg.Wait()
-		code := int32(cmd.ProcessState.ExitCode())
+
+		// Resolve the exit code, coordinating with the SIGCHLD reaper. If the
+		// reaper won the race, cmd.Wait() returns ECHILD and ProcessState is
+		// unreliable — pull the real status from the registered channel.
+		var code int32
+		switch {
+		case waitErr == nil:
+			code = int32(cmd.ProcessState.ExitCode())
+			UnregisterReap(pid)
+		case isExitError(waitErr):
+			code = int32(waitErr.(*exec.ExitError).ExitCode())
+			UnregisterReap(pid)
+		case errors.Is(waitErr, syscall.ECHILD):
+			ws := <-exitCh
+			code = int32(ws.ExitStatus())
+		default:
+			// Unknown wait error — best effort from ProcessState, drop the reg.
+			code = int32(cmd.ProcessState.ExitCode())
+			UnregisterReap(pid)
+		}
+
 		sess.mu.Lock()
 		sess.exitCode = &code
 		sess.mu.Unlock()

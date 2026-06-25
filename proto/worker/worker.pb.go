@@ -2465,6 +2465,134 @@ func (*ExecSessionKillResponse) Descriptor() ([]byte, []int) {
 	return file_proto_worker_worker_proto_rawDescGZIP(), []int{41}
 }
 
+type ExecSessionResultRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SandboxId     string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
+	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecSessionResultRequest) Reset() {
+	*x = ExecSessionResultRequest{}
+	mi := &file_proto_worker_worker_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecSessionResultRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecSessionResultRequest) ProtoMessage() {}
+
+func (x *ExecSessionResultRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_worker_worker_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecSessionResultRequest.ProtoReflect.Descriptor instead.
+func (*ExecSessionResultRequest) Descriptor() ([]byte, []int) {
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *ExecSessionResultRequest) GetSandboxId() string {
+	if x != nil {
+		return x.SandboxId
+	}
+	return ""
+}
+
+func (x *ExecSessionResultRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+type ExecSessionResultResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Running       bool                   `protobuf:"varint,1,opt,name=running,proto3" json:"running,omitempty"`
+	ExitCode      int32                  `protobuf:"varint,2,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"` // valid only when running = false
+	Stdout        []byte                 `protobuf:"bytes,3,opt,name=stdout,proto3" json:"stdout,omitempty"`
+	Stderr        []byte                 `protobuf:"bytes,4,opt,name=stderr,proto3" json:"stderr,omitempty"`
+	Truncated     bool                   `protobuf:"varint,5,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecSessionResultResponse) Reset() {
+	*x = ExecSessionResultResponse{}
+	mi := &file_proto_worker_worker_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecSessionResultResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecSessionResultResponse) ProtoMessage() {}
+
+func (x *ExecSessionResultResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_worker_worker_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecSessionResultResponse.ProtoReflect.Descriptor instead.
+func (*ExecSessionResultResponse) Descriptor() ([]byte, []int) {
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *ExecSessionResultResponse) GetRunning() bool {
+	if x != nil {
+		return x.Running
+	}
+	return false
+}
+
+func (x *ExecSessionResultResponse) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *ExecSessionResultResponse) GetStdout() []byte {
+	if x != nil {
+		return x.Stdout
+	}
+	return nil
+}
+
+func (x *ExecSessionResultResponse) GetStderr() []byte {
+	if x != nil {
+		return x.Stderr
+	}
+	return nil
+}
+
+func (x *ExecSessionResultResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
 type GetSandboxStatsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SandboxId     string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
@@ -2474,7 +2602,7 @@ type GetSandboxStatsRequest struct {
 
 func (x *GetSandboxStatsRequest) Reset() {
 	*x = GetSandboxStatsRequest{}
-	mi := &file_proto_worker_worker_proto_msgTypes[42]
+	mi := &file_proto_worker_worker_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2486,7 +2614,7 @@ func (x *GetSandboxStatsRequest) String() string {
 func (*GetSandboxStatsRequest) ProtoMessage() {}
 
 func (x *GetSandboxStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[42]
+	mi := &file_proto_worker_worker_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2499,7 +2627,7 @@ func (x *GetSandboxStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSandboxStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetSandboxStatsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{42}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *GetSandboxStatsRequest) GetSandboxId() string {
@@ -2523,7 +2651,7 @@ type GetSandboxStatsResponse struct {
 
 func (x *GetSandboxStatsResponse) Reset() {
 	*x = GetSandboxStatsResponse{}
-	mi := &file_proto_worker_worker_proto_msgTypes[43]
+	mi := &file_proto_worker_worker_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2535,7 +2663,7 @@ func (x *GetSandboxStatsResponse) String() string {
 func (*GetSandboxStatsResponse) ProtoMessage() {}
 
 func (x *GetSandboxStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[43]
+	mi := &file_proto_worker_worker_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2548,7 +2676,7 @@ func (x *GetSandboxStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSandboxStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetSandboxStatsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{43}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *GetSandboxStatsResponse) GetCpuPercent() float64 {
@@ -2609,7 +2737,7 @@ type CreateCheckpointRequest struct {
 
 func (x *CreateCheckpointRequest) Reset() {
 	*x = CreateCheckpointRequest{}
-	mi := &file_proto_worker_worker_proto_msgTypes[44]
+	mi := &file_proto_worker_worker_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2621,7 +2749,7 @@ func (x *CreateCheckpointRequest) String() string {
 func (*CreateCheckpointRequest) ProtoMessage() {}
 
 func (x *CreateCheckpointRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[44]
+	mi := &file_proto_worker_worker_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2634,7 +2762,7 @@ func (x *CreateCheckpointRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCheckpointRequest.ProtoReflect.Descriptor instead.
 func (*CreateCheckpointRequest) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{44}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *CreateCheckpointRequest) GetSandboxId() string {
@@ -2681,7 +2809,7 @@ type CreateCheckpointResponse struct {
 
 func (x *CreateCheckpointResponse) Reset() {
 	*x = CreateCheckpointResponse{}
-	mi := &file_proto_worker_worker_proto_msgTypes[45]
+	mi := &file_proto_worker_worker_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2693,7 +2821,7 @@ func (x *CreateCheckpointResponse) String() string {
 func (*CreateCheckpointResponse) ProtoMessage() {}
 
 func (x *CreateCheckpointResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[45]
+	mi := &file_proto_worker_worker_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2706,7 +2834,7 @@ func (x *CreateCheckpointResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCheckpointResponse.ProtoReflect.Descriptor instead.
 func (*CreateCheckpointResponse) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{45}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *CreateCheckpointResponse) GetRootfsS3Key() string {
@@ -2740,7 +2868,7 @@ type RestoreCheckpointRequest struct {
 
 func (x *RestoreCheckpointRequest) Reset() {
 	*x = RestoreCheckpointRequest{}
-	mi := &file_proto_worker_worker_proto_msgTypes[46]
+	mi := &file_proto_worker_worker_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2752,7 +2880,7 @@ func (x *RestoreCheckpointRequest) String() string {
 func (*RestoreCheckpointRequest) ProtoMessage() {}
 
 func (x *RestoreCheckpointRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[46]
+	mi := &file_proto_worker_worker_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2765,7 +2893,7 @@ func (x *RestoreCheckpointRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreCheckpointRequest.ProtoReflect.Descriptor instead.
 func (*RestoreCheckpointRequest) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{46}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *RestoreCheckpointRequest) GetSandboxId() string {
@@ -2791,7 +2919,7 @@ type RestoreCheckpointResponse struct {
 
 func (x *RestoreCheckpointResponse) Reset() {
 	*x = RestoreCheckpointResponse{}
-	mi := &file_proto_worker_worker_proto_msgTypes[47]
+	mi := &file_proto_worker_worker_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2803,7 +2931,7 @@ func (x *RestoreCheckpointResponse) String() string {
 func (*RestoreCheckpointResponse) ProtoMessage() {}
 
 func (x *RestoreCheckpointResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[47]
+	mi := &file_proto_worker_worker_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2816,7 +2944,7 @@ func (x *RestoreCheckpointResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreCheckpointResponse.ProtoReflect.Descriptor instead.
 func (*RestoreCheckpointResponse) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{47}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *RestoreCheckpointResponse) GetSuccess() bool {
@@ -2839,7 +2967,7 @@ type SetSandboxLimitsRequest struct {
 
 func (x *SetSandboxLimitsRequest) Reset() {
 	*x = SetSandboxLimitsRequest{}
-	mi := &file_proto_worker_worker_proto_msgTypes[48]
+	mi := &file_proto_worker_worker_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2851,7 +2979,7 @@ func (x *SetSandboxLimitsRequest) String() string {
 func (*SetSandboxLimitsRequest) ProtoMessage() {}
 
 func (x *SetSandboxLimitsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[48]
+	mi := &file_proto_worker_worker_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2864,7 +2992,7 @@ func (x *SetSandboxLimitsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSandboxLimitsRequest.ProtoReflect.Descriptor instead.
 func (*SetSandboxLimitsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{48}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *SetSandboxLimitsRequest) GetSandboxId() string {
@@ -2910,7 +3038,7 @@ type SetSandboxLimitsResponse struct {
 
 func (x *SetSandboxLimitsResponse) Reset() {
 	*x = SetSandboxLimitsResponse{}
-	mi := &file_proto_worker_worker_proto_msgTypes[49]
+	mi := &file_proto_worker_worker_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2922,7 +3050,7 @@ func (x *SetSandboxLimitsResponse) String() string {
 func (*SetSandboxLimitsResponse) ProtoMessage() {}
 
 func (x *SetSandboxLimitsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[49]
+	mi := &file_proto_worker_worker_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2935,7 +3063,7 @@ func (x *SetSandboxLimitsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSandboxLimitsResponse.ProtoReflect.Descriptor instead.
 func (*SetSandboxLimitsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{49}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{51}
 }
 
 // Live migration messages
@@ -2948,7 +3076,7 @@ type PreCopyDrivesRequest struct {
 
 func (x *PreCopyDrivesRequest) Reset() {
 	*x = PreCopyDrivesRequest{}
-	mi := &file_proto_worker_worker_proto_msgTypes[50]
+	mi := &file_proto_worker_worker_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2960,7 +3088,7 @@ func (x *PreCopyDrivesRequest) String() string {
 func (*PreCopyDrivesRequest) ProtoMessage() {}
 
 func (x *PreCopyDrivesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[50]
+	mi := &file_proto_worker_worker_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2973,7 +3101,7 @@ func (x *PreCopyDrivesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreCopyDrivesRequest.ProtoReflect.Descriptor instead.
 func (*PreCopyDrivesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{50}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *PreCopyDrivesRequest) GetSandboxId() string {
@@ -3017,7 +3145,7 @@ type PreCopyDrivesResponse struct {
 
 func (x *PreCopyDrivesResponse) Reset() {
 	*x = PreCopyDrivesResponse{}
-	mi := &file_proto_worker_worker_proto_msgTypes[51]
+	mi := &file_proto_worker_worker_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3029,7 +3157,7 @@ func (x *PreCopyDrivesResponse) String() string {
 func (*PreCopyDrivesResponse) ProtoMessage() {}
 
 func (x *PreCopyDrivesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[51]
+	mi := &file_proto_worker_worker_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3042,7 +3170,7 @@ func (x *PreCopyDrivesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreCopyDrivesResponse.ProtoReflect.Descriptor instead.
 func (*PreCopyDrivesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{51}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *PreCopyDrivesResponse) GetRootfsKey() string {
@@ -3125,7 +3253,7 @@ type HostList struct {
 
 func (x *HostList) Reset() {
 	*x = HostList{}
-	mi := &file_proto_worker_worker_proto_msgTypes[52]
+	mi := &file_proto_worker_worker_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3137,7 +3265,7 @@ func (x *HostList) String() string {
 func (*HostList) ProtoMessage() {}
 
 func (x *HostList) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[52]
+	mi := &file_proto_worker_worker_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3150,7 +3278,7 @@ func (x *HostList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostList.ProtoReflect.Descriptor instead.
 func (*HostList) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{52}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *HostList) GetHosts() []string {
@@ -3188,7 +3316,7 @@ type PrepareMigrationIncomingRequest struct {
 
 func (x *PrepareMigrationIncomingRequest) Reset() {
 	*x = PrepareMigrationIncomingRequest{}
-	mi := &file_proto_worker_worker_proto_msgTypes[53]
+	mi := &file_proto_worker_worker_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3200,7 +3328,7 @@ func (x *PrepareMigrationIncomingRequest) String() string {
 func (*PrepareMigrationIncomingRequest) ProtoMessage() {}
 
 func (x *PrepareMigrationIncomingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[53]
+	mi := &file_proto_worker_worker_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3213,7 +3341,7 @@ func (x *PrepareMigrationIncomingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareMigrationIncomingRequest.ProtoReflect.Descriptor instead.
 func (*PrepareMigrationIncomingRequest) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{53}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *PrepareMigrationIncomingRequest) GetSandboxId() string {
@@ -3338,7 +3466,7 @@ type PrepareMigrationIncomingResponse struct {
 
 func (x *PrepareMigrationIncomingResponse) Reset() {
 	*x = PrepareMigrationIncomingResponse{}
-	mi := &file_proto_worker_worker_proto_msgTypes[54]
+	mi := &file_proto_worker_worker_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3350,7 +3478,7 @@ func (x *PrepareMigrationIncomingResponse) String() string {
 func (*PrepareMigrationIncomingResponse) ProtoMessage() {}
 
 func (x *PrepareMigrationIncomingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[54]
+	mi := &file_proto_worker_worker_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3363,7 +3491,7 @@ func (x *PrepareMigrationIncomingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareMigrationIncomingResponse.ProtoReflect.Descriptor instead.
 func (*PrepareMigrationIncomingResponse) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{54}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *PrepareMigrationIncomingResponse) GetIncomingAddr() string {
@@ -3391,7 +3519,7 @@ type UpdateSandboxSecretRequest struct {
 
 func (x *UpdateSandboxSecretRequest) Reset() {
 	*x = UpdateSandboxSecretRequest{}
-	mi := &file_proto_worker_worker_proto_msgTypes[55]
+	mi := &file_proto_worker_worker_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3403,7 +3531,7 @@ func (x *UpdateSandboxSecretRequest) String() string {
 func (*UpdateSandboxSecretRequest) ProtoMessage() {}
 
 func (x *UpdateSandboxSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[55]
+	mi := &file_proto_worker_worker_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3416,7 +3544,7 @@ func (x *UpdateSandboxSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSandboxSecretRequest.ProtoReflect.Descriptor instead.
 func (*UpdateSandboxSecretRequest) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{55}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *UpdateSandboxSecretRequest) GetSandboxId() string {
@@ -3452,7 +3580,7 @@ type UpdateSandboxSecretResponse struct {
 
 func (x *UpdateSandboxSecretResponse) Reset() {
 	*x = UpdateSandboxSecretResponse{}
-	mi := &file_proto_worker_worker_proto_msgTypes[56]
+	mi := &file_proto_worker_worker_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3464,7 +3592,7 @@ func (x *UpdateSandboxSecretResponse) String() string {
 func (*UpdateSandboxSecretResponse) ProtoMessage() {}
 
 func (x *UpdateSandboxSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[56]
+	mi := &file_proto_worker_worker_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3477,7 +3605,7 @@ func (x *UpdateSandboxSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSandboxSecretResponse.ProtoReflect.Descriptor instead.
 func (*UpdateSandboxSecretResponse) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{56}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *UpdateSandboxSecretResponse) GetUpdated() bool {
@@ -3497,7 +3625,7 @@ type LiveMigrateRequest struct {
 
 func (x *LiveMigrateRequest) Reset() {
 	*x = LiveMigrateRequest{}
-	mi := &file_proto_worker_worker_proto_msgTypes[57]
+	mi := &file_proto_worker_worker_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3509,7 +3637,7 @@ func (x *LiveMigrateRequest) String() string {
 func (*LiveMigrateRequest) ProtoMessage() {}
 
 func (x *LiveMigrateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[57]
+	mi := &file_proto_worker_worker_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3522,7 +3650,7 @@ func (x *LiveMigrateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LiveMigrateRequest.ProtoReflect.Descriptor instead.
 func (*LiveMigrateRequest) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{57}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *LiveMigrateRequest) GetSandboxId() string {
@@ -3547,7 +3675,7 @@ type LiveMigrateResponse struct {
 
 func (x *LiveMigrateResponse) Reset() {
 	*x = LiveMigrateResponse{}
-	mi := &file_proto_worker_worker_proto_msgTypes[58]
+	mi := &file_proto_worker_worker_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3559,7 +3687,7 @@ func (x *LiveMigrateResponse) String() string {
 func (*LiveMigrateResponse) ProtoMessage() {}
 
 func (x *LiveMigrateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[58]
+	mi := &file_proto_worker_worker_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3572,7 +3700,7 @@ func (x *LiveMigrateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LiveMigrateResponse.ProtoReflect.Descriptor instead.
 func (*LiveMigrateResponse) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{58}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{60}
 }
 
 type CompleteMigrationIncomingRequest struct {
@@ -3584,7 +3712,7 @@ type CompleteMigrationIncomingRequest struct {
 
 func (x *CompleteMigrationIncomingRequest) Reset() {
 	*x = CompleteMigrationIncomingRequest{}
-	mi := &file_proto_worker_worker_proto_msgTypes[59]
+	mi := &file_proto_worker_worker_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3596,7 +3724,7 @@ func (x *CompleteMigrationIncomingRequest) String() string {
 func (*CompleteMigrationIncomingRequest) ProtoMessage() {}
 
 func (x *CompleteMigrationIncomingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[59]
+	mi := &file_proto_worker_worker_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3609,7 +3737,7 @@ func (x *CompleteMigrationIncomingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteMigrationIncomingRequest.ProtoReflect.Descriptor instead.
 func (*CompleteMigrationIncomingRequest) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{59}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *CompleteMigrationIncomingRequest) GetSandboxId() string {
@@ -3627,7 +3755,7 @@ type CompleteMigrationIncomingResponse struct {
 
 func (x *CompleteMigrationIncomingResponse) Reset() {
 	*x = CompleteMigrationIncomingResponse{}
-	mi := &file_proto_worker_worker_proto_msgTypes[60]
+	mi := &file_proto_worker_worker_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3639,7 +3767,7 @@ func (x *CompleteMigrationIncomingResponse) String() string {
 func (*CompleteMigrationIncomingResponse) ProtoMessage() {}
 
 func (x *CompleteMigrationIncomingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[60]
+	mi := &file_proto_worker_worker_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3652,7 +3780,7 @@ func (x *CompleteMigrationIncomingResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CompleteMigrationIncomingResponse.ProtoReflect.Descriptor instead.
 func (*CompleteMigrationIncomingResponse) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{60}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{62}
 }
 
 // Golden snapshot management
@@ -3664,7 +3792,7 @@ type RebuildGoldenSnapshotRequest struct {
 
 func (x *RebuildGoldenSnapshotRequest) Reset() {
 	*x = RebuildGoldenSnapshotRequest{}
-	mi := &file_proto_worker_worker_proto_msgTypes[61]
+	mi := &file_proto_worker_worker_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3676,7 +3804,7 @@ func (x *RebuildGoldenSnapshotRequest) String() string {
 func (*RebuildGoldenSnapshotRequest) ProtoMessage() {}
 
 func (x *RebuildGoldenSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[61]
+	mi := &file_proto_worker_worker_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3689,7 +3817,7 @@ func (x *RebuildGoldenSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebuildGoldenSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*RebuildGoldenSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{61}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{63}
 }
 
 type RebuildGoldenSnapshotResponse struct {
@@ -3702,7 +3830,7 @@ type RebuildGoldenSnapshotResponse struct {
 
 func (x *RebuildGoldenSnapshotResponse) Reset() {
 	*x = RebuildGoldenSnapshotResponse{}
-	mi := &file_proto_worker_worker_proto_msgTypes[62]
+	mi := &file_proto_worker_worker_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3714,7 +3842,7 @@ func (x *RebuildGoldenSnapshotResponse) String() string {
 func (*RebuildGoldenSnapshotResponse) ProtoMessage() {}
 
 func (x *RebuildGoldenSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_worker_worker_proto_msgTypes[62]
+	mi := &file_proto_worker_worker_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3727,7 +3855,7 @@ func (x *RebuildGoldenSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebuildGoldenSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*RebuildGoldenSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_proto_worker_worker_proto_rawDescGZIP(), []int{62}
+	return file_proto_worker_worker_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *RebuildGoldenSnapshotResponse) GetOldVersion() string {
@@ -3950,7 +4078,18 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x16\n" +
 	"\x06signal\x18\x03 \x01(\x05R\x06signal\"\x19\n" +
-	"\x17ExecSessionKillResponse\"7\n" +
+	"\x17ExecSessionKillResponse\"X\n" +
+	"\x18ExecSessionResultRequest\x12\x1d\n" +
+	"\n" +
+	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\"\xa0\x01\n" +
+	"\x19ExecSessionResultResponse\x12\x18\n" +
+	"\arunning\x18\x01 \x01(\bR\arunning\x12\x1b\n" +
+	"\texit_code\x18\x02 \x01(\x05R\bexitCode\x12\x16\n" +
+	"\x06stdout\x18\x03 \x01(\fR\x06stdout\x12\x16\n" +
+	"\x06stderr\x18\x04 \x01(\fR\x06stderr\x12\x1c\n" +
+	"\ttruncated\x18\x05 \x01(\bR\ttruncated\"7\n" +
 	"\x16GetSandboxStatsRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\"\xc4\x01\n" +
@@ -4073,7 +4212,7 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\vold_version\x18\x01 \x01(\tR\n" +
 	"oldVersion\x12\x1f\n" +
 	"\vnew_version\x18\x02 \x01(\tR\n" +
-	"newVersion2\x8b\x13\n" +
+	"newVersion2\xe5\x13\n" +
 	"\rSandboxWorker\x12L\n" +
 	"\rCreateSandbox\x12\x1c.worker.CreateSandboxRequest\x1a\x1d.worker.CreateSandboxResponse\x12O\n" +
 	"\x0eDestroySandbox\x12\x1d.worker.DestroySandboxRequest\x1a\x1e.worker.DestroySandboxResponse\x12C\n" +
@@ -4089,7 +4228,8 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\tPTYStream\x12\x10.worker.PTYInput\x1a\x11.worker.PTYOutput(\x010\x01\x12X\n" +
 	"\x11ExecSessionCreate\x12 .worker.ExecSessionCreateRequest\x1a!.worker.ExecSessionCreateResponse\x12R\n" +
 	"\x0fExecSessionList\x12\x1e.worker.ExecSessionListRequest\x1a\x1f.worker.ExecSessionListResponse\x12R\n" +
-	"\x0fExecSessionKill\x12\x1e.worker.ExecSessionKillRequest\x1a\x1f.worker.ExecSessionKillResponse\x12U\n" +
+	"\x0fExecSessionKill\x12\x1e.worker.ExecSessionKillRequest\x1a\x1f.worker.ExecSessionKillResponse\x12X\n" +
+	"\x11ExecSessionResult\x12 .worker.ExecSessionResultRequest\x1a!.worker.ExecSessionResultResponse\x12U\n" +
 	"\x10HibernateSandbox\x12\x1f.worker.HibernateSandboxRequest\x1a .worker.HibernateSandboxResponse\x12F\n" +
 	"\vWakeSandbox\x12\x1a.worker.WakeSandboxRequest\x1a\x1b.worker.WakeSandboxResponse\x12L\n" +
 	"\rRebootSandbox\x12\x1c.worker.RebootSandboxRequest\x1a\x1d.worker.RebootSandboxResponse\x12X\n" +
@@ -4120,7 +4260,7 @@ func file_proto_worker_worker_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_worker_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_worker_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 74)
+var file_proto_worker_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 76)
 var file_proto_worker_worker_proto_goTypes = []any{
 	(ExecOutputChunk_Stream)(0),               // 0: worker.ExecOutputChunk.Stream
 	(*CreateSandboxRequest)(nil),              // 1: worker.CreateSandboxRequest
@@ -4165,58 +4305,60 @@ var file_proto_worker_worker_proto_goTypes = []any{
 	(*ExecSessionInfoEntry)(nil),              // 40: worker.ExecSessionInfoEntry
 	(*ExecSessionKillRequest)(nil),            // 41: worker.ExecSessionKillRequest
 	(*ExecSessionKillResponse)(nil),           // 42: worker.ExecSessionKillResponse
-	(*GetSandboxStatsRequest)(nil),            // 43: worker.GetSandboxStatsRequest
-	(*GetSandboxStatsResponse)(nil),           // 44: worker.GetSandboxStatsResponse
-	(*CreateCheckpointRequest)(nil),           // 45: worker.CreateCheckpointRequest
-	(*CreateCheckpointResponse)(nil),          // 46: worker.CreateCheckpointResponse
-	(*RestoreCheckpointRequest)(nil),          // 47: worker.RestoreCheckpointRequest
-	(*RestoreCheckpointResponse)(nil),         // 48: worker.RestoreCheckpointResponse
-	(*SetSandboxLimitsRequest)(nil),           // 49: worker.SetSandboxLimitsRequest
-	(*SetSandboxLimitsResponse)(nil),          // 50: worker.SetSandboxLimitsResponse
-	(*PreCopyDrivesRequest)(nil),              // 51: worker.PreCopyDrivesRequest
-	(*PreCopyDrivesResponse)(nil),             // 52: worker.PreCopyDrivesResponse
-	(*HostList)(nil),                          // 53: worker.HostList
-	(*PrepareMigrationIncomingRequest)(nil),   // 54: worker.PrepareMigrationIncomingRequest
-	(*PrepareMigrationIncomingResponse)(nil),  // 55: worker.PrepareMigrationIncomingResponse
-	(*UpdateSandboxSecretRequest)(nil),        // 56: worker.UpdateSandboxSecretRequest
-	(*UpdateSandboxSecretResponse)(nil),       // 57: worker.UpdateSandboxSecretResponse
-	(*LiveMigrateRequest)(nil),                // 58: worker.LiveMigrateRequest
-	(*LiveMigrateResponse)(nil),               // 59: worker.LiveMigrateResponse
-	(*CompleteMigrationIncomingRequest)(nil),  // 60: worker.CompleteMigrationIncomingRequest
-	(*CompleteMigrationIncomingResponse)(nil), // 61: worker.CompleteMigrationIncomingResponse
-	(*RebuildGoldenSnapshotRequest)(nil),      // 62: worker.RebuildGoldenSnapshotRequest
-	(*RebuildGoldenSnapshotResponse)(nil),     // 63: worker.RebuildGoldenSnapshotResponse
-	nil,                                       // 64: worker.CreateSandboxRequest.EnvsEntry
-	nil,                                       // 65: worker.CreateSandboxRequest.SecretAllowedHostsEntry
-	nil,                                       // 66: worker.CreateSandboxRequest.SecretEnvsEntry
-	nil,                                       // 67: worker.ExecCommandRequest.EnvsEntry
-	nil,                                       // 68: worker.ExecSessionCreateRequest.EnvsEntry
-	nil,                                       // 69: worker.PreCopyDrivesResponse.SealedTokensEntry
-	nil,                                       // 70: worker.PreCopyDrivesResponse.TokenHostsEntry
-	nil,                                       // 71: worker.PreCopyDrivesResponse.SealedNamesEntry
-	nil,                                       // 72: worker.PrepareMigrationIncomingRequest.SealedTokensEntry
-	nil,                                       // 73: worker.PrepareMigrationIncomingRequest.TokenHostsEntry
-	nil,                                       // 74: worker.PrepareMigrationIncomingRequest.SealedNamesEntry
+	(*ExecSessionResultRequest)(nil),          // 43: worker.ExecSessionResultRequest
+	(*ExecSessionResultResponse)(nil),         // 44: worker.ExecSessionResultResponse
+	(*GetSandboxStatsRequest)(nil),            // 45: worker.GetSandboxStatsRequest
+	(*GetSandboxStatsResponse)(nil),           // 46: worker.GetSandboxStatsResponse
+	(*CreateCheckpointRequest)(nil),           // 47: worker.CreateCheckpointRequest
+	(*CreateCheckpointResponse)(nil),          // 48: worker.CreateCheckpointResponse
+	(*RestoreCheckpointRequest)(nil),          // 49: worker.RestoreCheckpointRequest
+	(*RestoreCheckpointResponse)(nil),         // 50: worker.RestoreCheckpointResponse
+	(*SetSandboxLimitsRequest)(nil),           // 51: worker.SetSandboxLimitsRequest
+	(*SetSandboxLimitsResponse)(nil),          // 52: worker.SetSandboxLimitsResponse
+	(*PreCopyDrivesRequest)(nil),              // 53: worker.PreCopyDrivesRequest
+	(*PreCopyDrivesResponse)(nil),             // 54: worker.PreCopyDrivesResponse
+	(*HostList)(nil),                          // 55: worker.HostList
+	(*PrepareMigrationIncomingRequest)(nil),   // 56: worker.PrepareMigrationIncomingRequest
+	(*PrepareMigrationIncomingResponse)(nil),  // 57: worker.PrepareMigrationIncomingResponse
+	(*UpdateSandboxSecretRequest)(nil),        // 58: worker.UpdateSandboxSecretRequest
+	(*UpdateSandboxSecretResponse)(nil),       // 59: worker.UpdateSandboxSecretResponse
+	(*LiveMigrateRequest)(nil),                // 60: worker.LiveMigrateRequest
+	(*LiveMigrateResponse)(nil),               // 61: worker.LiveMigrateResponse
+	(*CompleteMigrationIncomingRequest)(nil),  // 62: worker.CompleteMigrationIncomingRequest
+	(*CompleteMigrationIncomingResponse)(nil), // 63: worker.CompleteMigrationIncomingResponse
+	(*RebuildGoldenSnapshotRequest)(nil),      // 64: worker.RebuildGoldenSnapshotRequest
+	(*RebuildGoldenSnapshotResponse)(nil),     // 65: worker.RebuildGoldenSnapshotResponse
+	nil,                                       // 66: worker.CreateSandboxRequest.EnvsEntry
+	nil,                                       // 67: worker.CreateSandboxRequest.SecretAllowedHostsEntry
+	nil,                                       // 68: worker.CreateSandboxRequest.SecretEnvsEntry
+	nil,                                       // 69: worker.ExecCommandRequest.EnvsEntry
+	nil,                                       // 70: worker.ExecSessionCreateRequest.EnvsEntry
+	nil,                                       // 71: worker.PreCopyDrivesResponse.SealedTokensEntry
+	nil,                                       // 72: worker.PreCopyDrivesResponse.TokenHostsEntry
+	nil,                                       // 73: worker.PreCopyDrivesResponse.SealedNamesEntry
+	nil,                                       // 74: worker.PrepareMigrationIncomingRequest.SealedTokensEntry
+	nil,                                       // 75: worker.PrepareMigrationIncomingRequest.TokenHostsEntry
+	nil,                                       // 76: worker.PrepareMigrationIncomingRequest.SealedNamesEntry
 }
 var file_proto_worker_worker_proto_depIdxs = []int32{
-	64, // 0: worker.CreateSandboxRequest.envs:type_name -> worker.CreateSandboxRequest.EnvsEntry
-	65, // 1: worker.CreateSandboxRequest.secret_allowed_hosts:type_name -> worker.CreateSandboxRequest.SecretAllowedHostsEntry
-	66, // 2: worker.CreateSandboxRequest.secret_envs:type_name -> worker.CreateSandboxRequest.SecretEnvsEntry
+	66, // 0: worker.CreateSandboxRequest.envs:type_name -> worker.CreateSandboxRequest.EnvsEntry
+	67, // 1: worker.CreateSandboxRequest.secret_allowed_hosts:type_name -> worker.CreateSandboxRequest.SecretAllowedHostsEntry
+	68, // 2: worker.CreateSandboxRequest.secret_envs:type_name -> worker.CreateSandboxRequest.SecretEnvsEntry
 	10, // 3: worker.ListSandboxesResponse.sandboxes:type_name -> worker.GetSandboxResponse
-	67, // 4: worker.ExecCommandRequest.envs:type_name -> worker.ExecCommandRequest.EnvsEntry
+	69, // 4: worker.ExecCommandRequest.envs:type_name -> worker.ExecCommandRequest.EnvsEntry
 	0,  // 5: worker.ExecOutputChunk.stream:type_name -> worker.ExecOutputChunk.Stream
 	21, // 6: worker.ListDirResponse.entries:type_name -> worker.DirEntry
 	26, // 7: worker.PTYInput.resize:type_name -> worker.PTYResize
-	68, // 8: worker.ExecSessionCreateRequest.envs:type_name -> worker.ExecSessionCreateRequest.EnvsEntry
+	70, // 8: worker.ExecSessionCreateRequest.envs:type_name -> worker.ExecSessionCreateRequest.EnvsEntry
 	40, // 9: worker.ExecSessionListResponse.sessions:type_name -> worker.ExecSessionInfoEntry
-	69, // 10: worker.PreCopyDrivesResponse.sealed_tokens:type_name -> worker.PreCopyDrivesResponse.SealedTokensEntry
-	70, // 11: worker.PreCopyDrivesResponse.token_hosts:type_name -> worker.PreCopyDrivesResponse.TokenHostsEntry
-	71, // 12: worker.PreCopyDrivesResponse.sealed_names:type_name -> worker.PreCopyDrivesResponse.SealedNamesEntry
-	72, // 13: worker.PrepareMigrationIncomingRequest.sealed_tokens:type_name -> worker.PrepareMigrationIncomingRequest.SealedTokensEntry
-	73, // 14: worker.PrepareMigrationIncomingRequest.token_hosts:type_name -> worker.PrepareMigrationIncomingRequest.TokenHostsEntry
-	74, // 15: worker.PrepareMigrationIncomingRequest.sealed_names:type_name -> worker.PrepareMigrationIncomingRequest.SealedNamesEntry
-	53, // 16: worker.PreCopyDrivesResponse.TokenHostsEntry.value:type_name -> worker.HostList
-	53, // 17: worker.PrepareMigrationIncomingRequest.TokenHostsEntry.value:type_name -> worker.HostList
+	71, // 10: worker.PreCopyDrivesResponse.sealed_tokens:type_name -> worker.PreCopyDrivesResponse.SealedTokensEntry
+	72, // 11: worker.PreCopyDrivesResponse.token_hosts:type_name -> worker.PreCopyDrivesResponse.TokenHostsEntry
+	73, // 12: worker.PreCopyDrivesResponse.sealed_names:type_name -> worker.PreCopyDrivesResponse.SealedNamesEntry
+	74, // 13: worker.PrepareMigrationIncomingRequest.sealed_tokens:type_name -> worker.PrepareMigrationIncomingRequest.SealedTokensEntry
+	75, // 14: worker.PrepareMigrationIncomingRequest.token_hosts:type_name -> worker.PrepareMigrationIncomingRequest.TokenHostsEntry
+	76, // 15: worker.PrepareMigrationIncomingRequest.sealed_names:type_name -> worker.PrepareMigrationIncomingRequest.SealedNamesEntry
+	55, // 16: worker.PreCopyDrivesResponse.TokenHostsEntry.value:type_name -> worker.HostList
+	55, // 17: worker.PrepareMigrationIncomingRequest.TokenHostsEntry.value:type_name -> worker.HostList
 	1,  // 18: worker.SandboxWorker.CreateSandbox:input_type -> worker.CreateSandboxRequest
 	3,  // 19: worker.SandboxWorker.DestroySandbox:input_type -> worker.DestroySandboxRequest
 	9,  // 20: worker.SandboxWorker.GetSandbox:input_type -> worker.GetSandboxRequest
@@ -4231,54 +4373,56 @@ var file_proto_worker_worker_proto_depIdxs = []int32{
 	36, // 29: worker.SandboxWorker.ExecSessionCreate:input_type -> worker.ExecSessionCreateRequest
 	38, // 30: worker.SandboxWorker.ExecSessionList:input_type -> worker.ExecSessionListRequest
 	41, // 31: worker.SandboxWorker.ExecSessionKill:input_type -> worker.ExecSessionKillRequest
-	28, // 32: worker.SandboxWorker.HibernateSandbox:input_type -> worker.HibernateSandboxRequest
-	30, // 33: worker.SandboxWorker.WakeSandbox:input_type -> worker.WakeSandboxRequest
-	5,  // 34: worker.SandboxWorker.RebootSandbox:input_type -> worker.RebootSandboxRequest
-	7,  // 35: worker.SandboxWorker.PowerCycleSandbox:input_type -> worker.PowerCycleSandboxRequest
-	32, // 36: worker.SandboxWorker.SaveAsTemplate:input_type -> worker.SaveAsTemplateRequest
-	45, // 37: worker.SandboxWorker.CreateCheckpoint:input_type -> worker.CreateCheckpointRequest
-	47, // 38: worker.SandboxWorker.RestoreCheckpoint:input_type -> worker.RestoreCheckpointRequest
-	34, // 39: worker.SandboxWorker.BuildTemplate:input_type -> worker.BuildTemplateRequest
-	43, // 40: worker.SandboxWorker.GetSandboxStats:input_type -> worker.GetSandboxStatsRequest
-	49, // 41: worker.SandboxWorker.SetSandboxLimits:input_type -> worker.SetSandboxLimitsRequest
-	56, // 42: worker.SandboxWorker.UpdateSandboxSecret:input_type -> worker.UpdateSandboxSecretRequest
-	51, // 43: worker.SandboxWorker.PreCopyDrives:input_type -> worker.PreCopyDrivesRequest
-	54, // 44: worker.SandboxWorker.PrepareMigrationIncoming:input_type -> worker.PrepareMigrationIncomingRequest
-	58, // 45: worker.SandboxWorker.LiveMigrate:input_type -> worker.LiveMigrateRequest
-	60, // 46: worker.SandboxWorker.CompleteMigrationIncoming:input_type -> worker.CompleteMigrationIncomingRequest
-	62, // 47: worker.SandboxWorker.RebuildGoldenSnapshot:input_type -> worker.RebuildGoldenSnapshotRequest
-	2,  // 48: worker.SandboxWorker.CreateSandbox:output_type -> worker.CreateSandboxResponse
-	4,  // 49: worker.SandboxWorker.DestroySandbox:output_type -> worker.DestroySandboxResponse
-	10, // 50: worker.SandboxWorker.GetSandbox:output_type -> worker.GetSandboxResponse
-	12, // 51: worker.SandboxWorker.ListSandboxes:output_type -> worker.ListSandboxesResponse
-	14, // 52: worker.SandboxWorker.ExecCommand:output_type -> worker.ExecCommandResponse
-	15, // 53: worker.SandboxWorker.ExecCommandStream:output_type -> worker.ExecOutputChunk
-	17, // 54: worker.SandboxWorker.ReadFile:output_type -> worker.ReadFileResponse
-	19, // 55: worker.SandboxWorker.WriteFile:output_type -> worker.WriteFileResponse
-	22, // 56: worker.SandboxWorker.ListDir:output_type -> worker.ListDirResponse
-	24, // 57: worker.SandboxWorker.CreatePTY:output_type -> worker.CreatePTYResponse
-	27, // 58: worker.SandboxWorker.PTYStream:output_type -> worker.PTYOutput
-	37, // 59: worker.SandboxWorker.ExecSessionCreate:output_type -> worker.ExecSessionCreateResponse
-	39, // 60: worker.SandboxWorker.ExecSessionList:output_type -> worker.ExecSessionListResponse
-	42, // 61: worker.SandboxWorker.ExecSessionKill:output_type -> worker.ExecSessionKillResponse
-	29, // 62: worker.SandboxWorker.HibernateSandbox:output_type -> worker.HibernateSandboxResponse
-	31, // 63: worker.SandboxWorker.WakeSandbox:output_type -> worker.WakeSandboxResponse
-	6,  // 64: worker.SandboxWorker.RebootSandbox:output_type -> worker.RebootSandboxResponse
-	8,  // 65: worker.SandboxWorker.PowerCycleSandbox:output_type -> worker.PowerCycleSandboxResponse
-	33, // 66: worker.SandboxWorker.SaveAsTemplate:output_type -> worker.SaveAsTemplateResponse
-	46, // 67: worker.SandboxWorker.CreateCheckpoint:output_type -> worker.CreateCheckpointResponse
-	48, // 68: worker.SandboxWorker.RestoreCheckpoint:output_type -> worker.RestoreCheckpointResponse
-	35, // 69: worker.SandboxWorker.BuildTemplate:output_type -> worker.BuildTemplateResponse
-	44, // 70: worker.SandboxWorker.GetSandboxStats:output_type -> worker.GetSandboxStatsResponse
-	50, // 71: worker.SandboxWorker.SetSandboxLimits:output_type -> worker.SetSandboxLimitsResponse
-	57, // 72: worker.SandboxWorker.UpdateSandboxSecret:output_type -> worker.UpdateSandboxSecretResponse
-	52, // 73: worker.SandboxWorker.PreCopyDrives:output_type -> worker.PreCopyDrivesResponse
-	55, // 74: worker.SandboxWorker.PrepareMigrationIncoming:output_type -> worker.PrepareMigrationIncomingResponse
-	59, // 75: worker.SandboxWorker.LiveMigrate:output_type -> worker.LiveMigrateResponse
-	61, // 76: worker.SandboxWorker.CompleteMigrationIncoming:output_type -> worker.CompleteMigrationIncomingResponse
-	63, // 77: worker.SandboxWorker.RebuildGoldenSnapshot:output_type -> worker.RebuildGoldenSnapshotResponse
-	48, // [48:78] is the sub-list for method output_type
-	18, // [18:48] is the sub-list for method input_type
+	43, // 32: worker.SandboxWorker.ExecSessionResult:input_type -> worker.ExecSessionResultRequest
+	28, // 33: worker.SandboxWorker.HibernateSandbox:input_type -> worker.HibernateSandboxRequest
+	30, // 34: worker.SandboxWorker.WakeSandbox:input_type -> worker.WakeSandboxRequest
+	5,  // 35: worker.SandboxWorker.RebootSandbox:input_type -> worker.RebootSandboxRequest
+	7,  // 36: worker.SandboxWorker.PowerCycleSandbox:input_type -> worker.PowerCycleSandboxRequest
+	32, // 37: worker.SandboxWorker.SaveAsTemplate:input_type -> worker.SaveAsTemplateRequest
+	47, // 38: worker.SandboxWorker.CreateCheckpoint:input_type -> worker.CreateCheckpointRequest
+	49, // 39: worker.SandboxWorker.RestoreCheckpoint:input_type -> worker.RestoreCheckpointRequest
+	34, // 40: worker.SandboxWorker.BuildTemplate:input_type -> worker.BuildTemplateRequest
+	45, // 41: worker.SandboxWorker.GetSandboxStats:input_type -> worker.GetSandboxStatsRequest
+	51, // 42: worker.SandboxWorker.SetSandboxLimits:input_type -> worker.SetSandboxLimitsRequest
+	58, // 43: worker.SandboxWorker.UpdateSandboxSecret:input_type -> worker.UpdateSandboxSecretRequest
+	53, // 44: worker.SandboxWorker.PreCopyDrives:input_type -> worker.PreCopyDrivesRequest
+	56, // 45: worker.SandboxWorker.PrepareMigrationIncoming:input_type -> worker.PrepareMigrationIncomingRequest
+	60, // 46: worker.SandboxWorker.LiveMigrate:input_type -> worker.LiveMigrateRequest
+	62, // 47: worker.SandboxWorker.CompleteMigrationIncoming:input_type -> worker.CompleteMigrationIncomingRequest
+	64, // 48: worker.SandboxWorker.RebuildGoldenSnapshot:input_type -> worker.RebuildGoldenSnapshotRequest
+	2,  // 49: worker.SandboxWorker.CreateSandbox:output_type -> worker.CreateSandboxResponse
+	4,  // 50: worker.SandboxWorker.DestroySandbox:output_type -> worker.DestroySandboxResponse
+	10, // 51: worker.SandboxWorker.GetSandbox:output_type -> worker.GetSandboxResponse
+	12, // 52: worker.SandboxWorker.ListSandboxes:output_type -> worker.ListSandboxesResponse
+	14, // 53: worker.SandboxWorker.ExecCommand:output_type -> worker.ExecCommandResponse
+	15, // 54: worker.SandboxWorker.ExecCommandStream:output_type -> worker.ExecOutputChunk
+	17, // 55: worker.SandboxWorker.ReadFile:output_type -> worker.ReadFileResponse
+	19, // 56: worker.SandboxWorker.WriteFile:output_type -> worker.WriteFileResponse
+	22, // 57: worker.SandboxWorker.ListDir:output_type -> worker.ListDirResponse
+	24, // 58: worker.SandboxWorker.CreatePTY:output_type -> worker.CreatePTYResponse
+	27, // 59: worker.SandboxWorker.PTYStream:output_type -> worker.PTYOutput
+	37, // 60: worker.SandboxWorker.ExecSessionCreate:output_type -> worker.ExecSessionCreateResponse
+	39, // 61: worker.SandboxWorker.ExecSessionList:output_type -> worker.ExecSessionListResponse
+	42, // 62: worker.SandboxWorker.ExecSessionKill:output_type -> worker.ExecSessionKillResponse
+	44, // 63: worker.SandboxWorker.ExecSessionResult:output_type -> worker.ExecSessionResultResponse
+	29, // 64: worker.SandboxWorker.HibernateSandbox:output_type -> worker.HibernateSandboxResponse
+	31, // 65: worker.SandboxWorker.WakeSandbox:output_type -> worker.WakeSandboxResponse
+	6,  // 66: worker.SandboxWorker.RebootSandbox:output_type -> worker.RebootSandboxResponse
+	8,  // 67: worker.SandboxWorker.PowerCycleSandbox:output_type -> worker.PowerCycleSandboxResponse
+	33, // 68: worker.SandboxWorker.SaveAsTemplate:output_type -> worker.SaveAsTemplateResponse
+	48, // 69: worker.SandboxWorker.CreateCheckpoint:output_type -> worker.CreateCheckpointResponse
+	50, // 70: worker.SandboxWorker.RestoreCheckpoint:output_type -> worker.RestoreCheckpointResponse
+	35, // 71: worker.SandboxWorker.BuildTemplate:output_type -> worker.BuildTemplateResponse
+	46, // 72: worker.SandboxWorker.GetSandboxStats:output_type -> worker.GetSandboxStatsResponse
+	52, // 73: worker.SandboxWorker.SetSandboxLimits:output_type -> worker.SetSandboxLimitsResponse
+	59, // 74: worker.SandboxWorker.UpdateSandboxSecret:output_type -> worker.UpdateSandboxSecretResponse
+	54, // 75: worker.SandboxWorker.PreCopyDrives:output_type -> worker.PreCopyDrivesResponse
+	57, // 76: worker.SandboxWorker.PrepareMigrationIncoming:output_type -> worker.PrepareMigrationIncomingResponse
+	61, // 77: worker.SandboxWorker.LiveMigrate:output_type -> worker.LiveMigrateResponse
+	63, // 78: worker.SandboxWorker.CompleteMigrationIncoming:output_type -> worker.CompleteMigrationIncomingResponse
+	65, // 79: worker.SandboxWorker.RebuildGoldenSnapshot:output_type -> worker.RebuildGoldenSnapshotResponse
+	49, // [49:80] is the sub-list for method output_type
+	18, // [18:49] is the sub-list for method input_type
 	18, // [18:18] is the sub-list for extension type_name
 	18, // [18:18] is the sub-list for extension extendee
 	0,  // [0:18] is the sub-list for field type_name
@@ -4299,7 +4443,7 @@ func file_proto_worker_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_worker_worker_proto_rawDesc), len(file_proto_worker_worker_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   74,
+			NumMessages:   76,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
