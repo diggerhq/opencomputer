@@ -10,9 +10,10 @@ token behind a proxy does not narrow that authority.
 Repos make GitHub access operation-scoped. A **Repo** records owner/repo plus policy; a
 **Source** pins `ref` and `sha`. OpenComputer checks out the exact commit in a short-lived
 **Git operations sandbox**, copies only files into `/workspace/sources/<name>`, and
-destroys the token. For writes, the agent supplies files and a requested outcome;
-OpenComputer enforces repo and operation policy, then calls GitHub outside the agent
-sandbox.
+destroys the token. For writes, the agent edits files and calls the
+[`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool;
+OpenComputer enforces repo and operation policy, then commits and opens the PR outside the
+agent sandbox.
 
 <Note>**Preview** — APIs may change before general availability.</Note>
 
@@ -221,6 +222,15 @@ Common `errorCode` values: `source.auth_required`, `source.auth_ambiguous`,
 After checkout, the agent works with ordinary files. It can inspect, edit, test, diff, and
 make local commits. Anything needing GitHub credentials runs outside the agent sandbox, so
 the agent never runs authenticated `git`/`gh` and never sees a token.
+
+To open a pull request, the agent calls the
+[`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool —
+it is **not** an SDK method; the agent invokes it from inside the sandbox. It takes the
+source's local `name` as `source`, a `title`, and optional `body`, `base` (defaults to the
+source's checked-out ref), and `draft`, and returns the PR URL. OpenComputer commits the
+agent's edits to an `oc/<session>/<source>-<id>` branch and opens the PR with a
+just-in-time, write-scoped token. This requires a **configured GitHub App** — the inline
+`risky_short_lived_token` path is checkout-only and **cannot** open PRs.
 
 ## Guarantees
 

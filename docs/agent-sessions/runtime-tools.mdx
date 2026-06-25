@@ -30,16 +30,45 @@ To work on a **public** repo, the agent `git clone`s it via `bash` — the sandb
 
 The agent's final `say` is the session result. `ask` ends the turn with `yield_reason: "needs_input"`; answer by [steering](/agent-sessions/messaging) a reply, which wakes the session.
 
+## GitHub tools
+
+| Tool | What it does |
+| --- | --- |
+| `github_publish_pull_request` | Open a pull request from a checked-out [Repo](/agent-sessions/repos) source. |
+
+`github_publish_pull_request` lets the agent open a PR **without ever holding a GitHub
+credential**. The agent edits files in `/workspace/sources/<source>` and makes local
+commits as usual; calling the tool hands the requested outcome to the platform, which
+commits the agent's edits to an `oc/<session>/<source>-<id>` branch and opens the PR with a
+just-in-time, write-scoped token — outside the agent sandbox. It returns the PR URL.
+
+| Argument | Required | What it is |
+| --- | --- | --- |
+| `source` | yes | The checked-out source's local name (its directory under `/workspace/sources`). |
+| `title` | yes | PR title. |
+| `body` | no | PR description. |
+| `base` | no | PR base branch. Defaults to the source's checked-out ref. |
+| `draft` | no | Open the PR as a draft. |
+
+<Note>
+`github_publish_pull_request` requires a **configured GitHub App** (the OpenComputer App or
+a [bring-your-own App](/agent-sessions/repos#github-app-modes)). It does **not** work with
+inline (`risky_short_lived_token`) auth, which is **checkout-only** — see
+[Repos & GitHub](/agent-sessions/repos#inline-short-lived-token).
+</Note>
+
 ## External systems
 
-The tools above do not give the agent credentials for GitHub, Slack, Jira, or other
-external systems. To move a session's output into your product, register a
-[webhook destination](/agent-sessions/webhooks) and handle the delivered events in your
-backend.
+These tools never hand the agent raw credentials for GitHub, Slack, Jira, or other external
+systems — the agent opens PRs through `github_publish_pull_request` above (platform-mediated,
+no token in the sandbox), and other actions go through the platform too. To move a session's
+output into your product, register a [webhook destination](/agent-sessions/webhooks) and
+handle the delivered events in your backend.
 
 ## Prompt guidance
 
 - Tell the agent to do all work in the sandbox via `bash`/`read`/`write` — it can't touch your machine.
 - **Public repo:** include the URL + branch/commit in the task text and have the agent `git clone` it with `bash`. **Private repo:** register a [Repo](/agent-sessions/repos) and list it in the session's `sources` — checked out before the first turn, no credential in the sandbox.
+- **Opening a PR:** have the agent edit a source under `/workspace/sources/<name>` and call `github_publish_pull_request` with that `source` and a `title` — the platform commits and opens the PR (requires a configured GitHub App; inline tokens are checkout-only).
 - Have it `say` a clear final result — that's what `GET /sessions/:id/result` returns.
 - Have it `ask` only when it genuinely needs a decision; otherwise it should proceed.
