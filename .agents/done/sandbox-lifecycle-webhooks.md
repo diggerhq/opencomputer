@@ -1,8 +1,10 @@
 # Sandbox lifecycle webhooks — implementation plan
 
-Status: **rev 6 — P1 backend IMPLEMENTED (2026-06-24)**, not yet deployed. Branch:
-`feat/sandbox-webhooks`. This is a **complete reference** — a future implementer should be able
-to work from this doc + the cited code without the conversation that produced it.
+Status: **SUPERSEDED (2026-06-25) — historical, do not build from this.** This describes the
+original full-stack bespoke CP webhook implementation (Postgres dispatcher + signing + SSRF +
+deliveries ledger + reconciler). That stack was **deleted** in the all-Svix-at-edge pivot, which is
+now shipped + deployed to prod — see **`sandbox-webhooks-rearchitecture.md`** (the as-built record).
+Kept only for context on what the pivot replaced and why.
 
 **Testing source of truth:** see §16 at the end of this doc. It records the local/unit expectations,
 the GCP QEMU dev-box setup, the exact smoke commands, the 22/22 e2e result, manual probes, bugs
