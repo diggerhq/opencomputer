@@ -18,30 +18,29 @@ sources; GitHub credentials stay behind that boundary and never enter the agent 
 | Repo | Provider, owner, repo name, optional App pin, and permission ceiling. | Stores no tokens, private keys, or session refs. |
 | Source | Per-session checkout: repo/url, `ref`, `sha`, and local name. | Auth comes from the repo's App unless using inline auth. |
 
-Launch scope is source checkout before the first turn. Remote GitHub actions
-(`source.fetch_ref`, PR publish, comments, statuses) use the same boundary and are coming
-next.
+Private GitHub access is used to prepare the source checkout before a turn starts. Inside
+the sandbox, the agent works on local files; authenticated GitHub operations stay outside
+the model-executed environment.
 
 <Note>
 The Repo/Source shape is provider-neutral: `provider`, `owner`, `repo`, `ref`, `sha`.
-GitHub uses GitHub Apps as its auth surface. A future GitLab integration should add a
-provider-specific auth surface, but sessions should still reference repos and sources the
-same way.
+GitHub uses GitHub Apps as its auth surface. Other providers can add their own auth
+surface while sessions continue to reference repos and sources the same way.
 </Note>
 
 ## GitHub App modes
 
-| Mode | Who owns the App key | Who mints tokens | Status |
+| Mode | Who owns the App key | Who mints tokens | Use when |
 | --- | --- | --- | --- |
-| `oc_app` | OpenComputer | OpenComputer | Current simplest path. |
-| `byo_stored_key` | You; encrypted in OpenComputer | OpenComputer | Coming next. |
-| `byo_broker` | You; kept in your backend | Your broker endpoint | Coming next. |
+| `oc_app` | OpenComputer | OpenComputer | You want private repo access with no App key handling. |
+| `byo_stored_key` | You; encrypted in OpenComputer | OpenComputer | You want GitHub actions to appear as your own App without hosting a broker. |
+| `byo_broker` | You; kept in your backend | Your broker endpoint | Your backend must own GitHub policy, token minting, and App lifecycle. |
 
 In all modes, each operation asks for the minimum GitHub permission it needs. Checkout
-needs read-only contents access; future publish/comment/status tools ask for write access
-only for that operation.
+needs read-only contents access; write-capable actions ask for write access only for that
+operation.
 
-### OpenComputer GitHub App (current simplest path)
+### OpenComputer GitHub App
 
 Install the **OpenComputer** GitHub App and select the repositories agents may work in —
 you choose the repos, and can change the selection or uninstall anytime. No keys to
@@ -51,7 +50,7 @@ operation, so durable sessions and recovery work with nothing else from you.
 <Warning>
 The App may request write-capable GitHub permissions on the repos you select. OpenComputer
 does **not** hand that broad authority to the agent: each operation gets a fresh token with
-the minimum permission it needs, such as read-only for checkout and write only for a future
+the minimum permission it needs, such as read-only for checkout and write only for a
 publish/comment action.
 </Warning>
 
@@ -60,18 +59,10 @@ expose an SDK method to mint that URL because the App is owned by OpenComputer. 
 installed on a repo, reference that repo in a session's `sources` (below) — OpenComputer
 resolves the App and mints a token just in time.
 
-<Note>
-**Coming soon:** listing your Apps and installs (`oc.github.apps.list()` /
-`oc.github.installations.list()`). Today the OpenComputer App is resolved automatically;
-you don't need to enumerate installs to use a repo.
+You do not need to enumerate installations to use a repo. OpenComputer resolves the App
+automatically when a session starts.
 
-```ts
-const installs = await oc.github.installations.list({ appId: "gha_oc" });
-// [{ id: "ghi_...", appId: "gha_oc", accountLogin: "acme", status: "active" }]
-```
-</Note>
-
-### Bring your own GitHub App (coming next)
+### Bring your own GitHub App
 
 Use a bring-your-own App when you want GitHub audit logs, PRs, comments, and statuses to
 come from your own App instead of OpenComputer's.
@@ -88,7 +79,7 @@ Apps, because your backend owns that state.
 
 ### Inline short-lived token
 
-The no-setup workaround is to pass a real short-lived token inline on the source, using the
+The no-setup path is to pass a real short-lived token inline on the source, using the
 deliberately-named `risky_short_lived_token` auth:
 
 <CodeGroup>
@@ -125,8 +116,7 @@ sources: [{
 The inline token **can't refresh** — once it expires the session can't fetch, push, or
 recover, so use it only for sessions that finish within the token's life. OpenComputer
 rejects a far-future or missing expiry and holds it encrypted only until the first
-checkout, then purges it. It's a temporary shortcut for environments that have not
-connected a GitHub App yet.
+checkout, then purges it. Use this only when a GitHub App is not configured.
 </Warning>
 
 ## Register a repo
@@ -202,8 +192,7 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 - **`sha`** (required) — the exact commit, pinned and verified after fetch.
 
 You can also reference `"owner/repo"` directly instead of a registered id. A session can
-list several immutable sources, such as a PR's base and head. Fetching more refs
-mid-session will use the `source.fetch_ref` tool once remote actions land.
+list several immutable sources, such as a PR's base and head.
 
 ## Check source status
 
@@ -227,25 +216,18 @@ Common `errorCode` values: `source.auth_required`, `source.auth_ambiguous`,
 ## What the agent can do
 
 Local Git works normally on the checkout (`status`/`diff`/`log`, edit, test, local
-commits). Anything needing GitHub credentials is a **typed tool** run in a separate
-git-ops sandbox — the agent never runs authenticated `git`/`gh` and never sees a token:
-
-| Tool | Does | Status |
-| --- | --- | --- |
-| `source.fetch_ref` | fetch another ref into the checkout | Coming soon |
-| `github.publish_branch` / `publish_pull_request` | push changes / open a PR | Coming soon |
-| `github.comment` / `github.set_status` | comment, set a commit status | Coming soon |
+commits). Anything needing GitHub credentials runs outside the agent sandbox, so the agent
+never runs authenticated `git`/`gh` and never sees a token.
 
 ## Guarantees
 
 - **GitHub App-backed tokens are never stored** — OpenComputer obtains short-lived,
   repo-scoped tokens just in time and destroys them. None reaches the agent's prompt,
-  shell, files, env, the event log, or telemetry. (The one exception is the inline-token
-  workaround, held encrypted only until the first checkout, then purged.)
+  shell, files, env, the event log, or telemetry. (The one exception is inline-token auth,
+  held encrypted only until the first checkout, then purged.)
 - App private keys for the OpenComputer App and stored-key Apps live only in
   OpenComputer's **control plane**, never in a sandbox. `byo_broker` App keys stay in your
   backend.
-- Agent pushes go to an `oc/<session>/…` branch namespace — **no protected-branch push,
-  no force-push.**
-- Submodules and Git LFS aren't supported yet. Lost-sandbox recovery and prebuilt
-  checkouts for large repos ([Workspaces](/agent-sessions/workspaces)) are firming up.
+- Platform-mediated pushes use an `oc/<session>/…` branch namespace — **no
+  protected-branch push, no force-push.**
+- Submodules and Git LFS are not part of the checkout contract.

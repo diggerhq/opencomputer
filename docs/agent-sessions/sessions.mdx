@@ -19,7 +19,7 @@ A **session** is the durable unit of an [agent](/agent-sessions/agents) at work:
 
 | Status | Meaning |
 | --- | --- |
-| `queued` | Scheduled; a turn hasn't started running yet. |
+| `queued` | Scheduled; no turn is running. |
 | `running` | A turn is executing. |
 | `awaiting_input` | A turn ended asking you a question — steerable; reply to continue. |
 | `idle` | Done for now; quiescent and steerable; the sandbox is hibernated. |
@@ -79,14 +79,14 @@ Three independent knobs — don't overload one for another:
 
 ## Limits
 
-Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are **non-monetary** (no dollar caps — we don't bill model usage yet; you run on your own key). Hitting one ends the turn with the matching `yield_reason`.
+Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are runtime limits, not spend controls; model usage is billed by your provider key. Hitting one ends the turn with the matching `yield_reason`.
 
 ## Stop a session
 
 `POST /sessions/:id/cancel` **requests** a cooperative stop: the turn ends at its next checkpoint with a `turn.completed` (`yield_reason: "canceled"`), so an in-flight model call may run to its timeout — billing for that turn stops when it actually exits, not the instant you call. `POST /sessions/:id/archive` cancels any active turn, then closes the session read-only.
 
-**`archive` is not delete** — the session's log is retained, just read-only. Hard delete (`DELETE /sessions/:id`) and export are coming soon.
+**`archive` is not delete** — the session's log is retained, just read-only.
 
-<Note>Blocking on input *mid-turn* (the formal `ask` loop) is coming soon. Today the agent signals it needs input by ending the turn with `yield_reason: "needs_input"` (status `awaiting_input`); you reply by [steering](/agent-sessions/messaging).</Note>
+<Note>When the agent needs input, the turn ends with `yield_reason: "needs_input"` and the session status becomes `awaiting_input`; reply by [steering](/agent-sessions/messaging).</Note>
 
-<Note>**No cross-session memory (yet).** Each session starts fresh from the agent's prompt + that session's `input` — a durable log is *session history*, not memory the agent carries between sessions. A dedicated memory surface is on the roadmap.</Note>
+<Note>**No cross-session memory.** Each session starts from the agent's prompt + that session's `input` — a durable log is *session history*, not memory the agent carries between sessions.</Note>

@@ -63,6 +63,4 @@ These fields don't all land in one place — the appended [event](/agent-session
 
 So a `*.message` event's `body` is just `{ text, raw? }` — `source`/`conversation`/`refs` live under the event's top-level `refs`, and the sender under `actor` (not inside `body`). Outbound `agent.message` bodies are likewise `{ text }`.
 
-To deliver a session's output, register a webhook destination — deliveries carry the full [Event](/agent-sessions/events); see [Webhooks](/agent-sessions/webhooks).
-
-<Note>[Inbound channels](/agent-sessions/channels) (Slack, GitHub, Jira, email) are coming soon — they map onto this same envelope; today you steer in via the API.</Note>
+To deliver a session's output, register a webhook destination — deliveries carry the full [Event](/agent-sessions/events); see [Webhooks](/agent-sessions/webhooks). The same envelope also underpins [Channels](/agent-sessions/channels) in Labs.

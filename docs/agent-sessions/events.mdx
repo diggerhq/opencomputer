@@ -44,8 +44,6 @@ Treat **`type`** as the stable discriminator — switch on it, don't parse prose
 | `exec.completed` | `{ command, exit_code, summary, content_ref?, bytes? }` | a finished command |
 | `error.runtime` · `error.model` · `error.task` | `{ code, message, retriable? }` | a failure |
 
-**Coming soon**: `test.results`, `diff`/`patch`, `pr.result`, `preview.url`, `action.required` (agent needs an approval / tool result).
-
 ## Visibility levels
 
 Every event carries a `level` — use it to choose how much detail each surface receives.
@@ -79,7 +77,7 @@ Read or stream with `after=<seq>` to get everything since that point — this is
     Steers coalesce — one turn can pick up several — so [`POST /messages`](/agent-sessions/messaging) returns the *event* `seq`, not a turn. The turn that consumes your steer emits `turn.started` with `input_from_seq ≤ your_seq ≤ input_to_seq`; await its `turn.completed`, then `GET …/events?turn_id=` for everything it produced.
   </Accordion>
   <Accordion title="Large output and artifacts">
-    A large `body` is offloaded to a `content_ref`; fetch the bytes with `GET /sessions/:id/events/:eventId/content` (e.g. full `exec.completed` output). Richer **artifacts** (named files, diffs, screenshots, reports) get a first-class [artifacts & previews API](/agent-sessions/artifacts) **coming soon**.
+    A large `body` is offloaded to a `content_ref`; fetch the bytes with `GET /sessions/:id/events/:eventId/content` (e.g. full `exec.completed` output). For named files, diffs, screenshots, reports, and previews, see [Artifacts & previews](/agent-sessions/artifacts) in Labs.
   </Accordion>
   <Accordion title="id, turn_id, and idempotency keys">
     **`id`** is the event's own unique id (`evt_…`). **`turn_id`** is the turn that produced the event, when applicable — filter a turn's output with `?turn_id=`. The client idempotency key for steering is separate from both (deduped per session — see [steering](/agent-sessions/messaging)).

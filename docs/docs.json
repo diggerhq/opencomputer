@@ -77,7 +77,7 @@
           "agent-sessions/api-reference",
           {
             "group": "Labs",
-            "tag": "Coming soon",
+            "tag": "Labs",
             "expanded": true,
             "pages": [
               "agent-sessions/custom-runtimes",

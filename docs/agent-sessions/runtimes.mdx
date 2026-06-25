@@ -67,7 +67,7 @@ A runtime has two pieces:
 
 The brain knows the SDK, the model, the prompt, its resumable state directory, and the sandbox tools exposed to it. It does **not** write OpenComputer events directly and does not call the sandbox API itself. The adapter reads new input from the [event log](/agent-sessions/events), sends a bounded turn to the brain, translates the brain's stream into session events, handles fencing/idempotency, and only declares the turn done after committed output is durable.
 
-The built-in runtimes are built this way, and [custom runtimes](/agent-sessions/custom-runtimes) follow the same split. See [example runtimes](https://github.com/diggerhq/oc-runtime-examples) for `claude` and `codex` brain servers side by side.
+The built-in runtimes are built this way. See [example runtimes](https://github.com/diggerhq/oc-runtime-examples) for `claude` and `codex` brain servers side by side, and [custom runtimes](/agent-sessions/custom-runtimes) in Labs for the same brain/adapter shape applied to your own harness.
 
 A runtime also **starts fast**: the engine is prepared ahead of time and baked into the image, so a new or recreated session doesn't wait on a per-session download before its first step.
 
@@ -105,8 +105,6 @@ Sessions are fully managed — you never restart anything yourself:
 
 ### Failure behavior
 
-What's guaranteed today, and what isn't:
-
 | Failure | What happens |
 | --- | --- |
 | Client disconnects | Reconnect from your cursor ([events](/agent-sessions/events)); nothing lost. |
@@ -116,11 +114,4 @@ What's guaranteed today, and what isn't:
 | Sandbox lost **while idle** | Recreated from the last checkpoint before the next turn. |
 | Sandbox lost **mid-turn** | Recreated, restored from checkpointed state, and replayed from the durable log. |
 
-Work since the last committed step may repeat, so **make side effects idempotent** and treat the event log (and delivered webhooks) as the durable record. Uncommitted hands-sandbox files are not restored after sandbox loss — commit or push to keep them. Byte-exact **mid-turn** resume is coming in a later release.
-
-## What's coming
-
-More engines are on the way, each picked the same one-line way — your setup won't change:
-
-- **More prebuilt runtimes and providers** — additional managed engines, selected by setting `runtime` to its name.
-- **Custom runtimes** — package any agent harness as a runtime image and run it on the same sessions, events, and recovery as the built-ins. See [Custom runtimes](/agent-sessions/custom-runtimes) in Labs for the shape this takes.
+Work since the last committed step may repeat, so **make side effects idempotent** and treat the event log (and delivered webhooks) as the durable record. Recovery resumes from committed steps and checkpointed runtime state, not from arbitrary CPU instruction state. Uncommitted hands-sandbox files are not restored after sandbox loss — commit or push to keep them.

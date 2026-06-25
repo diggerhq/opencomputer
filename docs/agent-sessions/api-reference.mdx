@@ -77,18 +77,17 @@ SessionSource =                                    // a sources[] entry — WIRE
     { repo, ref, sha, name? }                      // a registered repo id or "owner/repo" — GitHub App auth
   | { url, ref, sha, name?, auth }                 // inline shortcut; name defaults to repo name, type defaults "git"
 SourceAuth =                                        // inline path ONLY (GitHub App-backed repos need none)
-    { type: "risky_short_lived_token", token, expires_at }   // workaround; short-lived; can't refresh
+    { type: "risky_short_lived_token", token, expires_at }   // short-lived; can't refresh
 // SDK is camelCase: expiresAt (wire expires_at).
-SourceSummary = { name, status, path, sha,        // returned today
-                  resolved_sha?, error_code?, error_message?, retryable? }  // forward-looking
+SourceSummary = { name, status, path, sha,
+                  resolved_sha?, error_code?, error_message?, retryable? }
 // sanitized; in the create response + GET …/sources
-//   status today: pending | materializing | resolved | failed | auth_required
-//     (unavailable is reserved/forward-looking)
+//   status: pending | materializing | resolved | failed | auth_required
 //   error_code examples: source.auth_required, source.repo_not_selected,
 //     source.permission_missing, source.mint_failed, source.ref_not_found, source.sha_mismatch
 ```
 
-`yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`; `requires_action` is reserved, not emitted yet) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
+`yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
 
 ## Events
 
@@ -260,7 +259,7 @@ Pass `key` **or** `credential` (or neither → org default). The agent's `limits
 
 Connect a GitHub App to let OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is repository identity + policy. See the [Repos & GitHub guide](/agent-sessions/repos).
 
-The OpenComputer-owned App is the current simplest path and is installed from its GitHub App install URL, not by minting an install URL through the SDK. Bring-your-own GitHub App support adds more App records later; repo and session shapes stay the same. **No credential passes through this API.**
+The OpenComputer-owned App is installed from its GitHub App install URL, not by minting an install URL through the SDK. Bring-your-own GitHub App modes use the same repo and session shapes. **No credential passes through this API.**
 
 GitHub App `mode` values: `oc_app` (OpenComputer owns and mints), `byo_stored_key` (your
 App key is encrypted in OpenComputer; OpenComputer mints), and `byo_broker` (your backend
@@ -272,8 +271,6 @@ owns the App key and returns operation-scoped short-lived tokens).
 
 | Call | Purpose |
 | --- | --- |
-| `oc.github.apps.list()` | List GitHub Apps available to your org. _(coming soon)_ |
-| `oc.github.installations.list(params?)` | List installations for `oc_app` / `byo_stored_key`. _(coming soon; the OC App is resolved automatically — not needed to use a repo)_ |
 | `oc.repos.create(params)` | Register (get-or-create) a repo. |
 | `oc.repos.get(id)` · `oc.repos.list()` | Fetch / list. |
 | `oc.repos.update(id, params)` | Update policy `defaults`. |
@@ -284,8 +281,6 @@ owns the App key and returns operation-scoped short-lived tokens).
 
 | Method · Path | Purpose |
 | --- | --- |
-| `GET /github/apps` | List GitHub Apps available to your org. _(coming soon)_ |
-| `GET /github/installations?app_id=...` | List installations for `oc_app` / `byo_stored_key`. _(coming soon; OC App resolved automatically)_ |
 | `POST /repos` | Register (get-or-create) a repo. |
 | `GET /repos/:id` · `GET /repos` | Fetch / list. |
 | `PATCH /repos/:id` | Update policy `defaults`. |
@@ -298,11 +293,9 @@ Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a h
 
 ```
 Repo               = { id, provider, owner, repo, name?, app_id?, defaults?, created_at, updated_at }
-GitHubApp          = { id, provider, mode, status, app_slug?, app_name?, is_default?, created_at }
-GitHubInstallation = { id, app_id, account_login, status, repository_selection?, created_at }
 ```
 
-Responses **never** contain a token or secret. (SDK camelCase: `branchNamespace`, `appId`, `appSlug`, `accountLogin`.) Installations are a status/preflight surface: `oc_app` and `byo_stored_key` Apps can list them, while `byo_broker` Apps may have none because your backend owns that lifecycle. Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
+Responses **never** contain a token or secret. (SDK camelCase: `branchNamespace`, `appId`.) Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
 
 ## Credentials
 
@@ -330,7 +323,7 @@ Responses **never** contain a token or secret. (SDK camelCase: `branchNamespace`
 
 </Tabs>
 
-Credential body: `provider`, `key`, `name?`, `is_default?`. Keys are write-only. A credential is **required**; sessions run on your key (no platform billing yet).
+Credential body: `provider`, `key`, `name?`, `is_default?`. Keys are write-only. A credential is **required**; sessions run on your provider key.
 
 ```
 Credential  = { id, provider, name?, last4, is_default, created_at }
