@@ -46,12 +46,18 @@ export interface Repo {
   updatedAt?: string;
 }
 
+/**
+ * How a GitHub App mints operation-scoped tokens:
+ * - `oc_app`: OpenComputer owns the App key and mints.
+ * - `byo_stored_key`: you own the App; OpenComputer stores the key encrypted and mints.
+ * - `byo_broker`: your backend owns the App key/lifecycle and returns short-lived tokens.
+ */
 export type GitHubAppMode = "oc_app" | "byo_stored_key" | "byo_broker" | (string & {});
 export type GitHubAppStatus = "active" | "suspended" | "revoked" | (string & {});
 
 /**
- * A GitHub App OpenComputer can use to mint short-lived, repo-scoped tokens. The built-in
- * OpenComputer App is `oc_app`; user-owned App modes are additive.
+ * A GitHub App authority for repo operations. The built-in OpenComputer App is `oc_app`;
+ * user-owned App modes are additive and keep the Repo/Source shape unchanged.
  */
 export interface GitHubApp {
   id: string; // gha_…
@@ -66,8 +72,8 @@ export interface GitHubApp {
 
 /**
  * A GitHub App installation visible to OpenComputer. Installations are useful for setup
- * status and preflight; auth resolves through the App, and broker-mode Apps may have no
- * OpenComputer-visible installations.
+ * status and preflight. `byo_broker` Apps may have no OpenComputer-visible installations
+ * because your backend owns that lifecycle.
  */
 export interface GitHubInstallation {
   id: string; // ghi_…
@@ -90,11 +96,11 @@ export interface ListGitHubInstallationsParams {
 }
 
 /**
- * Repos — repository identity + policy (the "where" a session works), analogous to
- * {@link Agents}. Auth resolves through a GitHub App; no credential is passed here.
+ * Repos — provider-neutral repository identity + policy (the "where" a session works).
+ * Auth for GitHub repos resolves through a GitHub App; no credential is passed here.
  * Register once and reference from `sources: [{ repo, ref, sha }]`. A session can also
  * reference `"owner/repo"` directly without creating a Repo handle. See the
- * [Repos guide](https://docs.opencomputer.dev/agent-sessions/repos).
+ * [Repos & GitHub guide](https://docs.opencomputer.dev/agent-sessions/repos).
  */
 export class Repos {
   constructor(private readonly http: Http) {}
@@ -132,7 +138,7 @@ export class GitHubApps {
   }
 }
 
-/** GitHub App installations visible to OpenComputer; optional for broker-mode Apps. */
+/** GitHub App installations visible to OpenComputer; optional for `byo_broker` Apps. */
 export class GitHubInstallations {
   constructor(private readonly http: Http) {}
   list(params: ListGitHubInstallationsParams = {}): Promise<Page<GitHubInstallation>> {
