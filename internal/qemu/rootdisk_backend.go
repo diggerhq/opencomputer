@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -213,23 +214,45 @@ func removeIfExists(path string) error {
 
 type cloudDiskRootDiskProvider struct {
 	cfg CloudDiskConfig
+	run func(context.Context, cloudDiskCommand) ([]byte, error)
 }
 
 func (p cloudDiskRootDiskProvider) PrepareSandboxDisks(ctx context.Context, req PrepareSandboxDisksRequest) (RootDiskSet, error) {
-	_ = ctx
 	diskName := p.sandboxDiskName(req.SandboxID)
 	create := p.createForkCommand(diskName, p.cfg.GoldenDisk, p.cfg.GoldenSnapshot, p.diskSizeMB(req.DiskMB))
 	mount := p.mountCommand(diskName)
-	return RootDiskSet{}, fmt.Errorf("cloud-disk root backend is not implemented yet: would run %q then %q", create.String(), mount.String())
+	if _, err := p.runCommand(ctx, create); err != nil {
+		return RootDiskSet{}, fmt.Errorf("cloud-disk create root disk %s: %w", diskName, err)
+	}
+	if _, err := p.runCommand(ctx, mount); err != nil {
+		return RootDiskSet{}, fmt.Errorf("cloud-disk mount root disk %s: %w", diskName, err)
+	}
+	device, err := p.devicePath(ctx, diskName)
+	if err != nil {
+		return RootDiskSet{}, err
+	}
+	return RootDiskSet{RootfsPath: device}, nil
 }
 
 func (p cloudDiskRootDiskProvider) MaterializeCheckpointDisks(ctx context.Context, req MaterializeCheckpointDisksRequest) (RootDiskSet, error) {
-	_ = ctx
 	diskName := p.sandboxDiskName(req.SandboxID)
 	parentDisk, snapshot := p.checkpointDiskRef(req.CheckpointID)
 	create := p.createForkCommand(diskName, parentDisk, snapshot, p.cfg.DefaultSizeMB)
 	mount := p.mountCommand(diskName)
-	return RootDiskSet{}, fmt.Errorf("cloud-disk root backend is not implemented yet: would run %q then %q", create.String(), mount.String())
+	if req.Replace {
+		return RootDiskSet{}, fmt.Errorf("cloud-disk restore-in-place is not implemented yet")
+	}
+	if _, err := p.runCommand(ctx, create); err != nil {
+		return RootDiskSet{}, fmt.Errorf("cloud-disk create checkpoint fork %s: %w", diskName, err)
+	}
+	if _, err := p.runCommand(ctx, mount); err != nil {
+		return RootDiskSet{}, fmt.Errorf("cloud-disk mount checkpoint fork %s: %w", diskName, err)
+	}
+	device, err := p.devicePath(ctx, diskName)
+	if err != nil {
+		return RootDiskSet{}, err
+	}
+	return RootDiskSet{RootfsPath: device}, nil
 }
 
 func (p cloudDiskRootDiskProvider) diskSizeMB(requestedMB int) int {
@@ -271,6 +294,61 @@ func (p cloudDiskRootDiskProvider) mountCommand(name string) cloudDiskCommand {
 		args: []string{"mount", name},
 		env:  p.env(),
 	}
+}
+
+func (p cloudDiskRootDiskProvider) configShowCommand(name string) cloudDiskCommand {
+	return cloudDiskCommand{
+		path: p.cfg.CLIPath,
+		args: []string{"config", name, "show", "-all"},
+		env:  p.env(),
+	}
+}
+
+func (p cloudDiskRootDiskProvider) devicePath(ctx context.Context, name string) (string, error) {
+	out, err := p.runCommand(ctx, p.configShowCommand(name))
+	if err != nil {
+		return "", fmt.Errorf("cloud-disk inspect root disk %s: %w", name, err)
+	}
+	device := parseCloudDiskNBDDevice(string(out))
+	if device == "" {
+		return "", fmt.Errorf("cloud-disk root disk %s: nbd-device not found in config output", name)
+	}
+	return device, nil
+}
+
+func parseCloudDiskNBDDevice(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, "nbd-device") {
+			continue
+		}
+		fields := strings.FieldsFunc(line, func(r rune) bool {
+			return r == '=' || r == ':' || r == '"' || r == '\'' || r == ' ' || r == '\t'
+		})
+		for _, field := range fields {
+			if strings.HasPrefix(field, "/dev/nbd") {
+				return field
+			}
+		}
+	}
+	return ""
+}
+
+func (p cloudDiskRootDiskProvider) runCommand(ctx context.Context, cmd cloudDiskCommand) ([]byte, error) {
+	run := p.run
+	if run == nil {
+		run = runCloudDiskCommand
+	}
+	return run(ctx, cmd)
+}
+
+func runCloudDiskCommand(ctx context.Context, c cloudDiskCommand) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, c.path, c.args...)
+	cmd.Env = append(os.Environ(), c.env...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return out, fmt.Errorf("%s: %w (%s)", c.String(), err, strings.TrimSpace(string(out)))
+	}
+	return out, nil
 }
 
 func (p cloudDiskRootDiskProvider) env() []string {

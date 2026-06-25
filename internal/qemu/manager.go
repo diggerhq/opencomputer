@@ -1610,14 +1610,8 @@ func (m *Manager) allocateCID() uint32 {
 // agentSock is the Unix socket path for the virtio-serial agent channel.
 func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapName, mac, agentSock, qmpSock, bootArgs string) []string {
 	// Detect drive format from file extension
-	rootfsFmt := "qcow2"
-	if strings.HasSuffix(rootfsPath, ".ext4") {
-		rootfsFmt = "raw"
-	}
-	wsFmt := "qcow2"
-	if strings.HasSuffix(workspacePath, ".ext4") {
-		wsFmt = "raw"
-	}
+	rootfsFmt := qemuDriveFormat(rootfsPath)
+	wsFmt := qemuDriveFormat(workspacePath)
 	// Memory layout: base memory + virtio-mem pool for hotplug scaling.
 	// The virtio-mem backend allocates lazily (only requested-size is committed),
 	// but maxmem must exceed base+pool for QEMU to accept the device.
@@ -1628,7 +1622,7 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 	}
 	maxMemMB := memMB + virtioMemPoolMB
 
-	return []string{
+	args := []string{
 		"-machine", "q35,accel=kvm",
 		"-cpu", "host",
 		"-m", fmt.Sprintf("%dM,slots=1,maxmem=%dM", memMB, maxMemMB),
@@ -1639,7 +1633,11 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 		"-kernel", m.cfg.KernelPath,
 		"-append", bootArgs,
 		"-drive", fmt.Sprintf("file=%s,format=%s,if=virtio,cache=writethrough", rootfsPath, rootfsFmt),
-		"-drive", fmt.Sprintf("file=%s,format=%s,if=virtio,cache=writethrough", workspacePath, wsFmt),
+	}
+	if workspacePath != "" {
+		args = append(args, "-drive", fmt.Sprintf("file=%s,format=%s,if=virtio,cache=writethrough", workspacePath, wsFmt))
+	}
+	args = append(args,
 		"-netdev", fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
 		"-device", fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", mac),
 		// Agent communication via virtio-serial (survives QEMU migration,
@@ -1651,7 +1649,18 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 		"-nographic",
 		"-nodefaults",
 		"-serial", "stdio",
+	)
+	return args
+}
+
+func qemuDriveFormat(path string) string {
+	if path == "" {
+		return ""
 	}
+	if strings.HasPrefix(path, "/dev/") || strings.HasSuffix(path, ".ext4") || strings.HasSuffix(path, ".raw") {
+		return "raw"
+	}
+	return "qcow2"
 }
 
 // Create launches a new QEMU VM.

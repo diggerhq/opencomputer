@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,7 +178,8 @@ func TestCloudDiskProviderCommandShapes(t *testing.T) {
 	}
 }
 
-func TestCloudDiskProviderPrepareFailsBeforeExecuting(t *testing.T) {
+func TestCloudDiskProviderPrepareCreatesMountsAndReturnsDevice(t *testing.T) {
+	var commands []string
 	provider := cloudDiskRootDiskProvider{cfg: CloudDiskConfig{
 		CLIPath:           "cloud-disk",
 		CachePath:         "/var/lib/cloud-disk",
@@ -189,14 +191,79 @@ func TestCloudDiskProviderPrepareFailsBeforeExecuting(t *testing.T) {
 		S3AccessKeyID:     "access",
 		S3SecretAccessKey: "secret",
 	}}
-	_, err := provider.PrepareSandboxDisks(t.Context(), PrepareSandboxDisksRequest{
+	provider.run = func(_ context.Context, cmd cloudDiskCommand) ([]byte, error) {
+		commands = append(commands, cmd.String())
+		if len(cmd.args) >= 4 && cmd.args[0] == "config" {
+			return []byte("nbd-device = /dev/nbd7\n"), nil
+		}
+		return []byte("ok"), nil
+	}
+
+	disks, err := provider.PrepareSandboxDisks(t.Context(), PrepareSandboxDisksRequest{
 		SandboxID: "sb-123",
 		DiskMB:    1024,
 	})
-	if err == nil || !strings.Contains(err.Error(), "not implemented yet") {
-		t.Fatalf("PrepareSandboxDisks error = %v, want not implemented", err)
+	if err != nil {
+		t.Fatalf("PrepareSandboxDisks: %v", err)
 	}
-	if !strings.Contains(err.Error(), "cloud-disk create oc-root-sb-123") {
-		t.Fatalf("PrepareSandboxDisks error = %v, want planned create command", err)
+	if disks.RootfsPath != "/dev/nbd7" {
+		t.Fatalf("rootfs path = %q, want /dev/nbd7", disks.RootfsPath)
+	}
+	if disks.WorkspacePath != "" {
+		t.Fatalf("workspace path = %q, want empty single-disk mode", disks.WorkspacePath)
+	}
+	if len(commands) != 3 {
+		t.Fatalf("commands = %#v, want create, mount, config show", commands)
+	}
+	for _, want := range []string{
+		"cloud-disk create oc-root-sb-123",
+		"cloud-disk mount oc-root-sb-123",
+		"cloud-disk config oc-root-sb-123 show -all",
+	} {
+		found := false
+		for _, cmd := range commands {
+			if strings.Contains(cmd, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("commands %#v missing %q", commands, want)
+		}
+	}
+}
+
+func TestParseCloudDiskNBDDevice(t *testing.T) {
+	for _, output := range []string{
+		"nbd-device=/dev/nbd3\n",
+		"nbd-device: /dev/nbd4\n",
+		`"nbd-device": "/dev/nbd5"`,
+	} {
+		if got := parseCloudDiskNBDDevice(output); !strings.HasPrefix(got, "/dev/nbd") {
+			t.Fatalf("parseCloudDiskNBDDevice(%q) = %q", output, got)
+		}
+	}
+}
+
+func TestQEMUDriveFormatAndSingleDiskArgs(t *testing.T) {
+	if got := qemuDriveFormat("/dev/nbd7"); got != "raw" {
+		t.Fatalf("qemuDriveFormat(/dev/nbd7) = %q, want raw", got)
+	}
+	if got := qemuDriveFormat("/tmp/rootfs.qcow2"); got != "qcow2" {
+		t.Fatalf("qemuDriveFormat(qcow2) = %q, want qcow2", got)
+	}
+
+	m := &Manager{cfg: Config{KernelPath: "/kernel"}}
+	args := m.buildQEMUArgs(1, 256, "/dev/nbd7", "", "tap0", "02:00:00:00:00:01", "/tmp/agent.sock", "/tmp/qmp.sock", "root=/dev/vda")
+	driveCount := 0
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "file=") {
+			driveCount++
+			if !strings.Contains(arg, "format=raw") {
+				t.Fatalf("drive arg = %q, want raw", arg)
+			}
+		}
+	}
+	if driveCount != 1 {
+		t.Fatalf("drive count = %d, want 1", driveCount)
 	}
 }
