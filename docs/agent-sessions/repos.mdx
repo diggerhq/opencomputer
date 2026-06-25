@@ -22,7 +22,7 @@ sandbox.
 | --- | --- | --- |
 | GitHub App | Mints operation-scoped GitHub tokens. | Not repo policy or session refs. |
 | Installation | GitHub account and repo selection. | `byo_broker` can keep this in your backend. |
-| Repo | Owner/repo, optional App pin, permission ceiling. | No tokens, private keys, or session refs. |
+| Repo | Owner/repo, optional App pin. | No tokens, private keys, or session refs. |
 | Source | `ref`, `sha`, and local name for one session. | Auth comes from the Repo's App unless inline. |
 | Git operations sandbox | Runs authenticated clone/fetch/publish work. | Separate from the agent; token lives only for one operation. |
 
@@ -84,7 +84,9 @@ Apps, because your backend owns that state.
 ### Inline short-lived token
 
 The no-setup path is to pass a real short-lived token inline on the source, using the
-deliberately-named `risky_short_lived_token` auth:
+deliberately-named `risky_short_lived_token` auth. An inline token is **checkout-only**:
+it is used once to check the repo out and then purged, so it **cannot publish or open
+PRs**. Publishing requires a configured GitHub App (the OpenComputer App).
 
 <CodeGroup>
 
@@ -117,10 +119,11 @@ sources: [{
 </CodeGroup>
 
 <Warning>
-The inline token **can't refresh** — once it expires the session can't fetch, push, or
-recover, so use it only for sessions that finish within the token's life. OpenComputer
-rejects a far-future or missing expiry and holds it encrypted only until the first
-checkout, then purges it. Use this only when a GitHub App is not configured.
+The inline token is **checkout-only** — it checks the repo out once and is then purged, so
+it **cannot publish or open PRs** (publishing requires a configured GitHub App). It also
+**can't refresh**, so use it only for sessions that finish within the token's life.
+OpenComputer rejects a far-future or missing expiry and holds the token encrypted only
+until the first checkout, then purges it. Use this only when a GitHub App is not configured.
 </Warning>
 
 ## Register a repo
@@ -135,7 +138,6 @@ const repo = await oc.repos.create({
   owner: "acme",
   repo: "web",
   // appId: "gha_...", // optional: org default, then OC App
-  defaults: { allow: ["contents:read"] },
 });
 ```
 
@@ -151,9 +153,6 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 Get-or-create, owner-scoped, idempotent by `(provider, owner, repo)`. **No credential is
 passed** — auth resolves through the GitHub App. Optional `appId` pins a repo to a
 specific App; otherwise OpenComputer uses your org default App, then the OpenComputer App.
-Optional `defaults`:
-`{ branchNamespace, allow }` (`allow` is a GitHub permission ceiling; OpenComputer still
-requests the minimum token per operation).
 
 ## Use it in a session
 

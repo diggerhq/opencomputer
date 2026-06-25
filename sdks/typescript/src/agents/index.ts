@@ -11,7 +11,7 @@ export { Agents } from "./agents.js";
 export type { CreateAgentParams, UpdateAgentParams, Page } from "./agents.js";
 export { Repos, GitHub, GitHubApps, GitHubInstallations } from "./repos.js";
 export type {
-  CreateRepoParams, UpdateRepoParams, Repo, RepoDefaults, GitHubPermission,
+  CreateRepoParams, UpdateRepoParams, Repo,
   GitHubApp, GitHubAppMode, GitHubAppStatus, GitHubInstallation,
   ListGitHubInstallationsParams,
 } from "./repos.js";

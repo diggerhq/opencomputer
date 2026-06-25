@@ -69,10 +69,11 @@ export interface InlineRepoSource {
 }
 
 /**
- * Inline-source auth — the **no-setup workaround**. Pass a real short-lived token; it
- * works today but **can't refresh** (once it expires the session can't fetch/push/recover),
- * so it's only for sessions that finish within the token's life. Prefer connecting a
- * GitHub App (durable). Held encrypted, used once, then purged.
+ * Inline-source auth — the **no-setup workaround**, and **checkout-only**. Pass a real
+ * short-lived token; it is used once to check the repo out and then **purged immediately**,
+ * so it **cannot publish or open PRs** — publishing requires a configured GitHub App (the
+ * OpenComputer App). Prefer connecting a GitHub App (durable). Held encrypted, used once
+ * for checkout, then purged.
  */
 export type SourceAuth =
   | { type: "risky_short_lived_token"; token: string; expiresAt: string };

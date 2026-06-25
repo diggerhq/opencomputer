@@ -1,35 +1,19 @@
 import type { Http, Query } from "./http.js";
 
-export type GitHubPermission =
-  | "contents:read" | "contents:write"
-  | "pull_requests:read" | "pull_requests:write"
-  | "issues:read" | "issues:write"
-  | "statuses:read" | "statuses:write"
-  | "checks:read" | "checks:write"
-  | (string & {});
-
-export interface RepoDefaults {
-  /** Branch namespace for agent pushes; default `oc/{session}/`. No protected/base push. */
-  branchNamespace?: string;
-  /** GitHub permission ceiling (e.g. `contents:read`, `pull_requests:write`) this repo
-   *  may ever authorize — a ceiling; each operation still requests the minimum token. */
-  allow?: GitHubPermission[];
-}
-
 export interface CreateRepoParams {
   provider?: "github"; // default: github
   owner: string;
   repo: string;
   /** Optional handle for your own reference; identity is (provider, owner, repo). */
   name?: string;
-  /** Optional explicit GitHub App id. Defaults to your org's default app, then the OC App. */
+  /** The GitHub App this repo resolves to (↔ `app_id` on the wire). Optional;
+   *  defaults to your org's default App, then the OpenComputer App. */
   appId?: string;
-  defaults?: RepoDefaults;
 }
 
 export interface UpdateRepoParams {
-  defaults?: RepoDefaults;
   name?: string;
+  /** The GitHub App this repo resolves to (↔ `app_id` on the wire). */
   appId?: string;
 }
 
@@ -39,9 +23,8 @@ export interface Repo {
   owner: string;
   repo: string;
   name?: string;
-  /** The GitHub App that authorizes this repo (auth lives there, not here). */
+  /** The GitHub App this repo resolves to (auth lives there, not here). */
   appId?: string;
-  defaults?: RepoDefaults;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -96,7 +79,7 @@ export interface ListGitHubInstallationsParams {
 }
 
 /**
- * Repos — provider-neutral repository identity + policy (the "where" a session works).
+ * Repos — provider-neutral repository identity (the "where" a session works).
  * Auth for GitHub repos resolves through a GitHub App; no credential is passed here.
  * Register once and reference from `sources: [{ repo, ref, sha }]`. A session can also
  * reference `"owner/repo"` directly without creating a Repo handle. See the

@@ -257,7 +257,7 @@ Pass `key` **or** `credential` (or neither → org default). The agent's `limits
 
 ## GitHub Apps & Repos
 
-Connect a GitHub App to let OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is repository identity + policy. See the [Repos & GitHub guide](/agent-sessions/repos).
+Connect a GitHub App to let OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is repository identity. See the [Repos & GitHub guide](/agent-sessions/repos).
 
 The OpenComputer-owned App is installed from its GitHub App install URL, not by minting an install URL through the SDK. Bring-your-own GitHub App modes use the same repo and session shapes. **No credential passes through this API.**
 
@@ -273,7 +273,7 @@ owns the App key and returns operation-scoped short-lived tokens).
 | --- | --- |
 | `oc.repos.create(params)` | Register (get-or-create) a repo. |
 | `oc.repos.get(id)` · `oc.repos.list()` | Fetch / list. |
-| `oc.repos.update(id, params)` | Update policy `defaults`. |
+| `oc.repos.update(id, params)` | Update `name` / `appId`. |
 
 </Tab>
 
@@ -283,19 +283,19 @@ owns the App key and returns operation-scoped short-lived tokens).
 | --- | --- |
 | `POST /repos` | Register (get-or-create) a repo. |
 | `GET /repos/:id` · `GET /repos` | Fetch / list. |
-| `PATCH /repos/:id` | Update policy `defaults`. |
+| `PATCH /repos/:id` | Update `name` / `app_id`. |
 
 </Tab>
 
 </Tabs>
 
-Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle), `app_id?`, `defaults?`. **No `auth`** — auth resolves through the GitHub App. **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). `defaults`: `{ branch_namespace?, allow? }` — `allow` is a **GitHub permission ceiling** (e.g. `contents:read`, `pull_requests:write`).
+Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle), `app_id?`. **No `auth`** — auth resolves through the GitHub App. **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). `app_id` is optional — the GitHub App this repo resolves to; defaults to your org's default App, then the OpenComputer App.
 
 ```
-Repo               = { id, provider, owner, repo, name?, app_id?, defaults?, created_at, updated_at }
+Repo               = { id, provider, owner, repo, name?, app_id?, created_at, updated_at }
 ```
 
-Responses **never** contain a token or secret. (SDK camelCase: `branchNamespace`, `appId`.) Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
+Responses **never** contain a token or secret. (SDK camelCase: `appId`.) Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
 
 ## Credentials
 
