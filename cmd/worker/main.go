@@ -243,10 +243,24 @@ func main() {
 		}
 
 		qmCfg := qm.Config{
-			DataDir:                 cfg.DataDir,
-			KernelPath:              cfg.KernelPath,
-			ImagesDir:               cfg.ImagesDir,
-			QEMUBin:                 cfg.QEMUBin,
+			DataDir:    cfg.DataDir,
+			KernelPath: cfg.KernelPath,
+			ImagesDir:  cfg.ImagesDir,
+			QEMUBin:    cfg.QEMUBin,
+			RootDisk: qm.RootDiskConfig{
+				Backend: cfg.RootDiskBackend,
+				CloudDisk: qm.CloudDiskConfig{
+					CLIPath:           cfg.CloudDiskCLIPath,
+					CachePath:         cfg.CloudDiskCachePath,
+					DefaultSizeMB:     cfg.CloudDiskDefaultSizeMB,
+					GoldenDisk:        cfg.CloudDiskGoldenDisk,
+					GoldenSnapshot:    cfg.CloudDiskGoldenSnapshot,
+					S3Endpoint:        cfg.CloudDiskS3Endpoint,
+					S3Region:          cfg.CloudDiskS3Region,
+					S3AccessKeyID:     cfg.CloudDiskS3AccessKeyID,
+					S3SecretAccessKey: cfg.CloudDiskS3SecretKey,
+				},
+			},
 			AgentBinaryPath:         "/usr/local/bin/osb-agent",
 			AgentVersion:            AgentVersion,
 			Region:                  cfg.Region,

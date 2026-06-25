@@ -299,6 +299,7 @@ type Config struct {
 	KernelPath      string // path to vmlinux kernel
 	ImagesDir       string // path to base rootfs images
 	QEMUBin         string // path to qemu-system-x86_64 binary
+	RootDisk        RootDiskConfig
 	AgentBinaryPath string // path to osb-agent binary on host (for hot-upgrade)
 	AgentVersion    string // expected agent version (for hot-upgrade check)
 	Region          string // worker region (e.g. eastus2); used as a metric label
@@ -321,8 +322,9 @@ type Config struct {
 
 // Manager implements sandbox.Manager using QEMU VMs.
 type Manager struct {
-	cfg     Config
-	subnets *SubnetAllocator
+	cfg       Config
+	subnets   *SubnetAllocator
+	rootDisks RootDiskProvider
 
 	mu       sync.RWMutex
 	vms      map[string]*VMInstance
@@ -392,6 +394,11 @@ func NewManager(cfg Config) (*Manager, error) {
 	if cfg.QEMUBin == "" {
 		cfg.QEMUBin = "qemu-system-x86_64"
 	}
+	rootDisk, err := cfg.RootDisk.validate()
+	if err != nil {
+		return nil, err
+	}
+	cfg.RootDisk = rootDisk
 	if cfg.DefaultMemoryMB == 0 {
 		cfg.DefaultMemoryMB = 256
 	}
@@ -420,6 +427,12 @@ func NewManager(cfg Config) (*Manager, error) {
 	if err := checkReflinkSupport(cfg.DataDir); err != nil {
 		return nil, fmt.Errorf("data directory does not support reflink: %w (XFS with reflink=1 required)", err)
 	}
+	log.Printf("qemu: root disk backend=%s", cfg.RootDisk.Backend)
+
+	rootDisks, err := newRootDiskProvider(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	// Clean up stale archive-staging directories from previous crashes
 	staleStaging, _ := filepath.Glob(filepath.Join(cfg.DataDir, "sandboxes", "*", "archive-staging"))
@@ -429,10 +442,11 @@ func NewManager(cfg Config) (*Manager, error) {
 	}
 
 	m := &Manager{
-		cfg:     cfg,
-		subnets: NewSubnetAllocator(),
-		vms:     make(map[string]*VMInstance),
-		nextCID: 3,
+		cfg:       cfg,
+		subnets:   NewSubnetAllocator(),
+		rootDisks: rootDisks,
+		vms:       make(map[string]*VMInstance),
+		nextCID:   3,
 	}
 	// Start the ghost-VM reaper. Without it a code path that leaks an m.vms
 	// entry on failure (qemu dies but map entry stays) leads to usage_ticker
@@ -1681,41 +1695,24 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 		return nil, fmt.Errorf("mkdir sandbox dir: %w", err)
 	}
 
-	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
-
 	if cfg.TemplateRootfsKey != "" {
-		srcRootfs := strings.TrimPrefix(cfg.TemplateRootfsKey, "local://")
-		srcWorkspace := strings.TrimPrefix(cfg.TemplateWorkspaceKey, "local://")
-		log.Printf("qemu: create %s from snapshot template (rootfs=%s, workspace=%s)", id, srcRootfs, srcWorkspace)
-		if err := copyFileReflink(srcRootfs, rootfsPath); err != nil {
-			os.RemoveAll(sandboxDir)
-			return nil, fmt.Errorf("copy template rootfs: %w", err)
-		}
-		if err := copyFileReflink(srcWorkspace, workspacePath); err != nil {
-			os.RemoveAll(sandboxDir)
-			return nil, fmt.Errorf("copy template workspace: %w", err)
-		}
-	} else {
-		baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, template)
-		if err != nil {
-			os.RemoveAll(sandboxDir)
-			return nil, fmt.Errorf("resolve base image: %w", err)
-		}
-		if err := PrepareRootfs(baseImage, rootfsPath); err != nil {
-			os.RemoveAll(sandboxDir)
-			return nil, fmt.Errorf("prepare rootfs: %w", err)
-		}
-
-		diskMB := cfg.DiskMB
-		if diskMB <= 0 {
-			diskMB = m.cfg.DefaultDiskMB
-		}
-		if err := CreateWorkspace(workspacePath, diskMB); err != nil {
-			os.RemoveAll(sandboxDir)
-			return nil, fmt.Errorf("create workspace: %w", err)
-		}
+		log.Printf("qemu: create %s from snapshot template (rootfs=%s, workspace=%s)",
+			id, strings.TrimPrefix(cfg.TemplateRootfsKey, "local://"), strings.TrimPrefix(cfg.TemplateWorkspaceKey, "local://"))
 	}
+	disks, err := m.rootDisks.PrepareSandboxDisks(ctx, PrepareSandboxDisksRequest{
+		SandboxID:            id,
+		SandboxDir:           sandboxDir,
+		Template:             template,
+		DiskMB:               cfg.DiskMB,
+		TemplateRootfsKey:    cfg.TemplateRootfsKey,
+		TemplateWorkspaceKey: cfg.TemplateWorkspaceKey,
+	})
+	if err != nil {
+		os.RemoveAll(sandboxDir)
+		return nil, err
+	}
+	rootfsPath := disks.RootfsPath
+	workspacePath := disks.WorkspacePath
 
 	// Allocate network
 	netCfg, err := m.subnets.Allocate()
@@ -3352,12 +3349,6 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 	// Step 3: Copy fresh qcow2 drives from checkpoint cache
 	m.checkpointCacheMu.RLock()
 	cacheDir := m.checkpointCacheDir(checkpointID)
-	cachedRootfs := filepath.Join(cacheDir, "rootfs.qcow2")
-	cachedWorkspace := filepath.Join(cacheDir, "workspace.qcow2")
-	if !fileExists(cachedRootfs) || !fileExists(cachedWorkspace) {
-		m.checkpointCacheMu.RUnlock()
-		return fmt.Errorf("checkpoint %s: qcow2 files not found in cache", checkpointID)
-	}
 
 	// Read checkpoint metadata for base topology.
 	var cpMeta SnapshotMeta
@@ -3383,21 +3374,20 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 	}
 
 	sandboxDir := vm.sandboxDir
-	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
-
-	// Remove old drives and copy fresh ones
-	os.Remove(rootfsPath)
-	os.Remove(workspacePath)
-	if err := copyFileReflink(cachedRootfs, rootfsPath); err != nil {
+	disks, err := m.rootDisks.MaterializeCheckpointDisks(ctx, MaterializeCheckpointDisksRequest{
+		CheckpointID: checkpointID,
+		CacheDir:     cacheDir,
+		SandboxID:    sandboxID,
+		SandboxDir:   sandboxDir,
+		Replace:      true,
+	})
+	if err != nil {
 		m.checkpointCacheMu.RUnlock()
-		return fmt.Errorf("copy rootfs from cache: %w", err)
-	}
-	if err := copyFileReflink(cachedWorkspace, workspacePath); err != nil {
-		m.checkpointCacheMu.RUnlock()
-		return fmt.Errorf("copy workspace from cache: %w", err)
+		return err
 	}
 	m.checkpointCacheMu.RUnlock()
+	rootfsPath := disks.RootfsPath
+	workspacePath := disks.WorkspacePath
 
 	// Step 4: Allocate new network
 	netCfg, err := m.subnets.Allocate()
@@ -3622,13 +3612,6 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	cacheDir := m.checkpointCacheDir(checkpointID)
 	metaPath := filepath.Join(cacheDir, "snapshot", "snapshot-meta.json")
 
-	cachedRootfs := filepath.Join(cacheDir, "rootfs.qcow2")
-	cachedWorkspace := filepath.Join(cacheDir, "workspace.qcow2")
-	if !fileExists(cachedRootfs) || !fileExists(cachedWorkspace) {
-		m.checkpointCacheMu.RUnlock()
-		return nil, fmt.Errorf("checkpoint %s: qcow2 files not found in cache", checkpointID)
-	}
-
 	var meta SnapshotMeta
 	if data, err := os.ReadFile(metaPath); err == nil {
 		json.Unmarshal(data, &meta)
@@ -3644,20 +3627,20 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		return nil, fmt.Errorf("mkdir sandbox dir: %w", err)
 	}
 
-	// Copy qcow2 drives (contain snapshot data)
-	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
-	if err := copyFileReflink(cachedRootfs, rootfsPath); err != nil {
+	disks, err := m.rootDisks.MaterializeCheckpointDisks(ctx, MaterializeCheckpointDisksRequest{
+		CheckpointID: checkpointID,
+		CacheDir:     cacheDir,
+		SandboxID:    id,
+		SandboxDir:   sandboxDir,
+	})
+	if err != nil {
 		m.checkpointCacheMu.RUnlock()
 		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("copy rootfs: %w", err)
-	}
-	if err := copyFileReflink(cachedWorkspace, workspacePath); err != nil {
-		m.checkpointCacheMu.RUnlock()
-		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("copy workspace: %w", err)
+		return nil, err
 	}
 	m.checkpointCacheMu.RUnlock()
+	rootfsPath := disks.RootfsPath
+	workspacePath := disks.WorkspacePath
 
 	// Allocate network
 	netCfg, err := m.subnets.Allocate()

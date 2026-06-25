@@ -104,26 +104,41 @@ type Config struct {
 	ImagesDir  string // Path to base rootfs images
 	QEMUBin    string // Path to qemu-system binary (default: "qemu-system-x86_64")
 
+	// Root disk backend for QEMU workers. "local" preserves the existing
+	// rootfs.qcow2 + workspace.qcow2 flow. "cloud-disk" is experimental and
+	// will become the single-root-disk backend.
+	RootDiskBackend string
+
+	CloudDiskCLIPath        string
+	CloudDiskCachePath      string
+	CloudDiskDefaultSizeMB  int
+	CloudDiskGoldenDisk     string
+	CloudDiskGoldenSnapshot string
+	CloudDiskS3Endpoint     string
+	CloudDiskS3Region       string
+	CloudDiskS3AccessKeyID  string
+	CloudDiskS3SecretKey    string
+
 	// AWS EC2 compute pool (server mode only — for auto-scaling worker machines)
-	EC2AMI             string // Custom AMI for worker instances
-	EC2InstanceType    string // single fallback type; used only when EC2InstanceTypes is empty
-	EC2InstanceTypes   []string // ranked list of instance types tried in order on quota/capacity errors
-	EC2SubnetID        string // VPC subnet for worker instances
-	EC2SecurityGroupID string // Security group (allow 8080, 9090, 9091)
-	EC2KeyName             string // SSH key pair name (for debugging)
-	EC2WorkerImage         string // Docker image for containerized workers
-	EC2IAMInstanceProfile  string // IAM instance profile for worker instances (Secrets Manager + S3)
-	EC2SSMParameterName    string // SSM parameter name for dynamic AMI ID (e.g. /opensandbox/prod/worker-ami-id)
+	EC2AMI                string   // Custom AMI for worker instances
+	EC2InstanceType       string   // single fallback type; used only when EC2InstanceTypes is empty
+	EC2InstanceTypes      []string // ranked list of instance types tried in order on quota/capacity errors
+	EC2SubnetID           string   // VPC subnet for worker instances
+	EC2SecurityGroupID    string   // Security group (allow 8080, 9090, 9091)
+	EC2KeyName            string   // SSH key pair name (for debugging)
+	EC2WorkerImage        string   // Docker image for containerized workers
+	EC2IAMInstanceProfile string   // IAM instance profile for worker instances (Secrets Manager + S3)
+	EC2SSMParameterName   string   // SSM parameter name for dynamic AMI ID (e.g. /opensandbox/prod/worker-ami-id)
 
 	// Azure compute pool (server mode — for auto-scaling worker VMs)
-	AzureSubscriptionID string // Azure subscription ID
-	AzureResourceGroup  string // Resource group for worker VMs
-	AzureVMSize         string // single fallback size; used only when AzureVMSizes is empty
+	AzureSubscriptionID string   // Azure subscription ID
+	AzureResourceGroup  string   // Resource group for worker VMs
+	AzureVMSize         string   // single fallback size; used only when AzureVMSizes is empty
 	AzureVMSizes        []string // ranked list of VM sizes tried in order on quota/capacity errors
-	AzureImageID        string // Custom image ID or URN
-	AzureSubnetID       string // Full resource ID of the VNet subnet
-	AzureSSHPublicKey   string // SSH public key for worker VMs
-	AzureKeyVaultName   string // Key Vault name for dynamic image ID refresh (e.g. "opensandbox-prod")
+	AzureImageID        string   // Custom image ID or URN
+	AzureSubnetID       string   // Full resource ID of the VNet subnet
+	AzureSSHPublicKey   string   // SSH public key for worker VMs
+	AzureKeyVaultName   string   // Key Vault name for dynamic image ID refresh (e.g. "opensandbox-prod")
 	// AzureWorkerIdentityID is the full resource ID of a UserAssigned managed
 	// identity to attach to every worker VM. The identity must already have
 	// "Key Vault Secrets Officer" on the regional KV so workers can fetch
@@ -312,7 +327,7 @@ func Load() (*Config, error) {
 		WorkOSCookieDomain: os.Getenv("WORKOS_COOKIE_DOMAIN"),
 		WorkOSFrontendURL:  os.Getenv("WORKOS_FRONTEND_URL"),
 
-		RedisURL:    os.Getenv("OPENSANDBOX_REDIS_URL"),
+		RedisURL: os.Getenv("OPENSANDBOX_REDIS_URL"),
 
 		MaxCapacity: envOrDefaultInt("OPENSANDBOX_MAX_CAPACITY", 50),
 
@@ -338,28 +353,39 @@ func Load() (*Config, error) {
 		DefaultSandboxCPUs:     envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_CPUS", 1),
 		DefaultSandboxDiskMB:   envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_DISK_MB", 0),
 
-		KernelPath:     os.Getenv("OPENSANDBOX_KERNEL_PATH"),     // default derived from DataDir
-		ImagesDir:      os.Getenv("OPENSANDBOX_IMAGES_DIR"),      // default derived from DataDir
-		QEMUBin:        envOrDefault("OPENSANDBOX_QEMU_BIN", "qemu-system-x86_64"),
+		KernelPath:      os.Getenv("OPENSANDBOX_KERNEL_PATH"), // default derived from DataDir
+		ImagesDir:       os.Getenv("OPENSANDBOX_IMAGES_DIR"),  // default derived from DataDir
+		QEMUBin:         envOrDefault("OPENSANDBOX_QEMU_BIN", "qemu-system-x86_64"),
+		RootDiskBackend: envOrDefault("OPENSANDBOX_ROOT_DISK_BACKEND", "local"),
 
-		EC2AMI:             os.Getenv("OPENSANDBOX_EC2_AMI"),
-		EC2InstanceType:    envOrDefault("OPENSANDBOX_EC2_INSTANCE_TYPE", "c7gd.metal"),
-		EC2InstanceTypes:   splitCSV(os.Getenv("OPENSANDBOX_EC2_INSTANCE_TYPES")),
-		EC2SubnetID:        os.Getenv("OPENSANDBOX_EC2_SUBNET_ID"),
-		EC2SecurityGroupID: os.Getenv("OPENSANDBOX_EC2_SECURITY_GROUP_ID"),
-		EC2KeyName:         os.Getenv("OPENSANDBOX_EC2_KEY_NAME"),
-		EC2WorkerImage:         envOrDefault("OPENSANDBOX_EC2_WORKER_IMAGE", "opensandbox-worker:latest"),
-		EC2IAMInstanceProfile:  os.Getenv("OPENSANDBOX_EC2_IAM_INSTANCE_PROFILE"),
-		EC2SSMParameterName:    os.Getenv("OPENSANDBOX_EC2_SSM_AMI_PARAM"),
+		CloudDiskCLIPath:        envOrDefault("OPENSANDBOX_CLOUD_DISK_CLI_PATH", "cloud-disk"),
+		CloudDiskCachePath:      os.Getenv("OPENSANDBOX_CLOUD_DISK_CACHE_PATH"),
+		CloudDiskDefaultSizeMB:  envOrDefaultInt("OPENSANDBOX_CLOUD_DISK_DEFAULT_SIZE_MB", 20480),
+		CloudDiskGoldenDisk:     os.Getenv("OPENSANDBOX_CLOUD_DISK_GOLDEN_DISK"),
+		CloudDiskGoldenSnapshot: os.Getenv("OPENSANDBOX_CLOUD_DISK_GOLDEN_SNAPSHOT"),
+		CloudDiskS3Endpoint:     os.Getenv("OPENSANDBOX_CLOUD_DISK_S3_ENDPOINT"),
+		CloudDiskS3Region:       envOrDefault("OPENSANDBOX_CLOUD_DISK_S3_REGION", "auto"),
+		CloudDiskS3AccessKeyID:  os.Getenv("OPENSANDBOX_CLOUD_DISK_S3_ACCESS_KEY_ID"),
+		CloudDiskS3SecretKey:    os.Getenv("OPENSANDBOX_CLOUD_DISK_S3_SECRET_ACCESS_KEY"),
 
-		AzureSubscriptionID: os.Getenv("OPENSANDBOX_AZURE_SUBSCRIPTION_ID"),
-		AzureResourceGroup:  os.Getenv("OPENSANDBOX_AZURE_RESOURCE_GROUP"),
-		AzureVMSize:         envOrDefault("OPENSANDBOX_AZURE_VM_SIZE", "Standard_D16s_v5"),
-		AzureVMSizes:        splitCSV(os.Getenv("OPENSANDBOX_AZURE_VM_SIZES")),
-		AzureImageID:        os.Getenv("OPENSANDBOX_AZURE_IMAGE_ID"),
-		AzureSubnetID:       os.Getenv("OPENSANDBOX_AZURE_SUBNET_ID"),
-		AzureSSHPublicKey:   os.Getenv("OPENSANDBOX_AZURE_SSH_PUBLIC_KEY"),
-		AzureKeyVaultName:   os.Getenv("OPENSANDBOX_AZURE_KEY_VAULT_NAME"),
+		EC2AMI:                os.Getenv("OPENSANDBOX_EC2_AMI"),
+		EC2InstanceType:       envOrDefault("OPENSANDBOX_EC2_INSTANCE_TYPE", "c7gd.metal"),
+		EC2InstanceTypes:      splitCSV(os.Getenv("OPENSANDBOX_EC2_INSTANCE_TYPES")),
+		EC2SubnetID:           os.Getenv("OPENSANDBOX_EC2_SUBNET_ID"),
+		EC2SecurityGroupID:    os.Getenv("OPENSANDBOX_EC2_SECURITY_GROUP_ID"),
+		EC2KeyName:            os.Getenv("OPENSANDBOX_EC2_KEY_NAME"),
+		EC2WorkerImage:        envOrDefault("OPENSANDBOX_EC2_WORKER_IMAGE", "opensandbox-worker:latest"),
+		EC2IAMInstanceProfile: os.Getenv("OPENSANDBOX_EC2_IAM_INSTANCE_PROFILE"),
+		EC2SSMParameterName:   os.Getenv("OPENSANDBOX_EC2_SSM_AMI_PARAM"),
+
+		AzureSubscriptionID:   os.Getenv("OPENSANDBOX_AZURE_SUBSCRIPTION_ID"),
+		AzureResourceGroup:    os.Getenv("OPENSANDBOX_AZURE_RESOURCE_GROUP"),
+		AzureVMSize:           envOrDefault("OPENSANDBOX_AZURE_VM_SIZE", "Standard_D16s_v5"),
+		AzureVMSizes:          splitCSV(os.Getenv("OPENSANDBOX_AZURE_VM_SIZES")),
+		AzureImageID:          os.Getenv("OPENSANDBOX_AZURE_IMAGE_ID"),
+		AzureSubnetID:         os.Getenv("OPENSANDBOX_AZURE_SUBNET_ID"),
+		AzureSSHPublicKey:     os.Getenv("OPENSANDBOX_AZURE_SSH_PUBLIC_KEY"),
+		AzureKeyVaultName:     os.Getenv("OPENSANDBOX_AZURE_KEY_VAULT_NAME"),
 		AzureWorkerIdentityID: os.Getenv("OPENSANDBOX_AZURE_WORKER_IDENTITY_ID"),
 
 		CFAPIToken: os.Getenv("OPENSANDBOX_CF_API_TOKEN"),
@@ -373,8 +399,8 @@ func Load() (*Config, error) {
 		StripeSecretKey:            os.Getenv("STRIPE_SECRET_KEY"),
 		StripeWebhookSecret:        os.Getenv("STRIPE_WEBHOOK_SECRET"),
 		StripeTelegramAgentPriceID: os.Getenv("STRIPE_TELEGRAM_AGENT_PRICE_ID"),
-		StripeSuccessURL:    envOrDefault("STRIPE_SUCCESS_URL", "http://localhost:3000/billing?success=true"),
-		StripeCancelURL:     envOrDefault("STRIPE_CANCEL_URL", "http://localhost:3000/billing?cancelled=true"),
+		StripeSuccessURL:           envOrDefault("STRIPE_SUCCESS_URL", "http://localhost:3000/billing?success=true"),
+		StripeCancelURL:            envOrDefault("STRIPE_CANCEL_URL", "http://localhost:3000/billing?cancelled=true"),
 
 		SegmentWriteKey: os.Getenv("SEGMENT_WRITE_KEY"),
 
@@ -391,15 +417,15 @@ func Load() (*Config, error) {
 		SentrySampleRate:       envOrDefaultFloat("OPENSANDBOX_SENTRY_SAMPLE_RATE", 1.0),
 		SentryTracesSampleRate: envOrDefaultFloat("OPENSANDBOX_SENTRY_TRACES_SAMPLE_RATE", 0.0),
 
-		CellID:           os.Getenv("OPENSANDBOX_CELL_ID"),
-		CFEventEndpoint:  os.Getenv("OPENSANDBOX_CF_EVENT_ENDPOINT"),
-		CFEventSecret:    os.Getenv("OPENSANDBOX_CF_EVENT_SECRET"),
-		CFAdminSecret:    os.Getenv("OPENSANDBOX_CF_ADMIN_SECRET"),
-		SessionJWTSecret: os.Getenv("OPENSANDBOX_SESSION_JWT_SECRET"),
-		HaltListURL:      os.Getenv("OPENSANDBOX_HALT_LIST_URL"),
-		UsageParityURL:   os.Getenv("OPENSANDBOX_USAGE_PARITY_URL"),
+		CellID:              os.Getenv("OPENSANDBOX_CELL_ID"),
+		CFEventEndpoint:     os.Getenv("OPENSANDBOX_CF_EVENT_ENDPOINT"),
+		CFEventSecret:       os.Getenv("OPENSANDBOX_CF_EVENT_SECRET"),
+		CFAdminSecret:       os.Getenv("OPENSANDBOX_CF_ADMIN_SECRET"),
+		SessionJWTSecret:    os.Getenv("OPENSANDBOX_SESSION_JWT_SECRET"),
+		HaltListURL:         os.Getenv("OPENSANDBOX_HALT_LIST_URL"),
+		UsageParityURL:      os.Getenv("OPENSANDBOX_USAGE_PARITY_URL"),
 		ProBillingAuthority: os.Getenv("OPENSANDBOX_PRO_BILLING_AUTHORITY"),
-		CFEdgeBaseURL:    os.Getenv("OPENSANDBOX_CF_EDGE_BASE_URL"),
+		CFEdgeBaseURL:       os.Getenv("OPENSANDBOX_CF_EDGE_BASE_URL"),
 
 		ComputeProvider: os.Getenv("OPENSANDBOX_COMPUTE_PROVIDER"),
 		SecretsProvider: envOrDefault("OPENSANDBOX_SECRETS_PROVIDER", "env"),
