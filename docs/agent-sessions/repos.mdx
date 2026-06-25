@@ -13,23 +13,57 @@ holds a GitHub credential.
 ## Connect GitHub
 
 Connect once; OpenComputer mints short-lived, repo-scoped tokens just in time for each
-operation.
+operation. There are three ways to connect — one available today.
 
-| Method | Setup | Status |
-| --- | --- | --- |
-| **OpenComputer GitHub App** | install the App, select your repos | Recommended (landing) |
-| Bring your own App — delegated key | register your App's id + private key | Coming soon |
-| Bring your own App — broker | host a mint endpoint OpenComputer calls | Coming soon |
-| Inline short-lived token | pass a token per session (can't refresh) | Available now (workaround) |
+### OpenComputer GitHub App (recommended)
 
-### OpenComputer GitHub App
+Install the **OpenComputer** GitHub App and select the repositories agents may work in —
+you choose the repos, and can change the selection or uninstall anytime. No keys to
+manage, no endpoint to host. OpenComputer mints a fresh, narrowly-scoped token for each
+operation, so durable sessions and recovery work with nothing else from you.
 
-Install the **OpenComputer** GitHub App and select the repositories agents may work in
-(change the selection or uninstall anytime). No keys to manage, no endpoint to host.
+### Inline short-lived token
 
-Bring-your-own App (so PRs and comments appear as *your* App) is coming soon — either
-register your App's key, or host a mint endpoint OpenComputer calls. Same repo model and
-session API.
+Haven't connected the App yet? Pass a real short-lived token inline on the source, using
+the deliberately-named `risky_short_lived_token` auth:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+sources: [{
+  url: "https://github.com/acme/web.git",
+  ref: "refs/pull/42/head",
+  sha: "abc123…",
+  auth: { type: "risky_short_lived_token", token: "ghs_…", expiresAt: "…" },
+}]
+```
+
+```json REST API
+"sources": [{
+  "url": "https://github.com/acme/web.git",
+  "ref": "refs/pull/42/head",
+  "sha": "abc123...",
+  "auth": { "type": "risky_short_lived_token", "token": "ghs_...", "expires_at": "..." }
+}]
+```
+
+</CodeGroup>
+
+<Warning>
+The inline token **can't refresh** — once it expires the session can't fetch, push, or
+recover, so use it only for sessions that finish within the token's life. OpenComputer
+rejects a far-future or missing expiry and holds it encrypted only until the first
+checkout, then purges it. It's a temporary shortcut until the App-based methods land —
+**prefer the GitHub App.**
+</Warning>
+
+### Bring your own GitHub App (not yet available)
+
+Not built yet — here's how we expect it to work. To have PRs and comments appear as
+*your own* App (branding, audit), you'll connect your GitHub App one of two ways: register
+its App id + private key with OpenComputer (OpenComputer mints the tokens), or keep the
+key and host a small endpoint OpenComputer calls to mint. Either way the repo model and
+session API below are unchanged.
 
 ## Register a repo
 
@@ -57,7 +91,9 @@ passed** — auth comes from your GitHub connection. Optional `defaults`:
 
 ## Use it in a session
 
-```ts
+<CodeGroup>
+
+```ts TypeScript SDK
 const session = await oc.sessions.create({
   agent: agent.id,
   input: "Review this pull request.",
@@ -66,6 +102,19 @@ const session = await oc.sessions.create({
 // checked out at /workspace/sources/head before the first turn
 ```
 
+```http REST API
+POST /v3/sessions
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+
+{
+  "agent": "agt_...",
+  "input": "Review this pull request.",
+  "sources": [{ "repo": "repo_...", "ref": "refs/pull/42/head", "sha": "abc123...", "name": "head" }]
+}
+```
+
+</CodeGroup>
+
 - **`ref`** (required) — the fetch ref (a branch or `refs/pull/N/head`); a private SHA
   can't be fetched directly.
 - **`sha`** (required) — the exact commit, pinned and verified after fetch.
@@ -73,22 +122,6 @@ const session = await oc.sessions.create({
 You can also reference `"owner/repo"` directly instead of a registered id. A session can
 list several sources (a PR's base + head); they're **immutable**, and the agent pulls
 more refs mid-session via the `source.fetch_ref` tool.
-
-## Inline token — the no-setup workaround
-
-Haven't connected the App yet? Pass a real short-lived token inline with the
-deliberately-named `risky_short_lived_token` auth:
-
-```ts
-sources: [{ url: "https://github.com/acme/web.git", ref: "refs/pull/42/head", sha: "abc123…",
-  auth: { type: "risky_short_lived_token", token: "ghs_…", expiresAt: "…" } }]
-```
-
-It works today but **can't refresh** — once the token expires the session can't fetch,
-push, or recover (so it's only safe for sessions that finish within the token's life).
-OpenComputer rejects a far-future/missing expiry, holds it **encrypted only until the
-first checkout, then purges it**. This is a **temporary shortcut until the App-based
-methods above land — prefer the GitHub App.**
 
 ## What the agent can do
 
