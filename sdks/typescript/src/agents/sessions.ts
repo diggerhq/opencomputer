@@ -95,11 +95,11 @@ export class Sessions {
 
   async create(params: CreateSessionParams): Promise<Session> {
     const { idempotencyKey, ...body } = params;
-    const r = await this.http.request<{ session: SessionData; clientToken?: string }>(
+    const r = await this.http.request<{ session: SessionData; clientToken?: string; sources?: SourceSummary[] }>(
       "POST", "/sessions",
       { body, idempotencyKey, idempotent: Boolean(idempotencyKey || params.key) },
     );
-    return new Session(this.http, r.session, r.clientToken);
+    return new Session(this.http, r.session, r.clientToken, r.sources);
   }
   async get(id: string): Promise<Session> {
     return new Session(this.http, await this.http.request<SessionData>("GET", `/sessions/${id}`));
@@ -191,16 +191,21 @@ export class Session extends ClientSession {
   readonly destinations: Destinations;
   readonly deliveries: Deliveries;
   private data: SessionData;
+  private _sources: SourceSummary[];
 
-  constructor(http: Http, data: SessionData, clientToken?: string) {
+  constructor(http: Http, data: SessionData, clientToken?: string, sources?: SourceSummary[]) {
     super(http, data.id, clientToken);
     this.data = data;
+    this._sources = sources ?? [];
     this.destinations = new Destinations(http, data.id);
     this.deliveries = new Deliveries(http, data.id);
   }
 
   get status(): SessionStatus { return this.data.status; }
   get lastTurn(): LastTurn | undefined { return this.data.lastTurn; }
+  /** Source checkout status from create — `{ name, status, path, sha }[]` (empty when none).
+   *  For live status after create, poll `GET /sessions/:id/sources`. */
+  get sources(): SourceSummary[] { return this._sources; }
   /** Opaque app routing state set at create (`null` when unset). See {@link CreateSessionParams.metadata}. */
   get metadata(): Record<string, unknown> | null { return this.data.metadata ?? null; }
   /** The latest fetched session record. */

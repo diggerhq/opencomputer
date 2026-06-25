@@ -32,6 +32,7 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 | `session.cancel()` | Cooperatively stop the active turn (no-op if not running). |
 | `session.result()` | `{ lastTurn, result? }` — the resolved final event. |
 | `session.turns()` · `session.turn(id)` | Per-turn history: timing, error. |
+| `session.sources` | Source checkout status — `SourceSummary[]`. |
 | `session.mintClientToken(opts)` | Mint a client token. |
 
 </Tab>
@@ -47,6 +48,7 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 | `POST /sessions/:id/cancel` | Cooperatively stop the active turn (no-op if not running). |
 | `GET /sessions/:id/result` | The result helper — `{ last_turn, result? }`. |
 | `GET /sessions/:id/turns` · `…/turns/:turnId` | Per-turn history: timing, error. |
+| `GET /sessions/:id/sources` | Source checkout status (`SourceSummary[]`). |
 | `POST /sessions/:id/client-tokens` | Mint a client token. |
 
 </Tab>
@@ -71,13 +73,14 @@ Turn = {
   started_at?, completed_at?
 }
 
-SessionSource =                                    // a sources[] entry (SDK camelCase)
-    { repo, ref, sha, name? }                      // registered repo (repo_… or "owner/repo")
-  | { url, ref, sha, name?, auth }                 // inline; auth = the per-session credential
+SessionSource =                                    // a sources[] entry — WIRE shape (SDK is
+    { repo, ref, sha, name? }                      //   camelCase: brokerUrl, expiresAt)
+  | { url, ref, sha, name?, auth }                 // name defaults to the repo name; type defaults "git"
 SourceAuth =
     { type: "token_broker", broker_url, grant }    // grant: a short-lived reference, not a token
   | { type: "risky_short_lived_token", token, expires_at }   // discouraged; short-lived only
-SourceSummary = { name, status, path, sha }        // sanitized; echoed in the create response
+SourceSummary = { name, status, path, sha }        // sanitized; in the create response + GET …/sources
+//   status: pending | materializing | resolved | failed | unavailable | auth_required
 ```
 
 `yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`; `requires_action` is reserved, not emitted yet) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
@@ -287,7 +290,16 @@ Create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle
 Repo = { id, provider, owner, repo, name?, broker_url?, defaults?, created_at, updated_at }
 ```
 
-The response **never** contains a token or secret. (SDK is camelCase: `brokerUrl`, `branchNamespace`.)
+The response **never** contains a token or secret. (SDK is camelCase: `brokerUrl`, `branchNamespace`.) `defaults.allow` is a **GitHub permission ceiling** (e.g. `contents:read`, `pull_requests:write`) — not a free-form list.
+
+**Broker request** (the contract your `broker_url` implements). At materialization OpenComputer `POST`s your broker a **signed** request (verify against OpenComputer's published JWKS):
+
+```
+→  { owner_id, repo, operation, permissions, ref, sha }   // signed by OpenComputer
+←  { token, expires_at, permissions }                     // a JIT installation token
+```
+
+**Bind `owner_id` to your OpenComputer org** (allowlist or a one-time registration) so a foreign org can't point at your broker URL and mint tokens for your installation. Mint only the intersection of your grant/policy and the requested scope — never broader. See the [Repos guide](/agent-sessions/repos#what-you-provide).
 
 ## Credentials
 

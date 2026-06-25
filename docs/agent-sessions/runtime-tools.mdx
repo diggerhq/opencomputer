@@ -17,7 +17,7 @@ When you write a prompt for a [runtime](/agent-sessions/runtimes) (`claude` or `
 
 `bash` is the only place commands run. Each call is a fresh shell, so use absolute paths or `cd /workspace && ...`. A run surfaces as an [`exec.completed`](/agent-sessions/events#event-shape) event (`{ command, exit_code, summary }`), with large output available via `content_ref`.
 
-To work on a repo, the agent `git clone`s it via `bash` — the sandbox has open outbound internet (below). Prepared [workspaces](/agent-sessions/workspaces) and private-repo access are coming soon.
+To work on a **public** repo, the agent `git clone`s it via `bash` — the sandbox has open outbound internet (below). For **private** repos, register a [Repo](/agent-sessions/repos) and reference it in the session's `sources`: it's checked out before the first turn and the GitHub credential never enters the sandbox. Prepared [workspaces](/agent-sessions/workspaces) are coming soon.
 
 <Note>**Network:** the sandbox has **open outbound internet** by default (so `git clone`, package installs, and API calls just work), with private, loopback, link-local, and cloud-metadata addresses blocked. Per-agent egress allowlists are coming.</Note>
 
@@ -39,6 +39,6 @@ The agent's final `say` is the session result. `ask` ends the turn with `yield_r
 ## Prompt guidance
 
 - Tell the agent to do all work in the sandbox via `bash`/`read`/`write` — it can't touch your machine.
-- To work on a repo, include the repo URL and branch or commit in the task text, then have the agent `git clone` it with `bash`. Public repos work today; private-repo connections are coming soon.
+- **Public repo:** include the URL + branch/commit in the task text and have the agent `git clone` it with `bash`. **Private repo:** register a [Repo](/agent-sessions/repos) and list it in the session's `sources` — checked out before the first turn, no credential in the sandbox.
 - Have it `say` a clear final result — that's what `GET /sessions/:id/result` returns.
 - Have it `ask` only when it genuinely needs a decision; otherwise it should proceed.

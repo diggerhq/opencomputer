@@ -19,24 +19,29 @@ the repo's dedicated operation sandbox, one operation at a time.
 A Repo is to *where* an agent works what an [Agent](/agent-sessions/agents) is to *what*
 it runs: a reusable, owner-scoped entity you register once and reference by id.
 
+<Note>**Status — in active rollout.** Today a session accepts inline `sources` at
+create (below). Registered **Repos**, the broker drop-in, automatic checkout, and the
+GitHub tools are landing now; this page is the target contract.</Note>
+
 ## What you provide
 
-You own a **GitHub App** and host a small **token broker** endpoint. OpenComputer stores
-no GitHub credential; when it needs one it calls your broker, which mints a fresh,
-repo-scoped, short-lived installation token for that one operation. Use the drop-in:
+You own a **GitHub App** (you hold its private key) and host a small **token broker**
+endpoint. OpenComputer stores no GitHub credential; at materialization it calls your
+broker with a **signed** request, and your broker mints a fresh, repo-scoped,
+short-lived installation token for that one operation. Your broker:
 
-```ts
-import { ocGithubBroker } from "@opencomputer/sdk";
+1. **Verifies the request is OpenComputer's** — each request is signed; verify it
+   against OpenComputer's published JWKS (no shared secret for you to store).
+2. **Binds it to your org** — the request carries the OpenComputer `owner_id`, the
+   `repo`, and the `operation`. Confirm the `owner_id` is *your* OpenComputer org (an
+   allowlist, or a one-time registration handshake) — so another customer can't point
+   at your broker URL and have it mint tokens for your installation (confused-deputy).
+3. **Mints to the policy, never more** — issue an installation token scoped to that
+   repo and the minimum permissions the operation needs, with a short TTL.
 
-app.post("/oc/github-token", ocGithubBroker({
-  appId: process.env.GITHUB_APP_ID!,
-  privateKey: process.env.GITHUB_APP_PRIVATE_KEY!,
-  policy: { allowedRepos: ["acme/*"] },   // ceiling on what any request may mint
-}));
-```
-
-It verifies OpenComputer's request against the published JWKS (no shared secret to
-store), applies your policy, and mints the token.
+<Note>A drop-in `ocGithubBroker()` that does all three is **coming soon**. Until then,
+implement the contract above — it's a thin wrapper over your existing GitHub App
+client. See the [broker contract](/agent-sessions/api-reference#repos) for exact shapes.</Note>
 
 ## Register a repo
 
@@ -119,7 +124,8 @@ Write actions need write scope; if the repo's grant doesn't cover it the action 
 
 <Note>
 **No broker yet?** Pass a real short-lived token inline with the deliberately-named
-`risky_short_lived_token` auth. OpenComputer rejects a far-future/missing expiry, holds
-it only for the one job, and never stores it (so the source can't be recovered after it
-expires). Prefer the broker.
+`risky_short_lived_token` auth. OpenComputer rejects a far-future/missing expiry, stores
+it **encrypted** only until the first checkout, then purges it — it never becomes a
+durable credential, and the source can't be recovered once the token expires. Prefer the
+broker.
 </Note>

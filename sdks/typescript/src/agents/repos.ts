@@ -20,7 +20,8 @@ export type RepoAuth = {
 export interface RepoDefaults {
   /** Branch namespace for agent pushes; default `oc/{session}/`. No protected/base push. */
   branchNamespace?: string;
-  /** Operation classes this repo may ever authorize (a ceiling; the broker still decides per call). */
+  /** GitHub permission ceiling (e.g. `contents:read`, `pull_requests:write`) this repo
+   *  may ever authorize — a ceiling; the broker still decides what to mint per call. */
   allow?: string[];
 }
 
