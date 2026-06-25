@@ -63,6 +63,19 @@ type WorkerSpec struct {
 	DefaultCPUs     int
 	DefaultDiskMB   int
 
+	// Root disk backend. Empty means workers use their local default.
+	RootDiskBackend string
+
+	CloudDiskCLIPath        string
+	CloudDiskCachePath      string
+	CloudDiskDefaultSizeMB  int
+	CloudDiskGoldenDisk     string
+	CloudDiskGoldenSnapshot string
+	CloudDiskS3Endpoint     string
+	CloudDiskS3Region       string
+	CloudDiskS3AccessKeyID  string
+	CloudDiskS3SecretKey    string
+
 	// Object storage (S3-compat: Azure Blob, AWS S3, GCS, R2, MinIO)
 	S3Endpoint        string
 	S3Bucket          string
@@ -143,6 +156,16 @@ func BuildWorkerEnv(spec WorkerSpec) string {
 		{"OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB", itoa(spec.DefaultMemoryMB)},
 		{"OPENSANDBOX_DEFAULT_SANDBOX_CPUS", itoa(spec.DefaultCPUs)},
 		{"OPENSANDBOX_DEFAULT_SANDBOX_DISK_MB", itoa(spec.DefaultDiskMB)},
+		{"OPENSANDBOX_ROOT_DISK_BACKEND", spec.RootDiskBackend},
+		{"OPENSANDBOX_CLOUD_DISK_CLI_PATH", spec.CloudDiskCLIPath},
+		{"OPENSANDBOX_CLOUD_DISK_CACHE_PATH", spec.CloudDiskCachePath},
+		{"OPENSANDBOX_CLOUD_DISK_DEFAULT_SIZE_MB", itoa(spec.CloudDiskDefaultSizeMB)},
+		{"OPENSANDBOX_CLOUD_DISK_GOLDEN_DISK", spec.CloudDiskGoldenDisk},
+		{"OPENSANDBOX_CLOUD_DISK_GOLDEN_SNAPSHOT", spec.CloudDiskGoldenSnapshot},
+		{"OPENSANDBOX_CLOUD_DISK_S3_ENDPOINT", spec.CloudDiskS3Endpoint},
+		{"OPENSANDBOX_CLOUD_DISK_S3_REGION", spec.CloudDiskS3Region},
+		{"OPENSANDBOX_CLOUD_DISK_S3_ACCESS_KEY_ID", spec.CloudDiskS3AccessKeyID},
+		{"OPENSANDBOX_CLOUD_DISK_S3_SECRET_ACCESS_KEY", spec.CloudDiskS3SecretKey},
 		{"OPENSANDBOX_DATABASE_URL", spec.DatabaseURL},
 		{"OPENSANDBOX_REDIS_URL", spec.RedisURL},
 		{"OPENSANDBOX_S3_BUCKET", spec.S3Bucket},
