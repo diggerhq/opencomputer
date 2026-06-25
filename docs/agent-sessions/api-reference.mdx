@@ -32,7 +32,7 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 | `session.cancel()` | Cooperatively stop the active turn (no-op if not running). |
 | `session.result()` | `{ lastTurn, result? }` — the resolved final event. |
 | `session.turns()` · `session.turn(id)` | Per-turn history: timing, error. |
-| `session.sources` | Source checkout status — `SourceSummary[]`. |
+| `session.sources` · `session.listSources()` | Source checkout status — create snapshot · live poll. |
 | `session.mintClientToken(opts)` | Mint a client token. |
 
 </Tab>
@@ -73,11 +73,12 @@ Turn = {
   started_at?, completed_at?
 }
 
-SessionSource =                                    // a sources[] entry (SDK camelCase: expiresAt)
+SessionSource =                                    // a sources[] entry — WIRE shape, snake_case
     { repo, ref, sha, name? }                      // a registered repo id or "owner/repo" — auth via your connection
   | { url, ref, sha, name?, auth }                 // inline shortcut; name defaults to repo name, type defaults "git"
 SourceAuth =                                        // inline path ONLY (connection-backed repos need none)
     { type: "risky_short_lived_token", token, expires_at }   // workaround; short-lived; can't refresh
+// SDK is camelCase: expiresAt (wire expires_at).
 SourceSummary = { name, status, path, sha }        // sanitized; in the create response + GET …/sources
 //   status: pending | materializing | resolved | failed | unavailable | auth_required
 ```

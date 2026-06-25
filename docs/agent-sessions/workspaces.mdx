@@ -4,7 +4,7 @@ title: "Workspaces"
 description: "Prepared repo environments, rebuilt on push (coming soon)"
 ---
 
-<Note>**Planned.** This page describes planned API shape, not shipped behavior. Today a session works in its [sandbox](/agent-sessions/runtime-tools) and clones a repo on demand.</Note>
+<Note>**Planned.** This page describes planned API shape, not shipped behavior. Today a session works in its [sandbox](/agent-sessions/runtime-tools); for a public repo the agent clones on demand, and for a private repo OpenComputer checks it out before the first turn (see [Repos](/agent-sessions/repos)).</Note>
 
 Cloning, installing, and building take minutes. A **workspace** does that work ahead of time — on every push — and snapshots the result, so a session boots into a ready machine in seconds. It is a first-class resource (not an agent attribute), shared by every session that lands on its repo(s).
 

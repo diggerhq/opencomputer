@@ -208,9 +208,14 @@ export class Session extends ClientSession {
 
   get status(): SessionStatus { return this.data.status; }
   get lastTurn(): LastTurn | undefined { return this.data.lastTurn; }
-  /** Source checkout status from create — `{ name, status, path, sha }[]` (empty when none).
-   *  For live status after create, poll `GET /sessions/:id/sources`. */
+  /** Source checkout status from the create response — `{ name, status, path, sha }[]`
+   *  (empty when none). For **live** status, call {@link Session.listSources}. */
   get sources(): SourceSummary[] { return this._sources; }
+  /** Fetch live source checkout status — poll this to watch materialization
+   *  (`pending`→`materializing`→`resolved`/`failed`/`auth_required`). */
+  listSources(): Promise<SourceSummary[]> {
+    return this.http.request("GET", `/sessions/${this.id}/sources`);
+  }
   /** Opaque app routing state set at create (`null` when unset). See {@link CreateSessionParams.metadata}. */
   get metadata(): Record<string, unknown> | null { return this.data.metadata ?? null; }
   /** The latest fetched session record. */
