@@ -255,11 +255,11 @@ Create body: `name`, `prompt`, `model`, `runtime?` (`claude` | `codex`), `key?`,
 
 Pass `key` **or** `credential` (or neither → org default). The agent's `limits` are the defaults for its sessions; a session's own `limits` override. Each agent has a monotonic `revision` (bumped on PATCH) that sessions pin in `agent_snapshot.revision`, so you can tell which version produced a run.
 
-## GitHub App installations & Repos
+## GitHub Apps & Repos
 
-Install the **OpenComputer GitHub App** to let OpenComputer mint short-lived, repo-scoped tokens for the GitHub accounts and repositories you select. A **Repo** is repository identity + policy. See the [Repos guide](/agent-sessions/repos).
+Connect a GitHub App to let OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is repository identity + policy. See the [Repos guide](/agent-sessions/repos).
 
-The OC-owned App is installed from the dashboard or GitHub, not by minting an install URL through the SDK. Bring-your-own GitHub App support will add a separate GitHub App entity later; repo and session shapes stay the same. **No credential passes through this API.**
+The OpenComputer-owned App is the current simplest path and is installed from the dashboard or GitHub, not by minting an install URL through the SDK. Bring-your-own GitHub App support adds more App records later; repo and session shapes stay the same. **No credential passes through this API.**
 
 <Tabs>
 
@@ -267,7 +267,8 @@ The OC-owned App is installed from the dashboard or GitHub, not by minting an in
 
 | Call | Purpose |
 | --- | --- |
-| `oc.github.installations.list()` | List OpenComputer GitHub App installations available to your org. |
+| `oc.github.apps.list()` | List GitHub Apps available to your org. |
+| `oc.github.installations.list(params?)` | List known installations for App-key modes; optional for setup/status. |
 | `oc.repos.create(params)` | Register (get-or-create) a repo. |
 | `oc.repos.get(id)` · `oc.repos.list()` | Fetch / list. |
 | `oc.repos.update(id, params)` | Update policy `defaults`. |
@@ -278,7 +279,8 @@ The OC-owned App is installed from the dashboard or GitHub, not by minting an in
 
 | Method · Path | Purpose |
 | --- | --- |
-| `GET /github/installations` | List OpenComputer GitHub App installations available to your org. |
+| `GET /github/apps` | List GitHub Apps available to your org. |
+| `GET /github/installations?app_id=...` | List known installations for App-key modes; optional for setup/status. |
 | `POST /repos` | Register (get-or-create) a repo. |
 | `GET /repos/:id` · `GET /repos` | Fetch / list. |
 | `PATCH /repos/:id` | Update policy `defaults`. |
@@ -287,14 +289,15 @@ The OC-owned App is installed from the dashboard or GitHub, not by minting an in
 
 </Tabs>
 
-Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle), `installation_id?`, `defaults?`. **No `auth`** — auth comes from the GitHub App installation. **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). `defaults`: `{ branch_namespace?, allow? }` — `allow` is a **GitHub permission ceiling** (e.g. `contents:read`, `pull_requests:write`).
+Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle), `app_id?`, `defaults?`. **No `auth`** — auth resolves through the GitHub App. **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). `defaults`: `{ branch_namespace?, allow? }` — `allow` is a **GitHub permission ceiling** (e.g. `contents:read`, `pull_requests:write`).
 
 ```
-Repo               = { id, provider, owner, repo, name?, installation_id?, defaults?, created_at, updated_at }
-GitHubInstallation = { id, account_login, status, repository_selection?, created_at }
+Repo               = { id, provider, owner, repo, name?, app_id?, defaults?, created_at, updated_at }
+GitHubApp          = { id, provider, mode, status, app_slug?, app_name?, is_default?, created_at }
+GitHubInstallation = { id, app_id, account_login, status, repository_selection?, created_at }
 ```
 
-Responses **never** contain a token or secret. (SDK camelCase: `branchNamespace`, `installationId`, `accountLogin`.) Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
+Responses **never** contain a token or secret. (SDK camelCase: `branchNamespace`, `appId`, `appSlug`, `accountLogin`.) Installations are a status/preflight surface: App-key modes can list them, while broker-mode Apps may have none because your broker owns that lifecycle. Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
 
 ## Credentials
 

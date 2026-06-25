@@ -9,10 +9,11 @@ export type {
 } from "./sessions.js";
 export { Agents } from "./agents.js";
 export type { CreateAgentParams, UpdateAgentParams, Page } from "./agents.js";
-export { Repos, GitHub, GitHubInstallations } from "./repos.js";
+export { Repos, GitHub, GitHubApps, GitHubInstallations } from "./repos.js";
 export type {
   CreateRepoParams, UpdateRepoParams, Repo, RepoDefaults, GitHubPermission,
-  GitHubInstallation,
+  GitHubApp, GitHubAppMode, GitHubAppStatus, GitHubInstallation,
+  ListGitHubInstallationsParams,
 } from "./repos.js";
 export { Credentials } from "./credentials.js";
 export type { CreateCredentialParams } from "./credentials.js";

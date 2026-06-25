@@ -45,7 +45,7 @@ export type SessionSource = RegisteredRepoSource | InlineRepoSource;
 
 export interface RegisteredRepoSource {
   /** A registered repo id (`repo_…`) or `owner/repo` slug. Auth comes from your GitHub
-   *  App installation — no per-source credential. */
+   *  App — no per-source credential. */
   repo: string;
   url?: never;
   auth?: never;
@@ -64,15 +64,15 @@ export interface InlineRepoSource {
   ref: string;
   sha: string;
   name?: string;
-  /** Inline auth (registered repos use the GitHub App installation instead). */
+  /** Inline auth (registered repos use the resolved GitHub App instead). */
   auth: SourceAuth;
 }
 
 /**
  * Inline-source auth — the **no-setup workaround**. Pass a real short-lived token; it
  * works today but **can't refresh** (once it expires the session can't fetch/push/recover),
- * so it's only for sessions that finish within the token's life. Prefer connecting the
- * OpenComputer GitHub App (durable). Held encrypted, used once, then purged.
+ * so it's only for sessions that finish within the token's life. Prefer connecting a
+ * GitHub App (durable). Held encrypted, used once, then purged.
  */
 export type SourceAuth =
   | { type: "risky_short_lived_token"; token: string; expiresAt: string };
@@ -83,8 +83,8 @@ export type SourceStatus =
 export type SourceErrorCode =
   | "source.auth_required"
   | "source.auth_ambiguous"
-  | "source.installation_suspended"
-  | "source.installation_revoked"
+  | "source.app_suspended"
+  | "source.app_revoked"
   | "source.repo_not_selected"
   | "source.permission_missing"
   | "source.mint_failed"

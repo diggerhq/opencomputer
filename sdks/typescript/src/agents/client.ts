@@ -22,7 +22,7 @@ export class OpenComputer {
   readonly sessions: Sessions;
   readonly credentials: Credentials;
   readonly repos: Repos;
-  /** GitHub integration (`oc.github.installations.list()`). Connect via the OpenComputer App. */
+  /** GitHub integration (`oc.github.apps.list()`). Connect via a GitHub App. */
   readonly github: GitHub;
 
   constructor(opts: OpenComputerOptions) {

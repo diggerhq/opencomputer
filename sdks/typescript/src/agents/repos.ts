@@ -12,7 +12,7 @@ export interface RepoDefaults {
   /** Branch namespace for agent pushes; default `oc/{session}/`. No protected/base push. */
   branchNamespace?: string;
   /** GitHub permission ceiling (e.g. `contents:read`, `pull_requests:write`) this repo
-   *  may ever authorize — a ceiling; OpenComputer still mints the minimum per operation. */
+   *  may ever authorize — a ceiling; each operation still requests the minimum token. */
   allow?: GitHubPermission[];
 }
 
@@ -22,15 +22,15 @@ export interface CreateRepoParams {
   repo: string;
   /** Optional handle for your own reference; identity is (provider, owner, repo). */
   name?: string;
-  /** Optional explicit GitHub App installation id. Usually resolved from owner/repo. */
-  installationId?: string;
+  /** Optional explicit GitHub App id. Defaults to your org's default app, then the OC App. */
+  appId?: string;
   defaults?: RepoDefaults;
 }
 
 export interface UpdateRepoParams {
   defaults?: RepoDefaults;
   name?: string;
-  installationId?: string;
+  appId?: string;
 }
 
 export interface Repo {
@@ -39,20 +39,40 @@ export interface Repo {
   owner: string;
   repo: string;
   name?: string;
-  /** The GitHub App installation that authorizes this repo (auth lives there, not here). */
-  installationId?: string;
+  /** The GitHub App that authorizes this repo (auth lives there, not here). */
+  appId?: string;
   defaults?: RepoDefaults;
   createdAt?: string;
   updatedAt?: string;
 }
 
+export type GitHubAppMode = "oc_app" | "byo_stored_key" | "byo_broker" | (string & {});
+export type GitHubAppStatus = "active" | "suspended" | "revoked" | (string & {});
+
 /**
- * An installation of the OpenComputer GitHub App on a GitHub user/org. OpenComputer uses
- * this to mint short-lived, repo-scoped tokens just in time; no token is ever returned.
+ * A GitHub App OpenComputer can use to mint short-lived, repo-scoped tokens. The built-in
+ * OpenComputer App is `oc_app`; user-owned App modes are additive.
+ */
+export interface GitHubApp {
+  id: string; // gha_…
+  provider: "github" | (string & {});
+  mode: GitHubAppMode;
+  status: GitHubAppStatus;
+  appSlug?: string;
+  appName?: string;
+  isDefault?: boolean;
+  createdAt?: string;
+}
+
+/**
+ * A GitHub App installation visible to OpenComputer. Installations are useful for setup
+ * status and preflight; auth resolves through the App, and broker-mode Apps may have no
+ * OpenComputer-visible installations.
  */
 export interface GitHubInstallation {
   id: string; // ghi_…
-  status: "active" | "suspended" | "revoked";
+  appId: string; // gha_…
+  status: GitHubAppStatus;
   /** The GitHub org/user the App is installed on. */
   accountLogin: string;
   /** GitHub's raw installation id, when exposed for audit/debug. */
@@ -63,9 +83,15 @@ export interface GitHubInstallation {
 
 export interface Page<T> { data: T[]; nextCursor?: string | null; }
 
+export interface ListGitHubInstallationsParams {
+  appId?: string;
+  limit?: number;
+  cursor?: string;
+}
+
 /**
  * Repos — repository identity + policy (the "where" a session works), analogous to
- * {@link Agents}. Auth comes from a GitHub App installation; no credential is passed here.
+ * {@link Agents}. Auth resolves through a GitHub App; no credential is passed here.
  * Register once and reference from `sources: [{ repo, ref, sha }]`. A session can also
  * reference `"owner/repo"` directly without creating a Repo handle. See the
  * [Repos guide](https://docs.opencomputer.dev/agent-sessions/repos).
@@ -88,18 +114,28 @@ export class Repos {
   }
 }
 
-/** GitHub integration surface (`oc.github`). v1: list OpenComputer App installations. */
+/** GitHub integration surface (`oc.github`). */
 export class GitHub {
+  readonly apps: GitHubApps;
   readonly installations: GitHubInstallations;
   constructor(http: Http) {
+    this.apps = new GitHubApps(http);
     this.installations = new GitHubInstallations(http);
   }
 }
 
-/** OpenComputer GitHub App installations available to your org. */
+/** GitHub Apps available to your org. BYO App registration methods are additive later. */
+export class GitHubApps {
+  constructor(private readonly http: Http) {}
+  list(params: { limit?: number; cursor?: string } = {}): Promise<Page<GitHubApp>> {
+    return this.http.request("GET", "/github/apps", { query: params as Query });
+  }
+}
+
+/** GitHub App installations visible to OpenComputer; optional for broker-mode Apps. */
 export class GitHubInstallations {
   constructor(private readonly http: Http) {}
-  list(): Promise<Page<GitHubInstallation>> {
-    return this.http.request("GET", "/github/installations");
+  list(params: ListGitHubInstallationsParams = {}): Promise<Page<GitHubInstallation>> {
+    return this.http.request("GET", "/github/installations", { query: params as Query });
   }
 }

@@ -10,14 +10,14 @@ holds a GitHub credential.
 
 <Note>**Preview** — APIs may change before general availability.</Note>
 
-## Connect GitHub
+## Connect a GitHub App
 
-Connect once; OpenComputer mints short-lived, repo-scoped tokens just in time for each
-operation. Launch scope is source checkout before the first turn; additional remote GitHub
-actions (`source.fetch_ref`, PR publish, comments, statuses) use the same boundary and are
-coming next.
+Connect a GitHub App once; OpenComputer uses that App to obtain short-lived, repo-scoped
+tokens just in time for each operation. Launch scope is source checkout before the first
+turn; additional remote GitHub actions (`source.fetch_ref`, PR publish, comments,
+statuses) use the same boundary and are coming next.
 
-### OpenComputer GitHub App (recommended)
+### OpenComputer GitHub App (current simplest path)
 
 Install the **OpenComputer** GitHub App and select the repositories agents may work in —
 you choose the repos, and can change the selection or uninstall anytime. No keys to
@@ -34,11 +34,14 @@ publish/comment action.
 Start the install from your dashboard (**Integrations → GitHub**) or from the public
 OpenComputer GitHub App page. No API call is needed to install the OC-owned App.
 
-After installation, you can verify which GitHub accounts are available:
+After installation, you can verify the App and visible installs:
 
 ```ts
-const installs = await oc.github.installations.list();
-// [{ id: "ghi_...", accountLogin: "acme", status: "active" }]
+const apps = await oc.github.apps.list();
+// [{ id: "gha_oc", appName: "OpenComputer", mode: "oc_app", status: "active" }]
+
+const installs = await oc.github.installations.list({ appId: "gha_oc" });
+// [{ id: "ghi_...", appId: "gha_oc", accountLogin: "acme", status: "active" }]
 ```
 
 ### Inline short-lived token
@@ -81,7 +84,7 @@ The inline token **can't refresh** — once it expires the session can't fetch, 
 recover, so use it only for sessions that finish within the token's life. OpenComputer
 rejects a far-future or missing expiry and holds it encrypted only until the first
 checkout, then purges it. It's a temporary shortcut for environments that have not
-installed the App yet — **prefer the GitHub App.**
+connected a GitHub App yet.
 </Warning>
 
 ### Bring your own GitHub App (not yet available)
@@ -89,8 +92,9 @@ installed the App yet — **prefer the GitHub App.**
 Not built yet — here's how we expect it to work. To have PRs and comments appear as
 *your own* App (branding, audit), you'll register a GitHub App entity with OpenComputer:
 either store its App id + private key in OpenComputer, or keep the key and host a small
-token-broker endpoint. That App will then have its own installations. The repo and session
-shape below stay the same.
+token-broker endpoint. Stored-key Apps can expose installations for setup status; broker
+Apps can own the full GitHub lifecycle on your side, with your broker as the authority.
+The repo and session shape below stays the same.
 
 ## Register a repo
 
@@ -103,6 +107,7 @@ used in a session directly; a Repo adds policy and a stable handle.
 const repo = await oc.repos.create({
   owner: "acme",
   repo: "web",
+  // appId: "gha_...", // optional: org default, then OC App
   defaults: { allow: ["contents:read"] },
 });
 ```
@@ -117,9 +122,11 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 </CodeGroup>
 
 Get-or-create, owner-scoped, idempotent by `(provider, owner, repo)`. **No credential is
-passed** — auth comes from the GitHub App installation. Optional `defaults`:
+passed** — auth resolves through the GitHub App. Optional `appId` pins a repo to a
+specific App; otherwise OpenComputer uses your org default App, then the OpenComputer App.
+Optional `defaults`:
 `{ branchNamespace, allow }` (`allow` is a GitHub permission ceiling; OpenComputer still
-mints the minimum token per operation).
+requests the minimum token per operation).
 
 ## Use it in a session
 
@@ -198,12 +205,13 @@ git-ops sandbox — the agent never runs authenticated `git`/`gh` and never sees
 
 ## Guarantees
 
-- **GitHub App-backed tokens are never stored** — OpenComputer mints short-lived,
+- **GitHub App-backed tokens are never stored** — OpenComputer obtains short-lived,
   repo-scoped tokens just in time and destroys them. None reaches the agent's prompt,
   shell, files, env, the event log, or telemetry. (The one exception is the inline-token
   workaround, held encrypted only until the first checkout, then purged.)
-- The GitHub App's private key lives only in OpenComputer's **control plane**, never in a
-  sandbox.
+- App private keys for the OpenComputer App and stored-key Apps live only in
+  OpenComputer's **control plane**, never in a sandbox. Broker-mode App keys stay in
+  your backend.
 - Agent pushes go to an `oc/<session>/…` branch namespace — **no protected-branch push,
   no force-push.**
 - Submodules and Git LFS aren't supported yet. Lost-sandbox recovery and prebuilt
