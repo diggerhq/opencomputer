@@ -1,0 +1,196 @@
+---
+title: "Repos"
+description: "Connect a Git repository so an agent can work in it — and act on it — without ever holding your GitHub credential"
+---
+
+A **Repo** is a registered connection to a Git repository: its identity plus how
+OpenComputer obtains short-lived tokens for it. Register a repo once, then any session
+can check it out and (soon) act on it — open a PR, comment, set a status — **without the
+GitHub credential ever entering the agent's sandbox.**
+
+A repo is to *where* an agent works what an [Agent](/agent-sessions/agents) is to *what*
+it runs: a small, reusable, owner-scoped entity you create once and reference by id.
+
+<Note>
+**The boundary that makes this safe:** the agent can *request GitHub outcomes*, it
+never receives *GitHub authority*. Your GitHub token is never placed in the agent's
+shell, prompt, files, or environment. OpenComputer runs every authenticated Git/GitHub
+operation in an isolated, single-use job the agent cannot reach, with a token minted
+just in time for that one operation.
+</Note>
+
+## What you provide
+
+You own a **GitHub App** (you hold its private key) and host a small **token broker**
+endpoint. OpenComputer never stores a GitHub credential; when it needs to touch GitHub
+it calls your broker to mint a fresh, narrowly-scoped installation token for one
+operation, uses it in an isolated job, and discards it.
+
+<Tip>
+Use the drop-in so you don't hand-roll the broker:
+
+```ts
+import { ocGithubBroker } from "@opencomputer/sdk";
+
+app.post("/oc/github-token", ocGithubBroker({
+  appId: process.env.GITHUB_APP_ID!,
+  privateKey: process.env.GITHUB_APP_PRIVATE_KEY!,
+  policy: { allowedRepos: ["acme/*"] },   // a ceiling on what any request may mint
+}));
+```
+
+It verifies OpenComputer's signed request against OpenComputer's published JWKS (so
+there's no shared secret to store), checks its policy, and mints a scoped token.
+</Tip>
+
+## Register a repo
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const repo = await oc.repos.create({
+  owner: "acme",
+  repo: "web",
+  auth: { type: "token_broker", brokerUrl: "https://app.example.com/oc/github-token" },
+  defaults: { branchNamespace: "oc/{session}/" },
+});
+// repo.id -> "repo_…"
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/repos
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "provider": "github",
+  "owner": "acme",
+  "repo": "web",
+  "auth": { "type": "token_broker", "broker_url": "https://app.example.com/oc/github-token" }
+}
+```
+
+</CodeGroup>
+
+`POST /repos` is **get-or-create**, owner-scoped, idempotent by `(provider, owner,
+repo)` — safe to call at startup. The response never contains a secret: a registered
+repo stores only the broker URL, the repo identity, and your policy defaults. **No
+GitHub token is ever stored.**
+
+<Note>
+Registering a repo establishes a **connection**: your broker has agreed to mint tokens
+for OpenComputer's signature-verified requests for this repo, governed by your broker's
+own policy. Sessions can then reference the repo with no per-session secret. For tighter,
+time-boxed authorization you can skip the connection and pass a per-session grant
+inline (below).
+</Note>
+
+## Use a repo in a session
+
+Reference the registered repo plus the exact ref and commit to work on:
+
+```ts
+const session = await oc.sessions.create({
+  agent: agent.id,
+  input: "Review this pull request and suggest fixes.",
+  metadata: { github: { owner: "acme", repo: "web", pull: 42 } },
+  sources: [{ repo: repo.id, ref: "refs/pull/42/head", sha: "abc123…", name: "head" }],
+});
+
+// session.sources -> [{ name: "head", status: "pending", path: "/workspace/sources/head", sha: "abc123…" }]
+```
+
+The repo is checked out at `/workspace/sources/<name>` before the agent's first turn.
+A session can list several sources (e.g. a PR's base and head). Each requires:
+
+- **`ref`** — the fetch ref (a branch, or `refs/pull/N/head`). Required: fetching an
+  arbitrary private SHA directly isn't reliable, so OpenComputer fetches the ref, then
+  checks out and **verifies the exact `sha`**.
+- **`sha`** — the exact commit, pinned and verified after fetch.
+
+Sources are **immutable** for the session. To pull another ref in mid-session the agent
+uses `source.fetch_ref`; to work on different source, start a new session.
+
+### Inline, without registering
+
+For quick use you can pass the repo inline with per-session auth — no registration:
+
+```ts
+sources: [{
+  url: "https://github.com/acme/web.git",
+  ref: "refs/pull/42/head",
+  sha: "abc123…",
+  auth: { type: "token_broker", brokerUrl: "https://app.example.com/oc/github-token", grant: "<grant>" },
+}]
+```
+
+The `grant` is a short-lived **reference** (not a token) your app mints for this
+session. Registering a repo is preferred — it moves the broker config off every create
+call and lets you manage policy and (later) repo-level workflows in one place.
+
+## What the agent can do
+
+The agent works on the checked-out tree with normal tools (`git status`/`diff`/`log`,
+edit files, run tests, local commits). Anything that needs the network is a **typed
+tool** — the agent requests an outcome and OpenComputer performs it in the isolated job:
+
+| Tool | What it does | Status |
+| --- | --- | --- |
+| *(source already checked out)* | read + edit `/workspace/sources/<name>` | **Available** |
+| `source.fetch_ref` | fetch another ref into the local repo | Coming soon |
+| `github.publish_branch` / `publish_pull_request` | push the agent's changes / open a PR | Coming soon |
+| `github.comment` / `github.set_status` | comment on a PR/issue, set a commit status | Coming soon |
+
+The agent never runs authenticated `git` or `gh`, and never sees a token. Results
+(branch, commit SHA, PR number/URL) come back as structured tool output.
+
+### Write actions and grants <Tag>Coming soon</Tag>
+
+Write actions (push, PR, comment, status) need write scope. The grant or connection
+authorizes a set of **operation classes** — your broker decides what to mint. A
+read-only review uses read scope; a session that will open PRs uses a connection or
+grant whose policy also allows the write classes. If an action isn't covered, it
+resolves to **`auth_required`** (rather than failing silently or reusing read scope);
+you attach an action-capable grant and it retries. Read and write authority stay
+distinct — OpenComputer never widens read access in place.
+
+## How it works, and what's guaranteed
+
+Materialization runs in a pre-execution step before the agent starts:
+
+1. OpenComputer calls your broker (a request **signed with OpenComputer's key**, which
+   your broker verifies against the public JWKS) and receives a **just-in-time,
+   repo-scoped, short-lived** installation token.
+2. An **isolated job** — OpenComputer-operated compute the agent cannot reach — fetches
+   the ref, verifies the SHA, and hands the files to the session sandbox. The token
+   lives only in that job and is **discarded when it exits**.
+3. The agent works on the files; for a write action, OpenComputer mints a fresh scoped
+   token the same way, performs the mutation in a clean isolated checkout, and returns
+   the result.
+
+**Token lifecycle and storage:**
+
+- OpenComputer stores **no GitHub token** — ever. A registered repo stores only the
+  broker URL, repo identity, and policy. A per-session grant is stored encrypted and is
+  a *reference*, not a credential.
+- Tokens are minted **just in time, per operation**, scoped to the one repo and the
+  minimum permissions, short-lived, and **destroyed with the job**.
+- No GitHub token appears in the agent's prompt, shell, files, environment, the event
+  log, or telemetry.
+
+**Boundaries and limits:**
+
+- Agent pushes go to an `oc/<session-id>/…` branch namespace by default — **no direct
+  push to protected/base branches, no force-push.**
+- Submodules and Git LFS are not supported by default (clear error if required).
+- If a session's sandbox is lost, the source is rehydrated from a retained workspace or
+  re-fetched via your broker; if neither is possible the source reports
+  `source.unavailable` and you re-trigger. <Note>Recovery behavior is firming up.</Note>
+- Very large repositories add bootstrap latency; <a href="/agent-sessions/workspaces">Workspaces</a> will offer prebuilt checkouts. <Tag>Coming soon</Tag>
+
+<Note>
+**Don't have a broker yet?** You can pass a real short-lived token inline with the
+deliberately-named `risky_short_lived_token` auth. OpenComputer rejects a far-future or
+missing expiry, holds it only transiently for the one job, and never stores it durably
+(so the source can't be recovered after it expires). Prefer the broker.
+</Note>

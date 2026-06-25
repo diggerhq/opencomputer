@@ -27,6 +27,54 @@ export interface CreateSessionParams {
   metadata?: Record<string, unknown>;
   /** Makes a keyless create retry-safe (sent as the Idempotency-Key header). */
   idempotencyKey?: string;
+  /**
+   * Repositories to check out for the agent at the start of the session. Each source
+   * is materialized into `/workspace/sources/<name>` before the agent's first turn;
+   * the checkout credential never enters the agent's sandbox. See {@link Repos} and
+   * the [Repos guide](https://docs.opencomputer.dev/agent-sessions/repos).
+   *
+   * Reference a registered repo (preferred — auth lives on the repo), or pass an
+   * inline source with per-session auth (no registration).
+   */
+  sources?: SessionSource[];
+}
+
+/** A repo to check out for a session. Either a reference to a registered {@link Repo},
+ *  or an inline source with its own per-session auth. */
+export type SessionSource = RegisteredRepoSource | InlineRepoSource;
+
+export interface RegisteredRepoSource {
+  /** A registered repo id (`repo_…`) or `owner/repo` slug. Auth comes from the repo. */
+  repo: string;
+  /** Required fetch ref (branch or `refs/pull/N/head`). */
+  ref: string;
+  /** Required exact commit; fetched, then pinned + verified. */
+  sha: string;
+  /** Checkout slug → `/workspace/sources/<name>`. Defaults to the repo name. */
+  name?: string;
+}
+
+export interface InlineRepoSource {
+  /** Clone URL (https, no embedded credentials). */
+  url: string;
+  ref: string;
+  sha: string;
+  name?: string;
+  /** Per-session auth (the registered-repo path carries auth on the repo instead). */
+  auth: SourceAuth;
+}
+
+/** Per-source auth for the inline path. Prefer a registered repo + broker connection. */
+export type SourceAuth =
+  | { type: "token_broker"; brokerUrl: string; grant: string }
+  | { type: "risky_short_lived_token"; token: string; expiresAt: string };
+
+/** Sanitized per-source status returned on a session (never exposes url/auth). */
+export interface SourceSummary {
+  name: string;
+  status: "pending" | "materializing" | "resolved" | "failed" | "unavailable" | "auth_required";
+  path: string;
+  sha: string;
 }
 
 export interface StreamOptions {

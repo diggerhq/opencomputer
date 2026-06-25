@@ -67,6 +67,7 @@
           "agent-sessions/quickstart",
           "agent-sessions/agents",
           "agent-sessions/sessions",
+          "agent-sessions/repos",
           "agent-sessions/events",
           "agent-sessions/authentication",
           "agent-sessions/messaging",

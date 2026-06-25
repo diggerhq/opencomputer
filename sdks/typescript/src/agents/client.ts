@@ -2,6 +2,7 @@ import { Http, type HttpOptions } from "./http.js";
 import { Agents } from "./agents.js";
 import { Sessions } from "./sessions.js";
 import { Credentials } from "./credentials.js";
+import { Repos } from "./repos.js";
 
 export interface OpenComputerOptions extends HttpOptions {
   /** Your OpenComputer org API key (server-side only — never ship it to a browser). */
@@ -20,11 +21,13 @@ export class OpenComputer {
   readonly agents: Agents;
   readonly sessions: Sessions;
   readonly credentials: Credentials;
+  readonly repos: Repos;
 
   constructor(opts: OpenComputerOptions) {
     const http = new Http({ apiKey: opts.apiKey }, opts);
     this.agents = new Agents(http);
     this.sessions = new Sessions(http);
     this.credentials = new Credentials(http);
+    this.repos = new Repos(http);
   }
 }

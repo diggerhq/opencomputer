@@ -2,9 +2,14 @@ export { OpenComputer, type OpenComputerOptions } from "./client.js";
 export { connectSession, type ConnectSessionOptions } from "./connect.js";
 
 export { Sessions, Session, ClientSession } from "./sessions.js";
-export type { CreateSessionParams, StreamOptions, Envelope, ListPage } from "./sessions.js";
+export type {
+  CreateSessionParams, StreamOptions, Envelope, ListPage,
+  SessionSource, RegisteredRepoSource, InlineRepoSource, SourceAuth, SourceSummary,
+} from "./sessions.js";
 export { Agents } from "./agents.js";
 export type { CreateAgentParams, UpdateAgentParams, Page } from "./agents.js";
+export { Repos } from "./repos.js";
+export type { CreateRepoParams, UpdateRepoParams, Repo, RepoAuth, RepoDefaults } from "./repos.js";
 export { Credentials } from "./credentials.js";
 export type { CreateCredentialParams } from "./credentials.js";
 export { Destinations, Deliveries } from "./destinations.js";
