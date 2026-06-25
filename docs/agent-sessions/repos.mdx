@@ -1,47 +1,38 @@
 ---
 title: "Repos"
-description: "Connect a private repo behind a security boundary — the agent works on the code, GitHub access stays isolated and durable"
+description: "Connect a Git repository to your sessions — the agent works on the code, GitHub access stays isolated"
 ---
 
-A **Repo** connects a Git repository to your sessions and draws a **security boundary**
-around it. The agent reads and edits the checked-out code in its own sandbox, but every
-authenticated GitHub operation — clone, fetch, push, PR, comment — runs in a **separate,
-single-use sandbox the agent can't reach**, with a token minted just in time and
-destroyed after.
+A **Repo** connects a Git repository to your sessions. The agent reads and edits the
+checked-out code in its sandbox; authenticated GitHub operations (clone, fetch, push, PR,
+comment) run outside it, with a short-lived token minted just in time — the agent never
+holds a GitHub credential.
 
-<Note>
-**Why isolate.** A GitHub token is *authority*, not just a secret — anything holding it
-can push, read your other repos, or exfiltrate. So OpenComputer keeps it out of the
-agent entirely: the agent requests GitHub *outcomes*, and the credential lives only in
-the isolated operation sandbox, one operation at a time.
-</Note>
+<Note>**In active rollout — not yet generally available.** Today a session accepts inline
+`sources` at create (the [workaround](#inline-token-the-no-setup-workaround) below).
+Registered **Repos**, the GitHub App connection, automatic checkout, and the GitHub tools
+are landing; this page is the target.</Note>
 
 ## Connect GitHub
 
-Sessions are **durable** — an agent might wait hours for input, then push — so a single
-token (GitHub installation tokens last ~1h) isn't enough; OpenComputer needs to mint a
-fresh one on demand. You connect GitHub **once**, and OpenComputer mints short-lived,
-repo-scoped tokens just in time, for every operation, across the whole session.
+Connect once; OpenComputer mints short-lived, repo-scoped tokens just in time for each
+operation.
 
-| Method | How | Status |
+| Method | Setup | Status |
 | --- | --- | --- |
-| **OpenComputer GitHub App** | install the App on your repos — OpenComputer mints from it | **Recommended** |
+| **OpenComputer GitHub App** | install the App, select your repos | Recommended (landing) |
 | Bring your own App — delegated key | register your App's id + private key | Coming soon |
-| Bring your own App — broker | host a small mint endpoint OpenComputer calls | Coming soon |
-| Inline short-lived token | pass a token per session (no refresh) | Workaround — see [below](#inline-token-the-no-setup-workaround) |
+| Bring your own App — broker | host a mint endpoint OpenComputer calls | Coming soon |
+| Inline short-lived token | pass a token per session (can't refresh) | Available now (workaround) |
 
-### OpenComputer GitHub App (recommended)
+### OpenComputer GitHub App
 
-Install the **OpenComputer** GitHub App on your org and the repos you want agents to work
-in — you choose the repos and the permissions, and can uninstall anytime. That's the
-whole setup: no keys to manage, no endpoint to host. From then on OpenComputer mints a
-fresh, narrowly-scoped token for each operation and discards it, so **durable sessions
-and recovery just work**.
+Install the **OpenComputer** GitHub App and select the repositories agents may work in
+(change the selection or uninstall anytime). No keys to manage, no endpoint to host.
 
-<Note>**Bring your own GitHub App** — so PRs and comments show as *your* App
-(branding/audit) — is coming soon, in two flavors: register your App's private key with
-OpenComputer, or keep the key and host a tiny mint endpoint OpenComputer calls. Same repo
-model and session API; your integration won't change.</Note>
+Bring-your-own App (so PRs and comments appear as *your* App) is coming soon — either
+register your App's key, or host a mint endpoint OpenComputer calls. Same repo model and
+session API.
 
 ## Register a repo
 
@@ -116,9 +107,10 @@ the agent never runs authenticated `git`/`gh` and never sees a token:
 
 ## Guarantees
 
-- **No GitHub token is ever stored** — OpenComputer mints short-lived, repo-scoped tokens
-  just in time and destroys them. None reaches the agent's prompt, shell, files, env, the
-  event log, or telemetry.
+- **Connection-backed tokens are never stored** — OpenComputer mints short-lived,
+  repo-scoped tokens just in time and destroys them. None reaches the agent's prompt,
+  shell, files, env, the event log, or telemetry. (The one exception is the inline-token
+  workaround, held encrypted only until the first checkout, then purged.)
 - The GitHub App's private key lives only in OpenComputer's **control plane**, never in a
   sandbox.
 - Agent pushes go to an `oc/<session>/…` branch namespace — **no protected-branch push,

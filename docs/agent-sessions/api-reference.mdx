@@ -253,6 +253,8 @@ Pass `key` **or** `credential` (or neither → org default). The agent's `limits
 
 ## GitHub connections & Repos
 
+<Note>**In active rollout** — `/repos`, `/github/connections`, registered repo sources, and `GET /sessions/:id/sources` are landing with the GitHub App connection. Today only inline `sources` auth (the `risky_short_lived_token` workaround) is live. See the [Repos guide](/agent-sessions/repos).</Note>
+
 Auth lives on a **connection** (how OpenComputer mints tokens for your org); a **Repo** is repo identity + policy that references it. See the [Repos guide](/agent-sessions/repos).
 
 **Connect GitHub** by installing the **OpenComputer GitHub App** (recommended, durable; bring-your-own App + broker coming soon). The install captures an owner-scoped connection; OpenComputer then mints short-lived, repo-scoped tokens just in time. **No credential passes through this API.**
