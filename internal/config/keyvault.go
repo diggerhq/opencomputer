@@ -36,31 +36,31 @@ import (
 // an unrelated env var (e.g., PATH).
 var kvMapping = map[string]string{
 	// Server secrets
-	"server-database-url":           "OPENSANDBOX_DATABASE_URL",
-	"server-redis-url":              "OPENSANDBOX_REDIS_URL",
-	"server-jwt-secret":             "OPENSANDBOX_JWT_SECRET",
-	"server-api-key":                "OPENSANDBOX_API_KEY",
-	"server-secret-encryption-key":  "OPENSANDBOX_SECRET_ENCRYPTION_KEY",
-	"server-workos-api-key":         "WORKOS_API_KEY",
-	"server-workos-client-id":       "WORKOS_CLIENT_ID",
-	"server-cf-api-token":           "OPENSANDBOX_CF_API_TOKEN",
-	"server-cf-zone-id":             "OPENSANDBOX_CF_ZONE_ID",
-	"server-stripe-secret-key":      "STRIPE_SECRET_KEY",
-	"server-stripe-webhook-secret":  "STRIPE_WEBHOOK_SECRET",
-	"server-sentry-dsn":             "OPENSANDBOX_SENTRY_DSN",
+	"server-database-url":          "OPENSANDBOX_DATABASE_URL",
+	"server-redis-url":             "OPENSANDBOX_REDIS_URL",
+	"server-jwt-secret":            "OPENSANDBOX_JWT_SECRET",
+	"server-api-key":               "OPENSANDBOX_API_KEY",
+	"server-secret-encryption-key": "OPENSANDBOX_SECRET_ENCRYPTION_KEY",
+	"server-workos-api-key":        "WORKOS_API_KEY",
+	"server-workos-client-id":      "WORKOS_CLIENT_ID",
+	"server-cf-api-token":          "OPENSANDBOX_CF_API_TOKEN",
+	"server-cf-zone-id":            "OPENSANDBOX_CF_ZONE_ID",
+	"server-stripe-secret-key":     "STRIPE_SECRET_KEY",
+	"server-stripe-webhook-secret": "STRIPE_WEBHOOK_SECRET",
+	"server-sentry-dsn":            "OPENSANDBOX_SENTRY_DSN",
 	// Machine-size fallback lists (PR #209). Comma-separated ranked
 	// instance types the autoscaler tries in order on quota / capacity
 	// errors. Empty value = use the single VMSize / InstanceType
 	// configured on the pool (pre-fallback behavior).
-	"server-azure-vm-sizes":         "OPENSANDBOX_AZURE_VM_SIZES",
-	"server-ec2-instance-types":     "OPENSANDBOX_EC2_INSTANCE_TYPES",
+	"server-azure-vm-sizes":     "OPENSANDBOX_AZURE_VM_SIZES",
+	"server-ec2-instance-types": "OPENSANDBOX_EC2_INSTANCE_TYPES",
 	// Legacy Axiom mappings — kept for backwards compat with existing prod
 	// KVs that pre-date the `shared-` prefix. New deploys should use
 	// `shared-axiom-*` instead. Safe to leave: in server mode only
 	// `server-axiom-*` is loaded; in worker mode only `worker-axiom-*`. New
 	// `shared-*` mappings below win for new envs that have only those.
-	"server-axiom-query-token":      "AXIOM_QUERY_TOKEN",
-	"server-axiom-dataset":          "AXIOM_DATASET",
+	"server-axiom-query-token": "AXIOM_QUERY_TOKEN",
+	"server-axiom-dataset":     "AXIOM_DATASET",
 
 	// Server-side cell config + shared secrets. These mirror the worker-* keys
 	// of the same name — both sides need them, and the prefix filter loads only
@@ -75,6 +75,19 @@ var kvMapping = map[string]string{
 	"server-session-jwt-secret": "OPENSANDBOX_SESSION_JWT_SECRET",
 	"server-halt-list-url":      "OPENSANDBOX_HALT_LIST_URL",
 
+	// Server-side root disk backend config. The CP copies these into every
+	// autoscaled worker's cloud-init WorkerSpec.
+	"server-root-disk-backend":               "OPENSANDBOX_ROOT_DISK_BACKEND",
+	"server-cloud-disk-cli-path":             "OPENSANDBOX_CLOUD_DISK_CLI_PATH",
+	"server-cloud-disk-cache-path":           "OPENSANDBOX_CLOUD_DISK_CACHE_PATH",
+	"server-cloud-disk-default-size-mb":      "OPENSANDBOX_CLOUD_DISK_DEFAULT_SIZE_MB",
+	"server-cloud-disk-golden-disk":          "OPENSANDBOX_CLOUD_DISK_GOLDEN_DISK",
+	"server-cloud-disk-golden-snapshot":      "OPENSANDBOX_CLOUD_DISK_GOLDEN_SNAPSHOT",
+	"server-cloud-disk-s3-endpoint":          "OPENSANDBOX_CLOUD_DISK_S3_ENDPOINT",
+	"server-cloud-disk-s3-region":            "OPENSANDBOX_CLOUD_DISK_S3_REGION",
+	"server-cloud-disk-s3-access-key-id":     "OPENSANDBOX_CLOUD_DISK_S3_ACCESS_KEY_ID",
+	"server-cloud-disk-s3-secret-access-key": "OPENSANDBOX_CLOUD_DISK_S3_SECRET_ACCESS_KEY",
+
 	// Worker secrets
 	"worker-jwt-secret":         "OPENSANDBOX_JWT_SECRET",
 	"worker-database-url":       "OPENSANDBOX_DATABASE_URL",
@@ -87,20 +100,20 @@ var kvMapping = map[string]string{
 
 	// Worker per-cell config (non-secret but cell-scoped — every worker in the
 	// cell shares these, so KV is the single source of truth)
-	"worker-region":                       "OPENSANDBOX_REGION",
-	"worker-cell-id":                      "OPENSANDBOX_CELL_ID",
-	"worker-max-capacity":                 "OPENSANDBOX_MAX_CAPACITY",
-	"worker-default-sandbox-memory-mb":    "OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB",
-	"worker-default-sandbox-cpus":         "OPENSANDBOX_DEFAULT_SANDBOX_CPUS",
-	"worker-default-sandbox-disk-mb":      "OPENSANDBOX_DEFAULT_SANDBOX_DISK_MB",
-	"worker-sandbox-domain":               "OPENSANDBOX_SANDBOX_DOMAIN",
-	"worker-s3-bucket":                    "OPENSANDBOX_S3_BUCKET",
-	"worker-s3-region":                    "OPENSANDBOX_S3_REGION",
-	"worker-s3-endpoint":                  "OPENSANDBOX_S3_ENDPOINT",
-	"worker-s3-force-path-style":          "OPENSANDBOX_S3_FORCE_PATH_STYLE",
-	"worker-cf-event-endpoint":            "OPENSANDBOX_CF_EVENT_ENDPOINT",
-	"worker-halt-list-url":                "OPENSANDBOX_HALT_LIST_URL",
-	"worker-segment-write-key":            "SEGMENT_WRITE_KEY",
+	"worker-region":                    "OPENSANDBOX_REGION",
+	"worker-cell-id":                   "OPENSANDBOX_CELL_ID",
+	"worker-max-capacity":              "OPENSANDBOX_MAX_CAPACITY",
+	"worker-default-sandbox-memory-mb": "OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB",
+	"worker-default-sandbox-cpus":      "OPENSANDBOX_DEFAULT_SANDBOX_CPUS",
+	"worker-default-sandbox-disk-mb":   "OPENSANDBOX_DEFAULT_SANDBOX_DISK_MB",
+	"worker-sandbox-domain":            "OPENSANDBOX_SANDBOX_DOMAIN",
+	"worker-s3-bucket":                 "OPENSANDBOX_S3_BUCKET",
+	"worker-s3-region":                 "OPENSANDBOX_S3_REGION",
+	"worker-s3-endpoint":               "OPENSANDBOX_S3_ENDPOINT",
+	"worker-s3-force-path-style":       "OPENSANDBOX_S3_FORCE_PATH_STYLE",
+	"worker-cf-event-endpoint":         "OPENSANDBOX_CF_EVENT_ENDPOINT",
+	"worker-halt-list-url":             "OPENSANDBOX_HALT_LIST_URL",
+	"worker-segment-write-key":         "SEGMENT_WRITE_KEY",
 
 	// CF-cutover event pipe (worker)
 	"worker-cf-event-secret":    "OPENSANDBOX_CF_EVENT_SECRET",
