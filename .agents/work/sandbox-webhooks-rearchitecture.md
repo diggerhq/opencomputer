@@ -1,11 +1,14 @@
 # Sandbox webhooks — re-architecture (reuse existing infra + managed delivery)
 
-Status: **design / pre-build, 2026-06-24 (rev2 — incorporates review findings).** The shipped impl
-(PR #410, branch `feat/sandbox-webhooks`, design doc `sandbox-lifecycle-webhooks.md`) works and is
-tested, but it's **over-built for OC's architecture**. This doc proposes the leaner shape and is
-intended to be **build-ready**: the durability boundary, the public-contract delta, and the state
-model are specified, not hand-waved. We continue in the **same PR/branch** (major changes, not a new
-PR); consolidate the two design docs later.
+Status: **DONE — shipped & deployed to prod (2026-06-25).** The all-Svix-at-edge rearchitecture is
+merged (**PR #410**) and deployed: the control plane, `api-edge`, and `events-ingest` (Mo's CF
+account, `app.opencomputer.dev`, D1 `opencomputer-prod`), with migration `049` and the D1 webhook
+schema applied — verified by a prod E2E (create/get/secret/test/idempotency, inline-on-create, full
+`created`→`ready`→`stopped` delivery, signatures). Follow-ups: prod-E2E fixes in **PR #413**
+(inline-spec validation on the edge→CP path, Idempotency-Key-409 on body mismatch, delivery-
+consistency docs); CI gaps (events-ingest auto-deploy + a D1-schema-apply workflow) in **PR #412**.
+Below is the as-built record of the pivot away from the original bespoke CP stack
+(`sandbox-lifecycle-webhooks.md`, now **superseded**).
 
 ## 0. Thesis (Igor)
 
@@ -520,3 +523,62 @@ Every §9.7 issue is now addressed (commits `23e2496` + `65cb266`; dev D1/box st
   not worth it for a test ping).
 - **Delivery detail 404** — not a bug: the provider's attempt index is visible a few seconds before
   `/msg/{id}` is fetchable (eventual consistency); reproduced clean with a wait; documented.
+
+### 9.9 Retest after latest fixes (2026-06-24) — edge path works, remaining contract gaps found
+
+Reviewed latest branch tip (`65cb266` idempotent create + `bb05e96` dev edge-path setup) and
+retested the live `igor-dev` stack using:
+
+- api-edge: `https://opencomputer-api-edge-igor-dev.mo-b8f.workers.dev`
+- events-ingest: `https://opencomputer-events-ingest-igor-dev.mo-b8f.workers.dev`
+- dev box: `http://34.181.232.88:8080`
+- UUID-org dev key from `/tmp/igordev_box_api_key` (do not print)
+- probe artifacts: `/tmp/oc-webhooks-round4-1782339637`
+
+Environment checks:
+
+- Health passed for api-edge, events-ingest, and the dev box.
+- Dev D1 has `webhook_destinations`, `webhook_idempotency`, a seeded `use4-default` cell with a
+  hostname `base_url` (`34.181.232.88.nip.io:8080`), and fresh capacity.
+- Cleaned the previously leaked inline destination `whk_f70df3dc9fbffdac6eca7a87`.
+- SDK TypeScript lint/typecheck passed: `npm run lint` in `sdks/typescript`.
+
+What passed:
+
+- **Webhook create idempotency happy path:** first `POST /api/webhooks` with `Idempotency-Key` returned
+  `201`; retry with the same body/key returned `200` and the same destination id. A no-key repeat
+  returned a new destination (`201`). Create/replay responses included `hasSecret`, `updatedAt`, and
+  a re-fetched `secret`.
+- **Pause behavior:** creating with `enabled:false` succeeded; `/test` while disabled returned `200`
+  but delivered nothing. Re-enabling did **not** backfill that message; a new `/test` after enabling
+  delivered once and appeared in `/deliveries`. This matches the guide text in
+  `docs/sandboxes/webhooks.mdx`.
+- **Valid inline-on-create edge path:** edge `POST /api/sandboxes` with an inline webhook returned
+  `201`, echoed `webhooks[0].{id,url,secret}`, and the receiver got `sandbox.created`,
+  `sandbox.ready`, and, after `DELETE`, `sandbox.stopped`. The endpoint was sandbox-scoped.
+- **Cleanup:** all probe webhook destinations are tombstoned and both created probe sandboxes are
+  stopped in D1.
+
+Issues found in this pass:
+
+- **Idempotency-key parameter mismatch is not detected.** Reusing the same `Idempotency-Key` with a
+  different body returned `200` with the original destination (`url`, `eventTypes`, `name` unchanged).
+  This is retry-safe but not best-practice idempotency. Prefer storing a request fingerprint with the
+  idempotency row and returning `409`/`422` on same-key/different-params; otherwise document that keys
+  are opaque replay handles and must never be reused for a different create.
+- **Inline webhook validation is missing on the edge create path.** Docs say each inline spec is
+  validated up front and invalid `eventTypes` are rejected with `400`; live edge
+  `POST /api/sandboxes {webhooks:[{eventTypes:["sandbox.not_real"]}]}` returned `201` and created a
+  sandbox with no `webhooks` echo. Root cause from code review: `validateInlineWebhooks` is called by
+  the direct CP create path, but `internalCreateSandbox` (edge -> CP) does not call it before
+  `createSandboxRemote`. Fix this before launch or weaken the docs.
+- **Pause docs are inconsistent.** `docs/sandboxes/webhooks.mdx` correctly says paused events are not
+  backfilled; `docs/api-reference/webhooks/update.mdx` says paused events are queued and delivered on
+  re-enable. Live behavior confirms **not backfilled**.
+- **`metadata` is advertised but not fully surfaced.** The guide says `metadata` can be attached to a
+  destination and delivered as custom headers. The API accepts it, but `docs/api-reference/webhooks/create.mdx`
+  has no `metadata` field and the TS SDK `CreateWebhookParams` has no `metadata` property.
+- **Fresh-D1 bootstrap still depends on phase SQL.** Dev D1 has `webhook_idempotency`, but the main
+  `cloudflare-workers/schema.sql` still does not include the webhook tables / `orgs.has_webhooks`;
+  they only live in `schema_phase8_webhooks.sql`. That is fine if phase SQL is the explicit migration
+  path, but a fresh bootstrap from `schema.sql` alone will not match the Worker code.
