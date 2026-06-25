@@ -15,7 +15,7 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 // or, in a browser:  await connectSession({ sessionId, clientToken })
 ```
 
-<Note>The SDK returns the same objects with **camelCase** fields (`client_token` → `session.clientToken`, `created_at` → `createdAt`, `last_turn` → `lastTurn`, `yield_reason` → `yieldReason`, `turn_seconds` → `turnSeconds`, …) and takes camelCase params (`idempotency_key` → `idempotencyKey`). The wire shapes below are the raw JSON. Truly opaque blobs — your session `metadata` and an event's `raw` field — pass through **verbatim** (keys untouched) in both directions; everything else, **including event `body` and `refs`**, is camelCased like the rest.</Note>
+<Note>The SDK returns the same objects with **camelCase** fields (`client_token` → `session.clientToken`, `created_at` → `createdAt`, `last_turn` → `lastTurn`, `yield_reason` → `yieldReason`, `turn_seconds` → `turnSeconds`, …) and takes camelCase params (`idempotency_key` → `idempotencyKey`). The wire shapes below are the raw JSON. Truly opaque blobs — your session `metadata`, event `refs`, and event `raw` — pass through **verbatim** (keys untouched) in both directions; everything else, including event `body`, is camelCased like the rest.</Note>
 
 ## Sessions
 
@@ -55,7 +55,7 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 
 </Tabs>
 
-`agent` is **required** (create a saved [agent](#agents) first); a resolvable model [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks** so a callback handler can route to the right external record without a lookup; it is **never** shown to the model, **not** indexed/queryable, and distinct from `key` (get-or-create) and `Idempotency-Key` (dedupe). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-input). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. There's no fixed byte cap on `input`, but it counts against the model's context window — **truncate large inputs** (e.g. a PR diff) and have the agent pull the rest through its [sandbox tools](/agent-sessions/runtime-tools) (clone the repo, read files) rather than inlining it. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations). `sources` checks out one or more repositories for the agent **before the first turn**; the checkout credential never enters the agent's sandbox (see [Repos](#repos)). Each entry references a registered [repo](#repos) — `{ repo, ref, sha, name? }` — or is inline — `{ url, ref, sha, name?, auth }`. `ref` (the fetch ref, e.g. `refs/pull/N/head`) and `sha` are both **required**: the ref is fetched and the exact `sha` is pinned and verified. The create response echoes sanitized `sources: [{ name, status, path, sha }]`.
+`agent` is **required** (create a saved [agent](#agents) first); a resolvable model [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks** so a callback handler can route to the right external record without a lookup; it is **never** shown to the model, **not** indexed/queryable, and distinct from `key` (get-or-create) and `Idempotency-Key` (dedupe). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-input). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. There's no fixed byte cap on `input`, but it counts against the model's context window — **truncate large inputs** (e.g. a PR diff) and have the agent pull the rest through its [sandbox tools](/agent-sessions/runtime-tools) (clone the repo, read files) rather than inlining it. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations). `sources` checks out one or more repositories for the agent **before the first turn**; the checkout credential never enters the agent's sandbox (see [Repos](#repos)). Each entry references a registered [repo](#repos) — `{ repo, ref, sha, name? }` — or is inline — `{ url, ref, sha, name?, auth }`. `ref` (the fetch ref, e.g. `refs/pull/N/head`) and `sha` are both **required**: the ref is fetched and the exact `sha` is pinned and verified. The create response echoes sanitized `sources`; poll `GET /sessions/:id/sources` for live status and `error_code` details.
 
 Client tokens accept `scopes?` (subset of `read`, `steer`) and `ttl?` seconds, clamped to 60–86400 (SDK: `ttlSeconds`).
 
@@ -79,8 +79,12 @@ SessionSource =                                    // a sources[] entry — WIRE
 SourceAuth =                                        // inline path ONLY (connection-backed repos need none)
     { type: "risky_short_lived_token", token, expires_at }   // workaround; short-lived; can't refresh
 // SDK is camelCase: expiresAt (wire expires_at).
-SourceSummary = { name, status, path, sha }        // sanitized; in the create response + GET …/sources
+SourceSummary = { name, status, path, sha, resolved_sha?,
+                  error_code?, error_message?, retryable? }
+// sanitized; in the create response + GET …/sources
 //   status: pending | materializing | resolved | failed | unavailable | auth_required
+//   error_code examples: source.auth_required, source.auth_ambiguous,
+//   source.permission_missing, source.sha_mismatch, source.timeout
 ```
 
 `yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`; `requires_action` is reserved, not emitted yet) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
@@ -263,8 +267,9 @@ Auth lives on a **connection** (how OpenComputer mints tokens for your org); a *
 
 | Call | Purpose |
 | --- | --- |
+| `oc.github.connections.installUrl(params?)` | Create a GitHub App installation URL. |
 | `oc.repos.create(params)` | Register (get-or-create) a repo. |
-| `oc.repos.get(idOrSlug)` · `oc.repos.list()` | Fetch / list. |
+| `oc.repos.get(id)` · `oc.repos.list()` | Fetch / list. |
 | `oc.repos.update(id, params)` | Update policy `defaults`. |
 | `oc.github.connections.list()` | List connected GitHub Apps (installs). |
 
@@ -274,6 +279,7 @@ Auth lives on a **connection** (how OpenComputer mints tokens for your org); a *
 
 | Method · Path | Purpose |
 | --- | --- |
+| `POST /github/connections/install-url` | Create a GitHub App installation URL. |
 | `POST /repos` | Register (get-or-create) a repo. |
 | `GET /repos/:id` · `GET /repos` | Fetch / list. |
 | `PATCH /repos/:id` | Update policy `defaults`. |
@@ -283,14 +289,16 @@ Auth lives on a **connection** (how OpenComputer mints tokens for your org); a *
 
 </Tabs>
 
-Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle), `defaults?`. **No `auth`** — auth comes from your GitHub connection. **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). `defaults`: `{ branch_namespace?, allow? }` — `allow` is a **GitHub permission ceiling** (e.g. `contents:read`, `pull_requests:write`).
+Install URL body: `account?`, `redirect_url?`; response `{ url }`. Redirect the user to `url`, then list connections after GitHub returns to your app.
+
+Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle), `connection_id?`, `defaults?`. **No `auth`** — auth comes from your GitHub connection. **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). `defaults`: `{ branch_namespace?, allow? }` — `allow` is a **GitHub permission ceiling** (e.g. `contents:read`, `pull_requests:write`).
 
 ```
 Repo       = { id, provider, owner, repo, name?, connection_id?, defaults?, created_at, updated_at }
 Connection = { id, provider, type, status, account_login, created_at }   // type: oc_app (byo_* coming soon)
 ```
 
-Responses **never** contain a token or secret. (SDK camelCase: `branchNamespace`, `accountLogin`.) Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
+Responses **never** contain a token or secret. (SDK camelCase: `branchNamespace`, `connectionId`, `accountLogin`.) Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
 
 ## Credentials
 

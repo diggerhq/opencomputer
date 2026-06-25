@@ -4,12 +4,16 @@ export { connectSession, type ConnectSessionOptions } from "./connect.js";
 export { Sessions, Session, ClientSession } from "./sessions.js";
 export type {
   CreateSessionParams, StreamOptions, Envelope, ListPage,
-  SessionSource, RegisteredRepoSource, InlineRepoSource, SourceAuth, SourceSummary,
+  SessionSource, RegisteredRepoSource, InlineRepoSource, SourceAuth, SourceStatus,
+  SourceErrorCode, SourceSummary,
 } from "./sessions.js";
 export { Agents } from "./agents.js";
 export type { CreateAgentParams, UpdateAgentParams, Page } from "./agents.js";
 export { Repos, GitHub, Connections } from "./repos.js";
-export type { CreateRepoParams, UpdateRepoParams, Repo, RepoDefaults, Connection } from "./repos.js";
+export type {
+  CreateRepoParams, UpdateRepoParams, Repo, RepoDefaults, GitHubPermission,
+  Connection, ConnectionInstallUrlParams,
+} from "./repos.js";
 export { Credentials } from "./credentials.js";
 export type { CreateCredentialParams } from "./credentials.js";
 export { Destinations, Deliveries } from "./destinations.js";

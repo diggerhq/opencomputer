@@ -13,7 +13,9 @@ holds a GitHub credential.
 ## Connect GitHub
 
 Connect once; OpenComputer mints short-lived, repo-scoped tokens just in time for each
-operation. There are three ways to connect — one available today.
+operation. Launch scope is source checkout before the first turn; additional remote GitHub
+actions (`source.fetch_ref`, PR publish, comments, statuses) use the same boundary and are
+coming next.
 
 ### OpenComputer GitHub App (recommended)
 
@@ -22,10 +24,43 @@ you choose the repos, and can change the selection or uninstall anytime. No keys
 manage, no endpoint to host. OpenComputer mints a fresh, narrowly-scoped token for each
 operation, so durable sessions and recovery work with nothing else from you.
 
+<Warning>
+The App may request write-capable GitHub permissions on the repos you select. OpenComputer
+does **not** hand that broad authority to the agent: each operation gets a fresh token with
+the minimum permission it needs, such as read-only for checkout and write only for a future
+publish/comment action.
+</Warning>
+
+Start the install from your dashboard (**Integrations → GitHub**) or create an install URL
+from your backend:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const url = await oc.github.connections.installUrl({ account: "acme" });
+redirectUserTo(url);
+```
+
+```http REST API
+POST /v3/github/connections/install-url
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+
+{ "account": "acme" }
+```
+
+</CodeGroup>
+
+After GitHub returns to your app, verify the connection:
+
+```ts
+const connections = await oc.github.connections.list();
+// [{ id: "conn_...", accountLogin: "acme", status: "active" }]
+```
+
 ### Inline short-lived token
 
-Haven't connected the App yet? Pass a real short-lived token inline on the source, using
-the deliberately-named `risky_short_lived_token` auth:
+The no-setup workaround is to pass a real short-lived token inline on the source, using the
+deliberately-named `risky_short_lived_token` auth:
 
 <CodeGroup>
 
@@ -34,7 +69,11 @@ sources: [{
   url: "https://github.com/acme/web.git",
   ref: "refs/pull/42/head",
   sha: "abc123…",
-  auth: { type: "risky_short_lived_token", token: "ghs_…", expiresAt: "…" },
+  auth: {
+    type: "risky_short_lived_token",
+    token: "ghs_…",
+    expiresAt: "…",
+  },
 }]
 ```
 
@@ -43,7 +82,11 @@ sources: [{
   "url": "https://github.com/acme/web.git",
   "ref": "refs/pull/42/head",
   "sha": "abc123...",
-  "auth": { "type": "risky_short_lived_token", "token": "ghs_...", "expires_at": "..." }
+  "auth": {
+    "type": "risky_short_lived_token",
+    "token": "ghs_...",
+    "expires_at": "..."
+  }
 }]
 ```
 
@@ -53,8 +96,8 @@ sources: [{
 The inline token **can't refresh** — once it expires the session can't fetch, push, or
 recover, so use it only for sessions that finish within the token's life. OpenComputer
 rejects a far-future or missing expiry and holds it encrypted only until the first
-checkout, then purges it. It's a temporary shortcut until the App-based methods land —
-**prefer the GitHub App.**
+checkout, then purges it. It's a temporary shortcut for environments that have not
+installed the App yet — **prefer the GitHub App.**
 </Warning>
 
 ### Bring your own GitHub App (not yet available)
@@ -73,7 +116,11 @@ session directly; a Repo adds policy and a stable handle.
 <CodeGroup>
 
 ```ts TypeScript SDK
-const repo = await oc.repos.create({ owner: "acme", repo: "web" });
+const repo = await oc.repos.create({
+  owner: "acme",
+  repo: "web",
+  defaults: { allow: ["contents:read"] },
+});
 ```
 
 ```http REST API
@@ -87,7 +134,8 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 
 Get-or-create, owner-scoped, idempotent by `(provider, owner, repo)`. **No credential is
 passed** — auth comes from your GitHub connection. Optional `defaults`:
-`{ branchNamespace, allow }` (`allow` is a GitHub permission ceiling).
+`{ branchNamespace, allow }` (`allow` is a GitHub permission ceiling; OpenComputer still
+mints the minimum token per operation).
 
 ## Use it in a session
 
@@ -97,7 +145,12 @@ passed** — auth comes from your GitHub connection. Optional `defaults`:
 const session = await oc.sessions.create({
   agent: agent.id,
   input: "Review this pull request.",
-  sources: [{ repo: repo.id, ref: "refs/pull/42/head", sha: "abc123…", name: "head" }],
+  sources: [{
+    repo: repo.id,
+    ref: "refs/pull/42/head",
+    sha: "abc123…",
+    name: "head",
+  }],
 });
 // checked out at /workspace/sources/head before the first turn
 ```
@@ -109,7 +162,12 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 {
   "agent": "agt_...",
   "input": "Review this pull request.",
-  "sources": [{ "repo": "repo_...", "ref": "refs/pull/42/head", "sha": "abc123...", "name": "head" }]
+  "sources": [{
+    "repo": "repo_...",
+    "ref": "refs/pull/42/head",
+    "sha": "abc123...",
+    "name": "head"
+  }]
 }
 ```
 
@@ -120,14 +178,33 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 - **`sha`** (required) — the exact commit, pinned and verified after fetch.
 
 You can also reference `"owner/repo"` directly instead of a registered id. A session can
-list several sources (a PR's base + head); they're **immutable**, and the agent pulls
-more refs mid-session via the `source.fetch_ref` tool.
+list several immutable sources, such as a PR's base and head. Fetching more refs
+mid-session will use the `source.fetch_ref` tool once remote actions land.
+
+## Check source status
+
+The create response includes a sanitized source snapshot. Poll `session.listSources()` for
+live materialization status:
+
+```ts
+const sources = await session.listSources();
+
+for (const source of sources) {
+  if (source.status === "auth_required" || source.status === "failed") {
+    showSourceError(source.errorCode, source.errorMessage);
+  }
+}
+```
+
+Common `errorCode` values: `source.auth_required`, `source.auth_ambiguous`,
+`source.repo_not_selected`, `source.permission_missing`, `source.sha_mismatch`, and
+`source.timeout`.
 
 ## What the agent can do
 
 Local Git works normally on the checkout (`status`/`diff`/`log`, edit, test, local
-commits). Anything needing the network is a **typed tool** run in the isolated sandbox —
-the agent never runs authenticated `git`/`gh` and never sees a token:
+commits). Anything needing GitHub credentials is a **typed tool** run in a separate
+git-ops sandbox — the agent never runs authenticated `git`/`gh` and never sees a token:
 
 | Tool | Does | Status |
 | --- | --- | --- |

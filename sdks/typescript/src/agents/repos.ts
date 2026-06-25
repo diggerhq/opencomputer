@@ -1,11 +1,19 @@
 import type { Http, Query } from "./http.js";
 
+export type GitHubPermission =
+  | "contents:read" | "contents:write"
+  | "pull_requests:read" | "pull_requests:write"
+  | "issues:read" | "issues:write"
+  | "statuses:read" | "statuses:write"
+  | "checks:read" | "checks:write"
+  | (string & {});
+
 export interface RepoDefaults {
   /** Branch namespace for agent pushes; default `oc/{session}/`. No protected/base push. */
   branchNamespace?: string;
   /** GitHub permission ceiling (e.g. `contents:read`, `pull_requests:write`) this repo
    *  may ever authorize — a ceiling; OpenComputer still mints the minimum per operation. */
-  allow?: string[];
+  allow?: GitHubPermission[];
 }
 
 export interface CreateRepoParams {
@@ -15,14 +23,14 @@ export interface CreateRepoParams {
   /** Optional handle for your own reference; identity is (provider, owner, repo). */
   name?: string;
   /** Optional explicit GitHub connection id. Defaults to your org's connection. */
-  connection?: string;
+  connectionId?: string;
   defaults?: RepoDefaults;
 }
 
 export interface UpdateRepoParams {
   defaults?: RepoDefaults;
   name?: string;
-  connection?: string;
+  connectionId?: string;
 }
 
 export interface Repo {
@@ -56,11 +64,19 @@ export interface Connection {
 
 export interface Page<T> { data: T[]; nextCursor?: string | null; }
 
+export interface ConnectionInstallUrlParams {
+  /** Optional GitHub org/user login to preselect when GitHub supports it. */
+  account?: string;
+  /** Optional app URL to return to after setup completes. */
+  redirectUrl?: string;
+}
+
 /**
  * Repos — repository identity + policy (the "where" a session works), analogous to
  * {@link Agents}. Auth comes from your GitHub {@link Connection}; no credential is passed
- * here. Register once and reference from `sources: [{ repo, ref, sha }]`, or reference
- * `"owner/repo"` directly. See the [Repos guide](https://docs.opencomputer.dev/agent-sessions/repos).
+ * here. Register once and reference from `sources: [{ repo, ref, sha }]`. A session can
+ * also reference `"owner/repo"` directly without creating a Repo handle. See the
+ * [Repos guide](https://docs.opencomputer.dev/agent-sessions/repos).
  */
 export class Repos {
   constructor(private readonly http: Http) {}
@@ -69,8 +85,8 @@ export class Repos {
   create(params: CreateRepoParams): Promise<Repo> {
     return this.http.request("POST", "/repos", { body: params, idempotent: true });
   }
-  get(idOrSlug: string): Promise<Repo> {
-    return this.http.request("GET", `/repos/${encodeURIComponent(idOrSlug)}`);
+  get(id: string): Promise<Repo> {
+    return this.http.request("GET", `/repos/${encodeURIComponent(id)}`);
   }
   update(id: string, params: UpdateRepoParams): Promise<Repo> {
     return this.http.request("PATCH", `/repos/${id}`, { body: params });
@@ -91,6 +107,14 @@ export class GitHub {
 /** Connected GitHub Apps (installs) for your org. Created via the install flow, not the API. */
 export class Connections {
   constructor(private readonly http: Http) {}
+  /** Create a GitHub App installation URL. Redirect your user to this URL, then poll/list. */
+  async installUrl(params: ConnectionInstallUrlParams = {}): Promise<string> {
+    const r = await this.http.request<{ url: string }>(
+      "POST", "/github/connections/install-url",
+      { body: params },
+    );
+    return r.url;
+  }
   list(): Promise<Page<Connection>> {
     return this.http.request("GET", "/github/connections");
   }

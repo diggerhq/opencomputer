@@ -47,6 +47,8 @@ export interface RegisteredRepoSource {
   /** A registered repo id (`repo_…`) or `owner/repo` slug. Auth comes from your GitHub
    *  connection (the installed OpenComputer App) — no per-source credential. */
   repo: string;
+  url?: never;
+  auth?: never;
   /** Required fetch ref (branch or `refs/pull/N/head`). */
   ref: string;
   /** Required exact commit; fetched, then pinned + verified. */
@@ -56,6 +58,7 @@ export interface RegisteredRepoSource {
 }
 
 export interface InlineRepoSource {
+  repo?: never;
   /** Clone URL (https, no embedded credentials). */
   url: string;
   ref: string;
@@ -74,12 +77,40 @@ export interface InlineRepoSource {
 export type SourceAuth =
   | { type: "risky_short_lived_token"; token: string; expiresAt: string };
 
+export type SourceStatus =
+  | "pending" | "materializing" | "resolved" | "failed" | "unavailable" | "auth_required";
+
+export type SourceErrorCode =
+  | "source.auth_required"
+  | "source.auth_ambiguous"
+  | "source.connection_suspended"
+  | "source.connection_revoked"
+  | "source.repo_not_selected"
+  | "source.permission_missing"
+  | "source.mint_failed"
+  | "source.mint_rate_limited"
+  | "source.ref_not_found"
+  | "source.sha_mismatch"
+  | "source.unsupported_submodule"
+  | "source.unsupported_lfs"
+  | "source.too_large"
+  | "source.timeout"
+  | (string & {});
+
 /** Sanitized per-source status returned on a session (never exposes url/auth). */
 export interface SourceSummary {
   name: string;
-  status: "pending" | "materializing" | "resolved" | "failed" | "unavailable" | "auth_required";
+  status: SourceStatus;
   path: string;
+  /** Requested commit from create; kept for correlation while materialization is pending. */
   sha: string;
+  /** Actual checked-out commit after materialization succeeds. Usually equals `sha`. */
+  resolvedSha?: string;
+  /** Machine-readable reason when status is `failed` / `unavailable` / `auth_required`. */
+  errorCode?: SourceErrorCode;
+  /** Human-readable diagnostic safe to show in operator/debug UI. */
+  errorMessage?: string;
+  retryable?: boolean;
 }
 
 export interface StreamOptions {
@@ -208,7 +239,7 @@ export class Session extends ClientSession {
 
   get status(): SessionStatus { return this.data.status; }
   get lastTurn(): LastTurn | undefined { return this.data.lastTurn; }
-  /** Source checkout status from the create response — `{ name, status, path, sha }[]`
+  /** Source checkout status from the create response — `{ name, status, path, sha, ... }[]`
    *  (empty when none). For **live** status, call {@link Session.listSources}. */
   get sources(): SourceSummary[] { return this._sources; }
   /** Fetch live source checkout status — poll this to watch materialization

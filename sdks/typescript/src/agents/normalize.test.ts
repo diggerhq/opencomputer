@@ -24,6 +24,13 @@ describe("normalize (API response → idiomatic TS)", () => {
     // Caller's routing JSON must round-trip exactly as set (no snake→camel mangling).
     expect(out.metadata).toEqual({ pull_number: 42, owner_repo: "acme/widgets", nested: { keep_me: true } });
   });
+
+  it("passes event refs through verbatim — opaque, inner keys untouched", () => {
+    const out = normalize<{ refs?: Record<string, unknown> }>({
+      refs: { pull_number: 42, owner_repo: "acme/widgets", nested: { keep_me: true } },
+    });
+    expect(out.refs).toEqual({ pull_number: 42, owner_repo: "acme/widgets", nested: { keep_me: true } });
+  });
 });
 
 describe("serialize (request body → snake_case)", () => {
@@ -31,5 +38,10 @@ describe("serialize (request body → snake_case)", () => {
     const out = serialize({ idempotencyKey: "k1", metadata: { pullNumber: 42 } }) as Record<string, unknown>;
     expect(out.idempotency_key).toBe("k1");
     expect(out.metadata).toEqual({ pullNumber: 42 }); // verbatim
+  });
+
+  it("leaves refs opaque on request bodies", () => {
+    const out = serialize({ refs: { pullNumber: 42, owner_repo: "acme/widgets" } }) as Record<string, unknown>;
+    expect(out.refs).toEqual({ pullNumber: 42, owner_repo: "acme/widgets" });
   });
 });
