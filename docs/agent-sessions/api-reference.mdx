@@ -53,7 +53,7 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 
 </Tabs>
 
-`agent` is **required** (create a saved [agent](#agents) first); a resolvable model [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks** so a callback handler can route to the right external record without a lookup; it is **never** shown to the model, **not** indexed/queryable, and distinct from `key` (get-or-create) and `Idempotency-Key` (dedupe). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-input). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. There's no fixed byte cap on `input`, but it counts against the model's context window — **truncate large inputs** (e.g. a PR diff) and have the agent pull the rest through its [sandbox tools](/agent-sessions/runtime-tools) (clone the repo, read files) rather than inlining it. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations).
+`agent` is **required** (create a saved [agent](#agents) first); a resolvable model [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks** so a callback handler can route to the right external record without a lookup; it is **never** shown to the model, **not** indexed/queryable, and distinct from `key` (get-or-create) and `Idempotency-Key` (dedupe). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-input). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. There's no fixed byte cap on `input`, but it counts against the model's context window — **truncate large inputs** (e.g. a PR diff) and have the agent pull the rest through its [sandbox tools](/agent-sessions/runtime-tools) (clone the repo, read files) rather than inlining it. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations). `sources` checks out one or more repositories for the agent **before the first turn**; the checkout credential never enters the agent's sandbox (see [Repos](#repos)). Each entry references a registered [repo](#repos) — `{ repo, ref, sha, name? }` — or is inline — `{ url, ref, sha, name?, auth }`. `ref` (the fetch ref, e.g. `refs/pull/N/head`) and `sha` are both **required**: the ref is fetched and the exact `sha` is pinned and verified. The create response echoes sanitized `sources: [{ name, status, path, sha }]`.
 
 Client tokens accept `scopes?` (subset of `read`, `steer`) and `ttl?` seconds, clamped to 60–86400 (SDK: `ttlSeconds`).
 
@@ -70,6 +70,14 @@ Turn = {
   id, state, yield_reason?, result_event_id?, error?,
   started_at?, completed_at?
 }
+
+SessionSource =                                    // a sources[] entry (SDK camelCase)
+    { repo, ref, sha, name? }                      // registered repo (repo_… or "owner/repo")
+  | { url, ref, sha, name?, auth }                 // inline; auth = the per-session credential
+SourceAuth =
+    { type: "token_broker", broker_url, grant }    // grant: a short-lived reference, not a token
+  | { type: "risky_short_lived_token", token, expires_at }   // discouraged; short-lived only
+SourceSummary = { name, status, path, sha }        // sanitized; echoed in the create response
 ```
 
 `yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`; `requires_action` is reserved, not emitted yet) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
@@ -239,6 +247,47 @@ Create body: `name`, `prompt`, `model`, `runtime?` (`claude` | `codex`), `key?`,
 `POST /agents` is **idempotent by `name`** — the outcome is in the **status code**, not a body field: a fresh create returns **201**; a repeat with matching non-secret config (`prompt`/`model`/`runtime`/`limits`) returns the existing agent with **200**; differing config returns **409**. Safe to call on every app startup or deploy. (`key` is ignored on a 200 hit — it never silently rotates.)
 
 Pass `key` **or** `credential` (or neither → org default). The agent's `limits` are the defaults for its sessions; a session's own `limits` override. Each agent has a monotonic `revision` (bumped on PATCH) that sessions pin in `agent_snapshot.revision`, so you can tell which version produced a run.
+
+## Repos
+
+A reusable, owner-scoped connection to a Git repository — referenced from a session's `sources`. See the [Repos guide](/agent-sessions/repos) for the security model.
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.repos.create(params)` | Register (get-or-create) a repo connection. |
+| `oc.repos.get(idOrSlug)` · `oc.repos.list()` | Fetch / list. |
+| `oc.repos.update(id, params)` | Update `auth` / policy `defaults`. |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /repos` | Register (get-or-create) a repo connection. |
+| `GET /repos/:id` · `GET /repos` | Fetch / list. |
+| `PATCH /repos/:id` | Update `auth` / policy `defaults`. |
+
+</Tab>
+
+</Tabs>
+
+Create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle), `auth`, `defaults?`. **Idempotent by `(provider, owner, repo)`** — a fresh register returns **201**, a repeat returns the existing repo with **200**. Stores **no GitHub token** — only the broker URL, repo identity, and policy.
+
+`auth` — how OpenComputer obtains tokens (no standing credential is stored):
+- `{ "type": "token_broker", "broker_url": "https://…" }` — your [broker](/agent-sessions/repos#what-you-provide) endpoint; OpenComputer signs each request to it, verified against its published JWKS.
+
+`defaults` (optional policy): `{ "branch_namespace"?: "oc/{session}/", "allow"?: ["contents:read", "pull_requests:write", …] }` — `allow` is a ceiling on what any request may mint.
+
+```
+Repo = { id, provider, owner, repo, name?, broker_url?, defaults?, created_at, updated_at }
+```
+
+The response **never** contains a token or secret. (SDK is camelCase: `brokerUrl`, `branchNamespace`.)
 
 ## Credentials
 
