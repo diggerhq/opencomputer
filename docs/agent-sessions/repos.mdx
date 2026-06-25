@@ -3,15 +3,16 @@ title: "Repos & GitHub"
 description: "Give sessions private code without giving agents GitHub credentials"
 ---
 
-Use Repos when a session needs private code. The agent needs files to inspect, edit, test,
-and diff; it should not get a GitHub token, authenticated remote, or `gh` session.
+Use Repos when a session needs private code. Giving an agent a GitHub token,
+authenticated remote, or `gh` session gives it whatever that token can do; hiding the
+token behind a proxy does not narrow that authority.
 
-A **Repo** records owner/repo plus policy. A **Source** pins `ref` and `sha`. Before the
-turn, OpenComputer checks out that exact commit in a short-lived **Git operations
-sandbox** with an operation-scoped token, copies only files into
-`/workspace/sources/<name>`, then destroys the token. GitHub writes use the same boundary:
-the agent requests an outcome; OpenComputer checks policy and performs authenticated calls
-outside the agent sandbox.
+Repos make GitHub access operation-scoped. A **Repo** records owner/repo plus policy; a
+**Source** pins `ref` and `sha`. OpenComputer checks out the exact commit in a short-lived
+**Git operations sandbox**, copies only files into `/workspace/sources/<name>`, and
+destroys the token. For writes, the agent supplies files and a requested outcome;
+OpenComputer enforces repo and operation policy, then calls GitHub outside the agent
+sandbox.
 
 <Note>**Preview** — APIs may change before general availability.</Note>
 
