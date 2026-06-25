@@ -27,6 +27,91 @@ export interface CreateSessionParams {
   metadata?: Record<string, unknown>;
   /** Makes a keyless create retry-safe (sent as the Idempotency-Key header). */
   idempotencyKey?: string;
+  /**
+   * Repositories to check out for the agent at the start of the session. Each source
+   * is materialized into `/workspace/sources/<name>` before the agent's first turn;
+   * the checkout credential never enters the agent's sandbox. See {@link Repos} and
+   * the [Repos guide](https://docs.opencomputer.dev/agent-sessions/repos).
+   *
+   * Reference a registered repo (preferred — auth lives on the repo), or pass an
+   * inline source with per-session auth (no registration).
+   */
+  sources?: SessionSource[];
+}
+
+/** A repo to check out for a session. Either a reference to a registered {@link Repo},
+ *  or an inline source with its own per-session auth. */
+export type SessionSource = RegisteredRepoSource | InlineRepoSource;
+
+export interface RegisteredRepoSource {
+  /** A registered repo id (`repo_…`) or `owner/repo` slug. Auth comes from your GitHub
+   *  App — no per-source credential. */
+  repo: string;
+  url?: never;
+  auth?: never;
+  /** Required fetch ref (branch or `refs/pull/N/head`). */
+  ref: string;
+  /** Required exact commit; fetched, then pinned + verified. */
+  sha: string;
+  /** Checkout slug → `/workspace/sources/<name>`. Defaults to the repo name. */
+  name?: string;
+}
+
+export interface InlineRepoSource {
+  repo?: never;
+  /** Clone URL (https, no embedded credentials). */
+  url: string;
+  ref: string;
+  sha: string;
+  name?: string;
+  /** Inline auth (registered repos use the resolved GitHub App instead). */
+  auth: SourceAuth;
+}
+
+/**
+ * Inline-source auth — the **no-setup workaround**, and **checkout-only**. Pass a real
+ * short-lived token; it is used once to check the repo out and then **purged immediately**,
+ * so it **cannot publish or open PRs** — publishing requires a configured GitHub App (the
+ * OpenComputer App). Prefer connecting a GitHub App (durable). Held encrypted, used once
+ * for checkout, then purged.
+ */
+export type SourceAuth =
+  | { type: "risky_short_lived_token"; token: string; expiresAt: string };
+
+export type SourceStatus =
+  | "pending" | "materializing" | "resolved" | "failed" | "unavailable" | "auth_required";
+
+export type SourceErrorCode =
+  | "source.auth_required"
+  | "source.auth_ambiguous"
+  | "source.app_suspended"
+  | "source.app_revoked"
+  | "source.repo_not_selected"
+  | "source.permission_missing"
+  | "source.mint_failed"
+  | "source.mint_rate_limited"
+  | "source.ref_not_found"
+  | "source.sha_mismatch"
+  | "source.unsupported_submodule"
+  | "source.unsupported_lfs"
+  | "source.too_large"
+  | "source.timeout"
+  | (string & {});
+
+/** Sanitized per-source status returned on a session (never exposes url/auth). */
+export interface SourceSummary {
+  name: string;
+  status: SourceStatus;
+  path: string;
+  /** Requested commit from create; kept for correlation while materialization is pending. */
+  sha: string;
+  /** Actual checked-out commit after materialization succeeds. Usually equals `sha`. */
+  resolvedSha?: string;
+  /** Machine-readable reason when status is `failed` / `unavailable` / `auth_required`. */
+  errorCode?: SourceErrorCode;
+  /** Human-readable diagnostic safe to show in operator/debug UI. */
+  errorMessage?: string;
+  retryable?: boolean;
 }
 
 export interface StreamOptions {
@@ -47,11 +132,11 @@ export class Sessions {
 
   async create(params: CreateSessionParams): Promise<Session> {
     const { idempotencyKey, ...body } = params;
-    const r = await this.http.request<{ session: SessionData; clientToken?: string }>(
+    const r = await this.http.request<{ session: SessionData; clientToken?: string; sources?: SourceSummary[] }>(
       "POST", "/sessions",
       { body, idempotencyKey, idempotent: Boolean(idempotencyKey || params.key) },
     );
-    return new Session(this.http, r.session, r.clientToken);
+    return new Session(this.http, r.session, r.clientToken, r.sources);
   }
   async get(id: string): Promise<Session> {
     return new Session(this.http, await this.http.request<SessionData>("GET", `/sessions/${id}`));
@@ -143,16 +228,26 @@ export class Session extends ClientSession {
   readonly destinations: Destinations;
   readonly deliveries: Deliveries;
   private data: SessionData;
+  private _sources: SourceSummary[];
 
-  constructor(http: Http, data: SessionData, clientToken?: string) {
+  constructor(http: Http, data: SessionData, clientToken?: string, sources?: SourceSummary[]) {
     super(http, data.id, clientToken);
     this.data = data;
+    this._sources = sources ?? [];
     this.destinations = new Destinations(http, data.id);
     this.deliveries = new Deliveries(http, data.id);
   }
 
   get status(): SessionStatus { return this.data.status; }
   get lastTurn(): LastTurn | undefined { return this.data.lastTurn; }
+  /** Source checkout status from the create response — `{ name, status, path, sha, ... }[]`
+   *  (empty when none). For **live** status, call {@link Session.listSources}. */
+  get sources(): SourceSummary[] { return this._sources; }
+  /** Fetch live source checkout status — poll this to watch materialization
+   *  (`pending`→`materializing`→`resolved`/`failed`/`auth_required`). */
+  listSources(): Promise<SourceSummary[]> {
+    return this.http.request("GET", `/sessions/${this.id}/sources`);
+  }
   /** Opaque app routing state set at create (`null` when unset). See {@link CreateSessionParams.metadata}. */
   get metadata(): Record<string, unknown> | null { return this.data.metadata ?? null; }
   /** The latest fetched session record. */
@@ -163,8 +258,8 @@ export class Session extends ClientSession {
     return this;
   }
 
-  /** Per-turn history (timing + outcome), paginated. */
-  turns(opts: { after?: string; limit?: number } = {}): Promise<ListPage<Turn>> {
+  /** Per-turn history (timing + outcome), paginated. `cursor` = `nextCursor` from the previous page. */
+  turns(opts: { cursor?: string; limit?: number } = {}): Promise<ListPage<Turn>> {
     return this.http.request("GET", `/sessions/${this.id}/turns`, { query: opts as Query });
   }
   turn(turnId: string): Promise<Turn> {

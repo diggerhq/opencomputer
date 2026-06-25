@@ -1,15 +1,15 @@
 ---
 mode: "wide"
 title: "Channels"
-description: "Talk to a session where people already work — Slack, GitHub (coming soon)"
+description: "Bind sessions to external threads"
 ---
 
-<Note>**Planned.** This page describes planned API shape, not shipped behavior. Today you converse with a session over the [API](/agent-sessions/messaging) — stream events out, post messages in — and deliver events out via [webhooks](/agent-sessions/webhooks).</Note>
+<Note>**Labs preview.** Channels are not part of the stable Durable Sessions API. For stable API access, use [Messaging](/agent-sessions/messaging) for input and [Webhooks](/agent-sessions/webhooks) for output.</Note>
 
-A **channel** binds a session's thread to a place people already work, so the same session is reachable from there. Slack is the first channel.
+A **channel** binds a session to an external thread, such as Slack or GitHub.
 
 - **Inbound.** A Slack `@mention` or thread reply is verified, de-duplicated, and appended to the session as a [steer](/agent-sessions/messaging) — the same inbound message you can post over the API.
-- **Outbound.** The platform projects the session's `user` and `progress` [events](/agent-sessions/events#visibility-levels) back to the thread. The agent never calls Slack itself — it appends events; the platform delivers them, durably and idempotently.
-- **Bindings accumulate.** A session gains bindings over its life; it is never typed as "a Slack session" or "a GitHub session." A chat-born session that opens a PR gains a binding to that PR. Routing follows event level — conversation goes to conversation bindings, work product to delivery targets.
+- **Outbound.** The platform delivers the session's `user` and `progress` [events](/agent-sessions/events#visibility-levels) back to the thread. The agent never calls Slack itself.
+- **Bindings.** A session can have multiple bindings. A Slack-started session that opens a PR can also bind to that PR. Routing follows event level: conversation events go to conversation bindings, work output goes to delivery targets.
 
-A channel is one consumer of the same public API a custom UI uses: post messages in, render the [event stream](/agent-sessions/events) at the level you want, and optionally bind a thread so the platform projects for you.
+A channel uses the same primitives as a custom UI: append messages and render the [event stream](/agent-sessions/events).

@@ -1,10 +1,10 @@
 ---
 mode: "wide"
 title: "Webhooks"
-description: "Deliver a session's output, and control deliveries"
+description: "Deliver session events to your backend"
 ---
 
-Register a **destination** and a session's [events](/agent-sessions/events) are delivered to it as a small **delivery envelope** — at-least-once, signed, and retried. The envelope carries top-level routing fields plus your session [`metadata`](/agent-sessions/api-reference#sessions), with the full event nested under `event`:
+Register a **destination** to receive a session's [events](/agent-sessions/events) as a **delivery envelope**. Deliveries are at-least-once, signed when a secret is set, and retried. The envelope carries routing fields, session [`metadata`](/agent-sessions/api-reference#sessions), and the full event under `event`:
 
 ```json
 {
@@ -82,11 +82,11 @@ Content-Type: application/json
 
 </Tabs>
 
-A destination receives events appended **after** it's created. To capture a whole session, pass `webhook` in `POST /v3/sessions` so it's registered before the agent produces output. (Replaying earlier events with `backfill_from_seq` is coming soon.)
+A destination receives events appended **after** it's created. To capture a whole session, pass `webhook` in `POST /v3/sessions` so it's registered before the agent produces output. Destinations are not retroactive.
 
 ## Deliveries
 
-Every send and its outcome — the data behind a deliveries dashboard.
+Each send is recorded with status, attempts, and the latest response or error.
 
 <Tabs>
 
@@ -120,8 +120,6 @@ Delivery = {
   last_attempt_at, response_code?, error?, created_at, updated_at
 }
 ```
-
-<Note>Coming soon: full request/response **body** capture in delivery detail (today records status, attempts, response code, and error); a **test-ping** for a destination; and **org/agent-scoped** destinations that persist across sessions.</Note>
 
 ## Signing, retries, and dedupe
 
@@ -162,5 +160,3 @@ function verify(headers, rawBody, secret) {
 ```
 
 <Note>These deliver a **session's** events (turns, messages, results). To react to **sandbox lifecycle** — boot, hibernate, stop, scale — see [Sandbox webhooks](/sandboxes/webhooks): the **same** Standard Webhooks `verifyWebhook` helper, but a different header dialect and delivery ownership. Sessions use `webhook-*` headers (where `webhook-id` is the *event id*) with the delivery-row id in `X-OC-Delivery-ID`, and signing is opt-in. Sandbox webhooks are delivered by Svix, always signed, under `svix-*` headers where `svix-id` is the delivery/dedupe id, with per-destination metadata as custom headers.</Note>
-
-<Note>Today, delivery is over **generic webhooks**. Slack, GitHub comments, Jira, and email are coming soon — all on this same event and delivery model.</Note>

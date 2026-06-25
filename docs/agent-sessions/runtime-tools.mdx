@@ -17,9 +17,9 @@ When you write a prompt for a [runtime](/agent-sessions/runtimes) (`claude` or `
 
 `bash` is the only place commands run. Each call is a fresh shell, so use absolute paths or `cd /workspace && ...`. A run surfaces as an [`exec.completed`](/agent-sessions/events#event-shape) event (`{ command, exit_code, summary }`), with large output available via `content_ref`.
 
-To work on a repo, the agent `git clone`s it via `bash` — the sandbox has open outbound internet (below). Prepared [workspaces](/agent-sessions/workspaces) and private-repo access are coming soon.
+To work on a **public** repo, the agent `git clone`s it via `bash` — the sandbox has open outbound internet (below). For **private** repos, register a [Repo](/agent-sessions/repos) and reference it in the session's `sources`: it's checked out before the first turn and the GitHub credential never enters the sandbox.
 
-<Note>**Network:** the sandbox has **open outbound internet** by default (so `git clone`, package installs, and API calls just work), with private, loopback, link-local, and cloud-metadata addresses blocked. Per-agent egress allowlists are coming.</Note>
+<Note>**Network:** the sandbox has **open outbound internet** by default (so `git clone`, package installs, and API calls just work), with private, loopback, link-local, and cloud-metadata addresses blocked.</Note>
 
 ## User-facing tools
 
@@ -30,15 +30,45 @@ To work on a repo, the agent `git clone`s it via `bash` — the sandbox has open
 
 The agent's final `say` is the session result. `ask` ends the turn with `yield_reason: "needs_input"`; answer by [steering](/agent-sessions/messaging) a reply, which wakes the session.
 
-<Note>The formal blocking `ask` state is coming soon. Today the turn yields rather than blocking.</Note>
+## GitHub tools
 
-## External delivery tools
+| Tool | What it does |
+| --- | --- |
+| `github_publish_pull_request` | Open a pull request from a checked-out [Repo](/agent-sessions/repos) source. |
 
-`deliver` (open/update a pull request or post a comment) and `reconcile` (declare the desired end state and let the platform converge to it) are how an agent acts **outside** the sandbox. They land with the channel launches (GitHub, etc.); until then, get a session's output out via [webhooks](/agent-sessions/webhooks) — the agent's `user`-level messages and results are delivered there.
+`github_publish_pull_request` lets the agent open a PR **without ever holding a GitHub
+credential**. The agent edits files in `/workspace/sources/<source>` and makes local
+commits as usual; calling the tool hands the requested outcome to the platform, which
+commits the agent's edits to an `oc/<session>/<source>-<id>` branch and opens the PR with a
+just-in-time, write-scoped token — outside the agent sandbox. It returns the PR URL.
+
+| Argument | Required | What it is |
+| --- | --- | --- |
+| `source` | yes | The checked-out source's local name (its directory under `/workspace/sources`). |
+| `title` | yes | PR title. |
+| `body` | no | PR description. |
+| `base` | no | PR base branch. Defaults to the source's checked-out ref. |
+| `draft` | no | Open the PR as a draft. |
+
+<Note>
+`github_publish_pull_request` requires a **configured GitHub App** (the OpenComputer App or
+a [bring-your-own App](/agent-sessions/repos#github-app-modes)). It does **not** work with
+inline (`risky_short_lived_token`) auth, which is **checkout-only** — see
+[Repos & GitHub](/agent-sessions/repos#inline-short-lived-token).
+</Note>
+
+## External systems
+
+These tools never hand the agent raw credentials for GitHub, Slack, Jira, or other external
+systems — the agent opens PRs through `github_publish_pull_request` above (platform-mediated,
+no token in the sandbox), and other actions go through the platform too. To move a session's
+output into your product, register a [webhook destination](/agent-sessions/webhooks) and
+handle the delivered events in your backend.
 
 ## Prompt guidance
 
 - Tell the agent to do all work in the sandbox via `bash`/`read`/`write` — it can't touch your machine.
-- To work on a repo, include the repo URL and branch or commit in the task text, then have the agent `git clone` it with `bash`. Public repos work today; private-repo connections are coming soon.
+- **Public repo:** include the URL + branch/commit in the task text and have the agent `git clone` it with `bash`. **Private repo:** register a [Repo](/agent-sessions/repos) and list it in the session's `sources` — checked out before the first turn, no credential in the sandbox.
+- **Opening a PR:** have the agent edit a source under `/workspace/sources/<name>` and call `github_publish_pull_request` with that `source` and a `title` — the platform commits and opens the PR (requires a configured GitHub App; inline tokens are checkout-only).
 - Have it `say` a clear final result — that's what `GET /sessions/:id/result` returns.
 - Have it `ask` only when it genuinely needs a decision; otherwise it should proceed.

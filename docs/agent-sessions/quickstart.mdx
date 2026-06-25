@@ -4,7 +4,7 @@ title: "Quickstart"
 description: "Start a session, stream it live, and steer it"
 ---
 
-Build the smallest useful Durable Agent Sessions integration: define an agent, start a session, stream its event log, then send follow-up messages with a scoped client token.
+This quickstart defines an agent, starts a session, streams its event log, and sends a follow-up message with a scoped client token.
 
 For the finished version, see the [example app](https://github.com/diggerhq/oc-sessions-demos); for every endpoint, the [API / SDK reference](/agent-sessions/api-reference).
 
@@ -63,7 +63,7 @@ Response:
 { "id": "agt_...", "name": "quickstart-coder", "revision": 1 }
 ```
 
-<Note>Your model `key` is held in OpenComputer's [secret store](/sandboxes/secrets) (encrypted, write-only) and **never enters the sandbox**. The agent runs with a placeholder; an **egress proxy substitutes the real key in-flight** on the outbound call to the model provider — so neither the model nor your agent's code ever sees it. Reuse one key across agents via a [credential](/agent-sessions/authentication#model-credentials).</Note>
+<Note>Your model `key` is held in OpenComputer's [secret store](/sandboxes/secrets) (encrypted, write-only) and **never enters the sandbox**. The agent runs with a placeholder; an **egress proxy substitutes the real key in-flight** on the outbound model-provider call. Reuse one key across agents via a [credential](/agent-sessions/authentication#model-credentials).</Note>
 
 <Tip>`POST /agents` is idempotent by agent name, so it is fine to call this during application startup.</Tip>
 
@@ -204,8 +204,8 @@ Response:
   <Card title="Events" icon="timeline" href="/agent-sessions/events">
     Event shape, levels, cursors, and resume behavior.
   </Card>
-  <Card title="Runtime tools" icon="toolbox" href="/agent-sessions/runtime-tools">
-    The tools a runtime can use in the sandbox.
+  <Card title="Repos & GitHub" icon="github" href="/agent-sessions/repos">
+    Check out private repositories without putting GitHub tokens in the sandbox.
   </Card>
   <Card title="Example app" icon="github" href="https://github.com/diggerhq/oc-sessions-demos">
     Fork a complete app-builder implementation.

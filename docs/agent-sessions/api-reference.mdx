@@ -15,7 +15,7 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 // or, in a browser:  await connectSession({ sessionId, clientToken })
 ```
 
-<Note>The SDK returns the same objects with **camelCase** fields (`client_token` → `session.clientToken`, `created_at` → `createdAt`, `last_turn` → `lastTurn`, `yield_reason` → `yieldReason`, `turn_seconds` → `turnSeconds`, …) and takes camelCase params (`idempotency_key` → `idempotencyKey`). The wire shapes below are the raw JSON. Truly opaque blobs — your session `metadata` and an event's `raw` field — pass through **verbatim** (keys untouched) in both directions; everything else, **including event `body` and `refs`**, is camelCased like the rest.</Note>
+<Note>The SDK returns the same objects with **camelCase** fields (`client_token` → `session.clientToken`, `created_at` → `createdAt`, `last_turn` → `lastTurn`, `yield_reason` → `yieldReason`, `turn_seconds` → `turnSeconds`, …) and takes camelCase params (`idempotency_key` → `idempotencyKey`). The wire shapes below are the raw JSON. Truly opaque blobs — your session `metadata`, event `refs`, and event `raw` — pass through **verbatim** (keys untouched) in both directions; everything else, including event `body`, is camelCased like the rest.</Note>
 
 ## Sessions
 
@@ -32,6 +32,7 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 | `session.cancel()` | Cooperatively stop the active turn (no-op if not running). |
 | `session.result()` | `{ lastTurn, result? }` — the resolved final event. |
 | `session.turns()` · `session.turn(id)` | Per-turn history: timing, error. |
+| `session.sources` · `session.listSources()` | Source checkout status — create snapshot · live poll. |
 | `session.mintClientToken(opts)` | Mint a client token. |
 
 </Tab>
@@ -47,13 +48,14 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 | `POST /sessions/:id/cancel` | Cooperatively stop the active turn (no-op if not running). |
 | `GET /sessions/:id/result` | The result helper — `{ last_turn, result? }`. |
 | `GET /sessions/:id/turns` · `…/turns/:turnId` | Per-turn history: timing, error. |
+| `GET /sessions/:id/sources` | Source checkout status (`SourceSummary[]`). |
 | `POST /sessions/:id/client-tokens` | Mint a client token. |
 
 </Tab>
 
 </Tabs>
 
-`agent` is **required** (create a saved [agent](#agents) first); a resolvable model [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks** so a callback handler can route to the right external record without a lookup; it is **never** shown to the model, **not** indexed/queryable, and distinct from `key` (get-or-create) and `Idempotency-Key` (dedupe). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-input). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. There's no fixed byte cap on `input`, but it counts against the model's context window — **truncate large inputs** (e.g. a PR diff) and have the agent pull the rest through its [sandbox tools](/agent-sessions/runtime-tools) (clone the repo, read files) rather than inlining it. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations).
+`agent` is **required** (create a saved [agent](#agents) first); a resolvable model [credential](#credentials) is also required (`422 no_credential` otherwise). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks** so a callback handler can route to the right external record without a lookup; it is **never** shown to the model, **not** indexed/queryable, and distinct from `key` (get-or-create) and `Idempotency-Key` (dedupe). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-input). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. There's no fixed byte cap on `input`, but it counts against the model's context window — **truncate large inputs** (e.g. a PR diff) and have the agent pull the rest through its [sandbox tools](/agent-sessions/runtime-tools) (clone the repo, read files) rather than inlining it. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations). `sources` checks out one or more repositories for the agent **before the first turn**; the checkout credential never enters the agent's sandbox (see [Repos & GitHub](#github-apps--repos)). Each entry references a registered [repo](#github-apps--repos) — `{ repo, ref, sha, name? }` — or is inline — `{ url, ref, sha, name?, auth }`. `ref` (the fetch ref, e.g. `refs/pull/N/head`) and `sha` are both **required**: the ref is fetched and the exact `sha` is pinned and verified. The create response echoes sanitized `sources`; poll `GET /sessions/:id/sources` for live status.
 
 Client tokens accept `scopes?` (subset of `read`, `steer`) and `ttl?` seconds, clamped to 60–86400 (SDK: `ttlSeconds`).
 
@@ -70,9 +72,22 @@ Turn = {
   id, state, yield_reason?, result_event_id?, error?,
   started_at?, completed_at?
 }
+
+SessionSource =                                    // a sources[] entry — WIRE shape, snake_case
+    { repo, ref, sha, name? }                      // a registered repo id or "owner/repo" — GitHub App auth
+  | { url, ref, sha, name?, auth }                 // inline shortcut; name defaults to repo name, type defaults "git"
+SourceAuth =                                        // inline path ONLY (GitHub App-backed repos need none)
+    { type: "risky_short_lived_token", token, expires_at }   // short-lived; can't refresh
+// SDK is camelCase: expiresAt (wire expires_at).
+SourceSummary = { name, status, path, sha,
+                  resolved_sha?, error_code?, error_message?, retryable? }
+// sanitized; in the create response + GET …/sources
+//   status: pending | materializing | resolved | failed | auth_required
+//   error_code examples: source.auth_required, source.repo_not_selected,
+//     source.permission_missing, source.mint_failed, source.ref_not_found, source.sha_mismatch
 ```
 
-`yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`; `requires_action` is reserved, not emitted yet) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
+`yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
 
 ## Events
 
@@ -187,7 +202,7 @@ Destination body: `url`, `secret?`, `level?` (`user`), `types?[]`, `include_raw?
 
 | Method · Path | Purpose |
 | --- | --- |
-| `GET /sessions/:id/deliveries?destination=&status=&after=&limit=` | List deliveries — status, attempts, last response/error (paginated). |
+| `GET /sessions/:id/deliveries?destination=&status=&after=&limit=` | List deliveries — status, attempts, last response/error. Returns `{ data }`; filter with `after` (a `created_at` cutoff) and `limit`. |
 | `GET /sessions/:id/deliveries/:id` | One delivery, in detail. |
 | `POST /sessions/:id/deliveries/:id/redeliver` | Re-send any delivery (not just dead-lettered). |
 
@@ -240,6 +255,50 @@ Create body: `name`, `prompt`, `model`, `runtime?` (`claude` | `codex`), `key?`,
 
 Pass `key` **or** `credential` (or neither → org default). The agent's `limits` are the defaults for its sessions; a session's own `limits` override. Each agent has a monotonic `revision` (bumped on PATCH) that sessions pin in `agent_snapshot.revision`, so you can tell which version produced a run.
 
+## GitHub Apps & Repos
+
+The OpenComputer GitHub App lets OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is a stable repository handle that resolves to the OpenComputer App. See the [Repos & GitHub guide](/agent-sessions/repos).
+
+During preview, OpenComputer installs its App on your repository for you — contact us to enable a repo; there is no SDK method to mint an install URL. **No credential passes through this API.** Bring-your-own GitHub App modes (`byo_stored_key`, `byo_broker`) are **coming later — not yet available**; in preview only `oc_app` (OpenComputer owns and mints) works.
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.repos.create(params)` | Register (get-or-create) a repo. |
+| `oc.repos.get(id)` · `oc.repos.list()` | Fetch / list. |
+| `oc.repos.update(id, params)` | Update `name`. |
+| `oc.github.apps.list()` | List GitHub Apps available to your org. |
+| `oc.github.installations.list()` | List GitHub App installations visible to OpenComputer. |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /repos` | Register (get-or-create) a repo. |
+| `GET /repos/:id` · `GET /repos` | Fetch / list. |
+| `PATCH /repos/:id` | Update `name`. |
+| `GET /github/apps` | List GitHub Apps available to your org. |
+| `GET /github/installations` | List GitHub App installations visible to OpenComputer. |
+
+</Tab>
+
+</Tabs>
+
+Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle). **No `auth`** — auth resolves through the OpenComputer App. **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). (Pinning a repo to a specific App is coming later.)
+
+```
+Repo               = { id, provider, owner, repo, name?, created_at, updated_at }
+```
+
+Responses **never** contain a token or secret. Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
+
+`GET /github/apps` lists the GitHub Apps available to your org (in preview, the OpenComputer App). `GET /github/installations` lists the App installations visible to OpenComputer — it may be **empty** for orgs using only the OpenComputer App (it surfaces bring-your-own installations once those modes are available).
+
 ## Credentials
 
 <Tabs>
@@ -266,7 +325,7 @@ Pass `key` **or** `credential` (or neither → org default). The agent's `limits
 
 </Tabs>
 
-Credential body: `provider`, `key`, `name?`, `is_default?`. Keys are write-only. A credential is **required**; sessions run on your key (no platform billing yet).
+Credential body: `provider`, `key`, `name?`, `is_default?`. Keys are write-only. A credential is **required**; sessions run on your provider key.
 
 ```
 Credential  = { id, provider, name?, last4, is_default, created_at }

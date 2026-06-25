@@ -1,10 +1,10 @@
 ---
 mode: "wide"
 title: "Messaging"
-description: "Steer a session, and the shared message envelope"
+description: "Append user input to a session"
 ---
 
-**Steer** sends a message into a session. Inbound and outbound messages share one channel-agnostic **envelope** — so you handle every message the same way, wherever it came from or goes. Outbound delivery has its own page: [Webhooks](/agent-sessions/webhooks).
+**Steer** appends a user message to a session. Message envelopes are channel-agnostic, so API input and channel input use the same shape. Outbound delivery has its own page: [Webhooks](/agent-sessions/webhooks).
 
 ## Steer (inbound)
 
@@ -63,6 +63,4 @@ These fields don't all land in one place — the appended [event](/agent-session
 
 So a `*.message` event's `body` is just `{ text, raw? }` — `source`/`conversation`/`refs` live under the event's top-level `refs`, and the sender under `actor` (not inside `body`). Outbound `agent.message` bodies are likewise `{ text }`.
 
-To deliver a session's output, register a webhook destination — deliveries carry the full [Event](/agent-sessions/events); see [Webhooks](/agent-sessions/webhooks).
-
-<Note>[Inbound channels](/agent-sessions/channels) (Slack, GitHub, Jira, email) are coming soon — they map onto this same envelope; today you steer in via the API.</Note>
+To deliver a session's output, register a webhook destination. Deliveries carry the full [Event](/agent-sessions/events); see [Webhooks](/agent-sessions/webhooks). The same envelope also underpins [Channels](/agent-sessions/channels) in Labs.

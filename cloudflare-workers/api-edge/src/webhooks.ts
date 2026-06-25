@@ -302,6 +302,8 @@ export async function handleWebhooksAPI(
 }
 
 async function createWebhook(req: Request, env: WebhookEnv, sx: SvixClient, caller: Caller): Promise<Response> {
+  // Read the raw body once: needed both to parse and to fingerprint for idempotency.
+  const rawBody = await req.text();
   let body: {
     url?: string;
     eventTypes?: string[];
@@ -312,7 +314,7 @@ async function createWebhook(req: Request, env: WebhookEnv, sx: SvixClient, call
     enabled?: boolean;
   };
   try {
-    body = await req.json();
+    body = rawBody ? JSON.parse(rawBody) : {};
   } catch {
     return json({ error: "invalid JSON body" }, 400);
   }
@@ -323,15 +325,22 @@ async function createWebhook(req: Request, env: WebhookEnv, sx: SvixClient, call
   }
 
   // Idempotency: a retried create with the same Idempotency-Key returns the same
-  // destination (200) instead of a duplicate. Fast path — replay a prior claim.
+  // destination (200) instead of a duplicate. Reusing a key with a DIFFERENT body
+  // is a client error → 409 (we fingerprint the request body). Fast path first.
   const idemKey = req.headers.get("Idempotency-Key") ?? undefined;
+  const reqHash = idemKey ? await sha256Hex(rawBody) : undefined;
   if (idemKey) {
     const prior = await env.OPENCOMPUTER_DB.prepare(
-      "SELECT destination_id FROM webhook_idempotency WHERE org_id = ?1 AND idempotency_key = ?2",
+      "SELECT destination_id, request_hash FROM webhook_idempotency WHERE org_id = ?1 AND idempotency_key = ?2",
     )
       .bind(caller.orgID, idemKey)
-      .first<{ destination_id: string }>();
-    if (prior) return idempotentReplay(env, sx, caller, prior.destination_id);
+      .first<{ destination_id: string; request_hash: string | null }>();
+    if (prior) {
+      if (prior.request_hash && prior.request_hash !== reqHash) {
+        return json({ error: "Idempotency-Key already used with a different request body" }, 409);
+      }
+      return idempotentReplay(env, sx, caller, prior.destination_id);
+    }
   }
 
   const { wire, secret } = await createDestination(env, sx, caller.orgID, {
@@ -347,23 +356,32 @@ async function createWebhook(req: Request, env: WebhookEnv, sx: SvixClient, call
   if (idemKey) {
     // Claim the key atomically (PK conflict = a concurrent create already won).
     await env.OPENCOMPUTER_DB.prepare(
-      "INSERT INTO webhook_idempotency (org_id, idempotency_key, destination_id, created_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(org_id, idempotency_key) DO NOTHING",
+      "INSERT INTO webhook_idempotency (org_id, idempotency_key, destination_id, request_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(org_id, idempotency_key) DO NOTHING",
     )
-      .bind(caller.orgID, idemKey, wire.id, nowSec())
+      .bind(caller.orgID, idemKey, wire.id, reqHash ?? null, nowSec())
       .run();
     const winner = await env.OPENCOMPUTER_DB.prepare(
-      "SELECT destination_id FROM webhook_idempotency WHERE org_id = ?1 AND idempotency_key = ?2",
+      "SELECT destination_id, request_hash FROM webhook_idempotency WHERE org_id = ?1 AND idempotency_key = ?2",
     )
       .bind(caller.orgID, idemKey)
-      .first<{ destination_id: string }>();
+      .first<{ destination_id: string; request_hash: string | null }>();
     if (winner && winner.destination_id !== wire.id) {
-      // Lost a concurrent race — drop our just-created duplicate, return the winner.
+      // Lost a concurrent race — drop our just-created duplicate.
       await deleteDestinationById(env, sx, caller.orgID, wire.id as string);
+      if (winner.request_hash && winner.request_hash !== reqHash) {
+        return json({ error: "Idempotency-Key already used with a different request body" }, 409);
+      }
       return idempotentReplay(env, sx, caller, winner.destination_id);
     }
   }
   // Secret is returned on create (Svix-generated unless supplied; re-fetchable via GET /:id/secret).
   return json({ ...wire, secret }, 201);
+}
+
+// sha256Hex — request-body fingerprint for Idempotency-Key conflict detection.
+async function sha256Hex(s: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // idempotentReplay returns an existing destination + its (re-fetched) signing

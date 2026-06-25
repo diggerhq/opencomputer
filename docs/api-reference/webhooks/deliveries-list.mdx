@@ -4,7 +4,9 @@ api: 'GET /api/webhooks/{id}/deliveries'
 ---
 
 List a destination's most recent delivery attempts (up to 50). Each entry is a delivery-provider
-attempt record. The attempt index lags actual delivery by a few seconds. See [Webhooks](/sandboxes/webhooks#deliveries).
+attempt record. The attempt index lags actual delivery by a few seconds, and resolving a single
+message ([get](/api-reference/webhooks/delivery-get)) / [redeliver](/api-reference/webhooks/redeliver)
+can lag longer (~30s+) — retry with backoff. See [Webhooks](/sandboxes/webhooks#deliveries).
 
 <ParamField path="id" type="string" required>
   Destination ID (`whk_…`).
