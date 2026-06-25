@@ -3132,6 +3132,15 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 		log.Printf("qemu: CreateCheckpoint %s/%s: failed to resume VM after savevm: %v", sandboxID, checkpointID, contErr)
 	}
 	if saveErr != nil {
+		// The guest may already have been fsfrozen by quiesceAndCloseAgent.
+		// Once QEMU has been resumed, make a best-effort attempt to thaw before
+		// returning the savevm failure so the source sandbox is not left wedged.
+		if agentClient, reconnErr := m.waitForAgentSocket(context.Background(), vm.agentSockPath, 10*time.Second); reconnErr == nil {
+			vm.agent = agentClient
+			m.agentFsThawAfterWake(context.Background(), sandboxID, agentClient)
+		} else {
+			log.Printf("qemu: CreateCheckpoint %s/%s: savevm failed and agent reconnect for fs thaw failed: %v", sandboxID, checkpointID, reconnErr)
+		}
 		os.RemoveAll(stagingDir)
 		failureReason = "qmp_savevm"
 		return "", "", 0, fmt.Errorf("savevm: %w", saveErr)
@@ -3170,6 +3179,11 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	}
 	if reconnErr == nil {
 		vm.agent = agentClient
+		// Live checkpoint uses the same prepareAgentForHibernate path as
+		// hibernate/fork, so thaw the still-running source VM before accepting
+		// any more customer work. Without this, writes can block indefinitely on
+		// the guest fsfreeze semaphore even though QEMU has resumed.
+		m.agentFsThawAfterWake(context.Background(), sandboxID, agentClient)
 	} else {
 		// Agent didn't come back after savevm — the VM is unmanageable. Full
 		// teardown via destroyVM, not the partial QMP-quit-only cleanup that
