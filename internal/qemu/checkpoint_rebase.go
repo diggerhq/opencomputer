@@ -49,6 +49,9 @@ func (m *Manager) ensureCheckpointRebased(ctx context.Context, checkpointID stri
 	if json.Unmarshal(data, &meta) != nil {
 		return nil
 	}
+	if meta.RootDisk != nil && meta.RootDisk.Backend == RootDiskBackendCloudDisk {
+		return nil
+	}
 
 	if meta.GoldenVersion == "" {
 		return m.checkLegacyCheckpoint(checkpointID, meta)
@@ -283,4 +286,3 @@ func (m *Manager) checkLegacyCheckpoint(checkpointID string, meta SnapshotMeta) 
 		meta.SnapshotedAt.Format(time.RFC3339),
 		baseInstalled.Format(time.RFC3339))
 }
-

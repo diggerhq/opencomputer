@@ -3908,6 +3908,10 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		// Fall back to the old loadvm path.
 		incomingURI = ""
 	}
+	if meta.RootDisk != nil && meta.RootDisk.Backend == RootDiskBackendCloudDisk && incomingURI == "" {
+		os.RemoveAll(sandboxDir)
+		return nil, fmt.Errorf("checkpoint %s: cloud-disk checkpoint missing memory state file", checkpointID)
+	}
 
 	// Boot QEMU, load the checkpoint (migration or loadvm), and connect the
 	// agent inside. Post-loadvm virtio-serial occasionally comes up with the
