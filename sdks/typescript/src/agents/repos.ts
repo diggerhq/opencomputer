@@ -22,15 +22,15 @@ export interface CreateRepoParams {
   repo: string;
   /** Optional handle for your own reference; identity is (provider, owner, repo). */
   name?: string;
-  /** Optional explicit GitHub connection id. Defaults to your org's connection. */
-  connectionId?: string;
+  /** Optional explicit GitHub App installation id. Usually resolved from owner/repo. */
+  installationId?: string;
   defaults?: RepoDefaults;
 }
 
 export interface UpdateRepoParams {
   defaults?: RepoDefaults;
   name?: string;
-  connectionId?: string;
+  installationId?: string;
 }
 
 export interface Repo {
@@ -39,43 +39,35 @@ export interface Repo {
   owner: string;
   repo: string;
   name?: string;
-  /** The GitHub connection that authorizes this repo (auth lives there, not here). */
-  connectionId?: string;
+  /** The GitHub App installation that authorizes this repo (auth lives there, not here). */
+  installationId?: string;
   defaults?: RepoDefaults;
   createdAt?: string;
   updatedAt?: string;
 }
 
 /**
- * How OpenComputer mints GitHub tokens for your org. Created by **installing the
- * OpenComputer GitHub App** (recommended) — bring-your-own App + broker are coming soon.
- * No GitHub credential is ever returned.
+ * An installation of the OpenComputer GitHub App on a GitHub user/org. OpenComputer uses
+ * this to mint short-lived, repo-scoped tokens just in time; no token is ever returned.
  */
-export interface Connection {
-  id: string; // conn_…
-  provider: string;
-  /** `oc_app` today; `byo_app_key` / `byo_broker` coming soon. */
-  type: "oc_app" | "byo_app_key" | "byo_broker";
+export interface GitHubInstallation {
+  id: string; // ghi_…
   status: "active" | "suspended" | "revoked";
   /** The GitHub org/user the App is installed on. */
   accountLogin: string;
+  /** GitHub's raw installation id, when exposed for audit/debug. */
+  githubInstallationId?: number;
+  repositorySelection?: "all" | "selected";
   createdAt?: string;
 }
 
 export interface Page<T> { data: T[]; nextCursor?: string | null; }
 
-export interface ConnectionInstallUrlParams {
-  /** Optional GitHub org/user login to preselect when GitHub supports it. */
-  account?: string;
-  /** Optional app URL to return to after setup completes. */
-  redirectUrl?: string;
-}
-
 /**
  * Repos — repository identity + policy (the "where" a session works), analogous to
- * {@link Agents}. Auth comes from your GitHub {@link Connection}; no credential is passed
- * here. Register once and reference from `sources: [{ repo, ref, sha }]`. A session can
- * also reference `"owner/repo"` directly without creating a Repo handle. See the
+ * {@link Agents}. Auth comes from a GitHub App installation; no credential is passed here.
+ * Register once and reference from `sources: [{ repo, ref, sha }]`. A session can also
+ * reference `"owner/repo"` directly without creating a Repo handle. See the
  * [Repos guide](https://docs.opencomputer.dev/agent-sessions/repos).
  */
 export class Repos {
@@ -96,26 +88,18 @@ export class Repos {
   }
 }
 
-/** GitHub integration surface (`oc.github`). v1: list your connected installs. */
+/** GitHub integration surface (`oc.github`). v1: list OpenComputer App installations. */
 export class GitHub {
-  readonly connections: Connections;
+  readonly installations: GitHubInstallations;
   constructor(http: Http) {
-    this.connections = new Connections(http);
+    this.installations = new GitHubInstallations(http);
   }
 }
 
-/** Connected GitHub Apps (installs) for your org. Created via the install flow, not the API. */
-export class Connections {
+/** OpenComputer GitHub App installations available to your org. */
+export class GitHubInstallations {
   constructor(private readonly http: Http) {}
-  /** Create a GitHub App installation URL. Redirect your user to this URL, then poll/list. */
-  async installUrl(params: ConnectionInstallUrlParams = {}): Promise<string> {
-    const r = await this.http.request<{ url: string }>(
-      "POST", "/github/connections/install-url",
-      { body: params },
-    );
-    return r.url;
-  }
-  list(): Promise<Page<Connection>> {
-    return this.http.request("GET", "/github/connections");
+  list(): Promise<Page<GitHubInstallation>> {
+    return this.http.request("GET", "/github/installations");
   }
 }

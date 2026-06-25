@@ -18,9 +18,11 @@ on   = "issue.labeled:agent"
 - **Routing:** a routing key groups events into sessions — by default one session per issue; a comment on a PR the agent opened resumes the session that opened it.
 - **Who can trigger:** restricted to members of your organization by default, configurable per agent.
 
-## Connections
+## Integrations
 
-Triggers, and the deliveries that carry work back out, run through **connections** — integrations the platform operates, so the agent holds no tokens. Installing the OpenComputer GitHub App is the whole GitHub integration; a Slack connection powers the Slack [channel](/agent-sessions/channels). Model provider keys are connections too.
+Triggers, and the deliveries that carry work back out, run through platform-operated
+integrations, so the agent holds no tokens. Installing the OpenComputer GitHub App is the
+GitHub integration; a Slack integration powers the Slack [channel](/agent-sessions/channels).
 
 ## Deliveries
 

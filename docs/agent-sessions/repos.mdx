@@ -31,30 +31,14 @@ the minimum permission it needs, such as read-only for checkout and write only f
 publish/comment action.
 </Warning>
 
-Start the install from your dashboard (**Integrations → GitHub**) or create an install URL
-from your backend:
+Start the install from your dashboard (**Integrations → GitHub**) or from the public
+OpenComputer GitHub App page. No API call is needed to install the OC-owned App.
 
-<CodeGroup>
-
-```ts TypeScript SDK
-const url = await oc.github.connections.installUrl({ account: "acme" });
-redirectUserTo(url);
-```
-
-```http REST API
-POST /v3/github/connections/install-url
-Authorization: Bearer $OPENCOMPUTER_API_KEY
-
-{ "account": "acme" }
-```
-
-</CodeGroup>
-
-After GitHub returns to your app, verify the connection:
+After installation, you can verify which GitHub accounts are available:
 
 ```ts
-const connections = await oc.github.connections.list();
-// [{ id: "conn_...", accountLogin: "acme", status: "active" }]
+const installs = await oc.github.installations.list();
+// [{ id: "ghi_...", accountLogin: "acme", status: "active" }]
 ```
 
 ### Inline short-lived token
@@ -103,15 +87,15 @@ installed the App yet — **prefer the GitHub App.**
 ### Bring your own GitHub App (not yet available)
 
 Not built yet — here's how we expect it to work. To have PRs and comments appear as
-*your own* App (branding, audit), you'll connect your GitHub App one of two ways: register
-its App id + private key with OpenComputer (OpenComputer mints the tokens), or keep the
-key and host a small endpoint OpenComputer calls to mint. Either way the repo model and
-session API below are unchanged.
+*your own* App (branding, audit), you'll register a GitHub App entity with OpenComputer:
+either store its App id + private key in OpenComputer, or keep the key and host a small
+token-broker endpoint. That App will then have its own installations. The repo and session
+shape below stay the same.
 
 ## Register a repo
 
-Once GitHub is connected, register a repo — optional: any installed repo can be used in a
-session directly; a Repo adds policy and a stable handle.
+Once the GitHub App is installed, register a repo — optional: any installed repo can be
+used in a session directly; a Repo adds policy and a stable handle.
 
 <CodeGroup>
 
@@ -133,7 +117,7 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 </CodeGroup>
 
 Get-or-create, owner-scoped, idempotent by `(provider, owner, repo)`. **No credential is
-passed** — auth comes from your GitHub connection. Optional `defaults`:
+passed** — auth comes from the GitHub App installation. Optional `defaults`:
 `{ branchNamespace, allow }` (`allow` is a GitHub permission ceiling; OpenComputer still
 mints the minimum token per operation).
 
@@ -214,7 +198,7 @@ git-ops sandbox — the agent never runs authenticated `git`/`gh` and never sees
 
 ## Guarantees
 
-- **Connection-backed tokens are never stored** — OpenComputer mints short-lived,
+- **GitHub App-backed tokens are never stored** — OpenComputer mints short-lived,
   repo-scoped tokens just in time and destroys them. None reaches the agent's prompt,
   shell, files, env, the event log, or telemetry. (The one exception is the inline-token
   workaround, held encrypted only until the first checkout, then purged.)

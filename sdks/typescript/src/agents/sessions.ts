@@ -45,7 +45,7 @@ export type SessionSource = RegisteredRepoSource | InlineRepoSource;
 
 export interface RegisteredRepoSource {
   /** A registered repo id (`repo_…`) or `owner/repo` slug. Auth comes from your GitHub
-   *  connection (the installed OpenComputer App) — no per-source credential. */
+   *  App installation — no per-source credential. */
   repo: string;
   url?: never;
   auth?: never;
@@ -64,7 +64,7 @@ export interface InlineRepoSource {
   ref: string;
   sha: string;
   name?: string;
-  /** Inline auth (registered repos use the connection instead — no per-source auth). */
+  /** Inline auth (registered repos use the GitHub App installation instead). */
   auth: SourceAuth;
 }
 
@@ -83,8 +83,8 @@ export type SourceStatus =
 export type SourceErrorCode =
   | "source.auth_required"
   | "source.auth_ambiguous"
-  | "source.connection_suspended"
-  | "source.connection_revoked"
+  | "source.installation_suspended"
+  | "source.installation_revoked"
   | "source.repo_not_selected"
   | "source.permission_missing"
   | "source.mint_failed"
