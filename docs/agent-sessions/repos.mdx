@@ -144,7 +144,7 @@ tool** — the agent requests an outcome and OpenComputer performs it in the iso
 The agent never runs authenticated `git` or `gh`, and never sees a token. Results
 (branch, commit SHA, PR number/URL) come back as structured tool output.
 
-### Write actions and grants <Tag>Coming soon</Tag>
+### Write actions and grants (coming soon)
 
 Write actions (push, PR, comment, status) need write scope. The grant or connection
 authorizes a set of **operation classes** — your broker decides what to mint. A
@@ -185,8 +185,9 @@ Materialization runs in a pre-execution step before the agent starts:
 - Submodules and Git LFS are not supported by default (clear error if required).
 - If a session's sandbox is lost, the source is rehydrated from a retained workspace or
   re-fetched via your broker; if neither is possible the source reports
-  `source.unavailable` and you re-trigger. <Note>Recovery behavior is firming up.</Note>
-- Very large repositories add bootstrap latency; <a href="/agent-sessions/workspaces">Workspaces</a> will offer prebuilt checkouts. <Tag>Coming soon</Tag>
+  `source.unavailable` and you re-trigger. (Recovery behavior is firming up.)
+- Very large repositories add bootstrap latency; [Workspaces](/agent-sessions/workspaces)
+  will offer prebuilt checkouts. (Coming soon.)
 
 <Note>
 **Don't have a broker yet?** You can pass a real short-lived token inline with the
