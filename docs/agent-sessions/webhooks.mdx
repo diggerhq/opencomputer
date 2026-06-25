@@ -1,10 +1,10 @@
 ---
 mode: "wide"
 title: "Webhooks"
-description: "Deliver a session's output, and control deliveries"
+description: "Deliver session events to your backend"
 ---
 
-Register a **destination** and a session's [events](/agent-sessions/events) are delivered to it as a small **delivery envelope** — at-least-once, signed, and retried. The envelope carries top-level routing fields plus your session [`metadata`](/agent-sessions/api-reference#sessions), with the full event nested under `event`:
+Register a **destination** to receive a session's [events](/agent-sessions/events) as a **delivery envelope**. Deliveries are at-least-once, signed when a secret is set, and retried. The envelope carries routing fields, session [`metadata`](/agent-sessions/api-reference#sessions), and the full event under `event`:
 
 ```json
 {
@@ -86,7 +86,7 @@ A destination receives events appended **after** it's created. To capture a whol
 
 ## Deliveries
 
-Every send and its outcome — the data behind a deliveries dashboard.
+Each send is recorded with status, attempts, and the latest response or error.
 
 <Tabs>
 

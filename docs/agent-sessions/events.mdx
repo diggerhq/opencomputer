@@ -3,7 +3,7 @@ title: "Events"
 description: "The append-only log: read, stream, filter by level, and resume"
 ---
 
-A session is an **append-only log of events**: every step the agent takes is appended in order. You **read** it, **stream** it live, **filter** it by who should see each event (`level`), and **resume** from any point. Switch on the event **`type`**, don't parse prose.
+A session is an **append-only event log**. Read it, stream it, filter it by visibility (`level`), and resume from any `seq`. Switch on event **`type`**, not prose.
 
 ## Events in a turn
 
@@ -32,7 +32,7 @@ The two fields you act on are **`type`** (what happened — the discriminator) a
 
 ## Event types
 
-Treat **`type`** as the stable discriminator — switch on it, don't parse prose. Unknown types render fine from their `text`/`summary`, so new ones won't break your UI. Match a prefix like `turn.*` or `agent.*` for coarse buckets.
+Treat **`type`** as the stable discriminator. Unknown types should render from their `text` or `summary`, so new types do not break your UI. Match a prefix like `turn.*` or `agent.*` for coarse buckets.
 
 | `type` | `body` shape | Use it for |
 | --- | --- | --- |
@@ -46,7 +46,7 @@ Treat **`type`** as the stable discriminator — switch on it, don't parse prose
 
 ## Visibility levels
 
-Every event carries a `level` — use it to choose how much detail each surface receives.
+Every event carries a `level`; use it to choose how much detail each client receives.
 
 | Level | Contains | Use for |
 | --- | --- | --- |
@@ -60,7 +60,7 @@ Filtering is **cumulative** — `user` is the narrowest, `internal` is everythin
 - `?level=progress` → `progress` + `user`
 - `?level=internal` → everything
 
-So customer-facing chat asks for `user`, an agent-activity view for `progress`, and debugging for `internal`. The model's private reasoning is never surfaced; webhooks default to `user`.
+Use `user` for customer-facing chat, `progress` for activity views, and `internal` for debugging. The model's private reasoning is never surfaced; webhooks default to `user`.
 
 ## Cursors and resume
 

@@ -6,7 +6,7 @@ description: "Package your own agent harness as a runtime"
 
 <Note>**Labs preview.** Custom runtimes are not part of the stable Durable Sessions API. Production sessions use the built-in [runtimes](/agent-sessions/runtimes): `claude` and `codex`.</Note>
 
-A custom runtime lets you run your own agent harness on Durable Agent Sessions. Once registered, you select it on an agent with `runtime: "<name>"`; sessions, events, steering, webhooks, recovery, and sandbox tools work the same way as the built-ins.
+A custom runtime lets you run your own agent harness on Durable Agent Sessions. Once registered, select it on an agent with `runtime: "<name>"`; sessions, events, steering, webhooks, recovery, and sandbox tools use the same public API as built-in runtimes.
 
 The runtime image contains a **brain server**: a resident process around your agent SDK. OpenComputer supplies the platform adapter that reads the session log, owns fencing and idempotency, exposes tools, calls your brain over localhost, and commits the brain's stream as durable events.
 
@@ -14,7 +14,7 @@ You implement the brain. You do **not** implement OpenComputer's event API, sess
 
 See [example runtimes](https://github.com/diggerhq/oc-runtime-examples) for minimal `claude` and `codex` brain servers.
 
-## Runtime shape
+## Runtime contract
 
 Your image starts an HTTP server on `127.0.0.1:$OC_BRAIN_PORT` (`8080` by default). The server stays warm across turns and handles one turn at a time.
 
@@ -76,7 +76,7 @@ The adapter has already read the event log. Your brain receives the new turn inp
 - `kind` is the SDK's message/event type; `msg` is the native object, unchanged.
 - `done.reason` is `quiescent` (nothing left to do), `awaiting_input` (the agent called `ask` and is paused for a reply), or `error` (with an `error`).
 
-The platform ships a **per-SDK adapter** that knows each SDK's shape: it maps these native events to [session events](/agent-sessions/events) with stable idempotency keys, and flushes committed output before ending the turn. Custom runtimes target an SDK the platform has an adapter for.
+The platform ships a **per-SDK adapter** that maps native SDK events to [session events](/agent-sessions/events) with stable idempotency keys, and flushes committed output before ending the turn. Custom runtimes target an SDK the platform has an adapter for.
 
 Tool calls, including user-visible `say` and `ask`, are made through MCP, not by emitting HTTP requests to OpenComputer.
 
@@ -108,7 +108,7 @@ Design your brain so replay is safe. If a crash happens after a step is emitted 
 
 ## Register runtimes
 
-Labs CLI shape:
+Registration command:
 
 ```bash
 oc runtime push

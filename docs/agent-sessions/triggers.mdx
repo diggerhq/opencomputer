@@ -4,9 +4,9 @@ title: "Triggers"
 description: "Start and resume sessions from external events"
 ---
 
-<Note>**Labs preview.** Triggers are not part of the stable Durable Sessions API. The stable path is to start a session with [`POST /sessions`](/agent-sessions/api-reference) and steer it with [`POST /messages`](/agent-sessions/messaging).</Note>
+<Note>**Labs preview.** Triggers are not part of the stable Durable Sessions API. For stable API access, use [`POST /sessions`](/agent-sessions/api-reference) to start work and [`POST /messages`](/agent-sessions/messaging) to steer it.</Note>
 
-Triggers let external events start and resume sessions without an API call. You declare them on an [agent](/agent-sessions/agents); the platform receives the events and routes them to the right session.
+Triggers let external events start or resume sessions. You declare them on an [agent](/agent-sessions/agents); OpenComputer receives events, de-duplicates them, and routes them to a session.
 
 ```toml
 [[triggers]]
@@ -20,12 +20,15 @@ on   = "issue.labeled:agent"
 
 ## Integrations
 
-Triggers, and the deliveries that carry work back out, run through platform-operated
-integrations, so the agent holds no tokens. Installing the OpenComputer GitHub App is the
-GitHub integration; a Slack integration powers the Slack [channel](/agent-sessions/channels).
+Triggers and outbound deliveries run through platform integrations, so the agent holds no
+GitHub or Slack tokens. Installing the OpenComputer GitHub App configures GitHub access;
+Slack channels use a Slack integration.
 
 ## Deliveries
 
-To act back on a source — open or update a draft PR, post a comment — the agent requests a **delivery** and the platform performs it, as the org or (with a personal grant) as the triggering user. For generic outbound delivery, use [webhooks](/agent-sessions/webhooks).
+To open or update a draft PR, post a comment, or take another external action, the agent
+requests a **delivery** and OpenComputer performs it as the org or as the triggering user,
+depending on the configured grant. For generic outbound delivery, use
+[webhooks](/agent-sessions/webhooks).
 
 See [Channels](/agent-sessions/channels) for the two-way conversation model and [Workspaces](/agent-sessions/workspaces) for the repo a triggered session works in.

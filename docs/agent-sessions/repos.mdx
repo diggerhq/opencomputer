@@ -16,7 +16,7 @@ sandbox.
 
 <Note>**Preview** — APIs may change before general availability.</Note>
 
-## How the pieces fit
+## Concepts
 
 | Concept | Role | Boundary |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ sandbox.
 | Git operations sandbox | Runs authenticated clone/fetch/publish work. | Separate from the agent; token lives only for one operation. |
 
 <Note>
-The Repo/Source shape is provider-neutral: `provider`, `owner`, `repo`, `ref`, `sha`.
+`Repo` and `Source` are provider-neutral: `provider`, `owner`, `repo`, `ref`, `sha`.
 GitHub uses GitHub Apps as its auth surface. Other providers can add their own auth
 surface while sessions continue to reference repos and sources the same way.
 </Note>
@@ -49,7 +49,7 @@ operation.
 Install the **OpenComputer** GitHub App and select the repositories agents may work in —
 you choose the repos, and can change the selection or uninstall anytime. No keys to
 manage, no endpoint to host. OpenComputer mints a fresh, narrowly-scoped token for each
-operation, so durable sessions and recovery work with nothing else from you.
+operation, including retries and recovery.
 
 <Warning>
 The App may request write-capable GitHub permissions on the repos you select. OpenComputer
