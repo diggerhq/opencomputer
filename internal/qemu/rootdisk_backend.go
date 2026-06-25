@@ -2,6 +2,7 @@ package qemu
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -43,6 +44,12 @@ type RootDiskSet struct {
 	WorkspacePath string
 }
 
+type RootDiskCheckpoint struct {
+	Backend  string `json:"backend"`
+	DiskName string `json:"diskName"`
+	Snapshot string `json:"snapshot"`
+}
+
 type PrepareSandboxDisksRequest struct {
 	SandboxID  string
 	SandboxDir string
@@ -62,8 +69,16 @@ type MaterializeCheckpointDisksRequest struct {
 	Replace      bool
 }
 
+type CaptureCheckpointDisksRequest struct {
+	CheckpointID string
+	SandboxID    string
+	SandboxDir   string
+	StagingDir   string
+}
+
 type RootDiskProvider interface {
 	PrepareSandboxDisks(ctx context.Context, req PrepareSandboxDisksRequest) (RootDiskSet, error)
+	CaptureCheckpointDisks(ctx context.Context, req CaptureCheckpointDisksRequest) (*RootDiskCheckpoint, error)
 	MaterializeCheckpointDisks(ctx context.Context, req MaterializeCheckpointDisksRequest) (RootDiskSet, error)
 }
 
@@ -197,6 +212,19 @@ func (p localRootDiskProvider) MaterializeCheckpointDisks(ctx context.Context, r
 	return disks, nil
 }
 
+func (p localRootDiskProvider) CaptureCheckpointDisks(ctx context.Context, req CaptureCheckpointDisksRequest) (*RootDiskCheckpoint, error) {
+	_ = ctx
+	srcRootfs := filepath.Join(req.SandboxDir, "rootfs.qcow2")
+	srcWorkspace := filepath.Join(req.SandboxDir, "workspace.qcow2")
+	if err := p.copy(srcRootfs, filepath.Join(req.StagingDir, "rootfs.qcow2")); err != nil {
+		return nil, fmt.Errorf("copy rootfs: %w", err)
+	}
+	if err := p.copy(srcWorkspace, filepath.Join(req.StagingDir, "workspace.qcow2")); err != nil {
+		return nil, fmt.Errorf("copy workspace: %w", err)
+	}
+	return &RootDiskCheckpoint{Backend: RootDiskBackendLocal}, nil
+}
+
 func (p localRootDiskProvider) copy(src, dst string) error {
 	copyFile := p.copyFile
 	if copyFile == nil {
@@ -236,7 +264,7 @@ func (p cloudDiskRootDiskProvider) PrepareSandboxDisks(ctx context.Context, req 
 
 func (p cloudDiskRootDiskProvider) MaterializeCheckpointDisks(ctx context.Context, req MaterializeCheckpointDisksRequest) (RootDiskSet, error) {
 	diskName := p.sandboxDiskName(req.SandboxID)
-	parentDisk, snapshot := p.checkpointDiskRef(req.CheckpointID)
+	parentDisk, snapshot := p.checkpointDiskRef(req.CacheDir, req.CheckpointID)
 	create := p.createForkCommand(diskName, parentDisk, snapshot, p.cfg.DefaultSizeMB)
 	mount := p.mountCommand(diskName)
 	if req.Replace {
@@ -255,6 +283,27 @@ func (p cloudDiskRootDiskProvider) MaterializeCheckpointDisks(ctx context.Contex
 	return RootDiskSet{RootfsPath: device}, nil
 }
 
+func (p cloudDiskRootDiskProvider) CaptureCheckpointDisks(ctx context.Context, req CaptureCheckpointDisksRequest) (*RootDiskCheckpoint, error) {
+	diskName := p.sandboxDiskName(req.SandboxID)
+	out, err := p.runCommand(ctx, p.snapshotCommand(diskName))
+	if err != nil {
+		return nil, fmt.Errorf("cloud-disk snapshot root disk %s: %w", diskName, err)
+	}
+	version := parseCloudDiskSnapshotVersion(string(out))
+	if version == "" {
+		return nil, fmt.Errorf("cloud-disk snapshot root disk %s: snapshot version not found in output %q", diskName, strings.TrimSpace(string(out)))
+	}
+	cp := &RootDiskCheckpoint{
+		Backend:  RootDiskBackendCloudDisk,
+		DiskName: diskName,
+		Snapshot: version,
+	}
+	if err := writeRootDiskCheckpoint(req.StagingDir, cp); err != nil {
+		return nil, err
+	}
+	return cp, nil
+}
+
 func (p cloudDiskRootDiskProvider) diskSizeMB(requestedMB int) int {
 	if requestedMB > 0 {
 		return requestedMB
@@ -266,7 +315,11 @@ func (p cloudDiskRootDiskProvider) sandboxDiskName(sandboxID string) string {
 	return cloudDiskName("oc-root", sandboxID)
 }
 
-func (p cloudDiskRootDiskProvider) checkpointDiskRef(checkpointID string) (diskName, snapshot string) {
+func (p cloudDiskRootDiskProvider) checkpointDiskRef(cacheDir, checkpointID string) (diskName, snapshot string) {
+	cp, err := readRootDiskCheckpoint(cacheDir)
+	if err == nil && cp != nil && cp.Backend == RootDiskBackendCloudDisk && cp.DiskName != "" && cp.Snapshot != "" {
+		return cp.DiskName, cp.Snapshot
+	}
 	return cloudDiskName("oc-checkpoint", checkpointID), checkpointID
 }
 
@@ -292,6 +345,14 @@ func (p cloudDiskRootDiskProvider) mountCommand(name string) cloudDiskCommand {
 	return cloudDiskCommand{
 		path: p.cfg.CLIPath,
 		args: []string{"mount", name},
+		env:  p.env(),
+	}
+}
+
+func (p cloudDiskRootDiskProvider) snapshotCommand(name string) cloudDiskCommand {
+	return cloudDiskCommand{
+		path: p.cfg.CLIPath,
+		args: []string{"snapshot", name},
 		env:  p.env(),
 	}
 }
@@ -331,6 +392,48 @@ func parseCloudDiskNBDDevice(output string) string {
 		}
 	}
 	return ""
+}
+
+func parseCloudDiskSnapshotVersion(output string) string {
+	var last string
+	for _, field := range strings.FieldsFunc(output, func(r rune) bool {
+		return r < '0' || r > '9'
+	}) {
+		if field != "" {
+			last = field
+		}
+	}
+	return last
+}
+
+func rootDiskCheckpointPath(cacheDir string) string {
+	return filepath.Join(cacheDir, "snapshot", "rootdisk.json")
+}
+
+func writeRootDiskCheckpoint(cacheDir string, cp *RootDiskCheckpoint) error {
+	data, err := json.Marshal(cp)
+	if err != nil {
+		return fmt.Errorf("marshal root disk checkpoint metadata: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(rootDiskCheckpointPath(cacheDir)), 0755); err != nil {
+		return fmt.Errorf("mkdir root disk checkpoint metadata dir: %w", err)
+	}
+	if err := os.WriteFile(rootDiskCheckpointPath(cacheDir), data, 0644); err != nil {
+		return fmt.Errorf("write root disk checkpoint metadata: %w", err)
+	}
+	return nil
+}
+
+func readRootDiskCheckpoint(cacheDir string) (*RootDiskCheckpoint, error) {
+	data, err := os.ReadFile(rootDiskCheckpointPath(cacheDir))
+	if err != nil {
+		return nil, err
+	}
+	var cp RootDiskCheckpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return nil, err
+	}
+	return &cp, nil
 }
 
 func (p cloudDiskRootDiskProvider) runCommand(ctx context.Context, cmd cloudDiskCommand) ([]byte, error) {

@@ -3118,6 +3118,10 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 		return "", "", 0, fmt.Errorf("mkdir staging: %w", mkErr)
 	}
 
+	if _, ok := m.rootDisks.(cloudDiskRootDiskProvider); ok {
+		return m.createCloudDiskCheckpoint(ctx, vm, checkpointID, checkpointStore, onReady, stagingDir, cacheDir, t0, &failureReason)
+	}
+
 	// savevm pauses the VM, writes memory+device+disk-delta into every qcow2
 	// drive as an internal snapshot, then resumes. The qcow2 files now carry
 	// the full VM state; no external memory file is needed.
@@ -3148,17 +3152,15 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	// checkpoint cache staging dir. The VM has already been resumed by savevm,
 	// but qcow2 internal snapshots are immutable once written, so the reflink
 	// copy captures exactly the snapshot bytes regardless of any new writes.
-	srcRootfs := filepath.Join(vm.sandboxDir, "rootfs.qcow2")
-	srcWorkspace := filepath.Join(vm.sandboxDir, "workspace.qcow2")
-	if err := copyFileReflink(srcRootfs, filepath.Join(stagingDir, "rootfs.qcow2")); err != nil {
+	if _, err := m.rootDisks.CaptureCheckpointDisks(ctx, CaptureCheckpointDisksRequest{
+		CheckpointID: checkpointID,
+		SandboxID:    sandboxID,
+		SandboxDir:   vm.sandboxDir,
+		StagingDir:   stagingDir,
+	}); err != nil {
 		os.RemoveAll(stagingDir)
 		failureReason = "qcow2_copy"
-		return "", "", 0, fmt.Errorf("copy rootfs: %w", err)
-	}
-	if err := copyFileReflink(srcWorkspace, filepath.Join(stagingDir, "workspace.qcow2")); err != nil {
-		os.RemoveAll(stagingDir)
-		failureReason = "qcow2_copy"
-		return "", "", 0, fmt.Errorf("copy workspace: %w", err)
+		return "", "", 0, err
 	}
 	// Record the savevm snapshot name so ForkFromCheckpoint / RestoreFromCheckpoint
 	// know which internal snapshot to loadvm.
@@ -3301,6 +3303,157 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 		onReady()
 	}
 
+	return rootfsKey, workspaceKey, sizeBytes, nil
+}
+
+func (m *Manager) createCloudDiskCheckpoint(
+	ctx context.Context,
+	vm *VMInstance,
+	checkpointID string,
+	checkpointStore *storage.CheckpointStore,
+	onReady func(),
+	stagingDir, cacheDir string,
+	t0 time.Time,
+	failureReason *string,
+) (rootfsKey, workspaceKey string, sizeBytes int64, err error) {
+	sandboxID := vm.ID
+	rootfsKey = fmt.Sprintf("checkpoints/%s/%s/rootdisk.tar.zst", sandboxID, checkpointID)
+	workspaceKey = ""
+
+	if vm.qmp == nil {
+		*failureReason = "qmp_unavailable"
+		return "", "", 0, fmt.Errorf("QMP connection not available for %s", sandboxID)
+	}
+
+	if stopErr := vm.qmp.Stop(); stopErr != nil {
+		os.RemoveAll(stagingDir)
+		*failureReason = "qmp_stop"
+		return "", "", 0, fmt.Errorf("qmp stop before cloud-disk checkpoint: %w", stopErr)
+	}
+
+	rootDisk, captureErr := m.rootDisks.CaptureCheckpointDisks(ctx, CaptureCheckpointDisksRequest{
+		CheckpointID: checkpointID,
+		SandboxID:    sandboxID,
+		SandboxDir:   vm.sandboxDir,
+		StagingDir:   stagingDir,
+	})
+	if captureErr != nil {
+		if contErr := vm.qmp.Cont(); contErr != nil {
+			log.Printf("qemu: cloud checkpoint %s/%s: failed to resume VM after disk snapshot failure: %v", sandboxID, checkpointID, contErr)
+		}
+		os.RemoveAll(stagingDir)
+		*failureReason = "cloud_disk_snapshot"
+		return "", "", 0, captureErr
+	}
+
+	memFile := filepath.Join(stagingDir, "mem")
+	if err := vm.qmp.Migrate(fmt.Sprintf("exec:cat > %s", memFile)); err != nil {
+		if contErr := vm.qmp.Cont(); contErr != nil {
+			log.Printf("qemu: cloud checkpoint %s/%s: failed to resume VM after migrate start failure: %v", sandboxID, checkpointID, contErr)
+		}
+		os.RemoveAll(stagingDir)
+		*failureReason = "qmp_migrate"
+		return "", "", 0, fmt.Errorf("qmp migrate checkpoint memory: %w", err)
+	}
+	if err := vm.qmp.WaitMigration(5 * time.Minute); err != nil {
+		if contErr := vm.qmp.Cont(); contErr != nil {
+			log.Printf("qemu: cloud checkpoint %s/%s: failed to resume VM after migrate wait failure: %v", sandboxID, checkpointID, contErr)
+		}
+		os.RemoveAll(stagingDir)
+		*failureReason = "qmp_migrate"
+		return "", "", 0, fmt.Errorf("wait checkpoint memory migration: %w", err)
+	}
+	if contErr := vm.qmp.Cont(); contErr != nil {
+		log.Printf("qemu: cloud checkpoint %s/%s: failed to resume VM after memory snapshot: %v", sandboxID, checkpointID, contErr)
+	}
+	log.Printf("qemu: cloud checkpoint %s/%s: disk+memory captured (%dms)", sandboxID, checkpointID, time.Since(t0).Milliseconds())
+
+	if fileExists(memFile) {
+		zstCmd := exec.Command("zstd", "-3", "--rm", memFile, "-o", memFile+".zst")
+		if out, zErr := zstCmd.CombinedOutput(); zErr != nil {
+			log.Printf("qemu: cloud checkpoint %s/%s: mem compression failed: %v (%s); keeping raw mem", sandboxID, checkpointID, zErr, strings.TrimSpace(string(out)))
+		}
+	}
+
+	agentClient, reconnErr := m.waitForAgentSocket(context.Background(), vm.agentSockPath, 10*time.Second)
+	if reconnErr != nil {
+		log.Printf("qemu: cloud checkpoint %s/%s: agent reconnect failed (attempt 1): %v, retrying", sandboxID, checkpointID, reconnErr)
+		agentClient, reconnErr = m.waitForAgentSocket(context.Background(), vm.agentSockPath, 30*time.Second)
+	}
+	if reconnErr == nil {
+		vm.agent = agentClient
+	} else {
+		log.Printf("qemu: cloud checkpoint %s/%s: CRITICAL: agent reconnect failed, destroying VM cleanly", sandboxID, checkpointID)
+		m.mu.Lock()
+		delete(m.vms, sandboxID)
+		m.mu.Unlock()
+		if destroyErr := m.destroyVM(vm); destroyErr != nil {
+			log.Printf("qemu: cloud checkpoint %s/%s: destroyVM also failed: %v", sandboxID, checkpointID, destroyErr)
+		}
+	}
+
+	meta := &SnapshotMeta{
+		SandboxID:     vm.ID,
+		Network:       vm.network,
+		GuestCID:      vm.guestCID,
+		GuestMAC:      vm.guestMAC,
+		BootArgs:      vm.bootArgs,
+		RootDisk:      rootDisk,
+		CpuCount:      vm.CpuCount,
+		MemoryMB:      vm.MemoryMB,
+		BaseMemoryMB:  vm.baseMemoryMB,
+		Template:      vm.Template,
+		GuestPort:     vm.GuestPort,
+		GoldenVersion: vm.goldenVersion,
+		SnapshotedAt:  time.Now(),
+	}
+	if m.secretsProxy != nil && vm.network != nil {
+		meta.SealedTokens = m.secretsProxy.GetSessionTokens(vm.network.GuestIP)
+		meta.EgressAllowlist = m.secretsProxy.GetSessionAllowlist(vm.network.GuestIP)
+		meta.TokenHosts = m.secretsProxy.GetSessionTokenHosts(vm.network.GuestIP)
+	}
+	metaJSON, _ := json.Marshal(meta)
+	_ = os.WriteFile(filepath.Join(stagingDir, "snapshot", "snapshot-meta.json"), metaJSON, 0644)
+
+	m.checkpointCacheMu.Lock()
+	os.RemoveAll(cacheDir)
+	if renameErr := os.Rename(stagingDir, cacheDir); renameErr != nil {
+		log.Printf("qemu: cloud checkpoint %s: rename staging to cache failed: %v", checkpointID, renameErr)
+	}
+	m.checkpointCacheMu.Unlock()
+
+	if checkpointStore != nil {
+		archiveFiles := []string{}
+		if fileExists(filepath.Join(cacheDir, "mem.zst")) {
+			archiveFiles = append(archiveFiles, "mem.zst")
+		} else if fileExists(filepath.Join(cacheDir, "mem")) {
+			archiveFiles = append(archiveFiles, "mem")
+		}
+		archiveFiles = append(archiveFiles,
+			filepath.Join("snapshot", "snapshot-meta.json"),
+			filepath.Join("snapshot", "rootdisk.json"),
+		)
+		archivePath := filepath.Join(cacheDir, "checkpoint.tar.zst")
+		if archErr := createArchive(archivePath, cacheDir, archiveFiles); archErr != nil {
+			*failureReason = "archive"
+			return rootfsKey, workspaceKey, 0, fmt.Errorf("create cloud checkpoint archive: %w", archErr)
+		}
+		uploadCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		_, uerr := checkpointStore.Upload(uploadCtx, rootfsKey, archivePath)
+		cancel()
+		if info, statErr := os.Stat(archivePath); statErr == nil {
+			sizeBytes = info.Size()
+		}
+		os.Remove(archivePath)
+		if uerr != nil {
+			*failureReason = "s3_upload"
+			return rootfsKey, workspaceKey, sizeBytes, fmt.Errorf("upload cloud checkpoint to S3: %w", uerr)
+		}
+	}
+
+	if onReady != nil {
+		onReady()
+	}
 	return rootfsKey, workspaceKey, sizeBytes, nil
 }
 

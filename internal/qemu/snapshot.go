@@ -22,27 +22,28 @@ import (
 
 // SnapshotMeta holds metadata persisted alongside snapshot files.
 type SnapshotMeta struct {
-	SandboxID     string         `json:"sandboxId"`
-	Network       *NetworkConfig `json:"network"`
-	GuestCID      uint32         `json:"guestCID"`
-	GuestMAC      string         `json:"guestMAC"`
-	BootArgs      string         `json:"bootArgs"`
-	RootfsPath    string         `json:"rootfsPath"`
-	WorkspacePath string         `json:"workspacePath"`
-	CpuCount      int            `json:"cpuCount"`
-	MemoryMB      int            `json:"memoryMB"`
-	BaseMemoryMB  int            `json:"baseMemoryMB,omitempty"`
-	Template      string         `json:"template"`
-	GuestPort        int                 `json:"guestPort"`
-	GoldenVersion    string              `json:"goldenVersion,omitempty"`
-	SnapshotedAt     time.Time           `json:"snapshotedAt,omitempty"`
-	SealedTokens     map[string]string   `json:"sealedTokens,omitempty"`
+	SandboxID     string              `json:"sandboxId"`
+	Network       *NetworkConfig      `json:"network"`
+	GuestCID      uint32              `json:"guestCID"`
+	GuestMAC      string              `json:"guestMAC"`
+	BootArgs      string              `json:"bootArgs"`
+	RootfsPath    string              `json:"rootfsPath"`
+	WorkspacePath string              `json:"workspacePath"`
+	RootDisk      *RootDiskCheckpoint `json:"rootDisk,omitempty"`
+	CpuCount      int                 `json:"cpuCount"`
+	MemoryMB      int                 `json:"memoryMB"`
+	BaseMemoryMB  int                 `json:"baseMemoryMB,omitempty"`
+	Template      string              `json:"template"`
+	GuestPort     int                 `json:"guestPort"`
+	GoldenVersion string              `json:"goldenVersion,omitempty"`
+	SnapshotedAt  time.Time           `json:"snapshotedAt,omitempty"`
+	SealedTokens  map[string]string   `json:"sealedTokens,omitempty"`
 	// SealedNames is the env-var-name → sealed-token index. Persisted alongside
 	// SealedTokens so secret-store refresh-by-name (UpdateSecretValue) keeps
 	// working after a wake or migration handoff.
-	SealedNames      map[string]string   `json:"sealedNames,omitempty"`
-	EgressAllowlist  []string            `json:"egressAllowlist,omitempty"`
-	TokenHosts       map[string][]string `json:"tokenHosts,omitempty"`
+	SealedNames     map[string]string   `json:"sealedNames,omitempty"`
+	EgressAllowlist []string            `json:"egressAllowlist,omitempty"`
+	TokenHosts      map[string][]string `json:"tokenHosts,omitempty"`
 }
 
 // doHibernate pauses a running VM, saves VM state via QMP migrate, and kicks off
@@ -632,18 +633,18 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		baseMemoryMB:         baseMem,
 		virtioMemRequestedMB: pluggedMB,
 		HostPort:             hostPort,
-		GuestPort:             netCfg.GuestPort,
-		pid:           cmd.Process.Pid,
-		cmd:           cmd,
-		network:       netCfg,
-		sandboxDir:    sandboxDir,
-		qmpSockPath:   qmpSockPath,
-		agentSockPath: agentSockPath,
-		qmp:           qmpClient,
-		guestMAC:      guestMAC,
-		guestCID:      guestCID,
-		bootArgs:      bootArgs,
-		goldenVersion: m.goldenVersion, // set on wake — VM runs on the current worker's base
+		GuestPort:            netCfg.GuestPort,
+		pid:                  cmd.Process.Pid,
+		cmd:                  cmd,
+		network:              netCfg,
+		sandboxDir:           sandboxDir,
+		qmpSockPath:          qmpSockPath,
+		agentSockPath:        agentSockPath,
+		qmp:                  qmpClient,
+		guestMAC:             guestMAC,
+		guestCID:             guestCID,
+		bootArgs:             bootArgs,
+		goldenVersion:        m.goldenVersion, // set on wake — VM runs on the current worker's base
 	}
 	// Recompute virtio-mem amount from the meta. Without this the field
 	// stays at zero on wake, which would (a) make grow deltas under-charge

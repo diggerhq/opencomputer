@@ -244,6 +244,105 @@ func TestParseCloudDiskNBDDevice(t *testing.T) {
 	}
 }
 
+func TestParseCloudDiskSnapshotVersion(t *testing.T) {
+	for _, tc := range []struct {
+		output string
+		want   string
+	}{
+		{"snapshot version 1782353013352357154\n", "1782353013352357154"},
+		{"created snapshot: version=42", "42"},
+	} {
+		if got := parseCloudDiskSnapshotVersion(tc.output); got != tc.want {
+			t.Fatalf("parseCloudDiskSnapshotVersion(%q) = %q, want %q", tc.output, got, tc.want)
+		}
+	}
+}
+
+func TestCloudDiskProviderCaptureCheckpointDisksWritesMetadata(t *testing.T) {
+	var commands []string
+	provider := cloudDiskRootDiskProvider{cfg: CloudDiskConfig{
+		CLIPath:           "cloud-disk",
+		CachePath:         "/var/lib/cloud-disk",
+		DefaultSizeMB:     20480,
+		GoldenDisk:        "oc-golden-root",
+		GoldenSnapshot:    "snap-1",
+		S3Endpoint:        "https://t3.storage.dev",
+		S3Region:          "auto",
+		S3AccessKeyID:     "access",
+		S3SecretAccessKey: "secret",
+	}}
+	provider.run = func(_ context.Context, cmd cloudDiskCommand) ([]byte, error) {
+		commands = append(commands, cmd.String())
+		return []byte("snapshot version 1782353013352357154\n"), nil
+	}
+	stagingDir := t.TempDir()
+	cp, err := provider.CaptureCheckpointDisks(t.Context(), CaptureCheckpointDisksRequest{
+		CheckpointID: "cp-123",
+		SandboxID:    "sb-123",
+		StagingDir:   stagingDir,
+	})
+	if err != nil {
+		t.Fatalf("CaptureCheckpointDisks: %v", err)
+	}
+	if cp.DiskName != "oc-root-sb-123" || cp.Snapshot != "1782353013352357154" {
+		t.Fatalf("checkpoint = %#v", cp)
+	}
+	if len(commands) != 1 || !strings.Contains(commands[0], "cloud-disk snapshot oc-root-sb-123") {
+		t.Fatalf("commands = %#v, want cloud-disk snapshot", commands)
+	}
+	read, err := readRootDiskCheckpoint(stagingDir)
+	if err != nil {
+		t.Fatalf("read root disk checkpoint: %v", err)
+	}
+	if *read != *cp {
+		t.Fatalf("read checkpoint = %#v, want %#v", read, cp)
+	}
+}
+
+func TestCloudDiskProviderMaterializeCheckpointReadsMetadata(t *testing.T) {
+	var commands []string
+	provider := cloudDiskRootDiskProvider{cfg: CloudDiskConfig{
+		CLIPath:           "cloud-disk",
+		CachePath:         "/var/lib/cloud-disk",
+		DefaultSizeMB:     20480,
+		GoldenDisk:        "oc-golden-root",
+		GoldenSnapshot:    "snap-1",
+		S3Endpoint:        "https://t3.storage.dev",
+		S3Region:          "auto",
+		S3AccessKeyID:     "access",
+		S3SecretAccessKey: "secret",
+	}}
+	provider.run = func(_ context.Context, cmd cloudDiskCommand) ([]byte, error) {
+		commands = append(commands, cmd.String())
+		if len(cmd.args) >= 4 && cmd.args[0] == "config" {
+			return []byte("nbd-device=/dev/nbd9\n"), nil
+		}
+		return []byte("ok"), nil
+	}
+	cacheDir := t.TempDir()
+	if err := writeRootDiskCheckpoint(cacheDir, &RootDiskCheckpoint{
+		Backend:  RootDiskBackendCloudDisk,
+		DiskName: "oc-root-source",
+		Snapshot: "snap-42",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	disks, err := provider.MaterializeCheckpointDisks(t.Context(), MaterializeCheckpointDisksRequest{
+		CheckpointID: "cp-123",
+		CacheDir:     cacheDir,
+		SandboxID:    "sb-fork",
+	})
+	if err != nil {
+		t.Fatalf("MaterializeCheckpointDisks: %v", err)
+	}
+	if disks.RootfsPath != "/dev/nbd9" {
+		t.Fatalf("rootfs path = %q, want /dev/nbd9", disks.RootfsPath)
+	}
+	if !strings.Contains(commands[0], "-parent oc-root-source") || !strings.Contains(commands[0], "-snapshot snap-42") {
+		t.Fatalf("create command = %q, want parent/snapshot from metadata", commands[0])
+	}
+}
+
 func TestQEMUDriveFormatAndSingleDiskArgs(t *testing.T) {
 	if got := qemuDriveFormat("/dev/nbd7"); got != "raw" {
 		t.Fatalf("qemuDriveFormat(/dev/nbd7) = %q, want raw", got)
