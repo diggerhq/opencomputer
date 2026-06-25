@@ -1,26 +1,29 @@
 ---
 title: "Repos & GitHub"
-description: "Use GitHub Apps to authorize private repo work while keeping credentials out of agent sandboxes"
+description: "Give sessions private code without giving agents GitHub credentials"
 ---
 
-A **Repo** is repository identity plus policy. A **GitHub App** is the authority
-OpenComputer uses to obtain short-lived GitHub tokens. Sessions point at repos and
-sources; GitHub credentials stay behind that boundary and never enter the agent sandbox.
+Use Repos when a session needs private code. The agent needs files to inspect, edit, test,
+and diff; it should not get a GitHub token, authenticated remote, or `gh` session.
+
+A **Repo** records owner/repo plus policy. A **Source** pins `ref` and `sha`. Before the
+turn, OpenComputer checks out that exact commit in a short-lived **Git operations
+sandbox** with an operation-scoped token, copies only files into
+`/workspace/sources/<name>`, then destroys the token. GitHub writes use the same boundary:
+the agent requests an outcome; OpenComputer checks policy and performs authenticated calls
+outside the agent sandbox.
 
 <Note>**Preview** — APIs may change before general availability.</Note>
 
-## Model
+## How the pieces fit
 
 | Concept | Role | Boundary |
 | --- | --- | --- |
-| GitHub App | Token authority for GitHub operations. | Does not define repo policy or session refs. |
-| Installation | GitHub account and repo selection for an App. | `byo_broker` can keep this state inside your backend. |
-| Repo | Provider, owner, repo name, optional App pin, and permission ceiling. | Stores no tokens, private keys, or session refs. |
-| Source | Per-session checkout: repo/url, `ref`, `sha`, and local name. | Auth comes from the repo's App unless using inline auth. |
-
-Private GitHub access is used to prepare the source checkout before a turn starts. Inside
-the sandbox, the agent works on local files; authenticated GitHub operations stay outside
-the model-executed environment.
+| GitHub App | Mints operation-scoped GitHub tokens. | Not repo policy or session refs. |
+| Installation | GitHub account and repo selection. | `byo_broker` can keep this in your backend. |
+| Repo | Owner/repo, optional App pin, permission ceiling. | No tokens, private keys, or session refs. |
+| Source | `ref`, `sha`, and local name for one session. | Auth comes from the Repo's App unless inline. |
+| Git operations sandbox | Runs authenticated clone/fetch/publish work. | Separate from the agent; token lives only for one operation. |
 
 <Note>
 The Repo/Source shape is provider-neutral: `provider`, `owner`, `repo`, `ref`, `sha`.
@@ -215,9 +218,9 @@ Common `errorCode` values: `source.auth_required`, `source.auth_ambiguous`,
 
 ## What the agent can do
 
-Local Git works normally on the checkout (`status`/`diff`/`log`, edit, test, local
-commits). Anything needing GitHub credentials runs outside the agent sandbox, so the agent
-never runs authenticated `git`/`gh` and never sees a token.
+After checkout, the agent works with ordinary files. It can inspect, edit, test, diff, and
+make local commits. Anything needing GitHub credentials runs outside the agent sandbox, so
+the agent never runs authenticated `git`/`gh` and never sees a token.
 
 ## Guarantees
 
