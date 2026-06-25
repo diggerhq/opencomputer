@@ -56,17 +56,20 @@ publish/comment action.
 </Warning>
 
 Install the OC-owned App from its published GitHub App install URL. OpenComputer does not
-expose an SDK method to mint that URL because the App is owned by OpenComputer.
+expose an SDK method to mint that URL because the App is owned by OpenComputer. Once it's
+installed on a repo, reference that repo in a session's `sources` (below) — OpenComputer
+resolves the App and mints a token just in time.
 
-After installation, you can verify the App and visible installs:
+<Note>
+**Coming soon:** listing your Apps and installs (`oc.github.apps.list()` /
+`oc.github.installations.list()`). Today the OpenComputer App is resolved automatically;
+you don't need to enumerate installs to use a repo.
 
 ```ts
-const apps = await oc.github.apps.list();
-// [{ id: "gha_oc", appName: "OpenComputer", mode: "oc_app", status: "active" }]
-
 const installs = await oc.github.installations.list({ appId: "gha_oc" });
 // [{ id: "ghi_...", appId: "gha_oc", accountLogin: "acme", status: "active" }]
 ```
+</Note>
 
 ### Bring your own GitHub App (coming next)
 
