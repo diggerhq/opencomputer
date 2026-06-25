@@ -34,7 +34,11 @@ func (s *Server) createSandbox(c echo.Context) error {
 	cfg.EnsureNetworkEnabledDefault()
 
 	// Validate CPU/memory against allowed tiers.
-	// Allowed tiers (memoryMB → vCPU): 1024→1, 4096→1, 8192→2, 16384→4, 32768→8, 65536→16.
+	// Self-serve tiers (memoryMB → vCPU): 1024→1, 4096→1, 8192→2, 16384→4.
+	// Requests above 16GB / 4 vCPU are rejected with a contact-us message —
+	// see types.MaxSelfServeMemoryMB. Previously 32/64GB were accepted at
+	// admission but silently downsized at the worker; honest rejection is
+	// better UX than a sandbox that doesn't match what was requested.
 	if err := types.ValidateResourceTier(&cfg); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": err.Error(),

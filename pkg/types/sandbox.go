@@ -131,14 +131,22 @@ type ResourceTier struct {
 	VCPUs    int
 }
 
-// AllowedResourceTiers lists the valid memory→vCPU combinations.
+// MaxSelfServeMemoryMB is the largest tier exposed to the public API.
+// Requests above this are rejected at admission with a "contact us for
+// enterprise sizing" error. Previously 32GB/64GB tiers were on the allow
+// list, but the worker would silently downsize them when the host
+// couldn't carve out the requested headroom — producing a sandbox much
+// smaller than the caller asked for. Hard-rejecting is the honest answer.
+const MaxSelfServeMemoryMB = 16384
+
+// AllowedResourceTiers lists the valid memory→vCPU combinations for
+// self-serve sandboxes. Enterprise sizes (32GB+, 8+ vCPU) are handled
+// out-of-band — admission rejects them with a contact-us message.
 var AllowedResourceTiers = []ResourceTier{
 	{MemoryMB: 1024, VCPUs: 1},
 	{MemoryMB: 4096, VCPUs: 1},
 	{MemoryMB: 8192, VCPUs: 2},
 	{MemoryMB: 16384, VCPUs: 4},
-	{MemoryMB: 32768, VCPUs: 8},
-	{MemoryMB: 65536, VCPUs: 16},
 }
 
 // IsNetworkEnabled returns the effective NetworkEnabled value, defaulting to
@@ -163,30 +171,39 @@ func (c *SandboxConfig) EnsureNetworkEnabledDefault() {
 
 // ValidateMemoryMB checks that memoryMB matches an allowed tier and returns the corresponding vCPU count.
 // Returns 0, nil if memoryMB is 0 (use defaults).
+// Above MaxSelfServeMemoryMB → "contact us" error so the caller gets a clear
+// signal instead of a silent worker-side downsize.
 func ValidateMemoryMB(memoryMB int) (vcpus int, err error) {
 	if memoryMB == 0 {
 		return 0, nil
+	}
+	if memoryMB > MaxSelfServeMemoryMB {
+		return 0, fmt.Errorf("memoryMB=%d exceeds the largest self-serve tier (%d MB). Contact us for enterprise sizing.", memoryMB, MaxSelfServeMemoryMB)
 	}
 	for _, t := range AllowedResourceTiers {
 		if memoryMB == t.MemoryMB {
 			return t.VCPUs, nil
 		}
 	}
-	return 0, fmt.Errorf("memoryMB must be one of: 1024, 4096, 8192, 16384, 32768, 65536 (got %d)", memoryMB)
+	return 0, fmt.Errorf("memoryMB must be one of: 1024, 4096, 8192, 16384 (got %d)", memoryMB)
 }
 
 // ValidateCPUCount checks that cpuCount matches an allowed tier and returns the corresponding memoryMB.
 // Returns 0, nil if cpuCount is 0 (use defaults).
+// Above the top self-serve tier (4 vCPU at 16GB) → "contact us" error.
 func ValidateCPUCount(cpuCount int) (memoryMB int, err error) {
 	if cpuCount == 0 {
 		return 0, nil
+	}
+	if cpuCount > 4 {
+		return 0, fmt.Errorf("cpuCount=%d exceeds the largest self-serve tier (4 vCPU). Contact us for enterprise sizing.", cpuCount)
 	}
 	for _, t := range AllowedResourceTiers {
 		if cpuCount == t.VCPUs {
 			return t.MemoryMB, nil
 		}
 	}
-	return 0, fmt.Errorf("cpuCount must be one of: 1, 2, 4, 8, 16 (got %d)", cpuCount)
+	return 0, fmt.Errorf("cpuCount must be one of: 1, 2, 4 (got %d)", cpuCount)
 }
 
 // ValidateResourceTier validates and normalizes CPU/memory on a SandboxConfig.
