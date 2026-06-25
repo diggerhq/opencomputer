@@ -43,10 +43,11 @@ no App key handling.
 Each operation asks for the minimum GitHub permission it needs. Checkout needs read-only
 contents access; write-capable actions ask for write access only for that operation.
 
-During preview, OpenComputer installs its GitHub App on your repository for you — contact us
-to enable a repo. Once a repo is enabled, reference it in a session's `sources` (below) and
-OpenComputer resolves the App and mints a token just in time. You do not need to enumerate
-installations to use a repo.
+**Install the [OpenComputer GitHub App](https://github.com/apps/opencomputerdev/installations/new)**
+on the repositories you want OpenComputer to work with — you choose the exact repos, so it
+never needs org-wide access. Once it's installed on a repo, reference that repo in a session's
+`sources` (below) and OpenComputer resolves the App and mints a token just in time. You do not
+need to enumerate installations to use a repo.
 
 <Warning>
 The App may request write-capable GitHub permissions on the repos you select. OpenComputer
@@ -69,7 +70,7 @@ from your own App. In preview, only the OpenComputer App is available.
 The no-setup path is to pass a real short-lived token inline on the source, using the
 deliberately-named `risky_short_lived_token` auth. An inline token is **checkout-only**:
 it is used once to check the repo out and then purged, so it **cannot publish or open
-PRs**. Publishing requires a configured GitHub App (the OpenComputer App).
+PRs**. Publishing requires a configured GitHub App — [install the OpenComputer App](https://github.com/apps/opencomputerdev/installations/new).
 
 <CodeGroup>
 
@@ -111,7 +112,8 @@ until the first checkout, then purges it. Use this only when a GitHub App is not
 
 ## Register a repo
 
-Once the GitHub App is enabled on a repo, register a repo — optional: any enabled repo can
+Once the [OpenComputer GitHub App](https://github.com/apps/opencomputerdev/installations/new)
+is installed on a repo, register a repo — optional: any installed repo can
 be used in a session directly; a Repo gives you a stable handle to reference.
 
 <CodeGroup>

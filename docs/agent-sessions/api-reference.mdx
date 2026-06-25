@@ -259,7 +259,7 @@ Pass `key` **or** `credential` (or neither → org default). The agent's `limits
 
 The OpenComputer GitHub App lets OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is a stable repository handle that resolves to the OpenComputer App. See the [Repos & GitHub guide](/agent-sessions/repos).
 
-During preview, OpenComputer installs its App on your repository for you — contact us to enable a repo; there is no SDK method to mint an install URL. **No credential passes through this API.** Bring-your-own GitHub App modes (`byo_stored_key`, `byo_broker`) are **coming later — not yet available**; in preview only `oc_app` (OpenComputer owns and mints) works.
+During preview, **install the [OpenComputer GitHub App](https://github.com/apps/opencomputerdev/installations/new)** on the repos you want OpenComputer to work with (you pick the exact repos); there is no SDK method to mint an install URL. **No credential passes through this API.** Bring-your-own GitHub App modes (`byo_stored_key`, `byo_broker`) are **coming later — not yet available**; in preview only `oc_app` (OpenComputer owns and mints) works.
 
 <Tabs>
 
