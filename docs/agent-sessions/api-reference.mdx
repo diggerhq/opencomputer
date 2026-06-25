@@ -73,12 +73,11 @@ Turn = {
   started_at?, completed_at?
 }
 
-SessionSource =                                    // a sources[] entry — WIRE shape (SDK is
-    { repo, ref, sha, name? }                      //   camelCase: brokerUrl, expiresAt)
-  | { url, ref, sha, name?, auth }                 // name defaults to the repo name; type defaults "git"
-SourceAuth =
-    { type: "token_broker", broker_url, grant }    // grant: a short-lived reference, not a token
-  | { type: "risky_short_lived_token", token, expires_at }   // discouraged; short-lived only
+SessionSource =                                    // a sources[] entry (SDK camelCase: expiresAt)
+    { repo, ref, sha, name? }                      // a registered repo id or "owner/repo" — auth via your connection
+  | { url, ref, sha, name?, auth }                 // inline shortcut; name defaults to repo name, type defaults "git"
+SourceAuth =                                        // inline path ONLY (connection-backed repos need none)
+    { type: "risky_short_lived_token", token, expires_at }   // workaround; short-lived; can't refresh
 SourceSummary = { name, status, path, sha }        // sanitized; in the create response + GET …/sources
 //   status: pending | materializing | resolved | failed | unavailable | auth_required
 ```
@@ -251,9 +250,11 @@ Create body: `name`, `prompt`, `model`, `runtime?` (`claude` | `codex`), `key?`,
 
 Pass `key` **or** `credential` (or neither → org default). The agent's `limits` are the defaults for its sessions; a session's own `limits` override. Each agent has a monotonic `revision` (bumped on PATCH) that sessions pin in `agent_snapshot.revision`, so you can tell which version produced a run.
 
-## Repos
+## GitHub connections & Repos
 
-A reusable, owner-scoped connection to a Git repository — referenced from a session's `sources`. See the [Repos guide](/agent-sessions/repos) for the security model.
+Auth lives on a **connection** (how OpenComputer mints tokens for your org); a **Repo** is repo identity + policy that references it. See the [Repos guide](/agent-sessions/repos).
+
+**Connect GitHub** by installing the **OpenComputer GitHub App** (recommended, durable; bring-your-own App + broker coming soon). The install captures an owner-scoped connection; OpenComputer then mints short-lived, repo-scoped tokens just in time. **No credential passes through this API.**
 
 <Tabs>
 
@@ -261,9 +262,10 @@ A reusable, owner-scoped connection to a Git repository — referenced from a se
 
 | Call | Purpose |
 | --- | --- |
-| `oc.repos.create(params)` | Register (get-or-create) a repo connection. |
+| `oc.repos.create(params)` | Register (get-or-create) a repo. |
 | `oc.repos.get(idOrSlug)` · `oc.repos.list()` | Fetch / list. |
-| `oc.repos.update(id, params)` | Update `auth` / policy `defaults`. |
+| `oc.repos.update(id, params)` | Update policy `defaults`. |
+| `oc.github.connections.list()` | List connected GitHub Apps (installs). |
 
 </Tab>
 
@@ -271,35 +273,23 @@ A reusable, owner-scoped connection to a Git repository — referenced from a se
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /repos` | Register (get-or-create) a repo connection. |
+| `POST /repos` | Register (get-or-create) a repo. |
 | `GET /repos/:id` · `GET /repos` | Fetch / list. |
-| `PATCH /repos/:id` | Update `auth` / policy `defaults`. |
+| `PATCH /repos/:id` | Update policy `defaults`. |
+| `GET /github/connections` | List connected GitHub Apps (installs). |
 
 </Tab>
 
 </Tabs>
 
-Create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle), `auth`, `defaults?`. **Idempotent by `(provider, owner, repo)`** — a fresh register returns **201**, a repeat returns the existing repo with **200**. Stores **no GitHub token** — only the broker URL, repo identity, and policy.
-
-`auth` — how OpenComputer obtains tokens (no standing credential is stored):
-- `{ "type": "token_broker", "broker_url": "https://…" }` — your [broker](/agent-sessions/repos#what-you-provide) endpoint; OpenComputer signs each request to it, verified against its published JWKS.
-
-`defaults` (optional policy): `{ "branch_namespace"?: "oc/{session}/", "allow"?: ["contents:read", "pull_requests:write", …] }` — `allow` is a ceiling on what any request may mint.
+Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle), `defaults?`. **No `auth`** — auth comes from your GitHub connection. **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). `defaults`: `{ branch_namespace?, allow? }` — `allow` is a **GitHub permission ceiling** (e.g. `contents:read`, `pull_requests:write`).
 
 ```
-Repo = { id, provider, owner, repo, name?, broker_url?, defaults?, created_at, updated_at }
+Repo       = { id, provider, owner, repo, name?, connection_id?, defaults?, created_at, updated_at }
+Connection = { id, provider, type, status, account_login, created_at }   // type: oc_app (byo_* coming soon)
 ```
 
-The response **never** contains a token or secret. (SDK is camelCase: `brokerUrl`, `branchNamespace`.) `defaults.allow` is a **GitHub permission ceiling** (e.g. `contents:read`, `pull_requests:write`) — not a free-form list.
-
-**Broker request** (the contract your `broker_url` implements). At materialization OpenComputer `POST`s your broker a **signed** request (verify against OpenComputer's published JWKS):
-
-```
-→  { owner_id, repo, operation, permissions, ref, sha }   // signed by OpenComputer
-←  { token, expires_at, permissions }                     // a JIT installation token
-```
-
-**Bind `owner_id` to your OpenComputer org** (allowlist or a one-time registration) so a foreign org can't point at your broker URL and mint tokens for your installation. Mint only the intersection of your grant/policy and the requested scope — never broader. See the [Repos guide](/agent-sessions/repos#what-you-provide).
+Responses **never** contain a token or secret. (SDK camelCase: `branchNamespace`, `accountLogin`.) Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
 
 ## Credentials
 

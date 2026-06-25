@@ -1,27 +1,10 @@
 import type { Http, Query } from "./http.js";
 
-/**
- * How OpenComputer obtains GitHub tokens for a repo. OpenComputer never stores a
- * GitHub credential — it calls your **token broker** to mint a short-lived,
- * narrowly-scoped installation token just in time for each operation, runs the
- * operation in an isolated job, and discards the token.
- *
- * `token_broker` registers a *connection*: your broker authorizes OpenComputer's
- * (signature-verified) requests for this repo, per your broker's own policy. No
- * standing GitHub credential is given to OpenComputer; only the broker URL +
- * repo identity are recorded.
- */
-export type RepoAuth = {
-  type: "token_broker";
-  /** Your broker endpoint. OpenComputer signs requests to it with its published JWKS. */
-  brokerUrl: string;
-};
-
 export interface RepoDefaults {
   /** Branch namespace for agent pushes; default `oc/{session}/`. No protected/base push. */
   branchNamespace?: string;
   /** GitHub permission ceiling (e.g. `contents:read`, `pull_requests:write`) this repo
-   *  may ever authorize — a ceiling; the broker still decides what to mint per call. */
+   *  may ever authorize — a ceiling; OpenComputer still mints the minimum per operation. */
   allow?: string[];
 }
 
@@ -31,14 +14,15 @@ export interface CreateRepoParams {
   repo: string;
   /** Optional handle for your own reference; identity is (provider, owner, repo). */
   name?: string;
-  auth: RepoAuth;
+  /** Optional explicit GitHub connection id. Defaults to your org's connection. */
+  connection?: string;
   defaults?: RepoDefaults;
 }
 
 export interface UpdateRepoParams {
-  auth?: RepoAuth;
   defaults?: RepoDefaults;
   name?: string;
+  connection?: string;
 }
 
 export interface Repo {
@@ -47,20 +31,36 @@ export interface Repo {
   owner: string;
   repo: string;
   name?: string;
-  /** The broker endpoint (not a secret). No GitHub token is ever returned or stored. */
-  brokerUrl?: string;
+  /** The GitHub connection that authorizes this repo (auth lives there, not here). */
+  connectionId?: string;
   defaults?: RepoDefaults;
   createdAt?: string;
   updatedAt?: string;
 }
 
+/**
+ * How OpenComputer mints GitHub tokens for your org. Created by **installing the
+ * OpenComputer GitHub App** (recommended) — bring-your-own App + broker are coming soon.
+ * No GitHub credential is ever returned.
+ */
+export interface Connection {
+  id: string; // conn_…
+  provider: string;
+  /** `oc_app` today; `byo_app_key` / `byo_broker` coming soon. */
+  type: "oc_app" | "byo_app_key" | "byo_broker";
+  status: "active" | "suspended" | "revoked";
+  /** The GitHub org/user the App is installed on. */
+  accountLogin: string;
+  createdAt?: string;
+}
+
 export interface Page<T> { data: T[]; nextCursor?: string | null; }
 
 /**
- * Repos — a reusable, registered connection to a repository (the "where" a session
- * works), analogous to {@link Agents} (the "what" it runs). Register once; reference
- * from many sessions via `sources: [{ repo, ref, sha }]`. Sessions can also use a repo
- * inline without registering — see {@link CreateSessionParams.sources}.
+ * Repos — repository identity + policy (the "where" a session works), analogous to
+ * {@link Agents}. Auth comes from your GitHub {@link Connection}; no credential is passed
+ * here. Register once and reference from `sources: [{ repo, ref, sha }]`, or reference
+ * `"owner/repo"` directly. See the [Repos guide](https://docs.opencomputer.dev/agent-sessions/repos).
  */
 export class Repos {
   constructor(private readonly http: Http) {}
@@ -77,5 +77,21 @@ export class Repos {
   }
   list(params: { limit?: number; cursor?: string } = {}): Promise<Page<Repo>> {
     return this.http.request("GET", "/repos", { query: params as Query });
+  }
+}
+
+/** GitHub integration surface (`oc.github`). v1: list your connected installs. */
+export class GitHub {
+  readonly connections: Connections;
+  constructor(http: Http) {
+    this.connections = new Connections(http);
+  }
+}
+
+/** Connected GitHub Apps (installs) for your org. Created via the install flow, not the API. */
+export class Connections {
+  constructor(private readonly http: Http) {}
+  list(): Promise<Page<Connection>> {
+    return this.http.request("GET", "/github/connections");
   }
 }

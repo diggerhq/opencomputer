@@ -2,7 +2,7 @@ import { Http, type HttpOptions } from "./http.js";
 import { Agents } from "./agents.js";
 import { Sessions } from "./sessions.js";
 import { Credentials } from "./credentials.js";
-import { Repos } from "./repos.js";
+import { Repos, GitHub } from "./repos.js";
 
 export interface OpenComputerOptions extends HttpOptions {
   /** Your OpenComputer org API key (server-side only — never ship it to a browser). */
@@ -22,6 +22,8 @@ export class OpenComputer {
   readonly sessions: Sessions;
   readonly credentials: Credentials;
   readonly repos: Repos;
+  /** GitHub integration (`oc.github.connections.list()`). Connect via the OpenComputer App. */
+  readonly github: GitHub;
 
   constructor(opts: OpenComputerOptions) {
     const http = new Http({ apiKey: opts.apiKey }, opts);
@@ -29,5 +31,6 @@ export class OpenComputer {
     this.sessions = new Sessions(http);
     this.credentials = new Credentials(http);
     this.repos = new Repos(http);
+    this.github = new GitHub(http);
   }
 }

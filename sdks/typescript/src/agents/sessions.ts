@@ -44,7 +44,8 @@ export interface CreateSessionParams {
 export type SessionSource = RegisteredRepoSource | InlineRepoSource;
 
 export interface RegisteredRepoSource {
-  /** A registered repo id (`repo_…`) or `owner/repo` slug. Auth comes from the repo. */
+  /** A registered repo id (`repo_…`) or `owner/repo` slug. Auth comes from your GitHub
+   *  connection (the installed OpenComputer App) — no per-source credential. */
   repo: string;
   /** Required fetch ref (branch or `refs/pull/N/head`). */
   ref: string;
@@ -60,13 +61,17 @@ export interface InlineRepoSource {
   ref: string;
   sha: string;
   name?: string;
-  /** Per-session auth (the registered-repo path carries auth on the repo instead). */
+  /** Inline auth (registered repos use the connection instead — no per-source auth). */
   auth: SourceAuth;
 }
 
-/** Per-source auth for the inline path. Prefer a registered repo + broker connection. */
+/**
+ * Inline-source auth — the **no-setup workaround**. Pass a real short-lived token; it
+ * works today but **can't refresh** (once it expires the session can't fetch/push/recover),
+ * so it's only for sessions that finish within the token's life. Prefer connecting the
+ * OpenComputer GitHub App (durable). Held encrypted, used once, then purged.
+ */
 export type SourceAuth =
-  | { type: "token_broker"; brokerUrl: string; grant: string }
   | { type: "risky_short_lived_token"; token: string; expiresAt: string };
 
 /** Sanitized per-source status returned on a session (never exposes url/auth). */
