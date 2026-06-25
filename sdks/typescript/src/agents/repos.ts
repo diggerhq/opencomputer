@@ -6,15 +6,10 @@ export interface CreateRepoParams {
   repo: string;
   /** Optional handle for your own reference; identity is (provider, owner, repo). */
   name?: string;
-  /** The GitHub App this repo resolves to (↔ `app_id` on the wire). Optional;
-   *  defaults to your org's default App, then the OpenComputer App. */
-  appId?: string;
 }
 
 export interface UpdateRepoParams {
   name?: string;
-  /** The GitHub App this repo resolves to (↔ `app_id` on the wire). */
-  appId?: string;
 }
 
 export interface Repo {
@@ -23,24 +18,23 @@ export interface Repo {
   owner: string;
   repo: string;
   name?: string;
-  /** The GitHub App this repo resolves to (auth lives there, not here). */
-  appId?: string;
   createdAt?: string;
   updatedAt?: string;
 }
 
 /**
- * How a GitHub App mints operation-scoped tokens:
- * - `oc_app`: OpenComputer owns the App key and mints.
- * - `byo_stored_key`: you own the App; OpenComputer stores the key encrypted and mints.
- * - `byo_broker`: your backend owns the App key/lifecycle and returns short-lived tokens.
+ * How a GitHub App mints operation-scoped tokens. In preview, only `oc_app` is available:
+ * - `oc_app`: OpenComputer owns the App key and mints (the only mode that works today).
+ * - `byo_stored_key`, `byo_broker`: bring-your-own App modes — coming later, not yet
+ *   available. Left as open string values so future values don't break clients.
  */
 export type GitHubAppMode = "oc_app" | "byo_stored_key" | "byo_broker" | (string & {});
 export type GitHubAppStatus = "active" | "suspended" | "revoked" | (string & {});
 
 /**
- * A GitHub App authority for repo operations. The built-in OpenComputer App is `oc_app`;
- * user-owned App modes are additive and keep the Repo/Source shape unchanged.
+ * A GitHub App authority for repo operations. In preview the only App is the built-in
+ * OpenComputer App (`oc_app`); user-owned App modes are planned and would keep the
+ * Repo/Source shape unchanged.
  */
 export interface GitHubApp {
   id: string; // gha_…
@@ -55,8 +49,8 @@ export interface GitHubApp {
 
 /**
  * A GitHub App installation visible to OpenComputer. Installations are useful for setup
- * status and preflight. `byo_broker` Apps may have no OpenComputer-visible installations
- * because your backend owns that lifecycle.
+ * status and preflight. In preview this may be empty for orgs using only the OpenComputer
+ * App; it surfaces bring-your-own App installations once those modes are available.
  */
 export interface GitHubInstallation {
   id: string; // ghi_…
@@ -113,7 +107,8 @@ export class GitHub {
   }
 }
 
-/** GitHub Apps available to your org. BYO App registration methods are additive later. */
+/** GitHub Apps available to your org. In preview this lists the OpenComputer App; BYO App
+ *  registration methods are planned for later. */
 export class GitHubApps {
   constructor(private readonly http: Http) {}
   list(params: { limit?: number; cursor?: string } = {}): Promise<Page<GitHubApp>> {
@@ -121,7 +116,8 @@ export class GitHubApps {
   }
 }
 
-/** GitHub App installations visible to OpenComputer; optional for `byo_broker` Apps. */
+/** GitHub App installations visible to OpenComputer. In preview this may be empty for orgs
+ *  using only the OpenComputer App; it surfaces BYO installations once available. */
 export class GitHubInstallations {
   constructor(private readonly http: Http) {}
   list(params: ListGitHubInstallationsParams = {}): Promise<Page<GitHubInstallation>> {

@@ -258,8 +258,8 @@ export class Session extends ClientSession {
     return this;
   }
 
-  /** Per-turn history (timing + outcome), paginated. */
-  turns(opts: { after?: string; limit?: number } = {}): Promise<ListPage<Turn>> {
+  /** Per-turn history (timing + outcome), paginated. `cursor` = `nextCursor` from the previous page. */
+  turns(opts: { cursor?: string; limit?: number } = {}): Promise<ListPage<Turn>> {
     return this.http.request("GET", `/sessions/${this.id}/turns`, { query: opts as Query });
   }
   turn(turnId: string): Promise<Turn> {

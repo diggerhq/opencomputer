@@ -202,7 +202,7 @@ Destination body: `url`, `secret?`, `level?` (`user`), `types?[]`, `include_raw?
 
 | Method · Path | Purpose |
 | --- | --- |
-| `GET /sessions/:id/deliveries?destination=&status=&after=&limit=` | List deliveries — status, attempts, last response/error (paginated). |
+| `GET /sessions/:id/deliveries?destination=&status=&after=&limit=` | List deliveries — status, attempts, last response/error. Returns `{ data }`; filter with `after` (a `created_at` cutoff) and `limit`. |
 | `GET /sessions/:id/deliveries/:id` | One delivery, in detail. |
 | `POST /sessions/:id/deliveries/:id/redeliver` | Re-send any delivery (not just dead-lettered). |
 
@@ -257,13 +257,9 @@ Pass `key` **or** `credential` (or neither → org default). The agent's `limits
 
 ## GitHub Apps & Repos
 
-Connect a GitHub App to let OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is repository identity. See the [Repos & GitHub guide](/agent-sessions/repos).
+The OpenComputer GitHub App lets OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is a stable repository handle that resolves to the OpenComputer App. See the [Repos & GitHub guide](/agent-sessions/repos).
 
-The OpenComputer-owned App is installed from its GitHub App install URL, not by minting an install URL through the SDK. Bring-your-own GitHub App modes use the same repo and session shapes. **No credential passes through this API.**
-
-GitHub App `mode` values: `oc_app` (OpenComputer owns and mints), `byo_stored_key` (your
-App key is encrypted in OpenComputer; OpenComputer mints), and `byo_broker` (your backend
-owns the App key and returns operation-scoped short-lived tokens).
+During preview, OpenComputer installs its App on your repository for you — contact us to enable a repo; there is no SDK method to mint an install URL. **No credential passes through this API.** Bring-your-own GitHub App modes (`byo_stored_key`, `byo_broker`) are **coming later — not yet available**; in preview only `oc_app` (OpenComputer owns and mints) works.
 
 <Tabs>
 
@@ -273,7 +269,9 @@ owns the App key and returns operation-scoped short-lived tokens).
 | --- | --- |
 | `oc.repos.create(params)` | Register (get-or-create) a repo. |
 | `oc.repos.get(id)` · `oc.repos.list()` | Fetch / list. |
-| `oc.repos.update(id, params)` | Update `name` / `appId`. |
+| `oc.repos.update(id, params)` | Update `name`. |
+| `oc.github.apps.list()` | List GitHub Apps available to your org. |
+| `oc.github.installations.list()` | List GitHub App installations visible to OpenComputer. |
 
 </Tab>
 
@@ -283,19 +281,23 @@ owns the App key and returns operation-scoped short-lived tokens).
 | --- | --- |
 | `POST /repos` | Register (get-or-create) a repo. |
 | `GET /repos/:id` · `GET /repos` | Fetch / list. |
-| `PATCH /repos/:id` | Update `name` / `app_id`. |
+| `PATCH /repos/:id` | Update `name`. |
+| `GET /github/apps` | List GitHub Apps available to your org. |
+| `GET /github/installations` | List GitHub App installations visible to OpenComputer. |
 
 </Tab>
 
 </Tabs>
 
-Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle), `app_id?`. **No `auth`** — auth resolves through the GitHub App. **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). `app_id` is optional — the GitHub App this repo resolves to; defaults to your org's default App, then the OpenComputer App.
+Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle). **No `auth`** — auth resolves through the OpenComputer App. **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). (Pinning a repo to a specific App is coming later.)
 
 ```
-Repo               = { id, provider, owner, repo, name?, app_id?, created_at, updated_at }
+Repo               = { id, provider, owner, repo, name?, created_at, updated_at }
 ```
 
-Responses **never** contain a token or secret. (SDK camelCase: `appId`.) Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
+Responses **never** contain a token or secret. Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
+
+`GET /github/apps` lists the GitHub Apps available to your org (in preview, the OpenComputer App). `GET /github/installations` lists the App installations visible to OpenComputer — it may be **empty** for orgs using only the OpenComputer App (it surfaces bring-your-own installations once those modes are available).
 
 ## Credentials
 

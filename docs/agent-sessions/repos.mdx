@@ -7,13 +7,14 @@ Use Repos when a session needs private code. Giving an agent a GitHub token,
 authenticated remote, or `gh` session gives it whatever that token can do; hiding the
 token behind a proxy does not narrow that authority.
 
-Repos make GitHub access operation-scoped. A **Repo** records owner/repo plus policy; a
-**Source** pins `ref` and `sha`. OpenComputer checks out the exact commit in a short-lived
-**Git operations sandbox**, copies only files into `/workspace/sources/<name>`, and
-destroys the token. For writes, the agent edits files and calls the
+Repos make GitHub access operation-scoped. A **Repo** is a stable repository handle
+(owner/repo) that resolves to the OpenComputer App; a **Source** pins `ref` and `sha`.
+OpenComputer checks out the exact commit in a short-lived **Git operations sandbox**,
+copies only files into `/workspace/sources/<name>`, and destroys the token. For writes, the
+agent edits files and calls the
 [`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool;
-OpenComputer enforces repo and operation policy, then commits and opens the PR outside the
-agent sandbox.
+OpenComputer commits and opens the PR outside the agent sandbox with a fresh, write-scoped
+token.
 
 <Note>**Preview** — APIs may change before general availability.</Note>
 
@@ -21,10 +22,10 @@ agent sandbox.
 
 | Concept | Role | Boundary |
 | --- | --- | --- |
-| GitHub App | Mints operation-scoped GitHub tokens. | Not repo policy or session refs. |
-| Installation | GitHub account and repo selection. | `byo_broker` can keep this in your backend. |
-| Repo | Owner/repo, optional App pin. | No tokens, private keys, or session refs. |
-| Source | `ref`, `sha`, and local name for one session. | Auth comes from the Repo's App unless inline. |
+| GitHub App | Mints operation-scoped GitHub tokens. | Not session refs. |
+| Installation | GitHub account and repo selection. | The repos the App may work in. |
+| Repo | A stable owner/repo handle. | No tokens, private keys, or session refs. |
+| Source | `ref`, `sha`, and local name for one session. | Auth comes from the OpenComputer App unless inline. |
 | Git operations sandbox | Runs authenticated clone/fetch/publish work. | Separate from the agent; token lives only for one operation. |
 
 <Note>
@@ -33,24 +34,19 @@ GitHub uses GitHub Apps as its auth surface. Other providers can add their own a
 surface while sessions continue to reference repos and sources the same way.
 </Note>
 
-## GitHub App modes
+## The OpenComputer GitHub App
 
-| Mode | Who owns the App key | Who mints tokens | Use when |
-| --- | --- | --- | --- |
-| `oc_app` | OpenComputer | OpenComputer | You want private repo access with no App key handling. |
-| `byo_stored_key` | You; encrypted in OpenComputer | OpenComputer | You want GitHub actions to appear as your own App without hosting a broker. |
-| `byo_broker` | You; kept in your backend | Your broker endpoint | Your backend must own GitHub policy, token minting, and App lifecycle. |
+In preview, the OpenComputer App is the only GitHub App: OpenComputer owns the App key and
+mints a fresh, narrowly-scoped token for each operation, so you get private repo access with
+no App key handling.
 
-In all modes, each operation asks for the minimum GitHub permission it needs. Checkout
-needs read-only contents access; write-capable actions ask for write access only for that
-operation.
+Each operation asks for the minimum GitHub permission it needs. Checkout needs read-only
+contents access; write-capable actions ask for write access only for that operation.
 
-### OpenComputer GitHub App
-
-Install the **OpenComputer** GitHub App and select the repositories agents may work in —
-you choose the repos, and can change the selection or uninstall anytime. No keys to
-manage, no endpoint to host. OpenComputer mints a fresh, narrowly-scoped token for each
-operation, including retries and recovery.
+During preview, OpenComputer installs its GitHub App on your repository for you — contact us
+to enable a repo. Once a repo is enabled, reference it in a session's `sources` (below) and
+OpenComputer resolves the App and mints a token just in time. You do not need to enumerate
+installations to use a repo.
 
 <Warning>
 The App may request write-capable GitHub permissions on the repos you select. OpenComputer
@@ -59,28 +55,14 @@ the minimum permission it needs, such as read-only for checkout and write only f
 publish/comment action.
 </Warning>
 
-Install the OC-owned App from its published GitHub App install URL. OpenComputer does not
-expose an SDK method to mint that URL because the App is owned by OpenComputer. Once it's
-installed on a repo, reference that repo in a session's `sources` (below) — OpenComputer
-resolves the App and mints a token just in time.
+### Bring your own GitHub App (coming later)
 
-You do not need to enumerate installations to use a repo. OpenComputer resolves the App
-automatically when a session starts.
-
-### Bring your own GitHub App
-
-Use a bring-your-own App when you want GitHub audit logs, PRs, comments, and statuses to
-come from your own App instead of OpenComputer's.
-
-`byo_stored_key` means OpenComputer stores your App private key encrypted and mints
-operation-scoped installation tokens on demand. This keeps setup simple, but OpenComputer
-is still the token authority.
-
-`byo_broker` means your backend keeps the App key and owns the full GitHub lifecycle. When
-OpenComputer needs a GitHub operation, it sends a signed request with the repo, operation,
-ref/sha, and requested permissions; your broker returns a short-lived installation token
-or denies the request. OpenComputer may not be able to list installations for `byo_broker`
-Apps, because your backend owns that state.
+<Note>
+**Not yet available.** Bring-your-own GitHub App modes — `byo_stored_key` (OpenComputer
+stores your App key encrypted and mints) and `byo_broker` (your backend owns the App key and
+returns short-lived tokens) — are planned so that GitHub PRs, comments, and statuses can come
+from your own App. In preview, only the OpenComputer App is available.
+</Note>
 
 ### Inline short-lived token
 
@@ -129,8 +111,8 @@ until the first checkout, then purges it. Use this only when a GitHub App is not
 
 ## Register a repo
 
-Once the GitHub App is installed, register a repo — optional: any installed repo can be
-used in a session directly; a Repo adds policy and a stable handle.
+Once the GitHub App is enabled on a repo, register a repo — optional: any enabled repo can
+be used in a session directly; a Repo gives you a stable handle to reference.
 
 <CodeGroup>
 
@@ -138,7 +120,6 @@ used in a session directly; a Repo adds policy and a stable handle.
 const repo = await oc.repos.create({
   owner: "acme",
   repo: "web",
-  // appId: "gha_...", // optional: org default, then OC App
 });
 ```
 
@@ -152,8 +133,8 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 </CodeGroup>
 
 Get-or-create, owner-scoped, idempotent by `(provider, owner, repo)`. **No credential is
-passed** — auth resolves through the GitHub App. Optional `appId` pins a repo to a
-specific App; otherwise OpenComputer uses your org default App, then the OpenComputer App.
+passed** — auth resolves through the OpenComputer App. (Pinning a repo to a specific App is
+coming later.)
 
 ## Use it in a session
 
@@ -238,9 +219,8 @@ just-in-time, write-scoped token. This requires a **configured GitHub App** — 
   repo-scoped tokens just in time and destroys them. None reaches the agent's prompt,
   shell, files, env, the event log, or telemetry. (The one exception is inline-token auth,
   held encrypted only until the first checkout, then purged.)
-- App private keys for the OpenComputer App and stored-key Apps live only in
-  OpenComputer's **control plane**, never in a sandbox. `byo_broker` App keys stay in your
-  backend.
+- The OpenComputer App's private key lives only in OpenComputer's **control plane**, never
+  in a sandbox.
 - Platform-mediated pushes use an `oc/<session>/…` branch namespace — **no
   protected-branch push, no force-push.**
 - Submodules and Git LFS are not part of the checkout contract.
