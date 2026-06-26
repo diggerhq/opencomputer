@@ -110,16 +110,16 @@ function PlanTab() {
   return (
     <div className="max-w-2xl space-y-4">
       <Panel className="p-6">
-        <h2 className="mb-4 text-sm font-semibold">Current plan</h2>
-        <div className="flex items-baseline gap-3">
-          <span className="text-foreground font-mono text-4xl font-semibold">
-            {isPro ? 'Pro' : 'Free'}
-          </span>
-          <span className="text-muted-foreground text-xs">
-            {billing?.maxConcurrentSandboxes ?? 5} concurrent sandboxes
-            {isPro ? ', all tiers' : ', up to 4GB / 1 vCPU'}
-          </span>
+        <h2 className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
+          Current plan
+        </h2>
+        <div className="text-foreground text-2xl font-semibold tracking-tight">
+          {isPro ? 'Pro' : 'Free'}
         </div>
+        <p className="text-muted-foreground mt-1 text-sm">
+          {billing?.maxConcurrentSandboxes ?? 5} concurrent sandboxes ·{' '}
+          {isPro ? 'all tiers' : 'up to 4 GB / 1 vCPU'}
+        </p>
 
         {isPro &&
         billing?.stripeCreditCents != null &&
@@ -133,9 +133,11 @@ function PlanTab() {
         {!isPro && billing != null ? (
           <div className="mt-4 space-y-3">
             {billing.freeCreditsRemainingCents > 0 ? (
-              <p className="text-status-running font-mono text-sm font-semibold">
-                ${(billing.freeCreditsRemainingCents / 100).toFixed(2)} free
-                trial credit remaining
+              <p className="text-status-running text-sm">
+                <span className="font-mono font-semibold">
+                  ${(billing.freeCreditsRemainingCents / 100).toFixed(2)}
+                </span>{' '}
+                free trial credit remaining
               </p>
             ) : (
               <p className="text-status-error flex items-center gap-1.5 text-sm">
