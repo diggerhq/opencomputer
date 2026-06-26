@@ -4,6 +4,7 @@ import {
   CircleSlash,
   Moon,
   Clock,
+  Loader2,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -19,17 +20,34 @@ const TONE_CLASS: Record<Tone, string> = {
   pending: 'bg-status-pending-bg text-status-pending',
 }
 
-type Meta = { tone: Tone; label: string; icon: LucideIcon }
+type Meta = { tone: Tone; label: string; icon: LucideIcon; spin?: boolean }
 
 // Raw API status strings -> lifecycle tone + label + non-color (icon) cue.
 const STATUS: Record<string, Meta> = {
   running: { tone: 'running', label: 'Running', icon: CircleCheck },
   ready: { tone: 'running', label: 'Ready', icon: CircleCheck },
+  active: { tone: 'running', label: 'Active', icon: CircleCheck },
+  success: { tone: 'running', label: 'Success', icon: CircleCheck },
   stopped: { tone: 'stopped', label: 'Stopped', icon: CircleSlash },
+  canceled: { tone: 'stopped', label: 'Canceled', icon: CircleSlash },
+  unknown: { tone: 'stopped', label: 'Unknown', icon: CircleSlash },
   hibernated: { tone: 'hibernated', label: 'Hibernated', icon: Moon },
+  paused: { tone: 'hibernated', label: 'Paused', icon: Moon },
   pending: { tone: 'pending', label: 'Pending', icon: Clock },
+  queued: { tone: 'pending', label: 'Queued', icon: Clock },
+  building: { tone: 'pending', label: 'Building', icon: Loader2, spin: true },
+  processing: {
+    tone: 'pending',
+    label: 'Processing',
+    icon: Loader2,
+    spin: true,
+  },
+  starting: { tone: 'pending', label: 'Starting', icon: Loader2, spin: true },
+  creating: { tone: 'pending', label: 'Creating', icon: Loader2, spin: true },
+  deleting: { tone: 'pending', label: 'Deleting', icon: Loader2, spin: true },
   error: { tone: 'error', label: 'Error', icon: CircleAlert },
   failed: { tone: 'error', label: 'Failed', icon: CircleAlert },
+  degraded: { tone: 'error', label: 'Degraded', icon: CircleAlert },
 }
 
 function titleCase(s: string) {
@@ -60,7 +78,10 @@ export function StatusBadge({
         className,
       )}
     >
-      <Icon className="size-3.5" aria-hidden />
+      <Icon
+        className={cn('size-3.5', meta.spin && 'animate-spin')}
+        aria-hidden
+      />
       {label ?? meta.label}
     </span>
   )
