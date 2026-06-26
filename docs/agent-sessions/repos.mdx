@@ -8,7 +8,8 @@ authenticated remote, or `gh` session gives it whatever that token can do; hidin
 token behind a proxy does not narrow that authority.
 
 Repos make GitHub access operation-scoped. A **Repo** is a stable repository handle
-(owner/repo) that resolves to the OpenComputer App; a **Source** pins `ref` and `sha`.
+(owner/repo) that resolves to your configured GitHub App (the OpenComputer App by default);
+a **Source** pins `ref` and `sha`.
 OpenComputer checks out the exact commit in a short-lived **Git operations sandbox**,
 copies only files into `/workspace/sources/<name>`, and destroys the token. For writes, the
 agent edits files and calls the
@@ -25,7 +26,7 @@ token.
 | GitHub App | Mints operation-scoped GitHub tokens. | Not session refs. |
 | Installation | GitHub account and repo selection. | The repos the App may work in. |
 | Repo | A stable owner/repo handle. | No tokens, private keys, or session refs. |
-| Source | `ref`, `sha`, and local name for one session. | Auth comes from the OpenComputer App unless inline. |
+| Source | `ref`, `sha`, and local name for one session. | Auth comes from your configured GitHub App (OpenComputer App by default) unless inline. |
 | Git operations sandbox | Runs authenticated clone/fetch/publish work. | Separate from the agent; token lives only for one operation. |
 
 <Note>
@@ -59,7 +60,7 @@ sequenceDiagram
     GH-->>CP: Scoped token
     CP->>GitR: Inject token into this box's env only
     GitR->>GH: Clone at the pinned sha
-    GitR->>Store: Write files (no .git, no token)
+    GitR->>Store: Write files (tokenless .git, no remote)
     Note over GitR: Destroyed
     Store->>Hands: Extract into /workspace/sources
 
@@ -92,8 +93,9 @@ sequenceDiagram
 2. The control plane mints a **just-in-time token**: the GitHub App requests an installation
    token scoped to that one repo with read-only contents permission, and it is injected into
    the sandbox's environment only — never `.git/config`, the command line, or any log.
-3. The sandbox clones the exact `sha`, then writes the **files** (no `.git`, no remote, no
-   token) to dedicated object storage.
+3. The sandbox clones the exact `sha`, then writes the **files** to dedicated object storage —
+   with a shallow, **tokenless** `.git` (the token rode in via an in-memory header, never
+   `.git/config`, and the remote is removed), so no credential travels with the bytes.
 4. The sandbox is destroyed; the token dies with it.
 5. The **hands** sandbox extracts those bytes into `/workspace/sources/<name>`.
 
@@ -110,36 +112,67 @@ sequenceDiagram
 The token is minted per operation, scoped to a single repo, lives only inside a box that
 does nothing but Git, and is gone before the next turn.
 
-## The OpenComputer GitHub App
+## Connecting GitHub
 
-In preview, the OpenComputer App is the only GitHub App: OpenComputer owns the App key and
-mints a fresh, narrowly-scoped token for each operation, so you get private repo access with
-no App key handling.
+Pick one. Either way, OpenComputer mints a fresh, repo-scoped token **per operation** (read-only
+for checkout, write only to publish) — the agent never holds one.
 
-Each operation asks for the minimum GitHub permission it needs. Checkout needs read-only
-contents access; write-capable actions ask for write access only for that operation.
+<CardGroup cols={2}>
+  <Card title="Install the OpenComputer App" icon="github" href="https://github.com/apps/opencomputerdev/installations/new">
+    Zero setup. Choose the repos and go — OpenComputer owns the key and mints per operation.
+  </Card>
+  <Card title="Create your own App" icon="wand-magic-sparkles" href="#bring-your-own-app">
+    GitHub creates it in a few clicks; OpenComputer federates it, so PRs come from your identity.
+  </Card>
+</CardGroup>
 
-**Install the [OpenComputer GitHub App](https://github.com/apps/opencomputerdev/installations/new)**
-on the repositories you want OpenComputer to work with — you choose the exact repos, so it
-never needs org-wide access. Once it's installed on a repo, reference that repo in a session's
-`sources` (below) and OpenComputer resolves the App and mints a token just in time. You do not
-need to enumerate installations to use a repo.
+### Bring your own App
 
-<Warning>
-The App may request write-capable GitHub permissions on the repos you select. OpenComputer
-does **not** hand that broad authority to the agent: each operation gets a fresh token with
-the minimum permission it needs, such as read-only for checkout and write only for a
-publish/comment action.
-</Warning>
+Use your own GitHub App so PRs, comments, and statuses come from **your** identity. OpenComputer
+stores the key encrypted and signs the same per-operation tokens with it.
 
-### Bring your own GitHub App (coming later)
+**Create one** — `createManifestUrl` returns a link; open it and GitHub walks you through
+creating the App, then OpenComputer captures the key and registers it. (Creating an App is a
+GitHub-UI flow, so it's a link to open, not a pure API call.)
 
-<Note>
-**Not yet available.** Bring-your-own GitHub App modes — `byo_stored_key` (OpenComputer
-stores your App key encrypted and mints) and `byo_broker` (your backend owns the App key and
-returns short-lived tokens) — are planned so that GitHub PRs, comments, and statuses can come
-from your own App. In preview, only the OpenComputer App is available.
-</Note>
+<CodeGroup>
+
+```ts TypeScript SDK
+const { startUrl } = await oc.github.apps.createManifestUrl({ name: "Your Agents" });
+// open startUrl → click "Create" on GitHub → done
+```
+
+```http REST API
+POST /v3/github/apps/manifest
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+
+{ "name": "Your Agents" }
+// → { "start_url": "…", "expires_at": "…" }   — open start_url in a browser
+```
+
+</CodeGroup>
+
+**Already have one** — register it with its App id + private key:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+await oc.github.apps.register({ mode: "byo_stored_key", githubAppId: "123456", privateKey: pem });
+```
+
+```http REST API
+POST /v3/github/apps
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+
+{ "mode": "byo_stored_key", "github_app_id": "123456", "private_key": "-----BEGIN…" }
+```
+
+</CodeGroup>
+
+Then **install your App on the repos** and reference them in `sources` as usual. List / rotate /
+remove with `oc.github.apps.list()` · `update(id, …)` · `delete(id)`. Building this into your own
+product with your own redirect? Use `createManifest` + `completeManifest`. (`byo_broker` can be
+registered but isn't used for minting yet.)
 
 ### Inline short-lived token
 
@@ -211,8 +244,8 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 </CodeGroup>
 
 Get-or-create, owner-scoped, idempotent by `(provider, owner, repo)`. **No credential is
-passed** — auth resolves through the OpenComputer App. (Pinning a repo to a specific App is
-coming later.)
+passed** — auth resolves through your configured GitHub App (the OpenComputer App by default).
+(Pinning a repo to a specific App is coming later.)
 
 ## Use it in a session
 
