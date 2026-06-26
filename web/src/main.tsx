@@ -5,6 +5,7 @@ import { BrowserRouter } from 'react-router-dom'
 import posthog from 'posthog-js'
 import { PostHogProvider } from '@posthog/react'
 import App from './App'
+import { Toaster } from './components/ui/sonner'
 import './index.css'
 import './styles/theme.css'
 
@@ -33,6 +34,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <App />
+          <Toaster theme="light" richColors closeButton />
         </BrowserRouter>
       </QueryClientProvider>
     </PostHogProvider>
