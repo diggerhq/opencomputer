@@ -24,20 +24,23 @@
 // is different — see design doc).
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { streamSessionLogs, type LogEvent } from '../api/client'
+import { X } from 'lucide-react'
+import { streamSessionLogs, type LogEvent } from '@/api/client'
 
-const visibleCap = 3000        // hard cap on retained events
-const debounceMs = 200         // search-box debounce
-const nearBottomPx = 40        // "auto-scroll if within this many px of bottom"
+const visibleCap = 3000 // hard cap on retained events
+const debounceMs = 200 // search-box debounce
+const nearBottomPx = 40 // "auto-scroll if within this many px of bottom"
 
 // One colour per source. Distinct hues across the four; no overlap
 // with the green used for success-EOF rows (✓ exited 0) and the rose
 // used for failure-EOF rows.
+// Dark-surface palette: one distinct hue per source, no overlap with the
+// emerald (✓ exited 0) / rose (✗) used for EOF rows.
 const sources: { value: LogEvent['source']; label: string; color: string }[] = [
-  { value: 'exec_stdout', label: 'stdout',  color: 'var(--text-secondary)' },
-  { value: 'exec_stderr', label: 'stderr',  color: 'var(--accent-rose)' },
-  { value: 'var_log',     label: 'var/log', color: '#f59e0b' /* amber — distinct from emerald used for ✓ exited */ },
-  { value: 'agent',       label: 'agent',   color: 'var(--accent-violet)' },
+  { value: 'exec_stdout', label: 'stdout', color: '#a1a1aa' }, // zinc-400
+  { value: 'exec_stderr', label: 'stderr', color: '#fb7185' }, // rose-400
+  { value: 'var_log', label: 'var/log', color: '#fbbf24' }, // amber-400
+  { value: 'agent', label: 'agent', color: '#38bdf8' }, // sky-400
 ]
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -59,9 +62,13 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
   const [paused, setPaused] = useState(false)
   // Subtractive filter: every source is shown by default. Clicking a
   // chip *hides* that source; clicking again brings it back.
-  const [hiddenSources, setHiddenSources] = useState<Set<LogEvent['source']>>(new Set())
+  const [hiddenSources, setHiddenSources] = useState<Set<LogEvent['source']>>(
+    new Set(),
+  )
   const [events, setEvents] = useState<LogEvent[]>([])
-  const [connState, setConnState] = useState<'connecting' | 'open' | 'error' | 'closed'>('connecting')
+  const [connState, setConnState] = useState<
+    'connecting' | 'open' | 'error' | 'closed'
+  >('connecting')
 
   const debouncedQuery = useDebouncedValue(query, debounceMs)
 
@@ -77,6 +84,9 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
   // wants to search beyond the current buffer they can adjust the
   // since= URL param later.
   useEffect(() => {
+    // Reset + (re)subscribe when the sandbox changes. The synchronous resets
+    // are intentional here (clear the stream before opening a new EventSource).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setEvents([])
     pausedBufRef.current = []
     stickToBottomRef.current = true
@@ -102,7 +112,10 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
         return
       }
       setEvents((prev) => {
-        const next = prev.length >= visibleCap ? prev.slice(prev.length - visibleCap + 1) : prev.slice()
+        const next =
+          prev.length >= visibleCap
+            ? prev.slice(prev.length - visibleCap + 1)
+            : prev.slice()
         next.push(ev)
         return next
       })
@@ -122,7 +135,9 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
       pausedBufRef.current = []
       setEvents((prev) => {
         const merged = prev.concat(buf)
-        return merged.length > visibleCap ? merged.slice(merged.length - visibleCap) : merged
+        return merged.length > visibleCap
+          ? merged.slice(merged.length - visibleCap)
+          : merged
       })
     }
   }, [paused])
@@ -186,99 +201,53 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
   }, [events, hiddenSources, debouncedQuery])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: 480 }}>
+    <div className="bg-terminal border-code-border flex h-[480px] flex-col overflow-hidden rounded-lg border">
       {/* Header */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
-        marginBottom: 12,
-        flexWrap: 'wrap',
-      }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+      <div className="border-code-border flex flex-wrap items-center gap-3 border-b px-3 py-2.5">
+        <span className="text-code-muted text-xs font-medium tracking-wide uppercase">
           Logs
-        </div>
-
+        </span>
         <ConnectionDot state={connState} />
 
-        <div style={{ flex: 1, minWidth: 160, position: 'relative' }}>
+        <div className="relative min-w-40 flex-1">
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search…"
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              background: 'var(--bg-deep)',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--radius-sm)',
-              color: 'var(--text-primary)',
-              fontSize: 13,
-              padding: '6px 28px 6px 10px',
-              fontFamily: 'inherit',
-            }}
+            className="border-code-border text-code-foreground placeholder:text-code-muted w-full rounded-md border bg-black/20 px-2.5 py-1.5 pr-7 text-[13px] outline-none focus-visible:border-zinc-500"
           />
-          {query && (
+          {query ? (
             <button
               type="button"
               onClick={() => setQuery('')}
               aria-label="Clear search"
-              title="Clear"
-              style={{
-                position: 'absolute',
-                right: 6,
-                top: '50%',
-                transform: 'translateY(-50%)',
-                background: 'none',
-                border: 'none',
-                padding: 4,
-                cursor: 'pointer',
-                color: 'var(--text-tertiary)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                lineHeight: 0,
-                opacity: 0.7,
-                transition: 'opacity 0.1s',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
-              onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.7')}
+              className="text-code-muted hover:text-code-foreground absolute top-1/2 right-1.5 -translate-y-1/2"
             >
-              <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-                <line x1="2" y1="2" x2="10" y2="10" />
-                <line x1="10" y1="2" x2="2" y2="10" />
-              </svg>
+              <X className="size-3.5" />
             </button>
-          )}
+          ) : null}
         </div>
 
-        <div style={{ display: 'flex', gap: 4 }}>
+        <div className="flex gap-1">
           {sources.map((src) => {
-            // Subtractive filter: chip ON = source visible (the
-            // default); chip OFF = source hidden. Click toggles.
-            // ON state uses a subtle ~18% tint of the source color
-            // rather than a full fill — keeps the four chips legible
-            // when all four are active by default.
+            // Subtractive filter: chip ON = source visible (default); OFF =
+            // hidden. ON uses a subtle tint of the (data-driven) source color.
             const isVisible = !hiddenSources.has(src.value)
-            const tinted = `color-mix(in srgb, ${src.color} 18%, transparent)`
             return (
               <button
                 key={src.value}
                 onClick={() => toggleSource(src.value)}
                 title={isVisible ? `Hide ${src.label}` : `Show ${src.label}`}
+                className="rounded-md border px-2 py-0.5 font-mono text-[11px] transition-opacity"
                 style={{
-                  background: isVisible ? tinted : 'transparent',
                   color: src.color,
-                  border: `1px solid ${src.color}`,
-                  borderRadius: 'var(--radius-sm)',
-                  fontSize: 11,
+                  borderColor: src.color,
+                  background: isVisible
+                    ? `color-mix(in srgb, ${src.color} 16%, transparent)`
+                    : 'transparent',
+                  opacity: isVisible ? 1 : 0.4,
                   fontWeight: isVisible ? 600 : 400,
-                  opacity: isVisible ? 1 : 0.45,
-                  padding: '3px 8px',
-                  cursor: 'pointer',
-                  fontFamily: 'var(--font-mono)',
-                  transition: 'background 0.1s, opacity 0.1s',
                 }}
               >
                 {src.label}
@@ -289,113 +258,87 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
 
         <button
           onClick={() => setPaused((p) => !p)}
-          className="btn-ghost"
-          title={paused ? 'Resume live tail' : 'Pause display (stream keeps running)'}
+          className="text-code-muted hover:text-code-foreground text-xs transition-colors"
+          title={
+            paused ? 'Resume live tail' : 'Pause display (stream keeps running)'
+          }
         >
           {paused ? 'Resume' : 'Pause'}
-          {paused && pausedBufRef.current.length > 0 && (
-            <span style={{ marginLeft: 6, color: 'var(--text-tertiary)' }}>
-              ({pausedBufRef.current.length} buffered)
-            </span>
-          )}
         </button>
 
-        {onClose && (
-          <button onClick={onClose} className="btn-ghost" title="Close logs">
+        {onClose ? (
+          <button
+            onClick={onClose}
+            className="text-code-muted hover:text-code-foreground text-xs transition-colors"
+          >
             Close
           </button>
-        )}
+        ) : null}
       </div>
 
-      {/* Stream view */}
+      {/* Stream */}
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        style={{
-          flex: 1,
-          background: 'var(--bg-deep)',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: 'var(--radius-sm)',
-          padding: '8px 0',
-          overflowY: 'auto',
-          fontFamily: 'var(--font-mono)',
-          fontSize: 12,
-          lineHeight: 1.45,
-        }}
+        className="flex-1 overflow-y-auto py-2 font-mono text-xs leading-relaxed"
       >
-        {visible.length === 0 && connState === 'open' && (
-          <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-            No logs yet. Run a command, write to <code>/var/log/...</code>, or wait for system activity.
+        {visible.length === 0 && connState === 'open' ? (
+          <div className="text-code-muted px-4 py-5 text-center">
+            No logs yet. Run a command, write to <code>/var/log/...</code>, or
+            wait for system activity.
           </div>
-        )}
-        {visible.length === 0 && connState === 'error' && (
-          <div style={{ padding: '20px', textAlign: 'center', color: 'var(--accent-rose)' }}>
-            Couldn't connect to log stream. Logs may not be configured for this deployment.
+        ) : null}
+        {visible.length === 0 && connState === 'error' ? (
+          <div className="px-4 py-5 text-center text-rose-400">
+            Couldn&apos;t connect to log stream. Logs may not be configured for
+            this deployment.
           </div>
-        )}
+        ) : null}
         {visible.map((ev, i) => (
           <Row key={i} ev={ev} />
         ))}
       </div>
 
-      {/* Footer: cap notice */}
-      {visible.length >= visibleCap && (
-        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-tertiary)' }}>
+      {visible.length >= visibleCap ? (
+        <div className="border-code-border text-code-muted border-t px-4 py-1.5 text-[11px]">
           Showing latest {visibleCap} events; older events scrolled off.
         </div>
-      )}
+      ) : null}
     </div>
   )
 }
 
-function ConnectionDot({ state }: { state: 'connecting' | 'open' | 'error' | 'closed' }) {
+function ConnectionDot({
+  state,
+}: {
+  state: 'connecting' | 'open' | 'error' | 'closed'
+}) {
   const color =
-    state === 'open' ? 'var(--accent-emerald, #10b981)' :
-    state === 'error' ? 'var(--accent-rose)' :
-    'var(--text-tertiary)'
+    state === 'open' ? '#34d399' : state === 'error' ? '#fb7185' : '#71717a'
   return (
     <span
       title={`Connection: ${state}`}
-      style={{
-        display: 'inline-block',
-        width: 8,
-        height: 8,
-        borderRadius: '50%',
-        background: color,
-      }}
+      className="inline-block size-2 shrink-0 rounded-full"
+      style={{ background: color }}
     />
   )
 }
 
 function Row({ ev }: { ev: LogEvent }) {
   const sourceMeta = sources.find((s) => s.value === ev.source)
-  const sourceColor = sourceMeta?.color || 'var(--text-tertiary)'
+  const sourceColor = sourceMeta?.color || '#71717a'
   const time = formatTime(ev._time)
 
-  // 3px left border in the source color so the chip palette and the
-  // row palette obviously share a key. Padding matches the
-  // non-bordered baseline so rows of different sources align.
-  const baseStyle: React.CSSProperties = {
-    display: 'flex',
-    gap: 10,
-    padding: '1px 14px',
-    borderLeft: `3px solid ${sourceColor}`,
-    paddingLeft: 11, // 14 - 3 to keep content alignment
-  }
-
-  // Exec EOF marker: line is empty + exit_code is present. Render as a
-  // synthetic system row so users can see "command X exited 0/1" inline.
+  // Exec EOF marker: empty line + exit_code present → a synthetic "command X
+  // exited N" row.
   if (ev.line === '' && ev.exit_code !== undefined) {
     const ok = ev.exit_code === 0
     return (
-      <div style={{
-        ...baseStyle,
-        padding: '2px 14px 2px 11px',
-        color: ok ? 'var(--accent-emerald, #10b981)' : 'var(--accent-rose)',
-        fontStyle: 'italic',
-        opacity: 0.85,
-      }}>
-        <span style={{ color: 'var(--text-tertiary)', fontStyle: 'normal' }}>{time}</span>
+      <div
+        className="flex gap-2.5 px-4 py-0.5 italic"
+        style={{ color: ok ? '#34d399' : '#fb7185' }}
+      >
+        <span className="text-code-muted not-italic">{time}</span>
         <span>
           {ok ? '✓' : '✗'} {ev.command || 'command'} exited {ev.exit_code}
         </span>
@@ -404,26 +347,15 @@ function Row({ ev }: { ev: LogEvent }) {
   }
 
   return (
-    <div style={{
-      ...baseStyle,
-      whiteSpace: 'pre-wrap',
-      wordBreak: 'break-word',
-    }}>
-      <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>{time}</span>
+    <div className="flex gap-2.5 px-4 py-px break-words whitespace-pre-wrap">
+      <span className="text-code-muted shrink-0">{time}</span>
       <span
-        style={{
-          color: sourceColor,
-          flexShrink: 0,
-          minWidth: 56,
-          fontSize: 11,
-          paddingTop: 1,
-        }}
+        className="w-14 shrink-0 text-[11px]"
+        style={{ color: sourceColor }}
       >
         {sourceMeta?.label || ev.source}
       </span>
-      <span style={{ color: 'var(--text-primary)', flex: 1 }}>
-        {ev.line}
-      </span>
+      <span className="text-code-foreground flex-1">{ev.line}</span>
     </div>
   )
 }
