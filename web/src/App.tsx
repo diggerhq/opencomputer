@@ -1,7 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './hooks/useAuth'
 import ProtectedRoute from './components/ProtectedRoute'
-import Layout from './components/Layout'
+import AppShell from './components/app-shell'
 import Dashboard from './pages/Dashboard'
 import Sessions from './pages/Sessions'
 import APIKeys from './pages/APIKeys'
@@ -16,7 +16,7 @@ export default function App() {
     <AuthProvider>
       <Routes>
         <Route element={<ProtectedRoute />}>
-          <Route element={<Layout />}>
+          <Route element={<AppShell />}>
             <Route index element={<Dashboard />} />
             <Route path="sessions" element={<Sessions />} />
             <Route path="sessions/:sandboxId" element={<SessionDetail />} />
