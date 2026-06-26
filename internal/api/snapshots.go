@@ -14,15 +14,19 @@ import (
 	"github.com/opensandbox/opensandbox/internal/db"
 )
 
-// createSnapshot handles POST /api/snapshots — creates a pre-built named snapshot from a declarative image.
-func (s *Server) createSnapshot(c echo.Context) error {
+// parseSnapshotCreate validates the shared POST body for the snapshot create
+// endpoints (auth, name, image, name-uniqueness). On any failure it writes the
+// error response and returns ok=false; the caller should then `return nil`.
+func (s *Server) parseSnapshotCreate(c echo.Context) (orgID uuid.UUID, name string, image json.RawMessage, ok bool) {
 	if s.store == nil {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+		_ = c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+		return uuid.Nil, "", nil, false
 	}
 
-	orgID, ok := auth.GetOrgID(c)
-	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	oid, found := auth.GetOrgID(c)
+	if !found {
+		_ = c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+		return uuid.Nil, "", nil, false
 	}
 
 	var req struct {
@@ -30,35 +34,68 @@ func (s *Server) createSnapshot(c echo.Context) error {
 		Image json.RawMessage `json:"image"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+		_ = c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+		return uuid.Nil, "", nil, false
 	}
-
 	if req.Name == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
+		_ = c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
+		return uuid.Nil, "", nil, false
 	}
 	if len(req.Image) == 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "image is required"})
+		_ = c.JSON(http.StatusBadRequest, map[string]string{"error": "image is required"})
+		return uuid.Nil, "", nil, false
+	}
+
+	// Check if name is already taken
+	existing, err := s.store.GetImageCacheByName(c.Request().Context(), oid, req.Name)
+	if err == nil && existing != nil {
+		_ = c.JSON(http.StatusConflict, map[string]string{"error": "snapshot name already exists"})
+		return uuid.Nil, "", nil, false
+	}
+
+	return oid, req.Name, req.Image, true
+}
+
+// createSnapshot handles POST /api/snapshots — creates a pre-built named
+// snapshot from a declarative image.
+//
+// Three shapes, picked by the request:
+//   - Accept: text/event-stream → SSE build-log stream (unchanged).
+//   - ?async=1 → non-blocking: returns a "building" row immediately and builds
+//     in the background; the caller polls GET /snapshots/:name until
+//     ready|failed. Newer clients use this to avoid a 524 on a long build.
+//   - otherwise → synchronous build that blocks until the snapshot is ready,
+//     preserving the original contract for SDK versions that predate the async
+//     flow.
+//
+// async is a query param rather than a /snapshots/async subpath because the edge
+// router treats any /api/snapshots/<seg> as a snapshot named <seg>.
+func (s *Server) createSnapshot(c echo.Context) error {
+	orgID, name, image, ok := s.parseSnapshotCreate(c)
+	if !ok {
+		return nil
 	}
 
 	ctx := c.Request().Context()
 
-	// Check if name is already taken
-	existing, err := s.store.GetImageCacheByName(ctx, orgID, req.Name)
-	if err == nil && existing != nil {
-		return c.JSON(http.StatusConflict, map[string]string{"error": "snapshot name already exists"})
-	}
-
 	// SSE streaming path
 	if c.Request().Header.Get("Accept") == "text/event-stream" {
-		return s.createSnapshotWithSSE(c, ctx, orgID, req.Name, req.Image)
+		return s.createSnapshotWithSSE(c, ctx, orgID, name, image)
 	}
 
-	// Non-streaming path: build asynchronously. Pre-create the named snapshot
-	// row as "building" and run the (potentially multi-minute) build in the
-	// background, returning immediately. Callers poll GET /snapshots/:name until
-	// status is "ready" or "failed". This keeps the request sub-second so the
-	// edge proxy never 524s on a long build.
-	return s.createSnapshotAsync(c, orgID, req.Name, req.Image)
+	// Async (non-blocking) opt-in.
+	if c.QueryParam("async") == "1" {
+		return s.createSnapshotAsync(c, orgID, name, image)
+	}
+
+	// Non-streaming path: synchronous build (legacy contract).
+	ic, err := s.createSnapshotCore(ctx, orgID, name, image, nil)
+	if err != nil {
+		log.Printf("snapshot: build failed for %q: %v", name, err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	log.Printf("snapshot: created %q", name)
+	return c.JSON(http.StatusCreated, ic)
 }
 
 // createSnapshotAsync pre-creates a named "building" snapshot row, dispatches

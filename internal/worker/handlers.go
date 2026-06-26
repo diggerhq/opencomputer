@@ -285,6 +285,13 @@ type asyncExec struct {
 	createMs  int64 // session create once the box was up
 }
 
+// execRun is the synchronous one-shot exec endpoint (POST /exec/run). It holds
+// the connection for the command's duration and returns {exitCode,stdout,stderr}
+// directly. Kept unchanged for SDK versions that predate the async flow; newer
+// SDKs POST /exec/run-async instead (see execRunAsync). For timeout>30 it streams
+// keepalive whitespace so the edge doesn't 524 on a long command — the original
+// band-aid — but a cold-start wake is still held on the connection here, which is
+// exactly why the async path exists.
 func (s *HTTPServer) execRun(c echo.Context) error {
 	id := c.Param("id")
 
@@ -296,11 +303,92 @@ func (s *HTTPServer) execRun(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "cmd is required"})
 	}
 
-	// Async path: register a handle synchronously and return immediately, then
-	// do the wake + session-create + command run in a background goroutine.
-	// Because the connection is never held — not for the command, and crucially
-	// not for a slow auto-wake/restore — the edge never 524s (nor 502s on the
-	// CP's 60s response-header timeout). The caller polls GET /exec/:execId/result.
+	// For long-running commands (timeout > 30s), send response headers
+	// immediately and write periodic keepalive whitespace. This prevents
+	// Cloudflare (and other reverse proxies) from timing out:
+	//   - 524 first-byte timeout (~100s): solved by sending headers early
+	//   - Body idle timeout (~600s): solved by periodic space bytes
+	// JSON parsers ignore leading whitespace, so the final JSON body
+	// is parsed cleanly regardless of how many spaces precede it.
+	earlyFlush := req.Timeout > 30
+	var keepaliveDone chan struct{}
+	if earlyFlush {
+		c.Response().Header().Set("Content-Type", "application/json")
+		c.Response().WriteHeader(http.StatusOK)
+		flusher, _ := c.Response().Writer.(http.Flusher)
+		if flusher != nil {
+			flusher.Flush()
+		}
+
+		keepaliveDone = make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					c.Response().Write([]byte(" "))
+					if flusher != nil {
+						flusher.Flush()
+					}
+				case <-keepaliveDone:
+					return
+				}
+			}
+		}()
+	}
+
+	var result *types.ProcessResult
+
+	routeOp := func(ctx context.Context) error {
+		var err error
+		result, err = s.manager.Exec(ctx, id, req)
+		return err
+	}
+
+	var execErr error
+	if s.router != nil {
+		execErr = s.router.Route(c.Request().Context(), id, "execRun", routeOp)
+	} else {
+		execErr = routeOp(c.Request().Context())
+	}
+
+	if keepaliveDone != nil {
+		close(keepaliveDone)
+	}
+
+	if execErr != nil {
+		if earlyFlush {
+			return json.NewEncoder(c.Response()).Encode(map[string]string{"error": execErr.Error()})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": execErr.Error()})
+	}
+
+	if earlyFlush {
+		return json.NewEncoder(c.Response()).Encode(result)
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+// execRunAsync is the async exec endpoint (POST /exec/run-async). It registers a
+// handle synchronously and returns immediately, then does the wake +
+// session-create + command run in a background goroutine. Because the connection
+// is never held — not for the command, and crucially not for a slow
+// auto-wake/restore — the edge never 524s (nor 502s on the CP's 60s
+// response-header timeout). The caller polls GET /exec/:execId/result.
+func (s *HTTPServer) execRunAsync(c echo.Context) error {
+	id := c.Param("id")
+
+	var req types.ProcessConfig
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+	}
+	if req.Command == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "cmd is required"})
+	}
+
+	// Register a handle synchronously and return immediately, then do the wake +
+	// session-create + command run in a background goroutine.
 	if s.execSessionManager != nil {
 		execID := uuid.NewString()[:8]
 		ae := &asyncExec{state: asyncExecStarting, startedAt: time.Now()}

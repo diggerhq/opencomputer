@@ -279,12 +279,14 @@ func (p *SandboxAPIProxy) ProxyHandler(c echo.Context) error {
 		}
 		// File ops are synchronous (the caller wants the bytes/result now) so
 		// handle+poll doesn't apply, but a cold restore can exceed Cloudflare's
-		// 100s → 524 (or the 90s WakeSandbox cap → 502). Instead of restoring
-		// on the connection, kick the wake to the background and return 503
-		// "waking" + Retry-After; the SDK retries and the warm retry proxies
-		// normally (the restore flips the DB status to running). Wake is deduped
-		// across control planes via a Redis lock so we never double-restore.
-		if isFilesPath(c) {
+		// 100s → 524 (or the 90s WakeSandbox cap → 502). For clients that opt in
+		// (X-OSB-Async-Wake — the newer SDK, which retries on 503), kick the wake
+		// to the background and return 503 "waking" + Retry-After; the warm retry
+		// proxies normally. Older SDKs don't send the header and don't retry, so
+		// they fall through to the inline synchronous wake below (their original
+		// behavior). Wake is deduped across control planes via a Redis lock so we
+		// never double-restore.
+		if isFilesPath(c) && wantsAsyncWake(c) {
 			p.startBackgroundWake(sandboxID)
 			c.Response().Header().Set("Retry-After", "1")
 			return c.JSON(http.StatusServiceUnavailable, map[string]any{
@@ -332,8 +334,16 @@ func (p *SandboxAPIProxy) ProxyHandler(c echo.Context) error {
 func isAsyncExecPath(c echo.Context) bool {
 	p := c.Request().URL.Path
 	m := c.Request().Method
-	return (m == http.MethodPost && strings.HasSuffix(p, "/exec/run")) ||
+	return (m == http.MethodPost && strings.HasSuffix(p, "/exec/run-async")) ||
 		(m == http.MethodGet && strings.HasSuffix(p, "/result"))
+}
+
+// wantsAsyncWake reports whether the client opted into the background-wake +
+// 503-retry flow for an otherwise-synchronous op (file ops). Newer SDKs send the
+// X-OSB-Async-Wake header and retry on 503 {waking}; older SDKs don't, so they
+// keep the inline synchronous wake below — preserving their original behavior.
+func wantsAsyncWake(c echo.Context) bool {
+	return c.Request().Header.Get("X-OSB-Async-Wake") == "1"
 }
 
 // isFilesPath reports whether the request targets the filesystem API

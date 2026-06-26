@@ -14,8 +14,14 @@ export class Filesystem {
   ) {}
 
   private get headers(): Record<string, string> {
-    if (this.token) return { "Authorization": `Bearer ${this.token}` };
-    return this.apiKey ? { "X-API-Key": this.apiKey } : {};
+    // X-OSB-Async-Wake opts into the control plane's background-wake + 503
+    // {waking} flow on a cold sandbox (wfetch retries it), instead of the inline
+    // synchronous wake older SDKs get — which can hold the connection past the
+    // edge's ~100s and 524. Harmless when the box is already warm.
+    const h: Record<string, string> = { "X-OSB-Async-Wake": "1" };
+    if (this.token) h["Authorization"] = `Bearer ${this.token}`;
+    else if (this.apiKey) h["X-API-Key"] = this.apiKey;
+    return h;
   }
 
   // wfetch transparently rides out a cold-start wake. If the sandbox is

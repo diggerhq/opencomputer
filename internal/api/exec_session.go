@@ -233,14 +233,9 @@ func (s *Server) execRun(c echo.Context) error {
 		return s.execRunRemote(c, id, req)
 	}
 
-	// Async path (QEMU worker): run the command as a background exec session
-	// and return a handle immediately. The caller polls GET /exec/:execId/result
-	// for completion. Every HTTP request stays sub-second, so the edge proxy
-	// never 524s no matter how long the command runs.
-	if s.execSessionManager != nil {
-		return s.execRunAsync(c, id, req)
-	}
-
+	// POST /exec/run is the synchronous one-shot endpoint, kept for SDK versions
+	// that predate the async flow. Newer SDKs POST /exec/run-async, which returns
+	// a handle immediately and is polled via /result (see execRunAsyncRoute).
 	if s.manager == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
@@ -268,6 +263,26 @@ func (s *Server) execRun(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, result)
+}
+
+// execRunAsyncRoute handles POST /exec/run-async — the async exec entrypoint.
+// It binds the request and dispatches a background exec session, returning a
+// handle immediately. Newer SDKs poll GET /exec/:execId/result for completion;
+// POST /exec/run stays synchronous for older SDKs.
+func (s *Server) execRunAsyncRoute(c echo.Context) error {
+	id := c.Param("id")
+
+	var req types.ProcessConfig
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+	}
+	if req.Command == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "cmd is required"})
+	}
+	if s.execSessionManager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+	return s.execRunAsync(c, id, req)
 }
 
 // execRunRemote routes an exec/run request to the worker via gRPC.

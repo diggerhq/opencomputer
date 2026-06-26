@@ -10,7 +10,9 @@ set -uo pipefail
 : "${OSB_API_KEY:?set OSB_API_KEY}"
 : "${OSB_BASE:?set OSB_BASE (e.g. https://app2.opensandbox.ai)}"
 API="$OSB_BASE/api"
-H=(-H "X-API-Key: $OSB_API_KEY" -H "User-Agent: curl/8.0" -H "Content-Type: application/json")
+# X-OSB-Async-Wake opts into the 503-waking cold-start flow for file ops (the
+# newer SDK sends this; older SDKs get the inline synchronous wake instead).
+H=(-H "X-API-Key: $OSB_API_KEY" -H "User-Agent: curl/8.0" -H "Content-Type: application/json" -H "X-OSB-Async-Wake: 1")
 PASS=0; FAIL=0
 ok(){ echo "  PASS: $1"; PASS=$((PASS+1)); }
 no(){ echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
@@ -21,7 +23,7 @@ hibernate(){ curl -s "${H[@]}" -X POST "$API/sandboxes/$1/hibernate" >/dev/null
 run_and_wait(){ # sid cmd -> "exit|stdout|post_secs"
   local rj; rj=$(curl -s -w '\n%{time_total}' "${H[@]}" -X POST \
     -d "$(python3 -c 'import json,sys;print(json.dumps({"cmd":"sh","args":["-c",sys.argv[1]]}))' "$2")" \
-    "$API/sandboxes/$1/exec/run")
+    "$API/sandboxes/$1/exec/run-async")
   local ps eid; ps=$(echo "$rj"|tail -1); eid=$(echo "$rj"|head -1|python3 -c 'import sys,json;print(json.load(sys.stdin).get("execId",""))')
   local r; for _ in $(seq 1 300); do r=$(curl -s "${H[@]}" "$API/sandboxes/$1/exec/$eid/result")
     [ "$(echo "$r"|python3 -c 'import sys,json;print(json.load(sys.stdin)["running"])')" = False ] && break; sleep 0.5; done
@@ -41,7 +43,7 @@ IFS='|' read -r ec so ps <<<"$(run_and_wait "$SID" 'echo e>&2; exit 7')"; [ "$ec
 
 echo "=== exec/run: cold (hibernated) returns immediately ==="
 hibernate "$SID"
-T=$(curl -s -o /tmp/c_run -w '%{time_total}' "${H[@]}" -X POST -d '{"cmd":"sh","args":["-c","echo woke"]}' "$API/sandboxes/$SID/exec/run")
+T=$(curl -s -o /tmp/c_run -w '%{time_total}' "${H[@]}" -X POST -d '{"cmd":"sh","args":["-c","echo woke"]}' "$API/sandboxes/$SID/exec/run-async")
 echo "  cold POST=${T}s"
 python3 -c "import sys;sys.exit(0 if float('$T')<5 else 1)" && ok "cold exec POST <5s" || no "cold exec POST ${T}s"
 
@@ -59,7 +61,7 @@ for _ in $(seq 1 60); do B=$(curl -s -w '|%{http_code}' "${H[@]}" "$API/sandboxe
 echo "=== snapshots: non-SSE build is async (building -> ready) ==="
 TS=$(date +%s)
 B=$(curl -s -o /tmp/c_s -w '%{time_total}' "${H[@]}" -X POST \
-  -d "{\"name\":\"confirm-$TS\",\"image\":{\"base\":\"ubuntu\",\"steps\":[{\"type\":\"run\",\"args\":{\"commands\":[\"echo hi\"]}}]}}" "$API/snapshots")
+  -d "{\"name\":\"confirm-$TS\",\"image\":{\"base\":\"ubuntu\",\"steps\":[{\"type\":\"run\",\"args\":{\"commands\":[\"echo hi\"]}}]}}" "$API/snapshots?async=1")
 echo "  POST=${B}s status=$(python3 -c 'import json;print(json.load(open("/tmp/c_s")).get("status"))')"
 python3 -c "import sys;sys.exit(0 if float('$B')<5 else 1)" && ok "snapshot POST <5s" || no "snapshot POST ${B}s"
 for _ in $(seq 1 120); do ST=$(curl -s "${H[@]}" "$API/snapshots/confirm-$TS" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("status"))' 2>/dev/null)

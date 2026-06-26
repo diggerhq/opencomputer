@@ -347,7 +347,7 @@ export class Exec {
   /**
    * Run a command and wait for it to finish, returning its result.
    *
-   * Transparently async: POSTs to /exec/run (which returns a handle
+   * Transparently async: POSTs to /exec/run-async (which returns a handle
    * immediately) then polls /exec/:execId/result until the command exits. Each
    * HTTP request is sub-second, so there is no proxy 524 regardless of how long
    * the command runs, and a dropped poll simply retries — the result persists
@@ -367,7 +367,7 @@ export class Exec {
     if (opts.cwd) body.cwd = opts.cwd;
     body.timeout = opts.timeout != null ? opts.timeout : 60;
 
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/run`, {
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/run-async`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify(body),
@@ -380,7 +380,8 @@ export class Exec {
 
     const handle = (await resp.json()) as ExecRunHandle;
 
-    // Back-compat: an older (synchronous) origin returns the full result.
+    // Back-compat: a worker without the async endpoint (synchronous origin)
+    // returns the full result directly.
     if (handle.execId == null && handle.exitCode != null) {
       return {
         exitCode: handle.exitCode,
