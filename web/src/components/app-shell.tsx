@@ -17,7 +17,6 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { logout, getAutumnBilling } from '@/api/client'
-import logoMark from '@/assets/logo-mark.svg'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -49,10 +48,9 @@ const NAV: NavItem[] = [
 
 function Brand() {
   return (
-    <Link to="/" className="flex items-center gap-2" aria-label="OpenComputer">
-      <img src={logoMark} alt="" className="size-6" />
-      <span className="text-foreground text-[15px] font-semibold tracking-tight">
-        OpenComputer
+    <Link to="/" className="flex items-center" aria-label="OpenComputer">
+      <span className="text-foreground font-mono text-[17px] font-semibold tracking-tight">
+        opencomputer
       </span>
     </Link>
   )
@@ -111,7 +109,7 @@ function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth()
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b px-4 py-4">
+      <div className="flex h-16 shrink-0 items-center border-b px-4">
         <Brand />
       </div>
 
@@ -130,35 +128,39 @@ function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
             onClick={onNavigate}
             className={({ isActive }) =>
               cn(
-                'flex min-h-9 items-center gap-2.5 rounded-md px-3 text-sm transition-colors',
+                'flex min-h-9 items-center gap-2.5 rounded-md px-3 font-mono text-[13px] tracking-tight transition-colors',
                 isActive
                   ? 'bg-sidebar-accent text-foreground font-medium'
                   : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
               )
             }
           >
-            <item.icon className="size-[18px] shrink-0" aria-hidden />
+            <item.icon
+              className="size-[18px] shrink-0 opacity-50"
+              aria-hidden
+            />
             {item.label}
           </NavLink>
         ))}
       </nav>
 
-      <div className="space-y-2.5 border-t p-3">
-        <div className="flex items-center gap-2.5 px-1">
+      <div className="border-t p-3">
+        <div className="flex items-center gap-2.5">
           <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium">
             {user?.email?.charAt(0).toUpperCase() || '?'}
           </span>
-          <span className="text-muted-foreground truncate text-xs">
+          <span className="text-foreground min-w-0 flex-1 truncate text-xs">
             {user?.email}
           </span>
+          <button
+            onClick={() => logout()}
+            aria-label="Sign out"
+            title="Sign out"
+            className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex size-7 shrink-0 items-center justify-center rounded-md transition-colors"
+          >
+            <LogOut className="size-4" aria-hidden />
+          </button>
         </div>
-        <button
-          onClick={() => logout()}
-          className="text-muted-foreground hover:text-foreground flex items-center gap-2 px-1 text-xs transition-colors"
-        >
-          <LogOut className="size-3.5" aria-hidden />
-          Sign out
-        </button>
       </div>
     </div>
   )
@@ -221,7 +223,7 @@ export default function AppShell() {
       {/* Main content */}
       <div className="md:pl-60">
         <HaltBanner />
-        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8 sm:py-8">
+        <main className="mx-auto max-w-7xl px-4 py-5 sm:px-8">
           <Outlet />
         </main>
       </div>

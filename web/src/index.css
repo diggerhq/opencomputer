@@ -36,6 +36,7 @@
 /* Self-hosted brand fonts (no external CDN dependency). */
 @import '@fontsource-variable/inter';
 @import '@fontsource-variable/geist-mono';
+@import '@fontsource-variable/newsreader';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -47,7 +48,8 @@
   --font-mono:
     'Geist Mono Variable', ui-monospace, 'SF Mono', 'Menlo', 'Consolas',
     monospace;
-  --font-heading: var(--font-sans);
+  /* Display/brand serif — matches the Mintlify docs heading font (Newsreader). */
+  --font-heading: 'Newsreader Variable', ui-serif, Georgia, serif;
 
   /* shadcn semantic colors -> our tokens */
   --color-background: var(--background);
