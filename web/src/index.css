@@ -2,36 +2,16 @@
    OpenComputer dashboard — design tokens (light, ink-on-paper)
    Brand source: opencomputer-site-v1/src/index.css + Mintlify docs.
 
-   COEXISTENCE NOTE (Phase A/B): the legacy `theme.css` ("Void Glass") is
-   imported HERE, into a low-priority `legacy` layer, during the migration.
-   This matters: theme.css has global `* { margin:0; padding:0 }` resets,
-   and unlayered CSS beats every @layer — so if theme.css were imported
-   unlayered (a plain JS import) it would override all Tailwind padding/
-   margin utilities and the new screens would lose their spacing. Importing
-   it into `legacy` (ordered below components/utilities) keeps Tailwind
-   utilities winning, while legacy classes still style the unmigrated
-   screens. `legacy` sits ABOVE `base` so theme.css's class borders survive
-   the base border reset.
-
-   Tailwind Preflight is intentionally OFF here (we import the theme +
-   utilities layers explicitly, omitting preflight) so it does not fight
-   theme.css's resets. A minimal border reset replaces the slice of
-   preflight that shadcn components rely on. At the END of Phase B
-   (theme.css deleted) we drop the `legacy` layer + this import, swap to the
-   bundled `@import "tailwindcss";` (Preflight back on) and drop the manual
-   reset — see the close-out task.
+   The legacy "Void Glass" theme.css is gone; Tailwind Preflight is on (the
+   bundled `@import "tailwindcss"`), which provides the resets shadcn assumes
+   (border reset, link/form-control inheritance, table border-collapse). The
+   only base addition is defaulting the border color to --border (Tailwind v4
+   defaults borders to currentColor) and the body bg/text/font.
    ============================================================ */
 
-@layer theme, base, legacy, components, utilities;
-
-@import 'tailwindcss/theme.css' layer(theme);
-@import 'tailwindcss/utilities.css' layer(utilities);
+@import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
-
-/* Legacy "Void Glass" styles — low layer so Tailwind utilities win (removed
-   with theme.css at the end of Phase B). */
-@import './styles/theme.css' layer(legacy);
 
 /* Self-hosted brand fonts (no external CDN dependency). */
 @import '@fontsource-variable/inter';
@@ -243,59 +223,17 @@
   --sidebar-accent-foreground: hsl(40 10% 92%);
 }
 
-/* Document font: Inter everywhere — including portaled overlays (dialogs,
-   dropdowns, toasts) that render outside the AppShell subtree. Unlayered so it
-   wins over the legacy body font during coexistence; per-element `font-mono`
-   utilities still override for code/terminal surfaces. */
-html,
-body {
-  font-family: var(--font-sans);
-  font-optical-sizing: auto;
-}
-
-/* Minimal base reset — the slice of Preflight we still need during coexistence
-   (Preflight itself is off so it doesn't fight theme.css). box-sizing is
-   already global via theme.css. */
 @layer base {
-  /* border-* utilities need a default style + color to render. */
+  /* Tailwind v4 defaults borders to currentColor; make --border the default. */
   *,
-  ::before,
-  ::after {
-    border-width: 0;
-    border-style: solid;
-    border-color: var(--border);
+  ::after,
+  ::before {
+    @apply border-border;
   }
-
-  /* Links: no browser-default underline / blue (we style links explicitly).
-     Without Preflight the UA would underline every <a>, incl. nav + the logo. */
-  a {
-    color: inherit;
-    text-decoration: inherit;
+  html {
+    font-optical-sizing: auto;
   }
-
-  /* Tables collapse borders — without Preflight the UA default is
-     `border-collapse: separate`, whose cell spacing breaks the row hover into
-     segments (the "gaps"/"blank borders" between cells). */
-  table {
-    border-collapse: collapse;
-    border-color: inherit;
-    text-indent: 0;
-  }
-
-  /* Form controls inherit the page font — otherwise buttons/inputs fall back
-     to the UA system font (the "looks like Arial" effect) instead of Inter. */
-  button,
-  input,
-  optgroup,
-  select,
-  textarea {
-    font-family: inherit;
-    font-feature-settings: inherit;
-    font-variation-settings: inherit;
-    font-size: 100%;
-    font-weight: inherit;
-    line-height: inherit;
-    letter-spacing: inherit;
-    color: inherit;
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
   }
 }

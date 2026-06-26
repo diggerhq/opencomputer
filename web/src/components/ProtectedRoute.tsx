@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Outlet } from 'react-router-dom'
-import { useAuth } from '../hooks/useAuth'
+import { Loader2 } from 'lucide-react'
+import { useAuth } from '@/hooks/useAuth'
 
 export default function ProtectedRoute() {
   const { user, loading } = useAuth()
@@ -17,22 +18,9 @@ export default function ProtectedRoute() {
 
   if (loading || !user) {
     return (
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: '100vh',
-        gap: 16,
-        background: 'var(--bg-void)',
-      }}>
-        <div className="loading-spinner" />
-        <span style={{
-          fontSize: 12,
-          color: 'var(--text-tertiary)',
-          fontFamily: 'var(--font-mono)',
-          letterSpacing: '0.04em',
-        }}>
+      <div className="bg-background flex min-h-screen flex-col items-center justify-center gap-3">
+        <Loader2 className="text-muted-foreground size-5 animate-spin" />
+        <span className="text-muted-foreground font-mono text-xs tracking-wide">
           Loading&hellip;
         </span>
       </div>
