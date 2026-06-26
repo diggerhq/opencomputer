@@ -104,8 +104,9 @@ or React), that bump is **in scope — the requirement is the reason.**
   current**, with no driving reason, waits until the very end (or is skipped).
   Adding new UI libraries is the point; gratuitous runtime upgrades aren't. A
   real reason — a new-lib requirement, a bug, a needed feature — flips it back in
-  scope. In practice the current Tailwind/shadcn/Radix run fine on our React 18 /
-  Vite 6, so we likely force no upgrade — but if we do, that's fine.
+  scope. Whether the current Tailwind/shadcn/Radix run on our React 18 / Vite 6
+  is **confirmed by the Phase A spike** (shadcn's v4 docs default to React 19 —
+  verify, don't assume); if a bump is forced, that's an in-scope reason.
 
 **Keep:** TanStack Query, recharts, xterm, posthog, the SPA shape.
 
@@ -120,14 +121,20 @@ An implementer can easily build a half-v3/half-v4 CSS system; the v4 specifics:
 
 - Vite plugin **`@tailwindcss/vite`** (no PostCSS pipeline, no JS color config in
   a `tailwind.config.js theme.extend`).
-- **CSS-first tokens:** `@import "tailwindcss";` then declare design tokens as CSS
-  color vars (`:root { --background: …; --foreground: … }`) and expose them with
+- **CSS-first tokens:** declare design tokens as CSS color vars
+  (`:root { --background: …; --foreground: … }`) and expose them with
   **`@theme inline`** — that's the brand + product token layer.
 - Animations: **`tw-animate-css`** (shadcn's v4 choice), **not** `tailwindcss-animate`.
 - `components.json` with `cssVariables: true`; the `@/*` alias (added in Phase A).
-- **Preflight during coexistence:** import only the **theme + utilities** layers,
-  *not* the preflight layer, so Tailwind's reset doesn't fight `theme.css`
-  (re-enabled at end of Phase B — see the plan).
+- **Imports / Preflight (coexistence):** the bundled `@import "tailwindcss";`
+  *includes* Preflight — so **don't use it while `theme.css` is live.** Import the
+  layers explicitly: `@import "tailwindcss/theme.css"` + `…/utilities.css`,
+  **omitting** `…/preflight.css`. With Preflight off, Tailwind's `border-*`
+  utilities render invisibly (no `border-style`), so add the **minimal base reset**
+  shadcn assumes: `@layer base { *,::before,::after { box-sizing:border-box;
+  border-width:0; border-style:solid; border-color:var(--border) } }`.
+- **Final state (end of Phase B):** swap to the bundled `@import "tailwindcss";`
+  (Preflight on) and drop the manual reset.
 
 ## Minimal component set (build only what the shell + pilot need)
 
@@ -142,9 +149,12 @@ row-click div; **no sort UI** until real sorting exists, which is deferred),
 is a fake modal — see breakdown). Filter pills (Sessions) are a simple `Button`
 group for v1 (`ToggleGroup` later).
 
-**Build on demand (when a screen needs it):** `MetricCard`, `CodeSurface` +
-`TerminalSurface` (when SessionDetail migrates), `OrgSwitcher`, richer toast
-helpers, TanStack-Table behavior in `ResourceTable`.
+**Build on demand (in the first commit that needs it):** `MetricCard`,
+`CodeSurface` + `TerminalSurface` (when SessionDetail migrates), `OrgSwitcher`,
+richer toast helpers, TanStack-Table behavior in `ResourceTable`. The
+**screen-specific shadcn primitives** the breakdown calls for — `pagination`
+(Checkpoints), `checkbox` (Checkpoints), `alert` (Checkpoints/Billing), etc. —
+are likewise `shadcn add`-ed in the commit that first needs them, not upfront.
 
 ## Decisions needed (review)
 
@@ -159,18 +169,24 @@ It all lands in the **single open PR** (`feat/web-ui-dev`, #426), built up as
 ordered commits — not split into multiple PRs.
 
 **Phase A — Foundation:**
+- [ ] **Spike first (de-risk the runtime).** Install Tailwind v4 + shadcn; run
+  `shadcn init` with **deterministic choices** — npm; style **new-york** (current
+  shadcn default; the site's old `default` is deprecated); base color **neutral**
+  (our token layer overrides it); `cssVariables: true`; aliases `@/components`,
+  `@/components/ui`, `@/lib/utils`, `@/hooks`. Then `shadcn add button dialog
+  dropdown-menu sheet sonner` and **`build` + `typecheck`** — proving current
+  shadcn/Tailwind v4 runs on our React 18 / Vite 6 *before* any screen work. (A
+  forced runtime bump here is an in-scope reason per Stack.)
 - [ ] ESLint 9 flat + Prettier (+ prettier-plugin-tailwindcss) + jsx-a11y; `@/*`
   alias; `lint`/`format`/`typecheck` (`tsc -b`) scripts.
-- [ ] Tailwind (latest, v4) + base tokens + **product token layer** + dark-surface
-  tokens + `cn()` (see "Tailwind v4 + shadcn setup"). **CSS coexistence:**
-  `theme.css` keeps owning unmigrated screens; **keep Tailwind's preflight OFF**
-  during coexistence (v4: import the theme + utilities layers, not the preflight
-  layer) so the global reset never reflows legacy screens; tokens on `:root`;
-  utilities opt-in per screen. **Decision (not a "revisit"):** at the end of
-  Phase B, when `theme.css` is gone, turn the full reset back ON (import
-  Tailwind's preflight layer) so shadcn components get the resets they assume.
-- [ ] shadcn init + core primitives + lucide + `<Toaster/>`.
-- [ ] Build the **minimal component set** + `AppShell`.
+- [ ] Token layer + CSS wiring per the **"Tailwind v4 + shadcn setup"** block:
+  base + product tokens + dark-surface tokens via `@theme inline`; explicit layer
+  imports with **Preflight off + the minimal border reset** while `theme.css` is
+  live; tokens on `:root`; utilities opt-in per screen. **Decision (not a
+  "revisit"):** at the end of Phase B, when `theme.css` is gone, swap to the
+  bundled `@import "tailwindcss";` (Preflight back on) and drop the manual reset.
+- [ ] Finish the **minimal component set**: `shadcn add input badge separator
+  skeleton table`, then build `AppShell` + the OC wrappers; lucide + `<Toaster/>`.
 
 **Phase B — Visual migration (one screen per commit, reskin only):**
 - [ ] Pilot **`Sessions.tsx`** (table + filters + delete) — the reference pattern.
@@ -299,7 +315,8 @@ check only when the commit touches them.)
 
 - Inline `style={}` ≈ 0 (except the contract's allowed cases); `theme.css` deleted.
 - Brand + product tokens live; contrast met on **used** pairs.
-- Overlays/menus/confirms via the component set; **no `confirm()`/`alert()`**.
+- Overlays/menus/confirms via the component set; **no `confirm()`/`alert()` in
+  live routed screens** (orphaned Agents/AgentDetail are excluded).
 - ESLint + Prettier + jsx-a11y green; both-serving-mode smoke green at release.
 - Repo hygiene: no generated files tracked (`*.tsbuildinfo` done, `api-edge/assets/`).
 - **Agents/AgentDetail excluded** from all metrics until deleted or routed.
