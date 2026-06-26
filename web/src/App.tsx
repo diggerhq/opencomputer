@@ -1,15 +1,19 @@
+import { lazy } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './hooks/auth-provider'
 import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './components/app-shell'
-import Dashboard from './pages/Dashboard'
-import Sessions from './pages/Sessions'
-import APIKeys from './pages/APIKeys'
-import Checkpoints from './pages/Checkpoints'
-import Templates from './pages/Templates'
-import Settings from './pages/Settings'
-import Billing from './pages/Billing'
-import SessionDetail from './pages/SessionDetail'
+
+// Route pages are code-split so the initial bundle stays small; the heaviest
+// deps (xterm, in Terminal/LogsPanel) only load on SessionDetail when opened.
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const Sessions = lazy(() => import('./pages/Sessions'))
+const APIKeys = lazy(() => import('./pages/APIKeys'))
+const Checkpoints = lazy(() => import('./pages/Checkpoints'))
+const Templates = lazy(() => import('./pages/Templates'))
+const Settings = lazy(() => import('./pages/Settings'))
+const Billing = lazy(() => import('./pages/Billing'))
+const SessionDetail = lazy(() => import('./pages/SessionDetail'))
 
 export default function App() {
   return (

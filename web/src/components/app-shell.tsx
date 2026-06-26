@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -13,6 +13,7 @@ import {
   ChevronsUpDown,
   Check,
   Menu,
+  Loader2,
   type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
@@ -235,7 +236,15 @@ export default function AppShell() {
       <div className="md:pt-16 md:pl-60">
         <HaltBanner />
         <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8">
-          <Outlet />
+          <Suspense
+            fallback={
+              <div className="flex min-h-[60vh] items-center justify-center">
+                <Loader2 className="text-muted-foreground size-5 animate-spin" />
+              </div>
+            }
+          >
+            <Outlet />
+          </Suspense>
         </main>
       </div>
     </div>

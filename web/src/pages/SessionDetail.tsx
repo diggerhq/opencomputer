@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifyError } from '@/lib/errors'
@@ -10,6 +10,7 @@ import {
   Power,
   Trash2,
   ChevronRight,
+  Loader2,
 } from 'lucide-react'
 import {
   deleteSession,
@@ -20,8 +21,9 @@ import {
   type Session,
   type SessionDetail as SessionDetailData,
 } from '@/api/client'
-import Terminal from '@/components/Terminal'
-import LogsPanel from '@/components/LogsPanel'
+// Lazy — these pull in xterm / the SSE stream; keep them out of the main chunk.
+const Terminal = lazy(() => import('@/components/Terminal'))
+const LogsPanel = lazy(() => import('@/components/LogsPanel'))
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -239,19 +241,23 @@ export default function SessionDetail() {
 
       {showTerminal && isRunning ? (
         <div className="mb-4">
-          <Terminal
-            sandboxId={sandboxId!}
-            onClose={() => setShowTerminal(false)}
-          />
+          <Suspense fallback={<PanelLoading />}>
+            <Terminal
+              sandboxId={sandboxId!}
+              onClose={() => setShowTerminal(false)}
+            />
+          </Suspense>
         </div>
       ) : null}
 
       {showLogs ? (
         <div className="mb-4">
-          <LogsPanel
-            sandboxId={sandboxId!}
-            onClose={() => setShowLogs(false)}
-          />
+          <Suspense fallback={<PanelLoading />}>
+            <LogsPanel
+              sandboxId={sandboxId!}
+              onClose={() => setShowLogs(false)}
+            />
+          </Suspense>
         </div>
       ) : null}
 
@@ -420,6 +426,15 @@ export default function SessionDetail() {
           })
         }
       />
+    </div>
+  )
+}
+
+// Dark fallback while a lazy panel (Terminal / Logs) chunk loads.
+function PanelLoading() {
+  return (
+    <div className="bg-terminal border-code-border flex h-40 items-center justify-center rounded-lg border">
+      <Loader2 className="text-code-muted size-5 animate-spin" />
     </div>
   )
 }
