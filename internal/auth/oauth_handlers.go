@@ -216,10 +216,11 @@ func (h *OAuthHandlers) HandleLogout(c echo.Context) error {
 }
 
 // sessionIDFromAccessToken extracts the WorkOS `sid` claim from an access-token
-// JWT without verifying its signature. The token was already validated for this
-// request by the auth middleware; here we only need the session id to build the
-// logout URL, so an unverified parse is sufficient (and avoids needing WorkOS's
-// JWKS at logout time).
+// JWT WITHOUT verifying its signature. Note /auth/logout is a public route (see
+// router.go), so this cookie is not validated by the auth middleware. That's
+// acceptable here: the worst a forged/garbage cookie can do is yield a session
+// id we put in a WorkOS logout URL, which only ends that session — no privilege
+// escalation and no data access. We never trust this value for anything else.
 func sessionIDFromAccessToken(token string) string {
 	claims := jwt.MapClaims{}
 	if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err != nil {
