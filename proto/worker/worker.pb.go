@@ -2603,8 +2603,11 @@ type CreateCheckpointRequest struct {
 	// — so the image's memory floor is finalize_memory_mb, decoupled from the
 	// (larger) build-phase RAM. Used by the image builder. 0 = snapshot in place.
 	FinalizeMemoryMb int32 `protobuf:"varint,4,opt,name=finalize_memory_mb,json=finalizeMemoryMb,proto3" json:"finalize_memory_mb,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// full (default) captures disk + memory/device state. disk_only captures
+	// only root/workspace disks and restores with a cold boot.
+	Kind          string `protobuf:"bytes,5,opt,name=kind,proto3" json:"kind,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateCheckpointRequest) Reset() {
@@ -2663,6 +2666,13 @@ func (x *CreateCheckpointRequest) GetFinalizeMemoryMb() int32 {
 		return x.FinalizeMemoryMb
 	}
 	return 0
+}
+
+func (x *CreateCheckpointRequest) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
 }
 
 type CreateCheckpointResponse struct {
@@ -3962,13 +3972,14 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\tnet_input\x18\x04 \x01(\x04R\bnetInput\x12\x1d\n" +
 	"\n" +
 	"net_output\x18\x05 \x01(\x04R\tnetOutput\x12\x12\n" +
-	"\x04pids\x18\x06 \x01(\x05R\x04pids\"\xb2\x01\n" +
+	"\x04pids\x18\x06 \x01(\x05R\x04pids\"\xc6\x01\n" +
 	"\x17CreateCheckpointRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12#\n" +
 	"\rcheckpoint_id\x18\x02 \x01(\tR\fcheckpointId\x12%\n" +
 	"\x0eprepare_golden\x18\x03 \x01(\bR\rprepareGolden\x12,\n" +
-	"\x12finalize_memory_mb\x18\x04 \x01(\x05R\x10finalizeMemoryMb\"\x87\x01\n" +
+	"\x12finalize_memory_mb\x18\x04 \x01(\x05R\x10finalizeMemoryMb\x12\x12\n" +
+	"\x04kind\x18\x05 \x01(\tR\x04kind\"\x87\x01\n" +
 	"\x18CreateCheckpointResponse\x12\"\n" +
 	"\rrootfs_s3_key\x18\x01 \x01(\tR\vrootfsS3Key\x12(\n" +
 	"\x10workspace_s3_key\x18\x02 \x01(\tR\x0eworkspaceS3Key\x12\x1d\n" +

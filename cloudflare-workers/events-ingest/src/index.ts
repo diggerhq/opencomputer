@@ -249,8 +249,8 @@ export default {
     // would rebase the delta onto the wrong base and break restore.
     const checkpointUpsert = env.OPENCOMPUTER_DB.prepare(
       `INSERT INTO checkpoints_index
-         (id, sandbox_id, org_id, owner_cell_id, s3_url, size_bytes, golden_hash, workspace_size, created_at, name)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)
+         (id, sandbox_id, org_id, owner_cell_id, s3_url, size_bytes, golden_hash, workspace_size, created_at, name, kind)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10)
        ON CONFLICT(id) DO UPDATE SET
          sandbox_id    = excluded.sandbox_id,
          owner_cell_id = excluded.owner_cell_id,
@@ -260,19 +260,21 @@ export default {
          error_msg     = NULL,
          failed_at     = NULL,
          golden_hash   = CASE WHEN checkpoints_index.golden_hash = '' THEN excluded.golden_hash ELSE checkpoints_index.golden_hash END,
-         name          = CASE WHEN excluded.name IS NULL OR excluded.name = '' THEN checkpoints_index.name ELSE excluded.name END`,
+         name          = CASE WHEN excluded.name IS NULL OR excluded.name = '' THEN checkpoints_index.name ELSE excluded.name END,
+         kind          = excluded.kind`,
     );
     const checkpointFailedUpsert = env.OPENCOMPUTER_DB.prepare(
       `INSERT INTO checkpoints_index
-         (id, sandbox_id, org_id, owner_cell_id, s3_url, size_bytes, golden_hash, workspace_size, created_at, name, status, error_msg, failed_at)
-       VALUES (?1, ?2, ?3, ?4, '', 0, '', NULL, ?5, ?6, 'failed', ?7, ?8)
+         (id, sandbox_id, org_id, owner_cell_id, s3_url, size_bytes, golden_hash, workspace_size, created_at, name, status, error_msg, failed_at, kind)
+       VALUES (?1, ?2, ?3, ?4, '', 0, '', NULL, ?5, ?6, 'failed', ?7, ?8, ?9)
        ON CONFLICT(id) DO UPDATE SET
          sandbox_id    = excluded.sandbox_id,
          owner_cell_id = excluded.owner_cell_id,
          status        = 'failed',
          error_msg     = excluded.error_msg,
          failed_at     = excluded.failed_at,
-         name          = CASE WHEN excluded.name IS NULL OR excluded.name = '' THEN checkpoints_index.name ELSE excluded.name END`,
+         name          = CASE WHEN excluded.name IS NULL OR excluded.name = '' THEN checkpoints_index.name ELSE excluded.name END,
+         kind          = excluded.kind`,
     );
     const checkpointDelete = env.OPENCOMPUTER_DB.prepare(
       `DELETE FROM checkpoints_index WHERE id = ?1`,
@@ -287,6 +289,7 @@ export default {
           size_bytes?: number;
           golden_hash?: string;
           name?: string;
+          kind?: string;
           error_msg?: string;
         };
         if (!p.checkpoint_id) return [];
@@ -305,6 +308,7 @@ export default {
               p.name ?? null,
               p.error_msg ?? "checkpoint failed",
               tsSec,
+              p.kind === "disk_only" ? "disk_only" : "full",
             ),
           ];
         }
@@ -324,6 +328,7 @@ export default {
             p.golden_hash ?? "",
             tsSec,
             p.name ?? null,
+            p.kind === "disk_only" ? "disk_only" : "full",
           ),
         ];
       });

@@ -36,10 +36,24 @@ var checkpointCreateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c := client.FromContext(cmd.Context())
 		name, _ := cmd.Flags().GetString("name")
+		kind, _ := cmd.Flags().GetString("kind")
+		promoteToFull, _ := cmd.Flags().GetBool("promote-to-full")
 		retentionPolicy, _ := cmd.Flags().GetString("retention-policy")
 		retentionMaxCount, _ := cmd.Flags().GetInt("retention-max-count")
 
 		req := map[string]any{"name": name}
+		if kind != "" && kind != "full" {
+			if kind != "disk_only" {
+				return fmt.Errorf("unsupported checkpoint kind %q; expected full or disk_only", kind)
+			}
+			req["kind"] = kind
+		}
+		if promoteToFull {
+			if kind != "disk_only" {
+				return fmt.Errorf("--promote-to-full requires --kind disk_only")
+			}
+			req["promoteToFull"] = true
+		}
 		if retentionPolicy != "" && retentionPolicy != "none" {
 			if retentionPolicy != "delete_oldest" {
 				return fmt.Errorf("unsupported retention policy %q; expected none or delete_oldest", retentionPolicy)
@@ -197,8 +211,10 @@ func setCheckpointPublic(cmd *cobra.Command, id string, isPublic bool) error {
 
 func init() {
 	checkpointCreateCmd.Flags().String("name", "", "Checkpoint name (required)")
+	checkpointCreateCmd.Flags().String("kind", "full", "Checkpoint kind (full, disk_only)")
+	checkpointCreateCmd.Flags().Bool("promote-to-full", false, "For disk_only checkpoints, asynchronously create a derived full checkpoint for faster forks")
 	checkpointCreateCmd.Flags().String("retention-policy", "none", "Retention policy for automatic checkpoint cleanup (none, delete_oldest)")
-	checkpointCreateCmd.Flags().Int("retention-max-count", 0, "Maximum checkpoints to keep when --retention-policy=delete_oldest (1-10, default server limit)")
+	checkpointCreateCmd.Flags().Int("retention-max-count", 0, "Maximum checkpoints of this kind to keep when --retention-policy=delete_oldest (full: 1-10, disk_only: 1-100, default server limit)")
 	checkpointCreateCmd.MarkFlagRequired("name")
 
 	checkpointSpawnCmd.Flags().Int("timeout", 0, "Idle timeout in seconds before auto-hibernate (0 = never hibernate)")

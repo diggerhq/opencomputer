@@ -219,6 +219,9 @@ export interface CheckpointItem {
   orgId: string
   name: string
   status: string
+  kind?: 'full' | 'disk_only'
+  promotionStatus?: 'pending' | 'processing' | 'ready' | 'failed'
+  promotedCheckpointId?: string
   sizeBytes: number
   activeForks: number
   totalForks: number

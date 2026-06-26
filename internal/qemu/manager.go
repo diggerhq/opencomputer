@@ -207,6 +207,30 @@ func quiesceAndCloseAgent(ctx context.Context, agent *AgentClient) error {
 	return nil
 }
 
+func freezeGuestFilesystemsForDiskSnapshot(ctx context.Context, agent *AgentClient) error {
+	if agent == nil {
+		return fmt.Errorf("%w: missing agent", ErrAgentUnresponsive)
+	}
+	freezeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	_, err := agent.Exec(freezeCtx, &pb.ExecRequest{
+		Command: "/bin/sh",
+		Args: []string{"-c", strings.Join([]string{
+			"set -eu",
+			"sync",
+			"blockdev --flushbufs /dev/vda 2>/dev/null || true",
+			"blockdev --flushbufs /dev/vdb 2>/dev/null || true",
+			`targets="$(for p in /home/sandbox /; do findmnt -n -T "$p" -o TARGET 2>/dev/null || echo "$p"; done | awk '!seen[$0]++')"`,
+			"for mp in $targets; do fsfreeze --freeze \"$mp\"; done",
+		}, "\n")},
+		RunAsRoot: true,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: fsfreeze failed: %v", ErrAgentUnresponsive, err)
+	}
+	return nil
+}
+
 // Compile-time check that Manager implements sandbox.Manager.
 var _ sandbox.Manager = (*Manager)(nil)
 
@@ -3312,6 +3336,159 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	return rootfsKey, workspaceKey, sizeBytes, nil
 }
 
+func (m *Manager) CreateDiskOnlyCheckpoint(ctx context.Context, sandboxID, checkpointID string, checkpointStore *storage.CheckpointStore, onReady func()) (rootfsKey, workspaceKey string, sizeBytes int64, err error) {
+	tStart := time.Now()
+	failureReason := "other"
+	template := "unknown"
+	defer func() {
+		status := "success"
+		if err != nil {
+			status = "failure"
+			metrics.CheckpointFailuresTotal.WithLabelValues(m.cfg.Region, template, failureReason).Inc()
+		}
+		metrics.CheckpointDuration.WithLabelValues(m.cfg.Region, template, status).Observe(time.Since(tStart).Seconds())
+	}()
+
+	vm, err := m.getVM(sandboxID)
+	if err != nil {
+		failureReason = "vm_not_found"
+		return "", "", 0, err
+	}
+	template = vm.Template
+	if err := m.checkRootfsPressure(ctx, vm); err != nil {
+		failureReason = "disk_pressure"
+		return "", "", 0, err
+	}
+	if !vm.opMu.TryLock() {
+		failureReason = "op_in_progress"
+		return "", "", 0, fmt.Errorf("another operation is in progress on sandbox %s — try again shortly", sandboxID)
+	}
+	defer vm.opMu.Unlock()
+	if vm.qmp == nil {
+		failureReason = "qmp_unavailable"
+		return "", "", 0, fmt.Errorf("QMP connection not available for %s", sandboxID)
+	}
+	if vm.agent == nil {
+		failureReason = "agent_unresponsive"
+		return "", "", 0, fmt.Errorf("checkpoint %s: %w", sandboxID, ErrAgentUnresponsive)
+	}
+
+	t0 := time.Now()
+	cacheDir := m.checkpointCacheDir(checkpointID)
+	stagingDir := cacheDir + ".staging"
+	if mkErr := os.MkdirAll(filepath.Join(stagingDir, "snapshot"), 0755); mkErr != nil {
+		failureReason = "staging_setup"
+		return "", "", 0, fmt.Errorf("mkdir staging: %w", mkErr)
+	}
+	defer func() {
+		if err != nil {
+			os.RemoveAll(stagingDir)
+		}
+	}()
+
+	if qErr := freezeGuestFilesystemsForDiskSnapshot(ctx, vm.agent); qErr != nil {
+		failureReason = "agent_unresponsive"
+		return "", "", 0, fmt.Errorf("disk-only checkpoint %s: %w", sandboxID, qErr)
+	}
+	frozen := true
+	stopped := false
+	defer func() {
+		if stopped {
+			if contErr := vm.qmp.Cont(); contErr != nil {
+				log.Printf("qemu: DiskOnlyCheckpoint %s/%s: failed to resume VM: %v", sandboxID, checkpointID, contErr)
+			}
+		}
+		if frozen {
+			m.agentFsThawAfterWake(context.Background(), sandboxID, vm.agent)
+		}
+	}()
+
+	if stopErr := vm.qmp.Stop(); stopErr != nil {
+		failureReason = "qmp_stop"
+		return "", "", 0, fmt.Errorf("qmp stop before disk-only copy: %w", stopErr)
+	}
+	stopped = true
+
+	srcRootfs := filepath.Join(vm.sandboxDir, "rootfs.qcow2")
+	srcWorkspace := filepath.Join(vm.sandboxDir, "workspace.qcow2")
+	if err := copyFileReflink(srcRootfs, filepath.Join(stagingDir, "rootfs.qcow2")); err != nil {
+		failureReason = "qcow2_copy"
+		return "", "", 0, fmt.Errorf("copy rootfs: %w", err)
+	}
+	if err := copyFileReflink(srcWorkspace, filepath.Join(stagingDir, "workspace.qcow2")); err != nil {
+		failureReason = "qcow2_copy"
+		return "", "", 0, fmt.Errorf("copy workspace: %w", err)
+	}
+	if contErr := vm.qmp.Cont(); contErr != nil {
+		log.Printf("qemu: DiskOnlyCheckpoint %s/%s: failed to resume VM after copy: %v", sandboxID, checkpointID, contErr)
+	} else {
+		stopped = false
+	}
+	m.agentFsThawAfterWake(context.Background(), sandboxID, vm.agent)
+	frozen = false
+
+	rootfsKey = fmt.Sprintf("checkpoints/%s/%s/rootfs.tar.zst", sandboxID, checkpointID)
+	workspaceKey = fmt.Sprintf("checkpoints/%s/%s/workspace.tar.zst", sandboxID, checkpointID)
+	meta := &SnapshotMeta{
+		SandboxID:     vm.ID,
+		Network:       vm.network,
+		GuestCID:      vm.guestCID,
+		GuestMAC:      vm.guestMAC,
+		BootArgs:      vm.bootArgs,
+		CpuCount:      vm.CpuCount,
+		MemoryMB:      vm.MemoryMB,
+		BaseMemoryMB:  vm.baseMemoryMB,
+		Template:      vm.Template,
+		GuestPort:     vm.GuestPort,
+		GoldenVersion: vm.goldenVersion,
+		SnapshotedAt:  time.Now(),
+	}
+	if m.secretsProxy != nil && vm.network != nil {
+		meta.SealedTokens = m.secretsProxy.GetSessionTokens(vm.network.GuestIP)
+		meta.EgressAllowlist = m.secretsProxy.GetSessionAllowlist(vm.network.GuestIP)
+		meta.TokenHosts = m.secretsProxy.GetSessionTokenHosts(vm.network.GuestIP)
+	}
+	metaJSON, _ := json.Marshal(meta)
+	_ = os.WriteFile(filepath.Join(stagingDir, "snapshot", "snapshot-meta.json"), metaJSON, 0644)
+
+	m.checkpointCacheMu.Lock()
+	os.RemoveAll(cacheDir)
+	if renameErr := os.Rename(stagingDir, cacheDir); renameErr != nil {
+		m.checkpointCacheMu.Unlock()
+		failureReason = "staging_setup"
+		return "", "", 0, fmt.Errorf("rename staging to cache: %w", renameErr)
+	}
+	m.checkpointCacheMu.Unlock()
+	log.Printf("qemu: disk-only checkpoint %s: cache saved (%dms)", checkpointID, time.Since(t0).Milliseconds())
+
+	if checkpointStore != nil {
+		archiveFiles := []string{"rootfs.qcow2", "workspace.qcow2", filepath.Join("snapshot", "snapshot-meta.json")}
+		archivePath := filepath.Join(cacheDir, "checkpoint.tar.zst")
+		if archErr := createArchive(archivePath, cacheDir, archiveFiles); archErr != nil {
+			failureReason = "archive"
+			return rootfsKey, workspaceKey, 0, fmt.Errorf("create disk-only checkpoint archive: %w", archErr)
+		}
+		uploadCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		_, uerr := checkpointStore.Upload(uploadCtx, rootfsKey, archivePath)
+		cancel()
+		if info, statErr := os.Stat(archivePath); statErr == nil {
+			sizeBytes = info.Size()
+		}
+		os.Remove(archivePath)
+		if uerr != nil {
+			failureReason = "s3_upload"
+			return rootfsKey, workspaceKey, sizeBytes, fmt.Errorf("upload disk-only checkpoint to S3: %w", uerr)
+		}
+		log.Printf("qemu: disk-only checkpoint %s: S3 upload complete (%dms, %.1f MB)",
+			checkpointID, time.Since(t0).Milliseconds(), float64(sizeBytes)/(1024*1024))
+	}
+
+	if onReady != nil {
+		onReady()
+	}
+	return rootfsKey, workspaceKey, sizeBytes, nil
+}
+
 // RestoreFromCheckpoint reverts a sandbox to a checkpoint by killing the current
 // QEMU process and starting a fresh one from the checkpoint's cached qcow2 drives.
 // In-place loadvm corrupts the qcow2 COW layer because blocks written after the
@@ -3391,8 +3568,11 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 		incomingURI = fmt.Sprintf("exec:cat %s", memRaw)
 	}
 
+	snapshotNamePath := filepath.Join(cacheDir, "snapshot-name")
+	hasSnapshotName := fileExists(snapshotNamePath)
+	coldBoot := incomingURI == "" && !hasSnapshotName
 	snapshotName := "cp-" + checkpointID
-	if data, err := os.ReadFile(filepath.Join(cacheDir, "snapshot-name")); err == nil {
+	if data, err := os.ReadFile(snapshotNamePath); err == nil {
 		snapshotName = strings.TrimSpace(string(data))
 	}
 
@@ -3465,6 +3645,9 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 	}
 	// Remember what the user had so we can re-scale after restore
 	desiredMemMB := vm.MemoryMB
+	if coldBoot && desiredMemMB > bootMemMB {
+		bootMemMB = desiredMemMB
+	}
 
 	logFile, _ := os.Create(filepath.Join(sandboxDir, "qemu.log"))
 	args := m.buildQEMUArgs(bootCpus, bootMemMB, rootfsPath, workspacePath,
@@ -3473,7 +3656,7 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 	if incomingURI != "" {
 		// Migration-based restore: QEMU loads state from the mem dump file.
 		args = append(args, "-incoming", incomingURI)
-	} else {
+	} else if !coldBoot {
 		// Savevm-based fallback: start paused, then loadvm.
 		args = append(args, "-S")
 	}
@@ -3510,7 +3693,7 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 			m.cleanupVM(netCfg, "")
 			return fmt.Errorf("migration load: %w", err)
 		}
-	} else {
+	} else if !coldBoot {
 		// Savevm fallback: load the internal snapshot.
 		if err := qmpClient.LoadVM(snapshotName); err != nil {
 			qmpClient.Close()
@@ -3524,7 +3707,7 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 	// Re-scale virtio-mem BEFORE cont — the VM is paused, so the kernel sees full
 	// memory immediately on resume. Without this, restored processes that were using
 	// >baseMemMB would OOM before the post-resume re-scale completes.
-	if desiredMemMB > bootMemMB {
+	if !coldBoot && desiredMemMB > bootMemMB {
 		additionalMB := alignVirtioMemBlock(desiredMemMB - bootMemMB)
 		if err := qmpClient.SetVirtioMemSize(additionalMB); err != nil {
 			log.Printf("qemu: RestoreFromCheckpoint %s: pre-resume scale to %dMB failed: %v (continuing with base %dMB)",
@@ -3535,12 +3718,14 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 		}
 	}
 
-	if err := qmpClient.Cont(); err != nil {
-		qmpClient.Close()
-		cmd.Process.Kill()
-		cmd.Wait()
-		m.cleanupVM(netCfg, "")
-		return fmt.Errorf("cont: %w", err)
+	if !coldBoot {
+		if err := qmpClient.Cont(); err != nil {
+			qmpClient.Close()
+			cmd.Process.Kill()
+			cmd.Wait()
+			m.cleanupVM(netCfg, "")
+			return fmt.Errorf("cont: %w", err)
+		}
 	}
 
 	// Step 7: Reconnect agent + patch network
@@ -3777,6 +3962,20 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		// Fall back to the old loadvm path.
 		incomingURI = ""
 	}
+	snapshotNamePath := filepath.Join(cacheDir, "snapshot-name")
+	hasSnapshotName := fileExists(snapshotNamePath)
+	coldBoot := incomingURI == "" && !hasSnapshotName
+	if coldBoot {
+		if cfg.CpuCount > 0 {
+			cpus = cfg.CpuCount
+		}
+		if cfg.MemoryMB > 0 {
+			memMB = cfg.MemoryMB
+		} else if meta.MemoryMB > 0 {
+			memMB = meta.MemoryMB
+		}
+		desiredMemMB = memMB
+	}
 
 	// Boot QEMU, load the checkpoint (migration or loadvm), and connect the
 	// agent inside. Post-loadvm virtio-serial occasionally comes up with the
@@ -3798,7 +3997,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 			netCfg.TAPName, guestMAC, agentSockPath, qmpSockPath, bootArgs)
 		if incomingURI != "" {
 			args = append(args, "-incoming", incomingURI)
-		} else {
+		} else if !coldBoot {
 			args = append(args, "-S")
 		}
 
@@ -3833,9 +4032,9 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 				cmd.Wait()
 				return nil, nil, nil, fmt.Errorf("migration load: %w", err)
 			}
-		} else {
+		} else if !coldBoot {
 			snapshotName := "cp-" + checkpointID
-			if data, readErr := os.ReadFile(filepath.Join(cacheDir, "snapshot-name")); readErr == nil {
+			if data, readErr := os.ReadFile(snapshotNamePath); readErr == nil {
 				snapshotName = strings.TrimSpace(string(data))
 			}
 			if err := qmpClient.LoadVM(snapshotName); err != nil {
@@ -3849,7 +4048,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		// Honor cfg.MemoryMB above the snapshot base via pre-Cont virtio-mem
 		// plug. VM is paused, so the kernel sees the full memory map on resume —
 		// same pattern as RestoreFromCheckpoint and wake-from-hibernate.
-		if desiredMemMB > memMB {
+		if !coldBoot && desiredMemMB > memMB {
 			additionalMB := alignVirtioMemBlock(desiredMemMB - memMB)
 			if err := qmpClient.SetVirtioMemSize(additionalMB); err != nil {
 				log.Printf("qemu: ForkFromCheckpoint %s: pre-resume virtio-mem plug to +%dMB failed: %v (continuing at base %dMB)",
@@ -3860,11 +4059,13 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 			}
 		}
 
-		if err := qmpClient.Cont(); err != nil {
-			qmpClient.Close()
-			cmd.Process.Kill()
-			cmd.Wait()
-			return nil, nil, nil, fmt.Errorf("QMP cont: %w", err)
+		if !coldBoot {
+			if err := qmpClient.Cont(); err != nil {
+				qmpClient.Close()
+				cmd.Process.Kill()
+				cmd.Wait()
+				return nil, nil, nil, fmt.Errorf("QMP cont: %w", err)
+			}
 		}
 		log.Printf("qemu: ForkFromCheckpoint %s → %s: VM resumed (%dms), connecting agent...",
 			checkpointID, id, time.Since(t0).Milliseconds())

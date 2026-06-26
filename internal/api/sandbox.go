@@ -18,14 +18,27 @@ import (
 	"github.com/opensandbox/opensandbox/internal/edgeclient"
 	"github.com/opensandbox/opensandbox/internal/observability"
 	"github.com/opensandbox/opensandbox/internal/previewauth"
+	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
 
-const maxCheckpointsPerSandbox = 10
+const (
+	maxFullCheckpointsPerSandbox     = 10
+	maxDiskOnlyCheckpointsPerSandbox = 100
+)
+
+func maxCheckpointsForKind(kind string) int {
+	if kind == "disk_only" {
+		return maxDiskOnlyCheckpointsPerSandbox
+	}
+	return maxFullCheckpointsPerSandbox
+}
 
 type createCheckpointRequest struct {
 	Name            string                    `json:"name"`
+	Kind            string                    `json:"kind"`
+	PromoteToFull   bool                      `json:"promoteToFull"`
 	RetentionPolicy checkpointRetentionPolicy `json:"retentionPolicy"`
 }
 
@@ -2180,9 +2193,22 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 	if req.Name == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
 	}
+	kind := req.Kind
+	if kind == "" {
+		kind = "full"
+	}
+	if kind != "full" && kind != "disk_only" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "kind must be full or disk_only"})
+	}
+	if req.PromoteToFull && kind != "disk_only" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "promoteToFull is only supported for disk_only checkpoints"})
+	}
 
-	// Enforce max 10 checkpoints per sandbox
-	count, err := s.store.CountCheckpoints(ctx, sandboxID)
+	// Enforce checkpoint limits per kind. Full checkpoints are heavier because
+	// they include memory/CPU state; disk-only checkpoints are cheaper and get
+	// a larger sandbox-local budget.
+	limit := maxCheckpointsForKind(kind)
+	count, err := s.store.CountCheckpointsByKind(ctx, sandboxID, kind)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to count checkpoints"})
 	}
@@ -2193,19 +2219,19 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 		}
 		maxCount := req.RetentionPolicy.MaxCount
 		if maxCount == 0 {
-			maxCount = maxCheckpointsPerSandbox
+			maxCount = limit
 		}
-		if maxCount < 1 || maxCount > maxCheckpointsPerSandbox {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "retentionPolicy.maxCount must be between 1 and 10"})
+		if maxCount < 1 || maxCount > limit {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("retentionPolicy.maxCount must be between 1 and %d for %s checkpoints", limit, kind)})
 		}
 		if count >= maxCount {
 			deleteCount := count - maxCount + 1
-			candidates, err := s.store.ListCheckpointRetentionCandidates(ctx, sandboxID, orgID, deleteCount)
+			candidates, err := s.store.ListCheckpointRetentionCandidatesByKind(ctx, sandboxID, orgID, kind, deleteCount)
 			if err != nil {
 				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to find checkpoints for retention"})
 			}
 			if len(candidates) < deleteCount {
-				return c.JSON(http.StatusBadRequest, map[string]string{"error": "maximum 10 checkpoints per sandbox; no eligible checkpoint can be deleted by retention policy"})
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("maximum %d %s checkpoints per sandbox; no eligible checkpoint can be deleted by retention policy", limit, kind)})
 			}
 			for _, oldCP := range candidates {
 				if err := s.deleteCheckpointRecordAndObjects(ctx, &oldCP, orgID); err != nil {
@@ -2216,8 +2242,8 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 		}
 	}
 
-	if count >= maxCheckpointsPerSandbox {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "maximum 10 checkpoints per sandbox"})
+	if count >= limit {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("maximum %d %s checkpoints per sandbox", limit, kind)})
 	}
 
 	// Reserve a checkpoint UUID
@@ -2229,8 +2255,16 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 		SandboxID:     sandboxID,
 		OrgID:         orgID,
 		Name:          req.Name,
+		Kind:          kind,
 		Status:        "processing",
 		SandboxConfig: session.Config,
+	}
+	var promotedArtifactID string
+	if req.PromoteToFull {
+		promotionStatus := "pending"
+		promotedArtifactID = uuid.New().String()
+		cp.PromotionStatus = &promotionStatus
+		cp.PromotedCheckpointID = &promotedArtifactID
 	}
 	if err := s.store.CreateCheckpoint(ctx, cp); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
@@ -2266,6 +2300,7 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 			grpcResp, err := grpcClient.CreateCheckpoint(grpcCtx, &pb.CreateCheckpointRequest{
 				SandboxId:    sandboxID,
 				CheckpointId: checkpointID.String(),
+				Kind:         kind,
 			})
 
 			// Signal that the sandbox is usable again (VM resumed, agent reconnected).
@@ -2294,6 +2329,9 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				s.recordLifecycleID(context.Background(), orgID, sandboxID, types.WebhookEventCheckpointCreated,
 					sandboxID+":sandbox.checkpoint.created:"+checkpointID.String(),
 					map[string]any{"checkpointId": checkpointID.String()})
+				if req.PromoteToFull {
+					s.startCheckpointPromotion(context.Background(), checkpointID, promotedArtifactID, sandboxID, req.Name, session.WorkerID, session.Config, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key)
+				}
 			}
 			golden := ""
 			if session.GoldenVersion != nil {
@@ -2311,6 +2349,7 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				// fell back to deriving from rootfs_s3_key, which always ends
 				// in "rootfs.tar.zst" — every row showed the same name.
 				"name": req.Name,
+				"kind": kind,
 			})
 		}()
 	} else if s.manager != nil {
@@ -2318,7 +2357,22 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
 
-			rootfsKey, workspaceKey, sizeBytes, err := s.manager.CreateCheckpoint(bgCtx, sandboxID, checkpointID.String(), s.checkpointStore, func() {})
+			var rootfsKey, workspaceKey string
+			var sizeBytes int64
+			var err error
+			if kind == "disk_only" {
+				type diskOnlyCheckpointer interface {
+					CreateDiskOnlyCheckpoint(ctx context.Context, sandboxID, checkpointID string, checkpointStore *storage.CheckpointStore, onReady func()) (string, string, int64, error)
+				}
+				diskMgr, ok := s.manager.(diskOnlyCheckpointer)
+				if !ok {
+					err = fmt.Errorf("manager does not support disk-only checkpoints")
+				} else {
+					rootfsKey, workspaceKey, sizeBytes, err = diskMgr.CreateDiskOnlyCheckpoint(bgCtx, sandboxID, checkpointID.String(), s.checkpointStore, func() {})
+				}
+			} else {
+				rootfsKey, workspaceKey, sizeBytes, err = s.manager.CreateCheckpoint(bgCtx, sandboxID, checkpointID.String(), s.checkpointStore, func() {})
+			}
 
 			// Signal sandbox usable
 			pending.err = err
@@ -2340,6 +2394,9 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				s.recordLifecycleID(context.Background(), orgID, sandboxID, types.WebhookEventCheckpointCreated,
 					sandboxID+":sandbox.checkpoint.created:"+checkpointID.String(),
 					map[string]any{"checkpointId": checkpointID.String()})
+				if req.PromoteToFull {
+					s.startCheckpointPromotion(context.Background(), checkpointID, promotedArtifactID, sandboxID, req.Name, session.WorkerID, session.Config, rootfsKey, workspaceKey)
+				}
 			}
 			golden := ""
 			if session.GoldenVersion != nil {
@@ -2351,6 +2408,7 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				"size_bytes":       sizeBytes,
 				"golden_hash":      golden,
 				"name":             req.Name,
+				"kind":             kind,
 			})
 		}()
 	} else {
@@ -2359,6 +2417,107 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, cp)
+}
+
+func (s *Server) startCheckpointPromotion(ctx context.Context, checkpointID uuid.UUID, promotedArtifactID, sourceSandboxID, checkpointName, workerID string, configJSON json.RawMessage, rootfsKey, workspaceKey string) {
+	if promotedArtifactID == "" {
+		promotedArtifactID = uuid.New().String()
+	}
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		if err := s.store.SetCheckpointPromotionProcessing(bgCtx, checkpointID); err != nil {
+			log.Printf("api: checkpoint %s promotion status update failed: %v", checkpointID, err)
+		}
+		rootfs, workspace, size, err := s.promoteCheckpointToFull(bgCtx, checkpointID.String(), promotedArtifactID, sourceSandboxID, checkpointName, workerID, configJSON, rootfsKey, workspaceKey)
+		if err != nil {
+			log.Printf("api: checkpoint %s promotion failed: %v", checkpointID, err)
+			_ = s.store.SetCheckpointPromotionFailed(context.Background(), checkpointID, err.Error())
+			return
+		}
+		if err := s.store.SetCheckpointPromotionReady(context.Background(), checkpointID, promotedArtifactID, rootfs, workspace, size); err != nil {
+			log.Printf("api: checkpoint %s promotion ready update failed: %v", checkpointID, err)
+			return
+		}
+		log.Printf("api: checkpoint %s promoted to full artifact %s (size=%d bytes)", checkpointID, promotedArtifactID, size)
+	}()
+}
+
+func (s *Server) promoteCheckpointToFull(ctx context.Context, checkpointID, promotedArtifactID, sourceSandboxID, checkpointName, workerID string, configJSON json.RawMessage, rootfsKey, workspaceKey string) (string, string, int64, error) {
+	var cfg types.SandboxConfig
+	_ = json.Unmarshal(configJSON, &cfg)
+	cfg.SandboxID = "sb-" + uuid.New().String()[:8]
+	cfg.CheckpointID = checkpointID
+	cfg.TemplateRootfsKey = rootfsKey
+	cfg.TemplateWorkspaceKey = workspaceKey
+	cfg.AgentReadyTimeout = 90 * time.Second
+
+	if s.workerRegistry != nil {
+		grpcClient, err := s.workerRegistry.GetWorkerClient(workerID)
+		if err != nil {
+			return "", "", 0, fmt.Errorf("promotion worker unavailable: %w", err)
+		}
+		resp, err := grpcClient.CreateSandbox(ctx, &pb.CreateSandboxRequest{
+			Template:             cfg.Template,
+			Timeout:              int32(cfg.Timeout),
+			Envs:                 cfg.Envs,
+			MemoryMb:             int32(cfg.MemoryMB),
+			CpuCount:             int32(cfg.CpuCount),
+			NetworkEnabled:       cfg.IsNetworkEnabled(),
+			Port:                 int32(cfg.Port),
+			TemplateRootfsKey:    rootfsKey,
+			TemplateWorkspaceKey: workspaceKey,
+			CheckpointId:         checkpointID,
+			SandboxId:            cfg.SandboxID,
+			EgressAllowlist:      cfg.EgressAllowlist,
+			SecretAllowedHosts:   flattenSecretAllowedHosts(cfg.SecretAllowedHosts),
+			SecretEnvs:           cfg.SecretEnvs,
+			DiskMb:               int32(cfg.DiskMB),
+		})
+		if err != nil {
+			return "", "", 0, fmt.Errorf("boot promotion VM: %w", err)
+		}
+		promotionSandboxID := cfg.SandboxID
+		if resp != nil && resp.SandboxId != "" {
+			promotionSandboxID = resp.SandboxId
+		}
+		defer func() {
+			dctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			_, _ = grpcClient.DestroySandbox(dctx, &pb.DestroySandboxRequest{SandboxId: promotionSandboxID})
+		}()
+		cpResp, err := grpcClient.CreateCheckpoint(ctx, &pb.CreateCheckpointRequest{
+			SandboxId:    promotionSandboxID,
+			CheckpointId: promotedArtifactID,
+			Kind:         "full",
+		})
+		if err != nil {
+			return "", "", 0, fmt.Errorf("capture promoted full checkpoint: %w", err)
+		}
+		return cpResp.RootfsS3Key, cpResp.WorkspaceS3Key, cpResp.SizeBytes, nil
+	}
+
+	if s.manager == nil {
+		return "", "", 0, fmt.Errorf("sandbox execution not configured")
+	}
+	forkMgr, ok := s.manager.(interface {
+		ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error)
+	})
+	if !ok {
+		return "", "", 0, fmt.Errorf("manager does not support checkpoint forks")
+	}
+	sb, err := forkMgr.ForkFromCheckpoint(ctx, checkpointID, cfg)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("boot promotion VM: %w", err)
+	}
+	defer func() {
+		_ = s.manager.Kill(context.Background(), sb.ID)
+	}()
+	rootfs, workspace, size, err := s.manager.CreateCheckpoint(ctx, sb.ID, promotedArtifactID, s.checkpointStore, func() {})
+	if err != nil {
+		return "", "", 0, fmt.Errorf("capture promoted full checkpoint: %w", err)
+	}
+	return rootfs, workspace, size, nil
 }
 
 // listCheckpoints returns all checkpoints for a sandbox.
@@ -2600,6 +2759,19 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 	if cp.RootfsS3Key == nil || cp.WorkspaceS3Key == nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("checkpoint S3 keys not available")
 	}
+	forkCheckpointID := checkpointID.String()
+	forkRootfsKey := *cp.RootfsS3Key
+	forkWorkspaceKey := *cp.WorkspaceS3Key
+	if cp.Kind == "disk_only" &&
+		cp.PromotionStatus != nil && *cp.PromotionStatus == "ready" &&
+		cp.PromotedCheckpointID != nil && *cp.PromotedCheckpointID != "" &&
+		cp.PromotedRootfsS3Key != nil && *cp.PromotedRootfsS3Key != "" &&
+		cp.PromotedWorkspaceS3Key != nil && *cp.PromotedWorkspaceS3Key != "" {
+		forkCheckpointID = *cp.PromotedCheckpointID
+		forkRootfsKey = *cp.PromotedRootfsS3Key
+		forkWorkspaceKey = *cp.PromotedWorkspaceS3Key
+		log.Printf("api: fork checkpoint %s using promoted full artifact %s", checkpointID, forkCheckpointID)
+	}
 
 	// Parse the original sandbox config to reuse settings
 	var originalCfg types.SandboxConfig
@@ -2793,9 +2965,9 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 			CpuCount:             int32(originalCfg.CpuCount),
 			NetworkEnabled:       originalCfg.IsNetworkEnabled(),
 			Port:                 int32(originalCfg.Port),
-			TemplateRootfsKey:    *cp.RootfsS3Key,
-			TemplateWorkspaceKey: *cp.WorkspaceS3Key,
-			CheckpointId:         checkpointID.String(),
+			TemplateRootfsKey:    forkRootfsKey,
+			TemplateWorkspaceKey: forkWorkspaceKey,
+			CheckpointId:         forkCheckpointID,
 			SandboxId:            sandboxID,
 			EgressAllowlist:      originalCfg.EgressAllowlist,
 			SecretAllowedHosts:   flattenSecretAllowedHosts(originalCfg.SecretAllowedHosts),
@@ -2809,16 +2981,16 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 		// Combined mode: create locally — no external timeout, same reasoning as above
 		cfg := originalCfg
 		cfg.Timeout = timeout
-		cfg.TemplateRootfsKey = *cp.RootfsS3Key
-		cfg.TemplateWorkspaceKey = *cp.WorkspaceS3Key
+		cfg.TemplateRootfsKey = forkRootfsKey
+		cfg.TemplateWorkspaceKey = forkWorkspaceKey
 		cfg.SandboxID = sandboxID
-		cfg.CheckpointID = checkpointID.String()
+		cfg.CheckpointID = forkCheckpointID
 
 		forkMgr, hasFork := s.manager.(interface {
 			ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error)
 		})
 		if hasFork {
-			sb, err := forkMgr.ForkFromCheckpoint(context.Background(), checkpointID.String(), cfg)
+			sb, err := forkMgr.ForkFromCheckpoint(context.Background(), forkCheckpointID, cfg)
 			createErr = err
 			if sb != nil {
 				effectiveMemoryMB = sb.MemoryMB
@@ -2934,15 +3106,29 @@ func (s *Server) deleteCheckpointRecordAndObjects(ctx context.Context, cp *db.Ch
 	// Mirror the deletion to D1 checkpoints_index via events-ingest.
 	s.publishCheckpointEvent(ctx, "checkpoint_deleted", cp.ID, cp.SandboxID, cp.OrgID, "", nil)
 
-	// Best-effort: delete S3 objects if checkpoint store is configured
-	if s.checkpointStore != nil && cp.RootfsS3Key != nil && cp.WorkspaceS3Key != nil {
+	// Best-effort: delete S3 objects if checkpoint store is configured.
+	// Disk-only checkpoints may also own a derived full checkpoint artifact used
+	// for faster forks after background promotion.
+	if s.checkpointStore != nil {
+		keys := make([]string, 0, 4)
+		if cp.RootfsS3Key != nil {
+			keys = append(keys, *cp.RootfsS3Key)
+		}
+		if cp.WorkspaceS3Key != nil {
+			keys = append(keys, *cp.WorkspaceS3Key)
+		}
+		if cp.PromotedRootfsS3Key != nil {
+			keys = append(keys, *cp.PromotedRootfsS3Key)
+		}
+		if cp.PromotedWorkspaceS3Key != nil {
+			keys = append(keys, *cp.PromotedWorkspaceS3Key)
+		}
 		go func() {
 			bgCtx := context.Background()
-			if err := s.checkpointStore.Delete(bgCtx, *cp.RootfsS3Key); err != nil {
-				log.Printf("checkpoint: failed to delete S3 rootfs %s: %v", *cp.RootfsS3Key, err)
-			}
-			if err := s.checkpointStore.Delete(bgCtx, *cp.WorkspaceS3Key); err != nil {
-				log.Printf("checkpoint: failed to delete S3 workspace %s: %v", *cp.WorkspaceS3Key, err)
+			for _, key := range keys {
+				if err := s.checkpointStore.Delete(bgCtx, key); err != nil {
+					log.Printf("checkpoint: failed to delete S3 object %s: %v", key, err)
+				}
 			}
 		}()
 	}

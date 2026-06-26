@@ -1,0 +1,106 @@
+name: Deploy Events Ingest
+
+# Mirrors deploy-api-edge.yml for the events-ingest Worker, which had no CI deploy
+# (it was deployed by hand). On merge to main touching its sources, deploy to prod.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare-workers/events-ingest/**'
+      - 'cloudflare-workers/shared/**'
+      - '.github/workflows/deploy-events-ingest.yml'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Cloudflare Worker target'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+          - prod
+          - dev
+
+concurrency:
+  group: deploy-events-ingest
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy Events Ingest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Resolve target
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET="${{ inputs.target }}"
+          else
+            TARGET="prod"
+          fi
+
+          case "$TARGET" in
+            prod)
+              echo "config=wrangler.prod.toml" >> "$GITHUB_OUTPUT"
+              echo "name=opencomputer-events-ingest-prod" >> "$GITHUB_OUTPUT"
+              ;;
+            dev)
+              echo "config=wrangler.toml" >> "$GITHUB_OUTPUT"
+              echo "name=opensandbox-events-ingest-dev" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "unknown target: $TARGET" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Install events-ingest dependencies
+        working-directory: cloudflare-workers/events-ingest
+        run: npm ci
+
+      - name: Prepare CI deploy config
+        working-directory: cloudflare-workers/events-ingest
+        run: |
+          # Strip any `routes = [...]` block — the CI token may lack zone perms,
+          # and the worker is reached directly (CP forwarder / custom domain),
+          # not via a route. Mirrors the api-edge deploy.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          src = Path("${{ steps.target.outputs.config }}")
+          dst = Path("wrangler.ci.toml")
+          lines = src.read_text().splitlines()
+
+          out = []
+          skipping_routes = False
+          for line in lines:
+              if line.startswith("routes = ["):
+                  skipping_routes = True
+                  continue
+              if skipping_routes:
+                  if line.strip() == "]":
+                      skipping_routes = False
+                  continue
+              out.append(line)
+
+          dst.write_text("\n".join(out).rstrip() + "\n")
+          PY
+
+      - name: Deploy ${{ steps.target.outputs.name }}
+        working-directory: cloudflare-workers/events-ingest
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "CLOUDFLARE_API_TOKEN GitHub secret is required for Wrangler deploys" >&2
+            exit 1
+          fi
+          npx wrangler deploy -c wrangler.ci.toml

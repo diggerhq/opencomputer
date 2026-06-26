@@ -5,6 +5,17 @@ description: "Snapshot and fork sandbox state"
 
 A checkpoint is a named snapshot of a running sandbox. Fork new sandboxes from it to start from a known-good environment — like git branches for VMs.
 
+## Checkpoint Types
+
+OpenComputer supports two checkpoint modes:
+
+| Type | Preserves | Use when |
+| --- | --- | --- |
+| Full checkpoint | Disk, memory, and CPU state | You want the fastest fork or restore path from an exact running VM state. This is best for templates, important milestones, and branches you expect to fork often. |
+| Disk-only checkpoint | Rootfs and workspace disk state | You want lightweight, frequent snapshots of files, installed packages, and workspace changes. Forks boot from the saved disks, so they are cheaper to keep but may take longer to become ready. |
+
+Full checkpoints are the default. Use `kind: "disk_only"` when creating autosaves or high-frequency checkpoints where disk state is enough.
+
 <CodeGroup>
 
 ```typescript TypeScript
@@ -79,33 +90,36 @@ oc cp create sb-abc123 --name before-migration
 
 Checkpoint name must be unique within the sandbox. Status transitions from `processing` to `ready` (or `failed`).
 
-Each sandbox can have up to 10 checkpoints. To create a new checkpoint without failing at the limit, pass a retention policy that deletes the oldest eligible checkpoint first:
+Each sandbox can have up to 10 full checkpoints and up to 100 disk-only checkpoints. To create a new checkpoint without failing at the limit, pass a retention policy that deletes the oldest eligible checkpoint of the same type first:
 
 <CodeGroup>
 
 ```typescript TypeScript
 const checkpoint = await sandbox.createCheckpoint("autosave", {
-  retentionPolicy: { mode: "delete_oldest", maxCount: 10 },
+  kind: "disk_only",
+  retentionPolicy: { mode: "delete_oldest", maxCount: 100 },
 });
 ```
 
 ```python Python
 checkpoint = await sandbox.create_checkpoint(
     "autosave",
-    retention_policy={"mode": "delete_oldest", "maxCount": 10},
+    kind="disk_only",
+    retention_policy={"mode": "delete_oldest", "maxCount": 100},
 )
 ```
 
 ```bash CLI
 oc cp create sb-abc123 \
   --name autosave \
+  --kind disk_only \
   --retention-policy delete_oldest \
-  --retention-max-count 10
+  --retention-max-count 100
 ```
 
 </CodeGroup>
 
-Retention skips checkpoints that are public, have patches, or are still referenced by forked sandboxes. If no eligible checkpoint can be deleted, creation fails instead of deleting protected state.
+Retention skips checkpoints that are public, have patches, or are still referenced by forked sandboxes. If no eligible checkpoint of the requested type can be deleted, creation fails instead of deleting protected state.
 
 ### List Checkpoints
 

@@ -217,9 +217,10 @@ Create a named checkpoint. [HTTP API →](/api-reference/checkpoints/create)
 </ParamField>
 
 <ParamField body="opts.retentionPolicy" type="object">
-  Optional retention policy. Use `{ mode: "delete_oldest", maxCount: 10 }` to
-  delete the oldest eligible checkpoint before creating a new one when the
-  sandbox already has 10 checkpoints.
+  Optional retention policy. Use `{ mode: "delete_oldest", maxCount: 10 }` for
+  full checkpoints or `{ mode: "delete_oldest", maxCount: 100 }` with
+  `kind: "disk_only"` to delete the oldest eligible checkpoint of the same type
+  before creating a new one.
 </ParamField>
 
 **Returns:** `Promise<CheckpointInfo>`
