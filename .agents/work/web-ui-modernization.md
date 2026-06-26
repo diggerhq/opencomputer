@@ -13,7 +13,8 @@ do core library version bumps **last**. Status: **draft for review**, not starte
 
 > Measured **2026-06-26** at `feat/web-ui-dev` (`git rev-parse --short HEAD`).
 > Counts: `grep -rao 'style={' web/src | wc -l` (633), `… 'className='` (141),
-> `find web/src -name '*.tsx' -o -name '*.ts' | xargs wc -l` (~8,035).
+> `find web/src -name '*.tsx' -o -name '*.ts' | xargs wc -l` → **7,587** (TS/TSX;
+> ~8,035 if you also count `theme.css`).
 > Versions: `cd web && npm outdated`. Re-run these before trusting the tables —
 > they stale fast.
 
@@ -142,11 +143,17 @@ shadcn gives primitives; without named wrappers each agent will compose them
 differently. Define and build these OC dashboard components (on shadcn/Radix):
 
 `AppShell` (sidebar + topbar + org switcher), `PageHeader` (title/subtitle/
-actions), `DataTable` (TanStack Table + sort/empty/loading/row-click),
-`StatusBadge` (session lifecycle variants), `ConnectionState` (live dot),
+actions), `TableShell`/`ResourceTable` (**presentational** — sort affordance,
+empty/loading/row-click; TanStack Table *behavior* is added in Track C, not
+here), `StatusBadge` (session lifecycle variants), `ConnectionState` (live dot),
 `EmptyState`, `DangerAction` (confirm dialog + destructive styling),
 `MetricCard`, `CodeSurface` + `TerminalSurface` (the dark exception),
 `OrgSwitcher`, toast helpers. Screens compose these, not raw Radix.
+
+**Gallery (build it alongside the inventory):** a dev-only `/design-system` route
+(or Ladle/Storybook) that renders every component across its states + the State
+Fixture Matrix, captured by Playwright screenshots. Wrappers built in the
+abstract drift — the gallery is where the system is reviewed and regression-tested.
 
 ## Decisions needed (review)
 
@@ -165,12 +172,17 @@ actions), `DataTable` (TanStack Table + sort/empty/loading/row-click),
 
 The old plan conflated visual reskin with behavior/architecture changes. Split:
 
-**Track A — Foundation (one PR, no visual change beyond tokens):**
-- [ ] ESLint 9 flat + Prettier + `jsx-a11y`; `@/*` path alias; `lint`/`format` scripts.
-- [ ] Tailwind 3.4 + base tokens (from site) + **product token layer** + **dialect**
-  (fonts, dark surfaces) + `cn()`. Coexists with `theme.css`.
+**Track A — Foundation (one PR, no visual change to unmigrated screens):**
+- [ ] ESLint 9 flat + Prettier (+ **prettier-plugin-tailwindcss** for class order)
+  + `jsx-a11y` + **@tanstack/eslint-plugin-query**; `@/*` alias; `lint`/`format` scripts.
+- [ ] Tailwind 3.4 + base tokens + **product token layer** + **dialect** (fonts,
+  dark surfaces) + `cn()`. **CSS coexistence (load-bearing — get this right):**
+  `theme.css` keeps owning unmigrated screens; **disable Tailwind preflight**
+  (`corePlugins.preflight:false`) during coexistence so the global reset doesn't
+  reflow legacy screens; tokens live on `:root`; Tailwind utilities are **opt-in
+  per screen**. Preflight is re-enabled only when `theme.css` is deleted (end of B).
 - [ ] shadcn init + core primitives + lucide + `<Toaster/>`.
-- [ ] Build the **component inventory** (AppShell, PageHeader, DataTable, StatusBadge, …).
+- [ ] Build the **component inventory** + the `/design-system` gallery.
 
 **Track B — Visual migration (per-screen PRs, reskin only):**
 - [ ] Pilot **`Sessions.tsx`** (table + filters + delete) as the reference.
@@ -178,6 +190,8 @@ The old plan conflated visual reskin with behavior/architecture changes. Split:
   Settings → Billing → SessionDetail (incl. **dark** logs/terminal surfaces).
 - [ ] Each screen follows the **Migration Contract** (below). **Excludes**
   Agents/AgentDetail (gated on decision #1).
+- [ ] **End of Track B:** delete `theme.css`, remove dead inline styles, and
+  re-enable Tailwind preflight — done here, *before* the Track D upgrades.
 
 **Track C — Behavior refactors (separate PRs, NOT "reskin"):**
 - [ ] Forms → react-hook-form + zod (Settings/Billing/APIKeys).
@@ -186,7 +200,8 @@ The old plan conflated visual reskin with behavior/architecture changes. Split:
   SessionDetail; AgentDetail only if revived).
 
 **Track D — Last: core lib upgrades (separate PRs):** React 19 + RR7 together;
-Vite 8 + plugin-react(-swc); TS 6; Tailwind 4 evaluation. Then delete `theme.css`.
+Vite 8 + plugin-react(-swc); TS 6; Tailwind 4 evaluation. (`theme.css` is already
+gone — deleted at the end of Track B.)
 
 ## Migration Contract (NEW — per screen)
 
@@ -197,6 +212,41 @@ Vite 8 + plugin-react(-swc); TS 6; Tailwind 4 evaluation. Then delete `theme.css
   destructive-confirm, and mobile/tablet** states.
 - Per-screen PR includes before/after **screenshots** (desktop + mobile) and the
   Quality Gate results.
+
+## Responsive behavior (NEW — "mobile/tablet states" made concrete)
+
+- **Sidebar:** icon-rail < `lg`, drawer (vaul/Sheet) < `md`; remembers state.
+- **Tables:** horizontal scroll with a **sticky first column + sticky action
+  column**; never squash actions; card/list fallback < `sm` for the busiest
+  tables (Sessions).
+- **Terminal / log panels:** viewport-relative height with min/max, collapsible,
+  scroll *within* the panel (not the page).
+- **Actions:** overflow to a `…` menu when they don't fit; the primary stays visible.
+- **Touch targets:** ≥ 44×44px on coarse pointers.
+
+## State fixture matrix (NEW — test real states, not happy paths)
+
+Each surface is built + screenshotted against its real states; these double as
+the `/design-system` gallery fixtures and the Playwright cases:
+first-run · loading-auth · unauth-redirect · sessions {empty, active, failed,
+deleting} · billing {ok, halted, past-due, no-payment-method} · org {single,
+multiple → switcher} · API key {created, secret-shown-once} · custom domain
+{pending, failed, verified} · logs {streaming, disconnected (SSE drop)} ·
+terminal {connected, WS failure, reconnecting}.
+
+## Interaction feel (NEW — designed, not just themed)
+
+- **Skeletons** for first-load layout; **spinners** only for in-place async
+  (button-pending, refetch). No layout shift on load.
+- **Toast taxonomy** (sonner, one place): success (auto-dismiss), error
+  (sticky + action), info. No `alert()`.
+- **Copy-to-clipboard:** inline check + "Copied" toast (ids, keys, URLs).
+- **Destructive confirm copy:** name the object + the consequence ("Delete
+  sandbox `x`? Stops it and removes preview URLs."); typed-confirm for the
+  scariest.
+- **Button pending:** disable + spinner, keep width (no reflow).
+- **Motion:** 150–200ms ease-out for state transitions; honor
+  `prefers-reduced-motion` (instant/crossfade fallback).
 
 ## Accessibility plan (NEW — "Radix + jsx-a11y" is not enough)
 
@@ -235,6 +285,8 @@ exercise the edge path.)
   `confirm()`/`alert()`.
 - Forms on RHF + zod; lists on TanStack Table.
 - ESLint + Prettier + jsx-a11y + axe smoke green in CI, in **both** serving modes.
+- Repo hygiene: no generated files tracked — `*.tsbuildinfo` (done) +
+  `api-edge/assets/` are gitignored.
 - Core libs current after Track D.
 
 ## References
