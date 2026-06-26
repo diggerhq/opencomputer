@@ -43,6 +43,28 @@ Managed-agent product behavior is mostly **not** implemented here:
 - `ws-gstack` — design workspace for managed agents, channels, packages, and
   product shape
 
+## Local development (dev box + dashboard)
+
+The dashboard (`web/`) + control plane run against a personal **GCP dev box**
+(`deploy/gcp/deploy-qemu-dev.sh`; config in the gitignored
+`~/.opensandbox-gcp-dev.env`). The dashboard can be run two ways — both, plus
+the quirks that bite, are documented in **`.agents/work/dev-edge-setup.md`**:
+
+- **Vite local** (fast UI iteration) — `cd web && source ~/.opensandbox-gcp-dev.env && npm run dev`:
+  SPA on `:3000` proxying `/api`,`/auth` to the box (combined-mode WorkOS auth).
+- **Prod-mirror edge** — a CF Worker serving the SPA + the *real* edge auth path,
+  for validating edge behavior (e.g. the WorkOS hosted-logout flow).
+
+**Dev-env quirks — read the runbook before touching CF / D1 / WorkOS:**
+
+- `~/.opensandbox-gcp-dev.env` uses `${VAR:-default}` references — **`source` it**,
+  never `grep|cut` (the literal `${...}` string breaks WorkOS as `invalid_client`).
+- `cloudflare-workers/api-edge/wrangler.toml` points at **prod** — always pass
+  `--config wrangler.igor-dev.toml` for personal-dev `wrangler` commands.
+- D1: apply only `cloudflare-workers/schema.sql` (it is the full current
+  snapshot; the `schema_phase*.sql` files are baked in and error with
+  `duplicate column` on a fresh DB).
+
 ## Hard rules
 
 **⚠️ PRODUCTION DATABASE IS EFFECTIVELY READ-ONLY.** This is the most
