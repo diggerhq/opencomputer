@@ -8,6 +8,7 @@ import {
   getSessions,
   type Session,
 } from '@/api/client'
+import { usePrefetchSandbox } from '@/hooks/use-prefetch'
 import { PageHeader } from '@/components/page-header'
 import {
   Panel,
@@ -42,6 +43,7 @@ function elapsedMinutes(session: Session): number {
 }
 
 export default function Dashboard() {
+  const prefetch = usePrefetchSandbox()
   const { data: runningSessions, isLoading: loadingRunning } = useQuery({
     queryKey: ['sessions', 'running'],
     queryFn: () => getSessions('running'),
@@ -66,6 +68,8 @@ export default function Dashboard() {
       cell: (s) => (
         <Link
           to={`/sandboxes/${s.sandboxId}`}
+          onMouseEnter={() => prefetch(s.sandboxId)}
+          onFocus={() => prefetch(s.sandboxId)}
           className="text-foreground font-mono text-[13px] underline-offset-4 hover:underline"
         >
           {s.sandboxId}
@@ -183,10 +187,13 @@ export default function Dashboard() {
 }
 
 function SandboxRow({ session }: { session: Session }) {
+  const prefetch = usePrefetchSandbox()
   const elapsed = elapsedMinutes(session)
   return (
     <Link
       to={`/sandboxes/${session.sandboxId}`}
+      onMouseEnter={() => prefetch(session.sandboxId)}
+      onFocus={() => prefetch(session.sandboxId)}
       className="hover:bg-row-hover flex items-center justify-between px-5 py-3 transition-colors"
     >
       <div className="flex items-center gap-2.5">

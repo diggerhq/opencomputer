@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Boxes } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
+import { usePrefetchSandbox } from '@/hooks/use-prefetch'
 import { deleteSession, getSessions, type Session } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
 import { Panel } from '@/components/panel'
@@ -28,6 +29,7 @@ function canDeleteSession(session: Session) {
 
 export default function Sessions() {
   const queryClient = useQueryClient()
+  const prefetch = usePrefetchSandbox()
   const [status, setStatus] = useState<string>('')
   const [toDelete, setToDelete] = useState<Session | null>(null)
 
@@ -75,6 +77,8 @@ export default function Sessions() {
       cell: (s) => (
         <Link
           to={`/sandboxes/${s.sandboxId}`}
+          onMouseEnter={() => prefetch(s.sandboxId)}
+          onFocus={() => prefetch(s.sandboxId)}
           className="text-foreground font-mono text-[13px] underline-offset-4 hover:underline"
         >
           {s.sandboxId}
