@@ -24,8 +24,8 @@ brand-aligned, accessible dashboard design system; a linter — for the **live**
 screens, in one focused effort.
 
 **Not this effort (follow-ups):** framework migration (stays a SPA); data-layer
-rewrite (TanStack Query stays); forms refactor (RHF/zod); TanStack Table
-behavior; decomposing oversized components; **upgrade-only runtime work** (a
+rewrite (TanStack Query stays); TanStack Table behavior; decomposing oversized
+components; **upgrade-only runtime work** (a
 React/RR/Vite/TS bump with no driving reason — deferred to the end or skipped; a
 new-lib requirement or bug *is* a reason); a Storybook/Ladle gallery; the
 orphaned Agents screens. *(Adding new UI libs — Tailwind, shadcn, lucide, sonner
@@ -89,8 +89,9 @@ same stack, so a few tokens/patterns can be borrowed — a convenience, **not th
 rationale, and not a constraint** (we don't have to match the site's versions).
 
 **Adopt now:** Tailwind (latest, v4) (+ tw-animate-css, tailwind-merge, clsx → `cn()`),
-shadcn/ui (Radix), lucide-react, sonner (toasts), ESLint 9 flat
-(+ typescript-eslint, react-hooks, **jsx-a11y**) + Prettier
+shadcn/ui (Radix), lucide-react, sonner (toasts), **react-hook-form + zod +
+@hookform/resolvers** (forms — applied where they earn it, see "Forms" below),
+ESLint 9 flat (+ typescript-eslint, react-hooks, **jsx-a11y**) + Prettier
 (+ **prettier-plugin-tailwindcss**), `@/*` alias.
 
 **Use the latest of the new libs** (Tailwind, shadcn, Radix, lucide, sonner). If
@@ -98,8 +99,8 @@ a new lib's latest *requires* a core-lib bump (a release that needs a newer Vite
 or React), that bump is **in scope — the requirement is the reason.**
 
 **Defer:**
-- *New libs not yet earned* — react-hook-form + zod, TanStack Table,
-  `@tanstack/eslint-plugin-query`. Add when a screen actually needs them.
+- *New libs not yet earned* — TanStack Table, `@tanstack/eslint-plugin-query`.
+  Add when a screen actually needs them.
 - *Upgrade-only work* — bumping React / react-router / Vite / TS **just to be
   current**, with no driving reason, waits until the very end (or is skipped).
   Adding new UI libraries is the point; gratuitous runtime upgrades aren't. A
@@ -155,6 +156,13 @@ richer toast helpers, TanStack-Table behavior in `ResourceTable`. The
 **screen-specific shadcn primitives** the breakdown calls for — `pagination`
 (Checkpoints), `checkbox` (Checkpoints), `alert` (Checkpoints/Billing), etc. —
 are likewise `shadcn add`-ed in the commit that first needs them, not upfront.
+
+**Forms:** use **react-hook-form + zod** (`zodResolver`) on forms with real
+validation or multiple fields — **Billing's three** (promo / top-up / auto-topup),
+built in Billing's reskin commit so it's touched once (not a later refactor).
+Trivial single-input forms (Settings org-name/domain/invite, APIKeys create) stay
+**plain controlled `Input`s** — RHF there is pure overhead and there's no later
+pass to avoid.
 
 ## Decisions needed (review)
 
@@ -237,9 +245,9 @@ screens only — **Agents (44) + AgentDetail (159) are orphaned and excluded.**
 | **Checkpoints** | 27 | `.data-table`→`ResourceTable`; manual pagination→`Pagination`; checkbox filter→`Checkbox`; RGBA badges→`StatusBadge`; error box→`Alert`; `confirm()` | loading, empty, failed-error, deleting, paged | manual pagination + per-type RGBA badge math |
 | **APIKeys** | 15 | **fake-modal create→real `Dialog`**; `.input`→`Input`; 3 svg→lucide; copy; `confirm()` | loading, empty, **key-shown-once**, copied | the "modal" is a `.glass-card` (no backdrop/focus-trap) — a real defect to fix; inline "Copied", not a toast |
 | **Dashboard** | 50 | `.data-table`→`ResourceTable`; stat cards→`MetricCard`; copy/reveal | first-run onboarding, loading, empty, create-error | **first-run flow + auto-create-API-key-on-mount (useRef guard)** must be preserved |
-| **Settings** | 72 | `.input`→`Input`; **2×`confirm()`→`AlertDialog`**; domain branching; status badge | loading, empty(members), domain {pending/failed/verified}, saved | forms are simple → **no RHF**; `hasDomain`/`!hasDomain` branching; team + invitations lists |
+| **Settings** | 72 | `.input`→`Input`; **2×`confirm()`→`AlertDialog`**; domain branching; status badge | loading, empty(members), domain {pending/failed/verified}, saved | forms are trivial single inputs → **plain `Input`, no RHF**; `hasDomain`/`!hasDomain` branching; team + invitations lists |
 | **SessionDetail** | 49 | header/actions; 9 svg→lucide; **3×`confirm()`→`AlertDialog`**; `StatCard`→`MetricCard`; preview-URL copy; **builds `Code`/`TerminalSurface`** | loading, not-found, reboot/power-cycle/delete (pending+error), live stats | embeds Terminal (WS) + LogsPanel (SSE); stats poll 5s |
-| **Billing** (last) | 112 | **`ConfirmModal`→`Dialog` (non-dismissible while pending)**; invoices `.data-table`→`ResourceTable`; usage grid; 3 forms; 3 svg→lucide | loading, empty, error, halted/past-due, free-trial-exhausted, promo-applied, no-payment-method | **biggest.** Stripe `window.location.href` redirects **stay untouched**; Stripe-vs-Autumn branching; 3 non-trivial forms (promo/top-up/auto-topup) kept as local state (RHF deferred) |
+| **Billing** (last) | 112 | **`ConfirmModal`→`Dialog` (non-dismissible while pending)**; invoices `.data-table`→`ResourceTable`; usage grid; 3 forms; 3 svg→lucide | loading, empty, error, halted/past-due, free-trial-exhausted, promo-applied, no-payment-method | **biggest.** Stripe `window.location.href` redirects **stay untouched**; Stripe-vs-Autumn branching; **3 forms (promo/top-up/auto-topup) → react-hook-form + zod here** (they earn it — numeric validation — done in the reskin so Billing is touched once) |
 | **Terminal** (dark) | 15 | reskin chrome only; status→tokens | connected / connecting / disconnected / error | **preserve:** xterm ANSI theme + `#0a0a0f` bg + **binary WS** + resize. Inline sizing is the *allowed* third-party-bridge exception; `@xterm/xterm/css/xterm.css` coexists |
 | **LogsPanel** (dark) | 20 | source chips, search, status dot→tokens | streaming, empty, error, disconnected, paused | **preserve:** dark `--bg-deep`, SSE lifecycle, **auto-scroll/sticky-bottom**, `color-mix` chips, mono font. Reskin chrome only — complex internals |
 
@@ -323,7 +331,7 @@ check only when the commit touches them.)
 
 ## Follow-ups (separate efforts — explicitly out of this pass)
 
-Forms (RHF + zod) · TanStack Table behavior · decomposing oversized live
+TanStack Table behavior · decomposing oversized live
 components (Billing, SessionDetail) · `MetricCard`/`OrgSwitcher`/richer toasts ·
 a `/design-system` gallery (or Ladle/Storybook) if wrapper drift becomes real ·
 axe/Playwright automation · full semantic palette (logs/chart/billing/ANSI) ·
