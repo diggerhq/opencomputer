@@ -11,8 +11,8 @@ var sandboxScaleCmd = &cobra.Command{
 	Use:   "scale <sandbox-id> <memory-mb>",
 	Short: "Manually resize a sandbox",
 	Long: `Manually resize a sandbox to a specific memory tier. CPU follows memory
-per the platform's tier table (e.g. 8 GB → 4 vCPU). Allowed tiers:
-1024, 4096, 8192, 16384, 32768, 65536 MB.
+per the platform's tier table (e.g. 8 GB → 2 vCPU, 16 GB → 4 vCPU). Allowed tiers:
+1024, 4096, 8192, 16384 MB. Contact us for enterprise sizing above 16 GB.
 
 A manual scale disables autoscale on this sandbox as a side effect; re-
 enable with 'oc sandbox autoscale --on' if you want it back.
@@ -195,8 +195,8 @@ func setScalingLock(cmd *cobra.Command, sandboxID string, locked bool) error {
 func init() {
 	sandboxAutoscaleCmd.Flags().Bool("on", false, "Enable autoscale (requires --min and --max)")
 	sandboxAutoscaleCmd.Flags().Bool("off", false, "Disable autoscale")
-	sandboxAutoscaleCmd.Flags().Int("min", 0, "Minimum memory tier in MB (allowed: 1024, 4096, 8192, 16384, 32768, 65536)")
-	sandboxAutoscaleCmd.Flags().Int("max", 0, "Maximum memory tier in MB (allowed: 1024, 4096, 8192, 16384, 32768, 65536)")
+	sandboxAutoscaleCmd.Flags().Int("min", 0, "Minimum memory tier in MB (allowed: 1024, 4096, 8192, 16384)")
+	sandboxAutoscaleCmd.Flags().Int("max", 0, "Maximum memory tier in MB (allowed: 1024, 4096, 8192, 16384)")
 
 	sandboxCmd.AddCommand(sandboxScaleCmd)
 	sandboxCmd.AddCommand(sandboxAutoscaleCmd)
