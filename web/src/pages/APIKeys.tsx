@@ -1,6 +1,29 @@
 import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getAPIKeys, createAPIKey, deleteAPIKey, type APIKey } from '../api/client'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { CircleCheck, KeyRound, Plus, X } from 'lucide-react'
+import {
+  createAPIKey,
+  deleteAPIKey,
+  getAPIKeys,
+  type APIKey,
+} from '@/api/client'
+import { PageHeader } from '@/components/page-header'
+import { Panel } from '@/components/panel'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Field, Input } from '@/components/form'
+import { CopyRow } from '@/components/copy-row'
+import { EmptyState } from '@/components/empty-state'
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import { ResourceTable, type Column } from '@/components/resource-table'
 
 export default function APIKeys() {
   const queryClient = useQueryClient()
@@ -12,7 +35,7 @@ export default function APIKeys() {
   const [showCreate, setShowCreate] = useState(false)
   const [newKeyName, setNewKeyName] = useState('')
   const [createdKey, setCreatedKey] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
+  const [toRevoke, setToRevoke] = useState<APIKey | null>(null)
 
   const createMutation = useMutation({
     mutationFn: (name: string) => createAPIKey(name),
@@ -22,189 +45,194 @@ export default function APIKeys() {
       setNewKeyName('')
       queryClient.invalidateQueries({ queryKey: ['api-keys'] })
     },
+    onError: (error) =>
+      toast.error(
+        `Couldn't create key: ${error instanceof Error ? error.message : String(error)}`,
+      ),
   })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteAPIKey(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['api-keys'] })
-    },
+    onError: (error) =>
+      toast.error(
+        `Revoke failed: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['api-keys'] }),
   })
+
+  const columns: Column<APIKey>[] = [
+    {
+      key: 'name',
+      header: 'Name',
+      cell: (k) => (
+        <span className="text-foreground font-medium">{k.name}</span>
+      ),
+    },
+    {
+      key: 'prefix',
+      header: 'Prefix',
+      cell: (k) => (
+        <code className="text-muted-foreground font-mono text-xs">
+          {k.keyPrefix}…
+        </code>
+      ),
+    },
+    {
+      key: 'lastUsed',
+      header: 'Last used',
+      cell: (k) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {k.lastUsed ? new Date(k.lastUsed).toLocaleString() : 'Never'}
+        </span>
+      ),
+    },
+    {
+      key: 'created',
+      header: 'Created',
+      cell: (k) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {new Date(k.createdAt).toLocaleString()}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (k) => (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-status-error hover:bg-status-error-bg hover:text-status-error"
+          onClick={() => setToRevoke(k)}
+        >
+          Revoke
+        </Button>
+      ),
+    },
+  ]
 
   return (
     <div>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 28 }}>
-        <div>
-          <h1 className="page-title">API Keys</h1>
-          <p className="page-subtitle">Manage authentication tokens for your integrations</p>
-        </div>
-        <button className="btn-primary" onClick={() => setShowCreate(true)}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-            <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-          Create Key
-        </button>
-      </div>
+      <PageHeader
+        title="API Keys"
+        description="Manage authentication tokens for your integrations"
+        actions={
+          <Button onClick={() => setShowCreate(true)}>
+            <Plus className="size-4" />
+            Create key
+          </Button>
+        }
+      />
 
-      {/* Created Key Banner */}
-      {createdKey && (
-        <div className="animate-in" style={{
-          background: 'rgba(99, 102, 241, 0.06)',
-          border: '1px solid var(--border-accent)',
-          borderRadius: 'var(--radius-lg)',
-          padding: 20,
-          marginBottom: 20,
-        }}>
-          <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 14 }}>New API key created</div>
-          <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 10 }}>
-            Copy this key now. You won&apos;t be able to see it again.
-          </div>
-          <div style={{ position: 'relative' }}>
-            <code style={{
-              display: 'block',
-              background: 'var(--bg-deep)',
-              color: 'var(--text-accent)',
-              padding: 14,
-              paddingRight: 96,
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 13,
-              fontFamily: 'var(--font-mono)',
-              wordBreak: 'break-all',
-              border: '1px solid var(--border-subtle)',
-            }}>{createdKey}</code>
-            <button
-              onClick={async () => {
-                await navigator.clipboard.writeText(createdKey)
-                setCopied(true)
-                setTimeout(() => setCopied(false), 1500)
-              }}
-              className="btn-ghost"
-              style={{
-                position: 'absolute',
-                top: 8,
-                right: 8,
-                fontSize: 12,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
+      {createdKey ? (
+        <Panel className="mb-5 p-5">
+          <div className="flex items-start gap-3">
+            <CircleCheck className="text-status-running mt-0.5 size-5 shrink-0" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <div>
+                <p className="text-foreground text-sm font-semibold">
+                  New API key created
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  Copy this key now — you won&apos;t be able to see it again.
+                </p>
+              </div>
+              <CopyRow value={createdKey} />
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Dismiss"
+              onClick={() => setCreatedKey(null)}
             >
-              {copied ? (
-                <>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                  Copied
-                </>
-              ) : (
-                <>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                  </svg>
-                  Copy
-                </>
-              )}
-            </button>
+              <X className="size-4" />
+            </Button>
           </div>
-          <button
-            onClick={() => { setCreatedKey(null); setCopied(false) }}
-            style={{
-              marginTop: 10, fontSize: 12, background: 'none', border: 'none',
-              color: 'var(--accent-indigo)', cursor: 'pointer',
-              fontFamily: 'var(--font-body)',
+        </Panel>
+      ) : null}
+
+      <Panel className="overflow-hidden">
+        <ResourceTable
+          columns={columns}
+          rows={keys ?? []}
+          rowKey={(k) => k.id}
+          loading={isLoading}
+          empty={
+            <EmptyState
+              icon={KeyRound}
+              title="No API keys yet"
+              description="Create a key to authenticate the SDK, CLI, and integrations."
+              action={
+                <Button size="sm" onClick={() => setShowCreate(true)}>
+                  <Plus className="size-4" />
+                  Create key
+                </Button>
+              }
+            />
+          }
+        />
+      </Panel>
+
+      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create API key</DialogTitle>
+            <DialogDescription>
+              Give the key a name so you can recognize it later.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (newKeyName.trim()) createMutation.mutate(newKeyName.trim())
             }}
           >
-            Dismiss
-          </button>
-        </div>
-      )}
+            <Field label="Key name" htmlFor="key-name">
+              <Input
+                id="key-name"
+                value={newKeyName}
+                onChange={(e) => setNewKeyName(e.target.value)}
+                placeholder="e.g. Production"
+              />
+            </Field>
+            <DialogFooter className="mt-4">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setShowCreate(false)
+                  setNewKeyName('')
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={createMutation.isPending || !newKeyName.trim()}
+              >
+                {createMutation.isPending ? 'Creating…' : 'Create key'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
-      {/* Create Dialog */}
-      {showCreate && (
-        <div className="glass-card animate-in" style={{ padding: 22, marginBottom: 20 }}>
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>
-              Key Name
-            </label>
-            <input
-              type="text"
-              value={newKeyName}
-              onChange={e => setNewKeyName(e.target.value)}
-              placeholder="e.g. Production Key"
-              className="input"
-              autoFocus
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              className="btn-primary"
-              onClick={() => createMutation.mutate(newKeyName)}
-              disabled={createMutation.isPending || !newKeyName.trim()}
-            >
-              {createMutation.isPending ? 'Creating\u2026' : 'Create'}
-            </button>
-            <button className="btn-ghost" onClick={() => { setShowCreate(false); setNewKeyName('') }}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Table */}
-      {isLoading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
-          <div className="loading-spinner" />
-        </div>
-      ) : (
-        <div className="glass-card animate-in stagger-1" style={{ overflow: 'hidden' }}>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Prefix</th>
-                <th>Last Used</th>
-                <th>Created</th>
-                <th style={{ width: 80 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {(keys ?? []).map((k: APIKey) => (
-                <tr key={k.id}>
-                  <td style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{k.name}</td>
-                  <td><code>{k.keyPrefix}…</code></td>
-                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                    {k.lastUsed ? new Date(k.lastUsed).toLocaleString() : 'Never'}
-                  </td>
-                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                    {new Date(k.createdAt).toLocaleString()}
-                  </td>
-                  <td>
-                    <button
-                      className="btn-danger"
-                      onClick={() => {
-                        if (confirm('Revoke this API key?')) {
-                          deleteMutation.mutate(k.id)
-                        }
-                      }}
-                    >
-                      Revoke
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {(keys ?? []).length === 0 && (
-                <tr>
-                  <td colSpan={5} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>
-                    No API keys yet
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <ConfirmDialog
+        open={toRevoke !== null}
+        onOpenChange={(open) => !open && setToRevoke(null)}
+        title={`Revoke ${toRevoke?.name ? `"${toRevoke.name}"` : 'this key'}?`}
+        description="Integrations using this key will stop working immediately. This can't be undone."
+        confirmLabel="Revoke key"
+        destructive
+        pending={deleteMutation.isPending}
+        onConfirm={() => {
+          if (!toRevoke) return
+          deleteMutation.mutate(toRevoke.id, {
+            onSuccess: () => setToRevoke(null),
+          })
+        }}
+      />
     </div>
   )
 }
