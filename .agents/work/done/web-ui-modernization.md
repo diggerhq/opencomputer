@@ -9,11 +9,16 @@ explicit **follow-up**, pulled in only when a screen actually needs it.
 
 Drivers: 633 inline styles, no components/forms/lint, and an off-brand look
 ("Void Glass" dark indigo) vs the site + docs (light ink-on-paper). Status:
-**code-complete on `feat/web-ui-dev` (#426)** — Phases A + B done (all live
+**DONE / shipped on `feat/web-ui-dev` (#426).** Phases A + B done (all live
 screens + the dark Terminal/Logs migrated, `theme.css` deleted, Preflight on,
-build/lint/jsx-a11y green). The **only** remaining item is the both-serving-mode
-release smoke (auth/logout/SSE/WS/SPA-fallback through the Go control plane and
-the api-edge Worker) — it needs the live backend, so it's a manual release gate.
+build/lint/format/jsx-a11y green), plus a post-completion polish + PR-review +
+critique round (see **Session 2 wrap-up** below). The dev edge is deployed and
+the **edge** serving-mode smoke is green; the **Go combined-mode** smoke is the
+only thing still pending (needs a box redeploy — not a code task).
+
+> **Next effort:** Durable Sessions UI (Agents + Sessions from the
+> sessions-api). Read the **Session 2 wrap-up → carry-forward** below FIRST —
+> especially the Sandboxes-rename naming collision.
 
 > Measured **2026-06-26** at `feat/web-ui-dev`. Counts:
 > `grep -rao 'style={' web/src | wc -l` (633), `… 'className='` (141),
@@ -353,6 +358,54 @@ check only when the commit touches them.)
 - ESLint + Prettier + jsx-a11y green; both-serving-mode smoke green at release.
 - Repo hygiene: no generated files tracked (`*.tsbuildinfo` done, `api-edge/assets/`).
 - **Agents/AgentDetail excluded** from all metrics until deleted or routed.
+
+## Session 2 wrap-up (2026-06-27) — polish, PR review, rename, critique
+
+After Phase B, a polish + review round landed on `feat/web-ui-dev` (all green,
+all pushed):
+
+- **Visual polish** (interactive review): lighter disabled primary (muted fill,
+  not ink-at-50%), `--radius-sm` 2→3px for small buttons/pills, failed-checkpoint
+  error became a flush full-width tinted strip (was a floating Alert),
+  destructive row-action hover no longer paints a rectangle over row-hover,
+  **dark Terminal/Logs re-tinted WARM** (hue ~36, matches the app — was cool
+  blue) incl. the xterm bg/fg/cursor, log source chips toned down + finer
+  borders, Templates empty-state SDK calls rendered as `<code>` chips.
+- **PR-review fixes:** quality gates now green (`npm run lint` + `format:check`)
+  — useAuth lint annotations + `.prettierignore` mirrors the eslint Agents
+  ignore; preview gated on `VITE_PREVIEW === '1'`; **latin-only `@font-face`**
+  (2 woff2, not ~14); dropped `next-themes`, `shadcn` → devDep; **org switch
+  clears the React Query cache**; **edge `/auth/refresh` preserves `wsid`** (was
+  regressing hosted logout) and **Go `ClearAllCookies` clears the
+  configured-domain cookie** too (combined-mode logout).
+- **Error toasts humanized:** new `src/lib/errors.ts` `notifyError(message,
+  error)` — human toast, raw error to console. **Use this for new screens.**
+- **`impeccable` critique: 35/40 (Good), no P0/P1**, detector-clean apart from
+  the intentional brand fonts. The one weak heuristic is power-user Flexibility
+  (2/40: no bulk actions / shortcuts / command palette) — **deferred** (already
+  a follow-up). Snapshot in `web/.impeccable/` (gitignored).
+
+### Carry-forward for the Durable Sessions UI (READ FIRST)
+
+- **The "Sessions" tab was renamed to "Sandboxes"** (route `/sandboxes`;
+  `/sessions` now redirects to it; nav/titles/links all say Sandboxes). This was
+  done precisely to **free up "Sessions"** for the new Durable Agent Sessions
+  concepts (Agents + Sessions).
+- **Naming collision to resolve:** the *internal* sandbox data layer still uses
+  the backend's vocabulary — the `Session` TS type, `getSessions()`, the
+  `['sessions']` query keys, and the `/api/dashboard/sessions` endpoints all mean
+  **sandboxes**. The page component files are still `Sessions.tsx` /
+  `SessionDetail.tsx`. When the real Sessions entity lands, rename this layer to
+  `sandbox` (and repurpose the `/sessions` redirect) so the two don't clash.
+- **Reuse, don't rebuild:** the token system (`web/src/index.css`), the
+  component set (`AppShell`, `Panel`, `PageHeader`, `StatusBadge`,
+  `ConfirmDialog`, `ResourceTable`, `MetricCard`, `CopyRow`, `EmptyState`,
+  form primitives), `notifyError`, and the **preview harness**
+  (`npm run dev:preview` + `src/api/mock.ts`, gated on `VITE_PREVIEW===1`) for
+  no-backend rendering + headless screenshots. New screens add their API to
+  `client.ts` + mock entries to `mock.ts`.
+- Sources for the next effort: `sessions-api/` (the Durable Sessions API) and
+  `oc-bg-agents/` (design context) in the workspace.
 
 ## Follow-ups (separate efforts — explicitly out of this pass)
 
