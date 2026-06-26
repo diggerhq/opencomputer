@@ -197,6 +197,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{47, "migrations/047_orgs_billing_provider.up.sql"},
 		{48, "migrations/048_orgs_usage_sync_watermark.up.sql"},
 		{49, "migrations/049_sandbox_webhooks.up.sql"},
+		{50, "migrations/050_checkpoint_kind.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -1998,17 +1999,25 @@ func (s *Store) UpsertWorkspaceBackup(ctx context.Context, sandboxID string, org
 
 // Checkpoint represents a named checkpoint for a sandbox.
 type Checkpoint struct {
-	ID             uuid.UUID       `json:"id"`
-	SandboxID      string          `json:"sandboxId"`
-	OrgID          uuid.UUID       `json:"orgId"`
-	Name           string          `json:"name"`
-	RootfsS3Key    *string         `json:"rootfsS3Key,omitempty"`
-	WorkspaceS3Key *string         `json:"workspaceS3Key,omitempty"`
-	SandboxConfig  json.RawMessage `json:"sandboxConfig"`
-	Status         string          `json:"status"`
-	SizeBytes      int64           `json:"sizeBytes"`
-	IsPublic       bool            `json:"isPublic"`
-	CreatedAt      time.Time       `json:"createdAt"`
+	ID                     uuid.UUID       `json:"id"`
+	SandboxID              string          `json:"sandboxId"`
+	OrgID                  uuid.UUID       `json:"orgId"`
+	Name                   string          `json:"name"`
+	RootfsS3Key            *string         `json:"rootfsS3Key,omitempty"`
+	WorkspaceS3Key         *string         `json:"workspaceS3Key,omitempty"`
+	SandboxConfig          json.RawMessage `json:"sandboxConfig"`
+	Kind                   string          `json:"kind"`
+	PromotionStatus        *string         `json:"promotionStatus,omitempty"`
+	PromotedCheckpointID   *string         `json:"promotedCheckpointId,omitempty"`
+	PromotedRootfsS3Key    *string         `json:"promotedRootfsS3Key,omitempty"`
+	PromotedWorkspaceS3Key *string         `json:"promotedWorkspaceS3Key,omitempty"`
+	PromotedSizeBytes      *int64          `json:"promotedSizeBytes,omitempty"`
+	PromotedAt             *time.Time      `json:"promotedAt,omitempty"`
+	PromotionError         *string         `json:"promotionError,omitempty"`
+	Status                 string          `json:"status"`
+	SizeBytes              int64           `json:"sizeBytes"`
+	IsPublic               bool            `json:"isPublic"`
+	CreatedAt              time.Time       `json:"createdAt"`
 	// ErrorMsg holds the failure reason when Status == "failed". Persisted by
 	// SetCheckpointFailed so customers/operators can see WHY a checkpoint
 	// failed (timeout, archive error, S3 upload error, etc.) instead of just
@@ -2019,11 +2028,14 @@ type Checkpoint struct {
 
 // CreateCheckpoint inserts a new checkpoint record.
 func (s *Store) CreateCheckpoint(ctx context.Context, cp *Checkpoint) error {
+	if cp.Kind == "" {
+		cp.Kind = "full"
+	}
 	return s.pool.QueryRow(ctx,
-		`INSERT INTO sandbox_checkpoints (id, sandbox_id, org_id, name, sandbox_config)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO sandbox_checkpoints (id, sandbox_id, org_id, name, sandbox_config, kind, promotion_status, promoted_checkpoint_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING created_at`,
-		cp.ID, cp.SandboxID, cp.OrgID, cp.Name, cp.SandboxConfig,
+		cp.ID, cp.SandboxID, cp.OrgID, cp.Name, cp.SandboxConfig, cp.Kind, cp.PromotionStatus, cp.PromotedCheckpointID,
 	).Scan(&cp.CreatedAt)
 }
 
@@ -2071,15 +2083,71 @@ func (s *Store) SetCheckpointFailed(ctx context.Context, checkpointID uuid.UUID,
 	return err
 }
 
+// SetCheckpointPromotionProcessing marks the derived full-checkpoint promotion as running.
+func (s *Store) SetCheckpointPromotionProcessing(ctx context.Context, checkpointID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_checkpoints
+		 SET promotion_status = 'processing',
+		     promotion_error = NULL
+		 WHERE id = $1`,
+		checkpointID)
+	return err
+}
+
+// SetCheckpointPromotionReady records the full-checkpoint artifact derived from a disk-only checkpoint.
+func (s *Store) SetCheckpointPromotionReady(ctx context.Context, checkpointID uuid.UUID, promotedID, rootfsKey, workspaceKey string, sizeBytes int64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_checkpoints
+		 SET promotion_status = 'ready',
+		     promoted_checkpoint_id = $2,
+		     promoted_rootfs_s3_key = $3,
+		     promoted_workspace_s3_key = $4,
+		     promoted_size_bytes = $5,
+		     promoted_at = now(),
+		     promotion_error = NULL
+		 WHERE id = $1`,
+		checkpointID, promotedID, rootfsKey, workspaceKey, sizeBytes)
+	return err
+}
+
+// SetCheckpointPromotionFailed records that asynchronous full promotion failed.
+func (s *Store) SetCheckpointPromotionFailed(ctx context.Context, checkpointID uuid.UUID, reason string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_checkpoints
+		 SET promotion_status = 'failed',
+		     promotion_error = $2
+		 WHERE id = $1`,
+		checkpointID, reason)
+	return err
+}
+
+const checkpointSelectColumns = `id, sandbox_id, org_id, name, rootfs_s3_key, workspace_s3_key, sandbox_config, kind,
+        promotion_status, promoted_checkpoint_id, promoted_rootfs_s3_key, promoted_workspace_s3_key,
+        promoted_size_bytes, promoted_at, promotion_error,
+        status, size_bytes, is_public, created_at, error_msg, failed_at`
+
+const checkpointSelectColumnsWithAlias = `c.id, c.sandbox_id, c.org_id, c.name, c.rootfs_s3_key, c.workspace_s3_key, c.sandbox_config, c.kind,
+        c.promotion_status, c.promoted_checkpoint_id, c.promoted_rootfs_s3_key, c.promoted_workspace_s3_key,
+        c.promoted_size_bytes, c.promoted_at, c.promotion_error,
+        c.status, c.size_bytes, c.is_public, c.created_at, c.error_msg, c.failed_at`
+
+func scanCheckpoint(scanner interface {
+	Scan(dest ...any) error
+}, cp *Checkpoint) error {
+	return scanner.Scan(&cp.ID, &cp.SandboxID, &cp.OrgID, &cp.Name, &cp.RootfsS3Key, &cp.WorkspaceS3Key,
+		&cp.SandboxConfig, &cp.Kind, &cp.PromotionStatus, &cp.PromotedCheckpointID, &cp.PromotedRootfsS3Key,
+		&cp.PromotedWorkspaceS3Key, &cp.PromotedSizeBytes, &cp.PromotedAt, &cp.PromotionError,
+		&cp.Status, &cp.SizeBytes, &cp.IsPublic, &cp.CreatedAt,
+		&cp.ErrorMsg, &cp.FailedAt)
+}
+
 // GetCheckpoint returns a checkpoint by ID.
 func (s *Store) GetCheckpoint(ctx context.Context, checkpointID uuid.UUID) (*Checkpoint, error) {
 	cp := &Checkpoint{}
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, sandbox_id, org_id, name, rootfs_s3_key, workspace_s3_key, sandbox_config, status, size_bytes, is_public, created_at, error_msg, failed_at
+	err := scanCheckpoint(s.pool.QueryRow(ctx,
+		`SELECT `+checkpointSelectColumns+`
 		 FROM sandbox_checkpoints WHERE id = $1`, checkpointID,
-	).Scan(&cp.ID, &cp.SandboxID, &cp.OrgID, &cp.Name, &cp.RootfsS3Key, &cp.WorkspaceS3Key,
-		&cp.SandboxConfig, &cp.Status, &cp.SizeBytes, &cp.IsPublic, &cp.CreatedAt,
-		&cp.ErrorMsg, &cp.FailedAt)
+	), cp)
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint not found: %w", err)
 	}
@@ -2089,7 +2157,7 @@ func (s *Store) GetCheckpoint(ctx context.Context, checkpointID uuid.UUID) (*Che
 // ListCheckpoints returns all checkpoints for a sandbox, newest first.
 func (s *Store) ListCheckpoints(ctx context.Context, sandboxID string) ([]Checkpoint, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, sandbox_id, org_id, name, rootfs_s3_key, workspace_s3_key, sandbox_config, status, size_bytes, is_public, created_at, error_msg, failed_at
+		`SELECT `+checkpointSelectColumns+`
 		 FROM sandbox_checkpoints WHERE sandbox_id = $1 ORDER BY created_at DESC`, sandboxID)
 	if err != nil {
 		return nil, err
@@ -2099,9 +2167,7 @@ func (s *Store) ListCheckpoints(ctx context.Context, sandboxID string) ([]Checkp
 	var checkpoints []Checkpoint
 	for rows.Next() {
 		var cp Checkpoint
-		if err := rows.Scan(&cp.ID, &cp.SandboxID, &cp.OrgID, &cp.Name, &cp.RootfsS3Key, &cp.WorkspaceS3Key,
-			&cp.SandboxConfig, &cp.Status, &cp.SizeBytes, &cp.IsPublic, &cp.CreatedAt,
-			&cp.ErrorMsg, &cp.FailedAt); err != nil {
+		if err := scanCheckpoint(rows, &cp); err != nil {
 			return nil, err
 		}
 		checkpoints = append(checkpoints, cp)
@@ -2126,9 +2192,7 @@ func (s *Store) ListOrgCheckpoints(ctx context.Context, orgID uuid.UUID, limit, 
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT c.id, c.sandbox_id, c.org_id, c.name, c.rootfs_s3_key, c.workspace_s3_key,
-		        c.sandbox_config, c.status, c.size_bytes, c.is_public, c.created_at,
-		        c.error_msg, c.failed_at,
+		`SELECT `+checkpointSelectColumnsWithAlias+`,
 		        (SELECT COUNT(*) FROM sandbox_sessions ss WHERE ss.based_on_checkpoint_id = c.id AND ss.status IN ('running', 'hibernated')) AS active_forks,
 		        (SELECT COUNT(*) FROM sandbox_sessions ss WHERE ss.based_on_checkpoint_id = c.id) AS total_forks
 		 FROM sandbox_checkpoints c WHERE c.org_id = $1
@@ -2142,9 +2206,10 @@ func (s *Store) ListOrgCheckpoints(ctx context.Context, orgID uuid.UUID, limit, 
 	for rows.Next() {
 		var cf CheckpointWithForks
 		if err := rows.Scan(&cf.ID, &cf.SandboxID, &cf.OrgID, &cf.Name, &cf.RootfsS3Key, &cf.WorkspaceS3Key,
-			&cf.SandboxConfig, &cf.Status, &cf.SizeBytes, &cf.IsPublic, &cf.CreatedAt,
-			&cf.ErrorMsg, &cf.FailedAt,
-			&cf.ActiveForks, &cf.TotalForks); err != nil {
+			&cf.SandboxConfig, &cf.Kind, &cf.PromotionStatus, &cf.PromotedCheckpointID, &cf.PromotedRootfsS3Key,
+			&cf.PromotedWorkspaceS3Key, &cf.PromotedSizeBytes, &cf.PromotedAt, &cf.PromotionError,
+			&cf.Status, &cf.SizeBytes, &cf.IsPublic, &cf.CreatedAt,
+			&cf.ErrorMsg, &cf.FailedAt, &cf.ActiveForks, &cf.TotalForks); err != nil {
 			return nil, 0, err
 		}
 		results = append(results, cf)
@@ -2155,12 +2220,10 @@ func (s *Store) ListOrgCheckpoints(ctx context.Context, orgID uuid.UUID, limit, 
 // GetCheckpointByName looks up a checkpoint by sandbox-scoped name.
 func (s *Store) GetCheckpointByName(ctx context.Context, sandboxID, name string) (*Checkpoint, error) {
 	cp := &Checkpoint{}
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, sandbox_id, org_id, name, rootfs_s3_key, workspace_s3_key, sandbox_config, status, size_bytes, is_public, created_at, error_msg, failed_at
+	err := scanCheckpoint(s.pool.QueryRow(ctx,
+		`SELECT `+checkpointSelectColumns+`
 		 FROM sandbox_checkpoints WHERE sandbox_id = $1 AND name = $2`, sandboxID, name,
-	).Scan(&cp.ID, &cp.SandboxID, &cp.OrgID, &cp.Name, &cp.RootfsS3Key, &cp.WorkspaceS3Key,
-		&cp.SandboxConfig, &cp.Status, &cp.SizeBytes, &cp.IsPublic, &cp.CreatedAt,
-		&cp.ErrorMsg, &cp.FailedAt)
+	), cp)
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint not found: %w", err)
 	}
@@ -2184,9 +2247,7 @@ func (s *Store) ListCheckpointRetentionCandidates(ctx context.Context, sandboxID
 		return nil, nil
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT c.id, c.sandbox_id, c.org_id, c.name, c.rootfs_s3_key, c.workspace_s3_key,
-		        c.sandbox_config, c.status, c.size_bytes, c.is_public, c.created_at,
-		        c.error_msg, c.failed_at
+		`SELECT `+checkpointSelectColumnsWithAlias+`
 		   FROM sandbox_checkpoints c
 		  WHERE c.sandbox_id = $1
 		    AND c.org_id = $2
@@ -2207,9 +2268,7 @@ func (s *Store) ListCheckpointRetentionCandidates(ctx context.Context, sandboxID
 	var checkpoints []Checkpoint
 	for rows.Next() {
 		var cp Checkpoint
-		if err := rows.Scan(&cp.ID, &cp.SandboxID, &cp.OrgID, &cp.Name, &cp.RootfsS3Key, &cp.WorkspaceS3Key,
-			&cp.SandboxConfig, &cp.Status, &cp.SizeBytes, &cp.IsPublic, &cp.CreatedAt,
-			&cp.ErrorMsg, &cp.FailedAt); err != nil {
+		if err := scanCheckpoint(rows, &cp); err != nil {
 			return nil, err
 		}
 		checkpoints = append(checkpoints, cp)

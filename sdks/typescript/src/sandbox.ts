@@ -106,6 +106,8 @@ export type CheckpointRetentionPolicy =
   | { mode: "delete_oldest"; maxCount?: number };
 
 export interface CreateCheckpointOptions {
+  kind?: "full" | "disk_only";
+  promoteToFull?: boolean;
   retentionPolicy?: CheckpointRetentionPolicy;
 }
 
@@ -703,6 +705,12 @@ export class Sandbox {
 
   async createCheckpoint(name: string, opts: CreateCheckpointOptions = {}): Promise<CheckpointInfo> {
     const body: Record<string, unknown> = { name };
+    if (opts.kind) {
+      body.kind = opts.kind;
+    }
+    if (opts.promoteToFull) {
+      body.promoteToFull = true;
+    }
     if (opts.retentionPolicy) {
       body.retentionPolicy = opts.retentionPolicy;
     }

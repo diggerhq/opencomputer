@@ -314,6 +314,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		return &pb.CreateSandboxResponse{
 			SandboxId: sb.ID,
 			Status:    string(sb.Status),
+			MemoryMb:  int32(sb.MemoryMB),
 		}, nil
 	}
 
@@ -903,6 +904,16 @@ func (s *GRPCServer) CreateCheckpoint(ctx context.Context, req *pb.CreateCheckpo
 	var rootfsKey, workspaceKey string
 	var sizeBytes int64
 	var err error
+	kind := req.Kind
+	if kind == "" {
+		kind = "full"
+	}
+	if kind != "full" && kind != "disk_only" {
+		return nil, fmt.Errorf("unsupported checkpoint kind %q", kind)
+	}
+	if kind == "disk_only" && req.FinalizeMemoryMb > 0 {
+		return nil, fmt.Errorf("disk-only checkpoints do not support finalize_memory_mb")
+	}
 	if req.FinalizeMemoryMb > 0 {
 		type finalizer interface {
 			CreateCheckpointFinalized(ctx context.Context, buildSandboxID, checkpointID string, store *storage.CheckpointStore, finalizeMemMB int, onReady func()) (string, string, int64, error)
@@ -912,6 +923,15 @@ func (s *GRPCServer) CreateCheckpoint(ctx context.Context, req *pb.CreateCheckpo
 			return nil, fmt.Errorf("manager does not support finalized checkpoints")
 		}
 		rootfsKey, workspaceKey, sizeBytes, err = fz.CreateCheckpointFinalized(ctx, req.SandboxId, checkpointID, s.checkpointStore, int(req.FinalizeMemoryMb), onReady)
+	} else if kind == "disk_only" {
+		type diskOnlyCheckpointer interface {
+			CreateDiskOnlyCheckpoint(ctx context.Context, sandboxID, checkpointID string, store *storage.CheckpointStore, onReady func()) (string, string, int64, error)
+		}
+		diskMgr, ok := s.manager.(diskOnlyCheckpointer)
+		if !ok {
+			return nil, fmt.Errorf("manager does not support disk-only checkpoints")
+		}
+		rootfsKey, workspaceKey, sizeBytes, err = diskMgr.CreateDiskOnlyCheckpoint(ctx, req.SandboxId, checkpointID, s.checkpointStore, onReady)
 	} else {
 		rootfsKey, workspaceKey, sizeBytes, err = s.manager.CreateCheckpoint(ctx, req.SandboxId, checkpointID, s.checkpointStore, onReady)
 	}

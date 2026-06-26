@@ -605,12 +605,19 @@ class Sandbox:
     async def create_checkpoint(
         self,
         name: str,
+        kind: str | None = None,
+        promote_to_full: bool = False,
         retention_policy: dict | None = None,
     ) -> dict:
         """Create a named checkpoint of the running sandbox.
 
         Args:
             name: A unique name for this checkpoint.
+            kind: Optional checkpoint kind. Use "full" for disk, memory, and
+                device state, or "disk_only" for a disk-only checkpoint that
+                restores with a cold boot.
+            promote_to_full: For disk-only checkpoints, asynchronously create
+                a derived full checkpoint so future forks can use warm restore.
             retention_policy: Optional policy such as
                 {"mode": "delete_oldest", "maxCount": 10}. When set, the
                 server may delete older eligible checkpoints before creating
@@ -620,6 +627,10 @@ class Sandbox:
             Checkpoint info dict with id, sandboxId, name, status, etc.
         """
         body = {"name": name}
+        if kind is not None:
+            body["kind"] = kind
+        if promote_to_full:
+            body["promoteToFull"] = True
         if retention_policy is not None:
             body["retentionPolicy"] = retention_policy
 
