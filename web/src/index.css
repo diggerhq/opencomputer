@@ -2,26 +2,36 @@
    OpenComputer dashboard — design tokens (light, ink-on-paper)
    Brand source: opencomputer-site-v1/src/index.css + Mintlify docs.
 
-   COEXISTENCE NOTE (Phase A/B): the legacy `theme.css` ("Void Glass")
-   is still imported alongside this file during the migration. It owns
-   its own `--bg-void` / `--text-primary` / `--accent-*` namespace and
-   global `*`/body resets, so it does NOT collide with the shadcn
-   `--background` / `--foreground` / `--border` tokens defined here.
+   COEXISTENCE NOTE (Phase A/B): the legacy `theme.css` ("Void Glass") is
+   imported HERE, into a low-priority `legacy` layer, during the migration.
+   This matters: theme.css has global `* { margin:0; padding:0 }` resets,
+   and unlayered CSS beats every @layer — so if theme.css were imported
+   unlayered (a plain JS import) it would override all Tailwind padding/
+   margin utilities and the new screens would lose their spacing. Importing
+   it into `legacy` (ordered below components/utilities) keeps Tailwind
+   utilities winning, while legacy classes still style the unmigrated
+   screens. `legacy` sits ABOVE `base` so theme.css's class borders survive
+   the base border reset.
 
    Tailwind Preflight is intentionally OFF here (we import the theme +
    utilities layers explicitly, omitting preflight) so it does not fight
    theme.css's resets. A minimal border reset replaces the slice of
    preflight that shadcn components rely on. At the END of Phase B
-   (theme.css deleted) we swap to the bundled `@import "tailwindcss";`
-   (Preflight back on) and drop the manual reset — see the close-out task.
+   (theme.css deleted) we drop the `legacy` layer + this import, swap to the
+   bundled `@import "tailwindcss";` (Preflight back on) and drop the manual
+   reset — see the close-out task.
    ============================================================ */
 
-@layer theme, base, components, utilities;
+@layer theme, base, legacy, components, utilities;
 
 @import 'tailwindcss/theme.css' layer(theme);
 @import 'tailwindcss/utilities.css' layer(utilities);
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
+
+/* Legacy "Void Glass" styles — low layer so Tailwind utilities win (removed
+   with theme.css at the end of Phase B). */
+@import './styles/theme.css' layer(legacy);
 
 /* Self-hosted brand fonts (no external CDN dependency). */
 @import '@fontsource-variable/inter';

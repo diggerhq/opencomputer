@@ -6,8 +6,9 @@ import posthog from 'posthog-js'
 import { PostHogProvider } from '@posthog/react'
 import App from './App'
 import { Toaster } from './components/ui/sonner'
+// theme.css (legacy) is imported via index.css into the `legacy` cascade layer
+// so Tailwind utilities win during coexistence — see index.css for why.
 import './index.css'
-import './styles/theme.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {
