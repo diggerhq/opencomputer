@@ -38,13 +38,17 @@ func maxCheckpointsForKind(kind string) int {
 type createCheckpointRequest struct {
 	Name            string                    `json:"name"`
 	Kind            string                    `json:"kind"`
-	PromoteToFull   bool                      `json:"promoteToFull"`
+	PromoteToFull   *bool                     `json:"promoteToFull"`
 	RetentionPolicy checkpointRetentionPolicy `json:"retentionPolicy"`
 }
 
 type checkpointRetentionPolicy struct {
 	Mode     string `json:"mode"`
 	MaxCount int    `json:"maxCount"`
+}
+
+func shouldPromoteCheckpoint(kind string, promoteToFull *bool) bool {
+	return kind == "disk_only" && (promoteToFull == nil || *promoteToFull)
 }
 
 func (s *Server) createSandbox(c echo.Context) error {
@@ -2204,9 +2208,10 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 	if kind != "full" && kind != "disk_only" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "kind must be full or disk_only"})
 	}
-	if req.PromoteToFull && kind != "disk_only" {
+	if req.PromoteToFull != nil && *req.PromoteToFull && kind != "disk_only" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "promoteToFull is only supported for disk_only checkpoints"})
 	}
+	shouldPromoteToFull := shouldPromoteCheckpoint(kind, req.PromoteToFull)
 
 	// Enforce checkpoint limits per kind. Full checkpoints are heavier because
 	// they include memory/CPU state; disk-only checkpoints are cheaper and get
@@ -2264,7 +2269,7 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 		SandboxConfig: session.Config,
 	}
 	var promotedArtifactID string
-	if req.PromoteToFull {
+	if shouldPromoteToFull {
 		promotionStatus := "pending"
 		promotedArtifactID = uuid.New().String()
 		cp.PromotionStatus = &promotionStatus
@@ -2333,7 +2338,7 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				s.recordLifecycleID(context.Background(), orgID, sandboxID, types.WebhookEventCheckpointCreated,
 					sandboxID+":sandbox.checkpoint.created:"+checkpointID.String(),
 					map[string]any{"checkpointId": checkpointID.String()})
-				if req.PromoteToFull {
+				if shouldPromoteToFull {
 					s.startCheckpointPromotion(context.Background(), checkpointID, promotedArtifactID, sandboxID, req.Name, session.WorkerID, session.Config, grpcResp.RootfsS3Key, grpcResp.WorkspaceS3Key)
 				}
 			}
@@ -2398,7 +2403,7 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				s.recordLifecycleID(context.Background(), orgID, sandboxID, types.WebhookEventCheckpointCreated,
 					sandboxID+":sandbox.checkpoint.created:"+checkpointID.String(),
 					map[string]any{"checkpointId": checkpointID.String()})
-				if req.PromoteToFull {
+				if shouldPromoteToFull {
 					s.startCheckpointPromotion(context.Background(), checkpointID, promotedArtifactID, sandboxID, req.Name, session.WorkerID, session.Config, rootfsKey, workspaceKey)
 				}
 			}

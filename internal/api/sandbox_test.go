@@ -48,10 +48,10 @@ func TestForkCheckpointAuthMatrix(t *testing.T) {
 	otherOrg := uuid.New()
 
 	cases := []struct {
-		name      string
-		cp        db.Checkpoint
-		caller    uuid.UUID
-		wantDeny  bool
+		name     string
+		cp       db.Checkpoint
+		caller   uuid.UUID
+		wantDeny bool
 	}{
 		{"owner forks private", db.Checkpoint{OrgID: ownerOrg, IsPublic: false}, ownerOrg, false},
 		{"owner forks public", db.Checkpoint{OrgID: ownerOrg, IsPublic: true}, ownerOrg, false},
@@ -65,6 +65,32 @@ func TestForkCheckpointAuthMatrix(t *testing.T) {
 			if deny != tc.wantDeny {
 				t.Fatalf("deny=%v, want %v (cp.OrgID=%s caller=%s public=%v)",
 					deny, tc.wantDeny, tc.cp.OrgID, tc.caller, tc.cp.IsPublic)
+			}
+		})
+	}
+}
+
+func TestShouldPromoteCheckpointDefault(t *testing.T) {
+	ptrue := true
+	pfalse := false
+	cases := []struct {
+		name          string
+		kind          string
+		promoteToFull *bool
+		want          bool
+	}{
+		{"full omitted", "full", nil, false},
+		{"full explicit true", "full", &ptrue, false},
+		{"full explicit false", "full", &pfalse, false},
+		{"disk only omitted defaults true", "disk_only", nil, true},
+		{"disk only explicit true", "disk_only", &ptrue, true},
+		{"disk only explicit false", "disk_only", &pfalse, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldPromoteCheckpoint(tc.kind, tc.promoteToFull); got != tc.want {
+				t.Fatalf("shouldPromoteCheckpoint(%q, %v) = %v, want %v", tc.kind, tc.promoteToFull, got, tc.want)
 			}
 		})
 	}

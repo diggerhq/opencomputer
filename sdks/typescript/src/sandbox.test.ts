@@ -36,4 +36,38 @@ describe("Sandbox checkpoint requests", () => {
       retentionPolicy: { mode: "delete_oldest", maxCount: 3 },
     });
   });
+
+  it("preserves explicit false for disk-only promotion override", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        id: "cp_1",
+        sandboxId: "sb_1",
+        orgId: "org_1",
+        name: "manual",
+        sandboxConfig: {},
+        kind: "disk_only",
+        status: "processing",
+        sizeBytes: 0,
+        createdAt: "2026-01-01T00:00:00Z",
+      }), { status: 201, headers: { "content-type": "application/json" } }),
+    );
+
+    const sandbox = Object.create(Sandbox.prototype) as Sandbox;
+    const sandboxState = sandbox as unknown as Record<string, unknown>;
+    sandboxState.apiUrl = "https://api.example.test/api";
+    sandboxState.apiKey = "osb_test";
+    sandboxState.sandboxId = "sb_1";
+
+    await sandbox.createCheckpoint("manual", {
+      kind: "disk_only",
+      promoteToFull: false,
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toEqual({
+      name: "manual",
+      kind: "disk_only",
+      promoteToFull: false,
+    });
+  });
 });
