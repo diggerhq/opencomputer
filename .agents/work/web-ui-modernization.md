@@ -25,9 +25,11 @@ screens, in one focused effort.
 
 **Not this effort (follow-ups):** framework migration (stays a SPA); data-layer
 rewrite (TanStack Query stays); forms refactor (RHF/zod); TanStack Table
-behavior; decomposing oversized components; core-lib upgrades (React 19 / RR7 /
-Vite 8 / TS 6 / Tailwind 4); a Storybook/Ladle gallery; the orphaned Agents
-screens.
+behavior; decomposing oversized components; **upgrade-only runtime work** (a
+React/RR/Vite/TS bump with no driving reason — deferred to the end or skipped; a
+new-lib requirement or bug *is* a reason); a Storybook/Ladle gallery; the
+orphaned Agents screens. *(Adding new UI libs — Tailwind, shadcn, lucide, sonner
+— at their latest is the point of this effort, not a non-goal.)*
 
 ## Current state (assessment)
 
@@ -52,7 +54,9 @@ Source of truth: the site (`opencomputer-site-v1`, already `vite_react_shadcn_ts
 + Mintlify docs — both light, ink-on-paper. Site base tokens (shadcn HSL, from
 `src/index.css`): `--background 40 33% 97%` (paper), `--foreground 45 8% 8%`
 (ink), `--primary` ink, `--destructive 0 84% 60%`, `--border 0 0% 91%`,
-`--radius 6px`. Replaces "Void Glass" (not additive).
+`--radius 6px`. Replaces "Void Glass" (not additive): the current dark tokens
+(`--bg-void`, `--accent-indigo`, …) are **retired with `theme.css`, not
+remapped** — dark survives only in the terminal/log/code surfaces.
 
 **Dialect (a dense console, not a marketing page):**
 - **Type: Inter (UI) + Geist Mono (ids/code/logs/terminal/metrics).** Newsreader
@@ -75,29 +79,49 @@ error / pending) + **destructive** now. Logs-by-source, chart series, billing,
 and ANSI palettes are added **when those screens migrate**, not upfront. Every
 status has a non-color cue (icon/label).
 
-## Stack: mirror the site
+## Stack
 
-The site already uses this exact stack and shares React 18 / RR6 / TanStack
-Query 5 with the dashboard, so we mirror it for direct token + component reuse.
+Chosen on its own merits: **Tailwind + shadcn/ui (Radix) + lucide** is the
+current standard for an accessible, low-ownership React UI, and it pairs cleanly
+with the TanStack Query data layer we keep. The marketing site happens to use the
+same stack, so a few tokens/patterns can be borrowed — a convenience, **not the
+rationale, and not a constraint** (we don't have to match the site's versions).
 
-**Adopt now:** Tailwind 3.4 (+ animate, tailwind-merge, clsx → `cn()`),
+**Adopt now:** Tailwind (latest, v4) (+ animate, tailwind-merge, clsx → `cn()`),
 shadcn/ui (Radix), lucide-react, sonner (toasts), ESLint 9 flat
 (+ typescript-eslint, react-hooks, **jsx-a11y**) + Prettier
 (+ **prettier-plugin-tailwindcss**), `@/*` alias.
 
-**Later (don't add the deps until a screen earns them):** react-hook-form + zod,
-TanStack Table, `@tanstack/eslint-plugin-query`, the Tailwind 4 / React 19 / RR7
-/ Vite 8 / TS 6 upgrades.
+**Use the latest of the new libs** (Tailwind, shadcn, Radix, lucide, sonner). If
+a new lib's latest *requires* a core-lib bump (a release that needs a newer Vite
+or React), that bump is **in scope — the requirement is the reason.**
+
+**Defer:**
+- *New libs not yet earned* — react-hook-form + zod, TanStack Table,
+  `@tanstack/eslint-plugin-query`. Add when a screen actually needs them.
+- *Upgrade-only work* — bumping React / react-router / Vite / TS **just to be
+  current**, with no driving reason, waits until the very end (or is skipped).
+  Adding new UI libraries is the point; gratuitous runtime upgrades aren't. A
+  real reason — a new-lib requirement, a bug, a needed feature — flips it back in
+  scope. In practice the current Tailwind/shadcn/Radix run fine on our React 18 /
+  Vite 6, so we likely force no upgrade — but if we do, that's fine.
 
 **Keep:** TanStack Query, recharts, xterm, posthog, the SPA shape.
+
+Tailwind is **net-new** here (zero Tailwind today — just `theme.css` + inline
+styles), so adopting it *is* the work. Use the **latest (v4)** and whatever its
+setup needs.
 
 ## Minimal component set (build only what the shell + pilot need)
 
 Build now, on shadcn/Radix: `Button`, `Panel`, `PageHeader`, `StatusBadge`
-(lifecycle), `ConfirmDialog` (destructive — replaces `confirm()`), `EmptyState`,
-`ResourceTable` (**presentational** — sort affordance, empty/loading, an explicit
-**Open** link per row, *not* a row-click div), `AppShell` (desktop sidebar +
-mobile drawer + topbar), and a basic `<Toaster/>` (sonner).
+(lifecycle), `ConfirmDialog` (destructive — replaces the **9 `confirm()`** calls
+in live screens), `EmptyState`, `Input`, `ResourceTable` (**presentational** —
+sort affordance, empty/loading, an explicit **Open** link per row, *not* a
+row-click div), `DropdownMenu` (the AppShell org switcher is a hand-rolled
+abs-positioned dropdown today), `AppShell` (desktop sidebar + mobile drawer +
+topbar), `<Toaster/>` (sonner). `Dialog` lands with APIKeys (its "create" form is
+a fake modal — see breakdown).
 
 **Build on demand (when a screen needs it):** `MetricCard`, `CodeSurface` +
 `TerminalSurface` (when SessionDetail migrates), `OrgSwitcher`, richer toast
@@ -110,26 +134,75 @@ helpers, TanStack-Table behavior in `ResourceTable`.
 2. **Default theme** — light (brand); dark deferred. *Recommend: light.*
 3. **Formatter** — Prettier (site parity). *Recommend: yes.*
 
-## Plan — two tracks
+## Plan — one PR, two phases
 
-**Track A — Foundation (one PR):**
+It all lands in the **single open PR** (`feat/web-ui-dev`, #426), built up as
+ordered commits — not split into multiple PRs.
+
+**Phase A — Foundation:**
 - [ ] ESLint 9 flat + Prettier (+ prettier-plugin-tailwindcss) + jsx-a11y; `@/*`
   alias; `lint`/`format` scripts.
-- [ ] Tailwind 3.4 + base tokens + **product token layer** + dark-surface tokens
-  + `cn()`. **CSS coexistence:** `theme.css` keeps owning unmigrated screens;
-  **Tailwind preflight stays disabled** (`corePlugins.preflight:false`) so the
-  global reset never reflows legacy screens; tokens on `:root`; utilities opt-in
-  per screen. (No disable/re-enable dance — preflight stays off through the
-  migration; revisit once only if needed after `theme.css` is gone.)
+- [ ] Tailwind (latest, v4) + base tokens + **product token layer** + dark-surface
+  tokens + `cn()`. **CSS coexistence:** `theme.css` keeps owning unmigrated
+  screens; **keep Tailwind's preflight OFF** during coexistence so the global
+  reset never reflows legacy screens (v4: don't import the preflight layer; v3
+  equivalent: `corePlugins.preflight:false`); tokens on `:root`; utilities opt-in
+  per screen. Preflight stays off through the migration; revisit once only after
+  `theme.css` is gone.
 - [ ] shadcn init + core primitives + lucide + `<Toaster/>`.
 - [ ] Build the **minimal component set** + `AppShell`.
 
-**Track B — Visual migration (per-screen PRs, reskin only):**
+**Phase B — Visual migration (one screen per commit, reskin only):**
 - [ ] Pilot **`Sessions.tsx`** (table + filters + delete) — the reference pattern.
-- [ ] Then the live screens: Layout/shell → Dashboard → Checkpoints → APIKeys →
-  Templates → Settings → Billing → SessionDetail (builds Code/TerminalSurface).
+- [ ] Then the live screens, lightest-first (see the breakdown): Layout/shell →
+  Templates → Checkpoints → APIKeys → Dashboard → Settings → SessionDetail
+  (builds the dark Code/TerminalSurface) → **Billing last** (heaviest).
   **Excludes** Agents/AgentDetail.
-- [ ] **End of Track B:** delete `theme.css` + remove dead inline styles.
+- [ ] **End of Phase B:** delete `theme.css` + remove dead inline styles.
+
+## Foundation findings (from the code survey, 2026-06-26)
+
+Concrete things Phase A must handle (verified against the code):
+- **No `@/*` alias** — add to `tsconfig.json` (`paths`) + `vite.config.ts`
+  (`resolve.alias`); shadcn needs it.
+- **Fonts:** `index.html` loads Outfit / DM Sans / JetBrains Mono (Void-Glass).
+  Add **Inter + Geist Mono** (brand); retire the old three with `theme.css`.
+- **Tokens are replaced, not remapped** — the dark `:root` set (`--bg-void`,
+  `--accent-indigo`, …) goes; define the light brand + product tokens fresh.
+- **Providers** (`main.tsx`): QueryClientProvider + PostHog + BrowserRouter;
+  (`App.tsx`) AuthProvider → ProtectedRoute → Layout. `theme.css` is imported in
+  `main.tsx`; `<Toaster/>` slots in there.
+- **`theme.css` also carries** global resets, a `body::before` dot-grid texture
+  (drop it — off-brand), scrollbar styling, and **recharts element-selector
+  overrides** (`.recharts-*`) — re-home the recharts bits when `theme.css` is
+  deleted (end of Phase B).
+- **z-index:** today maxes at ~50 (sidebar), no overlay strategy — define a scale
+  (dropdown < sticky < modal < toast < tooltip) before adding Radix overlays.
+- **Replacement-target classes** (coupling counts): `.btn-*` (35+), `.glass-card`
+  (30), `.data-table` (6), plus `.badge-*`, `.filter-btn`, `.input`,
+  `.loading-spinner`, `.page-title`/`.section-title`, `.animate-in`/`.stagger`,
+  `.stat-card`, `.metric-value` → OC wrappers / Tailwind utilities.
+- **Preflight stays off** during coexistence — confirmed `theme.css` sets global
+  `*`/body resets Tailwind preflight would fight.
+
+## Per-screen breakdown (from the survey)
+
+`style={}` counts are per-file (systematic grep) and drive sequencing. Live
+screens only — **Agents (44) + AgentDetail (159) are orphaned and excluded.**
+
+| Screen | `style=` | Hand-rolled → target | States to cover | Specific risk / finding |
+|---|---|---|---|---|
+| **Sessions** (pilot) | 30 | `.data-table`→`ResourceTable`; filter pills→`ToggleGroup`; `confirm()`→`ConfirmDialog`; `StatusBadge`; hover-mutate row→CSS | loading, empty, delete-error, deleting | **ActivityChart is hand-built positioned divs (not recharts)** — decide rebuild-on-recharts vs isolate-as-is |
+| **Layout/shell** | 24 | sidebar/nav; **org switcher (manual abs dropdown)→`DropdownMenu`**; logout; HaltBanner | (shell) | no responsive today → desktop sidebar + mobile drawer; HaltBanner polls autumn 30s (keep); swap brand fonts/logo |
+| **Templates** | ~8 | `.data-table`→`ResourceTable`; `StatusBadge`; `confirm()` | loading, empty | lowest complexity — good 2nd after the pilot |
+| **Checkpoints** | 27 | `.data-table`→`ResourceTable`; manual pagination→`Pagination`; checkbox filter→`Checkbox`; RGBA badges→`StatusBadge`; error box→`Alert`; `confirm()` | loading, empty, failed-error, deleting, paged | manual pagination + per-type RGBA badge math |
+| **APIKeys** | 15 | **fake-modal create→real `Dialog`**; `.input`→`Input`; 3 svg→lucide; copy; `confirm()` | loading, empty, **key-shown-once**, copied | the "modal" is a `.glass-card` (no backdrop/focus-trap) — a real defect to fix; inline "Copied", not a toast |
+| **Dashboard** | 50 | `.data-table`→`ResourceTable`; stat cards→`MetricCard`; copy/reveal | first-run onboarding, loading, empty, create-error | **first-run flow + auto-create-API-key-on-mount (useRef guard)** must be preserved |
+| **Settings** | 72 | `.input`→`Input`; **2×`confirm()`→`AlertDialog`**; domain branching; status badge | loading, empty(members), domain {pending/failed/verified}, saved | forms are simple → **no RHF**; `hasDomain`/`!hasDomain` branching; team + invitations lists |
+| **SessionDetail** | 49 | header/actions; 9 svg→lucide; **3×`confirm()`→`AlertDialog`**; `StatCard`→`MetricCard`; preview-URL copy; **builds `Code`/`TerminalSurface`** | loading, not-found, reboot/power-cycle/delete (pending+error), live stats | embeds Terminal (WS) + LogsPanel (SSE); stats poll 5s |
+| **Billing** (last) | 112 | **`ConfirmModal`→`Dialog` (non-dismissible while pending)**; invoices `.data-table`→`ResourceTable`; usage grid; 3 forms; 3 svg→lucide | loading, empty, error, halted/past-due, free-trial-exhausted, promo-applied, no-payment-method | **biggest.** Stripe `window.location.href` redirects **stay untouched**; Stripe-vs-Autumn branching; 3 non-trivial forms (promo/top-up/auto-topup) kept as local state (RHF deferred) |
+| **Terminal** (dark) | 15 | reskin chrome only; status→tokens | connected / connecting / disconnected / error | **preserve:** xterm ANSI theme + `#0a0a0f` bg + **binary WS** + resize. Inline sizing is the *allowed* third-party-bridge exception; `@xterm/xterm/css/xterm.css` coexists |
+| **LogsPanel** (dark) | 20 | source chips, search, status dot→tokens | streaming, empty, error, disconnected, paused | **preserve:** dark `--bg-deep`, SSE lifecycle, **auto-scroll/sticky-bottom**, `color-mix` chips, mono font. Reskin chrome only — complex internals |
 
 ## Migration Contract (per screen)
 
@@ -215,7 +288,8 @@ components (Billing, SessionDetail) · `MetricCard`/`OrgSwitcher`/richer toasts 
 a `/design-system` gallery (or Ladle/Storybook) if wrapper drift becomes real ·
 axe/Playwright automation · full semantic palette (logs/chart/billing/ANSI) ·
 Newsreader for sparse titles · sticky table columns / mobile card fallback /
-icon-rail · core-lib upgrades (React 19 + RR7, Vite 8 + plugin, TS 6, Tailwind 4).
+icon-rail · **upgrade-only** runtime bumps if nothing forces them sooner
+(React 19 + RR7, Vite 8 + plugin, TS 6).
 
 ## References
 
