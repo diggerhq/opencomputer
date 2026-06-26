@@ -440,9 +440,17 @@ function AutoTopupCard({
   hasToppedUp: boolean
 }) {
   const queryClient = useQueryClient()
-  const [enabled, setEnabled] = useState(current?.enabled ?? false)
-  const [threshold, setThreshold] = useState(current?.threshold ?? 5)
-  const [quantity, setQuantity] = useState(current?.quantity ?? 25)
+  // Canonical values come from the server (`current`); local edits are nullable
+  // overrides, so a refetch / org switch updates the form instead of being
+  // shadowed by once-copied state. Draft is cleared after a successful save.
+  const [draft, setDraft] = useState<{
+    enabled?: boolean
+    threshold?: number
+    quantity?: number
+  }>({})
+  const enabled = draft.enabled ?? current?.enabled ?? false
+  const threshold = draft.threshold ?? current?.threshold ?? 5
+  const quantity = draft.quantity ?? current?.quantity ?? 25
   const [saved, setSaved] = useState(false)
   const [confirm, setConfirm] = useState(false)
 
@@ -455,6 +463,7 @@ function AutoTopupCard({
         return
       }
       queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
+      setDraft({}) // server config is canonical again
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     },
@@ -477,7 +486,9 @@ function AutoTopupCard({
         <Checkbox
           id="auto-topup"
           checked={enabled}
-          onCheckedChange={(v) => setEnabled(v === true)}
+          onCheckedChange={(v) =>
+            setDraft((d) => ({ ...d, enabled: v === true }))
+          }
         />
         <Label htmlFor="auto-topup" className="cursor-pointer font-normal">
           Enable automatic top-up
@@ -495,9 +506,13 @@ function AutoTopupCard({
                 min={0}
                 value={threshold}
                 onChange={(e) =>
-                  setThreshold(
-                    Math.max(0, Math.floor(Number(e.target.value) || 0)),
-                  )
+                  setDraft((d) => ({
+                    ...d,
+                    threshold: Math.max(
+                      0,
+                      Math.floor(Number(e.target.value) || 0),
+                    ),
+                  }))
                 }
                 className="w-24 font-mono"
               />
@@ -512,9 +527,13 @@ function AutoTopupCard({
                 min={1}
                 value={quantity}
                 onChange={(e) =>
-                  setQuantity(
-                    Math.max(1, Math.floor(Number(e.target.value) || 0)),
-                  )
+                  setDraft((d) => ({
+                    ...d,
+                    quantity: Math.max(
+                      1,
+                      Math.floor(Number(e.target.value) || 0),
+                    ),
+                  }))
                 }
                 className="w-24 font-mono"
               />

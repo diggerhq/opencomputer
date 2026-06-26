@@ -120,7 +120,7 @@ export default function Sessions() {
           <Button
             variant="ghost"
             size="sm"
-            className="text-status-error hover:bg-status-error-bg hover:text-status-error"
+            className="text-status-error hover:text-destructive underline-offset-2 hover:bg-transparent hover:underline"
             onClick={() => setToDelete(s)}
           >
             Delete

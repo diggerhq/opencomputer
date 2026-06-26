@@ -61,15 +61,19 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
     term.loadAddon(webLinks)
     term.open(termRef.current)
 
-    // Fit after a small delay to let the container render
-    requestAnimationFrame(() => {
-      fit.fit()
-    })
+    // Fit after a frame to let the container render.
+    const raf = requestAnimationFrame(() => fit.fit())
 
     xtermRef.current = term
     fitRef.current = fit
 
     term.writeln('\x1b[2m  Connecting to sandbox...\x1b[0m')
+
+    // Guard the async PTY/WS setup against racing the effect cleanup (close or
+    // navigate before the POST returns): abort the in-flight fetch and never
+    // open a socket / write to a disposed terminal.
+    let disposed = false
+    const controller = new AbortController()
 
     // Create PTY session, then connect WebSocket
     const initTerminal = async () => {
@@ -83,6 +87,7 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
           body: JSON.stringify({ cols, rows }),
+          signal: controller.signal,
         })
 
         if (!res.ok) {
@@ -91,6 +96,7 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
         }
 
         const { sessionId } = await res.json()
+        if (disposed) return
         ptySessionIdRef.current = sessionId
 
         // Connect WebSocket
@@ -146,6 +152,7 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
           }
         })
       } catch (err: unknown) {
+        if (disposed) return // unmounted mid-setup (incl. fetch AbortError)
         setStatus('error')
         const msg = err instanceof Error ? err.message : 'Failed to connect'
         setErrorMsg(msg)
@@ -164,6 +171,9 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
     window.addEventListener('resize', handleResize)
 
     return () => {
+      disposed = true
+      controller.abort()
+      cancelAnimationFrame(raf)
       window.removeEventListener('resize', handleResize)
       if (wsRef.current) {
         wsRef.current.close()

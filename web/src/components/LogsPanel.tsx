@@ -75,6 +75,13 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const stickToBottomRef = useRef(true)
 
+  // Mirror `paused` into a ref so the SSE onmessage handler — created once per
+  // sandbox — reads the live value instead of its stale first-render closure.
+  const pausedRef = useRef(paused)
+  useEffect(() => {
+    pausedRef.current = paused
+  }, [paused])
+
   // Open the EventSource ONCE per sandbox. Search and source filters
   // are applied client-side against the in-memory buffer — no SSE
   // re-open on filter change, no flicker. The historical batch is
@@ -101,7 +108,7 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
       } catch {
         return
       }
-      if (paused) {
+      if (pausedRef.current) {
         pausedBufRef.current.push(ev)
         // Defensive cap on the paused buffer.
         if (pausedBufRef.current.length > visibleCap) {

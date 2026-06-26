@@ -11,28 +11,38 @@ import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ResourceTable, type Column } from '@/components/resource-table'
 
+// Total over unknown backend data — a malformed/older manifest must not crash
+// the page, so every field is guarded (no bare casts into .join()/.length).
 function formatSteps(manifest: Record<string, unknown>): string {
-  const steps = manifest.steps as Array<Record<string, unknown>> | undefined
-  if (!steps || steps.length === 0) return 'base'
+  const steps = Array.isArray(manifest?.steps)
+    ? (manifest.steps as Array<Record<string, unknown>>)
+    : []
+  if (steps.length === 0) return 'base'
+  const list = (v: unknown): string[] =>
+    Array.isArray(v) ? (v as string[]) : []
   return steps
     .map((s) => {
-      const t = s.type as string
-      const args = s.args as Record<string, unknown> | undefined
+      const t = typeof s?.type === 'string' ? s.type : ''
+      const args = (s?.args ?? {}) as Record<string, unknown>
       switch (t) {
         case 'apt_install':
-          return `apt: ${(args?.packages as string[])?.join(', ') || '...'}`
+          return `apt: ${list(args.packages).join(', ') || '...'}`
         case 'pip_install':
-          return `pip: ${(args?.packages as string[])?.join(', ') || '...'}`
+          return `pip: ${list(args.packages).join(', ') || '...'}`
         case 'run':
-          return `run: ${((args?.commands as string[]) || []).length} cmd(s)`
-        case 'env':
-          return `env: ${Object.keys((args?.vars as Record<string, string>) || {}).length} var(s)`
+          return `run: ${list(args.commands).length} cmd(s)`
+        case 'env': {
+          const vars = args.vars
+          const n =
+            vars && typeof vars === 'object' ? Object.keys(vars).length : 0
+          return `env: ${n} var(s)`
+        }
         case 'workdir':
-          return `workdir: ${args?.path || '...'}`
+          return `workdir: ${args.path ?? '...'}`
         case 'add_file':
-          return `file: ${args?.path || '...'}`
+          return `file: ${args.path ?? '...'}`
         default:
-          return t
+          return t || 'step'
       }
     })
     .join(' + ')
@@ -121,7 +131,7 @@ export default function Templates() {
         <Button
           variant="ghost"
           size="sm"
-          className="text-status-error hover:bg-status-error-bg hover:text-status-error"
+          className="text-status-error hover:text-destructive underline-offset-2 hover:bg-transparent hover:underline"
           onClick={() => setToDelete(img)}
         >
           Delete
