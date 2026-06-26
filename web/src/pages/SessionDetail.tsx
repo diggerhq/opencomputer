@@ -1,19 +1,35 @@
 import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { deleteSession, getSessionDetail, getSessionStats, rebootSession, powerCycleSession, type Session, type SessionDetail as SessionDetailData } from '../api/client'
-import Terminal from '../components/Terminal'
-import LogsPanel from '../components/LogsPanel'
-
-function StatusBadge({ status }: { status: string }) {
-  const cls =
-    status === 'running' ? 'badge-running' :
-    status === 'stopped' ? 'badge-stopped' :
-    status === 'hibernated' ? 'badge-hibernated' :
-    status === 'error' ? 'badge-error' : ''
-
-  return <span className={`status-badge ${cls}`}>{status}</span>
-}
+import { toast } from 'sonner'
+import {
+  ArrowLeft,
+  List,
+  SquareTerminal,
+  RotateCcw,
+  Power,
+  Trash2,
+  ChevronRight,
+} from 'lucide-react'
+import {
+  deleteSession,
+  getSessionDetail,
+  getSessionStats,
+  powerCycleSession,
+  rebootSession,
+  type Session,
+  type SessionDetail as SessionDetailData,
+} from '@/api/client'
+import Terminal from '@/components/Terminal'
+import LogsPanel from '@/components/LogsPanel'
+import { Panel } from '@/components/panel'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { MetricCard } from '@/components/metric-card'
+import { CopyRow } from '@/components/copy-row'
+import { StatusBadge } from '@/components/status-badge'
+import { EmptyState } from '@/components/empty-state'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B'
@@ -29,120 +45,21 @@ function timeAgo(dateStr: string): string {
   if (mins < 60) return `${mins}m ago`
   const hrs = Math.floor(mins / 60)
   if (hrs < 24) return `${hrs}h ${mins % 60}m ago`
-  const days = Math.floor(hrs / 24)
-  return `${days}d ago`
+  return `${Math.floor(hrs / 24)}d ago`
 }
 
-function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div style={{
-      background: 'rgba(255,255,255,0.02)',
-      border: '1px solid var(--border-subtle)',
-      borderRadius: 'var(--radius-md)',
-      padding: '16px 20px',
-      flex: 1,
-    }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-        {label}
-      </div>
-      <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>
-        {value}
-      </div>
-      {sub && (
-        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
-          {sub}
-        </div>
-      )}
-    </div>
-  )
-}
+type ConfirmKind = 'delete' | 'reboot' | 'power-cycle' | null
 
 export default function SessionDetail() {
   const { sandboxId } = useParams<{ sandboxId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
-  const [copiedShell, setCopiedShell] = useState(false)
   const [showTerminal, setShowTerminal] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [showInternal, setShowInternal] = useState(false)
-  const [resetState, setResetState] = useState<'idle' | 'rebooting' | 'power-cycling'>('idle')
-  const [resetError, setResetError] = useState<string | null>(null)
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteSession(id),
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: ['session-detail', sandboxId] })
-      await queryClient.cancelQueries({ queryKey: ['sessions'] })
-      const stoppedAt = new Date().toISOString()
-      queryClient.setQueryData<SessionDetailData>(['session-detail', sandboxId], (old) =>
-        old ? { ...old, status: 'stopped', stoppedAt } : old
-      )
-      queryClient.setQueriesData<Session[]>({ queryKey: ['sessions'] }, (old) =>
-        old?.map((item) =>
-          item.sandboxId === sandboxId
-            ? { ...item, status: 'stopped', stoppedAt }
-            : item
-        )
-      )
-      setShowTerminal(false)
-      setResetError(null)
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['sessions'] })
-      queryClient.invalidateQueries({ queryKey: ['session-detail', sandboxId] })
-      queryClient.invalidateQueries({ queryKey: ['session-stats', sandboxId] })
-    },
-  })
-
-  const handleDelete = () => {
-    if (!sandboxId) return
-    if (!confirm(
-      `Delete sandbox ${sandboxId}?\n\n` +
-      'The sandbox will be stopped and its preview URLs removed.'
-    )) return
-    deleteMutation.mutate(sandboxId)
-  }
-
-  const handleReboot = async () => {
-    if (resetState !== 'idle') return
-    if (!confirm(
-      'Reboot this sandbox?\n\n' +
-      'The guest kernel will restart. Running processes are killed; ' +
-      'workspace data is preserved. Takes a few seconds.'
-    )) return
-    setResetState('rebooting')
-    setResetError(null)
-    try {
-      await rebootSession(sandboxId!)
-      queryClient.invalidateQueries({ queryKey: ['session-detail', sandboxId] })
-      queryClient.invalidateQueries({ queryKey: ['session-stats', sandboxId] })
-    } catch (e) {
-      setResetError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setResetState('idle')
-    }
-  }
-
-  const handlePowerCycle = async () => {
-    if (resetState !== 'idle') return
-    if (!confirm(
-      'Power-cycle this sandbox?\n\n' +
-      'The QEMU process is destroyed and recreated with the same disks. ' +
-      'Use this if a regular reboot didn\'t recover. ' +
-      'Workspace data is preserved; takes ~30 seconds.'
-    )) return
-    setResetState('power-cycling')
-    setResetError(null)
-    try {
-      await powerCycleSession(sandboxId!)
-      queryClient.invalidateQueries({ queryKey: ['session-detail', sandboxId] })
-      queryClient.invalidateQueries({ queryKey: ['session-stats', sandboxId] })
-    } catch (e) {
-      setResetError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setResetState('idle')
-    }
-  }
+  const [confirm, setConfirm] = useState<ConfirmKind>(null)
 
   const { data: session, isLoading } = useQuery({
     queryKey: ['session-detail', sandboxId],
@@ -158,401 +75,396 @@ export default function SessionDetail() {
     retry: false,
   })
 
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['session-detail', sandboxId] })
+    queryClient.invalidateQueries({ queryKey: ['session-stats', sandboxId] })
+    queryClient.invalidateQueries({ queryKey: ['sessions'] })
+  }
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteSession(sandboxId!),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ['session-detail', sandboxId] })
+      const stoppedAt = new Date().toISOString()
+      queryClient.setQueryData<SessionDetailData>(
+        ['session-detail', sandboxId],
+        (old) => (old ? { ...old, status: 'stopped', stoppedAt } : old),
+      )
+      queryClient.setQueriesData<Session[]>({ queryKey: ['sessions'] }, (old) =>
+        old?.map((item) =>
+          item.sandboxId === sandboxId
+            ? { ...item, status: 'stopped', stoppedAt }
+            : item,
+        ),
+      )
+      setShowTerminal(false)
+    },
+    onError: (e) =>
+      toast.error(`Delete failed: ${e instanceof Error ? e.message : String(e)}`),
+    onSettled: invalidate,
+  })
+
+  const rebootMutation = useMutation({
+    mutationFn: () => rebootSession(sandboxId!),
+    onError: (e) =>
+      toast.error(`Reboot failed: ${e instanceof Error ? e.message : String(e)}`),
+    onSettled: invalidate,
+  })
+
+  const powerCycleMutation = useMutation({
+    mutationFn: () => powerCycleSession(sandboxId!),
+    onError: (e) =>
+      toast.error(
+        `Power-cycle failed: ${e instanceof Error ? e.message : String(e)}`,
+      ),
+    onSettled: invalidate,
+  })
+
   const copyUrl = (hostname: string, key: string) => {
-    navigator.clipboard.writeText(`https://${hostname}`)
+    void navigator.clipboard.writeText(`https://${hostname}`)
     setCopiedUrl(key)
     setTimeout(() => setCopiedUrl(null), 2000)
   }
 
-  const copyShellCommand = (command: string) => {
-    navigator.clipboard.writeText(command)
-    setCopiedShell(true)
-    setTimeout(() => setCopiedShell(false), 1500)
-  }
-
   if (isLoading) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
-        <div className="loading-spinner" />
+      <div className="space-y-4">
+        <Skeleton className="h-28 w-full" />
+        <Skeleton className="h-40 w-full" />
       </div>
     )
   }
 
   if (!session) {
     return (
-      <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-tertiary)' }}>
-        Session not found
-      </div>
+      <Panel>
+        <EmptyState
+          title="Session not found"
+          description="This sandbox may have been deleted."
+          action={
+            <Button variant="outline" onClick={() => navigate('/sessions')}>
+              Back to Sessions
+            </Button>
+          }
+        />
+      </Panel>
     )
   }
 
-  const shellCommand = `oc shell ${session.sandboxId}`
+  const isRunning = session.status === 'running'
+  const canDelete = isRunning || session.status === 'hibernated'
+  const busy =
+    rebootMutation.isPending ||
+    powerCycleMutation.isPending ||
+    deleteMutation.isPending
 
   return (
     <div>
-      {/* Back link */}
-      <button
-        onClick={() => navigate('/sessions')}
-        style={{
-          background: 'none', border: 'none', cursor: 'pointer',
-          color: 'var(--text-tertiary)', fontSize: 13, padding: 0,
-          marginBottom: 20, display: 'flex', alignItems: 'center', gap: 6,
-        }}
+      <Link
+        to="/sessions"
+        className="mb-5 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M19 12H5" /><polyline points="12 19 5 12 12 5" />
-        </svg>
+        <ArrowLeft className="size-4" />
         Back to Sessions
-      </button>
+      </Link>
 
       {/* Header */}
-      <div className="glass-card animate-in" style={{ padding: 24, marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-              <code style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+      <Panel className="mb-4 p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3">
+              <code className="font-mono text-lg font-semibold text-foreground">
                 {session.sandboxId}
               </code>
               <StatusBadge status={session.status} />
             </div>
-            <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
-              {session.template || 'base'} &middot; Started {timeAgo(session.startedAt)}
+            <div className="mt-1 text-sm text-muted-foreground">
+              {session.template || 'base'} · Started {timeAgo(session.startedAt)}
             </div>
           </div>
 
-          {/* Actions */}
-          <div style={{ display: 'flex', gap: 8 }}>
-            {/* Logs is available regardless of sandbox status — Axiom
-                retains events past the sandbox's lifetime, so users can
-                fetch logs of stopped / hibernated / errored sandboxes. */}
-            <button
-              className={showLogs ? 'btn-primary' : 'btn-ghost'}
-              onClick={() => setShowLogs(!showLogs)}
-              title="Live logs from /var/log + every exec'd command"
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant={showLogs ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setShowLogs((v) => !v)}
             >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="8" y1="6" x2="21" y2="6" />
-                <line x1="8" y1="12" x2="21" y2="12" />
-                <line x1="8" y1="18" x2="21" y2="18" />
-                <line x1="3" y1="6" x2="3.01" y2="6" />
-                <line x1="3" y1="12" x2="3.01" y2="12" />
-                <line x1="3" y1="18" x2="3.01" y2="18" />
-              </svg>
+              <List className="size-4" />
               Logs
-            </button>
-            {session.status === 'running' && (
+            </Button>
+            {isRunning ? (
               <>
-                <button
-                  className={showTerminal ? 'btn-primary' : 'btn-ghost'}
-                  onClick={() => setShowTerminal(!showTerminal)}
+                <Button
+                  variant={showTerminal ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setShowTerminal((v) => !v)}
                 >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="4 17 10 11 4 5" />
-                    <line x1="12" y1="19" x2="20" y2="19" />
-                  </svg>
+                  <SquareTerminal className="size-4" />
                   Terminal
-                </button>
-                <button
-                  className="btn-ghost"
-                  onClick={handleReboot}
-                  disabled={resetState !== 'idle'}
-                  title="Soft restart: kernel reboots, workspace preserved"
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => setConfirm('reboot')}
                 >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="23 4 23 10 17 10" />
-                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                  </svg>
-                  {resetState === 'rebooting' ? 'Rebooting…' : 'Reboot'}
-                </button>
-                <button
-                  className="btn-ghost"
-                  onClick={handlePowerCycle}
-                  disabled={resetState !== 'idle'}
-                  title="Hard restart: rebuilds VM, workspace preserved. Use if reboot didn't recover."
+                  <RotateCcw className="size-4" />
+                  {rebootMutation.isPending ? 'Rebooting…' : 'Reboot'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => setConfirm('power-cycle')}
                 >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
-                    <line x1="12" y1="2" x2="12" y2="12" />
-                  </svg>
-                  {resetState === 'power-cycling' ? 'Power-cycling…' : 'Power Cycle'}
-                </button>
+                  <Power className="size-4" />
+                  {powerCycleMutation.isPending ? 'Power-cycling…' : 'Power cycle'}
+                </Button>
               </>
-            )}
-            {(session.status === 'running' || session.status === 'hibernated') && (
-              <button
-                className="btn-danger"
-                onClick={handleDelete}
-                disabled={deleteMutation.isPending}
-                title="Stop and delete this sandbox"
-                style={{ padding: '9px 18px', fontSize: 13 }}
+            ) : null}
+            {canDelete ? (
+              <Button
+                size="sm"
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                disabled={busy}
+                onClick={() => setConfirm('delete')}
               >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="3 6 5 6 21 6" />
-                  <path d="M19 6l-1 14H6L5 6" />
-                  <path d="M10 11v6" />
-                  <path d="M14 11v6" />
-                  <path d="M9 6V4h6v2" />
-                </svg>
-                {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
-              </button>
-            )}
+                <Trash2 className="size-4" />
+                Delete
+              </Button>
+            ) : null}
           </div>
         </div>
-        {(resetError || deleteMutation.isError) && (
-          <div style={{
-            marginTop: 12,
-            padding: '10px 14px',
-            background: 'rgba(239,68,68,0.08)',
-            border: '1px solid rgba(239,68,68,0.3)',
-            borderRadius: 'var(--radius-sm)',
-            color: 'var(--text-error, #f87171)',
-            fontSize: 13,
-          }}>
-            {resetError
-              ? `Reset failed: ${resetError}`
-              : `Delete failed: ${deleteMutation.error instanceof Error ? deleteMutation.error.message : String(deleteMutation.error)}`}
-          </div>
-        )}
-      </div>
+      </Panel>
 
-      {/* Terminal */}
-      {showTerminal && session.status === 'running' && (
-        <div className="glass-card animate-in" style={{ padding: 20, marginBottom: 16 }}>
-          <Terminal sandboxId={sandboxId!} onClose={() => setShowTerminal(false)} />
+      {showTerminal && isRunning ? (
+        <div className="mb-4">
+          <Terminal
+            sandboxId={sandboxId!}
+            onClose={() => setShowTerminal(false)}
+          />
         </div>
-      )}
+      ) : null}
 
-      {/* Logs — works for all sandbox states (Axiom retains past-lifetime). */}
-      {showLogs && (
-        <div className="glass-card animate-in" style={{ padding: 20, marginBottom: 16 }}>
+      {showLogs ? (
+        <div className="mb-4">
           <LogsPanel sandboxId={sandboxId!} onClose={() => setShowLogs(false)} />
         </div>
-      )}
+      ) : null}
 
-      {/* Stats cards — only for running sandboxes */}
-      {session.status === 'running' && (
-        <div className="glass-card animate-in stagger-1" style={{ padding: 20, marginBottom: 16 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14 }}>
-            Resource Usage
-          </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <StatCard
-              label="CPU"
-              value={stats ? `${stats.cpuPercent.toFixed(1)}%` : '—'}
-            />
-            <StatCard
-              label="Memory"
-              value={stats ? formatBytes(stats.memUsage) : '—'}
-              sub={stats ? `of ${formatBytes(stats.memLimit)}` : undefined}
-            />
-            <StatCard
-              label="Processes"
-              value={stats ? String(stats.pids) : '—'}
-            />
-            <StatCard
-              label="Network"
-              value={stats ? `↑${formatBytes(stats.netOutput)}` : '—'}
-              sub={stats ? `↓${formatBytes(stats.netInput)}` : undefined}
-            />
-          </div>
+      {/* Resource usage */}
+      {isRunning ? (
+        <div className="mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <MetricCard
+            label="CPU"
+            value={stats ? `${stats.cpuPercent.toFixed(1)}%` : '—'}
+          />
+          <MetricCard
+            label="Memory"
+            value={stats ? formatBytes(stats.memUsage) : '—'}
+            hint={stats ? `of ${formatBytes(stats.memLimit)}` : undefined}
+          />
+          <MetricCard
+            label="Processes"
+            value={stats ? String(stats.pids) : '—'}
+          />
+          <MetricCard
+            label="Network"
+            value={stats ? `↑${formatBytes(stats.netOutput)}` : '—'}
+            hint={stats ? `↓${formatBytes(stats.netInput)}` : undefined}
+          />
         </div>
-      )}
+      ) : null}
 
       {/* Preview URLs */}
-      {session.previewUrls && session.previewUrls.length > 0 && (() => {
-        const hasCustom = session.previewUrls.some(u => u.customHostname)
-        return (
-          <div className="glass-card animate-in stagger-2" style={{ padding: 20, marginBottom: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
-              Preview URLs
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {session.previewUrls.map((url) => {
-                const displayHost = url.customHostname || url.hostname
-                return (
-                  <div key={url.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{
-                      minWidth: 60,
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: 'var(--text-tertiary)',
-                      fontFamily: 'var(--font-mono)',
-                    }}>
-                      :{url.port}
-                    </div>
-                    <div style={{
-                      flex: 1,
-                      background: 'var(--bg-deep)',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: 'var(--radius-sm)',
-                      padding: '10px 14px',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 13,
-                      color: 'var(--text-accent)',
-                    }}>
-                      <a
-                        href={`https://${displayHost}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{ color: 'var(--text-accent)', textDecoration: 'none' }}
-                      >
-                        https://{displayHost}
-                      </a>
-                    </div>
-                    <button className="btn-ghost" onClick={() => copyUrl(displayHost, `${url.port}`)} style={{ whiteSpace: 'nowrap' }}>
-                      {copiedUrl === `${url.port}` ? 'Copied' : 'Copy'}
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-
-            {/* Internal URLs toggle — only shown when custom domain URLs are displayed */}
-            {hasCustom && (
-              <div style={{ marginTop: 12 }}>
-                <button
-                  onClick={() => setShowInternal(!showInternal)}
-                  style={{
-                    background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                    fontSize: 11, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 4,
-                  }}
-                >
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                    style={{ transform: showInternal ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>
-                    <polyline points="9 18 15 12 9 6" />
-                  </svg>
-                  Internal URLs
-                </button>
-                {showInternal && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-                    {session.previewUrls.map((url) => (
-                      <div key={`int-${url.id}`} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <div style={{ minWidth: 60, fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-                          :{url.port}
-                        </div>
-                        <div style={{
-                          flex: 1,
-                          background: 'var(--bg-deep)',
-                          border: '1px solid var(--border-subtle)',
-                          borderRadius: 'var(--radius-sm)',
-                          padding: '8px 12px',
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: 12,
-                          color: 'var(--text-tertiary)',
-                        }}>
-                          <a
-                            href={`https://${url.hostname}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{ color: 'var(--text-tertiary)', textDecoration: 'none' }}
-                          >
-                            https://{url.hostname}
-                          </a>
-                        </div>
-                        <button className="btn-ghost" onClick={() => copyUrl(url.hostname, `int-${url.port}`)} style={{ whiteSpace: 'nowrap', fontSize: 11 }}>
-                          {copiedUrl === `int-${url.port}` ? 'Copied' : 'Copy'}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+      {session.previewUrls && session.previewUrls.length > 0 ? (
+        <Panel className="mb-4 p-6">
+          <h2 className="mb-3 text-sm font-semibold">Preview URLs</h2>
+          <div className="space-y-2">
+            {session.previewUrls.map((url) => {
+              const host = url.customHostname || url.hostname
+              return (
+                <PreviewUrlRow
+                  key={url.id}
+                  port={url.port}
+                  host={host}
+                  copied={copiedUrl === `${url.port}`}
+                  onCopy={() => copyUrl(host, `${url.port}`)}
+                />
+              )
+            })}
           </div>
-        )
-      })()}
+
+          {session.previewUrls.some((u) => u.customHostname) ? (
+            <div className="mt-3">
+              <button
+                onClick={() => setShowInternal((v) => !v)}
+                className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <ChevronRight
+                  className={`size-3.5 transition-transform ${showInternal ? 'rotate-90' : ''}`}
+                />
+                Internal URLs
+              </button>
+              {showInternal ? (
+                <div className="mt-2 space-y-2">
+                  {session.previewUrls.map((url) => (
+                    <PreviewUrlRow
+                      key={`int-${url.id}`}
+                      port={url.port}
+                      host={url.hostname}
+                      copied={copiedUrl === `int-${url.port}`}
+                      onCopy={() => copyUrl(url.hostname, `int-${url.port}`)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </Panel>
+      ) : null}
 
       {/* Details */}
-      <div className="glass-card animate-in stagger-3" style={{ padding: 20, marginBottom: 16 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14 }}>
-          Details
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 32px' }}>
-          <DetailRow label="Template" value={session.template || 'base'} />
-          <DetailRow label="Timeout" value={session.config?.timeout ? `${session.config.timeout}s` : '300s'} />
-          <DetailRow label="CPUs" value={String(session.config?.cpuCount ?? 1)} />
-          <DetailRow label="Memory" value={`${session.config?.memoryMB ?? 512} MB`} />
-          <DetailRow label="Started" value={new Date(session.startedAt).toLocaleString()} />
-          {session.status === 'running' && (
-            <DetailCommandRow
-              label="CLI shell"
-              value={shellCommand}
-              copied={copiedShell}
-              onCopy={() => copyShellCommand(shellCommand)}
+      <Panel className="mb-4 p-6">
+        <h2 className="mb-4 text-sm font-semibold">Details</h2>
+        <dl className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">
+          <Detail label="Template" value={session.template || 'base'} />
+          <Detail
+            label="Timeout"
+            value={`${session.config?.timeout ?? 300}s`}
+          />
+          <Detail label="CPUs" value={String(session.config?.cpuCount ?? 1)} />
+          <Detail
+            label="Memory"
+            value={`${session.config?.memoryMB ?? 512} MB`}
+          />
+          <Detail
+            label="Started"
+            value={new Date(session.startedAt).toLocaleString()}
+          />
+          {session.stoppedAt ? (
+            <Detail
+              label="Stopped"
+              value={new Date(session.stoppedAt).toLocaleString()}
             />
-          )}
-          {session.stoppedAt && (
-            <DetailRow label="Stopped" value={new Date(session.stoppedAt).toLocaleString()} />
-          )}
-          {session.errorMsg && (
-            <DetailRow label="Error" value={session.errorMsg} isError />
-          )}
-        </div>
-      </div>
+          ) : null}
+          {session.errorMsg ? (
+            <Detail label="Error" value={session.errorMsg} error />
+          ) : null}
+        </dl>
+        {isRunning ? (
+          <div className="mt-4 space-y-1.5">
+            <div className="text-xs text-muted-foreground">CLI shell</div>
+            <CopyRow value={`oc shell ${session.sandboxId}`} />
+          </div>
+        ) : null}
+      </Panel>
 
-      {/* Checkpoint info for hibernated */}
-      {session.checkpoint && (
-        <div className="glass-card animate-in stagger-4" style={{ padding: 20 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14 }}>
-            Checkpoint
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 32px' }}>
-            <DetailRow label="Size" value={formatBytes(session.checkpoint.sizeBytes)} />
-            <DetailRow label="Hibernated" value={new Date(session.checkpoint.hibernatedAt).toLocaleString()} />
-          </div>
-        </div>
-      )}
+      {/* Checkpoint */}
+      {session.checkpoint ? (
+        <Panel className="p-6">
+          <h2 className="mb-4 text-sm font-semibold">Checkpoint</h2>
+          <dl className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">
+            <Detail
+              label="Size"
+              value={formatBytes(session.checkpoint.sizeBytes)}
+            />
+            <Detail
+              label="Hibernated"
+              value={new Date(session.checkpoint.hibernatedAt).toLocaleString()}
+            />
+          </dl>
+        </Panel>
+      ) : null}
+
+      <ConfirmDialog
+        open={confirm === 'reboot'}
+        onOpenChange={(o) => !o && setConfirm(null)}
+        title="Reboot this sandbox?"
+        description="The guest kernel restarts. Running processes are killed; workspace data is preserved. Takes a few seconds."
+        confirmLabel="Reboot"
+        pending={rebootMutation.isPending}
+        onConfirm={() =>
+          rebootMutation.mutate(undefined, { onSuccess: () => setConfirm(null) })
+        }
+      />
+      <ConfirmDialog
+        open={confirm === 'power-cycle'}
+        onOpenChange={(o) => !o && setConfirm(null)}
+        title="Power-cycle this sandbox?"
+        description="The VM is destroyed and recreated with the same disks — use this if a reboot didn't recover. Workspace data is preserved; takes ~30 seconds."
+        confirmLabel="Power cycle"
+        pending={powerCycleMutation.isPending}
+        onConfirm={() =>
+          powerCycleMutation.mutate(undefined, {
+            onSuccess: () => setConfirm(null),
+          })
+        }
+      />
+      <ConfirmDialog
+        open={confirm === 'delete'}
+        onOpenChange={(o) => !o && setConfirm(null)}
+        title={`Delete sandbox ${session.sandboxId}?`}
+        description="The sandbox will be stopped and its preview URLs removed."
+        confirmLabel="Delete sandbox"
+        destructive
+        pending={deleteMutation.isPending}
+        onConfirm={() =>
+          deleteMutation.mutate(undefined, { onSuccess: () => setConfirm(null) })
+        }
+      />
     </div>
   )
 }
 
-function DetailRow({ label, value, isError }: { label: string; value: string; isError?: boolean }) {
-  return (
-    <div>
-      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 2 }}>{label}</div>
-      <div style={{
-        fontSize: 13,
-        fontFamily: 'var(--font-mono)',
-        color: isError ? 'var(--accent-rose)' : 'var(--text-primary)',
-        wordBreak: 'break-all',
-      }}>
-        {value}
-      </div>
-    </div>
-  )
-}
-
-function DetailCommandRow({
-  label,
-  value,
+function PreviewUrlRow({
+  port,
+  host,
   copied,
   onCopy,
 }: {
-  label: string
-  value: string
+  port: number
+  host: string
   copied: boolean
   onCopy: () => void
 }) {
   return (
+    <div className="flex items-center gap-3">
+      <span className="w-12 shrink-0 font-mono text-xs text-muted-foreground">
+        :{port}
+      </span>
+      <a
+        href={`https://${host}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex-1 truncate rounded-md border bg-panel-2 px-3 py-2 font-mono text-[13px] text-foreground hover:underline"
+      >
+        https://{host}
+      </a>
+      <Button variant="ghost" size="sm" onClick={onCopy}>
+        {copied ? 'Copied' : 'Copy'}
+      </Button>
+    </div>
+  )
+}
+
+function Detail({
+  label,
+  value,
+  error,
+}: {
+  label: string
+  value: string
+  error?: boolean
+}) {
+  return (
     <div>
-      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 2 }}>{label}</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-        <code style={{
-          fontSize: 13,
-          fontFamily: 'var(--font-mono)',
-          color: 'var(--text-primary)',
-          wordBreak: 'break-all',
-        }}>
-          {value}
-        </code>
-        <button
-          className="btn-ghost"
-          onClick={onCopy}
-          style={{ padding: '2px 7px', fontSize: 11, flexShrink: 0 }}
-        >
-          {copied ? 'Copied' : 'Copy'}
-        </button>
-      </div>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd
+        className={`font-mono text-[13px] break-all ${error ? 'text-status-error' : 'text-foreground'}`}
+      >
+        {value}
+      </dd>
     </div>
   )
 }

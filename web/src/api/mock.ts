@@ -239,6 +239,47 @@ const apiKeys = [
 
 const autumn = { isHalted: false, balance: 4210, currency: 'usd' }
 
+const sessionDetail = {
+  id: 's1',
+  sandboxId: 'sbx_a1b2c3d4e5',
+  template: 'python-3.12',
+  status: 'running',
+  startedAt: at(0, 3),
+  config: { timeout: 3600, cpuCount: 2, memoryMB: 2048, networkEnabled: true },
+  previewUrls: [
+    {
+      id: 'pu1',
+      sandboxId: 'sbx_a1b2c3d4e5',
+      orgId: 'org_digger',
+      hostname: 'sbx-a1b2c3d4e5-3000.preview.opencomputer.dev',
+      customHostname: 'sbx-a1b2c3d4e5-3000.acme.dev',
+      port: 3000,
+      sslStatus: 'active',
+      authConfig: {},
+      createdAt: at(0, 2),
+    },
+    {
+      id: 'pu2',
+      sandboxId: 'sbx_a1b2c3d4e5',
+      orgId: 'org_digger',
+      hostname: 'sbx-a1b2c3d4e5-8080.preview.opencomputer.dev',
+      port: 8080,
+      sslStatus: 'active',
+      authConfig: {},
+      createdAt: at(0, 2),
+    },
+  ],
+}
+
+const sandboxStats = {
+  cpuPercent: 12.4,
+  memUsage: 734_003_200,
+  memLimit: 2_147_483_648,
+  pids: 37,
+  netOutput: 4_180_000,
+  netInput: 12_500_000,
+}
+
 const org = {
   id: 'org_digger',
   name: 'Digger',
@@ -292,8 +333,8 @@ type Handler = () => unknown
 // Ordered most-specific first. Matched against the path (without /api/dashboard).
 const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/me$/, () => me],
-  [/^\/sessions\/[^/]+\/stats$/, () => ({})],
-  [/^\/sessions\/[^/]+$/, () => sessions[0]],
+  [/^\/sessions\/[^/]+\/stats$/, () => sandboxStats],
+  [/^\/sessions\/[^/]+$/, () => sessionDetail],
   [/^\/sessions(\?.*)?$/, () => sessions],
   [/^\/images(\?.*)?$/, () => images],
   [
