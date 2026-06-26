@@ -257,7 +257,7 @@ Pass `key` **or** `credential` (or neither → org default). The agent's `limits
 
 ## GitHub Apps & Repos
 
-The OpenComputer GitHub App lets OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is a stable repository handle that resolves to the OpenComputer App. See the [Repos & GitHub guide](/agent-sessions/repos).
+A GitHub App lets OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is a stable repository handle that resolves to your configured GitHub App (the OpenComputer App by default, or your own). See the [Repos & GitHub guide](/agent-sessions/repos).
 
 During preview, **install the [OpenComputer GitHub App](https://github.com/apps/opencomputerdev/installations/new)** on the repos you want OpenComputer to work with (you pick the exact repos). **No credential passes through this API for the OpenComputer App.** You can also **bring your own GitHub App** (`byo_stored_key`) — register an existing App, or create one in one click via the [manifest flow](/agent-sessions/repos#bring-your-own-github-app); the App key is encrypted at rest and never returned. `byo_broker` is registrable but not yet used for minting.
 
@@ -298,7 +298,7 @@ During preview, **install the [OpenComputer GitHub App](https://github.com/apps/
 
 </Tabs>
 
-Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle). **No `auth`** — auth resolves through the OpenComputer App. **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). (Pinning a repo to a specific App is coming later.)
+Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle). **No `auth`** — auth resolves through your configured GitHub App (the OpenComputer App by default). **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). (Pinning a repo to a specific App is coming later.)
 
 ```
 Repo               = { id, provider, owner, repo, name?, created_at, updated_at }
