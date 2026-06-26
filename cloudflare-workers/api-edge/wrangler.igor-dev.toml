@@ -1,22 +1,42 @@
-# api-edge — one-off `igor-dev` dev stack for the sandbox-webhooks
-# rearchitecture e2e (PR #410), Milestone D (management + inline). Lives in
-# **Mo's CF account b8f23cb8**. STRIPPED vs prod: no public routes, no SPA
-# [assets] (no ./assets dir in-repo), no autumn cron [triggers], no tail_consumer
-# (Axiom log-tail is prod-only), no SESSIONS_KV (the webhooks + api-key-auth path
-# is pure D1 — webhooks.ts reads only EVENT_SECRET, OPENCOMPUTER_DB,
-# SVIX_API_TOKEN). The CreditAccount DO is kept (self-contained, off the webhook
-# path) so the worker's `export { CreditAccount }` has a matching migration.
-# Deploy with:
-#   wrangler deploy   --config wrangler.igor-dev.toml
-#   wrangler secret put EVENT_SECRET   --config wrangler.igor-dev.toml   # == events-ingest-igor-dev EVENT_SECRET
-#   wrangler secret put SVIX_API_TOKEN --config wrangler.igor-dev.toml
-# See .agents/work/sandbox-webhooks-rearchitecture.md §8.
+# api-edge — `igor-dev` personal dev edge in **Mo's CF account (b8f23cb8)**.
+# A prod-mirror of the api-edge Worker sitting in front of Igor's GCP dev box:
+# one worker that serves the dashboard SPA from [assets] AND handles /auth
+# (WorkOS) + /api/dashboard (edge-native, read from D1) + /api/webhooks — the
+# same code path as prod's single edge.
+#
+# Differs from prod: no public routes (uses the workers.dev URL), no autumn
+# cron [triggers], no tail_consumer (Axiom is prod-only), no SESSIONS_KV
+# (unused by the code). The CreditAccount DO is kept so `export { CreditAccount }`
+# has a matching migration.
+#
+# Full setup + rationale: .agents/work/dev-edge-setup.md. Quick deploy:
+#   cd web && npm run build                                      # build the SPA
+#   rm -rf cloudflare-workers/api-edge/assets \
+#     && cp -R web/dist/. cloudflare-workers/api-edge/assets/    # stage SPA -> [assets]
+#   cd cloudflare-workers/api-edge \
+#     && wrangler deploy --config wrangler.igor-dev.toml
+# Secrets (wrangler secret put <NAME> --config wrangler.igor-dev.toml):
+#   WORKOS_API_KEY, WORKOS_CLIENT_ID — staging WorkOS (same app as the dev box)
+#   SESSION_JWT_SECRET               — signs oc_session; must == the box's
+#                                      OPENSANDBOX_SESSION_JWT_SECRET to wire it as a cell
+#   EVENT_SECRET, SVIX_API_TOKEN     — webhooks e2e (PR #410), optional
+# WorkOS dashboard (staging env): allowlist https://<worker>.workers.dev/auth/callback
+# and set it as the Sign-out redirect.
 
 name = "opencomputer-api-edge-igor-dev"
 main = "src/index.ts"
 compatibility_date = "2026-04-28"
 compatibility_flags = ["nodejs_compat"]
 account_id = "b8f23cb87a7a6c64040d3134643da448"
+
+# Dashboard SPA assets (built from web/, staged into ./assets — gitignored).
+# Worker runs first on every request, handles /api,/auth,/webhooks, then falls
+# through to the SPA (index.html) for client-side routes.
+[assets]
+directory = "./assets"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
 
 [[d1_databases]]
 binding = "OPENCOMPUTER_DB"
