@@ -78,7 +78,7 @@ export default function Sessions() {
       header: 'Sandbox ID',
       cell: (s) => (
         <Link
-          to={`/sessions/${s.sandboxId}`}
+          to={`/sandboxes/${s.sandboxId}`}
           className="text-foreground font-mono text-[13px] underline-offset-4 hover:underline"
         >
           {s.sandboxId}
@@ -135,7 +135,7 @@ export default function Sessions() {
 
   return (
     <div>
-      <PageHeader title="Sessions" description="Session history" />
+      <PageHeader title="Sandboxes" description="Active and recent sandboxes" />
 
       <ActivityChart sessions={allSessions ?? []} loading={loadingAll} />
 
@@ -161,10 +161,10 @@ export default function Sessions() {
           empty={
             <EmptyState
               icon={Boxes}
-              title="No sessions found"
+              title="No sandboxes found"
               description={
                 status
-                  ? 'No sessions match this filter.'
+                  ? 'No sandboxes match this filter.'
                   : 'Sandboxes you start will show up here.'
               }
             />
@@ -254,7 +254,7 @@ function ActivityChart({
         <div className="relative">
           {/* Accessible summary (chart is decorative; this conveys the data). */}
           <p className="sr-only">
-            {total} sessions started in the last 14 days.
+            {total} sandboxes started in the last 14 days.
           </p>
 
           {/* Y-axis */}
@@ -275,7 +275,7 @@ function ActivityChart({
               return (
                 <div
                   key={day.date}
-                  title={`${day.label}: ${day.count} sessions${
+                  title={`${day.label}: ${day.count} sandboxes${
                     day.hibernated ? ` (${day.hibernated} hibernated)` : ''
                   }${day.errored ? ` (${day.errored} errors)` : ''}`}
                   className={cn(

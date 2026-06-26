@@ -38,7 +38,7 @@ type NavItem = { to: string; label: string; icon: LucideIcon; end?: boolean }
 
 const NAV: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: LayoutGrid, end: true },
-  { to: '/sessions', label: 'Sessions', icon: Boxes },
+  { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
   { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
   { to: '/templates', label: 'Templates', icon: Package },
   { to: '/api-keys', label: 'API Keys', icon: KeyRound },

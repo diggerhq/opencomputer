@@ -65,7 +65,7 @@ export default function Dashboard() {
       header: 'Sandbox ID',
       cell: (s) => (
         <Link
-          to={`/sessions/${s.sandboxId}`}
+          to={`/sandboxes/${s.sandboxId}`}
           className="text-foreground font-mono text-[13px] underline-offset-4 hover:underline"
         >
           {s.sandboxId}
@@ -125,7 +125,7 @@ export default function Dashboard() {
               value={loadingRunning ? '—' : active.length.toLocaleString()}
             />
             <MetricCard
-              label="Sessions today"
+              label="Sandboxes today"
               value={loadingAll ? '—' : sessionsToday.toLocaleString()}
             />
           </div>
@@ -160,7 +160,7 @@ export default function Dashboard() {
 
           <Panel className="overflow-hidden">
             <PanelHeader>
-              <PanelTitle>Recent sessions</PanelTitle>
+              <PanelTitle>Recent sandboxes</PanelTitle>
             </PanelHeader>
             <ResourceTable
               columns={recentColumns}
@@ -170,7 +170,7 @@ export default function Dashboard() {
               empty={
                 <EmptyState
                   icon={Boxes}
-                  title="No sessions yet"
+                  title="No sandboxes yet"
                   description="Sandboxes you start will show up here."
                 />
               }
@@ -186,7 +186,7 @@ function SandboxRow({ session }: { session: Session }) {
   const elapsed = elapsedMinutes(session)
   return (
     <Link
-      to={`/sessions/${session.sandboxId}`}
+      to={`/sandboxes/${session.sandboxId}`}
       className="hover:bg-row-hover flex items-center justify-between px-5 py-3 transition-colors"
     >
       <div className="flex items-center gap-2.5">

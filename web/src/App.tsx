@@ -18,8 +18,13 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
             <Route index element={<Dashboard />} />
-            <Route path="sessions" element={<Sessions />} />
-            <Route path="sessions/:sandboxId" element={<SessionDetail />} />
+            <Route path="sandboxes" element={<Sessions />} />
+            <Route path="sandboxes/:sandboxId" element={<SessionDetail />} />
+            {/* Back-compat: the tab was renamed Sessions → Sandboxes. */}
+            <Route
+              path="sessions"
+              element={<Navigate to="/sandboxes" replace />}
+            />
             <Route path="checkpoints" element={<Checkpoints />} />
             <Route path="templates" element={<Templates />} />
             <Route path="api-keys" element={<APIKeys />} />

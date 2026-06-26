@@ -145,11 +145,11 @@ export default function SessionDetail() {
     return (
       <Panel>
         <EmptyState
-          title="Session not found"
+          title="Sandbox not found"
           description="This sandbox may have been deleted."
           action={
-            <Button variant="outline" onClick={() => navigate('/sessions')}>
-              Back to Sessions
+            <Button variant="outline" onClick={() => navigate('/sandboxes')}>
+              Back to Sandboxes
             </Button>
           }
         />
@@ -167,11 +167,11 @@ export default function SessionDetail() {
   return (
     <div>
       <Link
-        to="/sessions"
+        to="/sandboxes"
         className="text-muted-foreground hover:text-foreground mb-5 inline-flex items-center gap-1.5 text-sm transition-colors"
       >
         <ArrowLeft className="size-4" />
-        Back to Sessions
+        Back to Sandboxes
       </Link>
 
       {/* Header */}
