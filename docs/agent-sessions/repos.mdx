@@ -139,28 +139,56 @@ identity instead of OpenComputer's. Nothing else changes — OpenComputer still 
 per-operation, repo-scoped tokens; it just signs them with your App's key, which it stores
 encrypted and never returns.
 
-There are two ways to set one up.
+Creating a GitHub App is, by GitHub's design, a **user-facing flow through GitHub's UI** —
+GitHub authenticates the person who creates and owns the App, so there's no API that mints one
+on your behalf. OpenComputer hosts that flow behind a single link. (If you already have an App,
+skip to [registering it directly](#already-have-an-app).)
 
-**One-click — create an App from a manifest.** OpenComputer hands you a manifest already scoped
-to the permissions it needs; GitHub creates the App and returns a one-time code; OpenComputer
-exchanges it and captures the key. You never handle the private key yourself.
+**One-click — open a link (recommended).** Ask OpenComputer for a setup link and open it.
+GitHub walks the user through creating the App; OpenComputer's callback captures the key,
+encrypts it, and registers the App as `byo_stored_key`. You never render a form or touch the
+private key.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const { startUrl } = await oc.github.apps.createManifestUrl({
+  name: "Acme Agents",
+  isDefault: true,
+  // organization: "acme",   // omit for a user-owned App
+});
+// Open startUrl in a browser (or print it in your CLI). After the user clicks
+// "Create" on GitHub, OpenComputer registers the App — nothing else to call.
+```
+
+```http REST API
+POST /v3/github/apps/manifest
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+
+{ "name": "Acme Agents", "is_default": true }
+// → { "start_url": "https://api.opencomputer.dev/v3/github/apps/manifest/start?token=…",
+//     "expires_at": "…" }
+// Open start_url in a browser; OpenComputer hosts the GitHub redirect + key capture.
+```
+
+</CodeGroup>
+
+**Embed it in your own product (developer-driven).** If you want the GitHub redirect to land in
+*your* app (e.g. to attach the new App to your own user), host the redirect yourself: build the
+manifest, render a top-level form that POSTs it to GitHub, then exchange the `code` GitHub
+returns. (The form must be a top-level navigation, not fetch/XHR — GitHub shows the user its
+App-creation screen.)
 
 <CodeGroup>
 
 ```ts TypeScript SDK
 // 1. Build the manifest + the GitHub URL to submit it to.
-const manifest = await oc.github.apps.createManifest({
+const m = await oc.github.apps.createManifest({
   redirectUrl: "https://your.app/github/callback",
   name: "Acme Agents",
-  // organization: "acme",   // omit for a user-owned App
 });
-
-// 2. Render a form that POSTs manifest.manifest (JSON) as field manifest.field
-//    to manifest.postUrl. It must be a top-level navigation, not fetch/XHR —
-//    GitHub shows the user its App-creation screen, then redirects to
-//    redirectUrl?code=…&state=…
-
-// 3. In your redirect handler, exchange the code — registers a byo_stored_key App.
+// 2. Render a form that POSTs m.manifest (JSON) as field m.field to m.postUrl.
+// 3. In your redirect handler, exchange the code GitHub appended:
 const app = await oc.github.apps.completeManifest({ code, isDefault: true });
 ```
 
@@ -172,16 +200,15 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 // → { "manifest": { … }, "post_url": "https://github.com/settings/apps/new?state=…",
 //     "field": "manifest", "state": "…" }
 
-// After GitHub redirects back to your redirect_url with ?code=…
+// after GitHub redirects back to your redirect_url with ?code=…
 POST /v3/github/apps/manifest/conversions
-Authorization: Bearer $OPENCOMPUTER_API_KEY
-
 { "code": "…", "is_default": true }
-// → { "id": "gha_…", "mode": "byo_stored_key", "app_name": "Acme Agents", … }
+// → { "id": "gha_…", "mode": "byo_stored_key", … }
 ```
 
 </CodeGroup>
 
+<a id="already-have-an-app" />
 **Already have an App?** Register it directly with its numeric App id and private key.
 
 <CodeGroup>
@@ -209,10 +236,10 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 
 </CodeGroup>
 
-Either way, the last step is to **install the App on the repos you want** (from its GitHub
-settings page) and reference those repos in `sources` exactly as with the OpenComputer App —
-OpenComputer resolves your App and mints per operation. Rotate the key or change the default
-with `oc.github.apps.update(id, { … })`; remove it (and its encrypted key) with
+However you set it up, the last step is to **install the App on the repos you want** (from its
+GitHub settings page) and reference those repos in `sources` exactly as with the OpenComputer
+App — OpenComputer resolves your App and mints per operation. Rotate the key or change the
+default with `oc.github.apps.update(id, { … })`; remove it (and its encrypted key) with
 `oc.github.apps.delete(id)`.
 
 <Note>

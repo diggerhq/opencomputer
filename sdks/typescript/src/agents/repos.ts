@@ -86,7 +86,27 @@ export interface UpdateGitHubAppParams {
   brokerSecret?: string;
 }
 
-/** Parameters for building a GitHub App-creation manifest. */
+/** Parameters for the hosted one-click flow (OpenComputer hosts the start page + callback). */
+export interface CreateAppManifestUrlParams {
+  /** Suggested App name (GitHub requires global uniqueness; the user can change it). */
+  name?: string;
+  /** Org login to create an org-owned App; omit for a user-owned App. */
+  organization?: string;
+  /** Make the new App your org's default. */
+  isDefault?: boolean;
+}
+
+/** A short-lived link to open in a browser to create + connect a GitHub App. */
+export interface AppManifestUrl {
+  /** Open this in a browser: it sends the user to GitHub, and OpenComputer's callback captures
+   *  the key and registers the App. No form to render, no code to handle. */
+  startUrl: string;
+  expiresAt: string;
+}
+
+/** Parameters for building a GitHub App-creation manifest (developer-driven; you host the
+ *  redirect and exchange the code yourself). For the one-click path use
+ *  {@link GitHubApps.createManifestUrl} instead. */
 export interface CreateAppManifestParams {
   /** Where GitHub returns `?code=&state=` after the App is created (must be https). */
   redirectUrl: string;
@@ -177,8 +197,8 @@ export class GitHub {
 /**
  * GitHub Apps available to your org — the built-in OpenComputer App plus any you register.
  * Use your own App (`byo_stored_key`) so PRs, comments, and statuses come from your App
- * identity; register it directly with {@link register}, or one-click with {@link createManifest}
- * + {@link completeManifest}.
+ * identity. Easiest is {@link createManifestUrl} (one link, OpenComputer hosts the rest); if
+ * you already have an App, {@link register} it directly.
  */
 export class GitHubApps {
   constructor(private readonly http: Http) {}
@@ -204,19 +224,32 @@ export class GitHubApps {
   }
 
   /**
-   * Step 1 of the one-click flow: build a GitHub App-creation manifest pre-scoped to what
-   * OpenComputer needs. Render a form that POSTs `result.manifest` (JSON) as field
-   * `result.field` to `result.postUrl`; GitHub creates the App and redirects to your
-   * `redirectUrl` with a `code`.
+   * **One-click (recommended).** Returns a `startUrl` to open in a browser. It sends the user
+   * to GitHub to create the App, and OpenComputer's hosted callback captures the key and
+   * registers it as `byo_stored_key` — you don't render a form or handle the redirect code.
+   * Creating an App from a manifest is inherently a GitHub-UI flow, so this is a link to open,
+   * not a fully programmatic call. The link is short-lived.
+   */
+  createManifestUrl(params: CreateAppManifestUrlParams = {}): Promise<AppManifestUrl> {
+    return this.http.request("POST", "/github/apps/manifest", { body: params });
+  }
+
+  /**
+   * Developer-driven manifest flow (use {@link createManifestUrl} unless you need to host the
+   * redirect yourself — e.g. to attach the App to your own user in your UI). Builds a manifest
+   * pre-scoped to what OpenComputer needs; render a form that POSTs `result.manifest` (JSON) as
+   * field `result.field` to `result.postUrl`. GitHub redirects to your `redirectUrl` with a
+   * `code` — finish with {@link completeManifest}.
    */
   createManifest(params: CreateAppManifestParams): Promise<AppManifest> {
     return this.http.request("POST", "/github/apps/manifest", { body: params });
   }
 
   /**
-   * Step 2 of the one-click flow: exchange the `code` GitHub returned for a registered App.
-   * OpenComputer captures the new App's private key server-side, encrypts it, and registers
-   * the App as `byo_stored_key`. The key is never exposed to your code.
+   * Finish the developer-driven flow: exchange the `code` GitHub returned for a registered App.
+   * OpenComputer captures the new App's private key server-side, encrypts it, and registers the
+   * App as `byo_stored_key`. The key is never exposed to your code. (Not needed for
+   * {@link createManifestUrl}, whose callback does this for you.)
    */
   completeManifest(params: CompleteAppManifestParams): Promise<GitHubApp> {
     return this.http.request("POST", "/github/apps/manifest/conversions", { body: params });

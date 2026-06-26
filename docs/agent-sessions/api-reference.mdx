@@ -272,7 +272,8 @@ During preview, **install the [OpenComputer GitHub App](https://github.com/apps/
 | `oc.repos.update(id, params)` | Update `name`. |
 | `oc.github.apps.list()` | List GitHub Apps available to your org. |
 | `oc.github.apps.register(params)` | Register your own App (`byo_stored_key` / `byo_broker`). |
-| `oc.github.apps.createManifest(params)` · `completeManifest(params)` | One-click App creation via GitHub's manifest flow. |
+| `oc.github.apps.createManifestUrl(params)` | One-click: get a link to open; OpenComputer hosts the GitHub flow + key capture. |
+| `oc.github.apps.createManifest(params)` · `completeManifest(params)` | Developer-driven manifest flow (you host the redirect). |
 | `oc.github.apps.update(id, params)` · `delete(id)` | Update / rotate / remove a registered App. |
 | `oc.github.installations.list()` | List GitHub App installations visible to OpenComputer. |
 
@@ -288,7 +289,9 @@ During preview, **install the [OpenComputer GitHub App](https://github.com/apps/
 | `GET /github/apps` | List GitHub Apps available to your org. |
 | `POST /github/apps` | Register your own App (`byo_stored_key` / `byo_broker`). |
 | `PATCH /github/apps/:id` · `DELETE /github/apps/:id` | Update / rotate / remove a registered App. |
-| `POST /github/apps/manifest` · `POST /github/apps/manifest/conversions` | One-click App creation (build manifest → exchange code). |
+| `POST /github/apps/manifest` | Start the manifest flow → `{ start_url }` (hosted) or `{ manifest, … }` (with `redirect_url`). |
+| `GET /github/apps/manifest/start` · `…/callback` | Hosted pages OpenComputer serves (browser, not called directly). |
+| `POST /github/apps/manifest/conversions` | Developer-driven: exchange the code for a registered App. |
 | `GET /github/installations` | List GitHub App installations visible to OpenComputer. |
 
 </Tab>
@@ -303,7 +306,7 @@ Repo               = { id, provider, owner, repo, name?, created_at, updated_at 
 
 Responses **never** contain a token or secret. Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
 
-`GET /github/apps` lists the GitHub Apps available to your org — the built-in OpenComputer App plus any you register. Register your own with `POST /github/apps` (`byo_stored_key`: `github_app_id` + `private_key`; `byo_broker`: `broker_url` + `broker_secret`), or one-click via `POST /github/apps/manifest` → `POST /github/apps/manifest/conversions`. App responses carry `id`, `mode`, `status`, `github_app_id?`, `app_name?`, `is_default?` — **never** a key or secret. `GET /github/installations` lists installations visible to OpenComputer; it may be **empty** for orgs using only the OpenComputer App. See the [Repos & GitHub guide](/agent-sessions/repos#bring-your-own-github-app) for the full flow.
+`GET /github/apps` lists the GitHub Apps available to your org — the built-in OpenComputer App plus any you register. Register your own with `POST /github/apps` (`byo_stored_key`: `github_app_id` + `private_key`; `byo_broker`: `broker_url` + `broker_secret`), or one-click: `POST /github/apps/manifest` returns a `start_url` to open and OpenComputer hosts the GitHub redirect + key capture (creating an App is a GitHub-UI flow, so it's a link to open, not a fully programmatic call). App responses carry `id`, `mode`, `status`, `github_app_id?`, `app_name?`, `is_default?` — **never** a key or secret. `GET /github/installations` lists installations visible to OpenComputer; it may be **empty** for orgs using only the OpenComputer App. See the [Repos & GitHub guide](/agent-sessions/repos#bring-your-own-github-app) for the full flow.
 
 ## Credentials
 
