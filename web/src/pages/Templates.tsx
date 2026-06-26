@@ -150,7 +150,19 @@ export default function Templates() {
             <EmptyState
               icon={Package}
               title="No templates yet"
-              description="Create them with the SDK — Image.base().aptInstall([...]) — or snapshots.create()."
+              description={
+                <>
+                  Create one with the SDK using{' '}
+                  <code className="bg-muted text-foreground rounded px-1.5 py-0.5 font-mono text-xs">
+                    Image.base().aptInstall([…])
+                  </code>{' '}
+                  or{' '}
+                  <code className="bg-muted text-foreground rounded px-1.5 py-0.5 font-mono text-xs">
+                    snapshots.create()
+                  </code>
+                  .
+                </>
+              }
             />
           }
         />
