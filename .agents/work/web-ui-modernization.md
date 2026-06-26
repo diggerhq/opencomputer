@@ -45,7 +45,8 @@ orphaned Agents screens. *(Adding new UI libs — Tailwind, shadcn, lucide, sonn
 **Two findings that shape scope (verified 2026-06-26):**
 - **`Agents.tsx` (509) + `AgentDetail.tsx` (1,892) are orphaned** — not imported
   or routed in `App.tsx`. **Excluded from this effort and from all success
-  metrics** until someone deletes or routes them (decision #1).
+  metrics.** Delete-vs-revive is a separate product decision (see Decisions) — it
+  doesn't affect this pass.
 - **Terminal + logs are dark technical surfaces** (`Terminal.tsx:29`
   `background:'#0a0a0f'` + ANSI), not paper UI — a sanctioned exception.
 
@@ -179,12 +180,17 @@ later pass slots in without re-touching the visual system:
 Then the later pass wires RHF into these (or swaps to shadcn `Form`) without
 changing markup. So inputs are built **once**; only their wiring changes later.
 
-## Decisions needed (review)
+## Decisions (settled)
 
-1. **Agents/AgentDetail** — orphaned. Delete, route, or leave? Until then,
-   excluded from work + metrics. *Recommend: leave; decide delete-vs-revive later.*
-2. **Default theme** — light (brand); dark deferred. *Recommend: light.*
-3. **Formatter** — Prettier (site parity). *Recommend: yes.*
+No open decisions — these are locked for this effort:
+
+1. **Default theme = light** (the OpenComputer brand). Dark is deferred (shadcn
+   `darkMode:class` is wired, so it's addable later).
+2. **Formatter = Prettier** (+ prettier-plugin-tailwindcss).
+3. **Agents/AgentDetail = out of scope.** They're orphaned (unrouted), so this
+   pass does **not** touch them and they're excluded from all metrics. Whether to
+   **delete or revive** them is a separate product decision tracked elsewhere — it
+   does not block or affect this work, so it's not an open item here.
 
 ## Plan — one PR, two phases
 
