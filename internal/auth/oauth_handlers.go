@@ -196,8 +196,10 @@ func (h *OAuthHandlers) HandleLogout(c echo.Context) error {
 		}
 	}
 
-	// Clear all auth cookies.
-	ClearAllCookies(c)
+	// Clear all auth cookies — including the configured-domain variant that
+	// login sets, not just the host-only one.
+	cfg := h.workos.Config()
+	ClearAllCookies(c, cfg.CookieDomain)
 
 	// Hand back WorkOS's hosted logout URL for the browser to follow. GetLogoutURL
 	// is an offline URL builder; the real teardown + redirect happen when the
@@ -312,8 +314,12 @@ func SetRefreshCookie(c echo.Context, refreshToken, domain string) {
 	})
 }
 
-// ClearAllCookies helper to clear all auth cookies (used for force-logout).
-func ClearAllCookies(c echo.Context) {
+// ClearAllCookies clears all auth cookies (used for logout / force-logout).
+// Login sets workos_session with the configured cookie Domain, so a host-only
+// delete leaves the domain-scoped cookie behind (the browser keeps the real
+// auth cookie and silently re-auths). Clear both the host-only and the
+// configured-domain variant.
+func ClearAllCookies(c echo.Context, domain string) {
 	for _, name := range []string{"workos_session", "workos_refresh", "oauth_state"} {
 		c.SetCookie(&http.Cookie{
 			Name:     name,
@@ -323,5 +329,16 @@ func ClearAllCookies(c echo.Context) {
 			Expires:  time.Unix(0, 0),
 			HttpOnly: true,
 		})
+		if domain != "" {
+			c.SetCookie(&http.Cookie{
+				Name:     name,
+				Value:    "",
+				Path:     "/",
+				Domain:   domain,
+				MaxAge:   -1,
+				Expires:  time.Unix(0, 0),
+				HttpOnly: true,
+			})
+		}
 	}
 }

@@ -1310,7 +1310,10 @@ async function authRefresh(req: Request, env: Env): Promise<Response> {
     .bind(claims.org_id)
     .first<{ plan: string }>();
   const plan = orgRow?.plan ?? "free";
-  const fresh = await mintSessionJWT(env.SESSION_JWT_SECRET, claims.org_id, claims.user_id, plan);
+  // Preserve the WorkOS session id across refresh so hosted logout still works
+  // (logout builds the WorkOS logout URL from claims.wsid; dropping it here
+  // would silently downgrade post-refresh logout to local cookie clearing).
+  const fresh = await mintSessionJWT(env.SESSION_JWT_SECRET, claims.org_id, claims.user_id, plan, claims.wsid);
   return new Response(JSON.stringify({ ok: true, plan }), {
     status: 200,
     headers: {
