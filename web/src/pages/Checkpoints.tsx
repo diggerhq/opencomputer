@@ -2,6 +2,26 @@ import { Fragment, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getCheckpoints, deleteCheckpointDashboard, type CheckpointItem } from '../api/client'
 
+function checkpointTypeLabel(cp: CheckpointItem) {
+  return cp.kind === 'disk_only' ? 'Disk-only' : 'Full'
+}
+
+function checkpointTypeDetail(cp: CheckpointItem) {
+  if (cp.kind !== 'disk_only') {
+    return 'Disk, memory, CPU'
+  }
+  if (cp.promotionStatus === 'ready') {
+    return 'Promoted for fast fork'
+  }
+  if (cp.promotionStatus === 'processing' || cp.promotionStatus === 'pending') {
+    return 'Promoting'
+  }
+  if (cp.promotionStatus === 'failed') {
+    return 'Promotion failed'
+  }
+  return 'Disk only'
+}
+
 export default function Checkpoints() {
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
@@ -78,6 +98,7 @@ export default function Checkpoints() {
               <tr>
                 <th>Name</th>
                 <th>Sandbox</th>
+                <th>Type</th>
                 <th>Status</th>
                 <th style={{ textAlign: 'right' }}>Active Forks</th>
                 <th style={{ textAlign: 'right' }}>Total Forks</th>
@@ -92,6 +113,35 @@ export default function Checkpoints() {
                     <td style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{cp.name}</td>
                     <td>
                       <code style={{ fontSize: 12 }}>{cp.sandboxId}</code>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                        <span
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            padding: '2px 8px',
+                            borderRadius: 10,
+                            width: 'fit-content',
+                            background: cp.kind === 'disk_only'
+                              ? 'rgba(59, 130, 246, 0.08)'
+                              : 'rgba(148, 163, 184, 0.08)',
+                            color: cp.kind === 'disk_only'
+                              ? '#60a5fa'
+                              : 'var(--text-secondary)',
+                            border: `1px solid ${
+                              cp.kind === 'disk_only'
+                                ? 'rgba(59, 130, 246, 0.18)'
+                                : 'rgba(148, 163, 184, 0.16)'
+                            }`,
+                          }}
+                        >
+                          {checkpointTypeLabel(cp)}
+                        </span>
+                        <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                          {checkpointTypeDetail(cp)}
+                        </span>
+                      </div>
                     </td>
                     <td>
                       <span
@@ -150,7 +200,7 @@ export default function Checkpoints() {
                   </tr>
                   {cp.status === 'failed' && cp.errorMsg && (
                     <tr key={`${cp.id}-error`}>
-                      <td colSpan={7} style={{ paddingTop: 0 }}>
+                      <td colSpan={8} style={{ paddingTop: 0 }}>
                         <div
                           style={{
                             border: '1px solid rgba(251, 113, 133, 0.16)',
@@ -177,7 +227,7 @@ export default function Checkpoints() {
               ))}
               {visibleCheckpoints.length === 0 && (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>
+                  <td colSpan={8} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>
                     {checkpoints.length === 0 ? 'No checkpoints yet' : 'No checkpoints to show'}
                   </td>
                 </tr>
