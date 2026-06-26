@@ -51,8 +51,9 @@ orphaned Agents screens. *(Adding new UI libs — Tailwind, shadcn, lucide, sonn
 ## Brand + dashboard dialect
 
 Source of truth: the site (`opencomputer-site-v1`, already `vite_react_shadcn_ts`)
-+ Mintlify docs — both light, ink-on-paper. Site base tokens (shadcn HSL, from
-`src/index.css`): `--background 40 33% 97%` (paper), `--foreground 45 8% 8%`
++ Mintlify docs — both light, ink-on-paper. Site base token *values* (HSL, from
+the site's `src/index.css`; in our v4 setup these become CSS color vars under
+`@theme inline` — see "Tailwind v4 + shadcn setup"): `--background 40 33% 97%` (paper), `--foreground 45 8% 8%`
 (ink), `--primary` ink, `--destructive 0 84% 60%`, `--border 0 0% 91%`,
 `--radius 6px`. Replaces "Void Glass" (not additive): the current dark tokens
 (`--bg-void`, `--accent-indigo`, …) are **retired with `theme.css`, not
@@ -87,7 +88,7 @@ with the TanStack Query data layer we keep. The marketing site happens to use th
 same stack, so a few tokens/patterns can be borrowed — a convenience, **not the
 rationale, and not a constraint** (we don't have to match the site's versions).
 
-**Adopt now:** Tailwind (latest, v4) (+ animate, tailwind-merge, clsx → `cn()`),
+**Adopt now:** Tailwind (latest, v4) (+ tw-animate-css, tailwind-merge, clsx → `cn()`),
 shadcn/ui (Radix), lucide-react, sonner (toasts), ESLint 9 flat
 (+ typescript-eslint, react-hooks, **jsx-a11y**) + Prettier
 (+ **prettier-plugin-tailwindcss**), `@/*` alias.
@@ -112,16 +113,34 @@ Tailwind is **net-new** here (zero Tailwind today — just `theme.css` + inline
 styles), so adopting it *is* the work. Use the **latest (v4)** and whatever its
 setup needs.
 
+## Tailwind v4 + shadcn setup (don't mix v3 patterns)
+
+Follow the **current** shadcn "Vite" + Tailwind v4 docs — not v3 muscle memory.
+An implementer can easily build a half-v3/half-v4 CSS system; the v4 specifics:
+
+- Vite plugin **`@tailwindcss/vite`** (no PostCSS pipeline, no JS color config in
+  a `tailwind.config.js theme.extend`).
+- **CSS-first tokens:** `@import "tailwindcss";` then declare design tokens as CSS
+  color vars (`:root { --background: …; --foreground: … }`) and expose them with
+  **`@theme inline`** — that's the brand + product token layer.
+- Animations: **`tw-animate-css`** (shadcn's v4 choice), **not** `tailwindcss-animate`.
+- `components.json` with `cssVariables: true`; the `@/*` alias (added in Phase A).
+- **Preflight during coexistence:** import only the **theme + utilities** layers,
+  *not* the preflight layer, so Tailwind's reset doesn't fight `theme.css`
+  (re-enabled at end of Phase B — see the plan).
+
 ## Minimal component set (build only what the shell + pilot need)
 
 Build now, on shadcn/Radix: `Button`, `Panel`, `PageHeader`, `StatusBadge`
-(lifecycle), `ConfirmDialog` (destructive — replaces the **9 `confirm()`** calls
+(lifecycle), `ConfirmDialog` (destructive — replaces the **10 `confirm()`** calls
 in live screens), `EmptyState`, `Input`, `ResourceTable` (**presentational** —
-sort affordance, empty/loading, an explicit **Open** link per row, *not* a
-row-click div), `DropdownMenu` (the AppShell org switcher is a hand-rolled
-abs-positioned dropdown today), `AppShell` (desktop sidebar + mobile drawer +
-topbar), `<Toaster/>` (sonner). `Dialog` lands with APIKeys (its "create" form is
-a fake modal — see breakdown).
+rows, empty/loading, actions, an explicit **Open** link per row, *not* a
+row-click div; **no sort UI** until real sorting exists, which is deferred),
+`DropdownMenu` (the org switcher is a hand-rolled abs-positioned dropdown today),
+`Sheet` (the AppShell mobile drawer), `AppShell` (desktop sidebar + mobile drawer
++ topbar), `<Toaster/>` (sonner). `Dialog` lands with APIKeys (its "create" form
+is a fake modal — see breakdown). Filter pills (Sessions) are a simple `Button`
+group for v1 (`ToggleGroup` later).
 
 **Build on demand (when a screen needs it):** `MetricCard`, `CodeSurface` +
 `TerminalSurface` (when SessionDetail migrates), `OrgSwitcher`, richer toast
@@ -141,14 +160,15 @@ ordered commits — not split into multiple PRs.
 
 **Phase A — Foundation:**
 - [ ] ESLint 9 flat + Prettier (+ prettier-plugin-tailwindcss) + jsx-a11y; `@/*`
-  alias; `lint`/`format` scripts.
+  alias; `lint`/`format`/`typecheck` (`tsc -b`) scripts.
 - [ ] Tailwind (latest, v4) + base tokens + **product token layer** + dark-surface
-  tokens + `cn()`. **CSS coexistence:** `theme.css` keeps owning unmigrated
-  screens; **keep Tailwind's preflight OFF** during coexistence so the global
-  reset never reflows legacy screens (v4: don't import the preflight layer; v3
-  equivalent: `corePlugins.preflight:false`); tokens on `:root`; utilities opt-in
-  per screen. Preflight stays off through the migration; revisit once only after
-  `theme.css` is gone.
+  tokens + `cn()` (see "Tailwind v4 + shadcn setup"). **CSS coexistence:**
+  `theme.css` keeps owning unmigrated screens; **keep Tailwind's preflight OFF**
+  during coexistence (v4: import the theme + utilities layers, not the preflight
+  layer) so the global reset never reflows legacy screens; tokens on `:root`;
+  utilities opt-in per screen. **Decision (not a "revisit"):** at the end of
+  Phase B, when `theme.css` is gone, turn the full reset back ON (import
+  Tailwind's preflight layer) so shadcn components get the resets they assume.
 - [ ] shadcn init + core primitives + lucide + `<Toaster/>`.
 - [ ] Build the **minimal component set** + `AppShell`.
 
@@ -158,15 +178,18 @@ ordered commits — not split into multiple PRs.
   Templates → Checkpoints → APIKeys → Dashboard → Settings → SessionDetail
   (builds the dark Code/TerminalSurface) → **Billing last** (heaviest).
   **Excludes** Agents/AgentDetail.
-- [ ] **End of Phase B:** delete `theme.css` + remove dead inline styles.
+- [ ] **End of Phase B:** delete `theme.css` + remove dead inline styles, and
+  **enable Tailwind's preflight** (the permanent app reset) now that no legacy CSS remains.
 
 ## Foundation findings (from the code survey, 2026-06-26)
 
 Concrete things Phase A must handle (verified against the code):
 - **No `@/*` alias** — add to `tsconfig.json` (`paths`) + `vite.config.ts`
   (`resolve.alias`); shadcn needs it.
-- **Fonts:** `index.html` loads Outfit / DM Sans / JetBrains Mono (Void-Glass).
-  Add **Inter + Geist Mono** (brand); retire the old three with `theme.css`.
+- **Fonts:** the `<link>` loaders live in **`web/index.html`** (Outfit / DM Sans /
+  JetBrains Mono) — *not* `theme.css`. Phase A **edits `index.html`** to load
+  **Inter + Geist Mono** and drop the old three; the `--font-*` tokens move into
+  the new Tailwind theme.
 - **Tokens are replaced, not remapped** — the dark `:root` set (`--bg-void`,
   `--accent-indigo`, …) goes; define the light brand + product tokens fresh.
 - **Providers** (`main.tsx`): QueryClientProvider + PostHog + BrowserRouter;
@@ -192,7 +215,7 @@ screens only — **Agents (44) + AgentDetail (159) are orphaned and excluded.**
 
 | Screen | `style=` | Hand-rolled → target | States to cover | Specific risk / finding |
 |---|---|---|---|---|
-| **Sessions** (pilot) | 30 | `.data-table`→`ResourceTable`; filter pills→`ToggleGroup`; `confirm()`→`ConfirmDialog`; `StatusBadge`; hover-mutate row→CSS | loading, empty, delete-error, deleting | **ActivityChart is hand-built positioned divs (not recharts)** — decide rebuild-on-recharts vs isolate-as-is |
+| **Sessions** (pilot) | 30 | `.data-table`→`ResourceTable`; filter pills→simple `Button` group (ToggleGroup later); `confirm()`→`ConfirmDialog`; `StatusBadge`; hover-mutate row→CSS | loading, empty, delete-error, deleting | **ActivityChart = hand-built positioned divs (not recharts). Decision: keep its data-driven inline geometry for v1** (the contract's allowed exception); recharts rebuild is a follow-up |
 | **Layout/shell** | 24 | sidebar/nav; **org switcher (manual abs dropdown)→`DropdownMenu`**; logout; HaltBanner | (shell) | no responsive today → desktop sidebar + mobile drawer; HaltBanner polls autumn 30s (keep); swap brand fonts/logo |
 | **Templates** | ~8 | `.data-table`→`ResourceTable`; `StatusBadge`; `confirm()` | loading, empty | lowest complexity — good 2nd after the pilot |
 | **Checkpoints** | 27 | `.data-table`→`ResourceTable`; manual pagination→`Pagination`; checkbox filter→`Checkbox`; RGBA badges→`StatusBadge`; error box→`Alert`; `confirm()` | loading, empty, failed-error, deleting, paged | manual pagination + per-type RGBA badge math |
@@ -268,7 +291,7 @@ only for SessionDetail / LogsPanel / Terminal / shell CSS, and at release.
 
 ## Quality gate (per screen / commit — lean)
 
-`npm run build` · `npm run lint` · `tsc` · before/after screenshots · manual
+`npm run build` · `npm run lint` · `npm run typecheck` (`tsc -b`) · before/after screenshots · manual
 keyboard + contrast pass for the screen's used token pairs. (Logs/terminal manual
 check only when the commit touches them.)
 
