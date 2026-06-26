@@ -28,15 +28,9 @@ SID=$(new_sandbox); echo "sandbox=$SID"
 echo "  $(timed -X POST -d '{"cmd":"sh","args":["-c","sleep 130; echo done"],"timeout":200}' "$API/sandboxes/$SID/exec/run")"
 echo
 
-echo "### snapshots — the synchronous (non-SSE) build holds the connection"
+echo "### snapshots — the synchronous (non-SSE) build holds the connection silent"
 TS=$(date +%s)
-BODY="{\"name\":\"repro-$TS\",\"image\":{\"base\":\"ubuntu\",\"steps\":[{\"type\":\"run\",\"args\":{\"commands\":[\"sleep 130\"]}}]}}"
+# A 200s build step keeps the origin silent well past Cloudflare's ~100s
+# proxy_read_timeout, so the edge 524s the client while the build runs.
+BODY="{\"name\":\"repro-$TS\",\"image\":{\"base\":\"ubuntu\",\"steps\":[{\"type\":\"run\",\"args\":{\"commands\":[\"sleep 200\"]}}]}}"
 echo "  $(timed -X POST -d "$BODY" "$API/snapshots")"
-echo
-
-echo "### files — a large/slow upload holds the connection until the write completes"
-SID2=$(new_sandbox); echo "sandbox=$SID2"
-# Stream the body slowly for >130s so the worker can't return its 204 before
-# Cloudflare's ~100s read timeout. Deterministic regardless of bandwidth.
-( for _ in $(seq 1 130); do head -c 200000 /dev/zero; sleep 1; done ) | \
-  curl -s -o /dev/null -w "  HTTP %{http_code} in %{time_total}s\n" "${H[@]}" -T - "$API/sandboxes/$SID2/files?path=/tmp/big"
