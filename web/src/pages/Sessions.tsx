@@ -119,17 +119,22 @@ export default function Sessions() {
       key: 'actions',
       header: '',
       align: 'right',
-      cell: (s) =>
-        canDeleteSession(s) ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-status-error hover:text-destructive underline-offset-2 hover:bg-transparent hover:underline"
-            onClick={() => setToDelete(s)}
-          >
-            Delete
-          </Button>
-        ) : null,
+      // Reserve the button height on every row so rows without a Delete action
+      // (stopped / error) aren't shorter than running / hibernated rows.
+      cell: (s) => (
+        <div className="flex h-7 items-center justify-end">
+          {canDeleteSession(s) ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-status-error hover:text-destructive underline-offset-2 hover:bg-transparent hover:underline"
+              onClick={() => setToDelete(s)}
+            >
+              Delete
+            </Button>
+          ) : null}
+        </div>
+      ),
     },
   ]
 
