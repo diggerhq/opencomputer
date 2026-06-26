@@ -7,9 +7,10 @@ export async function apiFetch<T>(
   options: RequestInit = {},
 ): Promise<T> {
   // Opt-in, dev-only preview mode: serve canned data with no backend/auth so
-  // the dashboard can be rendered locally (VITE_PREVIEW=1 npm run dev). The
-  // dynamic import + dead-when-unset flag keep the mock out of normal builds.
-  if (import.meta.env.VITE_PREVIEW) {
+  // the dashboard can be rendered locally (VITE_PREVIEW=1 npm run dev). Require
+  // the exact value '1' so VITE_PREVIEW=0 / false don't accidentally serve
+  // mocks; the dynamic import keeps the mock out of normal builds.
+  if (import.meta.env.VITE_PREVIEW === '1') {
     const { mockFetch } = await import('./mock')
     return mockFetch<T>(path, options)
   }

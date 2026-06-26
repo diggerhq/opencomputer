@@ -84,7 +84,9 @@ export default function SessionDetail() {
   const deleteMutation = useMutation({
     mutationFn: () => deleteSession(sandboxId!),
     onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: ['session-detail', sandboxId] })
+      await queryClient.cancelQueries({
+        queryKey: ['session-detail', sandboxId],
+      })
       const stoppedAt = new Date().toISOString()
       queryClient.setQueryData<SessionDetailData>(
         ['session-detail', sandboxId],
@@ -100,14 +102,18 @@ export default function SessionDetail() {
       setShowTerminal(false)
     },
     onError: (e) =>
-      toast.error(`Delete failed: ${e instanceof Error ? e.message : String(e)}`),
+      toast.error(
+        `Delete failed: ${e instanceof Error ? e.message : String(e)}`,
+      ),
     onSettled: invalidate,
   })
 
   const rebootMutation = useMutation({
     mutationFn: () => rebootSession(sandboxId!),
     onError: (e) =>
-      toast.error(`Reboot failed: ${e instanceof Error ? e.message : String(e)}`),
+      toast.error(
+        `Reboot failed: ${e instanceof Error ? e.message : String(e)}`,
+      ),
     onSettled: invalidate,
   })
 
@@ -162,7 +168,7 @@ export default function SessionDetail() {
     <div>
       <Link
         to="/sessions"
-        className="mb-5 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+        className="text-muted-foreground hover:text-foreground mb-5 inline-flex items-center gap-1.5 text-sm transition-colors"
       >
         <ArrowLeft className="size-4" />
         Back to Sessions
@@ -173,13 +179,14 @@ export default function SessionDetail() {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-3">
-              <code className="font-mono text-lg font-semibold text-foreground">
+              <code className="text-foreground font-mono text-lg font-semibold">
                 {session.sandboxId}
               </code>
               <StatusBadge status={session.status} />
             </div>
-            <div className="mt-1 text-sm text-muted-foreground">
-              {session.template || 'base'} · Started {timeAgo(session.startedAt)}
+            <div className="text-muted-foreground mt-1 text-sm">
+              {session.template || 'base'} · Started{' '}
+              {timeAgo(session.startedAt)}
             </div>
           </div>
 
@@ -218,7 +225,9 @@ export default function SessionDetail() {
                   onClick={() => setConfirm('power-cycle')}
                 >
                   <Power className="size-4" />
-                  {powerCycleMutation.isPending ? 'Power-cycling…' : 'Power cycle'}
+                  {powerCycleMutation.isPending
+                    ? 'Power-cycling…'
+                    : 'Power cycle'}
                 </Button>
               </>
             ) : null}
@@ -248,7 +257,10 @@ export default function SessionDetail() {
 
       {showLogs ? (
         <div className="mb-4">
-          <LogsPanel sandboxId={sandboxId!} onClose={() => setShowLogs(false)} />
+          <LogsPanel
+            sandboxId={sandboxId!}
+            onClose={() => setShowLogs(false)}
+          />
         </div>
       ) : null}
 
@@ -299,7 +311,7 @@ export default function SessionDetail() {
             <div className="mt-3">
               <button
                 onClick={() => setShowInternal((v) => !v)}
-                className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs transition-colors"
               >
                 <ChevronRight
                   className={`size-3.5 transition-transform ${showInternal ? 'rotate-90' : ''}`}
@@ -354,7 +366,7 @@ export default function SessionDetail() {
         </dl>
         {isRunning ? (
           <div className="mt-4 space-y-1.5">
-            <div className="text-xs text-muted-foreground">CLI shell</div>
+            <div className="text-muted-foreground text-xs">CLI shell</div>
             <CopyRow value={`oc shell ${session.sandboxId}`} />
           </div>
         ) : null}
@@ -385,7 +397,9 @@ export default function SessionDetail() {
         confirmLabel="Reboot"
         pending={rebootMutation.isPending}
         onConfirm={() =>
-          rebootMutation.mutate(undefined, { onSuccess: () => setConfirm(null) })
+          rebootMutation.mutate(undefined, {
+            onSuccess: () => setConfirm(null),
+          })
         }
       />
       <ConfirmDialog
@@ -410,7 +424,9 @@ export default function SessionDetail() {
         destructive
         pending={deleteMutation.isPending}
         onConfirm={() =>
-          deleteMutation.mutate(undefined, { onSuccess: () => setConfirm(null) })
+          deleteMutation.mutate(undefined, {
+            onSuccess: () => setConfirm(null),
+          })
         }
       />
     </div>
@@ -430,14 +446,14 @@ function PreviewUrlRow({
 }) {
   return (
     <div className="flex items-center gap-3">
-      <span className="w-12 shrink-0 font-mono text-xs text-muted-foreground">
+      <span className="text-muted-foreground w-12 shrink-0 font-mono text-xs">
         :{port}
       </span>
       <a
         href={`https://${host}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="flex-1 truncate rounded-md border bg-panel-2 px-3 py-2 font-mono text-[13px] text-foreground hover:underline"
+        className="bg-panel-2 text-foreground flex-1 truncate rounded-md border px-3 py-2 font-mono text-[13px] hover:underline"
       >
         https://{host}
       </a>
@@ -459,7 +475,7 @@ function Detail({
 }) {
   return (
     <div>
-      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dt className="text-muted-foreground text-xs">{label}</dt>
       <dd
         className={`font-mono text-[13px] break-all ${error ? 'text-status-error' : 'text-foreground'}`}
       >

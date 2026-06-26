@@ -13,9 +13,26 @@
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 
-/* Self-hosted brand fonts (no external CDN dependency). */
-@import '@fontsource-variable/inter';
-@import '@fontsource-variable/geist-mono';
+/* Self-hosted brand fonts — latin subset only (the dashboard is latin-only for
+   now). Explicit @font-face instead of the full package CSS so the build does
+   not bundle the cyrillic / greek / latin-ext / vietnamese subsets or the
+   unused italic / optical-size variants. */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/inter/files/inter-latin-wght-normal.woff2')
+    format('woff2-variations');
+}
+@font-face {
+  font-family: 'Geist Mono Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2')
+    format('woff2-variations');
+}
 
 @custom-variant dark (&:is(.dark *));
 

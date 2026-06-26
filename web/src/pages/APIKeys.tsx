@@ -103,7 +103,7 @@ export default function APIKeys() {
         <Button
           variant="ghost"
           size="sm"
-          className="text-status-error underline-offset-2 hover:bg-transparent hover:text-destructive hover:underline"
+          className="text-status-error hover:text-destructive underline-offset-2 hover:bg-transparent hover:underline"
           onClick={() => setToRevoke(k)}
         >
           Revoke
