@@ -115,6 +115,12 @@
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
   --radius-xl: calc(var(--radius) + 4px);
+
+  /* Soft, diffuse elevation for overlays (dialogs, menus, sheets) — large
+     blur + negative spread + low opacity, warm-ink tinted, so it reads as a
+     gentle lift rather than a crude default drop shadow. */
+  --shadow-overlay:
+    0 12px 40px -12px rgb(20 19 17 / 0.18), 0 2px 8px -4px rgb(20 19 17 / 0.1);
 }
 
 /* ------------------------------------------------------------------

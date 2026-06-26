@@ -124,7 +124,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             onClick={onNavigate}
             className={({ isActive }) =>
               cn(
-                'flex min-h-9 items-center gap-2.5 rounded-md px-3 font-mono text-[13px] tracking-tight transition-colors',
+                'flex min-h-9 items-center gap-2.5 rounded-md px-3 font-mono text-sm tracking-tight transition-colors',
                 isActive
                   ? 'bg-sidebar-accent text-foreground font-medium'
                   : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
@@ -132,8 +132,8 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             }
           >
             <item.icon
-              className="size-[18px] shrink-0 opacity-60"
-              strokeWidth={1.5}
+              className="size-4 shrink-0 opacity-50"
+              strokeWidth={1.25}
               aria-hidden
             />
             {item.label}
@@ -153,7 +153,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             onClick={() => logout()}
             aria-label="Sign out"
             title="Sign out"
-            className="text-muted-foreground/60 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
+            className="text-muted-foreground/40 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
           >
             <LogOut className="size-4" strokeWidth={1.5} aria-hidden />
           </button>
