@@ -260,10 +260,10 @@ func (p *SandboxAPIProxy) ProxyHandler(c echo.Context) error {
 
 	// If hibernated, wake on demand.
 	if session.Status == "hibernated" {
-		// Async exec path (POST /exec/run, GET …/result): never hold the
+		// Async exec path (POST /exec/run-async, GET …/result): never hold the
 		// connection on the restore — a large cold checkpoint can exceed
 		// Cloudflare's 100s and 524. Claim a worker (atomic CAS) and forward
-		// immediately; the worker's execRun returns a handle right away and
+		// immediately; the worker's execRunAsync returns a handle right away and
 		// self-restores in the background (router doWake), off the connection.
 		// /result is DB-routed to that worker, so this is correct across
 		// multiple control planes. Other (synchronous) ops keep the inline wake.

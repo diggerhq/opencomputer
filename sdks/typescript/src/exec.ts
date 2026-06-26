@@ -367,11 +367,24 @@ export class Exec {
     if (opts.cwd) body.cwd = opts.cwd;
     body.timeout = opts.timeout != null ? opts.timeout : 60;
 
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/run-async`, {
+    let resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/run-async`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify(body),
     });
+
+    // Graceful degradation: a server (CP or worker) that predates the async
+    // endpoint returns 404. Fall back to the legacy synchronous /exec/run, which
+    // returns the full result directly — what older SDKs always used. (A genuine
+    // "sandbox not found" 404s here too and re-404s below, surfacing the same
+    // error.)
+    if (resp.status === 404) {
+      resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/exec/run`, {
+        method: "POST",
+        headers: this.headers,
+        body: JSON.stringify(body),
+      });
+    }
 
     if (!resp.ok) {
       const text = await resp.text();
@@ -380,8 +393,8 @@ export class Exec {
 
     const handle = (await resp.json()) as ExecRunHandle;
 
-    // Back-compat: a worker without the async endpoint (synchronous origin)
-    // returns the full result directly.
+    // Legacy synchronous origin (the 404 fallback above) returns the full result
+    // directly, with no execId to poll.
     if (handle.execId == null && handle.exitCode != null) {
       return {
         exitCode: handle.exitCode,

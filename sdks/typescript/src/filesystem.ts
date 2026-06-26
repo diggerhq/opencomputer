@@ -62,14 +62,22 @@ export class Filesystem {
   }
 
   async write(path: string, content: string | Uint8Array | ReadableStream<Uint8Array>): Promise<void> {
+    const isStream = content instanceof ReadableStream;
+    const headers = { ...this.headers };
+    if (isStream) {
+      // A stream body can't be replayed across a 503-waking retry, so opt out of
+      // the async-wake flow (drop X-OSB-Async-Wake): on a cold box the control
+      // plane wakes synchronously on this connection, as it did before, rather
+      // than returning a 503 we couldn't retry.
+      delete headers["X-OSB-Async-Wake"];
+    }
     const opts: RequestInit & Record<string, unknown> = {
       method: "PUT",
-      headers: this.headers,
+      headers,
       body: content as BodyInit,
     };
     // duplex: "half" is required for ReadableStream bodies in Node.js fetch,
     // but must NOT be set for Uint8Array/Buffer/string bodies.
-    const isStream = content instanceof ReadableStream;
     if (isStream) {
       opts.duplex = "half";
     }
