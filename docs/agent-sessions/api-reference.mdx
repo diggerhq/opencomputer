@@ -259,7 +259,7 @@ Pass `key` **or** `credential` (or neither → org default). The agent's `limits
 
 The OpenComputer GitHub App lets OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is a stable repository handle that resolves to the OpenComputer App. See the [Repos & GitHub guide](/agent-sessions/repos).
 
-During preview, **install the [OpenComputer GitHub App](https://github.com/apps/opencomputerdev/installations/new)** on the repos you want OpenComputer to work with (you pick the exact repos); there is no SDK method to mint an install URL. **No credential passes through this API.** Bring-your-own GitHub App modes (`byo_stored_key`, `byo_broker`) are **coming later — not yet available**; in preview only `oc_app` (OpenComputer owns and mints) works.
+During preview, **install the [OpenComputer GitHub App](https://github.com/apps/opencomputerdev/installations/new)** on the repos you want OpenComputer to work with (you pick the exact repos). **No credential passes through this API for the OpenComputer App.** You can also **bring your own GitHub App** (`byo_stored_key`) — register an existing App, or create one in one click via the [manifest flow](/agent-sessions/repos#bring-your-own-github-app); the App key is encrypted at rest and never returned. `byo_broker` is registrable but not yet used for minting.
 
 <Tabs>
 
@@ -271,6 +271,9 @@ During preview, **install the [OpenComputer GitHub App](https://github.com/apps/
 | `oc.repos.get(id)` · `oc.repos.list()` | Fetch / list. |
 | `oc.repos.update(id, params)` | Update `name`. |
 | `oc.github.apps.list()` | List GitHub Apps available to your org. |
+| `oc.github.apps.register(params)` | Register your own App (`byo_stored_key` / `byo_broker`). |
+| `oc.github.apps.createManifest(params)` · `completeManifest(params)` | One-click App creation via GitHub's manifest flow. |
+| `oc.github.apps.update(id, params)` · `delete(id)` | Update / rotate / remove a registered App. |
 | `oc.github.installations.list()` | List GitHub App installations visible to OpenComputer. |
 
 </Tab>
@@ -283,6 +286,9 @@ During preview, **install the [OpenComputer GitHub App](https://github.com/apps/
 | `GET /repos/:id` · `GET /repos` | Fetch / list. |
 | `PATCH /repos/:id` | Update `name`. |
 | `GET /github/apps` | List GitHub Apps available to your org. |
+| `POST /github/apps` | Register your own App (`byo_stored_key` / `byo_broker`). |
+| `PATCH /github/apps/:id` · `DELETE /github/apps/:id` | Update / rotate / remove a registered App. |
+| `POST /github/apps/manifest` · `POST /github/apps/manifest/conversions` | One-click App creation (build manifest → exchange code). |
 | `GET /github/installations` | List GitHub App installations visible to OpenComputer. |
 
 </Tab>
@@ -297,7 +303,7 @@ Repo               = { id, provider, owner, repo, name?, created_at, updated_at 
 
 Responses **never** contain a token or secret. Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
 
-`GET /github/apps` lists the GitHub Apps available to your org (in preview, the OpenComputer App). `GET /github/installations` lists the App installations visible to OpenComputer — it may be **empty** for orgs using only the OpenComputer App (it surfaces bring-your-own installations once those modes are available).
+`GET /github/apps` lists the GitHub Apps available to your org — the built-in OpenComputer App plus any you register. Register your own with `POST /github/apps` (`byo_stored_key`: `github_app_id` + `private_key`; `byo_broker`: `broker_url` + `broker_secret`), or one-click via `POST /github/apps/manifest` → `POST /github/apps/manifest/conversions`. App responses carry `id`, `mode`, `status`, `github_app_id?`, `app_name?`, `is_default?` — **never** a key or secret. `GET /github/installations` lists installations visible to OpenComputer; it may be **empty** for orgs using only the OpenComputer App. See the [Repos & GitHub guide](/agent-sessions/repos#bring-your-own-github-app) for the full flow.
 
 ## Credentials
 

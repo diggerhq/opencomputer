@@ -132,13 +132,94 @@ the minimum permission it needs, such as read-only for checkout and write only f
 publish/comment action.
 </Warning>
 
-### Bring your own GitHub App (coming later)
+### Bring your own GitHub App
+
+Register your own GitHub App so pull requests, comments, and statuses come from **your** App
+identity instead of OpenComputer's. Nothing else changes — OpenComputer still mints the same
+per-operation, repo-scoped tokens; it just signs them with your App's key, which it stores
+encrypted and never returns.
+
+There are two ways to set one up.
+
+**One-click — create an App from a manifest.** OpenComputer hands you a manifest already scoped
+to the permissions it needs; GitHub creates the App and returns a one-time code; OpenComputer
+exchanges it and captures the key. You never handle the private key yourself.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+// 1. Build the manifest + the GitHub URL to submit it to.
+const manifest = await oc.github.apps.createManifest({
+  redirectUrl: "https://your.app/github/callback",
+  name: "Acme Agents",
+  // organization: "acme",   // omit for a user-owned App
+});
+
+// 2. Render a form that POSTs manifest.manifest (JSON) as field manifest.field
+//    to manifest.postUrl. It must be a top-level navigation, not fetch/XHR —
+//    GitHub shows the user its App-creation screen, then redirects to
+//    redirectUrl?code=…&state=…
+
+// 3. In your redirect handler, exchange the code — registers a byo_stored_key App.
+const app = await oc.github.apps.completeManifest({ code, isDefault: true });
+```
+
+```http REST API
+POST /v3/github/apps/manifest
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+
+{ "redirect_url": "https://your.app/github/callback", "name": "Acme Agents" }
+// → { "manifest": { … }, "post_url": "https://github.com/settings/apps/new?state=…",
+//     "field": "manifest", "state": "…" }
+
+// After GitHub redirects back to your redirect_url with ?code=…
+POST /v3/github/apps/manifest/conversions
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+
+{ "code": "…", "is_default": true }
+// → { "id": "gha_…", "mode": "byo_stored_key", "app_name": "Acme Agents", … }
+```
+
+</CodeGroup>
+
+**Already have an App?** Register it directly with its numeric App id and private key.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const app = await oc.github.apps.register({
+  mode: "byo_stored_key",
+  githubAppId: "123456",
+  privateKey: pem,   // PKCS#1 or PKCS#8 PEM; encrypted at rest, never returned
+  isDefault: true,
+});
+```
+
+```http REST API
+POST /v3/github/apps
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+
+{
+  "mode": "byo_stored_key",
+  "github_app_id": "123456",
+  "private_key": "-----BEGIN RSA PRIVATE KEY-----\n…",
+  "is_default": true
+}
+```
+
+</CodeGroup>
+
+Either way, the last step is to **install the App on the repos you want** (from its GitHub
+settings page) and reference those repos in `sources` exactly as with the OpenComputer App —
+OpenComputer resolves your App and mints per operation. Rotate the key or change the default
+with `oc.github.apps.update(id, { … })`; remove it (and its encrypted key) with
+`oc.github.apps.delete(id)`.
 
 <Note>
-**Not yet available.** Bring-your-own GitHub App modes — `byo_stored_key` (OpenComputer
-stores your App key encrypted and mints) and `byo_broker` (your backend owns the App key and
-returns short-lived tokens) — are planned so that GitHub PRs, comments, and statuses can come
-from your own App. In preview, only the OpenComputer App is available.
+**`byo_broker` is registrable but not yet used for operations.** You can register a broker App
+(`mode: "byo_broker"` with `brokerUrl` + `brokerSecret`) so it shows up in your apps list, but
+minting through a broker is still coming — checkout and publish keep using the OpenComputer App
+until it lands. `byo_stored_key` above is the supported way to use your own App today.
 </Note>
 
 ### Inline short-lived token
