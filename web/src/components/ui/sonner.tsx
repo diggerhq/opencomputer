@@ -1,6 +1,3 @@
-'use client'
-
-import { useTheme } from 'next-themes'
 import { Toaster as Sonner, type ToasterProps } from 'sonner'
 import {
   CircleCheckIcon,
@@ -10,12 +7,12 @@ import {
   Loader2Icon,
 } from 'lucide-react'
 
-const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = 'system' } = useTheme()
-
+// The dashboard is light-only (no theme provider), so the toaster defaults to
+// the light theme; callers can still override via the `theme` prop.
+const Toaster = ({ theme = 'light', ...props }: ToasterProps) => {
   return (
     <Sonner
-      theme={theme as ToasterProps['theme']}
+      theme={theme}
       className="toaster group"
       icons={{
         success: <CircleCheckIcon className="size-4" />,
