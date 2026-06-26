@@ -1031,6 +1031,7 @@ func runExecRebindQEMU(ctx context.Context, agent *qm.AgentClient, sessionID str
 	}
 	go forwardStdin(stdinR, stream)
 	consumeExecOutput(stream, scrollback, handle)
+	recoverExitAfterDrop(ctx, agent, sessionID, handle)
 }
 
 // createExecSessionQEMU creates an exec session using a QEMU agent client.
@@ -1089,6 +1090,40 @@ func runExecStreamQEMU(ctx context.Context, agent *qm.AgentClient, sessionID str
 	}
 	go forwardStdin(stdinR, stream)
 	consumeExecOutput(stream, scrollback, handle)
+	recoverExitAfterDrop(ctx, agent, sessionID, handle)
+}
+
+// recoverExitAfterDrop handles the case where the attach stream ended before
+// the EXIT frame (e.g. the gRPC connection dropped mid-command). The command
+// likely kept running / finished but we never recorded its exit code, which
+// would leave the handle stuck at running forever and the async /result poll
+// never completing. The agent retains exited sessions ~5min, so we re-attach in
+// exit-only mode to recover the real code. Bounded; ignores replayed output
+// (the handle's scrollback already has it) to avoid duplicating it.
+func recoverExitAfterDrop(ctx context.Context, agent *qm.AgentClient, sessionID string, handle *sandbox.ExecSessionHandle) {
+	for attempt := 0; handle.ExitCode == nil && ctx.Err() == nil && attempt < 30; attempt++ {
+		time.Sleep(2 * time.Second)
+		rs, err := agent.ExecSessionAttach(ctx)
+		if err != nil {
+			continue
+		}
+		if err := rs.Send(&agentpb.ExecSessionInput{SessionId: sessionID}); err != nil {
+			continue
+		}
+		for {
+			msg, err := rs.Recv()
+			if err != nil {
+				break
+			}
+			if msg.Type == agentpb.ExecSessionOutput_EXIT {
+				exitCode := int(msg.ExitCode)
+				handle.ExitedAt = time.Now()
+				handle.ExitCode = &exitCode
+				handle.Running = false
+				return
+			}
+		}
+	}
 }
 
 // forwardStdin pipes stdin data to a gRPC stream.
