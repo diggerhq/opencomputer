@@ -126,7 +126,7 @@ export default function Settings() {
     <div>
       <PageHeader title="Settings" description="Organization configuration" />
 
-      <div className="max-w-2xl space-y-6">
+      <div className="grid max-w-5xl grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
         {/* Organization */}
         <Panel className="p-6">
           <div className="space-y-5">
@@ -301,8 +301,12 @@ export default function Settings() {
           )}
         </Panel>
 
-        <TeamMembers />
-        <PendingInvitations />
+        <div className="lg:col-span-2">
+          <TeamMembers />
+        </div>
+        <div className="lg:col-span-2">
+          <PendingInvitations />
+        </div>
       </div>
 
       <ConfirmDialog

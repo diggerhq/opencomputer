@@ -288,7 +288,7 @@ function PrepaidPlan() {
   const tier = CONCURRENCY_TIERS.find((t) => t.id === confirmPlanId)
 
   return (
-    <div className="max-w-2xl space-y-4">
+    <div className="grid max-w-5xl grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
       {/* Credits */}
       <Panel className="p-6">
         <h2 className="mb-4 text-sm font-semibold">Prepaid credits</h2>
