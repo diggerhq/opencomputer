@@ -18,7 +18,7 @@ Create a named checkpoint of a running sandbox. [HTTP API →](/api-reference/ch
 </ParamField>
 
 <ParamField query="--retention-max-count" type="int" default="10">
-  Maximum checkpoints to keep when `--retention-policy delete_oldest` is set. Must be between 1 and 10.
+  Maximum checkpoints of this type to keep when `--retention-policy delete_oldest` is set. Must be between 1 and 10 for full checkpoints, or 1 and 100 for disk-only checkpoints.
 </ParamField>
 
 ```bash
@@ -28,8 +28,9 @@ oc cp create sb-abc --name before-migration
 ```bash
 oc cp create sb-abc \
   --name autosave \
+  --kind disk_only \
   --retention-policy delete_oldest \
-  --retention-max-count 10
+  --retention-max-count 100
 ```
 
 ---

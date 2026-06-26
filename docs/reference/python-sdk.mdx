@@ -121,9 +121,9 @@ Update idle timeout.
 | --- | --- | --- |
 | `timeout` | int | New timeout in seconds |
 
-#### `await sandbox.create_checkpoint(name, retention_policy=None): dict`
+#### `await sandbox.create_checkpoint(name, kind=None, promote_to_full=False, retention_policy=None): dict`
 
-Create a named checkpoint. Pass `retention_policy={"mode": "delete_oldest", "maxCount": 10}` to delete the oldest eligible checkpoint before creating a new one when the sandbox already has 10 checkpoints. Returns checkpoint info as a dictionary.
+Create a named checkpoint. Full checkpoints are limited to 10 per sandbox; disk-only checkpoints are limited to 100 per sandbox. Pass `retention_policy={"mode": "delete_oldest", "maxCount": 10}` for full checkpoints or `kind="disk_only", retention_policy={"mode": "delete_oldest", "maxCount": 100}` to delete the oldest eligible checkpoint of the same type before creating a new one. Returns checkpoint info as a dictionary.
 
 #### `await sandbox.list_checkpoints(): list[dict]`
 

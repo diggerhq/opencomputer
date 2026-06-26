@@ -23,7 +23,17 @@ import (
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
 
-const maxCheckpointsPerSandbox = 10
+const (
+	maxFullCheckpointsPerSandbox     = 10
+	maxDiskOnlyCheckpointsPerSandbox = 100
+)
+
+func maxCheckpointsForKind(kind string) int {
+	if kind == "disk_only" {
+		return maxDiskOnlyCheckpointsPerSandbox
+	}
+	return maxFullCheckpointsPerSandbox
+}
 
 type createCheckpointRequest struct {
 	Name            string                    `json:"name"`
@@ -2194,8 +2204,11 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "promoteToFull is only supported for disk_only checkpoints"})
 	}
 
-	// Enforce max 10 checkpoints per sandbox
-	count, err := s.store.CountCheckpoints(ctx, sandboxID)
+	// Enforce checkpoint limits per kind. Full checkpoints are heavier because
+	// they include memory/CPU state; disk-only checkpoints are cheaper and get
+	// a larger sandbox-local budget.
+	limit := maxCheckpointsForKind(kind)
+	count, err := s.store.CountCheckpointsByKind(ctx, sandboxID, kind)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to count checkpoints"})
 	}
@@ -2206,19 +2219,19 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 		}
 		maxCount := req.RetentionPolicy.MaxCount
 		if maxCount == 0 {
-			maxCount = maxCheckpointsPerSandbox
+			maxCount = limit
 		}
-		if maxCount < 1 || maxCount > maxCheckpointsPerSandbox {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "retentionPolicy.maxCount must be between 1 and 10"})
+		if maxCount < 1 || maxCount > limit {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("retentionPolicy.maxCount must be between 1 and %d for %s checkpoints", limit, kind)})
 		}
 		if count >= maxCount {
 			deleteCount := count - maxCount + 1
-			candidates, err := s.store.ListCheckpointRetentionCandidates(ctx, sandboxID, orgID, deleteCount)
+			candidates, err := s.store.ListCheckpointRetentionCandidatesByKind(ctx, sandboxID, orgID, kind, deleteCount)
 			if err != nil {
 				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to find checkpoints for retention"})
 			}
 			if len(candidates) < deleteCount {
-				return c.JSON(http.StatusBadRequest, map[string]string{"error": "maximum 10 checkpoints per sandbox; no eligible checkpoint can be deleted by retention policy"})
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("maximum %d %s checkpoints per sandbox; no eligible checkpoint can be deleted by retention policy", limit, kind)})
 			}
 			for _, oldCP := range candidates {
 				if err := s.deleteCheckpointRecordAndObjects(ctx, &oldCP, orgID); err != nil {
@@ -2229,8 +2242,8 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 		}
 	}
 
-	if count >= maxCheckpointsPerSandbox {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "maximum 10 checkpoints per sandbox"})
+	if count >= limit {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("maximum %d %s checkpoints per sandbox", limit, kind)})
 	}
 
 	// Reserve a checkpoint UUID
@@ -2336,6 +2349,7 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				// fell back to deriving from rootfs_s3_key, which always ends
 				// in "rootfs.tar.zst" — every row showed the same name.
 				"name": req.Name,
+				"kind": kind,
 			})
 		}()
 	} else if s.manager != nil {
@@ -2394,6 +2408,7 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 				"size_bytes":       sizeBytes,
 				"golden_hash":      golden,
 				"name":             req.Name,
+				"kind":             kind,
 			})
 		}()
 	} else {

@@ -3,10 +3,11 @@ title: 'Create Checkpoint'
 api: 'POST /api/sandboxes/{id}/checkpoints'
 ---
 
-Create a checkpoint of the sandbox state. Maximum 10 checkpoints per sandbox.
-By default, creating an 11th checkpoint returns an error. Set
-`retentionPolicy.mode` to `delete_oldest` to delete the oldest eligible
-checkpoint first so the new checkpoint can be created.
+Create a checkpoint of the sandbox state. Each sandbox can have up to 10 full
+checkpoints and up to 100 disk-only checkpoints. By default, creating past the
+limit for that checkpoint type returns an error. Set `retentionPolicy.mode` to
+`delete_oldest` to delete the oldest eligible checkpoint of the same type first
+so the new checkpoint can be created.
 
 <ParamField path="id" type="string" required>
   Sandbox ID
@@ -16,10 +17,16 @@ checkpoint first so the new checkpoint can be created.
   Checkpoint name (unique per sandbox)
 </ParamField>
 
+<ParamField body="kind" type="string" default="full">
+  Checkpoint type. Use `full` to preserve disk, memory, and CPU state, or
+  `disk_only` to preserve only disk state with a larger per-sandbox limit.
+</ParamField>
+
 <ParamField body="retentionPolicy" type="object">
   Optional retention policy. Use `{ "mode": "delete_oldest", "maxCount": 10 }`
-  to keep at most 10 checkpoints by deleting the oldest eligible checkpoint
-  before creating a new one.
+  for full checkpoints or `{ "mode": "delete_oldest", "maxCount": 100 }` for
+  disk-only checkpoints to delete the oldest eligible checkpoint of the same
+  type before creating a new one.
 </ParamField>
 
 <ResponseExample>

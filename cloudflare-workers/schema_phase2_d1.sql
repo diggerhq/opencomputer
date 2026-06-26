@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS checkpoints_index (
   name             TEXT,
   status           TEXT NOT NULL DEFAULT 'ready',
   error_msg        TEXT,
-  failed_at        INTEGER
+  failed_at        INTEGER,
+  kind             TEXT NOT NULL DEFAULT 'full'
 );
 
 CREATE INDEX IF NOT EXISTS idx_checkpoints_org      ON checkpoints_index(org_id);

@@ -594,7 +594,7 @@ async function handleListCheckpoints(req: Request, env: DashboardEnv, caller: Ca
     const offset = (page - 1) * perPage;
 
     const { results } = await env.OPENCOMPUTER_DB.prepare(
-      `SELECT id, sandbox_id, owner_cell_id, s3_url, size_bytes, golden_hash, workspace_size, created_at, expires_at, name, status, error_msg, failed_at
+      `SELECT id, sandbox_id, owner_cell_id, s3_url, size_bytes, golden_hash, workspace_size, created_at, expires_at, name, status, error_msg, failed_at, kind
          FROM checkpoints_index WHERE org_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3`,
     ).bind(caller.orgID, perPage, offset).all<{
       id: string; sandbox_id: string; owner_cell_id: string; s3_url: string | null;
@@ -602,6 +602,7 @@ async function handleListCheckpoints(req: Request, env: DashboardEnv, caller: Ca
       created_at: number; expires_at: number | null;
       name: string | null;
       status: string | null; error_msg: string | null; failed_at: number | null;
+      kind: string | null;
     }>();
     const totalRow = await env.OPENCOMPUTER_DB.prepare(`SELECT COUNT(*) AS c FROM checkpoints_index WHERE org_id = ?1`).bind(caller.orgID).first<{ c: number }>();
     return json({
@@ -621,6 +622,7 @@ async function handleListCheckpoints(req: Request, env: DashboardEnv, caller: Ca
         createdAt: epochToISORequired(r.created_at),
         errorMsg: r.error_msg ?? undefined,
         failedAt: r.failed_at ? epochToISORequired(r.failed_at) : undefined,
+        kind: r.kind === "disk_only" ? "disk_only" : "full",
         cellId: r.owner_cell_id ?? "",
         goldenHash: r.golden_hash ?? "",
       })),

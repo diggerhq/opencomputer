@@ -2238,11 +2238,26 @@ func (s *Store) CountCheckpoints(ctx context.Context, sandboxID string) (int, er
 	return count, err
 }
 
+// CountCheckpointsByKind returns the number of checkpoints of a specific kind for a sandbox.
+func (s *Store) CountCheckpointsByKind(ctx context.Context, sandboxID, kind string) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM sandbox_checkpoints WHERE sandbox_id = $1 AND kind = $2`, sandboxID, kind).Scan(&count)
+	return count, err
+}
+
 // ListCheckpointRetentionCandidates returns the oldest checkpoints that can be
 // deleted by an automatic retention policy. It deliberately skips public
 // checkpoints, patched checkpoints, and checkpoints that are still referenced
 // by forked sandboxes.
 func (s *Store) ListCheckpointRetentionCandidates(ctx context.Context, sandboxID string, orgID uuid.UUID, limit int) ([]Checkpoint, error) {
+	return s.ListCheckpointRetentionCandidatesByKind(ctx, sandboxID, orgID, "", limit)
+}
+
+// ListCheckpointRetentionCandidatesByKind returns the oldest checkpoints of a
+// specific kind that can be deleted by an automatic retention policy. When
+// kind is empty, all checkpoint kinds are eligible.
+func (s *Store) ListCheckpointRetentionCandidatesByKind(ctx context.Context, sandboxID string, orgID uuid.UUID, kind string, limit int) ([]Checkpoint, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -2251,6 +2266,7 @@ func (s *Store) ListCheckpointRetentionCandidates(ctx context.Context, sandboxID
 		   FROM sandbox_checkpoints c
 		  WHERE c.sandbox_id = $1
 		    AND c.org_id = $2
+		    AND ($3 = '' OR c.kind = $3)
 		    AND c.is_public = false
 		    AND NOT EXISTS (
 		          SELECT 1 FROM checkpoint_patches p WHERE p.checkpoint_id = c.id
@@ -2259,7 +2275,7 @@ func (s *Store) ListCheckpointRetentionCandidates(ctx context.Context, sandboxID
 		          SELECT 1 FROM sandbox_sessions ss WHERE ss.based_on_checkpoint_id = c.id
 		        )
 		  ORDER BY c.created_at ASC
-		  LIMIT $3`, sandboxID, orgID, limit)
+		  LIMIT $4`, sandboxID, orgID, kind, limit)
 	if err != nil {
 		return nil, err
 	}

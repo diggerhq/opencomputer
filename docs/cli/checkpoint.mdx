@@ -52,15 +52,16 @@ oc cp list sb-abc123
 oc cp delete sb-abc123 cp-7f3a1b2c
 ```
 
-Maximum 10 checkpoints per sandbox.
+Each sandbox can have up to 10 full checkpoints and up to 100 disk-only checkpoints.
 
-To create a new checkpoint at the limit, opt into automatic deletion of the oldest eligible checkpoint:
+To create a new checkpoint at the limit, opt into automatic deletion of the oldest eligible checkpoint of the same type:
 
 ```bash
 oc cp create sb-abc123 \
   --name autosave \
+  --kind disk_only \
   --retention-policy delete_oldest \
-  --retention-max-count 10
+  --retention-max-count 100
 ```
 
 Retention skips public checkpoints, patched checkpoints, and checkpoints that are still referenced by forked sandboxes.
