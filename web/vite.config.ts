@@ -17,7 +17,9 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/auth': target,
-      '/api': { target, ws: true },
+      // Trailing slash so the SPA route `/api-keys` isn't proxied to the
+      // backend; all real API paths live under `/api/dashboard/`.
+      '/api/': { target, ws: true },
       '/webhooks': target,
     },
   },
