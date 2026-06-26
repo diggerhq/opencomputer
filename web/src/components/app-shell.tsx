@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { logout, getAutumnBilling } from '@/api/client'
-import logo from '@/assets/logo.svg'
+import logoMark from '@/assets/logo-mark.svg'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -49,8 +49,11 @@ const NAV: NavItem[] = [
 
 function Brand() {
   return (
-    <Link to="/" className="flex items-center" aria-label="OpenComputer">
-      <img src={logo} alt="OpenComputer" className="h-7 w-auto" />
+    <Link to="/" className="flex items-center gap-2" aria-label="OpenComputer">
+      <img src={logoMark} alt="" className="size-6" />
+      <span className="text-foreground text-[15px] font-semibold tracking-tight">
+        OpenComputer
+      </span>
     </Link>
   )
 }
@@ -140,24 +143,22 @@ function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
         ))}
       </nav>
 
-      <div className="border-t p-3">
-        <div className="mb-2 flex items-center gap-2.5 px-1">
-          <span className="bg-secondary flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold">
+      <div className="space-y-2.5 border-t p-3">
+        <div className="flex items-center gap-2.5 px-1">
+          <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium">
             {user?.email?.charAt(0).toUpperCase() || '?'}
           </span>
           <span className="text-muted-foreground truncate text-xs">
             {user?.email}
           </span>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-muted-foreground w-full justify-start"
+        <button
           onClick={() => logout()}
+          className="text-muted-foreground hover:text-foreground flex items-center gap-2 px-1 text-xs transition-colors"
         >
-          <LogOut className="size-4" aria-hidden />
+          <LogOut className="size-3.5" aria-hidden />
           Sign out
-        </Button>
+        </button>
       </div>
     </div>
   )

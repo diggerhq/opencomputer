@@ -6,7 +6,7 @@ export function Panel({ className, ...props }: ComponentProps<'div'>) {
   return (
     <div
       className={cn(
-        'bg-panel text-card-foreground rounded-lg border shadow-sm',
+        'bg-panel text-card-foreground rounded-lg border',
         className,
       )}
       {...props}

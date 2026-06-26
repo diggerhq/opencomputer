@@ -130,7 +130,7 @@ export default function Dashboard() {
             />
           </div>
 
-          <Panel>
+          <Panel className="overflow-hidden">
             <PanelHeader>
               <PanelTitle>Live sandboxes</PanelTitle>
               {active.length > 0 ? (
@@ -140,24 +140,22 @@ export default function Dashboard() {
                 </span>
               ) : null}
             </PanelHeader>
-            <PanelContent>
-              {loadingRunning ? (
-                <div className="space-y-2">
-                  <Skeleton className="h-12 w-full" />
-                  <Skeleton className="h-12 w-full" />
-                </div>
-              ) : active.length === 0 ? (
-                <p className="text-muted-foreground py-6 text-center text-sm">
-                  No sandboxes running
-                </p>
-              ) : (
-                <div className="flex max-h-[320px] flex-col gap-1.5 overflow-y-auto">
-                  {active.map((s) => (
-                    <SandboxRow key={s.id} session={s} />
-                  ))}
-                </div>
-              )}
-            </PanelContent>
+            {loadingRunning ? (
+              <PanelContent className="space-y-2">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </PanelContent>
+            ) : active.length === 0 ? (
+              <p className="text-muted-foreground px-5 py-8 text-center text-sm">
+                No sandboxes running
+              </p>
+            ) : (
+              <div className="max-h-80 divide-y overflow-y-auto">
+                {active.map((s) => (
+                  <SandboxRow key={s.id} session={s} />
+                ))}
+              </div>
+            )}
           </Panel>
 
           <Panel className="overflow-hidden">
@@ -189,7 +187,7 @@ function SandboxRow({ session }: { session: Session }) {
   return (
     <Link
       to={`/sessions/${session.sandboxId}`}
-      className="hover:bg-row-hover flex items-center justify-between rounded-md border px-3 py-2.5 transition-colors"
+      className="hover:bg-row-hover flex items-center justify-between px-5 py-3 transition-colors"
     >
       <div className="flex items-center gap-2.5">
         <span className="bg-status-running size-1.5 shrink-0 animate-pulse rounded-full" />

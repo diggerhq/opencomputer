@@ -113,7 +113,7 @@
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
-  --radius-xl: calc(var(--radius) + 6px);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
 /* ------------------------------------------------------------------
@@ -128,7 +128,7 @@
   --foreground: hsl(45 8% 8%); /* ink */
   --primary: hsl(45 8% 8%); /* ink */
   --primary-foreground: hsl(40 33% 97%); /* paper */
-  --radius: 0.375rem;
+  --radius: 0.25rem; /* sharper corners (was 0.375rem) */
 
   /* Raised surfaces (cards, popovers, dropdowns, dialogs) — warm near-white */
   --card: hsl(40 40% 99%);
@@ -153,11 +153,13 @@
   /* Lines + focus */
   --border: hsl(40 14% 87%);
   --input: hsl(40 14% 82%);
-  --ring: hsl(45 8% 8%); /* ink focus ring (high contrast, on-brand) */
+  --ring: hsl(
+    45 5% 48%
+  ); /* soft grey focus ring (ink was too heavy on inputs) */
 
   /* Table rows */
-  --row-hover: hsl(40 24% 95%);
-  --row-selected: hsl(40 30% 92%);
+  --row-hover: hsl(40 22% 93%);
+  --row-selected: hsl(40 26% 90%);
 
   /* Destructive (solid button bg; darker than site 60% for AA white text) */
   --destructive: hsl(0 70% 45%);
@@ -234,15 +236,50 @@
   --sidebar-accent-foreground: hsl(40 10% 92%);
 }
 
-/* Minimal base reset — the slice of Preflight shadcn assumes, scoped so it
-   does not fight theme.css. (box-sizing is already global via theme.css.)
-   Tailwind border-* utilities need a default style+color to render. */
+/* Document font: Inter everywhere — including portaled overlays (dialogs,
+   dropdowns, toasts) that render outside the AppShell subtree. Unlayered so it
+   wins over the legacy body font during coexistence; per-element `font-mono`
+   utilities still override for code/terminal surfaces. */
+html,
+body {
+  font-family: var(--font-sans);
+  font-optical-sizing: auto;
+}
+
+/* Minimal base reset — the slice of Preflight we still need during coexistence
+   (Preflight itself is off so it doesn't fight theme.css). box-sizing is
+   already global via theme.css. */
 @layer base {
+  /* border-* utilities need a default style + color to render. */
   *,
   ::before,
   ::after {
     border-width: 0;
     border-style: solid;
     border-color: var(--border);
+  }
+
+  /* Links: no browser-default underline / blue (we style links explicitly).
+     Without Preflight the UA would underline every <a>, incl. nav + the logo. */
+  a {
+    color: inherit;
+    text-decoration: inherit;
+  }
+
+  /* Form controls inherit the page font — otherwise buttons/inputs fall back
+     to the UA system font (the "looks like Arial" effect) instead of Inter. */
+  button,
+  input,
+  optgroup,
+  select,
+  textarea {
+    font-family: inherit;
+    font-feature-settings: inherit;
+    font-variation-settings: inherit;
+    font-size: 100%;
+    font-weight: inherit;
+    line-height: inherit;
+    letter-spacing: inherit;
+    color: inherit;
   }
 }

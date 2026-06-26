@@ -272,12 +272,6 @@ function ActivityChart({
             {days.map((day) => {
               const barHeight =
                 maxCount > 0 ? Math.round((day.count / maxCount) * 110) : 0
-              const tone =
-                day.errored > 0
-                  ? 'bg-status-error'
-                  : day.hibernated > 0
-                    ? 'bg-status-hibernated'
-                    : 'bg-foreground/75'
               return (
                 <div
                   key={day.date}
@@ -285,8 +279,8 @@ function ActivityChart({
                     day.hibernated ? ` (${day.hibernated} hibernated)` : ''
                   }${day.errored ? ` (${day.errored} errors)` : ''}`}
                   className={cn(
-                    'relative flex-1 rounded-t-sm transition-[height] duration-300',
-                    day.count > 0 ? tone : 'bg-transparent',
+                    'bg-foreground/70 relative flex-1 rounded-t-sm transition-[height] duration-300',
+                    day.count > 0 ? '' : 'bg-transparent',
                   )}
                   style={{ height: day.count > 0 ? Math.max(barHeight, 4) : 0 }}
                 >
@@ -311,30 +305,8 @@ function ActivityChart({
               </div>
             ))}
           </div>
-
-          {/* Legend */}
-          <div className="mt-3 flex justify-center gap-4" aria-hidden>
-            <LegendItem className="bg-foreground/75" label="Sessions" />
-            <LegendItem className="bg-status-hibernated" label="Hibernated" />
-            <LegendItem className="bg-status-error" label="Errors" />
-          </div>
         </div>
       )}
     </Panel>
-  )
-}
-
-function LegendItem({
-  className,
-  label,
-}: {
-  className: string
-  label: string
-}) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <div className={cn('size-2 rounded-[2px]', className)} />
-      <span className="text-muted-foreground text-[10px]">{label}</span>
-    </div>
   )
 }
