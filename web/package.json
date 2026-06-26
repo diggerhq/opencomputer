@@ -16,19 +16,19 @@
   "dependencies": {
     "@fontsource-variable/geist-mono": "^5.2.8",
     "@fontsource-variable/inter": "^5.2.8",
-    "@posthog/react": "^1.9.0",
-    "@tanstack/react-query": "^5.60.0",
+    "@posthog/react": "^1.10.3",
+    "@tanstack/react-query": "^5.101.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.21.0",
-    "posthog-js": "^1.372.0",
+    "posthog-js": "^1.395.0",
     "radix-ui": "^1.6.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router-dom": "^7.18.0",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.6.0",
     "tw-animate-css": "^1.4.0"
@@ -36,9 +36,9 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@tailwindcss/vite": "^4.3.1",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-jsx-a11y": "^6.10.2",
@@ -49,8 +49,8 @@
     "prettier-plugin-tailwindcss": "^0.8.0",
     "shadcn": "^4.12.0",
     "tailwindcss": "^4.3.1",
-    "typescript": "~5.6.2",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.62.0",
-    "vite": "^6.0.0"
+    "vite": "^8.1.0"
   }
 }
