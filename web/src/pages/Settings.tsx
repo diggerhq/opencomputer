@@ -33,7 +33,7 @@ function ReadOnlyField({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="space-y-1.5">
       <Label>{label}</Label>
-      <div className="bg-panel-2 text-muted-foreground rounded-md border px-3 py-2 font-mono text-sm">
+      <div className="bg-panel-2 text-muted-foreground flex h-8 items-center rounded-md border px-3 font-mono text-sm">
         {value}
       </div>
     </div>
@@ -126,9 +126,15 @@ export default function Settings() {
     <div>
       <PageHeader title="Settings" description="Organization configuration" />
 
-      <div className="grid max-w-5xl grid-cols-1 gap-6 lg:grid-cols-2 lg:items-start">
+      <div className="grid max-w-5xl grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Organization */}
         <Panel className="p-6">
+          <div className="mb-5">
+            <PanelTitle>Organization</PanelTitle>
+            <PanelDescription className="mt-1">
+              Your organization&apos;s name and plan limits.
+            </PanelDescription>
+          </div>
           <div className="space-y-5">
             <Field label="Organization name" htmlFor="org-name">
               <Input
@@ -175,11 +181,7 @@ export default function Settings() {
           <div className="mb-5">
             <PanelTitle>Custom domain</PanelTitle>
             <PanelDescription className="mt-1">
-              Serve sandbox preview URLs from your own domain (e.g.{' '}
-              <code className="font-mono text-xs">
-                &lt;id&gt;.yourdomain.com
-              </code>
-              ).
+              Serve sandbox preview URLs from your own domain.
             </PanelDescription>
           </div>
 
@@ -276,7 +278,6 @@ export default function Settings() {
             </div>
           ) : (
             <form
-              className="space-y-3"
               onSubmit={(e) => {
                 e.preventDefault()
                 if (domainInput.trim())
@@ -284,19 +285,24 @@ export default function Settings() {
               }}
             >
               <Field label="Domain" htmlFor="domain">
-                <Input
-                  id="domain"
-                  value={domainInput}
-                  onChange={(e) => setDomainInput(e.target.value)}
-                  placeholder="acme.dev"
-                />
+                <div className="flex gap-2">
+                  <Input
+                    id="domain"
+                    value={domainInput}
+                    onChange={(e) => setDomainInput(e.target.value)}
+                    placeholder="acme.dev"
+                    className="flex-1"
+                  />
+                  <Button
+                    type="submit"
+                    disabled={
+                      setDomainMutation.isPending || !domainInput.trim()
+                    }
+                  >
+                    {setDomainMutation.isPending ? 'Setting up…' : 'Set domain'}
+                  </Button>
+                </div>
               </Field>
-              <Button
-                type="submit"
-                disabled={setDomainMutation.isPending || !domainInput.trim()}
-              >
-                {setDomainMutation.isPending ? 'Setting up…' : 'Set domain'}
-              </Button>
             </form>
           )}
         </Panel>
@@ -469,7 +475,9 @@ function PendingInvitations() {
 
   const pending = (invitations ?? []).filter((inv) => inv.state === 'pending')
 
-  if (!isLoading && pending.length === 0) return null
+  // Render only once we know there are pending invitations — never during the
+  // initial load, so the panel doesn't flash in and then vanish when empty.
+  if (isLoading || pending.length === 0) return null
 
   return (
     <Panel className="p-6">
@@ -481,34 +489,27 @@ function PendingInvitations() {
       </div>
 
       <div className="mt-3 divide-y">
-        {isLoading ? (
-          <Skeleton className="h-10 w-full" />
-        ) : (
-          pending.map((inv) => (
-            <div
-              key={inv.id}
-              className="flex items-center justify-between py-3"
-            >
-              <div className="min-w-0">
-                <div className="text-foreground truncate text-sm font-medium">
-                  {inv.email}
-                </div>
-                <div className="text-muted-foreground truncate text-xs">
-                  {inv.state} · expires{' '}
-                  {new Date(inv.expiresAt).toLocaleDateString()}
-                </div>
+        {pending.map((inv) => (
+          <div key={inv.id} className="flex items-center justify-between py-3">
+            <div className="min-w-0">
+              <div className="text-foreground truncate text-sm font-medium">
+                {inv.email}
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:text-status-error"
-                onClick={() => setToRevoke(inv)}
-              >
-                Revoke
-              </Button>
+              <div className="text-muted-foreground truncate text-xs">
+                {inv.state} · expires{' '}
+                {new Date(inv.expiresAt).toLocaleDateString()}
+              </div>
             </div>
-          ))
-        )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:text-status-error"
+              onClick={() => setToRevoke(inv)}
+            >
+              Revoke
+            </Button>
+          </div>
+        ))}
       </div>
 
       <ConfirmDialog
