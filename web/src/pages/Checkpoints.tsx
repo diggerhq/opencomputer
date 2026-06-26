@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
 import { Layers, CircleAlert } from 'lucide-react'
+import { notifyError } from '@/lib/errors'
 import {
   deleteCheckpointDashboard,
   getCheckpoints,
@@ -12,7 +12,6 @@ import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Label } from '@/components/ui/label'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -46,10 +45,7 @@ export default function Checkpoints() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteCheckpointDashboard(id),
-    onError: (error) =>
-      toast.error(
-        `Delete failed: ${error instanceof Error ? error.message : String(error)}`,
-      ),
+    onError: (error) => notifyError("Couldn't delete the checkpoint.", error),
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: ['checkpoints'] }),
   })
@@ -167,21 +163,20 @@ export default function Checkpoints() {
       <PageHeader
         title="Checkpoints"
         description="Sandbox snapshots across your organization"
+        actions={
+          <label
+            htmlFor="show-failed"
+            className="text-muted-foreground hover:text-foreground flex cursor-pointer items-center gap-2 text-sm transition-colors"
+          >
+            <Checkbox
+              id="show-failed"
+              checked={showFailed}
+              onCheckedChange={(v) => setShowFailed(v === true)}
+            />
+            Show failed
+          </label>
+        }
       />
-
-      <div className="mb-3 flex items-center gap-2">
-        <Checkbox
-          id="show-failed"
-          checked={showFailed}
-          onCheckedChange={(v) => setShowFailed(v === true)}
-        />
-        <Label
-          htmlFor="show-failed"
-          className="text-muted-foreground cursor-pointer text-sm font-normal"
-        >
-          Show failed checkpoints
-        </Label>
-      </div>
 
       <Panel className="overflow-hidden">
         <ResourceTable

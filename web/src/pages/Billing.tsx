@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { CircleAlert, CircleCheck } from 'lucide-react'
+import { notifyError } from '@/lib/errors'
 import {
   autumnSubscribeConcurrency,
   autumnTopup,
@@ -79,16 +80,14 @@ function PlanTab() {
     onSuccess: (data) => {
       window.location.href = data.url
     },
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : 'Setup failed'),
+    onError: (e) => notifyError("Couldn't start checkout.", e),
   })
   const portalMutation = useMutation({
     mutationFn: billingPortal,
     onSuccess: (data) => {
       window.location.href = data.url
     },
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : "Couldn't open portal"),
+    onError: (e) => notifyError("Couldn't open the billing portal.", e),
   })
   const redeemMutation = useMutation({
     mutationFn: () => redeemPromoCode(promoCode),
@@ -99,8 +98,7 @@ function PlanTab() {
         `$${(data.creditAppliedCents / 100).toFixed(2)} credit applied`,
       )
     },
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : 'Invalid promo code'),
+    onError: (e) => notifyError("Couldn't redeem that promo code.", e),
   })
 
   if (isLoading) return <Skeleton className="h-64 max-w-2xl" />
@@ -268,8 +266,7 @@ function PrepaidPlan() {
       setConfirmTopup(false)
       onPurchase(d)
     },
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : 'Top-up failed'),
+    onError: (e) => notifyError("Couldn't complete the top-up.", e),
   })
   const planMutation = useMutation({
     mutationFn: (plan: string) => autumnSubscribeConcurrency(plan),
@@ -277,8 +274,7 @@ function PrepaidPlan() {
       setConfirmPlanId(null)
       onPurchase(d)
     },
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : 'Subscription failed'),
+    onError: (e) => notifyError("Couldn't update your subscription.", e),
   })
 
   if (isLoading) return <Skeleton className="h-64 max-w-2xl" />
@@ -460,7 +456,7 @@ function AutoTopupCard({
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     },
-    onError: (e) => toast.error(e instanceof Error ? e.message : 'Save failed'),
+    onError: (e) => notifyError("Couldn't save auto-top-up settings.", e),
   })
 
   // Saving only charges when enabling WITHOUT a card on file. Gate that one path.

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
+import { notifyError } from '@/lib/errors'
 import {
   ArrowLeft,
   List,
@@ -101,28 +101,19 @@ export default function SessionDetail() {
       )
       setShowTerminal(false)
     },
-    onError: (e) =>
-      toast.error(
-        `Delete failed: ${e instanceof Error ? e.message : String(e)}`,
-      ),
+    onError: (e) => notifyError("Couldn't delete the sandbox.", e),
     onSettled: invalidate,
   })
 
   const rebootMutation = useMutation({
     mutationFn: () => rebootSession(sandboxId!),
-    onError: (e) =>
-      toast.error(
-        `Reboot failed: ${e instanceof Error ? e.message : String(e)}`,
-      ),
+    onError: (e) => notifyError("Couldn't reboot the sandbox.", e),
     onSettled: invalidate,
   })
 
   const powerCycleMutation = useMutation({
     mutationFn: () => powerCycleSession(sandboxId!),
-    onError: (e) =>
-      toast.error(
-        `Power-cycle failed: ${e instanceof Error ? e.message : String(e)}`,
-      ),
+    onError: (e) => notifyError("Couldn't power-cycle the sandbox.", e),
     onSettled: invalidate,
   })
 

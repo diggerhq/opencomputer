@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { toast } from 'sonner'
 import { Boxes } from 'lucide-react'
+import { notifyError } from '@/lib/errors'
 import { deleteSession, getSessions, type Session } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
 import { Panel } from '@/components/panel'
@@ -55,11 +55,7 @@ export default function Sessions() {
         ),
       )
     },
-    onError: (error) => {
-      toast.error(
-        `Delete failed: ${error instanceof Error ? error.message : String(error)}`,
-      )
-    },
+    onError: (error) => notifyError("Couldn't delete the sandbox.", error),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
     },

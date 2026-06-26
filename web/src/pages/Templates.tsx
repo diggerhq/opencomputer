@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
 import { Package } from 'lucide-react'
+import { notifyError } from '@/lib/errors'
 import { deleteImage, getImages, type ImageCacheItem } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
 import { Panel } from '@/components/panel'
@@ -49,10 +49,7 @@ export default function Templates() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteImage(id),
-    onError: (error) =>
-      toast.error(
-        `Delete failed: ${error instanceof Error ? error.message : String(error)}`,
-      ),
+    onError: (error) => notifyError("Couldn't delete the template.", error),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['images'] }),
   })
 

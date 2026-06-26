@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
+import { notifyError } from '@/lib/errors'
 import {
   deleteCustomDomain,
   getInvitations,
@@ -83,7 +83,7 @@ export default function Settings() {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     },
-    onError: (e) => toast.error(e instanceof Error ? e.message : 'Save failed'),
+    onError: (e) => notifyError("Couldn't save organization settings.", e),
   })
 
   const setDomainMutation = useMutation({
@@ -92,21 +92,18 @@ export default function Settings() {
       queryClient.invalidateQueries({ queryKey: ['org'] })
       setDomainInput('')
     },
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : "Couldn't set domain"),
+    onError: (e) => notifyError("Couldn't set the custom domain.", e),
   })
 
   const deleteDomainMutation = useMutation({
     mutationFn: () => deleteCustomDomain(),
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : 'Remove failed'),
+    onError: (e) => notifyError("Couldn't remove the custom domain.", e),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['org'] }),
   })
 
   const refreshDomainMutation = useMutation({
     mutationFn: () => refreshCustomDomain(),
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : 'Refresh failed'),
+    onError: (e) => notifyError("Couldn't refresh domain status.", e),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['org'] }),
   })
 
@@ -345,14 +342,12 @@ function TeamMembers() {
       setInviteEmail('')
       setShowInvite(false)
     },
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : "Couldn't send invite"),
+    onError: (e) => notifyError("Couldn't send the invitation.", e),
   })
 
   const removeMutation = useMutation({
     mutationFn: (membershipId: string) => removeMember(membershipId),
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : 'Remove failed'),
+    onError: (e) => notifyError("Couldn't remove the member.", e),
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: ['org-members'] }),
   })
@@ -463,8 +458,7 @@ function PendingInvitations() {
 
   const revokeMutation = useMutation({
     mutationFn: (id: string) => revokeInvitation(id),
-    onError: (e) =>
-      toast.error(e instanceof Error ? e.message : 'Revoke failed'),
+    onError: (e) => notifyError("Couldn't revoke the invitation.", e),
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: ['org-invitations'] }),
   })

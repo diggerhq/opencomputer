@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
 import { CircleCheck, KeyRound, Plus, X } from 'lucide-react'
+import { notifyError } from '@/lib/errors'
 import {
   createAPIKey,
   deleteAPIKey,
@@ -45,18 +45,12 @@ export default function APIKeys() {
       setNewKeyName('')
       queryClient.invalidateQueries({ queryKey: ['api-keys'] })
     },
-    onError: (error) =>
-      toast.error(
-        `Couldn't create key: ${error instanceof Error ? error.message : String(error)}`,
-      ),
+    onError: (error) => notifyError("Couldn't create the API key.", error),
   })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteAPIKey(id),
-    onError: (error) =>
-      toast.error(
-        `Revoke failed: ${error instanceof Error ? error.message : String(error)}`,
-      ),
+    onError: (error) => notifyError("Couldn't revoke the key.", error),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['api-keys'] }),
   })
 
