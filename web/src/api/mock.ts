@@ -237,7 +237,48 @@ const apiKeys = [
   },
 ]
 
-const autumn = { isHalted: false, balance: 4210, currency: 'usd' }
+const autumn = {
+  isHalted: false,
+  creditsRemainingCents: 4210,
+  concurrencyPlan: 'base',
+  maxConcurrentSandboxes: 5,
+  autoTopup: { enabled: false, threshold: 5, quantity: 25 },
+  hasToppedUp: true,
+  currency: 'usd',
+}
+
+const billing = {
+  plan: 'free',
+  billingProvider: 'autumn',
+  maxConcurrentSandboxes: 5,
+  freeCreditsRemainingCents: 0,
+  stripeCreditCents: 0,
+}
+
+const sandboxUsage = {
+  windowDays: 30,
+  totalCents: 156,
+  sandboxes: [
+    {
+      sandboxId: 'sbx_a1b2c3d4e5',
+      status: 'running',
+      seconds: 12_600,
+      costCents: 84,
+    },
+    {
+      sandboxId: 'sbx_f6g7h8i9j0',
+      status: 'stopped',
+      seconds: 3_600,
+      costCents: 24,
+    },
+    {
+      sandboxId: 'sbx_k1l2m3n4o5',
+      status: 'hibernated',
+      seconds: 7_200,
+      costCents: 48,
+    },
+  ],
+}
 
 const sessionDetail = {
   id: 's1',
@@ -343,12 +384,13 @@ const ROUTES: Array<[RegExp, Handler]> = [
   ],
   [/^\/api-keys$/, () => apiKeys],
   [/^\/billing\/autumn$/, () => autumn],
-  [/^\/billing\/invoices/, () => []],
+  [/^\/billing\/invoices/, () => ({ invoices: [] })],
+  [/^\/billing$/, () => billing],
+  [/^\/usage\/sandboxes/, () => sandboxUsage],
   [/^\/org\/members$/, () => orgMembers],
   [/^\/org\/invitations$/, () => orgInvitations],
   [/^\/org\/custom-domain$/, () => ({})],
   [/^\/org$/, () => org],
-  [/^\/usage\/sandboxes/, () => []],
   [/^\/agents$/, () => []],
 ]
 
