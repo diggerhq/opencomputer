@@ -9,7 +9,11 @@ explicit **follow-up**, pulled in only when a screen actually needs it.
 
 Drivers: 633 inline styles, no components/forms/lint, and an off-brand look
 ("Void Glass" dark indigo) vs the site + docs (light ink-on-paper). Status:
-**draft for review**, not started.
+**code-complete on `feat/web-ui-dev` (#426)** — Phases A + B done (all live
+screens + the dark Terminal/Logs migrated, `theme.css` deleted, Preflight on,
+build/lint/jsx-a11y green). The **only** remaining item is the both-serving-mode
+release smoke (auth/logout/SSE/WS/SPA-fallback through the Go control plane and
+the api-edge Worker) — it needs the live backend, so it's a manual release gate.
 
 > Measured **2026-06-26** at `feat/web-ui-dev`. Counts:
 > `grep -rao 'style={' web/src | wc -l` (633), `… 'className='` (141),
@@ -198,7 +202,7 @@ It all lands in the **single open PR** (`feat/web-ui-dev`, #426), built up as
 ordered commits — not split into multiple PRs.
 
 **Phase A — Foundation:**
-- [ ] **Spike first (de-risk the runtime).** Install Tailwind v4 + shadcn; run
+- [x] **Spike first (de-risk the runtime).** Install Tailwind v4 + shadcn; run
   `shadcn init` with **deterministic choices** — npm; style **new-york** (current
   shadcn default; the site's old `default` is deprecated); base color **neutral**
   (our token layer overrides it); `cssVariables: true`; aliases `@/components`,
@@ -206,24 +210,24 @@ ordered commits — not split into multiple PRs.
   dropdown-menu sheet sonner` and **`build` + `typecheck`** — proving current
   shadcn/Tailwind v4 runs on our React 18 / Vite 6 *before* any screen work. (A
   forced runtime bump here is an in-scope reason per Stack.)
-- [ ] ESLint 9 flat + Prettier (+ prettier-plugin-tailwindcss) + jsx-a11y; `@/*`
+- [x] ESLint 9 flat + Prettier (+ prettier-plugin-tailwindcss) + jsx-a11y; `@/*`
   alias; `lint`/`format`/`typecheck` (`tsc -b`) scripts.
-- [ ] Token layer + CSS wiring per the **"Tailwind v4 + shadcn setup"** block:
+- [x] Token layer + CSS wiring per the **"Tailwind v4 + shadcn setup"** block:
   base + product tokens + dark-surface tokens via `@theme inline`; explicit layer
   imports with **Preflight off + the minimal border reset** while `theme.css` is
   live; tokens on `:root`; utilities opt-in per screen. **Decision (not a
   "revisit"):** at the end of Phase B, when `theme.css` is gone, swap to the
   bundled `@import "tailwindcss";` (Preflight back on) and drop the manual reset.
-- [ ] Finish the **minimal component set**: `shadcn add input badge separator
+- [x] Finish the **minimal component set**: `shadcn add input badge separator
   skeleton table`, then build `AppShell` + the OC wrappers; lucide + `<Toaster/>`.
 
 **Phase B — Visual migration (one screen per commit, reskin only):**
-- [ ] Pilot **`Sessions.tsx`** (table + filters + delete) — the reference pattern.
-- [ ] Then the live screens, lightest-first (see the breakdown): Layout/shell →
+- [x] Pilot **`Sessions.tsx`** (table + filters + delete) — the reference pattern.
+- [x] Then the live screens, lightest-first (see the breakdown): Layout/shell →
   Templates → Checkpoints → APIKeys → Dashboard → Settings → SessionDetail
   (builds the dark Code/TerminalSurface) → **Billing last** (heaviest).
   **Excludes** Agents/AgentDetail.
-- [ ] **End of Phase B:** delete `theme.css` + remove dead inline styles, and
+- [x] **End of Phase B:** delete `theme.css` + remove dead inline styles, and
   **enable Tailwind's preflight** (the permanent app reset) now that no legacy CSS remains.
 
 ## Foundation findings (from the code survey, 2026-06-26)
