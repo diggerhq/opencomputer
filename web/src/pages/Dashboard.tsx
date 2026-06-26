@@ -1,16 +1,51 @@
-import { useState, useEffect, useRef } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, Link } from 'react-router-dom'
-import { getSessions, getAPIKeys, createAPIKey, type Session } from '../api/client'
+import { useEffect, useRef, type ReactNode } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
+import { Boxes } from 'lucide-react'
+import {
+  createAPIKey,
+  getAPIKeys,
+  getSessions,
+  type Session,
+} from '@/api/client'
+import { PageHeader } from '@/components/page-header'
+import {
+  Panel,
+  PanelContent,
+  PanelHeader,
+  PanelTitle,
+} from '@/components/panel'
+import { MetricCard } from '@/components/metric-card'
+import { CopyRow } from '@/components/copy-row'
+import { StatusBadge } from '@/components/status-badge'
+import { EmptyState } from '@/components/empty-state'
+import { ResourceTable, type Column } from '@/components/resource-table'
+import { Skeleton } from '@/components/ui/skeleton'
 
 const SKILL_INSTALL_CMD = 'npx skills add diggerhq/opencomputer'
+
+function formatDuration(session: Session): string {
+  const start = new Date(session.startedAt).getTime()
+  const end = session.stoppedAt
+    ? new Date(session.stoppedAt).getTime()
+    : Date.now()
+  const secs = Math.round((end - start) / 1000)
+  if (secs < 60) return `${secs}s`
+  if (secs < 3600) return `${Math.round(secs / 60)}m`
+  return `${Math.round((secs / 3600) * 10) / 10}h`
+}
+
+function elapsedMinutes(session: Session): number {
+  return Math.round(
+    (Date.now() - new Date(session.startedAt).getTime()) / 1000 / 60,
+  )
+}
 
 export default function Dashboard() {
   const { data: runningSessions, isLoading: loadingRunning } = useQuery({
     queryKey: ['sessions', 'running'],
     queryFn: () => getSessions('running'),
   })
-
   const { data: allSessions, isLoading: loadingAll } = useQuery({
     queryKey: ['sessions', ''],
     queryFn: () => getSessions(),
@@ -19,148 +54,180 @@ export default function Dashboard() {
   const active = runningSessions ?? []
   const all = allSessions ?? []
   const today = new Date().toISOString().slice(0, 10)
-  const sessionsToday = all.filter(s => new Date(s.startedAt).toISOString().slice(0, 10) === today).length
-
+  const sessionsToday = all.filter(
+    (s) => new Date(s.startedAt).toISOString().slice(0, 10) === today,
+  ).length
   const isFirstRun = !loadingAll && all.length === 0
+
+  const recentColumns: Column<Session>[] = [
+    {
+      key: 'id',
+      header: 'Sandbox ID',
+      cell: (s) => (
+        <Link
+          to={`/sessions/${s.sandboxId}`}
+          className="text-foreground font-mono text-[13px] underline-offset-4 hover:underline"
+        >
+          {s.sandboxId}
+        </Link>
+      ),
+    },
+    {
+      key: 'template',
+      header: 'Template',
+      cell: (s) => (
+        <span className="text-muted-foreground">{s.template || 'base'}</span>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (s) => <StatusBadge status={s.status} />,
+    },
+    {
+      key: 'started',
+      header: 'Started',
+      cell: (s) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {new Date(s.startedAt).toLocaleString()}
+        </span>
+      ),
+    },
+    {
+      key: 'duration',
+      header: 'Duration',
+      cell: (s) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {formatDuration(s)}
+        </span>
+      ),
+    },
+  ]
 
   return (
     <div>
-      <div style={{ marginBottom: 32 }}>
-        <h1 className="page-title">{isFirstRun ? 'Welcome to OpenComputer' : 'Dashboard'}</h1>
-        <p className="page-subtitle">
-          {isFirstRun
+      <PageHeader
+        title={isFirstRun ? 'Welcome to OpenComputer' : 'Dashboard'}
+        description={
+          isFirstRun
             ? 'Get your first sandbox running in two steps'
-            : 'Overview of your sandbox infrastructure'}
-        </p>
-      </div>
+            : 'Overview of your sandbox infrastructure'
+        }
+      />
 
       {isFirstRun ? (
         <GettingStarted />
       ) : (
-        <>
-      {/* ── Stat Cards ── */}
-      <div style={{
-        display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14, marginBottom: 24,
-      }}>
-        <StatCard
-          label="Active Sandboxes"
-          value={loadingRunning ? '\u2014' : active.length}
-          accent="var(--accent-emerald)"
-        />
-        <StatCard
-          label="Sessions Today"
-          value={loadingAll ? '\u2014' : sessionsToday}
-          accent="#818cf8"
-        />
-      </div>
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <MetricCard
+              label="Active sandboxes"
+              value={loadingRunning ? '—' : active.length.toLocaleString()}
+            />
+            <MetricCard
+              label="Sessions today"
+              value={loadingAll ? '—' : sessionsToday.toLocaleString()}
+            />
+          </div>
 
-      {/* ── Live Sandboxes ── */}
-      <div className="glass-card animate-in stagger-1" style={{ padding: '22px 24px', marginBottom: 24 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-          <span className="section-title" style={{ marginBottom: 0 }}>Live Sandboxes</span>
-          {active.length > 0 && (
-            <span style={{
-              fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--accent-emerald)',
-              display: 'flex', alignItems: 'center', gap: 6,
-            }}>
-              <span className="pulse-dot" style={{
-                width: 6, height: 6, borderRadius: '50%',
-                background: 'var(--accent-emerald)', display: 'inline-block',
-              }} />
-              {active.length} active
-            </span>
-          )}
+          <Panel>
+            <PanelHeader>
+              <PanelTitle>Live sandboxes</PanelTitle>
+              {active.length > 0 ? (
+                <span className="text-status-running flex items-center gap-1.5 font-mono text-xs">
+                  <span className="bg-status-running size-1.5 animate-pulse rounded-full" />
+                  {active.length} active
+                </span>
+              ) : null}
+            </PanelHeader>
+            <PanelContent>
+              {loadingRunning ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-12 w-full" />
+                  <Skeleton className="h-12 w-full" />
+                </div>
+              ) : active.length === 0 ? (
+                <p className="text-muted-foreground py-6 text-center text-sm">
+                  No sandboxes running
+                </p>
+              ) : (
+                <div className="flex max-h-[320px] flex-col gap-1.5 overflow-y-auto">
+                  {active.map((s) => (
+                    <SandboxRow key={s.id} session={s} />
+                  ))}
+                </div>
+              )}
+            </PanelContent>
+          </Panel>
+
+          <Panel className="overflow-hidden">
+            <PanelHeader>
+              <PanelTitle>Recent sessions</PanelTitle>
+            </PanelHeader>
+            <ResourceTable
+              columns={recentColumns}
+              rows={all.slice(0, 20)}
+              rowKey={(s) => s.id}
+              loading={loadingAll}
+              empty={
+                <EmptyState
+                  icon={Boxes}
+                  title="No sessions yet"
+                  description="Sandboxes you start will show up here."
+                />
+              }
+            />
+          </Panel>
         </div>
-
-        {loadingRunning ? (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
-            <div className="loading-spinner" />
-          </div>
-        ) : active.length === 0 ? (
-          <div style={{
-            textAlign: 'center', padding: '40px 20px',
-            color: 'var(--text-tertiary)', fontSize: 13,
-          }}>
-            No sandboxes running
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflowY: 'auto' }}>
-            {active.map(s => <SandboxRow key={s.id} session={s} />)}
-          </div>
-        )}
-      </div>
-
-      {/* ── Recent Sessions ── */}
-      <div className="glass-card animate-in stagger-2" style={{ padding: '22px 24px' }}>
-        <span className="section-title">Recent Sessions</span>
-        {loadingAll ? (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
-            <div className="loading-spinner" />
-          </div>
-        ) : all.length === 0 ? (
-          <div style={{
-            textAlign: 'center', padding: '40px 20px',
-            color: 'var(--text-tertiary)', fontSize: 13,
-          }}>
-            No sessions yet
-          </div>
-        ) : (
-          <div style={{ overflow: 'hidden' }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Sandbox ID</th>
-                  <th>Template</th>
-                  <th>Status</th>
-                  <th>Started</th>
-                  <th>Duration</th>
-                </tr>
-              </thead>
-              <tbody>
-                {all.slice(0, 20).map(s => (
-                  <ClickableRow key={s.id} sandboxId={s.sandboxId}>
-                    <td><code style={{ color: 'var(--text-accent)' }}>{s.sandboxId}</code></td>
-                    <td>{s.template || 'base'}</td>
-                    <td><StatusBadge status={s.status} /></td>
-                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                      {new Date(s.startedAt).toLocaleString()}
-                    </td>
-                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                      {formatDuration(s)}
-                    </td>
-                  </ClickableRow>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-        </>
       )}
     </div>
   )
 }
 
-/* ── Getting Started (first-run onboarding) ───────────────── */
+function SandboxRow({ session }: { session: Session }) {
+  const elapsed = elapsedMinutes(session)
+  return (
+    <Link
+      to={`/sessions/${session.sandboxId}`}
+      className="hover:bg-row-hover flex items-center justify-between rounded-md border px-3 py-2.5 transition-colors"
+    >
+      <div className="flex items-center gap-2.5">
+        <span className="bg-status-running size-1.5 shrink-0 animate-pulse rounded-full" />
+        <div>
+          <code className="text-foreground font-mono text-xs">
+            {session.sandboxId}
+          </code>
+          <div className="text-muted-foreground text-[11px]">
+            {session.template || 'base'}
+          </div>
+        </div>
+      </div>
+      <span className="text-muted-foreground font-mono text-xs">
+        {elapsed}m
+      </span>
+    </Link>
+  )
+}
+
+/* ── First-run onboarding ─────────────────────────────────────────────────── */
 function GettingStarted() {
   const queryClient = useQueryClient()
-  const { data: keys, isLoading: loadingKeys } = useQuery({ queryKey: ['api-keys'], queryFn: getAPIKeys })
-  const [copied, setCopied] = useState<string | null>(null)
-  const [createdKey, setCreatedKey] = useState<string | null>(null)
+  const { data: keys, isLoading: loadingKeys } = useQuery({
+    queryKey: ['api-keys'],
+    queryFn: getAPIKeys,
+  })
   const autoCreateRef = useRef(false)
 
   const createMutation = useMutation({
     mutationFn: () => createAPIKey('Default'),
-    onSuccess: (data) => {
-      setCreatedKey(data.key)
-      queryClient.invalidateQueries({ queryKey: ['api-keys'] })
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['api-keys'] }),
   })
 
   const hasKeys = (keys?.length ?? 0) > 0
+  const createdKey = createMutation.data?.key ?? null
 
-  // On first signup (no keys exist), auto-create a Default key so the user
-  // sees their key immediately without having to click anything.
+  // On first signup (no keys), auto-create a Default key so the user sees it
+  // immediately without clicking anything.
   useEffect(() => {
     if (loadingKeys || autoCreateRef.current) return
     if (!hasKeys && !createdKey && !createMutation.isPending) {
@@ -169,20 +236,14 @@ function GettingStarted() {
     }
   }, [loadingKeys, hasKeys, createdKey, createMutation])
 
-  const copy = (text: string, id: string) => {
-    navigator.clipboard.writeText(text)
-    setCopied(id)
-    setTimeout(() => setCopied(c => (c === id ? null : c)), 1500)
-  }
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div className="space-y-4">
       <StepCard
         index={1}
         title="Install the OpenComputer skill"
         description="Adds OpenComputer sandbox controls to Claude Code so you can create, inspect, and manage sandboxes from your terminal."
       >
-        <CommandRow command={SKILL_INSTALL_CMD} copied={copied === 'install'} onCopy={() => copy(SKILL_INSTALL_CMD, 'install')} />
+        <CopyRow value={SKILL_INSTALL_CMD} />
       </StepCard>
 
       <StepCard
@@ -190,273 +251,84 @@ function GettingStarted() {
         title="Your API key"
         description="The skill uses this key to authenticate with OpenComputer. We've created a Default key for you — copy it now, you won't be able to see it again."
       >
-        {(loadingKeys || createMutation.isPending) && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--text-tertiary)', fontSize: 13 }}>
-            <div className="loading-spinner" style={{ width: 14, height: 14 }} />
+        {loadingKeys || createMutation.isPending ? (
+          <p className="text-muted-foreground text-sm">
             Preparing your API key…
-          </div>
-        )}
+          </p>
+        ) : null}
 
-        {createdKey && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <SecretRow
-              secret={createdKey}
-              copied={copied === 'key'}
-              onCopy={() => copy(createdKey, 'key')}
-            />
-            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 6 }}>
+        {createdKey ? (
+          <div className="space-y-2.5">
+            <CopyRow value={createdKey} maskable />
+            <p className="text-muted-foreground text-xs">
               Then run this in your terminal to configure the CLI:
-            </div>
-            <SecretRow
-              secret={createdKey}
-              wrap={(s) => `oc config set api-key ${s}`}
-              copied={copied === 'cmd'}
-              onCopy={() => copy(`oc config set api-key ${createdKey}`, 'cmd')}
+            </p>
+            <CopyRow
+              value={createdKey}
+              maskable
+              transform={(s) => `oc config set api-key ${s}`}
             />
           </div>
-        )}
+        ) : null}
 
-        {!createdKey && !createMutation.isPending && hasKeys && (
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-            You already have {keys!.length} API key{keys!.length === 1 ? '' : 's'} from a previous session.
-            For security, existing key values can&apos;t be re-displayed.{' '}
-            <Link to="/api-keys" style={{ color: 'var(--accent-indigo)' }}>Manage keys</Link> to rotate.
-          </div>
-        )}
+        {!createdKey && !createMutation.isPending && hasKeys ? (
+          <p className="text-muted-foreground text-sm">
+            You already have {keys!.length} API key
+            {keys!.length === 1 ? '' : 's'} from a previous session. For
+            security, existing key values can&apos;t be re-displayed.{' '}
+            <Link
+              to="/api-keys"
+              className="text-foreground font-medium underline underline-offset-4"
+            >
+              Manage keys
+            </Link>{' '}
+            to rotate.
+          </p>
+        ) : null}
 
-        {createMutation.isError && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
-            <span style={{ fontSize: 12, color: 'var(--accent-rose, #fb7185)' }}>
+        {createMutation.isError ? (
+          <div className="flex items-center gap-3">
+            <span className="text-status-error text-sm">
               Failed to create your API key.
             </span>
             <button
-              className="btn-ghost"
-              style={{ fontSize: 12 }}
+              className="text-foreground text-sm font-medium underline underline-offset-4"
               onClick={() => createMutation.mutate()}
             >
               Retry
             </button>
           </div>
-        )}
+        ) : null}
       </StepCard>
     </div>
   )
 }
 
-function StepCard({ index, title, description, children }: {
+function StepCard({
+  index,
+  title,
+  description,
+  children,
+}: {
   index: number
   title: string
   description: string
-  children: React.ReactNode
+  children: ReactNode
 }) {
   return (
-    <div className="glass-card animate-in" style={{ padding: '22px 24px' }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
-        <div style={{
-          width: 28, height: 28, borderRadius: '50%',
-          background: 'rgba(99,102,241,0.12)',
-          border: '1px solid var(--border-accent)',
-          color: 'var(--accent-indigo)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 13, fontWeight: 600, flexShrink: 0, fontFamily: 'var(--font-mono)',
-        }}>
+    <Panel className="p-5">
+      <div className="flex items-start gap-4">
+        <span className="bg-secondary flex size-7 shrink-0 items-center justify-center rounded-full font-mono text-sm font-semibold">
           {index}
-        </div>
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>
-              {title}
-            </div>
-            <div style={{ fontSize: 13, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
-              {description}
-            </div>
+        </span>
+        <div className="flex-1 space-y-3">
+          <div className="space-y-1">
+            <h3 className="text-foreground text-sm font-semibold">{title}</h3>
+            <p className="text-muted-foreground text-sm">{description}</p>
           </div>
           {children}
         </div>
       </div>
-    </div>
+    </Panel>
   )
-}
-
-function CommandRow({ command, copied, onCopy }: {
-  command: string
-  copied: boolean
-  onCopy: () => void
-}) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 8,
-      background: 'var(--bg-deep)',
-      border: '1px solid var(--border-subtle)',
-      borderRadius: 'var(--radius-sm)',
-      padding: '10px 12px',
-    }}>
-      <code style={{
-        flex: 1, fontFamily: 'var(--font-mono)', fontSize: 13,
-        color: 'var(--text-accent)', wordBreak: 'break-all',
-      }}>
-        {command}
-      </code>
-      <button
-        onClick={onCopy}
-        className="btn-ghost"
-        style={{ fontSize: 11, padding: '4px 10px', flexShrink: 0 }}
-      >
-        {copied ? 'Copied' : 'Copy'}
-      </button>
-    </div>
-  )
-}
-
-function SecretRow({ secret, wrap, copied, onCopy }: {
-  secret: string
-  wrap?: (s: string) => string
-  copied: boolean
-  onCopy: () => void
-}) {
-  const [revealed, setRevealed] = useState(false)
-  const masked = '•'.repeat(Math.min(secret.length, 32))
-  const display = revealed ? secret : masked
-  const text = wrap ? wrap(display) : display
-
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 8,
-      background: 'var(--bg-deep)',
-      border: '1px solid var(--border-subtle)',
-      borderRadius: 'var(--radius-sm)',
-      padding: '10px 12px',
-    }}>
-      <code style={{
-        flex: 1, fontFamily: 'var(--font-mono)', fontSize: 13,
-        color: 'var(--text-accent)', wordBreak: 'break-all',
-        letterSpacing: revealed ? 'normal' : '0.05em',
-      }}>
-        {text}
-      </code>
-      <button
-        onClick={() => setRevealed(r => !r)}
-        className="btn-ghost"
-        style={{ fontSize: 11, padding: '4px 10px', flexShrink: 0 }}
-        aria-label={revealed ? 'Hide secret' : 'Reveal secret'}
-      >
-        {revealed ? 'Hide' : 'Reveal'}
-      </button>
-      <button
-        onClick={onCopy}
-        className="btn-ghost"
-        style={{ fontSize: 11, padding: '4px 10px', flexShrink: 0 }}
-      >
-        {copied ? 'Copied' : 'Copy'}
-      </button>
-    </div>
-  )
-}
-
-/* ── Stat Card ───────────────────────────────────────────── */
-function StatCard({ label, value, accent }: {
-  label: string
-  value: number | string
-  accent: string
-}) {
-  return (
-    <div className="stat-card animate-in">
-      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 8, letterSpacing: '0.03em' }}>
-        {label}
-      </div>
-      <div className="metric-value" style={{
-        fontSize: 30, fontWeight: 700, lineHeight: 1, color: accent,
-      }}>
-        {typeof value === 'number' ? value.toLocaleString() : value}
-      </div>
-    </div>
-  )
-}
-
-/* ── Sandbox Row ──────────────────────────────────────────── */
-function SandboxRow({ session }: { session: Session }) {
-  const navigate = useNavigate()
-  const elapsed = Math.round((Date.now() - new Date(session.startedAt).getTime()) / 1000 / 60)
-  return (
-    <div
-      onClick={() => navigate(`/sessions/${session.sandboxId}`)}
-      style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '9px 12px', borderRadius: 8,
-        background: 'rgba(255,255,255,0.015)',
-        border: '1px solid rgba(255,255,255,0.035)',
-        transition: 'all 0.15s ease', cursor: 'pointer',
-      }}
-      onMouseOver={e => {
-        e.currentTarget.style.background = 'rgba(99,102,241,0.05)'
-        e.currentTarget.style.borderColor = 'rgba(99,102,241,0.12)'
-      }}
-      onMouseOut={e => {
-        e.currentTarget.style.background = 'rgba(255,255,255,0.015)'
-        e.currentTarget.style.borderColor = 'rgba(255,255,255,0.035)'
-      }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span className="pulse-dot" style={{
-          width: 6, height: 6, borderRadius: '50%',
-          background: 'var(--accent-emerald)', flexShrink: 0,
-        }} />
-        <div>
-          <code style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-accent)' }}>
-            {session.sandboxId}
-          </code>
-          <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 1 }}>
-            {session.template || 'base'}
-          </div>
-        </div>
-      </div>
-      <span className="metric-value" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-        {elapsed}m
-      </span>
-    </div>
-  )
-}
-
-/* ── Clickable Table Row ──────────────────────────────────── */
-function ClickableRow({ sandboxId, children }: { sandboxId: string; children: React.ReactNode }) {
-  const navigate = useNavigate()
-  return (
-    <tr
-      onClick={() => navigate(`/sessions/${sandboxId}`)}
-      style={{ cursor: 'pointer' }}
-      onMouseOver={e => { e.currentTarget.style.background = 'rgba(99,102,241,0.04)' }}
-      onMouseOut={e => { e.currentTarget.style.background = '' }}
-    >
-      {children}
-    </tr>
-  )
-}
-
-/* ── Status Badge ─────────────────────────────────────────── */
-function StatusBadge({ status }: { status: string }) {
-  const cls =
-    status === 'running' ? 'badge-running'
-    : status === 'hibernated' ? 'badge-hibernated'
-    : status === 'error' ? 'badge-error'
-    : 'badge-stopped'
-  return (
-    <span className={`badge ${cls}`}>
-      {status === 'running' && (
-        <span className="pulse-dot" style={{
-          width: 5, height: 5, borderRadius: '50%',
-          background: 'currentColor', display: 'inline-block',
-        }} />
-      )}
-      {status}
-    </span>
-  )
-}
-
-/* ── Helpers ──────────────────────────────────────────────── */
-function formatDuration(session: Session): string {
-  const start = new Date(session.startedAt).getTime()
-  const end = session.stoppedAt ? new Date(session.stoppedAt).getTime() : Date.now()
-  const secs = Math.round((end - start) / 1000)
-  if (secs < 60) return `${secs}s`
-  if (secs < 3600) return `${Math.round(secs / 60)}m`
-  return `${Math.round(secs / 3600 * 10) / 10}h`
 }
