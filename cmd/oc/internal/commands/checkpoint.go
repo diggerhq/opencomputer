@@ -213,6 +213,7 @@ func init() {
 	checkpointCreateCmd.Flags().String("name", "", "Checkpoint name (required)")
 	checkpointCreateCmd.Flags().String("kind", "full", "Checkpoint kind (full, disk_only)")
 	checkpointCreateCmd.Flags().Bool("promote-to-full", false, "For disk_only checkpoints, asynchronously create a derived full checkpoint for faster forks")
+	checkpointCreateCmd.Flags().MarkHidden("promote-to-full")
 	checkpointCreateCmd.Flags().String("retention-policy", "none", "Retention policy for automatic checkpoint cleanup (none, delete_oldest)")
 	checkpointCreateCmd.Flags().Int("retention-max-count", 0, "Maximum checkpoints of this kind to keep when --retention-policy=delete_oldest (full: 1-10, disk_only: 1-100, default server limit)")
 	checkpointCreateCmd.MarkFlagRequired("name")

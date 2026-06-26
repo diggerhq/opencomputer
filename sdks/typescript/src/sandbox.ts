@@ -708,8 +708,8 @@ export class Sandbox {
     if (opts.kind) {
       body.kind = opts.kind;
     }
-    if (opts.promoteToFull) {
-      body.promoteToFull = true;
+    if (opts.promoteToFull !== undefined) {
+      body.promoteToFull = opts.promoteToFull;
     }
     if (opts.retentionPolicy) {
       body.retentionPolicy = opts.retentionPolicy;
