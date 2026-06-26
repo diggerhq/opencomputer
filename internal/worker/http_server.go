@@ -2,6 +2,7 @@ package worker
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -25,6 +26,13 @@ type HTTPServer struct {
 	router             *sandbox.SandboxRouter
 	mountSvc           *mounts.Service // nil when store is unavailable
 	sandboxDomain      string
+
+	// asyncExecs tracks background exec/run invocations by client-facing
+	// execId. The handle is registered synchronously so POST /exec/run returns
+	// immediately; the wake + session create + command run happen in a
+	// goroutine, so a slow auto-wake never holds the connection (no 524/502).
+	// Keyed execId -> *asyncExec. Entries self-expire via a TTL timer.
+	asyncExecs sync.Map
 }
 
 // NewHTTPServer creates a new worker HTTP server for direct SDK access.
@@ -77,10 +85,12 @@ func NewHTTPServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, execMgr *san
 	api.GET("/sandboxes/:id", s.getSandbox)
 
 	// Exec sessions (replaces old /commands)
-	api.POST("/sandboxes/:id/exec/run", s.execRun) // static path before parameterized
+	api.POST("/sandboxes/:id/exec/run", s.execRun)            // static path before parameterized (sync, legacy)
+	api.POST("/sandboxes/:id/exec/run-async", s.execRunAsync) // async handle + poll /result
 	api.POST("/sandboxes/:id/exec", s.createExecSession)
 	api.GET("/sandboxes/:id/exec", s.listExecSessions)
 	api.GET("/sandboxes/:id/exec/:sessionID", s.execSessionWebSocket)
+	api.GET("/sandboxes/:id/exec/:sessionID/result", s.execResult)
 	api.POST("/sandboxes/:id/exec/:sessionID/kill", s.killExecSession)
 
 	// Timeout

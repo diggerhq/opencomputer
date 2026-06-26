@@ -14,15 +14,19 @@ import (
 	"github.com/opensandbox/opensandbox/internal/db"
 )
 
-// createSnapshot handles POST /api/snapshots — creates a pre-built named snapshot from a declarative image.
-func (s *Server) createSnapshot(c echo.Context) error {
+// parseSnapshotCreate validates the shared POST body for the snapshot create
+// endpoints (auth, name, image, name-uniqueness). On any failure it writes the
+// error response and returns ok=false; the caller should then `return nil`.
+func (s *Server) parseSnapshotCreate(c echo.Context) (orgID uuid.UUID, name string, image json.RawMessage, ok bool) {
 	if s.store == nil {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+		_ = c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+		return uuid.Nil, "", nil, false
 	}
 
-	orgID, ok := auth.GetOrgID(c)
-	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	oid, found := auth.GetOrgID(c)
+	if !found {
+		_ = c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+		return uuid.Nil, "", nil, false
 	}
 
 	var req struct {
@@ -30,38 +34,123 @@ func (s *Server) createSnapshot(c echo.Context) error {
 		Image json.RawMessage `json:"image"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+		_ = c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+		return uuid.Nil, "", nil, false
 	}
-
 	if req.Name == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
+		_ = c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
+		return uuid.Nil, "", nil, false
 	}
 	if len(req.Image) == 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "image is required"})
+		_ = c.JSON(http.StatusBadRequest, map[string]string{"error": "image is required"})
+		return uuid.Nil, "", nil, false
+	}
+
+	// Check if name is already taken
+	existing, err := s.store.GetImageCacheByName(c.Request().Context(), oid, req.Name)
+	if err == nil && existing != nil {
+		_ = c.JSON(http.StatusConflict, map[string]string{"error": "snapshot name already exists"})
+		return uuid.Nil, "", nil, false
+	}
+
+	return oid, req.Name, req.Image, true
+}
+
+// createSnapshot handles POST /api/snapshots — creates a pre-built named
+// snapshot from a declarative image.
+//
+// Three shapes, picked by the request:
+//   - Accept: text/event-stream → SSE build-log stream (unchanged).
+//   - ?async=1 → non-blocking: returns a "building" row immediately and builds
+//     in the background; the caller polls GET /snapshots/:name until
+//     ready|failed. Newer clients use this to avoid a 524 on a long build.
+//   - otherwise → synchronous build that blocks until the snapshot is ready,
+//     preserving the original contract for SDK versions that predate the async
+//     flow.
+//
+// async is a query param rather than a /snapshots/async subpath because the edge
+// router treats any /api/snapshots/<seg> as a snapshot named <seg>.
+func (s *Server) createSnapshot(c echo.Context) error {
+	orgID, name, image, ok := s.parseSnapshotCreate(c)
+	if !ok {
+		return nil
 	}
 
 	ctx := c.Request().Context()
 
-	// Check if name is already taken
-	existing, err := s.store.GetImageCacheByName(ctx, orgID, req.Name)
-	if err == nil && existing != nil {
-		return c.JSON(http.StatusConflict, map[string]string{"error": "snapshot name already exists"})
-	}
-
 	// SSE streaming path
 	if c.Request().Header.Get("Accept") == "text/event-stream" {
-		return s.createSnapshotWithSSE(c, ctx, orgID, req.Name, req.Image)
+		return s.createSnapshotWithSSE(c, ctx, orgID, name, image)
 	}
 
-	// Non-streaming path
-	ic, err := s.createSnapshotCore(ctx, orgID, req.Name, req.Image, nil)
+	// Async (non-blocking) opt-in.
+	if c.QueryParam("async") == "1" {
+		return s.createSnapshotAsync(c, orgID, name, image)
+	}
+
+	// Non-streaming path: synchronous build (legacy contract).
+	ic, err := s.createSnapshotCore(ctx, orgID, name, image, nil)
 	if err != nil {
-		log.Printf("snapshot: build failed for %q: %v", req.Name, err)
+		log.Printf("snapshot: build failed for %q: %v", name, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
-
-	log.Printf("snapshot: created %q", req.Name)
+	log.Printf("snapshot: created %q", name)
 	return c.JSON(http.StatusCreated, ic)
+}
+
+// createSnapshotAsync pre-creates a named "building" snapshot row, dispatches
+// the image build in a background goroutine, and returns the building row
+// immediately. Mirrors the SSE path's background dispatch but without a
+// streaming connection. The inflightBuilds dedup in resolveImageManifest
+// prevents duplicate concurrent builds of the same underlying image.
+func (s *Server) createSnapshotAsync(c echo.Context, orgID uuid.UUID, name string, imageJSON json.RawMessage) error {
+	var manifest ImageManifest
+	_ = json.Unmarshal(imageJSON, &manifest)
+	contentHash := computeManifestHash(&manifest)
+
+	n := name
+	ic := &db.ImageCache{
+		ID:    uuid.New(),
+		OrgID: orgID,
+		// Suffix the hash so the named row never collides with the unnamed
+		// content-hash build row that resolveImageManifest creates/reuses.
+		ContentHash: contentHash + ":named:" + name,
+		Name:        &n,
+		Manifest:    imageJSON,
+		Status:      "building",
+	}
+	if err := s.store.CreateImageCache(c.Request().Context(), ic); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create snapshot: " + err.Error()})
+	}
+
+	// Background build — context.Background() so it survives the HTTP response.
+	go func() {
+		ctx := context.Background()
+		tBuild := time.Now()
+		checkpointID, err := s.resolveImageManifest(ctx, orgID, imageJSON, nil)
+		buildMs := time.Since(tBuild).Milliseconds()
+		if err != nil {
+			log.Printf("snapshot: async build failed for %q after %dms: %v", name, buildMs, err)
+			_ = s.store.SetImageCacheFailed(ctx, ic.ID)
+			// Mirror the failed status to D1 so GET /snapshots/:name returns
+			// status=failed (not 404), letting SDK waitUntilReady throw instead
+			// of polling to timeout. publishImageCacheReadyFrom mirrors whatever
+			// ic.Status is — here, "failed".
+			ic.Status = "failed"
+			s.publishImageCacheReadyFrom(ctx, ic)
+			return
+		}
+		if err := s.store.SetImageCacheReady(ctx, ic.ID, checkpointID); err != nil {
+			log.Printf("snapshot: failed to mark %q ready: %v", name, err)
+			return
+		}
+		ic.Status = "ready"
+		ic.CheckpointID = &checkpointID
+		s.publishImageCacheReadyFrom(ctx, ic)
+		log.Printf("snapshot: created %q (checkpoint=%s, build_ms=%d)", name, checkpointID, buildMs)
+	}()
+
+	return c.JSON(http.StatusAccepted, ic)
 }
 
 // createSnapshotCore contains the shared snapshot creation logic.

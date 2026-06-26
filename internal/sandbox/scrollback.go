@@ -18,6 +18,7 @@ type ScrollbackBuffer struct {
 	totalLen int
 	maxBytes int
 	nextSeq  uint64
+	evicted  bool // true once the ring has dropped older output
 	subs     map[chan OutputChunk]struct{}
 }
 
@@ -56,6 +57,7 @@ func (sb *ScrollbackBuffer) Write(stream uint8, data []byte) {
 	for sb.totalLen > sb.maxBytes && len(sb.chunks) > 0 {
 		sb.totalLen -= len(sb.chunks[0].Data)
 		sb.chunks = sb.chunks[1:]
+		sb.evicted = true
 	}
 
 	// Copy subscribers to avoid holding lock during send
@@ -83,6 +85,14 @@ func (sb *ScrollbackBuffer) Snapshot() []OutputChunk {
 	result := make([]OutputChunk, len(sb.chunks))
 	copy(result, sb.chunks)
 	return result
+}
+
+// Truncated reports whether the ring has evicted older output (i.e. the
+// snapshot is incomplete because total output exceeded the buffer size).
+func (sb *ScrollbackBuffer) Truncated() bool {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.evicted
 }
 
 // Subscribe returns a channel that receives live output chunks.

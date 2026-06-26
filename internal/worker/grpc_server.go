@@ -709,6 +709,41 @@ func (s *GRPCServer) ExecSessionKill(ctx context.Context, req *pb.ExecSessionKil
 	return &pb.ExecSessionKillResponse{}, nil
 }
 
+func (s *GRPCServer) ExecSessionResult(ctx context.Context, req *pb.ExecSessionResultRequest) (*pb.ExecSessionResultResponse, error) {
+	if s.execSessionManager == nil {
+		return nil, fmt.Errorf("exec sessions not configured on this worker")
+	}
+
+	var res *types.ExecSessionResult
+
+	routeOp := func(_ context.Context) error {
+		var err error
+		res, err = s.execSessionManager.GetResult(req.SandboxId, req.SessionId)
+		return err
+	}
+
+	if s.router != nil {
+		if err := s.router.Route(ctx, req.SandboxId, "execSessionResult", routeOp); err != nil {
+			return nil, fmt.Errorf("exec session result failed: %w", err)
+		}
+	} else {
+		if err := routeOp(ctx); err != nil {
+			return nil, fmt.Errorf("exec session result failed: %w", err)
+		}
+	}
+
+	resp := &pb.ExecSessionResultResponse{
+		Running:   res.Running,
+		Stdout:    res.Stdout,
+		Stderr:    res.Stderr,
+		Truncated: res.Truncated,
+	}
+	if res.ExitCode != nil {
+		resp.ExitCode = int32(*res.ExitCode)
+	}
+	return resp, nil
+}
+
 func (s *GRPCServer) HibernateSandbox(ctx context.Context, req *pb.HibernateSandboxRequest) (*pb.HibernateSandboxResponse, error) {
 	if s.checkpointStore == nil {
 		return nil, fmt.Errorf("hibernation not configured on this worker")

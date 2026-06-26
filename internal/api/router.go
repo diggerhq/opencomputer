@@ -504,8 +504,10 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		api.POST("/sandboxes/:id/exec", pxy)
 		api.GET("/sandboxes/:id/exec", pxy)
 		api.GET("/sandboxes/:id/exec/:sessionID", wsHandler)
+		api.GET("/sandboxes/:id/exec/:sessionID/result", pxy)
 		api.POST("/sandboxes/:id/exec/:sessionID/kill", pxy)
 		api.POST("/sandboxes/:id/exec/run", pxy)
+		api.POST("/sandboxes/:id/exec/run-async", pxy)
 
 		// Agent
 		api.POST("/sandboxes/:id/agent", pxy)
@@ -543,8 +545,10 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		api.POST("/sandboxes/:id/exec", s.createExecSession)
 		api.GET("/sandboxes/:id/exec", s.listExecSessions)
 		api.GET("/sandboxes/:id/exec/:sessionID", s.execSessionWebSocket)
+		api.GET("/sandboxes/:id/exec/:sessionID/result", s.execResult)
 		api.POST("/sandboxes/:id/exec/:sessionID/kill", s.killExecSession)
 		api.POST("/sandboxes/:id/exec/run", s.execRun)
+		api.POST("/sandboxes/:id/exec/run-async", s.execRunAsyncRoute)
 
 		api.POST("/sandboxes/:id/agent", s.createAgentSession)
 		api.GET("/sandboxes/:id/agent", s.listAgentSessions)

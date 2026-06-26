@@ -17,6 +17,7 @@ import (
 	"github.com/opensandbox/opensandbox/internal/logship"
 	pb "github.com/opensandbox/opensandbox/proto/agent"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 const (
@@ -97,6 +98,17 @@ func (s *Server) Serve(lis net.Listener) error {
 	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(256 * 1024 * 1024), // 256MB for large file transfers
 		grpc.MaxSendMsgSize(256 * 1024 * 1024),
+		// The worker client pings every 30s with PermitWithoutStream. gRPC's
+		// default server enforcement (MinTime 5m, PermitWithoutStream false)
+		// treats those as too-frequent and, after 2 strikes, sends GOAWAY and
+		// drops the connection — which kills in-flight exec attach streams on
+		// long no-output commands (e.g. `sleep 60`), so the EXIT is never
+		// delivered and the async result poll hangs at running. Permit the
+		// client's cadence.
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
 	)
 	pb.RegisterSandboxAgentServer(grpcServer, s)
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -257,8 +258,42 @@ func (p *SandboxAPIProxy) ProxyHandler(c echo.Context) error {
 		})
 	}
 
-	// If hibernated, wake on demand
+	// If hibernated, wake on demand.
 	if session.Status == "hibernated" {
+		// Async exec path (POST /exec/run-async, GET …/result): never hold the
+		// connection on the restore — a large cold checkpoint can exceed
+		// Cloudflare's 100s and 524. Claim a worker (atomic CAS) and forward
+		// immediately; the worker's execRunAsync returns a handle right away and
+		// self-restores in the background (router doWake), off the connection.
+		// /result is DB-routed to that worker, so this is correct across
+		// multiple control planes. Other (synchronous) ops keep the inline wake.
+		if isAsyncExecPath(c) {
+			workerURL, workerID, err := p.claimWorkerForAsyncWake(ctx, sandboxID)
+			if err != nil {
+				log.Printf("sandbox-api-proxy: async-wake claim failed for sandbox %s: %v", sandboxID, err)
+				return c.JSON(http.StatusBadGateway, map[string]string{
+					"error": fmt.Sprintf("sandbox %s: failed to wake: %v", sandboxID, err),
+				})
+			}
+			return p.forward(c, sandboxID, workerURL, workerID)
+		}
+		// File ops are synchronous (the caller wants the bytes/result now) so
+		// handle+poll doesn't apply, but a cold restore can exceed Cloudflare's
+		// 100s → 524 (or the 90s WakeSandbox cap → 502). For clients that opt in
+		// (X-OSB-Async-Wake — the newer SDK, which retries on 503), kick the wake
+		// to the background and return 503 "waking" + Retry-After; the warm retry
+		// proxies normally. Older SDKs don't send the header and don't retry, so
+		// they fall through to the inline synchronous wake below (their original
+		// behavior). Wake is deduped across control planes via a Redis lock so we
+		// never double-restore.
+		if isFilesPath(c) && wantsAsyncWake(c) {
+			p.startBackgroundWake(sandboxID)
+			c.Response().Header().Set("Retry-After", "1")
+			return c.JSON(http.StatusServiceUnavailable, map[string]any{
+				"error":  fmt.Sprintf("sandbox %s is waking", sandboxID),
+				"waking": true,
+			})
+		}
 		worker, workerURL, err := p.wakeHibernatedSandbox(ctx, sandboxID)
 		if err != nil {
 			log.Printf("sandbox-api-proxy: wake-on-request failed for sandbox %s: %v", sandboxID, err)
@@ -290,6 +325,104 @@ func (p *SandboxAPIProxy) ProxyHandler(c echo.Context) error {
 	}
 
 	return p.forward(c, sandboxID, worker.HTTPAddr, session.WorkerID)
+}
+
+// isAsyncExecPath reports whether the request is part of the async exec/run
+// flow (the POST that dispatches, or a /result poll). Those tolerate a 503
+// "waking" + retry, so we never hold their connection on a restore. Everything
+// else keeps the inline synchronous wake.
+func isAsyncExecPath(c echo.Context) bool {
+	p := c.Request().URL.Path
+	m := c.Request().Method
+	return (m == http.MethodPost && strings.HasSuffix(p, "/exec/run-async")) ||
+		(m == http.MethodGet && strings.HasSuffix(p, "/result"))
+}
+
+// wantsAsyncWake reports whether the client opted into the background-wake +
+// 503-retry flow for an otherwise-synchronous op (file ops). Newer SDKs send the
+// X-OSB-Async-Wake header and retry on 503 {waking}; older SDKs don't, so they
+// keep the inline synchronous wake below — preserving their original behavior.
+func wantsAsyncWake(c echo.Context) bool {
+	return c.Request().Header.Get("X-OSB-Async-Wake") == "1"
+}
+
+// isFilesPath reports whether the request targets the filesystem API
+// (read/write/list/mkdir/remove, including the signed download/upload variants
+// that re-enter via the proxy). These are synchronous ops that tolerate a 503
+// "waking" + client retry, so we never restore on their connection.
+func isFilesPath(c echo.Context) bool {
+	return strings.Contains(c.Request().URL.Path, "/files")
+}
+
+// startBackgroundWake restores a hibernated sandbox off the request connection.
+// Deduped across control planes via a Redis SETNX lock (120s TTL) so a burst of
+// 503-driven client retries — which the edge may spread across CP instances —
+// triggers exactly one restore (no split-brain double-restore). The restore
+// flips the DB status to running on success, so subsequent retries proxy
+// normally; on failure the lock is released so a later retry can try again.
+func (p *SandboxAPIProxy) startBackgroundWake(sandboxID string) {
+	key := "sandbox:waking:" + sandboxID
+	rdb := p.registry.RedisClient()
+	if rdb != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		won, err := rdb.SetNX(ctx, key, "1", 120*time.Second).Result()
+		cancel()
+		if err == nil && !won {
+			return // another control plane already owns this wake
+		}
+		// err != nil → Redis hiccup; fall through and wake best-effort.
+	}
+	go func() {
+		t0 := time.Now()
+		_, _, err := p.wakeHibernatedSandbox(context.Background(), sandboxID)
+		slog.Info("files_async_wake", "sandbox", sandboxID,
+			"wake_ms", time.Since(t0).Milliseconds(), "ok", err == nil)
+		if err != nil {
+			log.Printf("sandbox-api-proxy: background wake failed for sandbox %s: %v", sandboxID, err)
+		}
+		if rdb != nil {
+			dctx, dcancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = rdb.Del(dctx, key).Err()
+			dcancel()
+		}
+	}()
+}
+
+// claimWorkerForAsyncWake atomically assigns a hibernated sandbox to a worker
+// and returns that worker's address — WITHOUT performing the restore. The
+// restore happens lazily on the worker (its execRun → router doWake) so it
+// stays off the connection.
+//
+// Multi-CP safe: UpdateSandboxSessionForWake is a compare-and-swap
+// (UPDATE … WHERE status='hibernated'), so if several control planes race only
+// the first flips the row. We then RE-READ the session and forward to whatever
+// worker actually won the claim — so every racing CP converges on the same
+// worker and the box restores exactly once (the worker's router + manager.Wake
+// singleflight dedup any remaining concurrency).
+func (p *SandboxAPIProxy) claimWorkerForAsyncWake(ctx context.Context, sandboxID string) (string, string, error) {
+	checkpoint, err := p.store.GetActiveHibernation(ctx, sandboxID)
+	if err != nil {
+		return "", "", fmt.Errorf("no active hibernation: %w", err)
+	}
+	candidate, _, err := p.registry.GetLeastLoadedWorker(checkpoint.Region)
+	if err != nil {
+		return "", "", fmt.Errorf("no workers available in region %s: %w", checkpoint.Region, err)
+	}
+	// CAS claim (no-ops if another CP already flipped the row).
+	if err := p.store.UpdateSandboxSessionForWake(ctx, sandboxID, candidate.ID); err != nil {
+		return "", "", fmt.Errorf("claim worker for wake: %w", err)
+	}
+	// Authoritative re-read: forward to whoever actually won the claim.
+	sess, err := p.store.GetSandboxSession(ctx, sandboxID)
+	if err != nil {
+		return "", "", fmt.Errorf("re-read session after claim: %w", err)
+	}
+	w := p.registry.GetWorker(sess.WorkerID)
+	if w == nil || w.HTTPAddr == "" {
+		return "", "", fmt.Errorf("claimed worker %s unavailable", sess.WorkerID)
+	}
+	log.Printf("sandbox-api-proxy: async-wake claim for sandbox %s → worker %s (%s), worker will restore lazily", sandboxID, sess.WorkerID, w.HTTPAddr)
+	return w.HTTPAddr, sess.WorkerID, nil
 }
 
 // forward proxies the request to the worker, mints a JWT, caches the route.

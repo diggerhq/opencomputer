@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -261,6 +263,35 @@ func (s *HTTPServer) execSessionWebSocket(c echo.Context) error {
 	}
 }
 
+type asyncExecState int
+
+const (
+	asyncExecStarting asyncExecState = iota // waking / creating the in-VM session
+	asyncExecRunning                        // session created; command in flight or done
+	asyncExecFailed                         // wake or session-create failed
+)
+
+// asyncExec tracks a background exec/run by its client-facing execId, so that
+// POST /exec/run can return a handle before the (possibly slow) auto-wake and
+// session-create complete. Once running, sessionID points at the real in-VM
+// exec session that holds the output + exit code.
+type asyncExec struct {
+	mu        sync.Mutex
+	state     asyncExecState
+	sessionID string
+	err       error
+	startedAt time.Time
+	wakeMs    int64 // checkpoint-restore latency before the command could start
+	createMs  int64 // session create once the box was up
+}
+
+// execRun is the synchronous one-shot exec endpoint (POST /exec/run). It holds
+// the connection for the command's duration and returns {exitCode,stdout,stderr}
+// directly. Kept unchanged for SDK versions that predate the async flow; newer
+// SDKs POST /exec/run-async instead (see execRunAsync). For timeout>30 it streams
+// keepalive whitespace so the edge doesn't 524 on a long command — the original
+// band-aid — but a cold-start wake is still held on the connection here, which is
+// exactly why the async path exists.
 func (s *HTTPServer) execRun(c echo.Context) error {
 	id := c.Param("id")
 
@@ -337,6 +368,178 @@ func (s *HTTPServer) execRun(c echo.Context) error {
 		return json.NewEncoder(c.Response()).Encode(result)
 	}
 	return c.JSON(http.StatusOK, result)
+}
+
+// execRunAsync is the async exec endpoint (POST /exec/run-async). It registers a
+// handle synchronously and returns immediately, then does the wake +
+// session-create + command run in a background goroutine. Because the connection
+// is never held — not for the command, and crucially not for a slow
+// auto-wake/restore — the edge never 524s (nor 502s on the CP's 60s
+// response-header timeout). The caller polls GET /exec/:execId/result.
+func (s *HTTPServer) execRunAsync(c echo.Context) error {
+	id := c.Param("id")
+
+	var req types.ProcessConfig
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+	}
+	if req.Command == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "cmd is required"})
+	}
+
+	// Register a handle synchronously and return immediately, then do the wake +
+	// session-create + command run in a background goroutine.
+	if s.execSessionManager != nil {
+		execID := uuid.NewString()[:8]
+		ae := &asyncExec{state: asyncExecStarting, startedAt: time.Now()}
+		s.asyncExecs.Store(execID, ae)
+
+		sreq := types.ExecSessionCreateRequest{
+			Command: req.Command,
+			Args:    req.Args,
+			Env:     req.Env,
+			Cwd:     req.Cwd,
+			Timeout: req.Timeout,
+		}
+
+		go func() {
+			// 524-attribution timing. wake_ms = checkpoint restore latency (the
+			// dominant cause of the old synchronous exec/run 524s); create_ms =
+			// session create once the box is up. The command's own duration is
+			// logged separately on session exit (exec_session_exit). routeOp
+			// stamps when the session create begins, so the time inside Route
+			// before it is the wake (+ any queue wait).
+			wasHibernated := false
+			if s.router != nil {
+				if st, ok := s.router.GetState(id); ok {
+					wasHibernated = st != sandbox.StateRunning
+				}
+			}
+			var session *sandbox.ExecSessionHandle
+			var createMs int64
+			routeOp := func(_ context.Context) error {
+				tc := time.Now()
+				var e error
+				session, e = s.execSessionManager.CreateSession(id, sreq)
+				createMs = time.Since(tc).Milliseconds()
+				return e
+			}
+			// context.Background(): detached from the HTTP request (already
+			// returned). ensureRunning (the wake/restore) and the command both
+			// run here, off the connection.
+			t0 := time.Now()
+			var err error
+			if s.router != nil {
+				err = s.router.Route(context.Background(), id, "execRun", routeOp)
+			} else {
+				err = routeOp(context.Background())
+			}
+			wakeMs := time.Since(t0).Milliseconds() - createMs
+			if wakeMs < 0 {
+				wakeMs = 0
+			}
+			slog.Info("exec_run_dispatch",
+				"sandbox", id, "exec_id", execID,
+				"was_hibernated", wasHibernated,
+				"wake_ms", wakeMs, "create_ms", createMs, "ok", err == nil)
+
+			ae.mu.Lock()
+			ae.wakeMs = wakeMs
+			ae.createMs = createMs
+			if err != nil {
+				ae.state = asyncExecFailed
+				ae.err = err
+			} else {
+				ae.state = asyncExecRunning
+				ae.sessionID = session.ID
+			}
+			ae.mu.Unlock()
+			// Reap the handle after the underlying session's own retention
+			// window has comfortably passed.
+			time.AfterFunc(10*time.Minute, func() { s.asyncExecs.Delete(execID) })
+		}()
+
+		return c.JSON(http.StatusAccepted, types.ExecRunResponse{
+			ExecID:    execID,
+			Running:   true,
+			StartedAt: ae.startedAt.Format(time.RFC3339),
+		})
+	}
+
+	// Fallback (no exec sessions, e.g. Podman): synchronous one-shot.
+	var result *types.ProcessResult
+	routeOp := func(ctx context.Context) error {
+		var err error
+		result, err = s.manager.Exec(ctx, id, req)
+		return err
+	}
+
+	var execErr error
+	if s.router != nil {
+		execErr = s.router.Route(c.Request().Context(), id, "execRun", routeOp)
+	} else {
+		execErr = routeOp(c.Request().Context())
+	}
+	if execErr != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": execErr.Error()})
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+// execResult is the poll target behind async exec/run. It resolves the
+// client-facing execId to its background state: still waking/creating →
+// running:true (with waking:true); the wake/create failed → an error; otherwise
+// it reads the live session result (running/exitCode + buffered output),
+// rebinding from the in-VM agent on a local miss. Always sub-second.
+func (s *HTTPServer) execResult(c echo.Context) error {
+	if s.execSessionManager == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "exec sessions not available"})
+	}
+
+	id := c.Param("id")
+	execID := c.Param("sessionID")
+
+	v, ok := s.asyncExecs.Load(execID)
+	if !ok {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "exec " + execID + " not found"})
+	}
+	ae := v.(*asyncExec)
+	ae.mu.Lock()
+	state, sessionID, aeErr := ae.state, ae.sessionID, ae.err
+	wakeMs, createMs := ae.wakeMs, ae.createMs
+	ae.mu.Unlock()
+
+	if s.router != nil {
+		s.router.Touch(id)
+	}
+
+	switch state {
+	case asyncExecStarting:
+		// Box is waking and/or the session is still being created.
+		return c.JSON(http.StatusOK, types.ExecRunResult{Running: true, Waking: true})
+	case asyncExecFailed:
+		ec := -1
+		return c.JSON(http.StatusOK, types.ExecRunResult{
+			Running: false, ExitCode: &ec, Error: aeErr.Error(),
+			WakeMs: wakeMs, CreateMs: createMs,
+		})
+	}
+
+	// Running — read the live session result.
+	res, err := s.execSessionManager.GetResult(id, sessionID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, types.ExecRunResult{
+		Running:   res.Running,
+		ExitCode:  res.ExitCode,
+		Stdout:    string(res.Stdout),
+		Stderr:    string(res.Stderr),
+		Truncated: res.Truncated,
+		WakeMs:    wakeMs,
+		CreateMs:  createMs,
+		CommandMs: res.CommandMs,
+	})
 }
 
 func (s *HTTPServer) killExecSession(c echo.Context) error {

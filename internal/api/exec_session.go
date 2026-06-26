@@ -233,6 +233,9 @@ func (s *Server) execRun(c echo.Context) error {
 		return s.execRunRemote(c, id, req)
 	}
 
+	// POST /exec/run is the synchronous one-shot endpoint, kept for SDK versions
+	// that predate the async flow. Newer SDKs POST /exec/run-async, which returns
+	// a handle immediately and is polled via /result (see execRunAsyncRoute).
 	if s.manager == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
@@ -260,6 +263,26 @@ func (s *Server) execRun(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, result)
+}
+
+// execRunAsyncRoute handles POST /exec/run-async — the async exec entrypoint.
+// It binds the request and dispatches a background exec session, returning a
+// handle immediately. Newer SDKs poll GET /exec/:execId/result for completion;
+// POST /exec/run stays synchronous for older SDKs.
+func (s *Server) execRunAsyncRoute(c echo.Context) error {
+	id := c.Param("id")
+
+	var req types.ProcessConfig
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+	}
+	if req.Command == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "cmd is required"})
+	}
+	if s.execSessionManager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+	return s.execRunAsync(c, id, req)
 }
 
 // execRunRemote routes an exec/run request to the worker via gRPC.
@@ -312,6 +335,85 @@ func (s *Server) execRunRemote(c echo.Context, sandboxID string, req types.Proce
 		ExitCode: int(resp.ExitCode),
 		Stdout:   resp.Stdout,
 		Stderr:   resp.Stderr,
+	})
+}
+
+// execRunAsync runs a command as a background exec session and returns a handle
+// immediately. Mirrors createExecSession but maps the ProcessConfig shape and
+// returns an ExecRunResponse. The command keeps running independent of this
+// connection; the result persists on the worker (scrollback + exit code, with
+// the agent's 5-min post-exit retention) and is fetched via execResult.
+func (s *Server) execRunAsync(c echo.Context, id string, req types.ProcessConfig) error {
+	sreq := types.ExecSessionCreateRequest{
+		Command: req.Command,
+		Args:    req.Args,
+		Env:     req.Env,
+		Cwd:     req.Cwd,
+		Timeout: req.Timeout,
+	}
+
+	var session *sandbox.ExecSessionHandle
+
+	routeOp := func(_ context.Context) error {
+		var err error
+		session, err = s.execSessionManager.CreateSession(id, sreq)
+		return err
+	}
+
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "execRun", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+
+	return c.JSON(http.StatusAccepted, types.ExecRunResponse{
+		ExecID:    session.ID,
+		Running:   true,
+		StartedAt: session.StartedAt.Format(time.RFC3339),
+	})
+}
+
+// execResult returns the current state of an async exec/run session — the
+// load-bearing poll endpoint behind SDK exec.run(). Returns immediately with
+// running/exitCode/stdout/stderr; the result is read straight from the in-VM
+// agent (authoritative), so a dropped worker attach stream can't leave it
+// stuck reporting running:true forever.
+func (s *Server) execResult(c echo.Context) error {
+	if s.execSessionManager == nil {
+		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
+	id := c.Param("id")
+	sessionID := c.Param("sessionID")
+
+	var res *types.ExecSessionResult
+
+	routeOp := func(_ context.Context) error {
+		var err error
+		res, err = s.execSessionManager.GetResult(id, sessionID)
+		return err
+	}
+
+	if s.router != nil {
+		if err := s.router.Route(c.Request().Context(), id, "execResult", routeOp); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	} else {
+		if err := routeOp(c.Request().Context()); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+
+	return c.JSON(http.StatusOK, types.ExecRunResult{
+		Running:   res.Running,
+		ExitCode:  res.ExitCode,
+		Stdout:    string(res.Stdout),
+		Stderr:    string(res.Stderr),
+		Truncated: res.Truncated,
 	})
 }
 
