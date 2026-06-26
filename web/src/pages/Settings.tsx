@@ -1,38 +1,62 @@
-import { useState, useEffect } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState, type ReactNode } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import {
-  getOrg, updateOrg, setCustomDomain, deleteCustomDomain, refreshCustomDomain,
-  getOrgMembers, getInvitations, sendInvitation, revokeInvitation, removeMember,
-  type OrgMember, type OrgInvitation,
-} from '../api/client'
+  deleteCustomDomain,
+  getInvitations,
+  getOrg,
+  getOrgMembers,
+  refreshCustomDomain,
+  removeMember,
+  revokeInvitation,
+  sendInvitation,
+  setCustomDomain,
+  updateOrg,
+  type OrgInvitation,
+  type OrgMember,
+} from '@/api/client'
+import { PageHeader } from '@/components/page-header'
+import {
+  Panel,
+  PanelHeader,
+  PanelTitle,
+  PanelDescription,
+} from '@/components/panel'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Field, Input, Label } from '@/components/form'
+import { StatusBadge } from '@/components/status-badge'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 
-function StatusBadge({ status }: { status: string }) {
-  let color = 'var(--text-tertiary)'
-  let bg = 'rgba(255,255,255,0.04)'
-  if (status === 'active') {
-    color = 'var(--accent-emerald)'
-    bg = 'rgba(52,211,153,0.1)'
-  } else if (status === 'pending' || status === 'pending_validation' || status === 'initializing') {
-    color = 'var(--accent-amber, #f59e0b)'
-    bg = 'rgba(245,158,11,0.1)'
-  } else if (status === 'none') {
-    color = 'var(--text-tertiary)'
-    bg = 'rgba(255,255,255,0.04)'
-  }
+function ReadOnlyField({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <span style={{
-      display: 'inline-block',
-      padding: '2px 8px',
-      borderRadius: 4,
-      fontSize: 11,
-      fontWeight: 600,
-      color,
-      background: bg,
-      textTransform: 'uppercase',
-      letterSpacing: '0.5px',
-    }}>
-      {status}
-    </span>
+    <div className="space-y-1.5">
+      <Label>{label}</Label>
+      <div className="bg-panel-2 text-muted-foreground rounded-md border px-3 py-2 font-mono text-sm">
+        {value}
+      </div>
+    </div>
+  )
+}
+
+// Domain verification / SSL statuses → a lifecycle tone + clean label.
+function DomainStatus({ status }: { status: string }) {
+  const tone =
+    status === 'active'
+      ? 'running'
+      : !status || status === 'none'
+        ? 'stopped'
+        : 'pending'
+  const label =
+    !status || status === 'none' ? 'Not set' : status.replace(/_/g, ' ')
+  return <StatusBadge status={tone} label={label} />
+}
+
+function CodeBlock({ children }: { children: ReactNode }) {
+  return (
+    <div className="bg-panel-2 text-muted-foreground rounded-md border p-3 font-mono text-xs leading-relaxed break-all">
+      {children}
+    </div>
   )
 }
 
@@ -43,21 +67,23 @@ export default function Settings() {
     queryFn: getOrg,
   })
 
-  const [name, setName] = useState('')
+  // Local edits override the fetched name; null = "not edited" (avoids an
+  // effect to sync the field with the query).
+  const [draftName, setDraftName] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [domainInput, setDomainInput] = useState('')
+  const [confirmRemoveDomain, setConfirmRemoveDomain] = useState(false)
+  const name = draftName ?? org?.name ?? ''
 
-  useEffect(() => {
-    if (org) setName(org.name)
-  }, [org])
-
-  const mutation = useMutation({
+  const saveMutation = useMutation({
     mutationFn: (n: string) => updateOrg(n),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['org'] })
+      setDraftName(null)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     },
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Save failed'),
   })
 
   const setDomainMutation = useMutation({
@@ -66,278 +92,236 @@ export default function Settings() {
       queryClient.invalidateQueries({ queryKey: ['org'] })
       setDomainInput('')
     },
+    onError: (e) =>
+      toast.error(e instanceof Error ? e.message : "Couldn't set domain"),
   })
 
   const deleteDomainMutation = useMutation({
     mutationFn: () => deleteCustomDomain(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['org'] })
-    },
+    onError: (e) =>
+      toast.error(e instanceof Error ? e.message : 'Remove failed'),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['org'] }),
   })
 
   const refreshDomainMutation = useMutation({
     mutationFn: () => refreshCustomDomain(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['org'] })
-    },
+    onError: (e) =>
+      toast.error(e instanceof Error ? e.message : 'Refresh failed'),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['org'] }),
   })
 
   if (isLoading) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 64 }}>
-        <div className="loading-spinner" />
+      <div>
+        <PageHeader title="Settings" description="Organization configuration" />
+        <div className="max-w-2xl space-y-6">
+          <Skeleton className="h-64 w-full" />
+          <Skeleton className="h-40 w-full" />
+        </div>
       </div>
     )
   }
 
-  const unchanged = name === org?.name
-  const hasDomain = org?.customDomain && org.customDomain !== ''
-  const labelStyle = { display: 'block' as const, fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }
-  const readOnlyStyle = {
-    padding: '10px 14px',
-    background: 'rgba(255,255,255,0.02)',
-    border: '1px solid var(--border-subtle)',
-    borderRadius: 'var(--radius-sm)',
-    fontSize: 13,
-    fontFamily: 'var(--font-mono)',
-    color: 'var(--text-tertiary)',
-  }
+  const unchanged = name === (org?.name ?? '')
+  const hasDomain = !!org?.customDomain && org.customDomain !== ''
 
   return (
     <div>
-      <div style={{ marginBottom: 28 }}>
-        <h1 className="page-title">Settings</h1>
-        <p className="page-subtitle">Organization configuration</p>
-      </div>
+      <PageHeader title="Settings" description="Organization configuration" />
 
-      <div className="glass-card animate-in stagger-1" style={{ padding: 28, maxWidth: 520 }}>
-        {/* Org Name */}
-        <div style={{ marginBottom: 22 }}>
-          <label style={labelStyle}>
-            Organization Name
-          </label>
-          <input
-            type="text"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            className="input"
-          />
-        </div>
+      <div className="max-w-2xl space-y-6">
+        {/* Organization */}
+        <Panel className="p-6">
+          <div className="space-y-5">
+            <Field label="Organization name" htmlFor="org-name">
+              <Input
+                id="org-name"
+                value={name}
+                onChange={(e) => setDraftName(e.target.value)}
+              />
+            </Field>
 
-        {/* Plan (read-only) */}
-        <div style={{ marginBottom: 22 }}>
-          <label style={labelStyle}>
-            Plan
-          </label>
-          <div style={{
-            padding: '10px 14px',
-            background: 'rgba(255,255,255,0.02)',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 14,
-            color: 'var(--text-tertiary)',
-            textTransform: 'capitalize',
-          }}>
-            {org?.plan ?? 'free'}
-          </div>
-        </div>
+            <ReadOnlyField
+              label="Plan"
+              value={<span className="capitalize">{org?.plan ?? 'free'}</span>}
+            />
 
-        {/* Limits */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
-          <div>
-            <label style={labelStyle}>
-              Max Concurrent Sandboxes
-            </label>
-            <div style={readOnlyStyle}>
-              {org?.maxConcurrentSandboxes}
-            </div>
-          </div>
-          <div>
-            <label style={labelStyle}>
-              Max Timeout (sec)
-            </label>
-            <div style={readOnlyStyle}>
-              {org?.maxSandboxTimeoutSec}
-            </div>
-          </div>
-        </div>
-
-        {/* Save */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <button
-            className="btn-primary"
-            onClick={() => mutation.mutate(name)}
-            disabled={mutation.isPending || unchanged}
-          >
-            {mutation.isPending ? 'Saving\u2026' : 'Save Changes'}
-          </button>
-          {saved && (
-            <span style={{
-              fontSize: 12, fontWeight: 500,
-              color: 'var(--accent-emerald)',
-              animation: 'fadeInUp 0.3s ease',
-            }}>
-              Saved
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Custom Domain */}
-      <div className="glass-card animate-in stagger-2" style={{ padding: 28, maxWidth: 520, marginTop: 20 }}>
-        <div style={{ marginBottom: 18 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>Custom Domain</h2>
-          <p style={{ fontSize: 13, color: 'var(--text-tertiary)', margin: '4px 0 0' }}>
-            Configure a custom domain for sandbox preview URLs (e.g. sandboxes become accessible at &lt;id&gt;.yourdomain.com)
-          </p>
-        </div>
-
-        {hasDomain ? (
-          <>
-            {/* Current domain */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={labelStyle}>Domain</label>
-              <div style={readOnlyStyle}>
-                *.{org!.customDomain}
-              </div>
-            </div>
-
-            {/* Status */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-              <div>
-                <label style={labelStyle}>Verification</label>
-                <StatusBadge status={org!.domainVerificationStatus} />
-              </div>
-              <div>
-                <label style={labelStyle}>SSL</label>
-                <StatusBadge status={org!.domainSslStatus} />
-              </div>
-            </div>
-
-            {/* DNS Records */}
-            {(org!.verificationTxtName || org!.sslTxtName) && (
-              <div style={{ marginBottom: 16 }}>
-                <label style={labelStyle}>Required DNS TXT Records</label>
-                <div style={{
-                  background: 'rgba(255,255,255,0.02)',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: 14,
-                  fontSize: 12,
-                  fontFamily: 'var(--font-mono)',
-                  lineHeight: 1.6,
-                  color: 'var(--text-tertiary)',
-                  wordBreak: 'break-all',
-                }}>
-                  {org!.verificationTxtName && (
-                    <div style={{ marginBottom: org!.sslTxtName ? 12 : 0 }}>
-                      <div style={{ color: 'var(--text-secondary)', fontWeight: 600, marginBottom: 2 }}>Domain Verification:</div>
-                      <div>Name: {org!.verificationTxtName}</div>
-                      <div>Value: {org!.verificationTxtValue}</div>
-                    </div>
-                  )}
-                  {org!.sslTxtName && (
-                    <div>
-                      <div style={{ color: 'var(--text-secondary)', fontWeight: 600, marginBottom: 2 }}>SSL Validation:</div>
-                      <div>Name: {org!.sslTxtName}</div>
-                      <div>Value: {org!.sslTxtValue}</div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Wildcard CNAME instruction for preview URLs */}
-            {org!.domainVerificationStatus === 'active' && (
-              <div style={{ marginBottom: 16 }}>
-                <label style={labelStyle}>Preview URL Setup</label>
-                <div style={{
-                  background: 'rgba(255,255,255,0.02)',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: 14,
-                  fontSize: 12,
-                  fontFamily: 'var(--font-mono)',
-                  lineHeight: 1.6,
-                  color: 'var(--text-tertiary)',
-                  wordBreak: 'break-all',
-                }}>
-                  <div style={{ color: 'var(--text-secondary)', fontWeight: 600, marginBottom: 6 }}>
-                    Add a wildcard CNAME record for preview URLs:
-                  </div>
-                  <div>Type: <span style={{ color: 'var(--text-primary)' }}>CNAME</span></div>
-                  <div>Name: <span style={{ color: 'var(--text-primary)' }}>*.{org!.customDomain}</span></div>
-                  <div>Target: <span style={{ color: 'var(--text-primary)' }}>fallback-origin.opencomputer.dev</span></div>
-                  <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-tertiary)' }}>
-                    This enables per-sandbox preview URLs (e.g. sb-abc123.{org!.customDomain}) via the SDK's createPreviewURL() method.
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Actions */}
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button
-                className="btn-primary"
-                onClick={() => refreshDomainMutation.mutate()}
-                disabled={refreshDomainMutation.isPending}
-              >
-                {refreshDomainMutation.isPending ? 'Refreshing\u2026' : 'Refresh Status'}
-              </button>
-              <button
-                className="btn-secondary"
-                onClick={() => {
-                  if (confirm('Remove custom domain? Sandbox URLs will revert to the default domain.')) {
-                    deleteDomainMutation.mutate()
-                  }
-                }}
-                disabled={deleteDomainMutation.isPending}
-                style={{ color: 'var(--accent-red, #ef4444)' }}
-              >
-                {deleteDomainMutation.isPending ? 'Removing\u2026' : 'Remove Domain'}
-              </button>
-            </div>
-
-            {(setDomainMutation.isError || deleteDomainMutation.isError || refreshDomainMutation.isError) && (
-              <div style={{ marginTop: 10, fontSize: 12, color: 'var(--accent-red, #ef4444)' }}>
-                {(setDomainMutation.error || deleteDomainMutation.error || refreshDomainMutation.error)?.message}
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            {/* Set new domain */}
-            <div style={{ marginBottom: 14 }}>
-              <label style={labelStyle}>Domain</label>
-              <input
-                type="text"
-                value={domainInput}
-                onChange={e => setDomainInput(e.target.value)}
-                placeholder="acme.dev"
-                className="input"
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <ReadOnlyField
+                label="Max concurrent sandboxes"
+                value={org?.maxConcurrentSandboxes}
+              />
+              <ReadOnlyField
+                label="Max timeout (sec)"
+                value={org?.maxSandboxTimeoutSec}
               />
             </div>
-            <button
-              className="btn-primary"
-              onClick={() => setDomainMutation.mutate(domainInput)}
-              disabled={setDomainMutation.isPending || !domainInput.trim()}
-            >
-              {setDomainMutation.isPending ? 'Setting up\u2026' : 'Set Domain'}
-            </button>
-            {setDomainMutation.isError && (
-              <div style={{ marginTop: 10, fontSize: 12, color: 'var(--accent-red, #ef4444)' }}>
-                {setDomainMutation.error?.message}
+
+            <div className="flex items-center gap-3">
+              <Button
+                onClick={() => saveMutation.mutate(name)}
+                disabled={saveMutation.isPending || unchanged}
+              >
+                {saveMutation.isPending ? 'Saving…' : 'Save changes'}
+              </Button>
+              {saved ? (
+                <span className="text-status-running text-sm font-medium">
+                  Saved
+                </span>
+              ) : null}
+            </div>
+          </div>
+        </Panel>
+
+        {/* Custom domain */}
+        <Panel className="p-6">
+          <div className="mb-5">
+            <PanelTitle>Custom domain</PanelTitle>
+            <PanelDescription className="mt-1">
+              Serve sandbox preview URLs from your own domain (e.g.{' '}
+              <code className="font-mono text-xs">
+                &lt;id&gt;.yourdomain.com
+              </code>
+              ).
+            </PanelDescription>
+          </div>
+
+          {hasDomain ? (
+            <div className="space-y-4">
+              <ReadOnlyField label="Domain" value={`*.${org!.customDomain}`} />
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label>Verification</Label>
+                  <div>
+                    <DomainStatus status={org!.domainVerificationStatus} />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>SSL</Label>
+                  <div>
+                    <DomainStatus status={org!.domainSslStatus} />
+                  </div>
+                </div>
               </div>
-            )}
-          </>
-        )}
+
+              {org!.verificationTxtName || org!.sslTxtName ? (
+                <div className="space-y-1.5">
+                  <Label>Required DNS TXT records</Label>
+                  <CodeBlock>
+                    {org!.verificationTxtName ? (
+                      <div className={org!.sslTxtName ? 'mb-3' : ''}>
+                        <div className="text-foreground font-semibold">
+                          Domain verification
+                        </div>
+                        <div>Name: {org!.verificationTxtName}</div>
+                        <div>Value: {org!.verificationTxtValue}</div>
+                      </div>
+                    ) : null}
+                    {org!.sslTxtName ? (
+                      <div>
+                        <div className="text-foreground font-semibold">
+                          SSL validation
+                        </div>
+                        <div>Name: {org!.sslTxtName}</div>
+                        <div>Value: {org!.sslTxtValue}</div>
+                      </div>
+                    ) : null}
+                  </CodeBlock>
+                </div>
+              ) : null}
+
+              {org!.domainVerificationStatus === 'active' ? (
+                <div className="space-y-1.5">
+                  <Label>Preview URL setup</Label>
+                  <CodeBlock>
+                    <div className="text-foreground mb-1.5 font-semibold">
+                      Add a wildcard CNAME record for preview URLs:
+                    </div>
+                    <div>
+                      Type: <span className="text-foreground">CNAME</span>
+                    </div>
+                    <div>
+                      Name:{' '}
+                      <span className="text-foreground">
+                        *.{org!.customDomain}
+                      </span>
+                    </div>
+                    <div>
+                      Target:{' '}
+                      <span className="text-foreground">
+                        fallback-origin.opencomputer.dev
+                      </span>
+                    </div>
+                  </CodeBlock>
+                </div>
+              ) : null}
+
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => refreshDomainMutation.mutate()}
+                  disabled={refreshDomainMutation.isPending}
+                >
+                  {refreshDomainMutation.isPending
+                    ? 'Refreshing…'
+                    : 'Refresh status'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="text-status-error hover:bg-status-error-bg hover:text-status-error"
+                  onClick={() => setConfirmRemoveDomain(true)}
+                  disabled={deleteDomainMutation.isPending}
+                >
+                  Remove domain
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <form
+              className="space-y-3"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (domainInput.trim())
+                  setDomainMutation.mutate(domainInput.trim())
+              }}
+            >
+              <Field label="Domain" htmlFor="domain">
+                <Input
+                  id="domain"
+                  value={domainInput}
+                  onChange={(e) => setDomainInput(e.target.value)}
+                  placeholder="acme.dev"
+                />
+              </Field>
+              <Button
+                type="submit"
+                disabled={setDomainMutation.isPending || !domainInput.trim()}
+              >
+                {setDomainMutation.isPending ? 'Setting up…' : 'Set domain'}
+              </Button>
+            </form>
+          )}
+        </Panel>
+
+        <TeamMembers />
+        <PendingInvitations />
       </div>
 
-      {/* Team Members */}
-      <TeamMembers />
-
-      {/* Pending Invitations */}
-      <PendingInvitations />
+      <ConfirmDialog
+        open={confirmRemoveDomain}
+        onOpenChange={setConfirmRemoveDomain}
+        title="Remove custom domain?"
+        description="Sandbox preview URLs will revert to the default domain."
+        confirmLabel="Remove domain"
+        destructive
+        pending={deleteDomainMutation.isPending}
+        onConfirm={() =>
+          deleteDomainMutation.mutate(undefined, {
+            onSuccess: () => setConfirmRemoveDomain(false),
+          })
+        }
+      />
     </div>
   )
 }
@@ -351,6 +335,7 @@ function TeamMembers() {
 
   const [inviteEmail, setInviteEmail] = useState('')
   const [showInvite, setShowInvite] = useState(false)
+  const [toRemove, setToRemove] = useState<OrgMember | null>(null)
 
   const inviteMutation = useMutation({
     mutationFn: (email: string) => sendInvitation(email),
@@ -360,118 +345,111 @@ function TeamMembers() {
       setInviteEmail('')
       setShowInvite(false)
     },
+    onError: (e) =>
+      toast.error(e instanceof Error ? e.message : "Couldn't send invite"),
   })
 
   const removeMutation = useMutation({
     mutationFn: (membershipId: string) => removeMember(membershipId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['org-members'] })
-    },
+    onError: (e) =>
+      toast.error(e instanceof Error ? e.message : 'Remove failed'),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: ['org-members'] }),
   })
 
   return (
-    <div className="glass-card animate-in stagger-3" style={{ padding: 28, maxWidth: 520, marginTop: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+    <Panel className="p-6">
+      <PanelHeader className="border-0 p-0">
         <div>
-          <h2 style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>Team Members</h2>
-          <p style={{ fontSize: 13, color: 'var(--text-tertiary)', margin: '4px 0 0' }}>
+          <PanelTitle>Team members</PanelTitle>
+          <PanelDescription className="mt-1">
             People with access to this organization
-          </p>
+          </PanelDescription>
         </div>
-        <button
-          className="btn-primary"
-          onClick={() => setShowInvite(!showInvite)}
-          style={{ fontSize: 12, padding: '6px 14px' }}
-        >
+        <Button size="sm" onClick={() => setShowInvite((v) => !v)}>
           Invite
-        </button>
-      </div>
+        </Button>
+      </PanelHeader>
 
-      {showInvite && (
-        <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
-          <input
+      {showInvite ? (
+        <form
+          className="mt-4 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (inviteEmail.trim()) inviteMutation.mutate(inviteEmail.trim())
+          }}
+        >
+          <Input
             type="email"
             value={inviteEmail}
-            onChange={e => setInviteEmail(e.target.value)}
+            onChange={(e) => setInviteEmail(e.target.value)}
             placeholder="email@example.com"
-            className="input"
-            style={{ flex: 1 }}
+            className="flex-1"
           />
-          <button
-            className="btn-primary"
-            onClick={() => inviteMutation.mutate(inviteEmail)}
+          <Button
+            type="submit"
             disabled={inviteMutation.isPending || !inviteEmail.trim()}
-            style={{ fontSize: 12, padding: '6px 14px', whiteSpace: 'nowrap' }}
           >
-            {inviteMutation.isPending ? 'Sending...' : 'Send'}
-          </button>
-        </div>
-      )}
-      {inviteMutation.isError && (
-        <div style={{ marginBottom: 10, fontSize: 12, color: 'var(--accent-red, #ef4444)' }}>
-          {inviteMutation.error?.message}
-        </div>
-      )}
+            {inviteMutation.isPending ? 'Sending…' : 'Send'}
+          </Button>
+        </form>
+      ) : null}
 
-      {isLoading ? (
-        <div style={{ padding: 20, textAlign: 'center' }}>
-          <div className="loading-spinner" />
-        </div>
-      ) : (
-        <div>
-          {(members ?? []).map((member: OrgMember, i: number) => (
-            <div key={member.membershipId || member.id || i} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 0',
-              borderBottom: i < (members?.length ?? 0) - 1 ? '1px solid var(--border-subtle)' : 'none',
-            }}>
-              <div>
-                <div style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 500 }}>
+      <div className="mt-4 divide-y">
+        {isLoading ? (
+          <Skeleton className="h-10 w-full" />
+        ) : (members ?? []).length === 0 ? (
+          <p className="text-muted-foreground py-2 text-sm">No members yet.</p>
+        ) : (
+          (members ?? []).map((member, i) => (
+            <div
+              key={member.membershipId || member.id || i}
+              className="flex items-center justify-between py-3"
+            >
+              <div className="min-w-0">
+                <div className="text-foreground truncate text-sm font-medium">
                   {member.name || member.email}
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                <div className="text-muted-foreground truncate text-xs">
                   {member.email}
                 </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{
-                  fontSize: 11, fontWeight: 600,
-                  color: 'var(--text-tertiary)',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                }}>
+              <div className="flex items-center gap-3">
+                <span className="text-muted-foreground text-xs tracking-wide uppercase">
                   {member.role}
                 </span>
-                {member.membershipId && (
-                  <button
-                    onClick={() => {
-                      if (confirm(`Remove ${member.email} from this organization?`)) {
-                        removeMutation.mutate(member.membershipId!)
-                      }
-                    }}
-                    disabled={removeMutation.isPending}
-                    style={{
-                      background: 'none', border: 'none', cursor: 'pointer',
-                      color: 'var(--text-tertiary)', fontSize: 11,
-                      padding: '2px 6px',
-                    }}
-                    onMouseOver={e => (e.currentTarget.style.color = 'var(--accent-red, #ef4444)')}
-                    onMouseOut={e => (e.currentTarget.style.color = 'var(--text-tertiary)')}
+                {member.membershipId ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground hover:text-status-error"
+                    onClick={() => setToRemove(member)}
                   >
                     Remove
-                  </button>
-                )}
+                  </Button>
+                ) : null}
               </div>
             </div>
-          ))}
-          {(!members || members.length === 0) && (
-            <div style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '10px 0' }}>
-              No members yet.
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+          ))
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={toRemove !== null}
+        onOpenChange={(open) => !open && setToRemove(null)}
+        title={`Remove ${toRemove?.email ?? 'this member'}?`}
+        description="They will lose access to this organization."
+        confirmLabel="Remove member"
+        destructive
+        pending={removeMutation.isPending}
+        onConfirm={() => {
+          if (!toRemove?.membershipId) return
+          removeMutation.mutate(toRemove.membershipId, {
+            onSuccess: () => setToRemove(null),
+          })
+        }}
+      />
+    </Panel>
   )
 }
 
@@ -481,71 +459,74 @@ function PendingInvitations() {
     queryKey: ['org-invitations'],
     queryFn: getInvitations,
   })
+  const [toRevoke, setToRevoke] = useState<OrgInvitation | null>(null)
 
   const revokeMutation = useMutation({
     mutationFn: (id: string) => revokeInvitation(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['org-invitations'] })
-    },
+    onError: (e) =>
+      toast.error(e instanceof Error ? e.message : 'Revoke failed'),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: ['org-invitations'] }),
   })
 
-  const pending = (invitations ?? []).filter((inv: OrgInvitation) => inv.state === 'pending')
+  const pending = (invitations ?? []).filter((inv) => inv.state === 'pending')
 
-  // Don't show the section if there are no pending invitations
-  if (!isLoading && pending.length === 0) {
-    return null
-  }
+  if (!isLoading && pending.length === 0) return null
 
   return (
-    <div className="glass-card animate-in stagger-4" style={{ padding: 28, maxWidth: 520, marginTop: 20 }}>
-      <div style={{ marginBottom: 18 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>Pending Invitations</h2>
-        <p style={{ fontSize: 13, color: 'var(--text-tertiary)', margin: '4px 0 0' }}>
+    <Panel className="p-6">
+      <div className="mb-1">
+        <PanelTitle>Pending invitations</PanelTitle>
+        <PanelDescription className="mt-1">
           Invitations waiting to be accepted
-        </p>
+        </PanelDescription>
       </div>
 
-      {isLoading ? (
-        <div style={{ padding: 20, textAlign: 'center' }}>
-          <div className="loading-spinner" />
-        </div>
-      ) : (
-        <div>
-          {pending.map((inv: OrgInvitation, i: number) => (
-            <div key={inv.id} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 0',
-              borderBottom: i < pending.length - 1 ? '1px solid var(--border-subtle)' : 'none',
-            }}>
-              <div>
-                <div style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 500 }}>
+      <div className="mt-3 divide-y">
+        {isLoading ? (
+          <Skeleton className="h-10 w-full" />
+        ) : (
+          pending.map((inv) => (
+            <div
+              key={inv.id}
+              className="flex items-center justify-between py-3"
+            >
+              <div className="min-w-0">
+                <div className="text-foreground truncate text-sm font-medium">
                   {inv.email}
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                  {inv.state} &middot; expires {new Date(inv.expiresAt).toLocaleDateString()}
+                <div className="text-muted-foreground truncate text-xs">
+                  {inv.state} · expires{' '}
+                  {new Date(inv.expiresAt).toLocaleDateString()}
                 </div>
               </div>
-              <button
-                onClick={() => {
-                  if (confirm(`Revoke invitation for ${inv.email}?`)) {
-                    revokeMutation.mutate(inv.id)
-                  }
-                }}
-                disabled={revokeMutation.isPending}
-                style={{
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: 'var(--text-tertiary)', fontSize: 11,
-                  padding: '2px 6px',
-                }}
-                onMouseOver={e => (e.currentTarget.style.color = 'var(--accent-red, #ef4444)')}
-                onMouseOut={e => (e.currentTarget.style.color = 'var(--text-tertiary)')}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-status-error"
+                onClick={() => setToRevoke(inv)}
               >
                 Revoke
-              </button>
+              </Button>
             </div>
-          ))}
-        </div>
-      )}
-    </div>
+          ))
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={toRevoke !== null}
+        onOpenChange={(open) => !open && setToRevoke(null)}
+        title={`Revoke invitation for ${toRevoke?.email ?? ''}?`}
+        confirmLabel="Revoke invitation"
+        destructive
+        pending={revokeMutation.isPending}
+        onConfirm={() => {
+          if (!toRevoke) return
+          revokeMutation.mutate(toRevoke.id, {
+            onSuccess: () => setToRevoke(null),
+          })
+        }}
+      />
+    </Panel>
   )
 }

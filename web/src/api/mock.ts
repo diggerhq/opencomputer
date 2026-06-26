@@ -239,6 +239,54 @@ const apiKeys = [
 
 const autumn = { isHalted: false, balance: 4210, currency: 'usd' }
 
+const org = {
+  id: 'org_digger',
+  name: 'Digger',
+  slug: 'digger',
+  plan: 'pro',
+  maxConcurrentSandboxes: 25,
+  maxSandboxTimeoutSec: 3600,
+  createdAt: at(120),
+  updatedAt: at(2),
+  customDomain: 'acme.dev',
+  domainVerificationStatus: 'pending_validation',
+  domainSslStatus: 'pending',
+  verificationTxtName: '_oc-verify.acme.dev',
+  verificationTxtValue: 'oc-verify=abc123def456',
+  sslTxtName: '_acme-challenge.acme.dev',
+  sslTxtValue: 'xyz789uvw012',
+  isPersonal: false,
+  creditBalanceCents: 4210,
+}
+
+const orgMembers = [
+  {
+    membershipId: 'mem_1',
+    id: 'user_2abc',
+    email: 'igor@digger.dev',
+    name: 'Igor',
+    role: 'admin',
+  },
+  {
+    membershipId: 'mem_2',
+    id: 'user_3def',
+    email: 'alex@digger.dev',
+    name: 'Alex Rivera',
+    role: 'member',
+  },
+]
+
+const orgInvitations = [
+  {
+    id: 'inv_1',
+    email: 'sam@acme.dev',
+    state: 'pending',
+    role: 'member',
+    expiresAt: at(-5),
+    createdAt: at(1),
+  },
+]
+
 type Handler = () => unknown
 
 // Ordered most-specific first. Matched against the path (without /api/dashboard).
@@ -255,9 +303,10 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/api-keys$/, () => apiKeys],
   [/^\/billing\/autumn$/, () => autumn],
   [/^\/billing\/invoices/, () => []],
-  [/^\/org\/members$/, () => []],
-  [/^\/org\/invitations$/, () => []],
+  [/^\/org\/members$/, () => orgMembers],
+  [/^\/org\/invitations$/, () => orgInvitations],
   [/^\/org\/custom-domain$/, () => ({})],
+  [/^\/org$/, () => org],
   [/^\/usage\/sandboxes/, () => []],
   [/^\/agents$/, () => []],
 ]
