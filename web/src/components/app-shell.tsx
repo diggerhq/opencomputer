@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { logout, getAutumnBilling } from '@/api/client'
+import logo from '@/assets/logo.svg'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -48,18 +49,8 @@ const NAV: NavItem[] = [
 
 function Brand() {
   return (
-    <Link to="/" className="flex items-center gap-2.5">
-      <span className="bg-foreground text-background flex size-8 items-center justify-center rounded-md font-mono text-xs font-bold">
-        oc
-      </span>
-      <span className="flex flex-col leading-none">
-        <span className="text-sm font-semibold tracking-tight">
-          OpenComputer
-        </span>
-        <span className="text-muted-foreground mt-0.5 font-mono text-[10px] tracking-wide">
-          Console
-        </span>
-      </span>
+    <Link to="/" className="flex items-center" aria-label="OpenComputer">
+      <img src={logo} alt="OpenComputer" className="h-7 w-auto" />
     </Link>
   )
 }
