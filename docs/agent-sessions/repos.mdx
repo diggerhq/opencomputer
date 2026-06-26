@@ -60,7 +60,7 @@ sequenceDiagram
     CP->>GitR: Inject token into this box's env only
     GitR->>GH: Clone at the pinned sha
     GitR->>Store: Write files (no .git, no token)
-    Note over GitR: Destroyed — token gone
+    Note over GitR: Destroyed
     Store->>Hands: Extract into /workspace/sources
 
     Note over GitW: Publish — on github_publish_pull_request
@@ -73,7 +73,7 @@ sequenceDiagram
     CP->>GitW: Inject token into this box's env only
     GitW->>Store: Read the patch
     GitW->>GH: Push an oc/ branch, open the PR
-    Note over GitW: Destroyed — token gone
+    Note over GitW: Destroyed
     CP-->>Brain: PR URL
 ```
 
