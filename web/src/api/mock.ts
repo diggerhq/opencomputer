@@ -395,10 +395,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/agents$/, () => []],
 ]
 
-export async function mockFetch<T>(
-  path: string,
-  options: RequestInit = {},
-): Promise<T> {
+export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   const method = (options.method ?? 'GET').toUpperCase()
   if (method !== 'GET') return {} as T
   for (const [re, handler] of ROUTES) {

@@ -43,7 +43,7 @@ export default function APIKeys() {
       setCreatedKey(data.key)
       setShowCreate(false)
       setNewKeyName('')
-      queryClient.invalidateQueries({ queryKey: ['api-keys'] })
+      void queryClient.invalidateQueries({ queryKey: ['api-keys'] })
     },
     onError: (error) => notifyError("Couldn't create the API key.", error),
   })

@@ -79,7 +79,7 @@ export default function Settings() {
   const saveMutation = useMutation({
     mutationFn: (n: string) => updateOrg(n),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['org'] })
+      void queryClient.invalidateQueries({ queryKey: ['org'] })
       setDraftName(null)
       markSaved()
     },
@@ -89,7 +89,7 @@ export default function Settings() {
   const setDomainMutation = useMutation({
     mutationFn: (domain: string) => setCustomDomain(domain),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['org'] })
+      void queryClient.invalidateQueries({ queryKey: ['org'] })
       setDomainInput('')
     },
     onError: (e) => notifyError("Couldn't set the custom domain.", e),
@@ -185,50 +185,50 @@ export default function Settings() {
 
           {hasDomain ? (
             <div className="space-y-4">
-              <ReadOnlyField label="Domain" value={`*.${org!.customDomain}`} />
+              <ReadOnlyField label="Domain" value={`*.${org.customDomain}`} />
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label>Verification</Label>
                   <div>
-                    <DomainStatus status={org!.domainVerificationStatus} />
+                    <DomainStatus status={org.domainVerificationStatus} />
                   </div>
                 </div>
                 <div className="space-y-1.5">
                   <Label>SSL</Label>
                   <div>
-                    <DomainStatus status={org!.domainSslStatus} />
+                    <DomainStatus status={org.domainSslStatus} />
                   </div>
                 </div>
               </div>
 
-              {org!.verificationTxtName || org!.sslTxtName ? (
+              {org.verificationTxtName || org.sslTxtName ? (
                 <div className="space-y-1.5">
                   <Label>Required DNS TXT records</Label>
                   <CodeBlock>
-                    {org!.verificationTxtName ? (
-                      <div className={org!.sslTxtName ? 'mb-3' : ''}>
+                    {org.verificationTxtName ? (
+                      <div className={org.sslTxtName ? 'mb-3' : ''}>
                         <div className="text-foreground font-semibold">
                           Domain verification
                         </div>
-                        <div>Name: {org!.verificationTxtName}</div>
-                        <div>Value: {org!.verificationTxtValue}</div>
+                        <div>Name: {org.verificationTxtName}</div>
+                        <div>Value: {org.verificationTxtValue}</div>
                       </div>
                     ) : null}
-                    {org!.sslTxtName ? (
+                    {org.sslTxtName ? (
                       <div>
                         <div className="text-foreground font-semibold">
                           SSL validation
                         </div>
-                        <div>Name: {org!.sslTxtName}</div>
-                        <div>Value: {org!.sslTxtValue}</div>
+                        <div>Name: {org.sslTxtName}</div>
+                        <div>Value: {org.sslTxtValue}</div>
                       </div>
                     ) : null}
                   </CodeBlock>
                 </div>
               ) : null}
 
-              {org!.domainVerificationStatus === 'active' ? (
+              {org.domainVerificationStatus === 'active' ? (
                 <div className="space-y-1.5">
                   <Label>Preview URL setup</Label>
                   <CodeBlock>
@@ -241,7 +241,7 @@ export default function Settings() {
                     <div>
                       Name:{' '}
                       <span className="text-foreground">
-                        *.{org!.customDomain}
+                        *.{org.customDomain}
                       </span>
                     </div>
                     <div>
@@ -337,8 +337,8 @@ function TeamMembers() {
   const inviteMutation = useMutation({
     mutationFn: (email: string) => sendInvitation(email),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['org-members'] })
-      queryClient.invalidateQueries({ queryKey: ['org-invitations'] })
+      void queryClient.invalidateQueries({ queryKey: ['org-members'] })
+      void queryClient.invalidateQueries({ queryKey: ['org-invitations'] })
       setInviteEmail('')
       setShowInvite(false)
     },
@@ -349,7 +349,7 @@ function TeamMembers() {
     mutationFn: (membershipId: string) => removeMember(membershipId),
     onError: (e) => notifyError("Couldn't remove the member.", e),
     onSettled: () =>
-      queryClient.invalidateQueries({ queryKey: ['org-members'] }),
+      void queryClient.invalidateQueries({ queryKey: ['org-members'] }),
   })
 
   return (
@@ -460,7 +460,7 @@ function PendingInvitations() {
     mutationFn: (id: string) => revokeInvitation(id),
     onError: (e) => notifyError("Couldn't revoke the invitation.", e),
     onSettled: () =>
-      queryClient.invalidateQueries({ queryKey: ['org-invitations'] }),
+      void queryClient.invalidateQueries({ queryKey: ['org-invitations'] }),
   })
 
   const pending = (invitations ?? []).filter((inv) => inv.state === 'pending')

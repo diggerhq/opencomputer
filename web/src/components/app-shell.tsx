@@ -85,7 +85,9 @@ function OrgSwitcher() {
         {orgs.map((org) => (
           <DropdownMenuItem
             key={org.id}
-            onClick={() => !org.isActive && switchOrg(org.id)}
+            onClick={() => {
+              if (!org.isActive) void switchOrg(org.id)
+            }}
             className="gap-2"
           >
             <Check
@@ -152,7 +154,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             {user?.email}
           </span>
           <button
-            onClick={() => logout()}
+            onClick={() => void logout()}
             aria-label="Sign out"
             title="Sign out"
             className="text-muted-foreground/40 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"

@@ -93,7 +93,7 @@ function PlanTab() {
   const redeemMutation = useMutation({
     mutationFn: () => redeemPromoCode(promoCode),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['billing'] })
+      void queryClient.invalidateQueries({ queryKey: ['billing'] })
       setPromoCode('')
       toast.success(
         `$${(data.creditAppliedCents / 100).toFixed(2)} credit applied`,
@@ -261,7 +261,7 @@ function PrepaidPlan() {
   // existing card was charged server-side, so just refresh the balance.
   const onPurchase = (data: { url: string | null }) => {
     if (data.url) window.location.href = data.url
-    else queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
+    else void queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
   }
   const topupMutation = useMutation({
     mutationFn: () => autumnTopup(amount),
@@ -463,7 +463,7 @@ function AutoTopupCard({
         window.location.href = data.url
         return
       }
-      queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
+      void queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
       setDraft({}) // server config is canonical again
       markSaved()
     },

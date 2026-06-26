@@ -57,7 +57,7 @@ export default function Sessions() {
     },
     onError: (error) => notifyError("Couldn't delete the sandbox.", error),
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] })
     },
   })
 

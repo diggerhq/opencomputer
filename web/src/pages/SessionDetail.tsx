@@ -78,9 +78,13 @@ export default function SessionDetail() {
   })
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['session-detail', sandboxId] })
-    queryClient.invalidateQueries({ queryKey: ['session-stats', sandboxId] })
-    queryClient.invalidateQueries({ queryKey: ['sessions'] })
+    void queryClient.invalidateQueries({
+      queryKey: ['session-detail', sandboxId],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['session-stats', sandboxId],
+    })
+    void queryClient.invalidateQueries({ queryKey: ['sessions'] })
   }
 
   const deleteMutation = useMutation({
@@ -141,7 +145,10 @@ export default function SessionDetail() {
           title="Sandbox not found"
           description="This sandbox may have been deleted."
           action={
-            <Button variant="outline" onClick={() => navigate('/sandboxes')}>
+            <Button
+              variant="outline"
+              onClick={() => void navigate('/sandboxes')}
+            >
               Back to Sandboxes
             </Button>
           }

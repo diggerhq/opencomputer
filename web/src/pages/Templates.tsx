@@ -38,9 +38,9 @@ function formatSteps(manifest: Record<string, unknown>): string {
           return `env: ${n} var(s)`
         }
         case 'workdir':
-          return `workdir: ${args.path ?? '...'}`
+          return `workdir: ${typeof args.path === 'string' ? args.path : '...'}`
         case 'add_file':
-          return `file: ${args.path ?? '...'}`
+          return `file: ${typeof args.path === 'string' ? args.path : '...'}`
         default:
           return t || 'step'
       }

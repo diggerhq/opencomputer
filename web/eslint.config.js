@@ -11,7 +11,22 @@ export default tseslint.config(
     ignores: ['dist'],
   },
   js.configs.recommended,
-  ...tseslint.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
+  {
+    languageOptions: {
+      parserOptions: {
+        projectService: {
+          allowDefaultProject: ['*.config.ts', 'eslint.config.js'],
+        },
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
+  {
+    // Config files aren't part of the app tsconfig → no type-aware linting.
+    files: ['**/*.config.{ts,js}', 'eslint.config.js'],
+    extends: [tseslint.configs.disableTypeChecked],
+  },
   jsxA11y.flatConfigs.recommended,
   reactRefresh.configs.vite,
   {

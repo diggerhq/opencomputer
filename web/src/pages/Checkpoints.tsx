@@ -47,7 +47,7 @@ export default function Checkpoints() {
     mutationFn: (id: string) => deleteCheckpointDashboard(id),
     onError: (error) => notifyError("Couldn't delete the checkpoint.", error),
     onSettled: () =>
-      queryClient.invalidateQueries({ queryKey: ['checkpoints'] }),
+      void queryClient.invalidateQueries({ queryKey: ['checkpoints'] }),
   })
 
   const confirmDelete = () => {

@@ -91,12 +91,23 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
         })
 
         if (!res.ok) {
-          const data = await res.json()
-          throw new Error(data.error || `HTTP ${res.status}`)
+          const data: unknown = await res.json().catch(() => null)
+          const err =
+            data && typeof data === 'object'
+              ? (data as Record<string, unknown>).error
+              : undefined
+          throw new Error(typeof err === 'string' ? err : `HTTP ${res.status}`)
         }
 
-        const { sessionId } = await res.json()
+        const payload: unknown = await res.json()
         if (disposed) return
+        const sessionId =
+          payload && typeof payload === 'object'
+            ? (payload as Record<string, unknown>).sessionId
+            : undefined
+        if (typeof sessionId !== 'string') {
+          throw new Error('Invalid PTY session response')
+        }
         ptySessionIdRef.current = sessionId
 
         // Connect WebSocket
@@ -160,7 +171,7 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
       }
     }
 
-    initTerminal()
+    void initTerminal()
 
     // Handle window resize
     const handleResize = () => {

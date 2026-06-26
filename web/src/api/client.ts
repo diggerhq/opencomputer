@@ -51,6 +51,21 @@ function validate<T>(
   return data as T
 }
 
+// Extract a human message from an error body of unknown shape. OC dashboard
+// returns {error: "string"}; sessions-api returns {error: {type, message}}.
+function errorMessage(body: unknown, status: number): string {
+  if (body && typeof body === 'object') {
+    const b = body as Record<string, unknown>
+    if (typeof b.error === 'string') return b.error
+    if (b.error && typeof b.error === 'object') {
+      const inner = (b.error as Record<string, unknown>).message
+      if (typeof inner === 'string') return inner
+    }
+    if (typeof b.message === 'string') return b.message
+  }
+  return `Request failed: ${status}`
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
@@ -81,17 +96,8 @@ export async function apiFetch<T>(
   }
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    // OC dashboard returns {error: "string"}; sessions-api returns
-    // {error: {type, message}}. Handle both so we don't surface
-    // "[object Object]" when the proxy talks to sessions-api.
-    let msg: string
-    if (typeof body.error === 'string') msg = body.error
-    else if (body.error && typeof body.error.message === 'string')
-      msg = body.error.message
-    else if (typeof body.message === 'string') msg = body.message
-    else msg = `Request failed: ${res.status}`
-    throw new Error(msg)
+    const body: unknown = await res.json().catch(() => ({}))
+    throw new Error(errorMessage(body, res.status))
   }
 
   if (res.status === 204) {
@@ -112,9 +118,10 @@ export async function logout(): Promise<void> {
       method: 'POST',
       credentials: 'include',
     })
-    const body = await res.json().catch(() => ({}))
-    if (body && typeof body.logoutUrl === 'string' && body.logoutUrl) {
-      dest = body.logoutUrl
+    const body: unknown = await res.json().catch(() => ({}))
+    if (body && typeof body === 'object') {
+      const url = (body as Record<string, unknown>).logoutUrl
+      if (typeof url === 'string' && url) dest = url
     }
   } catch {
     // ignore — fall back to /auth/login
@@ -488,7 +495,9 @@ export const getAgentLogs = (agentId: string, tail = 300) =>
 
 // ── Per-agent paywalled feature subscriptions (Telegram et al) ──
 
-export type EntitlementReason = 'ungated' | 'subscription_required' | string
+// Known values: 'ungated' | 'subscription_required'; typed as string so a new
+// server reason never fails typing.
+export type EntitlementReason = string
 
 export interface AgentEntitlement {
   feature: string

@@ -104,7 +104,7 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
     es.onmessage = (e) => {
       let ev: LogEvent
       try {
-        ev = JSON.parse(e.data) as LogEvent
+        ev = JSON.parse(e.data as string) as LogEvent
       } catch {
         return
       }
@@ -130,7 +130,6 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
       es.close()
       setConnState('closed')
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sandboxId])
 
   // When unpausing, drain the paused buffer into events.
