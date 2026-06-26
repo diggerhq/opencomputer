@@ -1,10 +1,60 @@
 import posthog from 'posthog-js'
+import { z } from 'zod'
+import * as S from './schemas'
+
+// Re-export the inferred response types (schemas are the single source of
+// truth) so existing `import { type Session } from '@/api/client'` keeps working.
+export type {
+  OrgInfo,
+  MeResponse,
+  Session,
+  PreviewURL,
+  SessionDetail,
+  SandboxStats,
+  CheckpointItem,
+  CheckpointsResponse,
+  ImageCacheItem,
+  Org,
+  APIKey,
+  OrgMember,
+  OrgInvitation,
+  Credits,
+  BillingState,
+  AutumnAutoTopup,
+  AutumnBilling,
+  StripeInvoice,
+  SandboxUsageRow,
+  SandboxUsage,
+} from './schemas'
 
 const API_BASE = '/api/dashboard'
+
+// Validate a response against its schema. Always surfaces a mismatch; throws in
+// dev (catches schema/backend drift during dev + against the preview mock), but
+// in prod falls back to the raw data so a slightly-off schema can't take a
+// screen down. Tighten to always-throw once the schemas are proven in prod.
+function validate<T>(
+  schema: z.ZodType<T> | undefined,
+  data: unknown,
+  path: string,
+): T {
+  if (!schema) return data as T
+  const result = schema.safeParse(data)
+  if (result.success) return result.data
+  console.error(
+    `[api] ${path} response failed validation:`,
+    result.error.issues,
+  )
+  if (import.meta.env.DEV) {
+    throw new Error(`${path}: response did not match the expected shape`)
+  }
+  return data as T
+}
 
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
+  schema?: z.ZodType<T>,
 ): Promise<T> {
   // Opt-in, dev-only preview mode: serve canned data with no backend/auth so
   // the dashboard can be rendered locally (VITE_PREVIEW=1 npm run dev). Require
@@ -12,7 +62,7 @@ export async function apiFetch<T>(
   // mocks; the dynamic import keeps the mock out of normal builds.
   if (import.meta.env.VITE_PREVIEW === '1') {
     const { mockFetch } = await import('./mock')
-    return mockFetch<T>(path, options)
+    return validate(schema, await mockFetch<unknown>(path, options), path)
   }
 
   const res = await fetch(`${API_BASE}${path}`, {
@@ -48,7 +98,7 @@ export async function apiFetch<T>(
     return undefined as T
   }
 
-  return res.json()
+  return validate(schema, await res.json(), path)
 }
 
 // Logout: the backend clears cookies and returns WorkOS's hosted logout URL,
@@ -74,42 +124,53 @@ export async function logout(): Promise<void> {
 }
 
 // API functions
-export const getMe = () => apiFetch<MeResponse>('/me')
+export const getMe = () => apiFetch('/me', {}, S.MeResponseSchema)
 
 export const getSessions = (status?: string) =>
-  apiFetch<Session[]>(`/sessions${status ? `?status=${status}` : ''}`)
+  apiFetch(
+    `/sessions${status ? `?status=${status}` : ''}`,
+    {},
+    S.SessionListSchema,
+  )
 
-export const getAPIKeys = () => apiFetch<APIKey[]>('/api-keys')
+export const getAPIKeys = () =>
+  apiFetch('/api-keys', {}, z.array(S.APIKeySchema))
 
 export const createAPIKey = (name: string) =>
-  apiFetch<{
-    id: string
-    name: string
-    key: string
-    keyPrefix: string
-    createdAt: string
-  }>('/api-keys', { method: 'POST', body: JSON.stringify({ name }) })
+  apiFetch(
+    '/api-keys',
+    { method: 'POST', body: JSON.stringify({ name }) },
+    S.CreatedAPIKeySchema,
+  )
 
 export const deleteAPIKey = (keyId: string) =>
   apiFetch<void>(`/api-keys/${keyId}`, { method: 'DELETE' })
 
 export const getCheckpoints = (page = 1, perPage = 20) =>
-  apiFetch<CheckpointsResponse>(`/checkpoints?page=${page}&per_page=${perPage}`)
+  apiFetch(
+    `/checkpoints?page=${page}&per_page=${perPage}`,
+    {},
+    S.CheckpointsResponseSchema,
+  )
 
 export const deleteCheckpointDashboard = (id: string) =>
   apiFetch<void>(`/checkpoints/${id}`, { method: 'DELETE' })
 
 export const getImages = (all = false) =>
-  apiFetch<ImageCacheItem[]>(`/images${all ? '?all=true' : ''}`)
+  apiFetch(
+    `/images${all ? '?all=true' : ''}`,
+    {},
+    z.array(S.ImageCacheItemSchema),
+  )
 
 export const deleteImage = (id: string) =>
   apiFetch<void>(`/images/${id}`, { method: 'DELETE' })
 
 export const getSessionDetail = (sandboxId: string) =>
-  apiFetch<SessionDetail>(`/sessions/${sandboxId}`)
+  apiFetch(`/sessions/${sandboxId}`, {}, S.SessionDetailSchema)
 
 export const getSessionStats = (sandboxId: string) =>
-  apiFetch<SandboxStats>(`/sessions/${sandboxId}/stats`)
+  apiFetch(`/sessions/${sandboxId}/stats`, {}, S.SandboxStatsSchema)
 
 export const deleteSession = (sandboxId: string) =>
   apiFetch<void>(`/sessions/${sandboxId}`, { method: 'DELETE' })
@@ -163,264 +224,64 @@ export function streamSessionLogs(
   return new EventSource(url.toString(), { withCredentials: true })
 }
 
-export const getOrg = () => apiFetch<Org>('/org')
+export const getOrg = () => apiFetch('/org', {}, S.OrgSchema)
 
 export const updateOrg = (name: string) =>
-  apiFetch<Org>('/org', { method: 'PUT', body: JSON.stringify({ name }) })
+  apiFetch(
+    '/org',
+    { method: 'PUT', body: JSON.stringify({ name }) },
+    S.OrgSchema,
+  )
 
 export const setCustomDomain = (domain: string) =>
-  apiFetch<Org>('/org/custom-domain', {
-    method: 'PUT',
-    body: JSON.stringify({ domain }),
-  })
+  apiFetch(
+    '/org/custom-domain',
+    { method: 'PUT', body: JSON.stringify({ domain }) },
+    S.OrgSchema,
+  )
 
 export const deleteCustomDomain = () =>
-  apiFetch<Org>('/org/custom-domain', { method: 'DELETE' })
+  apiFetch('/org/custom-domain', { method: 'DELETE' }, S.OrgSchema)
 
 export const refreshCustomDomain = () =>
-  apiFetch<Org>('/org/custom-domain/refresh', { method: 'POST' })
-
-// Types
-export interface Session {
-  id: string
-  sandboxId: string
-  orgId: string
-  template: string
-  region: string
-  workerId: string
-  status: string
-  startedAt: string
-  stoppedAt?: string
-  errorMsg?: string
-}
-
-export interface APIKey {
-  id: string
-  orgId: string
-  keyPrefix: string
-  name: string
-  scopes: string[]
-  lastUsed?: string
-  expiresAt?: string
-  createdAt: string
-}
-
-export interface PreviewURL {
-  id: string
-  sandboxId: string
-  orgId: string
-  hostname: string
-  customHostname?: string
-  port: number
-  cfHostnameId?: string
-  sslStatus: string
-  authConfig: Record<string, unknown>
-  createdAt: string
-}
-
-export interface SessionDetail {
-  id: string
-  sandboxId: string
-  template: string
-  status: string
-  startedAt: string
-  stoppedAt?: string
-  errorMsg?: string
-  config?: {
-    timeout?: number
-    cpuCount?: number
-    memoryMB?: number
-    networkEnabled?: boolean
-    envs?: Record<string, string>
-  }
-  checkpoint?: {
-    checkpointKey: string
-    sizeBytes: number
-    hibernatedAt: string
-  }
-  previewUrls?: PreviewURL[]
-}
-
-export interface SandboxStats {
-  cpuPercent: number
-  memUsage: number
-  memLimit: number
-  netInput: number
-  netOutput: number
-  pids: number
-}
-
-export interface CheckpointItem {
-  id: string
-  sandboxId: string
-  orgId: string
-  name: string
-  status: string
-  kind?: 'full' | 'disk_only'
-  promotionStatus?: 'pending' | 'processing' | 'ready' | 'failed'
-  promotedCheckpointId?: string
-  sizeBytes: number
-  activeForks: number
-  totalForks: number
-  createdAt: string
-  // errorMsg / failedAt are populated when status === 'failed'.
-  // Pre-fix the API returned status='failed' with no detail; now the row
-  // carries the actual reason (timeout, archive failure, S3 upload failure,
-  // etc.) and the failure timestamp. Server-side: db.Checkpoint.ErrorMsg /
-  // FailedAt (sandbox_checkpoints columns added in migration 039).
-  errorMsg?: string
-  failedAt?: string
-}
-
-export interface CheckpointsResponse {
-  checkpoints: CheckpointItem[]
-  total: number
-  page: number
-  perPage: number
-}
-
-export interface ImageCacheItem {
-  id: string
-  orgId: string
-  contentHash: string
-  checkpointId?: string
-  name?: string
-  manifest: Record<string, unknown>
-  status: string
-  createdAt: string
-  lastUsedAt: string
-}
-
-export interface Org {
-  id: string
-  name: string
-  slug: string
-  plan: string
-  maxConcurrentSandboxes: number
-  maxSandboxTimeoutSec: number
-  createdAt: string
-  updatedAt: string
-  customDomain?: string
-  cfHostnameId?: string
-  domainVerificationStatus: string
-  domainSslStatus: string
-  verificationTxtName?: string
-  verificationTxtValue?: string
-  sslTxtName?: string
-  sslTxtValue?: string
-  workosOrgId?: string
-  isPersonal: boolean
-  creditBalanceCents: number
-}
-
-export interface MeResponse {
-  id: string
-  email: string
-  orgId: string
-  orgs?: OrgInfo[]
-}
-
-export interface OrgInfo {
-  id: string
-  name: string
-  isPersonal: boolean
-  isActive: boolean
-}
-
-export interface OrgMember {
-  membershipId?: string
-  workosUserId?: string
-  id?: string
-  email: string
-  name: string
-  role: string
-  status?: string
-}
-
-export interface OrgInvitation {
-  id: string
-  email: string
-  state: string
-  role?: string
-  expiresAt: string
-  createdAt: string
-}
-
-export interface Credits {
-  balanceCents: number
-  isPersonal: boolean
-}
+  apiFetch('/org/custom-domain/refresh', { method: 'POST' }, S.OrgSchema)
 
 // Organization members
-export const getOrgMembers = () => apiFetch<OrgMember[]>('/org/members')
+export const getOrgMembers = () =>
+  apiFetch('/org/members', {}, z.array(S.OrgMemberSchema))
 
 export const removeMember = (membershipId: string) =>
   apiFetch<void>(`/org/members/${membershipId}`, { method: 'DELETE' })
 
 // Invitations
 export const sendInvitation = (email: string, role = 'member') =>
-  apiFetch<OrgInvitation>('/org/invitations', {
-    method: 'POST',
-    body: JSON.stringify({ email, role }),
-  })
+  apiFetch(
+    '/org/invitations',
+    { method: 'POST', body: JSON.stringify({ email, role }) },
+    S.OrgInvitationSchema,
+  )
 
 export const getInvitations = () =>
-  apiFetch<OrgInvitation[]>('/org/invitations')
+  apiFetch('/org/invitations', {}, z.array(S.OrgInvitationSchema))
 
 export const revokeInvitation = (id: string) =>
   apiFetch<void>(`/org/invitations/${id}`, { method: 'DELETE' })
 
 // Org switching
-export const listOrgs = () => apiFetch<OrgInfo[]>('/orgs')
+export const listOrgs = () => apiFetch('/orgs', {}, z.array(S.OrgInfoSchema))
 
 export const switchOrg = (orgId: string) =>
-  apiFetch<Org>('/org/switch', {
-    method: 'POST',
-    body: JSON.stringify({ orgId }),
-  })
+  apiFetch(
+    '/org/switch',
+    { method: 'POST', body: JSON.stringify({ orgId }) },
+    S.OrgSchema,
+  )
 
 // Credits
-export const getCredits = () => apiFetch<Credits>('/org/credits')
-
-// Billing types
-export interface BillingState {
-  plan: string
-  stripeCreditCents: number
-  maxConcurrentSandboxes: number
-  hasPaymentMethod: boolean
-  freeCreditsRemainingCents: number
-  billingProvider?: string // 'legacy' | 'autumn'
-}
-
-// Autumn prepaid billing
-export interface AutumnAutoTopup {
-  enabled: boolean
-  threshold: number
-  quantity: number
-}
-export interface AutumnBilling {
-  creditsRemainingCents: number
-  maxConcurrentSandboxes: number
-  concurrencyPlan: string // 'base' | 'concurrency_pro' | 'concurrency_pro_plus' | 'concurrency_pro_plus_plus'
-  isHalted: boolean
-  hasToppedUp: boolean // charged a top-up before → auto-recharge is armed (enabling won't re-charge)
-  autoTopup: AutumnAutoTopup | null
-}
-
-export interface StripeInvoice {
-  id: string
-  number: string
-  status: string
-  amountDue: number
-  amountPaid: number
-  currency: string
-  created: number
-  hostedUrl: string
-  pdfUrl: string
-}
+export const getCredits = () => apiFetch('/org/credits', {}, S.CreditsSchema)
 
 // Billing API
-export const getBilling = () => apiFetch<BillingState>('/billing')
+export const getBilling = () => apiFetch('/billing', {}, S.BillingStateSchema)
 
 export const billingSetup = () =>
   apiFetch<{ url: string }>('/billing/setup', { method: 'POST' })
@@ -429,7 +290,7 @@ export const billingPortal = () =>
   apiFetch<{ url: string }>('/billing/portal', { method: 'POST' })
 
 export const getBillingInvoices = (limit = 10) =>
-  apiFetch<{ invoices: StripeInvoice[] }>(`/billing/invoices?limit=${limit}`)
+  apiFetch(`/billing/invoices?limit=${limit}`, {}, S.InvoicesResponseSchema)
 
 export const redeemPromoCode = (code: string) =>
   apiFetch<{ creditAppliedCents: number }>('/billing/redeem', {
@@ -438,7 +299,8 @@ export const redeemPromoCode = (code: string) =>
   })
 
 // Autumn prepaid billing API
-export const getAutumnBilling = () => apiFetch<AutumnBilling>('/billing/autumn')
+export const getAutumnBilling = () =>
+  apiFetch('/billing/autumn', {}, S.AutumnBillingSchema)
 
 // url is non-null → redirect to a hosted Stripe flow (no card yet); null → the
 // existing card was charged server-side, so just refresh the balance.
@@ -467,20 +329,8 @@ export const setAutumnAutoTopup = (cfg: {
   })
 
 // Per-sandbox usage breakdown (compute cost over a recent window)
-export interface SandboxUsageRow {
-  sandboxId: string
-  status: string
-  createdAt?: number
-  seconds: number
-  costCents: number
-}
-export interface SandboxUsage {
-  windowDays: number
-  totalCents: number
-  sandboxes: SandboxUsageRow[]
-}
 export const getSandboxUsage = (days = 30) =>
-  apiFetch<SandboxUsage>(`/usage/sandboxes?days=${days}`)
+  apiFetch(`/usage/sandboxes?days=${days}`, {}, S.SandboxUsageSchema)
 
 // ── Agents (proxied to sessions-api at /api/dashboard/agents/*) ──
 

@@ -253,6 +253,7 @@ const billing = {
   maxConcurrentSandboxes: 5,
   freeCreditsRemainingCents: 0,
   stripeCreditCents: 0,
+  hasPaymentMethod: false,
 }
 
 const sandboxUsage = {
