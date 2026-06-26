@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/workos/workos-go/v4/pkg/usermanagement"
@@ -168,26 +169,66 @@ func (h *OAuthHandlers) HandleCallback(c echo.Context) error {
 	return c.Redirect(http.StatusFound, "/")
 }
 
-// HandleLogout clears the session cookie and invalidates the server-side session.
+// HandleLogout ends the session via WorkOS's hosted logout. Clearing our own
+// cookies is NOT enough — the WorkOS SSO session would survive, so the next hit
+// to /auth/login silently re-authenticates the user (the "logout logs me back
+// in" loop). Handing the browser WorkOS's logout URL tears down the WorkOS
+// session cookie itself, then redirects to the Sign-out redirect configured in
+// the WorkOS dashboard.
+//
+// We intentionally do NOT pass return_to: the post-logout destination is
+// WorkOS-managed dashboard config (per environment), not app code. That config
+// is required — without a configured Sign-out redirect WorkOS returns
+// app-homepage-url-not-found.
 func (h *OAuthHandlers) HandleLogout(c echo.Context) error {
-	// Invalidate server-side session if we can identify the user
+	var sessionID string
 	if cookie, err := c.Cookie("workos_session"); err == nil && cookie.Value != "" {
-		store := h.workos.Store()
-		if store != nil {
+		// The WorkOS session id is the `sid` claim of the access token; it's
+		// required to build the hosted logout URL.
+		sessionID = sessionIDFromAccessToken(cookie.Value)
+
+		// Invalidate the server-side session if we can identify the user.
+		if store := h.workos.Store(); store != nil {
 			ctx := c.Request().Context()
-			user, err := store.GetUserByAccessToken(ctx, cookie.Value)
-			if err == nil {
+			if user, err := store.GetUserByAccessToken(ctx, cookie.Value); err == nil {
 				_ = store.DeleteAccessTokensForUser(ctx, user.ID)
 			}
 		}
 	}
 
-	// Clear all auth cookies
+	// Clear all auth cookies.
 	ClearAllCookies(c)
 
-	return c.JSON(http.StatusOK, map[string]string{
-		"message": "logged out",
-	})
+	// Hand back WorkOS's hosted logout URL for the browser to follow. GetLogoutURL
+	// is an offline URL builder; the real teardown + redirect happen when the
+	// browser visits it.
+	if mgr := h.workos.UserMgr(); mgr != nil && sessionID != "" {
+		if logoutURL, err := mgr.GetLogoutURL(usermanagement.GetLogoutURLOpts{SessionID: sessionID}); err == nil {
+			return c.JSON(http.StatusOK, map[string]string{
+				"message":   "logged out",
+				"logoutUrl": logoutURL.String(),
+			})
+		}
+	}
+
+	// Fallback: no WorkOS session to end — the client falls back to /auth/login.
+	return c.JSON(http.StatusOK, map[string]string{"message": "logged out"})
+}
+
+// sessionIDFromAccessToken extracts the WorkOS `sid` claim from an access-token
+// JWT without verifying its signature. The token was already validated for this
+// request by the auth middleware; here we only need the session id to build the
+// logout URL, so an unverified parse is sufficient (and avoids needing WorkOS's
+// JWKS at logout time).
+func sessionIDFromAccessToken(token string) string {
+	claims := jwt.MapClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err != nil {
+		return ""
+	}
+	if sid, ok := claims["sid"].(string); ok {
+		return sid
+	}
+	return ""
 }
 
 // HandleMe returns the current user info from the authenticated context.

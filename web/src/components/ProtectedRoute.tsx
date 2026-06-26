@@ -1,10 +1,21 @@
-import { Navigate, Outlet } from 'react-router-dom'
+import { useEffect } from 'react'
+import { Outlet } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 
 export default function ProtectedRoute() {
   const { user, loading } = useAuth()
 
-  if (loading) {
+  // Not authenticated → go straight to WorkOS. /auth/login is a server route
+  // (proxied by Vite) that 302s to the WorkOS hosted login, so we do a
+  // full-page navigation rather than an in-app route. No intermediate
+  // "Sign in" screen — the spinner below shows until the browser leaves.
+  useEffect(() => {
+    if (!loading && !user) {
+      window.location.replace('/auth/login')
+    }
+  }, [loading, user])
+
+  if (loading || !user) {
     return (
       <div style={{
         display: 'flex',
@@ -26,10 +37,6 @@ export default function ProtectedRoute() {
         </span>
       </div>
     )
-  }
-
-  if (!user) {
-    return <Navigate to="/login" replace />
   }
 
   return <Outlet />

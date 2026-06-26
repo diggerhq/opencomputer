@@ -38,12 +38,23 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   return res.json()
 }
 
-// Logout: clears server session, then navigates to login
+// Logout: the backend clears cookies and returns WorkOS's hosted logout URL,
+// which ends the WorkOS session and redirects to the dashboard-configured
+// Sign-out redirect (so we're not instantly re-logged-in). Navigate there.
+// Fall back to /auth/login only when there was no WorkOS session to end.
 export async function logout(): Promise<void> {
-  await fetch('/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {})
+  let dest = '/auth/login'
+  try {
+    const res = await fetch('/auth/logout', { method: 'POST', credentials: 'include' })
+    const body = await res.json().catch(() => ({}))
+    if (body && typeof body.logoutUrl === 'string' && body.logoutUrl) {
+      dest = body.logoutUrl
+    }
+  } catch {
+    // ignore — fall back to /auth/login
+  }
   posthog.reset()
-  // Navigate to login page — use replace to prevent back-button loop
-  window.location.replace('/login')
+  window.location.replace(dest)
 }
 
 // API functions
