@@ -105,14 +105,10 @@ function OrgSwitcher() {
   )
 }
 
-function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
+function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth()
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex h-16 shrink-0 items-center border-b px-4">
-        <Brand />
-      </div>
-
+    <div className="flex h-full min-h-0 flex-col">
       {(user?.orgs?.length ?? 0) > 1 ? (
         <div className="border-b px-3 py-3">
           <OrgSwitcher />
@@ -136,7 +132,8 @@ function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
             }
           >
             <item.icon
-              className="size-[18px] shrink-0 opacity-50"
+              className="size-[18px] shrink-0 opacity-60"
+              strokeWidth={1.5}
               aria-hidden
             />
             {item.label}
@@ -156,9 +153,9 @@ function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
             onClick={() => logout()}
             aria-label="Sign out"
             title="Sign out"
-            className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex size-7 shrink-0 items-center justify-center rounded-md transition-colors"
+            className="text-muted-foreground/60 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
           >
-            <LogOut className="size-4" aria-hidden />
+            <LogOut className="size-4" strokeWidth={1.5} aria-hidden />
           </button>
         </div>
       </div>
@@ -199,9 +196,17 @@ export default function AppShell() {
 
   return (
     <div className="bg-background text-foreground min-h-screen font-sans">
-      {/* Desktop sidebar */}
-      <aside className="bg-sidebar fixed inset-y-0 left-0 z-30 hidden w-60 border-r md:block">
-        <SidebarBody />
+      {/* Desktop top bar — a continuous line across the app; the brand sits in
+          the column above the sidebar so its right + bottom borders line up. */}
+      <header className="bg-sidebar fixed inset-x-0 top-0 z-30 hidden h-16 items-center border-b md:flex">
+        <div className="flex h-full w-60 shrink-0 items-center border-r px-6">
+          <Brand />
+        </div>
+      </header>
+
+      {/* Desktop sidebar (below the top bar) */}
+      <aside className="bg-sidebar fixed top-16 bottom-0 left-0 z-20 hidden w-60 flex-col border-r md:flex">
+        <SidebarNav />
       </aside>
 
       {/* Mobile top bar */}
@@ -212,18 +217,24 @@ export default function AppShell() {
               <Menu className="size-5" />
             </Button>
           </SheetTrigger>
-          <SheetContent side="left" className="bg-sidebar w-64 p-0">
+          <SheetContent
+            side="left"
+            className="bg-sidebar flex w-64 flex-col p-0"
+          >
             <SheetTitle className="sr-only">Navigation</SheetTitle>
-            <SidebarBody onNavigate={() => setDrawerOpen(false)} />
+            <div className="flex h-14 shrink-0 items-center border-b px-4">
+              <Brand />
+            </div>
+            <SidebarNav onNavigate={() => setDrawerOpen(false)} />
           </SheetContent>
         </Sheet>
         <Brand />
       </header>
 
       {/* Main content */}
-      <div className="md:pl-60">
+      <div className="md:pt-16 md:pl-60">
         <HaltBanner />
-        <main className="mx-auto max-w-7xl px-4 py-5 sm:px-8">
+        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8">
           <Outlet />
         </main>
       </div>
