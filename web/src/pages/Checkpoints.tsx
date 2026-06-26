@@ -1,51 +1,69 @@
-import { Fragment, useMemo, useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getCheckpoints, deleteCheckpointDashboard, type CheckpointItem } from '../api/client'
+import { useMemo, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { Layers, CircleAlert } from 'lucide-react'
+import {
+  deleteCheckpointDashboard,
+  getCheckpoints,
+  type CheckpointItem,
+} from '@/api/client'
+import { PageHeader } from '@/components/page-header'
+import { Panel } from '@/components/panel'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Label } from '@/components/ui/label'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { StatusBadge } from '@/components/status-badge'
+import { EmptyState } from '@/components/empty-state'
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import { ResourceTable, type Column } from '@/components/resource-table'
 
 function checkpointTypeLabel(cp: CheckpointItem) {
   return cp.kind === 'disk_only' ? 'Disk-only' : 'Full'
 }
 
 function checkpointTypeDetail(cp: CheckpointItem) {
-  if (cp.kind !== 'disk_only') {
-    return 'Disk, memory, CPU'
-  }
-  if (cp.promotionStatus === 'ready') {
-    return 'Promoted for fast fork'
-  }
-  if (cp.promotionStatus === 'processing' || cp.promotionStatus === 'pending') {
+  if (cp.kind !== 'disk_only') return 'Disk, memory, CPU'
+  if (cp.promotionStatus === 'ready') return 'Promoted for fast fork'
+  if (cp.promotionStatus === 'processing' || cp.promotionStatus === 'pending')
     return 'Promoting'
-  }
-  if (cp.promotionStatus === 'failed') {
-    return 'Promotion failed'
-  }
+  if (cp.promotionStatus === 'failed') return 'Promotion failed'
   return 'Disk only'
 }
+
+const PER_PAGE = 20
 
 export default function Checkpoints() {
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
   const [showFailed, setShowFailed] = useState(false)
-  const perPage = 20
+  const [toDelete, setToDelete] = useState<CheckpointItem | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['checkpoints', page],
-    queryFn: () => getCheckpoints(page, perPage),
+    queryFn: () => getCheckpoints(page, PER_PAGE),
   })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteCheckpointDashboard(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['checkpoints'] })
-    },
+    onError: (error) =>
+      toast.error(
+        `Delete failed: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: ['checkpoints'] }),
   })
 
-  const checkpoints = data?.checkpoints ?? []
-  const visibleCheckpoints = useMemo(() => {
-    if (!showFailed) {
-      return checkpoints.filter((cp) => cp.status !== 'failed')
-    }
+  const confirmDelete = () => {
+    if (!toDelete) return
+    deleteMutation.mutate(toDelete.id, { onSuccess: () => setToDelete(null) })
+  }
 
+  const checkpoints = useMemo(() => data?.checkpoints ?? [], [data])
+  const visibleCheckpoints = useMemo(() => {
+    if (!showFailed) return checkpoints.filter((cp) => cp.status !== 'failed')
+    // Keep failed at the bottom, otherwise preserve order.
     return checkpoints
       .map((cp, index) => ({ cp, index }))
       .sort((a, b) => {
@@ -56,222 +74,194 @@ export default function Checkpoints() {
       })
       .map(({ cp }) => cp)
   }, [checkpoints, showFailed])
+
   const total = data?.total ?? 0
-  const totalPages = Math.ceil(total / perPage)
+  const totalPages = Math.ceil(total / PER_PAGE)
+
+  const columns: Column<CheckpointItem>[] = [
+    {
+      key: 'name',
+      header: 'Name',
+      cell: (cp) => (
+        <span className="text-foreground font-medium">{cp.name}</span>
+      ),
+    },
+    {
+      key: 'sandbox',
+      header: 'Sandbox',
+      cell: (cp) => <code className="font-mono text-xs">{cp.sandboxId}</code>,
+    },
+    {
+      key: 'type',
+      header: 'Type',
+      cell: (cp) => (
+        <div className="flex flex-col gap-1">
+          <Badge
+            variant={cp.kind === 'disk_only' ? 'secondary' : 'outline'}
+            className="w-fit"
+          >
+            {checkpointTypeLabel(cp)}
+          </Badge>
+          <span className="text-muted-foreground text-xs">
+            {checkpointTypeDetail(cp)}
+          </span>
+        </div>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (cp) => <StatusBadge status={cp.status} />,
+    },
+    {
+      key: 'activeForks',
+      header: 'Active forks',
+      align: 'right',
+      cell: (cp) => (
+        <span className="font-mono text-xs">
+          {cp.activeForks > 0 ? (
+            <span className="text-status-running">{cp.activeForks}</span>
+          ) : (
+            <span className="text-muted-foreground">0</span>
+          )}
+        </span>
+      ),
+    },
+    {
+      key: 'totalForks',
+      header: 'Total forks',
+      align: 'right',
+      cell: (cp) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {cp.totalForks}
+        </span>
+      ),
+    },
+    {
+      key: 'created',
+      header: 'Created',
+      cell: (cp) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {new Date(cp.createdAt).toLocaleString()}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (cp) => (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-status-error hover:bg-status-error-bg hover:text-status-error"
+          onClick={() => setToDelete(cp)}
+        >
+          Delete
+        </Button>
+      ),
+    },
+  ]
 
   return (
     <div>
-      {/* Header */}
-      <div style={{ marginBottom: 28 }}>
-        <h1 className="page-title">Checkpoints</h1>
-        <p className="page-subtitle">Sandbox snapshots across your organization</p>
+      <PageHeader
+        title="Checkpoints"
+        description="Sandbox snapshots across your organization"
+      />
+
+      <div className="mb-3 flex items-center gap-2">
+        <Checkbox
+          id="show-failed"
+          checked={showFailed}
+          onCheckedChange={(v) => setShowFailed(v === true)}
+        />
+        <Label
+          htmlFor="show-failed"
+          className="text-muted-foreground cursor-pointer text-sm font-normal"
+        >
+          Show failed checkpoints
+        </Label>
       </div>
 
-      <label
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 8,
-          marginBottom: 12,
-          fontSize: 13,
-          color: 'var(--text-secondary)',
-          cursor: 'pointer',
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={showFailed}
-          onChange={(event) => setShowFailed(event.target.checked)}
+      <Panel className="overflow-hidden">
+        <ResourceTable
+          columns={columns}
+          rows={visibleCheckpoints}
+          rowKey={(cp) => cp.id}
+          loading={isLoading}
+          renderSubRow={(cp) =>
+            cp.status === 'failed' && cp.errorMsg ? (
+              <Alert variant="destructive">
+                <CircleAlert />
+                <AlertDescription>
+                  <p className="break-words">{cp.errorMsg}</p>
+                  {cp.failedAt ? (
+                    <p className="text-muted-foreground mt-1">
+                      Failed {new Date(cp.failedAt).toLocaleString()}
+                    </p>
+                  ) : null}
+                </AlertDescription>
+              </Alert>
+            ) : null
+          }
+          empty={
+            <EmptyState
+              icon={Layers}
+              title={
+                checkpoints.length === 0
+                  ? 'No checkpoints yet'
+                  : 'No checkpoints to show'
+              }
+              description={
+                checkpoints.length === 0
+                  ? 'Snapshots of your sandboxes will appear here.'
+                  : 'Toggle “Show failed checkpoints” to include failures.'
+              }
+            />
+          }
         />
-        Show failed checkpoints
-      </label>
 
-      {/* Table */}
-      {isLoading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
-          <div className="loading-spinner" />
-        </div>
-      ) : (
-        <div className="glass-card animate-in stagger-1" style={{ overflow: 'hidden' }}>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Sandbox</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th style={{ textAlign: 'right' }}>Active Forks</th>
-                <th style={{ textAlign: 'right' }}>Total Forks</th>
-                <th>Created</th>
-                <th style={{ width: 80 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleCheckpoints.map((cp: CheckpointItem) => (
-                <Fragment key={cp.id}>
-                  <tr>
-                    <td style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{cp.name}</td>
-                    <td>
-                      <code style={{ fontSize: 12 }}>{cp.sandboxId}</code>
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                        <span
-                          style={{
-                            fontSize: 11,
-                            fontWeight: 600,
-                            padding: '2px 8px',
-                            borderRadius: 10,
-                            width: 'fit-content',
-                            background: cp.kind === 'disk_only'
-                              ? 'rgba(59, 130, 246, 0.08)'
-                              : 'rgba(148, 163, 184, 0.08)',
-                            color: cp.kind === 'disk_only'
-                              ? '#60a5fa'
-                              : 'var(--text-secondary)',
-                            border: `1px solid ${
-                              cp.kind === 'disk_only'
-                                ? 'rgba(59, 130, 246, 0.18)'
-                                : 'rgba(148, 163, 184, 0.16)'
-                            }`,
-                          }}
-                        >
-                          {checkpointTypeLabel(cp)}
-                        </span>
-                        <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                          {checkpointTypeDetail(cp)}
-                        </span>
-                      </div>
-                    </td>
-                    <td>
-                      <span
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 600,
-                          padding: '2px 8px',
-                          borderRadius: 10,
-                          background: cp.status === 'ready'
-                            ? 'rgba(34, 197, 94, 0.08)'
-                            : cp.status === 'failed'
-                              ? 'rgba(251, 113, 133, 0.08)'
-                              : 'rgba(234, 179, 8, 0.08)',
-                          color: cp.status === 'ready'
-                            ? 'var(--accent-green)'
-                            : cp.status === 'failed'
-                              ? 'var(--accent-rose)'
-                              : '#eab308',
-                          border: `1px solid ${
-                            cp.status === 'ready'
-                              ? 'rgba(34, 197, 94, 0.15)'
-                              : cp.status === 'failed'
-                                ? 'rgba(251, 113, 133, 0.15)'
-                                : 'rgba(234, 179, 8, 0.15)'
-                          }`,
-                        }}
-                      >
-                        {cp.status === 'ready' ? 'Ready' : cp.status === 'failed' ? 'Failed' : 'Processing'}
-                      </span>
-                    </td>
-                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                      {cp.activeForks > 0 ? (
-                        <span style={{ color: 'var(--accent-emerald)' }}>{cp.activeForks}</span>
-                      ) : (
-                        <span style={{ color: 'var(--text-tertiary)' }}>0</span>
-                      )}
-                    </td>
-                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-secondary)' }}>
-                      {cp.totalForks}
-                    </td>
-                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                      {new Date(cp.createdAt).toLocaleString()}
-                    </td>
-                    <td>
-                      <button
-                        className="btn-danger"
-                        onClick={() => {
-                          if (confirm(`Delete checkpoint "${cp.name}"? Active forks will not be affected.`)) {
-                            deleteMutation.mutate(cp.id)
-                          }
-                        }}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                  {cp.status === 'failed' && cp.errorMsg && (
-                    <tr key={`${cp.id}-error`}>
-                      <td colSpan={8} style={{ paddingTop: 0 }}>
-                        <div
-                          style={{
-                            border: '1px solid rgba(251, 113, 133, 0.16)',
-                            borderRadius: 8,
-                            padding: '10px 12px',
-                            background: 'rgba(251, 113, 133, 0.06)',
-                            color: 'var(--accent-rose)',
-                            fontSize: 12,
-                            lineHeight: 1.45,
-                            overflowWrap: 'anywhere',
-                          }}
-                        >
-                          {cp.errorMsg}
-                          {cp.failedAt && (
-                            <div style={{ color: 'var(--text-tertiary)', marginTop: 4 }}>
-                              Failed {new Date(cp.failedAt).toLocaleString()}
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              ))}
-              {visibleCheckpoints.length === 0 && (
-                <tr>
-                  <td colSpan={8} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>
-                    {checkpoints.length === 0 ? 'No checkpoints yet' : 'No checkpoints to show'}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '12px 16px',
-              borderTop: '1px solid var(--border-subtle)',
-              fontSize: 12,
-              color: 'var(--text-secondary)',
-            }}>
-              <span>{total} checkpoint{total !== 1 ? 's' : ''}</span>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button
-                  className="btn-ghost"
-                  disabled={page <= 1}
-                  onClick={() => setPage(p => p - 1)}
-                  style={{ padding: '4px 10px', fontSize: 12 }}
-                >
-                  Prev
-                </button>
-                <span style={{ padding: '4px 8px', lineHeight: '24px' }}>
-                  {page} / {totalPages}
-                </span>
-                <button
-                  className="btn-ghost"
-                  disabled={page >= totalPages}
-                  onClick={() => setPage(p => p + 1)}
-                  style={{ padding: '4px 10px', fontSize: 12 }}
-                >
-                  Next
-                </button>
-              </div>
+        {totalPages > 1 && (
+          <div className="text-muted-foreground flex items-center justify-between border-t px-4 py-3 text-sm">
+            <span>
+              {total} checkpoint{total !== 1 ? 's' : ''}
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => p - 1)}
+              >
+                Previous
+              </Button>
+              <span className="px-1 font-mono text-xs">
+                {page} / {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </Button>
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </Panel>
+
+      <ConfirmDialog
+        open={toDelete !== null}
+        onOpenChange={(open) => !open && setToDelete(null)}
+        title={`Delete checkpoint ${toDelete?.name ? `"${toDelete.name}"` : ''}?`}
+        description="Active forks will not be affected."
+        confirmLabel="Delete checkpoint"
+        destructive
+        pending={deleteMutation.isPending}
+        onConfirm={confirmDelete}
+      />
     </div>
   )
 }

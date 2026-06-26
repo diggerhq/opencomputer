@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import {
   Table,
   TableBody,
@@ -39,6 +39,7 @@ export function ResourceTable<T>({
   loading = false,
   skeletonRows = 5,
   empty,
+  renderSubRow,
   className,
 }: {
   columns: Column<T>[]
@@ -47,6 +48,8 @@ export function ResourceTable<T>({
   loading?: boolean
   skeletonRows?: number
   empty?: ReactNode
+  /** Optional expanded row rendered under a row when it returns a node. */
+  renderSubRow?: (row: T) => ReactNode
   className?: string
 }) {
   return (
@@ -82,18 +85,32 @@ export function ResourceTable<T>({
               </TableCell>
             </TableRow>
           ) : (
-            rows.map((row) => (
-              <TableRow key={rowKey(row)} className="hover:bg-row-hover">
-                {columns.map((col) => (
-                  <TableCell
-                    key={col.key}
-                    className={cn(alignClass(col.align), col.className)}
+            rows.map((row) => {
+              const sub = renderSubRow?.(row)
+              return (
+                <Fragment key={rowKey(row)}>
+                  <TableRow
+                    className={cn('hover:bg-row-hover', sub && 'border-b-0')}
                   >
-                    {col.cell(row)}
-                  </TableCell>
-                ))}
-              </TableRow>
-            ))
+                    {columns.map((col) => (
+                      <TableCell
+                        key={col.key}
+                        className={cn(alignClass(col.align), col.className)}
+                      >
+                        {col.cell(row)}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                  {sub ? (
+                    <TableRow className="hover:bg-transparent">
+                      <TableCell colSpan={columns.length} className="pt-0">
+                        {sub}
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </Fragment>
+              )
+            })
           )}
         </TableBody>
       </Table>
