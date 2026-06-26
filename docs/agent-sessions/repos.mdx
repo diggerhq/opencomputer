@@ -63,6 +63,15 @@ sequenceDiagram
     Note over GitR: Destroyed
     Store->>Hands: Extract into /workspace/sources
 
+    Note over Brain: Reason
+    Note over Brain: Plan
+    Brain->>Hands: Read, edit, run commands
+    Note over Hands: Edit files
+    Note over Hands: Run tests
+    Note over Hands: Run tools
+    Hands-->>Brain: Results
+    Note over Brain: Decide next step
+
     Note over GitW: Publish — on github_publish_pull_request
     Brain->>CP: github_publish_pull_request(source, title)
     CP->>Hands: Diff the edits
