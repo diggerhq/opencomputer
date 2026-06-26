@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
-import { AuthProvider } from './hooks/useAuth'
+import { AuthProvider } from './hooks/auth-provider'
 import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './components/app-shell'
 import Dashboard from './pages/Dashboard'
