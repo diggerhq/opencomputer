@@ -72,6 +72,7 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
 
   // Buffered events that arrived while paused; flushed on resume.
   const pausedBufRef = useRef<LogEvent[]>([])
+  const seqRef = useRef(0)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const stickToBottomRef = useRef(true)
 
@@ -108,6 +109,7 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
       } catch {
         return
       }
+      ev._seq = seqRef.current++
       if (pausedRef.current) {
         pausedBufRef.current.push(ev)
         // Defensive cap on the paused buffer.
@@ -300,8 +302,8 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
             this deployment.
           </div>
         ) : null}
-        {visible.map((ev, i) => (
-          <Row key={i} ev={ev} />
+        {visible.map((ev) => (
+          <Row key={ev._seq} ev={ev} />
         ))}
       </div>
 

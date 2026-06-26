@@ -204,6 +204,9 @@ export interface LogEvent {
   command?: string
   argv?: string[]
   exit_code?: number
+  // Client-assigned monotonic ingest order. Not from the API — set on parse so
+  // the live list has a stable React key under filtering + cap trimming.
+  _seq?: number
 }
 
 export interface LogStreamOptions {

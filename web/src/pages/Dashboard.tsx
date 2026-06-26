@@ -217,7 +217,11 @@ function SandboxRow({ session }: { session: Session }) {
 /* ── First-run onboarding ─────────────────────────────────────────────────── */
 function GettingStarted() {
   const queryClient = useQueryClient()
-  const { data: keys, isLoading: loadingKeys } = useQuery({
+  const {
+    data: keys,
+    isLoading: loadingKeys,
+    isSuccess: keysLoaded,
+  } = useQuery({
     queryKey: ['api-keys'],
     queryFn: getAPIKeys,
   })
@@ -234,12 +238,14 @@ function GettingStarted() {
   // On first signup (no keys), auto-create a Default key so the user sees it
   // immediately without clicking anything.
   useEffect(() => {
-    if (loadingKeys || autoCreateRef.current) return
+    // Only auto-create after a SUCCESSFUL (empty) keys list — never after the
+    // list errored (keys would be undefined → falsely "no keys").
+    if (!keysLoaded || autoCreateRef.current) return
     if (!hasKeys && !createdKey && !createMutation.isPending) {
       autoCreateRef.current = true
       createMutation.mutate()
     }
-  }, [loadingKeys, hasKeys, createdKey, createMutation])
+  }, [keysLoaded, hasKeys, createdKey, createMutation])
 
   return (
     <div className="space-y-4">

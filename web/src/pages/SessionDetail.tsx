@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifyError } from '@/lib/errors'
@@ -123,10 +123,23 @@ export default function SessionDetail() {
     onSettled: invalidate,
   })
 
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current)
+    },
+    [],
+  )
+
   const copyUrl = (hostname: string, key: string) => {
-    void navigator.clipboard.writeText(`https://${hostname}`)
-    setCopiedUrl(key)
-    setTimeout(() => setCopiedUrl(null), 2000)
+    void navigator.clipboard.writeText(`https://${hostname}`).then(
+      () => {
+        setCopiedUrl(key)
+        if (copyTimer.current) clearTimeout(copyTimer.current)
+        copyTimer.current = setTimeout(() => setCopiedUrl(null), 2000)
+      },
+      (e: unknown) => notifyError("Couldn't copy to clipboard.", e),
+    )
   }
 
   if (isLoading) {

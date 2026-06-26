@@ -60,6 +60,7 @@ function Brand() {
 
 function OrgSwitcher() {
   const { user, switchOrg } = useAuth()
+  const [switching, setSwitching] = useState(false)
   const orgs = user?.orgs ?? []
   if (orgs.length <= 1) return null
   const active = orgs.find((o) => o.isActive)
@@ -71,6 +72,7 @@ function OrgSwitcher() {
           variant="outline"
           className="w-full justify-between font-normal"
           size="sm"
+          disabled={switching}
         >
           <span className="truncate">{active?.name || 'Select org'}</span>
           <ChevronsUpDown className="size-3.5 shrink-0 opacity-60" />
@@ -86,7 +88,9 @@ function OrgSwitcher() {
           <DropdownMenuItem
             key={org.id}
             onClick={() => {
-              if (!org.isActive) void switchOrg(org.id)
+              if (org.isActive || switching) return
+              setSwitching(true)
+              void switchOrg(org.id).finally(() => setSwitching(false))
             }}
             className="gap-2"
           >
@@ -196,6 +200,7 @@ function HaltBanner() {
 }
 
 export default function AppShell() {
+  const { user } = useAuth()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const location = useLocation()
 
@@ -240,8 +245,10 @@ export default function AppShell() {
       <div className="md:pt-16 md:pl-60">
         <HaltBanner />
         <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8">
-          {/* Keyed by route so a page error clears when you navigate away. */}
-          <ErrorBoundary key={location.pathname}>
+          {/* Keyed by org + route: clears a page error on navigation AND
+              remounts org-scoped pages on org switch so local draft/filter
+              state can't bleed across orgs. */}
+          <ErrorBoundary key={`${user?.orgId ?? ''}:${location.pathname}`}>
             <Suspense
               fallback={
                 <div className="flex min-h-[60vh] items-center justify-center">

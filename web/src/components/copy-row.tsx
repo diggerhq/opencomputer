@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Check, Copy, Eye, EyeOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useTransientFlag } from '@/lib/use-transient-flag'
+import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 
 /**
@@ -29,8 +30,12 @@ export function CopyRow({
   const copyText = transform ? transform(value) : value
 
   const copy = () => {
-    void navigator.clipboard.writeText(copyText)
-    markCopied()
+    // Only show "Copied" if the write actually succeeds (clipboard can be
+    // blocked by permissions / insecure context).
+    void navigator.clipboard.writeText(copyText).then(
+      () => markCopied(),
+      (e: unknown) => notifyError("Couldn't copy to clipboard.", e),
+    )
   }
 
   return (
