@@ -6,6 +6,10 @@ import posthog from 'posthog-js'
 import { PostHogProvider } from '@posthog/react'
 import App from './App'
 import { Toaster } from './components/ui/sonner'
+import {
+  ErrorBoundary,
+  DefaultErrorFallback,
+} from './components/error-boundary'
 import './index.css'
 
 const queryClient = new QueryClient({
@@ -32,7 +36,15 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <PostHogProvider client={posthog}>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
-          <App />
+          <ErrorBoundary
+            fallback={(reset) => (
+              <div className="bg-background flex min-h-screen items-center justify-center">
+                <DefaultErrorFallback onRetry={reset} />
+              </div>
+            )}
+          >
+            <App />
+          </ErrorBoundary>
           <Toaster theme="light" richColors closeButton />
         </BrowserRouter>
       </QueryClientProvider>

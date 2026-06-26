@@ -33,6 +33,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { ErrorBoundary } from '@/components/error-boundary'
 import { cn } from '@/lib/utils'
 
 type NavItem = { to: string; label: string; icon: LucideIcon; end?: boolean }
@@ -194,6 +195,7 @@ function HaltBanner() {
 
 export default function AppShell() {
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const location = useLocation()
 
   return (
     <div className="bg-background text-foreground min-h-screen font-sans">
@@ -236,15 +238,18 @@ export default function AppShell() {
       <div className="md:pt-16 md:pl-60">
         <HaltBanner />
         <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8">
-          <Suspense
-            fallback={
-              <div className="flex min-h-[60vh] items-center justify-center">
-                <Loader2 className="text-muted-foreground size-5 animate-spin" />
-              </div>
-            }
-          >
-            <Outlet />
-          </Suspense>
+          {/* Keyed by route so a page error clears when you navigate away. */}
+          <ErrorBoundary key={location.pathname}>
+            <Suspense
+              fallback={
+                <div className="flex min-h-[60vh] items-center justify-center">
+                  <Loader2 className="text-muted-foreground size-5 animate-spin" />
+                </div>
+              }
+            >
+              <Outlet />
+            </Suspense>
+          </ErrorBoundary>
         </main>
       </div>
     </div>
