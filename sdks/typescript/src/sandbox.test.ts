@@ -20,14 +20,11 @@ describe("Sandbox checkpoint requests", () => {
       }), { status: 201, headers: { "content-type": "application/json" } }),
     );
 
-    const sandbox = Object.create(Sandbox.prototype) as Sandbox & {
-      apiUrl: string;
-      apiKey: string;
-      sandboxId: string;
-    };
-    sandbox.apiUrl = "https://api.example.test/api";
-    sandbox.apiKey = "osb_test";
-    sandbox.sandboxId = "sb_1";
+    const sandbox = Object.create(Sandbox.prototype) as Sandbox;
+    const sandboxState = sandbox as unknown as Record<string, unknown>;
+    sandboxState.apiUrl = "https://api.example.test/api";
+    sandboxState.apiKey = "osb_test";
+    sandboxState.sandboxId = "sb_1";
 
     await sandbox.createCheckpoint("autosave", {
       retentionPolicy: { mode: "delete_oldest", maxCount: 3 },
