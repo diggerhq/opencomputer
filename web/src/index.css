@@ -91,7 +91,9 @@
   --color-chart-5: var(--chart-5);
 
   /* Radius scale (from --radius = 0.375rem) */
-  --radius-sm: calc(var(--radius) - 2px);
+  --radius-sm: calc(
+    var(--radius) - 1px
+  ); /* ~3px — small buttons/pills: sharp but a touch rounded */
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
   --radius-xl: calc(var(--radius) + 4px);
