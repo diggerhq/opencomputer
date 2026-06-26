@@ -2175,6 +2175,48 @@ func (s *Store) CountCheckpoints(ctx context.Context, sandboxID string) (int, er
 	return count, err
 }
 
+// ListCheckpointRetentionCandidates returns the oldest checkpoints that can be
+// deleted by an automatic retention policy. It deliberately skips public
+// checkpoints, patched checkpoints, and checkpoints that are still referenced
+// by forked sandboxes.
+func (s *Store) ListCheckpointRetentionCandidates(ctx context.Context, sandboxID string, orgID uuid.UUID, limit int) ([]Checkpoint, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT c.id, c.sandbox_id, c.org_id, c.name, c.rootfs_s3_key, c.workspace_s3_key,
+		        c.sandbox_config, c.status, c.size_bytes, c.is_public, c.created_at,
+		        c.error_msg, c.failed_at
+		   FROM sandbox_checkpoints c
+		  WHERE c.sandbox_id = $1
+		    AND c.org_id = $2
+		    AND c.is_public = false
+		    AND NOT EXISTS (
+		          SELECT 1 FROM checkpoint_patches p WHERE p.checkpoint_id = c.id
+		        )
+		    AND NOT EXISTS (
+		          SELECT 1 FROM sandbox_sessions ss WHERE ss.based_on_checkpoint_id = c.id
+		        )
+		  ORDER BY c.created_at ASC
+		  LIMIT $3`, sandboxID, orgID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var checkpoints []Checkpoint
+	for rows.Next() {
+		var cp Checkpoint
+		if err := rows.Scan(&cp.ID, &cp.SandboxID, &cp.OrgID, &cp.Name, &cp.RootfsS3Key, &cp.WorkspaceS3Key,
+			&cp.SandboxConfig, &cp.Status, &cp.SizeBytes, &cp.IsPublic, &cp.CreatedAt,
+			&cp.ErrorMsg, &cp.FailedAt); err != nil {
+			return nil, err
+		}
+		checkpoints = append(checkpoints, cp)
+	}
+	return checkpoints, rows.Err()
+}
+
 // DeleteCheckpoint deletes a checkpoint (only if owned by org).
 // Clears any sandbox_sessions FK references first to avoid constraint violations.
 func (s *Store) DeleteCheckpoint(ctx context.Context, orgID uuid.UUID, checkpointID uuid.UUID) error {

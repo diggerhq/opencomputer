@@ -130,9 +130,9 @@ Update the idle timeout.
 | --- | --- | --- |
 | `timeout` | number | New timeout in seconds |
 
-#### `sandbox.createCheckpoint(name): Promise<CheckpointInfo>`
+#### `sandbox.createCheckpoint(name, opts?): Promise<CheckpointInfo>`
 
-Create a named checkpoint.
+Create a named checkpoint. Pass `retentionPolicy: { mode: "delete_oldest", maxCount: 10 }` to delete the oldest eligible checkpoint before creating a new one when the sandbox already has 10 checkpoints.
 
 #### `sandbox.listCheckpoints(): Promise<CheckpointInfo[]>`
 

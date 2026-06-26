@@ -22,6 +22,18 @@ import (
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
 
+const maxCheckpointsPerSandbox = 10
+
+type createCheckpointRequest struct {
+	Name            string                    `json:"name"`
+	RetentionPolicy checkpointRetentionPolicy `json:"retentionPolicy"`
+}
+
+type checkpointRetentionPolicy struct {
+	Mode     string `json:"mode"`
+	MaxCount int    `json:"maxCount"`
+}
+
 func (s *Server) createSandbox(c echo.Context) error {
 	var cfg types.SandboxConfig
 	if err := c.Bind(&cfg); err != nil {
@@ -2161,9 +2173,7 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 	}
 
 	// Parse request body
-	var req struct {
-		Name string `json:"name"`
-	}
+	var req createCheckpointRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 	}
@@ -2176,7 +2186,37 @@ func (s *Server) createCheckpoint(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to count checkpoints"})
 	}
-	if count >= 10 {
+
+	if req.RetentionPolicy.Mode != "" && req.RetentionPolicy.Mode != "none" {
+		if req.RetentionPolicy.Mode != "delete_oldest" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "unsupported checkpoint retention policy"})
+		}
+		maxCount := req.RetentionPolicy.MaxCount
+		if maxCount == 0 {
+			maxCount = maxCheckpointsPerSandbox
+		}
+		if maxCount < 1 || maxCount > maxCheckpointsPerSandbox {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "retentionPolicy.maxCount must be between 1 and 10"})
+		}
+		if count >= maxCount {
+			deleteCount := count - maxCount + 1
+			candidates, err := s.store.ListCheckpointRetentionCandidates(ctx, sandboxID, orgID, deleteCount)
+			if err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to find checkpoints for retention"})
+			}
+			if len(candidates) < deleteCount {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "maximum 10 checkpoints per sandbox; no eligible checkpoint can be deleted by retention policy"})
+			}
+			for _, oldCP := range candidates {
+				if err := s.deleteCheckpointRecordAndObjects(ctx, &oldCP, orgID); err != nil {
+					return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to apply checkpoint retention policy: " + err.Error()})
+				}
+			}
+			count -= len(candidates)
+		}
+	}
+
+	if count >= maxCheckpointsPerSandbox {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "maximum 10 checkpoints per sandbox"})
 	}
 
@@ -2878,12 +2918,21 @@ func (s *Server) deleteCheckpoint(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "checkpoint does not belong to this sandbox"})
 	}
 
-	// Delete from DB (enforces org ownership)
-	if err := s.store.DeleteCheckpoint(ctx, orgID, checkpointID); err != nil {
+	if err := s.deleteCheckpointRecordAndObjects(ctx, cp, orgID); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Server) deleteCheckpointRecordAndObjects(ctx context.Context, cp *db.Checkpoint, orgID uuid.UUID) error {
+	// Delete from DB (enforces org ownership)
+	if err := s.store.DeleteCheckpoint(ctx, orgID, cp.ID); err != nil {
+		return err
+	}
+
 	// Mirror the deletion to D1 checkpoints_index via events-ingest.
-	s.publishCheckpointEvent(ctx, "checkpoint_deleted", checkpointID, sandboxID, orgID, "", nil)
+	s.publishCheckpointEvent(ctx, "checkpoint_deleted", cp.ID, cp.SandboxID, cp.OrgID, "", nil)
 
 	// Best-effort: delete S3 objects if checkpoint store is configured
 	if s.checkpointStore != nil && cp.RootfsS3Key != nil && cp.WorkspaceS3Key != nil {
@@ -2898,7 +2947,7 @@ func (s *Server) deleteCheckpoint(c echo.Context) error {
 		}()
 	}
 
-	return c.NoContent(http.StatusNoContent)
+	return nil
 }
 
 // --- Checkpoint Patch handlers ---

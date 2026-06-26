@@ -11,16 +11,16 @@ import (
 
 // CheckpointInfo matches the API response for checkpoints.
 type CheckpointInfo struct {
-	ID              string    `json:"id"`
-	SandboxID       string    `json:"sandboxId"`
-	OrgID           string    `json:"orgId"`
-	Name            string    `json:"name"`
-	Status          string    `json:"status"`
-	RootfsS3Key     string    `json:"rootfsS3Key,omitempty"`
-	WorkspaceS3Key  string    `json:"workspaceS3Key,omitempty"`
-	SizeBytes       int64     `json:"sizeBytes"`
-	IsPublic        bool      `json:"isPublic"`
-	CreatedAt       time.Time `json:"createdAt"`
+	ID             string    `json:"id"`
+	SandboxID      string    `json:"sandboxId"`
+	OrgID          string    `json:"orgId"`
+	Name           string    `json:"name"`
+	Status         string    `json:"status"`
+	RootfsS3Key    string    `json:"rootfsS3Key,omitempty"`
+	WorkspaceS3Key string    `json:"workspaceS3Key,omitempty"`
+	SizeBytes      int64     `json:"sizeBytes"`
+	IsPublic       bool      `json:"isPublic"`
+	CreatedAt      time.Time `json:"createdAt"`
 }
 
 var checkpointCmd = &cobra.Command{
@@ -36,8 +36,20 @@ var checkpointCreateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c := client.FromContext(cmd.Context())
 		name, _ := cmd.Flags().GetString("name")
+		retentionPolicy, _ := cmd.Flags().GetString("retention-policy")
+		retentionMaxCount, _ := cmd.Flags().GetInt("retention-max-count")
 
-		req := map[string]string{"name": name}
+		req := map[string]any{"name": name}
+		if retentionPolicy != "" && retentionPolicy != "none" {
+			if retentionPolicy != "delete_oldest" {
+				return fmt.Errorf("unsupported retention policy %q; expected none or delete_oldest", retentionPolicy)
+			}
+			policy := map[string]any{"mode": retentionPolicy}
+			if retentionMaxCount > 0 {
+				policy["maxCount"] = retentionMaxCount
+			}
+			req["retentionPolicy"] = policy
+		}
 		var cp CheckpointInfo
 		if err := c.Post(cmd.Context(), fmt.Sprintf("/sandboxes/%s/checkpoints", args[0]), req, &cp); err != nil {
 			return err
@@ -185,6 +197,8 @@ func setCheckpointPublic(cmd *cobra.Command, id string, isPublic bool) error {
 
 func init() {
 	checkpointCreateCmd.Flags().String("name", "", "Checkpoint name (required)")
+	checkpointCreateCmd.Flags().String("retention-policy", "none", "Retention policy for automatic checkpoint cleanup (none, delete_oldest)")
+	checkpointCreateCmd.Flags().Int("retention-max-count", 0, "Maximum checkpoints to keep when --retention-policy=delete_oldest (1-10, default server limit)")
 	checkpointCreateCmd.MarkFlagRequired("name")
 
 	checkpointSpawnCmd.Flags().Int("timeout", 0, "Idle timeout in seconds before auto-hibernate (0 = never hibernate)")

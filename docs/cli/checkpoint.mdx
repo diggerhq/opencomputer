@@ -54,6 +54,17 @@ oc cp delete sb-abc123 cp-7f3a1b2c
 
 Maximum 10 checkpoints per sandbox.
 
+To create a new checkpoint at the limit, opt into automatic deletion of the oldest eligible checkpoint:
+
+```bash
+oc cp create sb-abc123 \
+  --name autosave \
+  --retention-policy delete_oldest \
+  --retention-max-count 10
+```
+
+Retention skips public checkpoints, patched checkpoints, and checkpoints that are still referenced by forked sandboxes.
+
 ## Checkpoint vs Hibernate
 
 | | Checkpoint | Hibernate |
