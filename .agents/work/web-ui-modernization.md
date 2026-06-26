@@ -1,246 +1,249 @@
 # Web dashboard UI modernization
 
-Bring the OpenComputer dashboard (`web/`) in line with modern frontend
-practice and the OpenComputer brand. Three things drive this: we own far
-too much hand-rolled UI code, we have no styling/component/forms/lint
-foundation, and the dashboard's look ("Void Glass" dark indigo) is off-brand
-versus the marketing site and docs (light ink-on-paper, serif headings).
+Bring the OpenComputer dashboard (`web/`) up to modern frontend practice and the
+OpenComputer brand — **as a product-grade operational console**, not a marketing
+reskin. Three drivers: we hand-own far too much UI code (633 inline styles, no
+components/forms/lint), there's no enforced design system, and the look ("Void
+Glass" dark indigo) is off-brand vs the site + docs (light ink-on-paper).
 
-The plan: adopt the **same stack the site already uses** (Tailwind + shadcn/ui
-+ lucide + react-hook-form/zod + ESLint flat), reskin to the brand tokens, and
-do the core library version bumps **last** — only after the styling/components/
-forms/lint foundation is in. Status: **draft for review**, not yet started.
+The approach: adopt the stack the site already uses (Tailwind + shadcn/ui +
+lucide + react-hook-form/zod + ESLint flat), build a **dashboard design system**
+on top of it (product tokens + semantic statuses + OC component wrappers), and
+do core library version bumps **last**. Status: **draft for review**, not started.
+
+> Measured **2026-06-26** at `feat/web-ui-dev` (`git rev-parse --short HEAD`).
+> Counts: `grep -rao 'style={' web/src | wc -l` (633), `… 'className='` (141),
+> `find web/src -name '*.tsx' -o -name '*.ts' | xargs wc -l` (~8,035).
+> Versions: `cd web && npm outdated`. Re-run these before trusting the tables —
+> they stale fast.
 
 ## Goal / non-goals
 
 **Goals**
 - Stop hand-writing styling, modals, dropdowns, forms, icons.
-- A real, enforced design system that matches the OC site + docs brand.
+- A real, enforced **dashboard** design system (brand-aligned, product-dense,
+  accessible) — not raw shadcn + marketing tokens pasted per screen.
 - A linter/formatter so a multi-person codebase stays consistent.
-- Reduce owned code and align with current best practice.
 
-**Non-goals (for this effort)**
-- No framework migration. This is a client-rendered dashboard served as static
-  assets behind the `api-edge` Worker (see `internal/api/router.go`
-  `serveDashboardUI` and `cloudflare-workers/api-edge`). A SPA is the right
-  shape — we are **not** moving to Next/Remix.
-- No rewrite of the data layer. TanStack Query is already used well and stays.
-- Not a product/IA redesign. First pass is a 1:1 reskin of existing screens;
-  layout/UX redesigns are a separate effort.
+**Non-goals (this effort)**
+- No framework migration. Client-rendered SPA behind the `api-edge` Worker /
+  Go `serveDashboardUI` is the right shape — **not** Next/Remix.
+- No data-layer rewrite. TanStack Query stays.
+- Not a product/IA redesign. Screens keep their information + behavior; we
+  restyle and harden states.
 
 ## Current state (assessment)
 
-Measured from `web/src` (~8,035 LOC across 19 files):
-
 | Area | Today | Verdict |
 |---|---|---|
-| Build | Vite 6.4 + `@vitejs/plugin-react` 4.7 | OK; 2 majors behind (Vite 8) |
-| Language | TypeScript 5.6 | 1 major behind (TS 6) |
-| UI runtime | React 18.3 | 1 major behind (React 19) |
-| Routing | react-router-dom 6.30 | 1 major behind (RR7) |
-| **Data fetching** | **TanStack Query 5.90** (48 `useQuery`, 28 `useMutation`, optimistic updates) | **Keep — modern, idiomatic** |
-| Charts | recharts 3.7 | Current major |
-| Terminal | `@xterm` 6 | Current |
-| Styling | hand-rolled `theme.css` (448 LOC) + **633 inline `style={{}}`** vs 141 `className` | Replace |
-| Components | **none** — modals/dropdowns/tables/badges all hand-rolled (`position:fixed` overlays in Billing/Agents/Layout) | Replace |
-| Forms | **none** — 90 `useState`, hand-rolled validation | Replace |
-| Icons | **none** — 26 inline `<svg>` | Replace |
-| Lint/format | **none** — no ESLint/Prettier/Biome | Add |
-| Destructive UX | native `confirm()`/`alert()` + inline error `<div>`s | Replace w/ dialog + toast |
-| Big components | `AgentDetail.tsx` **1,892 LOC**, Billing 787, SessionDetail 558 | Decompose (falls out of primitives) |
+| Build / lang | Vite 6.4, TS 5.6, React 18.3, react-router 6.30 | all 1–2 majors behind (Vite 8/TS 6/React 19/RR7) |
+| **Data** | **TanStack Query 5.90** (48 `useQuery`, 28 `useMutation`, optimistic) | **keep — modern** |
+| Charts / term | recharts 3.7 / `@xterm` 6 | current |
+| Styling | `theme.css` (448 LOC) + **633 inline `style={{}}`** vs 141 `className` | replace |
+| Components | none — modals/dropdowns/tables hand-rolled | replace |
+| Forms | none — 90 `useState` | replace |
+| Icons | none — 26 inline `<svg>` | replace |
+| Lint/format | **none** | add |
+| Big files | `AgentDetail.tsx` 1,892 · Billing 787 · SessionDetail 558 | decompose (see scope) |
 
-The root cause of most of this is the **inline-style-everything** pattern: there
-are CSS-variable tokens in `theme.css`, but they're consumed inline
-(`style={{ background: 'var(--bg-card)' }}`) rather than through classes or
-components — so there's no reuse, no `:hover`/`:focus`/responsive, and constant
-drift.
+**Two findings that change scope (verified 2026-06-26):**
+- **`Agents.tsx` (509) + `AgentDetail.tsx` (1,892) are orphaned** — not imported
+  or routed in `App.tsx`; only `client.ts` has the API calls. They're
+  unreachable. Do **not** migrate them until their status is decided (below).
+- **Terminal + logs are dark technical surfaces**, not paper UI
+  (`Terminal.tsx:29` `background:'#0a0a0f'` + ANSI palette; `LogsPanel.tsx`).
+  The brand is light, but these stay dark — an explicit exception (below).
 
-## Target: the OpenComputer brand
+## Target brand + the dashboard dialect
 
-The brand source of truth is the marketing site
-(`opencomputer-site-v1`, a `vite_react_shadcn_ts` project) and the Mintlify docs
-(`opencomputer/docs`). Both are **light, editorial, ink-on-paper**, the inverse
-of the dashboard's dark glassmorphism.
+Brand source of truth: the marketing site (`opencomputer-site-v1`, a
+`vite_react_shadcn_ts` project) + the Mintlify docs. Both are **light,
+ink-on-paper, editorial**.
 
-**Brand tokens** (verbatim from `opencomputer-site-v1/src/index.css`,
-shadcn HSL convention):
+**Site base tokens** (from `opencomputer-site-v1/src/index.css`, shadcn HSL):
+`--background 40 33% 97%` (paper ~#f8f6f1), `--foreground 45 8% 8%` (ink ~#131311),
+`--primary 45 8% 8%`, `--muted/secondary/accent 0 0% 98%`,
+`--muted-foreground 0 0% 53%`, `--destructive 0 84% 60%`, `--border 0 0% 91%`,
+`--radius 0.375rem` (6px). Type: **Newsreader** (serif headings) / **Inter**
+(body) / **Geist Mono** (signature). This replaces "Void Glass" (deep-black,
+indigo glass, Outfit/DM Sans, 20px radii) — it is a replacement, not additive.
 
-| Token | Value (HSL) | Meaning |
+### Dashboard Brand Dialect (NEW — the doc's core correction)
+
+The site is a sparse marketing page; the dashboard is a dense operational
+console. **Do not copy site tokens verbatim.** Adopt this dialect:
+
+- **Light paper/ink shell, product-first density.** Tighter spacing/type scale
+  than the marketing site.
+- **Type usage:** Inter for nearly all UI; **Newsreader only** for page titles /
+  sparse section headings (not table cells, labels, or dense text). Geist Mono
+  for ids, code, logs, terminal, metrics.
+- **Dark technical surfaces are a sanctioned exception.** Terminal, log viewer,
+  and code blocks stay dark (their own token set), even on the light shell.
+- **Contrast is a gate, not a vibe.** The site's `--muted-foreground` (≈#878787)
+  is only **~3.3:1** on paper — fails WCAG AA (4.5:1) for body/table text. The
+  dashboard needs its own, darker text tokens (below).
+
+### Product token layer (NEW — extends, not replaces, the base)
+
+shadcn base tokens are too blunt for product UI. Add a dashboard layer with
+**explicit contrast targets** (AA: ≥4.5:1 body, ≥3:1 large/UI/icons), verified
+on every pair before merge:
+
+| Token | Purpose | Target |
 |---|---|---|
-| `--background` | `40 33% 97%` | paper (~`#f8f6f1`) |
-| `--foreground` | `45 8% 8%` | ink (~`#131311`) |
-| `--card` / `--popover` | `40 33% 97%` | paper |
-| `--primary` | `45 8% 8%` | ink |
-| `--primary-foreground` | `40 33% 97%` | paper |
-| `--muted` / `--secondary` / `--accent` | `0 0% 98%` | near-white surface |
-| `--muted-foreground` | `0 0% 53%` | mid gray |
-| `--destructive` | `0 84.2% 60.2%` | red |
-| `--border` / `--input` | `0 0% 91%` | hairline gray |
-| `--ring` | `45 8% 8%` | ink focus ring |
-| `--radius` | `0.375rem` | **6px brand radius** |
+| `--text` (=foreground) | primary text | ≥12:1 |
+| `--text-secondary` | labels, table body, metadata | **≥4.5:1** (≈`hsl 0 0% 40%`, NOT site's 53%) |
+| `--text-tertiary` | de-emphasized, large only | ≥3:1 |
+| `--panel`, `--panel-2` | card / nested surfaces on paper | borders, not just shadow |
+| `--sidebar`, `--sidebar-active` | nav | — |
+| `--row-hover`, `--row-selected` | table interaction | visible non-color cue too |
+| `--focus-ring` | keyboard focus | ≥3:1 vs adjacent |
+| `--disabled` / `--disabled-text` | disabled controls | — |
+| `--code-bg/-fg`, `--terminal-bg/-fg` | dark technical surfaces | AA on dark |
 
-**Type** (from `docs/docs.json` + site `index.css` + `docs/styles/custom.css`):
-- Headings: **Newsreader** (serif, 600) — `.font-heading`
-- Body / UI: **Inter** (400)
-- Mono (signature texture): **Geist Mono** — `.font-mono-brand`
-- Wordmark: `opencomputer` in Geist Mono, 500, lowercase, `-0.025em`
-- `::selection`: inverted ink-on-paper
+### Semantic status palette (NEW — "monochrome + maybe green" is insufficient)
 
-This is a hard departure from `theme.css`'s "Void Glass" (deep-black surfaces,
-indigo `#818cf8`/violet glassmorphism, Outfit/DM Sans/JetBrains Mono, radii up
-to 20px). The reskin **replaces** that theme; it is not additive.
+The console renders many states; define a restrained but real palette (each with
+AA text-on-surface + a non-color cue: icon/label/shape):
 
-### Void Glass → brand mapping (for the migration)
+- **Session lifecycle:** running, stopped, hibernated, error, starting/pending.
+- **Connection (live):** connected / connecting / disconnected (terminal, SSE).
+- **Billing:** ok / warning / past-due.
+- **Logs by source** + **chart series:** a small ordered categorical ramp that
+  reads on both paper and the dark log/terminal surfaces.
+- **Terminal ANSI:** keep a real 16-color ANSI set (don't flatten to brand).
 
-| Void Glass (`theme.css`) | Brand replacement |
-|---|---|
-| `--bg-void #08080c` / `--bg-card` glass | `--background` paper / `--card` |
-| `--text-primary #ededf0` | `--foreground` ink |
-| `--text-secondary/tertiary` grays | `--muted-foreground` |
-| `--accent-indigo #818cf8` (primary accent) | `--primary` ink (monochrome) + optional functional green |
-| `--gradient-primary`, `--shadow-glow`, dot-grid `body::before` | dropped (off-brand) |
-| `--radius-xl 20px` | `--radius` 6px (and `-2/-4px` steps) |
-| Outfit / DM Sans / JetBrains Mono | Newsreader / Inter / Geist Mono |
+## Stack: mirror the site (but know it's not "latest")
 
-## Stack decision: mirror the site
+The site already uses the exact stack and shares React 18 / RR6 / TanStack
+Query 5 with the dashboard, so we mirror it for direct token + component reuse
+and brand parity.
 
-The site (`opencomputer-site-v1`) **already** uses the exact stack we'd choose,
-and already shares React 18 / react-router 6 / TanStack Query 5 with the
-dashboard. So we mirror it — same tooling, same tokens, reuse component patterns,
-automatic brand consistency:
-
-| Concern | Adopt | Why |
+| Concern | Adopt (site parity) | Latest (deferred to Phase D) |
 |---|---|---|
-| Styling | **Tailwind CSS 3.4** + `tailwindcss-animate` + `tailwind-merge` + `clsx` (`cn()` util) | Site is on 3.4; lets us copy its `tailwind.config.ts` + `index.css` tokens and shadcn components verbatim. (Tailwind v4 deferred — don't diverge from the site.) |
-| Components | **shadcn/ui** (Radix primitives, `components.json` style "default") | Site uses it; accessible Dialog/Dropdown/Select/Tabs/Tooltip/Table/Toast; brandable via tokens |
-| Icons | **lucide-react** | Site uses it; tree-shakeable; pairs with shadcn |
-| Forms | **react-hook-form + zod** | Site uses it; kills the 90-`useState` sprawl; zod can also validate API responses |
-| Toasts | **sonner** | Site uses it; replaces `alert()`/inline errors |
-| Lint | **ESLint 9 flat** + `typescript-eslint` + `eslint-plugin-react-hooks` + `react-refresh` (+ add `jsx-a11y`) | Mirror the site's `eslint.config.js` |
-| Format | **Prettier** (or Biome) | See decision below |
-| Path alias | `@/*` → `src/*` (shadcn convention) | Required by shadcn; matches site `components.json` aliases |
+| CSS | **Tailwind 3.4** + animate + tailwind-merge + clsx (`cn()`) | Tailwind 4 |
+| Components | **shadcn/ui** (Radix) | — |
+| Icons | **lucide-react** | — |
+| Forms | **react-hook-form + zod** | — |
+| Toasts | **sonner** | — |
+| Lint/format | **ESLint 9 flat** + typescript-eslint + react-hooks + **jsx-a11y**; **Prettier** | Biome (maybe) |
+| Build/runtime | (stay on current Vite 6 for migration) | Vite 8, React 19, RR7, TS 6, plugin-react-swc |
 
-**Keep as-is:** TanStack Query (data), recharts (charts), xterm (terminal),
-posthog (analytics), the pages/components/hooks/api-client architecture, the SPA
-shape.
+**Explicit:** "mirror the site" ≠ "latest npm." The site is Tailwind 3 / Vite 5
+era; latest is Tailwind 4 / Vite 8. We take site-parity now (reuse + brand),
+and treat the latest-stack bump as a separate, last phase.
 
-## Decisions needed (for review)
+**Keep:** TanStack Query, recharts, xterm, posthog, the SPA shape.
 
-1. **Default theme** — match brand = **light** by default. Dashboards are often
-   dark, but brand wins; shadcn's `darkMode: ["class"]` is wired so we can add a
-   dark token set later. *Recommend: light default, dark deferred.*
-2. **Accent color** — the site is essentially **monochrome** (ink primary, no
-   colored accent). Keep monochrome + `--destructive` red, and optionally one
-   functional green (`#3f7d5e`, used on the manifest pages) for success/active
-   states only? *Recommend: monochrome + red + a single green for status.*
-3. **Formatter** — ESLint 9 flat (mirror site) is decided; pair with **Prettier**
-   or use **Biome** (one fast tool for lint+format). *Recommend: ESLint flat +
-   Prettier to mirror the site exactly; revisit Biome later.*
-4. **shadcn ownership** — shadcn copies components into `web/src/components/ui`
-   (we "own" them but don't maintain the logic). The site already accepts this.
-   Confirm OK vs a zero-ownership lib (Mantine) — which would be harder to brand.
-   *Recommend: shadcn, for parity with the site.*
-5. **Reskin vs redesign** — first pass = 1:1 reskin of existing screens.
-   *Recommend: reskin first; redesigns later, per-screen.*
-6. **Shared UI later?** — the site and dashboard are separate repos. For now we
-   copy/mirror. A shared `@opencomputer/ui` package is a possible future step;
-   out of scope here.
+## Component inventory (NEW — define the product system)
 
-## Plan (phased; version bumps LAST)
+shadcn gives primitives; without named wrappers each agent will compose them
+differently. Define and build these OC dashboard components (on shadcn/Radix):
 
-Ordered so the foundation lands before any risky upgrade. Everything is
-incremental — Tailwind/shadcn coexist with the current `theme.css` + inline
-styles, so we migrate page-by-page with a green build throughout.
+`AppShell` (sidebar + topbar + org switcher), `PageHeader` (title/subtitle/
+actions), `DataTable` (TanStack Table + sort/empty/loading/row-click),
+`StatusBadge` (session lifecycle variants), `ConnectionState` (live dot),
+`EmptyState`, `DangerAction` (confirm dialog + destructive styling),
+`MetricCard`, `CodeSurface` + `TerminalSurface` (the dark exception),
+`OrgSwitcher`, toast helpers. Screens compose these, not raw Radix.
 
-- [ ] **Phase 0 — Tooling.** ESLint 9 flat config (mirror site's
-  `eslint.config.js`, add `jsx-a11y`) + Prettier. Wire `@/*` path alias in
-  `tsconfig.json` + `vite.config.ts`. Add `lint`/`format` npm scripts. Fix the
-  initial lint fallout. *No visual change.*
-- [ ] **Phase 1 — Tailwind + tokens.** Add Tailwind 3.4 + `tailwindcss-animate`
-  + `tailwind-merge` + `clsx`. Copy the site's `tailwind.config.ts` and the
-  `:root` token block from its `index.css`. Load Inter / Newsreader / Geist Mono.
-  Add `src/lib/utils.ts` (`cn()`). Tailwind coexists with `theme.css`.
-- [ ] **Phase 2 — shadcn + icons.** `shadcn init` (style "default", baseColor
-  slate, cssVariables). Generate the core set: `button card dialog
-  alert-dialog dropdown-menu select tabs table tooltip input label badge
-  separator sonner skeleton`. Add `lucide-react`. Stand up `<Toaster />` +
-  theme provider in `main.tsx`/`App.tsx`.
-- [ ] **Phase 3 — Migrate screens (reskin).** Pilot **`Sessions.tsx`** (table +
-  filters + delete confirm) as the reference pattern. Then roll through the rest,
-  replacing inline styles → utility classes/components, hand-rolled overlays →
-  `Dialog`/`DropdownMenu`, `confirm()`/`alert()` → `AlertDialog` + `sonner`,
-  inline `<svg>` → lucide. Suggested order by leverage: Sessions → Layout/shell →
-  Dashboard → Checkpoints → APIKeys → Templates → Settings → Billing →
-  SessionDetail → Agents → **AgentDetail (1,892 LOC, decompose while migrating)**.
-- [ ] **Phase 4 — Forms.** Convert Settings / Billing / APIKeys / app-registration
-  to react-hook-form + zod schemas.
-- [ ] **Phase 5 — Tables.** Introduce TanStack Table where lists need
-  sort/filter/pagination (Sessions, Checkpoints, Agents).
-- [ ] **Phase 6 — Retire Void Glass.** Delete `theme.css` + any remaining inline
-  styles once all screens are migrated.
-- [ ] **Phase 7 — Core library upgrades (LAST, separate PRs).**
-  - React 19 + react-router 7 **together** (RR7 supports React 19; codemods
-    exist). Update `@types/react`/`@types/react-dom` to 19.
-  - Vite 8 + `@vitejs/plugin-react` 6 (consider switching to
-    `@vitejs/plugin-react-swc` to match the site).
-  - TypeScript 6.
-  - Bump `@tanstack/react-query`, recharts, posthog to latest minors (low risk).
+## Decisions needed (review)
 
-## Per-concern detail
+1. **Agents/AgentDetail** — orphaned (unrouted). Dead code to delete, hidden
+   WIP to route, or future work to leave alone? **Blocks** any work on them.
+   *Recommend: leave un-migrated; decide delete-vs-revive separately.*
+2. **Default theme** — light (brand). Dark deferred (shadcn `darkMode:class`
+   wired). *Recommend: light; dark later.*
+3. **Status palette scope** — adopt the semantic palette above vs minimal.
+   *Recommend: the restrained semantic palette (states are real).*
+4. **Formatter** — Prettier (site parity) vs Biome. *Recommend: Prettier now.*
+5. **shadcn ownership** — copies components into the repo (own but don't
+   maintain). Site already accepts this. *Recommend: shadcn.*
 
-**Styling.** Tokens become Tailwind theme colors (`bg-background`,
-`text-foreground`, `border-border`, `bg-card`, `text-muted-foreground`, etc.),
-radius via `rounded-lg/md/sm` → `--radius`. The 633 inline `style={{}}` go to
-zero. `:hover`/`:focus`/responsive become trivial (utility variants) instead of
-impossible (inline).
+## Plan — three tracks, separate PRs (NEW — reskin ≠ refactor)
 
-**Components.** Each hand-rolled pattern maps to a shadcn primitive:
-overlay → `Dialog`/`AlertDialog` (focus trap, ESC, ARIA for free), menus →
-`DropdownMenu`, `<table className="data-table">` → shadcn `Table` (then TanStack
-Table for behavior), badges → `Badge`, filter buttons → `ToggleGroup`/`Tabs`,
-status pills → `Badge` variants.
+The old plan conflated visual reskin with behavior/architecture changes. Split:
 
-**Forms.** `useState`-per-field → `useForm` + zod resolver; field errors and
-submit state come from RHF. zod schemas double as runtime validation for the
-`client.ts` API layer if we want it.
+**Track A — Foundation (one PR, no visual change beyond tokens):**
+- [ ] ESLint 9 flat + Prettier + `jsx-a11y`; `@/*` path alias; `lint`/`format` scripts.
+- [ ] Tailwind 3.4 + base tokens (from site) + **product token layer** + **dialect**
+  (fonts, dark surfaces) + `cn()`. Coexists with `theme.css`.
+- [ ] shadcn init + core primitives + lucide + `<Toaster/>`.
+- [ ] Build the **component inventory** (AppShell, PageHeader, DataTable, StatusBadge, …).
 
-**Icons.** 26 inline `<svg>` → named lucide imports.
+**Track B — Visual migration (per-screen PRs, reskin only):**
+- [ ] Pilot **`Sessions.tsx`** (table + filters + delete) as the reference.
+- [ ] Then: Layout/shell → Dashboard → Checkpoints → APIKeys → Templates →
+  Settings → Billing → SessionDetail (incl. **dark** logs/terminal surfaces).
+- [ ] Each screen follows the **Migration Contract** (below). **Excludes**
+  Agents/AgentDetail (gated on decision #1).
 
-**Linter.** Catches hooks-rule violations, a11y issues (`jsx-a11y`), unused
-vars, and enforces formatting — none of which we check today.
+**Track C — Behavior refactors (separate PRs, NOT "reskin"):**
+- [ ] Forms → react-hook-form + zod (Settings/Billing/APIKeys).
+- [ ] Tables → TanStack Table behavior (sort/filter/paginate).
+- [ ] Decompose oversized components **only where they're live** (Billing,
+  SessionDetail; AgentDetail only if revived).
 
-## Risks & mitigations
+**Track D — Last: core lib upgrades (separate PRs):** React 19 + RR7 together;
+Vite 8 + plugin-react(-swc); TS 6; Tailwind 4 evaluation. Then delete `theme.css`.
 
-- **Big visual flip (dark → light).** Mitigate: 1:1 reskin (no layout changes),
-  pilot one screen, review before rolling out. The evergreen branch (PR #426)
-  keeps it reviewable.
-- **a11y regressions in hand-rolled bits.** Mitigate: shadcn/Radix primitives are
-  accessible by construction; `jsx-a11y` lint backstops.
-- **Scope creep into redesign.** Mitigate: reskin-only this pass; redesigns are
-  separate.
-- **AgentDetail (1,892 LOC).** Highest-effort screen; decompose into sub-
-  components as part of its migration, last in the order.
-- **Upgrades destabilizing the reskin.** Mitigate: version bumps are Phase 7,
-  after the foundation is proven; done as isolated PRs.
+## Migration Contract (NEW — per screen)
+
+- Keep existing API calls + behavior **unless explicitly called out** in the PR.
+- Inline `style={}` allowed **only** for data-driven geometry (chart dims,
+  computed positions) or third-party bridges (xterm) — never for static styling.
+- Every migrated screen must implement **loading, empty, error, disabled,
+  destructive-confirm, and mobile/tablet** states.
+- Per-screen PR includes before/after **screenshots** (desktop + mobile) and the
+  Quality Gate results.
+
+## Accessibility plan (NEW — "Radix + jsx-a11y" is not enough)
+
+Explicit gates, checked per screen:
+- Keyboard-only completion of every flow; sane **focus order**; visible focus ring.
+- **DataTable** keyboard nav + row-click has a real button/link affordance (not a
+  bare `onClick` div).
+- **Terminal** focus management; **toasts/errors** announced (aria-live).
+- **Charts** have text/table alternatives (recharts isn't accessible by default).
+- **Contrast** verified on *all* token pairs (incl. status colors, dark surfaces).
+- **Responsive overflow**: dense tables/cards don't break < tablet.
+- Tooling: `eslint-plugin-jsx-a11y` + **axe** in a Playwright smoke pass.
+
+## Serving + testing (NEW — two deploy paths)
+
+`web/` ships **two ways**: bundled by the Go control plane (`web/dist` via
+`serveDashboardUI`) **and** as `api-edge` Worker assets. Modernization must smoke
+**both** modes:
+- auth (login → WorkOS → callback), **logout** (Go + edge hosted-logout),
+- **SSE logs** (`/sessions/:id` logs), **WebSocket terminal**,
+- SPA fallback for client routes, static asset routing/caching.
+(The prod-mirror dev edge — `.agents/reference/dev-edge-setup.md` — is where to
+exercise the edge path.)
+
+## Quality Gate (NEW — must pass per PR)
+
+`npm run build` · `npm run lint` · `tsc` typecheck · Playwright smoke
+(desktop + mobile) · keyboard-navigation pass · contrast pass · manual check of
+`/sessions/:id` **logs (SSE)** + **terminal (WS)**.
 
 ## Success criteria
 
-- Inline `style={{}}` count ≈ 0; styling via Tailwind/tokens.
-- `theme.css` deleted; brand tokens (paper/ink, Newsreader/Inter/Geist Mono, 6px
-  radius) live and visually consistent with site + docs.
-- All overlays/menus/tables/toasts via shadcn; no `confirm()`/`alert()`.
-- Forms on react-hook-form + zod.
-- ESLint + Prettier pass in CI; `jsx-a11y` clean.
-- Net LOC down materially (esp. AgentDetail/Billing) despite added config.
-- Core libs current (React 19 / RR7 / Vite 8 / TS 6) after Phase 7.
+- Inline `style={}` ≈ 0 (except the contract's allowed cases); `theme.css` deleted.
+- Brand tokens + product layer live; **every token pair meets its contrast target**.
+- All overlays/menus/tables/toasts via the OC component inventory; no
+  `confirm()`/`alert()`.
+- Forms on RHF + zod; lists on TanStack Table.
+- ESLint + Prettier + jsx-a11y + axe smoke green in CI, in **both** serving modes.
+- Core libs current after Track D.
 
 ## References
 
-- Dashboard: `web/` — `src/styles/theme.css`, `src/api/client.ts`,
-  `src/pages/*`, `src/components/*`, `vite.config.ts`, `tsconfig.json`
-- Site (brand + stack source): `opencomputer-site-v1/` —
-  `tailwind.config.ts`, `src/index.css`, `components.json`, `eslint.config.js`,
-  `package.json`
-- Docs brand: `opencomputer/docs/docs.json`, `opencomputer/docs/styles/custom.css`
-- Serving model: `internal/api/router.go` (`serveDashboardUI`),
-  `cloudflare-workers/api-edge/wrangler.toml`
+- Dashboard: `web/` — `src/styles/theme.css`, `src/api/client.ts`, `src/pages/*`,
+  `src/components/{Layout,Terminal,LogsPanel}.tsx`, `src/App.tsx` (routes).
+- Brand + stack source: `opencomputer-site-v1/` — `src/index.css`,
+  `tailwind.config.ts`, `components.json`, `eslint.config.js`, `package.json`.
+- Docs brand: `opencomputer/docs/docs.json`, `opencomputer/docs/styles/custom.css`.
+- Serving: `internal/api/router.go` (`serveDashboardUI`),
+  `cloudflare-workers/api-edge/wrangler.toml`; dev edge:
+  `.agents/reference/dev-edge-setup.md`.
