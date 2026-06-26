@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:preview": "VITE_PREVIEW=1 vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "eslint .",

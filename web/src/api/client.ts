@@ -2,7 +2,18 @@ import posthog from 'posthog-js'
 
 const API_BASE = '/api/dashboard'
 
-export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+export async function apiFetch<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  // Opt-in, dev-only preview mode: serve canned data with no backend/auth so
+  // the dashboard can be rendered locally (VITE_PREVIEW=1 npm run dev). The
+  // dynamic import + dead-when-unset flag keep the mock out of normal builds.
+  if (import.meta.env.VITE_PREVIEW) {
+    const { mockFetch } = await import('./mock')
+    return mockFetch<T>(path, options)
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     credentials: 'include',
@@ -25,7 +36,8 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     // "[object Object]" when the proxy talks to sessions-api.
     let msg: string
     if (typeof body.error === 'string') msg = body.error
-    else if (body.error && typeof body.error.message === 'string') msg = body.error.message
+    else if (body.error && typeof body.error.message === 'string')
+      msg = body.error.message
     else if (typeof body.message === 'string') msg = body.message
     else msg = `Request failed: ${res.status}`
     throw new Error(msg)
@@ -45,7 +57,10 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
 export async function logout(): Promise<void> {
   let dest = '/auth/login'
   try {
-    const res = await fetch('/auth/logout', { method: 'POST', credentials: 'include' })
+    const res = await fetch('/auth/logout', {
+      method: 'POST',
+      credentials: 'include',
+    })
     const body = await res.json().catch(() => ({}))
     if (body && typeof body.logoutUrl === 'string' && body.logoutUrl) {
       dest = body.logoutUrl
@@ -66,10 +81,13 @@ export const getSessions = (status?: string) =>
 export const getAPIKeys = () => apiFetch<APIKey[]>('/api-keys')
 
 export const createAPIKey = (name: string) =>
-  apiFetch<{ id: string; name: string; key: string; keyPrefix: string; createdAt: string }>(
-    '/api-keys',
-    { method: 'POST', body: JSON.stringify({ name }) },
-  )
+  apiFetch<{
+    id: string
+    name: string
+    key: string
+    keyPrefix: string
+    createdAt: string
+  }>('/api-keys', { method: 'POST', body: JSON.stringify({ name }) })
 
 export const deleteAPIKey = (keyId: string) =>
   apiFetch<void>(`/api-keys/${keyId}`, { method: 'DELETE' })
@@ -120,23 +138,27 @@ export interface LogEvent {
 }
 
 export interface LogStreamOptions {
-  tail?: boolean      // default true; if false, returns historical batch then closes
-  q?: string          // free-text search (server applies "line contains")
-  source?: string     // comma-separated subset of source values
-  since?: string      // RFC3339; default = sandbox.startedAt
-  limit?: number      // historical batch cap; default 1000, max 10000
+  tail?: boolean // default true; if false, returns historical batch then closes
+  q?: string // free-text search (server applies "line contains")
+  source?: string // comma-separated subset of source values
+  since?: string // RFC3339; default = sandbox.startedAt
+  limit?: number // historical batch cap; default 1000, max 10000
 }
 
 export function streamSessionLogs(
   sandboxId: string,
   opts: LogStreamOptions = {},
 ): EventSource {
-  const url = new URL(`${API_BASE}/sessions/${encodeURIComponent(sandboxId)}/logs`, window.location.origin)
+  const url = new URL(
+    `${API_BASE}/sessions/${encodeURIComponent(sandboxId)}/logs`,
+    window.location.origin,
+  )
   if (opts.tail !== undefined) url.searchParams.set('tail', String(opts.tail))
   if (opts.q) url.searchParams.set('q', opts.q)
   if (opts.source) url.searchParams.set('source', opts.source)
   if (opts.since) url.searchParams.set('since', opts.since)
-  if (opts.limit !== undefined) url.searchParams.set('limit', String(opts.limit))
+  if (opts.limit !== undefined)
+    url.searchParams.set('limit', String(opts.limit))
   return new EventSource(url.toString(), { withCredentials: true })
 }
 
@@ -146,7 +168,10 @@ export const updateOrg = (name: string) =>
   apiFetch<Org>('/org', { method: 'PUT', body: JSON.stringify({ name }) })
 
 export const setCustomDomain = (domain: string) =>
-  apiFetch<Org>('/org/custom-domain', { method: 'PUT', body: JSON.stringify({ domain }) })
+  apiFetch<Org>('/org/custom-domain', {
+    method: 'PUT',
+    body: JSON.stringify({ domain }),
+  })
 
 export const deleteCustomDomain = () =>
   apiFetch<Org>('/org/custom-domain', { method: 'DELETE' })
@@ -338,7 +363,8 @@ export const sendInvitation = (email: string, role = 'member') =>
     body: JSON.stringify({ email, role }),
   })
 
-export const getInvitations = () => apiFetch<OrgInvitation[]>('/org/invitations')
+export const getInvitations = () =>
+  apiFetch<OrgInvitation[]>('/org/invitations')
 
 export const revokeInvitation = (id: string) =>
   apiFetch<void>(`/org/invitations/${id}`, { method: 'DELETE' })
@@ -347,7 +373,10 @@ export const revokeInvitation = (id: string) =>
 export const listOrgs = () => apiFetch<OrgInfo[]>('/orgs')
 
 export const switchOrg = (orgId: string) =>
-  apiFetch<Org>('/org/switch', { method: 'POST', body: JSON.stringify({ orgId }) })
+  apiFetch<Org>('/org/switch', {
+    method: 'POST',
+    body: JSON.stringify({ orgId }),
+  })
 
 // Credits
 export const getCredits = () => apiFetch<Credits>('/org/credits')
@@ -426,7 +455,11 @@ export const autumnSubscribeConcurrency = (plan: string) =>
 
 // url is non-null when enabling auto-recharge requires capturing an off-session
 // card first — the caller redirects there (a no-charge Stripe setup session).
-export const setAutumnAutoTopup = (cfg: { enabled: boolean; threshold: number; quantity: number }) =>
+export const setAutumnAutoTopup = (cfg: {
+  enabled: boolean
+  threshold: number
+  quantity: number
+}) =>
   apiFetch<{ ok: boolean; url?: string | null }>('/billing/autumn/auto-topup', {
     method: 'POST',
     body: JSON.stringify(cfg),
@@ -455,7 +488,11 @@ export interface Agent {
   display_name: string
   core: string | null
   model: string | null
-  channels: Array<{ name: string; bot_username?: string | null; connected_at?: string }>
+  channels: Array<{
+    name: string
+    bot_username?: string | null
+    connected_at?: string
+  }>
   packages: Array<{ name: string; installed_at?: string }>
   secret_store: string | null
   config: Record<string, unknown>
@@ -468,10 +505,26 @@ export interface AgentDetail extends Agent {
   instance_id: string | null
   instance_status: string | null
   sandbox_id: string | null
-  core_status: { status: string; reason?: string; message?: string; updated_at?: string } | null
-  channel_status: Record<string, { status: string; phase?: string; message?: string }>
-  package_status: Record<string, { status: string; phase?: string; message?: string }>
-  conditions: Array<{ type: string; status: string; reason?: string; message?: string }>
+  core_status: {
+    status: string
+    reason?: string
+    message?: string
+    updated_at?: string
+  } | null
+  channel_status: Record<
+    string,
+    { status: string; phase?: string; message?: string }
+  >
+  package_status: Record<
+    string,
+    { status: string; phase?: string; message?: string }
+  >
+  conditions: Array<{
+    type: string
+    status: string
+    reason?: string
+    message?: string
+  }>
   current_operation: AgentOperation | null
   last_error: { phase: string; message: string; at: string } | null
 }
@@ -489,8 +542,7 @@ export interface AgentOperation {
   updated_at: string
 }
 
-export const listAgents = () =>
-  apiFetch<{ agents: Agent[] }>('/agents')
+export const listAgents = () => apiFetch<{ agents: Agent[] }>('/agents')
 
 export const getAgent = (id: string) =>
   apiFetch<AgentDetail>(`/agents/${encodeURIComponent(id)}`)
@@ -509,15 +561,22 @@ export const createAgent = (input: {
   })
 
 export const deleteAgent = (id: string) =>
-  apiFetch<{ id: string; deleted: boolean }>(`/agents/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  })
+  apiFetch<{ id: string; deleted: boolean }>(
+    `/agents/${encodeURIComponent(id)}`,
+    {
+      method: 'DELETE',
+    },
+  )
 
 export const installGbrain = (agentId: string) =>
-  apiFetch<{ agent_id: string; package: string; status: string; operation: AgentOperation }>(
-    `/agents/${encodeURIComponent(agentId)}/packages/gbrain`,
-    { method: 'POST' },
-  )
+  apiFetch<{
+    agent_id: string
+    package: string
+    status: string
+    operation: AgentOperation
+  }>(`/agents/${encodeURIComponent(agentId)}/packages/gbrain`, {
+    method: 'POST',
+  })
 
 export const uninstallGbrain = (agentId: string) =>
   apiFetch<{ agent_id: string; package: string; status: string }>(
@@ -526,13 +585,15 @@ export const uninstallGbrain = (agentId: string) =>
   )
 
 export const connectTelegram = (agentId: string, botToken: string) =>
-  apiFetch<{ agent_id: string; channel: string; status: string; operation: AgentOperation }>(
-    `/agents/${encodeURIComponent(agentId)}/channels/telegram`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ bot_token: botToken }),
-    },
-  )
+  apiFetch<{
+    agent_id: string
+    channel: string
+    status: string
+    operation: AgentOperation
+  }>(`/agents/${encodeURIComponent(agentId)}/channels/telegram`, {
+    method: 'POST',
+    body: JSON.stringify({ bot_token: botToken }),
+  })
 
 export const disconnectTelegram = (agentId: string) =>
   apiFetch<{ agent_id: string; channel: string; status: string }>(
@@ -566,9 +627,13 @@ export const restartAgent = (agentId: string) =>
   )
 
 export const getAgentLogs = (agentId: string, tail = 300) =>
-  apiFetch<{ agent_id: string; sandbox_id: string; source: string; lines: number; content: string }>(
-    `/agents/${encodeURIComponent(agentId)}/logs?tail=${tail}`,
-  )
+  apiFetch<{
+    agent_id: string
+    sandbox_id: string
+    source: string
+    lines: number
+    content: string
+  }>(`/agents/${encodeURIComponent(agentId)}/logs?tail=${tail}`)
 
 // ── Per-agent paywalled feature subscriptions (Telegram et al) ──
 
@@ -591,10 +656,26 @@ export const listAgentEntitlements = (agentId: string) =>
   )
 
 export type SubscribeResult =
-  | { status: 'active'; feature: string; agent_id: string; subscription_id: string; price_id: string }
-  | { status: 'already_subscribed'; feature: string; agent_id: string; subscription_id: string }
+  | {
+      status: 'active'
+      feature: string
+      agent_id: string
+      subscription_id: string
+      price_id: string
+    }
+  | {
+      status: 'already_subscribed'
+      feature: string
+      agent_id: string
+      subscription_id: string
+    }
   | { status: 'ungated'; feature: string; agent_id: string }
-  | { status: 'checkout_required'; feature: string; agent_id: string; checkout_url: string }
+  | {
+      status: 'checkout_required'
+      feature: string
+      agent_id: string
+      checkout_url: string
+    }
 
 export const subscribeAgentFeature = (agentId: string, feature: string) =>
   apiFetch<SubscribeResult>(
@@ -644,7 +725,10 @@ export type ChatEvent =
   | { type: 'done' }
   | { type: 'raw'; data: string }
 
-export interface ChatTurn { role: 'user' | 'assistant' | 'system'; content: string }
+export interface ChatTurn {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+}
 
 export async function* streamAgentChat(
   agentId: string,
