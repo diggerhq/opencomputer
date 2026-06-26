@@ -266,6 +266,15 @@ body {
     text-decoration: inherit;
   }
 
+  /* Tables collapse borders — without Preflight the UA default is
+     `border-collapse: separate`, whose cell spacing breaks the row hover into
+     segments (the "gaps"/"blank borders" between cells). */
+  table {
+    border-collapse: collapse;
+    border-color: inherit;
+    text-indent: 0;
+  }
+
   /* Form controls inherit the page font — otherwise buttons/inputs fall back
      to the UA system font (the "looks like Arial" effect) instead of Inter. */
   button,
