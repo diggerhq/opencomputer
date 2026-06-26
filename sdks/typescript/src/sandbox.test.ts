@@ -30,13 +30,13 @@ describe("Sandbox checkpoint requests", () => {
     sandbox.sandboxId = "sb_1";
 
     await sandbox.createCheckpoint("autosave", {
-      retentionPolicy: { mode: "delete_oldest", maxCount: 10 },
+      retentionPolicy: { mode: "delete_oldest", maxCount: 3 },
     });
 
     const [, init] = fetchMock.mock.calls[0];
     expect(JSON.parse(init?.body as string)).toEqual({
       name: "autosave",
-      retentionPolicy: { mode: "delete_oldest", maxCount: 10 },
+      retentionPolicy: { mode: "delete_oldest", maxCount: 3 },
     });
   });
 });
