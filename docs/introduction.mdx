@@ -20,6 +20,17 @@ OpenComputer gives you a full Linux VM in the cloud. Each sandbox is an isolated
   </Card>
 </CardGroup>
 
+## Checkpoint Types
+
+OpenComputer supports two checkpoint modes:
+
+| Type | Preserves | Use when |
+| --- | --- | --- |
+| Full checkpoint | Disk, memory, and CPU state | You want the fastest fork or restore path from an exact running VM state. This is best for templates, important milestones, and branches you expect to fork often. |
+| Disk-only checkpoint | Disk state only | You want lightweight, frequent snapshots of files, installed packages, and environment changes. Forks boot from the saved disk, so they are cheaper to keep but may take longer to become ready. |
+
+Full checkpoints are the default. Use `kind: "disk_only"` when creating autosaves or high-frequency checkpoints where disk state is enough.
+
 ## Install
 
 <CodeGroup>
