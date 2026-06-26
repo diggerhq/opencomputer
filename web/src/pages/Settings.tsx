@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifyError } from '@/lib/errors'
+import { useTransientFlag } from '@/lib/use-transient-flag'
 import {
   deleteCustomDomain,
   getInvitations,
@@ -70,7 +71,7 @@ export default function Settings() {
   // Local edits override the fetched name; null = "not edited" (avoids an
   // effect to sync the field with the query).
   const [draftName, setDraftName] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
+  const [saved, markSaved] = useTransientFlag(2000)
   const [domainInput, setDomainInput] = useState('')
   const [confirmRemoveDomain, setConfirmRemoveDomain] = useState(false)
   const name = draftName ?? org?.name ?? ''
@@ -80,8 +81,7 @@ export default function Settings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['org'] })
       setDraftName(null)
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      markSaved()
     },
     onError: (e) => notifyError("Couldn't save organization settings.", e),
   })

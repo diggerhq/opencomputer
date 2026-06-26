@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Check, Copy, Eye, EyeOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useTransientFlag } from '@/lib/use-transient-flag'
 import { cn } from '@/lib/utils'
 
 /**
@@ -19,7 +20,7 @@ export function CopyRow({
   maskable?: boolean
   className?: string
 }) {
-  const [copied, setCopied] = useState(false)
+  const [copied, markCopied] = useTransientFlag(1500)
   const [revealed, setRevealed] = useState(!maskable)
 
   const shown =
@@ -29,8 +30,7 @@ export function CopyRow({
 
   const copy = () => {
     void navigator.clipboard.writeText(copyText)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+    markCopied()
   }
 
   return (

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { CircleAlert, CircleCheck } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
+import { useTransientFlag } from '@/lib/use-transient-flag'
 import {
   autumnSubscribeConcurrency,
   autumnTopup,
@@ -451,7 +452,7 @@ function AutoTopupCard({
   const enabled = draft.enabled ?? current?.enabled ?? false
   const threshold = draft.threshold ?? current?.threshold ?? 5
   const quantity = draft.quantity ?? current?.quantity ?? 25
-  const [saved, setSaved] = useState(false)
+  const [saved, markSaved] = useTransientFlag(3000)
   const [confirm, setConfirm] = useState(false)
 
   const mutation = useMutation({
@@ -464,8 +465,7 @@ function AutoTopupCard({
       }
       queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
       setDraft({}) // server config is canonical again
-      setSaved(true)
-      setTimeout(() => setSaved(false), 3000)
+      markSaved()
     },
     onError: (e) => notifyError("Couldn't save auto-top-up settings.", e),
   })
