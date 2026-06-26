@@ -48,7 +48,7 @@ Managed-agent product behavior is mostly **not** implemented here:
 The dashboard (`web/`) + control plane run against a personal **GCP dev box**
 (`deploy/gcp/deploy-qemu-dev.sh`; config in the gitignored
 `~/.opensandbox-gcp-dev.env`). The dashboard can be run two ways — both, plus
-the quirks that bite, are documented in **`.agents/work/dev-edge-setup.md`**:
+the quirks that bite, are documented in **`.agents/reference/dev-edge-setup.md`**:
 
 - **Vite local** (fast UI iteration) — `cd web && source ~/.opensandbox-gcp-dev.env && npm run dev`:
   SPA on `:3000` proxying `/api`,`/auth` to the box (combined-mode WorkOS auth).

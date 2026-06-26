@@ -9,7 +9,7 @@
 # (unused by the code). The CreditAccount DO is kept so `export { CreditAccount }`
 # has a matching migration.
 #
-# Full setup + rationale: .agents/work/dev-edge-setup.md. Quick deploy:
+# Full setup + rationale: .agents/reference/dev-edge-setup.md. Quick deploy:
 #   cd web && npm run build                                      # build the SPA
 #   rm -rf cloudflare-workers/api-edge/assets \
 #     && cp -R web/dist/. cloudflare-workers/api-edge/assets/    # stage SPA -> [assets]

@@ -31,7 +31,7 @@ behavior — e.g. the WorkOS hosted-logout flow, which the vite-local setup bypa
 
 ## Where it lives (living references — keep these current, not this record)
 
-- **Runbook:** `.agents/work/dev-edge-setup.md` (full setup/redeploy/box-as-cell).
+- **Runbook:** `.agents/reference/dev-edge-setup.md` (full setup/redeploy/box-as-cell).
 - **Discoverability:** `AGENTS.md` → "Local development" section.
 
 ## Status / follow-up
