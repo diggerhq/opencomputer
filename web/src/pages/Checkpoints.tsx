@@ -13,7 +13,6 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -192,17 +191,20 @@ export default function Checkpoints() {
           loading={isLoading}
           renderSubRow={(cp) =>
             cp.status === 'failed' && cp.errorMsg ? (
-              <Alert variant="destructive">
-                <CircleAlert />
-                <AlertDescription>
-                  <p className="break-words">{cp.errorMsg}</p>
+              <div className="bg-status-error-bg/50 flex items-start gap-2 px-4 py-2.5">
+                <CircleAlert className="text-status-error mt-px size-3.5 shrink-0" />
+                <div className="min-w-0 text-xs">
+                  <span className="text-status-error break-words">
+                    {cp.errorMsg}
+                  </span>
                   {cp.failedAt ? (
-                    <p className="text-muted-foreground mt-1">
-                      Failed {new Date(cp.failedAt).toLocaleString()}
-                    </p>
+                    <span className="text-muted-foreground">
+                      {' · failed '}
+                      {new Date(cp.failedAt).toLocaleString()}
+                    </span>
                   ) : null}
-                </AlertDescription>
-              </Alert>
+                </div>
+              </div>
             ) : null
           }
           empty={

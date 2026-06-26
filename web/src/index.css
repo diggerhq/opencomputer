@@ -167,12 +167,15 @@
   --status-pending: hsl(34 80% 31%);
   --status-pending-bg: hsl(42 88% 90%);
 
-  /* Dark technical surfaces */
-  --code: hsl(240 14% 9%); /* code blocks */
+  /* Dark technical surfaces — WARM dark (hue ~36) so they read as the app's
+     own dark, not a generic cool-blue terminal. */
+  --code: hsl(36 9% 10%); /* code blocks */
   --code-foreground: hsl(40 12% 88%);
-  --code-muted: hsl(240 6% 55%); /* line numbers, gutters */
-  --code-border: hsl(240 8% 18%);
-  --terminal: #0a0a0f; /* xterm bg — preserved exactly */
+  --code-muted: hsl(40 6% 54%); /* line numbers, gutters */
+  --code-border: hsl(36 8% 19%);
+  --terminal: hsl(
+    36 13% 7%
+  ); /* warm near-black (xterm bg matches in Terminal.tsx) */
 
   /* Charts — neutral ink ramp (light → dark) */
   --chart-1: hsl(45 8% 25%);

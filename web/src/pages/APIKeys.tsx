@@ -199,7 +199,7 @@ export default function APIKeys() {
             <DialogFooter className="mt-4">
               <Button
                 type="button"
-                variant="outline"
+                variant="ghost"
                 onClick={() => {
                   setShowCreate(false)
                   setNewKeyName('')

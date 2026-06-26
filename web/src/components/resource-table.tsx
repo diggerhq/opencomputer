@@ -103,7 +103,7 @@ export function ResourceTable<T>({
                   </TableRow>
                   {sub ? (
                     <TableRow className="hover:bg-transparent">
-                      <TableCell colSpan={columns.length} className="pt-0">
+                      <TableCell colSpan={columns.length} className="p-0">
                         {sub}
                       </TableCell>
                     </TableRow>

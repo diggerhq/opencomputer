@@ -31,16 +31,14 @@ const visibleCap = 3000 // hard cap on retained events
 const debounceMs = 200 // search-box debounce
 const nearBottomPx = 40 // "auto-scroll if within this many px of bottom"
 
-// One colour per source. Distinct hues across the four; no overlap
-// with the green used for success-EOF rows (✓ exited 0) and the rose
-// used for failure-EOF rows.
-// Dark-surface palette: one distinct hue per source, no overlap with the
-// emerald (✓ exited 0) / rose (✗) used for EOF rows.
+// One muted hue per source — distinct but toned down (not neon) so they sit
+// quietly on the warm-dark surface; no overlap with the green/rose used for
+// EOF rows.
 const sources: { value: LogEvent['source']; label: string; color: string }[] = [
-  { value: 'exec_stdout', label: 'stdout', color: '#a1a1aa' }, // zinc-400
-  { value: 'exec_stderr', label: 'stderr', color: '#fb7185' }, // rose-400
-  { value: 'var_log', label: 'var/log', color: '#fbbf24' }, // amber-400
-  { value: 'agent', label: 'agent', color: '#38bdf8' }, // sky-400
+  { value: 'exec_stdout', label: 'stdout', color: '#a8a299' }, // warm grey
+  { value: 'exec_stderr', label: 'stderr', color: '#dc8f88' }, // soft rose
+  { value: 'var_log', label: 'var/log', color: '#cfa45e' }, // soft amber
+  { value: 'agent', label: 'agent', color: '#7ba4cd' }, // soft blue
 ]
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -215,7 +213,7 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search…"
-            className="border-code-border text-code-foreground placeholder:text-code-muted w-full rounded-md border bg-black/20 px-2.5 py-1.5 pr-7 text-[13px] outline-none focus-visible:border-zinc-500"
+            className="border-code-border text-code-foreground placeholder:text-code-muted focus-visible:border-code-muted/70 w-full rounded-md border bg-black/20 px-2.5 py-1.5 pr-7 text-[13px] outline-none"
           />
           {query ? (
             <button
@@ -242,12 +240,14 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
                 className="rounded-md border px-2 py-0.5 font-mono text-[11px] transition-opacity"
                 style={{
                   color: src.color,
-                  borderColor: src.color,
+                  // Fine, low-contrast border — a faint tint of the source
+                  // color rather than a screamy full-saturation outline.
+                  borderColor: `color-mix(in srgb, ${src.color} 32%, transparent)`,
                   background: isVisible
-                    ? `color-mix(in srgb, ${src.color} 16%, transparent)`
+                    ? `color-mix(in srgb, ${src.color} 12%, transparent)`
                     : 'transparent',
-                  opacity: isVisible ? 1 : 0.4,
-                  fontWeight: isVisible ? 600 : 400,
+                  opacity: isVisible ? 1 : 0.45,
+                  fontWeight: isVisible ? 500 : 400,
                 }}
               >
                 {src.label}
@@ -314,7 +314,7 @@ function ConnectionDot({
   state: 'connecting' | 'open' | 'error' | 'closed'
 }) {
   const color =
-    state === 'open' ? '#34d399' : state === 'error' ? '#fb7185' : '#71717a'
+    state === 'open' ? '#6bbd95' : state === 'error' ? '#dc8f88' : '#8a847b'
   return (
     <span
       title={`Connection: ${state}`}
@@ -326,7 +326,7 @@ function ConnectionDot({
 
 function Row({ ev }: { ev: LogEvent }) {
   const sourceMeta = sources.find((s) => s.value === ev.source)
-  const sourceColor = sourceMeta?.color || '#71717a'
+  const sourceColor = sourceMeta?.color || '#8a847b'
   const time = formatTime(ev._time)
 
   // Exec EOF marker: empty line + exit_code present → a synthetic "command X
@@ -336,7 +336,7 @@ function Row({ ev }: { ev: LogEvent }) {
     return (
       <div
         className="flex gap-2.5 px-4 py-0.5 italic"
-        style={{ color: ok ? '#34d399' : '#fb7185' }}
+        style={{ color: ok ? '#6bbd95' : '#dc8f88' }}
       >
         <span className="text-code-muted not-italic">{time}</span>
         <span>

@@ -30,10 +30,10 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
       fontSize: 13,
       fontFamily: '"Geist Mono Variable", Menlo, Monaco, Consolas, monospace',
       theme: {
-        background: '#0a0a0f',
-        foreground: '#e4e4e7',
-        cursor: '#818cf8',
-        selectionBackground: 'rgba(129, 140, 248, 0.3)',
+        background: '#14120f', // warm near-black — matches --terminal
+        foreground: '#e6e1d8', // warm light
+        cursor: '#c2bcae', // warm neutral (de-purpled)
+        selectionBackground: 'rgba(230, 225, 216, 0.16)',
         black: '#18181b',
         red: '#fb7185',
         green: '#34d399',
