@@ -8,13 +8,7 @@ import prettier from 'eslint-config-prettier'
 
 export default tseslint.config(
   {
-    ignores: [
-      'dist',
-      // Orphaned, unrouted screens — out of scope for the UI modernization
-      // (excluded from all metrics per .agents/work/web-ui-modernization.md).
-      'src/pages/Agents.tsx',
-      'src/pages/AgentDetail.tsx',
-    ],
+    ignores: ['dist'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

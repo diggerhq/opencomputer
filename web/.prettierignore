@@ -1,7 +1,4 @@
 dist
 node_modules
 package-lock.json
-# Orphaned, unrouted screens — out of scope for the UI modernization
-# (excluded from all metrics per .agents/work/web-ui-modernization.md).
-src/pages/Agents.tsx
-src/pages/AgentDetail.tsx
+.impeccable
