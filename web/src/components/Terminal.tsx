@@ -118,23 +118,27 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
         wsRef.current = ws
 
         ws.onopen = () => {
+          if (disposed) return
           setStatus('connected')
           term.clear()
           term.focus()
         }
 
         ws.onmessage = (event) => {
+          if (disposed) return
           const data = new Uint8Array(event.data)
           term.write(data)
         }
 
         ws.onclose = () => {
+          if (disposed) return
           setStatus('disconnected')
           term.writeln('')
           term.writeln('\x1b[2m  Session ended.\x1b[0m')
         }
 
         ws.onerror = () => {
+          if (disposed) return
           setStatus('error')
           setErrorMsg('WebSocket connection failed')
         }

@@ -12,10 +12,10 @@
 //     unpins it.
 //   - Hard cap on retained events (visibleCap below). Once exceeded,
 //     drop the oldest. Memory grows linearly with cap and is bounded.
-//   - Search filters server-side (the SSE re-opens with `?q=...`); we
-//     debounce so each keystroke isn't a new connection.
-//   - Source filter is a comma-separated allowlist that maps directly
-//     to the server's ?source= param.
+//   - The EventSource opens ONCE per sandbox; search + source filters are
+//     applied client-side against the in-memory buffer (no SSE re-open on
+//     filter change). Search is debounced only to avoid re-running the filter
+//     pipeline on every keystroke.
 //   - Pause toggle freezes display only — the EventSource keeps
 //     receiving so unpausing catches up; if buffer overflows, oldest
 //     pending events drop.

@@ -1,5 +1,5 @@
 import { lazy } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { AuthProvider } from './hooks/auth-provider'
 import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './components/app-shell'
@@ -24,10 +24,15 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="sandboxes" element={<Sessions />} />
             <Route path="sandboxes/:sandboxId" element={<SessionDetail />} />
-            {/* Back-compat: the tab was renamed Sessions → Sandboxes. */}
+            {/* Back-compat: the tab was renamed Sessions → Sandboxes. Keep the
+                old deep links working, including /sessions/:sandboxId. */}
             <Route
               path="sessions"
               element={<Navigate to="/sandboxes" replace />}
+            />
+            <Route
+              path="sessions/:sandboxId"
+              element={<LegacySandboxRedirect />}
             />
             <Route path="checkpoints" element={<Checkpoints />} />
             <Route path="templates" element={<Templates />} />
@@ -40,4 +45,10 @@ export default function App() {
       </Routes>
     </AuthProvider>
   )
+}
+
+// Preserves the :sandboxId when redirecting the old /sessions/:id deep link.
+function LegacySandboxRedirect() {
+  const { sandboxId } = useParams()
+  return <Navigate to={`/sandboxes/${sandboxId ?? ''}`} replace />
 }

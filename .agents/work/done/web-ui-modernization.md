@@ -415,8 +415,13 @@ oversized live components (Billing, SessionDetail) ·
 a `/design-system` gallery (or Ladle/Storybook) if wrapper drift becomes real ·
 axe/Playwright automation · full semantic palette (logs/chart/billing/ANSI) ·
 Newsreader for sparse titles · sticky table columns / mobile card fallback /
-icon-rail · **upgrade-only** runtime bumps if nothing forces them sooner
-(React 19 + RR7, Vite 8 + plugin, TS 6).
+icon-rail.
+
+> **Note (2026-06-27):** the **upgrade-only runtime bumps were done**
+> intentionally (user-requested, post-modernization): React 19, React Router 7,
+> Vite 8 + `@vitejs/plugin-react` 5.2, TS 6, zod 4. Vite 8 requires **Node
+> ≥20.19** — pinned via `web/package.json` engines + `web/.nvmrc` + the
+> deploy-server workflow on Node 22. ESLint held at 9 (jsx-a11y peers `^9`).
 
 ## References
 

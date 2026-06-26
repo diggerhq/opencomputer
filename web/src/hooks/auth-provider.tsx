@@ -32,11 +32,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const switchOrg = useCallback(
     async (orgId: string) => {
       await switchOrgApi(orgId)
-      // Drop all cached queries so no previous-org data lingers in
-      // sandboxes / billing / API keys; the active ['me'] query refetches.
+      // Drop all cached (previous-org) data, then explicitly refetch ['me'] —
+      // clear() removes the query but does NOT refetch the active observer, so
+      // the shell would otherwise keep showing the old org. Other screens'
+      // queries refetch when they re-render against the cleared cache.
       queryClient.clear()
+      await refetch()
     },
-    [queryClient],
+    [queryClient, refetch],
   )
 
   // A 401 is an expected unauthenticated state, not a surfaced error.
