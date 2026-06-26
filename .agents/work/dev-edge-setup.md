@@ -72,7 +72,12 @@ pass `--config`.
 2. **Secrets** (`wrangler secret put <NAME> --config wrangler.igor-dev.toml`):
    - `WORKOS_API_KEY`, `WORKOS_CLIENT_ID` — **staging** WorkOS, the *same app the
      dev box uses* (`client_01KHP753DZSAF3PMR9D28HDMRW`); values in
-     `~/.opensandbox-gcp-dev.env`.
+     `~/.opensandbox-gcp-dev.env`. **GOTCHA:** that file uses `${VAR:-default}`
+     references, so you must **`source`** it to resolve them — `grep|cut` yields
+     the literal `${WORKOS_API_KEY:-…}` string and WorkOS rejects it with
+     `invalid_client / Invalid client secret`. Upload like:
+     `source ~/.opensandbox-gcp-dev.env && printf '%s' "$WORKOS_API_KEY" | wrangler secret put WORKOS_API_KEY --config wrangler.igor-dev.toml`
+     (verify it's the ~83-char `sk_…` value, not the ~102-char `${…}` wrapper).
    - `SESSION_JWT_SECRET` — signs `oc_session`. Generated once and saved as
      `EDGE_SESSION_JWT_SECRET` in `~/.opensandbox-gcp-dev.env` (gitignored). Must
      equal the box's `OPENSANDBOX_SESSION_JWT_SECRET` to wire the box as a cell.
