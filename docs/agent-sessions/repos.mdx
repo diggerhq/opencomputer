@@ -34,6 +34,82 @@ GitHub uses GitHub Apps as its auth surface. Other providers can add their own a
 surface while sessions continue to reference repos and sources the same way.
 </Note>
 
+## How it works
+
+Every authenticated Git operation runs in its own **Git operations sandbox** — a minimal
+box with `git` and nothing else, provisioned for that one operation and destroyed when it
+finishes. Checkout and publish get *different* boxes. Your agent's own sandboxes — the
+**brain** that runs the loop and the **hands** sandbox that holds the files — are never one
+of these: they hold no token and never run authenticated `git` or `gh`. Files and patches
+move between them through object storage, never next to a credential.
+
+```mermaid
+sequenceDiagram
+    participant Brain as Brain (agent loop)
+    participant Hands as Hands (agent sandbox)
+    participant CP as Control plane
+    participant GitR as Git box (checkout)
+    participant GitW as Git box (publish)
+    participant Store as Object storage
+    participant GH as GitHub
+
+    Note over GitR: Checkout — before the first turn
+    CP->>GitR: Provision (git only, ephemeral)
+    CP->>GH: Mint just-in-time token (read-only, one repo)
+    GH-->>CP: Scoped token
+    CP->>GitR: Inject token into this box's env only
+    GitR->>GH: Clone at the pinned sha
+    GitR->>Store: Write files (no .git, no token)
+    Note over GitR: Destroyed
+    Store->>Hands: Extract into /workspace/sources
+
+    Note over Brain: Reason
+    Note over Brain: Plan
+    Brain->>Hands: Read, edit, run commands
+    Note over Hands: Edit files
+    Note over Hands: Run tests
+    Note over Hands: Run tools
+    Hands-->>Brain: Results
+    Note over Brain: Decide next step
+
+    Note over GitW: Publish — on github_publish_pull_request
+    Brain->>CP: github_publish_pull_request(source, title)
+    CP->>Hands: Diff the edits
+    Hands->>Store: Write a patch (no token)
+    CP->>GitW: Provision a separate box (git only)
+    CP->>GH: Mint just-in-time token (write-scoped, one repo)
+    GH-->>CP: Scoped token
+    CP->>GitW: Inject token into this box's env only
+    GitW->>Store: Read the patch
+    GitW->>GH: Push an oc/ branch, open the PR
+    Note over GitW: Destroyed
+    CP-->>Brain: PR URL
+```
+
+**Checkout (read), before the first turn:**
+
+1. OpenComputer provisions a fresh Git operations sandbox for the checkout.
+2. The control plane mints a **just-in-time token**: the GitHub App requests an installation
+   token scoped to that one repo with read-only contents permission, and it is injected into
+   the sandbox's environment only — never `.git/config`, the command line, or any log.
+3. The sandbox clones the exact `sha`, then writes the **files** (no `.git`, no remote, no
+   token) to dedicated object storage.
+4. The sandbox is destroyed; the token dies with it.
+5. The **hands** sandbox extracts those bytes into `/workspace/sources/<name>`.
+
+**Publish (write), when the agent calls `github_publish_pull_request`:**
+
+1. The **hands** sandbox turns its edits into a patch and writes it to object storage. The
+   agent still has no token.
+2. OpenComputer provisions a **new** Git operations sandbox and mints a fresh,
+   **write-scoped** token for that one repo.
+3. The sandbox applies the patch on an `oc/<session>/<source>-<id>` branch, pushes, and
+   opens the PR.
+4. The sandbox is destroyed; the token dies with it. The PR URL is returned to the agent.
+
+The token is minted per operation, scoped to a single repo, lives only inside a box that
+does nothing but Git, and is gone before the next turn.
+
 ## The OpenComputer GitHub App
 
 In preview, the OpenComputer App is the only GitHub App: OpenComputer owns the App key and
