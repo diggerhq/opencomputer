@@ -211,12 +211,12 @@ screens only — **Agents (44) + AgentDetail (159) are orphaned and excluded.**
   positions) or third-party bridges (xterm) — never for static styling.
 - Cover the states **that screen actually has** — at minimum loading, empty,
   error, and destructive-confirm where relevant (see the matrix as a checklist).
-- PR includes before/after **screenshots** (desktop; mobile only if the screen
-  has meaningful mobile behavior).
+- Each screen's **commit** includes before/after **screenshots** (desktop;
+  mobile only if the screen has meaningful mobile behavior).
 
 ## State coverage (guidance, not a blocking matrix)
 
-Reference list — each PR fixtures **only the states its screen touches**:
+Reference list — each screen covers **only the states it actually has**:
 sessions {empty, active, failed, deleting} · billing {ok, halted, past-due,
 no-payment-method} · org {single, multiple} · API key {secret-shown-once} ·
 custom domain {pending, failed, verified} · logs {streaming, disconnected} ·
@@ -255,22 +255,22 @@ terminal {connected, WS failure}. (Auth/first-run are shell-level, covered once.
 - Contrast verified on the **token pairs actually used** (incl. status colors +
   dark surfaces) — not all combinatorial pairs.
 - First pass: **manual** keyboard + contrast checks + screenshots. Automate
-  (axe / Playwright) **once the UI settles** — not a blocker for early PRs.
+  (axe / Playwright) **once the UI settles** — not a blocker for early commits.
 
 ## Serving + testing
 
 `web/` ships two ways — Go control plane (`web/dist` via `serveDashboardUI`) and
 `api-edge` Worker assets. Smoke **both modes after Foundation and before
 release** (not per screen): auth, logout (Go + edge), SSE logs, WS terminal, SPA
-fallback, asset routing. Per-screen PRs run in one mode. (Exercise the edge via
+fallback, asset routing. Per-screen commits run in one mode. (Exercise the edge via
 `.agents/reference/dev-edge-setup.md`.) Manual logs/terminal checks are required
 only for SessionDetail / LogsPanel / Terminal / shell CSS, and at release.
 
-## Quality gate (per PR — lean)
+## Quality gate (per screen / commit — lean)
 
 `npm run build` · `npm run lint` · `tsc` · before/after screenshots · manual
 keyboard + contrast pass for the screen's used token pairs. (Logs/terminal manual
-check only when the PR touches them.)
+check only when the commit touches them.)
 
 ## Success criteria
 
