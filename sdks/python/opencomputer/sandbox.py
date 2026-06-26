@@ -602,18 +602,30 @@ class Sandbox:
         pty_key = self._token or self._api_key
         return Pty(self._ops_client, self.sandbox_id, pty_url, pty_key)
 
-    async def create_checkpoint(self, name: str) -> dict:
+    async def create_checkpoint(
+        self,
+        name: str,
+        retention_policy: dict | None = None,
+    ) -> dict:
         """Create a named checkpoint of the running sandbox.
 
         Args:
             name: A unique name for this checkpoint.
+            retention_policy: Optional policy such as
+                {"mode": "delete_oldest", "maxCount": 10}. When set, the
+                server may delete older eligible checkpoints before creating
+                this one.
 
         Returns:
             Checkpoint info dict with id, sandboxId, name, status, etc.
         """
+        body = {"name": name}
+        if retention_policy is not None:
+            body["retentionPolicy"] = retention_policy
+
         resp = await self._client.post(
             f"/sandboxes/{self.sandbox_id}/checkpoints",
-            json={"name": name},
+            json=body,
         )
         resp.raise_for_status()
         return resp.json()

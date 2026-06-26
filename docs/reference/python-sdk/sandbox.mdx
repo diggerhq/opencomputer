@@ -175,9 +175,15 @@ Update idle timeout. [HTTP API →](/api-reference/sandboxes/set-timeout)
 
 **Returns:** `None`
 
-### `await sandbox.create_checkpoint(name)`
+### `await sandbox.create_checkpoint(name, retention_policy=None)`
 
 Create a named checkpoint. [HTTP API →](/api-reference/checkpoints/create)
+
+<ParamField body="retention_policy" type="dict">
+  Optional retention policy. Use `{"mode": "delete_oldest", "maxCount": 10}` to
+  delete the oldest eligible checkpoint before creating a new one when the
+  sandbox already has 10 checkpoints.
+</ParamField>
 
 **Returns:** `dict`
 

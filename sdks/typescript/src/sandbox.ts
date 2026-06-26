@@ -101,6 +101,14 @@ export interface CheckpointInfo {
   createdAt: string;
 }
 
+export type CheckpointRetentionPolicy =
+  | { mode: "none" }
+  | { mode: "delete_oldest"; maxCount?: number };
+
+export interface CreateCheckpointOptions {
+  retentionPolicy?: CheckpointRetentionPolicy;
+}
+
 export interface PatchInfo {
   id: string;
   checkpointId: string;
@@ -693,14 +701,19 @@ export class Sandbox {
     }
   }
 
-  async createCheckpoint(name: string): Promise<CheckpointInfo> {
+  async createCheckpoint(name: string, opts: CreateCheckpointOptions = {}): Promise<CheckpointInfo> {
+    const body: Record<string, unknown> = { name };
+    if (opts.retentionPolicy) {
+      body.retentionPolicy = opts.retentionPolicy;
+    }
+
     const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}/checkpoints`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(this.apiKey ? { "X-API-Key": this.apiKey } : {}),
       },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(body),
     });
 
     if (!resp.ok) {

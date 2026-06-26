@@ -5,6 +5,8 @@ export {
   SandboxFamilyLimitError,
   type SandboxOpts,
   type CheckpointInfo,
+  type CheckpointRetentionPolicy,
+  type CreateCheckpointOptions,
   type PatchInfo,
   type PatchResult,
   type ScaleResult,

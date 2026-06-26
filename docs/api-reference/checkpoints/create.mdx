@@ -4,6 +4,9 @@ api: 'POST /api/sandboxes/{id}/checkpoints'
 ---
 
 Create a checkpoint of the sandbox state. Maximum 10 checkpoints per sandbox.
+By default, creating an 11th checkpoint returns an error. Set
+`retentionPolicy.mode` to `delete_oldest` to delete the oldest eligible
+checkpoint first so the new checkpoint can be created.
 
 <ParamField path="id" type="string" required>
   Sandbox ID
@@ -11,6 +14,12 @@ Create a checkpoint of the sandbox state. Maximum 10 checkpoints per sandbox.
 
 <ParamField body="name" type="string" required>
   Checkpoint name (unique per sandbox)
+</ParamField>
+
+<ParamField body="retentionPolicy" type="object">
+  Optional retention policy. Use `{ "mode": "delete_oldest", "maxCount": 10 }`
+  to keep at most 10 checkpoints by deleting the oldest eligible checkpoint
+  before creating a new one.
 </ParamField>
 
 <ResponseExample>

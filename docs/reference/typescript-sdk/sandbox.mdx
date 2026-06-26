@@ -208,12 +208,18 @@ Update the idle timeout. [HTTP API →](/api-reference/sandboxes/set-timeout)
 
 **Returns:** `Promise<void>`
 
-### `sandbox.createCheckpoint(name)`
+### `sandbox.createCheckpoint(name, opts?)`
 
 Create a named checkpoint. [HTTP API →](/api-reference/checkpoints/create)
 
 <ParamField body="name" type="string" required>
   Checkpoint name (unique per sandbox)
+</ParamField>
+
+<ParamField body="opts.retentionPolicy" type="object">
+  Optional retention policy. Use `{ mode: "delete_oldest", maxCount: 10 }` to
+  delete the oldest eligible checkpoint before creating a new one when the
+  sandbox already has 10 checkpoints.
 </ParamField>
 
 **Returns:** `Promise<CheckpointInfo>`
