@@ -48,11 +48,11 @@ export interface DashboardEnv {
   CF_ZONE_ID?: string;
   // Durable Agent Sessions (/v3) — the dashboard proxies /api/dashboard/v3/* to
   // this sessions-api host, asserting the logged-in OC org via a short-lived
-  // signed org-token (V3_EDGE_SECRET, shared with sessions-api). No osb_ key in
-  // the browser, no key custody. Both optional — if V3_EDGE_SECRET is unset the
-  // proxy 503s.
+  // signed OC org token (OC_ORG_TOKEN_SECRET, shared with sessions-api). No osb_
+  // key in the browser, no key custody. Both optional — if OC_ORG_TOKEN_SECRET is
+  // unset the proxy 503s.
   SESSIONS_API_URL?: string;
-  V3_EDGE_SECRET?: string;
+  OC_ORG_TOKEN_SECRET?: string;
 }
 
 const SESSION_COOKIE = "oc_session";
@@ -141,15 +141,15 @@ async function mintCellCapToken(secret: string, orgID: string, cellID: string, p
   return signingInput + "." + b64url(sig);
 }
 
-// Edge→/v3 org assertion: a short-lived HS256 token carrying the OC org id,
-// signed with V3_EDGE_SECRET (shared with sessions-api). /v3 trusts it and sets
-// owner = the asserted org — same "act for org X" shape as the cell cap-token,
-// so no osb_ key reaches the browser and /v3 never custodies a customer key.
-async function mintV3OrgToken(secret: string, orgID: string, userID: string | null): Promise<string> {
+// OC org token: a short-lived HS256 token carrying the OC org id, signed with
+// OC_ORG_TOKEN_SECRET (shared with sessions-api). /v3 trusts it and sets owner =
+// the asserted org — same "act for org X" shape as the cell cap-token, so no
+// osb_ key reaches the browser and /v3 never custodies a customer key.
+async function mintOrgToken(secret: string, orgID: string, userID: string | null): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "HS256", typ: "JWT" };
   const payload: Record<string, unknown> = {
-    sub: orgID, iss: "opencomputer-edge", aud: "sessions-api-v3", iat: now, exp: now + 120,
+    sub: orgID, iss: "opencomputer", aud: "sessions-api-v3", iat: now, exp: now + 120,
     org_id: orgID,
   };
   if (userID) payload.user_id = userID;
@@ -822,7 +822,7 @@ async function proxyToV3(
   caller: Caller,
   sub: string,
 ): Promise<Response> {
-  if (!env.V3_EDGE_SECRET) {
+  if (!env.OC_ORG_TOKEN_SECRET) {
     return json({ error: "agent sessions not configured" }, 503);
   }
   const base = (env.SESSIONS_API_URL ?? "https://api.opencomputer.dev").replace(
@@ -831,7 +831,7 @@ async function proxyToV3(
   );
   const url = new URL(req.url);
   const target = base + sub + url.search;
-  const orgToken = await mintV3OrgToken(env.V3_EDGE_SECRET, caller.orgID, caller.userID);
+  const orgToken = await mintOrgToken(env.OC_ORG_TOKEN_SECRET, caller.orgID, caller.userID);
 
   const headers = new Headers();
   headers.set("x-oc-org-token", orgToken);
