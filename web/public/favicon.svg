@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="OpenComputer">
+  <!-- Brand tokens: paper tile hsl(40 33% 97%), ink glyph hsl(45 8% 8%). A
+       minimal shell prompt `>_` for the console dialect. A hairline ink border
+       keeps the paper tile visible against light browser tab strips. -->
+  <rect x="1" y="1" width="30" height="30" rx="6.5" fill="#FAF8F5" stroke="#161513" stroke-width="1.5" />
+  <path
+    d="M10 11l5 5-5 5"
+    fill="none"
+    stroke="#161513"
+    stroke-width="2.6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M17.5 21.2h5.5"
+    fill="none"
+    stroke="#161513"
+    stroke-width="2.6"
+    stroke-linecap="round"
+  />
+</svg>
