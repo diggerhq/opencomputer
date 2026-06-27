@@ -13,13 +13,13 @@ import {
   Loader2,
 } from 'lucide-react'
 import {
-  deleteSession,
-  getSessionDetail,
-  getSessionStats,
-  powerCycleSession,
-  rebootSession,
-  type Session,
-  type SessionDetail as SessionDetailData,
+  deleteSandbox,
+  getSandboxDetail,
+  getSandboxStats,
+  powerCycleSandbox,
+  rebootSandbox,
+  type Sandbox,
+  type SandboxDetail as SessionDetailData,
 } from '@/api/client'
 // Lazy — these pull in xterm / the SSE stream; keep them out of the main chunk.
 const Terminal = lazy(() => import('@/components/Terminal'))
@@ -52,7 +52,7 @@ function timeAgo(dateStr: string): string {
 
 type ConfirmKind = 'delete' | 'reboot' | 'power-cycle' | null
 
-export default function SessionDetail() {
+export default function SandboxDetail() {
   const { sandboxId } = useParams<{ sandboxId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -64,14 +64,14 @@ export default function SessionDetail() {
   const [confirm, setConfirm] = useState<ConfirmKind>(null)
 
   const { data: session, isLoading } = useQuery({
-    queryKey: ['session-detail', sandboxId],
-    queryFn: () => getSessionDetail(sandboxId!),
+    queryKey: ['sandbox-detail', sandboxId],
+    queryFn: () => getSandboxDetail(sandboxId!),
     enabled: !!sandboxId,
   })
 
   const { data: stats } = useQuery({
-    queryKey: ['session-stats', sandboxId],
-    queryFn: () => getSessionStats(sandboxId!),
+    queryKey: ['sandbox-stats', sandboxId],
+    queryFn: () => getSandboxStats(sandboxId!),
     enabled: !!sandboxId && session?.status === 'running',
     refetchInterval: 5000,
     retry: false,
@@ -79,31 +79,33 @@ export default function SessionDetail() {
 
   const invalidate = () => {
     void queryClient.invalidateQueries({
-      queryKey: ['session-detail', sandboxId],
+      queryKey: ['sandbox-detail', sandboxId],
     })
     void queryClient.invalidateQueries({
-      queryKey: ['session-stats', sandboxId],
+      queryKey: ['sandbox-stats', sandboxId],
     })
-    void queryClient.invalidateQueries({ queryKey: ['sessions'] })
+    void queryClient.invalidateQueries({ queryKey: ['sandboxes'] })
   }
 
   const deleteMutation = useMutation({
-    mutationFn: () => deleteSession(sandboxId!),
+    mutationFn: () => deleteSandbox(sandboxId!),
     onMutate: async () => {
       await queryClient.cancelQueries({
-        queryKey: ['session-detail', sandboxId],
+        queryKey: ['sandbox-detail', sandboxId],
       })
       const stoppedAt = new Date().toISOString()
       queryClient.setQueryData<SessionDetailData>(
-        ['session-detail', sandboxId],
+        ['sandbox-detail', sandboxId],
         (old) => (old ? { ...old, status: 'stopped', stoppedAt } : old),
       )
-      queryClient.setQueriesData<Session[]>({ queryKey: ['sessions'] }, (old) =>
-        old?.map((item) =>
-          item.sandboxId === sandboxId
-            ? { ...item, status: 'stopped', stoppedAt }
-            : item,
-        ),
+      queryClient.setQueriesData<Sandbox[]>(
+        { queryKey: ['sandboxes'] },
+        (old) =>
+          old?.map((item) =>
+            item.sandboxId === sandboxId
+              ? { ...item, status: 'stopped', stoppedAt }
+              : item,
+          ),
       )
       setShowTerminal(false)
     },
@@ -112,13 +114,13 @@ export default function SessionDetail() {
   })
 
   const rebootMutation = useMutation({
-    mutationFn: () => rebootSession(sandboxId!),
+    mutationFn: () => rebootSandbox(sandboxId!),
     onError: (e) => notifyError("Couldn't reboot the sandbox.", e),
     onSettled: invalidate,
   })
 
   const powerCycleMutation = useMutation({
-    mutationFn: () => powerCycleSession(sandboxId!),
+    mutationFn: () => powerCycleSandbox(sandboxId!),
     onError: (e) => notifyError("Couldn't power-cycle the sandbox.", e),
     onSettled: invalidate,
   })

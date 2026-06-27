@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { Boxes } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import { usePrefetchSandbox } from '@/hooks/use-prefetch'
-import { deleteSession, getSessions, type Session } from '@/api/client'
+import { deleteSandbox, getSandboxes, type Sandbox } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
@@ -23,43 +23,45 @@ const STATUS_FILTERS = [
   { value: 'error', label: 'Error' },
 ] as const
 
-function canDeleteSession(session: Session) {
+function canDeleteSession(session: Sandbox) {
   return session.status === 'running' || session.status === 'hibernated'
 }
 
-export default function Sessions() {
+export default function Sandboxes() {
   const queryClient = useQueryClient()
   const prefetch = usePrefetchSandbox()
   const [status, setStatus] = useState<string>('')
-  const [toDelete, setToDelete] = useState<Session | null>(null)
+  const [toDelete, setToDelete] = useState<Sandbox | null>(null)
 
   const { data: sessions, isLoading } = useQuery({
-    queryKey: ['sessions', status],
-    queryFn: () => getSessions(status || undefined),
+    queryKey: ['sandboxes', status],
+    queryFn: () => getSandboxes(status || undefined),
   })
 
   // Always fetch all sessions for the activity chart.
   const { data: allSessions, isLoading: loadingAll } = useQuery({
-    queryKey: ['sessions', ''],
-    queryFn: () => getSessions(),
+    queryKey: ['sandboxes', ''],
+    queryFn: () => getSandboxes(),
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (sandboxId: string) => deleteSession(sandboxId),
+    mutationFn: (sandboxId: string) => deleteSandbox(sandboxId),
     onMutate: async (sandboxId) => {
-      await queryClient.cancelQueries({ queryKey: ['sessions'] })
+      await queryClient.cancelQueries({ queryKey: ['sandboxes'] })
       const stoppedAt = new Date().toISOString()
-      queryClient.setQueriesData<Session[]>({ queryKey: ['sessions'] }, (old) =>
-        old?.map((session) =>
-          session.sandboxId === sandboxId
-            ? { ...session, status: 'stopped', stoppedAt }
-            : session,
-        ),
+      queryClient.setQueriesData<Sandbox[]>(
+        { queryKey: ['sandboxes'] },
+        (old) =>
+          old?.map((session) =>
+            session.sandboxId === sandboxId
+              ? { ...session, status: 'stopped', stoppedAt }
+              : session,
+          ),
       )
     },
     onError: (error) => notifyError("Couldn't delete the sandbox.", error),
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      void queryClient.invalidateQueries({ queryKey: ['sandboxes'] })
     },
   })
 
@@ -70,7 +72,7 @@ export default function Sessions() {
     })
   }
 
-  const columns: Column<Session>[] = [
+  const columns: Column<Sandbox>[] = [
     {
       key: 'id',
       header: 'Sandbox ID',
@@ -199,7 +201,7 @@ function ActivityChart({
   sessions,
   loading,
 }: {
-  sessions: Session[]
+  sessions: Sandbox[]
   loading: boolean
 }) {
   const { days, maxCount } = useMemo(() => {

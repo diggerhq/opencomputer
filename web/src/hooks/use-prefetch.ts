@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { getSessionDetail } from '@/api/client'
+import { getSandboxDetail } from '@/api/client'
 
 /**
  * Returns a prefetcher for a sandbox detail page. Call it on row hover/focus to
@@ -9,11 +9,11 @@ import { getSessionDetail } from '@/api/client'
 export function usePrefetchSandbox() {
   const queryClient = useQueryClient()
   return (sandboxId: string) => {
-    // Warm the code-split SessionDetail chunk (same module the route lazy-loads).
-    void import('@/pages/SessionDetail')
+    // Warm the code-split SandboxDetail chunk (same module the route lazy-loads).
+    void import('@/pages/SandboxDetail')
     void queryClient.prefetchQuery({
-      queryKey: ['session-detail', sandboxId],
-      queryFn: () => getSessionDetail(sandboxId),
+      queryKey: ['sandbox-detail', sandboxId],
+      queryFn: () => getSandboxDetail(sandboxId),
       staleTime: 10_000,
     })
   }

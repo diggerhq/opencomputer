@@ -25,7 +25,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import { streamSessionLogs, type LogEvent } from '@/api/client'
+import { streamSandboxLogs, type LogEvent } from '@/api/client'
 
 const visibleCap = 3000 // hard cap on retained events
 const debounceMs = 200 // search-box debounce
@@ -98,7 +98,7 @@ export default function LogsPanel({ sandboxId, onClose }: LogsPanelProps) {
     stickToBottomRef.current = true
     setConnState('connecting')
 
-    const es = streamSessionLogs(sandboxId, { tail: true })
+    const es = streamSandboxLogs(sandboxId, { tail: true })
 
     es.onopen = () => setConnState('open')
     es.onerror = () => setConnState('error')

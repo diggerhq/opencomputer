@@ -21,7 +21,7 @@ export const MeResponseSchema = z.object({
   orgs: z.array(OrgInfoSchema).optional(),
 })
 
-export const SessionSchema = z.object({
+export const SandboxSchema = z.object({
   id: z.string(),
   sandboxId: z.string(),
   orgId: z.string(),
@@ -33,7 +33,7 @@ export const SessionSchema = z.object({
   stoppedAt: z.string().optional(),
   errorMsg: z.string().optional(),
 })
-export const SessionListSchema = z.array(SessionSchema)
+export const SandboxListSchema = z.array(SandboxSchema)
 
 export const PreviewURLSchema = z.object({
   id: z.string(),
@@ -48,7 +48,7 @@ export const PreviewURLSchema = z.object({
   createdAt: z.string(),
 })
 
-export const SessionDetailSchema = z.object({
+export const SandboxDetailSchema = z.object({
   id: z.string(),
   sandboxId: z.string(),
   template: z.string(),
@@ -241,9 +241,9 @@ export const SandboxUsageSchema = z.object({
 
 export type OrgInfo = z.infer<typeof OrgInfoSchema>
 export type MeResponse = z.infer<typeof MeResponseSchema>
-export type Session = z.infer<typeof SessionSchema>
+export type Sandbox = z.infer<typeof SandboxSchema>
 export type PreviewURL = z.infer<typeof PreviewURLSchema>
-export type SessionDetail = z.infer<typeof SessionDetailSchema>
+export type SandboxDetail = z.infer<typeof SandboxDetailSchema>
 export type SandboxStats = z.infer<typeof SandboxStatsSchema>
 export type CheckpointItem = z.infer<typeof CheckpointItemSchema>
 export type CheckpointsResponse = z.infer<typeof CheckpointsResponseSchema>

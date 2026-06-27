@@ -25,7 +25,7 @@ const me = {
   ],
 }
 
-const sessions = [
+const sandboxes = [
   {
     id: 's1',
     sandboxId: 'sbx_a1b2c3d4e5',
@@ -377,7 +377,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/me$/, () => me],
   [/^\/sessions\/[^/]+\/stats$/, () => sandboxStats],
   [/^\/sessions\/[^/]+$/, () => sessionDetail],
-  [/^\/sessions(\?.*)?$/, () => sessions],
+  [/^\/sessions(\?.*)?$/, () => sandboxes],
   [/^\/images(\?.*)?$/, () => images],
   [
     /^\/checkpoints(\?.*)?$/,

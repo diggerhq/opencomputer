@@ -5,8 +5,8 @@ import { Boxes } from 'lucide-react'
 import {
   createAPIKey,
   getAPIKeys,
-  getSessions,
-  type Session,
+  getSandboxes,
+  type Sandbox,
 } from '@/api/client'
 import { usePrefetchSandbox } from '@/hooks/use-prefetch'
 import { PageHeader } from '@/components/page-header'
@@ -25,7 +25,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 
 const SKILL_INSTALL_CMD = 'npx skills add diggerhq/opencomputer'
 
-function formatDuration(session: Session): string {
+function formatDuration(session: Sandbox): string {
   const start = new Date(session.startedAt).getTime()
   const end = session.stoppedAt
     ? new Date(session.stoppedAt).getTime()
@@ -36,7 +36,7 @@ function formatDuration(session: Session): string {
   return `${Math.round((secs / 3600) * 10) / 10}h`
 }
 
-function elapsedMinutes(session: Session): number {
+function elapsedMinutes(session: Sandbox): number {
   return Math.round(
     (Date.now() - new Date(session.startedAt).getTime()) / 1000 / 60,
   )
@@ -45,12 +45,12 @@ function elapsedMinutes(session: Session): number {
 export default function Dashboard() {
   const prefetch = usePrefetchSandbox()
   const { data: runningSessions, isLoading: loadingRunning } = useQuery({
-    queryKey: ['sessions', 'running'],
-    queryFn: () => getSessions('running'),
+    queryKey: ['sandboxes', 'running'],
+    queryFn: () => getSandboxes('running'),
   })
   const { data: allSessions, isLoading: loadingAll } = useQuery({
-    queryKey: ['sessions', ''],
-    queryFn: () => getSessions(),
+    queryKey: ['sandboxes', ''],
+    queryFn: () => getSandboxes(),
   })
 
   const active = runningSessions ?? []
@@ -61,7 +61,7 @@ export default function Dashboard() {
   ).length
   const isFirstRun = !loadingAll && all.length === 0
 
-  const recentColumns: Column<Session>[] = [
+  const recentColumns: Column<Sandbox>[] = [
     {
       key: 'id',
       header: 'Sandbox ID',
@@ -186,7 +186,7 @@ export default function Dashboard() {
   )
 }
 
-function SandboxRow({ session }: { session: Session }) {
+function SandboxRow({ session }: { session: Sandbox }) {
   const prefetch = usePrefetchSandbox()
   const elapsed = elapsedMinutes(session)
   return (

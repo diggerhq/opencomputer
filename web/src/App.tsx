@@ -5,15 +5,15 @@ import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './components/app-shell'
 
 // Route pages are code-split so the initial bundle stays small; the heaviest
-// deps (xterm, in Terminal/LogsPanel) only load on SessionDetail when opened.
+// deps (xterm, in Terminal/LogsPanel) only load on SandboxDetail when opened.
 const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Sessions = lazy(() => import('./pages/Sessions'))
+const Sandboxes = lazy(() => import('./pages/Sandboxes'))
 const APIKeys = lazy(() => import('./pages/APIKeys'))
 const Checkpoints = lazy(() => import('./pages/Checkpoints'))
 const Templates = lazy(() => import('./pages/Templates'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Billing = lazy(() => import('./pages/Billing'))
-const SessionDetail = lazy(() => import('./pages/SessionDetail'))
+const SandboxDetail = lazy(() => import('./pages/SandboxDetail'))
 
 export default function App() {
   return (
@@ -22,9 +22,9 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
             <Route index element={<Dashboard />} />
-            <Route path="sandboxes" element={<Sessions />} />
-            <Route path="sandboxes/:sandboxId" element={<SessionDetail />} />
-            {/* Back-compat: the tab was renamed Sessions → Sandboxes. Keep the
+            <Route path="sandboxes" element={<Sandboxes />} />
+            <Route path="sandboxes/:sandboxId" element={<SandboxDetail />} />
+            {/* Back-compat: the tab was renamed Sandboxes → Sandboxes. Keep the
                 old deep links working, including /sessions/:sandboxId. */}
             <Route
               path="sessions"

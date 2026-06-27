@@ -3,13 +3,13 @@ import { z } from 'zod'
 import * as S from './schemas'
 
 // Re-export the inferred response types (schemas are the single source of
-// truth) so existing `import { type Session } from '@/api/client'` keeps working.
+// truth) so existing `import { type Sandbox } from '@/api/client'` keeps working.
 export type {
   OrgInfo,
   MeResponse,
-  Session,
+  Sandbox,
   PreviewURL,
-  SessionDetail,
+  SandboxDetail,
   SandboxStats,
   CheckpointItem,
   CheckpointsResponse,
@@ -133,11 +133,11 @@ export async function logout(): Promise<void> {
 // API functions
 export const getMe = () => apiFetch('/me', {}, S.MeResponseSchema)
 
-export const getSessions = (status?: string) =>
+export const getSandboxes = (status?: string) =>
   apiFetch(
     `/sessions${status ? `?status=${status}` : ''}`,
     {},
-    S.SessionListSchema,
+    S.SandboxListSchema,
   )
 
 export const getAPIKeys = () =>
@@ -173,21 +173,21 @@ export const getImages = (all = false) =>
 export const deleteImage = (id: string) =>
   apiFetch<void>(`/images/${id}`, { method: 'DELETE' })
 
-export const getSessionDetail = (sandboxId: string) =>
-  apiFetch(`/sessions/${sandboxId}`, {}, S.SessionDetailSchema)
+export const getSandboxDetail = (sandboxId: string) =>
+  apiFetch(`/sessions/${sandboxId}`, {}, S.SandboxDetailSchema)
 
-export const getSessionStats = (sandboxId: string) =>
+export const getSandboxStats = (sandboxId: string) =>
   apiFetch(`/sessions/${sandboxId}/stats`, {}, S.SandboxStatsSchema)
 
-export const deleteSession = (sandboxId: string) =>
+export const deleteSandbox = (sandboxId: string) =>
   apiFetch<void>(`/sessions/${sandboxId}`, { method: 'DELETE' })
 
 // Soft restart: guest kernel reboots, QEMU process + workspace stay.
-export const rebootSession = (sandboxId: string) =>
+export const rebootSandbox = (sandboxId: string) =>
   apiFetch<void>(`/sessions/${sandboxId}/reboot`, { method: 'POST' })
 
 // Hard restart: QEMU process recreated, workspace data preserved.
-export const powerCycleSession = (sandboxId: string) =>
+export const powerCycleSandbox = (sandboxId: string) =>
   apiFetch<void>(`/sessions/${sandboxId}/power-cycle`, { method: 'POST' })
 
 // Sandbox session logs: SSE stream of /var/log + exec stdout/stderr.
@@ -217,7 +217,7 @@ export interface LogStreamOptions {
   limit?: number // historical batch cap; default 1000, max 10000
 }
 
-export function streamSessionLogs(
+export function streamSandboxLogs(
   sandboxId: string,
   opts: LogStreamOptions = {},
 ): EventSource {
