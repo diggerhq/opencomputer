@@ -249,14 +249,15 @@ browser = await Browser.create(
 
 </CodeGroup>
 
-## Environment
+## Authentication
 
-The SDK uses:
+The SDK uses your OpenComputer API key:
 
-| Variable | Description |
-| --- | --- |
-| `OPENCOMPUTER_API_KEY` | OpenComputer API key used for browser API auth |
-| `OPENCOMPUTER_BROWSER_API_URL` | Optional browser API URL override |
+```bash
+export OPENCOMPUTER_API_KEY="osb_..."
+```
 
-By default, the SDK calls `https://browser.opencomputer.dev`. During preview,
-your workspace may use a dev endpoint such as `https://browser.mo-oc-dev.com`.
+<Note>
+For local development against a non-production Browser Sessions endpoint, set
+`OPENCOMPUTER_BROWSER_API_URL`.
+</Note>
