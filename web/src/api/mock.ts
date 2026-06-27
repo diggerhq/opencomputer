@@ -550,17 +550,14 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/org\/custom-domain$/, () => ({})],
   [/^\/org$/, () => org],
   [/^\/agents$/, () => []],
-  // Durable Agent Sessions (/v3)
+  // Durable Agent Sessions (/v3) — lists return the { data: [...] } envelope.
   [/^\/v3\/agents\/[^/]+$/, () => v3agents[0]],
-  [/^\/v3\/agents$/, () => v3agents],
-  [
-    /^\/v3\/sessions\/[^/]+\/events/,
-    () => ({ events: v3events, cursor: null }),
-  ],
-  [/^\/v3\/sessions\/[^/]+\/destinations$/, () => v3destinations],
-  [/^\/v3\/sessions\/[^/]+\/deliveries$/, () => v3deliveries],
+  [/^\/v3\/agents$/, () => ({ data: v3agents })],
+  [/^\/v3\/sessions\/[^/]+\/events/, () => ({ data: v3events })],
+  [/^\/v3\/sessions\/[^/]+\/destinations$/, () => ({ data: v3destinations })],
+  [/^\/v3\/sessions\/[^/]+\/deliveries$/, () => ({ data: v3deliveries })],
   [/^\/v3\/sessions\/[^/]+$/, () => v3sessions[0]],
-  [/^\/v3\/sessions(\?.*)?$/, () => ({ sessions: v3sessions, cursor: null })],
+  [/^\/v3\/sessions(\?.*)?$/, () => ({ data: v3sessions, next_cursor: null })],
 ]
 
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {

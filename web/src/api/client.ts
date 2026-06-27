@@ -355,7 +355,9 @@ export const getSandboxUsage = (days = 30) =>
 // a browser-direct client-token path later without changing these signatures.
 
 // Agents — the reusable definition (prompt, model, runtime, credential).
-export const getAgents = () => apiFetch('/v3/agents', {}, S.AgentListSchema)
+// /v3 lists wrap rows in { data: [...] }; callers want the array.
+export const getAgents = () =>
+  apiFetch('/v3/agents', {}, S.AgentListSchema).then((r) => r.data)
 
 export const getAgent = (id: string) =>
   apiFetch(`/v3/agents/${id}`, {}, S.AgentSchema)
@@ -389,7 +391,7 @@ export const getSessions = (status?: string) =>
     `/v3/sessions${status ? `?status=${status}` : ''}`,
     {},
     S.SessionListSchema,
-  )
+  ).then((r) => r.data)
 
 export const getSession = (id: string) =>
   apiFetch(`/v3/sessions/${id}`, {}, S.SessionSchema)
@@ -414,7 +416,7 @@ export const getSessionEvents = (id: string, level?: string) =>
     `/v3/sessions/${id}/events${level ? `?level=${level}` : ''}`,
     {},
     S.SessionEventListSchema,
-  )
+  ).then((r) => r.data)
 
 // Steer — post a user message into a session.
 export const sendMessage = (
@@ -432,7 +434,14 @@ export const sendMessage = (
 
 // Webhooks — destinations are session-scoped.
 export const getDestinations = (id: string) =>
-  apiFetch(`/v3/sessions/${id}/destinations`, {}, z.array(S.DestinationSchema))
+  apiFetch(
+    `/v3/sessions/${id}/destinations`,
+    {},
+    z.object({
+      data: z.array(S.DestinationSchema),
+      next_cursor: z.string().nullish(),
+    }),
+  ).then((r) => r.data)
 
 export const createDestination = (
   id: string,
@@ -454,7 +463,14 @@ export const deleteDestination = (id: string, did: string) =>
 
 // Deliveries — the send ledger for a session's destinations.
 export const getDeliveries = (id: string) =>
-  apiFetch(`/v3/sessions/${id}/deliveries`, {}, z.array(S.DeliverySchema))
+  apiFetch(
+    `/v3/sessions/${id}/deliveries`,
+    {},
+    z.object({
+      data: z.array(S.DeliverySchema),
+      next_cursor: z.string().nullish(),
+    }),
+  ).then((r) => r.data)
 
 export const redeliver = (id: string, deliveryId: string) =>
   apiFetch<void>(`/v3/sessions/${id}/deliveries/${deliveryId}/redeliver`, {

@@ -59,7 +59,7 @@ export default function Sessions() {
     onError: (e) => notifyError("Couldn't start the session.", e),
   })
 
-  const sessions = data?.sessions ?? []
+  const sessions = data ?? []
   const hasAgents = (agents?.length ?? 0) > 0
 
   const columns: Column<Session>[] = [

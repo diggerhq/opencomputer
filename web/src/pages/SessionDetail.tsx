@@ -108,7 +108,7 @@ export default function SessionDetail() {
   const canSteer = !archived
   const canCancel = status === 'running' || status === 'awaiting_input'
 
-  const allEvents = eventData?.events ?? []
+  const allEvents = eventData ?? []
   const events =
     level === 'user' ? allEvents.filter((e) => e.level === 'user') : allEvents
 

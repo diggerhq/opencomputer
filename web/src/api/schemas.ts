@@ -255,7 +255,11 @@ export const AgentSchema = z.object({
   limits: record.optional(),
   created_at: z.string(),
 })
-export const AgentListSchema = z.array(AgentSchema)
+// /v3 list endpoints wrap rows in { data: [...], next_cursor? }.
+export const AgentListSchema = z.object({
+  data: z.array(AgentSchema),
+  next_cursor: z.string().nullish(),
+})
 
 export const SessionSchema = z.object({
   id: z.string(),
@@ -270,8 +274,8 @@ export const SessionSchema = z.object({
   created_at: z.string(),
 })
 export const SessionListSchema = z.object({
-  sessions: z.array(SessionSchema),
-  cursor: z.string().nullable().optional(),
+  data: z.array(SessionSchema),
+  next_cursor: z.string().nullish(),
 })
 
 export const ActorSchema = z.object({
@@ -295,8 +299,8 @@ export const SessionEventSchema = z.object({
   created_at: z.string().optional(),
 })
 export const SessionEventListSchema = z.object({
-  events: z.array(SessionEventSchema),
-  cursor: z.string().nullable().optional(),
+  data: z.array(SessionEventSchema),
+  next_cursor: z.string().nullish(),
 })
 
 export const TurnSchema = z.object({
