@@ -604,6 +604,10 @@ const ROUTES: Array<[RegExp, Handler]> = [
     /^\/webhooks\/[^/]+\/deliveries$/,
     () => ({ data: sandboxWebhookDeliveries }),
   ],
+  [
+    /^\/webhooks\/[^/]+\/secret$/,
+    () => ({ secret: 'whsec_mockSigningSecret123' }),
+  ],
   [/^\/webhooks$/, () => ({ data: sandboxWebhooks })],
 ]
 

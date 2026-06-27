@@ -1,6 +1,16 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Plus, RotateCw, Send, Webhook, X } from 'lucide-react'
+import {
+  Check,
+  ChevronRight,
+  Copy,
+  KeyRound,
+  Plus,
+  RotateCw,
+  Send,
+  Webhook,
+  X,
+} from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   getSandboxWebhooks,
@@ -8,6 +18,7 @@ import {
   deleteSandboxWebhook,
   testSandboxWebhook,
   getSandboxWebhookDeliveries,
+  getSandboxWebhookSecret,
   redeliverSandboxWebhook,
   type SandboxWebhook,
 } from '@/api/client'
@@ -54,7 +65,6 @@ export default function SandboxWebhooks() {
   const [showAdd, setShowAdd] = useState(false)
   const [url, setUrl] = useState('')
   const [name, setName] = useState('')
-  const [secret, setSecret] = useState('')
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [toDelete, setToDelete] = useState<SandboxWebhook | null>(null)
@@ -83,13 +93,11 @@ export default function SandboxWebhooks() {
         url: url.trim(),
         name: name.trim() || undefined,
         eventTypes: selectedTypes.size ? Array.from(selectedTypes) : undefined,
-        secret: secret.trim() || undefined,
       }),
     onSuccess: () => {
       setShowAdd(false)
       setUrl('')
       setName('')
-      setSecret('')
       setSelectedTypes(new Set())
       invalidate()
     },
@@ -201,6 +209,7 @@ export default function SandboxWebhooks() {
                           {w.eventTypes.join(', ')}
                         </p>
                       ) : null}
+                      <SecretReveal webhookId={w.id} />
                       <Deliveries webhookId={w.id} />
                     </div>
                   ) : null}
@@ -218,7 +227,8 @@ export default function SandboxWebhooks() {
             <DialogTitle>Add destination</DialogTitle>
             <DialogDescription>
               Sandbox lifecycle events for your org are delivered to this HTTPS
-              endpoint, signed with a per-destination secret.
+              endpoint. A signing secret is generated automatically — reveal it
+              from the destination after you add it.
             </DialogDescription>
           </DialogHeader>
           <form
@@ -270,18 +280,6 @@ export default function SandboxWebhooks() {
                 ))}
               </div>
             </div>
-            <Field
-              label="Signing secret"
-              htmlFor="swh-secret"
-              description="Optional. Leave blank and one is generated for you."
-            >
-              <Input
-                id="swh-secret"
-                value={secret}
-                onChange={(e) => setSecret(e.target.value)}
-                placeholder="whsec_…"
-              />
-            </Field>
             <DialogFooter className="mt-2">
               <Button
                 type="button"
@@ -370,5 +368,56 @@ function Deliveries({ webhookId }: { webhookId: string }) {
         </li>
       ))}
     </ul>
+  )
+}
+
+// Reveal + copy a destination's signing secret (Svix generates it; re-fetchable
+// any time, like the Svix App Portal). Verify request signatures against it.
+function SecretReveal({ webhookId }: { webhookId: string }) {
+  const [secret, setSecret] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const reveal = useMutation({
+    mutationFn: () => getSandboxWebhookSecret(webhookId),
+    onSuccess: setSecret,
+    onError: (e) => notifyError("Couldn't reveal the signing secret.", e),
+  })
+
+  if (!secret) {
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="mb-1.5 -ml-2"
+        onClick={() => reveal.mutate()}
+        disabled={reveal.isPending}
+      >
+        <KeyRound className="size-3.5" />
+        {reveal.isPending ? 'Revealing…' : 'Reveal signing secret'}
+      </Button>
+    )
+  }
+
+  return (
+    <div className="mb-1.5 flex items-center gap-2">
+      <code className="bg-panel min-w-0 flex-1 truncate rounded border px-2 py-1 font-mono text-[11px]">
+        {secret}
+      </code>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Copy signing secret"
+        onClick={() => {
+          void navigator.clipboard.writeText(secret)
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1500)
+        }}
+      >
+        {copied ? (
+          <Check className="size-3.5" />
+        ) : (
+          <Copy className="size-3.5" />
+        )}
+      </Button>
+    </div>
   )
 }

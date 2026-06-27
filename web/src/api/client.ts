@@ -492,11 +492,12 @@ export const redeliver = (id: string, deliveryId: string) =>
 export const getSandboxWebhooks = () =>
   apiFetch('/webhooks', {}, S.SandboxWebhookListSchema).then((r) => r.data)
 
+// No BYO secret: Svix generates the signing secret (a user-typed value isn't
+// valid Svix whsec_ base64). Reveal it afterward via getSandboxWebhookSecret.
 export const createSandboxWebhook = (body: {
   url: string
   eventTypes?: string[]
   name?: string
-  secret?: string
 }) =>
   apiFetch(
     '/webhooks',
@@ -516,6 +517,11 @@ export const getSandboxWebhookDeliveries = (id: string) =>
     {},
     S.SandboxWebhookDeliveryListSchema,
   ).then((r) => r.data)
+
+export const getSandboxWebhookSecret = (id: string) =>
+  apiFetch(`/webhooks/${id}/secret`, {}, z.object({ secret: z.string() })).then(
+    (r) => r.secret,
+  )
 
 export const redeliverSandboxWebhook = (id: string, deliveryId: string) =>
   apiFetch<void>(`/webhooks/${id}/deliveries/${deliveryId}/redeliver`, {
