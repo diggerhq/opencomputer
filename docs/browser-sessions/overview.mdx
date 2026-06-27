@@ -1,0 +1,263 @@
+---
+title: "Browser Sessions"
+description: "Preview: create cloud browser sessions for Playwright, Magnitude, and profile-backed web automation"
+---
+
+<Warning>
+Browser Sessions are currently in preview. API routes, SDK method names,
+response fields, limits, and pricing may change before general availability.
+</Warning>
+
+Browser Sessions create managed Chromium sessions for web agents and browser
+automation. OpenComputer handles API-key auth and org ownership, then returns
+browser connection URLs for tools such as Playwright and Magnitude.
+
+Use Browser Sessions when you want a cloud browser without installing Chromium
+inside an OpenComputer sandbox. Use [sandboxes](/sandboxes/overview) when you
+need a full Linux VM with your own browser runtime and filesystem.
+
+## Create a Browser
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Browser } from "@opencomputer/sdk";
+
+const browser = await Browser.create({
+  headless: false,
+  stealth: true,
+  startUrl: "https://example.com",
+  timeoutSeconds: 120,
+});
+
+console.log(browser.id);
+console.log(browser.cdpWsUrl);
+console.log(browser.liveViewUrl);
+
+await browser.delete();
+```
+
+```python Python
+from opencomputer import Browser
+
+browser = await Browser.create(
+    headless=False,
+    stealth=True,
+    start_url="https://example.com",
+    timeout_seconds=120,
+)
+
+print(browser.id)
+print(browser.cdp_ws_url)
+print(browser.live_view_url)
+
+await browser.delete()
+```
+
+</CodeGroup>
+
+Headful browsers return a live-view URL. Headless browsers are lighter, but do
+not provide a live view.
+
+## Playwright
+
+The browser response includes a CDP WebSocket URL. Pass it directly to
+Playwright's `connectOverCDP`.
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Browser } from "@opencomputer/sdk";
+import { chromium } from "playwright";
+
+const ocBrowser = await Browser.create({
+  headless: false,
+  startUrl: "https://example.com",
+});
+
+try {
+  const browser = await chromium.connectOverCDP(ocBrowser.cdpWsUrl);
+  const context = browser.contexts()[0] || await browser.newContext();
+  const page = context.pages()[0] || await context.newPage();
+
+  await page.goto("https://example.com");
+  console.log(await page.title());
+
+  await browser.close();
+} finally {
+  await ocBrowser.delete();
+}
+```
+
+```python Python
+from opencomputer import Browser
+from playwright.async_api import async_playwright
+
+oc_browser = await Browser.create(
+    headless=False,
+    start_url="https://example.com",
+)
+
+try:
+    async with async_playwright() as p:
+        browser = await p.chromium.connect_over_cdp(oc_browser.cdp_ws_url)
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        await page.goto("https://example.com")
+        print(await page.title())
+
+        await browser.close()
+finally:
+    await oc_browser.delete()
+```
+
+</CodeGroup>
+
+## Magnitude
+
+Magnitude can use a Playwright-connected browser. Create the OpenComputer
+browser first, connect over CDP, then hand the page to your Magnitude agent.
+
+```typescript TypeScript
+import { Browser } from "@opencomputer/sdk";
+import { chromium } from "playwright";
+import { startBrowserAgent } from "magnitude-core";
+
+const ocBrowser = await Browser.create({
+  headless: false,
+  stealth: true,
+  startUrl: "https://example.com",
+});
+
+try {
+  const browser = await chromium.connectOverCDP(ocBrowser.cdpWsUrl);
+  const context = browser.contexts()[0] || await browser.newContext();
+  const page = context.pages()[0] || await context.newPage();
+
+  const agent = await startBrowserAgent({ page });
+  await agent.act("Find the page title and summarize what this site is for.");
+
+  await browser.close();
+} finally {
+  await ocBrowser.delete();
+}
+```
+
+<Note>
+Magnitude package names and constructors can vary by version. The
+OpenComputer-specific step is stable: create a `Browser`, connect to
+`cdpWsUrl` with Playwright, then pass the resulting page or browser object to
+Magnitude.
+</Note>
+
+## Save and Load Profiles
+
+Profiles persist browser state such as cookies and local storage across browser
+sessions. Profiles are scoped to your OpenComputer org; another org cannot
+list, load, or delete your profiles.
+
+Create a profile once:
+
+<CodeGroup>
+
+```typescript TypeScript
+import { BrowserProfile } from "@opencomputer/sdk";
+
+const profile = await BrowserProfile.create({
+  name: "github-login",
+});
+```
+
+```python Python
+from opencomputer import BrowserProfile
+
+profile = await BrowserProfile.create(name="github-login")
+```
+
+</CodeGroup>
+
+Use the profile when creating a browser:
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Browser } from "@opencomputer/sdk";
+
+const browser = await Browser.create({
+  profile: {
+    id: profile.id,
+    saveChanges: true,
+  },
+  headless: false,
+});
+
+// Log in or update session state, then delete the browser.
+// With saveChanges enabled, changes are saved back to the profile.
+await browser.delete();
+```
+
+```python Python
+from opencomputer import Browser
+
+browser = await Browser.create(
+    profile={
+        "id": profile.id,
+        "save_changes": True,
+    },
+    headless=False,
+)
+
+# Log in or update session state, then delete the browser.
+# With save_changes enabled, changes are saved back to the profile.
+await browser.delete()
+```
+
+</CodeGroup>
+
+Load the same profile later by ID or name:
+
+<CodeGroup>
+
+```typescript TypeScript
+import { Browser, BrowserProfile } from "@opencomputer/sdk";
+
+const profile = await BrowserProfile.connect("github-login");
+
+const browser = await Browser.create({
+  profile: {
+    id: profile.id,
+    saveChanges: true,
+  },
+  headless: false,
+});
+```
+
+```python Python
+from opencomputer import Browser, BrowserProfile
+
+profile = await BrowserProfile.connect("github-login")
+
+browser = await Browser.create(
+    profile={
+        "id": profile.id,
+        "save_changes": True,
+    },
+    headless=False,
+)
+```
+
+</CodeGroup>
+
+## Authentication
+
+The SDK uses your OpenComputer API key:
+
+```bash
+export OPENCOMPUTER_API_KEY="osb_..."
+```
+
+<Note>
+For local development against a non-production Browser Sessions endpoint, set
+`OPENCOMPUTER_BROWSER_API_URL`.
+</Note>
