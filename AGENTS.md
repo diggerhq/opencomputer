@@ -174,7 +174,7 @@ Use this as a routing map, not a full index:
 - `internal/proxy/` — preview URL and subdomain routing
 - `internal/secretsproxy/` — outbound secret substitution proxy
 - `sdks/` — published SDKs
-- `web/` — dashboard (frontend architecture & conventions:
+- `web/` — dashboard (frontend engineering principles:
   `.agents/reference/web-frontend.md`)
 - `docs/` — docs site
 - `deploy/` — deployment assets

@@ -1,123 +1,118 @@
-# Web dashboard — frontend architecture & conventions
+# Web dashboard — engineering principles
 
-How the dashboard (`web/`) is structured and the engineering bar to hold when
-changing it. This is a reference, not a runbook: it captures the system-design
-decisions and the non-obvious reasons behind them, so they don't get
-re-litigated or quietly eroded. The dashboard is a React SPA served at the edge
-(see `dev-edge-setup.md`). Scope here is code and architecture, not visual
-design.
+What we believe keeps this dashboard correct and maintainable, and why we hold
+each one. Frameworks and versions will change; these shouldn't. This is about how
+the frontend is engineered, not how it looks — specific visual choices live in
+the tokens and components. Each principle names where it lives today so it's
+findable, not so it's pinned to a library. The dashboard is a React SPA served at
+the edge (`dev-edge-setup.md`). Reference, not runbook.
 
-## Stack
+## Own as little as possible, and make every change earn its place
 
-React 19 · React Router 7 (declarative `<Routes>`) · Vite 8 · TypeScript 6 ·
-Tailwind v4 · shadcn/ui (Radix) · TanStack Query 5 · zod 4 · ESLint 9
-(type-aware).
+The best code is the code you don't maintain. Prefer a well-chosen library over a
+bespoke version of the same thing, and periodically ask the inverse: what are we
+hand-rolling that a standard tool does better and would let us delete? Adding a
+capability you need is the point of a change; bumping a version for freshness is
+not — a dependency change has to buy something. Do the smallest thing that's
+correct: skip the abstraction, the gallery, the config you don't need yet. And
+sequence the work — get the foundations right (a real styling system, shared
+components, forms, a linter) before the nice-to-haves, because polish on a weak
+foundation is rework.
 
-**The toolchain version is API surface.** Vite 8 requires Node ≥20.19, so a bump
-that raises the runtime floor is a breaking change for every contributor and for
-CI, not an implementation detail. Pin it in three places that must agree:
-`web/package.json` `engines.node`, `web/.nvmrc`, and the Node version in the
-workflow that builds `web/dist` (`.github/workflows/deploy-server.yml`).
-Dependency upgrades are deliberate and recorded (which lib, why, what it forces);
-ESLint is held at 9 because `eslint-plugin-jsx-a11y` peers `^9`.
+## Keep the code honest: one current path
 
-## The data boundary is the contract
+There is one live behavior, not a runtime fork between an old and a new one. No
+version flags, no "if enabled" branches the running code chooses between — they
+are a tax on every future change and the source of "which path am I even on"
+bugs. Simplify toward a single linear path while the product is young enough to
+afford it. Unused code may sit dead and removed features move to a clearly
+dormant module, but neither should masquerade as a live alternative. The code in
+front of you should describe what actually ships.
 
-`src/api/schemas.ts` holds zod schemas and is the **single source of truth** for
-API shapes. Types are `z.infer`'d there and re-exported from `client.ts`, so
-`import { type Session } from '@/api/client'` keeps working and the type can
-never drift from the validator that produced it.
+## Keep one source of truth for every shape and value
 
-`apiFetch(path, opts, schema?)` parses every response it's given a schema for.
-The posture is **dev-hard / prod-soft**: a mismatch throws in dev (catches
-backend/schema drift early) and in prod logs it but passes the raw data through,
-so a schema that lags the backend by one field can't take a screen down. Tighten
-toward always-throw once the schemas are proven in prod.
+A fact lives in one place and everything else derives from it. Data shapes are
+defined once and the types are inferred from that definition, so a type cannot
+drift from the validator that enforces it (today: schemas in
+`src/api/schemas.ts`). Visual values — color, spacing, scale, radii — come from
+one set of tokens, not numbers typed at each call site, and elements align to a
+shared grid rather than by eye. The cost of not doing this is concrete and we
+paid it repeatedly: a color left over from a previous theme that nobody could
+trace, a focus ring heavier in one place than another, a header and a row
+"nearly the same size but not quite." When a value has one source you change it
+once; when you can't tell where a value comes from, that is itself the bug.
 
-A new endpoint means: add a schema, pass it to `apiFetch`, add a mock entry that
-satisfies it. The dev-hard parse runs against the preview mock too, which **keeps
-the mock honest** — it has already caught a mock missing a required field that
-would otherwise have rendered the wrong branch. `res.json()` is `unknown` at the
-boundary and narrowed deliberately (the `errorMessage` helper); no bare `any`
-crosses `fetch`.
+## Validate data where it enters the app
 
-## Types and lint earn their keep
+Every response is parsed against its schema at the boundary, in one place
+(`apiFetch`). A mismatch throws in development — including against the local mock,
+which is what keeps the mock honest — and degrades in production rather than
+taking a screen down, so a backend that's briefly ahead of the schema costs a log
+line, not an outage. Data is untyped (`unknown`) until it has been validated;
+nothing assumed-shaped flows inward. The boundary is the one place the backend's
+reality meets the UI's assumptions, and checking it there means a failure points
+at its cause instead of surfacing as a crash three components away.
 
-Type-aware ESLint is on (`recommendedTypeChecked` with `projectService`); config
-files opt out (`disableTypeChecked` + `allowDefaultProject`). It is not
-cosmetic — turning it on surfaced ~13 unhandled promises, several unsafe-`any`
-JSON boundaries, and the RR7 change below. Fix the cause; don't sprinkle
-disables. The classes of bug it pays back:
+## Don't let layout or behavior depend on transient state
 
-- **RR7 gotcha:** `navigate()` returns a `Promise`. In an event handler that's a
-  misused-promise — `onClick={() => void navigate('/x')}`, not `() => navigate('/x')`.
-- **Fire-and-forget query work is `void`-ed** explicitly
-  (`void queryClient.invalidateQueries(...)`): documents intent and satisfies
-  `no-floating-promises`.
-- TS narrows through aliased boolean conditions (`const hasDomain = !!org?.x && …`
-  narrows `org` inside `hasDomain ? …`), so non-null assertions in those branches
-  are genuinely unnecessary and the lint says so. Trust it over `!`.
+Two instances of a component that differ only by their data should still align
+and behave the same. Reserve space for a control only some rows have, so a table
+doesn't change height row to row. Render a conditional panel once its data is
+known, never show it mid-load and then take it away. Confirm an async action only
+once it has actually succeeded — the clipboard says "Copied" after the write
+resolves. Key lists by stable identity, never array index, or append and filter
+reconcile onto the wrong rows. Clean up everything you start (timers, sockets,
+subscriptions) and guard callbacks against firing after teardown. This is the
+class of bug the happy path never reveals: jitter, flashes, leaks, false
+confirmations.
 
-## Resilience
+## Give state one owner, and reset it deliberately when context changes
 
-- **Error boundaries** wrap the app at the top level and per route. The route
-  boundary is keyed `` `${orgId}:${pathname}` `` so a render throw clears when you
-  navigate away **and** pages remount on org switch (see state ownership). A
-  thrown render is contained to one route, never a white screen.
-- **`notifyError(message, error)`** is the single error sink: a human-readable
-  toast plus `console.error` with the raw error. Every `catch` / mutation
-  `onError` goes through it. Users never see a raw error string; the console
-  keeps the real one.
+Server state lives in the query cache, transient UI state lives in the component,
+and the two don't shadow each other. When the context changes — switching org —
+reset both on purpose: clearing the cache does not refetch an already-mounted
+query, and it does not touch a component's own drafts or filters, so the refetch
+and the remount are made explicit. State that quietly survives a context switch
+is the whole class of "it's still showing the previous account" bugs.
 
-## State ownership
+## Contain failures, and surface them once in human terms
 
-Server state lives in TanStack Query; component state stays local; there is no
-third store. Auth is just `useQuery(['me'])` (`hooks/auth-provider.tsx`) rather
-than a hand-rolled context with its own fetching.
+A render error is caught at the route boundary, and at the top, so one screen
+failing is not a blank app. Errors reach the user through a single path: a
+readable message in the UI, the raw error in the console for whoever debugs it. A
+dashboard renders live systems; something will eventually be missing or null, and
+the only question is whether it costs a panel or the page.
 
-- **Org switch** is `switchOrgApi(id)` → `queryClient.clear()` → `await refetch()`.
-  `clear()` removes cached queries but does **not** refetch the active `['me']`
-  observer, so without the explicit refetch the shell keeps showing the previous
-  org. This is the kind of cache-semantics detail that has to be encoded, not
-  assumed.
-- **Local state must not bleed across orgs.** Clearing the server cache does not
-  reset a component's own `useState` (a name draft, a filter, a half-filled
-  form). The org-scoped route subtree is therefore keyed by active org id so it
-  remounts on switch. Anything async and user-triggerable (the org switcher) is
-  race-guarded (disabled + in-flight flag) so a double-fire can't interleave.
+## Let the type system and the linter carry load
 
-## Performance
+Type-checking and type-aware linting are on, and findings are fixed at the cause
+rather than silenced. Turning them on is what surfaced unhandled promises,
+untyped data at fetch boundaries, and a navigation call whose return type had
+quietly changed — a class of bug that costs nothing to catch if you let the tools
+catch it. A suppression comment is a promise to owe that bug later; write one only
+when you can say why.
 
-- **Code-split by route.** Pages are `lazy()`; the heaviest deps (xterm, in
-  `Terminal`/`LogsPanel`) load only when a sandbox is opened, under `Suspense`.
-  This roughly halved initial JS (~1003kB → ~576kB; xterm's ~340kB is on-demand).
-- **Prefetch on intent.** Hovering or focusing a sandbox row warms the route
-  chunk and the detail query (`usePrefetchSandbox`), so the click feels instant.
-  Idempotent by construction: the dynamic import dedupes and the query has a
-  `staleTime`. Prefetch is an optimization, never a correctness dependency.
+## Fast by default, never load-bearing on the optimization
 
-## Async and lifecycle hygiene
+Split code by route and load the heaviest dependencies only when the screen that
+needs them opens. Prefetch the likely-next code and data on intent, so a
+navigation feels instant. But a prefetch is only ever an optimization: the
+destination must behave identically if it never ran. The moment correctness
+depends on the optimization having happened, it's a bug waiting for a slow
+network.
 
-- **Everything started is cleaned up.** A `setTimeout` backing transient UI is
-  held in a ref and cleared on unmount and on re-trigger; long-lived `WebSocket`
-  / `EventSource` handlers check a `disposed` flag so a late `onclose` can't set
-  state on or write to a torn-down component. `useTransientFlag` exists for the
-  common set-flag-then-auto-reset case so the cleanup isn't re-derived each time.
-- **Optimistic affordances confirm on success only.** Clipboard shows "Copied"
-  after the write resolves; a rejection (permissions, insecure context) surfaces
-  via `notifyError` rather than a false confirmation.
-- **Live lists key by a stable id, never the array index.** Append + cap-trim +
-  client-side filter make index keys reconcile incorrectly; streamed events get a
-  client-assigned monotonic ingest seq used as the key.
+## Separate mechanical change from behavioral change
 
-## Working method
+A reskin is not a refactor and a refactor is not a feature. Bundling them hides
+both: a diff that should be pure mechanics now also moves behavior, and the risky
+change disappears inside the boring one. Sequence the work and keep each kind in
+its own commit, so each can be read, reviewed, and reverted on its own.
 
-- **Preview harness.** `VITE_PREVIEW=1` serves `src/api/mock.ts` with no backend
-  or auth, so the whole dashboard renders locally for fast iteration. The mock is
-  schema-checked (dev-hard zod), so it can't silently drift from the real shapes.
-- **Dead code is split out, not left inline.** When pages are removed, their API
-  surface moves to a dormant module (e.g. `src/api/agents.ts`) rather than sitting
-  in the active client, so `client.ts` reflects routed behavior. Removing a
-  feature is intentional and noted, not a silent gap.
-- **The gate before commit** is `typecheck` + `lint` + `format:check` + `build`,
-  all green (`prettier --write` first). Scripts are in `web/package.json`.
+## Verify against reality, and shift uncertainty left
+
+Check a plan against the actual code before building it and write down what you
+find; a wrong assumption is far cheaper to fix before it's been built on. Look at
+the result instead of trusting it — run it, screenshot it, read the output.
+Invite review, address findings worst-first, and fix the cause rather than the
+symptom. Not everything suggested is worth doing now: say so and move it to an
+explicit "later" rather than doing it reflexively or leaving it unsaid.
