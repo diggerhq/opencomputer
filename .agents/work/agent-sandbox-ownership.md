@@ -230,20 +230,19 @@ on both → live for **dashboard** sessions. SDK/`osb_` sessions need Phase 0.5.
 ## Build status — all phases built
 
 - **Phase 0** — edge org-token → `/v3` org-scoped. **LIVE in prod.**
-- **Phase 0.5 — `osb_`→org** — **BUILT** (sessions-api PR #28: `resolveOrgForKey`
-  via OC `GET /api/whoami`; edge `/api/whoami` in PR 426). Inert (per-key
-  fallback) until prod edge ships `/api/whoami`. Dev-verified: whoami returns
-  `{org_id,user_id}`.
-- **Phase 1 — session→sandbox** — **BUILT** (sessions-api PR #28: `sandboxes:
-  {brain,hands}` on `serializeSession`; dashboard shows them, PR 426). Additive.
-- **Phase 2 — act-as-org** — **BUILT** (sessions-api #27 merged + deployed inert;
-  edge `authenticate()` in PR 426). Inert until `OC_PROVISION_SECRET` set. See
-  **Implemented (Phase 2)**.
-- **Phase 3 — dashboard surfaces boxes** — **BUILT**: session detail links to its
-  brain/hands boxes (PR 426); the org-scoped Sandboxes list shows agent boxes
-  automatically once they're org-owned (Phase 2 active). No further code.
+- **Phase 0.5 — `osb_`→org** — **LIVE on prod**: edge `/api/whoami` shipped via #429;
+  sessions-api `resolveOrgForKey` (#28) resolves keys to their org. Verified on prod
+  (whoami → `{org_id,user_id}`).
+- **Phase 1 — session→sandbox** — sessions-api `sandboxes:{brain,hands}` on
+  `serializeSession` **LIVE on prod** (#28). Dashboard *display* of them ships with
+  the dashboard (Path A, below).
+- **Phase 2 — act-as-org** — **LIVE on prod** (sessions-api #27 + edge #429 +
+  `OC_PROVISION_SECRET` set both sides; validated). See **SHIPPED + LIVE on prod**.
+- **Phase 3 — dashboard surfaces boxes** — code **BUILT** (session detail links boxes;
+  org-scoped Sandboxes list auto-shows org-owned boxes). **Not on prod until the
+  dashboard ships (Path A, below).**
 
-## Test in dev (dev box + dev edge + the single sessions-api)
+## Test in dev (ORIGINAL PLAN — the dev box is NOT a faithful replica; see "Dev env" below)
 
 Dev edge (`igor-dev`) already has `/api/whoami` + `authenticate()` act-as-org +
 `proxyToV3` + webhooks deployed. Then:
@@ -259,11 +258,75 @@ Dev edge (`igor-dev`) already has `/api/whoami` + `authenticate()` act-as-org +
    → dev box, owned by the org, shown on the session + in the org's Sandboxes
    list. An SDK/`osb_` session resolves to the same org and appears too (0.5).
 
-## Deploy to prod (after dev test passes)
+## SHIPPED + LIVE on prod (2026-06-27)
 
-Deploy **OC core + web statics + edge to prod** (prod edge ships whoami +
-act-as-org verifier + proxyToV3 + webhooks; prod core unchanged for ownership),
-point the single sessions-api at the **prod** edge, set `OC_PROVISION_SECRET` on
-the prod edge (matching sessions-api), and merge PR 426. Set the secret only
-after the prod edge has the verifier, else sessions-api mints JWTs it can't yet
-verify → provisioning breaks.
+The Phase-2 edge bits were **fast-tracked out of PR 426 into an isolated PR** and
+activated on prod ahead of the dashboard, so the "Test in dev" / original
+deploy-to-prod plan above are superseded. What actually shipped:
+
+- **Isolated edge PR — diggerhq/opencomputer #429** (`feat/edge-act-as-org`,
+  cherry-picked `cfe7f19`+`710554b` from #426): ONLY the edge ownership bits —
+  `authenticate()` act-as-org token + `GET /api/whoami`. Merged → `deploy-api-edge.yml`
+  deployed `opencomputer-edge-prod` (app.opencomputer.dev, account b8f). The rest of
+  #426 (new dashboard SPA, proxyToV3, dashboard-webhooks) stays on `feat/web-ui-dev`.
+- **sessions-api**: #27 (Phase 2) + #28 (Phase 0.5/1/queue-prefix) already on `main` + deployed.
+- **Activated**: `OC_PROVISION_SECRET` set MATCHING on the prod edge
+  (`wrangler secret put … -c wrangler.prod.toml`) and prod sessions-api
+  (`fly secrets import -a bolt-platform`). **Edge first** → no reject window.
+- **Validated end-to-end on prod**: `osb_`-key session → `/api/whoami` org
+  `2f9094d9-…` → act-as-org provisioned box `sb-841a064e`, whose
+  `sandboxes_index.org_id` == that org (cell azure-us-east-2-a); agent ran, turn completed.
+- **Global**, not a canary: every new prod session now provisions org-owned boxes.
+
+**Rollback of the activation** (reversible, no data/migration/redeploy): unset
+`OC_PROVISION_SECRET` on **either** side → sessions-api falls back to the platform
+key (boxes platform-owned), edge ignores act-as-org JWTs.
+`fly secrets unset OC_PROVISION_SECRET -a bolt-platform` and/or
+`wrangler secret delete OC_PROVISION_SECRET -c wrangler.prod.toml`.
+
+## Dev env is NOT a faithful prod replica (UI test can't run on dev)
+
+Full dev stack stood up (local `dev-env.md`), but the **dev box** was set up for an
+earlier stage and isn't wired for full agent-session provisioning. A dev session
+clears org-resolution + credential-seal but **fails at provision**. Gaps, in order hit:
+1. ✅ edge↔box shared secrets (`OPENSANDBOX_SESSION_JWT_SECRET` / `SECRET_ENCRYPTION_KEY`
+   / `CF_EVENT_SECRET`) were empty — **fixed** (matched edge↔box, box restarted).
+2. ⚠️ **capacity pipeline** — box CF event forwarder off (`CFEventEndpoint`/`CellID`
+   unset) + no dev events-ingest worker → `cells.capacity_updated_at` goes stale →
+   picker: "no cells available with capacity". Worked around once by poking the D1 row.
+3. ❌ **edge-side secret-store resolution** — box (`version: dev`, predates edge secret-stores)
+   → "secret store not found" at create. Needs current OC core redeployed to the box.
+4. ❌ **runtime artifacts** — fresh dev Supabase has no `runtime_builds` pointer → legacy
+   path → needs the runtime bundle in dev R2 (empty) or a dev snapshot + pointer.
+
+Net: finishing the dev box is a deferred multi-system infra task. **Prod is the only
+fully-wired stack** → UI testing goes there (below).
+
+## UI end-to-end test (create session → see its sandboxes) — Path A + rollback
+
+The new v3 dashboard UI lives only on `feat/web-ui-dev` (#426), deployed to the **dev**
+edge. A dashboard is bound to the edge that serves it (auth + org-token + the
+`/api/sandboxes` D1), so you can't cleanly point dev's UI at prod's backend (split brain).
+The faithful test = put the new dashboard on the **prod** edge.
+
+**Plan (Path A):**
+1. Branch-deploy the new dashboard to prod (no merge):
+   `gh workflow run deploy-api-edge.yml --ref feat/web-ui-dev -f target=prod`
+   → builds the new SPA + deploys `opencomputer-edge-prod`.
+2. Align `OC_ORG_TOKEN_SECRET` MATCHING on the prod edge (`wrangler … -c wrangler.prod.toml`)
+   and prod sessions-api (`bolt-platform`) so the dashboard's `/v3` proxy authenticates.
+   (Additive on prod — the v1 dashboard never used the v3 proxy.)
+3. Smoke on **app.opencomputer.dev**: load → WorkOS login → create agent (paste model key)
+   → create session → confirm its **sandboxes** show on the session, owned by your org.
+
+**Rollback (fast, no data involved):**
+- The dashboard is one worker artifact. Revert by redeploying from `main`:
+  `gh workflow run deploy-api-edge.yml --ref main -f target=prod` (~45s) → restores the
+  **v1 dashboard** + `main`'s edge. `main` already carries #429, so **ownership stays
+  live through the rollback** (dashboard and ownership are decoupled).
+- `OC_ORG_TOKEN_SECRET` is inert without the v3 dashboard; optional to unset after rollback.
+- No migrations, no sessions-api change → nothing else to revert.
+
+**Risk:** Path A makes the new dashboard **live on prod for all users** until rolled back.
+Detection = the step-3 smoke immediately after deploy; if any step fails, run the
+one-command rollback before it matters.
