@@ -18,7 +18,8 @@ import { Field, Input, Textarea } from '@/components/form'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
 
-const DEFAULT_MODEL = 'claude-opus-4-8'
+// /v3 requires a provider-prefixed model; runtime "claude" ⇒ anthropic/…
+const DEFAULT_MODEL = 'anthropic/claude-opus-4-8'
 
 export default function Agents() {
   const queryClient = useQueryClient()
