@@ -266,7 +266,7 @@ export const SessionSchema = z.object({
   status: z.string(),
   agent_id: z.string().nullable().optional(),
   credential_id: z.string().nullable().optional(),
-  head: z.number().optional(), // current event seq (the API calls it `head`)
+  head: z.coerce.number().optional(), // current event seq; API returns it as a string ("0")
   last_turn: record.nullish(),
   usage: record.nullish(),
   limits: record.nullish(),
