@@ -6,7 +6,9 @@
 > anonymised IDs). Full rule in project memory
 > `feedback_no_pii_in_git.md`. Audit before every Write/Edit.
 
-Status: **design approved, implementation not started.** Builds on
+Status: **Done — shipped.** Read API live (`sandbox session logs read
+API enabled`, `cmd/server/main.go:723`); in-process forwarder + Axiom
+ingest wired through config → pool → worker env. Builds on
 [`.agents/design/sandbox-session-logs.md`](../design/sandbox-session-logs.md)
 (design doc, draft PR #226) and the OC architecture as of `main` at
 the time of writing.

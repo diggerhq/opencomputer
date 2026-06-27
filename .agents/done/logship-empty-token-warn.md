@@ -3,9 +3,11 @@
 > ⚠️ **NO PII IN GIT.** Audit before every Write/Edit. Rule:
 > `feedback_no_pii_in_git.md` in project memory.
 
-Status: **planned, not started.** Builds on PR #226 (the
-sandbox-session-logs feature, merged `2af73c4`) and Brian's
-follow-up `d6c2985` (KV mapping for Axiom secrets).
+**Done — shipped.** The three WARNING log lines are live in
+`cmd/server/main.go` (startup check ~L731 + Azure-pool spawn-time
+warning ~L392). Built on PR #226 (the sandbox-session-logs feature,
+merged `2af73c4`) and Brian's follow-up `d6c2985` (KV mapping for
+Axiom secrets).
 
 ## Context
 

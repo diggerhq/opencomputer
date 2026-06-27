@@ -1,9 +1,13 @@
 # Durable Agent Sessions — dashboard UI
 
-Status: **building** — exploration done; the `/v3` credential + tenant decision
-(#1) is RESOLVED (org-token + act-as-org ownership; see agent-sandbox-ownership.md,
-LIVE on prod). First cut = Agents + Sessions + session webhooks; Repos and the rest
-follow. Lands in the same dashboard (`web/`) and PR lineage as the modernization work.
+**Done — first cut shipped.** Live on prod (app.opencomputer.dev,
+2026-06-27) via PR #426 on `feat/web-ui-dev`: Agents + Sessions + a rich
+session detail (live SSE events + steer) + session webhooks, proxied to
+`/v3` through the edge. The `/v3` credential + tenant decision (#1) is
+RESOLVED (org-token + act-as-org ownership; see agent-sandbox-ownership.md,
+LIVE on prod). Repos, the global sandbox-webhooks page, and the full
+Credentials page remain as follow-ups (see "Rough sequence" step 5). This
+doc is the design of record for that follow-on work.
 Engineering principles: `.agents/reference/web-frontend.md`.
 
 Goal: bring Durable Agent Sessions to the dashboard. Scope is the **stable v1
