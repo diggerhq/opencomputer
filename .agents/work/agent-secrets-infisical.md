@@ -318,14 +318,19 @@ don't log request/response bodies is part of Verification.
 ## Path scheme (sanitized, unambiguous)
 
 Infisical folder names allow letters/numbers/dashes; owner ids carry colons/
-prefixes (`keyhash:`, `oc-org:`), and purpose slugs use dashes. Split path vs name:
+prefixes (`keyhash:`, `oc-org:`). The secret is named by its opaque `secret_ref`
+(already path-safe), so the path only needs to isolate per owner:
 
 ```
-secretPath = /owners/<sha256(owner)>/secrets/<purpose-slug>
-secretName = <safe(secret_ref)>
+secretPath = /owners/<sha256(owner)>     # flat, one folder per owner
+secretName = <secret_ref>                # sec_… (opaque, unique per version)
 ```
 
-Real owner id stays only in PG + telemetry, never in the Infisical path.
+The **purpose is tracked in the ledger row, not in the path** — keeping the path
+flat means no per-purpose folder bookkeeping, and a `secret_ref` already collides
+with nothing (a rotation mints a fresh ref). Real owner id stays only in PG +
+telemetry, never in the Infisical path. (As-built: `core/secret-backend.ts`
+`ownerSecretPath()` + `ensureOwnerFolder()` create `/owners` then `/owners/<hash>`.)
 
 ## Trust boundary, exit & residency
 
@@ -339,6 +344,17 @@ Real owner id stays only in PG + telemetry, never in the Infisical path.
   customers re-enter keys; acceptable for re-enterable secrets, but say so.
 
 ## Build-out plan
+
+> **Status (as-built, sessions-api `feat/secret-backend`, smoke-verified on dev DB +
+> real Infisical `oc-sessions-api`/`prod`):** Phase 0 ✅ · Phase 1 ✅ (ledger +
+> `session_secret_bindings` migration, typed `SecretBackend`, service reserve/finalize
+> + pointer-swap; **reconciliation sweep still TODO**) · Phase 2 ✅ all four classes
+> wired (model-credential, webhook-signing, github-app-key/broker-secret,
+> repo-inline-token) with the corrected delete/purge behavior · Phase 3: conditional
+> seal ✅ (durable binding); **Go wake-ordering still TODO (opencomputer core,
+> `snapshot.go`)** · Phase 4: **crypto-shred is an operational cutover step, not yet
+> run**. Per-class live smokes: `scripts/{secret-backend,credentials,github-apps,
+> sources,destinations,bindings}-smoke.ts`.
 
 - **Phase 0 — Infisical setup.** Per-env projects + separate machine identities +
   least-privilege scope + finite client-secret TTL. Client module + config (incl.
@@ -455,7 +471,7 @@ in use; `proxyToV3` must forward `/v3/credentials/*` (UI step). (These apply to
 
 (The design forks are decided — see **Decisions (locked)**. These remain:)
 - **Infisical project config:** `INFISICAL_PROJECT_ID` + `INFISICAL_ENVIRONMENT`,
-  and confirm the `/owners/<hash>/secrets/<purpose>` folder layout — dev first,
+  with the flat `/owners/<hash>` folder layout (purpose in the ledger) — dev first,
   then prod.
 - **Infisical terms to verify:** exact non-Enterprise per-minute limits (confirm
   our volume fits) and destructive-delete + retention semantics (how strongly
