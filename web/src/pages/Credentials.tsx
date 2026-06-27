@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeySquare, Plus } from 'lucide-react'
+import { CircleCheck, KeySquare, Plus } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   createCredential,
@@ -26,6 +26,7 @@ import { Field, Input, Label, Select } from '@/components/form'
 import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ResourceTable, type Column } from '@/components/resource-table'
+import { StepProgress } from '@/components/step-progress'
 
 // Providers an agent runtime can use. claude → anthropic; openai lands when the
 // codex runtime ships, but a key can be stored ahead of it.
@@ -37,6 +38,15 @@ const KEY_HINT: Record<string, string> = {
   anthropic: 'sk-ant-…',
   openai: 'sk-…',
 }
+
+// The real phases a create runs through (reserve a ref → write to the secret
+// store → activate). We surface them so the wait reads as a job, not a hang.
+const CREATE_STEPS = [
+  'Securing your key',
+  'Provisioning in secure secret store',
+  'Finalizing credential',
+]
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 export default function Credentials() {
   const queryClient = useQueryClient()
@@ -59,10 +69,11 @@ export default function Credentials() {
     setMakeDefault(true)
   }
 
-  // These operations chain through the edge → sessions-api → Infisical, so each
-  // can take a second or two. We apply the change to the cache immediately and
-  // reconcile on settle; on failure we roll the cache back and surface the error,
-  // so the UI feels instant without ever showing a state the server rejected.
+  // Two strategies for the slow edge → sessions-api → Infisical chain:
+  //  - delete / set-default: OPTIMISTIC — apply to the cache instantly, roll back
+  //    on failure (no provisioning, nothing real to wait on).
+  //  - create: provisions a secret in the store, so rather than hide the wait we
+  //    SHOW it as a stepped job (reserve → provision → finalize).
   const CREDS_KEY = ['credentials'] as const
   const snapshot = async () => {
     await queryClient.cancelQueries({ queryKey: CREDS_KEY })
@@ -72,6 +83,12 @@ export default function Credentials() {
     if (previous) queryClient.setQueryData(CREDS_KEY, previous)
   }
 
+  // Create progress: 'form' shows the inputs; 'running' shows the step checklist.
+  const [phase, setPhase] = useState<'form' | 'running'>('form')
+  const [step, setStep] = useState(0)
+  const [createError, setCreateError] = useState<string | null>(null)
+  const provisionTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const createMutation = useMutation({
     mutationFn: () =>
       createCredential({
@@ -80,45 +97,34 @@ export default function Credentials() {
         name: name.trim() || undefined,
         is_default: makeDefault,
       }),
-    onMutate: async () => {
-      const previous = await snapshot()
-      // Optimistic row: real last4 (client-derived), temp id replaced on settle.
-      const optimistic: Credential = {
-        id: `temp_${Date.now()}`,
-        provider,
-        name: name.trim() || undefined,
-        last4: key.trim().slice(-4),
-        is_default: makeDefault,
-        created_at: new Date().toISOString(),
-      }
-      queryClient.setQueryData<Credential[]>(CREDS_KEY, (old = []) => [
-        optimistic,
-        // a new default clears the previous one for the same provider
-        ...(makeDefault
-          ? old.map((c) =>
-              c.provider === provider ? { ...c, is_default: false } : c,
-            )
-          : old),
-      ])
-      // Close instantly, but keep the form values so a failure can reopen with the
-      // typed key intact (it's never recoverable once the row truly exists).
-      const form = { name, provider, key, makeDefault }
+    onMutate: () => {
+      setCreateError(null)
+      setPhase('running')
+      setStep(0) // "Securing your key"
+      // The reserve is fast; the write to the secret store is the long pole — hold
+      // the active spinner on it until the request actually resolves.
+      provisionTimer.current = setTimeout(() => setStep(1), 450)
+    },
+    onSuccess: async () => {
+      if (provisionTimer.current) clearTimeout(provisionTimer.current)
+      setStep(2) // "Finalizing credential"
+      await wait(300)
+      setStep(CREATE_STEPS.length) // all done
+      await queryClient.invalidateQueries({ queryKey: CREDS_KEY })
+      await wait(550) // let the completed checklist register before closing
       setShowCreate(false)
-      return { previous, form }
+      setPhase('form')
+      setStep(0)
+      resetForm()
     },
-    onError: (e, _vars, ctx) => {
-      rollback(ctx?.previous)
-      notifyError("Couldn't add the credential.", e)
-      if (ctx?.form) {
-        setName(ctx.form.name)
-        setProvider(ctx.form.provider)
-        setKey(ctx.form.key)
-        setMakeDefault(ctx.form.makeDefault)
-        setShowCreate(true) // reopen so the user can retry without re-typing
-      }
+    onError: (e) => {
+      if (provisionTimer.current) clearTimeout(provisionTimer.current)
+      // Back to the form with inputs intact + an inline error, so they can retry.
+      setPhase('form')
+      setCreateError(
+        e instanceof Error ? e.message : "Couldn't add the credential.",
+      )
     },
-    onSuccess: () => resetForm(),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: CREDS_KEY }),
   })
 
   const defaultMutation = useMutation({
@@ -158,6 +164,20 @@ export default function Credentials() {
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: CREDS_KEY }),
   })
+
+  const openCreate = () => {
+    setPhase('form')
+    setStep(0)
+    setCreateError(null)
+    setShowCreate(true)
+  }
+  const closeCreate = () => {
+    setShowCreate(false)
+    setPhase('form')
+    setStep(0)
+    setCreateError(null)
+    resetForm()
+  }
 
   const columns: Column<Credential>[] = [
     {
@@ -242,7 +262,7 @@ export default function Credentials() {
           docs: 'https://docs.opencomputer.dev/agent-sessions/credentials',
         }}
         actions={
-          <Button onClick={() => setShowCreate(true)}>
+          <Button onClick={openCreate}>
             <Plus className="size-4" />
             Add credential
           </Button>
@@ -261,7 +281,7 @@ export default function Credentials() {
               title="No credentials yet"
               description="Add a model-provider key once, then reuse it across agents — no need to paste it every time."
               action={
-                <Button size="sm" onClick={() => setShowCreate(true)}>
+                <Button size="sm" onClick={openCreate}>
                   <Plus className="size-4" />
                   Add credential
                 </Button>
@@ -274,88 +294,114 @@ export default function Credentials() {
       <Dialog
         open={showCreate}
         onOpenChange={(open) => {
-          setShowCreate(open)
-          if (!open) setKey('') // never leave a key in state after close
+          if (phase === 'running') return // lock the dialog while the job runs
+          if (open) openCreate()
+          else closeCreate()
         }}
       >
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add credential</DialogTitle>
-            <DialogDescription>
-              The key is stored write-only — you won&apos;t be able to read it
-              back, only rotate or delete it.
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            className="space-y-4"
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (canCreate) createMutation.mutate()
-            }}
-          >
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="Name" htmlFor="cred-name">
-                <Input
-                  id="cred-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Production"
-                />
-              </Field>
-              <Field label="Provider" htmlFor="cred-provider">
-                <Select
-                  id="cred-provider"
-                  value={provider}
-                  onValueChange={setProvider}
-                  options={PROVIDERS}
-                />
-              </Field>
+          {phase === 'running' ? (
+            <div className="space-y-5">
+              <DialogHeader>
+                <DialogTitle>
+                  {step >= CREATE_STEPS.length
+                    ? 'Credential ready'
+                    : 'Adding credential'}
+                </DialogTitle>
+                <DialogDescription>
+                  {step >= CREATE_STEPS.length
+                    ? 'Stored in your secure secret store.'
+                    : 'Provisioning it in your secure secret store — just a moment.'}
+                </DialogDescription>
+              </DialogHeader>
+              {step >= CREATE_STEPS.length ? (
+                <div className="flex items-center gap-3 py-1 text-sm">
+                  <CircleCheck className="text-status-running size-5 shrink-0" />
+                  <span className="text-foreground">
+                    {name.trim() || 'Credential'} added
+                    {makeDefault ? ' · set as default' : ''}.
+                  </span>
+                </div>
+              ) : (
+                <StepProgress steps={CREATE_STEPS} current={step} />
+              )}
             </div>
-            <Field label="API key" htmlFor="cred-key">
-              <Input
-                id="cred-key"
-                type="password"
-                value={key}
-                onChange={(e) => setKey(e.target.value)}
-                placeholder={KEY_HINT[provider] ?? 'sk-…'}
-              />
-            </Field>
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="cred-default"
-                checked={makeDefault}
-                onCheckedChange={(v) => setMakeDefault(v === true)}
-              />
-              <Label
-                htmlFor="cred-default"
-                className="cursor-pointer font-normal"
-              >
-                Set as the org default for {provider}
-                <span className="text-muted-foreground">
-                  {' '}
-                  — used when an agent doesn&apos;t pin its own.
-                </span>
-              </Label>
-            </div>
-            <DialogFooter className="mt-2">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => {
-                  setShowCreate(false)
-                  resetForm()
+          ) : (
+            <>
+              <DialogHeader>
+                <DialogTitle>Add credential</DialogTitle>
+                <DialogDescription>
+                  The key is stored write-only — you won&apos;t be able to read
+                  it back, only rotate or delete it.
+                </DialogDescription>
+              </DialogHeader>
+              <form
+                className="space-y-4"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (canCreate) createMutation.mutate()
                 }}
               >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={createMutation.isPending || !canCreate}
-              >
-                {createMutation.isPending ? 'Adding…' : 'Add credential'}
-              </Button>
-            </DialogFooter>
-          </form>
+                {createError ? (
+                  <div className="border-status-error/30 bg-status-error-bg text-status-error rounded-md border px-3 py-2 text-xs">
+                    {createError}
+                  </div>
+                ) : null}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <Field label="Name" htmlFor="cred-name">
+                    <Input
+                      id="cred-name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="e.g. Production"
+                    />
+                  </Field>
+                  <Field label="Provider" htmlFor="cred-provider">
+                    <Select
+                      id="cred-provider"
+                      value={provider}
+                      onValueChange={setProvider}
+                      options={PROVIDERS}
+                    />
+                  </Field>
+                </div>
+                <Field label="API key" htmlFor="cred-key">
+                  <Input
+                    id="cred-key"
+                    type="password"
+                    value={key}
+                    onChange={(e) => setKey(e.target.value)}
+                    placeholder={KEY_HINT[provider] ?? 'sk-…'}
+                  />
+                </Field>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="cred-default"
+                    checked={makeDefault}
+                    onCheckedChange={(v) => setMakeDefault(v === true)}
+                  />
+                  <Label
+                    htmlFor="cred-default"
+                    className="cursor-pointer font-normal"
+                  >
+                    Set as the org default for {provider}
+                    <span className="text-muted-foreground">
+                      {' '}
+                      — used when an agent doesn&apos;t pin its own.
+                    </span>
+                  </Label>
+                </div>
+                <DialogFooter className="mt-2">
+                  <Button type="button" variant="ghost" onClick={closeCreate}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={!canCreate}>
+                    Add credential
+                  </Button>
+                </DialogFooter>
+              </form>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 
