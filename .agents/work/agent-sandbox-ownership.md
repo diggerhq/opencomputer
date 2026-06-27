@@ -110,13 +110,23 @@ edge→cell cap-token and avoids a credential-custody surface entirely.
   enforces).
 - Every hop attributes to exactly one OC org; no call is ownerless.
 
-## `/v3` is prod-only (deploy note)
+## Environments (how dev vs prod actually splits)
 
-There is no dev/staging `sessions-api`: the dev dashboard (the `igor-dev` edge)
-proxies to **prod** `/v3` (`api.opencomputer.dev` / `bolt-platform`). So `/v3`
-changes are validated against prod — ship them **additive and inert-until-
-configured**, the way Phase 0's org-token did (behind `OC_ORG_TOKEN_SECRET`, a
-no-op until the secret is set on both sides).
+- **sessions-api** — a **single instance** (no dev/prod split), easy to deploy
+  (Fly `bolt-platform`, on merge to main). Its `OPENCOMPUTER_API_URL` (+
+  `OC_ORG_FOR_KEY_URL`) decide **which OC edge it provisions/resolves against** —
+  point at the dev edge for dev testing, the prod edge for prod.
+- **OC edge** — real dev/prod split: a **dev edge** (`igor-dev`) + the prod edge.
+- **OC core** — real dev/prod split: a **dev box** + prod.
+- **web statics** — built into each edge (dev statics on the dev edge, prod on
+  prod).
+
+So ownership IS fully testable in dev: point the single sessions-api at the dev
+edge, with `OC_PROVISION_SECRET` on both — provisioning flows dev edge → dev box,
+boxes owned by the org, shown in the dev dashboard. No prod needed to test.
+
+Still ship `/v3`/edge changes **additive + inert-until-configured** (behind a
+secret) since sessions-api is one shared instance.
 
 ## Concrete seams (confirmed by code, 2026-06-27)
 
@@ -233,15 +243,27 @@ on both → live for **dashboard** sessions. SDK/`osb_` sessions need Phase 0.5.
   brain/hands boxes (PR 426); the org-scoped Sandboxes list shows agent boxes
   automatically once they're org-owned (Phase 2 active). No further code.
 
-## Activation (all prod; no dev `/v3` exists — test via the dev dashboard)
+## Test in dev (dev box + dev edge + the single sessions-api)
 
-1. Deploy the `feat/web-ui-dev` worker to the **prod OC edge** (ships `/api/whoami`
-   + `authenticate()` act-as-org + `proxyToV3` + dashboard webhooks). Inert.
-2. Merge sessions-api **#28** → deploy prod sessions-api (Phase 1 additive + 0.5
-   inert). (#27 / Phase 2 already deployed inert.)
-3. Set `OC_PROVISION_SECRET` (one shared value) on the prod OC edge + prod
-   sessions-api → **activates** act-as-org. (Set it ONLY after step 1, else
-   sessions-api mints JWTs the prod edge can't yet verify → provisioning breaks.)
-4. Test via the dev dashboard against prod `/v3`: create a session → box owned by
-   the org, shown on the session + in the org's Sandboxes list; an SDK/`osb_`
-   session also appears (Phase 0.5). Then merge PR 426.
+Dev edge (`igor-dev`) already has `/api/whoami` + `authenticate()` act-as-org +
+`proxyToV3` + webhooks deployed. Then:
+
+1. **sessions-api** (the single instance): merge #28 + deploy, and point it at the
+   dev edge — `OPENCOMPUTER_API_URL` = dev edge, `OC_ORG_FOR_KEY_URL` = dev edge
+   `/api/whoami`.
+2. Set `OC_PROVISION_SECRET` to the **same value** on sessions-api **and** the dev
+   edge (`wrangler secret put … --config wrangler.igor-dev.toml`).
+3. Dev box (OC core) needs no change — it trusts the edge cap-token, which now
+   carries the customer org.
+4. Test via the **dev dashboard**: create a session → box provisioned via dev edge
+   → dev box, owned by the org, shown on the session + in the org's Sandboxes
+   list. An SDK/`osb_` session resolves to the same org and appears too (0.5).
+
+## Deploy to prod (after dev test passes)
+
+Deploy **OC core + web statics + edge to prod** (prod edge ships whoami +
+act-as-org verifier + proxyToV3 + webhooks; prod core unchanged for ownership),
+point the single sessions-api at the **prod** edge, set `OC_PROVISION_SECRET` on
+the prod edge (matching sessions-api), and merge PR 426. Set the secret only
+after the prod edge has the verifier, else sessions-api mints JWTs it can't yet
+verify → provisioning breaks.
