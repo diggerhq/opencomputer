@@ -2,6 +2,7 @@ import { Component, type ReactNode } from 'react'
 import { TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/empty-state'
+import { isChunkLoadError, reloadForStaleChunk } from '@/lib/chunk-reload'
 
 interface Props {
   children: ReactNode
@@ -11,6 +12,8 @@ interface Props {
 
 interface State {
   error: Error | null
+  /** A chunk-load error we're recovering from by reloading — render nothing. */
+  recovering: boolean
 }
 
 /**
@@ -19,19 +22,30 @@ interface State {
  * route pathname) to auto-reset on navigation.
  */
 export class ErrorBoundary extends Component<Props, State> {
-  state: State = { error: null }
+  state: State = { error: null, recovering: false }
 
   static getDerivedStateFromError(error: Error): State {
-    return { error }
+    // A failed dynamic import (usually a stale code-split chunk after a deploy)
+    // is recoverable by reloading. Mark it so render shows nothing until
+    // componentDidCatch decides — avoids flashing the error UI before reload.
+    return { error, recovering: isChunkLoadError(error) }
   }
 
   componentDidCatch(error: Error, info: { componentStack?: string | null }) {
+    if (isChunkLoadError(error)) {
+      // Backstop for import failures the main.tsx vite:preloadError handler
+      // misses. Reload once; if the guard declines (already reloaded — likely a
+      // real failure, not a stale chunk), fall through to the error UI.
+      if (reloadForStaleChunk()) return
+      this.setState({ recovering: false })
+    }
     console.error('Unhandled UI error:', error, info.componentStack)
   }
 
-  reset = () => this.setState({ error: null })
+  reset = () => this.setState({ error: null, recovering: false })
 
   render() {
+    if (this.state.recovering) return null
     if (this.state.error) {
       return this.props.fallback ? (
         this.props.fallback(this.reset)

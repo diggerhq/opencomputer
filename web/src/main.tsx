@@ -10,6 +10,7 @@ import {
   ErrorBoundary,
   DefaultErrorFallback,
 } from './components/error-boundary'
+import { reloadForStaleChunk } from './lib/chunk-reload'
 import './index.css'
 
 const queryClient = new QueryClient({
@@ -30,6 +31,15 @@ if (PH_TOKEN) {
     person_profiles: 'identified_only',
   })
 }
+
+// After a deploy, an open tab still references the previous build's hashed route
+// chunks; navigating to a not-yet-loaded route fails the dynamic import and Vite
+// dispatches `vite:preloadError`. Reload once to pick up the new build instead
+// of surfacing it as a render error. If the guard declines (a recent reload —
+// likely a real failure), let it throw so the ErrorBoundary handles it.
+window.addEventListener('vite:preloadError', (event) => {
+  if (reloadForStaleChunk()) event.preventDefault()
+})
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
