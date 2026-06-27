@@ -368,6 +368,9 @@ export const createAgent = (body: {
   model: string
   runtime: string
   credential_id?: string
+  // `key` sugar: mints a model credential of the runtime's provider for this
+  // agent (write-only). Without it (and no org default) sessions 422 no_credential.
+  key?: string
 }) =>
   apiFetch(
     '/v3/agents',
@@ -396,7 +399,8 @@ export const getSessions = (status?: string) =>
 export const getSession = (id: string) =>
   apiFetch(`/v3/sessions/${id}`, {}, S.SessionSchema)
 
-export const createSession = (body: { agent_id: string; message?: string }) =>
+// /v3 wants { agent: <id>, input } and input is required (the first task).
+export const createSession = (body: { agent: string; input: string }) =>
   apiFetch(
     '/v3/sessions',
     { method: 'POST', body: JSON.stringify(body) },

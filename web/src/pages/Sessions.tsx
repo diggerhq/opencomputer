@@ -46,11 +46,7 @@ export default function Sessions() {
   }
 
   const startMutation = useMutation({
-    mutationFn: () =>
-      createSession({
-        agent_id: agentId,
-        message: message.trim() || undefined,
-      }),
+    mutationFn: () => createSession({ agent: agentId, input: message.trim() }),
     onSuccess: (session) => {
       setShowStart(false)
       void queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -95,7 +91,7 @@ export default function Sessions() {
       align: 'right',
       cell: (s) => (
         <span className="text-muted-foreground font-mono text-xs">
-          {s.event_seq ?? 0}
+          {s.head ?? 0}
         </span>
       ),
     },
@@ -171,7 +167,7 @@ export default function Sessions() {
               className="space-y-4"
               onSubmit={(e) => {
                 e.preventDefault()
-                if (agentId) startMutation.mutate()
+                if (agentId && message.trim()) startMutation.mutate()
               }}
             >
               <div className="space-y-1.5">
@@ -190,9 +186,9 @@ export default function Sessions() {
                 </select>
               </div>
               <Field
-                label="First message"
+                label="First task"
                 htmlFor="start-message"
-                description="Optional — what should the agent do?"
+                description="What should the agent do? (required)"
               >
                 <Textarea
                   id="start-message"
@@ -212,7 +208,9 @@ export default function Sessions() {
                 </Button>
                 <Button
                   type="submit"
-                  disabled={startMutation.isPending || !agentId}
+                  disabled={
+                    startMutation.isPending || !agentId || !message.trim()
+                  }
                 >
                   {startMutation.isPending ? 'Starting…' : 'Start session'}
                 </Button>

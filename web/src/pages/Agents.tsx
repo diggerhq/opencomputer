@@ -32,11 +32,13 @@ export default function Agents() {
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState(DEFAULT_MODEL)
+  const [apiKey, setApiKey] = useState('')
 
   const resetForm = () => {
     setName('')
     setPrompt('')
     setModel(DEFAULT_MODEL)
+    setApiKey('')
   }
 
   const createMutation = useMutation({
@@ -46,6 +48,7 @@ export default function Agents() {
         prompt: prompt.trim(),
         model,
         runtime: 'claude',
+        key: apiKey.trim() || undefined,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
@@ -192,6 +195,19 @@ export default function Agents() {
                 <Input id="agent-runtime" value="Claude" disabled />
               </Field>
             </div>
+            <Field
+              label="Anthropic API key"
+              htmlFor="agent-key"
+              description="Stored write-only. Needed to run sessions unless your org already has a default credential."
+            >
+              <Input
+                id="agent-key"
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-ant-…"
+              />
+            </Field>
             <DialogFooter className="mt-2">
               <Button
                 type="button"

@@ -133,7 +133,7 @@ export default function SessionDetail() {
               <StatusBadge status={status} />
             </div>
             <p className="text-muted-foreground text-xs">
-              {session?.event_seq ?? 0} events · created{' '}
+              {session?.head ?? 0} events · created{' '}
               {session?.created_at
                 ? new Date(session.created_at).toLocaleString()
                 : '—'}

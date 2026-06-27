@@ -247,12 +247,12 @@ export const SandboxUsageSchema = z.object({
 export const AgentSchema = z.object({
   id: z.string(),
   name: z.string(),
-  prompt_hash: z.string().optional(),
+  prompt_hash: z.string().nullish(),
   model: z.string(),
   runtime: z.string(),
   credential_id: z.string().nullable().optional(),
   revision: z.number().optional(),
-  limits: record.optional(),
+  limits: record.nullish(),
   created_at: z.string(),
 })
 // /v3 list endpoints wrap rows in { data: [...], next_cursor? }.
@@ -266,11 +266,11 @@ export const SessionSchema = z.object({
   status: z.string(),
   agent_id: z.string().nullable().optional(),
   credential_id: z.string().nullable().optional(),
-  event_seq: z.number().optional(),
-  last_turn: record.nullable().optional(),
-  usage: record.optional(),
-  limits: record.optional(),
-  metadata: record.optional(),
+  head: z.number().optional(), // current event seq (the API calls it `head`)
+  last_turn: record.nullish(),
+  usage: record.nullish(),
+  limits: record.nullish(),
+  metadata: record.nullish(),
   created_at: z.string(),
 })
 export const SessionListSchema = z.object({
@@ -291,8 +291,8 @@ export const SessionEventSchema = z.object({
   level: z.string(),
   actor: ActorSchema.optional(),
   body: z.unknown().optional(),
-  body_ref: z.string().nullable().optional(),
-  refs: record.optional(),
+  content_ref: z.string().nullish(), // set when body spilled to blob storage
+  refs: record.nullish(),
   source: z.string().optional(),
   turn_id: z.string().nullable().optional(),
   ts: z.string().optional(),
@@ -318,7 +318,7 @@ export const DestinationSchema = z.object({
   id: z.string(),
   url: z.string(),
   level: z.string().optional(),
-  types: z.array(z.string()).optional(),
+  types: z.array(z.string()).nullish(),
   include_raw: z.boolean().optional(),
   enabled: z.boolean(),
   has_secret: z.boolean().optional(),
@@ -329,7 +329,7 @@ export const DestinationSchema = z.object({
 
 export const DeliverySchema = z.object({
   id: z.string(),
-  destination_id: z.string(),
+  destination: z.string().optional(), // the API field is `destination`, not `destination_id`
   event_id: z.string().optional(),
   event_seq: z.number().optional(),
   status: z.string(),
