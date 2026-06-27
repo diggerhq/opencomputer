@@ -35,24 +35,36 @@ A session must record which mode it ran under (and which credential / `last4`),
 so billing only ever fires for managed-key sessions. That metadata already
 exists (credential metadata + the sealed per-session secret store).
 
-## What already exists (reuse, don't reinvent)
+## What exists today — legacy compute billing (context, NOT a foundation)
 
-- **Compute billing pipeline** — `internal/db/billable_events.go`: an outbox of
-  metered events (`reserved_usage`, `overage_usage`, `disk_overage_usage`),
-  keyed by `(org_id, event_type, memory_mb, bucket_start)`, GB-seconds over
-  15-minute buckets, delivered to Stripe / Autumn (`stripe_event_id`). There is
-  **no model-usage event type** — adding one is the obvious integration seam.
+> ⚠️ **Direction:** the existing **prepaid / 15-minute-bucket compute-billing
+> pipeline is a deprecation candidate** — not somewhere we want to invest
+> further. Treat the bullets below as *what's there today*, not as the substrate
+> to extend. Model billing should **not** assume it inherits this pipeline; the
+> credits **unit** stays (we bill model usage "as part of credits"), but the
+> metering/ledger **mechanism** is an open decision (see Open questions). There's
+> also a natural-fit argument here: model usage is inherently **per-call /
+> per-event** (token counts per request), which maps poorly onto the
+> GB-second, 15-minute-bucket compute model regardless of the deprecation call.
+
+- **Compute billing pipeline (legacy)** — `internal/db/billable_events.go`: an
+  outbox of metered events (`reserved_usage`, `overage_usage`,
+  `disk_overage_usage`), keyed by `(org_id, event_type, memory_mb,
+  bucket_start)`, GB-seconds over 15-minute buckets, delivered to Stripe /
+  Autumn (`stripe_event_id`). No model-usage event type — and per the direction
+  above, bolting one on here is **not** the assumed path.
 - **Two billing providers, per org** — `orgs.billing_provider` (migration 047):
   `legacy` (in-house CreditAccount DO on the edge + UsageReporter on the cell)
   vs `autumn` (Autumn owns the credit ledger, metering, top-ups, auto-recharge,
-  concurrency plans; the cell just measures usage → `track()`). The ledger +
-  auto-recharge machinery we'd debit against already exists.
-- **Credit halt** — `is_halted` / `halted_at` on `orgs` (migration 043),
-  mirrored from the CreditAccount DO via `/admin/halt-org`; the wake handler
-  refuses halted orgs; `halt_reason` on `sandbox_sessions` distinguishes
-  credit-exhaustion from user hibernation. Note: this gates **sandbox wake**,
-  not **mid-session model spend** — a long turn can keep burning model tokens
-  after credits are gone.
+  concurrency plans; the cell just measures usage → `track()`). A credit ledger
+  + auto-recharge exists, but whether model billing rides Autumn, something new,
+  or a successor to all of this is open — don't assume.
+- **Credit halt (legacy)** — `is_halted` / `halted_at` on `orgs`
+  (migration 043), mirrored from the CreditAccount DO via `/admin/halt-org`; the
+  wake handler refuses halted orgs; `halt_reason` on `sandbox_sessions`
+  distinguishes credit-exhaustion from user hibernation. Part of the same legacy
+  pipeline; it also only gates **sandbox wake**, not **mid-session model spend**
+  — a long turn can keep burning model tokens after credits are gone.
 - **Model-call paths (the candidate metering chokepoints):**
   - **V3 (durable sessions — the live dashboard path):** model calls egress
     **directly** from the sandbox through the host-side **secrets/egress proxy**
@@ -134,12 +146,18 @@ Plausible combination: **A (or B)** for real-time, trusted, per-session metering
 
 ### Billing integration
 
-- **Reuse `billable_events`:** add a model-usage event type carrying org +
-  session + token counts + computed cents, flowing into the same outbox →
-  Stripe / Autumn `track()`.
-- Extend **credit-halt** to model spend; consider a **mid-session** soft-stop or
-  a **pre-flight budget reservation** for long turns (agents already carry
-  limits like `maxTurnSeconds`; add a token/credit budget).
+> Do **not** assume extending the legacy compute pipeline (see the direction
+> note above). The credits **unit** stays; the metering/ledger **substrate** is
+> an open decision and may well be built fresh for per-call model usage.
+
+- **Substrate is open.** Whatever the credits ledger becomes (a successor to the
+  legacy/Autumn split, a usage-rating provider, or something new), model usage
+  is debited there. A model-usage record is naturally **per-call** (org +
+  session + agent + model + token counts + computed cost), not a GB-second
+  bucket — design the event for that shape, independent of the legacy outbox.
+- Extend halt/quota semantics to model spend; consider a **mid-session**
+  soft-stop or a **pre-flight budget reservation** for long turns (agents
+  already carry limits like `maxTurnSeconds`; add a token/credit budget).
 
 ### BYO vs managed interaction
 
@@ -155,6 +173,10 @@ Plausible combination: **A (or B)** for real-time, trusted, per-session metering
 - Per-session vs per-org granularity for v1?
 - Build metering in-house (proxy/gateway) vs adopt an LLM-gateway/metering
   provider (route E)?
+- **What replaces the prepaid / 15-min-bucket compute-billing pipeline (a
+  deprecation candidate), and should model billing share a credits substrate
+  with it or be built fresh?** This is the biggest upstream unknown — it gates
+  the "Billing integration" choice.
 - Reconciliation policy: metered vs provider invoice — who eats the delta, and
   at what cadence do we true-up?
 - When do OpenAI/codex (multi-provider) land, and does that change the choice?
