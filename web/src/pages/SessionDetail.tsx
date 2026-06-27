@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Send, Wrench } from 'lucide-react'
@@ -11,6 +11,7 @@ import {
   archiveSession,
   type SessionEvent,
 } from '@/api/client'
+import { SessionEventSchema } from '@/api/schemas'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/form'
@@ -56,17 +57,49 @@ export default function SessionDetail() {
   const [draft, setDraft] = useState('')
   const [level, setLevel] = useState<LevelFilter>('all')
   const [confirmCancel, setConfirmCancel] = useState(false)
+  const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
+  const [streamOk, setStreamOk] = useState(false)
 
   const { data: session, isLoading } = useQuery({
     queryKey: ['session', sessionId],
     queryFn: () => getSession(sessionId),
     refetchInterval: 5000,
   })
+  // Initial history, plus a polling fallback while the live stream is down.
   const { data: eventData } = useQuery({
     queryKey: ['session-events', sessionId],
     queryFn: () => getSessionEvents(sessionId),
-    refetchInterval: 5000,
+    refetchInterval: streamOk ? false : 5000,
   })
+
+  // Live events over SSE through the dashboard proxy (the proxy injects auth;
+  // EventSource can't set headers). It replays history then streams live, and
+  // auto-reconnects with Last-Event-ID. Skipped under the preview mock (no
+  // backend) — the query renders there.
+  useEffect(() => {
+    if (!sessionId || import.meta.env.VITE_PREVIEW === '1') return
+    const es = new EventSource(
+      `/api/dashboard/v3/sessions/${sessionId}/events?stream=sse`,
+      { withCredentials: true },
+    )
+    es.onopen = () => setStreamOk(true)
+    es.onmessage = (e) => {
+      let raw: unknown
+      try {
+        raw = JSON.parse(e.data as string)
+      } catch {
+        return
+      }
+      const parsed = SessionEventSchema.safeParse(raw)
+      if (!parsed.success) return
+      const ev = parsed.data
+      setLiveEvents((prev) =>
+        prev.some((x) => x.id === ev.id) ? prev : [...prev, ev],
+      )
+    }
+    es.onerror = () => setStreamOk(false) // EventSource retries on its own
+    return () => es.close()
+  }, [sessionId])
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
@@ -94,6 +127,17 @@ export default function SessionDetail() {
     onError: (e) => notifyError("Couldn't archive the session.", e),
   })
 
+  // History (query) ∪ this session's live SSE events, deduped by id, by seq.
+  const allEvents = useMemo(() => {
+    const byId = new Map<string, SessionEvent>()
+    for (const e of eventData ?? []) byId.set(e.id, e)
+    for (const e of liveEvents) {
+      if (e.session && e.session !== sessionId) continue
+      byId.set(e.id, e)
+    }
+    return [...byId.values()].sort((a, b) => a.seq - b.seq)
+  }, [eventData, liveEvents, sessionId])
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -108,7 +152,6 @@ export default function SessionDetail() {
   const canSteer = !archived
   const canCancel = status === 'running' || status === 'awaiting_input'
 
-  const allEvents = eventData ?? []
   const events =
     level === 'user' ? allEvents.filter((e) => e.level === 'user') : allEvents
 
@@ -167,7 +210,15 @@ export default function SessionDetail() {
       {/* Event stream */}
       <Panel className="overflow-hidden">
         <div className="flex items-center justify-between border-b px-4 py-2.5">
-          <h2 className="text-sm font-semibold">Events</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold">Events</h2>
+            {streamOk ? (
+              <span className="text-status-running flex items-center gap-1 text-[10px] font-medium tracking-wide uppercase">
+                <span className="bg-status-running size-1.5 rounded-full" />
+                Live
+              </span>
+            ) : null}
+          </div>
           <div className="flex gap-1">
             {LEVELS.map((l) => (
               <button

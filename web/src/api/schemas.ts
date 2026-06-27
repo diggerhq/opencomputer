@@ -316,6 +316,7 @@ export const ActorSchema = z.object({
 export const SessionEventSchema = z.object({
   id: z.string(),
   seq: z.number(),
+  session: z.string().optional(), // owning session id (present on SSE frames)
   type: z.string(),
   level: z.string(),
   actor: ActorSchema.optional(),
