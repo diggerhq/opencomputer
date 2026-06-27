@@ -290,6 +290,21 @@ export const AgentListSchema = z.object({
   next_cursor: z.string().nullish(),
 })
 
+// Credentials — the reusable model-provider keys an agent/session resolves. The
+// raw key is write-only; the API returns only metadata (last4 for display).
+export const CredentialSchema = z.object({
+  id: z.string(),
+  provider: z.string(),
+  name: z.string().nullish(),
+  last4: z.string().nullable().optional(),
+  is_default: z.boolean().optional(),
+  created_at: z.string(),
+})
+export const CredentialListSchema = z.object({
+  data: z.array(CredentialSchema),
+  next_cursor: z.string().nullish(),
+})
+
 export const SessionSchema = z.object({
   id: z.string(),
   status: z.string(),
@@ -378,6 +393,7 @@ export const DeliverySchema = z.object({
 })
 
 export type Agent = z.infer<typeof AgentSchema>
+export type Credential = z.infer<typeof CredentialSchema>
 export type Session = z.infer<typeof SessionSchema>
 export type SessionEvent = z.infer<typeof SessionEventSchema>
 export type Turn = z.infer<typeof TurnSchema>

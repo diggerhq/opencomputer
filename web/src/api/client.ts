@@ -33,6 +33,7 @@ export type {
   Delivery,
   SandboxWebhook,
   SandboxWebhookDelivery,
+  Credential,
 } from './schemas'
 
 const API_BASE = '/api/dashboard'
@@ -392,6 +393,35 @@ export const updateAgent = (
     S.AgentSchema,
   )
 
+// Credentials — reusable model-provider keys (the raw key is write-only). An
+// agent pins one (credential_id); sessions resolve the agent's, else the org
+// default for the provider.
+export const getCredentials = () =>
+  apiFetch('/v3/credentials', {}, S.CredentialListSchema).then((r) => r.data)
+
+export const createCredential = (body: {
+  key: string
+  provider?: string
+  name?: string
+  is_default?: boolean
+}) =>
+  apiFetch(
+    '/v3/credentials',
+    { method: 'POST', body: JSON.stringify(body) },
+    S.CredentialSchema,
+  )
+
+export const deleteCredential = (id: string) =>
+  apiFetch<void>(`/v3/credentials/${id}`, { method: 'DELETE' })
+
+// Set the org default credential for its provider (the one sessions fall back to).
+export const setDefaultCredential = (id: string) =>
+  apiFetch(
+    '/v3/credentials/default',
+    { method: 'PUT', body: JSON.stringify({ credential: id }) },
+    S.CredentialSchema,
+  )
+
 // Sessions — the durable runs.
 export const getSessions = (status?: string) =>
   apiFetch(
@@ -416,7 +446,9 @@ export const createSession = (
       body: JSON.stringify(body),
       // sessions-api dedups create on the Idempotency-Key header (the edge proxy
       // forwards it) so a retried start-session is safe.
-      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+      headers: idempotencyKey
+        ? { 'Idempotency-Key': idempotencyKey }
+        : undefined,
     },
     z.object({ session: S.SessionSchema, client_token: z.string().optional() }),
   ).then((r) => r.session)

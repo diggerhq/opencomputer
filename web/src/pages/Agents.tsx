@@ -2,7 +2,14 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bot, Plus } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
-import { getAgents, createAgent, updateAgent, type Agent } from '@/api/client'
+import {
+  getAgents,
+  createAgent,
+  updateAgent,
+  getCredentials,
+  createCredential,
+  type Agent,
+} from '@/api/client'
 import { PageHeader } from '@/components/page-header'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
@@ -27,37 +34,100 @@ const MODELS = [
 ]
 const DEFAULT_MODEL = MODELS[0].value
 
+// Agents run on the "claude" runtime → anthropic credentials. Sentinels for the
+// credential picker's two non-credential choices.
+const CRED_PROVIDER = 'anthropic'
+const NEW_CRED = '__new__'
+const ORG_DEFAULT = '__default__'
+
 export default function Agents() {
   const queryClient = useQueryClient()
   const { data: agents, isLoading } = useQuery({
     queryKey: ['agents'],
     queryFn: getAgents,
   })
+  // Credentials for the picker (so creating an agent doesn't need a fresh key each time).
+  const { data: credentials } = useQuery({
+    queryKey: ['credentials'],
+    queryFn: getCredentials,
+  })
+  const anthropicCreds = (credentials ?? []).filter(
+    (c) => c.provider === CRED_PROVIDER,
+  )
+  const hasDefault = anthropicCreds.some((c) => c.is_default)
 
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState(DEFAULT_MODEL)
-  const [apiKey, setApiKey] = useState('')
+  // Credential selection: a credential id, NEW_CRED (create inline), or ORG_DEFAULT
+  // (rely on the org default). '' is resolved to a sensible default on dialog open.
+  const [credChoice, setCredChoice] = useState('')
+  const [newCredName, setNewCredName] = useState('')
+  const [newCredKey, setNewCredKey] = useState('')
+
+  // Pick the lowest-friction default each time the dialog opens: the org default
+  // credential if any, else the first existing one, else "new credential".
+  const initialCredChoice = () =>
+    anthropicCreds.find((c) => c.is_default)?.id ??
+    anthropicCreds[0]?.id ??
+    NEW_CRED
 
   const resetForm = () => {
     setName('')
     setPrompt('')
     setModel(DEFAULT_MODEL)
-    setApiKey('')
+    setCredChoice('')
+    setNewCredName('')
+    setNewCredKey('')
   }
 
+  const openCreate = () => {
+    setCredChoice(initialCredChoice())
+    setShowCreate(true)
+  }
+
+  // Build options: existing creds + "New credential…" + (when one exists) "Use org default".
+  const credOptions = [
+    ...anthropicCreds.map((c) => ({
+      value: c.id,
+      label: `${c.name || 'Unnamed'}${c.last4 ? ` ·· ${c.last4}` : ''}${
+        c.is_default ? ' (default)' : ''
+      }`,
+    })),
+    { value: NEW_CRED, label: '＋ New credential…' },
+    ...(hasDefault ? [{ value: ORG_DEFAULT, label: 'Use org default' }] : []),
+  ]
+
   const createMutation = useMutation({
-    mutationFn: () =>
-      createAgent({
+    mutationFn: async () => {
+      // Resolve the agent's credential without leaving the dialog:
+      //  - NEW_CRED  → create the credential first, pin the new id.
+      //  - ORG_DEFAULT → pin nothing (sessions fall back to the org default).
+      //  - else      → pin the chosen existing credential.
+      let credentialId: string | undefined
+      if (credChoice === NEW_CRED) {
+        const cred = await createCredential({
+          key: newCredKey.trim(),
+          provider: CRED_PROVIDER,
+          name: newCredName.trim() || undefined,
+          is_default: !hasDefault, // first key becomes the org default
+        })
+        credentialId = cred.id
+      } else if (credChoice && credChoice !== ORG_DEFAULT) {
+        credentialId = credChoice
+      }
+      return createAgent({
         name: name.trim(),
         prompt: prompt.trim(),
         model,
         runtime: 'claude',
-        key: apiKey.trim() || undefined,
-      }),
+        credential_id: credentialId,
+      })
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      void queryClient.invalidateQueries({ queryKey: ['credentials'] })
       setShowCreate(false)
       resetForm()
     },
@@ -142,7 +212,10 @@ export default function Agents() {
     },
   ]
 
-  const canCreate = name.trim().length > 0 && prompt.trim().length > 0
+  const canCreate =
+    name.trim().length > 0 &&
+    prompt.trim().length > 0 &&
+    (credChoice !== NEW_CRED || newCredKey.trim().length > 0)
 
   return (
     <div>
@@ -156,7 +229,7 @@ export default function Agents() {
           docs: 'https://docs.opencomputer.dev/agent-sessions/agents',
         }}
         actions={
-          <Button onClick={() => setShowCreate(true)}>
+          <Button onClick={openCreate}>
             <Plus className="size-4" />
             Create agent
           </Button>
@@ -176,7 +249,7 @@ export default function Agents() {
               title="No agents yet"
               description="An agent is the reusable “what” — define it once, then start sessions from it."
               action={
-                <Button size="sm" onClick={() => setShowCreate(true)}>
+                <Button size="sm" onClick={openCreate}>
                   <Plus className="size-4" />
                   Create agent
                 </Button>
@@ -190,7 +263,7 @@ export default function Agents() {
         open={showCreate}
         onOpenChange={(open) => {
           setShowCreate(open)
-          if (!open) setApiKey('') // never leave a model key in state after close
+          if (!open) setNewCredKey('') // never leave a model key in state after close
         }}
       >
         <DialogContent>
@@ -247,18 +320,47 @@ export default function Agents() {
               </Field>
             </div>
             <Field
-              label="Anthropic API key"
-              htmlFor="agent-key"
-              description="Stored write-only. Needed to run sessions unless your org already has a default credential."
+              label="Credential"
+              htmlFor="agent-cred"
+              description={
+                credChoice === ORG_DEFAULT
+                  ? 'Sessions use your org default Anthropic credential.'
+                  : 'The Anthropic key this agent runs on. Reuse one from Credentials, or add a new one here.'
+              }
             >
-              <Input
-                id="agent-key"
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-ant-…"
+              <Select
+                id="agent-cred"
+                value={credChoice}
+                onValueChange={setCredChoice}
+                options={credOptions}
+                placeholder="Choose a credential"
               />
             </Field>
+            {credChoice === NEW_CRED ? (
+              <div className="border-border bg-panel-2 grid grid-cols-1 gap-4 rounded-md border p-3 sm:grid-cols-2">
+                <Field label="Credential name" htmlFor="new-cred-name">
+                  <Input
+                    id="new-cred-name"
+                    value={newCredName}
+                    onChange={(e) => setNewCredName(e.target.value)}
+                    placeholder="e.g. Production"
+                  />
+                </Field>
+                <Field
+                  label="Anthropic API key"
+                  htmlFor="new-cred-key"
+                  description="Stored write-only."
+                >
+                  <Input
+                    id="new-cred-key"
+                    type="password"
+                    value={newCredKey}
+                    onChange={(e) => setNewCredKey(e.target.value)}
+                    placeholder="sk-ant-…"
+                  />
+                </Field>
+              </div>
+            ) : null}
             <DialogFooter className="mt-2">
               <Button
                 type="button"

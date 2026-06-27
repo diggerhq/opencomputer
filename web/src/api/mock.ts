@@ -394,6 +394,25 @@ const v3agents = [
   },
 ]
 
+const v3credentials = [
+  {
+    id: 'cred_anth_1',
+    provider: 'anthropic',
+    name: 'Production',
+    last4: 'a1b2',
+    is_default: true,
+    created_at: at(20),
+  },
+  {
+    id: 'cred_anth_2',
+    provider: 'anthropic',
+    name: 'Staging',
+    last4: 'c3d4',
+    is_default: false,
+    created_at: at(8),
+  },
+]
+
 const v3sessions = [
   {
     id: 'ses_a1b2c3',
@@ -596,6 +615,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
   // Durable Agent Sessions (/v3) — lists return the { data: [...] } envelope.
   [/^\/v3\/agents\/[^/]+$/, () => v3agents[0]],
   [/^\/v3\/agents$/, () => ({ data: v3agents })],
+  [/^\/v3\/credentials$/, () => ({ data: v3credentials })],
   [/^\/v3\/sessions\/[^/]+\/events/, () => ({ data: v3events })],
   [/^\/v3\/sessions\/[^/]+\/destinations$/, () => ({ data: v3destinations })],
   [/^\/v3\/sessions\/[^/]+\/deliveries$/, () => ({ data: v3deliveries })],
