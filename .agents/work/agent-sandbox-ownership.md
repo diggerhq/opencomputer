@@ -1,8 +1,9 @@
 # Agent sandbox ownership — end-user org owns the compute
 
-Status: **design, approved direction** — building toward it. Owners span three
-repos (opencomputer edge + OC core, sessions-api). Companion to the dashboard
-work (`durable-agent-sessions-ui.md`).
+Status: **Phase 0 live; Phase 2 BUILT + verified, inert pending prod activation;
+Phase 0.5 / 1 / 3 open.** Owners span three repos (opencomputer edge + OC core,
+sessions-api). Companion to the dashboard work (`durable-agent-sessions-ui.md`).
+What actually shipped + how to turn it on: see **Implemented (Phase 2)** below.
 
 ## Requirement (non-negotiable)
 
@@ -173,17 +174,54 @@ response (or a small read endpoint).
   accept a `headers` option so `ocOpts()` (`runtime/sandbox.ts:20`, ~10 call
   sites) can attach the act-as-org token? If not, that's the first thing to add.
 - **Quota sharing** — agent boxes will count against the customer org's
-  concurrency, shared with its interactive sandboxes. Intended (ownership ⇒
-  quota), but confirm the limit is sized for it.
-- **`actas_org_id` on the cap-token** vs a separate edge→CP assertion — extend
-  the cap-token (Option A); minimal, billing already threads the org param.
+  concurrency, shared with its interactive sandboxes. Confirmed intended
+  (ownership ⇒ quota); confirm the limit is sized for it.
+- **No cap-token claim needed** (revised). The edge resolves org X in
+  `authenticate()` from the verified JWT, so the existing cap-token already
+  carries X to the CP — no `actas_org_id` claim, no CP change.
 
-## Build order (refined)
+## Implemented (Phase 2) — what shipped
 
-1. **Phase 1** — expose session→sandbox (serialize the recorded ids). Safe, no
-   trust changes, unblocks Phase 3.
-2. **Phase 0.5 — `osb_`→org** — unify owner so every session is `oc-org:X`
-   (also fixes demo visibility). Prereq for owning SDK/demo sessions' boxes.
-3. **Phase 2** — act-as-org provisioning (the signed token + edge stamp + cap
-   `actas_org_id`). The core. Ship inert behind `OC_PROVISION_SECRET`.
-4. **Phase 3** — dashboard surfaces agent boxes + session↔box links.
+Mechanism = the act-as-org assertion delivered AS the `X-API-Key` (signed JWT),
+so one edge `authenticate()` change covers create-stamp + sub-op authz + billing.
+Built + verified; **inert until `OC_PROVISION_SECRET` is set on both sides.**
+
+**sessions-api** — branch `feat/v3-act-as-org`, PR diggerhq/sessions-api#27:
+- `provisionApiKey(ownerId, sessionId)` in `src/v3/runtime/config.ts` — mints
+  HS256 `{ iss:"sessions-api", aud:"opencomputer-api", org_id, session_id,
+  exp: now + maxTurnSeconds + 600 }` signed with `OC_PROVISION_SECRET`. Returns
+  null when the secret is unset or the owner isn't `oc-org:*` (→ platform-key
+  fallback).
+- `ocOpts(owner)` in `src/v3/runtime/sandbox.ts`, `src/v3/runtime/credential.ts`,
+  `src/v3/sandbox/oc.ts` passes that token as `apiKey`. `ownerId`+`sessionId`
+  threaded through sandbox create/connect, SecretStore create/update/setSecret,
+  and the hands tool proxy (so the SecretStore is org-owned too and sub-ops on
+  X's boxes authorize).
+
+**OC edge** — opencomputer `feat/web-ui-dev` (PR 426), `cloudflare-workers/api-edge/src/index.ts`:
+- `verifyProvisionToken(secret, token)` + a branch in `authenticate()`: when
+  `OC_PROVISION_SECRET` is set and the key is a JWT (`eyJ…`, 3 segments, not
+  `osb_`), verify it → `{ orgID: X }`. Everything else (createSandbox stamp,
+  `org_id` match on sub-ops, concurrency/billing) follows automatically.
+
+**Secret** — `OC_PROVISION_SECRET`: one shared HS256 value on the prod OC edge
+(`wrangler secret put`) and prod sessions-api (env). Same trust class as
+`OC_ORG_TOKEN_SECRET`.
+
+**Verified** — `node:crypto` mint ↔ Worker `crypto.subtle` verify match
+byte-for-byte; live on the dev edge: valid token → 200, tampered → 401, `osb_`
+key → 200 (no regression); both repos `tsc` clean.
+
+**Activate (all prod — no dev `/v3` exists):** merge #27 + deploy prod
+sessions-api (inert); deploy the prod OC edge (inert); set `OC_PROVISION_SECRET`
+on both → live for **dashboard** sessions. SDK/`osb_` sessions need Phase 0.5.
+
+## Build order (remaining)
+
+- **Phase 0.5 — `osb_`→org** — resolve `osb_` keys to their org so every session
+  is `oc-org:X` (also makes SDK/demo sessions show in the dashboard). Prereq for
+  owning SDK/demo sessions' boxes.
+- **Phase 1** — expose session→sandbox (serialize the already-recorded ids).
+  Safe, no trust changes; unblocks Phase 3.
+- **Phase 3** — dashboard surfaces agent boxes + session↔box links.
+- **Phase 2** — DONE (see above), pending prod activation.
