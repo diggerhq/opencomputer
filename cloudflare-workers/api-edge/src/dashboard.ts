@@ -842,6 +842,10 @@ async function proxyToV3(
   if (accept) headers.set("accept", accept);
   const lastEventID = req.headers.get("last-event-id");
   if (lastEventID) headers.set("last-event-id", lastEventID);
+  // Forward client idempotency keys so dashboard create-session / steer are safe
+  // to retry end-to-end (sessions-api dedups on this header).
+  const idem = req.headers.get("idempotency-key");
+  if (idem) headers.set("idempotency-key", idem);
 
   const init: RequestInit = { method: req.method, headers, redirect: "manual" };
   if (req.method !== "GET" && req.method !== "HEAD") {

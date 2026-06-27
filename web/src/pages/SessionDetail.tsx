@@ -78,6 +78,9 @@ export default function SessionDetail() {
   // auto-reconnects with Last-Event-ID. Skipped under the preview mock (no
   // backend) — the query renders there.
   useEffect(() => {
+    // Reset per session so a previously-viewed session's events never bleed in.
+    setLiveEvents([])
+    setStreamOk(false)
     if (!sessionId || import.meta.env.VITE_PREVIEW === '1') return
     const es = new EventSource(
       `/api/dashboard/v3/sessions/${sessionId}/events?stream=sse`,
@@ -95,7 +98,8 @@ export default function SessionDetail() {
       if (!parsed.success) return
       const ev = parsed.data
       setLiveEvents((prev) =>
-        prev.some((x) => x.id === ev.id) ? prev : [...prev, ev],
+        // Cap the in-memory live buffer (older events remain in query history).
+        prev.some((x) => x.id === ev.id) ? prev : [...prev, ev].slice(-2000),
       )
     }
     es.onerror = () => setStreamOk(false) // EventSource retries on its own
@@ -110,7 +114,7 @@ export default function SessionDetail() {
   }
 
   const steerMutation = useMutation({
-    mutationFn: () => sendMessage(sessionId, draft.trim()),
+    mutationFn: () => sendMessage(sessionId, draft.trim(), crypto.randomUUID()),
     onSuccess: () => {
       setDraft('')
       invalidate()

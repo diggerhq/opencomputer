@@ -46,7 +46,7 @@ export default function Sessions() {
   }
 
   const startMutation = useMutation({
-    mutationFn: () => createSession({ agent: agentId, input: message.trim() }),
+    mutationFn: () => createSession({ agent: agentId, input: message.trim() }, crypto.randomUUID()),
     onSuccess: (session) => {
       setShowStart(false)
       void queryClient.invalidateQueries({ queryKey: ['sessions'] })

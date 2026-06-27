@@ -405,10 +405,19 @@ export const getSession = (id: string) =>
 
 // /v3 wants { agent: <id>, input } (input required). The response is an envelope
 // { session, client_token } — return the session.
-export const createSession = (body: { agent: string; input: string }) =>
+export const createSession = (
+  body: { agent: string; input: string },
+  idempotencyKey?: string,
+) =>
   apiFetch(
     '/v3/sessions',
-    { method: 'POST', body: JSON.stringify(body) },
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+      // sessions-api dedups create on the Idempotency-Key header (the edge proxy
+      // forwards it) so a retried start-session is safe.
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    },
     z.object({ session: S.SessionSchema, client_token: z.string().optional() }),
   ).then((r) => r.session)
 

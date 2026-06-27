@@ -186,7 +186,13 @@ export default function Agents() {
         />
       </Panel>
 
-      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+      <Dialog
+        open={showCreate}
+        onOpenChange={(open) => {
+          setShowCreate(open)
+          if (!open) setApiKey('') // never leave a model key in state after close
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Create agent</DialogTitle>
@@ -277,7 +283,12 @@ export default function Agents() {
 
       <Dialog
         open={editing !== null}
-        onOpenChange={(open) => !open && setEditing(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditing(null)
+            setEditKey('') // never leave a model key in state after close
+          }
+        }}
       >
         <DialogContent>
           <DialogHeader>

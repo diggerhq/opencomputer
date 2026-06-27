@@ -99,8 +99,8 @@ edge→cell cap-token and avoids a credential-custody surface entirely.
 - **Quota** — agent boxes count against the customer org's concurrency. Intended,
   but means agents and interactive sandboxes share the limit; flag for the quota
   owner.
-- **`osb_` → org resolution** — needs an OC endpoint returning org for a key (the
-  edge can expose `GET /api/org-for-key`, D1-backed).
+- **`osb_` → org resolution** — BUILT as edge `GET /api/whoami` (D1-backed,
+  returns `{org_id, user_id}`); sessions-api `resolveOrgForKey` calls it. LIVE on prod.
 
 ## Invariants
 

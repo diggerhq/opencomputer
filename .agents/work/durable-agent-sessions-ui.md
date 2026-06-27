@@ -1,9 +1,9 @@
 # Durable Agent Sessions — dashboard UI
 
-Status: **draft, decisions converging** — exploration done. First cut = Agents +
-Sessions + session webhooks; Repos and the rest follow. Blocked on the `/v3`
-credential + tenant decision (#1) before the management screens can be built.
-Lands in the same dashboard (`web/`) and PR lineage as the modernization work.
+Status: **building** — exploration done; the `/v3` credential + tenant decision
+(#1) is RESOLVED (org-token + act-as-org ownership; see agent-sandbox-ownership.md,
+LIVE on prod). First cut = Agents + Sessions + session webhooks; Repos and the rest
+follow. Lands in the same dashboard (`web/`) and PR lineage as the modernization work.
 Engineering principles: `.agents/reference/web-frontend.md`.
 
 Goal: bring Durable Agent Sessions to the dashboard. Scope is the **stable v1
