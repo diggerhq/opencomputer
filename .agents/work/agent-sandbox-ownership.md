@@ -1,10 +1,11 @@
 # Agent sandbox ownership — end-user org owns the compute
 
-Status: **Phase 0 live; Phases 0.5 / 1 / 2 / 3 all BUILT + dev-verified, inert
-pending prod activation + test.** Owners span three repos (opencomputer edge +
-OC core, sessions-api). Companion to the dashboard work
-(`durable-agent-sessions-ui.md`). What shipped + how to turn it on: see
-**Implemented** + **Activation** below.
+Status: **LIVE on prod (2026-06-27).** Phases 0 / 0.5 / 1 / 2 are activated +
+verified on prod — act-as-org provisioning, **hardened** (scoped token + required
+`exp`/`iat` + fail-closed org resolution); see **SHIPPED + LIVE on prod** below.
+Phase 3 (dashboard surfacing boxes) ships with the dashboard (Path A). Owners span
+three repos (opencomputer edge + OC core, sessions-api). Companion to the dashboard
+work (`durable-agent-sessions-ui.md`).
 
 ## Requirement (non-negotiable)
 
@@ -152,17 +153,18 @@ sandbox route does `authenticate()` then `row.org_id !== caller.orgID → 404`. 
 the cleanest, secure mechanism is: **deliver the act-as-org assertion AS the
 `X-API-Key` — a signed JWT the edge recognizes.**
 - sessions-api mints HS256 `{org_id: X, session_id, iss:"sessions-api",
-  aud:"opencomputer-api", exp: now+maxTurnSeconds+600}` signed with a NEW shared
-  secret (`OC_PROVISION_SECRET`) and passes it as `apiKey` in `ocOpts()` whenever
-  the session owner is `oc-org:X` (else the service key — inert fallback).
+  aud:"opencomputer-api", scope:"sandbox-provision", iat, exp: now+maxTurnSeconds+600}`
+  signed with a NEW shared secret (`OC_PROVISION_SECRET`) and passes it as `apiKey`
+  in `ocOpts()` whenever the session owner is `oc-org:X` (else the service key — inert fallback).
 - The **only edge change**: `authenticate()` — if the key is a JWT (not `osb_`)
   and `OC_PROVISION_SECRET` is set, verify it → `{orgID: X}`. Everything else
   flows automatically: `createSandbox` stamps X (it's `caller.orgID`), sub-ops on
   X's boxes pass the org-match check, billing/quota follow `sandboxes_index.org_id`.
   No cap-token claim, no CP change, no per-route change, no SDK change.
 - Lifetime = a turn (`maxTurnSeconds+600`, same as the sandbox timeout); minted
-  fresh per `ensure` (per turn). Powerful (full org-X authority for its lifetime)
-  but mintable only by the secret-holder — same trust class as
+  fresh per `ensure` (per turn). **Least-privilege** (edge #431): `scope:"sandbox-provision"`
+  limits it to sandbox + secret-store routes (`provisionScopeGate`), not full org
+  authority; mintable only by the secret-holder — same trust class as
   `OC_ORG_TOKEN_SECRET`. Receiver always re-derives org from the verified JWT.
 - Inert until the secret is set on both sides (matches the prod-only rule):
   without it the edge won't accept JWT keys and sessions-api won't mint them.
@@ -199,10 +201,10 @@ Built + verified; **inert until `OC_PROVISION_SECRET` is set on both sides.**
 
 **sessions-api** — branch `feat/v3-act-as-org`, PR diggerhq/sessions-api#27:
 - `provisionApiKey(ownerId, sessionId)` in `src/v3/runtime/config.ts` — mints
-  HS256 `{ iss:"sessions-api", aud:"opencomputer-api", org_id, session_id,
-  exp: now + maxTurnSeconds + 600 }` signed with `OC_PROVISION_SECRET`. Returns
-  null when the secret is unset or the owner isn't `oc-org:*` (→ platform-key
-  fallback).
+  HS256 `{ iss:"sessions-api", aud:"opencomputer-api", scope:"sandbox-provision",
+  org_id, session_id, iat, exp: now + maxTurnSeconds + 600 }` signed with
+  `OC_PROVISION_SECRET`. Returns null when the secret is unset or the owner isn't
+  `oc-org:*` (→ platform-key fallback). (`scope`/`iat` added in #29 hardening.)
 - `ocOpts(owner)` in `src/v3/runtime/sandbox.ts`, `src/v3/runtime/credential.ts`,
   `src/v3/sandbox/oc.ts` passes that token as `apiKey`. `ownerId`+`sessionId`
   threaded through sandbox create/connect, SecretStore create/update/setSecret,
@@ -212,8 +214,12 @@ Built + verified; **inert until `OC_PROVISION_SECRET` is set on both sides.**
 **OC edge** — opencomputer `feat/web-ui-dev` (PR 426), `cloudflare-workers/api-edge/src/index.ts`:
 - `verifyProvisionToken(secret, token)` + a branch in `authenticate()`: when
   `OC_PROVISION_SECRET` is set and the key is a JWT (`eyJ…`, 3 segments, not
-  `osb_`), verify it → `{ orgID: X }`. Everything else (createSandbox stamp,
-  `org_id` match on sub-ops, concurrency/billing) follows automatically.
+  `osb_`), verify it → `{ orgID: X, scope }`. **HARDENED (edge #431):** REQUIRES
+  `scope:"sandbox-provision"` + finite `exp`+`iat` + bounded lifetime (≤6h) + a
+  UUID `org_id` (a no-`exp` token is rejected); `provisionScopeGate` then limits the
+  caller to `/api/sandboxes` + `/api/secret-stores` (snapshots/images → 403).
+  Everything else (createSandbox stamp, `org_id` match on sub-ops,
+  concurrency/billing) follows automatically.
 
 **Secret** — `OC_PROVISION_SECRET`: one shared HS256 value on the prod OC edge
 (`wrangler secret put`) and prod sessions-api (env). Same trust class as
@@ -277,6 +283,12 @@ deploy-to-prod plan above are superseded. What actually shipped:
   `2f9094d9-…` → act-as-org provisioned box `sb-841a064e`, whose
   `sandboxes_index.org_id` == that org (cell azure-us-east-2-a); agent ran, turn completed.
 - **Global**, not a canary: every new prod session now provisions org-owned boxes.
+- **Hardened (review fixes, LIVE):** sessions-api **#29** + edge **#431** — token carries
+  `scope:"sandbox-provision"`; the edge `verifyProvisionToken` now REQUIRES scope +
+  finite `exp`/`iat` + bounded lifetime + UUID `org_id`, and `provisionScopeGate`
+  limits it to sandbox + secret-store routes. `resolveOrgForKey` fails closed (503) on
+  a transient whoami failure instead of mis-attributing to per-key tenancy. Re-verified
+  on prod after #431: scoped token provisions a box + turn completes.
 
 **Rollback of the activation** (reversible, no data/migration/redeploy): unset
 `OC_PROVISION_SECRET` on **either** side → sessions-api falls back to the platform
