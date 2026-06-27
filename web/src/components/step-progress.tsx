@@ -27,7 +27,7 @@ export function StepProgress({
                 <span
                   className={cn(
                     'h-px flex-1 transition-colors duration-300',
-                    i <= current ? 'bg-primary' : 'bg-border',
+                    i <= current ? 'bg-status-running' : 'bg-border',
                   )}
                 />
               ) : null}
@@ -35,7 +35,7 @@ export function StepProgress({
                 className={cn(
                   'flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-medium transition-colors duration-300',
                   done || active
-                    ? 'border-primary text-primary'
+                    ? 'border-status-running text-status-running'
                     : 'border-border text-muted-foreground/50',
                 )}
               >
@@ -53,9 +53,9 @@ export function StepProgress({
       </div>
       <div className="flex items-center gap-2 text-sm">
         {allDone ? (
-          <Check className="text-primary size-4 shrink-0" />
+          <Check className="text-status-running size-4 shrink-0" />
         ) : (
-          <Loader2 className="text-muted-foreground size-4 shrink-0 animate-spin" />
+          <Loader2 className="text-status-running size-4 shrink-0 animate-spin" />
         )}
         <span className="text-foreground">
           {allDone ? 'Done' : steps[current]}

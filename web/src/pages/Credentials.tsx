@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CircleCheck, KeySquare, Plus } from 'lucide-react'
+import { KeySquare, Plus } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   createCredential,
@@ -47,6 +47,10 @@ const CREATE_STEPS = [
   'Finalizing credential',
 ]
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+// Guaranteed minimum visible time per step (so the sequence has a steady rhythm
+// even when the backend is fast) + a beat to rest on the final green state.
+const STEP_MIN_MS = 550
+const DONE_PAUSE_MS = 800
 
 export default function Credentials() {
   const queryClient = useQueryClient()
@@ -87,45 +91,49 @@ export default function Credentials() {
   const [phase, setPhase] = useState<'form' | 'running'>('form')
   const [step, setStep] = useState(0)
   const [createError, setCreateError] = useState<string | null>(null)
-  const provisionTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const createMutation = useMutation({
-    mutationFn: () =>
-      createCredential({
-        key: key.trim(),
-        provider,
-        name: name.trim() || undefined,
-        is_default: makeDefault,
-      }),
-    onMutate: () => {
-      setCreateError(null)
-      setPhase('running')
-      setStep(0) // "Securing your key"
-      // The reserve is fast; the write to the secret store is the long pole — hold
-      // the active spinner on it until the request actually resolves.
-      provisionTimer.current = setTimeout(() => setStep(1), 450)
-    },
-    onSuccess: async () => {
-      if (provisionTimer.current) clearTimeout(provisionTimer.current)
-      setStep(2) // "Finalizing credential"
-      await wait(300)
-      setStep(CREATE_STEPS.length) // all done
-      await queryClient.invalidateQueries({ queryKey: CREDS_KEY })
-      await wait(550) // let the completed checklist register before closing
-      setShowCreate(false)
-      setPhase('form')
-      setStep(0)
-      resetForm()
-    },
-    onError: (e) => {
-      if (provisionTimer.current) clearTimeout(provisionTimer.current)
-      // Back to the form with inputs intact + an inline error, so they can retry.
+  // Drive the steps on a guaranteed minimum cadence so they read as a steady job,
+  // while the real request runs underneath. The provision step also absorbs the
+  // actual store-write latency (it holds until the request settles AND its minimum
+  // elapses). On failure we fall back to the form with the inputs + an inline error.
+  const runCreate = async () => {
+    setCreateError(null)
+    setPhase('running')
+    setStep(0) // Securing your key
+    // Tagged so it never rejects unhandled while we dwell on the early steps.
+    const settledP = createCredential({
+      key: key.trim(),
+      provider,
+      name: name.trim() || undefined,
+      is_default: makeDefault,
+    }).then(
+      (cred) => ({ ok: true as const, cred }),
+      (err: unknown) => ({ ok: false as const, err }),
+    )
+
+    await wait(STEP_MIN_MS)
+    setStep(1) // Provisioning in secure secret store (the long pole)
+    const [settled] = await Promise.all([settledP, wait(STEP_MIN_MS)])
+    if (!settled.ok) {
       setPhase('form')
       setCreateError(
-        e instanceof Error ? e.message : "Couldn't add the credential.",
+        settled.err instanceof Error
+          ? settled.err.message
+          : "Couldn't add the credential.",
       )
-    },
-  })
+      return
+    }
+
+    setStep(2) // Finalizing credential
+    await wait(STEP_MIN_MS)
+    setStep(CREATE_STEPS.length) // all done → the steps turn green
+    void queryClient.invalidateQueries({ queryKey: CREDS_KEY })
+    await wait(DONE_PAUSE_MS) // rest on the completed green state
+    setShowCreate(false)
+    setPhase('form')
+    setStep(0)
+    resetForm()
+  }
 
   const defaultMutation = useMutation({
     mutationFn: (id: string) => setDefaultCredential(id),
@@ -317,17 +325,7 @@ export default function Credentials() {
                       : 'Encrypting and provisioning it in your dedicated secret store.'}
                   </DialogDescription>
                 </DialogHeader>
-                {step >= CREATE_STEPS.length ? (
-                  <div className="flex items-center gap-3 text-sm">
-                    <CircleCheck className="text-status-running size-5 shrink-0" />
-                    <span className="text-foreground">
-                      {name.trim() || 'Credential'} added
-                      {makeDefault ? ' · set as default' : ''}.
-                    </span>
-                  </div>
-                ) : (
-                  <StepProgress steps={CREATE_STEPS} current={step} />
-                )}
+                <StepProgress steps={CREATE_STEPS} current={step} />
               </div>
             ) : (
               <>
@@ -342,7 +340,7 @@ export default function Credentials() {
                   className="flex flex-1 flex-col space-y-4"
                   onSubmit={(e) => {
                     e.preventDefault()
-                    if (canCreate) createMutation.mutate()
+                    if (canCreate) void runCreate()
                   }}
                 >
                   {createError ? (
