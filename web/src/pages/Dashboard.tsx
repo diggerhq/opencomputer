@@ -1,34 +1,31 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { Boxes } from 'lucide-react'
+import { Boxes, MessagesSquare } from 'lucide-react'
 import {
   createAPIKey,
   getAPIKeys,
   getSandboxes,
+  getSessions,
+  getAgents,
   type Sandbox,
 } from '@/api/client'
+import type { Session } from '@/api/schemas'
 import { usePrefetchSandbox } from '@/hooks/use-prefetch'
 import { PageHeader } from '@/components/page-header'
-import {
-  Panel,
-  PanelContent,
-  PanelHeader,
-  PanelTitle,
-} from '@/components/panel'
+import { Panel, PanelHeader, PanelTitle } from '@/components/panel'
 import { MetricCard } from '@/components/metric-card'
 import { CopyRow } from '@/components/copy-row'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
-import { Skeleton } from '@/components/ui/skeleton'
 
 const SKILL_INSTALL_CMD = 'npx skills add diggerhq/opencomputer'
 
-function formatDuration(session: Sandbox): string {
-  const start = new Date(session.startedAt).getTime()
-  const end = session.stoppedAt
-    ? new Date(session.stoppedAt).getTime()
+function formatDuration(sandbox: Sandbox): string {
+  const start = new Date(sandbox.startedAt).getTime()
+  const end = sandbox.stoppedAt
+    ? new Date(sandbox.stoppedAt).getTime()
     : Date.now()
   const secs = Math.round((end - start) / 1000)
   if (secs < 60) return `${secs}s`
@@ -36,32 +33,106 @@ function formatDuration(session: Sandbox): string {
   return `${Math.round((secs / 3600) * 10) / 10}h`
 }
 
-function elapsedMinutes(session: Sandbox): number {
-  return Math.round(
-    (Date.now() - new Date(session.startedAt).getTime()) / 1000 / 60,
-  )
-}
+// A session is "live" until it reaches a terminal state. Excluding terminal
+// states (rather than allow-listing live ones) keeps new/unknown live statuses
+// counted as active.
+const TERMINAL_SESSION = new Set([
+  'archived',
+  'failed',
+  'completed',
+  'complete',
+  'canceled',
+  'cancelled',
+  'error',
+  'errored',
+  'done',
+  'expired',
+])
+const isLiveSession = (s: Session) =>
+  !TERMINAL_SESSION.has(s.status.toLowerCase())
 
 export default function Dashboard() {
   const prefetch = usePrefetchSandbox()
-  const { data: runningSessions, isLoading: loadingRunning } = useQuery({
-    queryKey: ['sandboxes', 'running'],
-    queryFn: () => getSandboxes('running'),
-  })
-  const { data: allSessions, isLoading: loadingAll } = useQuery({
+
+  const { data: runningSandboxesData, isLoading: loadingRunningSandboxes } =
+    useQuery({
+      queryKey: ['sandboxes', 'running'],
+      queryFn: () => getSandboxes('running'),
+    })
+  const { data: allSandboxesData, isLoading: loadingSandboxes } = useQuery({
     queryKey: ['sandboxes', ''],
     queryFn: () => getSandboxes(),
   })
+  const { data: sessionsData, isLoading: loadingSessions } = useQuery({
+    queryKey: ['sessions'],
+    queryFn: () => getSessions(),
+  })
+  const { data: agentsData } = useQuery({
+    queryKey: ['agents'],
+    queryFn: getAgents,
+  })
 
-  const active = runningSessions ?? []
-  const all = allSessions ?? []
+  const activeSandboxes = runningSandboxesData ?? []
+  const allSandboxes = allSandboxesData ?? []
+  const sessions = sessionsData ?? []
+  const agents = agentsData ?? []
+
   const today = new Date().toISOString().slice(0, 10)
-  const sessionsToday = all.filter(
-    (s) => new Date(s.startedAt).toISOString().slice(0, 10) === today,
-  ).length
-  const isFirstRun = !loadingAll && all.length === 0
+  const isToday = (iso: string) =>
+    new Date(iso).toISOString().slice(0, 10) === today
 
-  const recentColumns: Column<Sandbox>[] = [
+  const sandboxesToday = allSandboxes.filter((s) => isToday(s.startedAt)).length
+  const activeSessions = sessions.filter(isLiveSession)
+  const sessionsToday = sessions.filter((s) => isToday(s.created_at)).length
+
+  const agentName = (id?: string | null) =>
+    agents.find((a) => a.id === id)?.name ?? id ?? '—'
+
+  // First-run only when the org has neither sessions nor sandboxes — an org that
+  // already runs agent sessions (but no raw sandboxes) is not a new user.
+  const isFirstRun =
+    !loadingSandboxes &&
+    !loadingSessions &&
+    allSandboxes.length === 0 &&
+    sessions.length === 0
+
+  const sessionColumns: Column<Session>[] = [
+    {
+      key: 'id',
+      header: 'Session',
+      cell: (s) => (
+        <Link
+          to={`/sessions/${s.id}`}
+          className="text-foreground font-mono text-[13px] underline-offset-4 hover:underline"
+        >
+          {s.id}
+        </Link>
+      ),
+    },
+    {
+      key: 'agent',
+      header: 'Agent',
+      cell: (s) => (
+        <span className="text-muted-foreground">{agentName(s.agent_id)}</span>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (s) => <StatusBadge status={s.status} />,
+    },
+    {
+      key: 'created',
+      header: 'Created',
+      cell: (s) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {new Date(s.created_at).toLocaleString()}
+        </span>
+      ),
+    },
+  ]
+
+  const sandboxColumns: Column<Sandbox>[] = [
     {
       key: 'id',
       header: 'Sandbox ID',
@@ -114,8 +185,8 @@ export default function Dashboard() {
         title={isFirstRun ? 'Welcome to OpenComputer' : 'Dashboard'}
         description={
           isFirstRun
-            ? 'Get your first sandbox running in two steps'
-            : 'Overview of your sandbox infrastructure'
+            ? 'Get started in two steps'
+            : 'Overview of your agent sessions and sandboxes'
         }
       />
 
@@ -123,54 +194,71 @@ export default function Dashboard() {
         <GettingStarted />
       ) : (
         <div className="space-y-6">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <MetricCard
+              label="Active sessions"
+              value={
+                loadingSessions ? '—' : activeSessions.length.toLocaleString()
+              }
+            />
+            <MetricCard
+              label="Sessions today"
+              value={loadingSessions ? '—' : sessionsToday.toLocaleString()}
+            />
             <MetricCard
               label="Active sandboxes"
-              value={loadingRunning ? '—' : active.length.toLocaleString()}
+              value={
+                loadingRunningSandboxes
+                  ? '—'
+                  : activeSandboxes.length.toLocaleString()
+              }
             />
             <MetricCard
               label="Sandboxes today"
-              value={loadingAll ? '—' : sessionsToday.toLocaleString()}
+              value={loadingSandboxes ? '—' : sandboxesToday.toLocaleString()}
             />
           </div>
 
           <Panel className="overflow-hidden">
             <PanelHeader>
-              <PanelTitle>Live sandboxes</PanelTitle>
-              {active.length > 0 ? (
-                <span className="text-status-running flex items-center gap-1.5 font-mono text-xs">
-                  <span className="bg-status-running size-1.5 animate-pulse rounded-full" />
-                  {active.length} active
-                </span>
-              ) : null}
+              <PanelTitle>Recent sessions</PanelTitle>
+              <Link
+                to="/sessions"
+                className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
+              >
+                View all
+              </Link>
             </PanelHeader>
-            {loadingRunning ? (
-              <PanelContent className="space-y-2">
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
-              </PanelContent>
-            ) : active.length === 0 ? (
-              <p className="text-muted-foreground px-5 py-8 text-center text-sm">
-                No sandboxes running
-              </p>
-            ) : (
-              <div className="max-h-80 divide-y overflow-y-auto">
-                {active.map((s) => (
-                  <SandboxRow key={s.id} session={s} />
-                ))}
-              </div>
-            )}
+            <ResourceTable
+              columns={sessionColumns}
+              rows={sessions.slice(0, 10)}
+              rowKey={(s) => s.id}
+              loading={loadingSessions}
+              empty={
+                <EmptyState
+                  icon={MessagesSquare}
+                  title="No sessions yet"
+                  description="Start a session from an agent to give it a durable task."
+                />
+              }
+            />
           </Panel>
 
           <Panel className="overflow-hidden">
             <PanelHeader>
               <PanelTitle>Recent sandboxes</PanelTitle>
+              <Link
+                to="/sandboxes"
+                className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
+              >
+                View all
+              </Link>
             </PanelHeader>
             <ResourceTable
-              columns={recentColumns}
-              rows={all.slice(0, 20)}
+              columns={sandboxColumns}
+              rows={allSandboxes.slice(0, 10)}
               rowKey={(s) => s.id}
-              loading={loadingAll}
+              loading={loadingSandboxes}
               empty={
                 <EmptyState
                   icon={Boxes}
@@ -183,34 +271,6 @@ export default function Dashboard() {
         </div>
       )}
     </div>
-  )
-}
-
-function SandboxRow({ session }: { session: Sandbox }) {
-  const prefetch = usePrefetchSandbox()
-  const elapsed = elapsedMinutes(session)
-  return (
-    <Link
-      to={`/sandboxes/${session.sandboxId}`}
-      onMouseEnter={() => prefetch(session.sandboxId)}
-      onFocus={() => prefetch(session.sandboxId)}
-      className="hover:bg-row-hover flex items-center justify-between px-5 py-3 transition-colors"
-    >
-      <div className="flex items-center gap-2.5">
-        <span className="bg-status-running size-1.5 shrink-0 animate-pulse rounded-full" />
-        <div>
-          <code className="text-foreground font-mono text-xs">
-            {session.sandboxId}
-          </code>
-          <div className="text-muted-foreground text-[11px]">
-            {session.template || 'base'}
-          </div>
-        </div>
-      </div>
-      <span className="text-muted-foreground font-mono text-xs">
-        {elapsed}m
-      </span>
-    </Link>
   )
 }
 
@@ -252,7 +312,7 @@ function GettingStarted() {
       <StepCard
         index={1}
         title="Install the OpenComputer skill"
-        description="Adds OpenComputer sandbox controls to Claude Code so you can create, inspect, and manage sandboxes from your terminal."
+        description="Adds OpenComputer controls to Claude Code so you can create and manage agents, sessions, and sandboxes from your terminal."
       >
         <CopyRow value={SKILL_INSTALL_CMD} />
       </StepCard>
