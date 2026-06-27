@@ -2002,6 +2002,15 @@ export default {
     // longer validate D1-only api_keys, and would mis-route in a multi-cell
     // world. proxyToCellAuthed streams the response (SSE-safe). This is a
     // backstop; prefer adding a native handler for high-traffic resources.
+    // /api/whoami — return the authenticated caller's org (+ user). Lets a
+    // trusted service resolve an osb_ key to its OC org without custodying it
+    // (agent-sandbox-ownership Phase 0.5: sessions-api maps osb_ → oc-org:<id>).
+    if (path === "/api/whoami" && req.method === "GET") {
+      const caller = await authenticate(req, env);
+      if (!caller) return json({ error: "missing or invalid API key" }, 401);
+      return json({ org_id: caller.orgID, user_id: caller.userID });
+    }
+
     // /api/webhooks* — sandbox lifecycle webhook management (Svix-backed,
     // all-at-edge). Same X-API-Key auth as the rest of the public API; must
     // precede the proxy catch-all below.
