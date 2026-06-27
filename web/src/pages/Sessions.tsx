@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import { MessagesSquare } from 'lucide-react'
 import { getSessions, getAgents } from '@/api/client'
 import type { Session } from '@/api/client'
@@ -28,7 +29,12 @@ export default function Sessions() {
       key: 'id',
       header: 'Session',
       cell: (s) => (
-        <span className="text-foreground font-mono text-[13px]">{s.id}</span>
+        <Link
+          to={`/sessions/${s.id}`}
+          className="text-foreground font-mono text-[13px] underline-offset-4 hover:underline"
+        >
+          {s.id}
+        </Link>
       ),
     },
     {

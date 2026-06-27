@@ -9,6 +9,7 @@ import AppShell from './components/app-shell'
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Agents = lazy(() => import('./pages/Agents'))
 const Sessions = lazy(() => import('./pages/Sessions'))
+const SessionDetail = lazy(() => import('./pages/SessionDetail'))
 const Sandboxes = lazy(() => import('./pages/Sandboxes'))
 const APIKeys = lazy(() => import('./pages/APIKeys'))
 const Checkpoints = lazy(() => import('./pages/Checkpoints'))
@@ -27,6 +28,7 @@ export default function App() {
             {/* Agent plane */}
             <Route path="agents" element={<Agents />} />
             <Route path="sessions" element={<Sessions />} />
+            <Route path="sessions/:sessionId" element={<SessionDetail />} />
             {/* Sandbox plane */}
             <Route path="sandboxes" element={<Sandboxes />} />
             <Route path="sandboxes/:sandboxId" element={<SandboxDetail />} />
