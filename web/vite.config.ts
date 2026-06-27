@@ -14,18 +14,28 @@ const target = process.env.OC_API_TARGET || 'http://localhost:8080'
 // org-token; this shortcut is local-only.
 const v3Key = process.env.OC_V3_KEY
 const v3Target = process.env.OC_V3_TARGET || 'https://api.opencomputer.dev'
+const injectKey: ProxyOptions['configure'] = (proxy) => {
+  proxy.on('proxyReq', (proxyReq) => {
+    if (v3Key) proxyReq.setHeader('x-api-key', v3Key)
+  })
+}
+// Both must precede '/api/' below — first matching rule wins.
 const v3Proxy: Record<string, ProxyOptions> = v3Key
   ? {
-      // Must precede '/api/' below — first matching rule wins.
+      // /v3 lives at the prod root (/v3/*).
       '/api/dashboard/v3': {
         target: v3Target,
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api\/dashboard/, ''),
-        configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq) => {
-            proxyReq.setHeader('x-api-key', v3Key)
-          })
-        },
+        configure: injectKey,
+      },
+      // Sandbox webhooks live at the prod public API (/api/webhooks/*).
+      '/api/dashboard/webhooks': {
+        target: v3Target,
+        changeOrigin: true,
+        rewrite: (p) =>
+          p.replace(/^\/api\/dashboard\/webhooks/, '/api/webhooks'),
+        configure: injectKey,
       },
     }
   : {}

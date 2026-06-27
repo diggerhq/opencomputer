@@ -527,6 +527,48 @@ const v3deliveries = [
   },
 ]
 
+const sandboxWebhooks = [
+  {
+    id: 'whk_1',
+    url: 'https://acme.dev/hooks/sandbox',
+    eventTypes: ['sandbox.ready', 'sandbox.stopped'],
+    sandboxId: null,
+    name: 'Prod ingest',
+    enabled: true,
+    hasSecret: true,
+    createdAt: at(3),
+    updatedAt: at(0, 4),
+  },
+  {
+    id: 'whk_2',
+    url: 'https://hooks.internal.acme.dev/all',
+    eventTypes: [],
+    sandboxId: null,
+    name: '',
+    enabled: true,
+    hasSecret: true,
+    createdAt: at(8),
+    updatedAt: at(8),
+  },
+]
+
+const sandboxWebhookDeliveries = [
+  {
+    id: 'msg_1',
+    attemptId: 'att_1',
+    status: 'success',
+    responseStatusCode: 200,
+    timestamp: at(0, 1),
+  },
+  {
+    id: 'msg_2',
+    attemptId: 'att_2',
+    status: 'failed',
+    responseStatusCode: 500,
+    timestamp: at(0, 2),
+  },
+]
+
 type Handler = () => unknown
 
 // Ordered most-specific first. Matched against the path (without /api/dashboard).
@@ -558,6 +600,11 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/v3\/sessions\/[^/]+\/deliveries$/, () => ({ data: v3deliveries })],
   [/^\/v3\/sessions\/[^/]+$/, () => v3sessions[0]],
   [/^\/v3\/sessions(\?.*)?$/, () => ({ data: v3sessions, next_cursor: null })],
+  [
+    /^\/webhooks\/[^/]+\/deliveries$/,
+    () => ({ data: sandboxWebhookDeliveries }),
+  ],
+  [/^\/webhooks$/, () => ({ data: sandboxWebhooks })],
 ]
 
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {

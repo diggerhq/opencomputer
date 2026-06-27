@@ -25,6 +25,7 @@ import {
   syncAutumnToD1,
   autumnSetAutoTopup,
 } from "./autumn_webhook";
+import { handleWebhooksAPI, type WebhookEnv } from "./webhooks";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -870,6 +871,17 @@ export async function handleDashboard(
   // workspace; org-scoping is a later refinement.)
   if (sub === "/v3" || sub.startsWith("/v3/")) {
     return proxyToV3(req, env, caller, sub);
+  }
+
+  // ── Sandbox lifecycle webhooks ─────────────────────────────────────────
+  // Reuse the public /api/webhooks handler with the cookie-derived org, so the
+  // dashboard manages destinations/deliveries org-scoped without an osb_ key in
+  // the browser. The handler parses the path from the url arg; rewrite it back
+  // to /api/webhooks/*. env carries the Svix bindings at runtime.
+  if (sub === "/webhooks" || sub.startsWith("/webhooks/")) {
+    const whUrl = new URL(req.url);
+    whUrl.pathname = "/api" + sub;
+    return handleWebhooksAPI(req, env as unknown as WebhookEnv, caller, whUrl);
   }
 
   // ── identity / org ─────────────────────────────────────────────────────

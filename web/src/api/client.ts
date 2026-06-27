@@ -31,6 +31,8 @@ export type {
   Turn,
   Destination,
   Delivery,
+  SandboxWebhook,
+  SandboxWebhookDelivery,
 } from './schemas'
 
 const API_BASE = '/api/dashboard'
@@ -481,5 +483,41 @@ export const getDeliveries = (id: string) =>
 
 export const redeliver = (id: string, deliveryId: string) =>
   apiFetch<void>(`/v3/sessions/${id}/deliveries/${deliveryId}/redeliver`, {
+    method: 'POST',
+  })
+
+// ── Sandbox lifecycle webhooks (org-scoped, Svix-backed at the edge) ─────────
+// Reached via /api/dashboard/webhooks* (cookie auth → org), mirroring the public
+// /api/webhooks API.
+export const getSandboxWebhooks = () =>
+  apiFetch('/webhooks', {}, S.SandboxWebhookListSchema).then((r) => r.data)
+
+export const createSandboxWebhook = (body: {
+  url: string
+  eventTypes?: string[]
+  name?: string
+  secret?: string
+}) =>
+  apiFetch(
+    '/webhooks',
+    { method: 'POST', body: JSON.stringify(body) },
+    S.SandboxWebhookSchema,
+  )
+
+export const deleteSandboxWebhook = (id: string) =>
+  apiFetch<void>(`/webhooks/${id}`, { method: 'DELETE' })
+
+export const testSandboxWebhook = (id: string) =>
+  apiFetch<void>(`/webhooks/${id}/test`, { method: 'POST' })
+
+export const getSandboxWebhookDeliveries = (id: string) =>
+  apiFetch(
+    `/webhooks/${id}/deliveries`,
+    {},
+    S.SandboxWebhookDeliveryListSchema,
+  ).then((r) => r.data)
+
+export const redeliverSandboxWebhook = (id: string, deliveryId: string) =>
+  apiFetch<void>(`/webhooks/${id}/deliveries/${deliveryId}/redeliver`, {
     method: 'POST',
   })

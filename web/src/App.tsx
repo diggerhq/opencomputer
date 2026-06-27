@@ -17,6 +17,7 @@ const Templates = lazy(() => import('./pages/Templates'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Billing = lazy(() => import('./pages/Billing'))
 const SandboxDetail = lazy(() => import('./pages/SandboxDetail'))
+const SandboxWebhooks = lazy(() => import('./pages/SandboxWebhooks'))
 
 export default function App() {
   return (
@@ -34,6 +35,7 @@ export default function App() {
             <Route path="sandboxes/:sandboxId" element={<SandboxDetail />} />
             <Route path="checkpoints" element={<Checkpoints />} />
             <Route path="templates" element={<Templates />} />
+            <Route path="sandbox-webhooks" element={<SandboxWebhooks />} />
             <Route path="api-keys" element={<APIKeys />} />
             <Route path="billing" element={<Billing />} />
             <Route path="settings" element={<Settings />} />

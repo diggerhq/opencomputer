@@ -8,6 +8,7 @@ import {
   Boxes,
   Layers,
   Package,
+  Webhook,
   KeyRound,
   CreditCard,
   Settings,
@@ -38,7 +39,13 @@ import {
 import { ErrorBoundary } from '@/components/error-boundary'
 import { cn } from '@/lib/utils'
 
-type NavItem = { to: string; label: string; icon: LucideIcon; end?: boolean }
+type NavItem = {
+  to: string
+  label: string
+  icon: LucideIcon
+  end?: boolean
+  preview?: boolean
+}
 type NavGroup = { label?: string; items: NavItem[] }
 
 // Two planes, subtly separated: the durable-agent plane and the raw-compute
@@ -49,8 +56,13 @@ const NAV: NavGroup[] = [
   {
     label: 'Agents',
     items: [
-      { to: '/agents', label: 'Agents', icon: Bot },
-      { to: '/sessions', label: 'Sessions', icon: MessagesSquare },
+      { to: '/agents', label: 'Agents', icon: Bot, preview: true },
+      {
+        to: '/sessions',
+        label: 'Sessions',
+        icon: MessagesSquare,
+        preview: true,
+      },
     ],
   },
   {
@@ -59,6 +71,7 @@ const NAV: NavGroup[] = [
       { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
       { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
       { to: '/templates', label: 'Templates', icon: Package },
+      { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
     ],
   },
   {
@@ -175,6 +188,11 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                   aria-hidden
                 />
                 {item.label}
+                {item.preview ? (
+                  <span className="border-border/70 text-muted-foreground ml-auto rounded border px-1 py-px font-sans text-[9px] font-medium tracking-wide uppercase">
+                    Preview
+                  </span>
+                ) : null}
               </NavLink>
             ))}
           </div>

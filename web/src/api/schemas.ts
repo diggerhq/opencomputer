@@ -239,6 +239,35 @@ export const SandboxUsageSchema = z.object({
   sandboxes: z.array(SandboxUsageRowSchema),
 })
 
+// Sandbox lifecycle webhooks (Svix-backed, served by the edge /api/webhooks*).
+// Org-scoped; shapes mirror the edge's toWire()/listDeliveries() camelCase.
+export const SandboxWebhookSchema = z.object({
+  id: z.string(),
+  url: z.string(),
+  eventTypes: z.array(z.string()).nullish(), // empty/absent = all events
+  sandboxId: z.string().nullish(),
+  name: z.string().nullish(),
+  enabled: z.boolean(),
+  hasSecret: z.boolean().optional(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+  secret: z.string().optional(), // returned once on create / rotate
+})
+export const SandboxWebhookListSchema = z.object({
+  data: z.array(SandboxWebhookSchema),
+})
+
+export const SandboxWebhookDeliverySchema = z.object({
+  id: z.string(), // message id — the redeliver/get key
+  attemptId: z.string().optional(),
+  status: z.string().optional(), // success | pending | failed
+  responseStatusCode: z.number().nullish(),
+  timestamp: z.string().optional(),
+})
+export const SandboxWebhookDeliveryListSchema = z.object({
+  data: z.array(SandboxWebhookDeliverySchema),
+})
+
 // ── Durable Agent Sessions (/v3) ─────────────────────────────────────────────
 // Mirrors the sessions-api /v3 contract verbatim (snake_case as the API returns
 // it) — no transform layer to keep in sync. Reached via the edge proxy; lenient
@@ -367,3 +396,7 @@ export type AutumnBilling = z.infer<typeof AutumnBillingSchema>
 export type StripeInvoice = z.infer<typeof StripeInvoiceSchema>
 export type SandboxUsageRow = z.infer<typeof SandboxUsageRowSchema>
 export type SandboxUsage = z.infer<typeof SandboxUsageSchema>
+export type SandboxWebhook = z.infer<typeof SandboxWebhookSchema>
+export type SandboxWebhookDelivery = z.infer<
+  typeof SandboxWebhookDeliverySchema
+>
