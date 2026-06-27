@@ -152,27 +152,25 @@ behind the org+route-keyed error boundary.
   detail in the first cut. Repos, the global sandbox-webhooks page, and the full
   Credentials page come later.
 
+**Settled (continued):**
+- **Identity & ownership** — RESOLVED, full design in
+  `oc-bg-agents/.agents/work/agent-sandbox-ownership.md`. One OC org id is
+  propagated as a signed org-token at every hop (act-as-org), reusing the edge→
+  cell cap-token pattern. `/v3` becomes org-scoped (`owner = oc-org:<id>`); agent
+  sandboxes are owned by + billed to the **customer's org** (not the service
+  org). No shared keys, no per-customer key custody. The dashboard's part is
+  **Phase 0** there: the edge proxies `/api/dashboard/v3/*` minting the org-token,
+  `/v3` trusts it. Phases 1–2 (session→sandbox exposure, OC-core act-as-org
+  ownership) are sessions-api + OC-core.
+
+Also settled: **model credential** is set via API/SDK at test time (no dashboard
+affordance for now); **sidebar separation** = spacing + small muted group labels
+(built).
+
 **Still open (need input / cross-team confirm):**
-1. **`/v3` credential + tenant model (blocks the management screens).** Two parts:
-   - *Credential path* — recommended: the OC edge proxies `/v3` management calls
-     (cookie → inject an org-scoped credential) and mints client tokens; the
-     browser streams events + steers directly from `/v3`. Keeps `osb_` keys
-     server-side.
-   - *Tenancy* — `/v3` is per-key today (`owner_id = sha256(key)`). For an org
-     dashboard, either (i) make `/v3` OC-org-scoped (sessions-api change: resolve
-     key→org, key data by org), or (ii) scope the dashboard to one designated
-     key's workspace (no backend change, weaker product). Recommend (i). The
-     live event/steer path needs no change either way. **Confirm with the edge +
-     sessions-api owners.**
-2. **Agent-level default destinations?** Not in `/v3` today (destinations are
+1. **Agent-level default destinations?** Not in `/v3` today (destinations are
    session-scoped). Adding them is what would make a unified, configure-once
    webhook UX real — pursue or leave as a follow-up?
-3. **Minimum credential for a runnable first cut.** An agent needs a model
-   credential or an org-default, else session-create returns `no_credential`.
-   Either add a minimal "set org-default Anthropic key" affordance in the first
-   cut, or assume it's set via API/SDK already. Which?
-4. **Sidebar separation** — recommend spacing + hairline + small muted group
-   labels; confirm vs spacing-only.
 
 ## Rough sequence (after decision #1)
 
