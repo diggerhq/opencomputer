@@ -239,6 +239,110 @@ export const SandboxUsageSchema = z.object({
   sandboxes: z.array(SandboxUsageRowSchema),
 })
 
+// ── Durable Agent Sessions (/v3) ─────────────────────────────────────────────
+// Mirrors the sessions-api /v3 contract verbatim (snake_case as the API returns
+// it) — no transform layer to keep in sync. Reached via the edge proxy; lenient
+// string fields so a new server enum never fails validation.
+
+export const AgentSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  prompt_hash: z.string().optional(),
+  model: z.string(),
+  runtime: z.string(),
+  credential_id: z.string().nullable().optional(),
+  revision: z.number().optional(),
+  limits: record.optional(),
+  created_at: z.string(),
+})
+export const AgentListSchema = z.array(AgentSchema)
+
+export const SessionSchema = z.object({
+  id: z.string(),
+  status: z.string(),
+  agent_id: z.string().nullable().optional(),
+  credential_id: z.string().nullable().optional(),
+  event_seq: z.number().optional(),
+  last_turn: record.nullable().optional(),
+  usage: record.optional(),
+  limits: record.optional(),
+  metadata: record.optional(),
+  created_at: z.string(),
+})
+export const SessionListSchema = z.object({
+  sessions: z.array(SessionSchema),
+  cursor: z.string().nullable().optional(),
+})
+
+export const ActorSchema = z.object({
+  id: z.string().optional(),
+  display: z.string().optional(),
+  type: z.string().optional(),
+})
+
+export const SessionEventSchema = z.object({
+  id: z.string(),
+  seq: z.number(),
+  type: z.string(),
+  level: z.string(),
+  actor: ActorSchema.optional(),
+  body: z.unknown().optional(),
+  body_ref: z.string().nullable().optional(),
+  refs: record.optional(),
+  source: z.string().optional(),
+  turn_id: z.string().nullable().optional(),
+  ts: z.string().optional(),
+  created_at: z.string().optional(),
+})
+export const SessionEventListSchema = z.object({
+  events: z.array(SessionEventSchema),
+  cursor: z.string().nullable().optional(),
+})
+
+export const TurnSchema = z.object({
+  id: z.string(),
+  state: z.string(),
+  yield_reason: z.string().nullable().optional(),
+  attempt: z.number().optional(),
+  started_at: z.string().nullable().optional(),
+  completed_at: z.string().nullable().optional(),
+  usage: record.optional(),
+  error: z.string().nullable().optional(),
+})
+
+export const DestinationSchema = z.object({
+  id: z.string(),
+  url: z.string(),
+  level: z.string().optional(),
+  types: z.array(z.string()).optional(),
+  include_raw: z.boolean().optional(),
+  enabled: z.boolean(),
+  has_secret: z.boolean().optional(),
+  created_after_seq: z.number().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string().optional(),
+})
+
+export const DeliverySchema = z.object({
+  id: z.string(),
+  destination_id: z.string(),
+  event_id: z.string().optional(),
+  event_seq: z.number().optional(),
+  status: z.string(),
+  attempts: z.number().optional(),
+  last_attempt_at: z.string().nullable().optional(),
+  response_code: z.number().nullable().optional(),
+  error: z.string().nullable().optional(),
+  created_at: z.string(),
+})
+
+export type Agent = z.infer<typeof AgentSchema>
+export type Session = z.infer<typeof SessionSchema>
+export type SessionEvent = z.infer<typeof SessionEventSchema>
+export type Turn = z.infer<typeof TurnSchema>
+export type Destination = z.infer<typeof DestinationSchema>
+export type Delivery = z.infer<typeof DeliverySchema>
+
 export type OrgInfo = z.infer<typeof OrgInfoSchema>
 export type MeResponse = z.infer<typeof MeResponseSchema>
 export type Sandbox = z.infer<typeof SandboxSchema>

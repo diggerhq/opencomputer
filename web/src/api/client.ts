@@ -25,6 +25,12 @@ export type {
   StripeInvoice,
   SandboxUsageRow,
   SandboxUsage,
+  Agent,
+  Session,
+  SessionEvent,
+  Turn,
+  Destination,
+  Delivery,
 } from './schemas'
 
 const API_BASE = '/api/dashboard'
@@ -341,3 +347,116 @@ export const setAutumnAutoTopup = (cfg: {
 // Per-sandbox usage breakdown (compute cost over a recent window)
 export const getSandboxUsage = (days = 30) =>
   apiFetch(`/usage/sandboxes?days=${days}`, {}, S.SandboxUsageSchema)
+
+// ── Durable Agent Sessions (/v3) ─────────────────────────────────────────────
+// A separate service (sessions-api). Reached through the OC edge under
+// `/api/dashboard/v3/*`, so these reuse apiFetch (cookie auth, validation, mock).
+// Org-key management lives server-side at the edge; live event/steer can move to
+// a browser-direct client-token path later without changing these signatures.
+
+// Agents — the reusable definition (prompt, model, runtime, credential).
+export const getAgents = () => apiFetch('/v3/agents', {}, S.AgentListSchema)
+
+export const getAgent = (id: string) =>
+  apiFetch(`/v3/agents/${id}`, {}, S.AgentSchema)
+
+export const createAgent = (body: {
+  name: string
+  prompt: string
+  model: string
+  runtime: string
+  credential_id?: string
+}) =>
+  apiFetch(
+    '/v3/agents',
+    { method: 'POST', body: JSON.stringify(body) },
+    S.AgentSchema,
+  )
+
+export const updateAgent = (
+  id: string,
+  body: Partial<{ name: string; prompt: string; model: string }>,
+) =>
+  apiFetch(
+    `/v3/agents/${id}`,
+    { method: 'PATCH', body: JSON.stringify(body) },
+    S.AgentSchema,
+  )
+
+// Sessions — the durable runs.
+export const getSessions = (status?: string) =>
+  apiFetch(
+    `/v3/sessions${status ? `?status=${status}` : ''}`,
+    {},
+    S.SessionListSchema,
+  )
+
+export const getSession = (id: string) =>
+  apiFetch(`/v3/sessions/${id}`, {}, S.SessionSchema)
+
+export const createSession = (body: { agent_id: string; message?: string }) =>
+  apiFetch(
+    '/v3/sessions',
+    { method: 'POST', body: JSON.stringify(body) },
+    S.SessionSchema,
+  )
+
+export const cancelSession = (id: string) =>
+  apiFetch<void>(`/v3/sessions/${id}/cancel`, { method: 'POST' })
+
+export const archiveSession = (id: string) =>
+  apiFetch<void>(`/v3/sessions/${id}/archive`, { method: 'POST' })
+
+// Events — append-only session log. Plain GET today; an SSE (`?stream=sse`)
+// browser-direct path replaces the fetch in the live view later.
+export const getSessionEvents = (id: string, level?: string) =>
+  apiFetch(
+    `/v3/sessions/${id}/events${level ? `?level=${level}` : ''}`,
+    {},
+    S.SessionEventListSchema,
+  )
+
+// Steer — post a user message into a session.
+export const sendMessage = (
+  id: string,
+  text: string,
+  idempotencyKey?: string,
+) =>
+  apiFetch<{ event: { id: string; seq: number } }>(
+    `/v3/sessions/${id}/messages`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ text, idempotency_key: idempotencyKey }),
+    },
+  )
+
+// Webhooks — destinations are session-scoped.
+export const getDestinations = (id: string) =>
+  apiFetch(`/v3/sessions/${id}/destinations`, {}, z.array(S.DestinationSchema))
+
+export const createDestination = (
+  id: string,
+  body: {
+    url: string
+    secret?: string
+    level?: string
+    types?: string[]
+  },
+) =>
+  apiFetch(
+    `/v3/sessions/${id}/destinations`,
+    { method: 'POST', body: JSON.stringify(body) },
+    S.DestinationSchema,
+  )
+
+export const deleteDestination = (id: string, did: string) =>
+  apiFetch<void>(`/v3/sessions/${id}/destinations/${did}`, { method: 'DELETE' })
+
+// Deliveries — the send ledger for a session's destinations.
+export const getDeliveries = (id: string) =>
+  apiFetch(`/v3/sessions/${id}/deliveries`, {}, z.array(S.DeliverySchema))
+
+export const redeliver = (id: string, deliveryId: string) =>
+  apiFetch<void>(`/v3/sessions/${id}/deliveries/${deliveryId}/redeliver`, {
+    method: 'POST',
+  })

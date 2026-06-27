@@ -370,6 +370,163 @@ const orgInvitations = [
   },
 ]
 
+// ── Durable Agent Sessions (/v3) ─────────────────────────────────────────────
+const v3agents = [
+  {
+    id: 'agt_3kf9xz',
+    name: 'PR Reviewer',
+    prompt_hash: 'sha256:9c1a4f',
+    model: 'claude-opus-4-8',
+    runtime: 'claude',
+    credential_id: 'cred_anth_1',
+    revision: 3,
+    created_at: at(20),
+  },
+  {
+    id: 'agt_7mq2aa',
+    name: 'Docs Writer',
+    prompt_hash: 'sha256:42bd07',
+    model: 'claude-sonnet-4-6',
+    runtime: 'claude',
+    credential_id: null,
+    revision: 1,
+    created_at: at(6),
+  },
+]
+
+const v3sessions = [
+  {
+    id: 'ses_a1b2c3',
+    status: 'running',
+    agent_id: 'agt_3kf9xz',
+    event_seq: 24,
+    created_at: at(0, 1),
+    last_turn: { state: 'running' },
+  },
+  {
+    id: 'ses_d4e5f6',
+    status: 'awaiting_input',
+    agent_id: 'agt_3kf9xz',
+    event_seq: 12,
+    created_at: at(0, 3),
+    last_turn: { state: 'ok', yield_reason: 'needs_input' },
+  },
+  {
+    id: 'ses_g7h8i9',
+    status: 'idle',
+    agent_id: 'agt_7mq2aa',
+    event_seq: 41,
+    created_at: at(1, 2),
+    last_turn: { state: 'ok', yield_reason: 'completed' },
+  },
+  {
+    id: 'ses_j1k2l3',
+    status: 'failed',
+    agent_id: 'agt_3kf9xz',
+    event_seq: 8,
+    created_at: at(2, 5),
+    last_turn: { state: 'error', yield_reason: 'error' },
+  },
+  {
+    id: 'ses_m4n5o6',
+    status: 'archived',
+    agent_id: 'agt_7mq2aa',
+    event_seq: 60,
+    created_at: at(4, 1),
+    last_turn: { state: 'ok', yield_reason: 'completed' },
+  },
+]
+
+const v3events = [
+  {
+    id: 'evt_1',
+    seq: 1,
+    type: 'user.message',
+    level: 'user',
+    actor: { type: 'user', display: 'You' },
+    body: {
+      text: 'Review PR #412 and open a follow-up if anything needs fixing.',
+    },
+    ts: at(0, 1),
+  },
+  {
+    id: 'evt_2',
+    seq: 2,
+    type: 'turn.started',
+    level: 'progress',
+    actor: { type: 'runtime' },
+    ts: at(0, 1),
+  },
+  {
+    id: 'evt_3',
+    seq: 3,
+    type: 'tool.call',
+    level: 'progress',
+    actor: { type: 'runtime' },
+    body: { tool: 'bash', input: 'git fetch origin pull/412/head' },
+    ts: at(0, 1),
+  },
+  {
+    id: 'evt_4',
+    seq: 4,
+    type: 'agent.message',
+    level: 'user',
+    actor: { type: 'agent', display: 'PR Reviewer' },
+    body: {
+      text: 'The diff touches the auth middleware. The token-refresh path looks correct, but the retry has no ceiling — I will flag it.',
+    },
+    ts: at(0, 1),
+  },
+  {
+    id: 'evt_5',
+    seq: 5,
+    type: 'turn.completed',
+    level: 'user',
+    actor: { type: 'runtime' },
+    body: { yield_reason: 'needs_input' },
+    ts: at(0, 1),
+  },
+]
+
+const v3destinations = [
+  {
+    id: 'dst_1',
+    url: 'https://acme.dev/hooks/oc',
+    level: 'user',
+    types: ['turn.completed', 'error.*'],
+    enabled: true,
+    has_secret: true,
+    created_at: at(0, 2),
+    updated_at: at(0, 2),
+  },
+]
+
+const v3deliveries = [
+  {
+    id: 'dlv_1',
+    destination_id: 'dst_1',
+    event_id: 'evt_5',
+    event_seq: 5,
+    status: 'delivered',
+    attempts: 1,
+    last_attempt_at: at(0, 1),
+    response_code: 200,
+    created_at: at(0, 1),
+  },
+  {
+    id: 'dlv_2',
+    destination_id: 'dst_1',
+    event_id: 'evt_4',
+    event_seq: 4,
+    status: 'failed',
+    attempts: 3,
+    last_attempt_at: at(0, 1),
+    response_code: 502,
+    error: 'upstream returned 502',
+    created_at: at(0, 1),
+  },
+]
+
 type Handler = () => unknown
 
 // Ordered most-specific first. Matched against the path (without /api/dashboard).
@@ -393,6 +550,17 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/org\/custom-domain$/, () => ({})],
   [/^\/org$/, () => org],
   [/^\/agents$/, () => []],
+  // Durable Agent Sessions (/v3)
+  [/^\/v3\/agents\/[^/]+$/, () => v3agents[0]],
+  [/^\/v3\/agents$/, () => v3agents],
+  [
+    /^\/v3\/sessions\/[^/]+\/events/,
+    () => ({ events: v3events, cursor: null }),
+  ],
+  [/^\/v3\/sessions\/[^/]+\/destinations$/, () => v3destinations],
+  [/^\/v3\/sessions\/[^/]+\/deliveries$/, () => v3deliveries],
+  [/^\/v3\/sessions\/[^/]+$/, () => v3sessions[0]],
+  [/^\/v3\/sessions(\?.*)?$/, () => ({ sessions: v3sessions, cursor: null })],
 ]
 
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {

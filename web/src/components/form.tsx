@@ -6,6 +6,20 @@ import { cn } from '@/lib/utils'
 // Re-exported so screens import all form primitives from one place.
 export { Input, Label }
 
+// Multiline input, styled to match Input (same border / focus tokens).
+export function Textarea({ className, ...props }: ComponentProps<'textarea'>) {
+  return (
+    <textarea
+      data-slot="textarea"
+      className={cn(
+        'border-input placeholder:text-muted-foreground focus-visible:border-ring disabled:bg-input/50 aria-invalid:border-destructive flex min-h-20 w-full rounded-md border bg-transparent px-2.5 py-1.5 text-base transition-colors outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
+        className,
+      )}
+      {...props}
+    />
+  )
+}
+
 /**
  * Plain-props, RHF-agnostic field wrapper: label + control + description/error.
  * A later "form correctness" pass wires react-hook-form + zod into these

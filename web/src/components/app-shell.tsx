@@ -3,6 +3,8 @@ import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   LayoutGrid,
+  Bot,
+  MessagesSquare,
   Boxes,
   Layers,
   Package,
@@ -37,15 +39,36 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { cn } from '@/lib/utils'
 
 type NavItem = { to: string; label: string; icon: LucideIcon; end?: boolean }
+type NavGroup = { label?: string; items: NavItem[] }
 
-const NAV: NavItem[] = [
-  { to: '/', label: 'Dashboard', icon: LayoutGrid, end: true },
-  { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
-  { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
-  { to: '/templates', label: 'Templates', icon: Package },
-  { to: '/api-keys', label: 'API Keys', icon: KeyRound },
-  { to: '/billing', label: 'Billing', icon: CreditCard },
-  { to: '/settings', label: 'Settings', icon: Settings },
+// Two planes, subtly separated: the durable-agent plane and the raw-compute
+// (sandbox) plane, plus account/org. Groups render with spacing + a small muted
+// label rather than hard dividers.
+const NAV: NavGroup[] = [
+  { items: [{ to: '/', label: 'Dashboard', icon: LayoutGrid, end: true }] },
+  {
+    label: 'Agents',
+    items: [
+      { to: '/agents', label: 'Agents', icon: Bot },
+      { to: '/sessions', label: 'Sessions', icon: MessagesSquare },
+    ],
+  },
+  {
+    label: 'Sandboxes',
+    items: [
+      { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
+      { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
+      { to: '/templates', label: 'Templates', icon: Package },
+    ],
+  },
+  {
+    label: 'Account',
+    items: [
+      { to: '/api-keys', label: 'API Keys', icon: KeyRound },
+      { to: '/billing', label: 'Billing', icon: CreditCard },
+      { to: '/settings', label: 'Settings', icon: Settings },
+    ],
+  },
 ]
 
 function Brand() {
@@ -123,29 +146,38 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       ) : null}
 
-      <nav className="flex-1 space-y-0.5 overflow-y-auto p-3">
-        {NAV.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.end}
-            onClick={onNavigate}
-            className={({ isActive }) =>
-              cn(
-                'flex min-h-9 items-center gap-2.5 rounded-md px-3 font-mono text-sm tracking-tight transition-colors',
-                isActive
-                  ? 'bg-sidebar-accent text-foreground font-medium'
-                  : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
-              )
-            }
-          >
-            <item.icon
-              className="size-4 shrink-0 opacity-50"
-              strokeWidth={1.25}
-              aria-hidden
-            />
-            {item.label}
-          </NavLink>
+      <nav className="flex-1 space-y-5 overflow-y-auto p-3">
+        {NAV.map((group, gi) => (
+          <div key={group.label ?? gi} className="space-y-0.5">
+            {group.label ? (
+              <div className="text-muted-foreground/55 px-3 pb-1 text-[10px] font-medium tracking-wider uppercase">
+                {group.label}
+              </div>
+            ) : null}
+            {group.items.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                onClick={onNavigate}
+                className={({ isActive }) =>
+                  cn(
+                    'flex min-h-9 items-center gap-2.5 rounded-md px-3 font-mono text-sm tracking-tight transition-colors',
+                    isActive
+                      ? 'bg-sidebar-accent text-foreground font-medium'
+                      : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
+                  )
+                }
+              >
+                <item.icon
+                  className="size-4 shrink-0 opacity-50"
+                  strokeWidth={1.25}
+                  aria-hidden
+                />
+                {item.label}
+              </NavLink>
+            ))}
+          </div>
         ))}
       </nav>
 
