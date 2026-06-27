@@ -145,6 +145,10 @@ export default function Templates() {
       <PageHeader
         title="Templates"
         description="Declarative image snapshots for your organization"
+        api={{
+          sdk: 'Templates.list()',
+          docs: 'https://docs.opencomputer.dev/sandboxes/templates',
+        }}
       />
 
       <Panel className="overflow-hidden">

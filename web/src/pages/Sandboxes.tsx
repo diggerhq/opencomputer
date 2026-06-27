@@ -142,7 +142,16 @@ export default function Sandboxes() {
 
   return (
     <div>
-      <PageHeader title="Sandboxes" description="Active and recent sandboxes" />
+      <PageHeader
+        title="Sandboxes"
+        description="Active and recent sandboxes"
+        api={{
+          method: 'POST',
+          path: '/api/sandboxes',
+          sdk: 'Sandbox.create()',
+          docs: 'https://docs.opencomputer.dev/sandboxes/overview',
+        }}
+      />
 
       <ActivityChart sessions={allSessions ?? []} loading={loadingAll} />
 

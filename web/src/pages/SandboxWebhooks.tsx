@@ -118,6 +118,12 @@ export default function SandboxWebhooks() {
       <PageHeader
         title="Webhooks"
         description="Deliver sandbox lifecycle events (created, ready, stopped, …) to your endpoints, signed and retried."
+        api={{
+          method: 'POST',
+          path: '/api/webhooks',
+          sdk: 'Webhooks.create()',
+          docs: 'https://docs.opencomputer.dev/sandboxes/webhooks',
+        }}
         actions={
           <Button onClick={() => setShowAdd(true)}>
             <Plus className="size-4" />

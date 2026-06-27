@@ -163,6 +163,10 @@ export default function Checkpoints() {
       <PageHeader
         title="Checkpoints"
         description="Sandbox snapshots across your organization"
+        api={{
+          sdk: 'sandbox.checkpoints.list()',
+          docs: 'https://docs.opencomputer.dev/sandboxes/checkpoints',
+        }}
         actions={
           <label
             htmlFor="show-failed"

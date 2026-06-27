@@ -149,6 +149,12 @@ export default function Agents() {
       <PageHeader
         title="Agents"
         description="Reusable definitions — a prompt, model, and runtime a session runs."
+        api={{
+          method: 'POST',
+          path: '/v3/agents',
+          sdk: 'oc.agents.create()',
+          docs: 'https://docs.opencomputer.dev/agent-sessions/agents',
+        }}
         actions={
           <Button onClick={() => setShowCreate(true)}>
             <Plus className="size-4" />

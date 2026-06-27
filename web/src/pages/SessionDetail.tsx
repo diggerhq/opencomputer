@@ -20,6 +20,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { SessionWebhooks } from '@/components/session-webhooks'
+import { ApiHint } from '@/components/api-hint'
 import { MessagesSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -181,6 +182,12 @@ export default function SessionDetail() {
                 ? new Date(session.created_at).toLocaleString()
                 : '—'}
             </p>
+            <ApiHint
+              method="GET"
+              path="/v3/sessions/:id"
+              sdk="oc.sessions.get()"
+              docs="https://docs.opencomputer.dev/agent-sessions/sessions"
+            />
           </div>
           <div className="flex items-center gap-2">
             {canCancel ? (
