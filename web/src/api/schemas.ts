@@ -300,6 +300,13 @@ export const SessionSchema = z.object({
   usage: record.nullish(),
   limits: record.nullish(),
   metadata: record.nullish(),
+  // The OC sandboxes this session runs on (agent-sandbox-ownership Phase 1).
+  sandboxes: z
+    .object({
+      brain: z.string().nullish(),
+      hands: z.string().nullish(),
+    })
+    .nullish(),
   created_at: z.string(),
 })
 export const SessionListSchema = z.object({

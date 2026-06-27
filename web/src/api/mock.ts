@@ -402,6 +402,7 @@ const v3sessions = [
     head: 24,
     created_at: at(0, 1),
     last_turn: { state: 'running' },
+    sandboxes: { brain: 'sbx_a1b2c3d4e5', hands: 'sbx_f6g7h8i9j0' },
   },
   {
     id: 'ses_d4e5f6',

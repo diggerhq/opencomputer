@@ -182,6 +182,30 @@ export default function SessionDetail() {
                 ? new Date(session.created_at).toLocaleString()
                 : '—'}
             </p>
+            {session?.sandboxes?.brain || session?.sandboxes?.hands ? (
+              <p className="text-muted-foreground flex flex-wrap items-center gap-x-1.5 text-xs">
+                <span>Sandboxes:</span>
+                {session.sandboxes.brain ? (
+                  <Link
+                    to={`/sandboxes/${session.sandboxes.brain}`}
+                    className="hover:text-foreground font-mono underline-offset-4 hover:underline"
+                  >
+                    brain
+                  </Link>
+                ) : null}
+                {session.sandboxes.brain && session.sandboxes.hands ? (
+                  <span>·</span>
+                ) : null}
+                {session.sandboxes.hands ? (
+                  <Link
+                    to={`/sandboxes/${session.sandboxes.hands}`}
+                    className="hover:text-foreground font-mono underline-offset-4 hover:underline"
+                  >
+                    hands
+                  </Link>
+                ) : null}
+              </p>
+            ) : null}
             <ApiHint
               method="GET"
               path="/v3/sessions/:id"
