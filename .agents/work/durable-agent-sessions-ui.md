@@ -154,7 +154,7 @@ behind the org+route-keyed error boundary.
 
 **Settled (continued):**
 - **Identity & ownership** — RESOLVED, full design in
-  `oc-bg-agents/.agents/work/agent-sandbox-ownership.md`. One OC org id is
+  `agent-sandbox-ownership.md`. One OC org id is
   propagated as a signed org-token at every hop (act-as-org), reusing the edge→
   cell cap-token pattern. `/v3` becomes org-scoped (`owner = oc-org:<id>`); agent
   sandboxes are owned by + billed to the **customer's org** (not the service
