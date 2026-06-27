@@ -124,6 +124,9 @@ async function mintCapToken(
 interface Caller {
   orgID: string;
   userID: string | null;
+  // Set only for act-as-org provisioning tokens (sessions-api). Least-privilege:
+  // the dispatch gates these to sandbox + secret-store routes (provisionScopeGate).
+  scope?: "sandbox-provision";
 }
 
 interface SandboxCreateResult {
@@ -1468,15 +1471,37 @@ async function verifyProvisionToken(secret: string, token: string): Promise<Call
   if (b64url(expected) !== sigB64) return null;
   try {
     const p = JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/"))) as {
-      iss?: string; aud?: string; exp?: number; org_id?: string;
+      iss?: string; aud?: string; exp?: number; iat?: number; org_id?: string; scope?: string;
     };
+    const now = Math.floor(Date.now() / 1000);
+    const SKEW = 120;          // clock-skew tolerance (s)
+    const MAX_AGE = 6 * 3600;  // sanity cap on lifetime; turn tokens live ~40min (maxTurnSeconds 1800 + 600)
     if (p.iss !== "sessions-api" || p.aud !== "opencomputer-api") return null;
-    if (typeof p.exp === "number" && p.exp < Math.floor(Date.now() / 1000)) return null;
-    if (typeof p.org_id !== "string" || !p.org_id) return null;
-    return { orgID: p.org_id, userID: null };
+    // P1-1: require the provisioning scope (gated to sandbox + secret-store routes).
+    if (p.scope !== "sandbox-provision") return null;
+    // P1-2: require finite exp + iat; reject expired, future-dated, or absurd-lifetime
+    // tokens (a no-exp token is no longer accepted).
+    if (typeof p.exp !== "number" || typeof p.iat !== "number") return null;
+    if (p.exp <= now) return null;
+    if (p.iat > now + SKEW) return null;
+    if (p.exp - p.iat > MAX_AGE || p.exp > now + MAX_AGE + SKEW) return null;
+    // P1-2: validate org_id shape (OC orgs are UUIDs).
+    if (typeof p.org_id !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.org_id)) return null;
+    return { orgID: p.org_id, userID: null, scope: "sandbox-provision" };
   } catch {
     return null;
   }
+}
+
+// Provision-scoped tokens (sessions-api act-as-org) are least-privilege: usable
+// ONLY for sandbox + secret-store provisioning, never snapshots/images/other org
+// resources. Call after authenticate() on any route OUTSIDE that allowlist to 403
+// a provision token; returns null (pass) for normal org keys.
+function provisionScopeGate(caller: Caller, path: string): Response | null {
+  if (caller.scope !== "sandbox-provision") return null;
+  if (path.startsWith("/api/sandboxes") || path.startsWith("/api/secret-stores")) return null;
+  return json({ error: "forbidden: provision-scoped token is limited to sandbox + secret-store operations" }, 403);
 }
 
 // ── Stripe webhook ───────────────────────────────────────────────────────
@@ -1828,6 +1853,7 @@ export default {
     if (path === "/api/snapshots") {
       const caller = await authenticate(req, env);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
+      { const g = provisionScopeGate(caller, path); if (g) return g; }
       if (req.method === "GET") return snapshots.listSnapshots(env, caller);
       if (req.method === "POST") return proxyToCellAuthed(req, env, caller); // build → home_cell, SSE
       return json({ error: "method not allowed" }, 405);
@@ -1840,6 +1866,7 @@ export default {
         const isPatch = !!m[2];
         const caller = await authenticate(req, env);
         if (!caller) return json({ error: "missing or invalid API key" }, 401);
+        { const g = provisionScopeGate(caller, path); if (g) return g; }
         // Patches + delete are cell-work — route to the cell that owns the
         // snapshot bytes (looked up from D1), not "any active cell".
         if (isPatch || req.method === "DELETE") {
@@ -1854,6 +1881,7 @@ export default {
     if (path === "/api/images") {
       const caller = await authenticate(req, env);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
+      { const g = provisionScopeGate(caller, path); if (g) return g; }
       if (req.method === "GET") return snapshots.listImages(env, caller);
       return json({ error: "method not allowed" }, 405);
     }
