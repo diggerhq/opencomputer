@@ -229,6 +229,7 @@ export default function Credentials() {
             <Button
               variant="ghost"
               size="sm"
+              className="text-muted-foreground hover:text-foreground underline-offset-2 hover:bg-transparent hover:underline"
               disabled={defaultMutation.isPending}
               onClick={() => defaultMutation.mutate(c.id)}
             >
@@ -300,108 +301,111 @@ export default function Credentials() {
         }}
       >
         <DialogContent>
-          {phase === 'running' ? (
-            <div className="space-y-5">
-              <DialogHeader>
-                <DialogTitle>
-                  {step >= CREATE_STEPS.length
-                    ? 'Credential ready'
-                    : 'Adding credential'}
-                </DialogTitle>
-                <DialogDescription>
-                  {step >= CREATE_STEPS.length
-                    ? 'Stored in your secure secret store.'
-                    : 'Provisioning it in your secure secret store — just a moment.'}
-                </DialogDescription>
-              </DialogHeader>
-              {step >= CREATE_STEPS.length ? (
-                <div className="flex items-center gap-3 py-1 text-sm">
-                  <CircleCheck className="text-status-running size-5 shrink-0" />
-                  <span className="text-foreground">
-                    {name.trim() || 'Credential'} added
-                    {makeDefault ? ' · set as default' : ''}.
-                  </span>
-                </div>
-              ) : (
-                <StepProgress steps={CREATE_STEPS} current={step} />
-              )}
-            </div>
-          ) : (
-            <>
-              <DialogHeader>
-                <DialogTitle>Add credential</DialogTitle>
-                <DialogDescription>
-                  The key is stored write-only — you won&apos;t be able to read
-                  it back, only rotate or delete it.
-                </DialogDescription>
-              </DialogHeader>
-              <form
-                className="space-y-4"
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  if (canCreate) createMutation.mutate()
-                }}
-              >
-                {createError ? (
-                  <div className="border-status-error/30 bg-status-error-bg text-status-error rounded-md border px-3 py-2 text-xs">
-                    {createError}
-                  </div>
-                ) : null}
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <Field label="Name" htmlFor="cred-name">
-                    <Input
-                      id="cred-name"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="e.g. Production"
-                    />
-                  </Field>
-                  <Field label="Provider" htmlFor="cred-provider">
-                    <Select
-                      id="cred-provider"
-                      value={provider}
-                      onValueChange={setProvider}
-                      options={PROVIDERS}
-                    />
-                  </Field>
-                </div>
-                <Field label="API key" htmlFor="cred-key">
-                  <Input
-                    id="cred-key"
-                    type="password"
-                    value={key}
-                    onChange={(e) => setKey(e.target.value)}
-                    placeholder={KEY_HINT[provider] ?? 'sk-…'}
-                  />
-                </Field>
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id="cred-default"
-                    checked={makeDefault}
-                    onCheckedChange={(v) => setMakeDefault(v === true)}
-                  />
-                  <Label
-                    htmlFor="cred-default"
-                    className="cursor-pointer font-normal"
-                  >
-                    Set as the org default for {provider}
-                    <span className="text-muted-foreground">
-                      {' '}
-                      — used when an agent doesn&apos;t pin its own.
+          {/* Stable height across phases so submitting doesn't resize the dialog. */}
+          <div className="flex min-h-[22rem] flex-col">
+            {phase === 'running' ? (
+              <div className="flex flex-1 flex-col justify-center gap-6">
+                <DialogHeader>
+                  <DialogTitle>
+                    {step >= CREATE_STEPS.length
+                      ? 'Credential ready'
+                      : 'Adding credential'}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {step >= CREATE_STEPS.length
+                      ? 'Encrypted and held in your dedicated secret store.'
+                      : 'Encrypting and provisioning it in your dedicated secret store.'}
+                  </DialogDescription>
+                </DialogHeader>
+                {step >= CREATE_STEPS.length ? (
+                  <div className="flex items-center gap-3 text-sm">
+                    <CircleCheck className="text-status-running size-5 shrink-0" />
+                    <span className="text-foreground">
+                      {name.trim() || 'Credential'} added
+                      {makeDefault ? ' · set as default' : ''}.
                     </span>
-                  </Label>
-                </div>
-                <DialogFooter className="mt-2">
-                  <Button type="button" variant="ghost" onClick={closeCreate}>
-                    Cancel
-                  </Button>
-                  <Button type="submit" disabled={!canCreate}>
-                    Add credential
-                  </Button>
-                </DialogFooter>
-              </form>
-            </>
-          )}
+                  </div>
+                ) : (
+                  <StepProgress steps={CREATE_STEPS} current={step} />
+                )}
+              </div>
+            ) : (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Add credential</DialogTitle>
+                  <DialogDescription>
+                    Encrypted in a dedicated secret store, isolated from our
+                    database — and never shown again.
+                  </DialogDescription>
+                </DialogHeader>
+                <form
+                  className="flex flex-1 flex-col space-y-4"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    if (canCreate) createMutation.mutate()
+                  }}
+                >
+                  {createError ? (
+                    <div className="border-status-error/30 bg-status-error-bg text-status-error rounded-md border px-3 py-2 text-xs">
+                      {createError}
+                    </div>
+                  ) : null}
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <Field label="Name" htmlFor="cred-name">
+                      <Input
+                        id="cred-name"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder="e.g. Production"
+                      />
+                    </Field>
+                    <Field label="Provider" htmlFor="cred-provider">
+                      <Select
+                        id="cred-provider"
+                        value={provider}
+                        onValueChange={setProvider}
+                        options={PROVIDERS}
+                      />
+                    </Field>
+                  </div>
+                  <Field label="API key" htmlFor="cred-key">
+                    <Input
+                      id="cred-key"
+                      type="password"
+                      value={key}
+                      onChange={(e) => setKey(e.target.value)}
+                      placeholder={KEY_HINT[provider] ?? 'sk-…'}
+                    />
+                  </Field>
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="cred-default"
+                      checked={makeDefault}
+                      onCheckedChange={(v) => setMakeDefault(v === true)}
+                    />
+                    <Label
+                      htmlFor="cred-default"
+                      className="cursor-pointer font-normal"
+                    >
+                      Set as the org default for {provider}
+                      <span className="text-muted-foreground">
+                        {' '}
+                        — used when an agent doesn&apos;t pin its own.
+                      </span>
+                    </Label>
+                  </div>
+                  <DialogFooter className="mt-auto pt-2">
+                    <Button type="button" variant="ghost" onClick={closeCreate}>
+                      Cancel
+                    </Button>
+                    <Button type="submit" disabled={!canCreate}>
+                      Add credential
+                    </Button>
+                  </DialogFooter>
+                </form>
+              </>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
 

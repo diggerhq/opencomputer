@@ -1,51 +1,66 @@
-import { Check, Loader2, X } from 'lucide-react'
+import { Fragment } from 'react'
+import { Check, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-// A small vertical checklist for a known multi-step backend job. Steps before
-// `current` render done, `current` renders active (spinner), the rest pending.
-// When `current === steps.length` everything reads done. `failedAt` marks the
-// step that errored (it shows an ✕; earlier steps stay done, later stay pending).
+// Horizontal stepper for a known multi-step backend job. Nodes fill left → right:
+// steps before `current` are done (✓), `current` is active (spinner), the rest are
+// pending. The connector leading into each reached node fills with the accent. A
+// single status line below names the active step (full label), so long step names
+// don't crowd the nodes. `current === steps.length` reads fully done.
 export function StepProgress({
   steps,
   current,
-  failedAt,
 }: {
   steps: string[]
   current: number
-  failedAt?: number
 }) {
+  const allDone = current >= steps.length
   return (
-    <ol className="space-y-3">
-      {steps.map((label, i) => {
-        const failed = failedAt === i
-        const done = failedAt == null ? i < current : i < failedAt
-        const active = failedAt == null && i === current
-        return (
-          <li key={label} className="flex items-center gap-3">
-            <span className="flex size-5 shrink-0 items-center justify-center">
-              {failed ? (
-                <X className="text-status-error size-4" />
-              ) : done ? (
-                <Check className="text-status-running size-4" />
-              ) : active ? (
-                <Loader2 className="text-foreground size-4 animate-spin" />
-              ) : (
-                <span className="border-muted-foreground/30 size-2.5 rounded-full border" />
-              )}
-            </span>
-            <span
-              className={cn(
-                'text-sm transition-colors',
-                done || active || failed
-                  ? 'text-foreground'
-                  : 'text-muted-foreground',
-              )}
-            >
-              {label}
-            </span>
-          </li>
-        )
-      })}
-    </ol>
+    <div className="space-y-4">
+      <div className="flex items-center">
+        {steps.map((label, i) => {
+          const done = i < current
+          const active = i === current
+          return (
+            <Fragment key={label}>
+              {i > 0 ? (
+                <span
+                  className={cn(
+                    'h-px flex-1 transition-colors duration-300',
+                    i <= current ? 'bg-primary' : 'bg-border',
+                  )}
+                />
+              ) : null}
+              <span
+                className={cn(
+                  'flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-medium transition-colors duration-300',
+                  done || active
+                    ? 'border-primary text-primary'
+                    : 'border-border text-muted-foreground/50',
+                )}
+              >
+                {done ? (
+                  <Check className="size-3.5" />
+                ) : active ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  i + 1
+                )}
+              </span>
+            </Fragment>
+          )
+        })}
+      </div>
+      <div className="flex items-center gap-2 text-sm">
+        {allDone ? (
+          <Check className="text-primary size-4 shrink-0" />
+        ) : (
+          <Loader2 className="text-muted-foreground size-4 shrink-0 animate-spin" />
+        )}
+        <span className="text-foreground">
+          {allDone ? 'Done' : steps[current]}
+        </span>
+      </div>
+    </div>
   )
 }
