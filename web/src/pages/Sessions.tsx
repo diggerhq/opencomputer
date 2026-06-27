@@ -1,20 +1,33 @@
-import { useQuery } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
-import { MessagesSquare } from 'lucide-react'
-import { getSessions, getAgents } from '@/api/client'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useNavigate } from 'react-router-dom'
+import { MessagesSquare, Plus } from 'lucide-react'
+import { notifyError } from '@/lib/errors'
+import { getSessions, getAgents, createSession } from '@/api/client'
 import type { Session } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
 import { Panel } from '@/components/panel'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Field, Label, Textarea } from '@/components/form'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
 
 export default function Sessions() {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { data, isLoading } = useQuery({
     queryKey: ['sessions'],
     queryFn: () => getSessions(),
   })
-  // Resolve agent_id → name for display (cheap, cached alongside the Agents page).
   const { data: agents } = useQuery({
     queryKey: ['agents'],
     queryFn: getAgents,
@@ -22,7 +35,32 @@ export default function Sessions() {
   const agentName = (id?: string | null) =>
     agents?.find((a) => a.id === id)?.name ?? id ?? '—'
 
+  const [showStart, setShowStart] = useState(false)
+  const [agentId, setAgentId] = useState('')
+  const [message, setMessage] = useState('')
+
+  const openStart = () => {
+    setAgentId(agents?.[0]?.id ?? '')
+    setMessage('')
+    setShowStart(true)
+  }
+
+  const startMutation = useMutation({
+    mutationFn: () =>
+      createSession({
+        agent_id: agentId,
+        message: message.trim() || undefined,
+      }),
+    onSuccess: (session) => {
+      setShowStart(false)
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      void navigate(`/sessions/${session.id}`)
+    },
+    onError: (e) => notifyError("Couldn't start the session.", e),
+  })
+
   const sessions = data?.sessions ?? []
+  const hasAgents = (agents?.length ?? 0) > 0
 
   const columns: Column<Session>[] = [
     {
@@ -77,6 +115,12 @@ export default function Sessions() {
       <PageHeader
         title="Sessions"
         description="Durable agent runs — an append-only event log you can steer."
+        actions={
+          <Button onClick={openStart}>
+            <Plus className="size-4" />
+            Start session
+          </Button>
+        }
       />
 
       <Panel className="overflow-hidden">
@@ -90,10 +134,93 @@ export default function Sessions() {
               icon={MessagesSquare}
               title="No sessions yet"
               description="Start a session from an agent to give it a task; it runs durably and streams events here."
+              action={
+                <Button size="sm" onClick={openStart}>
+                  <Plus className="size-4" />
+                  Start session
+                </Button>
+              }
             />
           }
         />
       </Panel>
+
+      <Dialog open={showStart} onOpenChange={setShowStart}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Start session</DialogTitle>
+            <DialogDescription>
+              Pick an agent and give it a first task. The session runs durably
+              and you can steer it as it goes.
+            </DialogDescription>
+          </DialogHeader>
+
+          {!hasAgents ? (
+            <p className="text-muted-foreground py-2 text-sm">
+              You need an agent first.{' '}
+              <Link
+                to="/agents"
+                className="text-foreground font-medium underline underline-offset-4"
+              >
+                Create an agent
+              </Link>
+              .
+            </p>
+          ) : (
+            <form
+              className="space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (agentId) startMutation.mutate()
+              }}
+            >
+              <div className="space-y-1.5">
+                <Label htmlFor="start-agent">Agent</Label>
+                <select
+                  id="start-agent"
+                  value={agentId}
+                  onChange={(e) => setAgentId(e.target.value)}
+                  className="border-input focus-visible:border-ring h-8 w-full rounded-md border bg-transparent px-2.5 text-sm outline-none"
+                >
+                  {agents?.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <Field
+                label="First message"
+                htmlFor="start-message"
+                description="Optional — what should the agent do?"
+              >
+                <Textarea
+                  id="start-message"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  placeholder="Review PR #412 and open a follow-up if anything needs fixing."
+                  className="min-h-24"
+                />
+              </Field>
+              <DialogFooter className="mt-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setShowStart(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={startMutation.isPending || !agentId}
+                >
+                  {startMutation.isPending ? 'Starting…' : 'Start session'}
+                </Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
