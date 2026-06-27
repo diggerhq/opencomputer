@@ -51,6 +51,15 @@ const STATUS: Record<string, Meta> = {
   error: { tone: 'error', label: 'Error', icon: CircleAlert },
   failed: { tone: 'error', label: 'Failed', icon: CircleAlert },
   degraded: { tone: 'error', label: 'Degraded', icon: CircleAlert },
+  // Webhook delivery statuses
+  delivered: { tone: 'running', label: 'Delivered', icon: CircleCheck },
+  delivering: {
+    tone: 'pending',
+    label: 'Delivering',
+    icon: Loader2,
+    spin: true,
+  },
+  dead_letter: { tone: 'error', label: 'Dead letter', icon: CircleAlert },
 }
 
 function titleCase(s: string) {

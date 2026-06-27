@@ -18,6 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { SessionWebhooks } from '@/components/session-webhooks'
 import { MessagesSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -230,6 +231,8 @@ export default function SessionDetail() {
           </form>
         </div>
       </Panel>
+
+      <SessionWebhooks sessionId={sessionId} />
 
       <ConfirmDialog
         open={confirmCancel}
