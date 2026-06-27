@@ -25,6 +25,7 @@ import {
   syncAutumnToD1,
   autumnSetAutoTopup,
 } from "./autumn_webhook";
+import { handleWebhooksAPI, type WebhookEnv } from "./webhooks";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -46,6 +47,13 @@ export interface DashboardEnv {
   // if unset the custom-domain endpoints return 503 (feature disabled).
   CF_API_TOKEN?: string;
   CF_ZONE_ID?: string;
+  // Durable Agent Sessions (/v3) — the dashboard proxies /api/dashboard/v3/* to
+  // this sessions-api host, asserting the logged-in OC org via a short-lived
+  // signed OC org token (OC_ORG_TOKEN_SECRET, shared with sessions-api). No osb_
+  // key in the browser, no key custody. Both optional — if OC_ORG_TOKEN_SECRET is
+  // unset the proxy 503s.
+  SESSIONS_API_URL?: string;
+  OC_ORG_TOKEN_SECRET?: string;
 }
 
 const SESSION_COOKIE = "oc_session";
@@ -124,6 +132,26 @@ async function mintCellCapToken(secret: string, orgID: string, cellID: string, p
   const payload: Record<string, unknown> = {
     sub: orgID, iss: "opensandbox-edge", iat: now, exp: now + 120,
     org_id: orgID, cell_id: cellID, plan,
+  };
+  if (userID) payload.user_id = userID;
+  const enc = new TextEncoder();
+  const signingInput =
+    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
+  return signingInput + "." + b64url(sig);
+}
+
+// OC org token: a short-lived HS256 token carrying the OC org id, signed with
+// OC_ORG_TOKEN_SECRET (shared with sessions-api). /v3 trusts it and sets owner =
+// the asserted org — same "act for org X" shape as the cell cap-token, so no
+// osb_ key reaches the browser and /v3 never custodies a customer key.
+async function mintOrgToken(secret: string, orgID: string, userID: string | null): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: "HS256", typ: "JWT" };
+  const payload: Record<string, unknown> = {
+    sub: orgID, iss: "opencomputer", aud: "sessions-api-v3", iat: now, exp: now + 120,
+    org_id: orgID,
   };
   if (userID) payload.user_id = userID;
   const enc = new TextEncoder();
@@ -785,6 +813,47 @@ async function workosUpdateOrg(env: DashboardEnv, workosOrgID: string, name: str
   });
 }
 
+// Proxy /api/dashboard/v3/* → sessions-api /v3/*, asserting the logged-in OC org
+// via a signed org-token in X-OC-Org-Token (a distinct header so /v3 doesn't
+// mistake it for a bearer client token). Forwards only what /v3 needs (never the
+// dashboard cookie); streams the response through unchanged so SSE passes back.
+async function proxyToV3(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+  sub: string,
+): Promise<Response> {
+  if (!env.OC_ORG_TOKEN_SECRET) {
+    return json({ error: "agent sessions not configured" }, 503);
+  }
+  const base = (env.SESSIONS_API_URL ?? "https://api.opencomputer.dev").replace(
+    /\/$/,
+    "",
+  );
+  const url = new URL(req.url);
+  const target = base + sub + url.search;
+  const orgToken = await mintOrgToken(env.OC_ORG_TOKEN_SECRET, caller.orgID, caller.userID);
+
+  const headers = new Headers();
+  headers.set("x-oc-org-token", orgToken);
+  const ct = req.headers.get("content-type");
+  if (ct) headers.set("content-type", ct);
+  const accept = req.headers.get("accept");
+  if (accept) headers.set("accept", accept);
+  const lastEventID = req.headers.get("last-event-id");
+  if (lastEventID) headers.set("last-event-id", lastEventID);
+  // Forward client idempotency keys so dashboard create-session / steer are safe
+  // to retry end-to-end (sessions-api dedups on this header).
+  const idem = req.headers.get("idempotency-key");
+  if (idem) headers.set("idempotency-key", idem);
+
+  const init: RequestInit = { method: req.method, headers, redirect: "manual" };
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    init.body = await req.text();
+  }
+  return fetch(target, init);
+}
+
 // ── dispatch ─────────────────────────────────────────────────────────────
 
 export async function handleDashboard(
@@ -799,6 +868,25 @@ export async function handleDashboard(
   // /api/dashboard/* — strip the prefix for routing.
   const sub = path.replace(/^\/api\/dashboard/, "");
   const method = req.method.toUpperCase();
+
+  // ── Durable Agent Sessions (/v3) — proxy to sessions-api ────────────────
+  // Cookie-gated above. We inject OC_V3_KEY downstream so the osb_ key never
+  // reaches the browser. (/v3 is per-key today, so this is that key's
+  // workspace; org-scoping is a later refinement.)
+  if (sub === "/v3" || sub.startsWith("/v3/")) {
+    return proxyToV3(req, env, caller, sub);
+  }
+
+  // ── Sandbox lifecycle webhooks ─────────────────────────────────────────
+  // Reuse the public /api/webhooks handler with the cookie-derived org, so the
+  // dashboard manages destinations/deliveries org-scoped without an osb_ key in
+  // the browser. The handler parses the path from the url arg; rewrite it back
+  // to /api/webhooks/*. env carries the Svix bindings at runtime.
+  if (sub === "/webhooks" || sub.startsWith("/webhooks/")) {
+    const whUrl = new URL(req.url);
+    whUrl.pathname = "/api" + sub;
+    return handleWebhooksAPI(req, env as unknown as WebhookEnv, caller, whUrl);
+  }
 
   // ── identity / org ─────────────────────────────────────────────────────
   if (sub === "/me" && method === "GET") return handleMe(req, env, caller);

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { SquareTerminal } from 'lucide-react'
 import '@xterm/xterm/css/xterm.css'
+import { cn } from '@/lib/utils'
 
 interface TerminalProps {
   sandboxId: string
@@ -15,7 +17,9 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
   const wsRef = useRef<WebSocket | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const ptySessionIdRef = useRef<string | null>(null)
-  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
+  const [status, setStatus] = useState<
+    'connecting' | 'connected' | 'disconnected' | 'error'
+  >('connecting')
   const [errorMsg, setErrorMsg] = useState('')
 
   useEffect(() => {
@@ -24,12 +28,12 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
     const term = new XTerm({
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: 'JetBrains Mono, Menlo, Monaco, Consolas, monospace',
+      fontFamily: '"Geist Mono Variable", Menlo, Monaco, Consolas, monospace',
       theme: {
-        background: '#0a0a0f',
-        foreground: '#e4e4e7',
-        cursor: '#818cf8',
-        selectionBackground: 'rgba(129, 140, 248, 0.3)',
+        background: '#14120f', // warm near-black — matches --terminal
+        foreground: '#e6e1d8', // warm light
+        cursor: '#c2bcae', // warm neutral (de-purpled)
+        selectionBackground: 'rgba(230, 225, 216, 0.16)',
         black: '#18181b',
         red: '#fb7185',
         green: '#34d399',
@@ -57,15 +61,19 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
     term.loadAddon(webLinks)
     term.open(termRef.current)
 
-    // Fit after a small delay to let the container render
-    requestAnimationFrame(() => {
-      fit.fit()
-    })
+    // Fit after a frame to let the container render.
+    const raf = requestAnimationFrame(() => fit.fit())
 
     xtermRef.current = term
     fitRef.current = fit
 
     term.writeln('\x1b[2m  Connecting to sandbox...\x1b[0m')
+
+    // Guard the async PTY/WS setup against racing the effect cleanup (close or
+    // navigate before the POST returns): abort the in-flight fetch and never
+    // open a socket / write to a disposed terminal.
+    let disposed = false
+    const controller = new AbortController()
 
     // Create PTY session, then connect WebSocket
     const initTerminal = async () => {
@@ -79,14 +87,27 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
           body: JSON.stringify({ cols, rows }),
+          signal: controller.signal,
         })
 
         if (!res.ok) {
-          const data = await res.json()
-          throw new Error(data.error || `HTTP ${res.status}`)
+          const data: unknown = await res.json().catch(() => null)
+          const err =
+            data && typeof data === 'object'
+              ? (data as Record<string, unknown>).error
+              : undefined
+          throw new Error(typeof err === 'string' ? err : `HTTP ${res.status}`)
         }
 
-        const { sessionId } = await res.json()
+        const payload: unknown = await res.json()
+        if (disposed) return
+        const sessionId =
+          payload && typeof payload === 'object'
+            ? (payload as Record<string, unknown>).sessionId
+            : undefined
+        if (typeof sessionId !== 'string') {
+          throw new Error('Invalid PTY session response')
+        }
         ptySessionIdRef.current = sessionId
 
         // Connect WebSocket
@@ -97,23 +118,27 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
         wsRef.current = ws
 
         ws.onopen = () => {
+          if (disposed) return
           setStatus('connected')
           term.clear()
           term.focus()
         }
 
         ws.onmessage = (event) => {
+          if (disposed) return
           const data = new Uint8Array(event.data)
           term.write(data)
         }
 
         ws.onclose = () => {
+          if (disposed) return
           setStatus('disconnected')
           term.writeln('')
           term.writeln('\x1b[2m  Session ended.\x1b[0m')
         }
 
         ws.onerror = () => {
+          if (disposed) return
           setStatus('error')
           setErrorMsg('WebSocket connection failed')
         }
@@ -128,17 +153,21 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
         // Handle resize — send to backend resize endpoint (not via PTY stream)
         term.onResize(({ cols, rows }) => {
           if (ptySessionIdRef.current) {
-            fetch(`/api/dashboard/sessions/${sandboxId}/pty/${ptySessionIdRef.current}/resize`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              credentials: 'include',
-              body: JSON.stringify({ cols, rows }),
-            }).catch(() => {
+            fetch(
+              `/api/dashboard/sessions/${sandboxId}/pty/${ptySessionIdRef.current}/resize`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ cols, rows }),
+              },
+            ).catch(() => {
               // Resize failed — not critical, ignore
             })
           }
         })
       } catch (err: unknown) {
+        if (disposed) return // unmounted mid-setup (incl. fetch AbortError)
         setStatus('error')
         const msg = err instanceof Error ? err.message : 'Failed to connect'
         setErrorMsg(msg)
@@ -146,7 +175,7 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
       }
     }
 
-    initTerminal()
+    void initTerminal()
 
     // Handle window resize
     const handleResize = () => {
@@ -157,6 +186,9 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
     window.addEventListener('resize', handleResize)
 
     return () => {
+      disposed = true
+      controller.abort()
+      cancelAnimationFrame(raf)
       window.removeEventListener('resize', handleResize)
       if (wsRef.current) {
         wsRef.current.close()
@@ -165,65 +197,49 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
     }
   }, [sandboxId])
 
+  const statusColor = {
+    connected: 'text-emerald-400',
+    connecting: 'text-blue-400',
+    error: 'text-rose-400',
+    disconnected: 'text-zinc-500',
+  }[status]
+
   return (
-    <div>
+    <div className="bg-terminal border-code-border overflow-hidden rounded-lg border">
       {/* Header */}
-      <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        marginBottom: 12,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-tertiary)' }}>
-            <polyline points="4 17 10 11 4 5" />
-            <line x1="12" y1="19" x2="20" y2="19" />
-          </svg>
-          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+      <div className="border-code-border flex items-center justify-between border-b px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          <SquareTerminal className="text-code-muted size-3.5" />
+          <span className="text-code-muted text-xs font-medium tracking-wide uppercase">
             Terminal
           </span>
-          <span style={{
-            fontSize: 10, padding: '2px 6px', borderRadius: 4,
-            background: status === 'connected' ? 'rgba(52,211,153,0.15)' :
-                        status === 'connecting' ? 'rgba(129,140,248,0.15)' :
-                        status === 'error' ? 'rgba(251,113,133,0.15)' :
-                        'rgba(255,255,255,0.05)',
-            color: status === 'connected' ? 'var(--accent-emerald)' :
-                   status === 'connecting' ? '#818cf8' :
-                   status === 'error' ? '#fb7185' :
-                   'var(--text-tertiary)',
-          }}>
+          <span
+            className={cn(
+              'rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px]',
+              statusColor,
+            )}
+          >
             {status}
           </span>
         </div>
-        {onClose && (
+        {onClose ? (
           <button
             onClick={onClose}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: 'var(--text-tertiary)', fontSize: 11, padding: '4px 8px',
-            }}
+            className="text-code-muted hover:text-code-foreground text-xs transition-colors"
           >
             Close
           </button>
-        )}
+        ) : null}
       </div>
 
-      {/* Terminal container */}
-      <div
-        ref={termRef}
-        style={{
-          height: 350,
-          borderRadius: 8,
-          overflow: 'hidden',
-          background: '#0a0a0f',
-          padding: '8px 4px',
-        }}
-      />
+      {/* Terminal surface (xterm) */}
+      <div ref={termRef} className="bg-terminal h-[350px] px-1 py-2" />
 
-      {status === 'error' && errorMsg && (
-        <div style={{ fontSize: 11, color: '#fb7185', marginTop: 8 }}>
+      {status === 'error' && errorMsg ? (
+        <div className="border-code-border border-t px-4 py-2 text-[11px] text-rose-400">
           {errorMsg}
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

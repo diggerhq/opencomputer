@@ -1,558 +1,393 @@
-import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { deleteSession, getSessionDetail, getSessionStats, rebootSession, powerCycleSession, type Session, type SessionDetail as SessionDetailData } from '../api/client'
-import Terminal from '../components/Terminal'
-import LogsPanel from '../components/LogsPanel'
+import { ArrowLeft, Send, Wrench } from 'lucide-react'
+import { notifyError } from '@/lib/errors'
+import {
+  getSession,
+  getSessionEvents,
+  sendMessage,
+  cancelSession,
+  archiveSession,
+  type SessionEvent,
+} from '@/api/client'
+import { SessionEventSchema } from '@/api/schemas'
+import { Panel } from '@/components/panel'
+import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/form'
+import { Skeleton } from '@/components/ui/skeleton'
+import { StatusBadge } from '@/components/status-badge'
+import { EmptyState } from '@/components/empty-state'
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import { SessionWebhooks } from '@/components/session-webhooks'
+import { ApiHint } from '@/components/api-hint'
+import { MessagesSquare } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
-function StatusBadge({ status }: { status: string }) {
-  const cls =
-    status === 'running' ? 'badge-running' :
-    status === 'stopped' ? 'badge-stopped' :
-    status === 'hibernated' ? 'badge-hibernated' :
-    status === 'error' ? 'badge-error' : ''
-
-  return <span className={`status-badge ${cls}`}>{status}</span>
+// body is unknown (inline JSON ≤32KB); pull the common shapes defensively.
+function bodyText(ev: SessionEvent): string | null {
+  const b = ev.body
+  if (
+    b &&
+    typeof b === 'object' &&
+    typeof (b as Record<string, unknown>).text === 'string'
+  ) {
+    return (b as Record<string, string>).text
+  }
+  return null
+}
+function toolSummary(ev: SessionEvent): string {
+  const b = (ev.body ?? {}) as Record<string, unknown>
+  const tool = typeof b.tool === 'string' ? b.tool : 'tool'
+  const input = typeof b.input === 'string' ? b.input : ''
+  return input ? `${tool} · ${input}` : tool
+}
+function humanizeType(t: string): string {
+  return t.replace(/[._]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${units[i]}`
-}
-
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ${mins % 60}m ago`
-  const days = Math.floor(hrs / 24)
-  return `${days}d ago`
-}
-
-function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div style={{
-      background: 'rgba(255,255,255,0.02)',
-      border: '1px solid var(--border-subtle)',
-      borderRadius: 'var(--radius-md)',
-      padding: '16px 20px',
-      flex: 1,
-    }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-        {label}
-      </div>
-      <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>
-        {value}
-      </div>
-      {sub && (
-        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
-          {sub}
-        </div>
-      )}
-    </div>
-  )
-}
+const LEVELS = [
+  { value: 'all', label: 'All' },
+  { value: 'user', label: 'Conversation' },
+] as const
+type LevelFilter = (typeof LEVELS)[number]['value']
 
 export default function SessionDetail() {
-  const { sandboxId } = useParams<{ sandboxId: string }>()
-  const navigate = useNavigate()
+  const { sessionId = '' } = useParams()
   const queryClient = useQueryClient()
-  const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
-  const [copiedShell, setCopiedShell] = useState(false)
-  const [showTerminal, setShowTerminal] = useState(false)
-  const [showLogs, setShowLogs] = useState(false)
-  const [showInternal, setShowInternal] = useState(false)
-  const [resetState, setResetState] = useState<'idle' | 'rebooting' | 'power-cycling'>('idle')
-  const [resetError, setResetError] = useState<string | null>(null)
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteSession(id),
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: ['session-detail', sandboxId] })
-      await queryClient.cancelQueries({ queryKey: ['sessions'] })
-      const stoppedAt = new Date().toISOString()
-      queryClient.setQueryData<SessionDetailData>(['session-detail', sandboxId], (old) =>
-        old ? { ...old, status: 'stopped', stoppedAt } : old
-      )
-      queryClient.setQueriesData<Session[]>({ queryKey: ['sessions'] }, (old) =>
-        old?.map((item) =>
-          item.sandboxId === sandboxId
-            ? { ...item, status: 'stopped', stoppedAt }
-            : item
-        )
-      )
-      setShowTerminal(false)
-      setResetError(null)
-    },
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['sessions'] })
-      queryClient.invalidateQueries({ queryKey: ['session-detail', sandboxId] })
-      queryClient.invalidateQueries({ queryKey: ['session-stats', sandboxId] })
-    },
-  })
-
-  const handleDelete = () => {
-    if (!sandboxId) return
-    if (!confirm(
-      `Delete sandbox ${sandboxId}?\n\n` +
-      'The sandbox will be stopped and its preview URLs removed.'
-    )) return
-    deleteMutation.mutate(sandboxId)
-  }
-
-  const handleReboot = async () => {
-    if (resetState !== 'idle') return
-    if (!confirm(
-      'Reboot this sandbox?\n\n' +
-      'The guest kernel will restart. Running processes are killed; ' +
-      'workspace data is preserved. Takes a few seconds.'
-    )) return
-    setResetState('rebooting')
-    setResetError(null)
-    try {
-      await rebootSession(sandboxId!)
-      queryClient.invalidateQueries({ queryKey: ['session-detail', sandboxId] })
-      queryClient.invalidateQueries({ queryKey: ['session-stats', sandboxId] })
-    } catch (e) {
-      setResetError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setResetState('idle')
-    }
-  }
-
-  const handlePowerCycle = async () => {
-    if (resetState !== 'idle') return
-    if (!confirm(
-      'Power-cycle this sandbox?\n\n' +
-      'The QEMU process is destroyed and recreated with the same disks. ' +
-      'Use this if a regular reboot didn\'t recover. ' +
-      'Workspace data is preserved; takes ~30 seconds.'
-    )) return
-    setResetState('power-cycling')
-    setResetError(null)
-    try {
-      await powerCycleSession(sandboxId!)
-      queryClient.invalidateQueries({ queryKey: ['session-detail', sandboxId] })
-      queryClient.invalidateQueries({ queryKey: ['session-stats', sandboxId] })
-    } catch (e) {
-      setResetError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setResetState('idle')
-    }
-  }
+  const [draft, setDraft] = useState('')
+  const [level, setLevel] = useState<LevelFilter>('all')
+  const [confirmCancel, setConfirmCancel] = useState(false)
+  const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
+  const [streamOk, setStreamOk] = useState(false)
 
   const { data: session, isLoading } = useQuery({
-    queryKey: ['session-detail', sandboxId],
-    queryFn: () => getSessionDetail(sandboxId!),
-    enabled: !!sandboxId,
-  })
-
-  const { data: stats } = useQuery({
-    queryKey: ['session-stats', sandboxId],
-    queryFn: () => getSessionStats(sandboxId!),
-    enabled: !!sandboxId && session?.status === 'running',
+    queryKey: ['session', sessionId],
+    queryFn: () => getSession(sessionId),
     refetchInterval: 5000,
-    retry: false,
+  })
+  // Initial history, plus a polling fallback while the live stream is down.
+  const { data: eventData } = useQuery({
+    queryKey: ['session-events', sessionId],
+    queryFn: () => getSessionEvents(sessionId),
+    refetchInterval: streamOk ? false : 5000,
   })
 
-  const copyUrl = (hostname: string, key: string) => {
-    navigator.clipboard.writeText(`https://${hostname}`)
-    setCopiedUrl(key)
-    setTimeout(() => setCopiedUrl(null), 2000)
+  // Live events over SSE through the dashboard proxy (the proxy injects auth;
+  // EventSource can't set headers). It replays history then streams live, and
+  // auto-reconnects with Last-Event-ID. Skipped under the preview mock (no
+  // backend) — the query renders there.
+  useEffect(() => {
+    // Reset per session so a previously-viewed session's events never bleed in.
+    setLiveEvents([])
+    setStreamOk(false)
+    if (!sessionId || import.meta.env.VITE_PREVIEW === '1') return
+    const es = new EventSource(
+      `/api/dashboard/v3/sessions/${sessionId}/events?stream=sse`,
+      { withCredentials: true },
+    )
+    es.onopen = () => setStreamOk(true)
+    es.onmessage = (e) => {
+      let raw: unknown
+      try {
+        raw = JSON.parse(e.data as string)
+      } catch {
+        return
+      }
+      const parsed = SessionEventSchema.safeParse(raw)
+      if (!parsed.success) return
+      const ev = parsed.data
+      setLiveEvents((prev) =>
+        // Cap the in-memory live buffer (older events remain in query history).
+        prev.some((x) => x.id === ev.id) ? prev : [...prev, ev].slice(-2000),
+      )
+    }
+    es.onerror = () => setStreamOk(false) // EventSource retries on its own
+    return () => es.close()
+  }, [sessionId])
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
+    void queryClient.invalidateQueries({
+      queryKey: ['session-events', sessionId],
+    })
   }
 
-  const copyShellCommand = (command: string) => {
-    navigator.clipboard.writeText(command)
-    setCopiedShell(true)
-    setTimeout(() => setCopiedShell(false), 1500)
-  }
+  const steerMutation = useMutation({
+    mutationFn: () => sendMessage(sessionId, draft.trim(), crypto.randomUUID()),
+    onSuccess: () => {
+      setDraft('')
+      invalidate()
+    },
+    onError: (e) => notifyError("Couldn't send the message.", e),
+  })
+  const cancelMutation = useMutation({
+    mutationFn: () => cancelSession(sessionId),
+    onSettled: invalidate,
+    onError: (e) => notifyError("Couldn't cancel the session.", e),
+  })
+  const archiveMutation = useMutation({
+    mutationFn: () => archiveSession(sessionId),
+    onSettled: invalidate,
+    onError: (e) => notifyError("Couldn't archive the session.", e),
+  })
+
+  // History (query) ∪ this session's live SSE events, deduped by id, by seq.
+  const allEvents = useMemo(() => {
+    const byId = new Map<string, SessionEvent>()
+    for (const e of eventData ?? []) byId.set(e.id, e)
+    for (const e of liveEvents) {
+      if (e.session && e.session !== sessionId) continue
+      byId.set(e.id, e)
+    }
+    return [...byId.values()].sort((a, b) => a.seq - b.seq)
+  }, [eventData, liveEvents, sessionId])
 
   if (isLoading) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
-        <div className="loading-spinner" />
+      <div className="space-y-4">
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-96 w-full" />
       </div>
     )
   }
 
-  if (!session) {
-    return (
-      <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-tertiary)' }}>
-        Session not found
-      </div>
-    )
-  }
+  const status = session?.status ?? 'unknown'
+  const archived = status === 'archived'
+  const canSteer = !archived
+  const canCancel = status === 'running' || status === 'awaiting_input'
 
-  const shellCommand = `oc shell ${session.sandboxId}`
+  const events =
+    level === 'user' ? allEvents.filter((e) => e.level === 'user') : allEvents
 
   return (
-    <div>
-      {/* Back link */}
-      <button
-        onClick={() => navigate('/sessions')}
-        style={{
-          background: 'none', border: 'none', cursor: 'pointer',
-          color: 'var(--text-tertiary)', fontSize: 13, padding: 0,
-          marginBottom: 20, display: 'flex', alignItems: 'center', gap: 6,
-        }}
+    <div className="max-w-4xl">
+      <Link
+        to="/sessions"
+        className="text-muted-foreground hover:text-foreground mb-4 inline-flex items-center gap-1.5 text-sm"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M19 12H5" /><polyline points="12 19 5 12 12 5" />
-        </svg>
-        Back to Sessions
-      </button>
+        <ArrowLeft className="size-4" />
+        Sessions
+      </Link>
 
       {/* Header */}
-      <div className="glass-card animate-in" style={{ padding: 24, marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-              <code style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
-                {session.sandboxId}
+      <Panel className="mb-4 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 space-y-1.5">
+            <div className="flex items-center gap-2.5">
+              <code className="text-foreground font-mono text-sm">
+                {sessionId}
               </code>
-              <StatusBadge status={session.status} />
+              <StatusBadge status={status} />
             </div>
-            <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
-              {session.template || 'base'} &middot; Started {timeAgo(session.startedAt)}
-            </div>
+            <p className="text-muted-foreground text-xs">
+              {session?.head ?? 0} events · created{' '}
+              {session?.created_at
+                ? new Date(session.created_at).toLocaleString()
+                : '—'}
+            </p>
+            {session?.sandboxes?.brain || session?.sandboxes?.hands ? (
+              <p className="text-muted-foreground flex flex-wrap items-center gap-x-1.5 text-xs">
+                <span>Sandboxes:</span>
+                {session.sandboxes.brain ? (
+                  <Link
+                    to={`/sandboxes/${session.sandboxes.brain}`}
+                    className="hover:text-foreground font-mono underline-offset-4 hover:underline"
+                  >
+                    brain
+                  </Link>
+                ) : null}
+                {session.sandboxes.brain && session.sandboxes.hands ? (
+                  <span>·</span>
+                ) : null}
+                {session.sandboxes.hands ? (
+                  <Link
+                    to={`/sandboxes/${session.sandboxes.hands}`}
+                    className="hover:text-foreground font-mono underline-offset-4 hover:underline"
+                  >
+                    hands
+                  </Link>
+                ) : null}
+              </p>
+            ) : null}
+            <ApiHint
+              method="GET"
+              path="/v3/sessions/:id"
+              sdk="oc.sessions.get()"
+              docs="https://docs.opencomputer.dev/agent-sessions/sessions"
+            />
           </div>
-
-          {/* Actions */}
-          <div style={{ display: 'flex', gap: 8 }}>
-            {/* Logs is available regardless of sandbox status — Axiom
-                retains events past the sandbox's lifetime, so users can
-                fetch logs of stopped / hibernated / errored sandboxes. */}
-            <button
-              className={showLogs ? 'btn-primary' : 'btn-ghost'}
-              onClick={() => setShowLogs(!showLogs)}
-              title="Live logs from /var/log + every exec'd command"
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="8" y1="6" x2="21" y2="6" />
-                <line x1="8" y1="12" x2="21" y2="12" />
-                <line x1="8" y1="18" x2="21" y2="18" />
-                <line x1="3" y1="6" x2="3.01" y2="6" />
-                <line x1="3" y1="12" x2="3.01" y2="12" />
-                <line x1="3" y1="18" x2="3.01" y2="18" />
-              </svg>
-              Logs
-            </button>
-            {session.status === 'running' && (
-              <>
-                <button
-                  className={showTerminal ? 'btn-primary' : 'btn-ghost'}
-                  onClick={() => setShowTerminal(!showTerminal)}
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="4 17 10 11 4 5" />
-                    <line x1="12" y1="19" x2="20" y2="19" />
-                  </svg>
-                  Terminal
-                </button>
-                <button
-                  className="btn-ghost"
-                  onClick={handleReboot}
-                  disabled={resetState !== 'idle'}
-                  title="Soft restart: kernel reboots, workspace preserved"
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="23 4 23 10 17 10" />
-                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                  </svg>
-                  {resetState === 'rebooting' ? 'Rebooting…' : 'Reboot'}
-                </button>
-                <button
-                  className="btn-ghost"
-                  onClick={handlePowerCycle}
-                  disabled={resetState !== 'idle'}
-                  title="Hard restart: rebuilds VM, workspace preserved. Use if reboot didn't recover."
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
-                    <line x1="12" y1="2" x2="12" y2="12" />
-                  </svg>
-                  {resetState === 'power-cycling' ? 'Power-cycling…' : 'Power Cycle'}
-                </button>
-              </>
-            )}
-            {(session.status === 'running' || session.status === 'hibernated') && (
-              <button
-                className="btn-danger"
-                onClick={handleDelete}
-                disabled={deleteMutation.isPending}
-                title="Stop and delete this sandbox"
-                style={{ padding: '9px 18px', fontSize: 13 }}
+          <div className="flex items-center gap-2">
+            {canCancel ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmCancel(true)}
               >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="3 6 5 6 21 6" />
-                  <path d="M19 6l-1 14H6L5 6" />
-                  <path d="M10 11v6" />
-                  <path d="M14 11v6" />
-                  <path d="M9 6V4h6v2" />
-                </svg>
-                {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
-              </button>
-            )}
+                Cancel run
+              </Button>
+            ) : null}
+            {!archived ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-status-error"
+                onClick={() => archiveMutation.mutate()}
+                disabled={archiveMutation.isPending}
+              >
+                Archive
+              </Button>
+            ) : null}
           </div>
         </div>
-        {(resetError || deleteMutation.isError) && (
-          <div style={{
-            marginTop: 12,
-            padding: '10px 14px',
-            background: 'rgba(239,68,68,0.08)',
-            border: '1px solid rgba(239,68,68,0.3)',
-            borderRadius: 'var(--radius-sm)',
-            color: 'var(--text-error, #f87171)',
-            fontSize: 13,
-          }}>
-            {resetError
-              ? `Reset failed: ${resetError}`
-              : `Delete failed: ${deleteMutation.error instanceof Error ? deleteMutation.error.message : String(deleteMutation.error)}`}
+      </Panel>
+
+      {/* Event stream */}
+      <Panel className="overflow-hidden">
+        <div className="flex items-center justify-between border-b px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold">Events</h2>
+            {streamOk ? (
+              <span className="text-status-running flex items-center gap-1 text-[10px] font-medium tracking-wide uppercase">
+                <span className="bg-status-running size-1.5 rounded-full" />
+                Live
+              </span>
+            ) : null}
           </div>
-        )}
-      </div>
-
-      {/* Terminal */}
-      {showTerminal && session.status === 'running' && (
-        <div className="glass-card animate-in" style={{ padding: 20, marginBottom: 16 }}>
-          <Terminal sandboxId={sandboxId!} onClose={() => setShowTerminal(false)} />
-        </div>
-      )}
-
-      {/* Logs — works for all sandbox states (Axiom retains past-lifetime). */}
-      {showLogs && (
-        <div className="glass-card animate-in" style={{ padding: 20, marginBottom: 16 }}>
-          <LogsPanel sandboxId={sandboxId!} onClose={() => setShowLogs(false)} />
-        </div>
-      )}
-
-      {/* Stats cards — only for running sandboxes */}
-      {session.status === 'running' && (
-        <div className="glass-card animate-in stagger-1" style={{ padding: 20, marginBottom: 16 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14 }}>
-            Resource Usage
-          </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <StatCard
-              label="CPU"
-              value={stats ? `${stats.cpuPercent.toFixed(1)}%` : '—'}
-            />
-            <StatCard
-              label="Memory"
-              value={stats ? formatBytes(stats.memUsage) : '—'}
-              sub={stats ? `of ${formatBytes(stats.memLimit)}` : undefined}
-            />
-            <StatCard
-              label="Processes"
-              value={stats ? String(stats.pids) : '—'}
-            />
-            <StatCard
-              label="Network"
-              value={stats ? `↑${formatBytes(stats.netOutput)}` : '—'}
-              sub={stats ? `↓${formatBytes(stats.netInput)}` : undefined}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Preview URLs */}
-      {session.previewUrls && session.previewUrls.length > 0 && (() => {
-        const hasCustom = session.previewUrls.some(u => u.customHostname)
-        return (
-          <div className="glass-card animate-in stagger-2" style={{ padding: 20, marginBottom: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
-              Preview URLs
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {session.previewUrls.map((url) => {
-                const displayHost = url.customHostname || url.hostname
-                return (
-                  <div key={url.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{
-                      minWidth: 60,
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: 'var(--text-tertiary)',
-                      fontFamily: 'var(--font-mono)',
-                    }}>
-                      :{url.port}
-                    </div>
-                    <div style={{
-                      flex: 1,
-                      background: 'var(--bg-deep)',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: 'var(--radius-sm)',
-                      padding: '10px 14px',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 13,
-                      color: 'var(--text-accent)',
-                    }}>
-                      <a
-                        href={`https://${displayHost}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{ color: 'var(--text-accent)', textDecoration: 'none' }}
-                      >
-                        https://{displayHost}
-                      </a>
-                    </div>
-                    <button className="btn-ghost" onClick={() => copyUrl(displayHost, `${url.port}`)} style={{ whiteSpace: 'nowrap' }}>
-                      {copiedUrl === `${url.port}` ? 'Copied' : 'Copy'}
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-
-            {/* Internal URLs toggle — only shown when custom domain URLs are displayed */}
-            {hasCustom && (
-              <div style={{ marginTop: 12 }}>
-                <button
-                  onClick={() => setShowInternal(!showInternal)}
-                  style={{
-                    background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                    fontSize: 11, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 4,
-                  }}
-                >
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                    style={{ transform: showInternal ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>
-                    <polyline points="9 18 15 12 9 6" />
-                  </svg>
-                  Internal URLs
-                </button>
-                {showInternal && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-                    {session.previewUrls.map((url) => (
-                      <div key={`int-${url.id}`} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <div style={{ minWidth: 60, fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-                          :{url.port}
-                        </div>
-                        <div style={{
-                          flex: 1,
-                          background: 'var(--bg-deep)',
-                          border: '1px solid var(--border-subtle)',
-                          borderRadius: 'var(--radius-sm)',
-                          padding: '8px 12px',
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: 12,
-                          color: 'var(--text-tertiary)',
-                        }}>
-                          <a
-                            href={`https://${url.hostname}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{ color: 'var(--text-tertiary)', textDecoration: 'none' }}
-                          >
-                            https://{url.hostname}
-                          </a>
-                        </div>
-                        <button className="btn-ghost" onClick={() => copyUrl(url.hostname, `int-${url.port}`)} style={{ whiteSpace: 'nowrap', fontSize: 11 }}>
-                          {copiedUrl === `int-${url.port}` ? 'Copied' : 'Copy'}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+          <div className="flex gap-1">
+            {LEVELS.map((l) => (
+              <button
+                key={l.value}
+                onClick={() => setLevel(l.value)}
+                className={cn(
+                  'rounded-sm px-2 py-1 text-xs transition-colors',
+                  level === l.value
+                    ? 'bg-secondary text-foreground font-medium'
+                    : 'text-muted-foreground hover:text-foreground',
                 )}
-              </div>
-            )}
+              >
+                {l.label}
+              </button>
+            ))}
           </div>
-        )
-      })()}
-
-      {/* Details */}
-      <div className="glass-card animate-in stagger-3" style={{ padding: 20, marginBottom: 16 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14 }}>
-          Details
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 32px' }}>
-          <DetailRow label="Template" value={session.template || 'base'} />
-          <DetailRow label="Timeout" value={session.config?.timeout ? `${session.config.timeout}s` : '300s'} />
-          <DetailRow label="CPUs" value={String(session.config?.cpuCount ?? 1)} />
-          <DetailRow label="Memory" value={`${session.config?.memoryMB ?? 512} MB`} />
-          <DetailRow label="Started" value={new Date(session.startedAt).toLocaleString()} />
-          {session.status === 'running' && (
-            <DetailCommandRow
-              label="CLI shell"
-              value={shellCommand}
-              copied={copiedShell}
-              onCopy={() => copyShellCommand(shellCommand)}
+
+        {events.length === 0 ? (
+          <EmptyState
+            icon={MessagesSquare}
+            title="No events yet"
+            description="Events from the agent's turns will stream in here."
+          />
+        ) : (
+          <ul className="divide-y">
+            {events.map((ev) => (
+              <EventRow key={ev.id} ev={ev} />
+            ))}
+          </ul>
+        )}
+
+        {/* Steer */}
+        <div className="border-t p-3">
+          <form
+            className="flex items-end gap-2"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (draft.trim() && canSteer) steerMutation.mutate()
+            }}
+          >
+            <Textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder={
+                canSteer
+                  ? 'Send a message to steer the session…'
+                  : 'Session archived'
+              }
+              disabled={!canSteer}
+              className="min-h-10 flex-1"
+              rows={1}
             />
-          )}
-          {session.stoppedAt && (
-            <DetailRow label="Stopped" value={new Date(session.stoppedAt).toLocaleString()} />
-          )}
-          {session.errorMsg && (
-            <DetailRow label="Error" value={session.errorMsg} isError />
-          )}
+            <Button
+              type="submit"
+              disabled={!draft.trim() || !canSteer || steerMutation.isPending}
+            >
+              <Send className="size-4" />
+              Send
+            </Button>
+          </form>
         </div>
-      </div>
+      </Panel>
 
-      {/* Checkpoint info for hibernated */}
-      {session.checkpoint && (
-        <div className="glass-card animate-in stagger-4" style={{ padding: 20 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 14 }}>
-            Checkpoint
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 32px' }}>
-            <DetailRow label="Size" value={formatBytes(session.checkpoint.sizeBytes)} />
-            <DetailRow label="Hibernated" value={new Date(session.checkpoint.hibernatedAt).toLocaleString()} />
-          </div>
-        </div>
-      )}
+      <SessionWebhooks sessionId={sessionId} />
+
+      <ConfirmDialog
+        open={confirmCancel}
+        onOpenChange={setConfirmCancel}
+        title="Cancel this run?"
+        description="The current turn stops. You can steer the session again afterward."
+        confirmLabel="Cancel run"
+        destructive
+        pending={cancelMutation.isPending}
+        onConfirm={() =>
+          cancelMutation.mutate(undefined, {
+            onSuccess: () => setConfirmCancel(false),
+          })
+        }
+      />
     </div>
   )
 }
 
-function DetailRow({ label, value, isError }: { label: string; value: string; isError?: boolean }) {
-  return (
-    <div>
-      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 2 }}>{label}</div>
-      <div style={{
-        fontSize: 13,
-        fontFamily: 'var(--font-mono)',
-        color: isError ? 'var(--accent-rose)' : 'var(--text-primary)',
-        wordBreak: 'break-all',
-      }}>
-        {value}
-      </div>
-    </div>
-  )
-}
+function EventRow({ ev }: { ev: SessionEvent }) {
+  const text = bodyText(ev)
 
-function DetailCommandRow({
-  label,
-  value,
-  copied,
-  onCopy,
-}: {
-  label: string
-  value: string
-  copied: boolean
-  onCopy: () => void
-}) {
+  // Conversation messages — the signal.
+  if (ev.type === 'user.message' || ev.type === 'agent.message') {
+    const isUser = ev.type === 'user.message'
+    return (
+      <li className="px-4 py-3">
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-foreground text-xs font-semibold">
+            {ev.actor?.display ?? (isUser ? 'You' : 'Agent')}
+          </span>
+          <span className="text-muted-foreground/70 font-mono text-[10px]">
+            #{ev.seq}
+          </span>
+        </div>
+        <p className="text-foreground/90 text-sm whitespace-pre-wrap">{text}</p>
+      </li>
+    )
+  }
+
+  // Tool calls — compact mono.
+  if (ev.type === 'tool.call') {
+    return (
+      <li className="text-muted-foreground flex items-center gap-2 px-4 py-1.5 font-mono text-xs">
+        <Wrench className="size-3.5 shrink-0 opacity-60" />
+        <span className="truncate">{toolSummary(ev)}</span>
+      </li>
+    )
+  }
+
+  // Errors.
+  if (ev.type.startsWith('error')) {
+    return (
+      <li className="bg-status-error-bg/40 text-status-error px-4 py-2 text-xs">
+        {text ?? humanizeType(ev.type)}
+      </li>
+    )
+  }
+
+  // Turn markers + everything else — quiet context line.
   return (
-    <div>
-      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 2 }}>{label}</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-        <code style={{
-          fontSize: 13,
-          fontFamily: 'var(--font-mono)',
-          color: 'var(--text-primary)',
-          wordBreak: 'break-all',
-        }}>
-          {value}
-        </code>
-        <button
-          className="btn-ghost"
-          onClick={onCopy}
-          style={{ padding: '2px 7px', fontSize: 11, flexShrink: 0 }}
-        >
-          {copied ? 'Copied' : 'Copy'}
-        </button>
-      </div>
-    </div>
+    <li className="text-muted-foreground flex items-center gap-2 px-4 py-1.5 text-xs">
+      <span className="bg-border h-px w-4 shrink-0" />
+      {humanizeType(ev.type)}
+      {ev.type === 'turn.completed' &&
+      ev.body &&
+      typeof (ev.body as Record<string, unknown>).yield_reason === 'string'
+        ? ` · ${humanizeType(String((ev.body as Record<string, unknown>).yield_reason))}`
+        : ''}
+    </li>
   )
 }

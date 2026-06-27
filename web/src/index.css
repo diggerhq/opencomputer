@@ -1,0 +1,261 @@
+/* ============================================================
+   OpenComputer dashboard — design tokens (light, ink-on-paper)
+   Brand source: opencomputer-site-v1/src/index.css + Mintlify docs.
+
+   The legacy "Void Glass" theme.css is gone; Tailwind Preflight is on (the
+   bundled `@import "tailwindcss"`), which provides the resets shadcn assumes
+   (border reset, link/form-control inheritance, table border-collapse). The
+   only base addition is defaulting the border color to --border (Tailwind v4
+   defaults borders to currentColor) and the body bg/text/font.
+   ============================================================ */
+
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+/* Self-hosted brand fonts — latin subset only (the dashboard is latin-only for
+   now). Explicit @font-face instead of the full package CSS so the build does
+   not bundle the cyrillic / greek / latin-ext / vietnamese subsets or the
+   unused italic / optical-size variants. */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/inter/files/inter-latin-wght-normal.woff2')
+    format('woff2-variations');
+}
+@font-face {
+  font-family: 'Geist Mono Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2')
+    format('woff2-variations');
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  /* Type */
+  --font-sans:
+    'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    Roboto, Helvetica, Arial, sans-serif;
+  --font-mono:
+    'Geist Mono Variable', ui-monospace, 'SF Mono', 'Menlo', 'Consolas',
+    monospace;
+  /* Headings use the UI sans (Inter) — serif felt out of place in the app. */
+  --font-heading: var(--font-sans);
+
+  /* shadcn semantic colors -> our tokens */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Product surface tokens (dashboard-specific) */
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-row-hover: var(--row-hover);
+  --color-row-selected: var(--row-selected);
+
+  /* Sidebar */
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+
+  /* Session lifecycle status (solid = dot/icon/text; -bg = badge tint) */
+  --color-status-running: var(--status-running);
+  --color-status-running-bg: var(--status-running-bg);
+  --color-status-stopped: var(--status-stopped);
+  --color-status-stopped-bg: var(--status-stopped-bg);
+  --color-status-hibernated: var(--status-hibernated);
+  --color-status-hibernated-bg: var(--status-hibernated-bg);
+  --color-status-error: var(--status-error);
+  --color-status-error-bg: var(--status-error-bg);
+  --color-status-pending: var(--status-pending);
+  --color-status-pending-bg: var(--status-pending-bg);
+
+  /* Dark technical surfaces (code / terminal / logs) — stay dark on light shell */
+  --color-code: var(--code);
+  --color-code-foreground: var(--code-foreground);
+  --color-code-muted: var(--code-muted);
+  --color-code-border: var(--code-border);
+  --color-terminal: var(--terminal);
+
+  /* Charts (recharts) — neutral ink ramp for v1; full series palette is a follow-up */
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  /* Radius scale (from --radius = 0.375rem) */
+  --radius-sm: calc(
+    var(--radius) - 1px
+  ); /* ~3px — small buttons/pills: sharp but a touch rounded */
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Soft, diffuse elevation for overlays (dialogs, menus, sheets) — large
+     blur + negative spread + low opacity, warm-ink tinted, so it reads as a
+     gentle lift rather than a crude default drop shadow. */
+  --shadow-overlay:
+    0 10px 30px -14px rgb(20 19 17 / 0.1), 0 1px 2px -1px rgb(20 19 17 / 0.04);
+}
+
+/* ------------------------------------------------------------------
+   Token values. Brand-defining tokens are taken verbatim from the site;
+   supporting neutrals are tinted toward the paper hue (40) so the warm
+   background coheres; text + status colors are tuned to pass WCAG AA on
+   the pairs the dashboard actually uses (body >=4.5:1, large/UI >=3:1).
+   ------------------------------------------------------------------ */
+:root {
+  /* Brand base (verbatim from opencomputer-site-v1) */
+  --background: hsl(40 33% 97%); /* paper #f8f6f1 */
+  --foreground: hsl(45 8% 8%); /* ink */
+  --primary: hsl(45 8% 8%); /* ink */
+  --primary-foreground: hsl(40 33% 97%); /* paper */
+  --radius: 0.25rem; /* sharper corners (was 0.375rem) */
+
+  /* Raised surfaces (cards, popovers, dropdowns, dialogs) — warm near-white */
+  --card: hsl(40 40% 99%);
+  --card-foreground: hsl(45 8% 8%);
+  --popover: hsl(40 40% 99%);
+  --popover-foreground: hsl(45 8% 8%);
+  --panel: hsl(40 40% 99%);
+  --panel-2: hsl(40 22% 94%); /* inset surface: table head, code chrome */
+
+  /* Subtle fills (hover, secondary buttons, muted chips) */
+  --secondary: hsl(40 22% 94%);
+  --secondary-foreground: hsl(45 8% 8%);
+  --muted: hsl(40 22% 94%);
+  --accent: hsl(40 22% 94%);
+  --accent-foreground: hsl(45 8% 8%);
+
+  /* Text ramp (verified on paper) */
+  --muted-foreground: hsl(
+    40 5% 38%
+  ); /* secondary text — ~5.4:1 on paper (site's 53% fails AA) */
+
+  /* Lines + focus */
+  --border: hsl(40 14% 87%);
+  --input: hsl(40 14% 82%);
+  --ring: hsl(
+    45 5% 48%
+  ); /* soft grey focus ring (ink was too heavy on inputs) */
+
+  /* Table rows */
+  --row-hover: hsl(40 22% 93%);
+  --row-selected: hsl(40 26% 90%);
+
+  /* Destructive (solid button bg; darker than site 60% for AA white text) */
+  --destructive: hsl(0 70% 45%);
+  --destructive-foreground: hsl(0 0% 100%);
+
+  /* Session lifecycle status. solids tuned for AA text on their tint;
+     each status also carries a non-color cue (icon/label) in the UI. */
+  --status-running: hsl(142 68% 27%);
+  --status-running-bg: hsl(142 44% 92%);
+  --status-stopped: hsl(40 5% 38%);
+  --status-stopped-bg: hsl(40 16% 92%);
+  --status-hibernated: hsl(222 55% 42%);
+  --status-hibernated-bg: hsl(222 60% 94%);
+  --status-error: hsl(0 65% 42%);
+  --status-error-bg: hsl(0 66% 95%);
+  --status-pending: hsl(34 80% 31%);
+  --status-pending-bg: hsl(42 88% 90%);
+
+  /* Dark technical surfaces — WARM dark (hue ~36) so they read as the app's
+     own dark, not a generic cool-blue terminal. */
+  --code: hsl(36 9% 10%); /* code blocks */
+  --code-foreground: hsl(40 12% 88%);
+  --code-muted: hsl(40 6% 54%); /* line numbers, gutters */
+  --code-border: hsl(36 8% 19%);
+  --terminal: hsl(
+    36 13% 7%
+  ); /* warm near-black (xterm bg matches in Terminal.tsx) */
+
+  /* Charts — neutral ink ramp (light → dark) */
+  --chart-1: hsl(45 8% 25%);
+  --chart-2: hsl(45 6% 42%);
+  --chart-3: hsl(40 5% 58%);
+  --chart-4: hsl(40 8% 72%);
+  --chart-5: hsl(40 10% 84%);
+
+  /* Sidebar (warm, one step off the app bg) */
+  --sidebar: hsl(40 28% 96%);
+  --sidebar-foreground: hsl(45 8% 8%);
+  --sidebar-border: hsl(40 14% 87%);
+  --sidebar-accent: hsl(40 24% 92%);
+  --sidebar-accent-foreground: hsl(45 8% 8%);
+
+  /* z-index convention (documentation): app chrome stays BELOW Radix
+     overlays (which portal at z-50). header z-20 < sidebar z-30 <
+     [Radix dropdown/dialog/popover z-50] < [sonner toaster z-[100]].
+     Use Tailwind z-* utilities per this scale; do not invent z-9999. */
+}
+
+/* Dark mode is deferred for this effort but kept wired (darkMode: class).
+   Placeholder neutral-dark values so the mechanism is testable later. */
+.dark {
+  --background: hsl(240 10% 8%);
+  --foreground: hsl(40 10% 92%);
+  --card: hsl(240 10% 11%);
+  --card-foreground: hsl(40 10% 92%);
+  --popover: hsl(240 10% 11%);
+  --popover-foreground: hsl(40 10% 92%);
+  --panel: hsl(240 10% 11%);
+  --panel-2: hsl(240 8% 14%);
+  --primary: hsl(40 10% 92%);
+  --primary-foreground: hsl(240 10% 8%);
+  --secondary: hsl(240 8% 16%);
+  --secondary-foreground: hsl(40 10% 92%);
+  --muted: hsl(240 8% 16%);
+  --muted-foreground: hsl(40 6% 64%);
+  --accent: hsl(240 8% 16%);
+  --accent-foreground: hsl(40 10% 92%);
+  --border: hsl(240 8% 18%);
+  --input: hsl(240 8% 22%);
+  --ring: hsl(40 10% 70%);
+  --row-hover: hsl(240 8% 13%);
+  --row-selected: hsl(240 8% 17%);
+  --sidebar: hsl(240 10% 10%);
+  --sidebar-foreground: hsl(40 10% 92%);
+  --sidebar-border: hsl(240 8% 18%);
+  --sidebar-accent: hsl(240 8% 16%);
+  --sidebar-accent-foreground: hsl(40 10% 92%);
+}
+
+@layer base {
+  /* Tailwind v4 defaults borders to currentColor; make --border the default. */
+  *,
+  ::after,
+  ::before {
+    @apply border-border;
+  }
+  html {
+    font-optical-sizing: auto;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+}

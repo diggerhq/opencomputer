@@ -1,8 +1,93 @@
 import posthog from 'posthog-js'
+import { z } from 'zod'
+import * as S from './schemas'
+
+// Re-export the inferred response types (schemas are the single source of
+// truth) so existing `import { type Sandbox } from '@/api/client'` keeps working.
+export type {
+  OrgInfo,
+  MeResponse,
+  Sandbox,
+  PreviewURL,
+  SandboxDetail,
+  SandboxStats,
+  CheckpointItem,
+  CheckpointsResponse,
+  ImageCacheItem,
+  Org,
+  APIKey,
+  OrgMember,
+  OrgInvitation,
+  Credits,
+  BillingState,
+  AutumnAutoTopup,
+  AutumnBilling,
+  StripeInvoice,
+  SandboxUsageRow,
+  SandboxUsage,
+  Agent,
+  Session,
+  SessionEvent,
+  Turn,
+  Destination,
+  Delivery,
+  SandboxWebhook,
+  SandboxWebhookDelivery,
+} from './schemas'
 
 const API_BASE = '/api/dashboard'
 
-export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+// Validate a response against its schema. Always surfaces a mismatch; throws in
+// dev (catches schema/backend drift during dev + against the preview mock), but
+// in prod falls back to the raw data so a slightly-off schema can't take a
+// screen down. Tighten to always-throw once the schemas are proven in prod.
+function validate<T>(
+  schema: z.ZodType<T> | undefined,
+  data: unknown,
+  path: string,
+): T {
+  if (!schema) return data as T
+  const result = schema.safeParse(data)
+  if (result.success) return result.data
+  console.error(
+    `[api] ${path} response failed validation:`,
+    result.error.issues,
+  )
+  if (import.meta.env.DEV) {
+    throw new Error(`${path}: response did not match the expected shape`)
+  }
+  return data as T
+}
+
+// Extract a human message from an error body of unknown shape. OC dashboard
+// returns {error: "string"}; sessions-api returns {error: {type, message}}.
+function errorMessage(body: unknown, status: number): string {
+  if (body && typeof body === 'object') {
+    const b = body as Record<string, unknown>
+    if (typeof b.error === 'string') return b.error
+    if (b.error && typeof b.error === 'object') {
+      const inner = (b.error as Record<string, unknown>).message
+      if (typeof inner === 'string') return inner
+    }
+    if (typeof b.message === 'string') return b.message
+  }
+  return `Request failed: ${status}`
+}
+
+export async function apiFetch<T>(
+  path: string,
+  options: RequestInit = {},
+  schema?: z.ZodType<T>,
+): Promise<T> {
+  // Opt-in, dev-only preview mode: serve canned data with no backend/auth so
+  // the dashboard can be rendered locally (VITE_PREVIEW=1 npm run dev). Require
+  // the exact value '1' so VITE_PREVIEW=0 / false don't accidentally serve
+  // mocks; the dynamic import keeps the mock out of normal builds.
+  if (import.meta.env.VITE_PREVIEW === '1') {
+    const { mockFetch } = await import('./mock')
+    return validate(schema, await mockFetch<unknown>(path, options), path)
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     credentials: 'include',
@@ -19,77 +104,98 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   }
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    // OC dashboard returns {error: "string"}; sessions-api returns
-    // {error: {type, message}}. Handle both so we don't surface
-    // "[object Object]" when the proxy talks to sessions-api.
-    let msg: string
-    if (typeof body.error === 'string') msg = body.error
-    else if (body.error && typeof body.error.message === 'string') msg = body.error.message
-    else if (typeof body.message === 'string') msg = body.message
-    else msg = `Request failed: ${res.status}`
-    throw new Error(msg)
+    const body: unknown = await res.json().catch(() => ({}))
+    throw new Error(errorMessage(body, res.status))
   }
 
   if (res.status === 204) {
     return undefined as T
   }
 
-  return res.json()
+  return validate(schema, await res.json(), path)
 }
 
-// Logout: clears server session, then navigates to login
+// Logout: the backend clears cookies and returns WorkOS's hosted logout URL,
+// which ends the WorkOS session and redirects to the dashboard-configured
+// Sign-out redirect (so we're not instantly re-logged-in). Navigate there.
+// Fall back to /auth/login only when there was no WorkOS session to end.
 export async function logout(): Promise<void> {
-  await fetch('/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {})
+  let dest = '/auth/login'
+  try {
+    const res = await fetch('/auth/logout', {
+      method: 'POST',
+      credentials: 'include',
+    })
+    const body: unknown = await res.json().catch(() => ({}))
+    if (body && typeof body === 'object') {
+      const url = (body as Record<string, unknown>).logoutUrl
+      if (typeof url === 'string' && url) dest = url
+    }
+  } catch {
+    // ignore — fall back to /auth/login
+  }
   posthog.reset()
-  // Navigate to login page — use replace to prevent back-button loop
-  window.location.replace('/login')
+  window.location.replace(dest)
 }
 
 // API functions
-export const getMe = () => apiFetch<MeResponse>('/me')
+export const getMe = () => apiFetch('/me', {}, S.MeResponseSchema)
 
-export const getSessions = (status?: string) =>
-  apiFetch<Session[]>(`/sessions${status ? `?status=${status}` : ''}`)
+export const getSandboxes = (status?: string) =>
+  apiFetch(
+    `/sessions${status ? `?status=${status}` : ''}`,
+    {},
+    S.SandboxListSchema,
+  )
 
-export const getAPIKeys = () => apiFetch<APIKey[]>('/api-keys')
+export const getAPIKeys = () =>
+  apiFetch('/api-keys', {}, z.array(S.APIKeySchema))
 
 export const createAPIKey = (name: string) =>
-  apiFetch<{ id: string; name: string; key: string; keyPrefix: string; createdAt: string }>(
+  apiFetch(
     '/api-keys',
     { method: 'POST', body: JSON.stringify({ name }) },
+    S.CreatedAPIKeySchema,
   )
 
 export const deleteAPIKey = (keyId: string) =>
   apiFetch<void>(`/api-keys/${keyId}`, { method: 'DELETE' })
 
 export const getCheckpoints = (page = 1, perPage = 20) =>
-  apiFetch<CheckpointsResponse>(`/checkpoints?page=${page}&per_page=${perPage}`)
+  apiFetch(
+    `/checkpoints?page=${page}&per_page=${perPage}`,
+    {},
+    S.CheckpointsResponseSchema,
+  )
 
 export const deleteCheckpointDashboard = (id: string) =>
   apiFetch<void>(`/checkpoints/${id}`, { method: 'DELETE' })
 
 export const getImages = (all = false) =>
-  apiFetch<ImageCacheItem[]>(`/images${all ? '?all=true' : ''}`)
+  apiFetch(
+    `/images${all ? '?all=true' : ''}`,
+    {},
+    z.array(S.ImageCacheItemSchema),
+  )
 
 export const deleteImage = (id: string) =>
   apiFetch<void>(`/images/${id}`, { method: 'DELETE' })
 
-export const getSessionDetail = (sandboxId: string) =>
-  apiFetch<SessionDetail>(`/sessions/${sandboxId}`)
+export const getSandboxDetail = (sandboxId: string) =>
+  apiFetch(`/sessions/${sandboxId}`, {}, S.SandboxDetailSchema)
 
-export const getSessionStats = (sandboxId: string) =>
-  apiFetch<SandboxStats>(`/sessions/${sandboxId}/stats`)
+export const getSandboxStats = (sandboxId: string) =>
+  apiFetch(`/sessions/${sandboxId}/stats`, {}, S.SandboxStatsSchema)
 
-export const deleteSession = (sandboxId: string) =>
+export const deleteSandbox = (sandboxId: string) =>
   apiFetch<void>(`/sessions/${sandboxId}`, { method: 'DELETE' })
 
 // Soft restart: guest kernel reboots, QEMU process + workspace stay.
-export const rebootSession = (sandboxId: string) =>
+export const rebootSandbox = (sandboxId: string) =>
   apiFetch<void>(`/sessions/${sandboxId}/reboot`, { method: 'POST' })
 
 // Hard restart: QEMU process recreated, workspace data preserved.
-export const powerCycleSession = (sandboxId: string) =>
+export const powerCycleSandbox = (sandboxId: string) =>
   apiFetch<void>(`/sessions/${sandboxId}/power-cycle`, { method: 'POST' })
 
 // Sandbox session logs: SSE stream of /var/log + exec stdout/stderr.
@@ -106,280 +212,94 @@ export interface LogEvent {
   command?: string
   argv?: string[]
   exit_code?: number
+  // Client-assigned monotonic ingest order. Not from the API — set on parse so
+  // the live list has a stable React key under filtering + cap trimming.
+  _seq?: number
 }
 
 export interface LogStreamOptions {
-  tail?: boolean      // default true; if false, returns historical batch then closes
-  q?: string          // free-text search (server applies "line contains")
-  source?: string     // comma-separated subset of source values
-  since?: string      // RFC3339; default = sandbox.startedAt
-  limit?: number      // historical batch cap; default 1000, max 10000
+  tail?: boolean // default true; if false, returns historical batch then closes
+  q?: string // free-text search (server applies "line contains")
+  source?: string // comma-separated subset of source values
+  since?: string // RFC3339; default = sandbox.startedAt
+  limit?: number // historical batch cap; default 1000, max 10000
 }
 
-export function streamSessionLogs(
+export function streamSandboxLogs(
   sandboxId: string,
   opts: LogStreamOptions = {},
 ): EventSource {
-  const url = new URL(`${API_BASE}/sessions/${encodeURIComponent(sandboxId)}/logs`, window.location.origin)
+  const url = new URL(
+    `${API_BASE}/sessions/${encodeURIComponent(sandboxId)}/logs`,
+    window.location.origin,
+  )
   if (opts.tail !== undefined) url.searchParams.set('tail', String(opts.tail))
   if (opts.q) url.searchParams.set('q', opts.q)
   if (opts.source) url.searchParams.set('source', opts.source)
   if (opts.since) url.searchParams.set('since', opts.since)
-  if (opts.limit !== undefined) url.searchParams.set('limit', String(opts.limit))
+  if (opts.limit !== undefined)
+    url.searchParams.set('limit', String(opts.limit))
   return new EventSource(url.toString(), { withCredentials: true })
 }
 
-export const getOrg = () => apiFetch<Org>('/org')
+export const getOrg = () => apiFetch('/org', {}, S.OrgSchema)
 
 export const updateOrg = (name: string) =>
-  apiFetch<Org>('/org', { method: 'PUT', body: JSON.stringify({ name }) })
+  apiFetch(
+    '/org',
+    { method: 'PUT', body: JSON.stringify({ name }) },
+    S.OrgSchema,
+  )
 
 export const setCustomDomain = (domain: string) =>
-  apiFetch<Org>('/org/custom-domain', { method: 'PUT', body: JSON.stringify({ domain }) })
+  apiFetch(
+    '/org/custom-domain',
+    { method: 'PUT', body: JSON.stringify({ domain }) },
+    S.OrgSchema,
+  )
 
 export const deleteCustomDomain = () =>
-  apiFetch<Org>('/org/custom-domain', { method: 'DELETE' })
+  apiFetch('/org/custom-domain', { method: 'DELETE' }, S.OrgSchema)
 
 export const refreshCustomDomain = () =>
-  apiFetch<Org>('/org/custom-domain/refresh', { method: 'POST' })
-
-// Types
-export interface Session {
-  id: string
-  sandboxId: string
-  orgId: string
-  template: string
-  region: string
-  workerId: string
-  status: string
-  startedAt: string
-  stoppedAt?: string
-  errorMsg?: string
-}
-
-export interface APIKey {
-  id: string
-  orgId: string
-  keyPrefix: string
-  name: string
-  scopes: string[]
-  lastUsed?: string
-  expiresAt?: string
-  createdAt: string
-}
-
-export interface PreviewURL {
-  id: string
-  sandboxId: string
-  orgId: string
-  hostname: string
-  customHostname?: string
-  port: number
-  cfHostnameId?: string
-  sslStatus: string
-  authConfig: Record<string, unknown>
-  createdAt: string
-}
-
-export interface SessionDetail {
-  id: string
-  sandboxId: string
-  template: string
-  status: string
-  startedAt: string
-  stoppedAt?: string
-  errorMsg?: string
-  config?: {
-    timeout?: number
-    cpuCount?: number
-    memoryMB?: number
-    networkEnabled?: boolean
-    envs?: Record<string, string>
-  }
-  checkpoint?: {
-    checkpointKey: string
-    sizeBytes: number
-    hibernatedAt: string
-  }
-  previewUrls?: PreviewURL[]
-}
-
-export interface SandboxStats {
-  cpuPercent: number
-  memUsage: number
-  memLimit: number
-  netInput: number
-  netOutput: number
-  pids: number
-}
-
-export interface CheckpointItem {
-  id: string
-  sandboxId: string
-  orgId: string
-  name: string
-  status: string
-  kind?: 'full' | 'disk_only'
-  promotionStatus?: 'pending' | 'processing' | 'ready' | 'failed'
-  promotedCheckpointId?: string
-  sizeBytes: number
-  activeForks: number
-  totalForks: number
-  createdAt: string
-  // errorMsg / failedAt are populated when status === 'failed'.
-  // Pre-fix the API returned status='failed' with no detail; now the row
-  // carries the actual reason (timeout, archive failure, S3 upload failure,
-  // etc.) and the failure timestamp. Server-side: db.Checkpoint.ErrorMsg /
-  // FailedAt (sandbox_checkpoints columns added in migration 039).
-  errorMsg?: string
-  failedAt?: string
-}
-
-export interface CheckpointsResponse {
-  checkpoints: CheckpointItem[]
-  total: number
-  page: number
-  perPage: number
-}
-
-export interface ImageCacheItem {
-  id: string
-  orgId: string
-  contentHash: string
-  checkpointId?: string
-  name?: string
-  manifest: Record<string, unknown>
-  status: string
-  createdAt: string
-  lastUsedAt: string
-}
-
-export interface Org {
-  id: string
-  name: string
-  slug: string
-  plan: string
-  maxConcurrentSandboxes: number
-  maxSandboxTimeoutSec: number
-  createdAt: string
-  updatedAt: string
-  customDomain?: string
-  cfHostnameId?: string
-  domainVerificationStatus: string
-  domainSslStatus: string
-  verificationTxtName?: string
-  verificationTxtValue?: string
-  sslTxtName?: string
-  sslTxtValue?: string
-  workosOrgId?: string
-  isPersonal: boolean
-  creditBalanceCents: number
-}
-
-export interface MeResponse {
-  id: string
-  email: string
-  orgId: string
-  orgs?: OrgInfo[]
-}
-
-export interface OrgInfo {
-  id: string
-  name: string
-  isPersonal: boolean
-  isActive: boolean
-}
-
-export interface OrgMember {
-  membershipId?: string
-  workosUserId?: string
-  id?: string
-  email: string
-  name: string
-  role: string
-  status?: string
-}
-
-export interface OrgInvitation {
-  id: string
-  email: string
-  state: string
-  role?: string
-  expiresAt: string
-  createdAt: string
-}
-
-export interface Credits {
-  balanceCents: number
-  isPersonal: boolean
-}
+  apiFetch('/org/custom-domain/refresh', { method: 'POST' }, S.OrgSchema)
 
 // Organization members
-export const getOrgMembers = () => apiFetch<OrgMember[]>('/org/members')
+export const getOrgMembers = () =>
+  apiFetch('/org/members', {}, z.array(S.OrgMemberSchema))
 
 export const removeMember = (membershipId: string) =>
   apiFetch<void>(`/org/members/${membershipId}`, { method: 'DELETE' })
 
 // Invitations
 export const sendInvitation = (email: string, role = 'member') =>
-  apiFetch<OrgInvitation>('/org/invitations', {
-    method: 'POST',
-    body: JSON.stringify({ email, role }),
-  })
+  apiFetch(
+    '/org/invitations',
+    { method: 'POST', body: JSON.stringify({ email, role }) },
+    S.OrgInvitationSchema,
+  )
 
-export const getInvitations = () => apiFetch<OrgInvitation[]>('/org/invitations')
+export const getInvitations = () =>
+  apiFetch('/org/invitations', {}, z.array(S.OrgInvitationSchema))
 
 export const revokeInvitation = (id: string) =>
   apiFetch<void>(`/org/invitations/${id}`, { method: 'DELETE' })
 
 // Org switching
-export const listOrgs = () => apiFetch<OrgInfo[]>('/orgs')
+export const listOrgs = () => apiFetch('/orgs', {}, z.array(S.OrgInfoSchema))
 
 export const switchOrg = (orgId: string) =>
-  apiFetch<Org>('/org/switch', { method: 'POST', body: JSON.stringify({ orgId }) })
+  apiFetch(
+    '/org/switch',
+    { method: 'POST', body: JSON.stringify({ orgId }) },
+    S.OrgSchema,
+  )
 
 // Credits
-export const getCredits = () => apiFetch<Credits>('/org/credits')
-
-// Billing types
-export interface BillingState {
-  plan: string
-  stripeCreditCents: number
-  maxConcurrentSandboxes: number
-  hasPaymentMethod: boolean
-  freeCreditsRemainingCents: number
-  billingProvider?: string // 'legacy' | 'autumn'
-}
-
-// Autumn prepaid billing
-export interface AutumnAutoTopup {
-  enabled: boolean
-  threshold: number
-  quantity: number
-}
-export interface AutumnBilling {
-  creditsRemainingCents: number
-  maxConcurrentSandboxes: number
-  concurrencyPlan: string // 'base' | 'concurrency_pro' | 'concurrency_pro_plus' | 'concurrency_pro_plus_plus'
-  isHalted: boolean
-  hasToppedUp: boolean // charged a top-up before → auto-recharge is armed (enabling won't re-charge)
-  autoTopup: AutumnAutoTopup | null
-}
-
-export interface StripeInvoice {
-  id: string
-  number: string
-  status: string
-  amountDue: number
-  amountPaid: number
-  currency: string
-  created: number
-  hostedUrl: string
-  pdfUrl: string
-}
+export const getCredits = () => apiFetch('/org/credits', {}, S.CreditsSchema)
 
 // Billing API
-export const getBilling = () => apiFetch<BillingState>('/billing')
+export const getBilling = () => apiFetch('/billing', {}, S.BillingStateSchema)
 
 export const billingSetup = () =>
   apiFetch<{ url: string }>('/billing/setup', { method: 'POST' })
@@ -388,7 +308,7 @@ export const billingPortal = () =>
   apiFetch<{ url: string }>('/billing/portal', { method: 'POST' })
 
 export const getBillingInvoices = (limit = 10) =>
-  apiFetch<{ invoices: StripeInvoice[] }>(`/billing/invoices?limit=${limit}`)
+  apiFetch(`/billing/invoices?limit=${limit}`, {}, S.InvoicesResponseSchema)
 
 export const redeemPromoCode = (code: string) =>
   apiFetch<{ creditAppliedCents: number }>('/billing/redeem', {
@@ -397,7 +317,8 @@ export const redeemPromoCode = (code: string) =>
   })
 
 // Autumn prepaid billing API
-export const getAutumnBilling = () => apiFetch<AutumnBilling>('/billing/autumn')
+export const getAutumnBilling = () =>
+  apiFetch('/billing/autumn', {}, S.AutumnBillingSchema)
 
 // url is non-null → redirect to a hosted Stripe flow (no card yet); null → the
 // existing card was charged server-side, so just refresh the balance.
@@ -415,282 +336,203 @@ export const autumnSubscribeConcurrency = (plan: string) =>
 
 // url is non-null when enabling auto-recharge requires capturing an off-session
 // card first — the caller redirects there (a no-charge Stripe setup session).
-export const setAutumnAutoTopup = (cfg: { enabled: boolean; threshold: number; quantity: number }) =>
+export const setAutumnAutoTopup = (cfg: {
+  enabled: boolean
+  threshold: number
+  quantity: number
+}) =>
   apiFetch<{ ok: boolean; url?: string | null }>('/billing/autumn/auto-topup', {
     method: 'POST',
     body: JSON.stringify(cfg),
   })
 
 // Per-sandbox usage breakdown (compute cost over a recent window)
-export interface SandboxUsageRow {
-  sandboxId: string
-  status: string
-  createdAt?: number
-  seconds: number
-  costCents: number
-}
-export interface SandboxUsage {
-  windowDays: number
-  totalCents: number
-  sandboxes: SandboxUsageRow[]
-}
 export const getSandboxUsage = (days = 30) =>
-  apiFetch<SandboxUsage>(`/usage/sandboxes?days=${days}`)
+  apiFetch(`/usage/sandboxes?days=${days}`, {}, S.SandboxUsageSchema)
 
-// ── Agents (proxied to sessions-api at /api/dashboard/agents/*) ──
+// ── Durable Agent Sessions (/v3) ─────────────────────────────────────────────
+// A separate service (sessions-api). Reached through the OC edge under
+// `/api/dashboard/v3/*`, so these reuse apiFetch (cookie auth, validation, mock).
+// Org-key management lives server-side at the edge; live event/steer can move to
+// a browser-direct client-token path later without changing these signatures.
 
-export interface Agent {
-  id: string
-  display_name: string
-  core: string | null
-  model: string | null
-  channels: Array<{ name: string; bot_username?: string | null; connected_at?: string }>
-  packages: Array<{ name: string; installed_at?: string }>
-  secret_store: string | null
-  config: Record<string, unknown>
-  created_at: string
-  updated_at: string
-}
-
-export interface AgentDetail extends Agent {
-  status: 'ready' | 'starting' | 'degraded' | 'error' | 'unknown'
-  instance_id: string | null
-  instance_status: string | null
-  sandbox_id: string | null
-  core_status: { status: string; reason?: string; message?: string; updated_at?: string } | null
-  channel_status: Record<string, { status: string; phase?: string; message?: string }>
-  package_status: Record<string, { status: string; phase?: string; message?: string }>
-  conditions: Array<{ type: string; status: string; reason?: string; message?: string }>
-  current_operation: AgentOperation | null
-  last_error: { phase: string; message: string; at: string } | null
-}
-
-export interface AgentOperation {
-  id: string
-  agent_id: string
-  kind: string
-  target_type?: string | null
-  target_key?: string | null
-  phase: string
-  state: 'queued' | 'running' | 'success' | 'error' | 'canceled'
-  message?: string | null
-  created_at: string
-  updated_at: string
-}
-
-export const listAgents = () =>
-  apiFetch<{ agents: Agent[] }>('/agents')
+// Agents — the reusable definition (prompt, model, runtime, credential).
+// /v3 lists wrap rows in { data: [...] }; callers want the array.
+export const getAgents = () =>
+  apiFetch('/v3/agents', {}, S.AgentListSchema).then((r) => r.data)
 
 export const getAgent = (id: string) =>
-  apiFetch<AgentDetail>(`/agents/${encodeURIComponent(id)}`)
+  apiFetch(`/v3/agents/${id}`, {}, S.AgentSchema)
 
-export const createAgent = (input: {
-  id: string
-  display_name?: string
-  core?: string
-  model?: string
-  config?: Record<string, unknown>
-  secrets?: Record<string, string>
+export const createAgent = (body: {
+  name: string
+  prompt: string
+  model: string
+  runtime: string
+  credential_id?: string
+  // `key` sugar: mints a model credential of the runtime's provider for this
+  // agent (write-only). Without it (and no org default) sessions 422 no_credential.
+  key?: string
 }) =>
-  apiFetch<AgentDetail>('/agents', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  })
-
-export const deleteAgent = (id: string) =>
-  apiFetch<{ id: string; deleted: boolean }>(`/agents/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  })
-
-export const installGbrain = (agentId: string) =>
-  apiFetch<{ agent_id: string; package: string; status: string; operation: AgentOperation }>(
-    `/agents/${encodeURIComponent(agentId)}/packages/gbrain`,
-    { method: 'POST' },
+  apiFetch(
+    '/v3/agents',
+    { method: 'POST', body: JSON.stringify(body) },
+    S.AgentSchema,
   )
 
-export const uninstallGbrain = (agentId: string) =>
-  apiFetch<{ agent_id: string; package: string; status: string }>(
-    `/agents/${encodeURIComponent(agentId)}/packages/gbrain`,
-    { method: 'DELETE' },
+// PATCH bumps revision; name is immutable (create idempotency key). `key`
+// rotates the model credential.
+export const updateAgent = (
+  id: string,
+  body: Partial<{ prompt: string; model: string; key: string }>,
+) =>
+  apiFetch(
+    `/v3/agents/${id}`,
+    { method: 'PATCH', body: JSON.stringify(body) },
+    S.AgentSchema,
   )
 
-export const connectTelegram = (agentId: string, botToken: string) =>
-  apiFetch<{ agent_id: string; channel: string; status: string; operation: AgentOperation }>(
-    `/agents/${encodeURIComponent(agentId)}/channels/telegram`,
+// Sessions — the durable runs.
+export const getSessions = (status?: string) =>
+  apiFetch(
+    `/v3/sessions${status ? `?status=${status}` : ''}`,
+    {},
+    S.SessionListSchema,
+  ).then((r) => r.data)
+
+export const getSession = (id: string) =>
+  apiFetch(`/v3/sessions/${id}`, {}, S.SessionSchema)
+
+// /v3 wants { agent: <id>, input } (input required). The response is an envelope
+// { session, client_token } — return the session.
+export const createSession = (
+  body: { agent: string; input: string },
+  idempotencyKey?: string,
+) =>
+  apiFetch(
+    '/v3/sessions',
     {
       method: 'POST',
-      body: JSON.stringify({ bot_token: botToken }),
-    },
-  )
-
-export const disconnectTelegram = (agentId: string) =>
-  apiFetch<{ agent_id: string; channel: string; status: string }>(
-    `/agents/${encodeURIComponent(agentId)}/channels/telegram`,
-    { method: 'DELETE' },
-  )
-
-export interface AgentEvent {
-  id: string
-  agent_id: string
-  type: 'info' | 'warning' | 'error'
-  phase: string
-  message: string
-  at: string
-}
-
-export const getAgentEvents = (agentId: string, limit = 50) =>
-  apiFetch<{ events: AgentEvent[]; next_before: string | null }>(
-    `/agents/${encodeURIComponent(agentId)}/events?limit=${limit}`,
-  )
-
-export const getAgentOperations = (agentId: string, limit = 20) =>
-  apiFetch<{ operations: AgentOperation[]; next_before: string | null }>(
-    `/agents/${encodeURIComponent(agentId)}/operations?limit=${limit}`,
-  )
-
-export const restartAgent = (agentId: string) =>
-  apiFetch<{ agent_id: string; status: string }>(
-    `/agents/${encodeURIComponent(agentId)}/restart`,
-    { method: 'POST' },
-  )
-
-export const getAgentLogs = (agentId: string, tail = 300) =>
-  apiFetch<{ agent_id: string; sandbox_id: string; source: string; lines: number; content: string }>(
-    `/agents/${encodeURIComponent(agentId)}/logs?tail=${tail}`,
-  )
-
-// ── Per-agent paywalled feature subscriptions (Telegram et al) ──
-
-export type EntitlementReason = 'ungated' | 'subscription_required' | string
-
-export interface AgentEntitlement {
-  feature: string
-  entitled: boolean
-  reason?: EntitlementReason
-  price_monthly_cents?: number
-  status?: string
-  current_period_end?: string
-  cancel_at_period_end?: boolean
-  stripe_subscription_id?: string
-}
-
-export const listAgentEntitlements = (agentId: string) =>
-  apiFetch<{ agent_id: string; entitlements: AgentEntitlement[] }>(
-    `/agents/${encodeURIComponent(agentId)}/entitlements`,
-  )
-
-export type SubscribeResult =
-  | { status: 'active'; feature: string; agent_id: string; subscription_id: string; price_id: string }
-  | { status: 'already_subscribed'; feature: string; agent_id: string; subscription_id: string }
-  | { status: 'ungated'; feature: string; agent_id: string }
-  | { status: 'checkout_required'; feature: string; agent_id: string; checkout_url: string }
-
-export const subscribeAgentFeature = (agentId: string, feature: string) =>
-  apiFetch<SubscribeResult>(
-    `/agents/${encodeURIComponent(agentId)}/subscriptions/${encodeURIComponent(feature)}`,
-    { method: 'POST' },
-  )
-
-export interface OrgAgentSubscription {
-  agent_id: string
-  feature: string
-  status: string
-  active: boolean
-  price_monthly_cents: number
-  current_period_end?: string
-  cancel_at_period_end: boolean
-  canceled_at?: string
-  created_at: string
-  stripe_subscription_id: string
-}
-
-export const listOrgAgentSubscriptions = () =>
-  apiFetch<{ subscriptions: OrgAgentSubscription[] }>(
-    '/billing/agent-subscriptions',
-  )
-
-export const cancelAgentFeature = (agentId: string, feature: string) =>
-  apiFetch<{
-    status: string
-    feature: string
-    agent_id: string
-    cancel_at_period_end: boolean
-    current_period_end?: string
-  }>(
-    `/agents/${encodeURIComponent(agentId)}/subscriptions/${encodeURIComponent(feature)}`,
-    { method: 'DELETE' },
-  )
-
-/**
- * Streams a chat turn to an agent's instance and yields parsed SSE events
- * as they arrive. The upstream (sessions-api POST /v1/agents/:id/instances/:id/messages)
- * emits `data: {type:"text",content:"..."}` and `data: {type:"done"}`.
- *
- * Uses fetch + ReadableStream because EventSource is GET-only.
- */
-export type ChatEvent =
-  | { type: 'text'; content: string; conversation_id?: string }
-  | { type: 'done' }
-  | { type: 'raw'; data: string }
-
-export interface ChatTurn { role: 'user' | 'assistant' | 'system'; content: string }
-
-export async function* streamAgentChat(
-  agentId: string,
-  instanceId: string,
-  content: string,
-  conversationId?: string,
-  history?: ChatTurn[],
-): AsyncGenerator<ChatEvent, void, unknown> {
-  // OpenAI-style chat-completions is stateless: the gateway needs the
-  // full conversation each turn to have any memory of prior messages.
-  // Caller passes `history` (already including the new user turn).
-  // For backwards compat with older callers, we still accept `content`
-  // as a single-turn shortcut.
-  const body: Record<string, unknown> = {}
-  if (history && history.length > 0) {
-    body.messages = history
-  } else {
-    body.content = content
-  }
-  if (conversationId) body.conversation_id = conversationId
-
-  const res = await fetch(
-    `/api/dashboard/agents/${encodeURIComponent(agentId)}/instances/${encodeURIComponent(instanceId)}/messages`,
-    {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      // sessions-api dedups create on the Idempotency-Key header (the edge proxy
+      // forwards it) so a retried start-session is safe.
+      headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+    },
+    z.object({ session: S.SessionSchema, client_token: z.string().optional() }),
+  ).then((r) => r.session)
+
+export const cancelSession = (id: string) =>
+  apiFetch<void>(`/v3/sessions/${id}/cancel`, { method: 'POST' })
+
+export const archiveSession = (id: string) =>
+  apiFetch<void>(`/v3/sessions/${id}/archive`, { method: 'POST' })
+
+// Events — append-only session log. Plain GET today; an SSE (`?stream=sse`)
+// browser-direct path replaces the fetch in the live view later.
+export const getSessionEvents = (id: string, level?: string) =>
+  apiFetch(
+    `/v3/sessions/${id}/events${level ? `?level=${level}` : ''}`,
+    {},
+    S.SessionEventListSchema,
+  ).then((r) => r.data)
+
+// Steer — post a user message into a session.
+export const sendMessage = (
+  id: string,
+  text: string,
+  idempotencyKey?: string,
+) =>
+  apiFetch<{ event: { id: string; seq: number } }>(
+    `/v3/sessions/${id}/messages`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ text, idempotency_key: idempotencyKey }),
     },
   )
-  if (!res.ok || !res.body) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`chat ${res.status}: ${text || 'no body'}`)
-  }
 
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) return
-    buffer += decoder.decode(value, { stream: true })
-    let idx: number
-    while ((idx = buffer.indexOf('\n\n')) !== -1) {
-      const block = buffer.slice(0, idx)
-      buffer = buffer.slice(idx + 2)
-      const data = block
-        .split('\n')
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trimStart())
-        .join('\n')
-      if (!data) continue
-      try {
-        yield JSON.parse(data) as ChatEvent
-      } catch {
-        yield { type: 'raw', data }
-      }
-    }
-  }
-}
+// Webhooks — destinations are session-scoped.
+export const getDestinations = (id: string) =>
+  apiFetch(
+    `/v3/sessions/${id}/destinations`,
+    {},
+    z.object({
+      data: z.array(S.DestinationSchema),
+      next_cursor: z.string().nullish(),
+    }),
+  ).then((r) => r.data)
+
+export const createDestination = (
+  id: string,
+  body: {
+    url: string
+    secret?: string
+    level?: string
+    types?: string[]
+  },
+) =>
+  apiFetch(
+    `/v3/sessions/${id}/destinations`,
+    { method: 'POST', body: JSON.stringify(body) },
+    S.DestinationSchema,
+  )
+
+export const deleteDestination = (id: string, did: string) =>
+  apiFetch<void>(`/v3/sessions/${id}/destinations/${did}`, { method: 'DELETE' })
+
+// Deliveries — the send ledger for a session's destinations.
+export const getDeliveries = (id: string) =>
+  apiFetch(
+    `/v3/sessions/${id}/deliveries`,
+    {},
+    z.object({
+      data: z.array(S.DeliverySchema),
+      next_cursor: z.string().nullish(),
+    }),
+  ).then((r) => r.data)
+
+export const redeliver = (id: string, deliveryId: string) =>
+  apiFetch<void>(`/v3/sessions/${id}/deliveries/${deliveryId}/redeliver`, {
+    method: 'POST',
+  })
+
+// ── Sandbox lifecycle webhooks (org-scoped, Svix-backed at the edge) ─────────
+// Reached via /api/dashboard/webhooks* (cookie auth → org), mirroring the public
+// /api/webhooks API.
+export const getSandboxWebhooks = () =>
+  apiFetch('/webhooks', {}, S.SandboxWebhookListSchema).then((r) => r.data)
+
+// No BYO secret: Svix generates the signing secret (a user-typed value isn't
+// valid Svix whsec_ base64). Reveal it afterward via getSandboxWebhookSecret.
+export const createSandboxWebhook = (body: {
+  url: string
+  eventTypes?: string[]
+  name?: string
+}) =>
+  apiFetch(
+    '/webhooks',
+    { method: 'POST', body: JSON.stringify(body) },
+    S.SandboxWebhookSchema,
+  )
+
+export const deleteSandboxWebhook = (id: string) =>
+  apiFetch<void>(`/webhooks/${id}`, { method: 'DELETE' })
+
+export const testSandboxWebhook = (id: string) =>
+  apiFetch<void>(`/webhooks/${id}/test`, { method: 'POST' })
+
+export const getSandboxWebhookDeliveries = (id: string) =>
+  apiFetch(
+    `/webhooks/${id}/deliveries`,
+    {},
+    S.SandboxWebhookDeliveryListSchema,
+  ).then((r) => r.data)
+
+export const getSandboxWebhookSecret = (id: string) =>
+  apiFetch(`/webhooks/${id}/secret`, {}, z.object({ secret: z.string() })).then(
+    (r) => r.secret,
+  )
+
+export const redeliverSandboxWebhook = (id: string, deliveryId: string) =>
+  apiFetch<void>(`/webhooks/${id}/deliveries/${deliveryId}/redeliver`, {
+    method: 'POST',
+  })

@@ -1,311 +1,227 @@
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
-import { deleteSession, getSessions, type Session } from '../api/client'
-
-const statusFilters = ['', 'running', 'stopped', 'hibernated', 'error'] as const
+import { Link, useNavigate } from 'react-router-dom'
+import { MessagesSquare, Plus } from 'lucide-react'
+import { notifyError } from '@/lib/errors'
+import { getSessions, getAgents, createSession } from '@/api/client'
+import type { Session } from '@/api/client'
+import { PageHeader } from '@/components/page-header'
+import { Panel } from '@/components/panel'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Field, Label, Select, Textarea } from '@/components/form'
+import { StatusBadge } from '@/components/status-badge'
+import { EmptyState } from '@/components/empty-state'
+import { ResourceTable, type Column } from '@/components/resource-table'
 
 export default function Sessions() {
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [status, setStatus] = useState<string>('')
-  const { data: sessions, isLoading } = useQuery({
-    queryKey: ['sessions', status],
-    queryFn: () => getSessions(status || undefined),
-  })
-
-  // Always fetch all sessions for the activity chart
-  const { data: allSessions, isLoading: loadingAll } = useQuery({
-    queryKey: ['sessions', ''],
+  const { data, isLoading } = useQuery({
+    queryKey: ['sessions'],
     queryFn: () => getSessions(),
   })
+  const { data: agents } = useQuery({
+    queryKey: ['agents'],
+    queryFn: getAgents,
+  })
+  const agentName = (id?: string | null) =>
+    agents?.find((a) => a.id === id)?.name ?? id ?? '—'
 
-  const deleteMutation = useMutation({
-    mutationFn: (sandboxId: string) => deleteSession(sandboxId),
-    onMutate: async (sandboxId) => {
-      await queryClient.cancelQueries({ queryKey: ['sessions'] })
-      const stoppedAt = new Date().toISOString()
-      queryClient.setQueriesData<Session[]>({ queryKey: ['sessions'] }, (old) =>
-        old?.map((session) =>
-          session.sandboxId === sandboxId
-            ? { ...session, status: 'stopped', stoppedAt }
-            : session
-        )
-      )
+  const [showStart, setShowStart] = useState(false)
+  const [agentId, setAgentId] = useState('')
+  const [message, setMessage] = useState('')
+
+  const openStart = () => {
+    setAgentId(agents?.[0]?.id ?? '')
+    setMessage('')
+    setShowStart(true)
+  }
+
+  const startMutation = useMutation({
+    mutationFn: () => createSession({ agent: agentId, input: message.trim() }, crypto.randomUUID()),
+    onSuccess: (session) => {
+      setShowStart(false)
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      void navigate(`/sessions/${session.id}`)
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['sessions'] })
-    },
+    onError: (e) => notifyError("Couldn't start the session.", e),
   })
 
-  const handleDelete = (sandboxId: string) => {
-    if (!confirm(`Delete sandbox ${sandboxId}?\n\nThe sandbox will be stopped and its preview URLs removed.`)) return
-    deleteMutation.mutate(sandboxId)
-  }
+  const sessions = data ?? []
+  const hasAgents = (agents?.length ?? 0) > 0
+
+  const columns: Column<Session>[] = [
+    {
+      key: 'id',
+      header: 'Session',
+      cell: (s) => (
+        <Link
+          to={`/sessions/${s.id}`}
+          className="text-foreground font-mono text-[13px] underline-offset-4 hover:underline"
+        >
+          {s.id}
+        </Link>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (s) => <StatusBadge status={s.status} />,
+    },
+    {
+      key: 'agent',
+      header: 'Agent',
+      cell: (s) => (
+        <span className="text-muted-foreground text-sm">
+          {agentName(s.agent_id)}
+        </span>
+      ),
+    },
+    {
+      key: 'events',
+      header: 'Events',
+      align: 'right',
+      cell: (s) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {s.head ?? 0}
+        </span>
+      ),
+    },
+    {
+      key: 'created',
+      header: 'Created',
+      cell: (s) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {new Date(s.created_at).toLocaleString()}
+        </span>
+      ),
+    },
+  ]
 
   return (
     <div>
-      <div style={{ marginBottom: 28 }}>
-        <h1 className="page-title">Sessions</h1>
-        <p className="page-subtitle">Session history</p>
-      </div>
+      <PageHeader
+        title="Sessions"
+        description="Durable agent runs — an append-only event log you can steer."
+        api={{
+          method: 'POST',
+          path: '/v3/sessions',
+          sdk: 'oc.sessions.create()',
+          docs: 'https://docs.opencomputer.dev/agent-sessions/sessions',
+        }}
+        actions={
+          <Button onClick={openStart}>
+            <Plus className="size-4" />
+            Start session
+          </Button>
+        }
+      />
 
-      {/* ── Activity Chart ── */}
-      <ActivityChart sessions={allSessions ?? []} loading={loadingAll} />
+      <Panel className="overflow-hidden">
+        <ResourceTable
+          columns={columns}
+          rows={sessions}
+          rowKey={(s) => s.id}
+          loading={isLoading}
+          empty={
+            <EmptyState
+              icon={MessagesSquare}
+              title="No sessions yet"
+              description="Start a session from an agent to give it a task; it runs durably and streams events here."
+              action={
+                <Button size="sm" onClick={openStart}>
+                  <Plus className="size-4" />
+                  Start session
+                </Button>
+              }
+            />
+          }
+        />
+      </Panel>
 
-      {/* ── Filters ── */}
-      <div style={{ marginBottom: 16, display: 'flex', gap: 6 }}>
-        {statusFilters.map(f => (
-          <button key={f} onClick={() => setStatus(f)}
-            className={`filter-btn${status === f ? ' active' : ''}`}>
-            {f || 'All'}
-          </button>
-        ))}
-      </div>
+      <Dialog open={showStart} onOpenChange={setShowStart}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Start session</DialogTitle>
+            <DialogDescription>
+              Pick an agent and give it a first task. The session runs durably
+              and you can steer it as it goes.
+            </DialogDescription>
+          </DialogHeader>
 
-      {/* ── Table ── */}
-      {isLoading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
-          <div className="loading-spinner" />
-        </div>
-      ) : (
-        <div className="glass-card animate-in stagger-1" style={{ overflow: 'hidden' }}>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Sandbox ID</th>
-                <th>Template</th>
-                <th>Status</th>
-                <th>Started</th>
-                <th>Stopped</th>
-                <th style={{ width: 96 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {(sessions ?? []).map((s: Session) => (
-                <ClickableRow key={s.id} sandboxId={s.sandboxId}>
-                  <td><code style={{ color: 'var(--text-accent)' }}>{s.sandboxId}</code></td>
-                  <td>{s.template || 'base'}</td>
-                  <td><StatusBadge status={s.status} /></td>
-                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{new Date(s.startedAt).toLocaleString()}</td>
-                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{s.stoppedAt ? new Date(s.stoppedAt).toLocaleString() : '\u2014'}</td>
-                  <td>
-                    {canDeleteSession(s) && (
-                      <button
-                        className="btn-danger"
-                        disabled={deleteMutation.isPending && deleteMutation.variables === s.sandboxId}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleDelete(s.sandboxId)
-                        }}
-                      >
-                        {deleteMutation.isPending && deleteMutation.variables === s.sandboxId ? 'Deleting...' : 'Delete'}
-                      </button>
-                    )}
-                  </td>
-                </ClickableRow>
-              ))}
-              {(sessions ?? []).length === 0 && (
-                <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>
-                    No sessions found
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-          {deleteMutation.isError && (
-            <div style={{
-              padding: '10px 16px',
-              borderTop: '1px solid var(--border-subtle)',
-              color: 'var(--accent-rose)',
-              fontSize: 13,
-            }}>
-              Delete failed: {deleteMutation.error instanceof Error ? deleteMutation.error.message : String(deleteMutation.error)}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-/* ── Activity Chart (last 14 days) ────────────────────────── */
-function ActivityChart({ sessions, loading }: { sessions: Session[]; loading: boolean }) {
-  const { days, maxCount } = useMemo(() => {
-    const now = new Date()
-    const dayBuckets: { label: string; date: string; count: number; hibernated: number; errored: number }[] = []
-
-    for (let i = 13; i >= 0; i--) {
-      const d = new Date(now)
-      d.setDate(d.getDate() - i)
-      const dateStr = d.toISOString().slice(0, 10)
-      dayBuckets.push({
-        label: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        date: dateStr,
-        count: 0,
-        hibernated: 0,
-        errored: 0,
-      })
-    }
-
-    for (const s of sessions) {
-      const dateStr = new Date(s.startedAt).toISOString().slice(0, 10)
-      const bucket = dayBuckets.find(b => b.date === dateStr)
-      if (bucket) {
-        bucket.count++
-        if (s.status === 'hibernated') bucket.hibernated++
-        else if (s.status === 'error') bucket.errored++
-      }
-    }
-
-    const maxCount = Math.max(1, ...dayBuckets.map(b => b.count))
-    return { days: dayBuckets, maxCount }
-  }, [sessions])
-
-  return (
-    <div className="glass-card animate-in" style={{ padding: '22px 24px', marginBottom: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <span className="section-title" style={{ marginBottom: 0 }}>Activity</span>
-        <span style={{ fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-          Last 14 days
-        </span>
-      </div>
-
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
-          <div className="loading-spinner" />
-        </div>
-      ) : (
-        <div style={{ position: 'relative' }}>
-          {/* Y-axis labels */}
-          <div style={{
-            position: 'absolute', left: 0, top: 0, bottom: 24,
-            display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-            width: 32,
-          }}>
-            <span style={{ fontSize: 10, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-              {maxCount}
-            </span>
-            <span style={{ fontSize: 10, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-              0
-            </span>
-          </div>
-
-          {/* Chart bars */}
-          <div style={{
-            display: 'flex', alignItems: 'flex-end', gap: 4, height: 120,
-            marginLeft: 36,
-          }}>
-            {days.map((day) => {
-              const barHeight = maxCount > 0 ? Math.round((day.count / maxCount) * 110) : 0
-              const hasHibernated = day.hibernated > 0
-              const hasError = day.errored > 0
-
-              return (
-                <div
-                  key={day.date}
-                  title={`${day.label}: ${day.count} sessions${day.hibernated ? ` (${day.hibernated} hibernated)` : ''}${day.errored ? ` (${day.errored} errors)` : ''}`}
-                  style={{
-                    flex: 1,
-                    height: day.count > 0 ? Math.max(barHeight, 4) : 0,
-                    borderRadius: '4px 4px 2px 2px',
-                    background: hasError
-                      ? 'linear-gradient(to top, rgba(251,113,133,0.5), rgba(129,140,248,0.5))'
-                      : hasHibernated
-                      ? 'linear-gradient(to top, rgba(34,211,238,0.4), rgba(129,140,248,0.5))'
-                      : day.count > 0
-                      ? 'linear-gradient(to top, rgba(99,102,241,0.25), rgba(129,140,248,0.5))'
-                      : 'transparent',
-                    transition: 'height 0.3s ease',
-                    cursor: 'default',
-                    position: 'relative',
-                  }}
-                >
-                  {day.count > 0 && (
-                    <span style={{
-                      position: 'absolute', top: -16, left: '50%', transform: 'translateX(-50%)',
-                      fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)',
-                      whiteSpace: 'nowrap',
-                    }}>
-                      {day.count}
-                    </span>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-
-          {/* X-axis labels */}
-          <div style={{
-            display: 'flex', gap: 4, marginLeft: 36, marginTop: 6,
-          }}>
-            {days.map((day, i) => (
-              <div key={day.date} style={{
-                flex: 1, textAlign: 'center',
-                fontSize: 9, color: 'var(--text-tertiary)',
-                fontFamily: 'var(--font-mono)',
-              }}>
-                {i % 2 === 0 ? day.label : ''}
+          {!hasAgents ? (
+            <p className="text-muted-foreground py-2 text-sm">
+              You need an agent first.{' '}
+              <Link
+                to="/agents"
+                className="text-foreground font-medium underline underline-offset-4"
+              >
+                Create an agent
+              </Link>
+              .
+            </p>
+          ) : (
+            <form
+              className="space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (agentId && message.trim()) startMutation.mutate()
+              }}
+            >
+              <div className="space-y-1.5">
+                <Label htmlFor="start-agent">Agent</Label>
+                <Select
+                  id="start-agent"
+                  value={agentId}
+                  onValueChange={setAgentId}
+                  options={(agents ?? []).map((a) => ({
+                    value: a.id,
+                    label: a.name,
+                  }))}
+                />
               </div>
-            ))}
-          </div>
-
-          {/* Legend */}
-          <div style={{
-            display: 'flex', gap: 16, justifyContent: 'center', marginTop: 12,
-          }}>
-            <LegendItem color="rgba(129,140,248,0.5)" label="Sessions" />
-            <LegendItem color="rgba(34,211,238,0.4)" label="Hibernated" />
-            <LegendItem color="rgba(251,113,133,0.5)" label="Errors" />
-          </div>
-        </div>
-      )}
+              <Field
+                label="First task"
+                htmlFor="start-message"
+                description="What should the agent do? (required)"
+              >
+                <Textarea
+                  id="start-message"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  placeholder="Review PR #412 and open a follow-up if anything needs fixing."
+                  className="min-h-24"
+                />
+              </Field>
+              <DialogFooter className="mt-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setShowStart(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={
+                    startMutation.isPending || !agentId || !message.trim()
+                  }
+                >
+                  {startMutation.isPending ? 'Starting…' : 'Start session'}
+                </Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
-  )
-}
-
-function LegendItem({ color, label }: { color: string; label: string }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-      <div style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
-      <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>{label}</span>
-    </div>
-  )
-}
-
-function canDeleteSession(session: Session) {
-  return session.status === 'running' || session.status === 'hibernated'
-}
-
-function ClickableRow({ sandboxId, children }: { sandboxId: string; children: React.ReactNode }) {
-  const navigate = useNavigate()
-  return (
-    <tr
-      onClick={() => navigate(`/sessions/${sandboxId}`)}
-      style={{ cursor: 'pointer' }}
-      onMouseOver={e => { e.currentTarget.style.background = 'rgba(99,102,241,0.04)' }}
-      onMouseOut={e => { e.currentTarget.style.background = '' }}
-    >
-      {children}
-    </tr>
-  )
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const cls =
-    status === 'running' ? 'badge-running'
-    : status === 'hibernated' ? 'badge-hibernated'
-    : status === 'error' ? 'badge-error'
-    : 'badge-stopped'
-  return (
-    <span className={`badge ${cls}`}>
-      {status === 'running' && (
-        <span className="pulse-dot" style={{
-          width: 5, height: 5, borderRadius: '50%',
-          background: 'currentColor', display: 'inline-block',
-        }} />
-      )}
-      {status}
-    </span>
   )
 }

@@ -5,7 +5,13 @@ import { BrowserRouter } from 'react-router-dom'
 import posthog from 'posthog-js'
 import { PostHogProvider } from '@posthog/react'
 import App from './App'
-import './styles/theme.css'
+import { Toaster } from './components/ui/sonner'
+import {
+  ErrorBoundary,
+  DefaultErrorFallback,
+} from './components/error-boundary'
+import { reloadForStaleChunk } from './lib/chunk-reload'
+import './index.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,12 +32,30 @@ if (PH_TOKEN) {
   })
 }
 
+// After a deploy, an open tab still references the previous build's hashed route
+// chunks; navigating to a not-yet-loaded route fails the dynamic import and Vite
+// dispatches `vite:preloadError`. Reload once to pick up the new build instead
+// of surfacing it as a render error. If the guard declines (a recent reload —
+// likely a real failure), let it throw so the ErrorBoundary handles it.
+window.addEventListener('vite:preloadError', (event) => {
+  if (reloadForStaleChunk()) event.preventDefault()
+})
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <PostHogProvider client={posthog}>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
-          <App />
+          <ErrorBoundary
+            fallback={(reset) => (
+              <div className="bg-background flex min-h-screen items-center justify-center">
+                <DefaultErrorFallback onRetry={reset} />
+              </div>
+            )}
+          >
+            <App />
+          </ErrorBoundary>
+          <Toaster theme="light" richColors closeButton />
         </BrowserRouter>
       </QueryClientProvider>
     </PostHogProvider>

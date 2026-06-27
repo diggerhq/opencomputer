@@ -1179,8 +1179,10 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
     const errText = await tokenResp.text();
     return json({ error: `workos exchange failed: ${tokenResp.status}: ${errText}` }, 401);
   }
-  const tokenBody = await tokenResp.json<{ user: WorkOSProfile; organization_id?: string }>();
+  const tokenBody = await tokenResp.json<{ user: WorkOSProfile; organization_id?: string; access_token?: string }>();
   const profile = tokenBody.user;
+  // WorkOS session id (sid) for the hosted logout flow — carried in our session JWT.
+  const workosSessionID = workosSessionIdFromAccessToken(tokenBody.access_token);
 
   // Upsert user + org. We share WorkOS with prod, so workos_user_id is the
   // stable identity across both. Org auto-created on first sign-in with
@@ -1257,7 +1259,7 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
 
   // Mint session JWT — same signing secret as cap-token but a different
   // Issuer so cell middleware can distinguish.
-  const sessionJWT = await mintSessionJWT(env.SESSION_JWT_SECRET, orgID, userID, orgPlan);
+  const sessionJWT = await mintSessionJWT(env.SESSION_JWT_SECRET, orgID, userID, orgPlan, workosSessionID);
 
   // Redirect to dashboard with the cookie set.
   const dashURL = `${reqURL.origin}/dashboard`;
@@ -1270,12 +1272,47 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
   });
 }
 
-async function authLogout(): Promise<Response> {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      "set-cookie": `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`,
-    },
+// Decode the WorkOS session id (`sid` claim) from a WorkOS access-token JWT
+// without verifying the signature. The token came straight from WorkOS's token
+// endpoint at callback; we only need the session id to build the hosted logout
+// URL, so an unverified parse is sufficient.
+function workosSessionIdFromAccessToken(accessToken?: string): string | undefined {
+  if (!accessToken) return undefined;
+  const parts = accessToken.split(".");
+  if (parts.length !== 3) return undefined;
+  try {
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))) as { sid?: string };
+    return payload.sid;
+  } catch {
+    return undefined;
+  }
+}
+
+async function authLogout(req: Request, env: Env): Promise<Response> {
+  const clearCookie = `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`;
+
+  // Clearing oc_session alone leaves the WorkOS SSO session alive, so the
+  // dashboard's /auth/login would silently re-authenticate the user. Hand back
+  // WorkOS's hosted logout URL (built from the sid captured into the session JWT
+  // at callback) so the browser also tears down the WorkOS session. No
+  // return_to: the post-logout destination is WorkOS dashboard config (Sign-out
+  // redirect), per environment. Old sessions without wsid fall back to a plain
+  // cookie clear; the client then routes to /auth/login.
+  let logoutUrl: string | undefined;
+  const cookie = req.headers.get("cookie") ?? "";
+  const m = cookie.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`));
+  if (m) {
+    const claims = await verifySessionJWT(env.SESSION_JWT_SECRET, m[1]);
+    if (claims?.wsid) {
+      const u = new URL("https://api.workos.com/user_management/sessions/logout");
+      u.searchParams.set("session_id", claims.wsid);
+      logoutUrl = u.toString();
+    }
+  }
+
+  return new Response(JSON.stringify({ message: "logged out", ...(logoutUrl ? { logoutUrl } : {}) }), {
+    status: 200,
+    headers: { "content-type": "application/json", "set-cookie": clearCookie },
   });
 }
 
@@ -1292,7 +1329,10 @@ async function authRefresh(req: Request, env: Env): Promise<Response> {
     .bind(claims.org_id)
     .first<{ plan: string }>();
   const plan = orgRow?.plan ?? "free";
-  const fresh = await mintSessionJWT(env.SESSION_JWT_SECRET, claims.org_id, claims.user_id, plan);
+  // Preserve the WorkOS session id across refresh so hosted logout still works
+  // (logout builds the WorkOS logout URL from claims.wsid; dropping it here
+  // would silently downgrade post-refresh logout to local cookie clearing).
+  const fresh = await mintSessionJWT(env.SESSION_JWT_SECRET, claims.org_id, claims.user_id, plan, claims.wsid);
   return new Response(JSON.stringify({ ok: true, plan }), {
     status: 200,
     headers: {
@@ -1354,9 +1394,13 @@ interface SessionClaims {
   plan: string;
   iat: number;
   exp: number;
+  // WorkOS session id (sid). Carried so /auth/logout can build the WorkOS
+  // hosted logout URL and tear down the SSO session, not just our cookie.
+  // Optional: sessions minted before this existed won't have it.
+  wsid?: string;
 }
 
-async function mintSessionJWT(secret: string, orgID: string, userID: string, plan: string): Promise<string> {
+async function mintSessionJWT(secret: string, orgID: string, userID: string, plan: string, wsid?: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "HS256", typ: "JWT" };
   const payload = {
@@ -1367,6 +1411,7 @@ async function mintSessionJWT(secret: string, orgID: string, userID: string, pla
     org_id: orgID,
     user_id: userID,
     plan,
+    ...(wsid ? { wsid } : {}),
   };
   const enc = new TextEncoder();
   const signingInput =
@@ -1844,7 +1889,7 @@ export default {
     // Auth flow (browser).
     if (path === "/auth/login")    { if (req.method === "GET")  return authLogin(req, env); }
     if (path === "/auth/callback") { if (req.method === "GET")  return authCallback(req, env); }
-    if (path === "/auth/logout")   { if (req.method === "POST") return authLogout(); }
+    if (path === "/auth/logout")   { if (req.method === "POST") return authLogout(req, env); }
     if (path === "/auth/refresh")  { if (req.method === "POST") return authRefresh(req, env); }
 
     // Stripe webhook (test mode in app2, live in app).

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/workos/workos-go/v4/pkg/usermanagement"
@@ -168,26 +169,69 @@ func (h *OAuthHandlers) HandleCallback(c echo.Context) error {
 	return c.Redirect(http.StatusFound, "/")
 }
 
-// HandleLogout clears the session cookie and invalidates the server-side session.
+// HandleLogout ends the session via WorkOS's hosted logout. Clearing our own
+// cookies is NOT enough — the WorkOS SSO session would survive, so the next hit
+// to /auth/login silently re-authenticates the user (the "logout logs me back
+// in" loop). Handing the browser WorkOS's logout URL tears down the WorkOS
+// session cookie itself, then redirects to the Sign-out redirect configured in
+// the WorkOS dashboard.
+//
+// We intentionally do NOT pass return_to: the post-logout destination is
+// WorkOS-managed dashboard config (per environment), not app code. That config
+// is required — without a configured Sign-out redirect WorkOS returns
+// app-homepage-url-not-found.
 func (h *OAuthHandlers) HandleLogout(c echo.Context) error {
-	// Invalidate server-side session if we can identify the user
+	var sessionID string
 	if cookie, err := c.Cookie("workos_session"); err == nil && cookie.Value != "" {
-		store := h.workos.Store()
-		if store != nil {
+		// The WorkOS session id is the `sid` claim of the access token; it's
+		// required to build the hosted logout URL.
+		sessionID = sessionIDFromAccessToken(cookie.Value)
+
+		// Invalidate the server-side session if we can identify the user.
+		if store := h.workos.Store(); store != nil {
 			ctx := c.Request().Context()
-			user, err := store.GetUserByAccessToken(ctx, cookie.Value)
-			if err == nil {
+			if user, err := store.GetUserByAccessToken(ctx, cookie.Value); err == nil {
 				_ = store.DeleteAccessTokensForUser(ctx, user.ID)
 			}
 		}
 	}
 
-	// Clear all auth cookies
-	ClearAllCookies(c)
+	// Clear all auth cookies — including the configured-domain variant that
+	// login sets, not just the host-only one.
+	cfg := h.workos.Config()
+	ClearAllCookies(c, cfg.CookieDomain)
 
-	return c.JSON(http.StatusOK, map[string]string{
-		"message": "logged out",
-	})
+	// Hand back WorkOS's hosted logout URL for the browser to follow. GetLogoutURL
+	// is an offline URL builder; the real teardown + redirect happen when the
+	// browser visits it.
+	if mgr := h.workos.UserMgr(); mgr != nil && sessionID != "" {
+		if logoutURL, err := mgr.GetLogoutURL(usermanagement.GetLogoutURLOpts{SessionID: sessionID}); err == nil {
+			return c.JSON(http.StatusOK, map[string]string{
+				"message":   "logged out",
+				"logoutUrl": logoutURL.String(),
+			})
+		}
+	}
+
+	// Fallback: no WorkOS session to end — the client falls back to /auth/login.
+	return c.JSON(http.StatusOK, map[string]string{"message": "logged out"})
+}
+
+// sessionIDFromAccessToken extracts the WorkOS `sid` claim from an access-token
+// JWT WITHOUT verifying its signature. Note /auth/logout is a public route (see
+// router.go), so this cookie is not validated by the auth middleware. That's
+// acceptable here: the worst a forged/garbage cookie can do is yield a session
+// id we put in a WorkOS logout URL, which only ends that session — no privilege
+// escalation and no data access. We never trust this value for anything else.
+func sessionIDFromAccessToken(token string) string {
+	claims := jwt.MapClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err != nil {
+		return ""
+	}
+	if sid, ok := claims["sid"].(string); ok {
+		return sid
+	}
+	return ""
 }
 
 // HandleMe returns the current user info from the authenticated context.
@@ -270,8 +314,12 @@ func SetRefreshCookie(c echo.Context, refreshToken, domain string) {
 	})
 }
 
-// ClearAllCookies helper to clear all auth cookies (used for force-logout).
-func ClearAllCookies(c echo.Context) {
+// ClearAllCookies clears all auth cookies (used for logout / force-logout).
+// Login sets workos_session with the configured cookie Domain, so a host-only
+// delete leaves the domain-scoped cookie behind (the browser keeps the real
+// auth cookie and silently re-auths). Clear both the host-only and the
+// configured-domain variant.
+func ClearAllCookies(c echo.Context, domain string) {
 	for _, name := range []string{"workos_session", "workos_refresh", "oauth_state"} {
 		c.SetCookie(&http.Cookie{
 			Name:     name,
@@ -281,5 +329,16 @@ func ClearAllCookies(c echo.Context) {
 			Expires:  time.Unix(0, 0),
 			HttpOnly: true,
 		})
+		if domain != "" {
+			c.SetCookie(&http.Cookie{
+				Name:     name,
+				Value:    "",
+				Path:     "/",
+				Domain:   domain,
+				MaxAge:   -1,
+				Expires:  time.Unix(0, 0),
+				HttpOnly: true,
+			})
+		}
 	}
 }

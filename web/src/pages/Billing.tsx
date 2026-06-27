@@ -1,10 +1,34 @@
-import { useState, type ReactNode } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { CircleAlert, CircleCheck } from 'lucide-react'
+import { notifyError } from '@/lib/errors'
+import { useTransientFlag } from '@/lib/use-transient-flag'
 import {
-  getBilling, billingSetup, billingPortal, getBillingInvoices, redeemPromoCode,
-  getAutumnBilling, autumnTopup, autumnSubscribeConcurrency, getSandboxUsage, setAutumnAutoTopup,
-  type StripeInvoice, type AutumnBilling,
-} from '../api/client'
+  autumnSubscribeConcurrency,
+  autumnTopup,
+  billingPortal,
+  billingSetup,
+  getAutumnBilling,
+  getBilling,
+  getBillingInvoices,
+  getSandboxUsage,
+  redeemPromoCode,
+  setAutumnAutoTopup,
+  type AutumnBilling,
+  type StripeInvoice,
+} from '@/api/client'
+import { PageHeader } from '@/components/page-header'
+import { Panel } from '@/components/panel'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Field, Input, Label } from '@/components/form'
+import { StatusBadge } from '@/components/status-badge'
+import { EmptyState } from '@/components/empty-state'
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import { ResourceTable, type Column } from '@/components/resource-table'
+import { cn } from '@/lib/utils'
 
 type Tab = 'sandboxes' | 'invoices'
 
@@ -13,256 +37,208 @@ export default function Billing() {
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
-        <h1 className="page-title">Billing</h1>
-        <p className="page-subtitle">Manage your plan, payment method, and invoices</p>
-      </div>
+      <PageHeader
+        title="Billing"
+        description="Manage your plan, payment method, and invoices"
+      />
 
-      {/* Tabs */}
-      <div style={{ display: 'flex', borderBottom: '1px solid var(--border-subtle)', marginBottom: 18, gap: 4 }}>
+      <div className="mb-6 flex gap-1 border-b">
         {(['sandboxes', 'invoices'] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            style={{
-              background: 'none',
-              border: 'none',
-              borderBottom: tab === t ? '2px solid var(--accent-indigo)' : '2px solid transparent',
-              padding: '10px 14px',
-              color: tab === t ? 'var(--text-primary)' : 'var(--text-secondary)',
-              fontSize: 13,
-              fontFamily: 'var(--font-body)',
-              fontWeight: tab === t ? 600 : 400,
-              cursor: 'pointer',
-              textTransform: 'capitalize',
-            }}
+            className={cn(
+              '-mb-px border-b-2 px-3 py-2 text-sm capitalize transition-colors',
+              tab === t
+                ? 'border-foreground text-foreground font-medium'
+                : 'text-muted-foreground hover:text-foreground border-transparent',
+            )}
           >
             {t}
           </button>
         ))}
       </div>
 
-      {tab === 'sandboxes' && <PlanTab />}
-      {tab === 'invoices' && <InvoicesTab />}
+      {tab === 'sandboxes' ? <PlanTab /> : <InvoicesTab />}
     </div>
   )
 }
 
-// ───────────── Plan & Usage tab ─────────────
+/* ── Plan & usage ─────────────────────────────────────────────────────────── */
 
 function PlanTab() {
   const queryClient = useQueryClient()
   const { data: billing, isLoading } = useQuery({
-    queryKey: ['billing'], queryFn: getBilling, refetchInterval: 30_000,
+    queryKey: ['billing'],
+    queryFn: getBilling,
+    refetchInterval: 30_000,
   })
 
   const [promoCode, setPromoCode] = useState('')
-  const [redeemSuccess, setRedeemSuccess] = useState('')
 
   const setupMutation = useMutation({
     mutationFn: billingSetup,
-    onSuccess: (data) => { window.location.href = data.url },
+    onSuccess: (data) => {
+      window.location.href = data.url
+    },
+    onError: (e) => notifyError("Couldn't start checkout.", e),
   })
   const portalMutation = useMutation({
     mutationFn: billingPortal,
-    onSuccess: (data) => { window.location.href = data.url },
+    onSuccess: (data) => {
+      window.location.href = data.url
+    },
+    onError: (e) => notifyError("Couldn't open the billing portal.", e),
   })
   const redeemMutation = useMutation({
     mutationFn: () => redeemPromoCode(promoCode),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['billing'] })
+      void queryClient.invalidateQueries({ queryKey: ['billing'] })
       setPromoCode('')
-      setRedeemSuccess(`$${(data.creditAppliedCents / 100).toFixed(2)} credit applied!`)
-      setTimeout(() => setRedeemSuccess(''), 4000)
+      toast.success(
+        `$${(data.creditAppliedCents / 100).toFixed(2)} credit applied`,
+      )
     },
+    onError: (e) => notifyError("Couldn't redeem that promo code.", e),
   })
+
+  if (isLoading) return <Skeleton className="h-64 max-w-2xl" />
+
+  if (billing?.billingProvider === 'autumn') return <PrepaidPlan />
 
   const isPro = billing?.plan === 'pro'
 
-  if (isLoading) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
-        <div className="loading-spinner" />
-      </div>
-    )
-  }
-
-  // Autumn (prepaid) orgs get the credits/top-up/concurrency view instead of
-  // the legacy free-trial / Pro-upgrade card.
-  if (billing?.billingProvider === 'autumn') {
-    return <PrepaidPlan />
-  }
-
   return (
-    <>
-      {/* Plan Card */}
-      <div className="glass-card animate-in stagger-1" style={{ padding: 28, marginBottom: 14 }}>
-        <span className="section-title" style={{ marginBottom: 16, display: 'block' }}>
-          Current Plan
-        </span>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8 }}>
-          <span className="metric-value" style={{
-            fontSize: 36, fontWeight: 700,
-            color: isPro ? 'var(--accent-indigo)' : 'var(--text-primary)',
-          }}>
-            {isPro ? 'Pro' : 'Free'}
-          </span>
-          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-            {isPro
-              ? `${billing?.maxConcurrentSandboxes ?? 5} concurrent sandboxes, all tiers`
-              : `${billing?.maxConcurrentSandboxes ?? 5} concurrent sandboxes, up to 4GB / 1 vCPU`}
-          </span>
+    <div className="max-w-2xl space-y-4">
+      <Panel className="p-6">
+        <h2 className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
+          Current plan
+        </h2>
+        <div className="text-foreground text-2xl font-semibold tracking-tight">
+          {isPro ? 'Pro' : 'Free'}
         </div>
+        <p className="text-muted-foreground mt-1 text-sm">
+          {billing?.maxConcurrentSandboxes ?? 5} concurrent sandboxes ·{' '}
+          {isPro ? 'all tiers' : 'up to 4 GB / 1 vCPU'}
+        </p>
 
-        {isPro && billing?.stripeCreditCents != null && billing.stripeCreditCents > 0 && (
-          <div style={{ fontSize: 13, color: 'var(--accent-emerald)', marginBottom: 12 }}>
-            ${(billing.stripeCreditCents / 100).toFixed(2)} promotional credit remaining
-          </div>
-        )}
+        {isPro &&
+        billing?.stripeCreditCents != null &&
+        billing.stripeCreditCents > 0 ? (
+          <p className="text-status-running mt-3 text-sm">
+            ${(billing.stripeCreditCents / 100).toFixed(2)} promotional credit
+            remaining
+          </p>
+        ) : null}
 
-        {!isPro && billing != null && (
-          <div style={{ marginTop: 12 }}>
+        {!isPro && billing != null ? (
+          <div className="mt-4 space-y-3">
             {billing.freeCreditsRemainingCents > 0 ? (
-              <div style={{
-                fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-mono)',
-                color: 'var(--accent-emerald)', marginBottom: 12,
-              }}>
-                ${(billing.freeCreditsRemainingCents / 100).toFixed(2)} free trial credit remaining
-              </div>
+              <p className="text-status-running text-sm">
+                <span className="font-mono font-semibold">
+                  ${(billing.freeCreditsRemainingCents / 100).toFixed(2)}
+                </span>{' '}
+                free trial credit remaining
+              </p>
             ) : (
-              <div style={{
-                fontSize: 13, color: 'var(--accent-rose)', marginBottom: 12,
-                display: 'flex', alignItems: 'center', gap: 6,
-              }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-                </svg>
-                Free trial credits exhausted — upgrade to continue using sandboxes
-              </div>
-            )}
-
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 10 }}>
-              Upgrade to Pro for an additional $30 free credit and larger machine sizes
-            </div>
-            <button
-              onClick={() => setupMutation.mutate()}
-              disabled={setupMutation.isPending}
-              style={{
-                padding: '10px 24px', fontSize: 14, fontWeight: 600,
-                fontFamily: 'var(--font-body)', cursor: 'pointer',
-                border: 'none', borderRadius: 'var(--radius-sm)',
-                background: 'var(--accent-indigo)', color: '#fff',
-                opacity: setupMutation.isPending ? 0.6 : 1,
-              }}
-            >
-              {setupMutation.isPending ? 'Redirecting...' : 'Upgrade to Pro'}
-            </button>
-            {setupMutation.isError && (
-              <p style={{ fontSize: 12, color: 'var(--accent-rose)', marginTop: 8 }}>
-                {(setupMutation.error as Error).message}
+              <p className="text-status-error flex items-center gap-1.5 text-sm">
+                <CircleAlert className="size-4 shrink-0" />
+                Free trial credits exhausted — upgrade to continue using
+                sandboxes
               </p>
             )}
+            <p className="text-muted-foreground text-sm">
+              Upgrade to Pro for an additional $30 free credit and larger
+              machine sizes.
+            </p>
+            <Button
+              onClick={() => setupMutation.mutate()}
+              disabled={setupMutation.isPending}
+            >
+              {setupMutation.isPending ? 'Redirecting…' : 'Upgrade to Pro'}
+            </Button>
           </div>
-        )}
+        ) : null}
 
-        {isPro && (
-          <div style={{
-            fontSize: 11, color: 'var(--accent-emerald)', marginTop: 4,
-            display: 'flex', alignItems: 'center', gap: 6,
-          }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+        {isPro ? (
+          <p className="text-status-running mt-3 flex items-center gap-1.5 text-xs">
+            <CircleCheck className="size-3.5 shrink-0" />
             Payment method on file — billed monthly via Stripe
-          </div>
-        )}
+          </p>
+        ) : null}
 
-        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 12 }}>
+        <p className="text-muted-foreground mt-3 text-xs">
           Need more concurrency?{' '}
-          <a href="https://cal.com/team/digger/opencomputer-founder-chat" target="_blank" rel="noreferrer"
-            style={{ color: 'var(--accent-indigo)', textDecoration: 'none' }}>
+          <a
+            href="https://cal.com/team/digger/opencomputer-founder-chat"
+            target="_blank"
+            rel="noreferrer"
+            className="text-foreground font-medium underline underline-offset-4"
+          >
             Talk to us
           </a>
-        </div>
-      </div>
+        </p>
+      </Panel>
 
-      {/* Stripe Billing Portal CTA (pro only) */}
-      {isPro && (
-        <div className="glass-card animate-in stagger-2" style={{ padding: '22px 24px', marginBottom: 14 }}>
-          <span className="section-title" style={{ marginBottom: 10, display: 'block' }}>
-            Usage & Payment Method
-          </span>
-          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14, lineHeight: 1.5 }}>
-            View your current-cycle usage, manage your payment method, and download invoices on Stripe.
+      {isPro ? (
+        <Panel className="p-6">
+          <h2 className="mb-2 text-sm font-semibold">
+            Usage &amp; payment method
+          </h2>
+          <p className="text-muted-foreground mb-3 text-sm">
+            View current-cycle usage, manage your payment method, and download
+            invoices on Stripe.
           </p>
-          <button
+          <Button
+            variant="outline"
             onClick={() => portalMutation.mutate()}
             disabled={portalMutation.isPending}
-            style={{
-              padding: '10px 20px', fontSize: 13, fontWeight: 600,
-              fontFamily: 'var(--font-body)', cursor: 'pointer',
-              border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-sm)',
-              background: 'rgba(255,255,255,0.02)', color: 'var(--text-primary)',
-              opacity: portalMutation.isPending ? 0.6 : 1,
+          >
+            {portalMutation.isPending
+              ? 'Opening Stripe…'
+              : 'Open Stripe billing portal ↗'}
+          </Button>
+        </Panel>
+      ) : null}
+
+      {isPro ? (
+        <Panel className="p-6">
+          <h2 className="mb-3 text-sm font-semibold">Promotion code</h2>
+          <form
+            className="flex items-end gap-3"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (promoCode.trim()) redeemMutation.mutate()
             }}
           >
-            {portalMutation.isPending ? 'Opening Stripe…' : 'Open Stripe billing portal ↗'}
-          </button>
-          {portalMutation.isError && (
-            <p style={{ fontSize: 12, color: 'var(--accent-rose)', marginTop: 10 }}>
-              {(portalMutation.error as Error).message}
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Redeem Promotion Code (pro only) */}
-      {isPro && (
-        <div className="glass-card animate-in stagger-3" style={{ padding: '22px 24px', marginBottom: 14 }}>
-          <span className="section-title" style={{ marginBottom: 12, display: 'block' }}>Promotion Code</span>
-          <div style={{ display: 'flex', alignItems: 'end', gap: 14 }}>
-            <div>
-              <label style={{ fontSize: 11, color: 'var(--text-tertiary)', display: 'block', marginBottom: 6 }}>
-                Enter a promotion code to apply credit
-              </label>
-              <input
-                className="input"
-                type="text"
-                placeholder="e.g. WELCOME100"
-                value={promoCode}
-                onChange={e => setPromoCode(e.target.value.toUpperCase())}
-                style={{ width: 240, fontFamily: 'var(--font-mono)', fontSize: 13 }}
-              />
-            </div>
-            <button
-              onClick={() => redeemMutation.mutate()}
-              disabled={redeemMutation.isPending || !promoCode.trim()}
-              style={{
-                padding: '8px 20px', fontSize: 13, fontWeight: 600,
-                fontFamily: 'var(--font-body)', cursor: 'pointer',
-                border: 'none', borderRadius: 'var(--radius-sm)',
-                background: 'var(--accent-indigo)', color: '#fff',
-                opacity: redeemMutation.isPending || !promoCode.trim() ? 0.5 : 1,
-              }}
+            <Field
+              label="Enter a promotion code to apply credit"
+              htmlFor="promo"
             >
-              {redeemMutation.isPending ? 'Applying...' : 'Redeem'}
-            </button>
-          </div>
-          {redeemSuccess && (
-            <p style={{ fontSize: 13, color: 'var(--accent-emerald)', marginTop: 10 }}>{redeemSuccess}</p>
-          )}
-          {redeemMutation.isError && (
-            <p style={{ fontSize: 12, color: 'var(--accent-rose)', marginTop: 10 }}>
-              {(redeemMutation.error as Error).message}
-            </p>
-          )}
-        </div>
-      )}
-    </>
+              <Input
+                id="promo"
+                value={promoCode}
+                onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
+                placeholder="e.g. WELCOME100"
+                className="w-60 font-mono"
+              />
+            </Field>
+            <Button
+              type="submit"
+              disabled={redeemMutation.isPending || !promoCode.trim()}
+            >
+              {redeemMutation.isPending ? 'Applying…' : 'Redeem'}
+            </Button>
+          </form>
+        </Panel>
+      ) : null}
+    </div>
   )
 }
 
-// ───────────── Prepaid (Autumn) plan view ─────────────
+/* ── Prepaid (Autumn) ─────────────────────────────────────────────────────── */
 
-const TOPUP_AMOUNTS = [5, 25, 100] // dollars == credits ($1/credit)
+const TOPUP_AMOUNTS = [5, 25, 100]
 
 const CONCURRENCY_TIERS = [
   { id: 'concurrency_pro', label: 'Pro', limit: 100, price: 150 },
@@ -270,313 +246,329 @@ const CONCURRENCY_TIERS = [
   { id: 'concurrency_pro_plus_plus', label: 'Pro++', limit: 1000, price: 1000 },
 ]
 
-// Confirmation gate shown before any action that charges a card. The purchase
-// flows (top-up, concurrency upgrade, first auto-recharge) charge immediately
-// when a card is on file, so a misclick = a real charge — this is the guard.
-function ConfirmModal({
-  title, body, confirmLabel, pending, error, onConfirm, onCancel,
-}: {
-  title: string
-  body: ReactNode
-  confirmLabel: string
-  pending: boolean
-  error?: string | null
-  onConfirm: () => void
-  onCancel: () => void
-}) {
-  return (
-    <div
-      onClick={() => { if (!pending) onCancel() }}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 1000, padding: 20,
-        background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="glass-card animate-in"
-        style={{ padding: 28, maxWidth: 440, width: '100%' }}
-      >
-        <span className="section-title" style={{ marginBottom: 12, display: 'block' }}>{title}</span>
-        <div style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 22 }}>
-          {body}
-        </div>
-        {error && (
-          <div style={{ fontSize: 12, color: 'var(--accent-rose)', marginBottom: 16 }}>{error}</div>
-        )}
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-          <button className="btn-secondary" onClick={onCancel} disabled={pending} style={{ padding: '8px 18px' }}>
-            Cancel
-          </button>
-          <button className="btn-primary" onClick={onConfirm} disabled={pending} style={{ padding: '8px 18px' }}>
-            {pending ? 'Processing…' : confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function PrepaidPlan() {
+  const queryClient = useQueryClient()
   const { data: autumn, isLoading } = useQuery({
-    queryKey: ['autumn-billing'], queryFn: getAutumnBilling, refetchInterval: 30_000,
+    queryKey: ['autumn-billing'],
+    queryFn: getAutumnBilling,
+    refetchInterval: 30_000,
   })
-  const [amount, setAmount] = useState<number>(25)
+  const [amount, setAmount] = useState(25)
   const [confirmTopup, setConfirmTopup] = useState(false)
   const [confirmPlanId, setConfirmPlanId] = useState<string | null>(null)
-  const queryClient = useQueryClient()
 
-  // url present → redirect to hosted checkout (collect a new card); url null →
-  // the existing card was charged server-side, so just refresh the balance.
+  // url present → redirect to hosted checkout (new card); url null → the
+  // existing card was charged server-side, so just refresh the balance.
   const onPurchase = (data: { url: string | null }) => {
     if (data.url) window.location.href = data.url
-    else queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
+    else void queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
   }
   const topupMutation = useMutation({
     mutationFn: () => autumnTopup(amount),
-    onSuccess: (d) => { setConfirmTopup(false); onPurchase(d) },
+    onSuccess: (d) => {
+      setConfirmTopup(false)
+      onPurchase(d)
+    },
+    onError: (e) => notifyError("Couldn't complete the top-up.", e),
   })
   const planMutation = useMutation({
     mutationFn: (plan: string) => autumnSubscribeConcurrency(plan),
-    onSuccess: (d) => { setConfirmPlanId(null); onPurchase(d) },
+    onSuccess: (d) => {
+      setConfirmPlanId(null)
+      onPurchase(d)
+    },
+    onError: (e) => notifyError("Couldn't update your subscription.", e),
   })
 
-
-  if (isLoading) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
-        <div className="loading-spinner" />
-      </div>
-    )
-  }
+  if (isLoading) return <Skeleton className="h-64 max-w-2xl" />
 
   const credits = (autumn?.creditsRemainingCents ?? 0) / 100
   const halted = autumn?.isHalted ?? false
   const currentPlan = autumn?.concurrencyPlan ?? 'base'
+  const tier = CONCURRENCY_TIERS.find((t) => t.id === confirmPlanId)
 
   return (
-    <>
-      {/* Credits balance */}
-      <div className="glass-card animate-in stagger-1" style={{ padding: 28, marginBottom: 14 }}>
-        <span className="section-title" style={{ marginBottom: 16, display: 'block' }}>
-          Prepaid Credits
-        </span>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8 }}>
-          <span className="metric-value" style={{
-            fontSize: 36, fontWeight: 700, fontFamily: 'var(--font-mono)',
-            color: halted ? 'var(--accent-rose)' : 'var(--accent-emerald)',
-          }}>
+    <div className="grid max-w-5xl grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
+      {/* Credits */}
+      <Panel className="p-6">
+        <h2 className="mb-4 text-sm font-semibold">Prepaid credits</h2>
+        <div className="flex items-baseline gap-3">
+          <span
+            className={cn(
+              'font-mono text-4xl font-semibold',
+              halted ? 'text-status-error' : 'text-status-running',
+            )}
+          >
             ${credits.toFixed(2)}
           </span>
-          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>remaining</span>
+          <span className="text-muted-foreground text-xs">remaining</span>
         </div>
-        {halted && (
-          <div style={{
-            fontSize: 13, color: 'var(--accent-rose)', marginBottom: 12,
-            display: 'flex', alignItems: 'center', gap: 6,
-          }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
+        {halted ? (
+          <p className="text-status-error mt-2 flex items-center gap-1.5 text-sm">
+            <CircleAlert className="size-4 shrink-0" />
             Credits exhausted — top up to resume your sandboxes
-          </div>
-        )}
+          </p>
+        ) : null}
 
-        {/* Top-up */}
-        <div style={{ marginTop: 18 }}>
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 10 }}>
+        <div className="mt-5">
+          <p className="text-muted-foreground mb-2.5 text-sm">
             Add credits (billed at the same per-second rates)
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+          </p>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
             {TOPUP_AMOUNTS.map((a) => (
-              <button
+              <Button
                 key={a}
+                variant={amount === a ? 'default' : 'outline'}
+                size="sm"
+                className="font-mono"
                 onClick={() => setAmount(a)}
-                style={{
-                  padding: '8px 16px', borderRadius: 8, cursor: 'pointer',
-                  fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 600,
-                  border: amount === a ? '1px solid var(--accent-indigo)' : '1px solid var(--border-subtle)',
-                  background: amount === a ? 'var(--accent-indigo-soft, rgba(99,102,241,0.12))' : 'transparent',
-                  color: amount === a ? 'var(--accent-indigo)' : 'var(--text-secondary)',
-                }}
               >
                 ${a}
-              </button>
+              </Button>
             ))}
-            <input
+            <Input
               type="number"
               min={1}
               value={amount}
-              onChange={(e) => setAmount(Math.max(1, Math.floor(Number(e.target.value) || 0)))}
-              style={{
-                width: 90, padding: '8px 12px', borderRadius: 8,
-                border: '1px solid var(--border-subtle)', background: 'transparent',
-                color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: 14,
-              }}
+              onChange={(e) =>
+                setAmount(Math.max(1, Math.floor(Number(e.target.value) || 0)))
+              }
+              className="w-24 font-mono"
             />
           </div>
-          <button
-            className="btn-primary"
-            disabled={amount < 1}
-            onClick={() => setConfirmTopup(true)}
-            style={{ padding: '10px 20px' }}
-          >
-            {`Top up $${amount}`}
-          </button>
+          <Button disabled={amount < 1} onClick={() => setConfirmTopup(true)}>
+            Top up ${amount}
+          </Button>
         </div>
-      </div>
+      </Panel>
 
-      <AutoTopupCard current={autumn?.autoTopup ?? null} hasToppedUp={autumn?.hasToppedUp ?? false} />
+      <AutoTopupCard
+        current={autumn?.autoTopup ?? null}
+        hasToppedUp={autumn?.hasToppedUp ?? false}
+      />
 
-      {/* Concurrency plans */}
-      <div className="glass-card animate-in stagger-3" style={{ padding: 28 }}>
-        <span className="section-title" style={{ marginBottom: 8, display: 'block' }}>
-          Concurrency
-        </span>
-        <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
-          You can run <strong style={{ color: 'var(--text-primary)' }}>{autumn?.maxConcurrentSandboxes ?? 5}</strong> sandboxes
-          at once on the <strong style={{ color: 'var(--text-primary)' }}>{currentPlan === 'base' ? 'Base' : currentPlan}</strong> tier.
-          Subscribe to a higher tier for more — billed monthly, separate from usage credits.
-        </div>
-        <div style={{ display: 'grid', gap: 10 }}>
-          {CONCURRENCY_TIERS.map((tier) => {
-            const active = currentPlan === tier.id
+      {/* Concurrency */}
+      <Panel className="p-6">
+        <h2 className="mb-2 text-sm font-semibold">Concurrency</h2>
+        <p className="text-muted-foreground mb-4 text-sm">
+          You can run{' '}
+          <strong className="text-foreground">
+            {autumn?.maxConcurrentSandboxes ?? 5}
+          </strong>{' '}
+          sandboxes at once on the{' '}
+          <strong className="text-foreground">
+            {currentPlan === 'base' ? 'Base' : currentPlan}
+          </strong>{' '}
+          tier. Subscribe to a higher tier for more — billed monthly, separate
+          from usage credits.
+        </p>
+        <div className="space-y-2">
+          {CONCURRENCY_TIERS.map((t) => {
+            const active = currentPlan === t.id
             return (
               <div
-                key={tier.id}
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  padding: '14px 16px', borderRadius: 10,
-                  border: active ? '1px solid var(--accent-indigo)' : '1px solid var(--border-subtle)',
-                }}
+                key={t.id}
+                className={cn(
+                  'flex items-center justify-between rounded-md border px-4 py-3',
+                  active && 'border-foreground/40 bg-secondary',
+                )}
               >
                 <div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
-                    {tier.label} — {tier.limit} concurrent
+                  <div className="text-foreground text-sm font-medium">
+                    {t.label} — {t.limit} concurrent
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-                    ${tier.price}/mo
+                  <div className="text-muted-foreground font-mono text-xs">
+                    ${t.price}/mo
                   </div>
                 </div>
-                <button
-                  className="btn-secondary"
+                <Button
+                  variant="outline"
+                  size="sm"
                   disabled={active}
-                  onClick={() => setConfirmPlanId(tier.id)}
-                  style={{ padding: '8px 16px' }}
+                  onClick={() => setConfirmPlanId(t.id)}
                 >
                   {active ? 'Current' : 'Subscribe'}
-                </button>
+                </Button>
               </div>
             )
           })}
-          <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4 }}>
-            Need more than 1000? <a href="mailto:support@digger.dev" style={{ color: 'var(--accent-indigo)' }}>Contact us</a>.
-          </div>
+          <p className="text-muted-foreground text-xs">
+            Need more than 1000?{' '}
+            <a
+              href="mailto:support@digger.dev"
+              className="text-foreground font-medium underline underline-offset-4"
+            >
+              Contact us
+            </a>
+            .
+          </p>
         </div>
-      </div>
+      </Panel>
 
       <UsageBreakdown />
 
-      {confirmTopup && (
-        <ConfirmModal
-          title="Confirm top-up"
-          body={<>Add <strong style={{ color: 'var(--text-primary)' }}>${amount}</strong> in prepaid credits. If a payment method is on file you&apos;ll be charged <strong style={{ color: 'var(--text-primary)' }}>${amount}</strong> now; otherwise you&apos;ll continue to checkout to add one.</>}
-          confirmLabel={`Top up $${amount}`}
-          pending={topupMutation.isPending}
-          error={topupMutation.isError ? (topupMutation.error as Error).message : null}
-          onConfirm={() => topupMutation.mutate()}
-          onCancel={() => setConfirmTopup(false)}
-        />
-      )}
-      {confirmPlanId && (() => {
-        const tier = CONCURRENCY_TIERS.find((t) => t.id === confirmPlanId)
-        if (!tier) return null
-        return (
-          <ConfirmModal
-            title="Confirm subscription"
-            body={<>Subscribe to <strong style={{ color: 'var(--text-primary)' }}>{tier.label}</strong> ({tier.limit} concurrent sandboxes) for <strong style={{ color: 'var(--text-primary)' }}>${tier.price}/mo</strong>. If a payment method is on file you&apos;ll be charged now and monthly; otherwise you&apos;ll continue to checkout.</>}
-            confirmLabel={`Subscribe — $${tier.price}/mo`}
-            pending={planMutation.isPending}
-            error={planMutation.isError ? (planMutation.error as Error).message : null}
-            onConfirm={() => planMutation.mutate(tier.id)}
-            onCancel={() => setConfirmPlanId(null)}
-          />
-        )
-      })()}
-    </>
+      <ConfirmDialog
+        open={confirmTopup}
+        onOpenChange={(o) => !o && setConfirmTopup(false)}
+        title="Confirm top-up"
+        description={`Add $${amount} in prepaid credits. If a payment method is on file you'll be charged $${amount} now; otherwise you'll continue to checkout to add one.`}
+        confirmLabel={`Top up $${amount}`}
+        pending={topupMutation.isPending}
+        onConfirm={() => topupMutation.mutate()}
+      />
+      <ConfirmDialog
+        open={!!tier}
+        onOpenChange={(o) => !o && setConfirmPlanId(null)}
+        title="Confirm subscription"
+        description={
+          tier
+            ? `Subscribe to ${tier.label} (${tier.limit} concurrent sandboxes) for $${tier.price}/mo. If a payment method is on file you'll be charged now and monthly; otherwise you'll continue to checkout.`
+            : ''
+        }
+        confirmLabel={tier ? `Subscribe — $${tier.price}/mo` : 'Subscribe'}
+        pending={planMutation.isPending}
+        onConfirm={() => tier && planMutation.mutate(tier.id)}
+      />
+    </div>
   )
 }
 
-function UsageBreakdown() {
-  const { data, isLoading } = useQuery({
-    queryKey: ['sandbox-usage'], queryFn: () => getSandboxUsage(30),
+function AutoTopupCard({
+  current,
+  hasToppedUp,
+}: {
+  current: AutumnBilling['autoTopup']
+  hasToppedUp: boolean
+}) {
+  const queryClient = useQueryClient()
+  // Canonical values come from the server (`current`); local edits are nullable
+  // overrides, so a refetch / org switch updates the form instead of being
+  // shadowed by once-copied state. Draft is cleared after a successful save.
+  const [draft, setDraft] = useState<{
+    enabled?: boolean
+    threshold?: number
+    quantity?: number
+  }>({})
+  const enabled = draft.enabled ?? current?.enabled ?? false
+  const threshold = draft.threshold ?? current?.threshold ?? 5
+  const quantity = draft.quantity ?? current?.quantity ?? 25
+  const [saved, markSaved] = useTransientFlag(3000)
+  const [confirm, setConfirm] = useState(false)
+
+  const mutation = useMutation({
+    mutationFn: () => setAutumnAutoTopup({ enabled, threshold, quantity }),
+    onSuccess: (data) => {
+      setConfirm(false)
+      if (data?.url) {
+        window.location.href = data.url
+        return
+      }
+      void queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
+      setDraft({}) // server config is canonical again
+      markSaved()
+    },
+    onError: (e) => notifyError("Couldn't save auto-top-up settings.", e),
   })
 
-  const rows = data?.sandboxes ?? []
+  // Saving only charges when enabling WITHOUT a card on file. Gate that one path.
+  const willCharge = enabled && !hasToppedUp
+  const onSave = () => (willCharge ? setConfirm(true) : mutation.mutate())
 
   return (
-    <div className="glass-card animate-in stagger-4" style={{ padding: 28, marginTop: 14 }}>
-      <span className="section-title" style={{ marginBottom: 4, display: 'block' }}>
-        Usage by sandbox
-      </span>
-      <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 16 }}>
-        Compute cost over the last {data?.windowDays ?? 30} days (disk overage not included).
+    <Panel className="p-6">
+      <h2 className="mb-2 text-sm font-semibold">Automatic top-up</h2>
+      <p className="text-muted-foreground mb-4 text-sm">
+        Keep your balance from running out — when it drops below the threshold
+        we automatically add credits to your saved card.
+      </p>
+
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id="auto-topup"
+          checked={enabled}
+          onCheckedChange={(v) =>
+            setDraft((d) => ({ ...d, enabled: v === true }))
+          }
+        />
+        <Label htmlFor="auto-topup" className="cursor-pointer font-normal">
+          Enable automatic top-up
+        </Label>
       </div>
 
-      {isLoading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
-          <div className="loading-spinner" />
-        </div>
-      ) : rows.length === 0 ? (
-        <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-          No recent sandbox usage to show yet.
-        </div>
-      ) : (
-        <div style={{ display: 'grid', gap: 1 }}>
-          <div style={{
-            display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12,
-            fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase',
-            letterSpacing: '0.04em', padding: '0 4px 8px',
-          }}>
-            <span>Sandbox</span><span style={{ textAlign: 'right' }}>Runtime</span><span style={{ textAlign: 'right' }}>Cost</span>
-          </div>
-          {rows.map((r) => (
-            <div
-              key={r.sandboxId}
-              style={{
-                display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12,
-                alignItems: 'center', padding: '10px 4px',
-                borderTop: '1px solid var(--border-subtle)', fontSize: 13,
-              }}
-            >
-              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {r.sandboxId}
-                <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-body)' }}>
-                  {r.status}
-                </span>
-              </span>
-              <span style={{ textAlign: 'right', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
-                {formatDuration(r.seconds)}
-              </span>
-              <span style={{ textAlign: 'right', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
-                {formatCost(r.costCents)}
-              </span>
+      {enabled ? (
+        <div className="mt-4 flex flex-wrap gap-5">
+          <Field label="When balance falls below" htmlFor="threshold">
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground text-sm">$</span>
+              <Input
+                id="threshold"
+                type="number"
+                min={0}
+                value={threshold}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    threshold: Math.max(
+                      0,
+                      Math.floor(Number(e.target.value) || 0),
+                    ),
+                  }))
+                }
+                className="w-24 font-mono"
+              />
             </div>
-          ))}
-          <div style={{
-            display: 'grid', gridTemplateColumns: '1fr auto', gap: 12,
-            padding: '12px 4px 0', borderTop: '1px solid var(--border-subtle)',
-            marginTop: 4, fontSize: 13, fontWeight: 600,
-          }}>
-            <span style={{ color: 'var(--text-secondary)' }}>Total</span>
-            <span style={{ textAlign: 'right', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
-              {formatCost(data?.totalCents ?? 0)}
-            </span>
-          </div>
+          </Field>
+          <Field label="Add credits" htmlFor="quantity">
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground text-sm">$</span>
+              <Input
+                id="quantity"
+                type="number"
+                min={1}
+                value={quantity}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    quantity: Math.max(
+                      1,
+                      Math.floor(Number(e.target.value) || 0),
+                    ),
+                  }))
+                }
+                className="w-24 font-mono"
+              />
+            </div>
+          </Field>
         </div>
-      )}
-    </div>
+      ) : null}
+
+      <div className="mt-4">
+        <Button
+          variant="outline"
+          disabled={mutation.isPending}
+          onClick={onSave}
+        >
+          {mutation.isPending ? 'Saving…' : saved ? 'Saved' : 'Save'}
+        </Button>
+      </div>
+
+      {enabled && !hasToppedUp ? (
+        <p className="text-muted-foreground mt-3 text-xs">
+          Since you haven&apos;t topped up yet, enabling runs your first $
+          {quantity} recharge now to set up your card.
+        </p>
+      ) : null}
+
+      <ConfirmDialog
+        open={confirm}
+        onOpenChange={(o) => !o && setConfirm(false)}
+        title="Enable automatic top-up"
+        description={`You don't have a saved card yet, so enabling runs your first $${quantity} recharge now to set it up — you'll be charged $${quantity}. After that we top up automatically whenever your balance drops below $${threshold}.`}
+        confirmLabel={`Charge $${quantity} & enable`}
+        pending={mutation.isPending}
+        onConfirm={() => mutation.mutate()}
+      />
+    </Panel>
   )
 }
 
@@ -586,8 +578,7 @@ function formatDuration(seconds: number): string {
   return `${(seconds / 3600).toFixed(1)}h`
 }
 
-// Cost can be fractional cents (cheap tiers / short runs). Show the real value
-// at higher precision below a cent rather than rounding it down to $0.00.
+// Cost can be fractional cents — show real value below a cent rather than $0.00.
 function formatCost(cents: number): string {
   const dollars = cents / 100
   if (dollars <= 0) return '$0.00'
@@ -595,193 +586,174 @@ function formatCost(cents: number): string {
   return `$${dollars.toFixed(2)}`
 }
 
-const autoTopupInputStyle = {
-  width: 80, padding: '6px 10px', borderRadius: 8, border: '1px solid var(--border-subtle)',
-  background: 'transparent', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: 13,
-}
-
-function AutoTopupCard({ current, hasToppedUp }: { current: AutumnBilling['autoTopup']; hasToppedUp: boolean }) {
-  const queryClient = useQueryClient()
-  const [enabled, setEnabled] = useState(current?.enabled ?? false)
-  const [threshold, setThreshold] = useState(current?.threshold ?? 5)
-  const [quantity, setQuantity] = useState(current?.quantity ?? 25)
-  const [saved, setSaved] = useState(false)
-  const [confirm, setConfirm] = useState(false)
-
-  const mutation = useMutation({
-    mutationFn: () => setAutumnAutoTopup({ enabled, threshold, quantity }),
-    onSuccess: (data) => {
-      // Auto-recharge needs a saved off-session card. If enabling without one, the
-      // server returns a no-charge Stripe setup URL — redirect to capture the card,
-      // after which auto-recharge is live. Otherwise just confirm the save.
-      setConfirm(false)
-      if (data?.url) { window.location.href = data.url; return }
-      queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
-      setSaved(true)
-      setTimeout(() => setSaved(false), 3000)
-    },
+function UsageBreakdown() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['sandbox-usage'],
+    queryFn: () => getSandboxUsage(30),
   })
+  const rows = data?.sandboxes ?? []
 
-  // Saving only charges when enabling WITHOUT a card on file (the first recharge
-  // arms the card). That's the one path we gate behind a confirm; disabling or
-  // editing thresholds with a card already saved is just config — save directly.
-  const willCharge = enabled && !hasToppedUp
-  const onSave = () => { if (willCharge) setConfirm(true); else mutation.mutate() }
+  const columns: Column<(typeof rows)[number]>[] = [
+    {
+      key: 'sandbox',
+      header: 'Sandbox',
+      cell: (r) => (
+        <span className="flex items-center gap-2">
+          <code className="text-foreground font-mono text-xs">
+            {r.sandboxId}
+          </code>
+          <span className="text-muted-foreground text-xs">{r.status}</span>
+        </span>
+      ),
+    },
+    {
+      key: 'runtime',
+      header: 'Runtime',
+      align: 'right',
+      cell: (r) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {formatDuration(r.seconds)}
+        </span>
+      ),
+    },
+    {
+      key: 'cost',
+      header: 'Cost',
+      align: 'right',
+      cell: (r) => (
+        <span className="text-foreground font-mono text-xs font-medium">
+          {formatCost(r.costCents)}
+        </span>
+      ),
+    },
+  ]
 
   return (
-    <div className="glass-card animate-in stagger-2" style={{ padding: 28, marginBottom: 14 }}>
-      <span className="section-title" style={{ marginBottom: 8, display: 'block' }}>
-        Automatic Top-up
-      </span>
-      <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
-        Keep your balance from running out — when it drops below the threshold we
-        automatically add credits to your saved card.
+    <Panel className="overflow-hidden">
+      <div className="px-6 pt-6">
+        <h2 className="text-sm font-semibold">Usage by sandbox</h2>
+        <p className="text-muted-foreground mt-1 text-xs">
+          Compute cost over the last {data?.windowDays ?? 30} days (disk overage
+          not included).
+        </p>
       </div>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, cursor: 'pointer', fontSize: 13 }}>
-        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-        <span style={{ color: 'var(--text-primary)' }}>Enable automatic top-up</span>
-      </label>
-      {enabled && (
-        <div style={{ display: 'flex', gap: 20, marginBottom: 16, flexWrap: 'wrap' }}>
-          <label style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-            When balance falls below
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
-              <span style={{ color: 'var(--text-secondary)' }}>$</span>
-              <input
-                type="number" min={0} value={threshold}
-                onChange={(e) => setThreshold(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
-                style={autoTopupInputStyle}
-              />
-            </div>
-          </label>
-          <label style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-            Add credits
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
-              <span style={{ color: 'var(--text-secondary)' }}>$</span>
-              <input
-                type="number" min={1} value={quantity}
-                onChange={(e) => setQuantity(Math.max(1, Math.floor(Number(e.target.value) || 0)))}
-                style={autoTopupInputStyle}
-              />
-            </div>
-          </label>
-        </div>
-      )}
-      <button
-        className="btn-secondary"
-        disabled={mutation.isPending}
-        onClick={onSave}
-        style={{ padding: '8px 16px' }}
-      >
-        {mutation.isPending ? 'Saving…' : saved ? 'Saved ✓' : 'Save'}
-      </button>
-      {confirm && (
-        <ConfirmModal
-          title="Enable automatic top-up"
-          body={<>You don&apos;t have a saved card yet, so enabling runs your first <strong style={{ color: 'var(--text-primary)' }}>${quantity}</strong> recharge now to set it up — you&apos;ll be charged <strong style={{ color: 'var(--text-primary)' }}>${quantity}</strong>. After that we top up automatically whenever your balance drops below ${threshold}.</>}
-          confirmLabel={`Charge $${quantity} & enable`}
-          pending={mutation.isPending}
-          error={mutation.isError ? (mutation.error as Error).message : null}
-          onConfirm={() => mutation.mutate()}
-          onCancel={() => setConfirm(false)}
+      <div className="mt-3">
+        <ResourceTable
+          columns={columns}
+          rows={rows}
+          rowKey={(r) => r.sandboxId}
+          loading={isLoading}
+          empty={<EmptyState title="No recent sandbox usage to show yet." />}
         />
-      )}
-      {enabled && (
-        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 10 }}>
-          Charges your saved card automatically when the balance drops below the threshold.
-          {!hasToppedUp && ` Since you haven't topped up yet, enabling runs your first $${quantity} recharge now to set up your card.`}
+      </div>
+      {rows.length > 0 ? (
+        <div className="flex items-center justify-between border-t px-6 py-3 text-sm font-medium">
+          <span className="text-muted-foreground">Total</span>
+          <span className="text-foreground font-mono">
+            {formatCost(data?.totalCents ?? 0)}
+          </span>
         </div>
-      )}
-      {mutation.isError && (
-        <div style={{ fontSize: 12, color: 'var(--accent-rose)', marginTop: 8 }}>
-          {(mutation.error as Error).message}
-        </div>
-      )}
-    </div>
+      ) : null}
+    </Panel>
   )
 }
 
-// ───────────── Invoices tab ─────────────
+/* ── Invoices ─────────────────────────────────────────────────────────────── */
+
+function invoiceTone(status: string) {
+  if (status === 'paid') return 'success'
+  if (status === 'open') return 'pending'
+  if (status === 'uncollectible') return 'error'
+  return 'stopped'
+}
 
 function InvoicesTab() {
-  const { data: billing } = useQuery({ queryKey: ['billing'], queryFn: getBilling })
+  const { data: billing } = useQuery({
+    queryKey: ['billing'],
+    queryFn: getBilling,
+  })
   const { data: invoiceData, isLoading } = useQuery({
-    queryKey: ['invoices'], queryFn: () => getBillingInvoices(),
+    queryKey: ['invoices'],
+    queryFn: () => getBillingInvoices(),
   })
 
   const isPro = billing?.plan === 'pro'
 
-  if (isLoading) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
-        <div className="loading-spinner" />
-      </div>
-    )
-  }
-
   if (!isPro) {
     return (
-      <div className="glass-card" style={{ padding: 28, textAlign: 'center' }}>
-        <p style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
-          Invoices appear here once you're on the Pro plan.
-        </p>
-      </div>
+      <Panel className="max-w-2xl">
+        <EmptyState
+          title="No invoices yet"
+          description="Invoices appear here once you're on the Pro plan."
+        />
+      </Panel>
     )
   }
 
-  return (
-    <div className="glass-card animate-in stagger-1" style={{ padding: '22px 24px' }}>
-      <span className="section-title" style={{ marginBottom: 14, display: 'block' }}>Invoices</span>
-      {!invoiceData?.invoices?.length ? (
-        <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-tertiary)', fontSize: 13 }}>
-          No invoices yet — your first invoice will appear at the end of the billing period
-        </div>
-      ) : (
-        <table className="data-table">
-          <thead>
-            <tr><th>Date</th><th>Number</th><th>Status</th><th>Amount</th><th></th></tr>
-          </thead>
-          <tbody>
-            {invoiceData.invoices.map((inv: StripeInvoice) => (
-              <tr key={inv.id}>
-                <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                  {new Date(inv.created * 1000).toLocaleDateString()}
-                </td>
-                <td style={{ fontSize: 12 }}>{inv.number}</td>
-                <td><InvoiceStatus status={inv.status} /></td>
-                <td style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 600 }}>
-                  ${(inv.amountDue / 100).toFixed(2)}
-                </td>
-                <td>
-                  {inv.hostedUrl && (
-                    <a href={inv.hostedUrl} target="_blank" rel="noreferrer"
-                      style={{ fontSize: 12, color: 'var(--accent-indigo)', textDecoration: 'none' }}>
-                      View
-                    </a>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  )
-}
+  const columns: Column<StripeInvoice>[] = [
+    {
+      key: 'date',
+      header: 'Date',
+      cell: (inv) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {new Date(inv.created * 1000).toLocaleDateString()}
+        </span>
+      ),
+    },
+    {
+      key: 'number',
+      header: 'Number',
+      cell: (inv) => <span className="text-sm">{inv.number}</span>,
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (inv) => (
+        <StatusBadge status={invoiceTone(inv.status)} label={inv.status} />
+      ),
+    },
+    {
+      key: 'amount',
+      header: 'Amount',
+      align: 'right',
+      cell: (inv) => (
+        <span className="font-mono text-sm font-medium">
+          ${(inv.amountDue / 100).toFixed(2)}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
+      cell: (inv) =>
+        inv.hostedUrl ? (
+          <a
+            href={inv.hostedUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-foreground text-sm font-medium underline underline-offset-4"
+          >
+            View
+          </a>
+        ) : null,
+    },
+  ]
 
-// ───────────── Helpers ─────────────
-
-function InvoiceStatus({ status }: { status: string }) {
-  let color = 'var(--text-tertiary)'
-  let bg = 'rgba(255,255,255,0.04)'
-  if (status === 'paid') { color = 'var(--accent-emerald)'; bg = 'rgba(52,211,153,0.1)' }
-  else if (status === 'open') { color = 'var(--accent-cyan)'; bg = 'rgba(34,211,238,0.1)' }
-  else if (status === 'uncollectible') { color = 'var(--accent-rose)'; bg = 'rgba(244,63,94,0.1)' }
   return (
-    <span style={{
-      display: 'inline-block', padding: '2px 8px', borderRadius: 4,
-      fontSize: 11, fontWeight: 600, color, background: bg,
-      textTransform: 'uppercase', letterSpacing: '0.5px',
-    }}>{status}</span>
+    <Panel className="max-w-3xl overflow-hidden">
+      <ResourceTable
+        columns={columns}
+        rows={invoiceData?.invoices ?? []}
+        rowKey={(inv) => inv.id}
+        loading={isLoading}
+        empty={
+          <EmptyState
+            title="No invoices yet"
+            description="Your first invoice will appear at the end of the billing period."
+          />
+        }
+      />
+    </Panel>
   )
 }

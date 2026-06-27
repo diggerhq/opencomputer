@@ -1,2 +1,6 @@
 node_modules
 dist
+*.tsbuildinfo
+
+# impeccable critique snapshots (local backlog)
+.impeccable/
