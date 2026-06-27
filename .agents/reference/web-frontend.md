@@ -29,6 +29,17 @@ afford it. Unused code may sit dead and removed features move to a clearly
 dormant module, but neither should masquerade as a live alternative. The code in
 front of you should describe what actually ships.
 
+## Preserve product contracts while rewriting internals
+
+A dashboard rewrite can simplify the code without narrowing the product. Before
+deleting a screen, route, API call, or integration path, compare against the
+current shipped behavior and decide explicitly whether the behavior is gone,
+dormant, or moved. Auth, billing, org switching, custom domains, API keys,
+preview URLs, PTY, logs, and legacy routes are product contracts even when they
+are not exercised by the happy-path demo. Keep compatibility redirects when
+users may have bookmarked old routes, and keep dormant client code isolated
+rather than half-wired through live navigation.
+
 ## Keep one source of truth for every shape and value
 
 A fact lives in one place and everything else derives from it. Data shapes are
@@ -53,6 +64,17 @@ nothing assumed-shaped flows inward. The boundary is the one place the backend's
 reality meets the UI's assumptions, and checking it there means a failure points
 at its cause instead of surfacing as a crash three components away.
 
+## Treat the API client as a boundary, not a convenience drawer
+
+The API layer should describe backend contracts, not page implementation detail.
+Keep request construction, response parsing, error normalization, and preview
+mock parity there; keep view-specific shaping in the page or a named hook. Query
+keys include the real scope of the data, especially org and resource identity,
+and mutations invalidate or update every affected query deliberately. Optimistic
+updates need rollback or a clear reason they can safely be temporary. Do not call
+endpoints that are inapplicable for the current state just because the page can
+ignore the result.
+
 ## Don't let layout or behavior depend on transient state
 
 Two instances of a component that differ only by their data should still align
@@ -72,8 +94,19 @@ Server state lives in the query cache, transient UI state lives in the component
 and the two don't shadow each other. When the context changes — switching org —
 reset both on purpose: clearing the cache does not refetch an already-mounted
 query, and it does not touch a component's own drafts or filters, so the refetch
-and the remount are made explicit. State that quietly survives a context switch
-is the whole class of "it's still showing the previous account" bugs.
+and the remount are made explicit. Treat the active org as a namespace for
+org-scoped screens: local drafts, dialogs, selected tabs, filters, and pending
+commands belong to that namespace too. State that quietly survives a context
+switch is the whole class of "it's still showing the previous account" bugs.
+
+## Make side effects scarce, named, and disposable
+
+Use effects for synchronizing with systems outside React: sockets, event streams,
+timers, browser APIs, and imperative libraries. Do not use them to derive state
+that can be computed during render. A side effect starts once for the resource it
+owns, has a clear cleanup path, and guards async callbacks after teardown.
+WebSocket, EventSource, PTY, clipboard, resize, and prefetch code should all
+make success, failure, cancellation, and unmount behavior explicit.
 
 ## Contain failures, and surface them once in human terms
 
@@ -91,6 +124,15 @@ untyped data at fetch boundaries, and a navigation call whose return type had
 quietly changed — a class of bug that costs nothing to catch if you let the tools
 catch it. A suppression comment is a promise to owe that bug later; write one only
 when you can say why.
+
+## Keep the toolchain boring and deterministic
+
+If the app requires a minimum Node, Vite, TypeScript, or package-manager version,
+pin it where people and CI will both use it. `engines`, lockfiles, local version
+files, and GitHub Actions setup are one contract; drifting between them makes a
+valid branch fail only on someone else's machine. A dependency upgrade is not
+done until lint, typecheck, format, and build run under the same version CI will
+use.
 
 ## Fast by default, never load-bearing on the optimization
 
