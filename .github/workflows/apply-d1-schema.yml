@@ -1,0 +1,70 @@
+name: Apply D1 Schema
+
+# CI-assisted application of a D1 schema file to a target database, so schema
+# changes don't require a local wrangler + account juggling.
+#
+# This is workflow_dispatch (NOT push-triggered) on purpose: D1 has no native
+# auto-migration, and the phase schema files use non-idempotent `ALTER TABLE ADD
+# COLUMN` statements (SQLite has no `IF NOT EXISTS` for those), so blindly
+# re-applying them on every push would fail. Pick the DB + file and run it once.
+#
+# A fully-automatic on-merge system would require adopting `wrangler d1
+# migrations` (a tracking table + numbered migrations) plus a one-time baseline
+# of the already-populated prod DB. Tracked as a follow-up — see the PR.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'D1 database'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+          - prod
+          - dev
+      file:
+        description: 'Schema file under cloudflare-workers/ to apply'
+        required: true
+        default: 'schema_phase8_webhooks.sql'
+
+concurrency:
+  group: apply-d1-schema-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Apply ${{ inputs.file }} → ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Resolve database
+        id: db
+        run: |
+          case "${{ inputs.target }}" in
+            prod) echo "name=opencomputer-prod" >> "$GITHUB_OUTPUT" ;;
+            dev)  echo "name=opencomputer-dev"  >> "$GITHUB_OUTPUT" ;;
+            *) echo "unknown target: ${{ inputs.target }}" >&2; exit 1 ;;
+          esac
+
+      - name: Apply ${{ inputs.file }} to ${{ steps.db.outputs.name }}
+        working-directory: cloudflare-workers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Run from cloudflare-workers/ (no wrangler.toml here), so the account
+          # comes from this env var, not a worker's stale toml account_id.
+          CLOUDFLARE_ACCOUNT_ID: b8f23cb87a7a6c64040d3134643da448
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "CLOUDFLARE_API_TOKEN GitHub secret is required" >&2
+            exit 1
+          fi
+          test -f "${{ inputs.file }}" || { echo "no such file: ${{ inputs.file }}" >&2; exit 1; }
+          npx wrangler d1 execute "${{ steps.db.outputs.name }}" --remote --yes --file "${{ inputs.file }}"
