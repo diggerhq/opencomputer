@@ -401,13 +401,14 @@ export const getSessions = (status?: string) =>
 export const getSession = (id: string) =>
   apiFetch(`/v3/sessions/${id}`, {}, S.SessionSchema)
 
-// /v3 wants { agent: <id>, input } and input is required (the first task).
+// /v3 wants { agent: <id>, input } (input required). The response is an envelope
+// { session, client_token } — return the session.
 export const createSession = (body: { agent: string; input: string }) =>
   apiFetch(
     '/v3/sessions',
     { method: 'POST', body: JSON.stringify(body) },
-    S.SessionSchema,
-  )
+    z.object({ session: S.SessionSchema, client_token: z.string().optional() }),
+  ).then((r) => r.session)
 
 export const cancelSession = (id: string) =>
   apiFetch<void>(`/v3/sessions/${id}/cancel`, { method: 'POST' })
