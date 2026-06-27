@@ -21,10 +21,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, Input } from '@/components/form'
+import { Field, Input, Label } from '@/components/form'
+import { Checkbox } from '@/components/ui/checkbox'
 import { StatusBadge } from '@/components/status-badge'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ResourceTable, type Column } from '@/components/resource-table'
+
+// Predefined event types a destination can subscribe to (exact + the error.*
+// prefix), from the /v3 event taxonomy. Empty selection = deliver every event.
+const EVENT_TYPES = [
+  { value: 'turn.completed', label: 'Turn completed' },
+  { value: 'turn.started', label: 'Turn started' },
+  { value: 'agent.message', label: 'Agent message' },
+  { value: 'user.message', label: 'User message' },
+  { value: 'tool.call', label: 'Tool call' },
+  { value: 'exec.completed', label: 'Command finished' },
+  { value: 'error.*', label: 'Errors' },
+]
 
 // Webhooks are session-scoped in /v3 (a destination is created per session), so
 // they live on the session detail rather than a global page.
@@ -32,9 +45,17 @@ export function SessionWebhooks({ sessionId }: { sessionId: string }) {
   const queryClient = useQueryClient()
   const [showAdd, setShowAdd] = useState(false)
   const [url, setUrl] = useState('')
-  const [types, setTypes] = useState('')
+  const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set())
   const [secret, setSecret] = useState('')
   const [toDelete, setToDelete] = useState<Destination | null>(null)
+
+  const toggleType = (v: string) =>
+    setSelectedTypes((prev) => {
+      const next = new Set(prev)
+      if (next.has(v)) next.delete(v)
+      else next.add(v)
+      return next
+    })
 
   const { data: destinations } = useQuery({
     queryKey: ['destinations', sessionId],
@@ -56,18 +77,13 @@ export function SessionWebhooks({ sessionId }: { sessionId: string }) {
     mutationFn: () =>
       createDestination(sessionId, {
         url: url.trim(),
-        types: types.trim()
-          ? types
-              .split(',')
-              .map((t) => t.trim())
-              .filter(Boolean)
-          : undefined,
+        types: selectedTypes.size ? Array.from(selectedTypes) : undefined,
         secret: secret.trim() || undefined,
       }),
     onSuccess: () => {
       setShowAdd(false)
       setUrl('')
-      setTypes('')
+      setSelectedTypes(new Set())
       setSecret('')
       invalidate()
     },
@@ -229,18 +245,28 @@ export function SessionWebhooks({ sessionId }: { sessionId: string }) {
                 placeholder="https://example.com/hooks/oc"
               />
             </Field>
-            <Field
-              label="Event types"
-              htmlFor="dst-types"
-              description="Comma-separated; exact or prefix (turn.*). Leave blank for all."
-            >
-              <Input
-                id="dst-types"
-                value={types}
-                onChange={(e) => setTypes(e.target.value)}
-                placeholder="turn.completed, error.*"
-              />
-            </Field>
+            <div className="space-y-2">
+              <Label>Event types</Label>
+              <p className="text-muted-foreground text-xs">
+                Leave all unchecked to deliver every event.
+              </p>
+              <div className="grid grid-cols-2 gap-2 pt-0.5">
+                {EVENT_TYPES.map((t) => (
+                  <label
+                    key={t.value}
+                    htmlFor={`et-${t.value}`}
+                    className="flex cursor-pointer items-center gap-2 text-sm"
+                  >
+                    <Checkbox
+                      id={`et-${t.value}`}
+                      checked={selectedTypes.has(t.value)}
+                      onCheckedChange={() => toggleType(t.value)}
+                    />
+                    {t.label}
+                  </label>
+                ))}
+              </div>
+            </div>
             <Field
               label="Signing secret"
               htmlFor="dst-secret"
