@@ -59,6 +59,19 @@ export default function Credentials() {
     setMakeDefault(true)
   }
 
+  // These operations chain through the edge → sessions-api → Infisical, so each
+  // can take a second or two. We apply the change to the cache immediately and
+  // reconcile on settle; on failure we roll the cache back and surface the error,
+  // so the UI feels instant without ever showing a state the server rejected.
+  const CREDS_KEY = ['credentials'] as const
+  const snapshot = async () => {
+    await queryClient.cancelQueries({ queryKey: CREDS_KEY })
+    return queryClient.getQueryData<Credential[]>(CREDS_KEY)
+  }
+  const rollback = (previous?: Credential[]) => {
+    if (previous) queryClient.setQueryData(CREDS_KEY, previous)
+  }
+
   const createMutation = useMutation({
     mutationFn: () =>
       createCredential({
@@ -67,26 +80,83 @@ export default function Credentials() {
         name: name.trim() || undefined,
         is_default: makeDefault,
       }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    onMutate: async () => {
+      const previous = await snapshot()
+      // Optimistic row: real last4 (client-derived), temp id replaced on settle.
+      const optimistic: Credential = {
+        id: `temp_${Date.now()}`,
+        provider,
+        name: name.trim() || undefined,
+        last4: key.trim().slice(-4),
+        is_default: makeDefault,
+        created_at: new Date().toISOString(),
+      }
+      queryClient.setQueryData<Credential[]>(CREDS_KEY, (old = []) => [
+        optimistic,
+        // a new default clears the previous one for the same provider
+        ...(makeDefault
+          ? old.map((c) =>
+              c.provider === provider ? { ...c, is_default: false } : c,
+            )
+          : old),
+      ])
+      // Close instantly, but keep the form values so a failure can reopen with the
+      // typed key intact (it's never recoverable once the row truly exists).
+      const form = { name, provider, key, makeDefault }
       setShowCreate(false)
-      resetForm()
+      return { previous, form }
     },
-    onError: (e) => notifyError("Couldn't add the credential.", e),
+    onError: (e, _vars, ctx) => {
+      rollback(ctx?.previous)
+      notifyError("Couldn't add the credential.", e)
+      if (ctx?.form) {
+        setName(ctx.form.name)
+        setProvider(ctx.form.provider)
+        setKey(ctx.form.key)
+        setMakeDefault(ctx.form.makeDefault)
+        setShowCreate(true) // reopen so the user can retry without re-typing
+      }
+    },
+    onSuccess: () => resetForm(),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: CREDS_KEY }),
   })
 
   const defaultMutation = useMutation({
     mutationFn: (id: string) => setDefaultCredential(id),
-    onError: (e) => notifyError("Couldn't set the default.", e),
-    onSettled: () =>
-      queryClient.invalidateQueries({ queryKey: ['credentials'] }),
+    onMutate: async (id) => {
+      const previous = await snapshot()
+      const target = previous?.find((c) => c.id === id)
+      queryClient.setQueryData<Credential[]>(CREDS_KEY, (old = []) =>
+        old.map((c) =>
+          c.provider === target?.provider
+            ? { ...c, is_default: c.id === id }
+            : c,
+        ),
+      )
+      return { previous }
+    },
+    onError: (e, _id, ctx) => {
+      rollback(ctx?.previous)
+      notifyError("Couldn't set the default.", e)
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: CREDS_KEY }),
   })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteCredential(id),
-    onError: (e) => notifyError("Couldn't delete the credential.", e),
-    onSettled: () =>
-      queryClient.invalidateQueries({ queryKey: ['credentials'] }),
+    onMutate: async (id) => {
+      const previous = await snapshot()
+      queryClient.setQueryData<Credential[]>(CREDS_KEY, (old = []) =>
+        old.filter((c) => c.id !== id),
+      )
+      setToDelete(null) // dismiss the confirm immediately
+      return { previous }
+    },
+    onError: (e, _id, ctx) => {
+      rollback(ctx?.previous)
+      notifyError("Couldn't delete the credential.", e)
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: CREDS_KEY }),
   })
 
   const columns: Column<Credential>[] = [
@@ -296,12 +366,8 @@ export default function Credentials() {
         description="Agents pinned to it, and sessions that fall back to it, will stop running until you point them at another credential. This can't be undone."
         confirmLabel="Delete credential"
         destructive
-        pending={deleteMutation.isPending}
         onConfirm={() => {
-          if (!toDelete) return
-          deleteMutation.mutate(toDelete.id, {
-            onSuccess: () => setToDelete(null),
-          })
+          if (toDelete) deleteMutation.mutate(toDelete.id)
         }}
       />
     </div>

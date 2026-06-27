@@ -34,11 +34,10 @@ const MODELS = [
 ]
 const DEFAULT_MODEL = MODELS[0].value
 
-// Agents run on the "claude" runtime → anthropic credentials. Sentinels for the
-// credential picker's two non-credential choices.
+// Agents run on the "claude" runtime → anthropic credentials. Sentinel for the
+// "create one inline" choice in the credential picker.
 const CRED_PROVIDER = 'anthropic'
 const NEW_CRED = '__new__'
-const ORG_DEFAULT = '__default__'
 
 export default function Agents() {
   const queryClient = useQueryClient()
@@ -60,8 +59,8 @@ export default function Agents() {
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState(DEFAULT_MODEL)
-  // Credential selection: a credential id, NEW_CRED (create inline), or ORG_DEFAULT
-  // (rely on the org default). '' is resolved to a sensible default on dialog open.
+  // Credential selection: a credential id or NEW_CRED (create inline). '' is
+  // resolved to a sensible default on dialog open.
   const [credChoice, setCredChoice] = useState('')
   const [newCredName, setNewCredName] = useState('')
   const [newCredKey, setNewCredKey] = useState('')
@@ -87,7 +86,7 @@ export default function Agents() {
     setShowCreate(true)
   }
 
-  // Build options: existing creds + "New credential…" + (when one exists) "Use org default".
+  // Build options: existing creds + "New credential…".
   const credOptions = [
     ...anthropicCreds.map((c) => ({
       value: c.id,
@@ -96,15 +95,13 @@ export default function Agents() {
       }`,
     })),
     { value: NEW_CRED, label: '＋ New credential…' },
-    ...(hasDefault ? [{ value: ORG_DEFAULT, label: 'Use org default' }] : []),
   ]
 
   const createMutation = useMutation({
     mutationFn: async () => {
       // Resolve the agent's credential without leaving the dialog:
-      //  - NEW_CRED  → create the credential first, pin the new id.
-      //  - ORG_DEFAULT → pin nothing (sessions fall back to the org default).
-      //  - else      → pin the chosen existing credential.
+      //  - NEW_CRED → create the credential first, pin the new id.
+      //  - else     → pin the chosen existing credential.
       let credentialId: string | undefined
       if (credChoice === NEW_CRED) {
         const cred = await createCredential({
@@ -114,7 +111,7 @@ export default function Agents() {
           is_default: !hasDefault, // first key becomes the org default
         })
         credentialId = cred.id
-      } else if (credChoice && credChoice !== ORG_DEFAULT) {
+      } else if (credChoice) {
         credentialId = credChoice
       }
       return createAgent({
@@ -322,11 +319,7 @@ export default function Agents() {
             <Field
               label="Credential"
               htmlFor="agent-cred"
-              description={
-                credChoice === ORG_DEFAULT
-                  ? 'Sessions use your org default Anthropic credential.'
-                  : 'The Anthropic key this agent runs on. Reuse one from Credentials, or add a new one here.'
-              }
+              description="The Anthropic key this agent runs on. Reuse one from Credentials, or add a new one here."
             >
               <Select
                 id="agent-cred"
