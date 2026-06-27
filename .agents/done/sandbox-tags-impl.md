@@ -1,5 +1,11 @@
 # Sandbox tags + per-tag/per-sandbox usage — implementation plan
 
+**Done — shipped + merged.** Review findings F3/F9/F10/F11 (commit
+`31d4b32`) and F12–F15 (commit `0ee4617`) all landed; usage API
+hardened (`0faece5`). F12 resolved via the org-scoped
+`GetSandboxSessionInOrg`, now used in both `sandbox_tags.go` and
+`usage.go`. The flag list below is kept for history.
+
 Working doc. Design is at `.agents/design/sandbox-tags-and-usage.md`,
 signed off. This doc is the delivery plan + a flag list of weak or
 fuzzy spots in the design that surfaced during code exploration.
