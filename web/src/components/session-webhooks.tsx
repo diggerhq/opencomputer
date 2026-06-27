@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, RotateCw, Webhook, X } from 'lucide-react'
+import { ChevronRight, Plus, RotateCw, Webhook, X } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   getDestinations,
@@ -25,7 +25,7 @@ import { Field, Input, Label } from '@/components/form'
 import { Checkbox } from '@/components/ui/checkbox'
 import { StatusBadge } from '@/components/status-badge'
 import { ConfirmDialog } from '@/components/confirm-dialog'
-import { ResourceTable, type Column } from '@/components/resource-table'
+import { cn } from '@/lib/utils'
 
 // Predefined event types a destination can subscribe to (exact + the error.*
 // prefix), from the /v3 event taxonomy. Empty selection = deliver every event.
@@ -49,11 +49,20 @@ export function SessionWebhooks({ sessionId }: { sessionId: string }) {
   const [secret, setSecret] = useState('')
   const [toDelete, setToDelete] = useState<Destination | null>(null)
 
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
   const toggleType = (v: string) =>
     setSelectedTypes((prev) => {
       const next = new Set(prev)
       if (next.has(v)) next.delete(v)
       else next.add(v)
+      return next
+    })
+  const toggleExpand = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       return next
     })
 
@@ -103,61 +112,15 @@ export function SessionWebhooks({ sessionId }: { sessionId: string }) {
     onError: (e) => notifyError("Couldn't redeliver.", e),
   })
 
-  const deliveryColumns: Column<Delivery>[] = [
-    {
-      key: 'event',
-      header: 'Event',
-      cell: (d) => (
-        <span className="text-muted-foreground font-mono text-xs">
-          #{d.event_seq ?? '—'}
-        </span>
-      ),
-    },
-    {
-      key: 'status',
-      header: 'Status',
-      cell: (d) => <StatusBadge status={d.status} />,
-    },
-    {
-      key: 'attempts',
-      header: 'Attempts',
-      align: 'right',
-      cell: (d) => (
-        <span className="text-muted-foreground font-mono text-xs">
-          {d.attempts ?? 0}
-        </span>
-      ),
-    },
-    {
-      key: 'response',
-      header: 'Response',
-      cell: (d) => (
-        <span className="text-muted-foreground font-mono text-xs">
-          {d.response_code ?? (d.error ? 'err' : '—')}
-        </span>
-      ),
-    },
-    {
-      key: 'actions',
-      header: '',
-      align: 'right',
-      cell: (d) => (
-        <div className="flex h-7 items-center justify-end">
-          {d.status === 'failed' || d.status === 'dead_letter' ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => redeliverMutation.mutate(d.id)}
-              disabled={redeliverMutation.isPending}
-            >
-              <RotateCw className="size-3.5" />
-              Redeliver
-            </Button>
-          ) : null}
-        </div>
-      ),
-    },
-  ]
+  // Deliveries grouped by destination — folded under each so the panel stays
+  // clean (delivery.destination is the destination id).
+  const byDest = new Map<string, Delivery[]>()
+  for (const dl of deliveries ?? []) {
+    const k = dl.destination ?? ''
+    const list = byDest.get(k) ?? []
+    list.push(dl)
+    byDest.set(k, list)
+  }
 
   return (
     <Panel className="mt-4 overflow-hidden">
@@ -169,7 +132,7 @@ export function SessionWebhooks({ sessionId }: { sessionId: string }) {
         </Button>
       </div>
 
-      {/* Destinations */}
+      {/* Destinations — each expands to its own deliveries */}
       {(destinations?.length ?? 0) === 0 ? (
         <div className="text-muted-foreground flex items-center gap-2 px-4 py-4 text-sm">
           <Webhook className="size-4 opacity-60" />
@@ -178,47 +141,98 @@ export function SessionWebhooks({ sessionId }: { sessionId: string }) {
         </div>
       ) : (
         <ul className="divide-y">
-          {destinations?.map((d) => (
-            <li key={d.id} className="flex items-center gap-3 px-4 py-2.5">
-              <code className="text-foreground min-w-0 flex-1 truncate font-mono text-xs">
-                {d.url}
-              </code>
-              {d.types?.length ? (
-                <span className="text-muted-foreground hidden font-mono text-[11px] sm:inline">
-                  {d.types.join(', ')}
-                </span>
-              ) : null}
-              <StatusBadge
-                status={d.enabled ? 'active' : 'paused'}
-                label={d.enabled ? 'Enabled' : 'Paused'}
-              />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Delete destination"
-                className="text-muted-foreground hover:text-status-error"
-                onClick={() => setToDelete(d)}
-              >
-                <X className="size-4" />
-              </Button>
-            </li>
-          ))}
+          {destinations?.map((d) => {
+            const dels = byDest.get(d.id) ?? []
+            const isOpen = expanded.has(d.id)
+            return (
+              <li key={d.id}>
+                <div className="flex items-center gap-3 px-4 py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpand(d.id)}
+                    aria-expanded={isOpen}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  >
+                    <ChevronRight
+                      className={cn(
+                        'size-3.5 shrink-0 opacity-60 transition-transform',
+                        isOpen && 'rotate-90',
+                      )}
+                    />
+                    <code className="text-foreground min-w-0 flex-1 truncate font-mono text-xs">
+                      {d.url}
+                    </code>
+                  </button>
+                  <span className="text-muted-foreground hidden text-xs sm:inline">
+                    {dels.length} sent
+                  </span>
+                  <StatusBadge
+                    status={d.enabled ? 'active' : 'paused'}
+                    label={d.enabled ? 'Enabled' : 'Paused'}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Delete destination"
+                    className="text-muted-foreground hover:text-status-error"
+                    onClick={() => setToDelete(d)}
+                  >
+                    <X className="size-4" />
+                  </Button>
+                </div>
+
+                {isOpen ? (
+                  <div className="bg-panel-2/40 border-t px-4 py-2 pl-9">
+                    {d.types?.length ? (
+                      <p className="text-muted-foreground mb-1.5 font-mono text-[11px]">
+                        {d.types.join(', ')}
+                      </p>
+                    ) : null}
+                    {dels.length === 0 ? (
+                      <p className="text-muted-foreground py-1 text-xs">
+                        No deliveries yet.
+                      </p>
+                    ) : (
+                      <ul className="divide-border/50 divide-y">
+                        {dels.map((dl) => (
+                          <li
+                            key={dl.id}
+                            className="flex items-center gap-3 py-1.5 text-xs"
+                          >
+                            <span className="text-muted-foreground w-10 shrink-0 font-mono">
+                              #{dl.event_seq ?? '—'}
+                            </span>
+                            <StatusBadge status={dl.status} />
+                            <span className="text-muted-foreground font-mono">
+                              {dl.attempts ?? 0}×
+                            </span>
+                            <span className="text-muted-foreground font-mono">
+                              {dl.response_code ?? (dl.error ? 'err' : '—')}
+                            </span>
+                            <span className="flex-1" />
+                            {dl.status === 'failed' ||
+                            dl.status === 'dead_letter' ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => redeliverMutation.mutate(dl.id)}
+                                disabled={redeliverMutation.isPending}
+                              >
+                                <RotateCw className="size-3.5" />
+                                Redeliver
+                              </Button>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ) : null}
+              </li>
+            )
+          })}
         </ul>
       )}
-
-      {/* Deliveries */}
-      {(deliveries?.length ?? 0) > 0 ? (
-        <div className="border-t">
-          <div className="text-muted-foreground px-4 pt-3 pb-1 text-xs font-medium tracking-wide uppercase">
-            Recent deliveries
-          </div>
-          <ResourceTable
-            columns={deliveryColumns}
-            rows={deliveries ?? []}
-            rowKey={(d) => d.id}
-          />
-        </div>
-      ) : null}
 
       {/* Add dialog */}
       <Dialog open={showAdd} onOpenChange={setShowAdd}>
