@@ -1,9 +1,10 @@
 # Agent sandbox ownership — end-user org owns the compute
 
-Status: **Phase 0 live; Phase 2 BUILT + verified, inert pending prod activation;
-Phase 0.5 / 1 / 3 open.** Owners span three repos (opencomputer edge + OC core,
-sessions-api). Companion to the dashboard work (`durable-agent-sessions-ui.md`).
-What actually shipped + how to turn it on: see **Implemented (Phase 2)** below.
+Status: **Phase 0 live; Phases 0.5 / 1 / 2 / 3 all BUILT + dev-verified, inert
+pending prod activation + test.** Owners span three repos (opencomputer edge +
+OC core, sessions-api). Companion to the dashboard work
+(`durable-agent-sessions-ui.md`). What shipped + how to turn it on: see
+**Implemented** + **Activation** below.
 
 ## Requirement (non-negotiable)
 
@@ -216,12 +217,31 @@ key → 200 (no regression); both repos `tsc` clean.
 sessions-api (inert); deploy the prod OC edge (inert); set `OC_PROVISION_SECRET`
 on both → live for **dashboard** sessions. SDK/`osb_` sessions need Phase 0.5.
 
-## Build order (remaining)
+## Build status — all phases built
 
-- **Phase 0.5 — `osb_`→org** — resolve `osb_` keys to their org so every session
-  is `oc-org:X` (also makes SDK/demo sessions show in the dashboard). Prereq for
-  owning SDK/demo sessions' boxes.
-- **Phase 1** — expose session→sandbox (serialize the already-recorded ids).
-  Safe, no trust changes; unblocks Phase 3.
-- **Phase 3** — dashboard surfaces agent boxes + session↔box links.
-- **Phase 2** — DONE (see above), pending prod activation.
+- **Phase 0** — edge org-token → `/v3` org-scoped. **LIVE in prod.**
+- **Phase 0.5 — `osb_`→org** — **BUILT** (sessions-api PR #28: `resolveOrgForKey`
+  via OC `GET /api/whoami`; edge `/api/whoami` in PR 426). Inert (per-key
+  fallback) until prod edge ships `/api/whoami`. Dev-verified: whoami returns
+  `{org_id,user_id}`.
+- **Phase 1 — session→sandbox** — **BUILT** (sessions-api PR #28: `sandboxes:
+  {brain,hands}` on `serializeSession`; dashboard shows them, PR 426). Additive.
+- **Phase 2 — act-as-org** — **BUILT** (sessions-api #27 merged + deployed inert;
+  edge `authenticate()` in PR 426). Inert until `OC_PROVISION_SECRET` set. See
+  **Implemented (Phase 2)**.
+- **Phase 3 — dashboard surfaces boxes** — **BUILT**: session detail links to its
+  brain/hands boxes (PR 426); the org-scoped Sandboxes list shows agent boxes
+  automatically once they're org-owned (Phase 2 active). No further code.
+
+## Activation (all prod; no dev `/v3` exists — test via the dev dashboard)
+
+1. Deploy the `feat/web-ui-dev` worker to the **prod OC edge** (ships `/api/whoami`
+   + `authenticate()` act-as-org + `proxyToV3` + dashboard webhooks). Inert.
+2. Merge sessions-api **#28** → deploy prod sessions-api (Phase 1 additive + 0.5
+   inert). (#27 / Phase 2 already deployed inert.)
+3. Set `OC_PROVISION_SECRET` (one shared value) on the prod OC edge + prod
+   sessions-api → **activates** act-as-org. (Set it ONLY after step 1, else
+   sessions-api mints JWTs the prod edge can't yet verify → provisioning breaks.)
+4. Test via the dev dashboard against prod `/v3`: create a session → box owned by
+   the org, shown on the session + in the org's Sandboxes list; an SDK/`osb_`
+   session also appears (Phase 0.5). Then merge PR 426.
