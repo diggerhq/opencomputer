@@ -222,14 +222,9 @@ export default function Agents() {
                 <Select
                   id="agent-model"
                   value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                >
-                  {MODELS.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </Select>
+                  onValueChange={setModel}
+                  options={MODELS}
+                />
               </Field>
               <Field
                 label="Runtime"
@@ -314,17 +309,13 @@ export default function Agents() {
                 <Select
                   id="edit-model"
                   value={editModel}
-                  onChange={(e) => setEditModel(e.target.value)}
-                >
-                  {!MODELS.some((m) => m.value === editModel) && editModel ? (
-                    <option value={editModel}>{editModel}</option>
-                  ) : null}
-                  {MODELS.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </Select>
+                  onValueChange={setEditModel}
+                  options={
+                    MODELS.some((m) => m.value === editModel) || !editModel
+                      ? MODELS
+                      : [{ value: editModel, label: editModel }, ...MODELS]
+                  }
+                />
               </Field>
               <Field
                 label="New prompt"

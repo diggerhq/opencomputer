@@ -175,14 +175,12 @@ export default function Sessions() {
                 <Select
                   id="start-agent"
                   value={agentId}
-                  onChange={(e) => setAgentId(e.target.value)}
-                >
-                  {agents?.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </Select>
+                  onValueChange={setAgentId}
+                  options={(agents ?? []).map((a) => ({
+                    value: a.id,
+                    label: a.name,
+                  }))}
+                />
               </div>
               <Field
                 label="First task"
