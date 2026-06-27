@@ -1,8 +1,10 @@
 # Durable Agent Sessions — dashboard UI
 
-Status: **first draft for review** — exploring shape before building. Lands in the
-same dashboard (`web/`) and PR lineage as the modernization work. Engineering
-principles: `.agents/reference/web-frontend.md`.
+Status: **draft, decisions converging** — exploration done. First cut = Agents +
+Sessions + session webhooks; Repos and the rest follow. Blocked on the `/v3`
+credential + tenant decision (#1) before the management screens can be built.
+Lands in the same dashboard (`web/`) and PR lineage as the modernization work.
+Engineering principles: `.agents/reference/web-frontend.md`.
 
 Goal: bring Durable Agent Sessions to the dashboard. Scope is the **stable v1
 `/v3` surface**; Labs-preview concepts (channels, triggers, workspaces,
@@ -11,12 +13,23 @@ screens.
 
 ## Two findings that shape everything
 
-1. **The dashboard does not currently talk to `/v3`.** Today it calls
-   `/api/dashboard/*` on the OpenComputer edge worker (D1, WorkOS-cookie auth).
-   The agent-sessions API is a **separate service** (sessions-api, `/v3`) authed
-   by **org API keys** (`osb_…`). Nothing wires the cookie-authed dashboard to
-   `/v3` yet. **This is the prerequisite and the one real unknown — decide it
-   first (see Open decisions #1).** Everything below assumes it's solved.
+1. **The dashboard can reach `/v3`, but `/v3` tenancy is per-key, not per-org.**
+   Connectivity is already solved: `/v3` (Fly app `bolt-platform`) reflects any
+   Origin (bearer-token model, not cookies) and is built for browser callers —
+   read+steer use a short-lived **client token**, SSE authenticates via `?token=`
+   (`sessions-api/src/index.ts:36-60`). So the browser can stream events and steer
+   directly. (The two `workers/` are background delivery + telemetry; `src/gateway`
+   is the model gateway — neither fronts the API.)
+   The real decision is the credential + tenant model. Management routes
+   (list/create agents, sessions, credentials, destinations) need an opaque `osb_`
+   **org key**, which must stay server-side. And `/v3` derives the tenant as
+   `owner_id = sha256(osb_key)` — **per key, not per OC org**
+   (`sessions-api/src/v3/auth/org.ts:18`). Sessions created with one key are
+   invisible to another even within one OC org, and `/v3` has no notion of the OC
+   org the dashboard authenticates as. A coherent org dashboard therefore needs
+   (a) a server-side path that mints client tokens + proxies management with an
+   org-scoped credential, and (b) a decision on org-scoping `/v3`. See Open
+   decisions #1. Everything below assumes a credential path exists.
 
 2. **Session webhooks are session-scoped; sandbox webhooks are org-scoped.**
    `/v3` destinations are created per session (`POST /v3/sessions/:id/destinations`)
@@ -35,7 +48,7 @@ inside a session. The management nouns a user actually administers:
 |---|---|---|
 | **Agents** | CRUD (`/v3/agents`) | Top-level: list + create/edit. Reusable "what" (prompt, model, runtime, credential, limits). |
 | **Sessions** | create/list/read/archive/cancel/result (`/v3/sessions`) | Top-level: list + a rich detail (below). The durable runs. |
-| **Credentials** | CRUD + default (`/v3/credentials`) | Small page: model-provider keys (anthropic/openai), write-only, `last4`, org default. Distinct from platform **API Keys** — note the naming risk. |
+| **Credentials** | CRUD + default (`/v3/credentials`) | Its own page (kept separate from platform **API Keys** by design — different purpose): model-provider keys (anthropic/openai), write-only, `last4`, org default. |
 | **Repos + GitHub** | `/v3/repos`, `/v3/github/apps`, `/v3/github/installations` | Page: connected repos + GitHub App (install OC app / BYO via manifest) + installations. |
 | **Webhooks** | sandbox (org) vs session destinations (per-session) | Split — see Webhooks. |
 
@@ -128,28 +141,46 @@ turn states), `EmptyState`, `ConfirmDialog`, `CopyRow`, `Field`/form,
 entries (dev-hard parse keeps the mock honest). New pages are `lazy()` routes
 behind the org+route-keyed error boundary.
 
-## Open decisions (need input before building)
+## Decisions
 
-1. **How does the dashboard reach `/v3`?** Recommended: the OC edge proxies
-   `/v3` under the dashboard origin and resolves the logged-in user's org to an
-   org-scoped call (mirrors today's `/api/dashboard` model, keeps cookie auth).
-   Alternatives: sessions-api validates the dashboard session directly (CORS), or
-   the user supplies an org key (poor UX). **Blocks everything; confirm with edge
-   + sessions-api owners.**
-2. **Agent-level default webhook destinations?** Decides whether a unified
-   webhook UX is possible now or is a follow-up.
-3. **Credentials vs API Keys naming** — two key-management pages. Keep separate
-   with clear labels, or consolidate into a "Keys & secrets" area?
-4. **Sidebar group labels** — subtle labels (b) or spacing-only (a)?
-5. **Scope for first cut** — minimum lovable = Agents (list/create) + Sessions
-   (list + detail with live events + steer). Repos / Credentials / global
-   Webhooks can follow. Confirm the cut.
+**Settled:**
+- **Webhooks IA** — session destinations on session detail; a separate global
+  page for sandbox/platform webhooks; no forced unification.
+- **Credentials separate from API Keys** — distinct pages, different purpose.
+- **First cut = Agents + Sessions + session webhooks.** Webhooks are part of
+  what makes it usable, so session destinations + deliveries ship on the session
+  detail in the first cut. Repos, the global sandbox-webhooks page, and the full
+  Credentials page come later.
 
-## Rough sequence (after decisions)
+**Still open (need input / cross-team confirm):**
+1. **`/v3` credential + tenant model (blocks the management screens).** Two parts:
+   - *Credential path* — recommended: the OC edge proxies `/v3` management calls
+     (cookie → inject an org-scoped credential) and mints client tokens; the
+     browser streams events + steers directly from `/v3`. Keeps `osb_` keys
+     server-side.
+   - *Tenancy* — `/v3` is per-key today (`owner_id = sha256(key)`). For an org
+     dashboard, either (i) make `/v3` OC-org-scoped (sessions-api change: resolve
+     key→org, key data by org), or (ii) scope the dashboard to one designated
+     key's workspace (no backend change, weaker product). Recommend (i). The
+     live event/steer path needs no change either way. **Confirm with the edge +
+     sessions-api owners.**
+2. **Agent-level default destinations?** Not in `/v3` today (destinations are
+   session-scoped). Adding them is what would make a unified, configure-once
+   webhook UX real — pursue or leave as a follow-up?
+3. **Minimum credential for a runnable first cut.** An agent needs a model
+   credential or an org-default, else session-create returns `no_credential`.
+   Either add a minimal "set org-default Anthropic key" affordance in the first
+   cut, or assume it's set via API/SDK already. Which?
+4. **Sidebar separation** — recommend spacing + hairline + small muted group
+   labels; confirm vs spacing-only.
 
-0. Mechanical: rename sandbox data layer; wire the `/v3` client path (decision #1).
-1. Agents: list + create/edit (+ runtime selector, credential picker).
-2. Sessions: list + detail (events SSE + steer) — the core.
-3. Sidebar grouping.
-4. Repos + GitHub connection; Credentials.
-5. Webhooks: session destinations on detail; then the global sandbox page.
+## Rough sequence (after decision #1)
+
+0. Mechanical, separate commit: rename the sandbox data layer
+   (`Session→Sandbox`, etc.); stand up the `/v3` client path + zod schemas.
+1. Agents: list + create/edit (runtime selector, credential reference).
+2. Sessions: list + detail — live events (SSE) + steer. The core.
+3. Session webhooks: destinations + deliveries (with redeliver) on the detail.
+4. Sidebar grouping.
+5. Later: Repos + GitHub connection; full Credentials page; global sandbox
+   webhooks page; (if chosen) agent-level default destinations.
