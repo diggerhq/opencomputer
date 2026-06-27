@@ -378,9 +378,11 @@ export const createAgent = (body: {
     S.AgentSchema,
   )
 
+// PATCH bumps revision; name is immutable (create idempotency key). `key`
+// rotates the model credential.
 export const updateAgent = (
   id: string,
-  body: Partial<{ name: string; prompt: string; model: string }>,
+  body: Partial<{ prompt: string; model: string; key: string }>,
 ) =>
   apiFetch(
     `/v3/agents/${id}`,
