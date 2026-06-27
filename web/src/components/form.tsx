@@ -6,6 +6,20 @@ import { cn } from '@/lib/utils'
 // Re-exported so screens import all form primitives from one place.
 export { Input, Label }
 
+// Native select, styled to match Input (same height / border / focus tokens).
+export function Select({ className, ...props }: ComponentProps<'select'>) {
+  return (
+    <select
+      data-slot="select"
+      className={cn(
+        'border-input focus-visible:border-ring h-8 w-full rounded-md border bg-transparent px-2.5 text-sm transition-colors outline-none disabled:cursor-not-allowed disabled:opacity-50',
+        className,
+      )}
+      {...props}
+    />
+  )
+}
+
 // Multiline input, styled to match Input (same border / focus tokens).
 export function Textarea({ className, ...props }: ComponentProps<'textarea'>) {
   return (

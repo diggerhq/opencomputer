@@ -14,12 +14,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, Input, Textarea } from '@/components/form'
+import { Field, Input, Select, Textarea } from '@/components/form'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
 
-// /v3 requires a provider-prefixed model; runtime "claude" ⇒ anthropic/…
-const DEFAULT_MODEL = 'anthropic/claude-opus-4-8'
+// Curated model list. /v3 requires a provider-prefixed id; runtime "claude" ⇒
+// anthropic/… (codex/openai land when that runtime ships).
+const MODELS = [
+  { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8' },
+  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+  { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+]
+const DEFAULT_MODEL = MODELS[0].value
 
 export default function Agents() {
   const queryClient = useQueryClient()
@@ -94,12 +100,7 @@ export default function Agents() {
       key: 'name',
       header: 'Name',
       cell: (a) => (
-        <button
-          onClick={() => openEdit(a)}
-          className="text-foreground font-medium underline-offset-4 hover:underline"
-        >
-          {a.name}
-        </button>
+        <span className="text-foreground font-medium">{a.name}</span>
       ),
     },
     {
@@ -161,6 +162,7 @@ export default function Agents() {
           columns={columns}
           rows={agents ?? []}
           rowKey={(a) => a.id}
+          onRowClick={openEdit}
           loading={isLoading}
           empty={
             <EmptyState
@@ -217,11 +219,17 @@ export default function Agents() {
             </Field>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Model" htmlFor="agent-model">
-                <Input
+                <Select
                   id="agent-model"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
-                />
+                >
+                  {MODELS.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </Select>
               </Field>
               <Field
                 label="Runtime"
@@ -303,11 +311,20 @@ export default function Agents() {
                 </span>
               </div>
               <Field label="Model" htmlFor="edit-model">
-                <Input
+                <Select
                   id="edit-model"
                   value={editModel}
                   onChange={(e) => setEditModel(e.target.value)}
-                />
+                >
+                  {!MODELS.some((m) => m.value === editModel) && editModel ? (
+                    <option value={editModel}>{editModel}</option>
+                  ) : null}
+                  {MODELS.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </Select>
               </Field>
               <Field
                 label="New prompt"

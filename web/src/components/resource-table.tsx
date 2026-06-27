@@ -29,8 +29,10 @@ function alignClass(a?: 'left' | 'right' | 'center') {
 
 /**
  * Presentational table (replaces the hand-rolled .data-table). Column-config
- * driven; handles loading (skeleton) and empty states. No sort UI and no
- * row-click div — give an explicit Open link/button in a column instead.
+ * driven; handles loading (skeleton) and empty states. Pass `onRowClick` to make
+ * the whole row activatable (keyboard-accessible); otherwise put an explicit
+ * action in a column. A row action button should stopPropagation to avoid also
+ * triggering the row.
  */
 export function ResourceTable<T>({
   columns,
@@ -40,6 +42,7 @@ export function ResourceTable<T>({
   skeletonRows = 5,
   empty,
   renderSubRow,
+  onRowClick,
   className,
 }: {
   columns: Column<T>[]
@@ -50,6 +53,8 @@ export function ResourceTable<T>({
   empty?: ReactNode
   /** Optional expanded row rendered under a row when it returns a node. */
   renderSubRow?: (row: T) => ReactNode
+  /** Make the whole row activatable (click + Enter/Space). */
+  onRowClick?: (row: T) => void
   className?: string
 }) {
   return (
@@ -90,7 +95,24 @@ export function ResourceTable<T>({
               return (
                 <Fragment key={rowKey(row)}>
                   <TableRow
-                    className={cn('hover:bg-row-hover', sub && 'border-b-0')}
+                    className={cn(
+                      'hover:bg-row-hover',
+                      onRowClick && 'cursor-pointer',
+                      sub && 'border-b-0',
+                    )}
+                    onClick={onRowClick ? () => onRowClick(row) : undefined}
+                    role={onRowClick ? 'button' : undefined}
+                    tabIndex={onRowClick ? 0 : undefined}
+                    onKeyDown={
+                      onRowClick
+                        ? (e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              onRowClick(row)
+                            }
+                          }
+                        : undefined
+                    }
                   >
                     {columns.map((col) => (
                       <TableCell

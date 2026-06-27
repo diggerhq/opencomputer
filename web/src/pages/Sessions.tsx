@@ -16,7 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, Label, Textarea } from '@/components/form'
+import { Field, Label, Select, Textarea } from '@/components/form'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
@@ -172,18 +172,17 @@ export default function Sessions() {
             >
               <div className="space-y-1.5">
                 <Label htmlFor="start-agent">Agent</Label>
-                <select
+                <Select
                   id="start-agent"
                   value={agentId}
                   onChange={(e) => setAgentId(e.target.value)}
-                  className="border-input focus-visible:border-ring h-8 w-full rounded-md border bg-transparent px-2.5 text-sm outline-none"
                 >
                   {agents?.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
               <Field
                 label="First task"
