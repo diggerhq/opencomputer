@@ -51,6 +51,11 @@ export interface Env extends DashboardEnv {
   // Optional alpha Burst Sandbox cell. When unset, burst=true creates
   // fail closed rather than silently landing on on-demand capacity.
   BURST_CELL_ID?: string;
+  // act-as-org provisioning (agent-sandbox-ownership): shared HS256 secret with
+  // sessions-api. When set, authenticate() accepts a signed "act for org X" JWT
+  // as the API key so /v3 sandboxes are owned by + billed to the customer org.
+  // Unset → the feature is inert (JWT keys rejected). See dashboard.ts.
+  OC_PROVISION_SECRET?: string;
 }
 
 // ── small helpers ────────────────────────────────────────────────────────
@@ -158,6 +163,17 @@ function stripApiKeyQueryParam(target: string): string {
 async function authenticate(req: Request, env: Env): Promise<Caller | null> {
   const apiKey = apiKeyFromRequest(req);
   if (!apiKey) return null;
+  // Act-as-org provisioning token (sessions-api): a signed JWT, not an osb_ key.
+  // Recognized only when OC_PROVISION_SECRET is configured — inert otherwise, so
+  // a stray JWT can't authenticate. The edge re-derives the org from the token;
+  // create stamps it, sub-ops match it, billing follows it.
+  if (
+    env.OC_PROVISION_SECRET &&
+    !apiKey.startsWith("osb_") &&
+    apiKey.split(".").length === 3
+  ) {
+    return verifyProvisionToken(env.OC_PROVISION_SECRET, apiKey);
+  }
   const hash = await sha256Hex(apiKey);
   const row = await env.OPENCOMPUTER_DB.prepare(
     "SELECT org_id, created_by, expires_at FROM api_keys WHERE key_hash = ?1",
@@ -1387,6 +1403,37 @@ async function verifySessionJWT(secret: string, token: string): Promise<SessionC
   }
 }
 
+// Verify an act-as-org provisioning token (sessions-api → OC sandbox API),
+// presented as the API key. HS256 signed with OC_PROVISION_SECRET; asserts
+// "operate as org X". Mintable only by the secret holder; we re-derive org X
+// from the verified token (never a client field). See agent-sandbox-ownership.md.
+async function verifyProvisionToken(secret: string, token: string): Promise<Caller | null> {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, sigB64] = parts;
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const expected = await crypto.subtle.sign("HMAC", key, enc.encode(`${headerB64}.${payloadB64}`));
+  if (b64url(expected) !== sigB64) return null;
+  try {
+    const p = JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/"))) as {
+      iss?: string; aud?: string; exp?: number; org_id?: string;
+    };
+    if (p.iss !== "sessions-api" || p.aud !== "opencomputer-api") return null;
+    if (typeof p.exp === "number" && p.exp < Math.floor(Date.now() / 1000)) return null;
+    if (typeof p.org_id !== "string" || !p.org_id) return null;
+    return { orgID: p.org_id, userID: null };
+  } catch {
+    return null;
+  }
+}
+
 // ── Stripe webhook ───────────────────────────────────────────────────────
 //
 // Stripe POSTs subscription / invoice events. We verify the signature,
@@ -1910,6 +1957,15 @@ export default {
     // longer validate D1-only api_keys, and would mis-route in a multi-cell
     // world. proxyToCellAuthed streams the response (SSE-safe). This is a
     // backstop; prefer adding a native handler for high-traffic resources.
+    // /api/whoami — return the authenticated caller's org (+ user). Lets a
+    // trusted service resolve an osb_ key to its OC org without custodying it
+    // (agent-sandbox-ownership Phase 0.5: sessions-api maps osb_ → oc-org:<id>).
+    if (path === "/api/whoami" && req.method === "GET") {
+      const caller = await authenticate(req, env);
+      if (!caller) return json({ error: "missing or invalid API key" }, 401);
+      return json({ org_id: caller.orgID, user_id: caller.userID });
+    }
+
     // /api/webhooks* — sandbox lifecycle webhook management (Svix-backed,
     // all-at-edge). Same X-API-Key auth as the rest of the public API; must
     // precede the proxy catch-all below.
