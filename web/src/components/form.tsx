@@ -37,7 +37,7 @@ export function Select({
         id={id}
         data-slot="select-trigger"
         className={cn(
-          'border-input focus-visible:border-ring data-placeholder:text-muted-foreground flex h-8 w-full items-center justify-between gap-2 rounded-md border bg-transparent px-2.5 text-sm transition-colors outline-none disabled:cursor-not-allowed disabled:opacity-50',
+          'border-input focus-visible:border-ring/60 data-placeholder:text-muted-foreground flex h-8 w-full items-center justify-between gap-2 rounded-md border bg-transparent px-2.5 text-sm transition-colors outline-none disabled:cursor-not-allowed disabled:opacity-50',
           className,
         )}
       >
@@ -80,7 +80,7 @@ export function Textarea({ className, ...props }: ComponentProps<'textarea'>) {
     <textarea
       data-slot="textarea"
       className={cn(
-        'border-input placeholder:text-muted-foreground focus-visible:border-ring disabled:bg-input/50 aria-invalid:border-destructive flex min-h-20 w-full resize-none rounded-md border bg-transparent px-2.5 py-1.5 text-base transition-colors outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
+        'border-input placeholder:text-muted-foreground focus-visible:border-ring/60 disabled:bg-input/50 aria-invalid:border-destructive flex min-h-20 w-full resize-none rounded-md border bg-transparent px-2.5 py-1.5 text-base transition-colors outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
         className,
       )}
       {...props}
