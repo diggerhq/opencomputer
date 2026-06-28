@@ -245,12 +245,13 @@ export default function SessionDetail() {
       {/* Event stream */}
       <Panel className="overflow-hidden">
         <div className="flex items-center justify-between border-b px-4 py-2.5">
-          <div className="flex items-baseline gap-2">
+          <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold">Events</h2>
             {streamOk ? (
-              // Sits on the Events text baseline; the dot rides the "Live" line.
-              <span className="text-status-running text-[10px] font-medium tracking-wide uppercase">
-                <span className="bg-status-running mr-1 inline-block size-1.5 rounded-full align-middle" />
+              // leading-none tightens the label box so items-center optically centers
+              // it on "Events" (default line-height would float it high).
+              <span className="text-status-running flex items-center gap-1 text-[10px] leading-none font-medium tracking-wide uppercase">
+                <span className="bg-status-running size-1.5 rounded-full" />
                 Live
               </span>
             ) : null}
