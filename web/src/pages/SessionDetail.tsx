@@ -248,11 +248,10 @@ export default function SessionDetail() {
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold">Events</h2>
             {streamOk ? (
-              // Optically centered on "Events" (leading-none tightens the label box); the
-              // dot is nudged up 1px so it sits on the uppercase cap-center, not the line
-              // center (which reads low next to all-caps text).
-              <span className="text-status-running flex items-center gap-1 text-[10px] leading-none font-medium tracking-wide uppercase">
-                <span className="bg-status-running relative -top-px size-1.5 rounded-full" />
+              // mt-[3px] drops the label to optically sit with "Events"; the dot stays
+              // line-centered with the "LIVE" text (values dialed in against the browser).
+              <span className="text-status-running mt-[3px] flex items-center gap-1 text-[10px] leading-none font-medium tracking-wide uppercase">
+                <span className="bg-status-running size-1.5 rounded-full" />
                 Live
               </span>
             ) : null}
