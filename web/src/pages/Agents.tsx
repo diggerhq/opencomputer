@@ -342,7 +342,7 @@ export default function Agents() {
                 <Field
                   label="Anthropic API key"
                   htmlFor="new-cred-key"
-                  description="Stored write-only."
+                  description="Encrypted in a dedicated secret store."
                 >
                   <Input
                     id="new-cred-key"

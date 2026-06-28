@@ -263,7 +263,7 @@ export default function Credentials() {
     <div>
       <PageHeader
         title="Credentials"
-        description="Model-provider keys your agents run on. Stored write-only; pick one per agent or set an org default."
+        description="Model-provider keys your agents run on. Pick one per agent or set an org default."
         api={{
           method: 'POST',
           path: '/v3/credentials',
