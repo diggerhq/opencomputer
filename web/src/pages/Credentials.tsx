@@ -375,20 +375,20 @@ export default function Credentials() {
                       placeholder={KEY_HINT[provider] ?? 'sk-…'}
                     />
                   </Field>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-start gap-2.5">
                     <Checkbox
                       id="cred-default"
                       checked={makeDefault}
                       onCheckedChange={(v) => setMakeDefault(v === true)}
+                      className="mt-0.5"
                     />
                     <Label
                       htmlFor="cred-default"
-                      className="cursor-pointer font-normal"
+                      className="cursor-pointer leading-snug font-normal"
                     >
                       Set as the org default for {provider}
-                      <span className="text-muted-foreground">
-                        {' '}
-                        — used when an agent doesn&apos;t pin its own.
+                      <span className="text-muted-foreground block text-xs">
+                        Used when an agent doesn&apos;t pin its own.
                       </span>
                     </Label>
                   </div>
