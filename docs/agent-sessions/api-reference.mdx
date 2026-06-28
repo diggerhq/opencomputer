@@ -334,7 +334,7 @@ Responses **never** contain a token or secret. Registering a repo is **optional*
 
 </Tabs>
 
-Credential body: `provider`, `key`, `name?`, `is_default?`. Keys are write-only. A credential is **required**; sessions run on your provider key.
+Credential body: `provider`, `key`, `name?`, `is_default?`. Keys are write-only. A credential is **required**; sessions run on your provider key. See the [Credentials](/agent-sessions/credentials) guide for resolution, rotation, and the dashboard.
 
 ```
 Credential  = { id, provider, name?, last4, is_default, created_at }

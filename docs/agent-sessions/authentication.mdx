@@ -77,44 +77,6 @@ For the SSE stream the browser passes the client token as `?token=` (native `Eve
 
 ## Model credentials
 
-Sessions run the model on **your own provider key**: Anthropic for the `claude` [runtime](/agent-sessions/runtimes), OpenAI for `codex`. The key is held in OpenComputer's [secret store](/sandboxes/secrets), encrypted at rest (AES-256-GCM), write-only, and **never returned** by the API. The real key never enters a sandbox: the runtime gets an opaque placeholder, and a host-side proxy swaps in the real value only on the outbound HTTPS call to the model provider (`api.anthropic.com` or `api.openai.com`, scoped by an egress allowlist). A credential is **required**; a session with no resolvable key fails to start (`422 no_credential`).
+Sessions run the model on **your own provider key** — Anthropic for the `claude` [runtime](/agent-sessions/runtimes), OpenAI for `codex`. The key is held in OpenComputer's [secret store](/sandboxes/secrets), encrypted at rest (AES-256-GCM), write-only, and **never returned** by the API. The real key never enters a sandbox: the runtime gets an opaque placeholder, and a host-side proxy swaps in the real value only on the outbound HTTPS call to the provider. A credential is **required**; a session with no resolvable key fails to start (`422 no_credential`).
 
-The easiest way to add one is inline when you [create an agent](/agent-sessions/agents) (`"key": "…"`) — the provider is inferred from the agent's `model`. The standalone resource below is for reusing one key across agents, setting an org default, and rotating/removing keys. Set `provider` to `anthropic` or `openai`:
-
-<CodeGroup>
-
-```ts TypeScript SDK
-await oc.credentials.create({
-  provider: "anthropic",
-  key: "sk-ant-...",
-  name: "prod",
-});
-```
-
-```http REST API
-POST https://api.opencomputer.dev/v3/credentials
-Authorization: Bearer $OPENCOMPUTER_API_KEY
-Content-Type: application/json
-
-{ "provider": "anthropic", "key": "sk-ant-...", "name": "prod" }
-```
-
-</CodeGroup>
-
-<CodeGroup>
-
-```ts TypeScript SDK
-await oc.credentials.setDefault({ credential: "cred_..." });
-```
-
-```http REST API
-PUT https://api.opencomputer.dev/v3/credentials/default
-Authorization: Bearer $OPENCOMPUTER_API_KEY
-Content-Type: application/json
-
-{ "credential": "cred_..." }
-```
-
-</CodeGroup>
-
-**Resolution** per session: the agent's credential → your org default for the provider. Sessions run on your configured provider key.
+The quickest way to add one is inline when you [create an agent](/agent-sessions/agents) (`"key": "…"`). To reuse a key across agents, set an org default, or rotate/remove keys, see the dedicated **[Credentials](/agent-sessions/credentials)** page.
