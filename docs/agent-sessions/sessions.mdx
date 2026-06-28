@@ -6,9 +6,11 @@ description: "Durable, resumable agent execution"
 
 A **session** is an [agent](/agent-sessions/agents) run with an append-only [event log](/agent-sessions/events), a pinned agent snapshot, and a lifecycle status. Compute can attach, detach when idle, and reattach on the next message; the log persists.
 
+<Note>The [dashboard](https://app.opencomputer.dev) lists your sessions and opens each with a live event stream you can watch and steer — handy for following or debugging a run without building UI.</Note>
+
 ## Session flow
 
-1. You create a session from an [agent](/agent-sessions/agents) (and a [model credential](/agent-sessions/authentication#model-credentials) — both required). The session starts immediately.
+1. You create a session from an [agent](/agent-sessions/agents) (and a [model credential](/agent-sessions/credentials) — both required). The session starts immediately.
 2. The [runtime](/agent-sessions/runtimes) executes the agent in a sandbox, appending [events](/agent-sessions/events) to the log as it works.
 3. With nothing left to do, the session goes **idle** and the sandbox **hibernates**.
 4. A [steer](/agent-sessions/messaging) message wakes it; it resumes with its prior context. Repeat.

@@ -6,6 +6,8 @@ description: "Define an agent, then run resumable, steerable sessions"
 
 Create an agent, start a session, stream its event log, steer it with messages, and receive results by webhook.
 
+<Note>Prefer a console? The [dashboard](https://app.opencomputer.dev) does all of this in a UI — create [agents](/agent-sessions/agents) and [credentials](/agent-sessions/credentials), watch and steer sessions live, and inspect webhook deliveries. The API and SDK below are the same surface, scripted.</Note>
+
 ## Core behavior
 
 <CardGroup cols={2}>
@@ -35,7 +37,7 @@ Create an agent, start a session, stream its event log, steer it with messages, 
 
 <Steps>
   <Step title="Define an agent">
-    Create a reusable `{ name, model, prompt, runtime }` from your backend — `runtime: "claude"` (Anthropic models) or `"codex"` (OpenAI models). Pass your model `key` inline, or reference a saved [credential](/agent-sessions/authentication#model-credentials). ([Agents](/agent-sessions/agents))
+    Create a reusable `{ name, model, prompt, runtime }` from your backend — `runtime: "claude"` (Anthropic models) or `"codex"` (OpenAI models). Pass your model `key` inline, or reference a saved [credential](/agent-sessions/credentials). ([Agents](/agent-sessions/agents))
   </Step>
   <Step title="Start a session">
     Start a session with `{ agent, input }`. The agent starts immediately and returns a browser-safe `client_token`.

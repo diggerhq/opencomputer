@@ -8,6 +8,8 @@ This quickstart defines an agent, starts a session, streams its event log, and s
 
 For the finished version, see the [example app](https://github.com/diggerhq/oc-sessions-demos); for every endpoint, the [API / SDK reference](/agent-sessions/api-reference).
 
+<Tip>Want to click through it first? The [dashboard](https://app.opencomputer.dev) creates agents and credentials, then streams and steers the session live — a fast way to see the flow before wiring it into code.</Tip>
+
 ## Prerequisites
 
 You need an OpenComputer API key and an Anthropic key:
@@ -63,7 +65,7 @@ Response:
 { "id": "agt_...", "name": "quickstart-coder", "revision": 1 }
 ```
 
-<Note>Your model `key` is held in OpenComputer's [secret store](/sandboxes/secrets) (encrypted, write-only) and **never enters the sandbox**. The agent runs with a placeholder; an **egress proxy substitutes the real key in-flight** on the outbound model-provider call. Reuse one key across agents via a [credential](/agent-sessions/authentication#model-credentials).</Note>
+<Note>Your model `key` is held in OpenComputer's [secret store](/sandboxes/secrets) (encrypted, write-only) and **never enters the sandbox**. The agent runs with a placeholder; an **egress proxy substitutes the real key in-flight** on the outbound model-provider call. Reuse one key across agents via a [credential](/agent-sessions/credentials).</Note>
 
 <Tip>`POST /agents` is idempotent by agent name, so it is fine to call this during application startup.</Tip>
 

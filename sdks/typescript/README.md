@@ -65,6 +65,19 @@ if (delivery.type === "turn.completed") {
 }
 ```
 
+### Credentials
+
+Sessions run on **your** model-provider key (Anthropic for `claude`, OpenAI for `codex`). The inline `key` above stores one and attaches it to the agent; manage them directly to reuse a key across agents, set an org default, or rotate/remove:
+
+```typescript
+await oc.credentials.create({ provider: "anthropic", key: process.env.ANTHROPIC_API_KEY!, name: "prod", isDefault: true });
+const creds = await oc.credentials.list();           // metadata only — keys are write-only
+await oc.credentials.setDefault({ credential: creds[0].id });
+await oc.credentials.delete(creds[0].id);
+```
+
+Or reference one by id when creating an agent: `oc.agents.create({ …, credential: "cred_…" })`. A credential is **required** — a session with no resolvable key fails with `422 no_credential`. Full guide: [Credentials](https://docs.opencomputer.dev/agent-sessions/credentials).
+
 ## Sandbox webhooks (Preview)
 
 Subscribe to sandbox lifecycle events (`sandbox.ready`, `sandbox.stopped`, …) — signed, retried, and redeliverable. The same `verifyWebhook` helper verifies both session and sandbox deliveries. **Preview: newly available; the surface may change.**

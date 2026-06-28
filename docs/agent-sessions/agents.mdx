@@ -6,6 +6,8 @@ description: "Reusable agent configuration"
 
 An **agent** is reusable configuration: `name`, `prompt`, `model`, and [`runtime`](/agent-sessions/runtimes). Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like.
 
+<Note>You can create and edit agents in the [dashboard](https://app.opencomputer.dev) too — the create dialog also lets you pick or add a [credential](/agent-sessions/credentials) inline.</Note>
+
 <CodeGroup>
 
 ```ts TypeScript SDK
@@ -38,14 +40,14 @@ Content-Type: application/json
 
 </CodeGroup>
 
-Pass your model `key` inline and it's stored as a [credential](/agent-sessions/authentication#model-credentials) and attached to the agent — sessions run the model on it. The provider is taken from `model` (Anthropic for `anthropic/…`, OpenAI for `openai/…`), so the key has to be for that provider. Already have a credential? Reference it with `credential: "cred_…"` instead, or omit both to use your org default for that provider. Optionally set default [`limits`](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) too; sessions inherit them.
+Pass your model `key` inline and it's stored as a [credential](/agent-sessions/credentials) and attached to the agent — sessions run the model on it. The provider is taken from `model` (Anthropic for `anthropic/…`, OpenAI for `openai/…`), so the key has to be for that provider. Already have a credential? Reference it with `credential: "cred_…"` instead, or omit both to use your org default for that provider. Optionally set default [`limits`](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) too; sessions inherit them.
 
 <Tip>Keep the org key and model key on your backend. Only return session-scoped client tokens to browsers.</Tip>
 
 ## Session-pinned config
 
-When a session is created it **freezes** the agent's `prompt`, `model`, `runtime`, and `revision` (a number that bumps on every edit) into the session — and pins the resolved credential too. Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change. (Rotating a credential's **key value** is the exception — that flows to running sessions, so a compromised key can be replaced; see [authentication](/agent-sessions/authentication#model-credentials).)
+When a session is created it **freezes** the agent's `prompt`, `model`, `runtime`, and `revision` (a number that bumps on every edit) into the session — and pins the resolved credential too. Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change. (Rotating a credential's **key value** is the exception — that flows to running sessions, so a compromised key can be replaced; see [credentials](/agent-sessions/credentials).)
 
 ## Model
 
-`model` is a `provider/model` id, and its provider must match the [runtime](/agent-sessions/runtimes): `claude` runs `anthropic/…` (e.g. `anthropic/claude-opus-4-8`), `codex` runs `openai/…` (e.g. `openai/gpt-5-codex`). The model runs on [your own key](/agent-sessions/authentication#model-credentials) for that provider (required). The `runtime` / `model` / credential pairing is validated when you **create** the agent. `runtime` is fixed at creation — to switch engines, create a new agent; you can still update `model` later, but keep it within the runtime's provider.
+`model` is a `provider/model` id, and its provider must match the [runtime](/agent-sessions/runtimes): `claude` runs `anthropic/…` (e.g. `anthropic/claude-opus-4-8`), `codex` runs `openai/…` (e.g. `openai/gpt-5-codex`). The model runs on [your own key](/agent-sessions/credentials) for that provider (required). The `runtime` / `model` / credential pairing is validated when you **create** the agent. `runtime` is fixed at creation — to switch engines, create a new agent; you can still update `model` later, but keep it within the runtime's provider.

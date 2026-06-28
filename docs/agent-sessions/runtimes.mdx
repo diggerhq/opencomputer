@@ -4,7 +4,7 @@ title: "Runtimes"
 description: "Runtime engine selected per agent"
 ---
 
-A **runtime** executes the agent loop: provider SDK, model calls, and tool use. You pick one per agent with `runtime`; it defaults to `claude`. The model is separate configuration, so an agent is a runtime, a `provider/model`, and a matching [credential](/agent-sessions/authentication#model-credentials).
+A **runtime** executes the agent loop: provider SDK, model calls, and tool use. You pick one per agent with `runtime`; it defaults to `claude`. The model is separate configuration, so an agent is a runtime, a `provider/model`, and a matching [credential](/agent-sessions/credentials).
 
 | Runtime | Models | Credential |
 | --- | --- | --- |
@@ -20,7 +20,7 @@ Sessions, [events](/agent-sessions/events), [steering](/agent-sessions/messaging
 
 ## `claude`
 
-The managed Claude agent loop (Claude Agent SDK / Claude Code). It works in a sandbox through remote tools, streams its steps into the session as events, and runs Claude models on your [Anthropic key](/agent-sessions/authentication#model-credentials).
+The managed Claude agent loop (Claude Agent SDK / Claude Code). It works in a sandbox through remote tools, streams its steps into the session as events, and runs Claude models on your [Anthropic key](/agent-sessions/credentials).
 
 ```http
 POST https://api.opencomputer.dev/v3/agents
@@ -38,7 +38,7 @@ Content-Type: application/json
 
 ## `codex`
 
-The managed Codex agent loop (OpenAI Codex SDK). It runs OpenAI models on your [OpenAI key](/agent-sessions/authentication#model-credentials), and drives the same sandbox tools and event stream as `claude` — only the engine and the provider change.
+The managed Codex agent loop (OpenAI Codex SDK). It runs OpenAI models on your [OpenAI key](/agent-sessions/credentials), and drives the same sandbox tools and event stream as `claude` — only the engine and the provider change.
 
 ```http
 POST https://api.opencomputer.dev/v3/agents
@@ -54,7 +54,7 @@ Content-Type: application/json
 }
 ```
 
-The runtime, model, and credential have to agree: `runtime: "codex"` needs an `openai/…` model and an OpenAI key, and `runtime: "claude"` needs an `anthropic/…` model and an Anthropic key. A mismatch is rejected when you create the agent, with a clear error — so a session never starts on a broken pairing. See [model credentials](/agent-sessions/authentication#model-credentials).
+The runtime, model, and credential have to agree: `runtime: "codex"` needs an `openai/…` model and an OpenAI key, and `runtime: "claude"` needs an `anthropic/…` model and an Anthropic key. A mismatch is rejected when you create the agent, with a clear error — so a session never starts on a broken pairing. See [model credentials](/agent-sessions/credentials).
 
 ## Architecture
 
@@ -73,7 +73,7 @@ A runtime also **starts fast**: the engine is prepared ahead of time and baked i
 
 ### Brain and hands
 
-The runtime runs the agent loop in its **own per-session sandbox** (the *brain*). The agent's file and shell tools don't run there — they run in a **separate sandbox** (the *hands*) exposed to the brain through tools, so commands and file edits stay isolated from the model loop. The brain carries the [sealed model key](/agent-sessions/authentication#model-credentials) (egress-allowlisted to the model API, swapped in by a host proxy so the key never enters the VM); the hands sandbox holds no secrets.
+The runtime runs the agent loop in its **own per-session sandbox** (the *brain*). The agent's file and shell tools don't run there — they run in a **separate sandbox** (the *hands*) exposed to the brain through tools, so commands and file edits stay isolated from the model loop. The brain carries the [sealed model key](/agent-sessions/credentials) (egress-allowlisted to the model API, swapped in by a host proxy so the key never enters the VM); the hands sandbox holds no secrets.
 
 ### Each turn is bounded
 
