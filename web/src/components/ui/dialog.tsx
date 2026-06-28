@@ -4,10 +4,10 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { XIcon } from 'lucide-react'
-import { isEventFromFloatingLayer } from '@/components/ui/floating-layer'
+import { shouldKeepParentOpenForFloatingLayer } from '@/components/ui/floating-layer'
 
 function keepDialogOpenForFloatingLayer(event: Event) {
-  if (isEventFromFloatingLayer(event)) event.preventDefault()
+  if (shouldKeepParentOpenForFloatingLayer(event)) event.preventDefault()
 }
 
 function Dialog({

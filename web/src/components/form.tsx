@@ -3,7 +3,10 @@ import { Select as SelectPrimitive } from 'radix-ui'
 import { Check, ChevronDown } from 'lucide-react'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
-import { floatingLayerProps } from '@/components/ui/floating-layer'
+import {
+  floatingLayerProps,
+  markFloatingLayerOutsideInteraction,
+} from '@/components/ui/floating-layer'
 import { cn } from '@/lib/utils'
 
 // Re-exported so screens import all form primitives from one place.
@@ -52,6 +55,7 @@ export function Select({
           {...floatingLayerProps}
           position="popper"
           sideOffset={4}
+          onPointerDownOutside={markFloatingLayerOutsideInteraction}
           className="bg-popover text-popover-foreground ring-foreground/10 shadow-overlay data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 z-50 max-h-(--radix-select-content-available-height) min-w-(--radix-select-trigger-width) origin-(--radix-select-content-transform-origin) overflow-hidden rounded-lg p-1 ring-1 duration-100"
         >
           <SelectPrimitive.Viewport>
