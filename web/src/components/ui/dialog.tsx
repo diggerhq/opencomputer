@@ -50,10 +50,31 @@ function DialogContent({
   children,
   showCloseButton = true,
   onInteractOutside,
+  onPointerDownOutside,
+  onFocusOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
 }) {
+  // A Select/Dropdown renders its menu in a portal OUTSIDE the dialog content, so
+  // interacting with it reads as "outside" and would dismiss the dialog. Suppress
+  // every outside-dismiss path when a dropdown is involved — either the event came
+  // from a popper menu, OR a dropdown is currently open anywhere in the document
+  // (the robust signal: if a menu is open, an outside interaction is closing the
+  // MENU, not the dialog). Escape + the explicit close buttons still dismiss.
+  const isFromOpenMenu = (event: {
+    detail?: { originalEvent?: Event | null }
+  }): boolean => {
+    const target = (event.detail?.originalEvent?.target ??
+      null) as Element | null
+    const fromPopper = target?.closest?.(
+      '[data-radix-popper-content-wrapper],[data-radix-select-viewport],[role="listbox"],[role="menu"],[role="option"],[role="menuitem"]',
+    )
+    const menuOpen =
+      typeof document !== 'undefined' &&
+      document.querySelector('[data-radix-select-viewport],[role="menu"]')
+    return Boolean(fromPopper || menuOpen)
+  }
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -63,21 +84,22 @@ function DialogContent({
           'bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 shadow-overlay fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border p-5 text-sm duration-100 outline-none sm:max-w-lg',
           className,
         )}
+        onPointerDownOutside={(event) => {
+          if (isFromOpenMenu(event)) {
+            event.preventDefault()
+            return
+          }
+          onPointerDownOutside?.(event)
+        }}
+        onFocusOutside={(event) => {
+          if (isFromOpenMenu(event)) {
+            event.preventDefault()
+            return
+          }
+          onFocusOutside?.(event)
+        }}
         onInteractOutside={(event) => {
-          // A Select/Dropdown renders its menu in a portal OUTSIDE this content, so
-          // clicking an item reads as an "interact outside" and would close the
-          // dialog. Ignore interactions that originate from any popper menu. Null-safe
-          // (the custom event's detail shape varies) and matched by role as well as
-          // the dynamically-built popper attribute.
-          const detail = (event as { detail?: { originalEvent?: Event } })
-            .detail
-          const target = (detail?.originalEvent?.target ??
-            null) as Element | null
-          if (
-            target?.closest?.(
-              '[data-radix-popper-content-wrapper],[role="listbox"],[role="menu"]',
-            )
-          ) {
+          if (isFromOpenMenu(event)) {
             event.preventDefault()
             return
           }
