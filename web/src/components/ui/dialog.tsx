@@ -49,6 +49,7 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -62,6 +63,17 @@ function DialogContent({
           'bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 shadow-overlay fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border p-5 text-sm duration-100 outline-none sm:max-w-lg',
           className,
         )}
+        onInteractOutside={(event) => {
+          // A Select/Dropdown renders its menu in a portal OUTSIDE this content, so
+          // clicking an item reads as an "interact outside" and would close the
+          // dialog. Ignore interactions that originate from any popper menu.
+          const target = event.detail.originalEvent.target as Element | null
+          if (target?.closest?.('[data-radix-popper-content-wrapper]')) {
+            event.preventDefault()
+            return
+          }
+          onInteractOutside?.(event)
+        }}
         {...props}
       >
         {children}
