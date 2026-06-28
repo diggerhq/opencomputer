@@ -66,9 +66,18 @@ function DialogContent({
         onInteractOutside={(event) => {
           // A Select/Dropdown renders its menu in a portal OUTSIDE this content, so
           // clicking an item reads as an "interact outside" and would close the
-          // dialog. Ignore interactions that originate from any popper menu.
-          const target = event.detail.originalEvent.target as Element | null
-          if (target?.closest?.('[data-radix-popper-content-wrapper]')) {
+          // dialog. Ignore interactions that originate from any popper menu. Null-safe
+          // (the custom event's detail shape varies) and matched by role as well as
+          // the dynamically-built popper attribute.
+          const detail = (event as { detail?: { originalEvent?: Event } })
+            .detail
+          const target = (detail?.originalEvent?.target ??
+            null) as Element | null
+          if (
+            target?.closest?.(
+              '[data-radix-popper-content-wrapper],[role="listbox"],[role="menu"]',
+            )
+          ) {
             event.preventDefault()
             return
           }
