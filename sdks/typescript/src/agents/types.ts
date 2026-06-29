@@ -18,7 +18,7 @@ export type Runtime = "claude" | "codex" | (string & {});
 // checkable while still accepting any concrete id.
 export type CredentialId = `cred_${string}`;
 // How an agent picks its model source: the reserved "managed" sentinel (run via
-// OpenComputer, billed to credits) or a specific BYO credential id. Omit/null to
+// OpenComputer, no provider key) or a specific BYO credential id. Omit/null to
 // inherit the org default.
 export type CredentialRef = "managed" | CredentialId;
 

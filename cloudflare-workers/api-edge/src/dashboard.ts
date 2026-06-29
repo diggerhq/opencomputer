@@ -989,19 +989,9 @@ export async function handleDashboard(
       max_concurrent_sandboxes: number; billing_provider: string;
     }>();
     if (!org) return json({ error: "org not found" }, 404);
-    // Managed model access (token-billing §6.6) — read SEPARATELY + defensively so the
-    // critical billing read above never depends on the phase-9 column. If schema_phase9
-    // hasn't been applied yet (Worker deployed first), the column is missing → this
-    // throws → managedAvailable=false, and existing billing is unaffected (P0 ordering).
-    let managedAvailable = false;
-    try {
-      const m = await env.OPENCOMPUTER_DB.prepare(
-        `SELECT model_billing_status FROM orgs WHERE id = ?1`,
-      ).bind(caller.orgID).first<{ model_billing_status: string | null }>();
-      managedAvailable = m?.model_billing_status === "active";
-    } catch {
-      /* phase-9 not migrated yet → Managed simply unavailable */
-    }
+    // Managed is a universal capability (every org gets a managed credential provisioned
+    // on demand at agent-create / first use), so there's no per-org "available" flag to
+    // read or return — the UI always offers Managed.
     // Cross-check against the live DO state — the D1 mirror gets written by
     // the DO after every debit but lags a touch, and on initial signup the
     // column reads its column-default (500) before the DO has ever been
@@ -1033,11 +1023,6 @@ export async function handleDashboard(
       isHalted: !!org.is_halted,
       maxConcurrentSandboxes: org.max_concurrent_sandboxes,
       billingProvider: org.billing_provider,
-      // Managed model access (token-billing §6.6): the single gating authority the UI
-      // reads to offer the "Managed" credential option. True only once the edge has
-      // provisioned the org's OpenRouter key + bound it (model_billing_status='active').
-      // Read defensively above so a missing phase-9 column never breaks billing.
-      managedAvailable,
       // Upcoming-invoice + meters would come from Stripe API on demand;
       // surface stubs for now so the UI has stable keys to render against.
       upcomingInvoice: null,

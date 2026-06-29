@@ -8,7 +8,6 @@ import {
   createAgent,
   getCredentials,
   createCredential,
-  getBilling,
   type Agent,
 } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
@@ -35,7 +34,8 @@ import {
 // Sentinels for the non-credential choices in the credential picker. The model
 // list + credential provider both follow the chosen runtime (see @/lib/runtimes).
 const NEW_CRED = '__new__'
-// "Managed" model access: run via OpenComputer, billed to credits (no BYO key).
+// "Managed" model access: run via OpenComputer with no BYO key. Billing varies by org
+// (Autumn → credits; otherwise a fixed OpenRouter key cap), so the label stays neutral.
 // Sent to the API as the reserved credential value "managed" (token-billing §6.6).
 const MANAGED = 'managed'
 
@@ -51,10 +51,6 @@ export default function Agents() {
     queryKey: ['credentials'],
     queryFn: getCredentials,
   })
-  // Managed availability gates the "Managed" picker entry (the single authority —
-  // token-billing §6.6/§6.8.C). Absent/false → only BYO credentials are offered.
-  const { data: billing } = useQuery({ queryKey: ['billing'], queryFn: getBilling })
-  const managedAvailable = billing?.managedAvailable ?? false
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -76,10 +72,9 @@ export default function Agents() {
   const hasDefault = providerCreds.some((c) => c.is_default)
 
   // Lowest-friction default, mirroring backend resolution (token-billing §6.6):
-  // a BYO org default wins; else Managed (when available); else first BYO; else "new".
+  // a BYO org default wins; else Managed (always available to every org).
   const defaultCredFor = (creds: typeof providerCreds) =>
-    creds.find((c) => c.is_default)?.id ??
-    (managedAvailable ? MANAGED : creds[0]?.id ?? NEW_CRED)
+    creds.find((c) => c.is_default)?.id ?? MANAGED
 
   const resetForm = () => {
     setName('')
@@ -111,12 +106,10 @@ export default function Agents() {
     setNewCredKey('')
   }
 
-  // Build options: Managed (if available, billed to credits — no provider filter, it
-  // has no provider) + this runtime's provider creds + "New credential…".
+  // Build options: Managed (always offered, no provider — runs without a BYO key) +
+  // this runtime's provider creds + "New credential…".
   const credOptions = [
-    ...(managedAvailable
-      ? [{ value: MANAGED, label: 'Managed · billed to credits' }]
-      : []),
+    { value: MANAGED, label: 'Managed · no key needed' },
     ...providerCreds.map((c) => ({
       value: c.id,
       label: `${c.name || 'Unnamed'}${c.last4 ? ` ·· ${c.last4}` : ''}${
@@ -133,7 +126,7 @@ export default function Agents() {
       //  - else     → pin the chosen existing credential.
       let credentialId: string | undefined
       if (credChoice === MANAGED) {
-        credentialId = MANAGED // run via OpenComputer, billed to credits — no key
+        credentialId = MANAGED // run via OpenComputer, no BYO key
       } else if (credChoice === NEW_CRED) {
         const cred = await createCredential({
           key: newCredKey.trim(),

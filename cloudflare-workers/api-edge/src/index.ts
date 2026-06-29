@@ -1804,8 +1804,15 @@ export default {
       const ts = req.headers.get("X-Timestamp") ?? "";
       const sig = req.headers.get("X-Signature") ?? "";
       const body = await req.text();
-      const expected = await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`);
-      if (!constantTimeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+      // CF_ADMIN_SECRET authorizes both ops. `enable` is additionally accepted with the
+      // scoped OC_MANAGED_CRED_HMAC_SECRET, so sessions-api can ensure-provision at
+      // agent-create without holding the broad admin secret. `disable` stays admin-only.
+      const adminOk = constantTimeEqual(await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`), sig);
+      const managedOk =
+        path === "/internal/model-billing/enable" && env.OC_MANAGED_CRED_HMAC_SECRET
+          ? constantTimeEqual(await hmacHex(env.OC_MANAGED_CRED_HMAC_SECRET, `${ts}.${body}`), sig)
+          : false;
+      if (!adminOk && !managedOk) return json({ error: "signature mismatch" }, 401);
       if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
       const parsed = JSON.parse(body) as { org_id?: string };
       if (!parsed.org_id) return json({ error: "org_id required" }, 400);

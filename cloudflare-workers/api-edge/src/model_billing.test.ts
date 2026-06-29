@@ -267,12 +267,19 @@ describe("enableManagedBilling state machine", () => {
     expect((create.body as { limit: number }).limit).toBeCloseTo(6 / 1.2, 5); // 5.0
   });
 
-  it("refuses non-autumn orgs", async () => {
+  it("non-autumn org provisions at the fixed default budget (decoupled from billing)", async () => {
     const db = new FakeDb();
     const orgId = seedOrg(db, { billing_provider: "legacy" });
-    vi.stubGlobal("fetch", makeFetch().spy);
-    await expect(enableManagedBilling(makeEnv(db), orgId)).rejects.toThrow(/not autumn/);
-    expect(db.orgs.get(orgId)!.model_billing_status).not.toBe("active");
+    const { spy, calls } = makeFetch();
+    vi.stubGlobal("fetch", spy);
+
+    const res = await enableManagedBilling(makeEnv(db), orgId);
+
+    expect(res.status).toBe("active");
+    expect(db.orgs.get(orgId)!.model_billing_status).toBe("active");
+    // Minted at the FIXED $10 budget (no credits lookup), not credits-derived.
+    const create = calls.find((c) => c.url.endsWith("/keys") && c.method === "POST")!;
+    expect((create.body as { limit: number }).limit).toBe(10);
   });
 
   it("is idempotent: a complete active row re-call mints nothing new", async () => {
