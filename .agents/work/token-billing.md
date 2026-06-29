@@ -1012,9 +1012,13 @@ malformed values that already would have failed now fail earlier and clearer.
 3. **Edge — metering + enforcement:** `model_meter` cron — persist-before-track
    immutable-interval debit (§5.4/§7), markup-correct **aggregate** cap across keys
    (§5.4/§7), `projectOrg` halt on ≤0 (§5.4); reconcile cron (§5.7).
-4. **Edge — `/billing.managedAvailable`** (§6.6 / §6.8.C).
-5. **UI — Managed delta:** picker entry + gate (§6.8.A–C); credential-source union
-   (§6.8.G). (Runtime/model/provider plumbing already shipped, #448.)
+4. **Edge — `/billing.managedAvailable` — DONE (PR #445).** `dashboard.ts` `/billing`
+   returns `managedAvailable` (= `model_billing_status==='active'`).
+5. **UI — Managed delta — DONE (PR #445).** Pinned `Managed · billed to credits`
+   picker entry in `Agents.tsx` + `AgentDetail.tsx`, gated on `managedAvailable`,
+   sends `credential:"managed"`; `BillingStateSchema.managedAvailable`; SDK
+   `CredentialId`/`CredentialRef` union (v0.9.4). (The §6.8.G credential-source shared
+   module was left as an optional refactor — picker is functional without it.)
 6. **Dashboard stats:** ClickHouse `model_usage` + the panel (§6.4 / §6.5).
 7. **Docs:** §6.9 (and scrub OpenRouter from `background-agents/*`, §12.6).
 
@@ -1022,13 +1026,21 @@ malformed values that already would have failed now fail earlier and clearer.
 markup value (§9.2), per-org vs per-session keys (§9.1), sync cadence (§9.3),
 BYO-via-OR (§9.4).
 
-**Current state (2026-06-29):** this doc + the edge **step 1** = PR #445 (branch
-`docs/token-billing-key-provisioning`; runtime picker #448 folded in). **Step 2** =
-sessions-api PR #34. Spike passed; OR management key obtained + verified. **Next: step
-3** (edge `model_meter` + reconcile crons). Before a live Managed turn: apply
-sessions-api migration 015, set `OC_MANAGED_CRED_HMAC_SECRET` (both sides) +
-`OPENROUTER_PROVISIONING_KEY` (edge Wrangler), fund the OR float, then smoke a Managed
-session (esp. codex). Everything shipped so far is dormant until those secrets are set.
+**Current state (2026-06-29):** **steps 1, 2, 4, 5 DONE.** OC repo (edge steps 1/4 +
+UI step 5 + this doc) = PR #445; sessions-api step 2 = PR #34. Spike passed; OR
+management key obtained + verified. The "Managed" option is now clickable in the UI
+end-to-end (create + live picker), gated on `managedAvailable`. **Remaining: step 3**
+(edge `model_meter` + reconcile crons — billing accuracy, runs async, not on the
+click path), **6** (dashboard stats), **7** (docs).
+
+**To click-test Managed** (deploy + provision): deploy the edge (#445) with
+`OPENROUTER_PROVISIONING_KEY` + `OC_MANAGED_CRED_HMAC_SECRET`; deploy sessions-api
+(#34) with `OC_MANAGED_CRED_HMAC_SECRET` (same) + apply migration 015; provision the
+org with `scripts/enable-model-billing.mjs` (→ `model_billing_status='active'` +
+managed credential bound). Then the dashboard offers Managed + a session resolves +
+seals the OR key. **A full model turn additionally needs** the runtime images rebuilt
+with step 2B (the brains) + a funded OR float; codex still wants the §9.7 CLI smoke.
+Everything is dormant until the secrets are set.
 
 ---
 
