@@ -26,6 +26,7 @@ import {
   createAutumnCustomer,
 } from "./autumn_webhook";
 import { runAutumnMeter } from "./autumn_meter";
+import { disableManagedBilling, enableManagedBilling } from "./model_billing";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
 import * as templates from "./templates";
@@ -56,6 +57,14 @@ export interface Env extends DashboardEnv {
   // as the API key so /v3 sandboxes are owned by + billed to the customer org.
   // Unset → the feature is inert (JWT keys rejected). See dashboard.ts.
   OC_PROVISION_SECRET?: string;
+  // Token / model-usage billing (token-billing.md). The edge holds ONE OpenRouter
+  // secret — a management/provisioning key — and mints per-org inference keys.
+  OPENROUTER_PROVISIONING_KEY: string;
+  OPENROUTER_BASE_URL?: string; // default https://openrouter.ai/api/v1
+  OPENROUTER_MARKUP_BPS?: string; // env-default markup (bps) when the org's is 0
+  // DEDICATED HMAC secret for handing a freshly-minted OR key to sessions-api
+  // (NOT the generic internal-auth — this route carries a live model key). §6.7.5.
+  OC_MANAGED_CRED_HMAC_SECRET: string;
 }
 
 // ── small helpers ────────────────────────────────────────────────────────
@@ -1765,6 +1774,37 @@ export default {
       const stub = env.CREDIT_ACCOUNT.get(env.CREDIT_ACCOUNT.idFromName(parsed.org_id));
       const r = await stub.fetch(`https://do/mark-free?org_id=${encodeURIComponent(parsed.org_id)}`, { method: "POST" });
       return new Response(await r.text(), { status: r.status, headers: { "content-type": "application/json" } });
+    }
+
+    // /internal/model-billing/enable|disable — operator-triggered managed-billing
+    // provisioning for one autumn org (token-billing §5.1). HMAC-auth'd with the
+    // shared CF_ADMIN_SECRET (same scheme as do-mark-free). Body: { org_id }. Not
+    // UI-exposed; the driver for controlled rollout + tests until an automatic
+    // enable trigger lands. `enable` drives off→provisioning→active idempotently
+    // (safe to re-call to resume a partial provision); `disable` marks the org's
+    // key for drain + offboard.
+    if (
+      (path === "/internal/model-billing/enable" || path === "/internal/model-billing/disable") &&
+      req.method === "POST"
+    ) {
+      const ts = req.headers.get("X-Timestamp") ?? "";
+      const sig = req.headers.get("X-Signature") ?? "";
+      const body = await req.text();
+      const expected = await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`);
+      if (!constantTimeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+      if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
+      const parsed = JSON.parse(body) as { org_id?: string };
+      if (!parsed.org_id) return json({ error: "org_id required" }, 400);
+      try {
+        if (path === "/internal/model-billing/disable") {
+          await disableManagedBilling(env, parsed.org_id);
+          return json({ ok: true });
+        }
+        const res = await enableManagedBilling(env, parsed.org_id);
+        return json(res, res.status === "active" ? 200 : 500);
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+      }
     }
 
     // /internal/secret-stores/:id — HMAC-auth'd, called by CP at sandbox-create

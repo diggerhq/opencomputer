@@ -86,6 +86,13 @@ new_sqlite_classes = ["CreditAccount"]
 #   WORKOS_API_KEY         — server-side WorkOS API for /auth/login
 #   WORKOS_CLIENT_ID       — WorkOS client identifier
 #   EVENT_SECRET           — HMAC for /internal/halt-list endpoint (shared with CP halt_reconciler)
+#   OPENROUTER_PROVISIONING_KEY — OpenRouter MANAGEMENT/provisioning key (token
+#                            billing; mints per-org keys + reads analytics). Dormant
+#                            until set. See .agents/work/token-billing.md.
+#   OC_MANAGED_CRED_HMAC_SECRET — dedicated HMAC for the minted-OR-key hand-off to
+#                            sessions-api (shared only with sessions-api).
+# Optional vars: OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1),
+#   OPENROUTER_MARKUP_BPS (env-default markup; per-org orgs.model_markup_bps wins).
 
 # Edge-native autumn billing: every 5 min, meter autumn orgs' usage_samples to
 # Autumn + halt on exhaustion (src/autumn_meter.ts). One place, not per-cell.
