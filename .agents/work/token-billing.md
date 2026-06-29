@@ -5,8 +5,8 @@ Architecture decided (OpenRouter-native + Autumn shared credit pool). The UI
 runtime/model/credential foundation shipped in **PR #448**, so §6.8 is now the
 small remaining Managed delta. **Implementation-ready for the `claude` path; the
 `codex` path is gated on the §9.7 spike** (OR's `wire_api:"responses"` support is
-unvalidated). One pre-build spike (§9.7) then build; decisions that could cause
-debate are in §9, failure modes in §10.
+unvalidated). **Start here: §14 (build sequence + prerequisites).** Decisions that
+could cause debate are in §9, failure modes in §10.
 
 ---
 
@@ -935,6 +935,50 @@ malformed values that already would have failed now fail earlier and clearer.
   `web/src/api/client.ts`, `web/src/api/schemas.ts`, `web/src/api/mock.ts`.
 - ClickHouse: `CLICKHOUSE_*` in `sessions-api/.env.v3`.
 - Compute-billing context: `internal/db/billable_events.go`, `internal/db/usage.go`.
+
+---
+
+## 14. Build sequencing & prerequisites (start here)
+
+**Prerequisites (before any code):**
+- **OpenRouter account + provisioning key — does not exist yet.** Create an OR org
+  account, fund it (or arm auto-recharge — the float, §5.7), generate a
+  **management/provisioning key**, and set it as the edge Wrangler secret
+  `OPENROUTER_PROVISIONING_KEY` (prod + dev). This master key mints per-org keys +
+  reads analytics; it is the only OR secret the edge holds.
+- **Autumn `model_spend` feature.** Define the metered feature and add it to the
+  `credits` credit_schema with `credit_cost = 1e-6` (§4 / §6.2). `AUTUMN_SECRET_KEY`
+  is already live on the prod edge **and** stored in `sessions-api/.env.v3`.
+- **Spike §9.7 — the gate.** Throwaway OR key; confirm a **claude-protocol** call
+  (`ANTHROPIC_BASE_URL=…/api` + `ANTHROPIC_AUTH_TOKEN`) and a **codex-protocol** call
+  (`baseURL=…/api/v1`, `wire_api:"responses"` + non-OpenAI auth) each work through OR
+  — protocol + tool calls + usage/cost echo. **Decides which runtimes ship under
+  Managed** (claude likely; codex may not).
+
+**Build order (claude path first; each step independently testable):**
+1. **Edge — managed key lifecycle + state:** `managed_model_keys` table +
+   `orgs.model_billing_status` (§4); provisioning state machine (§5.1) → OR
+   provisioning API (§6.1); hardened hand-off to sessions-api (§6.7.5).
+2. **sessions-api — credential + resolution + seal:** `POST/GET /internal/managed-credential`
+   (§6.7.5); `getManagedCredential` + resolver arm (§6.7.2); `endpoint_profile` on
+   `TurnConfig` + seal keyed on (runtime, source) (§5.2/G1, §6.7.4); `422
+   managed_unavailable`; runtime servers stop deleting/hardcoding base-URL+auth (§5.2).
+3. **Edge — metering + enforcement:** `model_meter` cron — persist-before-track
+   immutable-interval debit (§5.4/§7), markup-correct **aggregate** cap across keys
+   (§5.4/§7), `projectOrg` halt on ≤0 (§5.4); reconcile cron (§5.7).
+4. **Edge — `/billing.managedAvailable`** (§6.6 / §6.8.C).
+5. **UI — Managed delta:** picker entry + gate (§6.8.A–C); credential-source union
+   (§6.8.G). (Runtime/model/provider plumbing already shipped, #448.)
+6. **Dashboard stats:** ClickHouse `model_usage` + the panel (§6.4 / §6.5).
+7. **Docs:** §6.9 (and scrub OpenRouter from `background-agents/*`, §12.6).
+
+**Decisions still owed by product (don't block step 1, but needed by step 3/5):**
+markup value (§9.2), per-org vs per-session keys (§9.1), sync cadence (§9.3),
+BYO-via-OR (§9.4).
+
+**Current state:** this doc = PR #445 (branch `docs/token-billing-key-provisioning`).
+The runtime picker (#448) is merged to main + in this branch. Nothing of the billing
+itself is built yet — step 0 is the §9.7 spike.
 
 ---
 
