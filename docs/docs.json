@@ -60,6 +60,13 @@
         ]
       },
       {
+        "group": "Browser Sessions",
+        "tag": "Preview",
+        "pages": [
+          "browser-sessions/overview"
+        ]
+      },
+      {
         "group": "Durable Agent Sessions",
         "tag": "Preview",
         "pages": [

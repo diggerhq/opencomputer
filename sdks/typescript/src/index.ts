@@ -15,6 +15,7 @@ export {
   type ScalingLockStatus,
   type AllowedHostsInfo,
 } from "./sandbox.js";
+export { Browser, BrowserProfile, type BrowserCreateOpts, type BrowserData, type BrowserProfileCreateOpts, type BrowserProfileData } from "./browser.js";
 export { SandboxAgent, type SandboxAgentEvent, type SandboxAgentConfig, type SandboxAgentStartOpts, type SandboxAgentSession, type McpServerConfig } from "./agent.js";
 // Managed Durable Agent Sessions (the OpenComputer client + Session handle).
 export * from "./agents/index.js";
