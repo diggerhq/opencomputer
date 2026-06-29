@@ -169,5 +169,8 @@ customers (pro + active Stripe sub): **33 on legacy** (all `model_billing_status
 
 ## 9. Rollout
 
-One cutover: ship the decoupled path, provision for all, remove the
-`model_billing_status` conditional. No gradual ramp (see §2).
+One cutover (#452 edge/web + sessions-api #35 deploy together): ship the decoupled path
+and remove the `managedAvailable` flag. **No backfill** — provisioning is just-in-time at
+agent-create / session-resolve, so each org gets its key the first time it actually uses
+Managed (existing orgs included; no Managed agents sit on unprovisioned orgs). No gradual
+ramp, no sweep.
