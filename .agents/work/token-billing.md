@@ -166,6 +166,61 @@ Plausible combination: **A (or B)** for real-time, trusted, per-session metering
 - **Managed** → billed. Requires a reliable per-session record of mode + which
   key was used (already available via credential metadata + the sealed store).
 
+### Provider key provisioning & budget caps — what's actually possible (researched 2026-06-29)
+
+The question this answers: can we hand each customer a budget-capped provider key
+(per-user "default credential" with a hard spend ceiling) so spend is enforced by
+the provider, not us? **Anthropic/OpenAI: no. OpenRouter: yes, turnkey.**
+
+- **Anthropic** — Admin API (`sk-ant-admin…`) does Workspaces CRUD, members, API
+  keys, and **read-only** Rate-Limits + Usage/Cost APIs. **Per-workspace rate/spend
+  limits are Console-UI only** (open feature request to expose them). So you can
+  script the workspace/key, but the **$ cap is a manual dashboard step**.
+- **OpenAI** — Admin API creates a **Project** + **service account** key
+  (`POST /v1/organization/projects/{id}/service_accounts` returns a scoped key —
+  fully scriptable). But **project budgets are monthly + dashboard-only**; project
+  *rate* limits are API-settable, the **$ budget is not**.
+- ⇒ Provider-side scoping (project/workspace) buys **blast-radius isolation +
+  per-customer attribution**, NOT an API-enforceable budget. To cap spend
+  programmatically with the raw providers we'd **meter + enforce ourselves** at the
+  egress proxy (`internal/secretsproxy/proxy.go`).
+
+- **OpenRouter — built for exactly this (= "route E" made concrete).**
+  - **Provisioning API**: hold one provisioning key (manages keys only, can't call
+    models) → CRUD per-user keys via `/api/v1/keys`, each with a **spend limit +
+    optional daily/weekly/monthly reset (UTC) + label + auto-disable on exceed.**
+    Per-customer budget-capped credential in one call — the thing the providers
+    don't give us.
+  - **Billing modes** map to our two tracks: **Credits (managed)** — usage on *our*
+    OR credits, **no model markup** (provider list price), cost is a credit-purchase
+    fee (~5.5% card / 5% crypto, $0.80 min); **BYOK** — customer's own provider key,
+    provider bills *them*, OR fee = 5% of equiv OR cost, **free first 1M req/mo**.
+  - **Spend tracking (no self-metering needed):** per-key real-time accounting
+    (used/remaining/limit); per-generation cost via `GET /api/v1/generation?id=` or
+    inline `usage:{include:true}`; Credits API (balance); **Analytics API**
+    (read-only mgmt key) for org-wide spend by model/provider/key; Activity export.
+  - Fits our sealed-key/egress model cleanly (seal an OR key, allowlist
+    `openrouter.ai`; one OpenAI-compatible endpoint replaces per-provider keys → all
+    models, one egress host). First-party **Infisical integration** (same vault we use).
+  - **Cost of the convenience:** OpenRouter becomes a dependency **in the hot model
+    path** (latency, reliability, ToS, customer prompts transit them), the
+    credit-purchase fee on managed mode, and model ids live in OR's namespace.
+
+- **Not mutually exclusive:** a plausible shape is **BYO → Anthropic/OpenAI direct**
+  (provider invoices the customer; we only surface usage) and **managed-with-budget →
+  OpenRouter** (per-customer capped key + built-in metering, OC bills via credits).
+  The build-our-own alternative for managed is proxy-side metering at
+  `internal/secretsproxy/proxy.go` (we own the chokepoint) — more control, more code,
+  and we'd still lack a provider-enforced cap.
+
+Sources: OpenRouter [provisioning keys](https://openrouter.ai/docs/features/provisioning-api-keys),
+[BYOK/fees](https://openrouter.ai/docs/guides/overview/auth/byok),
+[usage accounting](https://openrouter.ai/docs/guides/guides/usage-accounting),
+[analytics/cost-control](https://openrouter.ai/docs/cookbook/administration/analytics-cost-control);
+[Anthropic Admin API](https://docs.anthropic.com/en/api/administration-api)
+(+ spend-limit [feature request](https://github.com/anthropics/claude-quickstarts/issues/371));
+OpenAI [create project service account](https://developers.openai.com/api/reference/resources/organization/subresources/projects/subresources/service_accounts/methods/create).
+
 ## Open questions (deferred decisions)
 
 - At-cost vs markup? Unified credits vs a separate model-credit balance?
