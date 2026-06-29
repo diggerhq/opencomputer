@@ -2065,6 +2065,25 @@ export default {
       }
     }
 
+    // /api/sandboxes/checkpoints/:id[/...] — checkpoint-scoped ops (publish,
+    // unpublish, patches). The URL carries no sandbox_id, so the generic
+    // /api/sandboxes/:id matcher below would read "checkpoints" as a sandbox id
+    // and 404 ("sandbox not found"). Route by the checkpoint's owning cell
+    // (checkpoints_index), like the snapshot patch/publish paths.
+    {
+      const cpm = path.match(/^\/api\/sandboxes\/checkpoints\/([^/]+)(\/.*)?$/);
+      if (cpm) {
+        const caller = await authenticate(req, env);
+        if (!caller) return json({ error: "missing or invalid API key" }, 401);
+        { const g = provisionScopeGate(caller, path); if (g) return g; }
+        const cpRow = await env.OPENCOMPUTER_DB.prepare(
+          `SELECT owner_cell_id FROM checkpoints_index WHERE id = ?1`,
+        ).bind(cpm[1]).first<{ owner_cell_id: string }>();
+        if (!cpRow?.owner_cell_id) return json({ error: "checkpoint not found" }, 404);
+        return proxyToCellAuthed(req, env, caller, { cellId: cpRow.owner_cell_id });
+      }
+    }
+
     const m = path.match(/^\/api\/sandboxes\/([^/]+)(\/.*)?$/);
     if (m) {
       const id = m[1];

@@ -2799,6 +2799,60 @@ func (s *Store) SetImageCachePublicByName(ctx context.Context, orgID uuid.UUID, 
 	return nil
 }
 
+// SetSnapshotPublic publishes/unpublishes a named snapshot AND its backing
+// checkpoint atomically. The fork path (createFromCheckpointCore) gates on
+// sandbox_checkpoints.is_public independently of image_cache.is_public, so
+// flipping only the snapshot resolves the NAME but the fork still fails with
+// "checkpoint does not belong to this organization". Both must move together.
+//
+// Owner-scoped (an org only touches its own rows). On unpublish, the backing
+// checkpoint is revoked only if no OTHER public snapshot of the org still
+// references it, so unpublishing one version can't strand a sibling.
+func (s *Store) SetSnapshotPublic(ctx context.Context, orgID uuid.UUID, name string, isPublic bool) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var checkpointID *uuid.UUID
+	err = tx.QueryRow(ctx,
+		`UPDATE image_cache SET is_public = $3 WHERE org_id = $1 AND name = $2 RETURNING checkpoint_id`,
+		orgID, name, isPublic,
+	).Scan(&checkpointID)
+	if err != nil {
+		// pgx.ErrNoRows when the snapshot is missing or not owned by the org.
+		return fmt.Errorf("snapshot %q not found or not owned by org", name)
+	}
+
+	if checkpointID != nil {
+		if isPublic {
+			if _, err := tx.Exec(ctx,
+				`UPDATE sandbox_checkpoints SET is_public = true WHERE id = $1 AND org_id = $2`,
+				*checkpointID, orgID); err != nil {
+				return err
+			}
+		} else {
+			var othersUsingIt int
+			if err := tx.QueryRow(ctx,
+				`SELECT count(*) FROM image_cache
+				 WHERE checkpoint_id = $1 AND is_public = true AND NOT (org_id = $2 AND name = $3)`,
+				*checkpointID, orgID, name).Scan(&othersUsingIt); err != nil {
+				return err
+			}
+			if othersUsingIt == 0 {
+				if _, err := tx.Exec(ctx,
+					`UPDATE sandbox_checkpoints SET is_public = false WHERE id = $1 AND org_id = $2`,
+					*checkpointID, orgID); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 // --- Preview URL operations ---
 
 // PreviewURL represents an on-demand preview URL for a sandbox.

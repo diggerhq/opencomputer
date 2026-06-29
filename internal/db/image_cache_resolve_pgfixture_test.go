@@ -151,3 +151,85 @@ func TestSetImageCachePublicByName_OwnerScoped(t *testing.T) {
 		t.Fatalf("expected snapshot to remain private after failed publish")
 	}
 }
+
+// checkpointIsPublic reads sandbox_checkpoints.is_public for a checkpoint id.
+func checkpointIsPublic(t *testing.T, store *Store, cpID uuid.UUID) bool {
+	t.Helper()
+	var pub bool
+	if err := store.pool.QueryRow(context.Background(),
+		`SELECT is_public FROM sandbox_checkpoints WHERE id=$1`, cpID).Scan(&pub); err != nil {
+		t.Fatalf("read checkpoint is_public: %v", err)
+	}
+	return pub
+}
+
+// seedSnapshotForCheckpoint inserts a named snapshot pointing at an EXISTING
+// checkpoint (lets a test share one checkpoint across snapshots).
+func seedSnapshotForCheckpoint(t *testing.T, store *Store, orgID uuid.UUID, name string, cpID uuid.UUID, isPublic bool) {
+	t.Helper()
+	id := uuid.New()
+	if _, err := store.pool.Exec(context.Background(),
+		`INSERT INTO image_cache (id, org_id, content_hash, checkpoint_id, name, manifest, status, is_public)
+		 VALUES ($1, $2, $3, $4, $5, $6, 'ready', $7)`,
+		id, orgID, "hash-"+id.String(), cpID, name, json.RawMessage(`{}`), isPublic); err != nil {
+		t.Fatalf("seed snapshot %q: %v", name, err)
+	}
+}
+
+// Publishing a snapshot must cascade is_public to its backing checkpoint — the
+// fork path (createFromCheckpointCore) gates on the checkpoint separately, so a
+// non-cascaded publish resolves the name but 403s the fork. This is the gap the
+// live prod test caught; unit/dev coverage didn't, because resolution and the
+// fork gate are different layers.
+func TestSetSnapshotPublic_CascadesToCheckpoint(t *testing.T) {
+	store := openPgStore(t)
+	ctx := context.Background()
+	org := seedOrgWithCap(t, store, 64)
+	cp := seedCheckpoint(t, store, org)
+	seedSnapshotForCheckpoint(t, store, org, "runtime-cascade", cp, false)
+
+	if err := store.SetSnapshotPublic(ctx, org, "runtime-cascade", true); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if !checkpointIsPublic(t, store, cp) {
+		t.Fatalf("publish must cascade is_public to the backing checkpoint")
+	}
+
+	if err := store.SetSnapshotPublic(ctx, org, "runtime-cascade", false); err != nil {
+		t.Fatalf("unpublish: %v", err)
+	}
+	if checkpointIsPublic(t, store, cp) {
+		t.Fatalf("unpublish must revoke the checkpoint when no other public snapshot uses it")
+	}
+}
+
+// Unpublishing one snapshot must NOT strand a sibling that shares the checkpoint.
+func TestSetSnapshotPublic_UnpublishKeepsCheckpointForSibling(t *testing.T) {
+	store := openPgStore(t)
+	ctx := context.Background()
+	org := seedOrgWithCap(t, store, 64)
+	cp := seedCheckpoint(t, store, org)
+	seedSnapshotForCheckpoint(t, store, org, "runtime-a", cp, false)
+	seedSnapshotForCheckpoint(t, store, org, "runtime-b", cp, false)
+
+	if err := store.SetSnapshotPublic(ctx, org, "runtime-a", true); err != nil {
+		t.Fatalf("publish a: %v", err)
+	}
+	if err := store.SetSnapshotPublic(ctx, org, "runtime-b", true); err != nil {
+		t.Fatalf("publish b: %v", err)
+	}
+	// Unpublish A — checkpoint must stay public because B still references it.
+	if err := store.SetSnapshotPublic(ctx, org, "runtime-a", false); err != nil {
+		t.Fatalf("unpublish a: %v", err)
+	}
+	if !checkpointIsPublic(t, store, cp) {
+		t.Fatalf("checkpoint must stay public while a sibling public snapshot still uses it")
+	}
+	// Unpublish B — now no public snapshot references it → revoke.
+	if err := store.SetSnapshotPublic(ctx, org, "runtime-b", false); err != nil {
+		t.Fatalf("unpublish b: %v", err)
+	}
+	if checkpointIsPublic(t, store, cp) {
+		t.Fatalf("checkpoint must be revoked after the last public snapshot is unpublished")
+	}
+}
