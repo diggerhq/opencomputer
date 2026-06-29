@@ -145,9 +145,13 @@ customers (pro + active Stripe sub): **33 on legacy** (all `model_billing_status
     (`core/credentials.ts`) — if the org has no managed credential, sign the enable call
     with `OC_MANAGED_CRED_HMAC_SECRET` (scheme `${ts}.${body}`, `X-Timestamp`/`X-Signature`)
     and POST `OPENCOMPUTER_API_URL/internal/model-billing/enable`; the edge mints + binds
-    back; confirm bound. Called synchronously from agent-create (`core/agents.ts`, the
-    `credential: managed` branch); throws on failure so we never create a Managed agent
-    that can't run. Idempotent. tsc green.
+    back; confirm bound. Called at agent-create (`core/agents.ts`, explicit
+    `credential: managed`) for early provisioning, AND at **session-resolve**
+    (`resolveCredentialForSession` — both the explicit-managed path and the
+    org-default→Managed fallback) so omitted/patched/flipped agents are covered (the
+    contract's "omit → Managed if no BYO default"). Provisions exactly when Managed is the
+    resolved credential, never for BYO/default-BYO. Idempotent; throws so we never run a
+    Managed agent that can't resolve. tsc green.
   - **Must deploy together** — flag removal (edge/web) + agent-create provisioning
     (sessions-api) are one rollout, else Managed is offered but unprovisioned.
   - **No backfill needed** — existing orgs provision when they next create a Managed
