@@ -652,10 +652,12 @@ func (s *Server) resolveSnapshot(ctx context.Context, orgID uuid.UUID, snapshotN
 	}
 
 	// Fork/provision path: resolve the org's own snapshot, falling back to a
-	// public one (e.g. the shared platform runtime/hands snapshots) when the org
-	// doesn't own one. Forking only reads the checkpoint, never mutates it, so
-	// sharing is safe. Management endpoints stay org-scoped (GetImageCacheByName).
-	cached, err := s.store.ResolveImageCacheByName(ctx, orgID, snapshotName)
+	// snapshot published by the platform org (the shared runtime/hands catalog)
+	// when the org doesn't own one. The fallback is anchored to s.platformOrgID
+	// so a customer can't spoof a runtime name. Forking only reads the
+	// checkpoint, never mutates it, so sharing is safe. Management endpoints stay
+	// org-scoped (GetImageCacheByName).
+	cached, err := s.store.ResolveImageCacheByName(ctx, orgID, s.platformOrgID, snapshotName)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("snapshot %q not found: %w", snapshotName, err)
 	}

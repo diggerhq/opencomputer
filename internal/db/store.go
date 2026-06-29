@@ -2638,26 +2638,36 @@ func (s *Store) GetImageCacheByName(ctx context.Context, orgID uuid.UUID, name s
 	return ic, nil
 }
 
-// ResolveImageCacheByName resolves a named snapshot for the FORK/PROVISION path,
-// preferring the org's own snapshot but falling back to a public one
-// (is_public = true) when the org doesn't own a snapshot by that name. This is
-// what lets sessions running under a customer org (act-as-org) fork the shared
-// platform runtime/hands snapshots, which are owned by the platform org.
+// ResolveImageCacheByName resolves a named snapshot for the FORK/PROVISION path.
+// It prefers the requesting org's own snapshot, then falls back to a snapshot
+// published by the PLATFORM ORG (is_public = true AND org_id = platformOrgID) —
+// the shared runtime/hands catalog. This is what lets sessions running under a
+// customer org (act-as-org) fork the platform base images.
+//
+// The fallback is deliberately anchored to a single trusted owner. image_cache
+// only enforces name uniqueness per org, so a fallback to "any is_public row
+// with this name" would let any org publish a look-alike (e.g. a spoof
+// runtime-claude-0.0.10) and hijack the predictable runtime namespace.
+// Anchoring also makes resolution deterministic: there is at most one platform
+// row per name (unique index on (org_id, name)), so the fallback can never
+// return an arbitrary / failed / spoofed row.
+//
+// platformOrgID == uuid.Nil disables the fallback (org-scoped only) — a cell
+// without OPENSANDBOX_PLATFORM_ORG_ID fails closed (provision fails loudly)
+// rather than open (resolving an untrusted public row).
 //
 // Management endpoints (get/list/delete/patch/publish) must keep using
 // GetImageCacheByName (strictly org-scoped) so only the owner can read, delete,
-// or mutate a snapshot. The unique index is (org_id, name), so two orgs may hold
-// the same name; ORDER BY (org_id = $1) DESC ensures the requester's own row
-// wins when both exist.
-func (s *Store) ResolveImageCacheByName(ctx context.Context, orgID uuid.UUID, name string) (*ImageCache, error) {
+// or mutate a snapshot.
+func (s *Store) ResolveImageCacheByName(ctx context.Context, orgID, platformOrgID uuid.UUID, name string) (*ImageCache, error) {
 	ic := &ImageCache{}
 	err := s.pool.QueryRow(ctx,
 		`SELECT id, org_id, content_hash, checkpoint_id, name, manifest, status, created_at, last_used_at
 		 FROM image_cache
-		 WHERE name = $2 AND (org_id = $1 OR is_public = true)
+		 WHERE name = $3 AND (org_id = $1 OR (is_public = true AND org_id = $2))
 		 ORDER BY (org_id = $1) DESC
 		 LIMIT 1`,
-		orgID, name,
+		orgID, platformOrgID, name,
 	).Scan(&ic.ID, &ic.OrgID, &ic.ContentHash, &ic.CheckpointID, &ic.Name, &ic.Manifest, &ic.Status, &ic.CreatedAt, &ic.LastUsedAt)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot %q not found: %w", name, err)

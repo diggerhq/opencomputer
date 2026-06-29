@@ -335,15 +335,16 @@ func (s *Server) deleteSnapshot(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// publishSnapshot handles POST /api/snapshots/:name/publish — marks a named
-// snapshot public so any org can fork it. Used to share the platform
-// runtime/hands snapshots with customer-org (act-as-org) sessions. Owner-org
-// only; idempotent. Mirrors publishCheckpoint.
+// publishSnapshot handles POST /api/snapshots/:name/publish — marks one of the
+// platform org's snapshots public so any org can fork it. This is how the
+// runtime/hands catalog is shared with customer-org (act-as-org) sessions.
+// Restricted to the platform org (the only owner the fork fallback trusts);
+// idempotent. Mirrors publishCheckpoint.
 func (s *Server) publishSnapshot(c echo.Context) error {
 	return s.setSnapshotPublic(c, true)
 }
 
-// unpublishSnapshot flips is_public back to false. Owner-org only, idempotent.
+// unpublishSnapshot flips is_public back to false. Platform-org only, idempotent.
 // In-flight forks that already resolved the snapshot continue; new forks by
 // other orgs stop resolving it.
 func (s *Server) unpublishSnapshot(c echo.Context) error {
@@ -358,6 +359,13 @@ func (s *Server) setSnapshotPublic(c echo.Context, isPublic bool) error {
 	orgID, ok := auth.GetOrgID(c)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+
+	// Publishing to the shared catalog is restricted to the platform org — it's
+	// the only owner the fork fallback trusts (see ResolveImageCacheByName), so
+	// letting any org publish would reintroduce the spoofable-namespace risk.
+	if s.platformOrgID == uuid.Nil || orgID != s.platformOrgID {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "only the platform org may publish snapshots to the shared catalog"})
 	}
 
 	name := c.Param("name")

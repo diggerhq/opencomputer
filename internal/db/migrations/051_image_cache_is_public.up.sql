@@ -9,18 +9,24 @@
 -- that lookup returns "snapshot not found" -> provision_failed for every org
 -- except the one that owns the snapshots.
 --
--- is_public lets the resolve/fork path fall back to a shared snapshot when the
--- requesting org doesn't own one, mirroring templates.is_public and
--- sandbox_checkpoints.is_public. Management endpoints (get/list/delete/patch)
--- stay strictly org-scoped; only the owner may mutate, delete, or publish.
+-- is_public lets the resolve/fork path fall back to a snapshot published by the
+-- platform org, mirroring templates.is_public and sandbox_checkpoints.is_public.
+-- The fallback is anchored to a trusted owner in code (ResolveImageCacheByName:
+-- is_public AND org_id = <platform org>), so this flag alone does NOT open a
+-- snapshot to the world — it only makes it eligible when the platform org owns
+-- it. Management endpoints (get/list/delete/patch) stay strictly org-scoped.
+--
+-- No data backfill here on purpose: which org is "the platform org" is
+-- environment-specific (prod vs dev), so blindly publishing every runtime-%/
+-- hands-% row would expose any customer-owned look-alike. Existing platform
+-- snapshots are published as a one-time, platform-org-scoped cutover step (see
+-- the PR), and future versions via POST /api/snapshots/:name/publish.
 ALTER TABLE image_cache
   ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT false;
 
--- Backfill: publish the platform runtime/hands snapshots so customer-org
--- provisions can fork them. Scoped by name pattern; idempotent and a no-op on
--- cells that don't host these snapshots (only azure-us-east-2-a does today).
--- Future runtime versions are published explicitly via the publish endpoint
--- (POST /api/snapshots/:name/publish) by the build tooling.
-UPDATE image_cache
-  SET is_public = true
-  WHERE name LIKE 'runtime-%' OR name LIKE 'hands-%';
+-- Index the fork fallback path: WHERE name = $3 AND is_public = true AND
+-- org_id = $2. The existing unique index (org_id, name) serves the org-scoped
+-- branch; this partial index serves the public branch and stays tiny (only
+-- catalog rows).
+CREATE INDEX IF NOT EXISTS idx_image_cache_public_name
+  ON image_cache(name) WHERE is_public = true;

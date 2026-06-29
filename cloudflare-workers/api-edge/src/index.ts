@@ -1875,8 +1875,15 @@ export default {
         // cell". is_public lives in the owning cell's image_cache.
         if (isPatch || isPublishToggle || req.method === "DELETE") {
           const ownerCell = await snapshots.ownerCellOfSnapshot(env, caller, name);
-          if (!ownerCell) return json({ error: "snapshot not found" }, 404);
-          return proxyToCellAuthed(req, env, caller, { cellId: ownerCell });
+          if (ownerCell) return proxyToCellAuthed(req, env, caller, { cellId: ownerCell });
+          // D1 images_index can lag the cell PG right after a snapshot is built.
+          // For publish/unpublish (idempotent catalog toggles), fall back to the
+          // org's home_cell — where a just-created snapshot lives — and let the
+          // cell be the source of truth (it returns 404 if the row is really
+          // absent). Patches/delete stay strict: a missing index row means the
+          // bytes aren't addressable yet.
+          if (isPublishToggle) return proxyToCellAuthed(req, env, caller);
+          return json({ error: "snapshot not found" }, 404);
         }
         if (req.method === "GET") return snapshots.getSnapshot(env, caller, name);
         return json({ error: "method not allowed" }, 405);

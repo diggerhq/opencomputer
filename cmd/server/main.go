@@ -97,6 +97,7 @@ func main() {
 		Region:           cfg.Region,
 		HTTPAddr:         cfg.HTTPAddr,
 		CellID:           cfg.CellID,
+		PlatformOrgID:    cfg.PlatformOrgID,
 		SessionJWTSecret: cfg.SessionJWTSecret,
 		CFAdminSecret:    cfg.CFAdminSecret,
 		CFEventSecret:    cfg.CFEventSecret,
