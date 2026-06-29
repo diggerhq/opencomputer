@@ -27,6 +27,7 @@ import {
 } from "./autumn_webhook";
 import { runAutumnMeter } from "./autumn_meter";
 import { disableManagedBilling, enableManagedBilling } from "./model_billing";
+import { runModelMeter } from "./model_meter";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
 import * as templates from "./templates";
@@ -1745,6 +1746,19 @@ export default {
       await runAutumnMeter(env, Date.now());
       return json({ ok: true });
     }
+    // Force a model-meter run (token billing §5.4). HMAC-auth'd (CF_ADMIN_SECRET) so
+    // it's safe to run in prod for testing/ops — useful to debit + push caps right
+    // after a Managed turn instead of waiting for the cron.
+    if (path === "/internal/run-model-meter" && req.method === "POST") {
+      const ts = req.headers.get("X-Timestamp") ?? "";
+      const sig = req.headers.get("X-Signature") ?? "";
+      const body = await req.text();
+      const expected = await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`);
+      if (!constantTimeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+      if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
+      await runModelMeter(env, Date.now());
+      return json({ ok: true });
+    }
 
     if (path === "/internal/org-policy") {
       if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
@@ -2106,11 +2120,19 @@ export default {
   // Cron (*/5): edge-native autumn billing. Meters autumn orgs' usage_samples to
   // Autumn and halts on exhaustion — one place, not per-cell. Legacy orgs bill
   // via the separate billing-rollup worker; this no-ops unless AUTUMN_SECRET_KEY
-  // is set (dormant until the cutover switch is flipped).
+  // is set (dormant until the cutover switch is flipped). The same tick also runs
+  // the token/model-usage meter (token-billing §5.4): poll each managed OpenRouter
+  // key's spend → debit Autumn `model_spend` → push the markup-correct cap + halt.
+  // Dormant unless OPENROUTER_PROVISIONING_KEY is set + managed keys exist.
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     if (!env.AUTUMN_SECRET_KEY) return;
     ctx.waitUntil(
       runAutumnMeter(env, Date.now()).catch((err) => console.error("autumn-meter: run failed", err)),
     );
+    if (env.OPENROUTER_PROVISIONING_KEY) {
+      ctx.waitUntil(
+        runModelMeter(env, Date.now()).catch((err) => console.error("model-meter: run failed", err)),
+      );
+    }
   },
 } satisfies ExportedHandler<Env>;
