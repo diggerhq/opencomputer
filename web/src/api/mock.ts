@@ -370,8 +370,8 @@ const orgInvitations = [
   },
 ]
 
-// ── Durable Agent Sessions (/v3) ─────────────────────────────────────────────
-const v3agents = [
+// ── Durable Agent Sessions ─────────────────────────────────────────────
+const agents = [
   {
     id: 'agt_3kf9xz',
     name: 'PR Reviewer',
@@ -395,7 +395,7 @@ const v3agents = [
 ]
 
 // A connected Slack app for the first agent (the AgentDetail Slack panel).
-const v3slack = {
+const slackConnection = {
   id: 'sla_5p6q7r',
   agent_id: 'agt_3kf9xz',
   handle: 'PR Reviewer',
@@ -410,7 +410,7 @@ const v3slack = {
 }
 
 // START-intent response for the Slack connect wizard (POST …/slack/manifest).
-const v3slackManifest = {
+const slackManifest = {
   manifest: {
     display_information: { name: 'PR Reviewer' },
     features: {
@@ -434,7 +434,7 @@ const v3slackManifest = {
   status: 'pending',
 }
 
-const v3credentials = [
+const credentials = [
   {
     id: 'cred_anth_1',
     provider: 'anthropic',
@@ -453,7 +453,7 @@ const v3credentials = [
   },
 ]
 
-const v3sessions = [
+const sessions = [
   {
     id: 'ses_a1b2c3',
     status: 'running',
@@ -497,7 +497,7 @@ const v3sessions = [
   },
 ]
 
-const v3events = [
+const sessionEvents = [
   {
     id: 'evt_1',
     seq: 1,
@@ -548,7 +548,7 @@ const v3events = [
   },
 ]
 
-const v3destinations = [
+const destinations = [
   {
     id: 'dst_1',
     url: 'https://acme.dev/hooks/oc',
@@ -561,7 +561,7 @@ const v3destinations = [
   },
 ]
 
-const v3deliveries = [
+const deliveries = [
   {
     id: 'dlv_1',
     destination: 'dst_1',
@@ -652,16 +652,16 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/org\/custom-domain$/, () => ({})],
   [/^\/org$/, () => org],
   [/^\/agents$/, () => []],
-  // Durable Agent Sessions (/v3) — lists return the { data: [...] } envelope.
-  [/^\/v3\/agents\/[^/]+\/slack$/, () => v3slack],
-  [/^\/v3\/agents\/[^/]+$/, () => v3agents[0]],
-  [/^\/v3\/agents$/, () => ({ data: v3agents })],
-  [/^\/v3\/credentials$/, () => ({ data: v3credentials })],
-  [/^\/v3\/sessions\/[^/]+\/events/, () => ({ data: v3events })],
-  [/^\/v3\/sessions\/[^/]+\/destinations$/, () => ({ data: v3destinations })],
-  [/^\/v3\/sessions\/[^/]+\/deliveries$/, () => ({ data: v3deliveries })],
-  [/^\/v3\/sessions\/[^/]+$/, () => v3sessions[0]],
-  [/^\/v3\/sessions(\?.*)?$/, () => ({ data: v3sessions, next_cursor: null })],
+  // Durable Agent Sessions — lists return the { data: [...] } envelope.
+  [/^\/v3\/agents\/[^/]+\/slack$/, () => slackConnection],
+  [/^\/v3\/agents\/[^/]+$/, () => agents[0]],
+  [/^\/v3\/agents$/, () => ({ data: agents })],
+  [/^\/v3\/credentials$/, () => ({ data: credentials })],
+  [/^\/v3\/sessions\/[^/]+\/events/, () => ({ data: sessionEvents })],
+  [/^\/v3\/sessions\/[^/]+\/destinations$/, () => ({ data: destinations })],
+  [/^\/v3\/sessions\/[^/]+\/deliveries$/, () => ({ data: deliveries })],
+  [/^\/v3\/sessions\/[^/]+$/, () => sessions[0]],
+  [/^\/v3\/sessions(\?.*)?$/, () => ({ data: sessions, next_cursor: null })],
   [
     /^\/webhooks\/[^/]+\/deliveries$/,
     () => ({ data: sandboxWebhookDeliveries }),
@@ -676,8 +676,11 @@ const ROUTES: Array<[RegExp, Handler]> = [
 // Mutations the preview needs to echo something parseable (e.g. the Slack
 // wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
 const POST_ROUTES: [RegExp, () => unknown][] = [
-  [/^\/v3\/agents\/[^/]+\/slack\/manifest$/, () => v3slackManifest],
-  [/^\/v3\/agents\/[^/]+\/slack$/, () => ({ ...v3slack, status: 'active' })],
+  [/^\/v3\/agents\/[^/]+\/slack\/manifest$/, () => slackManifest],
+  [
+    /^\/v3\/agents\/[^/]+\/slack$/,
+    () => ({ ...slackConnection, status: 'active' }),
+  ],
 ]
 
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {

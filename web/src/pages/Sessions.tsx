@@ -46,7 +46,11 @@ export default function Sessions() {
   }
 
   const startMutation = useMutation({
-    mutationFn: () => createSession({ agent: agentId, input: message.trim() }, crypto.randomUUID()),
+    mutationFn: () =>
+      createSession(
+        { agent: agentId, input: message.trim() },
+        crypto.randomUUID(),
+      ),
     onSuccess: (session) => {
       setShowStart(false)
       void queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -112,8 +116,6 @@ export default function Sessions() {
         title="Sessions"
         description="Durable agent runs — an append-only event log you can steer."
         api={{
-          method: 'POST',
-          path: '/v3/sessions',
           sdk: 'oc.sessions.create()',
           docs: 'https://docs.opencomputer.dev/agent-sessions/sessions',
         }}

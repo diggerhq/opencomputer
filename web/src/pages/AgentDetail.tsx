@@ -20,7 +20,7 @@ import { ResourceTable, type Column } from '@/components/resource-table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SlackConnect } from '@/components/slack-connect'
 
-// Mirrors the curated list in Agents.tsx (the create flow). /v3 wants a
+// Mirrors the curated list in Agents.tsx (the create flow). The API wants a
 // provider-prefixed model id.
 const MODELS = [
   { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8' },
@@ -43,7 +43,7 @@ export default function AgentDetail() {
     enabled: !!agentId,
   })
 
-  // This agent's sessions. /v3 has no per-agent filter, so scope client-side.
+  // This agent's sessions. The API has no per-agent filter, so scope client-side.
   const { data: allSessions, isLoading: loadingSessions } = useQuery({
     queryKey: ['sessions'],
     queryFn: () => getSessions(),
@@ -159,8 +159,6 @@ export default function AgentDetail() {
             title={agent.name}
             description="A reusable definition. Sessions pin a snapshot of it at create time."
             api={{
-              method: 'POST',
-              path: '/v3/sessions',
               sdk: 'oc.sessions.create()',
               docs: 'https://docs.opencomputer.dev/agent-sessions/sessions',
             }}

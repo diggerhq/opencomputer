@@ -25,7 +25,7 @@ import { Field, Input, Select, Textarea } from '@/components/form'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
 
-// Curated model list. /v3 requires a provider-prefixed id; runtime "claude" ⇒
+// Curated model list. The API requires a provider-prefixed id; runtime "claude" ⇒
 // anthropic/… (codex/openai land when that runtime ships).
 const MODELS = [
   { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8' },
@@ -192,8 +192,6 @@ export default function Agents() {
         title="Agents"
         description="Reusable definitions — a prompt, model, and runtime a session runs."
         api={{
-          method: 'POST',
-          path: '/v3/agents',
           sdk: 'oc.agents.create()',
           docs: 'https://docs.opencomputer.dev/agent-sessions/agents',
         }}

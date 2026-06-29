@@ -351,14 +351,14 @@ export const setAutumnAutoTopup = (cfg: {
 export const getSandboxUsage = (days = 30) =>
   apiFetch(`/usage/sandboxes?days=${days}`, {}, S.SandboxUsageSchema)
 
-// ── Durable Agent Sessions (/v3) ─────────────────────────────────────────────
+// ── Durable Agent Sessions ───────────────────────────────────────────────────
 // A separate service (sessions-api). Reached through the OC edge under
 // `/api/dashboard/v3/*`, so these reuse apiFetch (cookie auth, validation, mock).
 // Org-key management lives server-side at the edge; live event/steer can move to
 // a browser-direct client-token path later without changing these signatures.
 
 // Agents — the reusable definition (prompt, model, runtime, credential).
-// /v3 lists wrap rows in { data: [...] }; callers want the array.
+// List endpoints wrap rows in { data: [...] }; callers want the array.
 export const getAgents = () =>
   apiFetch('/v3/agents', {}, S.AgentListSchema).then((r) => r.data)
 
@@ -472,7 +472,7 @@ export const getSessions = (status?: string) =>
 export const getSession = (id: string) =>
   apiFetch(`/v3/sessions/${id}`, {}, S.SessionSchema)
 
-// /v3 wants { agent: <id>, input } (input required). The response is an envelope
+// The API wants { agent: <id>, input } (input required). The response is an envelope
 // { session, client_token } — return the session.
 export const createSession = (
   body: { agent: string; input: string },

@@ -268,8 +268,8 @@ export const SandboxWebhookDeliveryListSchema = z.object({
   data: z.array(SandboxWebhookDeliverySchema),
 })
 
-// ── Durable Agent Sessions (/v3) ─────────────────────────────────────────────
-// Mirrors the sessions-api /v3 contract verbatim (snake_case as the API returns
+// ── Durable Agent Sessions ───────────────────────────────────────────────────
+// Mirrors the sessions-api contract verbatim (snake_case as the API returns
 // it) — no transform layer to keep in sync. Reached via the edge proxy; lenient
 // string fields so a new server enum never fails validation.
 
@@ -284,7 +284,7 @@ export const AgentSchema = z.object({
   limits: record.nullish(),
   created_at: z.string(),
 })
-// /v3 list endpoints wrap rows in { data: [...], next_cursor? }.
+// List endpoints wrap rows in { data: [...], next_cursor? }.
 export const AgentListSchema = z.object({
   data: z.array(AgentSchema),
   next_cursor: z.string().nullish(),

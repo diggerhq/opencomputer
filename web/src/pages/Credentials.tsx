@@ -265,8 +265,6 @@ export default function Credentials() {
         title="Credentials"
         description="Model-provider keys your agents run on. Pick one per agent or set an org default."
         api={{
-          method: 'POST',
-          path: '/v3/credentials',
           sdk: 'oc.credentials.create()',
           docs: 'https://docs.opencomputer.dev/agent-sessions/credentials',
         }}
