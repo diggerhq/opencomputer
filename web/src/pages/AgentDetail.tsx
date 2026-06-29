@@ -253,8 +253,10 @@ export default function AgentDetail() {
             title={agent.name}
             description="A reusable definition. Sessions pin a snapshot of it at create time."
             api={{
-              sdk: 'oc.sessions.create()',
-              docs: 'https://docs.opencomputer.dev/agent-sessions/sessions',
+              method: 'GET',
+              path: '/v3/agents/{id}',
+              sdk: 'oc.agents.get()',
+              docs: 'https://docs.opencomputer.dev/agent-sessions/agents',
             }}
           />
 

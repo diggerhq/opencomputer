@@ -116,6 +116,8 @@ export default function Sessions() {
         title="Sessions"
         description="Durable agent runs — an append-only event log you can steer."
         api={{
+          method: 'POST',
+          path: '/v3/sessions',
           sdk: 'oc.sessions.create()',
           docs: 'https://docs.opencomputer.dev/agent-sessions/sessions',
         }}
