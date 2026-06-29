@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Send, Wrench } from 'lucide-react'
@@ -56,6 +56,7 @@ export default function SessionDetail() {
   const { sessionId = '' } = useParams()
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState('')
+  const draftRef = useRef<HTMLTextAreaElement>(null)
   const [level, setLevel] = useState<LevelFilter>('all')
   const [confirmCancel, setConfirmCancel] = useState(false)
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
@@ -105,6 +106,15 @@ export default function SessionDetail() {
     es.onerror = () => setStreamOk(false) // EventSource retries on its own
     return () => es.close()
   }, [sessionId])
+
+  // Auto-grow the steer box with its content (up to ~6 rows, then scroll), and
+  // shrink back when it's cleared after a send.
+  useLayoutEffect(() => {
+    const el = draftRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  }, [draft])
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
@@ -298,19 +308,35 @@ export default function SessionDetail() {
             }}
           >
             <Textarea
+              ref={draftRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter (or ⌘/Ctrl+Enter) sends; Shift+Enter inserts a newline.
+                // Ignore Enter mid-IME-composition so CJK/accent input isn't cut off.
+                if (
+                  e.key === 'Enter' &&
+                  !e.shiftKey &&
+                  !e.nativeEvent.isComposing
+                ) {
+                  e.preventDefault()
+                  if (draft.trim() && canSteer && !steerMutation.isPending) {
+                    steerMutation.mutate()
+                  }
+                }
+              }}
               placeholder={
                 canSteer
                   ? 'Send a message to steer the session…'
                   : 'Session archived'
               }
               disabled={!canSteer}
-              className="min-h-10 flex-1"
+              className="min-h-10 max-h-40 flex-1 overflow-y-auto"
               rows={1}
             />
             <Button
               type="submit"
+              title="Enter to send · Shift+Enter for newline"
               disabled={!draft.trim() || !canSteer || steerMutation.isPending}
             >
               <Send className="size-4" />
