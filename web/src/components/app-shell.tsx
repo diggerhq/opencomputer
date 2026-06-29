@@ -60,7 +60,7 @@ const NAV: NavGroup[] = [
       { to: '/agents', label: 'Agents', icon: Bot, preview: true },
       {
         to: '/sessions',
-        label: 'Agent sessions',
+        label: 'Sessions',
         icon: MessagesSquare,
         preview: true,
       },
