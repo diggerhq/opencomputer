@@ -276,6 +276,7 @@ export const SandboxWebhookDeliveryListSchema = z.object({
 export const AgentSchema = z.object({
   id: z.string(),
   name: z.string(),
+  prompt: z.string().nullish(),
   prompt_hash: z.string().nullish(),
   model: z.string(),
   runtime: z.string(),

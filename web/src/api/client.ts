@@ -381,11 +381,12 @@ export const createAgent = (body: {
     S.AgentSchema,
   )
 
-// PATCH bumps revision; name is immutable (create idempotency key). `key`
-// rotates the model credential.
+// PATCH bumps revision; name is immutable (create idempotency key). `credential`
+// switches which credential the agent runs on; `key` (legacy) rotates the pinned
+// credential's value — rotation now lives on the Credentials page.
 export const updateAgent = (
   id: string,
-  body: Partial<{ prompt: string; model: string; key: string }>,
+  body: Partial<{ prompt: string; model: string; key: string; credential: string }>,
 ) =>
   apiFetch(
     `/v3/agents/${id}`,
@@ -458,6 +459,15 @@ export const setDefaultCredential = (id: string) =>
   apiFetch(
     '/v3/credentials/default',
     { method: 'PUT', body: JSON.stringify({ credential: id }) },
+    S.CredentialSchema,
+  )
+
+// Rotate a credential's secret VALUE (versioned, write-only key). Returns updated
+// metadata (new last4). Switching which credential an agent uses is updateAgent({ credential }).
+export const rotateCredential = (id: string, key: string) =>
+  apiFetch(
+    `/v3/credentials/${id}`,
+    { method: 'PATCH', body: JSON.stringify({ key }) },
     S.CredentialSchema,
   )
 

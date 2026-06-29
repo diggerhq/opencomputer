@@ -375,6 +375,8 @@ const agents = [
   {
     id: 'agt_3kf9xz',
     name: 'PR Reviewer',
+    prompt:
+      'You are a meticulous code reviewer. Flag correctness, security, and clarity issues; be concise and cite line numbers.',
     prompt_hash: 'sha256:9c1a4f',
     model: 'anthropic/claude-opus-4-8',
     runtime: 'claude',
@@ -385,6 +387,8 @@ const agents = [
   {
     id: 'agt_7mq2aa',
     name: 'Docs Writer',
+    prompt:
+      'You write clear, friendly developer documentation. Prefer short sentences and runnable examples.',
     prompt_hash: 'sha256:42bd07',
     model: 'anthropic/claude-sonnet-4-6',
     runtime: 'claude',

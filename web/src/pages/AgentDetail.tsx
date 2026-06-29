@@ -3,7 +3,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, MessagesSquare, Pencil, Send } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
-import { getAgent, updateAgent, getSessions, createSession } from '@/api/client'
+import {
+  getAgent,
+  updateAgent,
+  getSessions,
+  createSession,
+  getCredentials,
+  createCredential,
+} from '@/api/client'
 import type { Session } from '@/api/schemas'
 import { PageHeader } from '@/components/page-header'
 import {
@@ -28,6 +35,13 @@ const MODELS = [
   { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
 ]
 
+// Agents run on the "claude" runtime → anthropic credentials. Sentinel for the
+// "create one inline" choice in the credential picker.
+const CRED_PROVIDER = 'anthropic'
+const NEW_CRED = '__new__'
+
+type EditField = 'model' | 'prompt' | 'credential'
+
 export default function AgentDetail() {
   const { agentId = '' } = useParams()
   const navigate = useNavigate()
@@ -50,14 +64,27 @@ export default function AgentDetail() {
   })
   const sessions = (allSessions ?? []).filter((s) => s.agent_id === agentId)
 
+  // Credentials for the switch picker + to label the current one.
+  const { data: credentials } = useQuery({
+    queryKey: ['credentials'],
+    queryFn: getCredentials,
+  })
+  const anthropicCreds = (credentials ?? []).filter(
+    (c) => c.provider === CRED_PROVIDER,
+  )
+  const credLabel = (id: string) => {
+    const c = anthropicCreds.find((x) => x.id === id)
+    if (!c) return id
+    return `${c.name || 'Unnamed'}${c.last4 ? ` ·· ${c.last4}` : ''}${
+      c.is_default ? ' (default)' : ''
+    }`
+  }
+
   // ── Start a session (inline composer) ─────────────────────────────────────
   const [task, setTask] = useState('')
   const startMutation = useMutation({
     mutationFn: () =>
-      createSession(
-        { agent: agentId, input: task.trim() },
-        crypto.randomUUID(),
-      ),
+      createSession({ agent: agentId, input: task.trim() }, crypto.randomUUID()),
     onSuccess: (session) => {
       void queryClient.invalidateQueries({ queryKey: ['sessions'] })
       void navigate(`/sessions/${session.id}`)
@@ -65,41 +92,76 @@ export default function AgentDetail() {
     onError: (e) => notifyError("Couldn't start the session.", e),
   })
 
-  // ── Edit (inline, no popup) ───────────────────────────────────────────────
-  const [editing, setEditing] = useState(false)
-  const [editModel, setEditModel] = useState('')
-  const [editPrompt, setEditPrompt] = useState('')
-  const [editKey, setEditKey] = useState('')
+  // ── Field-by-field inline edit ────────────────────────────────────────────
+  // One field at a time; the pencil on a row opens just that row's editor.
+  const [editField, setEditField] = useState<EditField | null>(null)
+  const [draftModel, setDraftModel] = useState('')
+  const [draftPrompt, setDraftPrompt] = useState('')
+  const [draftCred, setDraftCred] = useState('') // credential id or NEW_CRED
+  const [newCredName, setNewCredName] = useState('')
+  const [newCredKey, setNewCredKey] = useState('')
 
-  const openEdit = () => {
+  const startEdit = (field: EditField) => {
     if (!agent) return
-    setEditModel(agent.model)
-    setEditPrompt('')
-    setEditKey('')
-    setEditing(true)
+    if (field === 'model') setDraftModel(agent.model)
+    if (field === 'prompt') setDraftPrompt(agent.prompt ?? '')
+    if (field === 'credential') {
+      setDraftCred(agent.credential_id ?? anthropicCreds[0]?.id ?? NEW_CRED)
+      setNewCredName('')
+      setNewCredKey('')
+    }
+    setEditField(field)
   }
-  const closeEdit = () => {
-    setEditing(false)
-    setEditKey('') // never leave a model key in state
+  const cancelEdit = () => {
+    setEditField(null)
+    setNewCredKey('') // never leave a model key in state
   }
 
-  const updateMutation = useMutation({
-    mutationFn: () => {
+  const saveMutation = useMutation({
+    mutationFn: async () => {
       if (!agent) throw new Error('no agent loaded')
-      const body: { model?: string; prompt?: string; key?: string } = {}
-      if (editModel.trim() && editModel.trim() !== agent.model)
-        body.model = editModel.trim()
-      if (editPrompt.trim()) body.prompt = editPrompt.trim()
-      if (editKey.trim()) body.key = editKey.trim()
-      return updateAgent(agent.id, body)
+      if (editField === 'model')
+        return updateAgent(agent.id, { model: draftModel.trim() })
+      if (editField === 'prompt')
+        return updateAgent(agent.id, { prompt: draftPrompt.trim() })
+      // credential: switch to a chosen one, or mint a new one then switch.
+      let credentialId = draftCred
+      if (draftCred === NEW_CRED) {
+        const cred = await createCredential({
+          key: newCredKey.trim(),
+          provider: CRED_PROVIDER,
+          name: newCredName.trim() || undefined,
+          is_default: !anthropicCreds.some((c) => c.is_default),
+        })
+        credentialId = cred.id
+      }
+      return updateAgent(agent.id, { credential: credentialId })
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
-      closeEdit()
+      void queryClient.invalidateQueries({ queryKey: ['credentials'] })
+      cancelEdit()
     },
     onError: (e) => notifyError("Couldn't update the agent.", e),
   })
+
+  // Whether the open editor has a saveable value.
+  const canSave =
+    editField === 'model'
+      ? draftModel.trim().length > 0
+      : editField === 'prompt'
+        ? draftPrompt.trim().length > 0
+        : editField === 'credential'
+          ? draftCred === NEW_CRED
+            ? newCredKey.trim().length > 0
+            : draftCred.length > 0
+          : false
+
+  const credOptions = [
+    ...anthropicCreds.map((c) => ({ value: c.id, label: credLabel(c.id) })),
+    { value: NEW_CRED, label: '＋ New credential…' },
+  ]
 
   const sessionColumns: Column<Session>[] = [
     {
@@ -162,97 +224,138 @@ export default function AgentDetail() {
               sdk: 'oc.sessions.create()',
               docs: 'https://docs.opencomputer.dev/agent-sessions/sessions',
             }}
-            actions={
-              !editing ? (
-                <Button variant="outline" size="sm" onClick={openEdit}>
-                  <Pencil className="size-4" />
-                  Edit
-                </Button>
-              ) : null
-            }
           />
 
-          {/* Overview */}
-          <Panel className="p-5">
-            <div className="text-muted-foreground grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
-              <span>Agent ID</span>
-              <span className="text-foreground font-mono">{agent.id}</span>
-              <span>Model</span>
-              <span className="text-foreground font-mono">{agent.model}</span>
-              <span>Runtime</span>
-              <span className="text-foreground capitalize">
+          {/* Configuration — each field edits in place. */}
+          <Panel className="px-5 py-1.5">
+            {/* Read-only identity rows */}
+            <Row label="Agent ID">
+              <span className="text-foreground font-mono text-sm">
+                {agent.id}
+              </span>
+            </Row>
+            <Row label="Runtime">
+              <span className="text-foreground text-sm capitalize">
                 {agent.runtime}
               </span>
-              <span>Revision</span>
-              <span className="text-foreground font-mono">
+            </Row>
+            <Row label="Revision">
+              <span className="text-foreground font-mono text-sm">
                 {agent.revision ?? 1}
               </span>
-              <span>Credential</span>
-              <span className="text-foreground">
-                {agent.credential_id ? 'Set' : 'None'}
-              </span>
-              <span>Created</span>
-              <span className="text-foreground">
-                {new Date(agent.created_at).toLocaleString()}
-              </span>
-            </div>
+            </Row>
 
-            {editing ? (
-              <form
-                className="mt-5 space-y-4 border-t pt-5"
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  updateMutation.mutate()
-                }}
-              >
-                <Field label="Model" htmlFor="edit-model">
-                  <Select
-                    id="edit-model"
-                    value={editModel}
-                    onValueChange={setEditModel}
-                    options={
-                      MODELS.some((m) => m.value === editModel) || !editModel
-                        ? MODELS
-                        : [{ value: editModel, label: editModel }, ...MODELS]
-                    }
-                  />
-                </Field>
-                <Field
-                  label="New prompt"
-                  htmlFor="edit-prompt"
-                  description="Leave blank to keep the current prompt (it isn't shown)."
-                >
-                  <Textarea
-                    id="edit-prompt"
-                    value={editPrompt}
-                    onChange={(e) => setEditPrompt(e.target.value)}
-                    placeholder="Replace the system prompt…"
-                    className="min-h-24"
-                  />
-                </Field>
-                <Field
-                  label="Rotate Anthropic API key"
-                  htmlFor="edit-key"
-                  description="Leave blank to keep the current credential."
-                >
-                  <Input
-                    id="edit-key"
-                    type="password"
-                    value={editKey}
-                    onChange={(e) => setEditKey(e.target.value)}
-                    placeholder="sk-ant-…"
-                  />
-                </Field>
-                <div className="flex justify-end gap-2">
-                  <Button type="button" variant="ghost" onClick={closeEdit}>
-                    Cancel
-                  </Button>
-                  <Button type="submit" disabled={updateMutation.isPending}>
-                    {updateMutation.isPending ? 'Saving…' : 'Save changes'}
-                  </Button>
-                </div>
-              </form>
-            ) : null}
+            {/* Model */}
+            <EditRow
+              label="Model"
+              editing={editField === 'model'}
+              onEdit={() => startEdit('model')}
+              onCancel={cancelEdit}
+              onSave={() => saveMutation.mutate()}
+              saving={saveMutation.isPending}
+              canSave={canSave}
+              display={
+                <span className="text-foreground font-mono text-sm">
+                  {agent.model}
+                </span>
+              }
+            >
+              <Select
+                value={draftModel}
+                onValueChange={setDraftModel}
+                options={
+                  MODELS.some((m) => m.value === draftModel) || !draftModel
+                    ? MODELS
+                    : [{ value: draftModel, label: draftModel }, ...MODELS]
+                }
+              />
+            </EditRow>
+
+            {/* Prompt — now shown, edited in place */}
+            <EditRow
+              label="Prompt"
+              editing={editField === 'prompt'}
+              onEdit={() => startEdit('prompt')}
+              onCancel={cancelEdit}
+              onSave={() => saveMutation.mutate()}
+              saving={saveMutation.isPending}
+              canSave={canSave}
+              display={
+                <p className="text-foreground text-sm whitespace-pre-wrap">
+                  {agent.prompt || (
+                    <span className="text-muted-foreground">No prompt set</span>
+                  )}
+                </p>
+              }
+            >
+              <Textarea
+                value={draftPrompt}
+                onChange={(e) => setDraftPrompt(e.target.value)}
+                placeholder="You are a meticulous code reviewer…"
+                className="min-h-32"
+              />
+            </EditRow>
+
+            {/* Credential — switch (pick existing / create new), not rotate */}
+            <EditRow
+              label="Credential"
+              editing={editField === 'credential'}
+              onEdit={() => startEdit('credential')}
+              onCancel={cancelEdit}
+              onSave={() => saveMutation.mutate()}
+              saving={saveMutation.isPending}
+              canSave={canSave}
+              display={
+                <span className="text-foreground text-sm">
+                  {agent.credential_id ? (
+                    credLabel(agent.credential_id)
+                  ) : (
+                    <span className="text-muted-foreground">
+                      None — uses the org default
+                    </span>
+                  )}
+                </span>
+              }
+            >
+              <div className="space-y-3">
+                <Select
+                  value={draftCred}
+                  onValueChange={setDraftCred}
+                  options={credOptions}
+                  placeholder="Choose a credential"
+                />
+                {draftCred === NEW_CRED ? (
+                  <div className="border-border bg-panel-2 grid grid-cols-1 gap-3 rounded-md border p-3 sm:grid-cols-2">
+                    <Field label="Credential name" htmlFor="new-cred-name">
+                      <Input
+                        id="new-cred-name"
+                        value={newCredName}
+                        onChange={(e) => setNewCredName(e.target.value)}
+                        placeholder="e.g. Production"
+                      />
+                    </Field>
+                    <Field
+                      label="Anthropic API key"
+                      htmlFor="new-cred-key"
+                      description="Encrypted in a dedicated secret store."
+                    >
+                      <Input
+                        id="new-cred-key"
+                        type="password"
+                        value={newCredKey}
+                        onChange={(e) => setNewCredKey(e.target.value)}
+                        placeholder="sk-ant-…"
+                      />
+                    </Field>
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground text-xs">
+                    Switches which credential this agent runs on. To change a
+                    key's value, rotate it on the Credentials page.
+                  </p>
+                )}
+              </div>
+            </EditRow>
           </Panel>
 
           {/* Slack — kept above Sessions so it's visible without scrolling */}
@@ -311,6 +414,86 @@ export default function AgentDetail() {
               }
             />
           </Panel>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// A read-only configuration row: a fixed-width label + value.
+function Row({
+  label,
+  children,
+}: {
+  label: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="border-border/60 flex items-baseline gap-4 border-b py-3 last:border-0">
+      <span className="text-muted-foreground w-28 shrink-0 text-xs">
+        {label}
+      </span>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  )
+}
+
+// An editable configuration row: shows the value with a subtle pencil; clicking
+// swaps in the editor (the children) with Save / Cancel. One row edits at a time.
+function EditRow({
+  label,
+  editing,
+  onEdit,
+  onCancel,
+  onSave,
+  saving,
+  canSave,
+  display,
+  children,
+}: {
+  label: string
+  editing: boolean
+  onEdit: () => void
+  onCancel: () => void
+  onSave: () => void
+  saving: boolean
+  canSave: boolean
+  display: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <div className="border-border/60 flex gap-4 border-b py-3 last:border-0">
+      <span className="text-muted-foreground w-28 shrink-0 pt-1 text-xs">
+        {label}
+      </span>
+      {!editing ? (
+        <div className="flex min-w-0 flex-1 items-start justify-between gap-2">
+          <div className="min-w-0">{display}</div>
+          <button
+            type="button"
+            onClick={onEdit}
+            aria-label={`Edit ${label.toLowerCase()}`}
+            className="text-muted-foreground hover:text-foreground -mt-0.5 shrink-0 rounded p-1"
+          >
+            <Pencil className="size-3.5" />
+          </button>
+        </div>
+      ) : (
+        <div className="flex-1 space-y-2.5">
+          {children}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={onSave}
+              disabled={saving || !canSave}
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </Button>
+          </div>
         </div>
       )}
     </div>
