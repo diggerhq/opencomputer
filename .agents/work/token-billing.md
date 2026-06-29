@@ -1,12 +1,16 @@
 # Token / model-usage billing — design
 
-Status: **design reviewed (3 rounds) + reconciled against merged code.**
-Architecture decided (OpenRouter-native + Autumn shared credit pool). The UI
-runtime/model/credential foundation shipped in **PR #448**, so §6.8 is now the
-small remaining Managed delta. **Implementation-ready for the `claude` path; the
-`codex` path is gated on the §9.7 spike** (OR's `wire_api:"responses"` support is
-unvalidated). **Start here: §14 (build sequence + prerequisites).** Decisions that
-could cause debate are in §9, failure modes in §10.
+Status: **design reviewed (3 rounds) + reconciled against merged code + §9.7 spike
+PASSED (2026-06-29).** Architecture decided (OpenRouter-native + Autumn shared credit
+pool). The UI runtime/model/credential foundation shipped in **PR #448**, so §6.8 is
+now the small remaining Managed delta. **Both runtimes validated end-to-end through
+OpenRouter** — `claude` via Anthropic Messages (`/api/v1/messages`) and `codex` via
+the OpenAI Responses API (`/api/v1/responses`, `wire_api:"responses"`), each with tool
+calls + cost echo (§9.7). So **implementation-ready for both `claude` and `codex`.**
+Two prerequisites are now the gating items, not the protocol: (1) we hold only an OR
+**inference** key — provisioning needs a **management key** (§14); (2) a stored→OR
+**model-slug mapping** is required (Anthropic dash↔dot; §5.2). **Start here: §14.**
+Decisions that could cause debate are in §9, failure modes in §10.
 
 ---
 
@@ -814,20 +818,52 @@ would duplicate OR's pricing into Autumn's static schema. Per-model breakdown li
 in ClickHouse (§6.5). *Trade:* Autumn itself won't show per-model — acceptable,
 the dashboard reads ClickHouse.
 
-**9.7 Runtime ↔ OpenRouter protocol (claude likely; codex UNVALIDATED — gate build on this).**
-`claude`/Anthropic: OR documents a Claude-Code path
-(`ANTHROPIC_BASE_URL=https://openrouter.ai/api` + `ANTHROPIC_AUTH_TOKEN`) — *likely*
-feasible, still validate in our runtime. `codex`/OpenAI: **not** a clean "set
-baseURL" — our v3-codex pins `wire_api:"responses"` + `requires_openai_auth:true`
-(`v3-codex/server.ts:113–114`), and OR's OpenAI-compatible surface is
-chat/completions-centric; whether the Responses API + non-OpenAI-auth path works
-through OR is **unverified**. **The work** (§5.2): each runtime currently *blocks*
+**9.7 Runtime ↔ OpenRouter protocol — SPIKE PASSED 2026-06-29 (both runtimes green).**
+Validated live against OR with an inference key (`/tmp/or-spike.mjs`, throwaway):
+- **`claude` ✅** — `POST https://openrouter.ai/api/v1/messages` (Anthropic Messages
+  format, `Authorization: Bearer <or-key>`, `anthropic-version: 2023-06-01`,
+  model `anthropic/claude-haiku-4.5`) → `stop_reason:"tool_use"`, tool call echoed
+  (`get_weather{city:"Paris"}`), and **cost echoed** (`usage.cost = 0.000835` +
+  `cost_details`). This is OR's Claude-Code path (base `…/api`, auth via
+  `ANTHROPIC_AUTH_TOKEN`).
+- **`codex` ✅ (the one the doc said was unvalidated)** —
+  `POST https://openrouter.ai/api/v1/responses` (OpenAI **Responses** API,
+  `wire_api:"responses"`, Bearer auth, model `openai/gpt-5.4-nano`) →
+  `status:"completed"`, `function_call` echoed (`get_weather{city:"Paris"}`), and
+  **cost echoed** (`usage.cost = 0.0000331`). `chat/completions` also works (cost
+  echoed) as a fallback. So the Responses API + Bearer (non-OpenAI-auth) path **does**
+  work through OR.
+- **Both echo cost automatically** (no `usage:{include:true}` needed) → confirms the
+  §5.4 per-key poll + per-request capture are both viable.
+
+**The remaining build work** (§5.2) is unchanged: each runtime currently *blocks*
 base-URL injection — v3-claude **deletes** both `ANTHROPIC_AUTH_TOKEN` and
-`ANTHROPIC_BASE_URL` (`server.ts:~87–88`), v3-codex **hardcodes** the OpenAI provider
-block (`server.ts:~111–114`) — so make both configurable and **validate end-to-end
-(protocol + tool calls + usage/cost echo) before offering each runtime under Managed.**
-A runtime not yet validated is simply not offered. This spike (esp. codex) gates the
-build (open-q #4).
+`ANTHROPIC_BASE_URL` (`runtimes/v3-claude/src/server.ts:87–88`), v3-codex **hardcodes**
+the OpenAI provider block (`runtimes/v3-codex/src/server.ts:107–114`) — so make both
+configurable per `endpoint_profile`.
+
+**NEW finding — model-id slug mapping (load-bearing, P1).** Both servers **strip the
+provider prefix** before handing the model to the brain:
+`v3-claude/server.ts:78` `(cfg.model).replace(/^anthropic\//,"")`,
+`v3-codex/server.ts:70` `.replace(/^openai\//,"")`. That's **correct for BYO-direct**
+(Anthropic's real ids use dashes: `claude-opus-4-8`; OpenAI uses dots: `gpt-5.5`), but
+**wrong for Managed**: OR needs the **prefixed** slug, and for Anthropic a **dotted**
+version (`anthropic/claude-opus-4.8`, `…sonnet-4.6`, `…haiku-4.5` — verified present on
+OR; the dashed `anthropic/claude-opus-4-8` etc. used in `runtimes.ts` are **absent**
+from OR). OpenAI slugs match (`openai/gpt-5.5|5.4-mini|5.4-nano|5.3-codex` all present).
+So Managed must (a) **not** strip the prefix and (b) translate our stored Anthropic
+slug → OR's dotted slug. **Do not regex dash→dot** (OR also serves `anthropic/claude-3-haiku`
+with a dash). Implement as an explicit per-model `orSlug` in `runtimes.ts` (default =
+the stored id for OpenAI; explicit dotted value for Anthropic), carried into the
+Managed `endpoint_profile`/seal. `runtimes.ts` user-facing slugs stay as-is (they're
+right for BYO). Captured in §5.2 / §6.8.
+
+**NEW finding — key type.** The OR key currently in `.env.v3`
+(`OPENROUTER_PROVISIONING_KEY`) is actually an **inference** key (`GET /api/v1/keys` →
+401; it can call models + `GET /credits`, but cannot mint/list sub-keys). The build
+needs a real **management/provisioning** key (OR dashboard → *Provisioning API Keys*).
+Also the OR account float read `total_credits: 50, total_usage: 49.46` → **~$0.54
+left**; fund it before live Managed traffic (§5.7 float).
 
 **9.8 User-facing taxonomy (resolved).** Surface Managed as a single pinned entry
 in the existing credential picker, selected per agent, via the
@@ -941,19 +977,21 @@ malformed values that already would have failed now fail earlier and clearer.
 ## 14. Build sequencing & prerequisites (start here)
 
 **Prerequisites (before any code):**
-- **OpenRouter account + provisioning key — does not exist yet.** Create an OR org
-  account, fund it (or arm auto-recharge — the float, §5.7), generate a
-  **management/provisioning key**, and set it as the edge Wrangler secret
-  `OPENROUTER_PROVISIONING_KEY` (prod + dev). This master key mints per-org keys +
-  reads analytics; it is the only OR secret the edge holds.
+- **Spike §9.7 — DONE, PASSED 2026-06-29.** Both `claude` (Anthropic Messages) and
+  `codex` (OpenAI Responses) validated through OR with tool calls + cost echo. Both
+  runtimes ship under Managed. (`/tmp/or-spike.mjs`.)
+- **OpenRouter provisioning key — STILL NEEDED (the active blocker).** The key in
+  `.env.v3` is an **inference** key (can call models, can't mint sub-keys → `GET
+  /keys` 401). Create a **management/provisioning** key (OR dashboard → *Provisioning
+  API Keys*) and set it as the edge Wrangler secret `OPENROUTER_PROVISIONING_KEY`
+  (prod + dev). This master key mints per-org keys + reads analytics; it is the only
+  OR secret the edge holds. **Step 1's provisioning round-trip can't be tested live
+  until this exists** — but step-1/2 code can be written + unit-tested against it.
+- **Fund the OR account float.** `GET /credits` shows ~$0.54 left of $50 — fund it
+  (or arm auto-recharge, §5.7) before any real Managed traffic.
 - **Autumn `model_spend` feature.** Define the metered feature and add it to the
   `credits` credit_schema with `credit_cost = 1e-6` (§4 / §6.2). `AUTUMN_SECRET_KEY`
   is already live on the prod edge **and** stored in `sessions-api/.env.v3`.
-- **Spike §9.7 — the gate.** Throwaway OR key; confirm a **claude-protocol** call
-  (`ANTHROPIC_BASE_URL=…/api` + `ANTHROPIC_AUTH_TOKEN`) and a **codex-protocol** call
-  (`baseURL=…/api/v1`, `wire_api:"responses"` + non-OpenAI auth) each work through OR
-  — protocol + tool calls + usage/cost echo. **Decides which runtimes ship under
-  Managed** (claude likely; codex may not).
 
 **Build order (claude path first; each step independently testable):**
 1. **Edge — managed key lifecycle + state:** `managed_model_keys` table +
@@ -963,6 +1001,9 @@ malformed values that already would have failed now fail earlier and clearer.
    (§6.7.5); `getManagedCredential` + resolver arm (§6.7.2); `endpoint_profile` on
    `TurnConfig` + seal keyed on (runtime, source) (§5.2/G1, §6.7.4); `422
    managed_unavailable`; runtime servers stop deleting/hardcoding base-URL+auth (§5.2).
+   **Model-slug mapping (§9.7 finding):** add an `orSlug` per model and, for Managed,
+   send the **prefixed** OR slug (Anthropic dotted) instead of the prefix-stripped
+   form the servers use today; carry it via `endpoint_profile`.
 3. **Edge — metering + enforcement:** `model_meter` cron — persist-before-track
    immutable-interval debit (§5.4/§7), markup-correct **aggregate** cap across keys
    (§5.4/§7), `projectOrg` halt on ≤0 (§5.4); reconcile cron (§5.7).
