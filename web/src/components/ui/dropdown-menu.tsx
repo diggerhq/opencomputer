@@ -3,10 +3,7 @@ import { DropdownMenu as DropdownMenuPrimitive } from 'radix-ui'
 
 import { cn } from '@/lib/utils'
 import { CheckIcon, ChevronRightIcon } from 'lucide-react'
-import {
-  floatingLayerProps,
-  markFloatingLayerOutsideInteraction,
-} from '@/components/ui/floating-layer'
+import { markFloatingLayerPointerDismiss } from '@/components/ui/floating-layer'
 
 function DropdownMenu({
   ...props
@@ -37,33 +34,24 @@ function DropdownMenuContent({
   className,
   align = 'start',
   sideOffset = 4,
-  onInteractOutside,
   onPointerDownOutside,
-  onFocusOutside,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
-        {...floatingLayerProps}
         sideOffset={sideOffset}
         align={align}
         className={cn(
           'bg-popover text-popover-foreground ring-foreground/10 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 shadow-overlay z-50 max-h-(--radix-dropdown-menu-content-available-height) w-(--radix-dropdown-menu-trigger-width) min-w-32 origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-lg p-1 ring-1 duration-100 data-[state=closed]:overflow-hidden',
           className,
         )}
-        onInteractOutside={(event) => {
-          markFloatingLayerOutsideInteraction()
-          onInteractOutside?.(event)
-        }}
+        // Mark the gesture that closes this menu so a parent Dialog/Sheet doesn't
+        // dismiss on the retargeted tail of the same click (floating-layer.ts).
         onPointerDownOutside={(event) => {
-          markFloatingLayerOutsideInteraction()
+          markFloatingLayerPointerDismiss()
           onPointerDownOutside?.(event)
-        }}
-        onFocusOutside={(event) => {
-          markFloatingLayerOutsideInteraction()
-          onFocusOutside?.(event)
         }}
         {...props}
       />
@@ -258,31 +246,17 @@ function DropdownMenuSubTrigger({
 
 function DropdownMenuSubContent({
   className,
-  onInteractOutside,
-  onPointerDownOutside,
-  onFocusOutside,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+  // No floating-layer guard here: a submenu is nested inside its parent menu, not
+  // a dialog, so it never produces the Select-in-Dialog dismiss (floating-layer.ts).
   return (
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content"
-      {...floatingLayerProps}
       className={cn(
         'bg-popover text-popover-foreground ring-foreground/10 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 shadow-overlay z-50 min-w-[96px] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-lg p-1 ring-1 duration-100',
         className,
       )}
-      onInteractOutside={(event) => {
-        markFloatingLayerOutsideInteraction()
-        onInteractOutside?.(event)
-      }}
-      onPointerDownOutside={(event) => {
-        markFloatingLayerOutsideInteraction()
-        onPointerDownOutside?.(event)
-      }}
-      onFocusOutside={(event) => {
-        markFloatingLayerOutsideInteraction()
-        onFocusOutside?.(event)
-      }}
       {...props}
     />
   )

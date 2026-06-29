@@ -5,56 +5,47 @@ something is reproducible but not yet fixed, with enough detail to resume cold.
 
 ---
 
-## Dialog closes when interacting with a Select/dropdown inside it
+## Dialog closes when interacting with a Select/dropdown inside it — RESOLVED
 
-**Status:** open · **Severity:** minor–moderate UX (loses in-progress form input) · **Filed:** 2026-06-28
+**Status:** resolved (PR #443) · **Filed:** 2026-06-28 · **Fixed:** 2026-06-29 · **Severity:** minor–moderate UX (lost in-progress form input)
 
-**Symptom.** Open a Radix `Select` (or any dropdown) rendered *inside* a `Dialog`, then
-click an item — notably opening the dropdown a second time and clicking again — and the
-**whole Dialog closes** instead of just the dropdown. Confirmed **generic to every modal
-with a dropdown**, not specific to one screen (first reported on the agent-create dialog's
-credential picker; reproduced elsewhere).
+**Symptom.** Open a Radix `Select` inside a `Dialog`, then click the trigger a *second*
+time to close it — and the **whole Dialog closes** instead of just the menu. Generic to
+every modal with a dropdown (first hit on the agent-create credential picker).
 
-**Environment.** `radix-ui ^1.6.0` (the unified package), React 19, vite dev on `:3000`,
-`web/`. Affected primitives: `web/src/components/ui/dialog.tsx` (Dialog) +
-`web/src/components/form.tsx` (`Select`, `position="popper"`). Surfaces: any dialog with a
-`Select` — e.g. `pages/Agents.tsx` (model + credential pickers), `pages/Credentials.tsx`
-(provider).
+**Actual root cause (confirmed, not the original guess).** `Select` is hardcoded
+`disableOutsidePointerEvents` (no `modal` opt-out). While open it sets
+`pointer-events: none` outside its menu. The second trigger click closes the menu and the
+**tail of that same gesture** (pointerup/click, after pointer-events are restored) retargets
+onto the Dialog overlay → the Dialog reads it as an outside click and dismisses. The menu has
+already left Radix's layer stack by then, so the native `DismissableLayer` shielding (which
+*does* protect the common cases) can't cover it. Radix treats this as by-design and won't fix
+it (primitives [#2961](https://github.com/radix-ui/primitives/issues/2961) closed not-planned;
+[#2731](https://github.com/radix-ui/primitives/issues/2731) documents the "click twice"
+behavior). **It was not a version-mismatch / duplicate-`dismissable-layer` bug** — the unified
+`radix-ui` 1.6.0 already deduplicates that; the original `npm ls` / standalone-package leads
+were dead ends.
 
-**Suspected cause.** A Radix `Select` portals its menu *outside* the dialog DOM. Normally
-the Select's `DismissableLayer` registers as a nested "branch" of the Dialog's layer (via
-React context, which crosses portals), so interacting with the menu is NOT treated as
-"outside" the dialog. Here that shielding appears to fail — the menu interaction reaches the
-Dialog's dismiss path and closes it. Likely a layer/context nesting bug in the unified
-`radix-ui` build (or duplicate copies of `@radix-ui/react-dismissable-layer` /
-`react-focus-scope` breaking the shared context).
+**Why the earlier `[data-radix-popper-content-wrapper]` guard "didn't work."** Two missing
+pieces, both required:
+1. **Unwrap the native event.** Radix wraps it — `event.target` on the outside-event is the
+   *layer node*, not the click target — so `target.closest(...)` checked the wrong element and
+   silently never matched. Must read `event.detail.originalEvent.target`.
+2. **Survive the whole gesture.** The retarget dismiss fires later in the same
+   pointerdown→pointerup→click sequence; a guard that clears too early misses it.
 
-**What was tried (and did NOT fix it)** — all reverted to keep `DialogContent` clean:
-- `onInteractOutside` guard on `DialogContent` that `preventDefault`s when the event target
-  is inside a popper (`[data-radix-popper-content-wrapper]` / `[role=listbox]`).
-- Broadened guard across **all three** outside-dismiss callbacks
-  (`onPointerDownOutside`, `onFocusOutside`, `onInteractOutside`) that also `preventDefault`s
-  whenever a dropdown is open anywhere in the DOM (`[data-radix-select-viewport]` /
-  `[role=menu]`).
-- `modal={false}` on the shared `Select` — **not typed** in this `radix-ui` version (tsc
-  rejects the prop); abandoned.
+**The fix (`web/src/components/ui/floating-layer.ts` + dialog/sheet/form/dropdown).** Use
+Radix's intended override — `preventDefault()` on the Dialog/Sheet `onInteractOutside` /
+`onPointerDownOutside` / `onFocusOutside` — gated by two signals: (1) the interaction's
+*unwrapped* target is inside `[data-radix-popper-content-wrapper]` (Radix's own popper marker —
+no custom tagging), or (2) a **gesture flag**: a popper's `onPointerDownOutside` marks the
+current gesture, and the flag is cleared on the next document `pointerdown` (capture), so it
+covers exactly the one retarget gesture and never a later genuine backdrop click.
 
-None stopped the close. That strongly implies the dismissal is **not** going through the
-standard `DismissableLayer` outside-interaction callbacks (or HMR on the shared component
-masked testing — but a hard reload didn't help either).
+**Verified** (headless Chrome, real hit-tested clicks via CDP): second trigger click keeps the
+dialog open and closes the menu; a genuine backdrop click still dismisses the dialog. Disabling
+the guard flips the second-click assertion to fail, confirming the test discriminates.
 
-**Next things to try (resume here):**
-1. **Confirm the actual path first.** Temporarily log in the Dialog's `onOpenChange`
-   (or wrap with `onEscapeKeyDown` / `onPointerDownOutside` / `onFocusOutside` loggers) to
-   capture *what* fires the close — we never proved it's outside-interaction vs. focus-scope
-   vs. something else. Everything below is guesswork until this is known.
-2. `npm ls @radix-ui/react-dismissable-layer @radix-ui/react-focus-scope` — if there are
-   multiple copies, the Select/Dialog don't share the layer context → branch registration
-   fails. Dedupe / pin to fix.
-3. Try the standalone `@radix-ui/react-select` + `@radix-ui/react-dialog` (not the unified
-   `radix-ui`) for the affected dialogs, or bump `radix-ui`.
-4. Last resort: disable outside-click-to-close on the *form* dialogs only (per-dialog
-   `onInteractOutside={(e) => e.preventDefault()}` + rely on X/Cancel/Escape) — acceptable
-   for forms, but only worth it once #1 confirms outside-interaction is even the trigger.
-
-**Workaround for users today:** reopen the dialog (it's closed, not crashed).
+**Follow-up:** no automated browser test harness exists in `web/` yet — add a Playwright
+regression covering both directions (second-click-keeps-open; backdrop-dismisses) when one is
+set up, so this can't silently regress.

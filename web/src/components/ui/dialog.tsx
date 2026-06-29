@@ -6,6 +6,11 @@ import { Button } from '@/components/ui/button'
 import { XIcon } from 'lucide-react'
 import { shouldKeepParentOpenForFloatingLayer } from '@/components/ui/floating-layer'
 
+// Radix dismisses a modal Dialog on any "outside" interaction. A Select/dropdown
+// inside the dialog portals out, so interacting with it — or, worse, the
+// retargeted tail of the click that closes it — reads as outside and wrongly
+// closes the dialog. preventDefault() on these handlers is Radix's intended
+// override; the decision of when to override lives in floating-layer.ts.
 function keepDialogOpenForFloatingLayer(event: Event) {
   if (shouldKeepParentOpenForFloatingLayer(event)) event.preventDefault()
 }
