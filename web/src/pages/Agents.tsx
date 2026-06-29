@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { Bot, Plus } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   getAgents,
   createAgent,
-  updateAgent,
   getCredentials,
   createCredential,
   type Agent,
@@ -41,6 +41,7 @@ const NEW_CRED = '__new__'
 
 export default function Agents() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const { data: agents, isLoading } = useQuery({
     queryKey: ['agents'],
     queryFn: getAgents,
@@ -122,44 +123,15 @@ export default function Agents() {
         credential_id: credentialId,
       })
     },
-    onSuccess: () => {
+    onSuccess: (agent) => {
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
       void queryClient.invalidateQueries({ queryKey: ['credentials'] })
       setShowCreate(false)
       resetForm()
+      // Land on the new agent's screen, not back on the list.
+      void navigate(`/agents/${agent.id}`)
     },
     onError: (e) => notifyError("Couldn't create the agent.", e),
-  })
-
-  // See / edit an agent. name is immutable (PATCH covers model/prompt/key); the
-  // current prompt isn't returned (write-only), so editing it is a replace.
-  const [editing, setEditing] = useState<Agent | null>(null)
-  const [editModel, setEditModel] = useState('')
-  const [editPrompt, setEditPrompt] = useState('')
-  const [editKey, setEditKey] = useState('')
-
-  const openEdit = (a: Agent) => {
-    setEditing(a)
-    setEditModel(a.model)
-    setEditPrompt('')
-    setEditKey('')
-  }
-
-  const updateMutation = useMutation({
-    mutationFn: () => {
-      if (!editing) throw new Error('no agent selected')
-      const body: { model?: string; prompt?: string; key?: string } = {}
-      if (editModel.trim() && editModel.trim() !== editing.model)
-        body.model = editModel.trim()
-      if (editPrompt.trim()) body.prompt = editPrompt.trim()
-      if (editKey.trim()) body.key = editKey.trim()
-      return updateAgent(editing.id, body)
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['agents'] })
-      setEditing(null)
-    },
-    onError: (e) => notifyError("Couldn't update the agent.", e),
   })
 
   const columns: Column<Agent>[] = [
@@ -238,7 +210,7 @@ export default function Agents() {
           columns={columns}
           rows={agents ?? []}
           rowKey={(a) => a.id}
-          onRowClick={openEdit}
+          onRowClick={(a) => void navigate(`/agents/${a.id}`)}
           loading={isLoading}
           empty={
             <EmptyState
@@ -373,102 +345,6 @@ export default function Agents() {
               </Button>
             </DialogFooter>
           </form>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={editing !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setEditing(null)
-            setEditKey('') // never leave a model key in state after close
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{editing?.name}</DialogTitle>
-            <DialogDescription>
-              Edit the model, prompt, or credential. Changes bump the agent's
-              revision; the name is fixed.
-            </DialogDescription>
-          </DialogHeader>
-          {editing ? (
-            <form
-              className="space-y-4"
-              onSubmit={(e) => {
-                e.preventDefault()
-                updateMutation.mutate()
-              }}
-            >
-              <div className="bg-panel-2 text-muted-foreground grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 rounded-md border p-3 text-xs">
-                <span>Agent ID</span>
-                <span className="text-foreground font-mono">{editing.id}</span>
-                <span>Runtime</span>
-                <span className="text-foreground capitalize">
-                  {editing.runtime}
-                </span>
-                <span>Revision</span>
-                <span className="text-foreground font-mono">
-                  {editing.revision ?? 1}
-                </span>
-                <span>Credential</span>
-                <span className="text-foreground">
-                  {editing.credential_id ? 'Set' : 'None'}
-                </span>
-              </div>
-              <Field label="Model" htmlFor="edit-model">
-                <Select
-                  id="edit-model"
-                  value={editModel}
-                  onValueChange={setEditModel}
-                  options={
-                    MODELS.some((m) => m.value === editModel) || !editModel
-                      ? MODELS
-                      : [{ value: editModel, label: editModel }, ...MODELS]
-                  }
-                />
-              </Field>
-              <Field
-                label="New prompt"
-                htmlFor="edit-prompt"
-                description="Leave blank to keep the current prompt (it isn't shown)."
-              >
-                <Textarea
-                  id="edit-prompt"
-                  value={editPrompt}
-                  onChange={(e) => setEditPrompt(e.target.value)}
-                  placeholder="Replace the system prompt…"
-                  className="min-h-24"
-                />
-              </Field>
-              <Field
-                label="Rotate Anthropic API key"
-                htmlFor="edit-key"
-                description="Leave blank to keep the current credential."
-              >
-                <Input
-                  id="edit-key"
-                  type="password"
-                  value={editKey}
-                  onChange={(e) => setEditKey(e.target.value)}
-                  placeholder="sk-ant-…"
-                />
-              </Field>
-              <DialogFooter className="mt-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => setEditing(null)}
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={updateMutation.isPending}>
-                  {updateMutation.isPending ? 'Saving…' : 'Save changes'}
-                </Button>
-              </DialogFooter>
-            </form>
-          ) : null}
         </DialogContent>
       </Dialog>
     </div>
