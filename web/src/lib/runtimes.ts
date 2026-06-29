@@ -34,11 +34,14 @@ export const RUNTIMES: RuntimeOption[] = [
     provider: 'openai',
     keyLabel: 'OpenAI API key',
     keyPlaceholder: 'sk-…',
-    // The API only validates the `openai/` prefix — any model OpenAI serves works.
-    // Curated to the codex-optimized model + the general flagship; extend freely.
+    // The API only validates the `openai/` prefix — any model OpenAI serves works;
+    // this is UI curation. A range mirroring the Claude tiers: codex-optimized
+    // default, frontier, value, fastest. (Verified against OpenAI's model list.)
     models: [
-      { value: 'openai/gpt-5-codex', label: 'GPT-5 Codex' },
-      { value: 'openai/gpt-5', label: 'GPT-5' },
+      { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+      { value: 'openai/gpt-5.5', label: 'GPT-5.5' },
+      { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+      { value: 'openai/gpt-5.4-nano', label: 'GPT-5.4 Nano' },
     ],
   },
 ]
