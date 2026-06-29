@@ -84,6 +84,7 @@
               "agent-sessions/custom-runtimes",
               "agent-sessions/triggers",
               "agent-sessions/channels",
+              "agent-sessions/slack",
               "agent-sessions/workspaces",
               "agent-sessions/artifacts"
             ]
