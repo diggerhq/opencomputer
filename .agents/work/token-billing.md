@@ -34,7 +34,10 @@ card, or a token counter. The split of responsibility:
 **Locked decisions** (rationale in §9): single shared pool; OR does
 counting+limiting (we don't tally tokens / keep no rate card); egress proxy
 retained for key protection; **managed-only** billing (BYO bypasses); applies to
-`billing_provider='autumn'` orgs only.
+`billing_provider='autumn'` orgs only. **Managed is surfaced as one entry in the
+existing credential picker** (`credential: "managed"`, set per agent), org default
+Managed, Credentials page unchanged, **no** managed-config page, "OpenRouter"
+never user-visible (full contract §6.6, decision §9.8).
 
 **Genuine open forks left to product** (§9/§12): at-cost vs markup; per-org vs
 per-session OR keys; sync cadence; BYO-via-OR vs BYO-direct; the cross-service
@@ -96,6 +99,8 @@ Token billing reuses all of this and adds exactly one new consumer of the pool.
    debit (the provider/their-own-OR bills them); we may record usage for display.
 6. **Autumn-only.** Token billing applies to `billing_provider='autumn'` orgs.
    `legacy` orgs are unaffected until migrated.
+7. **Managed is a picker option, not a new concept.** Users pick Managed or a BYO
+   credential in one place; "OpenRouter" is never named to users (§6.6).
 
 ---
 
@@ -153,7 +158,7 @@ Idempotent: if `or_key_hash` already set, skip create (or rotate per §5.8).
 ### 5.2 Session create
 - Agent `model` is an OR-namespaced id (`anthropic/claude-opus-4-8`,
   `openai/gpt-5-codex`) — already our format. Credential resolves to the org's
-  managed OR credential (existing resolution order; BYO overrides).
+  managed OR credential (resolution + source taxonomy in §6.6; BYO overrides).
 - The credential is **sealed for the session** (existing flow) with
   `base_url = https://openrouter.ai/api/v1`. The runtime gets a placeholder.
 - (Per-session-key variant, §9.1: mint a session-scoped OR key here with
@@ -227,7 +232,7 @@ so resume isn't gated on the cron interval.
 
 ---
 
-## 6. API surfaces
+## 6. Surfaces & change spec (API · UI · docs)
 
 ### 6.1 OpenRouter — what we call (auth: `OPENROUTER_PROVISIONING_KEY`, a management key)
 Base `https://openrouter.ai/api/v1`.
@@ -271,6 +276,9 @@ Base `https://openrouter.ai/api/v1`.
   reconcile (§5.7) can be a second cron entry.
 
 ### 6.4 Dashboard (web)
+- **Agent create/edit dialog:** the credential picker gains the pinned
+  `Managed · billed to credits` entry (full taxonomy §6.6); filter the model
+  dropdown by the selected source. The Credentials page itself is **unchanged**.
 - Extend `getAutumnBilling` (`/billing/autumn`) response to include a model-spend
   summary (period total, % of pool), OR add `getModelUsage('/usage/models?days=')`
   reading ClickHouse. New `ModelUsageSchema` next to `SandboxUsageSchema`
@@ -290,6 +298,225 @@ Base `https://openrouter.ai/api/v1`.
   ordered by `(org_id, day, model)`; upserted from the analytics poll
   (`source='analytics'`) and/or inline capture. Authoritative billing stays in
   Autumn; this is for display + drift cross-checks.
+
+### 6.6 User-facing taxonomy & surface (the contract)
+
+**Principle: "OpenRouter" is never user-visible.** Per agent, the user makes one
+choice — run a model **via OpenComputer (Managed, billed to credits)** or with
+**their own key (BYO)** — surfaced as a single selection, not a new dimension.
+`model` (which model) is unchanged and orthogonal: same `provider/model` ids
+either way.
+
+**Surface = one entry in the existing credential picker.** On the agent
+create/edit dialog the credential picker gains a pinned top entry
+`Managed · billed to credits` (always present, not deletable) → saved keys →
+`+ New credential` (same inline create as today). Pick Managed → done, no key;
+pick/create a credential → BYO, exactly today's flow. There is **no separate
+managed-config page** — Managed is configured purely by selecting it per agent.
+The **Credentials page stays credentials-only**; it does not manage Managed. A
+**token-spend / model-usage page is deferred**; per-agent/per-org budget UI is out
+of scope now.
+
+**API contract.** The agent's source is the existing `credential` field, which now
+accepts a reserved value `"managed"`:
+- `credential: "managed"` → Managed (no key; runs on the org's OC-managed OR key,
+  billed to credits).
+- `credential: "cred_…"` → BYO; inline `key:` → BYO shortcut (unchanged).
+- omitted → inherit the org default.
+`cred_…` ids can't collide with `"managed"`, so the field stays unambiguous; we do
+**not** add a separate `model_access` field. SDK types `credential?` as the union
+`"managed" | string`.
+
+**Resolution (unchanged shape): agent `credential` → org default → error.**
+- **Org default = `"managed"` unless a BYO credential is marked default** (existing
+  `is_default`), which then wins. New orgs have no default credential ⇒ **default
+  Managed** (removes the first-run `422 no_credential` wall). Existing orgs keep
+  their default credential (backward-compatible).
+- Resolves to Managed but the org can't run Managed (gating) → a clear
+  `422 managed_unavailable`.
+
+**Gating & availability.**
+- Managed requires `billing_provider='autumn'` + model billing enabled (it debits
+  Autumn credits). `legacy` orgs: the picker hides/disables Managed (BYO only)
+  until migrated.
+- **Model list depends on source:** Managed → all OC-supported models; a BYO key →
+  that provider's models only. The dialog filters the model dropdown by source.
+- **§9.7 caveat:** a runtime whose OR path is unresolved (e.g. `claude` via OR) is
+  simply omitted from the Managed model list until resolved — BYO still offers it.
+
+**Behavior.**
+- Out of credits (Managed) → same halt as compute (one pool); "top up to resume."
+- Switching an agent's source affects **future sessions only** (session-pinned
+  config), as today.
+- Persisted as the agent's `credential` value; the runtime resolves the sealed key
+  at session create (Managed → the org's managed OR credential, §5).
+
+Wire-level deltas (exact endpoints / schemas / components / files): **API §6.7,
+UI §6.8, docs §6.9**.
+
+### 6.7 API deltas (exact)
+
+Repo: `sessions-api/src/v3`; SDK `opencomputer/sdks/typescript`. **No zod** — request
+bodies are TS interfaces + hand-written guards; responses via `serialize*`.
+**No org/billing table exists in v3** — `owner_id` is a derived opaque string
+(`auth/org.ts:18`); `billing_provider`/`autumn` live only in the edge D1 + Go cell,
+**not** in sessions-api. That shapes the gating design:
+
+> **Managed availability = "a managed credential is bound for the owner"** (the
+> recommended gate — avoids a cross-service `billing_provider` read). The edge
+> provisions the org's OR key (§5.1) **only for autumn + model-billing-enabled
+> orgs** and hands it to sessions-api, which stores it via the existing credential
+> pipeline as a **managed credential** (a `credential_metadata` row, internal
+> provider `"openrouter"`, never shown to users). So eligibility is enforced
+> *upstream at provisioning*; sessions-api only checks "does this owner have a
+> managed credential?". No new org table, no synchronous edge call.
+
+1. **`credential: "managed"` sentinel.**
+   - HTTP bodies stay `string`: `CreateAgentBody.credential` (`api/agents.ts:20`),
+     `PatchBody.credential` (`api/agents.ts:77`) — accept the literal. SDK widens
+     `CreateAgentParams.credential`/`UpdateAgentParams.credential` to
+     `"managed" | (string & {})` (`sdks/typescript/src/agents/agents.ts:11,19`) —
+     cosmetic (already `string`).
+   - Core branch: in `createAgent` (`core/agents.ts:157-163`) and `patchAgent`
+     (`core/agents.ts:252-265`) add a `credential === "managed"` arm **before**
+     `assertCredentialProvider` — skip provider-match (managed serves any runtime),
+     mint no BYO credential.
+   - **Storage of the sentinel (sub-decision):** store the literal `"managed"` in
+     `agent_core.agents.credential_id` (TEXT, no FK enforced, `db/schema.ts:29-43`)
+     — minimal, and request/storage/response all use one field; `serializeAgent`
+     passes it through (`core/agents.ts:78-92`). *Alt:* a dedicated
+     `agents.model_source` column with `credential_id` NULL — more explicit,
+     +migration +serialize/SDK plumbing. **Rec: sentinel-in-`credential_id`** (the
+     contract is already "the `credential` field carries the source").
+
+2. **Resolution** (`resolveCredentialForSession`, `core/credentials.ts:214-245`):
+   add an arm — if `agent.credentialId === "managed"` (or org default is managed,
+   see 3) → resolve the **owner's managed credential** (lookup by owner + internal
+   managed provider) → return its id (`source:"managed"`); **not found → throw
+   managed-unavailable**. Existing pin / org-default / null arms unchanged.
+
+3. **Org default = managed.** Today org default = the `is_default` credential per
+   `(owner, provider)` (`core/credentials.ts:198-206`). Add: when no `is_default`
+   BYO credential resolves AND the owner has a managed credential → default to
+   managed. New orgs (no BYO default) thus default Managed; existing orgs with an
+   `is_default` credential are unaffected. *(No `PUT /credentials/default` change
+   for v1; "managed is default" = simply having no default BYO credential.)*
+
+4. **`422 managed_unavailable`.** New error class beside `NoCredentialError`
+   (`core/session-service.ts:27-33`), thrown from `startSession`
+   (`session-service.ts:100-103`) when managed is selected/defaulted but no managed
+   credential exists for the owner; wire-mapped beside the `no_credential` arm
+   (`api/sessions.ts:173-175`) → `422 { error: { type:"managed_unavailable", … } }`.
+   The seal path re-resolves (`runtime/credential.ts:96`) — make it resolve the
+   managed credential too.
+
+5. **Provisioning hand-off (the §9.5 seam).** New sessions-api internal route
+   `POST /internal/managed-credential` (HMAC via `V3_INTERNAL_AUTH_SECRET`):
+   `{ owner_id, provider:"openrouter", key }` → store via
+   `reserveAndWrite`/secret-ledger + insert a managed `credential_metadata` row
+   (provider `"openrouter"`, fixed `name`). Idempotent per owner (re-create =
+   rotate, `rotateCredentialKey` `core/credentials.ts:165`). This is where the
+   edge's provisioned OR key becomes a sessions-api managed credential.
+
+6. **Unchanged / minor:** BYO validation (`assertModelMatchesRuntime` still applies
+   to the chosen `model`); credentials CRUD endpoints. `GET /v3/credentials`
+   (`listCredentials`, `core/credentials.ts:103-110`) **should hide** internal
+   `"openrouter"` managed rows so they don't render as user BYO keys (filter in
+   the query or serializer).
+
+### 6.8 UI deltas (exact)
+
+Repo `opencomputer/web` (`web/src/...`; byte-identical on `main`). **Two** credential
+pickers since PR #444 — both change.
+
+**A. Create dialog — `web/src/pages/Agents.tsx`.**
+- Add sentinel near `:40`: `const MANAGED = 'managed'` (sent verbatim to the API).
+- Prepend to `credOptions` (`:91-99`): `{ value: MANAGED, label: 'Managed · billed to credits' }`.
+- `createMutation.mutationFn` (`:101-125`): branch so `credChoice === MANAGED`
+  sets the `createAgent` body `credential` (`:123`) to `"managed"` (not `undefined`).
+  `canCreate` (`:184-187`) already passes (no key required).
+- `initialCredChoice()` (`:71-74`): default to `MANAGED` when the org is managed.
+- **Model filter:** replace `options={MODELS}` (`:280`) with a list derived from
+  `credChoice` — Managed → full `MODELS` (`:30-34`); a BYO cred id →
+  `MODELS.filter(m => m.value.startsWith(provider + '/'))` (provider from the
+  selected cred in `anthropicCreds` `:54-56`). `Select` has no groups
+  (`components/form.tsx:14-28`) → plain `.filter`.
+
+**B. Live picker — `web/src/pages/AgentDetail.tsx`.**
+- Sentinel near `:43`; prepend to `credOptions` (`:184-188`).
+- `credSelectValue` (`:181-183`): map `agent.credential_id === 'managed'` → `MANAGED`.
+- `onCredChange` (`:189-196`): `if (v === MANAGED) switchCredMutation.mutate('managed')`
+  (`switchCredMutation` `:136-145` already calls `updateAgent(id,{credential})`,
+  accepts `string` `client.ts:394`).
+- Model filter: same change at `modelOptions` (`:175-177`).
+
+**C. Gating (both dialogs).** Neither imports billing today. Add
+`useQuery({ queryKey:['billing'], queryFn: getBilling })` (Agents `~:45-53`,
+AgentDetail `~:68-71`; `getBilling` already exported `client.ts:303`, schema
+`schemas.ts:194`) and include the Managed option only when
+`billing?.billingProvider === 'autumn'` — the same field `Billing.tsx:107` gates on.
+UX-only; the backend still enforces via §6.7.4.
+
+**D. API layer (`web/src/api/`).** **No schema/type change** — `createAgent.credential?: string`
+(`client.ts:374`) and `updateAgent.credential: string|null` (`:394`) already accept
+`"managed"`. Hide internal managed rows from the list if the backend returns them
+(§6.7.6). Mocks (`mock.ts`): add an agent with `credential_id:'managed'`;
+`billing.billingProvider:'autumn'` already set (`:252`).
+
+**E. Credentials page — `web/src/pages/Credentials.tsx`: UNCHANGED** (self-contained
+CRUD; no dependency on the dialogs).
+
+**F. Billing model-spend panel (from §6.4).** `PrepaidPlan` (`Billing.tsx:249`),
+grid `:291`; add a `ModelUsageBreakdown` `<Panel>` beside `<UsageBreakdown/>`
+(`:408`, component `:589`); reuse `Panel`/`ResourceTable`/`formatCost`.
+
+### 6.9 Docs deltas (exact)
+
+Recurring edit: (a) "credential/key **required**" → "required **unless** Managed";
+(b) `422 no_credential` → "…unless Managed selected/default"; (c) add a third option
+`credential:"managed"` (run via OpenComputer, billed to credits) beside inline `key`
+/ `credential:"cred_…"`; (d) "billed by your provider key" → "…or to your
+OpenComputer credits under Managed". **Never name OpenRouter.**
+
+Published nav = `docs/agent-sessions/*` only. Per file:
+- **`credentials.mdx`** (highest impact): frontmatter L3-4 (broaden; consider
+  retitling the page **"Model access"** — keep slug `agent-sessions/credentials`, so
+  no `docs.json`/link churn); L7 (lead Managed zero-key default; credential not
+  strictly required); L20-22; L49 (add `credential:"managed"` example); L74
+  (fallback to Managed); L76-83 Resolution (insert Managed into the order;
+  "neither resolves" ≠ always 422); L105 (N/A for managed); L109-135 inline-key
+  section (Managed = the true no-key path).
+- **`agents.mdx`**: L43 (add `credential:"managed"`); L53 ("(required)" →
+  "(required unless Managed)").
+- **`authentication.mdx`**: L4 desc; L7; L67 Warning (credits under Managed);
+  L78-82 (lead Managed; soften required; mention `"managed"`).
+- **`sessions.mdx`**: L13; L84 (credits under Managed); L88.
+- **`quickstart.mdx`**: L15-20 prereqs (Managed removes the provider-key prereq);
+  L22 Tip; L26; L35-42 + L50-57 examples (add a Managed no-key variant); L68 Note;
+  L72 Tip; L196 checklist.
+- **`overview.mdx`**: L22 card; L40 step ("choose Managed"); L53/L56 architecture.
+- **`runtimes.mdx`**: L7; L9-12 table (Credential column); L23/L41; L57; L76; L102.
+- **`api-reference.mdx`**: L58 (not required when Managed); L252 (document
+  `credential:"managed"`, bypasses key provider-match, billed to credits); L256
+  (third path); L337 (soften required); L339-341 (decide how/whether managed shows
+  in the `Credential` shape).
+- **`docs.json`**: **no change** (no new page; keep the slug even if the title
+  becomes "Model access").
+
+**SDK docs:** `sdks/typescript/README.md` L47 (Managed no-`key` variant), L68-79
+Credentials section (open with Managed zero-key; soften "required"; show
+`oc.agents.create({ …, credential:"managed" })`). `sdks/python/README.md`: **no
+change** (sandbox-only).
+
+**FLAG — `docs/background-agents/*` (unpublished, not in `docs.json`) names
+OpenRouter.** It carries the prior "platform billing / model gateway" concept
+(≈ Managed) **and** explicit OpenRouter mentions: `overview.mdx:62`,
+`models.mdx:27,54,57,58`, `api.mdx:128` (connection enum includes `openrouter`),
+plus gateway/"platform billing" passages (`overview.mdx:34`,
+`how-it-works.mdx:19,29,65-78`, `runtimes.mdx:38`, `triggers.mdx:20`,
+`observability.mdx:79,87`, `sessions.mdx:22,33`). **Decision (see §12):** treat
+`background-agents/*` as dead (delete) or adopt it as the Managed-terminology
+source — either way **scrub every OpenRouter mention** before any of it publishes.
 
 ---
 
@@ -408,6 +635,18 @@ Anthropic-compatible `/v1/messages`) or that the runtime can use OR's
 OpenAI-compatible endpoint. If neither holds for a runtime, that runtime can't go
 through OR and must stay on a direct provider key (BYO-style) until resolved.
 
+**9.8 User-facing taxonomy (resolved).** Surface Managed as a single pinned entry
+in the existing credential picker, selected per agent, via the
+`credential: "managed"` sentinel — **not** a new `model_access` field. Org default
+is Managed unless a BYO credential is marked default; new orgs default to Managed;
+the Credentials page is unchanged and there is **no** managed-config page (a
+token-spend page is deferred); "OpenRouter" is never user-visible. Full contract
+§6.6; wire deltas §6.7–§6.9. *Why:* smallest surface — reuses the existing
+credential mental model + resolution, adds zero top-level concepts, removes the
+first-run `422 no_credential` wall. *Risk:* the sentinel lightly overloads
+`credential` (ids can't collide, so safe); Managed availability is gated on
+`autumn` + runtime/OR support (§9.7).
+
 ---
 
 ## 10. Failure modes & fail-open/closed
@@ -462,6 +701,8 @@ through OR and must stay on a direct provider key (BYO-style) until resolved.
    on direct keys.
 5. **Rollout** — token billing only for `autumn` orgs; sequencing vs the
    legacy→autumn migration (`AUTUMN_NEW_ORGS`, the missing `cmd/migrate-to-autumn`).
+6. **`background-agents/*` docs** — delete (dead) vs adopt as the Managed-terminology
+   source; either way **scrub all OpenRouter mentions** before any publishes (§6.9).
 
 ---
 
