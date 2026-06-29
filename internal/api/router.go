@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/redis/go-redis/v9"
@@ -50,6 +51,7 @@ type Server struct {
 	cfAdminSecret  string              // HMAC shared with CreditAccount DO for /admin/halt-org and /admin/resume-org; empty disables auth (dev only)
 	cfEventSecret  string              // HMAC shared with the api-edge Worker for /internal/secret-refresh and other edge-→cell push paths
 	cellID     string                  // this control plane's cell_id (for the cap-token cell check)
+	platformOrgID uuid.UUID            // owner of the shared catalog snapshots; anchors the public-snapshot fallback + gates publish (uuid.Nil = fallback disabled)
 	mode       string                  // "server", "worker", "combined"
 	workerID   string                  // this worker's ID
 	region     string                  // this worker's region
@@ -142,6 +144,7 @@ type ServerOpts struct {
 	CFAdminSecret    string // HMAC shared with CF CreditAccount DO; enables /admin/halt-org and /admin/resume-org
 	CFEventSecret    string // HMAC shared with the api-edge Worker; enables /internal/secret-refresh and other edge-→cell push paths
 	CellID      string // this control plane's cell_id
+	PlatformOrgID string // owner of the shared catalog snapshots (UUID string); empty disables the public-snapshot fallback
 	Mode        string // "server", "worker", "combined"
 	WorkerID    string
 	Region      string
@@ -189,6 +192,13 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.cfAdminSecret = opts.CFAdminSecret
 		s.cfEventSecret = opts.CFEventSecret
 		s.cellID = opts.CellID
+		if opts.PlatformOrgID != "" {
+			if pid, err := uuid.Parse(opts.PlatformOrgID); err == nil {
+				s.platformOrgID = pid
+			} else {
+				log.Printf("api: ignoring invalid OPENSANDBOX_PLATFORM_ORG_ID %q: %v (public-snapshot fallback disabled)", opts.PlatformOrgID, err)
+			}
+		}
 		s.mode = opts.Mode
 		s.workerID = opts.WorkerID
 		s.region = opts.Region
@@ -584,6 +594,11 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	api.POST("/snapshots/:name/patches", s.createSnapshotPatch)
 	api.GET("/snapshots/:name/patches", s.listSnapshotPatches)
 	api.DELETE("/snapshots/:name/patches/:patchId", s.deleteSnapshotPatch)
+
+	// Publish/unpublish a named snapshot (owner-org only) so other orgs can fork
+	// it — used to share the platform runtime/hands snapshots.
+	api.POST("/snapshots/:name/publish", s.publishSnapshot)
+	api.POST("/snapshots/:name/unpublish", s.unpublishSnapshot)
 
 	// Images (all cached images, named or unnamed)
 	api.GET("/images", s.listImages)

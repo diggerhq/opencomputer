@@ -197,6 +197,16 @@ type Config struct {
 	// distinguishes multiple cells in the same region.
 	CellID string
 
+	// PlatformOrgID — the org that owns the shared "catalog" snapshots (the
+	// runtime/hands base images). A provision under any org falls back to this
+	// org's is_public snapshots when it doesn't own one by that name (see
+	// store.ResolveImageCacheByName), and only this org may publish a snapshot to
+	// the shared catalog. Anchoring the fallback to a single trusted owner is
+	// what keeps the public-snapshot namespace from being spoofable. Empty
+	// disables the fallback (fail-closed: org-scoped resolution only).
+	// Env: OPENSANDBOX_PLATFORM_ORG_ID (a UUID).
+	PlatformOrgID string
+
 	// CF events-ingest endpoint. When set, the regional control plane runs an
 	// event_forwarder goroutine that drains the local Redis stream and POSTs
 	// HMAC-signed batches here.
@@ -392,6 +402,7 @@ func Load() (*Config, error) {
 		SentryTracesSampleRate: envOrDefaultFloat("OPENSANDBOX_SENTRY_TRACES_SAMPLE_RATE", 0.0),
 
 		CellID:           os.Getenv("OPENSANDBOX_CELL_ID"),
+		PlatformOrgID:    os.Getenv("OPENSANDBOX_PLATFORM_ORG_ID"),
 		CFEventEndpoint:  os.Getenv("OPENSANDBOX_CF_EVENT_ENDPOINT"),
 		CFEventSecret:    os.Getenv("OPENSANDBOX_CF_EVENT_SECRET"),
 		CFAdminSecret:    os.Getenv("OPENSANDBOX_CF_ADMIN_SECRET"),

@@ -1913,20 +1913,31 @@ export default {
       return json({ error: "method not allowed" }, 405);
     }
     {
-      // /api/snapshots/:name  and  /api/snapshots/:name/patches[/:patchId]
-      const m = path.match(/^\/api\/snapshots\/([^/]+)(\/patches(?:\/[^/]+)?)?$/);
+      // /api/snapshots/:name, /api/snapshots/:name/patches[/:patchId],
+      // /api/snapshots/:name/publish, /api/snapshots/:name/unpublish
+      const m = path.match(/^\/api\/snapshots\/([^/]+)(\/patches(?:\/[^/]+)?|\/(?:un)?publish)?$/);
       if (m) {
         const name = decodeURIComponent(m[1]);
-        const isPatch = !!m[2];
+        const sub = m[2] ?? "";
+        const isPatch = sub.startsWith("/patches");
+        const isPublishToggle = sub === "/publish" || sub === "/unpublish";
         const caller = await authenticate(req, env);
         if (!caller) return json({ error: "missing or invalid API key" }, 401);
         { const g = provisionScopeGate(caller, path); if (g) return g; }
-        // Patches + delete are cell-work — route to the cell that owns the
-        // snapshot bytes (looked up from D1), not "any active cell".
-        if (isPatch || req.method === "DELETE") {
+        // Patches, publish/unpublish, and delete are cell-work — route to the
+        // cell that owns the snapshot bytes (looked up from D1), not "any active
+        // cell". is_public lives in the owning cell's image_cache.
+        if (isPatch || isPublishToggle || req.method === "DELETE") {
           const ownerCell = await snapshots.ownerCellOfSnapshot(env, caller, name);
-          if (!ownerCell) return json({ error: "snapshot not found" }, 404);
-          return proxyToCellAuthed(req, env, caller, { cellId: ownerCell });
+          if (ownerCell) return proxyToCellAuthed(req, env, caller, { cellId: ownerCell });
+          // D1 images_index can lag the cell PG right after a snapshot is built.
+          // For publish/unpublish (idempotent catalog toggles), fall back to the
+          // org's home_cell — where a just-created snapshot lives — and let the
+          // cell be the source of truth (it returns 404 if the row is really
+          // absent). Patches/delete stay strict: a missing index row means the
+          // bytes aren't addressable yet.
+          if (isPublishToggle) return proxyToCellAuthed(req, env, caller);
+          return json({ error: "snapshot not found" }, 404);
         }
         if (req.method === "GET") return snapshots.getSnapshot(env, caller, name);
         return json({ error: "method not allowed" }, 405);
