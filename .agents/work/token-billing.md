@@ -980,30 +980,35 @@ malformed values that already would have failed now fail earlier and clearer.
 - **Spike §9.7 — DONE, PASSED 2026-06-29.** Both `claude` (Anthropic Messages) and
   `codex` (OpenAI Responses) validated through OR with tool calls + cost echo. Both
   runtimes ship under Managed. (`/tmp/or-spike.mjs`.)
-- **OpenRouter provisioning key — STILL NEEDED (the active blocker).** The key in
-  `.env.v3` is an **inference** key (can call models, can't mint sub-keys → `GET
-  /keys` 401). Create a **management/provisioning** key (OR dashboard → *Provisioning
-  API Keys*) and set it as the edge Wrangler secret `OPENROUTER_PROVISIONING_KEY`
-  (prod + dev). This master key mints per-org keys + reads analytics; it is the only
-  OR secret the edge holds. **Step 1's provisioning round-trip can't be tested live
-  until this exists** — but step-1/2 code can be written + unit-tested against it.
-- **Fund the OR account float.** `GET /credits` shows ~$0.54 left of $50 — fund it
-  (or arm auto-recharge, §5.7) before any real Managed traffic.
+- **OpenRouter management key — DONE (2026-06-29).** Obtained + verified (`GET /keys`
+  200; mints/lists keys) + stored in `sessions-api/.env.v3` as
+  `OPENROUTER_PROVISIONING_KEY`. The edge OR client ran a full mint→get→patch→delete
+  lifecycle against real OR with it. **Still TODO:** set it as the edge **Wrangler**
+  secret (`wrangler secret put OPENROUTER_PROVISIONING_KEY`, prod + dev).
+- **Fund the OR account float — STILL TODO.** `GET /credits` shows ~$0.54 left of $50.
+  Mint/provision works now (limit-capped), but real Managed spend needs funding (or
+  auto-recharge, §5.7) before a live Managed turn.
 - **Autumn `model_spend` feature.** Define the metered feature and add it to the
   `credits` credit_schema with `credit_cost = 1e-6` (§4 / §6.2). `AUTUMN_SECRET_KEY`
   is already live on the prod edge **and** stored in `sessions-api/.env.v3`.
 
 **Build order (claude path first; each step independently testable):**
-1. **Edge — managed key lifecycle + state:** `managed_model_keys` table +
-   `orgs.model_billing_status` (§4); provisioning state machine (§5.1) → OR
-   provisioning API (§6.1); hardened hand-off to sessions-api (§6.7.5).
-2. **sessions-api — credential + resolution + seal:** `POST/GET /internal/managed-credential`
-   (§6.7.5); `getManagedCredential` + resolver arm (§6.7.2); `endpoint_profile` on
-   `TurnConfig` + seal keyed on (runtime, source) (§5.2/G1, §6.7.4); `422
-   managed_unavailable`; runtime servers stop deleting/hardcoding base-URL+auth (§5.2).
-   **Model-slug mapping (§9.7 finding):** add an `orSlug` per model and, for Managed,
-   send the **prefixed** OR slug (Anthropic dotted) instead of the prefix-stripped
-   form the servers use today; carry it via `endpoint_profile`.
+1. **Edge — managed key lifecycle + state — DONE (PR #445).** `schema_phase9` (orgs
+   cols + `managed_model_keys`); OR management-key client (`openrouter.ts`);
+   provisioning state machine (`model_billing.ts`, off→active, idempotent +
+   lost-bind recovery); `/internal/model-billing/enable|disable`. 11 unit tests +
+   live OR lifecycle verified. Dormant until `OPENROUTER_PROVISIONING_KEY` is set.
+2. **sessions-api — credential + resolution + seal — DONE (sessions-api PR #34).**
+   2A: migration 015 (or_key_hash+operation_id); `getManagedCredential` +
+   `createOrRotateManagedCredential` + resolver arm; `POST/GET
+   /internal/managed-credential` (dedicated HMAC); `credential:"managed"` sentinel +
+   ref validation + key/credential exclusion; `422 managed_unavailable`. 2B:
+   `endpoint_profile` on `TurnConfig` + seal keyed on (runtime, source) +
+   `toOpenRouterSlug` (Anthropic dash→dot); both runtime servers route Managed
+   through OR. tsc clean (3 packages). **NOT yet smoke-tested with a live Managed
+   turn** (needs dev stack + funded float; codex `requires_openai_auth=false`
+   validated only at raw-HTTP, not through the CLI). Apply migration 015 + set
+   `OC_MANAGED_CRED_HMAC_SECRET` to enable.
 3. **Edge — metering + enforcement:** `model_meter` cron — persist-before-track
    immutable-interval debit (§5.4/§7), markup-correct **aggregate** cap across keys
    (§5.4/§7), `projectOrg` halt on ≤0 (§5.4); reconcile cron (§5.7).
@@ -1017,9 +1022,13 @@ malformed values that already would have failed now fail earlier and clearer.
 markup value (§9.2), per-org vs per-session keys (§9.1), sync cadence (§9.3),
 BYO-via-OR (§9.4).
 
-**Current state:** this doc = PR #445 (branch `docs/token-billing-key-provisioning`).
-The runtime picker (#448) is merged to main + in this branch. Nothing of the billing
-itself is built yet — step 0 is the §9.7 spike.
+**Current state (2026-06-29):** this doc + the edge **step 1** = PR #445 (branch
+`docs/token-billing-key-provisioning`; runtime picker #448 folded in). **Step 2** =
+sessions-api PR #34. Spike passed; OR management key obtained + verified. **Next: step
+3** (edge `model_meter` + reconcile crons). Before a live Managed turn: apply
+sessions-api migration 015, set `OC_MANAGED_CRED_HMAC_SECRET` (both sides) +
+`OPENROUTER_PROVISIONING_KEY` (edge Wrangler), fund the OR float, then smoke a Managed
+session (esp. codex). Everything shipped so far is dormant until those secrets are set.
 
 ---
 
