@@ -36,9 +36,9 @@ import { cn } from '@/lib/utils'
 // START returns a manifest the user pastes into Slack's "From a manifest"
 // flow; COMPLETE takes the three values Slack then hands back. No OAuth, no
 // secrets in responses.
-type Step = 'create' | 'paste' | 'done'
+type Step = 'create' | 'details' | 'install' | 'done'
 
-const WIZARD_STEPS = ['Create app', 'Connect', 'Done']
+const WIZARD_STEPS = ['Create app', 'Details', 'Install', 'Done']
 
 // Horizontal progress indicator — shows which step we're on; detail for each
 // step is only shown when it's reached (in the body below).
@@ -173,7 +173,8 @@ export function SlackConnect({
   const isPending = status === 'pending'
   const isErrorStatus = status === 'error'
   const workspace = conn?.account_login || conn?.team_id || null
-  const stepIndex = step === 'create' ? 0 : step === 'paste' ? 1 : 2
+  const stepIndex =
+    step === 'create' ? 0 : step === 'details' ? 1 : step === 'install' ? 2 : 3
 
   return (
     <Panel className="overflow-hidden">
@@ -269,7 +270,7 @@ export function SlackConnect({
               ) : (
                 <>
                   <p className="text-muted-foreground text-sm">
-                    Create the app from this manifest in Slack, then install it.
+                    Create the app from this manifest in Slack.
                   </p>
                   <div className="min-w-0">
                     <div className="mb-1.5 flex items-center justify-between">
@@ -315,25 +316,28 @@ export function SlackConnect({
                   Cancel
                 </Button>
                 <Button
-                  onClick={() => setStep('paste')}
+                  onClick={() => setStep('details')}
                   disabled={!manifest || startMutation.isPending}
                 >
-                  Next: paste values
+                  Next: app details
                 </Button>
               </DialogFooter>
             </div>
-          ) : step === 'paste' ? (
+          ) : step === 'details' ? (
             <form
               className="min-w-0 space-y-4"
               onSubmit={(e) => {
                 e.preventDefault()
-                completeMutation.mutate()
+                if (appId.trim() && signingSecret.trim()) setStep('install')
               }}
             >
+              <p className="text-muted-foreground text-sm">
+                From Basic Information → App Credentials, copy these two.
+              </p>
               <Field
                 label="App ID"
                 htmlFor="slack-app-id"
-                description="On the app’s Basic Information page."
+                description="Top of the App Credentials section."
               >
                 <Input
                   id="slack-app-id"
@@ -343,22 +347,9 @@ export function SlackConnect({
                 />
               </Field>
               <Field
-                label="Bot User OAuth Token"
-                htmlFor="slack-bot-token"
-                description="OAuth & Permissions → after Install to Workspace."
-              >
-                <Input
-                  id="slack-bot-token"
-                  type="password"
-                  value={botToken}
-                  onChange={(e) => setBotToken(e.target.value)}
-                  placeholder="xoxb-…"
-                />
-              </Field>
-              <Field
                 label="Signing Secret"
                 htmlFor="slack-signing-secret"
-                description="Basic Information → App Credentials."
+                description="Same section, under Client Secret."
               >
                 <Input
                   id="slack-signing-secret"
@@ -378,11 +369,52 @@ export function SlackConnect({
                 </Button>
                 <Button
                   type="submit"
+                  disabled={!appId.trim() || !signingSecret.trim()}
+                >
+                  Next: install
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : step === 'install' ? (
+            <form
+              className="min-w-0 space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault()
+                completeMutation.mutate()
+              }}
+            >
+              <p className="text-muted-foreground text-sm">
+                In the sidebar, open Install App → Install to Workspace to get
+                the token.
+              </p>
+              <Field
+                label="Bot User OAuth Token"
+                htmlFor="slack-bot-token"
+                description="Install App → Bot User OAuth Token (starts with xoxb-)."
+              >
+                <Input
+                  id="slack-bot-token"
+                  type="password"
+                  value={botToken}
+                  onChange={(e) => setBotToken(e.target.value)}
+                  placeholder="xoxb-…"
+                />
+              </Field>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setStep('details')}
+                >
+                  Back
+                </Button>
+                <Button
+                  type="submit"
                   disabled={
                     completeMutation.isPending ||
                     !appId.trim() ||
-                    !botToken.trim() ||
-                    !signingSecret.trim()
+                    !signingSecret.trim() ||
+                    !botToken.trim()
                   }
                 >
                   {completeMutation.isPending ? 'Connecting…' : 'Connect'}
