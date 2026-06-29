@@ -24,19 +24,15 @@ import {
 import { Field, Input, Select, Textarea } from '@/components/form'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
+import {
+  DEFAULT_RUNTIME,
+  defaultModelFor,
+  getRuntime,
+  runtimeOptions,
+} from '@/lib/runtimes'
 
-// Curated model list. The API requires a provider-prefixed id; runtime "claude" ⇒
-// anthropic/… (codex/openai land when that runtime ships).
-const MODELS = [
-  { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8' },
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-]
-const DEFAULT_MODEL = MODELS[0].value
-
-// Agents run on the "claude" runtime → anthropic credentials. Sentinel for the
-// "create one inline" choice in the credential picker.
-const CRED_PROVIDER = 'anthropic'
+// Sentinel for the "create one inline" choice in the credential picker. The model
+// list + credential provider both follow the chosen runtime (see @/lib/runtimes).
 const NEW_CRED = '__new__'
 
 export default function Agents() {
@@ -51,45 +47,63 @@ export default function Agents() {
     queryKey: ['credentials'],
     queryFn: getCredentials,
   })
-  const anthropicCreds = (credentials ?? []).filter(
-    (c) => c.provider === CRED_PROVIDER,
-  )
-  const hasDefault = anthropicCreds.some((c) => c.is_default)
-
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
-  const [model, setModel] = useState(DEFAULT_MODEL)
+  const [runtime, setRuntime] = useState(DEFAULT_RUNTIME)
+  const [model, setModel] = useState(defaultModelFor(DEFAULT_RUNTIME))
   // Credential selection: a credential id or NEW_CRED (create inline). '' is
   // resolved to a sensible default on dialog open.
   const [credChoice, setCredChoice] = useState('')
   const [newCredName, setNewCredName] = useState('')
   const [newCredKey, setNewCredKey] = useState('')
 
-  // Pick the lowest-friction default each time the dialog opens: the org default
-  // credential if any, else the first existing one, else "new credential".
-  const initialCredChoice = () =>
-    anthropicCreds.find((c) => c.is_default)?.id ??
-    anthropicCreds[0]?.id ??
-    NEW_CRED
+  // Everything model/credential-related follows the chosen runtime
+  // (claude→anthropic, codex→openai): the model list, the credential provider it
+  // filters to, and the key label.
+  const rt = getRuntime(runtime)
+  const providerCreds = (credentials ?? []).filter(
+    (c) => c.provider === rt.provider,
+  )
+  const hasDefault = providerCreds.some((c) => c.is_default)
+
+  // Lowest-friction default for a provider's creds: org default → first → "new".
+  const defaultCredFor = (creds: typeof providerCreds) =>
+    creds.find((c) => c.is_default)?.id ?? creds[0]?.id ?? NEW_CRED
 
   const resetForm = () => {
     setName('')
     setPrompt('')
-    setModel(DEFAULT_MODEL)
+    setRuntime(DEFAULT_RUNTIME)
+    setModel(defaultModelFor(DEFAULT_RUNTIME))
     setCredChoice('')
     setNewCredName('')
     setNewCredKey('')
   }
 
   const openCreate = () => {
-    setCredChoice(initialCredChoice())
+    setCredChoice(defaultCredFor(providerCreds))
     setShowCreate(true)
   }
 
-  // Build options: existing creds + "New credential…".
+  // Switching runtime resets the dependent fields so we never submit an invalid
+  // (runtime, model) pair or an off-provider credential.
+  const onRuntimeChange = (value: string) => {
+    setRuntime(value)
+    const next = getRuntime(value)
+    setModel(next.models[0].value)
+    setCredChoice(
+      defaultCredFor(
+        (credentials ?? []).filter((c) => c.provider === next.provider),
+      ),
+    )
+    setNewCredName('')
+    setNewCredKey('')
+  }
+
+  // Build options: this runtime's provider creds + "New credential…".
   const credOptions = [
-    ...anthropicCreds.map((c) => ({
+    ...providerCreds.map((c) => ({
       value: c.id,
       label: `${c.name || 'Unnamed'}${c.last4 ? ` ·· ${c.last4}` : ''}${
         c.is_default ? ' (default)' : ''
@@ -107,9 +121,9 @@ export default function Agents() {
       if (credChoice === NEW_CRED) {
         const cred = await createCredential({
           key: newCredKey.trim(),
-          provider: CRED_PROVIDER,
+          provider: rt.provider,
           name: newCredName.trim() || undefined,
-          is_default: !hasDefault, // first key becomes the org default
+          is_default: !hasDefault, // first key for this provider becomes its default
         })
         credentialId = cred.id
       } else if (credChoice) {
@@ -119,7 +133,7 @@ export default function Agents() {
         name: name.trim(),
         prompt: prompt.trim(),
         model,
-        runtime: 'claude',
+        runtime,
         credential: credentialId,
       })
     },
@@ -272,28 +286,41 @@ export default function Agents() {
               />
             </Field>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="Model" htmlFor="agent-model">
-                <Select
-                  id="agent-model"
-                  value={model}
-                  onValueChange={setModel}
-                  options={MODELS}
-                />
-              </Field>
               <Field
                 label="Runtime"
                 htmlFor="agent-runtime"
-                description="Codex and custom runtimes coming soon."
+                description="The engine, fixed once created."
               >
-                <Input id="agent-runtime" value="Claude" disabled />
+                <Select
+                  id="agent-runtime"
+                  value={runtime}
+                  onValueChange={onRuntimeChange}
+                  options={runtimeOptions}
+                />
+              </Field>
+              <Field
+                label="Model"
+                htmlFor="agent-model"
+                description={`Models for the ${rt.label} runtime.`}
+              >
+                <Select
+                  // Remount on runtime change: Radix Select.Value blanks out when
+                  // its options and value change in the same render.
+                  key={runtime}
+                  id="agent-model"
+                  value={model}
+                  onValueChange={setModel}
+                  options={rt.models}
+                />
               </Field>
             </div>
             <Field
               label="Credential"
               htmlFor="agent-cred"
-              description="The Anthropic key this agent runs on. Reuse one from Credentials, or add a new one here."
+              description={`The ${rt.provider} key this agent runs on (matches the runtime). Reuse one from Credentials, or add a new one here.`}
             >
               <Select
+                key={runtime}
                 id="agent-cred"
                 value={credChoice}
                 onValueChange={setCredChoice}
@@ -312,7 +339,7 @@ export default function Agents() {
                   />
                 </Field>
                 <Field
-                  label="Anthropic API key"
+                  label={rt.keyLabel}
                   htmlFor="new-cred-key"
                   description="Encrypted in a dedicated secret store."
                 >
@@ -321,7 +348,7 @@ export default function Agents() {
                     type="password"
                     value={newCredKey}
                     onChange={(e) => setNewCredKey(e.target.value)}
-                    placeholder="sk-ant-…"
+                    placeholder={rt.keyPlaceholder}
                   />
                 </Field>
               </div>
