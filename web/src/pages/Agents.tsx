@@ -120,7 +120,7 @@ export default function Agents() {
         prompt: prompt.trim(),
         model,
         runtime: 'claude',
-        credential_id: credentialId,
+        credential: credentialId,
       })
     },
     onSuccess: (agent) => {

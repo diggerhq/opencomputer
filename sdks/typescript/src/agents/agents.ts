@@ -25,7 +25,7 @@ export interface Page<T> { data: T[]; nextCursor?: string | null; }
 /** The Slack app manifest to create in Slack (from `slackManifest`). */
 export interface SlackManifest {
   manifest: Record<string, unknown>;
-  create_url: string;
+  createUrl: string;
   steps?: unknown;
   status: string;
 }
@@ -33,18 +33,18 @@ export interface SlackManifest {
 /** A Slack connection's public state — never carries the bot token / signing secret. */
 export interface SlackConnection {
   id: string;
-  agent_id: string;
+  agentId: string;
   status: string; // pending | active | revoked | error
-  slack_app_id?: string | null;
-  team_id?: string | null;
-  account_login?: string | null;
+  slackAppId?: string | null;
+  teamId?: string | null;
+  accountLogin?: string | null;
 }
 
 /** The three values pasted back from Slack to finalize a connection. */
 export interface ConnectSlackParams {
-  app_id: string;
-  bot_token: string;
-  signing_secret: string;
+  appId: string;
+  botToken: string;
+  signingSecret: string;
 }
 
 /** Reusable agents — the "what" a session runs. */
@@ -72,7 +72,8 @@ export class Agents {
   slackManifest(id: string, opts: { reconnect?: boolean } = {}): Promise<SlackManifest> {
     return this.http.request("POST", `/agents/${id}/slack/manifest`, { body: opts });
   }
-  /** Finalize the connection with the three values Slack shows after install. */
+  /** Finalize the connection with the three values Slack shows after install.
+   *  (The HTTP layer converts appId → app_id, etc. on the wire.) */
   connectSlack(id: string, params: ConnectSlackParams): Promise<SlackConnection> {
     return this.http.request("POST", `/agents/${id}/slack`, { body: params });
   }

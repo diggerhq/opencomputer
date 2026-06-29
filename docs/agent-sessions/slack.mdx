@@ -12,13 +12,13 @@ Connect from the agent's page in the [dashboard](https://app.opencomputer.dev) (
 
 ```ts TypeScript SDK
 // 1. Manifest to create the Slack app from (Create app → From a manifest).
-const { manifest, create_url } = await oc.agents.slackManifest(agentId);
+const { manifest, createUrl } = await oc.agents.slackManifest(agentId);
 
 // 2. Finalize with the App ID, Signing Secret, and Bot User OAuth Token.
 const slack = await oc.agents.connectSlack(agentId, {
-  app_id: "A0…",
-  signing_secret: "…",
-  bot_token: "xoxb-…",
+  appId: "A0…",
+  signingSecret: "…",
+  botToken: "xoxb-…",
 });
 
 await oc.agents.getSlack(agentId); // { status: "active", … } — no secrets

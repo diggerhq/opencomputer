@@ -370,7 +370,8 @@ export const createAgent = (body: {
   prompt: string
   model: string
   runtime: string
-  credential_id?: string
+  // The request field is `credential` (the response carries `credential_id`).
+  credential?: string
   // `key` sugar: mints a model credential of the runtime's provider for this
   // agent (write-only). Without it (and no org default) sessions 422 no_credential.
   key?: string
@@ -479,12 +480,21 @@ export const rotateCredential = (id: string, key: string) =>
   )
 
 // Sessions — the durable runs.
-export const getSessions = (status?: string) =>
-  apiFetch(
-    `/v3/sessions${status ? `?status=${status}` : ''}`,
+export const getSessions = (
+  params: { agent?: string; status?: string; limit?: number; cursor?: string } = {},
+) => {
+  const q = new URLSearchParams()
+  if (params.agent) q.set('agent', params.agent)
+  if (params.status) q.set('status', params.status)
+  if (params.limit) q.set('limit', String(params.limit))
+  if (params.cursor) q.set('cursor', params.cursor)
+  const qs = q.toString()
+  return apiFetch(
+    `/v3/sessions${qs ? `?${qs}` : ''}`,
     {},
     S.SessionListSchema,
   ).then((r) => r.data)
+}
 
 export const getSession = (id: string) =>
   apiFetch(`/v3/sessions/${id}`, {}, S.SessionSchema)

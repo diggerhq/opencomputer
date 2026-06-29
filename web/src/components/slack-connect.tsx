@@ -25,7 +25,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/form'
-import { CopyRow } from '@/components/copy-row'
 import { StatusBadge } from '@/components/status-badge'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { useTransientFlag } from '@/lib/use-transient-flag'
@@ -139,6 +138,9 @@ export function SlackConnect({
     onSuccess: () => {
       void invalidate()
       setStep('done')
+      setAppId('')
+      setBotToken('')
+      setSigningSecret('') // don't keep secrets in state past a successful connect
     },
     onError: (e) =>
       notifyError('Slack rejected those values. Double-check them.', e),
@@ -199,9 +201,8 @@ export function SlackConnect({
               is connected{workspace ? ` to ${workspace}` : ''}.
             </p>
             <p className="text-muted-foreground text-sm">
-              Invite it to a channel with{' '}
-              <code className="text-foreground">/invite @{conn?.handle}</code>,
-              then <strong>@-mention</strong> it to start or steer a session.
+              Invite the bot to a channel, then <strong>@-mention</strong> it to
+              start or steer a session.
             </p>
             <div className="flex gap-2">
               <Button
@@ -445,9 +446,9 @@ export function SlackConnect({
                   is connected{workspace ? ` to ${workspace}` : ''}.
                 </p>
                 <p className="text-muted-foreground">
-                  Invite it to a channel, then @-mention it:
+                  Invite the bot to a channel, then @-mention it to start a
+                  session.
                 </p>
-                <CopyRow value={`/invite @${conn?.handle ?? agentName}`} />
               </div>
               <DialogFooter>
                 <Button

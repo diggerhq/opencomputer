@@ -57,12 +57,12 @@ export default function AgentDetail() {
     enabled: !!agentId,
   })
 
-  // This agent's sessions. The API has no per-agent filter, so scope client-side.
-  const { data: allSessions, isLoading: loadingSessions } = useQuery({
-    queryKey: ['sessions'],
-    queryFn: () => getSessions(),
+  // This agent's sessions — filtered server-side (not a client slice of an unfiltered
+  // first page, which would drop older sessions once the org is busy).
+  const { data: sessions = [], isLoading: loadingSessions } = useQuery({
+    queryKey: ['sessions', { agent: agentId }],
+    queryFn: () => getSessions({ agent: agentId }),
   })
-  const sessions = (allSessions ?? []).filter((s) => s.agent_id === agentId)
 
   // Credentials for the switch picker + to label the current one.
   const { data: credentials } = useQuery({
