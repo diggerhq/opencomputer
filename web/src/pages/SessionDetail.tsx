@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Send, Wrench } from 'lucide-react'
@@ -14,7 +14,7 @@ import {
 import { SessionEventSchema } from '@/api/schemas'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/form'
+import { ChatTextarea } from '@/components/chat-textarea'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
@@ -56,7 +56,6 @@ export default function SessionDetail() {
   const { sessionId = '' } = useParams()
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState('')
-  const draftRef = useRef<HTMLTextAreaElement>(null)
   const [level, setLevel] = useState<LevelFilter>('all')
   const [confirmCancel, setConfirmCancel] = useState(false)
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
@@ -106,15 +105,6 @@ export default function SessionDetail() {
     es.onerror = () => setStreamOk(false) // EventSource retries on its own
     return () => es.close()
   }, [sessionId])
-
-  // Auto-grow the steer box with its content (up to ~6 rows, then scroll), and
-  // shrink back when it's cleared after a send.
-  useLayoutEffect(() => {
-    const el = draftRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-  }, [draft])
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
@@ -307,22 +297,12 @@ export default function SessionDetail() {
               if (draft.trim() && canSteer) steerMutation.mutate()
             }}
           >
-            <Textarea
-              ref={draftRef}
+            <ChatTextarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                // Enter (or ⌘/Ctrl+Enter) sends; Shift+Enter inserts a newline.
-                // Ignore Enter mid-IME-composition so CJK/accent input isn't cut off.
-                if (
-                  e.key === 'Enter' &&
-                  !e.shiftKey &&
-                  !e.nativeEvent.isComposing
-                ) {
-                  e.preventDefault()
-                  if (draft.trim() && canSteer && !steerMutation.isPending) {
-                    steerMutation.mutate()
-                  }
+              onSend={() => {
+                if (draft.trim() && canSteer && !steerMutation.isPending) {
+                  steerMutation.mutate()
                 }
               }}
               placeholder={
@@ -331,8 +311,7 @@ export default function SessionDetail() {
                   : 'Session archived'
               }
               disabled={!canSteer}
-              className="min-h-10 max-h-40 flex-1 overflow-y-auto"
-              rows={1}
+              className="min-h-10 flex-1"
             />
             <Button
               type="submit"
