@@ -73,6 +73,7 @@
           "agent-sessions/authentication",
           "agent-sessions/messaging",
           "agent-sessions/webhooks",
+          "agent-sessions/slack",
           "agent-sessions/runtimes",
           "agent-sessions/runtime-tools",
           "agent-sessions/api-reference",
@@ -84,7 +85,6 @@
               "agent-sessions/custom-runtimes",
               "agent-sessions/triggers",
               "agent-sessions/channels",
-              "agent-sessions/slack",
               "agent-sessions/workspaces",
               "agent-sessions/artifacts"
             ]
