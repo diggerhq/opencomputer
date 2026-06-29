@@ -394,6 +394,46 @@ const v3agents = [
   },
 ]
 
+// A connected Slack app for the first agent (the AgentDetail Slack panel).
+const v3slack = {
+  id: 'sla_5p6q7r',
+  agent_id: 'agt_3kf9xz',
+  handle: 'PR Reviewer',
+  slack_app_id: 'A0123ABCDEF',
+  team_id: 'T0123ABCDEF',
+  account_login: 'Acme',
+  status: 'active',
+  bot_token_verified: true,
+  signing_verified: false,
+  created_at: at(5),
+  updated_at: at(0, 2),
+}
+
+// START-intent response for the Slack connect wizard (POST …/slack/manifest).
+const v3slackManifest = {
+  manifest: {
+    display_information: { name: 'PR Reviewer' },
+    features: {
+      bot_user: { display_name: 'PR Reviewer', always_online: true },
+    },
+    oauth_config: { scopes: { bot: ['app_mentions:read', 'chat:write'] } },
+    settings: {
+      event_subscriptions: {
+        request_url: 'https://api.opencomputer.dev/v3/slack/events/abc123nonce',
+        bot_events: ['app_mention'],
+      },
+    },
+  },
+  create_url: 'https://api.slack.com/apps',
+  steps: [
+    'Open api.slack.com/apps → Create New App → From a manifest.',
+    'Pick your workspace, paste the manifest, and click Create.',
+    'Click Install to Workspace and approve.',
+    'Copy three values back here: App ID, Bot User OAuth Token (xoxb-…), and Signing Secret.',
+  ],
+  status: 'pending',
+}
+
 const v3credentials = [
   {
     id: 'cred_anth_1',
@@ -613,6 +653,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/org$/, () => org],
   [/^\/agents$/, () => []],
   // Durable Agent Sessions (/v3) — lists return the { data: [...] } envelope.
+  [/^\/v3\/agents\/[^/]+\/slack$/, () => v3slack],
   [/^\/v3\/agents\/[^/]+$/, () => v3agents[0]],
   [/^\/v3\/agents$/, () => ({ data: v3agents })],
   [/^\/v3\/credentials$/, () => ({ data: v3credentials })],
@@ -632,9 +673,21 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/webhooks$/, () => ({ data: sandboxWebhooks })],
 ]
 
+// Mutations the preview needs to echo something parseable (e.g. the Slack
+// wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
+const POST_ROUTES: [RegExp, () => unknown][] = [
+  [/^\/v3\/agents\/[^/]+\/slack\/manifest$/, () => v3slackManifest],
+  [/^\/v3\/agents\/[^/]+\/slack$/, () => ({ ...v3slack, status: 'active' })],
+]
+
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   const method = (options.method ?? 'GET').toUpperCase()
-  if (method !== 'GET') return {} as T
+  if (method !== 'GET') {
+    for (const [re, handler] of POST_ROUTES) {
+      if (re.test(path)) return handler() as T
+    }
+    return {} as T
+  }
   for (const [re, handler] of ROUTES) {
     if (re.test(path)) return handler() as T
   }

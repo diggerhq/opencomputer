@@ -18,6 +18,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { Skeleton } from '@/components/ui/skeleton'
+import { SlackConnect } from '@/components/slack-connect'
 
 // Mirrors the curated list in Agents.tsx (the create flow). /v3 wants a
 // provider-prefixed model id.
@@ -309,6 +310,8 @@ export default function AgentDetail() {
               }
             />
           </Panel>
+
+          <SlackConnect agentId={agent.id} agentName={agent.name} />
         </div>
       )}
     </div>
