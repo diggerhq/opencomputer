@@ -2142,16 +2142,21 @@ export default {
   // key's spend → debit Autumn `model_spend` → push the markup-correct cap + halt.
   // Dormant unless OPENROUTER_PROVISIONING_KEY is set + managed keys exist.
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    if (!env.AUTUMN_SECRET_KEY) return;
-    ctx.waitUntil(
-      runAutumnMeter(env, Date.now()).catch((err) => console.error("autumn-meter: run failed", err)),
-    );
-    if (env.OPENROUTER_PROVISIONING_KEY) {
+    // Autumn meter + the credit-debiting model meter are Autumn-specific.
+    if (env.AUTUMN_SECRET_KEY) {
       ctx.waitUntil(
-        runModelMeter(env, Date.now()).catch((err) => console.error("model-meter: run failed", err)),
+        runAutumnMeter(env, Date.now()).catch((err) => console.error("autumn-meter: run failed", err)),
       );
-      // Keep Managed an invariant: drain any org without a managed credential (backfill +
-      // new orgs from any create path + failed provisions). Idempotent, bounded per tick.
+      if (env.OPENROUTER_PROVISIONING_KEY) {
+        ctx.waitUntil(
+          runModelMeter(env, Date.now()).catch((err) => console.error("model-meter: run failed", err)),
+        );
+      }
+    }
+    // Managed provisioning is OpenRouter-only (decoupled from billing) — it must run
+    // even where Autumn is absent or disabled. Keeps Managed an invariant: drains any org
+    // without a managed credential (backfill + new orgs from any path + failed provisions).
+    if (env.OPENROUTER_PROVISIONING_KEY) {
       ctx.waitUntil(
         runManagedProvisioner(env).catch((err) => console.error("managed-provisioner: run failed", err)),
       );

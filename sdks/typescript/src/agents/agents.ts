@@ -10,7 +10,7 @@ export interface CreateAgentParams {
   runtime?: Runtime;
   /** Model provider key for the runtime (Anthropic for `claude`, OpenAI for `codex`), stored as a sealed credential. Mutually exclusive with `credential`. */
   key?: string;
-  /** Model source: `"managed"` (run via OpenComputer, billed to credits) or a `cred_…` id. Omit for the org default. Mutually exclusive with `key`. */
+  /** Model source: `"managed"` (run via OpenComputer, no provider key) or a `cred_…` id. Omit for the org default. Mutually exclusive with `key`. */
   credential?: CredentialRef;
   limits?: Limits;
 }

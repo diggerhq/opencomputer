@@ -33,7 +33,7 @@ import { getRuntime } from '@/lib/runtimes'
 // credential provider come from the agent's runtime (see @/lib/runtimes).
 const ORG_DEFAULT = '__default__' // no pinned credential → org default resolves
 const NEW_CRED = '__new__' // create one inline
-const MANAGED = 'managed' // run via OpenComputer, billed to credits (token-billing §6.6)
+const MANAGED = 'managed' // run via OpenComputer, no BYO key (token-billing §6.6)
 
 export default function AgentDetail() {
   const { agentId = '' } = useParams()
@@ -180,7 +180,7 @@ export default function AgentDetail() {
   // Managed is always offered (every org carries a managed credential); it has no provider.
   const credOptions = [
     { value: ORG_DEFAULT, label: 'Org default (no pinned credential)' },
-    { value: MANAGED, label: 'Managed · billed to credits' },
+    { value: MANAGED, label: 'Managed · no key needed' },
     ...providerCreds.map((c) => ({ value: c.id, label: credLabel(c.id) })),
     { value: NEW_CRED, label: '＋ New credential…' },
   ]
