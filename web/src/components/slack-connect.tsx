@@ -269,9 +269,7 @@ export function SlackConnect({
               ) : (
                 <>
                   <p className="text-muted-foreground text-sm">
-                    In Slack, create the app from this manifest (New App → From
-                    a manifest), then Install to Workspace. Come back with the
-                    three values it gives you.
+                    Create the app from this manifest in Slack, then install it.
                   </p>
                   <div className="min-w-0">
                     <div className="mb-1.5 flex items-center justify-between">
