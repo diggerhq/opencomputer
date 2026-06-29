@@ -1,9 +1,12 @@
 # Token / model-usage billing — design
 
-Status: **design, ready for review.** Architecture decided (OpenRouter-native +
-Autumn shared credit pool). This doc is written so a reviewer can flag holes and
-an implementer can build it without further questions. Decisions that could cause
-debate are spec'd explicitly in §9.
+Status: **design reviewed (3 rounds) + reconciled against merged code.**
+Architecture decided (OpenRouter-native + Autumn shared credit pool). The UI
+runtime/model/credential foundation shipped in **PR #448**, so §6.8 is now the
+small remaining Managed delta. **Implementation-ready for the `claude` path; the
+`codex` path is gated on the §9.7 spike** (OR's `wire_api:"responses"` support is
+unvalidated). One pre-build spike (§9.7) then build; decisions that could cause
+debate are in §9, failure modes in §10.
 
 ---
 
@@ -38,6 +41,13 @@ retained for key protection; **managed-only** billing (BYO bypasses); applies to
 existing credential picker** (`credential: "managed"`, set per agent), org default
 Managed, Credentials page unchanged, **no** managed-config page, "OpenRouter"
 never user-visible (full contract §6.6, decision §9.8).
+
+**Scope / prior art (don't conflate, G6):** this is **v3-only**. The legacy **v2**
+("OpenClaw") path already runs an OpenRouter platform gateway — `OPENROUTER_API_KEY`
+(`sessions-api/.../routes/agents.ts`), `lib/openclaw-image.ts`, and a v2
+credential-type enum that already includes `openrouter` (`v2/db/schema.ts`). This v3
+design is separate and supersedes it; the **v3 internal managed `"openrouter"`
+provider value is not the v2 enum value** — keep them namespaced apart.
 
 **Genuine open forks left to product** (§9/§12): at-cost vs markup; per-org vs
 per-session OR keys; sync cadence; BYO-via-OR vs BYO-direct; the cross-service
@@ -185,11 +195,12 @@ Bounded `attempts` with backoff; record `last_error`; after N attempts →
 `status='error'` + alert, and Managed stays unavailable (clean `422`, §6.6).
 
 ### 5.2 Session create — resolve a model endpoint profile, not just a key (P1-c)
-The runtime needs more than a secret. Current sealing maps **provider → env var**
-and **provider → egress host** only (`runtime/credential.ts:28,96`), which doesn't
-fit a managed OR key that serves either runtime. Resolve a **model endpoint
-profile** from `(runtime, source)` — protocol/env-var, base URL, egress host, and
-the billing credential are **separate fields**:
+The runtime needs more than a secret. Today sealing maps **provider → env var**
+(`PROVIDER_KEY_ENV`) and **provider → egress host** (`PROVIDER_EGRESS_HOST`) in
+`runtime/credential.ts` — only `anthropic`/`openai` — which doesn't fit a managed OR
+key that serves either runtime. Resolve a **model endpoint profile** from
+`(runtime, source)` where env-var, base URL, egress host, and the billing credential
+are **separate fields**:
 
 | field | BYO anthropic | BYO openai | Managed · claude rt | Managed · codex rt |
 |---|---|---|---|---|
@@ -199,21 +210,31 @@ the billing credential are **separate fields**:
 | sealed secret | anthropic cred | openai cred | org managed OR key | org managed OR key |
 | billing | BYO | BYO | Managed (Autumn) | Managed (Autumn) |
 
-- **Exact per-runtime code changes (P1-c)** — base-URL injection is new and
-  load-bearing, and each runtime currently *prevents* it:
-  - `claude` (`sessions-api/runtimes/v3-claude/src/server.ts:84`) today **deletes**
-    `ANTHROPIC_BASE_URL` (to force official Anthropic). Managed must instead **set**
-    `ANTHROPIC_BASE_URL=https://openrouter.ai/api` and pass the OR key as
-    `ANTHROPIC_AUTH_TOKEN` (OR's Claude Code path — note base is `…/api`, **not**
-    `/api/v1`, and the var is `AUTH_TOKEN`, not `API_KEY`).
-  - `codex` (`sessions-api/runtimes/v3-codex/src/server.ts:107`) today **hardcodes**
-    `https://api.openai.com/v1`. Managed must make the OpenAI client `baseURL`
-    configurable → `https://openrouter.ai/api/v1`, OR key as `OPENAI_API_KEY`.
-- This **confirms §9.7 is feasible** (OR documents both the Claude-Code and OpenAI-SDK
-  paths); it still needs validation in our actual runtimes before GA.
-- Resolution picks the source (managed credential vs BYO cred, §6.6/§6.7), then
-  derives + **seals the whole profile** (key + base URL + allowlist host),
-  session-pinned. Per-session-key variant: §9.1.
+- **Exact per-runtime changes (P1-c)** — base-URL/auth-mode injection is new and
+  load-bearing, and each runtime today *forces the official provider*:
+  - `claude` (`v3-claude/src/server.ts`) **deletes both** `ANTHROPIC_AUTH_TOKEN`
+    **and** `ANTHROPIC_BASE_URL` from the child env (`delete childEnv.ANTHROPIC_AUTH_TOKEN`
+    / `…ANTHROPIC_BASE_URL`, ~:87–88) to force the api-key path. Managed must instead
+    **set** `ANTHROPIC_BASE_URL=https://openrouter.ai/api` and pass the OR key as
+    `ANTHROPIC_AUTH_TOKEN` (OR's Claude-Code path — base is `…/api`, **not** `/api/v1`;
+    var is `AUTH_TOKEN`, not `API_KEY`).
+  - `codex` (`v3-codex/src/server.ts`) hardcodes the provider in the
+    `Codex({config:{model_providers:…}})` block: `base_url:"https://api.openai.com/v1"`
+    (~:111), `env_key:"OPENAI_API_KEY"` (:112), **`wire_api:"responses"`** and
+    **`requires_openai_auth:true`** (:113–114). Managed must override `base_url` →
+    `https://openrouter.ai/api/v1` **and** reconcile `wire_api`/`requires_openai_auth`
+    with OR — that pairing is **unvalidated** (the open risk, §9.7 / open-q #4).
+- **Delivery seam (G1) — how the brain learns it's Managed.** Today the brain
+  deletes/hardcodes the above; **no channel carries base-URL/auth-mode to it.**
+  `TurnConfig` (both servers) has only `model/system_prompt/mcp_endpoint/…`. Add a
+  **non-secret** `endpoint_profile` to `TurnConfig` — e.g. `{ mode:"byo"|"managed",
+  base_url?, auth_env }` — (or a sandbox env var the brain reads) so the brain *sets*
+  base-URL/auth-mode from it instead of deleting/hardcoding. The **secret** still
+  arrives sealed via the egress proxy (§5.3); only the non-secret routing rides
+  `TurnConfig`.
+- Resolution picks the source (managed credential vs BYO cred, §6.6/§6.7), derives
+  the profile, seals the secret **and** sets `endpoint_profile`; session-pinned.
+  Per-session-key variant: §9.1.
 
 ### 5.3 Turn execution (runtime → proxy → OR)
 - Runtime calls its profile's base URL (Managed → `openrouter.ai`) through the
@@ -344,12 +365,11 @@ Base `https://openrouter.ai/api/v1`.
 - **Provisioning hook** (edge) driving the §5.1 state machine on managed-enable.
 - **`POST /internal/managed-credential` (sessions-api) — carries a plaintext model
   key, so harden it (P2-f).** Do **not** reuse the generic static `X-Internal-Auth`
-  header (`sessions-api/src/v3/auth/worker.ts:18`). Use a **dedicated** secret +
-  audience with an HMAC over `timestamp + method + path + body`, a short replay
-  window (reject stale/duplicate timestamps), strict log redaction of the body, and
-  network-level restriction. Body `{ org_id, provider:"openrouter", key }` → store
-  via secret-ledger/Infisical, return `managed_credential_id`. Idempotent per org
-  (re-call = rotate, §5.8). (Seam §9.5.)
+  header (`requireWorkerAuth`, `auth/worker.ts`). Dedicated secret + HMAC over
+  `timestamp + method + path + body`, replay window, log redaction, network
+  restriction. **Exact body, idempotency key, and the `GET` lookup variant live in
+  §6.7.5 (single source of truth) — don't restate the body here** (that's how the two
+  drifted).
 - **`model_meter` cron** (§5.4) + **reconcile cron** (§5.7) as wrangler
   `[triggers] crons`.
 
@@ -430,8 +450,9 @@ accepts a reserved value `"managed"`:
   Managed changes *who pays*, not *which models* — both Managed and BYO show the
   runtime's models. (Managed's broader reach is **across agents/runtimes**, not within
   one agent.)
-- **§9.7:** confirmed feasible (OR's Claude-Code + OpenAI-SDK paths, §5.2); until a
-  runtime's OR path is validated it's simply not offered under Managed.
+- **§9.7:** claude *likely* feasible, **codex unvalidated** (the `wire_api:"responses"`
+  path — §5.2/§9.7); a runtime is offered under Managed only once its OR path is
+  validated end-to-end.
 
 **Behavior.**
 - Out of credits (Managed) → same halt as compute (one pool); "top up to resume."
@@ -448,7 +469,7 @@ UI §6.8, docs §6.9**.
 Repo: `sessions-api/src/v3`; SDK `opencomputer/sdks/typescript`. **No zod** — request
 bodies are TS interfaces + hand-written guards; responses via `serialize*`.
 **No org/billing table exists in v3** — `owner_id` is a derived opaque string
-(`auth/org.ts:18`); `billing_provider`/`autumn` live only in the edge D1 + Go cell,
+(`ownerIdForKey`, `auth/org.ts`); `billing_provider`/`autumn` live only in the edge D1 + Go cell,
 **not** in sessions-api. That shapes the gating design:
 
 > **Managed availability = "a managed credential is bound for the owner"** (the
@@ -461,11 +482,11 @@ bodies are TS interfaces + hand-written guards; responses via `serialize*`.
 > managed credential?". No new org table, no synchronous edge call.
 
 1. **`credential: "managed"` sentinel.**
-   - HTTP bodies stay `string`: `CreateAgentBody.credential` (`api/agents.ts:20`),
-     `PatchBody.credential` (`api/agents.ts:77`) — accept the literal. SDK widens
-     `CreateAgentParams.credential`/`UpdateAgentParams.credential` to
-     `"managed" | (string & {})` (`sdks/typescript/src/agents/agents.ts:11,19`) —
-     cosmetic (already `string`).
+   - HTTP bodies stay `string`: `CreateAgentBody.credential` / `PatchBody.credential`
+     (`api/agents.ts`) — accept the literal. SDK widens
+     `CreateAgentParams.credential` (`agents.ts:13`) / `UpdateAgentParams.credential`
+     (`:23`) to a `CredentialRef` union — mirror the **existing `Runtime` type**
+     (`types.ts:15`, shipped in #448; same `"…" | (string & {})` shape).
    - Core branch: in `createAgent` (`core/agents.ts:157-163`) and `patchAgent`
      (`core/agents.ts:252-265`) add a `credential === "managed"` arm **before**
      `assertCredentialProvider` — skip the **credential**-provider check (no BYO cred
@@ -484,9 +505,13 @@ bodies are TS interfaces + hand-written guards; responses via `serialize*`.
 
 2. **Resolution** (`resolveCredentialForSession`, `core/credentials.ts:214-245`):
    add an arm — if `agent.credentialId === "managed"` (or org default is managed,
-   see 3) → resolve the **owner's managed credential** (lookup by owner + internal
-   managed provider) → return its id (`source:"managed"`); **not found → throw
-   managed-unavailable**. Existing pin / org-default / null arms unchanged.
+   see 3) → resolve via a **separate `getManagedCredential(owner)` helper that
+   ignores the `provider` arg** (G7). The resolver is called with the *runtime's*
+   provider (`session-service.ts:102`, `runtime/credential.ts:96`), but the managed
+   cred's provider is `"openrouter"`, so a provider-keyed lookup would miss it.
+   Found → return its id (`source:"managed"`); **not found → throw
+   managed-unavailable**. **Both call sites (resolve + seal) route through this one
+   helper.** Existing pin/org-default/null arms unchanged.
 
 3. **Org default = managed.** Today org default = the `is_default` credential per
    `(owner, provider)` (`core/credentials.ts:198-206`). Add: when no `is_default`
@@ -495,13 +520,20 @@ bodies are TS interfaces + hand-written guards; responses via `serialize*`.
    `is_default` credential are unaffected. *(No `PUT /credentials/default` change
    for v1; "managed is default" = simply having no default BYO credential.)*
 
-4. **`422 managed_unavailable`.** New error class beside `NoCredentialError`
-   (`core/session-service.ts:27-33`), thrown from `startSession`
-   (`session-service.ts:100-103`) when managed is selected/defaulted but no managed
-   credential exists for the owner; wire-mapped beside the `no_credential` arm
-   (`api/sessions.ts:173-175`) → `422 { error: { type:"managed_unavailable", … } }`.
-   The seal path re-resolves (`runtime/credential.ts:96`) — make it resolve the
-   managed credential too.
+4. **`422 managed_unavailable` + seal keyed on (runtime, source), not provider (G3).**
+   New error class beside `NoCredentialError` (`core/session-service.ts:27-33`),
+   thrown from `startSession` (`session-service.ts:100-103`) when managed is
+   selected/defaulted but no managed credential exists; wire-mapped beside the
+   `no_credential` arm (`api/sessions.ts:173-175`) → `422 {type:"managed_unavailable"}`.
+   **Bigger than one line:** `sealCredentialForSession` (`runtime/credential.ts`)
+   derives the env-var name + egress host from the cred's `provider` via
+   `PROVIDER_KEY_ENV` / `PROVIDER_EGRESS_HOST` (only `anthropic`/`openai`). For Managed
+   the cred provider is `"openrouter"`, but the env var must be `ANTHROPIC_AUTH_TOKEN`
+   (claude) / `OPENAI_API_KEY` (codex) and the egress host `openrouter.ai` — so seal
+   needs a **(runtime, source)** input that overrides env-name + egress host **and**
+   supplies the base URL via `endpoint_profile` (§5.2 / G1). Also add `openrouter.ai`
+   to the per-session egress allowlist (`storeEgressAllowlist`, fed `modelHosts` from
+   the runtime build in `session-service.ts`) for Managed.
 
 5. **Provisioning hand-off (the §9.5 seam) — one exact contract** (this is the single
    source of truth; §6.3 matches it verbatim):
@@ -531,8 +563,9 @@ bodies are TS interfaces + hand-written guards; responses via `serialize*`.
    `CreateAgentBody.credential` / `PatchBody.credential` (`api/agents.ts:20,77`) as
    `CredentialRef`, and add a runtime `parseCredentialRef(v)` →
    `{kind:"managed"} | {kind:"id",id}` that throws `AgentValidationError`
-   (→ `400 invalid_credential`) for anything that is neither `"managed"` nor
-   `^cred_`. Call it in `createAgent`/`patchAgent` **before** the source branch so a
+   (wire-mapped to `400 {type:"invalid"}` today, `api/agents.ts:52,98`; add a distinct
+   `invalid_credential` type only if you want it separable) for anything that is
+   neither `"managed"` nor `^cred_`. Call it in `createAgent`/`patchAgent` **before** the source branch so a
    malformed ref fails fast and distinctly (today an unknown string only fails later
    as "credential not found"). Also tighten credential **create** `provider`
    (`api/credentials.ts`) to the closed `"anthropic" | "openai"` — the internal
@@ -544,50 +577,52 @@ bodies are TS interfaces + hand-written guards; responses via `serialize*`.
 
 8. **`key` and `credential` are mutually exclusive (P3).** Today create/patch accept
    both (`api/agents.ts:35,88`). Enforce one source per request: supplying both →
-   `400 invalid_request`; `credential:"managed"` + `key` → `400` (can't attach a BYO
-   key to Managed). Inline `key` stays the BYO shortcut; `credential` selects an
-   existing source (`"managed"` or a `cred_…`).
+   `400 {type:"invalid"}` (reuse `AgentValidationError`, `api/agents.ts:52,98` — no new
+   type needed); `credential:"managed"` + `key` → same `400`. Inline `key` stays the
+   BYO shortcut; `credential` selects an existing source (`"managed"` or `cred_…`).
 
 ### 6.8 UI deltas (exact)
 
-Repo `opencomputer/web` (`web/src/...`; byte-identical on `main`). **Two** credential
-pickers since PR #444 — both change.
+Repo `opencomputer/web`. **Most of what this section originally specced shipped in
+PR #448** — so the Managed delta is now small. Symbol refs (line numbers drift).
 
-**A. Create dialog — `web/src/pages/Agents.tsx`.**
-- Add sentinel near `:40`: `const MANAGED = 'managed'` (sent verbatim to the API).
-- Prepend to `credOptions` (`:91-99`): `{ value: MANAGED, label: 'Managed · billed to credits' }`.
-- `createMutation.mutationFn` (`:101-125`): branch so `credChoice === MANAGED`
-  sets the `createAgent` body `credential` (`:123`) to `"managed"` (not `undefined`).
-  `canCreate` (`:184-187`) already passes (no key required).
-- `initialCredChoice()` (`:71-74`): default to `MANAGED` when the org is managed.
-- **Model filter — by RUNTIME, not source (P1/P2):** filter `MODELS` (`:30-34`,
-  `options={MODELS}` `:280`) by the runtime's provider (`claude`→`anthropic/…`) for
-  **both** Managed and BYO — Managed does not widen the list (model must match the
-  runtime, enforced server-side §6.7.1). `Select` has no groups
-  (`components/form.tsx:14-28`) → plain `.filter`.
+**Already shipped (#448) — do NOT re-implement:**
+- Shared **`web/src/lib/runtimes.ts`** (`RUNTIMES` → `{provider, models, keyLabel,
+  keyPlaceholder}`, `getRuntime`, `defaultModelFor`, `runtimeOptions`), imported by
+  both `Agents.tsx` and `AgentDetail.tsx`. (This *is* the §6.8.G shared-lib pattern.)
+- **Model list is runtime-derived** in both pickers (create: `options={rt.models}`;
+  detail: `modelOptions` from `rt.models`). There is no `MODELS` const and no
+  `.filter` to add. Managed adds **no** model widening — model follows the runtime,
+  independent of source.
+- **Credential list filtered by the runtime's provider** in both
+  (`credentials.filter(c => c.provider === rt.provider)`).
 
-**B. Live picker — `web/src/pages/AgentDetail.tsx`.**
-- Sentinel near `:43`; prepend to `credOptions` (`:184-188`).
-- `credSelectValue` (`:181-183`): map `agent.credential_id === 'managed'` → `MANAGED`.
-- `onCredChange` (`:189-196`): `if (v === MANAGED) switchCredMutation.mutate('managed')`
-  (`switchCredMutation` `:136-145` already calls `updateAgent(id,{credential})`,
-  accepts `string` `client.ts:394`).
-- Model filter: same change at `modelOptions` (`:175-177`).
+**Remaining Managed delta (the only UI work):**
 
-**C. Gating (both dialogs) — gate on `managedAvailable`, the single authority (P2).**
-Add `useQuery({ queryKey:['billing'], queryFn: getBilling })` (Agents `~:45-53`,
-AgentDetail `~:68-71`; `getBilling` exported `client.ts:303`) and show the Managed
-option only when `billing?.managedAvailable` (new field on `/billing`, =
-edge `model_billing_status === 'active'`; add to `BillingStateSchema`
-`schemas.ts:188-195`). Gating on `billingProvider === 'autumn'` is **wrong** — an
-autumn org mid-provisioning would offer Managed and then `422`. UX-only; backend
-still enforces via §6.7.4.
+**A. Create dialog — `Agents.tsx`.** Add a `MANAGED='managed'` sentinel; prepend a
+`Managed · billed to credits` entry to `credOptions` **outside** the provider filter
+(Managed has no provider). In the create mutation, send `credential:"managed"` when
+chosen (no key needed — the non-`NEW_CRED` path already allows an empty key). Default
+the picker to Managed when `managedAvailable` (C).
 
-**D. API layer (`web/src/api/`).** **No schema/type change** — `createAgent.credential?: string`
-(`client.ts:374`) and `updateAgent.credential: string|null` (`:394`) already accept
-`"managed"`. Hide internal managed rows from the list if the backend returns them
-(§6.7.6). Mocks (`mock.ts`): add an agent with `credential_id:'managed'`;
-`billing.billingProvider:'autumn'` already set (`:252`).
+**B. Live picker — `AgentDetail.tsx`.** Same `Managed` entry in `credOptions`; map
+`agent.credential_id === 'managed'` to it in the selected value; on select,
+`switchCredMutation.mutate('managed')` (already calls `updateAgent(id,{credential})`).
+
+**C. Gating — `managedAvailable`, the single authority (P2).** Neither dialog reads
+billing today. Add a `getBilling` query and show the Managed entry only when
+`billing?.managedAvailable` — a **new** field on `/billing` (= edge
+`model_billing_status === 'active'`; add to `BillingStateSchema`). Do **not** gate on
+`billingProvider === 'autumn'` (an autumn org mid-provisioning would offer Managed
+then `422`). UX-only; backend enforces via §6.7.4. **Coupling caveat (G4):** this
+equals the backend's "managed credential bound" check only while §5.1 keeps
+`status='active'` ⟺ credential-bound — the partial states (§5.1/§10) are where they
+diverge, so reconcile must close that window.
+
+**D. API layer (`web/src/api/`).** `createAgent`/`updateAgent` `credential` already
+accept any string, so `"managed"` needs no client change (tighten to `CredentialRef`
+per G). Hide internal `"openrouter"` managed rows from the credentials list if the
+backend returns them (§6.7.6). Add a Managed mock fixture (`mock.ts`).
 
 **E. Credentials page — `web/src/pages/Credentials.tsx`: UNCHANGED** (self-contained
 CRUD; no dependency on the dialogs).
@@ -596,19 +631,17 @@ CRUD; no dependency on the dialogs).
 grid `:291`; add a `ModelUsageBreakdown` `<Panel>` beside `<UsageBreakdown/>`
 (`:408`, component `:589`); reuse `Panel`/`ResourceTable`/`formatCost`.
 
-**G. Tighten the picker selection type + DRY the two dialogs** (decision §9.9).
-Today both pickers cram cred-ids + sentinels (`'__new__'`, `'__default__'`,
-`'managed'`) into one `string` state, and they've **diverged** (AgentDetail has
-`ORG_DEFAULT`, Agents doesn't — research-confirmed). Extract a shared
-`web/src/lib/credential-source.ts`: the union
+**G. Credential-source type (rescoped — the runtime shared-lib already exists in #448).**
+`runtimes.ts` already DRYs the model/runtime/provider axis. What's **not** factored is
+the **credential-source** selection, still crammed as sentinels (`'__new__'`,
+`'__default__'`, `'managed'`) in one `string` state, with the two pickers diverged
+(detail has `ORG_DEFAULT`, create doesn't). Add a sibling
+`web/src/lib/credential-source.ts` (same pattern as `runtimes.ts`): the union
 `Source = {kind:'managed'} | {kind:'orgDefault'} | {kind:'credential'; id: CredentialId} | {kind:'new'}`,
 the `Select`-value ↔ `Source` map, and `toWire(source): CredentialRef | null | undefined`
 (managed→`"managed"`, credential→id, orgDefault→`null` on patch / omit on create,
-new→post-create id). Both `Agents.tsx` and `AgentDetail.tsx` import it → one source
-of truth, no drift. Type the web client `createAgent`/`updateAgent` `credential` as
-`CredentialRef` (`client.ts:374,394`) and runtime-validate via zod (web has zod):
-`CredentialSchema.id` (`schemas.ts:296`) as `z.string().startsWith('cred_')`, and the
-field as `z.union([z.literal('managed'), credentialIdSchema])`.
+new→post-create id); import in both. Type the web client `credential` as
+`CredentialRef` + zod `z.union([z.literal('managed'), z.string().startsWith('cred_')])`.
 
 ### 6.9 Docs deltas (exact)
 
@@ -781,15 +814,20 @@ would duplicate OR's pricing into Autumn's static schema. Per-model breakdown li
 in ClickHouse (§6.5). *Trade:* Autumn itself won't show per-model — acceptable,
 the dashboard reads ClickHouse.
 
-**9.7 Runtime ↔ OpenRouter protocol (confirmed feasible; validate before GA).** Both
-paths are documented by OR: `codex`/OpenAI → OpenAI SDK
-`baseURL=https://openrouter.ai/api/v1`; `claude`/Anthropic → Claude-Code path
-`ANTHROPIC_BASE_URL=https://openrouter.ai/api` + `ANTHROPIC_AUTH_TOKEN`. So Managed
-can route either runtime. **The work** (§5.2): each runtime currently *blocks*
-base-URL injection — v3-claude **deletes** `ANTHROPIC_BASE_URL` (`server.ts:84`),
-v3-codex **hardcodes** the OpenAI base (`server.ts:107`) — so make both configurable
-and validate end-to-end (protocol + tool calls + usage/cost echo) before GA. A
-runtime not yet validated is simply not offered under Managed.
+**9.7 Runtime ↔ OpenRouter protocol (claude likely; codex UNVALIDATED — gate build on this).**
+`claude`/Anthropic: OR documents a Claude-Code path
+(`ANTHROPIC_BASE_URL=https://openrouter.ai/api` + `ANTHROPIC_AUTH_TOKEN`) — *likely*
+feasible, still validate in our runtime. `codex`/OpenAI: **not** a clean "set
+baseURL" — our v3-codex pins `wire_api:"responses"` + `requires_openai_auth:true`
+(`v3-codex/server.ts:113–114`), and OR's OpenAI-compatible surface is
+chat/completions-centric; whether the Responses API + non-OpenAI-auth path works
+through OR is **unverified**. **The work** (§5.2): each runtime currently *blocks*
+base-URL injection — v3-claude **deletes** both `ANTHROPIC_AUTH_TOKEN` and
+`ANTHROPIC_BASE_URL` (`server.ts:~87–88`), v3-codex **hardcodes** the OpenAI provider
+block (`server.ts:~111–114`) — so make both configurable and **validate end-to-end
+(protocol + tool calls + usage/cost echo) before offering each runtime under Managed.**
+A runtime not yet validated is simply not offered. This spike (esp. codex) gates the
+build (open-q #4).
 
 **9.8 User-facing taxonomy (resolved).** Surface Managed as a single pinned entry
 in the existing credential picker, selected per agent, via the
@@ -809,7 +847,7 @@ not a free `string`**: `CredentialId = ` `` `cred_${string}` ``;
 layer: **web** client + schemas via zod
 (`z.union([z.literal("managed"), z.string().startsWith("cred_")])`); **SDK** via the
 TS union + a typed `Credential.id`; **backend** (no zod) via a `parseCredentialRef`
-guard → `400 invalid_credential`. The UI models the picker selection as a
+guard → `400 {type:"invalid"}` (`AgentValidationError`; §6.7.7). The UI models the picker selection as a
 discriminated `Source` union in a shared module used by **both** pickers (§6.8.G).
 *Why:* the sentinel-in-a-string is the one looseness this taxonomy introduced; a
 closed union removes it end-to-end and DRYs the two diverged pickers. *Risk:* none
