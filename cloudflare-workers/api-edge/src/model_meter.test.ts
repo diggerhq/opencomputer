@@ -21,7 +21,7 @@ const gProject = projectOrg as unknown as ReturnType<typeof vi.fn>;
 
 // ── in-memory D1 for orgs + managed_model_keys ──────────────────────────────
 class FakeDb {
-  orgs = new Map<string, { id: string; model_markup_bps: number }>();
+  orgs = new Map<string, { id: string; model_markup_bps: number; billing_provider: string }>();
   keys: ManagedModelKeyRow[] = [];
   prepare(sql: string) {
     return new Stmt(this, sql);
@@ -88,7 +88,7 @@ afterEach(() => vi.clearAllMocks());
 describe("model_meter debit (persist-before-track, §7)", () => {
   it("debits new spend: persists interval, tracks micro-credits, advances watermark", async () => {
     const db = new FakeDb();
-    db.orgs.set("org1", { id: "org1", model_markup_bps: 0 });
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
     db.keys.push(key({ committed_micro: 0 }));
     gOrKey.mockResolvedValue(orKey(0.5)); // $0.50 cumulative
     gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
@@ -101,9 +101,22 @@ describe("model_meter debit (persist-before-track, §7)", () => {
     expect(db.keys[0].pending_idem).toBeNull(); // cleared after success
   });
 
+  it("skips non-autumn orgs entirely — no debit, no halt (decoupled; the fixed OR-key budget is the ceiling)", async () => {
+    const db = new FakeDb();
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "legacy" });
+    db.keys.push(key({ committed_micro: 0 }));
+    gOrKey.mockResolvedValue(orKey(0.5));
+    gCust.mockResolvedValue(null); // a legacy org has no Autumn customer
+
+    await runModelMeter(env(db), 0);
+
+    expect(gTrack).not.toHaveBeenCalled(); // not metered
+    expect(gProject).not.toHaveBeenCalled(); // not halted — a 0 credit read must NOT hibernate it
+  });
+
   it("applies markup to the debit value", async () => {
     const db = new FakeDb();
-    db.orgs.set("org1", { id: "org1", model_markup_bps: 2000 }); // +20%
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 2000, billing_provider: "autumn" }); // +20%
     db.keys.push(key({ committed_micro: 0 }));
     gOrKey.mockResolvedValue(orKey(0.5));
     gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
@@ -114,7 +127,7 @@ describe("model_meter debit (persist-before-track, §7)", () => {
 
   it("retries a pending interval VERBATIM after a crash (never recompute against newer usage)", async () => {
     const db = new FakeDb();
-    db.orgs.set("org1", { id: "org1", model_markup_bps: 0 });
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
     // crashed mid-debit: pending [0,500000] persisted; OR usage has since grown to $1.
     db.keys.push(key({ committed_micro: 0, pending_from_micro: 0, pending_to_micro: 500000, pending_idem: "model_spend:org1:0:500000" }));
     gOrKey.mockResolvedValue(orKey(1.0)); // now $1.00
@@ -128,7 +141,7 @@ describe("model_meter debit (persist-before-track, §7)", () => {
 
   it("no track when usage hasn't advanced past the watermark", async () => {
     const db = new FakeDb();
-    db.orgs.set("org1", { id: "org1", model_markup_bps: 0 });
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
     db.keys.push(key({ committed_micro: 500000 }));
     gOrKey.mockResolvedValue(orKey(0.5)); // == committed
     gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
@@ -141,7 +154,7 @@ describe("model_meter debit (persist-before-track, §7)", () => {
 describe("model_meter cap + halt (§5.4/§7)", () => {
   it("active-key cap = usage + remaining/(1+markup)", async () => {
     const db = new FakeDb();
-    db.orgs.set("org1", { id: "org1", model_markup_bps: 0 });
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
     db.keys.push(key({ committed_micro: 500000 }));
     gOrKey.mockResolvedValue(orKey(0.5, 1)); // usage 0.5, limit 1
     gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 10 } } });
@@ -153,7 +166,7 @@ describe("model_meter cap + halt (§5.4/§7)", () => {
 
   it("rotation: superseded key frozen at usage+ε, active gets the rest", async () => {
     const db = new FakeDb();
-    db.orgs.set("org1", { id: "org1", model_markup_bps: 0 });
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
     db.keys.push(key({ id: "mmk_old", or_key_hash: "old", status: "superseded", committed_micro: 2000000 }));
     db.keys.push(key({ id: "mmk_new", or_key_hash: "new", status: "active", committed_micro: 1000000 }));
     gOrKey.mockImplementation(async (_e: unknown, h: string) => (h === "old" ? orKey(2.0, 5) : orKey(1.0, 5)));
@@ -167,7 +180,7 @@ describe("model_meter cap + halt (§5.4/§7)", () => {
 
   it("halts the org when balance ≤ 0", async () => {
     const db = new FakeDb();
-    db.orgs.set("org1", { id: "org1", model_markup_bps: 0 });
+    db.orgs.set("org1", { id: "org1", model_markup_bps: 0, billing_provider: "autumn" });
     db.keys.push(key({ committed_micro: 500000 }));
     gOrKey.mockResolvedValue(orKey(0.5));
     gCust.mockResolvedValue({ id: "org1", balances: { credits: { remaining: 0 } } });

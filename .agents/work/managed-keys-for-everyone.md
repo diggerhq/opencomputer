@@ -1,8 +1,8 @@
 # Managed keys for everyone — decouple Managed from billing
 
-Status: **working doc / plan (2026-06-29).** Objective decided; implementation not
-started. Builds on the shipped Managed work (`token-billing.md`, PRs #445 + sessions-api
-#34). Governing principle: `oc-bg-agents/.agents/conventions/shift-left-over-feature-flags.md`.
+Status: **Slice 1 implemented (2026-06-29); Slice 2 pending.** Builds on the shipped
+Managed work (`token-billing.md`, PRs #445 + sessions-api #34). Governing principle:
+`oc-bg-agents/.agents/conventions/shift-left-over-feature-flags.md`.
 
 ## 1. Objective
 
@@ -90,15 +90,36 @@ customers (pro + active Stripe sub): **33 on legacy** (all `model_billing_status
 - **Tests**: extend `model_billing.test.ts` / `model_meter.test.ts` — non-autumn
   provisions, isn't debited/halted, budget caps spend; `managedAvailable` for non-autumn.
 
-## 7. Open decisions
+## 7. Decisions
 
-- **Default budget amount** (our prepaid exposure per org). Start small.
-- **Remove org-halt-on-model-spend for autumn too?** Recommended **yes** — model
-  exhaustion shouldn't hibernate compute; the key cap already stops spend. (Behavior
-  change for autumn — conscious yes.)
-- **Per-org budget column now, or global config first?** Global first; add column when
-  top-ups need to differ per org.
-- **Offer Managed to ALL in the UI by default, or provision-on-first-select?**
+- **Default budget = `$10`** per org (`MANAGED_DEFAULT_BUDGET_USD`). Our prepaid exposure
+  per non-autumn org; deliberately small.
+- **KEEP the org-halt-on-credit-runout for Autumn orgs.** (Corrected — earlier draft
+  said remove it.) For autumn, model + compute share one credit pool; hitting 0 → halt
+  → top-up is the *intended billing nudge*, unrelated to decoupling. What the decoupling
+  does instead: **fence the meter so it never touches non-autumn orgs** — no debit, no
+  halt, no credit-derived cap. This is a *required correctness fix*, not optional: as
+  written, a provisioned non-autumn org would hit `model_meter.ts:99–105` with no Autumn
+  customer → `remaining` defaults to `0` → it would **wrongly halt** the org. Gate the
+  whole debit/halt/cap block on `billing_provider === 'autumn'` (mirrors
+  `autumn_meter.ts:61`).
+- **Global config first** for the budget; add a per-org `managed_budget` column only when
+  top-ups need to differ.
+- **Enablement = provision-on-first-use** (lazy), Managed offered to all in the UI — that's
+  what actually removes the per-org conditional enablement (vs pre-minting 482 keys).
+  Slice 2 below.
+
+## 7b. Slices
+
+- **Slice 1 (decouple + make safe) — DONE:** dropped the `billing_provider` refusal
+  (`model_billing.ts`); `budgetFor` mints non-autumn keys at the fixed `$10` budget
+  (`MANAGED_DEFAULT_BUDGET_USD`); fenced the meter (debit/halt/cap) to autumn-only
+  (`model_meter.ts` early-return). Tests updated + non-autumn cases added (21/21 green,
+  tsc clean). After this, *any* org can be enabled with bounded exposure and zero
+  wrongful halts. *Still requires the per-org enable step — that's Slice 2.*
+- **Slice 2 (remove per-org enablement):** provision-on-first-use so Managed "just works"
+  for any org with no operator action, and surface it to all in the UI. One UX seam to
+  settle: provision when the user selects Managed, or silently on the first Managed turn.
 
 ## 8. Non-goals
 

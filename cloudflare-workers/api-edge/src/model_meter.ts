@@ -30,6 +30,7 @@ const CAP_MIN_DELTA_USD = 0.01;
 interface OrgMeterRow {
   id: string;
   model_markup_bps: number;
+  billing_provider: string;
 }
 
 function markupBps(env: ModelMeterEnv, org: OrgMeterRow): number {
@@ -72,11 +73,18 @@ export async function runModelMeter(env: ModelMeterEnv, _nowMs: number): Promise
 
 async function meterOrg(env: ModelMeterEnv, orgId: string, keys: ManagedModelKeyRow[]): Promise<boolean> {
   const org = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT id, model_markup_bps FROM orgs WHERE id = ?1",
+    "SELECT id, model_markup_bps, billing_provider FROM orgs WHERE id = ?1",
   )
     .bind(orgId)
     .first<OrgMeterRow>();
   if (!org) return false;
+  // Decoupled billing: only autumn orgs are on the shared credit pool, so only they
+  // are metered, capped-to-credits, and halted. Non-autumn orgs run on the FIXED OR
+  // key budget set at provision — the key limit is the ceiling; we never debit or
+  // halt them. This guard is also a correctness requirement, not just a skip: with
+  // no Autumn customer, `remaining` below would read 0 and wrongly halt the org
+  // (hibernate its boxes). Top-up = move the org to autumn + grant credits.
+  if (org.billing_provider !== "autumn") return false;
   const bps = markupBps(env, org);
 
   // Read each key's current OpenRouter usage once (reused for debit + cap).

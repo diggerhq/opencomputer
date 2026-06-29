@@ -24,7 +24,13 @@ export interface ModelBillingEnv extends OpenRouterEnv, AutumnApiEnv {
   OC_MANAGED_CRED_HMAC_SECRET: string;
   // Optional env-default markup (basis points) when the org row's is 0. Org wins.
   OPENROUTER_MARKUP_BPS?: string;
+  // Fixed prepaid OR-key budget (USD) for non-autumn orgs, which are decoupled from
+  // billing (no metering/halt — the key limit IS the ceiling). Default $10.
+  MANAGED_DEFAULT_BUDGET_USD?: string;
 }
+
+// Fixed prepaid budget for a non-autumn (un-metered) managed org, in USD.
+const DEFAULT_MANAGED_BUDGET_USD = 10;
 
 // Bounded retries before parking the org in 'error' (§5.1).
 const MAX_PROVISION_ATTEMPTS = 5;
@@ -189,6 +195,24 @@ function initialCapUsd(remainingUsd: number, bps: number): number {
   return Math.max(0, remainingUsd / (1 + bps / 10000));
 }
 
+function defaultBudgetUsd(env: ModelBillingEnv): number {
+  const v = parseFloat(env.MANAGED_DEFAULT_BUDGET_USD ?? "");
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_MANAGED_BUDGET_USD;
+}
+
+// budgetFor returns the OR key's spend limit (USD) at provision. Autumn orgs are
+// metered against the shared credit pool, so their cap tracks remaining credits
+// (markup-adjusted) and the meter keeps it in sync. Non-autumn orgs are decoupled
+// from billing: they get a FIXED prepaid budget and are never metered/halted — the
+// OR key limit is the hard ceiling. Top-up = move them to autumn + grant credits.
+async function budgetFor(env: ModelBillingEnv, org: OrgBillingRow): Promise<number> {
+  if (org.billing_provider === "autumn") {
+    const remaining = await remainingCreditsUsd(env, org.id);
+    return initialCapUsd(remaining, markupBps(env, org));
+  }
+  return defaultBudgetUsd(env);
+}
+
 // ── edge → sessions-api hand-off (HMAC, §6.7.5) ─────────────────────────────
 
 async function hmacHex(secret: string, data: string): Promise<string> {
@@ -284,10 +308,10 @@ export interface EnableResult {
 export async function enableManagedBilling(env: ModelBillingEnv, orgId: string): Promise<EnableResult> {
   const org = await getOrg(env, orgId);
   if (!org) throw new Error(`model-billing: org ${orgId} not found`);
-  // Managed billing is autumn-only (§3 invariant 6).
-  if (org.billing_provider !== "autumn") {
-    throw new Error(`model-billing: org ${orgId} is '${org.billing_provider}', not autumn — refusing`);
-  }
+  // Managed is available to ANY org (decoupled from billing). Autumn orgs meter
+  // against the shared credit pool; non-autumn orgs run on a fixed OR-key budget
+  // (see budgetFor). The provider only changes the budget source, never whether
+  // Managed works.
 
   await setOrgStatus(env, orgId, "provisioning");
 
@@ -315,8 +339,7 @@ async function driveProvisioning(env: ModelBillingEnv, org: OrgBillingRow, row: 
     // Step 2: mint the OR key (once). Persist the hash before binding so a lost
     // bind response is recoverable.
     if (!row.or_key_hash) {
-      const remaining = await remainingCreditsUsd(env, org.id);
-      const limitUsd = initialCapUsd(remaining, markupBps(env, org));
+      const limitUsd = await budgetFor(env, org);
       const created = await createOrKey(env, { name: orKeyName(org.id), limitUsd });
       await updateRow(env, row.id, { or_key_hash: created.data.hash, attempts: 0, last_error: null });
       row.or_key_hash = created.data.hash;
