@@ -291,11 +291,7 @@ export default function AgentDetail() {
               </Field>
 
               {/* Prompt — draft with Save/Discard */}
-              <Field
-                label="System prompt"
-                htmlFor="agent-prompt"
-                description="How the agent behaves. Saving bumps the agent's revision."
-              >
+              <Field label="System prompt" htmlFor="agent-prompt">
                 <Textarea
                   id="agent-prompt"
                   value={promptValue}
@@ -303,9 +299,12 @@ export default function AgentDetail() {
                   placeholder="You are a meticulous code reviewer…"
                   className="min-h-32"
                 />
-                <div className="mt-2 flex items-center gap-2">
-                  <Saving show={promptMutation.isPending} />
-                  <div className="ml-auto flex gap-2">
+                <div className="mt-2 flex items-center gap-3">
+                  <p className="text-muted-foreground text-xs">
+                    How the agent behaves. Saving bumps the agent's revision.
+                  </p>
+                  <div className="ml-auto flex items-center gap-2">
+                    <Saving show={promptMutation.isPending} />
                     <Button
                       type="button"
                       variant="ghost"
