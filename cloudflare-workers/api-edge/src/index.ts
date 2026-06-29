@@ -26,7 +26,7 @@ import {
   createAutumnCustomer,
 } from "./autumn_webhook";
 import { runAutumnMeter } from "./autumn_meter";
-import { disableManagedBilling, enableManagedBilling, runManagedProvisioner } from "./model_billing";
+import { disableManagedBilling, enableManagedBilling } from "./model_billing";
 import { runModelMeter } from "./model_meter";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
@@ -1265,12 +1265,6 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
     )
       .bind(orgID, userID, nowSec)
       .run();
-    // Managed is an invariant: provision the org's OpenRouter key at birth so it "just
-    // works" immediately. Best-effort — a hiccup must not break signup; the reconcile
-    // sweep (scheduled) backfills + heals, and also covers the Go/WorkOS create path.
-    await enableManagedBilling(env, orgID).catch((e) =>
-      console.error(`signup: managed provisioning failed for ${orgID} (sweep will retry)`, e),
-    );
   }
 
   // Mint session JWT — same signing secret as cap-token but a different
@@ -1810,8 +1804,15 @@ export default {
       const ts = req.headers.get("X-Timestamp") ?? "";
       const sig = req.headers.get("X-Signature") ?? "";
       const body = await req.text();
-      const expected = await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`);
-      if (!constantTimeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+      // CF_ADMIN_SECRET authorizes both ops. `enable` is additionally accepted with the
+      // scoped OC_MANAGED_CRED_HMAC_SECRET, so sessions-api can ensure-provision at
+      // agent-create without holding the broad admin secret. `disable` stays admin-only.
+      const adminOk = constantTimeEqual(await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`), sig);
+      const managedOk =
+        path === "/internal/model-billing/enable" && env.OC_MANAGED_CRED_HMAC_SECRET
+          ? constantTimeEqual(await hmacHex(env.OC_MANAGED_CRED_HMAC_SECRET, `${ts}.${body}`), sig)
+          : false;
+      if (!adminOk && !managedOk) return json({ error: "signature mismatch" }, 401);
       if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
       const parsed = JSON.parse(body) as { org_id?: string };
       if (!parsed.org_id) return json({ error: "org_id required" }, 400);
@@ -2142,23 +2143,13 @@ export default {
   // key's spend → debit Autumn `model_spend` → push the markup-correct cap + halt.
   // Dormant unless OPENROUTER_PROVISIONING_KEY is set + managed keys exist.
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    // Autumn meter + the credit-debiting model meter are Autumn-specific.
-    if (env.AUTUMN_SECRET_KEY) {
-      ctx.waitUntil(
-        runAutumnMeter(env, Date.now()).catch((err) => console.error("autumn-meter: run failed", err)),
-      );
-      if (env.OPENROUTER_PROVISIONING_KEY) {
-        ctx.waitUntil(
-          runModelMeter(env, Date.now()).catch((err) => console.error("model-meter: run failed", err)),
-        );
-      }
-    }
-    // Managed provisioning is OpenRouter-only (decoupled from billing) — it must run
-    // even where Autumn is absent or disabled. Keeps Managed an invariant: drains any org
-    // without a managed credential (backfill + new orgs from any path + failed provisions).
+    if (!env.AUTUMN_SECRET_KEY) return;
+    ctx.waitUntil(
+      runAutumnMeter(env, Date.now()).catch((err) => console.error("autumn-meter: run failed", err)),
+    );
     if (env.OPENROUTER_PROVISIONING_KEY) {
       ctx.waitUntil(
-        runManagedProvisioner(env).catch((err) => console.error("managed-provisioner: run failed", err)),
+        runModelMeter(env, Date.now()).catch((err) => console.error("model-meter: run failed", err)),
       );
     }
   },

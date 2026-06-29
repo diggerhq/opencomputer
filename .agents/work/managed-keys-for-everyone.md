@@ -1,13 +1,18 @@
 # Managed keys for everyone — decouple Managed from billing
 
-Status: **Slices 1 + 2 implemented (2026-06-29) on `feat/managed-keys-for-everyone`
-(PR #452); pending review + deploy.** Builds on the shipped Managed work
-(`token-billing.md`, PRs #445 + sessions-api #34). Governing principle:
-`oc-bg-agents/.agents/conventions/shift-left-over-feature-flags.md`.
+Status: **Implemented (2026-06-29); pending review + deploy.** Slice 1 (decouple) + Slice 2
+(provision at agent-create, kill `managedAvailable`). edge/web on
+`feat/managed-keys-for-everyone` (PR #452); sessions-api on a companion PR. Builds on the
+shipped Managed work (`token-billing.md`, PRs #445 + sessions-api #34). Governing
+principle: `oc-bg-agents/.agents/conventions/shift-left-over-feature-flags.md`.
 
-**Step 0 resolved:** there ARE two org-create paths — the edge signup handler AND the
-Go/WorkOS cell path (`oauth_handlers.go` → `store.go:1620 INSERT INTO orgs` → D1). So the
-reconcile sweep is required (path-agnostic); the signup hook is immediacy-only.
+**Design note (the path we landed on after review):** the first cut of Slice 2 used a
+background reconcile **sweep** + signup hook to provision every org ahead of time. That was
+async machinery whose only purpose was to avoid one cross-service call — it provisions
+*eventually* (2h drain), parks errors, and offers Managed before it's provisioned. Dropped
+it for **just-in-time provisioning at agent-create** (sessions-api → edge enable,
+synchronous, idempotent). Agent-create is the single chokepoint both create paths flow
+through, so it covers everything with no sweep, no flag, no window, no wasted keys.
 
 ## 1. Objective
 
@@ -110,12 +115,15 @@ customers (pro + active Stripe sub): **33 on legacy** (all `model_billing_status
   `autumn_meter.ts:61`).
 - **Global config first** for the budget; add a per-org `managed_budget` column only when
   top-ups need to differ.
-- **Enablement = make Managed an INVARIANT, not a conditional.** Every org has a managed
-  credential the same way every org has an Autumn customer — provisioned at org birth +
-  backfilled, never gated. No runtime "provision-if-needed" branch, no `managedAvailable`
-  flag. (Rejected: the per-org enable step, AND a lazy provision-on-first-use trigger —
-  both keep a fork in the hot path and a new cross-service call. Reuses the existing
-  `enableManagedBilling`; **no new endpoint**.)
+- **Enablement = provision at AGENT CREATE (just-in-time), no flag.** When an agent is
+  created with `credential: managed`, sessions-api ensures the org's OpenRouter key is
+  provisioned (idempotent) before the create returns — bound before any session resolves
+  it. Managed is offered to all (no `managedAvailable` flag); an org that never picks
+  Managed is simply never provisioned. (Rejected: the per-org enable step; AND the
+  background invariant sweep + signup hook — async machinery that only provisioned
+  *eventually*, parked errors, and existed solely to dodge one cross-service call.
+  Agent-create is synchronous → no window, no wasted keys, no cron. Reuses the existing
+  enable route — **no new endpoint**.)
 
 ## 7b. Slices
 
@@ -125,30 +133,27 @@ customers (pro + active Stripe sub): **33 on legacy** (all `model_billing_status
   (`model_meter.ts` early-return). Tests updated + non-autumn cases added (21/21 green,
   tsc clean). After this, *any* org can be enabled with bounded exposure and zero
   wrongful halts. *Still requires the per-org enable step — that's Slice 2.*
-- **Slice 2 (make Managed an invariant + kill `managedAvailable`) — DONE (PR #452):**
-  `runManagedProvisioner` sweep (edge `scheduled()`, batched, idempotent) drains every
-  unprovisioned org via `enableManagedBilling`; signup hook provisions at org birth for
-  immediacy; `managedAvailable` deleted from edge `/billing` + web (`Agents.tsx`,
-  `AgentDetail.tsx`, `schemas.ts`) → Managed always offered; no sessions-api change. Edge
-  + web tsc clean, 22/22 edge tests (incl. the sweep test). No new endpoint, no
-  cross-service trigger, no hot-path fork. Below is the design as built:
-  - **Provision at org birth:** add `enableManagedBilling(orgID)` in the edge signup
-    handler, beside the existing `createAutumnCustomer` call (`index.ts:~1251`,
-    best-effort — don't fail signup on a provisioning hiccup; the sweep heals it).
-  - **Backfill + self-heal via a reconcile sweep:** a small edge cron (mirrors the
-    model_meter / autumn_meter cron pattern) that ensures every org is provisioned.
-    Path-agnostic (also covers the Go/WorkOS `ProvisionOrgAndUser` create path → cell PG →
-    D1), subsumes the one-time backfill, and repairs any failed provision — with zero
-    hot-path code. *Step 0: verify whether the edge signup handler is the ONLY org-create
-    path; if it is, the org-birth hook + a one-shot backfill may suffice and the cron is
-    optional.*
-  - **Remove `managedAvailable`:** delete it from edge `/billing` (`dashboard.ts:996–1040`)
-    and the web (`AgentDetail.tsx`, `Agents.tsx`, `schemas.ts`) — Managed is always
-    offered. Must land WITH the provisioning, never before (else offer-then-fail).
-  - **sessions-api:** no trigger change — resolve "just works" because the credential is
-    always bound. (Verify `credentials.ts:328` resolve has no provider assumption.)
-  - **Tradeoff:** one OR key per org (free until used; $10 cap). Consistent with the
-    invariant choice; if key-count ever bites, fall back to lazy-at-first-use.
+- **Slice 2 (provision at agent-create + kill `managedAvailable`) — DONE:**
+  - **edge (PR #452):** removed the async (`runManagedProvisioner` sweep + signup hook);
+    the enable route (`/internal/model-billing/enable`) now *also* accepts the scoped
+    `OC_MANAGED_CRED_HMAC_SECRET` so sessions-api can call it (no new endpoint; no broad
+    `CF_ADMIN_SECRET` on sessions-api; `disable` stays admin-only). `managedAvailable`
+    deleted from `/billing` (`dashboard.ts`) + web (`Agents.tsx`, `AgentDetail.tsx`,
+    `schemas.ts`) → Managed always offered. Copy made provider-neutral (`Managed · no key
+    needed`). 26 edge tests + edge/web tsc green.
+  - **sessions-api (companion PR):** `ensureManagedProvisioned(owner)`
+    (`core/credentials.ts`) — if the org has no managed credential, sign the enable call
+    with `OC_MANAGED_CRED_HMAC_SECRET` (scheme `${ts}.${body}`, `X-Timestamp`/`X-Signature`)
+    and POST `OPENCOMPUTER_API_URL/internal/model-billing/enable`; the edge mints + binds
+    back; confirm bound. Called synchronously from agent-create (`core/agents.ts`, the
+    `credential: managed` branch); throws on failure so we never create a Managed agent
+    that can't run. Idempotent. tsc green.
+  - **Must deploy together** — flag removal (edge/web) + agent-create provisioning
+    (sessions-api) are one rollout, else Managed is offered but unprovisioned.
+  - **No backfill needed** — existing orgs provision when they next create a Managed
+    agent; no existing Managed agents sit on unprovisioned orgs (only `2f9094d9` had it).
+  - **Open:** P2 legacy→autumn upgrade should baseline `committed_micro` at the provider
+    flip (`autumn_webhook`) so prior fixed-budget usage isn't retro-debited. Not yet done.
 
 ## 8. Non-goals
 
