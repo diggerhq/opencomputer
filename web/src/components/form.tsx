@@ -51,9 +51,7 @@ export function Select({
         <SelectPrimitive.Content
           position="popper"
           sideOffset={4}
-          // Mark the gesture that closes this menu so a parent Dialog/Sheet
-          // doesn't dismiss on the retargeted tail of the same click. See
-          // floating-layer.ts for the full rationale.
+          // Don't let closing this menu dismiss a parent Dialog (floating-layer.ts).
           onPointerDownOutside={markFloatingLayerPointerDismiss}
           className="bg-popover text-popover-foreground ring-foreground/10 shadow-overlay data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 z-50 max-h-(--radix-select-content-available-height) min-w-(--radix-select-trigger-width) origin-(--radix-select-content-transform-origin) overflow-hidden rounded-lg p-1 ring-1 duration-100"
         >

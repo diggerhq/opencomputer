@@ -8,9 +8,7 @@ import { Button } from '@/components/ui/button'
 import { XIcon } from 'lucide-react'
 import { shouldKeepParentOpenForFloatingLayer } from '@/components/ui/floating-layer'
 
-// Same Select/dropdown-dismiss guard as Dialog — a Sheet is a Radix Dialog under
-// the hood, so a portaled menu inside it can wrongly dismiss it. See
-// floating-layer.ts for the full rationale.
+// A Sheet is a Radix Dialog; same Select/dropdown-dismiss guard (floating-layer.ts).
 function keepSheetOpenForFloatingLayer(event: Event) {
   if (shouldKeepParentOpenForFloatingLayer(event)) event.preventDefault()
 }
