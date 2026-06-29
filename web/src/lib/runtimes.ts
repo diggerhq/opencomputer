@@ -34,7 +34,12 @@ export const RUNTIMES: RuntimeOption[] = [
     provider: 'openai',
     keyLabel: 'OpenAI API key',
     keyPlaceholder: 'sk-…',
-    models: [{ value: 'openai/gpt-5-codex', label: 'GPT-5 Codex' }],
+    // The API only validates the `openai/` prefix — any model OpenAI serves works.
+    // Curated to the codex-optimized model + the general flagship; extend freely.
+    models: [
+      { value: 'openai/gpt-5-codex', label: 'GPT-5 Codex' },
+      { value: 'openai/gpt-5', label: 'GPT-5' },
+    ],
   },
 ]
 

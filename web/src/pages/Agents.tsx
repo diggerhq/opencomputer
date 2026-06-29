@@ -304,6 +304,9 @@ export default function Agents() {
                 description={`Models available on the ${rt.label} runtime.`}
               >
                 <Select
+                  // Remount on runtime change: Radix Select.Value blanks out when
+                  // its options and value change in the same render.
+                  key={runtime}
                   id="agent-model"
                   value={model}
                   onValueChange={setModel}
@@ -317,6 +320,7 @@ export default function Agents() {
               description={`The ${rt.provider} key this agent runs on (matches the runtime). Reuse one from Credentials, or add a new one here.`}
             >
               <Select
+                key={runtime}
                 id="agent-cred"
                 value={credChoice}
                 onValueChange={setCredChoice}
