@@ -56,6 +56,14 @@ new_sqlite_classes = ["CreditAccount"]
 #   SECRET_ENCRYPTION_KEY  — envelope-encryption key for D1 secret_store_entries
 #                            (must match Infisical /shared/ key the CPs use, so
 #                            plaintext stays in sync across edge ↔ cells)
+#   OPENROUTER_PROVISIONING_KEY — OpenRouter MANAGEMENT/provisioning key (mints
+#                            per-org inference keys + reads analytics). Token
+#                            billing dormant until this is set. (token-billing.md)
+#   OC_MANAGED_CRED_HMAC_SECRET — dedicated HMAC for handing a minted OR key to
+#                            sessions-api (shared only with sessions-api; NOT the
+#                            generic internal-auth — this route carries a live key)
+# Optional vars: OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1),
+#   OPENROUTER_MARKUP_BPS (env-default markup; per-org orgs.model_markup_bps wins).
 
 # Edge-native autumn billing: every 5 min, meter autumn orgs' usage_samples to
 # Autumn + halt on exhaustion (src/autumn_meter.ts). One place, not per-cell.
