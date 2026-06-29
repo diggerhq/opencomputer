@@ -4,13 +4,17 @@ description: "Preview: create cloud browser sessions for Playwright, Magnitude, 
 ---
 
 <Warning>
-Browser Sessions are currently in preview. API routes, SDK method names,
-response fields, limits, and pricing may change before general availability.
+Browser Sessions are currently in invite-only preview. Access is enabled for
+approved organizations, and API routes, SDK method names, response fields,
+limits, and pricing may change before general availability.
 </Warning>
 
 Browser Sessions create managed Chromium sessions for web agents and browser
 automation. OpenComputer handles API-key auth and org ownership, then returns
 browser connection URLs for tools such as Playwright and Magnitude.
+
+If your organization has not been invited to the preview, Browser Session API
+calls may fail even when your OpenComputer API key is valid.
 
 Use Browser Sessions when you want a cloud browser without installing Chromium
 inside an OpenComputer sandbox. Use [sandboxes](/sandboxes/overview) when you
