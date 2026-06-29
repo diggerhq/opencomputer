@@ -40,7 +40,7 @@ import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { cn } from '@/lib/utils'
 
-// The /v3 event taxonomy's sandbox-plane counterpart (pkg/types/webhook.go).
+// The event taxonomy's sandbox-plane counterpart (pkg/types/webhook.go).
 // Empty selection = every event.
 const SANDBOX_EVENT_TYPES = [
   { value: 'sandbox.created', label: 'Created' },

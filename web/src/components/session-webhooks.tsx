@@ -28,7 +28,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { cn } from '@/lib/utils'
 
 // Predefined event types a destination can subscribe to (exact + the error.*
-// prefix), from the /v3 event taxonomy. Empty selection = deliver every event.
+// prefix), from the event taxonomy. Empty selection = deliver every event.
 const EVENT_TYPES = [
   { value: 'turn.completed', label: 'Turn completed' },
   { value: 'turn.started', label: 'Turn started' },
@@ -39,7 +39,7 @@ const EVENT_TYPES = [
   { value: 'error.*', label: 'Errors' },
 ]
 
-// Webhooks are session-scoped in /v3 (a destination is created per session), so
+// Webhooks are session-scoped (a destination is created per session), so
 // they live on the session detail rather than a global page.
 export function SessionWebhooks({ sessionId }: { sessionId: string }) {
   const queryClient = useQueryClient()

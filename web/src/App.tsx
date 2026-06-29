@@ -8,6 +8,7 @@ import AppShell from './components/app-shell'
 // deps (xterm, in Terminal/LogsPanel) only load on SandboxDetail when opened.
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Agents = lazy(() => import('./pages/Agents'))
+const AgentDetail = lazy(() => import('./pages/AgentDetail'))
 const Credentials = lazy(() => import('./pages/Credentials'))
 const Sessions = lazy(() => import('./pages/Sessions'))
 const SessionDetail = lazy(() => import('./pages/SessionDetail'))
@@ -29,6 +30,7 @@ export default function App() {
             <Route index element={<Dashboard />} />
             {/* Agent plane */}
             <Route path="agents" element={<Agents />} />
+            <Route path="agents/:agentId" element={<AgentDetail />} />
             <Route path="credentials" element={<Credentials />} />
             <Route path="sessions" element={<Sessions />} />
             <Route path="sessions/:sessionId" element={<SessionDetail />} />

@@ -268,14 +268,15 @@ export const SandboxWebhookDeliveryListSchema = z.object({
   data: z.array(SandboxWebhookDeliverySchema),
 })
 
-// ── Durable Agent Sessions (/v3) ─────────────────────────────────────────────
-// Mirrors the sessions-api /v3 contract verbatim (snake_case as the API returns
+// ── Durable Agent Sessions ───────────────────────────────────────────────────
+// Mirrors the sessions-api contract verbatim (snake_case as the API returns
 // it) — no transform layer to keep in sync. Reached via the edge proxy; lenient
 // string fields so a new server enum never fails validation.
 
 export const AgentSchema = z.object({
   id: z.string(),
   name: z.string(),
+  prompt: z.string().nullish(),
   prompt_hash: z.string().nullish(),
   model: z.string(),
   runtime: z.string(),
@@ -284,7 +285,7 @@ export const AgentSchema = z.object({
   limits: record.nullish(),
   created_at: z.string(),
 })
-// /v3 list endpoints wrap rows in { data: [...], next_cursor? }.
+// List endpoints wrap rows in { data: [...], next_cursor? }.
 export const AgentListSchema = z.object({
   data: z.array(AgentSchema),
   next_cursor: z.string().nullish(),
@@ -303,6 +304,32 @@ export const CredentialSchema = z.object({
 export const CredentialListSchema = z.object({
   data: z.array(CredentialSchema),
   next_cursor: z.string().nullish(),
+})
+
+// Slack connection (sessions-api `serializeSlackApp`) — an agent's BYO Slack app.
+// Never carries secrets (bot token / signing secret stay in the secret backend).
+// `handle` is the agent's name; slack_app_id/team_id/account_login fill in once
+// connected. status: pending | active | revoked | error.
+export const SlackConnectionSchema = z.object({
+  id: z.string(),
+  agent_id: z.string(),
+  handle: z.string().nullish(),
+  slack_app_id: z.string().nullable().optional(),
+  team_id: z.string().nullable().optional(),
+  account_login: z.string().nullable().optional(),
+  status: z.string(),
+  bot_token_verified: z.boolean().optional(),
+  signing_verified: z.boolean().optional(),
+  created_at: z.string().nullish(),
+  updated_at: z.string().nullish(),
+})
+// START intent: the generated manifest (an object to copy), the Slack apps URL,
+// and the ordered human steps the wizard renders.
+export const SlackManifestResponseSchema = z.object({
+  manifest: record,
+  create_url: z.string(),
+  steps: z.array(z.string()),
+  status: z.string(),
 })
 
 export const SessionSchema = z.object({
@@ -394,6 +421,8 @@ export const DeliverySchema = z.object({
 
 export type Agent = z.infer<typeof AgentSchema>
 export type Credential = z.infer<typeof CredentialSchema>
+export type SlackConnection = z.infer<typeof SlackConnectionSchema>
+export type SlackManifestResponse = z.infer<typeof SlackManifestResponseSchema>
 export type Session = z.infer<typeof SessionSchema>
 export type SessionEvent = z.infer<typeof SessionEventSchema>
 export type Turn = z.infer<typeof TurnSchema>

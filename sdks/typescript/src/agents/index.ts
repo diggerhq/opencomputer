@@ -8,7 +8,10 @@ export type {
   SourceErrorCode, SourceSummary,
 } from "./sessions.js";
 export { Agents } from "./agents.js";
-export type { CreateAgentParams, UpdateAgentParams, Page } from "./agents.js";
+export type {
+  CreateAgentParams, UpdateAgentParams, Page,
+  SlackManifest, SlackConnection, ConnectSlackParams,
+} from "./agents.js";
 export { Repos, GitHub, GitHubApps, GitHubInstallations } from "./repos.js";
 export type {
   CreateRepoParams, UpdateRepoParams, Repo,

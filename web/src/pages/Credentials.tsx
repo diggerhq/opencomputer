@@ -6,6 +6,7 @@ import {
   createCredential,
   deleteCredential,
   getCredentials,
+  rotateCredential,
   setDefaultCredential,
   type Credential,
 } from '@/api/client'
@@ -65,6 +66,8 @@ export default function Credentials() {
   const [key, setKey] = useState('')
   const [makeDefault, setMakeDefault] = useState(true)
   const [toDelete, setToDelete] = useState<Credential | null>(null)
+  const [toRotate, setToRotate] = useState<Credential | null>(null)
+  const [rotateKey, setRotateKey] = useState('')
 
   const resetForm = () => {
     setName('')
@@ -173,6 +176,19 @@ export default function Credentials() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: CREDS_KEY }),
   })
 
+  // Rotate the secret VALUE of an existing credential (versioned; running sessions
+  // re-seal to the new key). Not optimistic — it's a provisioning write.
+  const rotateMutation = useMutation({
+    mutationFn: ({ id, key }: { id: string; key: string }) =>
+      rotateCredential(id, key),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: CREDS_KEY })
+      setToRotate(null)
+      setRotateKey('')
+    },
+    onError: (e) => notifyError("Couldn't rotate the key.", e),
+  })
+
   const openCreate = () => {
     setPhase('form')
     setStep(0)
@@ -244,6 +260,17 @@ export default function Credentials() {
               Set default
             </Button>
           ) : null}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground hover:text-foreground underline-offset-2 hover:bg-transparent hover:underline"
+            onClick={() => {
+              setToRotate(c)
+              setRotateKey('')
+            }}
+          >
+            Rotate key
+          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -405,6 +432,65 @@ export default function Credentials() {
               </>
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={toRotate !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setToRotate(null)
+            setRotateKey('')
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Rotate {toRotate?.name ? `"${toRotate.name}"` : 'credential'}
+            </DialogTitle>
+            <DialogDescription>
+              Replace the secret value. Running sessions re-seal to the new key
+              and the old value is purged. The key is write-only — never shown
+              again.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (toRotate && rotateKey.trim())
+                rotateMutation.mutate({ id: toRotate.id, key: rotateKey.trim() })
+            }}
+          >
+            <Field label="New API key" htmlFor="rotate-key">
+              <Input
+                id="rotate-key"
+                type="password"
+                value={rotateKey}
+                onChange={(e) => setRotateKey(e.target.value)}
+                placeholder={KEY_HINT[toRotate?.provider ?? 'anthropic'] ?? 'sk-…'}
+              />
+            </Field>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setToRotate(null)
+                  setRotateKey('')
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={rotateMutation.isPending || !rotateKey.trim()}
+              >
+                {rotateMutation.isPending ? 'Rotating…' : 'Rotate key'}
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 

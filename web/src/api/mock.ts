@@ -370,11 +370,13 @@ const orgInvitations = [
   },
 ]
 
-// ── Durable Agent Sessions (/v3) ─────────────────────────────────────────────
-const v3agents = [
+// ── Durable Agent Sessions ─────────────────────────────────────────────
+const agents = [
   {
     id: 'agt_3kf9xz',
     name: 'PR Reviewer',
+    prompt:
+      'You are a meticulous code reviewer. Flag correctness, security, and clarity issues; be concise and cite line numbers.',
     prompt_hash: 'sha256:9c1a4f',
     model: 'anthropic/claude-opus-4-8',
     runtime: 'claude',
@@ -385,6 +387,8 @@ const v3agents = [
   {
     id: 'agt_7mq2aa',
     name: 'Docs Writer',
+    prompt:
+      'You write clear, friendly developer documentation. Prefer short sentences and runnable examples.',
     prompt_hash: 'sha256:42bd07',
     model: 'anthropic/claude-sonnet-4-6',
     runtime: 'claude',
@@ -394,7 +398,47 @@ const v3agents = [
   },
 ]
 
-const v3credentials = [
+// A connected Slack app for the first agent (the AgentDetail Slack panel).
+const slackConnection = {
+  id: 'sla_5p6q7r',
+  agent_id: 'agt_3kf9xz',
+  handle: 'PR Reviewer',
+  slack_app_id: 'A0123ABCDEF',
+  team_id: 'T0123ABCDEF',
+  account_login: 'Acme',
+  status: 'active',
+  bot_token_verified: true,
+  signing_verified: false,
+  created_at: at(5),
+  updated_at: at(0, 2),
+}
+
+// START-intent response for the Slack connect wizard (POST …/slack/manifest).
+const slackManifest = {
+  manifest: {
+    display_information: { name: 'PR Reviewer' },
+    features: {
+      bot_user: { display_name: 'PR Reviewer', always_online: true },
+    },
+    oauth_config: { scopes: { bot: ['app_mentions:read', 'chat:write'] } },
+    settings: {
+      event_subscriptions: {
+        request_url: 'https://api.opencomputer.dev/v3/slack/events/abc123nonce',
+        bot_events: ['app_mention'],
+      },
+    },
+  },
+  create_url: 'https://api.slack.com/apps',
+  steps: [
+    'Open api.slack.com/apps → Create New App → From a manifest.',
+    'Pick your workspace, paste the manifest, and click Create.',
+    'Click Install to Workspace and approve.',
+    'Copy three values back here: App ID, Bot User OAuth Token (xoxb-…), and Signing Secret.',
+  ],
+  status: 'pending',
+}
+
+const credentials = [
   {
     id: 'cred_anth_1',
     provider: 'anthropic',
@@ -413,7 +457,7 @@ const v3credentials = [
   },
 ]
 
-const v3sessions = [
+const sessions = [
   {
     id: 'ses_a1b2c3',
     status: 'running',
@@ -457,7 +501,7 @@ const v3sessions = [
   },
 ]
 
-const v3events = [
+const sessionEvents = [
   {
     id: 'evt_1',
     seq: 1,
@@ -508,7 +552,7 @@ const v3events = [
   },
 ]
 
-const v3destinations = [
+const destinations = [
   {
     id: 'dst_1',
     url: 'https://acme.dev/hooks/oc',
@@ -521,7 +565,7 @@ const v3destinations = [
   },
 ]
 
-const v3deliveries = [
+const deliveries = [
   {
     id: 'dlv_1',
     destination: 'dst_1',
@@ -612,15 +656,16 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/org\/custom-domain$/, () => ({})],
   [/^\/org$/, () => org],
   [/^\/agents$/, () => []],
-  // Durable Agent Sessions (/v3) — lists return the { data: [...] } envelope.
-  [/^\/v3\/agents\/[^/]+$/, () => v3agents[0]],
-  [/^\/v3\/agents$/, () => ({ data: v3agents })],
-  [/^\/v3\/credentials$/, () => ({ data: v3credentials })],
-  [/^\/v3\/sessions\/[^/]+\/events/, () => ({ data: v3events })],
-  [/^\/v3\/sessions\/[^/]+\/destinations$/, () => ({ data: v3destinations })],
-  [/^\/v3\/sessions\/[^/]+\/deliveries$/, () => ({ data: v3deliveries })],
-  [/^\/v3\/sessions\/[^/]+$/, () => v3sessions[0]],
-  [/^\/v3\/sessions(\?.*)?$/, () => ({ data: v3sessions, next_cursor: null })],
+  // Durable Agent Sessions — lists return the { data: [...] } envelope.
+  [/^\/v3\/agents\/[^/]+\/slack$/, () => slackConnection],
+  [/^\/v3\/agents\/[^/]+$/, () => agents[0]],
+  [/^\/v3\/agents$/, () => ({ data: agents })],
+  [/^\/v3\/credentials$/, () => ({ data: credentials })],
+  [/^\/v3\/sessions\/[^/]+\/events/, () => ({ data: sessionEvents })],
+  [/^\/v3\/sessions\/[^/]+\/destinations$/, () => ({ data: destinations })],
+  [/^\/v3\/sessions\/[^/]+\/deliveries$/, () => ({ data: deliveries })],
+  [/^\/v3\/sessions\/[^/]+$/, () => sessions[0]],
+  [/^\/v3\/sessions(\?.*)?$/, () => ({ data: sessions, next_cursor: null })],
   [
     /^\/webhooks\/[^/]+\/deliveries$/,
     () => ({ data: sandboxWebhookDeliveries }),
@@ -632,9 +677,24 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/webhooks$/, () => ({ data: sandboxWebhooks })],
 ]
 
+// Mutations the preview needs to echo something parseable (e.g. the Slack
+// wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
+const POST_ROUTES: [RegExp, () => unknown][] = [
+  [/^\/v3\/agents\/[^/]+\/slack\/manifest$/, () => slackManifest],
+  [
+    /^\/v3\/agents\/[^/]+\/slack$/,
+    () => ({ ...slackConnection, status: 'active' }),
+  ],
+]
+
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   const method = (options.method ?? 'GET').toUpperCase()
-  if (method !== 'GET') return {} as T
+  if (method !== 'GET') {
+    for (const [re, handler] of POST_ROUTES) {
+      if (re.test(path)) return handler() as T
+    }
+    return {} as T
+  }
   for (const [re, handler] of ROUTES) {
     if (re.test(path)) return handler() as T
   }

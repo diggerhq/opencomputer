@@ -73,6 +73,7 @@
           "agent-sessions/authentication",
           "agent-sessions/messaging",
           "agent-sessions/webhooks",
+          "agent-sessions/slack",
           "agent-sessions/runtimes",
           "agent-sessions/runtime-tools",
           "agent-sessions/api-reference",

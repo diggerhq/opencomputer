@@ -25,6 +25,10 @@ export class Credentials {
   delete(id: string): Promise<void> {
     return this.http.request("DELETE", `/credentials/${id}`);
   }
+  /** Rotate the key VALUE behind a credential (versioned) — flows to running sessions. */
+  rotate(id: string, key: string): Promise<Credential> {
+    return this.http.request("PATCH", `/credentials/${id}`, { body: { key } });
+  }
   setDefault(params: { credential: string; provider?: string }): Promise<void> {
     return this.http.request("PUT", "/credentials/default", { body: params });
   }

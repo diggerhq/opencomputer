@@ -351,14 +351,14 @@ export const setAutumnAutoTopup = (cfg: {
 export const getSandboxUsage = (days = 30) =>
   apiFetch(`/usage/sandboxes?days=${days}`, {}, S.SandboxUsageSchema)
 
-// ── Durable Agent Sessions (/v3) ─────────────────────────────────────────────
+// ── Durable Agent Sessions ───────────────────────────────────────────────────
 // A separate service (sessions-api). Reached through the OC edge under
 // `/api/dashboard/v3/*`, so these reuse apiFetch (cookie auth, validation, mock).
 // Org-key management lives server-side at the edge; live event/steer can move to
 // a browser-direct client-token path later without changing these signatures.
 
 // Agents — the reusable definition (prompt, model, runtime, credential).
-// /v3 lists wrap rows in { data: [...] }; callers want the array.
+// List endpoints wrap rows in { data: [...] }; callers want the array.
 export const getAgents = () =>
   apiFetch('/v3/agents', {}, S.AgentListSchema).then((r) => r.data)
 
@@ -370,7 +370,8 @@ export const createAgent = (body: {
   prompt: string
   model: string
   runtime: string
-  credential_id?: string
+  // The request field is `credential` (the response carries `credential_id`).
+  credential?: string
   // `key` sugar: mints a model credential of the runtime's provider for this
   // agent (write-only). Without it (and no org default) sessions 422 no_credential.
   key?: string
@@ -381,17 +382,64 @@ export const createAgent = (body: {
     S.AgentSchema,
   )
 
-// PATCH bumps revision; name is immutable (create idempotency key). `key`
-// rotates the model credential.
+// PATCH bumps revision; name is immutable (create idempotency key). `credential`
+// switches which credential the agent runs on; `key` (legacy) rotates the pinned
+// credential's value — rotation now lives on the Credentials page.
 export const updateAgent = (
   id: string,
-  body: Partial<{ prompt: string; model: string; key: string }>,
+  body: Partial<{
+    prompt: string
+    model: string
+    key: string
+    credential: string | null // null clears the pin → org default resolves
+  }>,
 ) =>
   apiFetch(
     `/v3/agents/${id}`,
     { method: 'PATCH', body: JSON.stringify(body) },
     S.AgentSchema,
   )
+
+// Slack — an agent's BYO Slack app (1 app ⟷ 1 agent ⟷ 1 workspace). Two-step
+// connect: START (manifest) returns the app manifest + guided steps; COMPLETE
+// posts the three pasted values back. No secrets are ever returned.
+// `getSlackConnection` maps the 404 "not connected" into null so callers can
+// branch on absence without treating it as an error.
+export async function getSlackConnection(agentId: string) {
+  try {
+    return await apiFetch(
+      `/v3/agents/${agentId}/slack`,
+      {},
+      S.SlackConnectionSchema,
+    )
+  } catch (e) {
+    if (e instanceof Error && /no slack connection/i.test(e.message))
+      return null
+    throw e
+  }
+}
+
+// `reconnect: true` is required to replace an ALREADY-ACTIVE connection (the server
+// refuses to tear down a live one otherwise). First connect / pending / error → false.
+export const startSlackConnect = (agentId: string, reconnect = false) =>
+  apiFetch(
+    `/v3/agents/${agentId}/slack/manifest`,
+    { method: 'POST', body: JSON.stringify({ reconnect }) },
+    S.SlackManifestResponseSchema,
+  )
+
+export const completeSlackConnect = (
+  agentId: string,
+  body: { app_id: string; bot_token: string; signing_secret: string },
+) =>
+  apiFetch(
+    `/v3/agents/${agentId}/slack`,
+    { method: 'POST', body: JSON.stringify(body) },
+    S.SlackConnectionSchema,
+  )
+
+export const disconnectSlack = (agentId: string) =>
+  apiFetch<void>(`/v3/agents/${agentId}/slack`, { method: 'DELETE' })
 
 // Credentials — reusable model-provider keys (the raw key is write-only). An
 // agent pins one (credential_id); sessions resolve the agent's, else the org
@@ -422,18 +470,36 @@ export const setDefaultCredential = (id: string) =>
     S.CredentialSchema,
   )
 
-// Sessions — the durable runs.
-export const getSessions = (status?: string) =>
+// Rotate a credential's secret VALUE (versioned, write-only key). Returns updated
+// metadata (new last4). Switching which credential an agent uses is updateAgent({ credential }).
+export const rotateCredential = (id: string, key: string) =>
   apiFetch(
-    `/v3/sessions${status ? `?status=${status}` : ''}`,
+    `/v3/credentials/${id}`,
+    { method: 'PATCH', body: JSON.stringify({ key }) },
+    S.CredentialSchema,
+  )
+
+// Sessions — the durable runs.
+export const getSessions = (
+  params: { agent?: string; status?: string; limit?: number; cursor?: string } = {},
+) => {
+  const q = new URLSearchParams()
+  if (params.agent) q.set('agent', params.agent)
+  if (params.status) q.set('status', params.status)
+  if (params.limit) q.set('limit', String(params.limit))
+  if (params.cursor) q.set('cursor', params.cursor)
+  const qs = q.toString()
+  return apiFetch(
+    `/v3/sessions${qs ? `?${qs}` : ''}`,
     {},
     S.SessionListSchema,
   ).then((r) => r.data)
+}
 
 export const getSession = (id: string) =>
   apiFetch(`/v3/sessions/${id}`, {}, S.SessionSchema)
 
-// /v3 wants { agent: <id>, input } (input required). The response is an envelope
+// The API wants { agent: <id>, input } (input required). The response is an envelope
 // { session, client_token } — return the session.
 export const createSession = (
   body: { agent: string; input: string },

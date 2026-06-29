@@ -1,0 +1,73 @@
+---
+mode: "wide"
+title: "Slack"
+description: "Give an agent its own Slack handle"
+---
+
+Connect an [agent](/agent-sessions/agents) to its own Slack app so members `@mention` it in a channel to start and steer [sessions](/agent-sessions/sessions). One app per agent, per workspace.
+
+Connect from the agent's page in the [dashboard](https://app.opencomputer.dev) (a guided wizard), or over the API: get a manifest, create the Slack app from it, then finalize with the three values Slack shows you.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+// 1. Manifest to create the Slack app from (Create app → From a manifest).
+const { manifest, createUrl } = await oc.agents.slackManifest(agentId);
+
+// 2. Finalize with the App ID, Signing Secret, and Bot User OAuth Token.
+const slack = await oc.agents.connectSlack(agentId, {
+  appId: "A0…",
+  signingSecret: "…",
+  botToken: "xoxb-…",
+});
+
+await oc.agents.getSlack(agentId); // { status: "active", … } — no secrets
+await oc.agents.disconnectSlack(agentId); // purge + stop routing
+```
+
+```http REST API
+POST   https://api.opencomputer.dev/v3/agents/{agent_id}/slack/manifest
+POST   https://api.opencomputer.dev/v3/agents/{agent_id}/slack
+GET    https://api.opencomputer.dev/v3/agents/{agent_id}/slack
+DELETE https://api.opencomputer.dev/v3/agents/{agent_id}/slack
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+
+// finalize body
+{ "app_id": "A0…", "signing_secret": "…", "bot_token": "xoxb-…" }
+```
+
+</CodeGroup>
+
+Then invite the bot (`/invite @handle`) and `@mention` it.
+
+## Routing
+
+An `@mention` is signature-verified, de-duplicated, and appended to a session as a [steer](/agent-sessions/messaging). The first mention in a thread starts a session; later mentions in that thread steer the same one. The session's `user`-level [events](/agent-sessions/events#visibility-levels) post back to the thread — the agent never calls Slack itself.
+
+## Reconnect
+
+Replacing the app requires explicit intent, so a stray request can't tear down a live connection:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+await oc.agents.slackManifest(agentId, { reconnect: true });
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/agents/{agent_id}/slack/manifest
+
+{ "reconnect": true }
+```
+
+</CodeGroup>
+
+Calling it on an active connection without `reconnect` returns `409`. A reconnect resets the connection to `pending` and retires the prior threads' bindings, so future mentions start fresh.
+
+## Limits
+
+<Warning>
+- Anyone who can `@mention` the bot in a channel it has joined can start and steer the agent — there is no per-user or per-channel allow-list yet. Invite it only where you trust the members.
+- Mention-only: it doesn't passively follow thread replies.
+- Outbound posts `user`-level events; live progress isn't streamed into the thread yet.
+</Warning>
