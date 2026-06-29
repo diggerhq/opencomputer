@@ -44,7 +44,8 @@ const agent = await oc.agents.create({
   runtime: "claude",                       // or "codex"
   model: "anthropic/claude-opus-4-8",
   prompt: "Review the diff. Run tests. Explain risks.",
-  key: process.env.ANTHROPIC_API_KEY!,     // sealed; never enters the sandbox
+  credential: "managed",                   // run via OpenComputer, billed to credits — no key
+  // …or bring your own: key: process.env.ANTHROPIC_API_KEY!  (sealed; never enters the sandbox)
 });
 
 // Per request — hand off durable work, route the callback via metadata:
@@ -67,7 +68,7 @@ if (delivery.type === "turn.completed") {
 
 ### Credentials
 
-Sessions run on **your** model-provider key (Anthropic for `claude`, OpenAI for `codex`). The inline `key` above stores one and attaches it to the agent; manage them directly to reuse a key across agents, set an org default, or rotate/remove:
+Sessions run **Managed** (via OpenComputer, billed to your credits — `credential: "managed"`, no key, the default for new orgs) or on **your own** model-provider key (Anthropic for `claude`, OpenAI for `codex`). An inline `key` stores one and attaches it to the agent; manage keys directly to reuse one across agents, set an org default, or rotate/remove:
 
 ```typescript
 await oc.credentials.create({ provider: "anthropic", key: process.env.ANTHROPIC_API_KEY!, name: "prod", isDefault: true });
@@ -76,7 +77,7 @@ await oc.credentials.setDefault({ credential: creds[0].id });
 await oc.credentials.delete(creds[0].id);
 ```
 
-Or reference one by id when creating an agent: `oc.agents.create({ …, credential: "cred_…" })`. A credential is **required** — a session with no resolvable key fails with `422 no_credential`. Full guide: [Credentials](https://docs.opencomputer.dev/agent-sessions/credentials).
+Or reference one by id when creating an agent: `oc.agents.create({ …, credential: "cred_…" })`. A key isn't required — `credential: "managed"` needs none; a session fails with `422 no_credential` only when it resolves to neither Managed nor a usable key. Full guide: [Credentials](https://docs.opencomputer.dev/agent-sessions/credentials).
 
 ## Sandbox webhooks (Preview)
 

@@ -192,6 +192,10 @@ export const BillingStateSchema = z.object({
   hasPaymentMethod: z.boolean(),
   freeCreditsRemainingCents: z.number(),
   billingProvider: z.string().optional(),
+  // Managed model access (token-billing §6.6): the single gating authority for
+  // offering the "Managed · billed to credits" credential option. Optional so an
+  // older edge without the field validates (treated as unavailable).
+  managedAvailable: z.boolean().optional(),
 })
 
 export const AutumnAutoTopupSchema = z.object({

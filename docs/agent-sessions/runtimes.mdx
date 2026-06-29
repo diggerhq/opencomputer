@@ -4,12 +4,12 @@ title: "Runtimes"
 description: "Runtime engine selected per agent"
 ---
 
-A **runtime** executes the agent loop: provider SDK, model calls, and tool use. You pick one per agent with `runtime`; it defaults to `claude`. The model is separate configuration, so an agent is a runtime, a `provider/model`, and a matching [credential](/agent-sessions/credentials).
+A **runtime** executes the agent loop: provider SDK, model calls, and tool use. You pick one per agent with `runtime`; it defaults to `claude`. The model is separate configuration, so an agent is a runtime, a `provider/model`, and a model source — **Managed** (billed to your OpenComputer credits, no key) or a matching [credential](/agent-sessions/credentials).
 
 | Runtime | Models | Credential |
 | --- | --- | --- |
-| `claude` | `anthropic/…` (e.g. `anthropic/claude-opus-4-8`) | Anthropic key |
-| `codex` | `openai/…` (e.g. `openai/gpt-5-codex`) | OpenAI key |
+| `claude` | `anthropic/…` (e.g. `anthropic/claude-opus-4-8`) | Managed, or an Anthropic key |
+| `codex` | `openai/…` (e.g. `openai/gpt-5-codex`) | Managed, or an OpenAI key |
 
 `model` is passed straight through to the provider, so any model that provider serves works — only the **`provider/` prefix** is validated against the runtime (a bad prefix is rejected at agent create, a model the provider doesn't recognize fails on the first turn). Common choices:
 

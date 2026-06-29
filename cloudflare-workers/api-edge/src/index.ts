@@ -26,6 +26,8 @@ import {
   createAutumnCustomer,
 } from "./autumn_webhook";
 import { runAutumnMeter } from "./autumn_meter";
+import { disableManagedBilling, enableManagedBilling } from "./model_billing";
+import { runModelMeter } from "./model_meter";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
 import * as templates from "./templates";
@@ -56,6 +58,14 @@ export interface Env extends DashboardEnv {
   // as the API key so /v3 sandboxes are owned by + billed to the customer org.
   // Unset → the feature is inert (JWT keys rejected). See dashboard.ts.
   OC_PROVISION_SECRET?: string;
+  // Token / model-usage billing (token-billing.md). The edge holds ONE OpenRouter
+  // secret — a management/provisioning key — and mints per-org inference keys.
+  OPENROUTER_PROVISIONING_KEY: string;
+  OPENROUTER_BASE_URL?: string; // default https://openrouter.ai/api/v1
+  OPENROUTER_MARKUP_BPS?: string; // env-default markup (bps) when the org's is 0
+  // DEDICATED HMAC secret for handing a freshly-minted OR key to sessions-api
+  // (NOT the generic internal-auth — this route carries a live model key). §6.7.5.
+  OC_MANAGED_CRED_HMAC_SECRET: string;
 }
 
 // ── small helpers ────────────────────────────────────────────────────────
@@ -1736,6 +1746,19 @@ export default {
       await runAutumnMeter(env, Date.now());
       return json({ ok: true });
     }
+    // Force a model-meter run (token billing §5.4). HMAC-auth'd (CF_ADMIN_SECRET) so
+    // it's safe to run in prod for testing/ops — useful to debit + push caps right
+    // after a Managed turn instead of waiting for the cron.
+    if (path === "/internal/run-model-meter" && req.method === "POST") {
+      const ts = req.headers.get("X-Timestamp") ?? "";
+      const sig = req.headers.get("X-Signature") ?? "";
+      const body = await req.text();
+      const expected = await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`);
+      if (!constantTimeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+      if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
+      await runModelMeter(env, Date.now());
+      return json({ ok: true });
+    }
 
     if (path === "/internal/org-policy") {
       if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
@@ -1765,6 +1788,37 @@ export default {
       const stub = env.CREDIT_ACCOUNT.get(env.CREDIT_ACCOUNT.idFromName(parsed.org_id));
       const r = await stub.fetch(`https://do/mark-free?org_id=${encodeURIComponent(parsed.org_id)}`, { method: "POST" });
       return new Response(await r.text(), { status: r.status, headers: { "content-type": "application/json" } });
+    }
+
+    // /internal/model-billing/enable|disable — operator-triggered managed-billing
+    // provisioning for one autumn org (token-billing §5.1). HMAC-auth'd with the
+    // shared CF_ADMIN_SECRET (same scheme as do-mark-free). Body: { org_id }. Not
+    // UI-exposed; the driver for controlled rollout + tests until an automatic
+    // enable trigger lands. `enable` drives off→provisioning→active idempotently
+    // (safe to re-call to resume a partial provision); `disable` marks the org's
+    // key for drain + offboard.
+    if (
+      (path === "/internal/model-billing/enable" || path === "/internal/model-billing/disable") &&
+      req.method === "POST"
+    ) {
+      const ts = req.headers.get("X-Timestamp") ?? "";
+      const sig = req.headers.get("X-Signature") ?? "";
+      const body = await req.text();
+      const expected = await hmacHex(env.CF_ADMIN_SECRET, `${ts}.${body}`);
+      if (!constantTimeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+      if (Math.abs(Math.floor(Date.now() / 1000) - Number(ts)) > 300) return json({ error: "timestamp out of window" }, 401);
+      const parsed = JSON.parse(body) as { org_id?: string };
+      if (!parsed.org_id) return json({ error: "org_id required" }, 400);
+      try {
+        if (path === "/internal/model-billing/disable") {
+          await disableManagedBilling(env, parsed.org_id);
+          return json({ ok: true });
+        }
+        const res = await enableManagedBilling(env, parsed.org_id);
+        return json(res, res.status === "active" ? 200 : 500);
+      } catch (e) {
+        return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+      }
     }
 
     // /internal/secret-stores/:id — HMAC-auth'd, called by CP at sandbox-create
@@ -2066,11 +2120,19 @@ export default {
   // Cron (*/5): edge-native autumn billing. Meters autumn orgs' usage_samples to
   // Autumn and halts on exhaustion — one place, not per-cell. Legacy orgs bill
   // via the separate billing-rollup worker; this no-ops unless AUTUMN_SECRET_KEY
-  // is set (dormant until the cutover switch is flipped).
+  // is set (dormant until the cutover switch is flipped). The same tick also runs
+  // the token/model-usage meter (token-billing §5.4): poll each managed OpenRouter
+  // key's spend → debit Autumn `model_spend` → push the markup-correct cap + halt.
+  // Dormant unless OPENROUTER_PROVISIONING_KEY is set + managed keys exist.
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     if (!env.AUTUMN_SECRET_KEY) return;
     ctx.waitUntil(
       runAutumnMeter(env, Date.now()).catch((err) => console.error("autumn-meter: run failed", err)),
     );
+    if (env.OPENROUTER_PROVISIONING_KEY) {
+      ctx.waitUntil(
+        runModelMeter(env, Date.now()).catch((err) => console.error("model-meter: run failed", err)),
+      );
+    }
   },
 } satisfies ExportedHandler<Env>;

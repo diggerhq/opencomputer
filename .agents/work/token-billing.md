@@ -1,196 +1,1087 @@
-# Token / model-usage billing — problem framing
+# Token / model-usage billing — design
 
-Status: **problem capture only.** No solution chosen, nothing scheduled.
-This doc exists so a future agent (or us) can pick the problem up with full
-context instead of re-deriving it. It frames the problem and lays out viable
-routes; it deliberately does **not** pick one.
+Status: **design reviewed (3 rounds) + reconciled against merged code + §9.7 spike
+PASSED (2026-06-29).** Architecture decided (OpenRouter-native + Autumn shared credit
+pool). The UI runtime/model/credential foundation shipped in **PR #448**, so §6.8 is
+now the small remaining Managed delta. **Both runtimes validated end-to-end through
+OpenRouter** — `claude` via Anthropic Messages (`/api/v1/messages`) and `codex` via
+the OpenAI Responses API (`/api/v1/responses`, `wire_api:"responses"`), each with tool
+calls + cost echo (§9.7). So **implementation-ready for both `claude` and `codex`.**
+Two prerequisites are now the gating items, not the protocol: (1) we hold only an OR
+**inference** key — provisioning needs a **management key** (§14); (2) a stored→OR
+**model-slug mapping** is required (Anthropic dash↔dot; §5.2). **Start here: §14.**
+Decisions that could cause debate are in §9, failure modes in §10.
 
-## Why this exists
+---
 
-We want **pass-through billing for model usage**: bill a customer org for the
-LLM tokens its agent sessions consume, drawn from the same **credits** balance
-we already use for compute. Today we meter and bill **compute** (sandbox
-GB-seconds); we do **not** meter or bill **model tokens** at all.
+## 1. Decision summary
 
-This is the natural next step after act-as-org ownership (see
-`agent-sandbox-ownership.md`): sandboxes are already owned by + billed to the
-customer org. Model usage is the other big cost an agent session incurs, and
-right now it's either invisible (managed key) or paid out-of-band by the
-customer (BYO key).
+Bill a customer org for the LLM tokens its agent sessions consume, **out of the
+same Autumn `credits` pool we already use for compute** (one balance, one $5 free
+grant, one top-up flow, one halt). We do **not** build a metering proxy, a rate
+card, or a token counter. The split of responsibility:
 
-## The two-track credential model (decided elsewhere — context for this doc)
+- **Egress proxy** (existing, `internal/secretsproxy/proxy.go`) — **security
+  only.** Keeps the real model key out of the sandbox; swaps the sealed
+  placeholder for the real key in-flight on outbound HTTPS. Unchanged mechanism;
+  we just allowlist `openrouter.ai` and seal an **OpenRouter** key instead of a
+  raw provider key. It does **not** count or limit.
+- **OpenRouter (OR)** — **counting + limiting + cost source of truth.** Each
+  managed org gets its own OR API key, provisioned by us, whose **spend limit is
+  the hard budget cap**. OR meters real spend per key; we read it. No rate card:
+  OR returns actual provider cost.
+- **Autumn** — the **single shared credit pool** (compute + tokens). Tokens debit
+  the same `credits` ledger; the existing halt / top-up / "out of credits" banner
+  cover tokens for free.
+- **OC glue** — provision the per-org OR key, and run one **sync cron** that
+  (pull) reads OR spend → debits Autumn, and (push) sets the OR key cap =
+  remaining shared credits. That's the whole integration: a key lifecycle + a
+  cron. No new billing pipeline, no second balance.
 
-Credential handling is splitting into two modes. They map cleanly onto two
-**billing** modes, and keeping them distinct keeps this problem tractable:
+**Locked decisions** (rationale in §9): single shared pool; OR does
+counting+limiting (we don't tally tokens / keep no rate card); egress proxy
+retained for key protection; **managed-only** billing (BYO bypasses); applies to
+`billing_provider='autumn'` orgs only. **Managed is surfaced as one entry in the
+existing credential picker** (`credential: "managed"`, set per agent), org default
+Managed, Credentials page unchanged, **no** managed-config page, "OpenRouter"
+never user-visible (full contract §6.6, decision §9.8).
 
-- **BYO key** — the user stores their own provider key (the Credentials UX, a
-  separate workstream). They pay the provider directly on their own invoice.
-  We may still want to **surface** their usage for observability, but we do
-  **not** bill them for model tokens.
-- **Managed key** — OC supplies the provider key. The org consumes OC credits
-  for model usage and we bill them (pass-through, possibly with a markup).
-  **This doc is about the managed path.**
+**Scope / prior art (don't conflate, G6):** this is **v3-only**. The legacy **v2**
+("OpenClaw") path already runs an OpenRouter platform gateway — `OPENROUTER_API_KEY`
+(`sessions-api/.../routes/agents.ts`), `lib/openclaw-image.ts`, and a v2
+credential-type enum that already includes `openrouter` (`v2/db/schema.ts`). This v3
+design is separate and supersedes it; the **v3 internal managed `"openrouter"`
+provider value is not the v2 enum value** — keep them namespaced apart.
 
-A session must record which mode it ran under (and which credential / `last4`),
-so billing only ever fires for managed-key sessions. That metadata already
-exists (credential metadata + the sealed per-session secret store).
+**Genuine open forks left to product** (§9/§12): at-cost vs markup; per-org vs
+per-session OR keys; sync cadence; BYO-via-OR vs BYO-direct; the cross-service
+seam for OR-key provisioning (§9.5, recommendation given).
 
-## What exists today — legacy compute billing (context, NOT a foundation)
+---
 
-> ⚠️ **Direction:** the existing **prepaid / 15-minute-bucket compute-billing
-> pipeline is a deprecation candidate** — not somewhere we want to invest
-> further. Treat the bullets below as *what's there today*, not as the substrate
-> to extend. Model billing should **not** assume it inherits this pipeline; the
-> credits **unit** stays (we bill model usage "as part of credits"), but the
-> metering/ledger **mechanism** is an open decision (see Open questions). There's
-> also a natural-fit argument here: model usage is inherently **per-call /
-> per-event** (token counts per request), which maps poorly onto the
-> GB-second, 15-minute-bucket compute model regardless of the deprecation call.
+## 2. Background: how compute billing works today (the thing we extend)
 
-- **Compute billing pipeline (legacy)** — `internal/db/billable_events.go`: an
-  outbox of metered events (`reserved_usage`, `overage_usage`,
-  `disk_overage_usage`), keyed by `(org_id, event_type, memory_mb,
-  bucket_start)`, GB-seconds over 15-minute buckets, delivered to Stripe /
-  Autumn (`stripe_event_id`). No model-usage event type — and per the direction
-  above, bolting one on here is **not** the assumed path.
-- **Two billing providers, per org** — `orgs.billing_provider` (migration 047):
-  `legacy` (in-house CreditAccount DO on the edge + UsageReporter on the cell)
-  vs `autumn` (Autumn owns the credit ledger, metering, top-ups, auto-recharge,
-  concurrency plans; the cell just measures usage → `track()`). A credit ledger
-  + auto-recharge exists, but whether model billing rides Autumn, something new,
-  or a successor to all of this is open — don't assume.
-- **Credit halt (legacy)** — `is_halted` / `halted_at` on `orgs`
-  (migration 043), mirrored from the CreditAccount DO via `/admin/halt-org`; the
-  wake handler refuses halted orgs; `halt_reason` on `sandbox_sessions`
-  distinguishes credit-exhaustion from user hibernation. Part of the same legacy
-  pipeline; it also only gates **sandbox wake**, not **mid-session model spend**
-  — a long turn can keep burning model tokens after credits are gone.
-- **Model-call paths (the candidate metering chokepoints):**
-  - **V3 (durable sessions — the live dashboard path):** model calls egress
-    **directly** from the sandbox through the host-side **secrets/egress proxy**
-    (`internal/secretsproxy/proxy.go`). The proxy already MITMs TLS (it swaps
-    the sealed token for the real key) and sits on *every* VM's outbound HTTPS
-    via a link-local address. It does **not** count tokens today.
-  - **V2 (background agents):** an optional model **gateway**
-    (`sessions-api/src/gateway/index.ts`) that injects the provider key and
-    emits telemetry marks (`model.call.start/forwarded`) but does **not** count
-    tokens. V3 bypasses it entirely.
+Verified against the **live** Autumn account (read 2026-06-29) and the edge code.
 
-## The problem, decomposed
+- **Unit: credits, 1 credit = $1.** (`top_up` product prices `credits` at
+  `{amount:1, billing_method:"prepaid"}` → "$1 per credit".)
+- **`credits` is an Autumn `credit_system`** = one shared prepaid balance per org.
+  It carries a `credit_schema` mapping each metered feature → per-unit
+  `credit_cost`. Compute is 6 metered features `compute_1gb…compute_64gb`, priced
+  linearly in RAM: `compute_1gb` = `1.667e-5` credits per GB-second
+  (= **$0.06/GB-hour**), scaling ×GB up to `compute_64gb` = `1.067e-3` (= $3.84/GB-hr).
+- **Products (live):** `base` (auto-enabled, grants `credits: included 5` one_off
+  = the **$5 free signup**); `top_up` ($1/credit prepaid, drives top-up +
+  auto-recharge); `concurrency_pro` / `concurrency_plus` / `concurrency_plus_plus`
+  = **$150 / $500 / $1,000 per-month** add-ons that only raise the concurrency
+  ceiling (no metered items).
+- **Compute meter** = an edge cron, `cloudflare-workers/api-edge/src/autumn_meter.ts`
+  (`*/5`). Per Autumn org it aggregates sandbox-seconds per memory tier from D1
+  `usage_samples`, `POST /track`s each `compute_Ngb` feature, and advances a D1
+  watermark `orgs.autumn_usage_watermark` (idempotency = unique key per bucket).
+  Autumn's `credit_schema` auto-debits `credits`.
+- **Billing provider switch** = `orgs.billing_provider ∈ {legacy, autumn}`
+  (migration 047; **D1 is authoritative**, cell-PG mirrors via cap-token).
+  `legacy` = in-house Stripe pipeline; `autumn` = Autumn owns the ledger.
+  `AUTUMN_NEW_ORGS` env flag routes new signups to Autumn (not yet set).
+- **Halt:** Autumn credits ≤ 0 → edge `projectOrg` sets `orgs.is_halted` and
+  dispatches `/admin/halt-org` to cells (hibernate boxes, 402 new work); top-up
+  resumes. **Autumn integration is entirely edge-native** — the Go cell holds no
+  Autumn client; only `api-edge` talks to Autumn (`autumn_webhook.ts`,
+  `autumn_meter.ts`, `dashboard.ts`).
+- **Dashboard:** `web/src/pages/Billing.tsx` already renders the Autumn view
+  (`PrepaidPlan`): balance, $5/$25/$100 top-up, auto-top-up, concurrency tiers,
+  per-sandbox usage table — gated on `billingProvider === 'autumn'`.
 
-1. **Metering** — count tokens (input / output / cache / tool-use) and/or cost
-   per org, ideally per session and per agent, **trustworthy** enough to bill
-   and **timely** enough to enforce limits.
-2. **Rating / pricing** — convert metered usage → credits. A rate card per
-   provider + model, with input/output/cache-token pricing, and a policy
-   (at-cost vs markup).
-3. **Billing integration** — debit credits, enforce quota, halt on exhaustion
-   (including **mid-session**), and reconcile our metered numbers against the
-   provider's own invoice (we eat any delta).
-4. **Surfacing** — usage + cost visibility and receipts in the dashboard, with
-   a per-session / per-agent breakdown.
-5. **Multi-provider / multi-model** — Anthropic today; OpenAI/codex later;
-   per-model pricing, prompt caching, and batch all change the math.
+Token billing reuses all of this and adds exactly one new consumer of the pool.
 
-## What makes it hard (constraints to respect)
+---
 
-- **Integrity** — the agent runs *inside the customer's sandbox*, so
-  self-reported token counts from the runtime are not billable on their own.
-  The count must come from a host-trusted point (proxy / gateway) or the
-  provider.
-- **Reconciliation / margin risk** — our metered cost must match the provider
-  invoice closely, or pass-through billing loses money. Streaming responses
-  report usage only in a final SSE event; tool use and caching shift the totals.
-- **Latency vs runaway spend** — a single turn can burn a lot before a daily
-  provider-usage pull would notice. Real-time-enough metering is needed if we
-  want to *halt* on model-spend rather than only bill after the fact.
-- **Two runtimes, two chokepoints** — V3 (proxy) and V2 (gateway) differ; a
-  unified billing pipeline has to cover whichever paths stay alive.
+## 3. Roles & invariants (the contract)
 
-## Viable routes (capture, not decide)
+1. **One balance.** Token spend debits the same `credits` pool as compute.
+   There is never a second customer-facing balance.
+2. **OR is the meter and the limiter.** We never count tokens ourselves and keep
+   no rate card. OR's per-key `usage` is the cost of record; OR's per-key `limit`
+   is the enforced cap.
+3. **The cap mirrors the shared pool — in aggregate across all of an org's keys.**
+   Headroom = `remaining_credits / (1+markup)` of provider spend, granted to the
+   **active** key; any `superseded` key (rotation) is frozen near its own `usage`.
+   So total spendable across keys can never exceed the prepaid balance (exact math
+   §7; per-key mechanics §5.4/§5.8).
+4. **Key never in the sandbox.** The OR key is sealed and swapped by the egress
+   proxy, exactly like provider keys today.
+5. **Managed-only.** Debits fire only for managed-key sessions. BYO sessions never
+   debit (the provider/their-own-OR bills them); we may record usage for display.
+6. **Autumn-only.** Token billing applies to `billing_provider='autumn'` orgs.
+   `legacy` orgs are unaffected until migrated.
+7. **Managed is a picker option, not a new concept.** Users pick Managed or a BYO
+   credential in one place; "OpenRouter" is never named to users (§6.6).
 
-### Metering — where to count
+---
 
-- **A. Egress-proxy meter (V3).** Have `secretsproxy` parse the Anthropic/OpenAI
-  response `usage` block. *Pro:* already on the path, host-trusted, per-session
-  attributable via the sealed-store↔session mapping, no new hop. *Con:* must
-  parse provider response shapes incl. streaming SSE; couples metering to the
-  proxy; multi-provider response handling.
-- **B. Gateway chokepoint.** Route all model calls through an OC gateway and
-  count there. *Pro:* clean app-layer seam; already injects the key; one place
-  for metering + rate limiting. *Con:* V3 bypasses it today; adds a hop +
-  availability dependency; still needs SSE parsing.
-- **C. Provider usage / Admin API.** Pull from Anthropic's usage/cost Admin API
-  per key. *Pro:* authoritative, matches the invoice. *Con:* needs per-org key
-  segregation to attribute; coarse granularity + latency (not real-time, can't
-  halt mid-session); no per-session detail.
-- **D. Runtime-reported usage.** The agent reports usage events. *Pro:* trivial
-  access to exact counts. *Con:* untrusted → not billable alone; useful only as
-  observability or a cross-check against A/B/C.
-- **E. Third-party LLM gateway / metering platform.** Helicone / Portkey /
-  LiteLLM / OpenRouter / Cloudflare AI Gateway for metering at the model edge,
-  or Metronome / Orb / OpenMeter for usage rating + billing. *Pro:* offloads
-  metering and/or rating; some offer pass-through billing. *Con:* another
-  dependency + customer data egress to them + their cost; we likely still own
-  the credit ledger.
+## 4. Entities & new state
 
-Plausible combination: **A (or B)** for real-time, trusted, per-session metering
-+ **C** as a periodic reconciliation against the provider invoice.
+**Org (D1 `orgs`):**
+- `model_billing_status TEXT NOT NULL DEFAULT 'off' CHECK (model_billing_status IN ('off','provisioning','active','error'))`
+  — drives the provisioning state machine (§5.1, P2-e). `active` ⇒ Managed is
+  offered + resolvable for the org.
+- `model_markup_bps INT NOT NULL DEFAULT 0` — markup in basis points applied to OR
+  cost before debiting Autumn (0 = at-cost; 2000 = +20%); per-org override of an env
+  default (§9.2). **Both the debit and the cap math depend on this** (§7).
 
-### Rating / credit model
+**`managed_model_keys` (D1, NEW) — one row per provisioned OR key** (normally one
+`active`; ≥1 transiently during rotation). This per-key ledger replaces a single
+`orgs.or_key_hash` so each key's spend is tracked independently until it quiesces
+(P2-g) and so the in-flight debit interval is durable (P1-a):
+```
+id, org_id,
+or_key_hash TEXT,                 -- OpenRouter key hash (non-secret)
+managed_credential_id TEXT,       -- sessions-api credential row id (the sealed key)
+status TEXT CHECK (status IN ('active','superseded','deleting')),
+committed_micro BIGINT NOT NULL DEFAULT 0,  -- watermark: OR usage already debited to Autumn (micro-USD)
+pending_from_micro BIGINT, pending_to_micro BIGINT, pending_idem TEXT,
+                                  -- the single in-flight debit interval, immutable until committed; NULL when none
+attempts INT NOT NULL DEFAULT 0, last_error TEXT,
+created_at, superseded_at
+```
+Index `(org_id, status)`. The plaintext OR key never lands here — only the hash +
+the sessions-api credential id; the secret lives in Infisical via the credential
+pipeline. `limit_reset = null` on the OR key (we manage the cap dynamically).
 
-- At-cost pass-through (credits == provider cost) — simplest, zero margin.
-- Cost + markup % — margin, but needs a maintained rate card as prices move.
-- Unified credits (compute + model in one balance) vs separate "model credits".
-- Open: who owns and updates the rate card when provider prices change.
+**Autumn — new feature `model_spend`:** a metered feature in the `credits`
+credit_system's `credit_schema` with `credit_cost = 1e-6` (1 unit = 1 micro-credit
+= $1e-6). Dollar-denominated; **per-model breakdown is NOT in Autumn** (ClickHouse,
+§6.5). Created once via Autumn dashboard/API.
 
-### Billing integration
+**ClickHouse — `model_usage`:** org/model/day rollup for the dashboard (§6.5).
+**No session dimension** — an org-level key isn't session-attributable from the OR
+poll (P1/P2-d); session-level is deferred.
 
-> Do **not** assume extending the legacy compute pipeline (see the direction
-> note above). The credits **unit** stays; the metering/ledger **substrate** is
-> an open decision and may well be built fresh for per-call model usage.
+**Secrets:** new **OpenRouter management key** `OPENROUTER_PROVISIONING_KEY`
+(Cloudflare Wrangler secret on `opencomputer-edge-prod`/dev), used by the edge for
+all OR API calls. Stored write-only like `AUTUMN_SECRET_KEY`. A **dedicated** HMAC
+secret (separate from the generic internal-auth) guards the plaintext-key hand-off
+(§6.3, P2-f).
 
-- **Substrate is open.** Whatever the credits ledger becomes (a successor to the
-  legacy/Autumn split, a usage-rating provider, or something new), model usage
-  is debited there. A model-usage record is naturally **per-call** (org +
-  session + agent + model + token counts + computed cost), not a GB-second
-  bucket — design the event for that shape, independent of the legacy outbox.
-- Extend halt/quota semantics to model spend; consider a **mid-session**
-  soft-stop or a **pre-flight budget reservation** for long turns (agents
-  already carry limits like `maxTurnSeconds`; add a token/credit budget).
+---
 
-### BYO vs managed interaction
+## 5. Time-axis journeys (what happens at each stage)
 
-- **BYO** → no model billing (customer's own provider invoice); optional usage
-  surfacing only.
-- **Managed** → billed. Requires a reliable per-session record of mode + which
-  key was used (already available via credential metadata + the sealed store).
+### 5.1 Managed enablement — a provisioning state machine (P2-e)
+Trigger: org on `billing_provider='autumn'` + model billing toggled on. The edge
+drives `orgs.model_billing_status` `off → provisioning → active` (or `error`),
+idempotent + retryable. This is **cross-service and non-atomic**, so every step is
+resumable from persisted state:
+1. Set `model_billing_status='provisioning'`; insert a `managed_model_keys` row.
+2. **Create OR key:** `POST /api/v1/keys { name:"oc-org-<org>", limit:<remaining/(1+markup)>, limit_reset:null }`
+   (auth `OPENROUTER_PROVISIONING_KEY`) → `key` (plaintext, once) + `data.hash`.
+   Persist `or_key_hash` on the row.
+3. **Bind credential:** hand the plaintext to sessions-api via the hardened HMAC
+   route (§6.3), passing `{ owner_id, or_key_hash, operation_id }` alongside the key
+   → it stores via secret-ledger/Infisical, **records `or_key_hash`+`operation_id` in
+   the credential metadata**, and returns `managed_credential_id`. Persist it; set the
+   row `status='active'`. (Seam §9.5.)
+4. Set `orgs.model_billing_status='active'`.
 
-## Open questions (deferred decisions)
+**Partial-failure repair** (reconcile, §5.7). Note the OR plaintext is **one-time**
+— the edge does **not** retain it after step 2, so a bind can't be "re-sent." Repair
+is driven off the row + a sessions-api **lookup** (`GET /internal/managed-credential?owner_id=&or_key_hash=`,
+§6.3) + OR:
+- OR key created, response to step 3 lost → **look up** by `or_key_hash`/`operation_id`:
+  if bound (we just lost the response) → finish the flip; if **not** bound → the
+  plaintext is unrecoverable, so **`DELETE` the OR key and recreate** from step 2
+  (never attempt to re-send a key the edge no longer holds).
+- Credential bound but row not `active` / status not flipped → finish the flip.
+- `model_billing_status='active'` but no `active` key row / credential missing →
+  re-provision + **alert**.
+Bounded `attempts` with backoff; record `last_error`; after N attempts →
+`status='error'` + alert, and Managed stays unavailable (clean `422`, §6.6).
 
-- At-cost vs markup? Unified credits vs a separate model-credit balance?
-- Real-time halt on model spend, or bill-after-the-fact + trust + reconcile?
-- Per-session vs per-org granularity for v1?
-- Build metering in-house (proxy/gateway) vs adopt an LLM-gateway/metering
-  provider (route E)?
-- **What replaces the prepaid / 15-min-bucket compute-billing pipeline (a
-  deprecation candidate), and should model billing share a credits substrate
-  with it or be built fresh?** This is the biggest upstream unknown — it gates
-  the "Billing integration" choice.
-- Reconciliation policy: metered vs provider invoice — who eats the delta, and
-  at what cadence do we true-up?
-- When do OpenAI/codex (multi-provider) land, and does that change the choice?
+### 5.2 Session create — resolve a model endpoint profile, not just a key (P1-c)
+The runtime needs more than a secret. Today sealing maps **provider → env var**
+(`PROVIDER_KEY_ENV`) and **provider → egress host** (`PROVIDER_EGRESS_HOST`) in
+`runtime/credential.ts` — only `anthropic`/`openai` — which doesn't fit a managed OR
+key that serves either runtime. Resolve a **model endpoint profile** from
+`(runtime, source)` where env-var, base URL, egress host, and the billing credential
+are **separate fields**:
 
-## Pointers
+| field | BYO anthropic | BYO openai | Managed · claude rt | Managed · codex rt |
+|---|---|---|---|---|
+| key env var | `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` | `ANTHROPIC_AUTH_TOKEN` | `OPENAI_API_KEY` |
+| base URL (env/cfg) | default | default | `ANTHROPIC_BASE_URL=https://openrouter.ai/api` | OpenAI client `baseURL=https://openrouter.ai/api/v1` |
+| egress allowlist host | `api.anthropic.com` | `api.openai.com` | `openrouter.ai` | `openrouter.ai` |
+| sealed secret | anthropic cred | openai cred | org managed OR key | org managed OR key |
+| billing | BYO | BYO | Managed (Autumn) | Managed (Autumn) |
 
-- Compute billing: `internal/db/billable_events.go`, `internal/db/usage.go`,
-  migrations `023_free_credits_remaining_cents`, `043_credit_halt`,
-  `047_orgs_billing_provider`, `048_orgs_usage_sync_watermark`;
+- **Exact per-runtime changes (P1-c)** — base-URL/auth-mode injection is new and
+  load-bearing, and each runtime today *forces the official provider*:
+  - `claude` (`v3-claude/src/server.ts`) **deletes both** `ANTHROPIC_AUTH_TOKEN`
+    **and** `ANTHROPIC_BASE_URL` from the child env (`delete childEnv.ANTHROPIC_AUTH_TOKEN`
+    / `…ANTHROPIC_BASE_URL`, ~:87–88) to force the api-key path. Managed must instead
+    **set** `ANTHROPIC_BASE_URL=https://openrouter.ai/api` and pass the OR key as
+    `ANTHROPIC_AUTH_TOKEN` (OR's Claude-Code path — base is `…/api`, **not** `/api/v1`;
+    var is `AUTH_TOKEN`, not `API_KEY`).
+  - `codex` (`v3-codex/src/server.ts`) hardcodes the provider in the
+    `Codex({config:{model_providers:…}})` block: `base_url:"https://api.openai.com/v1"`
+    (~:111), `env_key:"OPENAI_API_KEY"` (:112), **`wire_api:"responses"`** and
+    **`requires_openai_auth:true`** (:113–114). Managed must override `base_url` →
+    `https://openrouter.ai/api/v1` **and** reconcile `wire_api`/`requires_openai_auth`
+    with OR — that pairing is **unvalidated** (the open risk, §9.7 / open-q #4).
+- **Delivery seam (G1) — how the brain learns it's Managed.** Today the brain
+  deletes/hardcodes the above; **no channel carries base-URL/auth-mode to it.**
+  `TurnConfig` (both servers) has only `model/system_prompt/mcp_endpoint/…`. Add a
+  **non-secret** `endpoint_profile` to `TurnConfig` — e.g. `{ mode:"byo"|"managed",
+  base_url?, auth_env }` — (or a sandbox env var the brain reads) so the brain *sets*
+  base-URL/auth-mode from it instead of deleting/hardcoding. The **secret** still
+  arrives sealed via the egress proxy (§5.3); only the non-secret routing rides
+  `TurnConfig`.
+- Resolution picks the source (managed credential vs BYO cred, §6.6/§6.7), derives
+  the profile, seals the secret **and** sets `endpoint_profile`; session-pinned.
+  Per-session-key variant: §9.1.
+
+### 5.3 Turn execution (runtime → proxy → OR)
+- Runtime calls its profile's base URL (Managed → `openrouter.ai`) through the
+  egress proxy, which swaps the sealed key in-flight; allowlist = the profile's
+  host. (OR returns `response.usage` incl. cost **automatically**; the
+  `usage:{include:true}` request flag is **deprecated** — don't depend on it.)
+- **OR enforces the cap in real time:** exceeding `limit` → `402`/disabled → the
+  turn surfaces credits-exhausted. Provider-enforced overshoot guard.
+- Spend accrues on the OR key; we meter by polling (§5.4), **not in-path**.
+
+### 5.4 Sync cron (`model_meter`, edge, every N min, §9.3)
+Sibling to `autumn_meter.ts`. Iterate every `active` **and** `superseded`
+`managed_model_keys` row (superseded keys keep being polled until quiesced, P2-g):
+1. **Read OR spend:** `GET /api/v1/keys/{or_key_hash}` → `usage` (cumulative USD),
+   `limit`. `usage_micro = round(usage × 1e6)`.
+2. **Debit the immutable interval (P1-a — persist before track):**
+   - If the row has a **pending** interval (prior crash), retry it **verbatim**
+     (same `pending_from/to_micro`, same `pending_idem`) — do **not** recompute
+     against the newer `usage`.
+   - Else if `usage_micro > committed_micro`: set
+     `pending = { from = committed_micro, to = usage_micro,
+     idem = "model_spend:<org>:<from>:<to>" }` and **persist the row first**
+     (durable before any Autumn call).
+   - `trackAutumnUsage(org, "model_spend", value = round((to−from) × (1 + markup_bps/10000)), idempotency_key = pending_idem)`.
+   - On success/`409` → `committed_micro = to`, clear pending. (The interval is
+     immutable, so success-then-crash replays the exact same key+interval → true
+     dup, never a widened key reused — see §7.)
+3. **Halt + push cap (markup-correct, aggregate across keys — P1-b, P1-rotation, P2-halt):**
+   `remaining_usd = getAutumnCustomer(org).balances.credits.remaining` (read once per
+   org, not per key).
+   - **If `remaining_usd ≤ 0` → call `projectOrg(org)` to halt immediately**
+     (mirrors compute `autumn_meter.ts:112`; do **not** rely on the Autumn webhook
+     alone).
+   - Headroom is **shared across all of the org's usable keys**, so cap them together:
+     clamp every `superseded` key to `limit = its_usage + ε` (small grace so an
+     in-flight call can finish), then set the **active** key to
+     `limit = active_usage + remaining_usd/(1+markup) − Σε(superseded)`. Total
+     spendable across keys ≤ `remaining/(1+markup)` (a single active key reduces to
+     §7's formula). `PATCH` each only if it moved past an epsilon. *(Capping only the
+     active key — the previous wording — let a superseded key keep old headroom and
+     double the budget.)*
+4. **Detail → ClickHouse (org/model/day only, P1/P2-d):** `POST /api/v1/analytics/query`
+   `dimensions:["api_key_id","model"], granularity:"day"`, metrics
+   `total_usage,tokens_prompt,tokens_completion` → map `api_key_id`→org → upsert
+   `model_usage`. **Per-session is not derivable** (analytics has no session dim on
+   an org-level key); session-level needs per-session keys (§9.1) or runtime
+   self-reported usage (display-only) — both deferred.
+
+### 5.5 Top-up
+Existing Autumn top-up raises `credits.remaining`. Next `model_meter` tick raises
+the OR key `limit` (step 3) → calls resume. (Compute resume already handled by the
+existing halt/resume path.) Optionally hook top-up to fire an immediate cap-push
+so resume isn't gated on the cron interval.
+
+### 5.6 Halt / resume
+- Combined compute+token spend drives `credits.remaining` to ≤ 0 → existing
+  Autumn halt fires (`projectOrg` → `is_halted` → `/admin/halt-org`). Independently,
+  the cron will have pushed the OR `limit` down toward `usage` (remaining≈0), so OR
+  **also** refuses further model calls — belt-and-suspenders.
+- Resume on top-up (§5.5).
+
+### 5.7 Reconciliation (slow cron, daily)
+- Compare OR account spend (`GET /api/v1/credits` → `total_usage`, and
+  `analytics/query` summed per key) against the sum of Autumn `model_spend`
+  debits. Emit drift metric; alert if `|drift| > threshold`. Catches missed deltas,
+  disabled/rotated keys, partial-turn accounting.
+- Reconcile our **OR account float**: ensure our OR balance is funded
+  (auto-recharge on the OR account; alert on low balance).
+
+### 5.8 Offboard / rotate / disable — per-key, watermarked (P2-g)
+Each key has its **own** `committed_micro`; nothing is reset or transferred between
+keys (resetting/transferring is what dropped or double-counted spend before).
+- **Disable managed:** mark the `active` row `deleting`; keep polling it (steps 2/4)
+  until its `usage` stops advancing for N ticks (spend quiesced), do a final debit,
+  then `DELETE /api/v1/keys/{hash}` + revoke the managed credential. If no `active`
+  key remains, `orgs.model_billing_status='off'`.
+- **Rotate (compromise):** create a **new** key (new `active` row), re-seal the
+  managed credential (rotation flows to running sessions, `core/credentials.ts:165`),
+  mark the old row `superseded`. **Both rows keep independent watermarks and keep
+  being polled** until the old key (still sealed into in-flight sessions until they
+  reseal) quiesces → `deleting` → delete.
+
+### 5.9 BYO path
+- An agent whose source is a **BYO credential** (not `"managed"`): the customer's own
+  key (raw provider key, or — §9.4 — their own OR key). No OC-provisioned OR key, no
+  cap management, **no Autumn debit**; the provider / their own OR account bills them.
+  Optionally capture runtime self-reported usage → ClickHouse for display only.
+
+---
+
+## 6. Surfaces & change spec (API · UI · docs)
+
+### 6.1 OpenRouter — what we call (auth: `OPENROUTER_PROVISIONING_KEY`, a management key)
+Base `https://openrouter.ai/api/v1`.
+- `POST /keys` — create. Body: `name` (req), `limit` (USD cap, nullable),
+  `limit_reset` (`daily|weekly|monthly|null`; we use `null`),
+  `include_byok_in_limit` (bool), `expires_at?`. Response: `key` (plaintext,
+  returned **once**) + `data { hash, name, label, disabled, limit,
+  limit_remaining, limit_reset, usage, usage_daily/weekly/monthly, byok_usage*,
+  created_at, updated_at }`.
+- `GET /keys/{hash}` — read `usage` (cumulative USD), `limit`, `limit_remaining`,
+  `disabled`. **Our spend read + cap state.**
+- `PATCH /keys/{hash}` — update `limit` and/or `disabled` (and `name`). **Our cap
+  push + emergency disable.**
+- `DELETE /keys/{hash}` — offboard.
+- `GET /keys` — list (audit/reconcile).
+- `POST /analytics/query` — **per-model/per-key spend** for the dashboard.
+  `dimensions: ["api_key_id","model"]`, `granularity`, metrics incl.
+  `total_usage` (USD), `tokens_total/prompt/completion`. (Management-key auth;
+  inference keys get 403.) `GET /analytics/meta` lists available
+  metrics/dimensions.
+- `GET /credits` — our OR **account** balance/usage (float monitoring, §5.7).
+- Per-request usage: OR returns `response.usage` (incl. cost) **automatically**; the
+  legacy `usage:{include:true}` request flag is **deprecated** — don't depend on it.
+  `GET /generation?id=<id>` returns one generation's cost. (Optional display capture
+  only; billing truth is the per-key `usage` poll.)
+
+### 6.2 Autumn — what the edge calls (auth: `AUTUMN_SECRET_KEY`; existing helpers in `autumn_webhook.ts`)
+- `POST /track` `{ customer_id: org_id, feature_id: "model_spend", value, idempotency_key }`
+  (via `trackAutumnUsage`). `value` in micro-credits (§7).
+- `GET /customers/{org_id}` `→ balances.credits.remaining` (via `getAutumnCustomer`)
+  — for the cap push.
+- **Setup (once):** define feature `model_spend` and add
+  `{ metered_feature_id:"model_spend", credit_cost: 1e-6 }` to the `credits`
+  credit_schema (dashboard or API).
+
+### 6.3 New internal/edge endpoints & hooks
+- **Provisioning hook** (edge) driving the §5.1 state machine on managed-enable.
+- **`POST /internal/managed-credential` (sessions-api) — carries a plaintext model
+  key, so harden it (P2-f).** Do **not** reuse the generic static `X-Internal-Auth`
+  header (`requireWorkerAuth`, `auth/worker.ts`). Dedicated secret + HMAC over
+  `timestamp + method + path + body`, replay window, log redaction, network
+  restriction. **Exact body, idempotency key, and the `GET` lookup variant live in
+  §6.7.5 (single source of truth) — don't restate the body here** (that's how the two
+  drifted).
+- **`model_meter` cron** (§5.4) + **reconcile cron** (§5.7) as wrangler
+  `[triggers] crons`.
+
+### 6.4 Dashboard (web)
+- **`/billing` gains `managedAvailable`** (the single gating authority, §6.6/P2):
+  the edge derives it from `model_billing_status === 'active'`; add it to
+  `BillingStateSchema` (`schemas.ts:188-195`). The UI gates the Managed picker entry
+  on this field.
+- **Agent create/edit dialog:** the credential picker gains the pinned
+  `Managed · billed to credits` entry (full taxonomy §6.6); filter the model
+  dropdown by the **runtime** (not the source). The Credentials page is **unchanged**.
+- Extend `getAutumnBilling` (`/billing/autumn`) response to include a model-spend
+  summary (period total, % of pool), OR add `getModelUsage('/usage/models?days=')`
+  reading ClickHouse. New `ModelUsageSchema` next to `SandboxUsageSchema`
+  (`web/src/api/schemas.ts`), `getModelUsage` next to `getSandboxUsage`
+  (`client.ts`).
+- New panel `ModelUsageBreakdown` as a sibling of `UsageBreakdown` in
+  `PrepaidPlan` (`Billing.tsx`, the grid is already 2-col). Reuse `Panel`,
+  `ResourceTable`, `formatCost` (already handles sub-cent → good for $/token),
+  query-hook pattern (`['model-usage']`, 30s). Columns: Model · Tokens (in/out) ·
+  Cost · Total footer. Mock in `web/src/api/mock.ts`.
+
+### 6.5 Data stores
+- **D1 `orgs`** new columns: §4.
+- **ClickHouse `model_usage`** (display detail; not billing-authoritative):
+  `org_id String, day Date, model String, tokens_prompt UInt64,
+  tokens_completion UInt64, cost_usd Float64`, ordered `(org_id, day, model)`;
+  upserted from the analytics poll (§5.4 step 4). **No `session_id`** — an org-level
+  key isn't session-attributable from the analytics dims (P1/P2-d); session-level is
+  deferred (per-session keys §9.1, or runtime self-reported usage as display-only).
+  Authoritative billing stays in Autumn; this feeds the dashboard + drift checks.
+
+### 6.6 User-facing taxonomy & surface (the contract)
+
+**Principle: "OpenRouter" is never user-visible.** Per agent, the user makes one
+choice — run a model **via OpenComputer (Managed, billed to credits)** or with
+**their own key (BYO)** — surfaced as a single selection, not a new dimension.
+`model` (which model) is unchanged and orthogonal: same `provider/model` ids
+either way.
+
+**Surface = one entry in the existing credential picker.** On the agent
+create/edit dialog the credential picker gains a pinned top entry
+`Managed · billed to credits` (always present, not deletable) → saved keys →
+`+ New credential` (same inline create as today). Pick Managed → done, no key;
+pick/create a credential → BYO, exactly today's flow. There is **no separate
+managed-config page** — Managed is configured purely by selecting it per agent.
+The **Credentials page stays credentials-only**; it does not manage Managed. A
+**token-spend / model-usage page is deferred**; per-agent/per-org budget UI is out
+of scope now.
+
+**API contract.** The agent's source is the existing `credential` field, which now
+accepts a reserved value `"managed"`:
+- `credential: "managed"` → Managed (no key; runs on the org's OC-managed OR key,
+  billed to credits).
+- `credential: "cred_…"` → BYO; inline `key:` → BYO shortcut (unchanged).
+- omitted → inherit the org default.
+`cred_…` ids can't collide with `"managed"`, so the field stays unambiguous; we do
+**not** add a separate `model_access` field. SDK types `credential?` as the union
+`"managed" | string`.
+
+**Resolution (unchanged shape): agent `credential` → org default → error.**
+- **Org default = `"managed"` unless a BYO credential is marked default** (existing
+  `is_default`), which then wins. New orgs have no default credential ⇒ **default
+  Managed** (removes the first-run `422 no_credential` wall). Existing orgs keep
+  their default credential (backward-compatible).
+- Resolves to Managed but the org can't run Managed (gating) → a clear
+  `422 managed_unavailable`.
+
+**Gating & availability.**
+- **One authority (P2):** the edge `/billing` response exposes `managedAvailable`
+  (= `model_billing_status === 'active'`). The UI gates on **that** (not on
+  `billingProvider`), and sessions-api enforces the *same* condition (a managed
+  credential is bound — set only when status flips to `active`). UI, edge, and
+  backend agree, so a user is never offered Managed only to hit `422
+  managed_unavailable` (e.g. an autumn org mid-provisioning).
+- **Model list depends on the RUNTIME, not the source (P1/P2):** the model must match
+  the runtime's protocol either way (`claude`→`anthropic/…`, `codex`→`openai/…`).
+  Managed changes *who pays*, not *which models* — both Managed and BYO show the
+  runtime's models. (Managed's broader reach is **across agents/runtimes**, not within
+  one agent.)
+- **§9.7:** both `claude` and `codex` **validated end-to-end live on prod**
+  (2026-06-29) — incl. codex's `wire_api:"responses"` + `requires_openai_auth=false`
+  path through OR. Both runtimes are offered under Managed.
+
+**Behavior.**
+- Out of credits (Managed) → same halt as compute (one pool); "top up to resume."
+- Switching an agent's source affects **future sessions only** (session-pinned
+  config), as today.
+- Persisted as the agent's `credential` value; the runtime resolves the sealed key
+  at session create (Managed → the org's managed OR credential, §5).
+
+Wire-level deltas (exact endpoints / schemas / components / files): **API §6.7,
+UI §6.8, docs §6.9**.
+
+### 6.7 API deltas (exact)
+
+Repo: `sessions-api/src/v3`; SDK `opencomputer/sdks/typescript`. **No zod** — request
+bodies are TS interfaces + hand-written guards; responses via `serialize*`.
+**No org/billing table exists in v3** — `owner_id` is a derived opaque string
+(`ownerIdForKey`, `auth/org.ts`); `billing_provider`/`autumn` live only in the edge D1 + Go cell,
+**not** in sessions-api. That shapes the gating design:
+
+> **Managed availability = "a managed credential is bound for the owner"** (the
+> recommended gate — avoids a cross-service `billing_provider` read). The edge
+> provisions the org's OR key (§5.1) **only for autumn + model-billing-enabled
+> orgs** and hands it to sessions-api, which stores it via the existing credential
+> pipeline as a **managed credential** (a `credential_metadata` row, internal
+> provider `"openrouter"`, never shown to users). So eligibility is enforced
+> *upstream at provisioning*; sessions-api only checks "does this owner have a
+> managed credential?". No new org table, no synchronous edge call.
+
+1. **`credential: "managed"` sentinel.**
+   - HTTP bodies stay `string`: `CreateAgentBody.credential` / `PatchBody.credential`
+     (`api/agents.ts`) — accept the literal. SDK widens
+     `CreateAgentParams.credential` (`agents.ts:13`) / `UpdateAgentParams.credential`
+     (`:23`) to a `CredentialRef` union — mirror the **existing `Runtime` type**
+     (`types.ts:15`, shipped in #448; same `"…" | (string & {})` shape).
+   - Core branch: in `createAgent` (`core/agents.ts:157-163`) and `patchAgent`
+     (`core/agents.ts:252-265`) add a `credential === "managed"` arm **before**
+     `assertCredentialProvider` — skip the **credential**-provider check (no BYO cred
+     to match) and mint nothing. **`assertModelMatchesRuntime` still runs (P1/P2):**
+     Managed does *not* loosen the model↔runtime rule, so `model` must remain the
+     runtime's provider (`claude`→`anthropic/…`, `codex`→`openai/…`); a mismatch is a
+     `400` for Managed too. (Hence "models supported by the selected runtime," never
+     "all models.")
+   - **Storage of the sentinel (sub-decision):** store the literal `"managed"` in
+     `agent_core.agents.credential_id` (TEXT, no FK enforced, `db/schema.ts:29-43`)
+     — minimal, and request/storage/response all use one field; `serializeAgent`
+     passes it through (`core/agents.ts:78-92`). *Alt:* a dedicated
+     `agents.model_source` column with `credential_id` NULL — more explicit,
+     +migration +serialize/SDK plumbing. **Rec: sentinel-in-`credential_id`** (the
+     contract is already "the `credential` field carries the source").
+
+2. **Resolution** (`resolveCredentialForSession`, `core/credentials.ts:214-245`):
+   add an arm — if `agent.credentialId === "managed"` (or org default is managed,
+   see 3) → resolve via a **separate `getManagedCredential(owner)` helper that
+   ignores the `provider` arg** (G7). The resolver is called with the *runtime's*
+   provider (`session-service.ts:102`, `runtime/credential.ts:96`), but the managed
+   cred's provider is `"openrouter"`, so a provider-keyed lookup would miss it.
+   Found → return its id (`source:"managed"`); **not found → throw
+   managed-unavailable**. **Both call sites (resolve + seal) route through this one
+   helper.** Existing pin/org-default/null arms unchanged.
+
+3. **Org default = managed.** Today org default = the `is_default` credential per
+   `(owner, provider)` (`core/credentials.ts:198-206`). Add: when no `is_default`
+   BYO credential resolves AND the owner has a managed credential → default to
+   managed. New orgs (no BYO default) thus default Managed; existing orgs with an
+   `is_default` credential are unaffected. *(No `PUT /credentials/default` change
+   for v1; "managed is default" = simply having no default BYO credential.)*
+
+4. **`422 managed_unavailable` + seal keyed on (runtime, source), not provider (G3).**
+   New error class beside `NoCredentialError` (`core/session-service.ts:27-33`),
+   thrown from `startSession` (`session-service.ts:100-103`) when managed is
+   selected/defaulted but no managed credential exists; wire-mapped beside the
+   `no_credential` arm (`api/sessions.ts:173-175`) → `422 {type:"managed_unavailable"}`.
+   **Bigger than one line:** `sealCredentialForSession` (`runtime/credential.ts`)
+   derives the env-var name + egress host from the cred's `provider` via
+   `PROVIDER_KEY_ENV` / `PROVIDER_EGRESS_HOST` (only `anthropic`/`openai`). For Managed
+   the cred provider is `"openrouter"`, but the env var must be `ANTHROPIC_AUTH_TOKEN`
+   (claude) / `OPENAI_API_KEY` (codex) and the egress host `openrouter.ai` — so seal
+   needs a **(runtime, source)** input that overrides env-name + egress host **and**
+   supplies the base URL via `endpoint_profile` (§5.2 / G1). Also add `openrouter.ai`
+   to the per-session egress allowlist (`storeEgressAllowlist`, fed `modelHosts` from
+   the runtime build in `session-service.ts`) for Managed.
+
+5. **Provisioning hand-off (the §9.5 seam) — one exact contract** (this is the single
+   source of truth; §6.3 matches it verbatim):
+   - `POST /internal/managed-credential` (sessions-api). **Auth: a dedicated secret
+     `OC_MANAGED_CRED_HMAC_SECRET`** (NOT `V3_INTERNAL_AUTH_SECRET` / the static
+     `X-Internal-Auth`), HMAC over `timestamp + method + path + body`, short replay
+     window, body redacted in logs, network-restricted (P2-f). Body
+     `{ owner_id, provider:"openrouter", key, or_key_hash, operation_id }`. Effect:
+     store via `reserveAndWrite`/secret-ledger + insert a managed `credential_metadata`
+     row (provider `"openrouter"`, fixed `name`, **persisting `or_key_hash` +
+     `operation_id`**); return `managed_credential_id`. **Idempotent per
+     `(owner_id, operation_id)`** (re-call = rotate, `rotateCredentialKey`
+     `core/credentials.ts:165`).
+   - `GET /internal/managed-credential?owner_id=&or_key_hash=` (same auth) → whether a
+     managed credential is bound — the edge's lost-response recovery (§5.1).
+
+6. **Unchanged / minor:** BYO validation (`assertModelMatchesRuntime` still applies
+   to the chosen `model`); credentials CRUD endpoints. `GET /v3/credentials`
+   (`listCredentials`, `core/credentials.ts:103-110`) **should hide** internal
+   `"openrouter"` managed rows so they don't render as user BYO keys (filter in
+   the query or serializer).
+
+7. **Tighten the `credential` ref type — don't leave it `string`** (decision §9.9).
+   Shared closed union: `CredentialId = ` `` `cred_${string}` `` (ids are
+   `newId("cred")` → `cred_…`, `core/credentials.ts:69`); `CredentialRef =
+   "managed" | CredentialId` (omitted = org default). Backend (no zod): type
+   `CreateAgentBody.credential` / `PatchBody.credential` (`api/agents.ts:20,77`) as
+   `CredentialRef`, and add a runtime `parseCredentialRef(v)` →
+   `{kind:"managed"} | {kind:"id",id}` that throws `AgentValidationError`
+   (wire-mapped to `400 {type:"invalid"}` today, `api/agents.ts:52,98`; add a distinct
+   `invalid_credential` type only if you want it separable) for anything that is
+   neither `"managed"` nor `^cred_`. Call it in `createAgent`/`patchAgent` **before** the source branch so a
+   malformed ref fails fast and distinctly (today an unknown string only fails later
+   as "credential not found"). Also tighten credential **create** `provider`
+   (`api/credentials.ts`) to the closed `"anthropic" | "openai"` — the internal
+   `"openrouter"` managed provider is system-only, never user-supplied. SDK
+   (`sdks/typescript/src/agents`): `Credential.id: CredentialId`,
+   `CreateAgentParams.credential?: CredentialRef`,
+   `UpdateAgentParams.credential?: CredentialRef | null` so `credential: cred.id`
+   and `credential: "managed"` typecheck while arbitrary strings don't.
+
+8. **`key` and `credential` are mutually exclusive (P3).** Today create/patch accept
+   both (`api/agents.ts:35,88`). Enforce one source per request: supplying both →
+   `400 {type:"invalid"}` (reuse `AgentValidationError`, `api/agents.ts:52,98` — no new
+   type needed); `credential:"managed"` + `key` → same `400`. Inline `key` stays the
+   BYO shortcut; `credential` selects an existing source (`"managed"` or `cred_…`).
+
+### 6.8 UI deltas (exact)
+
+Repo `opencomputer/web`. **Most of what this section originally specced shipped in
+PR #448** — so the Managed delta is now small. Symbol refs (line numbers drift).
+
+**Already shipped (#448) — do NOT re-implement:**
+- Shared **`web/src/lib/runtimes.ts`** (`RUNTIMES` → `{provider, models, keyLabel,
+  keyPlaceholder}`, `getRuntime`, `defaultModelFor`, `runtimeOptions`), imported by
+  both `Agents.tsx` and `AgentDetail.tsx`. (This *is* the §6.8.G shared-lib pattern.)
+- **Model list is runtime-derived** in both pickers (create: `options={rt.models}`;
+  detail: `modelOptions` from `rt.models`). There is no `MODELS` const and no
+  `.filter` to add. Managed adds **no** model widening — model follows the runtime,
+  independent of source.
+- **Credential list filtered by the runtime's provider** in both
+  (`credentials.filter(c => c.provider === rt.provider)`).
+
+**Remaining Managed delta (the only UI work):**
+
+**A. Create dialog — `Agents.tsx`.** Add a `MANAGED='managed'` sentinel; prepend a
+`Managed · billed to credits` entry to `credOptions` **outside** the provider filter
+(Managed has no provider). In the create mutation, send `credential:"managed"` when
+chosen (no key needed — the non-`NEW_CRED` path already allows an empty key). Default
+the picker to Managed when `managedAvailable` (C).
+
+**B. Live picker — `AgentDetail.tsx`.** Same `Managed` entry in `credOptions`; map
+`agent.credential_id === 'managed'` to it in the selected value; on select,
+`switchCredMutation.mutate('managed')` (already calls `updateAgent(id,{credential})`).
+
+**C. Gating — `managedAvailable`, the single authority (P2).** Neither dialog reads
+billing today. Add a `getBilling` query and show the Managed entry only when
+`billing?.managedAvailable` — a **new** field on `/billing` (= edge
+`model_billing_status === 'active'`; add to `BillingStateSchema`). Do **not** gate on
+`billingProvider === 'autumn'` (an autumn org mid-provisioning would offer Managed
+then `422`). UX-only; backend enforces via §6.7.4. **Coupling caveat (G4):** this
+equals the backend's "managed credential bound" check only while §5.1 keeps
+`status='active'` ⟺ credential-bound — the partial states (§5.1/§10) are where they
+diverge, so reconcile must close that window.
+
+**D. API layer (`web/src/api/`).** `createAgent`/`updateAgent` `credential` already
+accept any string, so `"managed"` needs no client change (tighten to `CredentialRef`
+per G). Hide internal `"openrouter"` managed rows from the credentials list if the
+backend returns them (§6.7.6). Add a Managed mock fixture (`mock.ts`).
+
+**E. Credentials page — `web/src/pages/Credentials.tsx`: UNCHANGED** (self-contained
+CRUD; no dependency on the dialogs).
+
+**F. Billing model-spend panel (from §6.4).** `PrepaidPlan` (`Billing.tsx:249`),
+grid `:291`; add a `ModelUsageBreakdown` `<Panel>` beside `<UsageBreakdown/>`
+(`:408`, component `:589`); reuse `Panel`/`ResourceTable`/`formatCost`.
+
+**G. Credential-source type (rescoped — the runtime shared-lib already exists in #448).**
+`runtimes.ts` already DRYs the model/runtime/provider axis. What's **not** factored is
+the **credential-source** selection, still crammed as sentinels (`'__new__'`,
+`'__default__'`, `'managed'`) in one `string` state, with the two pickers diverged
+(detail has `ORG_DEFAULT`, create doesn't). Add a sibling
+`web/src/lib/credential-source.ts` (same pattern as `runtimes.ts`): the union
+`Source = {kind:'managed'} | {kind:'orgDefault'} | {kind:'credential'; id: CredentialId} | {kind:'new'}`,
+the `Select`-value ↔ `Source` map, and `toWire(source): CredentialRef | null | undefined`
+(managed→`"managed"`, credential→id, orgDefault→`null` on patch / omit on create,
+new→post-create id); import in both. Type the web client `credential` as
+`CredentialRef` + zod `z.union([z.literal('managed'), z.string().startsWith('cred_')])`.
+
+### 6.9 Docs deltas (exact)
+
+Recurring edit: (a) "credential/key **required**" → "required **unless** Managed";
+(b) `422 no_credential` → "…unless Managed selected/default"; (c) add a third option
+`credential:"managed"` (run via OpenComputer, billed to credits) beside inline `key`
+/ `credential:"cred_…"`; (d) "billed by your provider key" → "…or to your
+OpenComputer credits under Managed". **Never name OpenRouter.**
+
+Published nav = `docs/agent-sessions/*` only. Per file:
+- **`credentials.mdx`** (highest impact): frontmatter L3-4 (broaden; consider
+  retitling the page **"Model access"** — keep slug `agent-sessions/credentials`, so
+  no `docs.json`/link churn); L7 (lead Managed zero-key default; credential not
+  strictly required); L20-22; L49 (add `credential:"managed"` example); L74
+  (fallback to Managed); L76-83 Resolution (insert Managed into the order;
+  "neither resolves" ≠ always 422); L105 (N/A for managed); L109-135 inline-key
+  section (Managed = the true no-key path).
+- **`agents.mdx`**: L43 (add `credential:"managed"`); L53 ("(required)" →
+  "(required unless Managed)").
+- **`authentication.mdx`**: L4 desc; L7; L67 Warning (credits under Managed);
+  L78-82 (lead Managed; soften required; mention `"managed"`).
+- **`sessions.mdx`**: L13; L84 (credits under Managed); L88.
+- **`quickstart.mdx`**: L15-20 prereqs (Managed removes the provider-key prereq);
+  L22 Tip; L26; L35-42 + L50-57 examples (add a Managed no-key variant); L68 Note;
+  L72 Tip; L196 checklist.
+- **`overview.mdx`**: L22 card; L40 step ("choose Managed"); L53/L56 architecture.
+- **`runtimes.mdx`**: L7; L9-12 table (Credential column); L23/L41; L57; L76; L102.
+- **`api-reference.mdx`**: L58 (not required when Managed); L252 (document
+  `credential:"managed"`, bypasses key provider-match, billed to credits); L256
+  (third path); L337 (soften required); L339-341 (decide how/whether managed shows
+  in the `Credential` shape).
+- **`docs.json`**: **no change** (no new page; keep the slug even if the title
+  becomes "Model access").
+
+**SDK docs:** `sdks/typescript/README.md` L47 (Managed no-`key` variant), L68-79
+Credentials section (open with Managed zero-key; soften "required"; show
+`oc.agents.create({ …, credential:"managed" })`). `sdks/python/README.md`: **no
+change** (sandbox-only).
+
+**FLAG — `docs/background-agents/*` (unpublished, not in `docs.json`) names
+OpenRouter.** It carries the prior "platform billing / model gateway" concept
+(≈ Managed) **and** explicit OpenRouter mentions: `overview.mdx:62`,
+`models.mdx:27,54,57,58`, `api.mdx:128` (connection enum includes `openrouter`),
+plus gateway/"platform billing" passages (`overview.mdx:34`,
+`how-it-works.mdx:19,29,65-78`, `runtimes.mdx:38`, `triggers.mdx:20`,
+`observability.mdx:79,87`, `sessions.mdx:22,33`). **Decision (see §12):** treat
+`background-agents/*` as dead (delete) or adopt it as the Managed-terminology
+source — either way **scrub every OpenRouter mention** before any of it publishes.
+
+---
+
+## 7. Units & math (exact — implement verbatim)
+
+- **1 credit = $1.** Track token cost as **micro-credits** to stay integer:
+  feature `model_spend.credit_cost = 1e-6`, so `value` units are micro-credits and
+  credits debited = `value × 1e-6`.
+- **Watermark** = per-key `managed_model_keys.committed_micro` = OR `usage` already
+  debited (micro-USD, `round(usage_usd × 1e6)`). OR `usage` is monotonic.
+- **Debit per tick — immutable interval, persist before track (P1-a).** The in-flight
+  interval is written to the key row **before** the Autumn call
+  (`pending_from/to_micro`, `pending_idem = "model_spend:<org>:<from>:<to>"`).
+  `value = round((to − from) × (1 + markup_bps/10000))`. Advance
+  `committed_micro = to` and clear pending **only after** track success/`409`. On
+  restart a pending interval is retried **verbatim** (never recomputed against newer
+  `usage`). ⇒ **exactly-once**: the key always maps to one fixed interval, so a
+  success-then-crash replay is a true dup (no dropped tail, no widened key).
+  - Why the naive forms are wrong: keying on the **start watermark only** drops the
+    new spend (a post-crash retry computes a larger delta but reuses the old key →
+    `409` → watermark jumps, tail lost). Keying on `from:to` **without persisting the
+    interval first** double-charges (a pre-persist crash recomputes `from:to_new`, a
+    new key, charging the already-charged `from:to_old` again). Persist-then-track
+    with an immutable interval is the only correct form.
+- **Cap push — markup-correct (P1-b).** The OR cap bounds **provider** spend, but
+  Autumn charges `provider × (1+markup)`. To make the Autumn balance the hard
+  customer budget:
+  `new_limit_usd = usage_usd + remaining_usd / (1 + markup_bps/10000)`
+  (`remaining_usd = balances.credits.remaining`). `PATCH` only past an epsilon.
+  Setting `usage + remaining` (no markup divisor) would let OR allow `$remaining` of
+  provider spend while Autumn charges `remaining×(1+markup)` > balance → overspend.
+- **No negatives:** OR `usage` never decreases; refunds/credits are handled on the
+  Autumn side (grant credits), not by reversing OR.
+
+---
+
+## 8. Instrumentation (don't ship without these)
+
+Emitted from the edge crons + provisioning hook; surfaced in the existing metrics
+stack (and ClickHouse where noted).
+
+**Keep metric labels low-cardinality — no org-id labels** (P3-i); per-org detail
+lives in structured logs + ClickHouse, queryable without exploding the metric store.
+
+- **Counters (no `{org}`):** `model_or_key_provision_total{result}`,
+  `model_or_key_delete_total{result}`, `model_cap_update_total{result}`,
+  `model_spend_debit_micro_credits_total` (sum of `value`),
+  `model_meter_track_total{result=ok|dup|err}`,
+  `model_or_api_errors_total{op,http_code}`, `model_halt_resume_total{action}`.
+- **Gauges:** `model_meter_sync_lag_seconds` (now − last successful tick),
+  `model_or_account_balance_usd` (our float; **alert** low),
+  `model_managed_orgs_active`. (Per-org `cap_remaining` → logs/ClickHouse, not a gauge.)
+- **Reconcile:** `model_reconcile_drift_usd` aggregate (Σ OR spend − Σ Autumn
+  debits); **alert** if `|drift|` or its rate exceeds threshold. Per-org drift →
+  structured logs / a ClickHouse view.
+- **Structured logs / audit (immutable):** every key create/delete/rotate (org,
+  hash, limit), every cap change (org, old→new, reason top-up|drain|halt), every
+  debit tick (org, delta_micro, value, watermark before→after), every
+  provisioning hand-off to sessions-api. Never log the plaintext OR key.
+- **Traces:** wrap each cron tick (per-org span: read→debit→cap) and the
+  provisioning hook so OR/Autumn latency + failures are attributable.
+- **Dashboards/alerts:** sync-lag SLO; OR error-rate; drift; float low; spike in
+  `cap_update` failures (means orgs may overshoot or get wrongly blocked).
+
+---
+
+## 9. Consequential decisions (review these)
+
+**9.1 Per-org vs per-session OR keys.**
+*Options:* (a) one long-lived key per org, cap updated by cron; (b) ephemeral key
+per session, `limit=min(session budget, remaining)`, deleted at end.
+*Choice:* **(a) per-org default.** *Why:* durable, long-running sessions make
+per-session churn awkward; one key per org matches the billing entity (the pool
+owner) and minimizes OR API calls. *Risk:* a leaked key exposes the org's whole
+remaining budget (bounded by the cap, and the key is never in the sandbox thanks
+to the proxy). *Upgrade path:* (b) for tighter per-session blast radius if needed
+— same cron, iterate session keys.
+
+**9.2 At-cost vs markup.** *Options:* `markup_bps=0` (pass-through) vs >0.
+*Choice:* **mechanism shipped (per-org `model_markup_bps`, env default), value is a
+business call.** *Why it matters / must not be missed:* managed usage runs on
+**our** OR credits, and OR charges a **~5% credit-purchase fee**, so `markup_bps=0`
+**loses ~5%** (we pay list+5%, bill list). Break-even needs `~500 bps`; any margin
+is on top. Compute already runs at margin ($0.06/GB-hr bundled), so a markup is
+consistent.
+
+**9.3 Sync cadence.** *Choice:* `model_meter` every **1–2 min** (debit + cap),
+reconcile **daily**. *Why:* the OR cap is the real-time guard, so the cron only
+needs to keep the cap roughly aligned as compute drains the shared pool and to
+move spend into the visible balance. *Risk/trade:* between ticks, compute draining
+the pool while tokens still have OR headroom allows a **bounded overshoot**
+(≤ max burn × interval); trued-up next reconcile (can push balance slightly
+negative → halt). Same eventual-consistency class as today's 5-min compute bucket.
+Tighter = less overshoot, more OR calls. Add a top-up→cap-push hook (§5.5) so
+resume isn't cron-gated.
+
+**9.4 BYO via OR vs BYO direct.** *Choice:* **BYO-direct unchanged for v1**
+(raw provider key, existing credentials flow, no debit). BYO-via-OR (customer
+attaches their own OR key; `include_byok_in_limit`/`byok_usage` exist) is a later
+add for unified observability. *Why:* smallest surface; BYO is explicitly not
+billed.
+
+**9.5 Cross-service seam: who provisions + stores the OR key?** *Options:*
+(A) edge holds the OR mgmt key and does everything, storing the inference key in
+D1 `secret_store_entries` (edge's envelope-encrypted store); (B) sessions-api
+holds the mgmt key and provisions/stores via its Infisical credential pipeline,
+publishing only the hash to D1; (C) **edge provisions (mgmt key on edge only) and
+hands the freshly-created inference key to sessions-api via one HMAC internal call,
+which seals it through the existing Infisical credential pipeline; edge keeps the
+hash in D1 and owns all metering.** *Choice:* **(C).** *Why:* keeps the
+"Autumn/OR are edge-native" invariant (mgmt key in one place, all OR+Autumn calls
+on the edge), **and** reuses the post-migration Infisical-backed model-credential
+machinery for the runtime-facing secret (sealing, rotation-to-running-sessions).
+The plaintext key transits edge→sessions-api once over HMAC — the same trust path
+secrets already use. *Risk:* that one hand-off must be exactly-once / idempotent
+(key by org_id; re-create is a rotate).
+
+**9.6 Token feature representation in Autumn.** *Choice:* a **single
+dollar-denominated `model_spend`** credit-system feature (`credit_cost=1e-6`),
+**not** per-model Autumn features. *Why:* OR is the cost source; per-model prices
+would duplicate OR's pricing into Autumn's static schema. Per-model breakdown lives
+in ClickHouse (§6.5). *Trade:* Autumn itself won't show per-model — acceptable,
+the dashboard reads ClickHouse.
+
+**9.7 Runtime ↔ OpenRouter protocol — SPIKE PASSED 2026-06-29 (both runtimes green).**
+Validated live against OR with an inference key (`/tmp/or-spike.mjs`, throwaway):
+- **`claude` ✅** — `POST https://openrouter.ai/api/v1/messages` (Anthropic Messages
+  format, `Authorization: Bearer <or-key>`, `anthropic-version: 2023-06-01`,
+  model `anthropic/claude-haiku-4.5`) → `stop_reason:"tool_use"`, tool call echoed
+  (`get_weather{city:"Paris"}`), and **cost echoed** (`usage.cost = 0.000835` +
+  `cost_details`). This is OR's Claude-Code path (base `…/api`, auth via
+  `ANTHROPIC_AUTH_TOKEN`).
+- **`codex` ✅ (the one the doc said was unvalidated)** —
+  `POST https://openrouter.ai/api/v1/responses` (OpenAI **Responses** API,
+  `wire_api:"responses"`, Bearer auth, model `openai/gpt-5.4-nano`) →
+  `status:"completed"`, `function_call` echoed (`get_weather{city:"Paris"}`), and
+  **cost echoed** (`usage.cost = 0.0000331`). `chat/completions` also works (cost
+  echoed) as a fallback. So the Responses API + Bearer (non-OpenAI-auth) path **does**
+  work through OR.
+- **Both echo cost automatically** (no `usage:{include:true}` needed) → confirms the
+  §5.4 per-key poll + per-request capture are both viable.
+
+**The remaining build work** (§5.2) is unchanged: each runtime currently *blocks*
+base-URL injection — v3-claude **deletes** both `ANTHROPIC_AUTH_TOKEN` and
+`ANTHROPIC_BASE_URL` (`runtimes/v3-claude/src/server.ts:87–88`), v3-codex **hardcodes**
+the OpenAI provider block (`runtimes/v3-codex/src/server.ts:107–114`) — so make both
+configurable per `endpoint_profile`.
+
+**NEW finding — model-id slug mapping (load-bearing, P1).** Both servers **strip the
+provider prefix** before handing the model to the brain:
+`v3-claude/server.ts:78` `(cfg.model).replace(/^anthropic\//,"")`,
+`v3-codex/server.ts:70` `.replace(/^openai\//,"")`. That's **correct for BYO-direct**
+(Anthropic's real ids use dashes: `claude-opus-4-8`; OpenAI uses dots: `gpt-5.5`), but
+**wrong for Managed**: OR needs the **prefixed** slug, and for Anthropic a **dotted**
+version (`anthropic/claude-opus-4.8`, `…sonnet-4.6`, `…haiku-4.5` — verified present on
+OR; the dashed `anthropic/claude-opus-4-8` etc. used in `runtimes.ts` are **absent**
+from OR). OpenAI slugs match (`openai/gpt-5.5|5.4-mini|5.4-nano|5.3-codex` all present).
+So Managed must (a) **not** strip the prefix and (b) translate our stored Anthropic
+slug → OR's dotted slug. **Do not regex dash→dot** (OR also serves `anthropic/claude-3-haiku`
+with a dash). Implement as an explicit per-model `orSlug` in `runtimes.ts` (default =
+the stored id for OpenAI; explicit dotted value for Anthropic), carried into the
+Managed `endpoint_profile`/seal. `runtimes.ts` user-facing slugs stay as-is (they're
+right for BYO). Captured in §5.2 / §6.8.
+
+**NEW finding — key type.** The OR key currently in `.env.v3`
+(`OPENROUTER_PROVISIONING_KEY`) is actually an **inference** key (`GET /api/v1/keys` →
+401; it can call models + `GET /credits`, but cannot mint/list sub-keys). The build
+needs a real **management/provisioning** key (OR dashboard → *Provisioning API Keys*).
+Also the OR account float read `total_credits: 50, total_usage: 49.46` → **~$0.54
+left**; fund it before live Managed traffic (§5.7 float).
+
+**9.8 User-facing taxonomy (resolved).** Surface Managed as a single pinned entry
+in the existing credential picker, selected per agent, via the
+`credential: "managed"` sentinel — **not** a new `model_access` field. Org default
+is Managed unless a BYO credential is marked default; new orgs default to Managed;
+the Credentials page is unchanged and there is **no** managed-config page (a
+token-spend page is deferred); "OpenRouter" is never user-visible. Full contract
+§6.6; wire deltas §6.7–§6.9. *Why:* smallest surface — reuses the existing
+credential mental model + resolution, adds zero top-level concepts, removes the
+first-run `422 no_credential` wall. *Risk:* the sentinel lightly overloads
+`credential` (ids can't collide, so safe); Managed availability is gated on
+`autumn` + runtime/OR support (§9.7).
+
+**9.9 Type the credential ref (resolved).** `credential` carries a **closed union,
+not a free `string`**: `CredentialId = ` `` `cred_${string}` ``;
+`CredentialRef = "managed" | CredentialId` (omitted = org default). Enforced per
+layer: **web** client + schemas via zod
+(`z.union([z.literal("managed"), z.string().startsWith("cred_")])`); **SDK** via the
+TS union + a typed `Credential.id`; **backend** (no zod) via a `parseCredentialRef`
+guard → `400 {type:"invalid"}` (`AgentValidationError`; §6.7.7). The UI models the picker selection as a
+discriminated `Source` union in a shared module used by **both** pickers (§6.8.G).
+*Why:* the sentinel-in-a-string is the one looseness this taxonomy introduced; a
+closed union removes it end-to-end and DRYs the two diverged pickers. *Risk:* none
+material — the flat one-field wire contract is unchanged (non-breaking); only
+malformed values that already would have failed now fail earlier and clearer.
+
+---
+
+## 10. Failure modes & fail-open/closed
+
+- **OR inference path down** → model calls fail at the gateway (OR is in the hot
+  path; mitigated by OR's own provider routing/fallback). Product accepts OR as a
+  hot-path dependency (§9 trade); BYO-direct is the escape hatch.
+- **`model_meter` stalls / edge down** → no debit + no cap push. Balance lags but
+  the **last-set OR cap still enforces** the budget (fail-safe on overspend, modulo
+  the §9.3 overshoot bound). `sync_lag` alert fires.
+- **`PATCH limit` fails** → cap goes stale: after top-up the org may stay blocked
+  (cap too low) → retry + top-up→cap-push hook; after drain the org may overshoot
+  → bounded, trued by reconcile.
+- **`POST /track` fails** → watermark not advanced → delta re-sent next tick
+  (idempotent). No loss, no double charge.
+- **OR account out of funds** (our float) → all managed orgs' calls fail → **P1**;
+  guarded by float gauge + auto-recharge + alert (§5.7/§8).
+- **Provisioning hand-off (edge→sessions-api) fails** → partial state (OR key but no
+  bound credential). `model_billing_status` stays `provisioning`; Managed resolves to
+  **`422 managed_unavailable`** (not `no_credential`). The state machine (§5.1) +
+  reconcile (§5.7) repair each partial case — OR-key-without-credential,
+  credential-without-status-flip, status-`active`-without-key. Bounded retries →
+  `status='error'` + alert.
+
+---
+
+## 11. Alternatives considered (why not)
+
+- **Raw provider keys + our own metering** (parse `usage` in `secretsproxy`, keep a
+  rate card, enforce a mid-turn soft-stop): more code on the hot path, SSE/stream
+  parsing per provider, a rate card to maintain as prices move, and **still no
+  provider-enforced cap**. OR gives counting+limiting turnkey. Anthropic/OpenAI
+  expose key/project/workspace scoping but **no API-settable $ budget** (caps are
+  dashboard-only) — so self-enforcement is the only DIY path, and it's strictly
+  more work for less safety.
+- **Per-turn push from sessions-api → edge → Autumn:** real-time-ish balance, but
+  reintroduces "we count" (streaming capture, idempotent per-turn emit) for
+  marginal benefit; the OR cap already gives real-time enforcement. Poll-based
+  meter (mirrors the compute meter) is simpler and chosen. Revisit only if instant
+  balance UX is required.
+- **Separate token-credit balance:** breaks the single shared pool the product
+  wants; rejected.
+
+---
+
+## 12. Open questions (genuine forks for product/owner)
+
+1. **Markup value** (§9.2) — at-cost-minus-5%, break-even (~5%), or margin?
+2. **Per-org vs per-session keys** (§9.1) — accept org-budget blast radius, or pay
+   per-session churn for tighter isolation?
+3. **Sync cadence** (§9.3) — overshoot tolerance vs OR API volume.
+4. **Runtime/OR protocol** (§9.7) — confirm Claude-runtime path through OR before
+   committing the `claude` runtime; otherwise scope v1 to `codex` or keep `claude`
+   on direct keys.
+5. **Rollout** — token billing only for `autumn` orgs; sequencing vs the
+   legacy→autumn migration (`AUTUMN_NEW_ORGS`, the missing `cmd/migrate-to-autumn`).
+6. **`background-agents/*` docs** — delete (dead) vs adopt as the Managed-terminology
+   source; either way **scrub all OpenRouter mentions** before any publishes (§6.9).
+
+---
+
+## 13. Pointers (files)
+
+- Autumn (edge): `cloudflare-workers/api-edge/src/autumn_webhook.ts` (client:
+  `trackAutumnUsage`, `getAutumnCustomer`, `createAutumnCustomer`, `projectOrg`,
+  `syncAutumnToD1`), `autumn_meter.ts` (compute meter cron — **model_meter mirrors
+  it**), `dashboard.ts` (billing endpoints). Secret `AUTUMN_SECRET_KEY`; add
+  `OPENROUTER_PROVISIONING_KEY` the same way (`wrangler.prod.toml` /
+  `wrangler.toml`).
+- Provider switch / halt: migration `047_orgs_billing_provider`, D1
+  `schema_phase7.sql`, `index.ts` create/wake gates + `/internal/autumn-*`,
   `internal/controlplane/halt_reconciler.go`.
-- V3 model-call chokepoint: `internal/secretsproxy/proxy.go`.
-- V2 model gateway: `sessions-api/src/gateway/index.ts`.
-- Credential storage + per-session sealing: `sessions-api/src/v3/core/credentials.ts`,
-  `sessions-api/src/v3/runtime/credential.ts`.
-- Related design: `agent-sandbox-ownership.md` (act-as-org compute billing),
-  `.agents/design/per-sandbox-usage-api.md` and `.agents/design/sandbox-tags-and-usage.md`
-  (existing usage-metering precedent).
+- Egress proxy (security, unchanged): `internal/secretsproxy/proxy.go` — allowlist
+  `openrouter.ai`.
+- Credentials / sealing (store the OR inference key here): `sessions-api/src/v3/core/credentials.ts`,
+  `sessions-api/src/v3/runtime/credential.ts`, the secret-ledger/Infisical pipeline
+  (`INFISICAL_*` in `sessions-api/.env.v3`).
+- Dashboard: `web/src/pages/Billing.tsx` (`PrepaidPlan`/`UsageBreakdown`),
+  `web/src/api/client.ts`, `web/src/api/schemas.ts`, `web/src/api/mock.ts`.
+- ClickHouse: `CLICKHOUSE_*` in `sessions-api/.env.v3`.
+- Compute-billing context: `internal/db/billable_events.go`, `internal/db/usage.go`.
+
+---
+
+## 14. Build sequencing & prerequisites (start here)
+
+**Prerequisites (before any code):**
+- **Spike §9.7 — DONE, PASSED 2026-06-29.** Both `claude` (Anthropic Messages) and
+  `codex` (OpenAI Responses) validated through OR with tool calls + cost echo. Both
+  runtimes ship under Managed. (`/tmp/or-spike.mjs`.)
+- **OpenRouter management key — DONE (2026-06-29).** Obtained + verified (`GET /keys`
+  200; mints/lists keys) + stored in `sessions-api/.env.v3` as
+  `OPENROUTER_PROVISIONING_KEY`. The edge OR client ran a full mint→get→patch→delete
+  lifecycle against real OR with it. **Still TODO:** set it as the edge **Wrangler**
+  secret (`wrangler secret put OPENROUTER_PROVISIONING_KEY`, prod + dev).
+- **Fund the OR account float — STILL TODO.** `GET /credits` shows ~$0.54 left of $50.
+  Mint/provision works now (limit-capped), but real Managed spend needs funding (or
+  auto-recharge, §5.7) before a live Managed turn.
+- **Autumn `model_spend` feature.** Define the metered feature and add it to the
+  `credits` credit_schema with `credit_cost = 1e-6` (§4 / §6.2). `AUTUMN_SECRET_KEY`
+  is already live on the prod edge **and** stored in `sessions-api/.env.v3`.
+
+**Build order (claude path first; each step independently testable):**
+1. **Edge — managed key lifecycle + state — DONE (PR #445).** `schema_phase9` (orgs
+   cols + `managed_model_keys`); OR management-key client (`openrouter.ts`);
+   provisioning state machine (`model_billing.ts`, off→active, idempotent +
+   lost-bind recovery); `/internal/model-billing/enable|disable`. 11 unit tests +
+   live OR lifecycle verified. Dormant until `OPENROUTER_PROVISIONING_KEY` is set.
+2. **sessions-api — credential + resolution + seal — DONE (sessions-api PR #34).**
+   2A: migration 015 (or_key_hash+operation_id); `getManagedCredential` +
+   `createOrRotateManagedCredential` + resolver arm; `POST/GET
+   /internal/managed-credential` (dedicated HMAC); `credential:"managed"` sentinel +
+   ref validation + key/credential exclusion; `422 managed_unavailable`. 2B:
+   `endpoint_profile` on `TurnConfig` + seal keyed on (runtime, source) +
+   `toOpenRouterSlug` (Anthropic dash→dot); both runtime servers route Managed
+   through OR. **SHIPPED + validated live on prod 2026-06-29: both claude AND codex
+   Managed turns run end-to-end through OpenRouter** (org `2f9094d9`); codex's
+   `requires_openai_auth=false` CLI path — the last §9.7 unknown — **confirmed
+   working live**. Runtime brains shipped as org-scoped snapshots (claude v0.0.11,
+   codex v0.0.5).
+3. **Edge — metering + enforcement:** `model_meter` cron — persist-before-track
+   immutable-interval debit (§5.4/§7), markup-correct **aggregate** cap across keys
+   (§5.4/§7), `projectOrg` halt on ≤0 (§5.4); reconcile cron (§5.7).
+4. **Edge — `/billing.managedAvailable` — DONE (PR #445).** `dashboard.ts` `/billing`
+   returns `managedAvailable` (= `model_billing_status==='active'`).
+5. **UI — Managed delta — DONE (PR #445).** Pinned `Managed · billed to credits`
+   picker entry in `Agents.tsx` + `AgentDetail.tsx`, gated on `managedAvailable`,
+   sends `credential:"managed"`; `BillingStateSchema.managedAvailable`; SDK
+   `CredentialId`/`CredentialRef` union (v0.9.4). (The §6.8.G credential-source shared
+   module was left as an optional refactor — picker is functional without it.)
+6. **Dashboard stats:** ClickHouse `model_usage` + the panel (§6.4 / §6.5).
+7. **Docs:** §6.9 (and scrub OpenRouter from `background-agents/*`, §12.6).
+
+**Decisions still owed by product (don't block step 1, but needed by step 3/5):**
+markup value (§9.2), per-org vs per-session keys (§9.1), sync cadence (§9.3),
+BYO-via-OR (§9.4).
+
+**FINAL STATE (2026-06-29): steps 1–5, 7 DONE + LIVE ON PROD + review-hardened.**
+OC repo (edge steps 1/3/4 + UI step 5 + docs step 7 + this doc) = PR #445;
+sessions-api step 2 + runtime 2B + review fixes = PR #34. **Both DRAFT, NOT merged —
+prod runs branch code (edge via CI workflow_dispatch on the branch; bolt-platform +
+runtime snapshots from #34). MERGE BOTH for durability** (a future `main` deploy would
+revert; merging #445 also redeploys the Go server + publishes the SDK).
+
+Verified live on prod (org `2f9094d9`): both claude + codex Managed turns route
+through OpenRouter; a real **$0.226 model debit landed in Autumn credits** (step-3
+`model_meter` on the `*/5` tick). Autumn `model_spend` feature + credit_schema
+(`credit_cost=1e-6`) created via API. Two external reviews addressed (P0 managed-cred
+leak sealed: credential routes 404 openrouter + session id masked to "managed"; P1
+one-active-key unique index; P2 patch-key-on-managed → 400). markup still **0
+(at-cost, loses ~5%)** — set `OPENROUTER_MARKUP_BPS` for margin.
+
+**Remaining token-billing work:** step **6** (dashboard model-usage panel — only one
+not built); optionally tighten the meter cadence (`*/5`→`*/2`) + add the §5.7 reconcile
+cron. **Prod secrets set:** `OPENROUTER_PROVISIONING_KEY` + `OC_MANAGED_CRED_HMAC_SECRET`
+on the edge; `OC_MANAGED_CRED_HMAC_SECRET` on bolt-platform (matching).
+
+**BLOCKED rollout (held):** "bump existing Autumn orgs to latest runtime + provision
+managed keys" — **blocked by a separate, pre-existing prod SEV** (act-as-org sessions
+can't fork the org-scoped runtime snapshots; only org `2f9094d9` works). Full diagnosis
++ fix plan: `/Users/izalutski/Digger/_ws_opencomputer/snapshot-act-as-org-sharing.md`.
+Until that's fixed, other orgs can't run ANY session (BYO or Managed), so the rollout
+is a no-op. NOT a token-billing bug.
+
+---
+*(historical, pre-final)* steps 1,2,4,5 were done first; the "Managed" option became
+clickable gated on `managedAvailable`.
+
+**To click-test Managed** (deploy + provision): deploy the edge (#445) with
+`OPENROUTER_PROVISIONING_KEY` + `OC_MANAGED_CRED_HMAC_SECRET`; deploy sessions-api
+(#34) with `OC_MANAGED_CRED_HMAC_SECRET` (same) + apply migration 015; provision the
+org with `scripts/enable-model-billing.mjs` (→ `model_billing_status='active'` +
+managed credential bound). Then the dashboard offers Managed + a session resolves +
+seals the OR key. **A full model turn additionally needs** the runtime images rebuilt
+with step 2B (the brains) + a funded OR float; codex still wants the §9.7 CLI smoke.
+Everything is dormant until the secrets are set.
+
+---
+
+## Appendix: research sources
+
+OpenRouter — [keys API (create/list/get/patch/delete)](https://openrouter.ai/docs/api/api-reference/api-keys/create-keys),
+[provisioning/management keys](https://openrouter.ai/docs/guides/overview/auth/provisioning-api-keys),
+[analytics API](https://openrouter.ai/docs/cookbook/administration/analytics-cost-control)
+(`POST /api/v1/analytics/query`, mgmt-key auth; dims `model`/`api_key_id`,
+metric `total_usage`),
+[BYOK + fees](https://openrouter.ai/docs/guides/overview/auth/byok),
+[usage accounting](https://openrouter.ai/docs/guides/guides/usage-accounting),
+[Infisical integration](https://openrouter.ai/docs/guides/community/infisical).
+Anthropic [Admin API](https://docs.anthropic.com/en/api/administration-api)
+(no API-settable spend cap),
+OpenAI [project service accounts](https://developers.openai.com/api/reference/resources/organization/subresources/projects/subresources/service_accounts/methods/create)
+(no API-settable budget). Autumn config read live from `api.useautumn.com/v1`
+(`/products`, `/features`) 2026-06-29: `credits` credit_system (1 cr=$1),
+`compute_1gb…64gb` schema, `base`/`top_up`/`concurrency_*` products.

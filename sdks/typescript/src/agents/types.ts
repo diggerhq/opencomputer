@@ -14,6 +14,14 @@ export interface Limits { tokens?: number; turnSeconds?: number; turns?: number;
 // keeps known values discoverable while still accepting future ones.
 export type Runtime = "claude" | "codex" | (string & {});
 
+// A credential id (`newId("cred")` → `cred_…`). The template keeps the shape
+// checkable while still accepting any concrete id.
+export type CredentialId = `cred_${string}`;
+// How an agent picks its model source: the reserved "managed" sentinel (run via
+// OpenComputer, billed to credits) or a specific BYO credential id. Omit/null to
+// inherit the org default.
+export type CredentialRef = "managed" | CredentialId;
+
 export interface Actor {
   id?: string;
   type?: "human" | "agent" | "system" | (string & {});
@@ -27,7 +35,7 @@ export interface Agent {
   model: string;
   runtime: Runtime;
   revision?: number;
-  credentialId?: string | null;
+  credentialId?: CredentialRef | null;
   limits?: Limits;
   createdAt?: string;
   updatedAt?: string;
@@ -71,7 +79,7 @@ export interface SessionData {
 }
 
 export interface Credential {
-  id: string;
+  id: CredentialId;
   provider: string;
   name?: string;
   last4?: string;
