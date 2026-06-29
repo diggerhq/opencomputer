@@ -424,6 +424,24 @@ bodies are TS interfaces + hand-written guards; responses via `serialize*`.
    `"openrouter"` managed rows so they don't render as user BYO keys (filter in
    the query or serializer).
 
+7. **Tighten the `credential` ref type — don't leave it `string`** (decision §9.9).
+   Shared closed union: `CredentialId = ` `` `cred_${string}` `` (ids are
+   `newId("cred")` → `cred_…`, `core/credentials.ts:69`); `CredentialRef =
+   "managed" | CredentialId` (omitted = org default). Backend (no zod): type
+   `CreateAgentBody.credential` / `PatchBody.credential` (`api/agents.ts:20,77`) as
+   `CredentialRef`, and add a runtime `parseCredentialRef(v)` →
+   `{kind:"managed"} | {kind:"id",id}` that throws `AgentValidationError`
+   (→ `400 invalid_credential`) for anything that is neither `"managed"` nor
+   `^cred_`. Call it in `createAgent`/`patchAgent` **before** the source branch so a
+   malformed ref fails fast and distinctly (today an unknown string only fails later
+   as "credential not found"). Also tighten credential **create** `provider`
+   (`api/credentials.ts`) to the closed `"anthropic" | "openai"` — the internal
+   `"openrouter"` managed provider is system-only, never user-supplied. SDK
+   (`sdks/typescript/src/agents`): `Credential.id: CredentialId`,
+   `CreateAgentParams.credential?: CredentialRef`,
+   `UpdateAgentParams.credential?: CredentialRef | null` so `credential: cred.id`
+   and `credential: "managed"` typecheck while arbitrary strings don't.
+
 ### 6.8 UI deltas (exact)
 
 Repo `opencomputer/web` (`web/src/...`; byte-identical on `main`). **Two** credential
@@ -469,6 +487,20 @@ CRUD; no dependency on the dialogs).
 **F. Billing model-spend panel (from §6.4).** `PrepaidPlan` (`Billing.tsx:249`),
 grid `:291`; add a `ModelUsageBreakdown` `<Panel>` beside `<UsageBreakdown/>`
 (`:408`, component `:589`); reuse `Panel`/`ResourceTable`/`formatCost`.
+
+**G. Tighten the picker selection type + DRY the two dialogs** (decision §9.9).
+Today both pickers cram cred-ids + sentinels (`'__new__'`, `'__default__'`,
+`'managed'`) into one `string` state, and they've **diverged** (AgentDetail has
+`ORG_DEFAULT`, Agents doesn't — research-confirmed). Extract a shared
+`web/src/lib/credential-source.ts`: the union
+`Source = {kind:'managed'} | {kind:'orgDefault'} | {kind:'credential'; id: CredentialId} | {kind:'new'}`,
+the `Select`-value ↔ `Source` map, and `toWire(source): CredentialRef | null | undefined`
+(managed→`"managed"`, credential→id, orgDefault→`null` on patch / omit on create,
+new→post-create id). Both `Agents.tsx` and `AgentDetail.tsx` import it → one source
+of truth, no drift. Type the web client `createAgent`/`updateAgent` `credential` as
+`CredentialRef` (`client.ts:374,394`) and runtime-validate via zod (web has zod):
+`CredentialSchema.id` (`schemas.ts:296`) as `z.string().startsWith('cred_')`, and the
+field as `z.union([z.literal('managed'), credentialIdSchema])`.
 
 ### 6.9 Docs deltas (exact)
 
@@ -646,6 +678,19 @@ credential mental model + resolution, adds zero top-level concepts, removes the
 first-run `422 no_credential` wall. *Risk:* the sentinel lightly overloads
 `credential` (ids can't collide, so safe); Managed availability is gated on
 `autumn` + runtime/OR support (§9.7).
+
+**9.9 Type the credential ref (resolved).** `credential` carries a **closed union,
+not a free `string`**: `CredentialId = ` `` `cred_${string}` ``;
+`CredentialRef = "managed" | CredentialId` (omitted = org default). Enforced per
+layer: **web** client + schemas via zod
+(`z.union([z.literal("managed"), z.string().startsWith("cred_")])`); **SDK** via the
+TS union + a typed `Credential.id`; **backend** (no zod) via a `parseCredentialRef`
+guard → `400 invalid_credential`. The UI models the picker selection as a
+discriminated `Source` union in a shared module used by **both** pickers (§6.8.G).
+*Why:* the sentinel-in-a-string is the one looseness this taxonomy introduced; a
+closed union removes it end-to-end and DRYs the two diverged pickers. *Risk:* none
+material — the flat one-field wire contract is unchanged (non-breaking); only
+malformed values that already would have failed now fail earlier and clearer.
 
 ---
 
