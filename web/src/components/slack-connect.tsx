@@ -269,40 +269,34 @@ export function SlackConnect({
                 </p>
               ) : (
                 <>
+                  {/* Linear flow: read → Copy → Open Slack. The action row sits
+                      right under the explainer (Copy before the link), with the
+                      manifest below as reference. */}
                   <p className="text-muted-foreground text-sm">
-                    Create the app from this manifest in Slack.
+                    Copy this manifest, then create the app from it in Slack.
                   </p>
-                  <div className="min-w-0">
-                    <div className="mb-1.5 flex items-center justify-between">
-                      <span className="text-muted-foreground text-xs font-medium">
-                        App manifest
-                      </span>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={copyManifest}
-                      >
-                        {copied ? (
-                          <Check className="size-3.5" />
-                        ) : (
-                          <Copy className="size-3.5" />
-                        )}
-                        {copied ? 'Copied' : 'Copy'}
-                      </Button>
-                    </div>
-                    <pre className="bg-panel-2 max-h-60 overflow-auto rounded-md border p-3 font-mono text-xs">
-                      {JSON.stringify(manifest.manifest, null, 2)}
-                    </pre>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button variant="outline" size="sm" onClick={copyManifest}>
+                      {copied ? (
+                        <Check className="size-3.5" />
+                      ) : (
+                        <Copy className="size-3.5" />
+                      )}
+                      {copied ? 'Copied' : 'Copy manifest'}
+                    </Button>
+                    <a
+                      href={manifest.create_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-foreground inline-flex items-center gap-1.5 text-sm underline underline-offset-4"
+                    >
+                      Open Slack apps
+                      <ExternalLink className="size-3.5" />
+                    </a>
                   </div>
-                  <a
-                    href={manifest.create_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-foreground inline-flex items-center gap-1.5 text-sm underline underline-offset-4"
-                  >
-                    Open Slack apps
-                    <ExternalLink className="size-3.5" />
-                  </a>
+                  <pre className="bg-panel-2 max-h-60 min-w-0 overflow-auto rounded-md border p-3 font-mono text-xs">
+                    {JSON.stringify(manifest.manifest, null, 2)}
+                  </pre>
                 </>
               )}
               <DialogFooter>
