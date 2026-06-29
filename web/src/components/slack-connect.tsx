@@ -282,7 +282,17 @@ export function SlackConnect({
                       ) : (
                         <Copy className="size-3.5" />
                       )}
-                      {copied ? 'Copied' : 'Copy manifest'}
+                      {/* Reserve the wider label's width (stacked grid) so the
+                          button — and the link beside it — don't shift when it
+                          flips to "Copied". */}
+                      <span className="grid">
+                        <span className="invisible col-start-1 row-start-1">
+                          Copy manifest
+                        </span>
+                        <span className="col-start-1 row-start-1 text-left">
+                          {copied ? 'Copied' : 'Copy manifest'}
+                        </span>
+                      </span>
                     </Button>
                     <a
                       href={manifest.create_url}
