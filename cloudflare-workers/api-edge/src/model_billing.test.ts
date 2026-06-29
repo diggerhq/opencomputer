@@ -7,6 +7,7 @@ import {
   patchOrKey,
 } from "./openrouter";
 import {
+  disableManagedBilling,
   enableManagedBilling,
   type ManagedModelKeyRow,
   type ModelBillingEnv,
@@ -59,6 +60,15 @@ class FakeStmt {
     return null;
   }
 
+  // getAllKeyRows uses .all() (no status filter).
+  async all<T>(): Promise<{ results: T[] }> {
+    if (this.sql.includes("FROM managed_model_keys")) {
+      const orgId = this.args[0] as string;
+      return { results: this.db.keys.filter((k) => k.org_id === orgId) as T[] };
+    }
+    return { results: [] };
+  }
+
   async run(): Promise<void> {
     const s = this.sql;
     if (s.startsWith("UPDATE orgs SET model_billing_status")) {
@@ -84,6 +94,11 @@ class FakeStmt {
         created_at,
         superseded_at: null,
       });
+      return;
+    }
+    if (s.startsWith("DELETE FROM managed_model_keys")) {
+      const orgId = this.args[0] as string;
+      this.db.keys = this.db.keys.filter((k) => k.org_id !== orgId);
       return;
     }
     if (s.startsWith("UPDATE managed_model_keys SET")) {
@@ -136,6 +151,7 @@ function makeFetch(opts: RouterOpts = {}) {
     // sessions-api hand-off
     if (url.includes("/internal/managed-credential")) {
       if (method === "POST") return new Response(JSON.stringify({ managed_credential_id: "cred_bound" }), { status: 200 });
+      if (method === "DELETE") return new Response(JSON.stringify({ deleted: 1 }), { status: 200 });
       // GET lookup
       return new Response(JSON.stringify({ managed_credential_id: opts.lookupCredId ?? null }), { status: 200 });
     }
@@ -311,5 +327,35 @@ describe("enableManagedBilling state machine", () => {
     expect(calls.find((c) => c.method === "POST" && c.url.endsWith("/keys"))).toBeTruthy(); // recreated
     expect(db.keys[0].or_key_hash).toBe("hash-new");
     expect(db.keys[0].managed_credential_id).toBe("cred_bound");
+  });
+});
+
+describe("disableManagedBilling (rollback / hard offboard)", () => {
+  it("deletes the OR key, revokes the sessions-api credential, drops rows, flips off", async () => {
+    const db = new FakeDb();
+    const orgId = seedOrg(db, { model_billing_status: "active" });
+    db.keys.push({
+      id: "mmk_1", org_id: orgId, or_key_hash: "hash-live", managed_credential_id: "cred_live",
+      operation_id: "op_1", status: "active", committed_micro: 0, pending_from_micro: null,
+      pending_to_micro: null, pending_idem: null, attempts: 0, last_error: null, created_at: 1, superseded_at: null,
+    });
+    const { spy, calls } = makeFetch();
+    vi.stubGlobal("fetch", spy);
+
+    await disableManagedBilling(makeEnv(db), orgId);
+
+    expect(calls.find((c) => c.method === "DELETE" && c.url.includes("/keys/"))).toBeTruthy(); // OR key deleted
+    expect(calls.find((c) => c.method === "DELETE" && c.url.includes("/internal/managed-credential"))).toBeTruthy(); // credential revoked
+    expect(db.keys.length).toBe(0); // rows dropped
+    expect(db.orgs.get(orgId)!.model_billing_status).toBe("off"); // flipped off
+  });
+
+  it("is a no-op-safe toggle when nothing is provisioned", async () => {
+    const db = new FakeDb();
+    const orgId = seedOrg(db, { model_billing_status: "off" });
+    const { spy } = makeFetch();
+    vi.stubGlobal("fetch", spy);
+    await disableManagedBilling(makeEnv(db), orgId);
+    expect(db.orgs.get(orgId)!.model_billing_status).toBe("off");
   });
 });

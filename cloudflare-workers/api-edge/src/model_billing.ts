@@ -117,6 +117,20 @@ export async function getActiveKeyRow(env: ModelBillingEnv, orgId: string): Prom
     .first<ManagedModelKeyRow>();
 }
 
+// All of an org's key rows (any status) — for the hard offboard sweep.
+async function getAllKeyRows(env: ModelBillingEnv, orgId: string): Promise<ManagedModelKeyRow[]> {
+  const res = await env.OPENCOMPUTER_DB.prepare(
+    "SELECT * FROM managed_model_keys WHERE org_id = ?1",
+  )
+    .bind(orgId)
+    .all<ManagedModelKeyRow>();
+  return res.results ?? [];
+}
+
+async function deleteKeyRows(env: ModelBillingEnv, orgId: string): Promise<void> {
+  await env.OPENCOMPUTER_DB.prepare("DELETE FROM managed_model_keys WHERE org_id = ?1").bind(orgId).run();
+}
+
 async function insertRow(env: ModelBillingEnv, row: { id: string; orgId: string; operationId: string; createdAt: number }): Promise<ManagedModelKeyRow> {
   await env.OPENCOMPUTER_DB.prepare(
     "INSERT INTO managed_model_keys (id, org_id, operation_id, status, committed_micro, attempts, created_at) VALUES (?1, ?2, ?3, 'active', 0, 0, ?4)",
@@ -193,7 +207,7 @@ async function hmacHex(secret: string, data: string): Promise<string> {
 // sessions-api. Returns the parsed JSON. `path` must start with HANDOFF_PATH.
 async function signedHandoff(
   env: ModelBillingEnv,
-  method: "POST" | "GET",
+  method: "POST" | "GET" | "DELETE",
   path: string,
   body: string,
 ): Promise<unknown> {
@@ -210,7 +224,7 @@ async function signedHandoff(
       "x-oc-managed-ts": ts,
       "x-oc-managed-sig": sig,
     },
-    body: method === "GET" ? undefined : body,
+    body: method === "POST" ? body : undefined, // GET + DELETE carry no body
   });
   const text = await resp.text();
   if (!resp.ok) throw new Error(`managed-credential ${method} ${resp.status}: ${text.slice(0, 200)}`);
@@ -246,6 +260,15 @@ async function lookupManagedCredential(
   const qs = `?owner_id=${encodeURIComponent(p.ownerId)}&or_key_hash=${encodeURIComponent(p.orKeyHash)}`;
   const out = (await signedHandoff(env, "GET", HANDOFF_PATH + qs, "")) as { managed_credential_id?: string | null };
   return out?.managed_credential_id ?? null;
+}
+
+// Revoke (soft-delete) the owner's managed credential(s) in sessions-api — the
+// rollback counterpart of the bind. Idempotent (deleting none returns 0). Returns
+// how many were deleted.
+async function revokeManagedCredential(env: ModelBillingEnv, ownerId: string): Promise<number> {
+  const qs = `?owner_id=${encodeURIComponent(ownerId)}`;
+  const out = (await signedHandoff(env, "DELETE", HANDOFF_PATH + qs, "")) as { deleted?: number };
+  return out?.deleted ?? 0;
 }
 
 // ── the state machine ───────────────────────────────────────────────────────
@@ -356,17 +379,26 @@ export async function reconcileManagedBilling(env: ModelBillingEnv, orgId: strin
   return enableManagedBilling(env, orgId);
 }
 
-// disableManagedBilling marks the org's active key 'deleting' (§5.8). The metering
-// cron (step 3) keeps polling it until spend quiesces, does a final debit, then
-// DELETEs the OR key + revokes the credential, and flips the org 'off' once no
-// usable key remains. We only move state here; we do NOT delete mid-spend.
+// disableManagedBilling is the rollback path: a synchronous HARD offboard. The
+// graceful-drain cron (§5.8 — keep polling until spend quiesces, final debit, then
+// delete) isn't built yet, so disable does the teardown directly: delete the OR
+// key(s), revoke the sessions-api managed credential, drop the key rows, flip the org
+// off. Order matters — we only delete rows + flip off AFTER the OR key + credential
+// are gone, so a partial failure throws and a retry completes cleanly (every step is
+// idempotent). NOTE: a tiny final slice of spend may go unbilled (no drain); fine for
+// rollback/test offboard. Replace with the graceful drain when step 3 lands.
 export async function disableManagedBilling(env: ModelBillingEnv, orgId: string): Promise<void> {
-  const row = await getActiveKeyRow(env, orgId);
-  if (row) {
-    await updateRow(env, row.id, { status: "deleting" });
-    console.log(`model-billing: org ${orgId} key ${row.or_key_hash} → deleting (drain + offboard handled by cron)`);
-  } else {
-    // Nothing usable to drain → off immediately.
-    await setOrgStatus(env, orgId, "off");
+  const rows = await getAllKeyRows(env, orgId);
+  // 1. Delete every OR key (idempotent: 404 = already gone). Kills the budget + the
+  //    sealed key's validity immediately, even if a later step fails.
+  for (const row of rows) {
+    if (row.or_key_hash) await deleteOrKey(env, row.or_key_hash);
   }
+  // 2. Revoke the managed credential in sessions-api so the resolver stops resolving
+  //    Managed (the org-default-managed arm, §6.7.3). Throws on failure → retry.
+  await revokeManagedCredential(env, ownerIdForOrg(orgId));
+  // 3. Only now: drop the rows + flip off (so a mid-failure retry re-runs 1–2).
+  await deleteKeyRows(env, orgId);
+  await setOrgStatus(env, orgId, "off");
+  console.log(`model-billing: org ${orgId} disabled (hard offboard: ${rows.length} key(s) deleted + credential revoked)`);
 }

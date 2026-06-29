@@ -981,14 +981,27 @@ export async function handleDashboard(
   // dashboard renders instead of 404-erroring on a missing route.
   if (sub === "/billing" && method === "GET") {
     const org = await env.OPENCOMPUTER_DB.prepare(
-      `SELECT plan, stripe_customer_id, stripe_subscription_id, free_credits_remaining_cents, credit_balance_cents, is_halted, max_concurrent_sandboxes, billing_provider, model_billing_status
+      `SELECT plan, stripe_customer_id, stripe_subscription_id, free_credits_remaining_cents, credit_balance_cents, is_halted, max_concurrent_sandboxes, billing_provider
          FROM orgs WHERE id = ?1`,
     ).bind(caller.orgID).first<{
       plan: string; stripe_customer_id: string | null; stripe_subscription_id: string | null;
       free_credits_remaining_cents: number; credit_balance_cents: number; is_halted: number;
-      max_concurrent_sandboxes: number; billing_provider: string; model_billing_status: string | null;
+      max_concurrent_sandboxes: number; billing_provider: string;
     }>();
     if (!org) return json({ error: "org not found" }, 404);
+    // Managed model access (token-billing §6.6) — read SEPARATELY + defensively so the
+    // critical billing read above never depends on the phase-9 column. If schema_phase9
+    // hasn't been applied yet (Worker deployed first), the column is missing → this
+    // throws → managedAvailable=false, and existing billing is unaffected (P0 ordering).
+    let managedAvailable = false;
+    try {
+      const m = await env.OPENCOMPUTER_DB.prepare(
+        `SELECT model_billing_status FROM orgs WHERE id = ?1`,
+      ).bind(caller.orgID).first<{ model_billing_status: string | null }>();
+      managedAvailable = m?.model_billing_status === "active";
+    } catch {
+      /* phase-9 not migrated yet → Managed simply unavailable */
+    }
     // Cross-check against the live DO state — the D1 mirror gets written by
     // the DO after every debit but lags a touch, and on initial signup the
     // column reads its column-default (500) before the DO has ever been
@@ -1023,7 +1036,8 @@ export async function handleDashboard(
       // Managed model access (token-billing §6.6): the single gating authority the UI
       // reads to offer the "Managed" credential option. True only once the edge has
       // provisioned the org's OpenRouter key + bound it (model_billing_status='active').
-      managedAvailable: org.model_billing_status === "active",
+      // Read defensively above so a missing phase-9 column never breaks billing.
+      managedAvailable,
       // Upcoming-invoice + meters would come from Stripe API on demand;
       // surface stubs for now so the UI has stable keys to render against.
       upcomingInvoice: null,
