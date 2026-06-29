@@ -368,8 +368,14 @@ func (s *Server) setSnapshotPublic(c echo.Context, isPublic bool) error {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "only the platform org may publish snapshots to the shared catalog"})
 	}
 
+	// Cascade to the backing checkpoint. The fork path (createFromCheckpointCore)
+	// gates on sandbox_checkpoints.is_public separately, so publishing only the
+	// image_cache row makes the NAME resolve but the fork still 403s with
+	// "checkpoint does not belong to this organization". SetSnapshotPublic flips
+	// both atomically (unpublish revokes the checkpoint only if no other public
+	// snapshot still references it).
 	name := c.Param("name")
-	if err := s.store.SetImageCachePublicByName(c.Request().Context(), orgID, name, isPublic); err != nil {
+	if err := s.store.SetSnapshotPublic(c.Request().Context(), orgID, name, isPublic); err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
 	}
 
