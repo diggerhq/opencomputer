@@ -22,6 +22,7 @@ import {
 } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Select, Textarea } from '@/components/form'
+import { ChatTextarea } from '@/components/chat-textarea'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
@@ -423,9 +424,14 @@ export default function AgentDetail() {
                   if (task.trim()) startMutation.mutate()
                 }}
               >
-                <Textarea
+                <ChatTextarea
                   value={task}
                   onChange={(e) => setTask(e.target.value)}
+                  onSend={() => {
+                    if (task.trim() && !startMutation.isPending) {
+                      startMutation.mutate()
+                    }
+                  }}
                   placeholder="Give this agent a task — it runs durably as a new session…"
                   className="min-h-20"
                 />
@@ -433,6 +439,7 @@ export default function AgentDetail() {
                   <Button
                     type="submit"
                     size="sm"
+                    title="Enter to start · Shift+Enter for newline"
                     disabled={startMutation.isPending || !task.trim()}
                   >
                     <Send className="size-4" />

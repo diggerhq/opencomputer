@@ -16,7 +16,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, Label, Select, Textarea } from '@/components/form'
+import { Field, Label, Select } from '@/components/form'
+import { ChatTextarea } from '@/components/chat-textarea'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
@@ -197,10 +198,15 @@ export default function Sessions() {
                 htmlFor="start-message"
                 description="What should the agent do? (required)"
               >
-                <Textarea
+                <ChatTextarea
                   id="start-message"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
+                  onSend={() => {
+                    if (agentId && message.trim() && !startMutation.isPending) {
+                      startMutation.mutate()
+                    }
+                  }}
                   placeholder="Review PR #412 and open a follow-up if anything needs fixing."
                   className="min-h-24"
                 />

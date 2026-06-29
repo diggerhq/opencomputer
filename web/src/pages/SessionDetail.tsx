@@ -14,7 +14,7 @@ import {
 import { SessionEventSchema } from '@/api/schemas'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/form'
+import { ChatTextarea } from '@/components/chat-textarea'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
@@ -297,9 +297,14 @@ export default function SessionDetail() {
               if (draft.trim() && canSteer) steerMutation.mutate()
             }}
           >
-            <Textarea
+            <ChatTextarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
+              onSend={() => {
+                if (draft.trim() && canSteer && !steerMutation.isPending) {
+                  steerMutation.mutate()
+                }
+              }}
               placeholder={
                 canSteer
                   ? 'Send a message to steer the session…'
@@ -307,10 +312,10 @@ export default function SessionDetail() {
               }
               disabled={!canSteer}
               className="min-h-10 flex-1"
-              rows={1}
             />
             <Button
               type="submit"
+              title="Enter to send · Shift+Enter for newline"
               disabled={!draft.trim() || !canSteer || steerMutation.isPending}
             >
               <Send className="size-4" />
