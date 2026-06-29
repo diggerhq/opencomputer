@@ -117,9 +117,28 @@ customers (pro + active Stripe sub): **33 on legacy** (all `model_billing_status
   (`model_meter.ts` early-return). Tests updated + non-autumn cases added (21/21 green,
   tsc clean). After this, *any* org can be enabled with bounded exposure and zero
   wrongful halts. *Still requires the per-org enable step — that's Slice 2.*
-- **Slice 2 (remove per-org enablement):** provision-on-first-use so Managed "just works"
-  for any org with no operator action, and surface it to all in the UI. One UX seam to
-  settle: provision when the user selects Managed, or silently on the first Managed turn.
+- **Slice 2 (remove per-org enablement + kill `managedAvailable`):** Managed becomes a
+  universal capability — **provisioned automatically at agent create**, offered to all,
+  no `managedAvailable` flag (it's a reality-fork; remove it from edge `/billing` + web +
+  `schemas.ts`). Provisioning is idempotent (`reconcileManagedBilling`).
+
+  **Trigger MUST be in sessions-api, not the edge.** `api.opencomputer.dev` *is*
+  sessions-api; the edge only proxies the dashboard path (`dashboard.ts:proxyToV3`).
+  Programmatic agent-create (SDK → sessions-api direct) never hits the edge, so an
+  edge intercept would miss it → offer-then-fail. So sessions-api triggers provisioning
+  at agent-create (`core/agents.ts:161`, the MANAGED branch), with the session-create
+  resolve path (`core/credentials.ts:328`) as an idempotent fallback.
+
+  **This forces a new sessions-api → edge "ensure provisioned" call** (provisioning is
+  edge-native — OR/Autumn ownership). Decision: reuse the **existing**
+  `OC_MANAGED_CRED_HMAC_SECRET` (already shared edge↔sessions-api for the bind hand-off)
+  on a new edge internal route `POST /internal/managed-credential/ensure?org=…` that
+  calls `reconcileManagedBilling`, rather than handing sessions-api the broader
+  `CF_ADMIN_SECRET`.
+
+  **Ordering constraint:** removing `managedAvailable` (always-show) and wiring the
+  auto-provision trigger MUST land together — shipping the first without the second
+  recreates offer-then-fail.
 
 ## 8. Non-goals
 
