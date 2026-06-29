@@ -334,6 +334,40 @@ func (s *Server) deleteSnapshot(c echo.Context) error {
 
 	return c.NoContent(http.StatusNoContent)
 }
+
+// publishSnapshot handles POST /api/snapshots/:name/publish — marks a named
+// snapshot public so any org can fork it. Used to share the platform
+// runtime/hands snapshots with customer-org (act-as-org) sessions. Owner-org
+// only; idempotent. Mirrors publishCheckpoint.
+func (s *Server) publishSnapshot(c echo.Context) error {
+	return s.setSnapshotPublic(c, true)
+}
+
+// unpublishSnapshot flips is_public back to false. Owner-org only, idempotent.
+// In-flight forks that already resolved the snapshot continue; new forks by
+// other orgs stop resolving it.
+func (s *Server) unpublishSnapshot(c echo.Context) error {
+	return s.setSnapshotPublic(c, false)
+}
+
+func (s *Server) setSnapshotPublic(c echo.Context, isPublic bool) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+
+	name := c.Param("name")
+	if err := s.store.SetImageCachePublicByName(c.Request().Context(), orgID, name, isPublic); err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{"name": name, "public": isPublic})
+}
+
 func (s *Server) resolveNamedCheckpoint(c echo.Context, label string) (uuid.UUID, error) {
 	orgID, ok := auth.GetOrgID(c)
 	if !ok {

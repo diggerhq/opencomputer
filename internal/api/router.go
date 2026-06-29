@@ -585,6 +585,11 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	api.GET("/snapshots/:name/patches", s.listSnapshotPatches)
 	api.DELETE("/snapshots/:name/patches/:patchId", s.deleteSnapshotPatch)
 
+	// Publish/unpublish a named snapshot (owner-org only) so other orgs can fork
+	// it — used to share the platform runtime/hands snapshots.
+	api.POST("/snapshots/:name/publish", s.publishSnapshot)
+	api.POST("/snapshots/:name/unpublish", s.unpublishSnapshot)
+
 	// Images (all cached images, named or unnamed)
 	api.GET("/images", s.listImages)
 

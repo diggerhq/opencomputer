@@ -651,7 +651,11 @@ func (s *Server) resolveSnapshot(ctx context.Context, orgID uuid.UUID, snapshotN
 		return uuid.Nil, fmt.Errorf("database not configured")
 	}
 
-	cached, err := s.store.GetImageCacheByName(ctx, orgID, snapshotName)
+	// Fork/provision path: resolve the org's own snapshot, falling back to a
+	// public one (e.g. the shared platform runtime/hands snapshots) when the org
+	// doesn't own one. Forking only reads the checkpoint, never mutates it, so
+	// sharing is safe. Management endpoints stay org-scoped (GetImageCacheByName).
+	cached, err := s.store.ResolveImageCacheByName(ctx, orgID, snapshotName)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("snapshot %q not found: %w", snapshotName, err)
 	}

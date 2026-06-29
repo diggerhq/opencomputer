@@ -198,6 +198,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{48, "migrations/048_orgs_usage_sync_watermark.up.sql"},
 		{49, "migrations/049_sandbox_webhooks.up.sql"},
 		{50, "migrations/050_checkpoint_kind.up.sql"},
+		{51, "migrations/051_image_cache_is_public.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -2637,6 +2638,33 @@ func (s *Store) GetImageCacheByName(ctx context.Context, orgID uuid.UUID, name s
 	return ic, nil
 }
 
+// ResolveImageCacheByName resolves a named snapshot for the FORK/PROVISION path,
+// preferring the org's own snapshot but falling back to a public one
+// (is_public = true) when the org doesn't own a snapshot by that name. This is
+// what lets sessions running under a customer org (act-as-org) fork the shared
+// platform runtime/hands snapshots, which are owned by the platform org.
+//
+// Management endpoints (get/list/delete/patch/publish) must keep using
+// GetImageCacheByName (strictly org-scoped) so only the owner can read, delete,
+// or mutate a snapshot. The unique index is (org_id, name), so two orgs may hold
+// the same name; ORDER BY (org_id = $1) DESC ensures the requester's own row
+// wins when both exist.
+func (s *Store) ResolveImageCacheByName(ctx context.Context, orgID uuid.UUID, name string) (*ImageCache, error) {
+	ic := &ImageCache{}
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, org_id, content_hash, checkpoint_id, name, manifest, status, created_at, last_used_at
+		 FROM image_cache
+		 WHERE name = $2 AND (org_id = $1 OR is_public = true)
+		 ORDER BY (org_id = $1) DESC
+		 LIMIT 1`,
+		orgID, name,
+	).Scan(&ic.ID, &ic.OrgID, &ic.ContentHash, &ic.CheckpointID, &ic.Name, &ic.Manifest, &ic.Status, &ic.CreatedAt, &ic.LastUsedAt)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot %q not found: %w", name, err)
+	}
+	return ic, nil
+}
+
 // GetImageCacheByID looks up an image cache entry by its ID, scoped to org.
 func (s *Store) GetImageCacheByID(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*ImageCache, error) {
 	ic := &ImageCache{}
@@ -2739,6 +2767,24 @@ func (s *Store) DeleteImageCacheByName(ctx context.Context, orgID uuid.UUID, nam
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("snapshot %q not found", name)
+	}
+	return nil
+}
+
+// SetImageCachePublicByName toggles is_public on a named snapshot the org owns,
+// making it forkable by other orgs via ResolveImageCacheByName. Owner-scoped: an
+// org can only publish/unpublish its own snapshots. Used by the runtime/hands
+// build tooling to share each new platform snapshot version. Mirrors
+// SetCheckpointPublic.
+func (s *Store) SetImageCachePublicByName(ctx context.Context, orgID uuid.UUID, name string, isPublic bool) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE image_cache SET is_public = $3 WHERE org_id = $1 AND name = $2`,
+		orgID, name, isPublic)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("snapshot %q not found or not owned by org", name)
 	}
 	return nil
 }
