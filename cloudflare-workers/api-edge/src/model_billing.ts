@@ -293,12 +293,19 @@ export async function enableManagedBilling(env: ModelBillingEnv, orgId: string):
 
   let row = await getResumableRow(env, orgId);
   if (!row) {
-    row = await insertRow(env, {
-      id: newRowId(),
-      orgId,
-      operationId: newOperationId(),
-      createdAt: Math.floor(Date.now() / 1000),
-    });
+    try {
+      row = await insertRow(env, {
+        id: newRowId(),
+        orgId,
+        operationId: newOperationId(),
+        createdAt: Math.floor(Date.now() / 1000),
+      });
+    } catch (e) {
+      // Lost a concurrent enable race — the unique "one active key per org" index
+      // (schema_phase9) rejected this insert. Adopt the row the winner created.
+      row = await getResumableRow(env, orgId);
+      if (!row) throw e;
+    }
   }
   return driveProvisioning(env, org, row);
 }

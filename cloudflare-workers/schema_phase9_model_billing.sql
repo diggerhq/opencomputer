@@ -65,3 +65,10 @@ CREATE TABLE IF NOT EXISTS managed_model_keys (
 -- superseded/deleting keys (poll until quiesced).
 CREATE INDEX IF NOT EXISTS idx_managed_model_keys_org_status
   ON managed_model_keys(org_id, status);
+
+-- AT MOST ONE active key per org. Without this, two concurrent enable calls/retries
+-- (getResumableRow → insertRow with no txn) could mint two active OR keys + two
+-- managed credentials. The unique partial index makes the losing insert fail; the
+-- provisioning driver catches it and adopts the winner.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_model_keys_one_active
+  ON managed_model_keys(org_id) WHERE status = 'active';
