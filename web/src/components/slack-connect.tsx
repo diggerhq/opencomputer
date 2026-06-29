@@ -108,6 +108,7 @@ export function SlackConnect({
   const [botToken, setBotToken] = useState('')
   const [signingSecret, setSigningSecret] = useState('')
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
+  const [confirmReconnect, setConfirmReconnect] = useState(false)
   const [copied, markCopied] = useTransientFlag(1500)
 
   const resetWizard = () => {
@@ -119,7 +120,7 @@ export function SlackConnect({
   }
 
   const startMutation = useMutation({
-    mutationFn: () => startSlackConnect(agentId),
+    mutationFn: (reconnect = false) => startSlackConnect(agentId, reconnect),
     onSuccess: (m) => {
       setManifest(m)
       setStep('create')
@@ -152,10 +153,10 @@ export function SlackConnect({
     onError: (e) => notifyError("Couldn't disconnect Slack.", e),
   })
 
-  const beginConnect = () => {
+  const beginConnect = (reconnect = false) => {
     resetWizard()
     setOpen(true)
-    startMutation.mutate()
+    startMutation.mutate(reconnect)
   }
 
   const copyManifest = () => {
@@ -202,13 +203,22 @@ export function SlackConnect({
               <code className="text-foreground">/invite @{conn?.handle}</code>,
               then <strong>@-mention</strong> it to start or steer a session.
             </p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setConfirmDisconnect(true)}
-            >
-              Disconnect
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmReconnect(true)}
+              >
+                Reconnect
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmDisconnect(true)}
+              >
+                Disconnect
+              </Button>
+            </div>
           </div>
         ) : isErrorStatus ? (
           <div className="space-y-3">
@@ -217,7 +227,7 @@ export function SlackConnect({
               revoked). Reconnect to fix it.
             </p>
             <div className="flex gap-2">
-              <Button size="sm" onClick={beginConnect}>
+              <Button size="sm" onClick={() => beginConnect()}>
                 Reconnect
               </Button>
               <Button
@@ -235,7 +245,7 @@ export function SlackConnect({
               Give this agent its own Slack handle. Members @-mention it to
               start and steer sessions from a channel.
             </p>
-            <Button size="sm" onClick={beginConnect}>
+            <Button size="sm" onClick={() => beginConnect()}>
               {isPending ? 'Continue Slack setup' : 'Connect Slack'}
             </Button>
           </div>
@@ -463,6 +473,18 @@ export function SlackConnect({
         destructive
         pending={disconnectMutation.isPending}
         onConfirm={() => disconnectMutation.mutate()}
+      />
+
+      <ConfirmDialog
+        open={confirmReconnect}
+        onOpenChange={setConfirmReconnect}
+        title="Reconnect Slack?"
+        description="This replaces the current Slack app. The agent stops responding in Slack until you finish setting up the new one."
+        confirmLabel="Reconnect"
+        onConfirm={() => {
+          setConfirmReconnect(false)
+          beginConnect(true)
+        }}
       />
     </Panel>
   )

@@ -418,10 +418,12 @@ export async function getSlackConnection(agentId: string) {
   }
 }
 
-export const startSlackConnect = (agentId: string) =>
+// `reconnect: true` is required to replace an ALREADY-ACTIVE connection (the server
+// refuses to tear down a live one otherwise). First connect / pending / error → false.
+export const startSlackConnect = (agentId: string, reconnect = false) =>
   apiFetch(
     `/v3/agents/${agentId}/slack/manifest`,
-    { method: 'POST' },
+    { method: 'POST', body: JSON.stringify({ reconnect }) },
     S.SlackManifestResponseSchema,
   )
 
