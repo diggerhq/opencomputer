@@ -211,6 +211,8 @@ export default function SessionDetail() {
               </p>
             ) : null}
             <ApiHint
+              method="GET"
+              path="/v3/sessions/:id"
               sdk="oc.sessions.get()"
               docs="https://docs.opencomputer.dev/agent-sessions/sessions"
             />
