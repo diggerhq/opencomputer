@@ -9,6 +9,11 @@ export type YieldReason =
 
 export interface Limits { tokens?: number; turnSeconds?: number; turns?: number; }
 
+// The runtime an agent runs on. It fixes the model's provider — `claude` runs
+// `anthropic/…` models, `codex` runs `openai/…` (more land over time). The union
+// keeps known values discoverable while still accepting future ones.
+export type Runtime = "claude" | "codex" | (string & {});
+
 export interface Actor {
   id?: string;
   type?: "human" | "agent" | "system" | (string & {});
@@ -20,7 +25,7 @@ export interface Agent {
   name: string;
   promptHash?: string;
   model: string;
-  runtime: string;
+  runtime: Runtime;
   revision?: number;
   credentialId?: string | null;
   limits?: Limits;
