@@ -989,9 +989,9 @@ export async function handleDashboard(
       max_concurrent_sandboxes: number; billing_provider: string;
     }>();
     if (!org) return json({ error: "org not found" }, 404);
-    // Managed is a universal capability (every org is provisioned a managed credential by
-    // runManagedProvisioner), so there is no per-org "available" flag to read or return —
-    // the UI always offers Managed.
+    // Managed is a universal capability (every org gets a managed credential provisioned
+    // on demand at agent-create / first use), so there's no per-org "available" flag to
+    // read or return — the UI always offers Managed.
     // Cross-check against the live DO state — the D1 mirror gets written by
     // the DO after every debit but lags a touch, and on initial signup the
     // column reads its column-default (500) before the DO has ever been

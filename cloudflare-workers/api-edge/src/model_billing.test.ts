@@ -366,4 +366,3 @@ describe("disableManagedBilling (rollback / hard offboard)", () => {
     expect(db.orgs.get(orgId)!.model_billing_status).toBe("off");
   });
 });
-

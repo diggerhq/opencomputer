@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "./index";
 
 const orgID = "org-1";
@@ -260,5 +260,56 @@ describe("api-edge sandbox create", () => {
       2048,
       expect.any(Number),
     ]);
+  });
+});
+
+// The scoped-secret boundary added so sessions-api can ensure-provision Managed at
+// agent-create without holding the broad CF_ADMIN_SECRET. Asserts the auth gate only
+// (provisioning itself isn't exercised: getOrg → null → 500, which is still ≠ 401).
+describe("/internal/model-billing/enable — scoped-secret auth boundary", () => {
+  const ADMIN = "admin-secret";
+  const MANAGED = "managed-secret";
+  const authEnv = { ...env, CF_ADMIN_SECRET: ADMIN, OC_MANAGED_CRED_HMAC_SECRET: MANAGED } as unknown as Env;
+  // HMAC-SHA256 hex via Web Crypto — mirrors the edge's hmacHex (node:crypto isn't in the
+  // Worker tsconfig).
+  const sign = async (secret: string, ts: string, body: string): Promise<string> => {
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${ts}.${body}`));
+    return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  };
+  const post = async (path: string, secret: string, o: { ts?: string; sig?: string } = {}) => {
+    const body = JSON.stringify({ org_id: "org-x" });
+    const ts = o.ts ?? Math.floor(Date.now() / 1000).toString();
+    const sig = o.sig ?? (await sign(secret, ts, body));
+    return worker.fetch(
+      new Request(`https://app.opencomputer.dev${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "X-Timestamp": ts, "X-Signature": sig },
+        body,
+      }),
+      authEnv,
+      ctx,
+    );
+  };
+
+  // Belt: if auth ever passes through to provisioning, fail fast instead of hitting the net.
+  beforeEach(() => vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 502 }))));
+
+  it("managed secret authorizes enable (passes auth → not 401)", async () => {
+    expect((await post("/internal/model-billing/enable", MANAGED)).status).not.toBe(401);
+  });
+  it("managed secret CANNOT call disable → 401", async () => {
+    expect((await post("/internal/model-billing/disable", MANAGED)).status).toBe(401);
+  });
+  it("admin secret authorizes enable and disable (not 401)", async () => {
+    expect((await post("/internal/model-billing/enable", ADMIN)).status).not.toBe(401);
+    expect((await post("/internal/model-billing/disable", ADMIN)).status).not.toBe(401);
+  });
+  it("wrong signature → 401", async () => {
+    expect((await post("/internal/model-billing/enable", MANAGED, { sig: "deadbeef" })).status).toBe(401);
+  });
+  it("stale timestamp → 401", async () => {
+    const stale = (Math.floor(Date.now() / 1000) - 600).toString();
+    expect((await post("/internal/model-billing/enable", MANAGED, { ts: stale })).status).toBe(401);
   });
 });
