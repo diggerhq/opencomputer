@@ -29,6 +29,7 @@ import { CopyRow } from '@/components/copy-row'
 import { StatusBadge } from '@/components/status-badge'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { useTransientFlag } from '@/lib/use-transient-flag'
+import { cn } from '@/lib/utils'
 
 // An agent connects its OWN Slack app (BYO, 1:1:1). Connect is a two-step,
 // manifest-route wizard (oc-bg-agents/.agents/design/008-slack-presence.md §2):
@@ -36,6 +37,48 @@ import { useTransientFlag } from '@/lib/use-transient-flag'
 // flow; COMPLETE takes the three values Slack then hands back. No OAuth, no
 // secrets in responses.
 type Step = 'create' | 'paste' | 'done'
+
+const WIZARD_STEPS = ['Create app', 'Connect', 'Done']
+
+// Horizontal progress indicator — shows which step we're on; detail for each
+// step is only shown when it's reached (in the body below).
+function WizardSteps({ current }: { current: number }) {
+  return (
+    <ol className="flex items-center gap-2 pt-2">
+      {WIZARD_STEPS.map((label, i) => {
+        const done = i < current
+        const active = i === current
+        return (
+          <li key={label} className="flex min-w-0 items-center gap-2">
+            <span
+              className={cn(
+                'flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold',
+                done || active
+                  ? 'bg-foreground text-background'
+                  : 'bg-secondary text-muted-foreground',
+              )}
+            >
+              {done ? <Check className="size-3" /> : i + 1}
+            </span>
+            <span
+              className={cn(
+                'truncate text-xs',
+                active
+                  ? 'text-foreground font-medium'
+                  : 'text-muted-foreground',
+              )}
+            >
+              {label}
+            </span>
+            {i < WIZARD_STEPS.length - 1 ? (
+              <span className="bg-border h-px w-4 shrink-0" />
+            ) : null}
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
 
 export function SlackConnect({
   agentId,
@@ -130,6 +173,7 @@ export function SlackConnect({
   const isPending = status === 'pending'
   const isErrorStatus = status === 'error'
   const workspace = conn?.account_login || conn?.team_id || null
+  const stepIndex = step === 'create' ? 0 : step === 'paste' ? 1 : 2
 
   return (
     <Panel className="overflow-hidden">
@@ -205,36 +249,31 @@ export function SlackConnect({
           if (!o) resetWizard()
         }}
       >
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
               {step === 'done' ? 'Slack connected' : 'Connect Slack'}
             </DialogTitle>
-            <DialogDescription>
-              {step === 'create'
-                ? 'Create the agent’s Slack app from a manifest, install it, then copy three values back.'
-                : step === 'paste'
-                  ? 'Paste the three values from your new Slack app.'
-                  : `@${agentName} is ready to use in Slack.`}
+            <DialogDescription className="sr-only">
+              Connect this agent’s own Slack app so members can @-mention it.
             </DialogDescription>
+            <WizardSteps current={stepIndex} />
           </DialogHeader>
 
           {step === 'create' ? (
-            <div className="space-y-4">
+            <div className="min-w-0 space-y-4">
               {startMutation.isPending || !manifest ? (
                 <p className="text-muted-foreground text-sm">
                   Preparing the manifest…
                 </p>
               ) : (
                 <>
-                  <ol className="text-foreground list-decimal space-y-1.5 pl-5 text-sm">
-                    {manifest.steps.map((s, i) => (
-                      <li key={i} className="text-muted-foreground">
-                        {s}
-                      </li>
-                    ))}
-                  </ol>
-                  <div>
+                  <p className="text-muted-foreground text-sm">
+                    In Slack, create the app from this manifest (New App → From
+                    a manifest), then Install to Workspace. Come back with the
+                    three values it gives you.
+                  </p>
+                  <div className="min-w-0">
                     <div className="mb-1.5 flex items-center justify-between">
                       <span className="text-muted-foreground text-xs font-medium">
                         App manifest
@@ -252,7 +291,7 @@ export function SlackConnect({
                         {copied ? 'Copied' : 'Copy'}
                       </Button>
                     </div>
-                    <pre className="bg-panel-2 max-h-52 overflow-auto rounded-md border p-3 font-mono text-xs">
+                    <pre className="bg-panel-2 max-h-60 overflow-auto rounded-md border p-3 font-mono text-xs">
                       {JSON.stringify(manifest.manifest, null, 2)}
                     </pre>
                   </div>
@@ -287,7 +326,7 @@ export function SlackConnect({
             </div>
           ) : step === 'paste' ? (
             <form
-              className="space-y-4"
+              className="min-w-0 space-y-4"
               onSubmit={(e) => {
                 e.preventDefault()
                 completeMutation.mutate()
@@ -353,7 +392,7 @@ export function SlackConnect({
               </DialogFooter>
             </form>
           ) : (
-            <div className="space-y-4">
+            <div className="min-w-0 space-y-4">
               <div className="space-y-2 text-sm">
                 <p>
                   <span className="text-foreground font-medium">

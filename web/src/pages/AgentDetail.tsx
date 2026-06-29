@@ -255,6 +255,9 @@ export default function AgentDetail() {
             ) : null}
           </Panel>
 
+          {/* Slack — kept above Sessions so it's visible without scrolling */}
+          <SlackConnect agentId={agent.id} agentName={agent.name} />
+
           {/* Sessions */}
           <Panel className="overflow-hidden">
             <PanelHeader>
@@ -308,8 +311,6 @@ export default function AgentDetail() {
               }
             />
           </Panel>
-
-          <SlackConnect agentId={agent.id} agentName={agent.name} />
         </div>
       )}
     </div>
