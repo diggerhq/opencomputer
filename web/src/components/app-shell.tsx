@@ -60,7 +60,7 @@ const NAV: NavGroup[] = [
       { to: '/agents', label: 'Agents', icon: Bot, preview: true },
       {
         to: '/sessions',
-        label: 'Sessions',
+        label: 'Agent sessions',
         icon: MessagesSquare,
         preview: true,
       },
@@ -244,7 +244,8 @@ function HaltBanner() {
   if (!halted || location.pathname.startsWith('/billing')) return null
   return (
     <div className="border-status-pending/20 bg-status-pending-bg text-status-pending border-b px-4 py-2.5 text-center text-sm sm:px-8">
-      Your sandboxes are paused — you&apos;re out of prepaid credits.{' '}
+      Your agent sessions and sandboxes are paused — you&apos;re out of prepaid
+      credits.{' '}
       <Link
         to="/billing"
         className="font-semibold underline underline-offset-2"

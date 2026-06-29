@@ -196,13 +196,13 @@ export default function Dashboard() {
         <div className="space-y-6">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <MetricCard
-              label="Active sessions"
+              label="Active agent sessions"
               value={
                 loadingSessions ? '—' : activeSessions.length.toLocaleString()
               }
             />
             <MetricCard
-              label="Sessions today"
+              label="Agent sessions today"
               value={loadingSessions ? '—' : sessionsToday.toLocaleString()}
             />
             <MetricCard
@@ -221,7 +221,7 @@ export default function Dashboard() {
 
           <Panel className="overflow-hidden">
             <PanelHeader>
-              <PanelTitle>Recent sessions</PanelTitle>
+              <PanelTitle>Recent agent sessions</PanelTitle>
               <Link
                 to="/sessions"
                 className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"

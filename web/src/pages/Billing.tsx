@@ -306,7 +306,8 @@ function PrepaidPlan() {
         {halted ? (
           <p className="text-status-error mt-2 flex items-center gap-1.5 text-sm">
             <CircleAlert className="size-4 shrink-0" />
-            Credits exhausted — top up to resume your sandboxes
+            Credits exhausted — top up to resume your agent sessions and
+            sandboxes
           </p>
         ) : null}
 

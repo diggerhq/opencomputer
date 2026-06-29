@@ -113,7 +113,7 @@ export default function Sessions() {
   return (
     <div>
       <PageHeader
-        title="Sessions"
+        title="Agent sessions"
         description="Durable agent runs — an append-only event log you can steer."
         api={{
           method: 'POST',
