@@ -304,7 +304,7 @@ export function SlackConnect({
                       <ExternalLink className="size-3.5" />
                     </a>
                   </div>
-                  <pre className="bg-panel-2 max-h-60 min-w-0 overflow-auto rounded-md border p-3 font-mono text-xs">
+                  <pre className="bg-panel-2 max-h-60 min-w-0 overflow-y-auto rounded-md border p-3 font-mono text-xs [overflow-wrap:anywhere] whitespace-pre-wrap">
                     {JSON.stringify(manifest.manifest, null, 2)}
                   </pre>
                 </>
