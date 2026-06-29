@@ -300,6 +300,20 @@ export default function SessionDetail() {
             <Textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter (or ⌘/Ctrl+Enter) sends; Shift+Enter inserts a newline.
+                // Ignore Enter mid-IME-composition so CJK/accent input isn't cut off.
+                if (
+                  e.key === 'Enter' &&
+                  !e.shiftKey &&
+                  !e.nativeEvent.isComposing
+                ) {
+                  e.preventDefault()
+                  if (draft.trim() && canSteer && !steerMutation.isPending) {
+                    steerMutation.mutate()
+                  }
+                }
+              }}
               placeholder={
                 canSteer
                   ? 'Send a message to steer the session…'
@@ -311,6 +325,7 @@ export default function SessionDetail() {
             />
             <Button
               type="submit"
+              title="Enter to send · Shift+Enter for newline"
               disabled={!draft.trim() || !canSteer || steerMutation.isPending}
             >
               <Send className="size-4" />
