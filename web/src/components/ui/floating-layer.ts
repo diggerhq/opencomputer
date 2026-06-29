@@ -1,6 +1,7 @@
 const FLOATING_LAYER_ATTR = 'data-oc-floating-layer'
 const FLOATING_LAYER_SELECTOR = `[${FLOATING_LAYER_ATTR}]`
-let floatingLayerOutsideInteractionDepth = 0
+const FLOATING_LAYER_OUTSIDE_INTERACTION_WINDOW_MS = 500
+let lastFloatingLayerOutsideInteractionAt = 0
 
 type OutsideEventDetail = {
   originalEvent?: Event
@@ -24,20 +25,17 @@ function ownerDocumentForEvent(event: Event) {
 }
 
 export function markFloatingLayerOutsideInteraction() {
-  floatingLayerOutsideInteractionDepth += 1
-  globalThis.setTimeout(() => {
-    floatingLayerOutsideInteractionDepth = Math.max(
-      0,
-      floatingLayerOutsideInteractionDepth - 1,
-    )
-  }, 0)
+  lastFloatingLayerOutsideInteractionAt = Date.now()
 }
 
 export function shouldKeepParentOpenForFloatingLayer(event: Event) {
   const target = originalEventTarget(event)
+  const isRecentFloatingLayerOutsideInteraction =
+    Date.now() - lastFloatingLayerOutsideInteractionAt <=
+    FLOATING_LAYER_OUTSIDE_INTERACTION_WINDOW_MS
 
   return (
-    floatingLayerOutsideInteractionDepth > 0 ||
+    isRecentFloatingLayerOutsideInteraction ||
     (target instanceof Element &&
       target.closest(FLOATING_LAYER_SELECTOR) !== null) ||
     ownerDocumentForEvent(event)?.querySelector(FLOATING_LAYER_SELECTOR) !== null
