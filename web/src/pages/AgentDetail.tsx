@@ -10,6 +10,7 @@ import {
   createSession,
   getCredentials,
   createCredential,
+  getBilling,
   type Agent,
 } from '@/api/client'
 import type { Session } from '@/api/schemas'
@@ -33,6 +34,7 @@ import { getRuntime } from '@/lib/runtimes'
 // credential provider come from the agent's runtime (see @/lib/runtimes).
 const ORG_DEFAULT = '__default__' // no pinned credential → org default resolves
 const NEW_CRED = '__new__' // create one inline
+const MANAGED = 'managed' // run via OpenComputer, billed to credits (token-billing §6.6)
 
 export default function AgentDetail() {
   const { agentId = '' } = useParams()
@@ -61,6 +63,9 @@ export default function AgentDetail() {
     queryKey: ['credentials'],
     queryFn: getCredentials,
   })
+  // Managed availability gates the "Managed" entry (token-billing §6.6/§6.8.C).
+  const { data: billing } = useQuery({ queryKey: ['billing'], queryFn: getBilling })
+  const managedAvailable = billing?.managedAvailable ?? false
   // Model list + credential provider follow the agent's runtime (immutable after
   // create): claude→anthropic, codex→openai. Falls back to claude while loading.
   const rt = getRuntime(agent?.runtime)
@@ -176,11 +181,18 @@ export default function AgentDetail() {
   const credSelectValue = credNew
     ? NEW_CRED
     : (agent?.credential_id ?? ORG_DEFAULT)
+  // Show Managed when it's available, or when this agent already runs Managed (so the
+  // current value renders even if availability later changes). It carries no provider.
+  const showManaged = managedAvailable || agent?.credential_id === MANAGED
   const credOptions = [
     { value: ORG_DEFAULT, label: 'Org default (no pinned credential)' },
+    ...(showManaged
+      ? [{ value: MANAGED, label: 'Managed · billed to credits' }]
+      : []),
     ...providerCreds.map((c) => ({ value: c.id, label: credLabel(c.id) })),
     { value: NEW_CRED, label: '＋ New credential…' },
   ]
+  // ORG_DEFAULT → clear the pin (null); MANAGED → the "managed" sentinel; else a cred id.
   const onCredChange = (v: string) => {
     if (v === NEW_CRED) {
       setCredNew(true)

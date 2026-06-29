@@ -92,7 +92,7 @@ class FakeStmt {
       const cols = setClause.split(",").map((c) => c.trim().split(" ")[0]);
       const id = this.args[this.args.length - 1] as string;
       const row = this.db.keys.find((k) => k.id === id);
-      if (row) cols.forEach((c, i) => ((row as Record<string, unknown>)[c] = this.args[i]));
+      if (row) cols.forEach((c, i) => ((row as unknown as Record<string, unknown>)[c] = this.args[i]));
       return;
     }
     throw new Error(`FakeStmt: unhandled run() sql: ${s}`);
