@@ -90,9 +90,11 @@ Token billing reuses all of this and adds exactly one new consumer of the pool.
 2. **OR is the meter and the limiter.** We never count tokens ourselves and keep
    no rate card. OR's per-key `usage` is the cost of record; OR's per-key `limit`
    is the enforced cap.
-3. **The cap mirrors the shared pool.** A managed org's OR key `limit` is kept at
-   `usage + remaining_credits`, so additional token spend can never exceed the
-   org's current prepaid balance (which compute is also draining).
+3. **The cap mirrors the shared pool — in aggregate across all of an org's keys.**
+   Headroom = `remaining_credits / (1+markup)` of provider spend, granted to the
+   **active** key; any `superseded` key (rotation) is frozen near its own `usage`.
+   So total spendable across keys can never exceed the prepaid balance (exact math
+   §7; per-key mechanics §5.4/§5.8).
 4. **Key never in the sandbox.** The OR key is sealed and swapped by the egress
    proxy, exactly like provider keys today.
 5. **Managed-only.** Debits fire only for managed-key sessions. BYO sessions never
@@ -162,12 +164,20 @@ resumable from persisted state:
    (auth `OPENROUTER_PROVISIONING_KEY`) → `key` (plaintext, once) + `data.hash`.
    Persist `or_key_hash` on the row.
 3. **Bind credential:** hand the plaintext to sessions-api via the hardened HMAC
-   route (§6.3) → it stores via secret-ledger/Infisical and returns
-   `managed_credential_id`. Persist it; set the row `status='active'`. (Seam §9.5.)
+   route (§6.3), passing `{ owner_id, or_key_hash, operation_id }` alongside the key
+   → it stores via secret-ledger/Infisical, **records `or_key_hash`+`operation_id` in
+   the credential metadata**, and returns `managed_credential_id`. Persist it; set the
+   row `status='active'`. (Seam §9.5.)
 4. Set `orgs.model_billing_status='active'`.
 
-**Partial-failure repair** (reconcile, §5.7) — driven off the row + OR + sessions-api:
-- OR key created, no credential bound → retry bind, or delete the OR key + restart.
+**Partial-failure repair** (reconcile, §5.7). Note the OR plaintext is **one-time**
+— the edge does **not** retain it after step 2, so a bind can't be "re-sent." Repair
+is driven off the row + a sessions-api **lookup** (`GET /internal/managed-credential?owner_id=&or_key_hash=`,
+§6.3) + OR:
+- OR key created, response to step 3 lost → **look up** by `or_key_hash`/`operation_id`:
+  if bound (we just lost the response) → finish the flip; if **not** bound → the
+  plaintext is unrecoverable, so **`DELETE` the OR key and recreate** from step 2
+  (never attempt to re-send a key the edge no longer holds).
 - Credential bound but row not `active` / status not flipped → finish the flip.
 - `model_billing_status='active'` but no `active` key row / credential missing →
   re-provision + **alert**.
@@ -183,18 +193,26 @@ the billing credential are **separate fields**:
 
 | field | BYO anthropic | BYO openai | Managed · claude rt | Managed · codex rt |
 |---|---|---|---|---|
-| env var (runtime protocol) | `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` | `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` |
-| base URL | api.anthropic.com | api.openai.com | OR Anthropic-compatible base | `https://openrouter.ai/api/v1` |
+| key env var | `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` | `ANTHROPIC_AUTH_TOKEN` | `OPENAI_API_KEY` |
+| base URL (env/cfg) | default | default | `ANTHROPIC_BASE_URL=https://openrouter.ai/api` | OpenAI client `baseURL=https://openrouter.ai/api/v1` |
 | egress allowlist host | `api.anthropic.com` | `api.openai.com` | `openrouter.ai` | `openrouter.ai` |
 | sealed secret | anthropic cred | openai cred | org managed OR key | org managed OR key |
 | billing | BYO | BYO | Managed (Autumn) | Managed (Autumn) |
 
-- **Base-URL injection is load-bearing** and new: Managed keeps the runtime's native
-  protocol/env var but points it at `openrouter.ai` (OR's own docs: set the OpenAI
-  SDK `api_base` to `https://openrouter.ai/api/v1`). The Claude-runtime cell depends
-  on OR's Anthropic-compatible endpoint existing — the §9.7 build-gate.
-- Resolution first picks the source (managed credential vs BYO cred, §6.6/§6.7),
-  then derives + **seals the whole profile** (key + base URL + allowlist host),
+- **Exact per-runtime code changes (P1-c)** — base-URL injection is new and
+  load-bearing, and each runtime currently *prevents* it:
+  - `claude` (`sessions-api/runtimes/v3-claude/src/server.ts:84`) today **deletes**
+    `ANTHROPIC_BASE_URL` (to force official Anthropic). Managed must instead **set**
+    `ANTHROPIC_BASE_URL=https://openrouter.ai/api` and pass the OR key as
+    `ANTHROPIC_AUTH_TOKEN` (OR's Claude Code path — note base is `…/api`, **not**
+    `/api/v1`, and the var is `AUTH_TOKEN`, not `API_KEY`).
+  - `codex` (`sessions-api/runtimes/v3-codex/src/server.ts:107`) today **hardcodes**
+    `https://api.openai.com/v1`. Managed must make the OpenAI client `baseURL`
+    configurable → `https://openrouter.ai/api/v1`, OR key as `OPENAI_API_KEY`.
+- This **confirms §9.7 is feasible** (OR documents both the Claude-Code and OpenAI-SDK
+  paths); it still needs validation in our actual runtimes before GA.
+- Resolution picks the source (managed credential vs BYO cred, §6.6/§6.7), then
+  derives + **seals the whole profile** (key + base URL + allowlist host),
   session-pinned. Per-session-key variant: §9.1.
 
 ### 5.3 Turn execution (runtime → proxy → OR)
@@ -223,12 +241,20 @@ Sibling to `autumn_meter.ts`. Iterate every `active` **and** `superseded`
    - On success/`409` → `committed_micro = to`, clear pending. (The interval is
      immutable, so success-then-crash replays the exact same key+interval → true
      dup, never a widened key reused — see §7.)
-3. **Push cap (markup-correct, P1-b):**
-   `remaining_usd = getAutumnCustomer(org).balances.credits.remaining`. The OR cap
-   bounds **provider** spend, so
-   `new_limit_usd = usage_usd + remaining_usd / (1 + markup_bps/10000)` (the headroom
-   costs the customer exactly `remaining`, not `remaining×(1+markup)`). `PATCH` the
-   `active` key only if it moved past an epsilon.
+3. **Halt + push cap (markup-correct, aggregate across keys — P1-b, P1-rotation, P2-halt):**
+   `remaining_usd = getAutumnCustomer(org).balances.credits.remaining` (read once per
+   org, not per key).
+   - **If `remaining_usd ≤ 0` → call `projectOrg(org)` to halt immediately**
+     (mirrors compute `autumn_meter.ts:112`; do **not** rely on the Autumn webhook
+     alone).
+   - Headroom is **shared across all of the org's usable keys**, so cap them together:
+     clamp every `superseded` key to `limit = its_usage + ε` (small grace so an
+     in-flight call can finish), then set the **active** key to
+     `limit = active_usage + remaining_usd/(1+markup) − Σε(superseded)`. Total
+     spendable across keys ≤ `remaining/(1+markup)` (a single active key reduces to
+     §7's formula). `PATCH` each only if it moved past an epsilon. *(Capping only the
+     active key — the previous wording — let a superseded key keep old headroom and
+     double the budget.)*
 4. **Detail → ClickHouse (org/model/day only, P1/P2-d):** `POST /api/v1/analytics/query`
    `dimensions:["api_key_id","model"], granularity:"day"`, metrics
    `total_usage,tokens_prompt,tokens_completion` → map `api_key_id`→org → upsert
@@ -328,9 +354,13 @@ Base `https://openrouter.ai/api/v1`.
   `[triggers] crons`.
 
 ### 6.4 Dashboard (web)
+- **`/billing` gains `managedAvailable`** (the single gating authority, §6.6/P2):
+  the edge derives it from `model_billing_status === 'active'`; add it to
+  `BillingStateSchema` (`schemas.ts:188-195`). The UI gates the Managed picker entry
+  on this field.
 - **Agent create/edit dialog:** the credential picker gains the pinned
   `Managed · billed to credits` entry (full taxonomy §6.6); filter the model
-  dropdown by the selected source. The Credentials page itself is **unchanged**.
+  dropdown by the **runtime** (not the source). The Credentials page is **unchanged**.
 - Extend `getAutumnBilling` (`/billing/autumn`) response to include a model-spend
   summary (period total, % of pool), OR add `getModelUsage('/usage/models?days=')`
   reading ClickHouse. New `ModelUsageSchema` next to `SandboxUsageSchema`
@@ -389,13 +419,19 @@ accepts a reserved value `"managed"`:
   `422 managed_unavailable`.
 
 **Gating & availability.**
-- Managed requires `billing_provider='autumn'` + model billing enabled (it debits
-  Autumn credits). `legacy` orgs: the picker hides/disables Managed (BYO only)
-  until migrated.
-- **Model list depends on source:** Managed → all OC-supported models; a BYO key →
-  that provider's models only. The dialog filters the model dropdown by source.
-- **§9.7 caveat:** a runtime whose OR path is unresolved (e.g. `claude` via OR) is
-  simply omitted from the Managed model list until resolved — BYO still offers it.
+- **One authority (P2):** the edge `/billing` response exposes `managedAvailable`
+  (= `model_billing_status === 'active'`). The UI gates on **that** (not on
+  `billingProvider`), and sessions-api enforces the *same* condition (a managed
+  credential is bound — set only when status flips to `active`). UI, edge, and
+  backend agree, so a user is never offered Managed only to hit `422
+  managed_unavailable` (e.g. an autumn org mid-provisioning).
+- **Model list depends on the RUNTIME, not the source (P1/P2):** the model must match
+  the runtime's protocol either way (`claude`→`anthropic/…`, `codex`→`openai/…`).
+  Managed changes *who pays*, not *which models* — both Managed and BYO show the
+  runtime's models. (Managed's broader reach is **across agents/runtimes**, not within
+  one agent.)
+- **§9.7:** confirmed feasible (OR's Claude-Code + OpenAI-SDK paths, §5.2); until a
+  runtime's OR path is validated it's simply not offered under Managed.
 
 **Behavior.**
 - Out of credits (Managed) → same halt as compute (one pool); "top up to resume."
@@ -432,8 +468,12 @@ bodies are TS interfaces + hand-written guards; responses via `serialize*`.
      cosmetic (already `string`).
    - Core branch: in `createAgent` (`core/agents.ts:157-163`) and `patchAgent`
      (`core/agents.ts:252-265`) add a `credential === "managed"` arm **before**
-     `assertCredentialProvider` — skip provider-match (managed serves any runtime),
-     mint no BYO credential.
+     `assertCredentialProvider` — skip the **credential**-provider check (no BYO cred
+     to match) and mint nothing. **`assertModelMatchesRuntime` still runs (P1/P2):**
+     Managed does *not* loosen the model↔runtime rule, so `model` must remain the
+     runtime's provider (`claude`→`anthropic/…`, `codex`→`openai/…`); a mismatch is a
+     `400` for Managed too. (Hence "models supported by the selected runtime," never
+     "all models.")
    - **Storage of the sentinel (sub-decision):** store the literal `"managed"` in
      `agent_core.agents.credential_id` (TEXT, no FK enforced, `db/schema.ts:29-43`)
      — minimal, and request/storage/response all use one field; `serializeAgent`
@@ -463,13 +503,20 @@ bodies are TS interfaces + hand-written guards; responses via `serialize*`.
    The seal path re-resolves (`runtime/credential.ts:96`) — make it resolve the
    managed credential too.
 
-5. **Provisioning hand-off (the §9.5 seam).** New sessions-api internal route
-   `POST /internal/managed-credential` (HMAC via `V3_INTERNAL_AUTH_SECRET`):
-   `{ owner_id, provider:"openrouter", key }` → store via
-   `reserveAndWrite`/secret-ledger + insert a managed `credential_metadata` row
-   (provider `"openrouter"`, fixed `name`). Idempotent per owner (re-create =
-   rotate, `rotateCredentialKey` `core/credentials.ts:165`). This is where the
-   edge's provisioned OR key becomes a sessions-api managed credential.
+5. **Provisioning hand-off (the §9.5 seam) — one exact contract** (this is the single
+   source of truth; §6.3 matches it verbatim):
+   - `POST /internal/managed-credential` (sessions-api). **Auth: a dedicated secret
+     `OC_MANAGED_CRED_HMAC_SECRET`** (NOT `V3_INTERNAL_AUTH_SECRET` / the static
+     `X-Internal-Auth`), HMAC over `timestamp + method + path + body`, short replay
+     window, body redacted in logs, network-restricted (P2-f). Body
+     `{ owner_id, provider:"openrouter", key, or_key_hash, operation_id }`. Effect:
+     store via `reserveAndWrite`/secret-ledger + insert a managed `credential_metadata`
+     row (provider `"openrouter"`, fixed `name`, **persisting `or_key_hash` +
+     `operation_id`**); return `managed_credential_id`. **Idempotent per
+     `(owner_id, operation_id)`** (re-call = rotate, `rotateCredentialKey`
+     `core/credentials.ts:165`).
+   - `GET /internal/managed-credential?owner_id=&or_key_hash=` (same auth) → whether a
+     managed credential is bound — the edge's lost-response recovery (§5.1).
 
 6. **Unchanged / minor:** BYO validation (`assertModelMatchesRuntime` still applies
    to the chosen `model`); credentials CRUD endpoints. `GET /v3/credentials`
@@ -495,6 +542,12 @@ bodies are TS interfaces + hand-written guards; responses via `serialize*`.
    `UpdateAgentParams.credential?: CredentialRef | null` so `credential: cred.id`
    and `credential: "managed"` typecheck while arbitrary strings don't.
 
+8. **`key` and `credential` are mutually exclusive (P3).** Today create/patch accept
+   both (`api/agents.ts:35,88`). Enforce one source per request: supplying both →
+   `400 invalid_request`; `credential:"managed"` + `key` → `400` (can't attach a BYO
+   key to Managed). Inline `key` stays the BYO shortcut; `credential` selects an
+   existing source (`"managed"` or a `cred_…`).
+
 ### 6.8 UI deltas (exact)
 
 Repo `opencomputer/web` (`web/src/...`; byte-identical on `main`). **Two** credential
@@ -507,10 +560,10 @@ pickers since PR #444 — both change.
   sets the `createAgent` body `credential` (`:123`) to `"managed"` (not `undefined`).
   `canCreate` (`:184-187`) already passes (no key required).
 - `initialCredChoice()` (`:71-74`): default to `MANAGED` when the org is managed.
-- **Model filter:** replace `options={MODELS}` (`:280`) with a list derived from
-  `credChoice` — Managed → full `MODELS` (`:30-34`); a BYO cred id →
-  `MODELS.filter(m => m.value.startsWith(provider + '/'))` (provider from the
-  selected cred in `anthropicCreds` `:54-56`). `Select` has no groups
+- **Model filter — by RUNTIME, not source (P1/P2):** filter `MODELS` (`:30-34`,
+  `options={MODELS}` `:280`) by the runtime's provider (`claude`→`anthropic/…`) for
+  **both** Managed and BYO — Managed does not widen the list (model must match the
+  runtime, enforced server-side §6.7.1). `Select` has no groups
   (`components/form.tsx:14-28`) → plain `.filter`.
 
 **B. Live picker — `web/src/pages/AgentDetail.tsx`.**
@@ -521,12 +574,14 @@ pickers since PR #444 — both change.
   accepts `string` `client.ts:394`).
 - Model filter: same change at `modelOptions` (`:175-177`).
 
-**C. Gating (both dialogs).** Neither imports billing today. Add
-`useQuery({ queryKey:['billing'], queryFn: getBilling })` (Agents `~:45-53`,
-AgentDetail `~:68-71`; `getBilling` already exported `client.ts:303`, schema
-`schemas.ts:194`) and include the Managed option only when
-`billing?.billingProvider === 'autumn'` — the same field `Billing.tsx:107` gates on.
-UX-only; the backend still enforces via §6.7.4.
+**C. Gating (both dialogs) — gate on `managedAvailable`, the single authority (P2).**
+Add `useQuery({ queryKey:['billing'], queryFn: getBilling })` (Agents `~:45-53`,
+AgentDetail `~:68-71`; `getBilling` exported `client.ts:303`) and show the Managed
+option only when `billing?.managedAvailable` (new field on `/billing`, =
+edge `model_billing_status === 'active'`; add to `BillingStateSchema`
+`schemas.ts:188-195`). Gating on `billingProvider === 'autumn'` is **wrong** — an
+autumn org mid-provisioning would offer Managed and then `422`. UX-only; backend
+still enforces via §6.7.4.
 
 **D. API layer (`web/src/api/`).** **No schema/type change** — `createAgent.credential?: string`
 (`client.ts:374`) and `updateAgent.credential: string|null` (`:394`) already accept
@@ -726,13 +781,15 @@ would duplicate OR's pricing into Autumn's static schema. Per-model breakdown li
 in ClickHouse (§6.5). *Trade:* Autumn itself won't show per-model — acceptable,
 the dashboard reads ClickHouse.
 
-**9.7 Runtime ↔ OpenRouter protocol compatibility (MUST verify before build).**
-The `codex`/OpenAI runtime maps to OR's OpenAI-compatible `/chat/completions`
-cleanly. The **`claude` runtime uses the Anthropic API shape** — confirm it can be
-pointed at an OR endpoint that speaks Anthropic's protocol (OR's
-Anthropic-compatible `/v1/messages`) or that the runtime can use OR's
-OpenAI-compatible endpoint. If neither holds for a runtime, that runtime can't go
-through OR and must stay on a direct provider key (BYO-style) until resolved.
+**9.7 Runtime ↔ OpenRouter protocol (confirmed feasible; validate before GA).** Both
+paths are documented by OR: `codex`/OpenAI → OpenAI SDK
+`baseURL=https://openrouter.ai/api/v1`; `claude`/Anthropic → Claude-Code path
+`ANTHROPIC_BASE_URL=https://openrouter.ai/api` + `ANTHROPIC_AUTH_TOKEN`. So Managed
+can route either runtime. **The work** (§5.2): each runtime currently *blocks*
+base-URL injection — v3-claude **deletes** `ANTHROPIC_BASE_URL` (`server.ts:84`),
+v3-codex **hardcodes** the OpenAI base (`server.ts:107`) — so make both configurable
+and validate end-to-end (protocol + tool calls + usage/cost echo) before GA. A
+runtime not yet validated is simply not offered under Managed.
 
 **9.8 User-facing taxonomy (resolved).** Surface Managed as a single pinned entry
 in the existing credential picker, selected per agent, via the
