@@ -120,7 +120,7 @@ export function SlackConnect({
   }
 
   const startMutation = useMutation({
-    mutationFn: (reconnect = false) => startSlackConnect(agentId, reconnect),
+    mutationFn: (reconnect: boolean) => startSlackConnect(agentId, reconnect),
     onSuccess: (m) => {
       setManifest(m)
       setStep('create')
