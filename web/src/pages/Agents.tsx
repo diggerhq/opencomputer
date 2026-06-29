@@ -8,7 +8,6 @@ import {
   createAgent,
   getCredentials,
   createCredential,
-  getBilling,
   type Agent,
 } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
@@ -51,10 +50,6 @@ export default function Agents() {
     queryKey: ['credentials'],
     queryFn: getCredentials,
   })
-  // Managed availability gates the "Managed" picker entry (the single authority —
-  // token-billing §6.6/§6.8.C). Absent/false → only BYO credentials are offered.
-  const { data: billing } = useQuery({ queryKey: ['billing'], queryFn: getBilling })
-  const managedAvailable = billing?.managedAvailable ?? false
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -76,10 +71,9 @@ export default function Agents() {
   const hasDefault = providerCreds.some((c) => c.is_default)
 
   // Lowest-friction default, mirroring backend resolution (token-billing §6.6):
-  // a BYO org default wins; else Managed (when available); else first BYO; else "new".
+  // a BYO org default wins; else Managed (always available to every org).
   const defaultCredFor = (creds: typeof providerCreds) =>
-    creds.find((c) => c.is_default)?.id ??
-    (managedAvailable ? MANAGED : creds[0]?.id ?? NEW_CRED)
+    creds.find((c) => c.is_default)?.id ?? MANAGED
 
   const resetForm = () => {
     setName('')
@@ -114,9 +108,7 @@ export default function Agents() {
   // Build options: Managed (if available, billed to credits — no provider filter, it
   // has no provider) + this runtime's provider creds + "New credential…".
   const credOptions = [
-    ...(managedAvailable
-      ? [{ value: MANAGED, label: 'Managed · billed to credits' }]
-      : []),
+    { value: MANAGED, label: 'Managed · billed to credits' },
     ...providerCreds.map((c) => ({
       value: c.id,
       label: `${c.name || 'Unnamed'}${c.last4 ? ` ·· ${c.last4}` : ''}${

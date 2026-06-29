@@ -26,7 +26,7 @@ import {
   createAutumnCustomer,
 } from "./autumn_webhook";
 import { runAutumnMeter } from "./autumn_meter";
-import { disableManagedBilling, enableManagedBilling } from "./model_billing";
+import { disableManagedBilling, enableManagedBilling, runManagedProvisioner } from "./model_billing";
 import { runModelMeter } from "./model_meter";
 import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
@@ -1265,6 +1265,12 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
     )
       .bind(orgID, userID, nowSec)
       .run();
+    // Managed is an invariant: provision the org's OpenRouter key at birth so it "just
+    // works" immediately. Best-effort — a hiccup must not break signup; the reconcile
+    // sweep (scheduled) backfills + heals, and also covers the Go/WorkOS create path.
+    await enableManagedBilling(env, orgID).catch((e) =>
+      console.error(`signup: managed provisioning failed for ${orgID} (sweep will retry)`, e),
+    );
   }
 
   // Mint session JWT — same signing secret as cap-token but a different
@@ -2143,6 +2149,11 @@ export default {
     if (env.OPENROUTER_PROVISIONING_KEY) {
       ctx.waitUntil(
         runModelMeter(env, Date.now()).catch((err) => console.error("model-meter: run failed", err)),
+      );
+      // Keep Managed an invariant: drain any org without a managed credential (backfill +
+      // new orgs from any create path + failed provisions). Idempotent, bounded per tick.
+      ctx.waitUntil(
+        runManagedProvisioner(env).catch((err) => console.error("managed-provisioner: run failed", err)),
       );
     }
   },

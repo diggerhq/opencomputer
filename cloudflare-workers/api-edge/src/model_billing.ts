@@ -409,6 +409,35 @@ export async function reconcileManagedBilling(env: ModelBillingEnv, orgId: strin
   return enableManagedBilling(env, orgId);
 }
 
+// runManagedProvisioner makes "every org has a managed credential" an INVARIANT rather
+// than a per-org opt-in. It drains orgs that aren't provisioned yet — a bounded batch per
+// tick — via the idempotent enableManagedBilling. One mechanism covers the one-time
+// backfill, every new org (regardless of create path: edge signup OR the Go/WorkOS cell
+// path), and any half/failed provision — with zero hot-path code and no managedAvailable
+// flag. Orgs parked in 'error' (exhausted retries) are left alone.
+const PROVISION_BATCH = 20;
+export async function runManagedProvisioner(env: ModelBillingEnv): Promise<void> {
+  const res = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT id FROM orgs WHERE COALESCE(model_billing_status,'off') NOT IN ('active','error')
+       ORDER BY created_at LIMIT ?1`,
+  )
+    .bind(PROVISION_BATCH)
+    .all<{ id: string }>();
+  const orgs = res.results ?? [];
+  if (orgs.length === 0) return;
+  let done = 0;
+  for (const { id } of orgs) {
+    try {
+      await enableManagedBilling(env, id);
+      done++;
+    } catch (e) {
+      // Best-effort: one org's failure never blocks the rest; the next tick retries.
+      console.error(`managed-provisioner: org ${id} failed`, e);
+    }
+  }
+  console.log(`managed-provisioner: ${done}/${orgs.length} provisioned this run`);
+}
+
 // disableManagedBilling is the rollback path: a synchronous HARD offboard. The
 // graceful-drain cron (§5.8 — keep polling until spend quiesces, final debit, then
 // delete) isn't built yet, so disable does the teardown directly: delete the OR

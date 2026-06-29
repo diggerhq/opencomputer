@@ -1,8 +1,13 @@
 # Managed keys for everyone — decouple Managed from billing
 
-Status: **Slice 1 implemented (2026-06-29); Slice 2 pending.** Builds on the shipped
-Managed work (`token-billing.md`, PRs #445 + sessions-api #34). Governing principle:
+Status: **Slices 1 + 2 implemented (2026-06-29) on `feat/managed-keys-for-everyone`
+(PR #452); pending review + deploy.** Builds on the shipped Managed work
+(`token-billing.md`, PRs #445 + sessions-api #34). Governing principle:
 `oc-bg-agents/.agents/conventions/shift-left-over-feature-flags.md`.
+
+**Step 0 resolved:** there ARE two org-create paths — the edge signup handler AND the
+Go/WorkOS cell path (`oauth_handlers.go` → `store.go:1620 INSERT INTO orgs` → D1). So the
+reconcile sweep is required (path-agnostic); the signup hook is immediacy-only.
 
 ## 1. Objective
 
@@ -120,10 +125,13 @@ customers (pro + active Stripe sub): **33 on legacy** (all `model_billing_status
   (`model_meter.ts` early-return). Tests updated + non-autumn cases added (21/21 green,
   tsc clean). After this, *any* org can be enabled with bounded exposure and zero
   wrongful halts. *Still requires the per-org enable step — that's Slice 2.*
-- **Slice 2 (make Managed an invariant + kill `managedAvailable`):** No new endpoint, no
-  sessions-api→edge trigger, no hot-path fork. `enableManagedBilling` /
-  `reconcileManagedBilling` already mint+bind idempotently; we just make *every* org carry
-  a managed credential (like every org carries an Autumn customer).
+- **Slice 2 (make Managed an invariant + kill `managedAvailable`) — DONE (PR #452):**
+  `runManagedProvisioner` sweep (edge `scheduled()`, batched, idempotent) drains every
+  unprovisioned org via `enableManagedBilling`; signup hook provisions at org birth for
+  immediacy; `managedAvailable` deleted from edge `/billing` + web (`Agents.tsx`,
+  `AgentDetail.tsx`, `schemas.ts`) → Managed always offered; no sessions-api change. Edge
+  + web tsc clean, 22/22 edge tests (incl. the sweep test). No new endpoint, no
+  cross-service trigger, no hot-path fork. Below is the design as built:
   - **Provision at org birth:** add `enableManagedBilling(orgID)` in the edge signup
     handler, beside the existing `createAutumnCustomer` call (`index.ts:~1251`,
     best-effort — don't fail signup on a provisioning hiccup; the sweep heals it).

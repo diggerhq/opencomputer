@@ -9,6 +9,7 @@ import {
 import {
   disableManagedBilling,
   enableManagedBilling,
+  runManagedProvisioner,
   type ManagedModelKeyRow,
   type ModelBillingEnv,
   ownerIdForOrg,
@@ -65,6 +66,14 @@ class FakeStmt {
     if (this.sql.includes("FROM managed_model_keys")) {
       const orgId = this.args[0] as string;
       return { results: this.db.keys.filter((k) => k.org_id === orgId) as T[] };
+    }
+    // runManagedProvisioner: unprovisioned orgs (not active/error), bounded by LIMIT.
+    if (this.sql.includes("FROM orgs")) {
+      const rows = [...this.db.orgs.values()].filter(
+        (o) => !["active", "error"].includes(o.model_billing_status ?? "off"),
+      );
+      const limit = typeof this.args[0] === "number" ? this.args[0] : rows.length;
+      return { results: rows.slice(0, limit) as T[] };
     }
     return { results: [] };
   }
@@ -364,5 +373,25 @@ describe("disableManagedBilling (rollback / hard offboard)", () => {
     vi.stubGlobal("fetch", spy);
     await disableManagedBilling(makeEnv(db), orgId);
     expect(db.orgs.get(orgId)!.model_billing_status).toBe("off");
+  });
+});
+
+describe("runManagedProvisioner (Managed-as-invariant sweep)", () => {
+  it("provisions every unprovisioned org (any provider), leaving active/error alone", async () => {
+    const db = new FakeDb();
+    seedOrg(db, { id: "a", model_billing_status: "off" }); // autumn, fresh
+    seedOrg(db, { id: "b", model_billing_status: "active" }); // already provisioned
+    seedOrg(db, { id: "c", model_billing_status: "error" }); // parked — leave alone
+    seedOrg(db, { id: "d", billing_provider: "legacy" }); // non-autumn, off by default
+    const { spy } = makeFetch();
+    vi.stubGlobal("fetch", spy);
+
+    await runManagedProvisioner(makeEnv(db));
+
+    expect(db.orgs.get("a")!.model_billing_status).toBe("active");
+    expect(db.orgs.get("d")!.model_billing_status).toBe("active"); // legacy provisions too
+    expect(db.orgs.get("c")!.model_billing_status).toBe("error"); // untouched
+    expect(db.keys.some((k) => k.org_id === "a")).toBe(true);
+    expect(db.keys.some((k) => k.org_id === "c")).toBe(false); // never touched
   });
 });
