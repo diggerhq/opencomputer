@@ -1027,12 +1027,36 @@ malformed values that already would have failed now fail earlier and clearer.
 markup value (§9.2), per-org vs per-session keys (§9.1), sync cadence (§9.3),
 BYO-via-OR (§9.4).
 
-**Current state (2026-06-29):** **steps 1, 2, 4, 5 DONE.** OC repo (edge steps 1/4 +
-UI step 5 + this doc) = PR #445; sessions-api step 2 = PR #34. Spike passed; OR
-management key obtained + verified. The "Managed" option is now clickable in the UI
-end-to-end (create + live picker), gated on `managedAvailable`. **Remaining: step 3**
-(edge `model_meter` + reconcile crons — billing accuracy, runs async, not on the
-click path), **6** (dashboard stats), **7** (docs).
+**FINAL STATE (2026-06-29): steps 1–5, 7 DONE + LIVE ON PROD + review-hardened.**
+OC repo (edge steps 1/3/4 + UI step 5 + docs step 7 + this doc) = PR #445;
+sessions-api step 2 + runtime 2B + review fixes = PR #34. **Both DRAFT, NOT merged —
+prod runs branch code (edge via CI workflow_dispatch on the branch; bolt-platform +
+runtime snapshots from #34). MERGE BOTH for durability** (a future `main` deploy would
+revert; merging #445 also redeploys the Go server + publishes the SDK).
+
+Verified live on prod (org `2f9094d9`): both claude + codex Managed turns route
+through OpenRouter; a real **$0.226 model debit landed in Autumn credits** (step-3
+`model_meter` on the `*/5` tick). Autumn `model_spend` feature + credit_schema
+(`credit_cost=1e-6`) created via API. Two external reviews addressed (P0 managed-cred
+leak sealed: credential routes 404 openrouter + session id masked to "managed"; P1
+one-active-key unique index; P2 patch-key-on-managed → 400). markup still **0
+(at-cost, loses ~5%)** — set `OPENROUTER_MARKUP_BPS` for margin.
+
+**Remaining token-billing work:** step **6** (dashboard model-usage panel — only one
+not built); optionally tighten the meter cadence (`*/5`→`*/2`) + add the §5.7 reconcile
+cron. **Prod secrets set:** `OPENROUTER_PROVISIONING_KEY` + `OC_MANAGED_CRED_HMAC_SECRET`
+on the edge; `OC_MANAGED_CRED_HMAC_SECRET` on bolt-platform (matching).
+
+**BLOCKED rollout (held):** "bump existing Autumn orgs to latest runtime + provision
+managed keys" — **blocked by a separate, pre-existing prod SEV** (act-as-org sessions
+can't fork the org-scoped runtime snapshots; only org `2f9094d9` works). Full diagnosis
++ fix plan: `/Users/izalutski/Digger/_ws_opencomputer/snapshot-act-as-org-sharing.md`.
+Until that's fixed, other orgs can't run ANY session (BYO or Managed), so the rollout
+is a no-op. NOT a token-billing bug.
+
+---
+*(historical, pre-final)* steps 1,2,4,5 were done first; the "Managed" option became
+clickable gated on `managedAvailable`.
 
 **To click-test Managed** (deploy + provision): deploy the edge (#445) with
 `OPENROUTER_PROVISIONING_KEY` + `OC_MANAGED_CRED_HMAC_SECRET`; deploy sessions-api
