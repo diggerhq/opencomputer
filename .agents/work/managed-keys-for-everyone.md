@@ -105,9 +105,12 @@ customers (pro + active Stripe sub): **33 on legacy** (all `model_billing_status
   `autumn_meter.ts:61`).
 - **Global config first** for the budget; add a per-org `managed_budget` column only when
   top-ups need to differ.
-- **Enablement = provision-on-first-use** (lazy), Managed offered to all in the UI — that's
-  what actually removes the per-org conditional enablement (vs pre-minting 482 keys).
-  Slice 2 below.
+- **Enablement = make Managed an INVARIANT, not a conditional.** Every org has a managed
+  credential the same way every org has an Autumn customer — provisioned at org birth +
+  backfilled, never gated. No runtime "provision-if-needed" branch, no `managedAvailable`
+  flag. (Rejected: the per-org enable step, AND a lazy provision-on-first-use trigger —
+  both keep a fork in the hot path and a new cross-service call. Reuses the existing
+  `enableManagedBilling`; **no new endpoint**.)
 
 ## 7b. Slices
 
@@ -117,28 +120,27 @@ customers (pro + active Stripe sub): **33 on legacy** (all `model_billing_status
   (`model_meter.ts` early-return). Tests updated + non-autumn cases added (21/21 green,
   tsc clean). After this, *any* org can be enabled with bounded exposure and zero
   wrongful halts. *Still requires the per-org enable step — that's Slice 2.*
-- **Slice 2 (remove per-org enablement + kill `managedAvailable`):** Managed becomes a
-  universal capability — **provisioned automatically at agent create**, offered to all,
-  no `managedAvailable` flag (it's a reality-fork; remove it from edge `/billing` + web +
-  `schemas.ts`). Provisioning is idempotent (`reconcileManagedBilling`).
-
-  **Trigger MUST be in sessions-api, not the edge.** `api.opencomputer.dev` *is*
-  sessions-api; the edge only proxies the dashboard path (`dashboard.ts:proxyToV3`).
-  Programmatic agent-create (SDK → sessions-api direct) never hits the edge, so an
-  edge intercept would miss it → offer-then-fail. So sessions-api triggers provisioning
-  at agent-create (`core/agents.ts:161`, the MANAGED branch), with the session-create
-  resolve path (`core/credentials.ts:328`) as an idempotent fallback.
-
-  **This forces a new sessions-api → edge "ensure provisioned" call** (provisioning is
-  edge-native — OR/Autumn ownership). Decision: reuse the **existing**
-  `OC_MANAGED_CRED_HMAC_SECRET` (already shared edge↔sessions-api for the bind hand-off)
-  on a new edge internal route `POST /internal/managed-credential/ensure?org=…` that
-  calls `reconcileManagedBilling`, rather than handing sessions-api the broader
-  `CF_ADMIN_SECRET`.
-
-  **Ordering constraint:** removing `managedAvailable` (always-show) and wiring the
-  auto-provision trigger MUST land together — shipping the first without the second
-  recreates offer-then-fail.
+- **Slice 2 (make Managed an invariant + kill `managedAvailable`):** No new endpoint, no
+  sessions-api→edge trigger, no hot-path fork. `enableManagedBilling` /
+  `reconcileManagedBilling` already mint+bind idempotently; we just make *every* org carry
+  a managed credential (like every org carries an Autumn customer).
+  - **Provision at org birth:** add `enableManagedBilling(orgID)` in the edge signup
+    handler, beside the existing `createAutumnCustomer` call (`index.ts:~1251`,
+    best-effort — don't fail signup on a provisioning hiccup; the sweep heals it).
+  - **Backfill + self-heal via a reconcile sweep:** a small edge cron (mirrors the
+    model_meter / autumn_meter cron pattern) that ensures every org is provisioned.
+    Path-agnostic (also covers the Go/WorkOS `ProvisionOrgAndUser` create path → cell PG →
+    D1), subsumes the one-time backfill, and repairs any failed provision — with zero
+    hot-path code. *Step 0: verify whether the edge signup handler is the ONLY org-create
+    path; if it is, the org-birth hook + a one-shot backfill may suffice and the cron is
+    optional.*
+  - **Remove `managedAvailable`:** delete it from edge `/billing` (`dashboard.ts:996–1040`)
+    and the web (`AgentDetail.tsx`, `Agents.tsx`, `schemas.ts`) — Managed is always
+    offered. Must land WITH the provisioning, never before (else offer-then-fail).
+  - **sessions-api:** no trigger change — resolve "just works" because the credential is
+    always bound. (Verify `credentials.ts:328` resolve has no provider assumption.)
+  - **Tradeoff:** one OR key per org (free until used; $10 cap). Consistent with the
+    invariant choice; if key-count ever bites, fall back to lazy-at-first-use.
 
 ## 8. Non-goals
 
