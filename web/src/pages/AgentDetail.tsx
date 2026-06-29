@@ -27,18 +27,10 @@ import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SlackConnect } from '@/components/slack-connect'
+import { getRuntime } from '@/lib/runtimes'
 
-// Mirrors the curated list in Agents.tsx (the create flow). The API wants a
-// provider-prefixed model id.
-const MODELS = [
-  { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8' },
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-]
-
-// Agents run on the "claude" runtime → anthropic credentials. Sentinels for the
-// non-credential choices in the picker.
-const CRED_PROVIDER = 'anthropic'
+// Sentinels for the non-credential choices in the picker. The model list +
+// credential provider come from the agent's runtime (see @/lib/runtimes).
 const ORG_DEFAULT = '__default__' // no pinned credential → org default resolves
 const NEW_CRED = '__new__' // create one inline
 
@@ -69,11 +61,14 @@ export default function AgentDetail() {
     queryKey: ['credentials'],
     queryFn: getCredentials,
   })
-  const anthropicCreds = (credentials ?? []).filter(
-    (c) => c.provider === CRED_PROVIDER,
+  // Model list + credential provider follow the agent's runtime (immutable after
+  // create): claude→anthropic, codex→openai. Falls back to claude while loading.
+  const rt = getRuntime(agent?.runtime)
+  const providerCreds = (credentials ?? []).filter(
+    (c) => c.provider === rt.provider,
   )
   const credLabel = (id: string) => {
-    const c = anthropicCreds.find((x) => x.id === id)
+    const c = providerCreds.find((x) => x.id === id)
     if (!c) return id
     return `${c.name || 'Unnamed'}${c.last4 ? ` ·· ${c.last4}` : ''}${
       c.is_default ? ' (default)' : ''
@@ -152,9 +147,9 @@ export default function AgentDetail() {
     mutationFn: async () => {
       const cred = await createCredential({
         key: newCredKey.trim(),
-        provider: CRED_PROVIDER,
+        provider: rt.provider,
         name: newCredName.trim() || undefined,
-        is_default: !anthropicCreds.some((c) => c.is_default),
+        is_default: !providerCreds.some((c) => c.is_default),
       })
       return updateAgent(agentId, { credential: cred.id })
     },
@@ -172,9 +167,9 @@ export default function AgentDetail() {
   const credSaving = switchCredMutation.isPending || addCredMutation.isPending
 
   // Derived control values.
-  const modelOptions = MODELS.some((m) => m.value === agent?.model)
-    ? MODELS
-    : [{ value: agent?.model ?? '', label: agent?.model ?? '' }, ...MODELS]
+  const modelOptions = rt.models.some((m) => m.value === agent?.model)
+    ? rt.models
+    : [{ value: agent?.model ?? '', label: agent?.model ?? '' }, ...rt.models]
   const savedPrompt = agent?.prompt ?? ''
   const promptValue = promptDraft ?? savedPrompt
   const promptDirty = promptDraft !== undefined && promptDraft !== savedPrompt
@@ -183,7 +178,7 @@ export default function AgentDetail() {
     : (agent?.credential_id ?? ORG_DEFAULT)
   const credOptions = [
     { value: ORG_DEFAULT, label: 'Org default (no pinned credential)' },
-    ...anthropicCreds.map((c) => ({ value: c.id, label: credLabel(c.id) })),
+    ...providerCreds.map((c) => ({ value: c.id, label: credLabel(c.id) })),
     { value: NEW_CRED, label: '＋ New credential…' },
   ]
   const onCredChange = (v: string) => {
@@ -359,7 +354,7 @@ export default function AgentDetail() {
                       />
                     </Field>
                     <Field
-                      label="Anthropic API key"
+                      label={rt.keyLabel}
                       htmlFor="new-cred-key"
                       description="Encrypted in a dedicated secret store."
                     >
@@ -368,7 +363,7 @@ export default function AgentDetail() {
                         type="password"
                         value={newCredKey}
                         onChange={(e) => setNewCredKey(e.target.value)}
-                        placeholder="sk-ant-…"
+                        placeholder={rt.keyPlaceholder}
                       />
                     </Field>
                     <div className="flex justify-end gap-2 sm:col-span-2">

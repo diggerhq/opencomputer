@@ -1,11 +1,13 @@
 import type { Http, Query } from "./http.js";
-import type { Agent, Limits } from "./types.js";
+import type { Agent, Limits, Runtime } from "./types.js";
 
 export interface CreateAgentParams {
   name: string;
   prompt: string;
+  /** `provider/model` id; must match the runtime's provider (`anthropic/…` for `claude`, `openai/…` for `codex`). */
   model: string;
-  runtime?: string;
+  /** Defaults to `claude`. Fixes the model's provider (see `model`); immutable after create. */
+  runtime?: Runtime;
   /** Model provider key for the runtime (Anthropic for `claude`, OpenAI for `codex`), stored as a sealed credential. Or pass `credential`, or rely on the org default. */
   key?: string;
   credential?: string;
@@ -14,6 +16,7 @@ export interface CreateAgentParams {
 
 export interface UpdateAgentParams {
   prompt?: string;
+  /** Stay within the agent's runtime provider (`anthropic/…` for `claude`, `openai/…` for `codex`); the runtime itself is immutable. */
   model?: string;
   key?: string;
   credential?: string;
