@@ -56,12 +56,6 @@ export interface Env extends DashboardEnv {
   // as the API key so /v3 sandboxes are owned by + billed to the customer org.
   // Unset → the feature is inert (JWT keys rejected). See dashboard.ts.
   OC_PROVISION_SECRET?: string;
-  // TEMPORARY (revert with its PR): arms /internal/_debug/reveal-autumn-key so an
-  // operator can read the write-only AUTUMN_SECRET_KEY once, to bootstrap access
-  // to the Autumn billing dashboard for billing work. Inert (endpoint 404s)
-  // unless this secret is set. Delete the secret + revert the endpoint right
-  // after use.
-  DEBUG_REVEAL_TOKEN?: string;
 }
 
 // ── small helpers ────────────────────────────────────────────────────────
@@ -1017,40 +1011,6 @@ async function haltList(req: Request, env: Env): Promise<Response> {
   });
 }
 
-// ── /internal/_debug/reveal-autumn-key ─────────────────────────────────────
-//
-// TEMPORARY operator escape hatch — REVERT IMMEDIATELY AFTER USE.
-//
-// AUTUMN_SECRET_KEY is a write-only Cloudflare Worker secret: there is no
-// `wrangler secret get`, so the only way to read the deployed value (needed to
-// bootstrap access to the Autumn billing dashboard for billing work) is to run
-// deployed code that returns it. This endpoint does exactly that and nothing
-// else — deliberately narrow and loud, not a general secret dumper.
-//
-// Safeguards (this is a LIVE billing key — assume the exposure window is hostile):
-//   • INERT BY DEFAULT: returns 404 unless an operator deliberately arms it by
-//     setting the DEBUG_REVEAL_TOKEN Worker secret. Merging/deploying this code
-//     reveals nothing on its own; the (public) repo carries no token.
-//   • AUTH: the caller must present `X-Debug-Token: <DEBUG_REVEAL_TOKEN>`,
-//     constant-time compared. Any mismatch → 404 (same as unarmed; no oracle).
-//   • The value is returned ONLY in the HTTPS response body to that caller and
-//     is never logged.
-//
-// Use, then tear down in order:
-//   1. wrangler secret put DEBUG_REVEAL_TOKEN --config wrangler.prod.toml   (arm)
-//   2. curl -H "X-Debug-Token: <value>" https://<edge-host>/internal/_debug/reveal-autumn-key
-//   3. wrangler secret delete DEBUG_REVEAL_TOKEN --config wrangler.prod.toml (disarm)
-//   4. merge the revert PR to remove this endpoint.
-async function revealAutumnKey(req: Request, env: Env): Promise<Response> {
-  const armed = env.DEBUG_REVEAL_TOKEN ?? "";
-  if (!armed) return new Response("not found", { status: 404 });
-  const presented = req.headers.get("X-Debug-Token") ?? "";
-  if (!presented || !constantTimeEqual(presented, armed)) {
-    return new Response("not found", { status: 404 });
-  }
-  return json({ autumn_secret_key: env.AUTUMN_SECRET_KEY ?? null });
-}
-
 // ── /internal/org-policy ──────────────────────────────────────────────────
 
 // HMAC-auth'd endpoint the cell pulls for an org's authoritative billing
@@ -1757,13 +1717,6 @@ export default {
     if (path === "/internal/halt-list") {
       if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
       return haltList(req, env);
-    }
-
-    // TEMPORARY (revert me — see PR): reveal the write-only AUTUMN_SECRET_KEY to
-    // an operator who has armed the DEBUG_REVEAL_TOKEN secret. Inert otherwise.
-    if (path === "/internal/_debug/reveal-autumn-key") {
-      if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
-      return revealAutumnKey(req, env);
     }
 
     // Cell/reconciler trigger for the Autumn re-check+project (EVENT_SECRET HMAC).
