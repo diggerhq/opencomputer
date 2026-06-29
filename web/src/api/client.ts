@@ -386,7 +386,12 @@ export const createAgent = (body: {
 // credential's value — rotation now lives on the Credentials page.
 export const updateAgent = (
   id: string,
-  body: Partial<{ prompt: string; model: string; key: string; credential: string }>,
+  body: Partial<{
+    prompt: string
+    model: string
+    key: string
+    credential: string | null // null clears the pin → org default resolves
+  }>,
 ) =>
   apiFetch(
     `/v3/agents/${id}`,
