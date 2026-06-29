@@ -289,7 +289,7 @@ export default function Agents() {
               <Field
                 label="Runtime"
                 htmlFor="agent-runtime"
-                description="The engine this agent runs on. Fixed once created."
+                description="The engine, fixed once created."
               >
                 <Select
                   id="agent-runtime"
@@ -301,7 +301,7 @@ export default function Agents() {
               <Field
                 label="Model"
                 htmlFor="agent-model"
-                description={`Models available on the ${rt.label} runtime.`}
+                description={`Models for the ${rt.label} runtime.`}
               >
                 <Select
                   // Remount on runtime change: Radix Select.Value blanks out when
