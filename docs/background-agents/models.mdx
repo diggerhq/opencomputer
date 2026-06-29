@@ -24,7 +24,6 @@ Provider-prefixed, provider-native IDs:
 ```
 anthropic/claude-opus-4-8
 openai/gpt-5.x
-openrouter/qwen-3-coder
 ```
 
 OpenComputer adds no model names of its own. Bare IDs are accepted when
@@ -51,11 +50,9 @@ that drives it (the planned `opencode` drives all — Preview).
 ```bash
 oc connect anthropic --api-key sk-ant-...
 oc connect openai --api-key sk-...
-oc connect openrouter --api-key sk-or-...
 ```
 
-Bring your own keys per provider, or use platform billing where available.
-One OpenRouter key opens its full multi-lab catalog.
+Bring your own keys per provider, or run **Managed** (billed to your OpenComputer credits) where available.
 
 As designed, keys never enter agent machines: model traffic flows through
 OpenComputer's model gateway, which holds the keys, enforces the configured

@@ -10,7 +10,7 @@ A **session** is an [agent](/agent-sessions/agents) run with an append-only [eve
 
 ## Session flow
 
-1. You create a session from an [agent](/agent-sessions/agents) (and a [model credential](/agent-sessions/credentials) — both required). The session starts immediately.
+1. You create a session from an [agent](/agent-sessions/agents). The model runs **Managed** (billed to your credits, no key — the default) or on a [model credential](/agent-sessions/credentials) you supply. The session starts immediately.
 2. The [runtime](/agent-sessions/runtimes) executes the agent in a sandbox, appending [events](/agent-sessions/events) to the log as it works.
 3. With nothing left to do, the session goes **idle** and the sandbox **hibernates**.
 4. A [steer](/agent-sessions/messaging) message wakes it; it resumes with its prior context. Repeat.
@@ -81,7 +81,7 @@ Three independent knobs — don't overload one for another:
 
 ## Limits
 
-Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are runtime limits, not spend controls; model usage is billed by your provider key. Hitting one ends the turn with the matching `yield_reason`.
+Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are runtime limits, not spend controls; model usage is billed to your provider key (BYO) or to your OpenComputer credits (Managed). Hitting one ends the turn with the matching `yield_reason`.
 
 ## Stop a session
 

@@ -71,7 +71,7 @@
   <text x="758" y="105" font-size="10" fill="#6b6b6b">applies the configured model</text>
   <text x="758" y="120" font-size="10" fill="#7c7aae">records requests + responses</text>
   <text x="758" y="135" font-size="10" fill="#6b6b6b">holds provider keys</text>
-  <text x="758" y="153" font-size="9" fill="#9a9a9a">Anthropic · OpenAI · OpenRouter</text>
+  <text x="758" y="153" font-size="9" fill="#9a9a9a">Anthropic · OpenAI</text>
 
   <!-- Runtime -> Sandbox -->
   <line x1="585" y1="220" x2="585" y2="266" stroke="#9a9a9a" stroke-width="1.25" marker-end="url(#ah)"/>

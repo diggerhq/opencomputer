@@ -454,9 +454,9 @@ accepts a reserved value `"managed"`:
   Managed changes *who pays*, not *which models* — both Managed and BYO show the
   runtime's models. (Managed's broader reach is **across agents/runtimes**, not within
   one agent.)
-- **§9.7:** claude *likely* feasible, **codex unvalidated** (the `wire_api:"responses"`
-  path — §5.2/§9.7); a runtime is offered under Managed only once its OR path is
-  validated end-to-end.
+- **§9.7:** both `claude` and `codex` **validated end-to-end live on prod**
+  (2026-06-29) — incl. codex's `wire_api:"responses"` + `requires_openai_auth=false`
+  path through OR. Both runtimes are offered under Managed.
 
 **Behavior.**
 - Out of credits (Managed) → same halt as compute (one pool); "top up to resume."
@@ -1005,10 +1005,11 @@ malformed values that already would have failed now fail earlier and clearer.
    ref validation + key/credential exclusion; `422 managed_unavailable`. 2B:
    `endpoint_profile` on `TurnConfig` + seal keyed on (runtime, source) +
    `toOpenRouterSlug` (Anthropic dash→dot); both runtime servers route Managed
-   through OR. tsc clean (3 packages). **NOT yet smoke-tested with a live Managed
-   turn** (needs dev stack + funded float; codex `requires_openai_auth=false`
-   validated only at raw-HTTP, not through the CLI). Apply migration 015 + set
-   `OC_MANAGED_CRED_HMAC_SECRET` to enable.
+   through OR. **SHIPPED + validated live on prod 2026-06-29: both claude AND codex
+   Managed turns run end-to-end through OpenRouter** (org `2f9094d9`); codex's
+   `requires_openai_auth=false` CLI path — the last §9.7 unknown — **confirmed
+   working live**. Runtime brains shipped as org-scoped snapshots (claude v0.0.11,
+   codex v0.0.5).
 3. **Edge — metering + enforcement:** `model_meter` cron — persist-before-track
    immutable-interval debit (§5.4/§7), markup-correct **aggregate** cap across keys
    (§5.4/§7), `projectOrg` halt on ≤0 (§5.4); reconcile cron (§5.7).
