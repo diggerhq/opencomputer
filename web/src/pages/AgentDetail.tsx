@@ -96,6 +96,9 @@ export default function AgentDetail() {
   const settleAgent = () => {
     void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
     void queryClient.invalidateQueries({ queryKey: ['agents'] })
+    // A prompt/model save creates a new revision → refresh the Revisions panel too.
+    void queryClient.invalidateQueries({ queryKey: ['agent-revisions', agentId] })
+    void queryClient.invalidateQueries({ queryKey: ['agent-deploys', agentId] })
   }
   const optimistic = async (patch: Partial<Agent>) => {
     await queryClient.cancelQueries({ queryKey: ['agent', agentId] })
