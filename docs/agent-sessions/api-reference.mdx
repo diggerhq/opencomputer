@@ -300,7 +300,7 @@ You **deploy** an agent's behavior (`prompt` + `model` + `skills`); each deploym
 
 </Tabs>
 
-`input`: `{ type:"inline", prompt, model?, skills?, runtime? }` (the **complete** behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys the [linked repo](#deploy-from-a-repo); `repo`/`path` from the link). `activate:false` **stages** it. Inline = sync (`ready` + `revision_id`); GitHub = async (`queued`). `POST …/revisions` is inline-only sugar.
+`input`: `{ type:"inline", prompt, model?, skills?, runtime? }` (the **complete** behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys the [linked repo](#deploy-from-a-repo); `repo`/`path` from the link). `activate:false` **stages** it — but only for `inline`; `github` deploys are **branch-driven** (the production branch activates, others stage) so `activate` is ignored. Inline = sync (`ready` + `revision_id`); GitHub = async (`queued`). `POST …/revisions` is inline-only sugar.
 
 **`Deployment`**
 
@@ -308,7 +308,7 @@ You **deploy** an agent's behavior (`prompt` + `model` + `skills`); each deploym
 |---|---|
 | `id` `created_at` | |
 | `state` | progresses `accepted → queued → fetching → validating → uploading → ready`; terminal: `failed`, `superseded` (a newer deploy won), `skipped` (content unchanged) |
-| `result` | `created · skipped · failed` |
+| `result` | `created · skipped · superseded · failed` (`null` until terminal) |
 | `revision_id` | the revision it produced (`null` until `ready`) |
 | `active` | whether that revision is the active one |
 | `source?` `error?` | provenance · failure detail |
@@ -444,7 +444,7 @@ Linking deploys the current production HEAD immediately (unless `deploy_now: fal
 |---|---|
 | `agent_id` `repo_id` `path` | the linked agent · repo · directory within it |
 | `production_ref` | branch that auto-activates on push |
-| `status` | `active`, or a problem: `path_missing`, `auth_required`, `repo_not_selected`, `app_suspended`, `error` |
+| `status` | `active`, or a problem: `path_missing`, `ref_missing` (production branch deleted), `auth_required`, `repo_not_selected`, `app_suspended`, `error` |
 | `latest_seen_sha?` `active_deployed_sha?` | newest sha observed · sha behind the active revision |
 
 ## Destinations

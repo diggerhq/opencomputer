@@ -19,7 +19,7 @@ Deploy three ways — all the same underneath: the **API/SDK** (send it inline),
 
 ## Revisions
 
-A **revision** is an immutable snapshot of an agent's behavior — the `prompt`, `model`, and skills from one deployment, frozen and numbered. Each deployment appends a new one; the agent's **active revision** is the one new [sessions](/agent-sessions/sessions) run.
+A **revision** is an immutable snapshot of an agent's behavior — the `prompt`, `model`, and skills from one deployment, frozen and numbered. Every deploy appends a new one (a repo push that changes nothing is skipped); the agent's **active revision** is the one new [sessions](/agent-sessions/sessions) run.
 
 Revisions are **linear** (the number only goes up, like a Vercel/Fly deployment) and never rewritten — [rolling back](#roll-back-and-promote) just moves the active pointer to an earlier one. In-flight sessions keep the revision they started on; only new sessions pick up a change.
 
@@ -79,7 +79,7 @@ The response is a **deployment**:
 { "deployment": { "id": "dep_…", "state": "ready", "revision_id": "rev_…", "active": true } }
 ```
 
-Inline deployments finish synchronously (`state: "ready"` with a `revision_id`). Asynchronous deployments (GitHub) return `state: "queued"` — poll `GET /agents/:id/deployments/:deployment_id` or watch [events](/agent-sessions/events).
+Inline deployments finish synchronously (`state: "ready"` with a `revision_id`). Asynchronous deployments (GitHub) return `state: "queued"` — poll `GET /agents/:id/deployments/:deployment_id`; a repo deploy also reports progress as a **commit status** on GitHub.
 
 ### Staging vs activating
 
@@ -99,13 +99,13 @@ await oc.agents.revisions.activate("agt_123", deployment.revision_id);
 
 So `revision` on [session create](/agent-sessions/sessions) is how you exercise any non-active revision (a staged one, or an old one) without touching what's live.
 
-For [repo deployments](#deploy-from-a-repo) the **branch decides**: pushes to the production branch activate, other branches stage — so you rarely set `activate` by hand.
+For [repo deployments](#deploy-from-a-repo) the **branch decides** and `activate` is ignored: a push to the production branch activates, every other branch stages.
 
 <Tip>Editing `prompt`/`model` via [`PATCH /agents/:id`](/agent-sessions/agents) also deploys a revision — a shorthand for small edits.</Tip>
 
 ## Deploy from a repo
 
-Keep the agent directory (above) in Git and **push to deploy**. [Install the OpenComputer GitHub App](/agent-sessions/repos#connecting-github) on the repo (or bring your own), then connect it to an agent:
+Keep the agent directory (above) in Git and **push to deploy**. [Install the OpenComputer GitHub App](/agent-sessions/repos#connecting-github) on the repo, then connect it to an agent:
 
 <CodeGroup>
 

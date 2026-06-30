@@ -52,7 +52,7 @@ The only thing an agent needs is a **model** and a **prompt** — create one and
 |---|---|---|
 | **Default agent** | `name` + `model` (+ a prompt) | a working agent on the default runtime — no setup |
 | **+ Skills** | [`SKILL.md` folders](/agent-sessions/skills) (upload a `.zip`, or include in a repo) | reusable procedures the agent loads when relevant — still the default runtime |
-| **+ Deploy from a repo / CLI** | keep the agent's `prompt.md` + `skills/` in Git and [push to deploy](/agent-sessions/revisions#deploy-from-a-repo) | versioned, push-to-deploy, previews + rollback — still the default runtime |
+| **+ Deploy from a repo / CLI** | keep the agent's `prompt.md` + `skills/` in Git and [push to deploy](/agent-sessions/revisions#deploy-from-a-repo) | versioned, push-to-deploy, staged revisions + rollback — still the default runtime |
 | **+ Custom runtime** *(coming soon)* | bring your own runtime image | full control of the execution environment |
 
 At every rung the agent is just a small directory — at most `agent.toml` + `prompt.md` + `skills/`. You can stop at any rung; most agents never go past skills.
