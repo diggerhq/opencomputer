@@ -28,6 +28,7 @@ import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SlackConnect } from '@/components/slack-connect'
+import { AgentRevisions } from '@/components/agent-revisions'
 import { getRuntime } from '@/lib/runtimes'
 
 // Sentinels for the non-credential choices in the picker. The model list +
@@ -403,6 +404,9 @@ export default function AgentDetail() {
 
           {/* Slack — kept above Sessions so it's visible without scrolling */}
           <SlackConnect agentId={agent.id} agentName={agent.name} />
+
+          {/* Revisions — deploy history + active pointer + rollback */}
+          <AgentRevisions agentId={agent.id} />
 
           {/* Sessions */}
           <Panel className="overflow-hidden">

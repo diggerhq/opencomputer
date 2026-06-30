@@ -28,6 +28,8 @@ export type {
   BrowserSession,
   BrowserProfile,
   Agent,
+  AgentRevision,
+  AgentDeploy,
   Session,
   SessionEvent,
   Turn,
@@ -425,6 +427,26 @@ export const updateAgent = (
     `/v3/agents/${id}`,
     { method: 'PATCH', body: JSON.stringify(body) },
     S.AgentSchema,
+  )
+
+// Agent Revisions (design 009) — the deploy history of an agent's behavior. List
+// endpoints wrap rows in { data: [...] }; callers want the array. Rollback = activate
+// an earlier revision (by id or number); it moves the production pointer.
+export const getAgentRevisions = (agentId: string) =>
+  apiFetch(`/v3/agents/${agentId}/revisions`, {}, S.AgentRevisionListSchema).then(
+    (r) => r.data,
+  )
+
+export const getAgentDeploys = (agentId: string) =>
+  apiFetch(`/v3/agents/${agentId}/deploys`, {}, S.AgentDeployListSchema).then(
+    (r) => r.data,
+  )
+
+export const activateRevision = (agentId: string, rev: string | number) =>
+  apiFetch(
+    `/v3/agents/${agentId}/revisions/${rev}/activate`,
+    { method: 'POST', body: JSON.stringify({}) },
+    S.ActivateRevisionSchema,
   )
 
 // Slack — an agent's BYO Slack app (1 app ⟷ 1 agent ⟷ 1 workspace). Two-step

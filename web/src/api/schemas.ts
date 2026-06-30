@@ -340,6 +340,36 @@ export const AgentListSchema = z.object({
   next_cursor: z.string().nullish(),
 })
 
+// Agent Revisions (design 009) — immutable deployed versions of an agent's behavior.
+// `active` flags the production pointer; rollback = activate an earlier revision.
+export const AgentRevisionSchema = z.object({
+  id: z.string(),
+  number: z.number(),
+  digest: z.string(),
+  created_at: z.string(),
+  active: z.boolean(),
+})
+export const AgentRevisionListSchema = z.object({
+  data: z.array(AgentRevisionSchema),
+})
+// A deploy event (provenance + state); one revision can be produced by many deploys.
+export const AgentDeploySchema = z.object({
+  id: z.string(),
+  state: z.string(), // validating | uploading | ready | failed
+  result: z.string().nullish(), // created | deduped | failed
+  source: record.nullish(), // { via, repo_id?, path?, git_sha? }
+  actor: z.string().nullish(),
+  revision_id: z.string().nullish(),
+  created_at: z.string(),
+})
+export const AgentDeployListSchema = z.object({
+  data: z.array(AgentDeploySchema),
+})
+// The pointer-move response from POST …/revisions/:rev/activate.
+export const ActivateRevisionSchema = z.object({
+  active_revision_id: z.string(),
+})
+
 // Credentials — the reusable model-provider keys an agent/session resolves. The
 // raw key is write-only; the API returns only metadata (last4 for display).
 export const CredentialSchema = z.object({
@@ -469,6 +499,8 @@ export const DeliverySchema = z.object({
 })
 
 export type Agent = z.infer<typeof AgentSchema>
+export type AgentRevision = z.infer<typeof AgentRevisionSchema>
+export type AgentDeploy = z.infer<typeof AgentDeploySchema>
 export type Credential = z.infer<typeof CredentialSchema>
 export type SlackConnection = z.infer<typeof SlackConnectionSchema>
 export type SlackManifestResponse = z.infer<typeof SlackManifestResponseSchema>
