@@ -73,6 +73,7 @@
           "agent-sessions/overview",
           "agent-sessions/quickstart",
           "agent-sessions/agents",
+          "agent-sessions/revisions",
           "agent-sessions/sessions",
           "agent-sessions/credentials",
           "agent-sessions/repos",

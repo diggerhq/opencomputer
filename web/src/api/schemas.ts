@@ -331,6 +331,11 @@ export const AgentSchema = z.object({
   runtime: z.string(),
   credential_id: z.string().nullable().optional(),
   revision: z.number().optional(),
+  // Agent Revisions (design 009): the active production pointer + a summary of it.
+  active_revision_id: z.string().nullish(),
+  active_revision: z
+    .object({ id: z.string(), number: z.number(), digest: z.string() })
+    .nullish(),
   limits: record.nullish(),
   created_at: z.string(),
 })
@@ -338,6 +343,65 @@ export const AgentSchema = z.object({
 export const AgentListSchema = z.object({
   data: z.array(AgentSchema),
   next_cursor: z.string().nullish(),
+})
+
+// Agent Revisions (design 009) — immutable deployed versions of an agent's behavior.
+// `active` flags the production pointer; rollback = activate an earlier revision.
+export const AgentRevisionSchema = z.object({
+  id: z.string(),
+  number: z.number(),
+  digest: z.string(),
+  created_at: z.string(),
+  active: z.boolean(),
+})
+export const AgentRevisionListSchema = z.object({
+  data: z.array(AgentRevisionSchema),
+})
+// A deploy event (provenance + state); one revision can be produced by many deploys.
+export const AgentDeploySchema = z.object({
+  id: z.string(),
+  state: z.string(), // validating | uploading | ready | failed
+  result: z.string().nullish(), // created | deduped | failed
+  source: record.nullish(), // { via, repo_id?, path?, git_sha? }
+  actor: z.string().nullish(),
+  revision_id: z.string().nullish(),
+  created_at: z.string(),
+})
+export const AgentDeployListSchema = z.object({
+  data: z.array(AgentDeploySchema),
+})
+// The pointer-move response from POST …/revisions/:rev/activate.
+export const ActivateRevisionSchema = z.object({
+  active_revision_id: z.string(),
+})
+// A file within a skill (path/mode/size).
+export const SkillFileSchema = z.object({
+  path: z.string(),
+  mode: z.number(),
+  size: z.number(),
+})
+// A skill — the domain unit: a folder with a SKILL.md (name + description from frontmatter).
+export const SkillItemSchema = z.object({
+  name: z.string(),
+  description: z.string().nullish(),
+  files: z.array(SkillFileSchema).default([]),
+})
+// The agent's skills (GET …/skills) — the active revision's skills, enumerated.
+export const AgentSkillsSchema = z.object({
+  revision: z
+    .object({ id: z.string(), number: z.number(), digest: z.string() })
+    .nullish(),
+  skill_bundle_digest: z.string().nullish(),
+  skills: z.array(SkillItemSchema).default([]),
+})
+// The deploy-shaped response from POST …/revisions.
+export const DeployResultSchema = z.object({
+  deploy_id: z.string(),
+  state: z.string(),
+  result: z.string().nullish(),
+  revision: z
+    .object({ id: z.string(), number: z.number(), digest: z.string(), active: z.boolean() })
+    .nullish(),
 })
 
 // Credentials — the reusable model-provider keys an agent/session resolves. The
@@ -469,6 +533,10 @@ export const DeliverySchema = z.object({
 })
 
 export type Agent = z.infer<typeof AgentSchema>
+export type AgentRevision = z.infer<typeof AgentRevisionSchema>
+export type AgentSkills = z.infer<typeof AgentSkillsSchema>
+export type SkillItem = z.infer<typeof SkillItemSchema>
+export type AgentDeploy = z.infer<typeof AgentDeploySchema>
 export type Credential = z.infer<typeof CredentialSchema>
 export type SlackConnection = z.infer<typeof SlackConnectionSchema>
 export type SlackManifestResponse = z.infer<typeof SlackManifestResponseSchema>

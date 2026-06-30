@@ -28,6 +28,8 @@ import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SlackConnect } from '@/components/slack-connect'
+import { AgentSkills } from '@/components/agent-skills'
+import { AgentRevisions } from '@/components/agent-revisions'
 import { getRuntime } from '@/lib/runtimes'
 
 // Sentinels for the non-credential choices in the picker. The model list +
@@ -95,6 +97,9 @@ export default function AgentDetail() {
   const settleAgent = () => {
     void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
     void queryClient.invalidateQueries({ queryKey: ['agents'] })
+    // A prompt/model save creates a new revision → refresh the Revisions panel too.
+    void queryClient.invalidateQueries({ queryKey: ['agent-revisions', agentId] })
+    void queryClient.invalidateQueries({ queryKey: ['agent-deploys', agentId] })
   }
   const optimistic = async (patch: Partial<Agent>) => {
     await queryClient.cancelQueries({ queryKey: ['agent', agentId] })
@@ -267,9 +272,9 @@ export default function AgentDetail() {
               <span className="text-foreground font-mono">{agent.id}</span>
               <span>Runtime</span>
               <span className="text-foreground capitalize">{agent.runtime}</span>
-              <span>Revision</span>
+              <span>Active revision</span>
               <span className="text-foreground font-mono">
-                {agent.revision ?? 1}
+                #{agent.active_revision?.number ?? agent.revision ?? 1}
               </span>
               <span>Created</span>
               <span className="text-foreground">
@@ -403,6 +408,12 @@ export default function AgentDetail() {
 
           {/* Slack — kept above Sessions so it's visible without scrolling */}
           <SlackConnect agentId={agent.id} agentName={agent.name} />
+
+          {/* Skills — current files + upload-a-zip to deploy a new revision */}
+          <AgentSkills agentId={agent.id} />
+
+          {/* Revisions — deploy history + active pointer + rollback */}
+          <AgentRevisions agentId={agent.id} />
 
           {/* Sessions */}
           <Panel className="overflow-hidden">

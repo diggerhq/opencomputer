@@ -28,6 +28,10 @@ export type {
   BrowserSession,
   BrowserProfile,
   Agent,
+  AgentRevision,
+  AgentSkills,
+  SkillItem,
+  AgentDeploy,
   Session,
   SessionEvent,
   Turn,
@@ -426,6 +430,44 @@ export const updateAgent = (
     { method: 'PATCH', body: JSON.stringify(body) },
     S.AgentSchema,
   )
+
+// Agent Revisions (design 009) — the deploy history of an agent's behavior. List
+// endpoints wrap rows in { data: [...] }; callers want the array. Rollback = activate
+// an earlier revision (by id or number); it moves the production pointer.
+export const getAgentRevisions = (agentId: string) =>
+  apiFetch(`/v3/agents/${agentId}/revisions`, {}, S.AgentRevisionListSchema).then(
+    (r) => r.data,
+  )
+
+export const getAgentDeploys = (agentId: string) =>
+  apiFetch(`/v3/agents/${agentId}/deploys`, {}, S.AgentDeployListSchema).then(
+    (r) => r.data,
+  )
+
+export const activateRevision = (agentId: string, rev: string | number) =>
+  apiFetch(
+    `/v3/agents/${agentId}/revisions/${rev}/activate`,
+    { method: 'POST', body: JSON.stringify({}) },
+    S.ActivateRevisionSchema,
+  )
+
+// Skills sub-resource (design 009 §8) — the API owns zip → validate → bundle, so the
+// dashboard is a thin consumer: read the file list, upload a .zip, or clear.
+export const getAgentSkills = (agentId: string) =>
+  apiFetch(`/v3/agents/${agentId}/skills`, {}, S.AgentSkillsSchema)
+
+// Upload a .zip of skills → the API unzips + deploys a new revision (active behavior with
+// skills replaced). The raw file is the body; no client-side parsing.
+export const putAgentSkills = (agentId: string, zip: File | Blob) =>
+  apiFetch(
+    `/v3/agents/${agentId}/skills`,
+    { method: 'PUT', body: zip, headers: { 'Content-Type': 'application/zip' } },
+    S.DeployResultSchema,
+  )
+
+// Remove all skills → deploys a revision from the active behavior with no skills.
+export const deleteAgentSkills = (agentId: string) =>
+  apiFetch(`/v3/agents/${agentId}/skills`, { method: 'DELETE' }, S.DeployResultSchema)
 
 // Slack — an agent's BYO Slack app (1 app ⟷ 1 agent ⟷ 1 workspace). Two-step
 // connect: START (manifest) returns the app manifest + guided steps; COMPLETE
