@@ -519,6 +519,25 @@ const deploymentSource = {
   active_deployed_sha: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
 }
 
+// Revisions / deploys / skills for the agent Overview + Deployments tab.
+const agentRevisions = [
+  { id: 'rev_3', number: 3, digest: 'sha256:c0ffee0011223344', created_at: at(0, 1), active: true },
+  { id: 'rev_2', number: 2, digest: 'sha256:deadbeef55667788', created_at: at(0, 3), active: false },
+  { id: 'rev_1', number: 1, digest: 'sha256:0123456789abcdef', created_at: at(2), active: false },
+]
+const agentDeploys = [
+  { id: 'dep_3', state: 'ready', result: 'created', source: { via: 'repo', git_sha: '4a3f654010a5c16a' }, actor: null, revision_id: 'rev_3', created_at: at(0, 1) },
+  { id: 'dep_2', state: 'ready', result: 'created', source: { via: 'api' }, actor: null, revision_id: 'rev_2', created_at: at(0, 3) },
+  { id: 'dep_1', state: 'failed', result: 'failed', source: { via: 'repo', git_sha: 'badc0ffee1234567' }, actor: null, revision_id: null, created_at: at(1) },
+]
+const agentSkills = {
+  revision: { id: 'rev_3', number: 3, digest: 'sha256:c0ffee0011223344' },
+  skill_bundle_digest: 'sha256:c0ffee0011223344',
+  skills: [
+    { name: 'hello', description: 'A trivial example skill.', files: [{ path: 'hello/SKILL.md', mode: 33188, size: 240 }] },
+  ],
+}
+
 // A connected Slack app for the first agent (the AgentDetail Slack panel).
 const slackConnection = {
   id: 'sla_5p6q7r',
@@ -791,6 +810,9 @@ const ROUTES: Array<[RegExp, Handler]> = [
     /^\/v3\/agents\/[^/]+\/deployment-source$/,
     () => (DEPLOY_PREVIEW === 'connected' ? { source: deploymentSource } : NOT_FOUND),
   ],
+  [/^\/v3\/agents\/[^/]+\/deploys$/, () => ({ data: agentDeploys })],
+  [/^\/v3\/agents\/[^/]+\/revisions$/, () => ({ data: agentRevisions })],
+  [/^\/v3\/agents\/[^/]+\/skills$/, () => agentSkills],
   [/^\/v3\/agents\/[^/]+$/, () => agents[0]],
   [/^\/v3\/agents$/, () => ({ data: agents })],
   [/^\/v3\/credentials$/, () => ({ data: credentials })],

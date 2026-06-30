@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GitBranch, Plug, Unplug, ExternalLink } from 'lucide-react'
+import { GitBranch, Plug, Unplug, ExternalLink, Rocket } from 'lucide-react'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
   getDeployApp,
   getDeploymentSource,
   linkDeploymentSource,
   unlinkDeploymentSource,
+  deployFromGithub,
 } from '@/api/client'
 import {
   Panel,
@@ -86,6 +87,14 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
     },
     onError: (e) => notifyError("Couldn't disconnect the repo.", e),
   })
+  const deployNow = useMutation({
+    mutationFn: () => deployFromGithub(agentId),
+    onSuccess: () => {
+      invalidate()
+      notifySuccess('Deploying the production branch — watch the deployments tab.')
+    },
+    onError: (e) => notifyError("Couldn't start the deploy.", e),
+  })
 
   const pickRepo = (fullName: string) => {
     setRepo(fullName)
@@ -123,16 +132,31 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
                   ) : null}
                 </div>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:text-foreground"
-                disabled={unlink.isPending}
-                onClick={() => unlink.mutate()}
-              >
-                <Unplug className="size-4" />
-                {unlink.isPending ? 'Disconnecting…' : 'Disconnect'}
-              </Button>
+              <div className="flex shrink-0 items-center gap-1">
+                {st.tone === 'ok' ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground hover:text-foreground"
+                    disabled={deployNow.isPending}
+                    onClick={() => deployNow.mutate()}
+                    title="Deploy the production branch's current HEAD now"
+                  >
+                    <Rocket className="size-4" />
+                    {deployNow.isPending ? 'Deploying…' : 'Deploy now'}
+                  </Button>
+                ) : null}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground hover:text-foreground"
+                  disabled={unlink.isPending}
+                  onClick={() => unlink.mutate()}
+                >
+                  <Unplug className="size-4" />
+                  {unlink.isPending ? 'Disconnecting…' : 'Disconnect'}
+                </Button>
+              </div>
             </div>
             {st.tone === 'ok' ? (
               <p className="text-muted-foreground text-xs">

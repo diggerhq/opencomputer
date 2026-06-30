@@ -489,6 +489,14 @@ export const linkDeploymentSource = (
 export const unlinkDeploymentSource = (agentId: string) =>
   apiFetch<void>(`/v3/agents/${agentId}/deployment-source`, { method: 'DELETE' })
 
+// Deploy the linked repo's current production-branch HEAD now (no git push needed).
+// Returns { deployment } — fire-and-refetch, so we don't validate the body.
+export const deployFromGithub = (agentId: string) =>
+  apiFetch<{ deployment?: { id: string; state: string } }>(
+    `/v3/agents/${agentId}/deployments`,
+    { method: 'POST', body: JSON.stringify({ input: { type: 'github' } }) },
+  )
+
 // Slack — an agent's BYO Slack app (1 app ⟷ 1 agent ⟷ 1 workspace). Two-step
 // connect: START (manifest) returns the app manifest + guided steps; COMPLETE
 // posts the three pasted values back. No secrets are ever returned.
