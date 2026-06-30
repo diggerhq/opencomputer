@@ -71,9 +71,14 @@ const NAV: NavGroup[] = [
         icon: KeySquare,
         preview: true,
       },
+    ],
+  },
+  {
+    label: 'Browser Sessions',
+    items: [
       {
         to: '/browsers',
-        label: 'Browsers',
+        label: 'Browser sessions',
         icon: Monitor,
         preview: true,
       },
