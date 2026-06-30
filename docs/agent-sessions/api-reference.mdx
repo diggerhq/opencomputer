@@ -1,11 +1,11 @@
 ---
-title: "API / SDK reference"
-description: "Every endpoint in the Durable Agent Sessions API, with its TypeScript SDK call"
+title: "API / SDK / CLI reference"
+description: "Every action in the Durable Agent Sessions API, with its TypeScript SDK call and oc CLI command"
 ---
 
 Base URL `https://api.opencomputer.dev/v3`. Management calls authenticate with your **org API key**; stream and steer also accept a **[client token](/agent-sessions/authentication#client-tokens)**.
 
-Each section toggles between the **TypeScript** SDK (`@opencomputer/sdk`) and **REST** — pick one and the whole page follows. In the SDK calls, `oc` is the client and `session` is a handle:
+Each section toggles between the **TypeScript SDK** (`@opencomputer/sdk`), **REST**, and the **`oc` CLI** — pick one and the whole page follows.
 
 ```ts
 import { OpenComputer, connectSession } from "@opencomputer/sdk";
@@ -15,7 +15,13 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 // or, in a browser:  await connectSession({ sessionId, clientToken })
 ```
 
-<Note>The SDK returns the same objects with **camelCase** fields (`client_token` → `session.clientToken`, `created_at` → `createdAt`, `last_turn` → `lastTurn`, `yield_reason` → `yieldReason`, `turn_seconds` → `turnSeconds`, …) and takes camelCase params (`idempotency_key` → `idempotencyKey`). The wire shapes below are the raw JSON. Truly opaque blobs — your session `metadata`, event `refs`, and event `raw` — pass through **verbatim** (keys untouched) in both directions; everything else, including event `body`, is camelCased like the rest.</Note>
+```bash
+# the oc CLI authenticates with OPENCOMPUTER_API_KEY (or `oc login`); --json on any command
+oc whoami
+oc agent deploy        # deploy the agent directory in the cwd
+```
+
+<Note>The SDK returns the same objects with **camelCase** fields (`client_token` → `session.clientToken`, `created_at` → `createdAt`, `last_turn` → `lastTurn`, …) and takes camelCase params (`idempotency_key` → `idempotencyKey`). The wire shapes below are the raw JSON. Truly opaque blobs — session `metadata`, event `refs`, event `raw` — pass through **verbatim** both directions; everything else, including event `body`, is camelCased. The CLI prints a human table by default and the raw JSON with `--json`.</Note>
 
 ## Sessions
 
@@ -43,7 +49,7 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 | --- | --- |
 | `POST /sessions` | Start a session → `{ session, client_token }`. |
 | `GET /sessions/:id` | Fetch a session. |
-| `GET /sessions?status=&agent=&key=&after=&before=&limit=&cursor=` | List sessions (filtered, paginated; `cursor` = `nextCursor` from the previous page). |
+| `GET /sessions?status=&agent=&key=&after=&before=&limit=&cursor=` | List sessions (filtered, paginated; `cursor` = `nextCursor`). |
 | `POST /sessions/:id/archive` | Cancel any active turn, then close (read-only). |
 | `POST /sessions/:id/cancel` | Cooperatively stop the active turn (no-op if not running). |
 | `GET /sessions/:id/result` | The result helper — `{ last_turn, result? }`. |
@@ -53,38 +59,42 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 
 </Tab>
 
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc session create --agent <id\|name> [--revision <n>] [--input <text>]` | Start a session (`--revision` pins a specific revision; default = active). |
+| `oc session get <id>` | Fetch a session. |
+| `oc session list [--agent <id>] [--status <s>]` | List sessions. |
+| `oc session cancel <id>` · `oc session archive <id>` | Stop the active turn · close (read-only). |
+| `oc session result <id>` | The resolved final result. |
+| `oc session turns <id>` | Per-turn history. |
+| `oc session sources <id>` | Source checkout status. |
+| *(client tokens — no CLI; mint via SDK/REST for browsers)* | |
+
+</Tab>
+
 </Tabs>
 
-`agent` is **required** (create a saved [agent](#agents) first); the model must resolve to a source — **Managed** (billed to your credits, the default) or a usable [credential](#credentials) — else `422 no_credential` (or `422 managed_unavailable` if Managed is selected but not active for your org). `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks** so a callback handler can route to the right external record without a lookup; it is **never** shown to the model, **not** indexed/queryable, and distinct from `key` (get-or-create) and `Idempotency-Key` (dedupe). `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-input). For the managed runtimes (`claude`, `codex`), put all task-critical context in the task text. There's no fixed byte cap on `input`, but it counts against the model's context window — **truncate large inputs** (e.g. a PR diff) and have the agent pull the rest through its [sandbox tools](/agent-sessions/runtime-tools) (clone the repo, read files) rather than inlining it. `limits` `{ tokens, turn_seconds, turns }` are **non-monetary** — token budget, per-turn wall-clock, auto-run count; hitting one ends the turn with a matching `last_turn.yield_reason`. Destinations on an idempotent create-replay are ignored — manage them via the [destinations API](#destinations). `sources` checks out one or more repositories for the agent **before the first turn**; the checkout credential never enters the agent's sandbox (see [Repos & GitHub](#github-apps--repos)). Each entry references a registered [repo](#github-apps--repos) — `{ repo, ref, sha, name? }` — or is inline — `{ url, ref, sha, name?, auth }`. `ref` (the fetch ref, e.g. `refs/pull/N/head`) and `sha` are both **required**: the ref is fetched and the exact `sha` is pinned and verified. The create response echoes sanitized `sources`; poll `GET /sessions/:id/sources` for live status.
+`agent` is **required** (create a saved [agent](#agents) first); the model must resolve to a source — **Managed** (billed to your credits, the default) or a usable [credential](#credentials) — else `422 no_credential` (or `422 managed_unavailable`). A session **pins the agent's active [revision](#deployments-and-revisions)** (prompt/model/skills) for its whole life; pass **`revision`** (a number or `rev_…` id) to pin a specific, non-active one — e.g. to test a [staged](/agent-sessions/revisions#staging-vs-activating) revision. `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks**; never shown to the model, not indexed. `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-input); **truncate large inputs** and have the agent pull the rest through its [sandbox tools](/agent-sessions/runtime-tools). `limits` `{ tokens, turn_seconds, turns }` are **non-monetary**; hitting one ends the turn with a matching `last_turn.yield_reason`. `sources` checks out repositories **before the first turn** (the checkout credential never enters the sandbox; see [Repos & GitHub](#github-apps-and-repos)) — each entry is `{ repo, ref, sha, name? }` (registered repo / `owner/repo`) or inline `{ url, ref, sha, name?, auth }`; `ref` and `sha` are both **required**.
 
-Client tokens accept `scopes?` (subset of `read`, `steer`) and `ttl?` seconds, clamped to 60–86400 (SDK: `ttlSeconds`).
+Client tokens accept `scopes?` (subset of `read`, `steer`) and `ttl?` seconds, clamped 60–86400 (SDK: `ttlSeconds`).
 
 ```
 Session = { id, status, head, input_cursor,
-            agent_snapshot: { prompt_hash, model, runtime, revision },
+            agent_snapshot: { prompt_hash, model, runtime, revision },   // revision = the pinned revision number
             agent_id, credential_id,   // resolved + pinned at create
             last_turn: { id, state, yield_reason?, result_event_id? },
             limits: { tokens?, turn_seconds?, turns? },
-            metadata?,                 // opaque app routing state (null when unset)
-            key?, created_at }
+            metadata?, key?, created_at }
 
-Turn = {
-  id, state, yield_reason?, result_event_id?, error?,
-  started_at?, completed_at?
-}
+Turn = { id, state, yield_reason?, result_event_id?, error?, started_at?, completed_at? }
 
-SessionSource =                                    // a sources[] entry — WIRE shape, snake_case
-    { repo, ref, sha, name? }                      // a registered repo id or "owner/repo" — GitHub App auth
-  | { url, ref, sha, name?, auth }                 // inline shortcut; name defaults to repo name, type defaults "git"
-SourceAuth =                                        // inline path ONLY (GitHub App-backed repos need none)
-    { type: "risky_short_lived_token", token, expires_at }   // short-lived; can't refresh
-// SDK is camelCase: expiresAt (wire expires_at).
-SourceSummary = { name, status, path, sha,
-                  resolved_sha?, error_code?, error_message?, retryable? }
-// sanitized; in the create response + GET …/sources
+SessionSource = { repo, ref, sha, name? } | { url, ref, sha, name?, auth }
+SourceAuth    = { type: "risky_short_lived_token", token, expires_at }   // inline only; can't refresh
+SourceSummary = { name, status, path, sha, resolved_sha?, error_code?, error_message?, retryable? }
 //   status: pending | materializing | resolved | failed | auth_required
-//   error_code examples: source.auth_required, source.repo_not_selected,
-//     source.permission_missing, source.mint_failed, source.ref_not_found, source.sha_mismatch
+//   error_code: source.auth_required | source.repo_not_selected | source.permission_missing | source.mint_failed | source.ref_not_found | source.sha_mismatch
 ```
 
 `yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
@@ -98,7 +108,7 @@ SourceSummary = { name, status, path, sha,
 | Call | Purpose |
 | --- | --- |
 | `session.listEvents(opts)` | Read events since a cursor. |
-| `session.events(opts)` | Live stream from a cursor — an async iterator that resumes itself. |
+| `session.events(opts)` | Live stream from a cursor — a self-resuming async iterator. |
 | `session.event(id)` | Fetch one event (resolve `resultEventId`). |
 | `session.eventContent(id)` | Fetch a blob-backed body (large outputs). |
 | `session.messages(opts)` | User-message history. |
@@ -111,23 +121,28 @@ SourceSummary = { name, status, path, sha,
 | --- | --- |
 | `GET /sessions/:id/events?after=<seq>&level=<lvl>` | Read events since a cursor. |
 | `GET /sessions/:id/events?…&stream=sse` | Live SSE stream from a cursor. |
-| `GET /sessions/:id/events/:eventId` | Fetch one event (resolve `result_event_id`). |
-| `GET /sessions/:id/events/:eventId/content` | Fetch a blob-backed body (large outputs). |
+| `GET /sessions/:id/events/:eventId` | Fetch one event. |
+| `GET /sessions/:id/events/:eventId/content` | Fetch a blob-backed body. |
 | `GET /sessions/:id/messages` | User-message history. |
+
+</Tab>
+
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc session logs <id> [--follow] [--level <lvl>] [--type <t>]` | Read or live-stream events. |
+| `oc session event <id> <event-id>` | Fetch one event (add `--content` for the blob body). |
+| `oc session messages <id>` | User-message history. |
 
 </Tab>
 
 </Tabs>
 
-Filter events by `type` (exact or `prefix.*`), `turn_id`, and `limit`. `…/messages` is an alias for `level=user` + `type=*.message`.
-
-`after` resumes from a `seq`; `level` is a **visibility threshold** — `user` returns only user-facing events, `progress` adds work updates, `internal` adds everything (see [visibility levels](/agent-sessions/events#visibility-levels)). Omitting `level` defaults to `internal` (you get everything). Switch on [`type`](/agent-sessions/events#event-shape), don't parse prose. `type`/`turn_id` filtering applies to the **list** endpoint; the **SSE stream** filters by `level` + `after` server-side, so the SDK's `events({ type })` applies the type filter client-side as events arrive.
+Filter by `type` (exact or `prefix.*`), `turn_id`, `limit`. `after` resumes from a `seq`; `level` is a **visibility threshold** — `user` < `progress` < `internal` (default `internal`; see [visibility levels](/agent-sessions/events#visibility-levels)). Switch on [`type`](/agent-sessions/events#event-shape), don't parse prose. `…/messages` is an alias for `level=user` + `type=*.message`.
 
 ```
-Event = {
-  id, seq, ts, session, actor, type, level, body, turn_id?,
-  content_ref?, body_truncated?, body_bytes?
-}
+Event = { id, seq, ts, session, actor, type, level, body, turn_id?, content_ref?, body_truncated?, body_bytes? }
 ```
 
 ## Steer
@@ -150,11 +165,234 @@ Event = {
 
 </Tab>
 
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc session steer <id> <text>` | Append an input message; wakes the session. |
+
+</Tab>
+
 </Tabs>
 
 Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on idempotent replay) with `{ event: { id, seq }, session: { id, status, head } }`.
 
+## Agents
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.create(params)` | Create a reusable agent. |
+| `oc.agents.get(id)` · `oc.agents.list()` | Fetch / list. |
+| `oc.agents.update(id, params)` | Update bindings (credential / limits) — `prompt`/`model` deploy a revision. |
+| `oc.agents.delete(id)` | Delete an agent. |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /agents` | Create a reusable agent. |
+| `GET /agents/:id` · `GET /agents` | Fetch / list. |
+| `PATCH /agents/:id` | Update bindings; `prompt`/`model` deploy a revision. |
+| `DELETE /agents/:id` | Delete an agent. |
+
+</Tab>
+
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc agent create <name> --model <m> [--runtime claude\|codex]` | Create a reusable agent. |
+| `oc agent get <id\|name>` · `oc agent list` | Fetch / list. |
+| `oc agent update <id> [--credential <c>] [--limits …]` | Update bindings. |
+| `oc agent delete <id>` | Delete an agent. |
+
+</Tab>
+
+</Tabs>
+
+Create body: `name`, `prompt`, `model`, `runtime?` (`claude` | `codex`), `key?`, `credential?`, `limits?`. PATCH accepts `prompt?`, `model?`, `key?`, `credential?`, `limits?` — **not `runtime`** (fixed at creation). The `runtime` / `model` provider must agree (`claude`↔`anthropic/…`, `codex`↔`openai/…`), validated at create. `credential` is a closed value: a `cred_…` id (BYO, must match the provider) **or** the literal `"managed"` (run **via OpenComputer, billed to your credits**). `key`/`credential` are mutually exclusive.
+
+`POST /agents` is **idempotent by `name`** — a fresh create returns **201**; a repeat with matching non-secret config returns the existing agent **200**; differing config **409**. Editing `prompt`/`model` (here, or via the [deploy API](#deployments-and-revisions)) creates a new **revision**; the agent carries a pointer to its **active revision** (`GET /agents/:id` includes an `active_revision` summary), and sessions pin it. The agent row itself holds only identity + bindings (`name`, `runtime`, `credential`, `limits`).
+
+## Deployments and revisions
+
+You **deploy** an agent's behavior (`prompt` + `model` + `skills`); each deployment produces an immutable **revision**, and the **active revision** is what new sessions use. See the [Deployments & revisions guide](/agent-sessions/revisions).
+
+### Deploy
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.deployments.create(id, { input, activate?, idempotencyKey? })` | Deploy (`input.type: "inline" \| "github"`). |
+| `oc.agents.deployments.list(id)` · `.get(id, depId)` | Deployment history · one deployment. |
+| `oc.agents.deploy(dir)` *(Node)* | Bundle a local directory → inline deployment. |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /agents/:id/deployments` | Deploy → `{ deployment }`. Body: `{ input, activate?=true, idempotency_key?, client_context? }`. |
+| `GET /agents/:id/deployments` · `…/:deploymentId` | History · one deployment (poll async to `ready`\|`failed`). |
+
+</Tab>
+
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc agent deploy [dir] [--agent <id\|name>] [--no-activate]` | Bundle a local directory → inline deployment. |
+| `oc agent deployments [--agent <id>]` · `oc agent deployments get <id>` | History · one deployment. |
+
+</Tab>
+
+</Tabs>
+
+`input` is `{ type: "inline", prompt, model?, skills?, runtime? }` (the **complete** behavior — omitted `skills` means none) **or** `{ type: "github", ref?, sha? }` (deploys the agent's [linked repo](#deploy-from-a-repo); `repo`/`path` come from the link). `activate: false` **stages** the revision (test, then promote). Inline deployments are synchronous (`state: "ready"` with a `revision_id`); GitHub deployments are async (`state: "queued"`). `POST /agents/:id/revisions` remains as **inline-only sugar**.
+
+```
+Deployment = { id, state, revision_id|null, active, source?, error?, created_at }
+//   state: accepted | queued | fetching | validating | uploading | ready | failed | superseded | skipped
+//   result: created | skipped | failed
+```
+
+### Revisions, rollback & promote
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.revisions.list(id)` · `.get(id, n)` | History · one revision (+ skill manifest). |
+| `oc.agents.revisions.activate(id, n)` | Set the active revision (rollback **or** promote). |
+| `oc.agents.activations.list(id)` | Active-pointer audit log. |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `GET /agents/:id/revisions` · `…/:rev` | History · one revision (+ skill manifest). |
+| `POST /agents/:id/revisions/:rev/activate` | Set the active revision (rollback / promote). |
+| `GET /agents/:id/activations` | Active-pointer audit log. |
+
+</Tab>
+
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc agent revisions [--agent <id>]` · `oc agent revisions get <n>` | History · one revision. |
+| `oc agent rollback <n\|rev_…>` | Set the active revision (rollback / promote). |
+| `oc agent activations` | Active-pointer audit log. |
+
+</Tab>
+
+</Tabs>
+
+Revisions are **linear** (numbered, immutable). `:rev` is a `number` or `rev_…` id. Activate moves the active pointer instantly (no rebuild); rollback (earlier) and promote (a staged one) are the same call.
+
+```
+Revision = { id, number, digest, prompt, model, skill_bundle_digest?, runtime_ref, active, created_at,
+             files?: [{ path, mode, size }] }   // files on GET …/revisions/:rev
+```
+
+### Skills
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.skills.get(id)` | List the active revision's skills (name, description, files). |
+| `oc.agents.skills.put(id, zip)` | Replace skills from a `.zip` → new revision. |
+| `oc.agents.skills.delete(id)` | Remove all skills → new revision. |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `GET /agents/:id/skills` | List the active revision's skills. |
+| `PUT /agents/:id/skills` | Replace skills from a `.zip` (`Content-Type: application/zip`) → new revision. |
+| `DELETE /agents/:id/skills` | Remove all skills → new revision. |
+
+</Tab>
+
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc agent skills [--agent <id>]` | List the active revision's skills. |
+| `oc agent skills set <zip>` | Replace skills from a `.zip` → new revision. |
+| `oc agent skills remove` | Remove all skills → new revision. |
+
+</Tab>
+
+</Tabs>
+
+A skill is a folder with a `SKILL.md`; PUT/DELETE are **deployments** (versioned, rollback-able). Limits: 64 files, 256 KiB total, UTF-8, modes `0644`/`0755`. Full guide: [Skills](/agent-sessions/skills).
+
+### Deploy from a repo
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.deploymentSource.link(id, params)` | Link a repo directory → push-to-deploy. |
+| `oc.agents.deploymentSource.get(id)` | The link + status. |
+| `oc.agents.deploymentSource.unlink(id)` | Remove the link (shared App webhook untouched). |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /agents/:id/deployment-source` | Link a repo directory. Body: `{ repo, path, production_ref?, deploy_now?=true }`. |
+| `GET /agents/:id/deployment-source` | The link + status. |
+| `DELETE /agents/:id/deployment-source` | Remove the link. |
+
+</Tab>
+
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc agent link <owner/repo> --path <p> [--branch <ref>] [--no-deploy]` | Link a repo directory. |
+| `oc agent source [--agent <id>]` | The link + status. |
+| `oc agent unlink` | Remove the link. |
+
+</Tab>
+
+</Tabs>
+
+Linking deploys the current production HEAD immediately (unless `deploy_now: false` / `--no-deploy`); a push to the production branch activates, other branches stage. Requires `agents:link` + `agents:deploy`. Repo/path are server-anchored to the link. Full flow + guarantees: [Deploy from a repo](/agent-sessions/revisions#deploy-from-a-repo).
+
+```
+DeploymentSource = { agent_id, repo_id, path, production_ref, status, latest_seen_sha?, active_deployed_sha?, … }
+//   status: active | path_missing | auth_required | repo_not_selected | app_suspended | error
+```
+
 ## Destinations
+
+*Webhooks are configured via SDK/REST (no `oc` command).*
 
 <Tabs>
 
@@ -175,16 +413,18 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 | --- | --- |
 | `POST /sessions/:id/destinations` | Register a webhook destination. |
 | `GET /sessions/:id/destinations` · `…/:did` | List / fetch. |
-| `PATCH /sessions/:id/destinations/:did` | Pause/resume (`enabled`), retune `level`/`types`, rotate `secret`. |
+| `PATCH /sessions/:id/destinations/:did` | Pause/resume, retune, rotate. |
 | `DELETE /sessions/:id/destinations/:did` | Remove. |
 
 </Tab>
 
 </Tabs>
 
-Destination body: `url`, `secret?`, `level?` (`user`), `types?[]`, `include_raw?` (`false`, SDK: `includeRaw`), `enabled?` (`true`). `types` accepts exact event types or `prefix.*`.
+Destination body: `url`, `secret?`, `level?` (`user`), `types?[]`, `include_raw?` (`false`, SDK: `includeRaw`), `enabled?` (`true`). `types` accepts exact types or `prefix.*`.
 
 ## Deliveries
+
+*Delivery records are read via SDK/REST (no `oc` command).*
 
 <Tabs>
 
@@ -194,7 +434,7 @@ Destination body: `url`, `secret?`, `level?` (`user`), `types?[]`, `include_raw?
 | --- | --- |
 | `session.deliveries.list(opts)` | List deliveries — status, attempts, last response/error. |
 | `session.deliveries.get(id)` | One delivery, in detail. |
-| `session.deliveries.redeliver(id)` | Re-send any delivery (not just dead-lettered). |
+| `session.deliveries.redeliver(id)` | Re-send any delivery. |
 
 </Tab>
 
@@ -202,28 +442,24 @@ Destination body: `url`, `secret?`, `level?` (`user`), `types?[]`, `include_raw?
 
 | Method · Path | Purpose |
 | --- | --- |
-| `GET /sessions/:id/deliveries?destination=&status=&after=&limit=` | List deliveries — status, attempts, last response/error. Returns `{ data }`; filter with `after` (a `created_at` cutoff) and `limit`. |
-| `GET /sessions/:id/deliveries/:id` | One delivery, in detail. |
-| `POST /sessions/:id/deliveries/:id/redeliver` | Re-send any delivery (not just dead-lettered). |
+| `GET /sessions/:id/deliveries?destination=&status=&after=&limit=` | List deliveries. |
+| `GET /sessions/:id/deliveries/:id` | One delivery. |
+| `POST /sessions/:id/deliveries/:id/redeliver` | Re-send any delivery. |
 
 </Tab>
 
 </Tabs>
 
-See [Webhooks](/agent-sessions/webhooks#signing-retries-and-dedupe) for signing, retries, and dedupe.
+See [Webhooks](/agent-sessions/webhooks#signing-retries-and-dedupe) for signing, retries, dedupe.
 
 ```
-Destination = {
-  id, session, kind, url, level, types, include_raw, enabled,
-  has_secret, created_after_seq, created_at, updated_at
-}
-Delivery = {
-  id, session, destination, event_id, event_seq, status, attempts,
-  last_attempt_at, response_code?, error?, created_at, updated_at
-}
+Destination = { id, session, kind, url, level, types, include_raw, enabled, has_secret, created_after_seq, created_at, updated_at }
+Delivery    = { id, session, destination, event_id, event_seq, status, attempts, last_attempt_at, response_code?, error?, created_at, updated_at }
 ```
 
-## Agents
+## GitHub Apps and Repos
+
+A GitHub App lets OpenComputer mint short-lived, repo-scoped tokens; a **Repo** is a stable handle resolving to your configured App (the OpenComputer App by default). Used both for session [sources](#sessions) (work repos) and [deploy-from-a-repo](#deploy-from-a-repo) (definition repos). Install the [OpenComputer App](https://github.com/apps/opencomputerdev/installations/new), or bring your own.
 
 <Tabs>
 
@@ -231,51 +467,13 @@ Delivery = {
 
 | Call | Purpose |
 | --- | --- |
-| `oc.agents.create(params)` | Create a reusable agent. |
-| `oc.agents.get(id)` · `oc.agents.list()` | Fetch / list. |
-| `oc.agents.update(id, params)` | Update the agent for future sessions. |
-
-</Tab>
-
-<Tab title="REST API">
-
-| Method · Path | Purpose |
-| --- | --- |
-| `POST /agents` | Create a reusable agent. |
-| `GET /agents/:id` · `GET /agents` | Fetch / list. |
-| `PATCH /agents/:id` | Update the agent for future sessions. |
-
-</Tab>
-
-</Tabs>
-
-Create body: `name`, `prompt`, `model`, `runtime?` (`claude` | `codex`), `key?`, `credential?`, `limits?`. Patch accepts `prompt?`, `model?`, `key?`, `credential?`, and `limits?` — **not `runtime`, which is fixed at creation**. The `runtime` / `model` provider must agree (`claude`↔`anthropic/…`, `codex`↔`openai/…`), validated at create. `credential` is a closed value: a `cred_…` id (BYO, must match the runtime's provider) **or** the literal `"managed"` — run the model **via OpenComputer, billed to your credits**, which bypasses the credential provider match (the `model` still must match the runtime). `key` and `credential` are mutually exclusive.
-
-`POST /agents` is **idempotent by `name`** — the outcome is in the **status code**, not a body field: a fresh create returns **201**; a repeat with matching non-secret config (`prompt`/`model`/`runtime`/`limits`) returns the existing agent with **200**; differing config returns **409**. Safe to call on every app startup or deploy. (`key` is ignored on a 200 hit — it never silently rotates.)
-
-Pass `key` **or** `credential` (`"managed"` or a `cred_…` id), or neither → org default (Managed when your org has no default key). The agent's `limits` are the defaults for its sessions; a session's own `limits` override. Each agent has a monotonic `revision` (bumped on PATCH) that sessions pin in `agent_snapshot.revision`, so you can tell which version produced a run.
-
-## GitHub Apps & Repos
-
-A GitHub App lets OpenComputer obtain short-lived, repo-scoped tokens for the repositories agents may work in. A **Repo** is a stable repository handle that resolves to your configured GitHub App (the OpenComputer App by default, or your own). See the [Repos & GitHub guide](/agent-sessions/repos).
-
-During preview, **install the [OpenComputer GitHub App](https://github.com/apps/opencomputerdev/installations/new)** on the repos you want OpenComputer to work with (you pick the exact repos). **No credential passes through this API for the OpenComputer App.** You can also **bring your own GitHub App** (`byo_stored_key`) — register an existing App, or create one in one click via the [manifest flow](/agent-sessions/repos#bring-your-own-github-app); the App key is encrypted at rest and never returned. `byo_broker` is registrable but not yet used for minting.
-
-<Tabs>
-
-<Tab title="TypeScript SDK">
-
-| Call | Purpose |
-| --- | --- |
-| `oc.repos.create(params)` | Register (get-or-create) a repo. |
-| `oc.repos.get(id)` · `oc.repos.list()` | Fetch / list. |
-| `oc.repos.update(id, params)` | Update `name`. |
+| `oc.repos.create(params)` · `.get(id)` · `.list()` · `.update(id, params)` | Register / fetch / list / rename a repo. |
 | `oc.github.apps.list()` | List GitHub Apps available to your org. |
 | `oc.github.apps.register(params)` | Register your own App (`byo_stored_key` / `byo_broker`). |
-| `oc.github.apps.createManifestUrl(params)` | One-click: get a link to open; OpenComputer hosts the GitHub flow + key capture. |
-| `oc.github.apps.createManifest(params)` · `completeManifest(params)` | Developer-driven manifest flow (you host the redirect). |
-| `oc.github.apps.update(id, params)` · `delete(id)` | Update / rotate / remove a registered App. |
-| `oc.github.installations.list()` | List GitHub App installations visible to OpenComputer. |
+| `oc.github.apps.createManifestUrl(params)` | One-click: a link to open; OpenComputer hosts the flow + key capture. |
+| `oc.github.apps.createManifest/completeManifest(params)` | Developer-driven manifest flow. |
+| `oc.github.apps.update(id, params)` · `delete(id)` | Update / rotate / remove an App. |
+| `oc.github.installations.list()` | List installations visible to OpenComputer. |
 
 </Tab>
 
@@ -283,30 +481,30 @@ During preview, **install the [OpenComputer GitHub App](https://github.com/apps/
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /repos` | Register (get-or-create) a repo. |
-| `GET /repos/:id` · `GET /repos` | Fetch / list. |
-| `PATCH /repos/:id` | Update `name`. |
-| `GET /github/apps` | List GitHub Apps available to your org. |
-| `POST /github/apps` | Register your own App (`byo_stored_key` / `byo_broker`). |
-| `PATCH /github/apps/:id` · `DELETE /github/apps/:id` | Update / rotate / remove a registered App. |
-| `POST /github/apps/manifest` | Start the manifest flow → `{ start_url }` (hosted) or `{ manifest, … }` (with `redirect_url`). |
-| `GET /github/apps/manifest/start` · `…/callback` | Hosted pages OpenComputer serves (browser, not called directly). |
-| `POST /github/apps/manifest/conversions` | Developer-driven: exchange the code for a registered App. |
-| `GET /github/installations` | List GitHub App installations visible to OpenComputer. |
+| `POST /repos` · `GET /repos/:id` · `GET /repos` · `PATCH /repos/:id` | Register / fetch / list / rename a repo. |
+| `GET /github/apps` · `POST /github/apps` | List · register your own App. |
+| `PATCH /github/apps/:id` · `DELETE /github/apps/:id` | Update / rotate / remove. |
+| `POST /github/apps/manifest` · `…/manifest/start` · `…/callback` · `…/conversions` | Manifest flow (hosted or developer-driven). |
+| `GET /github/installations` | List installations visible to OpenComputer. |
+
+</Tab>
+
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc repo add <owner/repo>` · `oc repo list` · `oc repo get <id>` | Register / list / fetch a repo. |
+| *(App install + manifest — browser flow; manage in the dashboard or via SDK/REST)* | |
 
 </Tab>
 
 </Tabs>
 
-Repo create body: `owner`, `repo`, `provider?` (`github`, default), `name?` (a handle). **No `auth`** — auth resolves through your configured GitHub App (the OpenComputer App by default). **Idempotent by `(provider, owner, repo)`** (201 fresh / 200 repeat). (Pinning a repo to a specific App is coming later.)
+Repo create body: `owner`, `repo`, `provider?` (`github`), `name?`. **No `auth`** — it resolves through your App. **Idempotent by `(provider, owner, repo)`**. Responses **never** contain a token or secret. Registering a repo is **optional** under the OpenComputer App (reference `"owner/repo"` directly). App responses carry `id, mode, status, github_app_id?, app_name?, is_default?` — never a key. See the [Repos & GitHub guide](/agent-sessions/repos).
 
 ```
-Repo               = { id, provider, owner, repo, name?, created_at, updated_at }
+Repo = { id, provider, owner, repo, name?, created_at, updated_at }
 ```
-
-Responses **never** contain a token or secret. Registering a repo is **optional** under the OpenComputer App — a session can reference `"owner/repo"` directly.
-
-`GET /github/apps` lists the GitHub Apps available to your org — the built-in OpenComputer App plus any you register. Register your own with `POST /github/apps` (`byo_stored_key`: `github_app_id` + `private_key`; `byo_broker`: `broker_url` + `broker_secret`), or one-click: `POST /github/apps/manifest` returns a `start_url` to open and OpenComputer hosts the GitHub redirect + key capture (creating an App is a GitHub-UI flow, so it's a link to open, not a fully programmatic call). App responses carry `id`, `mode`, `status`, `github_app_id?`, `app_name?`, `is_default?` — **never** a key or secret. `GET /github/installations` lists installations visible to OpenComputer; it may be **empty** for orgs using only the OpenComputer App. See the [Repos & GitHub guide](/agent-sessions/repos#bring-your-own-github-app) for the full flow.
 
 ## Credentials
 
@@ -318,7 +516,7 @@ Responses **never** contain a token or secret. Registering a repo is **optional*
 | --- | --- |
 | `oc.credentials.create(params)` | Add a provider key. |
 | `oc.credentials.list()` · `oc.credentials.delete(id)` | List / remove. |
-| `oc.credentials.setDefault(params)` | Set the org default to a credential. |
+| `oc.credentials.setDefault(params)` | Set the org default. |
 
 </Tab>
 
@@ -328,13 +526,23 @@ Responses **never** contain a token or secret. Registering a repo is **optional*
 | --- | --- |
 | `POST /credentials` | Add a provider key. |
 | `GET /credentials` · `DELETE /credentials/:id` | List / remove. |
-| `PUT /credentials/default` | Set the org default to a credential (its provider is derived). |
+| `PUT /credentials/default` | Set the org default (provider derived). |
+
+</Tab>
+
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc credential add --provider <p> --key <k> [--default]` | Add a provider key. |
+| `oc credential list` · `oc credential remove <id>` | List / remove. |
+| `oc credential set-default <id>` | Set the org default. |
 
 </Tab>
 
 </Tabs>
 
-Credential body: `provider` (`anthropic` | `openai`), `key`, `name?`, `is_default?`. Keys are write-only. A BYO credential is optional — agents can run **Managed** (`credential: "managed"`, billed to your credits, no key), the default for new orgs. See the [Credentials](/agent-sessions/credentials) guide for Managed vs BYO, resolution, rotation, and the dashboard.
+Credential body: `provider` (`anthropic` | `openai`), `key`, `name?`, `is_default?`. Keys are write-only. A BYO credential is optional — agents can run **Managed** (`credential: "managed"`, the default). See [Credentials](/agent-sessions/credentials).
 
 ```
 Credential  = { id, provider, name?, last4, is_default, created_at }
@@ -343,4 +551,4 @@ ClientToken = { token, scopes, expires_at }
 
 ## Errors & rate limits
 
-Errors use one envelope: `{ "error": { "type", "message" } }`; the SDK throws them as typed `OpenComputerError` subclasses (`AuthError`, `NotFoundError`, `ConflictError`, `ValidationError`, `RateLimitError`). Cross-owner resources return `404` (not `403`). Rate and concurrency limits are not enforced at launch (a `429` with a `Retry-After` header may be introduced later; the SDK retries it automatically).
+One envelope: `{ "error": { "type", "message" } }`; the SDK throws typed `OpenComputerError` subclasses (`AuthError`, `NotFoundError`, `ConflictError`, `ValidationError`, `RateLimitError`); the CLI exits non-zero and prints the message (the JSON with `--json`). Cross-owner resources return `404` (not `403`). Rate/concurrency limits aren't enforced at launch (a `429` with `Retry-After` may come later; the SDK retries it).
