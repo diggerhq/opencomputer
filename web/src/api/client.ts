@@ -469,6 +469,9 @@ export const putAgentSkills = (agentId: string, zip: File | Blob) =>
 export const deleteAgentSkills = (agentId: string) =>
   apiFetch(`/v3/agents/${agentId}/skills`, { method: 'DELETE' }, S.DeployResultSchema)
 
+// The OC GitHub App (deploy) install-state + pickable repos — org-scoped admin read.
+export const getDeployApp = () => apiFetch('/v3/github/deploy-app', {}, S.DeployAppSchema)
+
 // Deployment source — link an agent to a repo dir for push-to-deploy (deploy-from-github).
 export const getDeploymentSource = (agentId: string) =>
   apiFetch(`/v3/agents/${agentId}/deployment-source`, {}, S.DeploymentSourceResponseSchema)

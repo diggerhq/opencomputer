@@ -415,6 +415,21 @@ export const DeploymentSourceSchema = z.object({
   active_deployed_sha: z.string().nullish(),
 })
 export const DeploymentSourceResponseSchema = z.object({ source: DeploymentSourceSchema })
+
+// The OC GitHub App (deploy) install-state + pickable repos — admin/operator surface.
+export const DeployAppRepoSchema = z.object({
+  full_name: z.string(),
+  default_branch: z.string().nullish(),
+  private: z.boolean().nullish(),
+})
+export const DeployAppSchema = z.object({
+  installed: z.boolean(),
+  install_url: z.string().nullish(),
+  configure_url: z.string().nullish(),
+  account: z.string().nullish(),
+  repository_selection: z.enum(['all', 'selected']).nullish(),
+  repositories: z.array(DeployAppRepoSchema).default([]),
+})
 export const LinkResultSchema = z.object({
   source: DeploymentSourceSchema,
   deployment_id: z.string().nullish(),

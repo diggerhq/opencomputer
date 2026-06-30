@@ -1,8 +1,13 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GitBranch, Plug, Unplug } from 'lucide-react'
+import { GitBranch, Plug, Unplug, ExternalLink } from 'lucide-react'
 import { notifyError, notifySuccess } from '@/lib/errors'
-import { getDeploymentSource, linkDeploymentSource, unlinkDeploymentSource } from '@/api/client'
+import {
+  getDeployApp,
+  getDeploymentSource,
+  linkDeploymentSource,
+  unlinkDeploymentSource,
+} from '@/api/client'
 import {
   Panel,
   PanelContent,
@@ -10,16 +15,14 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { Button } from '@/components/ui/button'
-import { Field, Input } from '@/components/form'
-
-const GITHUB_APP_INSTALL = 'https://github.com/apps/opencomputerdev/installations/new'
+import { Field, Input, Select } from '@/components/form'
 
 // Human label + tone for each link status (matches agent_deployment_sources.status).
 const STATUS: Record<string, { label: string; tone: 'ok' | 'warn' | 'err' }> = {
   active: { label: 'Connected', tone: 'ok' },
   path_missing: { label: 'Directory not found', tone: 'err' },
   ref_missing: { label: 'Production branch deleted', tone: 'err' },
-  auth_required: { label: 'App not installed on this repo', tone: 'warn' },
+  auth_required: { label: 'App lost access to this repo', tone: 'warn' },
   repo_not_selected: { label: 'Repo not selected in the App', tone: 'warn' },
   app_suspended: { label: 'GitHub App suspended', tone: 'err' },
   error: { label: 'Error', tone: 'err' },
@@ -31,9 +34,10 @@ const TONE: Record<'ok' | 'warn' | 'err', string> = {
 }
 
 /**
- * Deploy-from-a-repo panel — bind the agent to a repo directory so a push deploys it. Linking uses
- * the OpenComputer GitHub App (no BYO for deployment sources) and deploys the production branch
- * immediately. A push to the production branch then activates; other branches stage.
+ * Deploy-from-a-repo panel (admin) — install the OpenComputer GitHub App, pick a repo it can reach,
+ * choose a directory + branch, and a push then deploys. Mirrors the Vercel/Fly flow: not-installed →
+ * install; installed → pick from the App's repos (+ "Configure" to add more); connected → status.
+ * The OC App here is operator config (deployments), distinct from BYO product apps.
  */
 export function AgentDeploySource({ agentId }: { agentId: string }) {
   const queryClient = useQueryClient()
@@ -41,14 +45,15 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
   const [path, setPath] = useState('')
   const [branch, setBranch] = useState('main')
 
-  const { data: source, isLoading } = useQuery({
+  // The org's OC-App install-state + pickable repos (admin), and this agent's current link.
+  const { data: app, isLoading: appLoading } = useQuery({ queryKey: ['deploy-app'], queryFn: getDeployApp })
+  const { data: source, isLoading: srcLoading } = useQuery({
     queryKey: ['agent-deploy-source', agentId],
-    // 404 = not linked. Tolerate a transient blip by showing the connect form rather than an error.
     queryFn: async () => {
       try {
         return (await getDeploymentSource(agentId)).source
       } catch {
-        return null
+        return null // 404 = not linked (also tolerates a transient blip)
       }
     },
   })
@@ -62,18 +67,11 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
 
   const link = useMutation({
     mutationFn: () =>
-      linkDeploymentSource(agentId, {
-        repo: repo.trim(),
-        path: path.trim(),
-        production_ref: branch.trim() || 'main',
-      }),
+      linkDeploymentSource(agentId, { repo, path: path.trim(), production_ref: branch.trim() || 'main' }),
     onSuccess: (r) => {
       invalidate()
       if (r.deploy_error) {
-        notifyError(
-          `Repo connected, but the first deploy couldn't run (${r.deploy_error.message}). Install the GitHub App on the repo, then deploy again.`,
-          new Error(r.deploy_error.type),
-        )
+        notifyError(`Repo connected, but the first deploy couldn't run (${r.deploy_error.message}).`, new Error(r.deploy_error.type))
       } else {
         notifySuccess('Repo connected — deploying the production branch.')
       }
@@ -89,6 +87,12 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
     onError: (e) => notifyError("Couldn't disconnect the repo.", e),
   })
 
+  const pickRepo = (fullName: string) => {
+    setRepo(fullName)
+    const r = app?.repositories.find((x) => x.full_name === fullName)
+    if (r?.default_branch) setBranch(r.default_branch)
+  }
+
   const st = source ? (STATUS[source.status] ?? { label: source.status, tone: 'warn' as const }) : null
 
   return (
@@ -98,10 +102,10 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
         <span className="text-muted-foreground text-xs">Push to a branch to deploy this agent.</span>
       </PanelHeader>
       <PanelContent className="space-y-4">
-        {isLoading ? (
+        {srcLoading || appLoading ? (
           <p className="text-muted-foreground text-xs">Loading…</p>
         ) : source && st ? (
-          // ── Connected ──
+          /* ── Connected ── */
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-3 rounded-md border px-4 py-3">
               <div className="space-y-1">
@@ -115,9 +119,7 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
                 <div className="flex items-center gap-2 text-xs">
                   <span className={TONE[st.tone]}>● {st.label}</span>
                   {source.active_deployed_sha ? (
-                    <span className="text-muted-foreground font-mono">
-                      @ {source.active_deployed_sha.slice(0, 7)}
-                    </span>
+                    <span className="text-muted-foreground font-mono">@ {source.active_deployed_sha.slice(0, 7)}</span>
                   ) : null}
                 </div>
               </div>
@@ -132,33 +134,52 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
                 {unlink.isPending ? 'Disconnecting…' : 'Disconnect'}
               </Button>
             </div>
-            {st.tone !== 'ok' ? (
+            {st.tone === 'ok' ? (
               <p className="text-muted-foreground text-xs">
-                {source.status === 'auth_required' || source.status === 'repo_not_selected' ? (
+                Pushes to <span className="font-mono">{source.production_ref}</span> deploy and activate;
+                other branches deploy a staged revision.
+              </p>
+            ) : (
+              <p className="text-muted-foreground text-xs">
+                {(source.status === 'auth_required' || source.status === 'repo_not_selected') && app?.configure_url ? (
                   <>
-                    Install / re-select this repo in the{' '}
-                    <a className="underline" href={GITHUB_APP_INSTALL} target="_blank" rel="noreferrer">
-                      OpenComputer GitHub App
-                    </a>
-                    , then push again.
+                    Re-select this repo in the{' '}
+                    <a className="underline" href={app.configure_url} target="_blank" rel="noreferrer">GitHub App</a>, then push again.
                   </>
                 ) : (
                   'Fix the issue in the repo, then push again.'
                 )}
               </p>
-            ) : (
-              <p className="text-muted-foreground text-xs">
-                Pushes to <span className="font-mono">{source.production_ref}</span> deploy and
-                activate; other branches deploy a staged revision.
-              </p>
             )}
           </div>
+        ) : !app?.installed ? (
+          /* ── App not installed ── */
+          <div className="flex items-center justify-between gap-6 rounded-md border border-dashed px-5 py-6">
+            <div className="space-y-1.5">
+              <div className="text-foreground text-sm font-medium">Connect GitHub to deploy on push</div>
+              <p className="text-muted-foreground text-xs">
+                Install the OpenComputer GitHub App on the repos that hold your agent directories.
+              </p>
+            </div>
+            <Button size="sm" disabled={!app?.install_url} asChild>
+              <a href={app?.install_url ?? '#'} target="_blank" rel="noreferrer">
+                <Plug className="size-4" />
+                Install GitHub App
+              </a>
+            </Button>
+          </div>
         ) : (
-          // ── Not connected ──
+          /* ── Installed → pick a repo ── */
           <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-[1fr_1fr_8rem]">
+            <div className="grid gap-3 sm:grid-cols-[1.4fr_1fr_8rem]">
               <Field label="Repository">
-                <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/repo" />
+                <Select
+                  value={repo}
+                  onValueChange={pickRepo}
+                  placeholder={app.repositories.length ? 'Select a repo' : 'No repos available'}
+                  disabled={app.repositories.length === 0}
+                  options={app.repositories.map((r) => ({ value: r.full_name, label: r.full_name }))}
+                />
               </Field>
               <Field label="Directory">
                 <Input value={path} onChange={(e) => setPath(e.target.value)} placeholder="agents/issue-fixer" />
@@ -167,22 +188,26 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
                 <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
               </Field>
             </div>
-            <div className="flex items-center gap-3">
-              <p className="text-muted-foreground text-xs">
-                Needs the{' '}
-                <a className="underline" href={GITHUB_APP_INSTALL} target="_blank" rel="noreferrer">
-                  OpenComputer GitHub App
-                </a>{' '}
-                installed on the repo. Connecting deploys the branch now.
-              </p>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              {app.configure_url ? (
+                <a
+                  className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs underline"
+                  href={app.configure_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <ExternalLink className="size-3.5" />
+                  Don&apos;t see your repo? Configure the App
+                </a>
+              ) : null}
               <Button
                 size="sm"
                 className="ml-auto"
-                disabled={link.isPending || !repo.trim()}
+                disabled={link.isPending || !repo}
                 onClick={() => link.mutate()}
               >
                 <Plug className="size-4" />
-                {link.isPending ? 'Connecting…' : 'Connect repo'}
+                {link.isPending ? 'Connecting…' : 'Connect & deploy'}
               </Button>
             </div>
           </div>
