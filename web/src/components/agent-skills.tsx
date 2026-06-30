@@ -109,28 +109,30 @@ export function AgentSkills({ agentId }: { agentId: string }) {
               e.target.value = '' // allow re-selecting the same file
             }}
           />
-          <Button size="sm" disabled={busy} onClick={() => inputRef.current?.click()}>
-            <Upload className="size-4" />
-            {upload.isPending
-              ? 'Uploading…'
-              : skills.length
-                ? 'Replace skills (.zip)'
-                : 'Upload skills (.zip)'}
-          </Button>
-          {skills.length > 0 ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground hover:text-foreground"
-              disabled={busy}
-              onClick={() => remove.mutate()}
-            >
-              {remove.isPending ? 'Removing…' : 'Remove all'}
-            </Button>
-          ) : null}
-          <p className="text-muted-foreground ml-auto text-xs">
+          <p className="text-muted-foreground text-xs">
             Deploys a new revision; prompt &amp; model unchanged.
           </p>
+          <div className="ml-auto flex items-center gap-2">
+            {skills.length > 0 ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-foreground"
+                disabled={busy}
+                onClick={() => remove.mutate()}
+              >
+                {remove.isPending ? 'Removing…' : 'Remove all'}
+              </Button>
+            ) : null}
+            <Button size="sm" disabled={busy} onClick={() => inputRef.current?.click()}>
+              <Upload className="size-4" />
+              {upload.isPending
+                ? 'Uploading…'
+                : skills.length
+                  ? 'Replace skills (.zip)'
+                  : 'Upload skills (.zip)'}
+            </Button>
+          </div>
         </div>
       </PanelContent>
     </Panel>
