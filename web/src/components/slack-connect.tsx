@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Copy, ExternalLink } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
@@ -82,9 +82,11 @@ function WizardSteps({ current }: { current: number }) {
 export function SlackConnect({
   agentId,
   agentName,
+  autoOpen = false,
 }: {
   agentId: string
   agentName: string
+  autoOpen?: boolean
 }) {
   const queryClient = useQueryClient()
   const invalidate = () =>
@@ -178,6 +180,18 @@ export function SlackConnect({
   const workspace = conn?.account_login || conn?.team_id || null
   const stepIndex =
     step === 'create' ? 0 : step === 'details' ? 1 : step === 'install' ? 2 : 3
+
+  // Arrived via a setup CTA (?connect=slack) → open the wizard once, unless
+  // already connected. Latched so a re-render / param-clear doesn't re-trigger.
+  const autoOpenedRef = useRef(false)
+  useEffect(() => {
+    if (autoOpen && !autoOpenedRef.current && !isLoading && !isActive) {
+      autoOpenedRef.current = true
+      beginConnect()
+    }
+    // beginConnect is a stable-enough closure; the ref guards single-fire.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpen, isLoading, isActive])
 
   return (
     <Panel className="overflow-hidden">

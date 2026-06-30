@@ -1,6 +1,6 @@
-import { useState, type ComponentType } from 'react'
+import { useEffect, useState, type ComponentType } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, MessagesSquare, Send, GitBranch } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
@@ -11,6 +11,7 @@ import {
   getCredentials,
   createCredential,
   getDeploymentSource,
+  getDeployApp,
   getSlackConnection,
   type Agent,
 } from '@/api/client'
@@ -45,6 +46,20 @@ export default function AgentDetail() {
   const { agentId = '', tab } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  // ?connect=slack|github (set by an Overview setup CTA) auto-opens the matching
+  // flow on the Settings tab; the param is consumed once, then cleared so a
+  // refresh / re-render doesn't re-trigger it.
+  const connect = searchParams.get('connect')
+  useEffect(() => {
+    if (connect) {
+      const t = window.setTimeout(
+        () => setSearchParams({}, { replace: true }),
+        0,
+      )
+      return () => window.clearTimeout(t)
+    }
+  }, [connect, setSearchParams])
   const active: Tab =
     tab === 'revisions'
       ? 'revisions'
@@ -83,10 +98,18 @@ export default function AgentDetail() {
     },
   })
 
-  // Slack connection (shared cache key with SlackConnect) — drives the Overview nudge.
+  // Slack connection (shared cache key with SlackConnect) — drives the setup strip.
   const { data: slack } = useQuery({
     queryKey: ['slack', agentId],
     queryFn: () => getSlackConnection(agentId),
+  })
+
+  // OC GitHub App install-state (shared key with the Source card) — lets the
+  // setup strip's GitHub CTA branch: not-installed → install link, installed →
+  // deep-link to the repo picker.
+  const { data: deployApp } = useQuery({
+    queryKey: ['deploy-app'],
+    queryFn: getDeployApp,
   })
 
   // Credentials for the switch picker + to label the current one.
@@ -254,9 +277,48 @@ export default function AgentDetail() {
   const activeRev = agent.active_revision?.number ?? agent.revision ?? 1
   const base = `/agents/${agent.id}`
 
+  // Setup-strip CTAs — each performs the first step, not just a nav to Settings.
+  const onConnectGithub = () => {
+    if (deployApp && !deployApp.installed && deployApp.install_url) {
+      // Not installed yet → straight to the GitHub App install (nothing to do in-app first).
+      window.open(deployApp.install_url, '_blank', 'noopener')
+    } else {
+      // Installed (or unknown) → Settings with the repo picker auto-opened.
+      void navigate(`${base}/settings?connect=github`)
+    }
+  }
+  const onConnectSlack = () => void navigate(`${base}/settings?connect=slack`)
+  const showStrip = active !== 'settings' && (!source || !slack)
+
   return (
     <div className="mx-auto max-w-5xl">
       <BackLink />
+
+      {/* Setup strip — prominent, above the tabs; only the steps not yet done. */}
+      {showStrip && (
+        <div className="mb-4 space-y-2">
+          {!source && (
+            <SetupRow
+              icon={GitBranch}
+              text="Connect a GitHub repo so every push ships a new revision."
+              cta={
+                deployApp && !deployApp.installed
+                  ? 'Install GitHub App'
+                  : 'Connect repo'
+              }
+              onClick={onConnectGithub}
+            />
+          )}
+          {!slack && (
+            <SetupRow
+              icon={MessagesSquare}
+              text="Connect Slack so people can @-mention this agent."
+              cta="Connect Slack"
+              onClick={onConnectSlack}
+            />
+          )}
+        </div>
+      )}
 
       {/* Sticky header: identity + status + primary action, with the tab bar. */}
       <div className="bg-background sticky top-0 z-20 border-b">
@@ -404,30 +466,6 @@ export default function AgentDetail() {
               <AgentSkills agentId={agent.id} />
               <ShipRevisionCard connected={!!source} base={base} />
             </div>
-
-            {/* Contextual nudges for unconfigured integrations (point to Settings). */}
-            {(!source || !slack) && (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {!source && (
-                  <Nudge
-                    icon={GitBranch}
-                    title="Deploy from a GitHub repo"
-                    body="Connect a repo so every push ships a new revision."
-                    to={`${base}/settings`}
-                    cta="Connect in Settings →"
-                  />
-                )}
-                {!slack && (
-                  <Nudge
-                    icon={MessagesSquare}
-                    title="Connect Slack"
-                    body="Let people talk to this agent from Slack."
-                    to={`${base}/settings`}
-                    cta="Set up in Settings →"
-                  />
-                )}
-              </div>
-            )}
           </div>
         )}
 
@@ -494,10 +532,17 @@ export default function AgentDetail() {
         {active === 'settings' && (
           <div className="space-y-6">
             {/* Source — connect a GitHub repo as the agent's source. */}
-            <AgentDeploySource agentId={agent.id} />
+            <AgentDeploySource
+              agentId={agent.id}
+              autoFocusPicker={connect === 'github'}
+            />
 
             {/* Slack — let people talk to the agent from Slack. */}
-            <SlackConnect agentId={agent.id} agentName={agent.name} />
+            <SlackConnect
+              agentId={agent.id}
+              agentName={agent.name}
+              autoOpen={connect === 'slack'}
+            />
 
             {/* Credential — which key the agent runs on. */}
             <Panel>
@@ -723,34 +768,26 @@ function ShipRevisionCard({
   )
 }
 
-// A dashed-border nudge card pointing at an unconfigured integration in Settings.
-function Nudge({
+// A setup-strip row: one not-yet-done step + a CTA button that does the first step.
+function SetupRow({
   icon: Icon,
-  title,
-  body,
-  to,
+  text,
   cta,
+  onClick,
 }: {
   icon: ComponentType<{ className?: string }>
-  title: string
-  body: string
-  to: string
+  text: string
   cta: string
+  onClick: () => void
 }) {
   return (
-    <Link
-      to={to}
-      className="group border-border hover:border-foreground/30 hover:bg-panel-2 flex items-start gap-3 rounded-md border border-dashed px-4 py-3 transition-colors"
-    >
-      <Icon className="text-muted-foreground mt-0.5 size-4 shrink-0" />
-      <div className="space-y-0.5">
-        <div className="text-foreground text-sm font-medium">{title}</div>
-        <p className="text-muted-foreground text-xs">{body}</p>
-        <span className="text-muted-foreground group-hover:text-foreground text-xs">
-          {cta}
-        </span>
-      </div>
-    </Link>
+    <div className="border-border bg-panel-2 flex flex-wrap items-center gap-3 rounded-md border px-4 py-2.5">
+      <Icon className="text-muted-foreground size-4 shrink-0" />
+      <span className="text-foreground min-w-0 flex-1 text-sm">{text}</span>
+      <Button size="sm" onClick={onClick}>
+        {cta}
+      </Button>
+    </div>
   )
 }
 

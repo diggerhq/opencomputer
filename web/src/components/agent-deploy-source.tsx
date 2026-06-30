@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitBranch, Plug, Unplug, ExternalLink, Rocket } from 'lucide-react'
 import { notifyError, notifySuccess } from '@/lib/errors'
@@ -42,8 +42,15 @@ const TONE: Record<'ok' | 'warn' | 'err', string> = {
  * connected → status + Update + Disconnect. The OC App here is operator config, distinct from BYO
  * product apps. (User-facing language is revisions/source; "deployment" stays internal.)
  */
-export function AgentDeploySource({ agentId }: { agentId: string }) {
+export function AgentDeploySource({
+  agentId,
+  autoFocusPicker = false,
+}: {
+  agentId: string
+  autoFocusPicker?: boolean
+}) {
   const queryClient = useQueryClient()
+  const pickerRef = useRef<HTMLDivElement>(null)
   const [repo, setRepo] = useState('')
   const [path, setPath] = useState('')
   const [branch, setBranch] = useState('main')
@@ -123,6 +130,26 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
   const st = source
     ? (STATUS[source.status] ?? { label: source.status, tone: 'warn' as const })
     : null
+
+  // Arrived via a setup CTA (?connect=github) → scroll the repo picker into view
+  // and focus it. Only meaningful when installed-but-unlinked (the picker is
+  // rendered then). Latched so it fires once.
+  const focusedRef = useRef(false)
+  useEffect(() => {
+    if (
+      autoFocusPicker &&
+      !focusedRef.current &&
+      app?.installed &&
+      !source &&
+      pickerRef.current
+    ) {
+      focusedRef.current = true
+      pickerRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      pickerRef.current
+        .querySelector<HTMLElement>('button, [role="combobox"], input, select')
+        ?.focus()
+    }
+  }, [autoFocusPicker, app?.installed, source])
 
   return (
     <Panel className="overflow-hidden">
@@ -244,7 +271,7 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
           </div>
         ) : (
           /* ── Installed → pick a repo ── */
-          <div className="space-y-4">
+          <div className="space-y-4" ref={pickerRef}>
             <div className="grid gap-3 sm:grid-cols-[1.4fr_1fr_8rem]">
               <Field label="Repository">
                 <Select
