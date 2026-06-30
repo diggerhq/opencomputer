@@ -315,6 +315,12 @@ After checkout, the agent works with ordinary files. It can inspect, edit, test,
 make local commits. Anything needing GitHub credentials runs outside the agent sandbox, so
 the agent never runs authenticated `git`/`gh` and never sees a token.
 
+<Warning>
+Opening PRs from the agent (`github_publish_pull_request`) is **temporarily unavailable**
+while the runtime is being updated — checkout (read) works today; the agent-driven PR-open
+described below will be re-enabled in an upcoming runtime release.
+</Warning>
+
 To open a pull request, the agent calls the
 [`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool —
 it is **not** an SDK method; the agent invokes it from inside the sandbox. It takes the
