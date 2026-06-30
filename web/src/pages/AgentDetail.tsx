@@ -596,7 +596,7 @@ function SourceChip({
   } | null
 }) {
   if (!source) {
-    return <span className="text-muted-foreground/70">no repo connected</span>
+    return null
   }
   const label = source.full_name ?? (source.path || 'repo')
   return (
