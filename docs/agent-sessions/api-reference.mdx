@@ -88,22 +88,34 @@ oc agent deploy        # deploy the agent directory in the cwd
 
 A session pins the agent's active revision for its whole life — editing the agent later never affects a running one.
 
-```
-Session = { id, status, head, input_cursor, agent_id, credential_id,
-            key?, metadata?, created_at,
-            agent_snapshot: { prompt_hash, model, runtime, revision },   // revision = pinned
-            last_turn: { id, state, yield_reason?, result_event_id? },
-            limits?: { tokens?, turn_seconds?, turns? } }
-Turn   = { id, state, yield_reason?, result_event_id?, error?, started_at?, completed_at? }
-Source = { repo, ref, sha, name? } | { url, ref, sha, name?, auth }
-  auth (inline) = { type:"risky_short_lived_token", token, expires_at }   // can't refresh
-Summary= { name, status, path, sha, resolved_sha?, error_code?, error_message?, retryable? }
-  status     = pending | materializing | resolved | failed | auth_required
-  error_code = source.* — auth_required, repo_not_selected, permission_missing,
-                          mint_failed, ref_not_found, sha_mismatch
-```
+**`Session`**
 
-`yield_reason` = `completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled` (why the turn ended; `needs_input` → answer by [steering](#steer)).
+| Field | Type | Notes |
+|---|---|---|
+| `id` `status` `head` `input_cursor` | | id, [lifecycle](/agent-sessions/sessions#lifecycle) status, latest event seq, input cursor |
+| `agent_id` `credential_id` | string | resolved + pinned at create |
+| `agent_snapshot` | object | `{ prompt_hash, model, runtime, revision }` — `revision` = the pinned revision number |
+| `last_turn` | `Turn`-ish | `{ id, state, yield_reason?, result_event_id? }` |
+| `limits?` | object | `{ tokens?, turn_seconds?, turns? }` |
+| `metadata?` | object | opaque app routing state |
+| `key?` `created_at` | | get-or-create key, timestamp |
+
+**`Turn`** — `{ id, state, yield_reason?, result_event_id?, error?, started_at?, completed_at? }`. `yield_reason` ∈ `completed · needs_input · error · budget_exceeded · deadline_exceeded · max_turns · canceled` (`needs_input` → answer by [steering](#steer)).
+
+**`SessionSource`** — one of two variants:
+
+| Variant | Shape |
+|---|---|
+| registered | `{ repo, ref, sha, name? }` — `repo` is a `repo_…` id or `"owner/repo"`; App-backed auth |
+| inline | `{ url, ref, sha, name?, auth }` — `auth = { type:"risky_short_lived_token", token, expires_at }` (can't refresh) |
+
+**`SourceSummary`** (sanitized; on create + `GET …/sources`)
+
+| Field | Notes |
+|---|---|
+| `name` `path` `sha` `resolved_sha?` | checkout identity + resolved commit |
+| `status` | `pending · materializing · resolved · failed · auth_required` |
+| `error_code?` `error_message?` `retryable?` | `error_code`: `source.{auth_required, repo_not_selected, permission_missing, mint_failed, ref_not_found, sha_mismatch}` |
 
 ## Events
 
@@ -147,10 +159,15 @@ Summary= { name, status, path, sha, resolved_sha?, error_code?, error_message?, 
 
 Filter by `type` (exact or `prefix.*`), `turn_id`, `limit`. `after` resumes from a `seq`; `level` is a **visibility threshold** — `user` < `progress` < `internal` (default `internal`; see [visibility levels](/agent-sessions/events#visibility-levels)). Switch on [`type`](/agent-sessions/events#event-shape), don't parse prose. `…/messages` is an alias for `level=user` + `type=*.message`.
 
-```
-Event = { id, seq, ts, session, actor, type, level, body, turn_id?,
-          content_ref?, body_truncated?, body_bytes? }
-```
+**`Event`**
+
+| Field | Notes |
+|---|---|
+| `id` `seq` `ts` `session` | id, monotonic seq, timestamp, session id |
+| `actor` `type` `level` | source, event [type](/agent-sessions/events#event-shape), visibility level |
+| `body` | the payload (camelCased; switch on `type`, don't parse prose) |
+| `turn_id?` | the turn it belongs to |
+| `content_ref?` `body_truncated?` `body_bytes?` | large bodies are offloaded — fetch via `…/events/:id/content` |
 
 ## Steer
 
@@ -267,12 +284,16 @@ You **deploy** an agent's behavior (`prompt` + `model` + `skills`); each deploym
 
 `input`: `{ type:"inline", prompt, model?, skills?, runtime? }` (the **complete** behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys the [linked repo](#deploy-from-a-repo); `repo`/`path` from the link). `activate:false` **stages** it. Inline = sync (`ready` + `revision_id`); GitHub = async (`queued`). `POST …/revisions` is inline-only sugar.
 
-```
-Deployment = { id, state, revision_id|null, active, source?, error?, created_at }
-//   state:  accepted | queued | fetching | validating | uploading
-//           | ready | failed | superseded | skipped
-//   result: created | skipped | failed
-```
+**`Deployment`**
+
+| Field | Notes |
+|---|---|
+| `id` `created_at` | |
+| `state` | `accepted · queued · fetching · validating · uploading · ready · failed · superseded · skipped` |
+| `result` | `created · skipped · failed` |
+| `revision_id` | the revision it produced (`null` until `ready`) |
+| `active` | whether that revision is the active one |
+| `source?` `error?` | provenance · failure detail |
 
 ### Revisions, rollback & promote
 
@@ -312,10 +333,16 @@ Deployment = { id, state, revision_id|null, active, source?, error?, created_at 
 
 Revisions are **linear** (numbered, immutable). `:rev` is a `number` or `rev_…` id. Activate moves the active pointer instantly (no rebuild); rollback (earlier) and promote (a staged one) are the same call.
 
-```
-Revision = { id, number, digest, prompt, model, skill_bundle_digest?, runtime_ref,
-             active, created_at, files?: [{ path, mode, size }] }   // files on GET …/:rev
-```
+**`Revision`**
+
+| Field | Notes |
+|---|---|
+| `id` `number` `created_at` `active` | id, monotonic number, timestamp, is-active flag |
+| `prompt` `model` | the behavior |
+| `skill_bundle_digest?` | content-addressed skills bundle (`null` = no skills) |
+| `digest` | behavior content hash (change detection) |
+| `runtime_ref` | `floating` (latest shared runtime) — `pinned` later (custom runtime) |
+| `files?` | `[{ path, mode, size }]` — only on `GET …/revisions/:rev` |
 
 ### Skills
 
@@ -393,12 +420,14 @@ A skill is a folder with a `SKILL.md`; PUT/DELETE are **deployments** (versioned
 
 Linking deploys the current production HEAD immediately (unless `deploy_now: false` / `--no-deploy`); a push to the production branch activates, other branches stage. Requires `agents:link` + `agents:deploy`. Repo/path are server-anchored to the link. Full flow + guarantees: [Deploy from a repo](/agent-sessions/revisions#deploy-from-a-repo).
 
-```
-DeploymentSource = { agent_id, repo_id, path, production_ref, status,
-                     latest_seen_sha?, active_deployed_sha?, … }
-//   status: active | path_missing | auth_required
-//           | repo_not_selected | app_suspended | error
-```
+**`DeploymentSource`**
+
+| Field | Notes |
+|---|---|
+| `agent_id` `repo_id` `path` | the linked agent · repo · directory within it |
+| `production_ref` | branch that auto-activates on push |
+| `status` | `active · path_missing · auth_required · repo_not_selected · app_suspended · error` |
+| `latest_seen_sha?` `active_deployed_sha?` | newest sha observed · sha behind the active revision |
 
 ## Destinations
 
@@ -462,12 +491,24 @@ Destination body: `url`, `secret?`, `level?` (`user`), `types?[]`, `include_raw?
 
 See [Webhooks](/agent-sessions/webhooks#signing-retries-and-dedupe) for signing, retries, dedupe.
 
-```
-Destination = { id, session, kind, url, level, types, include_raw, enabled,
-                has_secret, created_after_seq, created_at, updated_at }
-Delivery    = { id, session, destination, event_id, event_seq, status, attempts,
-                last_attempt_at, response_code?, error?, created_at, updated_at }
-```
+**`Destination`**
+
+| Field | Notes |
+|---|---|
+| `id` `session` `kind` `created_at` `updated_at` | |
+| `url` | webhook target |
+| `level` `types` | visibility threshold · event-type filter |
+| `include_raw` `enabled` `has_secret` | include raw bodies · paused/active · whether a signing secret is set |
+| `created_after_seq` | only events after this seq are delivered |
+
+**`Delivery`**
+
+| Field | Notes |
+|---|---|
+| `id` `session` `destination` `created_at` `updated_at` | |
+| `event_id` `event_seq` | the event delivered |
+| `status` `attempts` `last_attempt_at` | delivery state, retry count, last try |
+| `response_code?` `error?` | last response · failure detail |
 
 ## GitHub Apps and Repos
 
