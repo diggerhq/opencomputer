@@ -27,7 +27,7 @@ export function AgentSkills({ agentId }: { agentId: string }) {
     queryKey: ['agent-skills', agentId],
     queryFn: () => getAgentSkills(agentId),
   })
-  const files = data?.files ?? []
+  const skills = data?.skills ?? []
 
   // A skills change deploys a new active revision — refresh the dependent views.
   const invalidate = () => {
@@ -57,24 +57,40 @@ export function AgentSkills({ agentId }: { agentId: string }) {
         </span>
       </PanelHeader>
       <PanelContent className="space-y-4">
-        {!isLoading && files.length === 0 ? (
+        {!isLoading && skills.length === 0 ? (
           <EmptyState
             icon={FileArchive}
             title="No skills deployed"
-            description="Upload a .zip of your skills folder to deploy a revision with them."
+            description="Upload a .zip with one folder per skill, each containing a SKILL.md."
           />
         ) : (
           <ul className="divide-border divide-y rounded-md border">
-            {files.map((f) => (
-              <li key={f.path} className="flex items-center justify-between px-3 py-2">
-                <span className="text-foreground font-mono text-xs">{f.path}</span>
-                <span className="text-muted-foreground font-mono text-xs">
-                  {(f.mode & 0o777).toString(8)} · {fmtBytes(f.size)}
-                </span>
+            {skills.map((s) => (
+              <li key={s.name} className="px-3 py-2.5">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-foreground font-mono text-[13px]">{s.name}</span>
+                  <span className="text-muted-foreground shrink-0 text-xs">
+                    {s.files.length} file{s.files.length === 1 ? '' : 's'} ·{' '}
+                    {fmtBytes(s.files.reduce((n, f) => n + f.size, 0))}
+                  </span>
+                </div>
+                {s.description ? (
+                  <p className="text-muted-foreground mt-0.5 text-xs">{s.description}</p>
+                ) : (
+                  <p className="text-muted-foreground/70 mt-0.5 text-xs italic">no description</p>
+                )}
               </li>
             ))}
           </ul>
         )}
+
+        <p className="text-muted-foreground text-xs">
+          A skill is a folder with a <span className="font-mono">SKILL.md</span> (its{' '}
+          <span className="font-mono">name</span> + <span className="font-mono">description</span> go
+          in the frontmatter). Upload a <span className="font-mono">.zip</span> with one folder per
+          skill (e.g. <span className="font-mono">triage/SKILL.md</span>), or a{' '}
+          <span className="font-mono">skills/</span> folder wrapping them.
+        </p>
 
         <div className="flex items-center gap-3">
           <input
@@ -92,11 +108,11 @@ export function AgentSkills({ agentId }: { agentId: string }) {
             <Upload className="size-4" />
             {upload.isPending
               ? 'Uploading…'
-              : files.length
+              : skills.length
                 ? 'Replace skills (.zip)'
                 : 'Upload skills (.zip)'}
           </Button>
-          {files.length > 0 ? (
+          {skills.length > 0 ? (
             <Button
               variant="ghost"
               size="sm"

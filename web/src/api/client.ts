@@ -30,7 +30,7 @@ export type {
   Agent,
   AgentRevision,
   AgentSkills,
-  SkillManifestEntry,
+  SkillItem,
   AgentDeploy,
   Session,
   SessionEvent,

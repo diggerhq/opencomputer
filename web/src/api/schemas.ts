@@ -374,20 +374,25 @@ export const AgentDeployListSchema = z.object({
 export const ActivateRevisionSchema = z.object({
   active_revision_id: z.string(),
 })
-// A skill file in a bundle manifest (no bytes — path/mode/size/sha256).
-export const SkillManifestEntrySchema = z.object({
+// A file within a skill (path/mode/size).
+export const SkillFileSchema = z.object({
   path: z.string(),
   mode: z.number(),
   size: z.number(),
-  sha256: z.string(),
 })
-// The agent's skills (GET …/skills) — the active revision's skill files.
+// A skill — the domain unit: a folder with a SKILL.md (name + description from frontmatter).
+export const SkillItemSchema = z.object({
+  name: z.string(),
+  description: z.string().nullish(),
+  files: z.array(SkillFileSchema).default([]),
+})
+// The agent's skills (GET …/skills) — the active revision's skills, enumerated.
 export const AgentSkillsSchema = z.object({
   revision: z
     .object({ id: z.string(), number: z.number(), digest: z.string() })
     .nullish(),
   skill_bundle_digest: z.string().nullish(),
-  files: z.array(SkillManifestEntrySchema).default([]),
+  skills: z.array(SkillItemSchema).default([]),
 })
 // The deploy-shaped response from POST …/revisions.
 export const DeployResultSchema = z.object({
@@ -530,7 +535,7 @@ export const DeliverySchema = z.object({
 export type Agent = z.infer<typeof AgentSchema>
 export type AgentRevision = z.infer<typeof AgentRevisionSchema>
 export type AgentSkills = z.infer<typeof AgentSkillsSchema>
-export type SkillManifestEntry = z.infer<typeof SkillManifestEntrySchema>
+export type SkillItem = z.infer<typeof SkillItemSchema>
 export type AgentDeploy = z.infer<typeof AgentDeploySchema>
 export type Credential = z.infer<typeof CredentialSchema>
 export type SlackConnection = z.infer<typeof SlackConnectionSchema>
