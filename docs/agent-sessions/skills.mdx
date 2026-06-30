@@ -1,0 +1,122 @@
+---
+mode: "wide"
+title: "Skills"
+description: "Reusable instructions an agent loads when it needs them"
+---
+
+A **skill** is a folder of instructions (plus optional helper files) an agent loads **when the task calls for it** — a playbook it reaches for, without bloating every prompt. Skills are the most common way to grow an agent past its base prompt ([the second rung](/agent-sessions/agents#start-simple-add-capability-as-you-go)).
+
+## What a skill is
+
+A folder with a `SKILL.md`:
+
+```
+triage/
+  SKILL.md
+  checklist.md        # optional helper the SKILL.md can reference
+```
+
+`SKILL.md` is YAML frontmatter followed by instructions:
+
+```markdown
+---
+name: triage
+description: Triage an incoming pull request
+---
+1. Read the diff and the linked issue.
+2. Label by area, flag risky changes, run the tests.
+3. Summarize in three bullets.
+```
+
+- **`name`** + **`description`** are always visible to the agent; the **body** is loaded only when the agent decides the skill is relevant — progressive disclosure that keeps context lean.
+- Helper files alongside `SKILL.md` (checklists, scripts, references) are available when the skill runs.
+
+## How it works
+
+When a session starts, the agent's skills are **materialized into its runtime**. The model sees each skill's `name` + `description` and **invokes** one when the task matches, then follows its instructions (and can read its helper files). Skills don't run on their own — the agent uses them like tools.
+
+Skills are part of the agent's [revision](/agent-sessions/revisions): they're versioned, rolled back, and activated together with the prompt and model. Changing skills is a [deploy](/agent-sessions/revisions#deploy).
+
+## Add skills
+
+Three ways — each produces a new revision:
+
+<Tabs>
+<Tab title="Upload a .zip">
+One folder per skill (a top-level `skills/` wrapper is fine — it's stripped):
+
+```
+triage/
+  SKILL.md
+pr-review/
+  SKILL.md
+  checklist.md
+```
+
+<CodeGroup>
+
+```bash CLI
+oc agent skills set ./skills.zip
+```
+
+```http REST API
+PUT https://api.opencomputer.dev/v3/agents/agt_123/skills
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/zip
+
+<binary .zip>
+```
+
+</CodeGroup>
+
+In the [dashboard](https://app.opencomputer.dev), the agent's **Skills** panel uploads the same `.zip`. This keeps the agent's current prompt + model and replaces its skills.
+</Tab>
+
+<Tab title="Inline in a deploy">
+Include `skills` in a [deploy](/agent-sessions/revisions#deploy) payload — the complete behavior in one call:
+
+```ts TypeScript SDK
+await oc.agents.deploys.create("agt_123", {
+  input: {
+    type: "inline",
+    prompt: "You triage pull requests.",
+    skills: [{ path: "triage/SKILL.md", content: "---\nname: triage\ndescription: Triage a PR\n---\n…" }],
+  },
+});
+```
+</Tab>
+
+<Tab title="From a repo / CLI">
+Put a `skills/` directory in your agent directory and [deploy from GitHub](/agent-sessions/deploy-from-github) (push to deploy) or `oc agent deploy` from a local checkout:
+
+```
+issue-fixer/
+  agent.toml
+  prompt.md
+  skills/
+    triage/SKILL.md
+```
+
+Every push that changes `skills/` deploys a new revision.
+</Tab>
+</Tabs>
+
+## List & remove
+
+```http REST API
+GET    /v3/agents/agt_123/skills     # enumerated: name, description, files
+DELETE /v3/agents/agt_123/skills     # remove all skills (deploys a revision with none)
+```
+
+`GET` returns each skill with its parsed `name`/`description` and file list — handy for showing what an agent currently knows.
+
+## Authoring tips
+
+- **One skill, one job.** A sharp `description` is what tells the agent *when* to use it.
+- Keep `SKILL.md` instructions concrete and ordered; move long reference material into helper files the body points to.
+- Skills are instructions, not code — they shape *how* the agent works, using the runtime's own tools.
+
+## Limits & availability
+
+- Up to **64 files**, **256 KiB** total, UTF-8 text, file modes `0644`/`0755`.
+- **`claude` runtime only** today; skills on `codex` agents are [coming soon](/agent-sessions/revisions#not-yet-supported).

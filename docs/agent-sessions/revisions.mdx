@@ -122,50 +122,9 @@ GET /v3/agents/agt_123/activations         # active-pointer audit log
 
 ## Skills
 
-A **skill** is a folder with a `SKILL.md` — YAML frontmatter (`name` + `description`) followed by instructions the agent loads when it needs them — plus any helper files. An agent can have several; they're materialized into the runtime when a session runs.
+Skills — reusable instruction folders the agent loads when relevant — are **part of a revision**, so they're deployed, versioned, and rolled back exactly like the prompt and model. Include them inline in a deploy (`skills:[…]`, above), upload a `.zip` (`PUT …/skills` / `oc agent skills set`), or ship a `skills/` directory [from a repo](/agent-sessions/deploy-from-github).
 
-Manage them as a sub-resource. **List** the active revision's skills:
-
-```http REST API
-GET https://api.opencomputer.dev/v3/agents/agt_123/skills
-Authorization: Bearer $OPENCOMPUTER_API_KEY
-```
-
-```json Response
-{
-  "revision": { "id": "rev_…", "number": 5, "digest": "sha256:…" },
-  "skill_bundle_digest": "sha256:…",
-  "skills": [{ "name": "triage", "description": "Triage a PR", "files": [{ "path": "triage/SKILL.md", "mode": 420, "size": 812 }] }]
-}
-```
-
-**Replace** all skills from a `.zip` (the API unzips, validates, and deploys a new revision keeping the current prompt + model). The zip holds one folder per skill, each with a `SKILL.md`:
-
-```
-triage/
-  SKILL.md
-  checklist.md
-pr-review/
-  SKILL.md
-```
-
-<CodeGroup>
-
-```bash CLI
-oc agent skills set ./skills.zip
-```
-
-```http REST API
-PUT https://api.opencomputer.dev/v3/agents/agt_123/skills
-Authorization: Bearer $OPENCOMPUTER_API_KEY
-Content-Type: application/zip
-
-<binary .zip>
-```
-
-</CodeGroup>
-
-A top-level `skills/` wrapper is fine (it's stripped). **Remove** all skills with `DELETE …/skills`. Limits: up to 64 files, 256 KiB total, UTF-8 text, modes `0644`/`0755`.
+See the **[Skills](/agent-sessions/skills)** page for the `SKILL.md` format, how skills are invoked, all three ways to add them, and limits.
 
 ## Not yet supported
 

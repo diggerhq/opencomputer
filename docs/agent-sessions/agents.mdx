@@ -44,6 +44,19 @@ Pass your model `key` inline and it's stored as a [credential](/agent-sessions/c
 
 <Tip>Keep the org key and model key on your backend. Only return session-scoped client tokens to browsers.</Tip>
 
+## Start simple, add capability as you go
+
+The only thing an agent needs is a **model** and a **prompt** — create one and it runs on a **default, managed runtime that just works**. Everything beyond that is **additive**: reach for a rung only when you need it, and nothing earlier is undone.
+
+| Rung | What you add | What you get |
+|---|---|---|
+| **Default agent** | `name` + `model` (+ a prompt) | a working agent on the default runtime — no setup |
+| **+ Skills** | [`SKILL.md` folders](/agent-sessions/skills) (upload a `.zip`, or include in a repo) | reusable procedures the agent loads when relevant — still the default runtime |
+| **+ Deploy from a repo / CLI** | keep the agent's `prompt.md` + `skills/` in Git and [push to deploy](/agent-sessions/deploy-from-github) | versioned, push-to-deploy, previews + rollback — still the default runtime |
+| **+ Custom runtime** *(coming soon)* | bring your own runtime image | full control of the execution environment |
+
+At every rung the agent is just a small directory — at most `agent.toml` + `prompt.md` + `skills/`. You can stop at any rung; most agents never go past skills.
+
 ## Session-pinned config
 
 When a session is created it **freezes** the agent's **active [revision](/agent-sessions/revisions)** — `prompt`, `model`, `runtime`, and `skills` — into the session, and pins the resolved credential too. Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change. (Rotating a credential's **key value** is the exception — that flows to running sessions, so a compromised key can be replaced; see [credentials](/agent-sessions/credentials).)
