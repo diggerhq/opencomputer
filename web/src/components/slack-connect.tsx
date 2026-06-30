@@ -9,12 +9,7 @@ import {
   disconnectSlack,
 } from '@/api/client'
 import type { SlackManifestResponse } from '@/api/schemas'
-import {
-  Panel,
-  PanelContent,
-  PanelHeader,
-  PanelTitle,
-} from '@/components/panel'
+import { Panel, PanelContent } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -25,7 +20,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/form'
-import { StatusBadge } from '@/components/status-badge'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import { cn } from '@/lib/utils'
@@ -79,6 +73,16 @@ function WizardSteps({ current }: { current: number }) {
   )
 }
 
+// Compact one-line progress for the card view (closed wizard): "Step N of 4 · label".
+function CompactSteps({ current }: { current: number }) {
+  const n = Math.min(current + 1, WIZARD_STEPS.length)
+  return (
+    <p className="text-muted-foreground text-xs">
+      Step {n} of {WIZARD_STEPS.length} · {WIZARD_STEPS[current] ?? 'Done'}
+    </p>
+  )
+}
+
 export function SlackConnect({
   agentId,
   agentName,
@@ -109,7 +113,6 @@ export function SlackConnect({
   const [botToken, setBotToken] = useState('')
   const [signingSecret, setSigningSecret] = useState('')
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
-  const [confirmReconnect, setConfirmReconnect] = useState(false)
   const [copied, markCopied] = useTransientFlag(1500)
 
   const resetWizard = () => {
@@ -195,75 +198,51 @@ export function SlackConnect({
 
   return (
     <Panel className="overflow-hidden">
-      <PanelHeader>
-        <PanelTitle>Slack</PanelTitle>
-        {conn ? <StatusBadge status={status ?? 'pending'} /> : null}
-      </PanelHeader>
-      <PanelContent>
+      <PanelContent className="space-y-3">
         {isLoading ? (
-          <p className="text-muted-foreground text-sm">Checking Slack…</p>
+          <p className="text-muted-foreground text-xs">Checking…</p>
         ) : isError ? (
-          <p className="text-muted-foreground text-sm">
+          <p className="text-muted-foreground text-xs">
             Slack status unavailable.
           </p>
         ) : isActive ? (
-          <div className="space-y-3">
-            <p className="text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-sm">
+              <span className="text-green-600 dark:text-green-500">●</span>{' '}
               <span className="text-foreground font-medium">
                 @{conn?.handle}
-              </span>{' '}
-              is connected{workspace ? ` to ${workspace}` : ''}.
-            </p>
-            <p className="text-muted-foreground text-sm">
-              Invite the bot to a channel, then <strong>@-mention</strong> it to
-              start or steer a session.
-            </p>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setConfirmReconnect(true)}
-              >
-                Reconnect
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setConfirmDisconnect(true)}
-              >
-                Disconnect
-              </Button>
-            </div>
-          </div>
-        ) : isErrorStatus ? (
-          <div className="space-y-3">
-            <p className="text-status-error text-sm">
-              Slack reported a connection error (the token may have been
-              revoked). Reconnect to fix it.
-            </p>
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => beginConnect()}>
-                Reconnect
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setConfirmDisconnect(true)}
-              >
-                Disconnect
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <p className="text-muted-foreground text-sm">
-              Give this agent its own Slack handle. Members @-mention it to
-              start and steer sessions from a channel.
-            </p>
-            <Button size="sm" onClick={() => beginConnect()}>
-              {isPending ? 'Continue Slack setup' : 'Connect Slack'}
+              </span>
+              {workspace ? (
+                <span className="text-muted-foreground"> · {workspace}</span>
+              ) : null}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:text-foreground shrink-0"
+              onClick={() => setConfirmDisconnect(true)}
+            >
+              Disconnect
             </Button>
           </div>
+        ) : isErrorStatus ? (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-status-error text-sm">● Connection error</span>
+            <Button size="sm" onClick={() => beginConnect()}>
+              Reconnect
+            </Button>
+          </div>
+        ) : isPending ? (
+          <div className="space-y-2">
+            <CompactSteps current={stepIndex} />
+            <Button size="sm" onClick={() => beginConnect()}>
+              Continue setup
+            </Button>
+          </div>
+        ) : (
+          <Button size="sm" onClick={() => beginConnect()}>
+            Connect Slack
+          </Button>
         )}
       </PanelContent>
 
@@ -490,17 +469,6 @@ export function SlackConnect({
         onConfirm={() => disconnectMutation.mutate()}
       />
 
-      <ConfirmDialog
-        open={confirmReconnect}
-        onOpenChange={setConfirmReconnect}
-        title="Reconnect Slack?"
-        description="This replaces the current Slack app. The agent stops responding in Slack until you finish setting up the new one."
-        confirmLabel="Reconnect"
-        onConfirm={() => {
-          setConfirmReconnect(false)
-          beginConnect(true)
-        }}
-      />
     </Panel>
   )
 }
