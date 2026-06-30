@@ -58,11 +58,21 @@ export function AgentSkills({ agentId }: { agentId: string }) {
       </PanelHeader>
       <PanelContent className="space-y-4">
         {!isLoading && skills.length === 0 ? (
-          <EmptyState
-            icon={FileArchive}
-            title="No skills deployed"
-            description="Upload a .zip with one folder per skill, each containing a SKILL.md."
-          />
+          <div className="space-y-3">
+            <EmptyState
+              icon={FileArchive}
+              title="No skills yet"
+              description="A skill is a folder with a SKILL.md. Upload a .zip shaped like:"
+            />
+            <pre className="text-muted-foreground/70 mx-auto w-fit text-left font-mono text-xs leading-relaxed">
+{`skills/
+├─ triage/
+│  └─ SKILL.md
+└─ pr-review/
+   ├─ SKILL.md
+   └─ run.sh`}
+            </pre>
+          </div>
         ) : (
           <ul className="divide-border divide-y rounded-md border">
             {skills.map((s) => (
@@ -83,14 +93,6 @@ export function AgentSkills({ agentId }: { agentId: string }) {
             ))}
           </ul>
         )}
-
-        <p className="text-muted-foreground text-xs">
-          A skill is a folder with a <span className="font-mono">SKILL.md</span> (its{' '}
-          <span className="font-mono">name</span> + <span className="font-mono">description</span> go
-          in the frontmatter). Upload a <span className="font-mono">.zip</span> with one folder per
-          skill (e.g. <span className="font-mono">triage/SKILL.md</span>), or a{' '}
-          <span className="font-mono">skills/</span> folder wrapping them.
-        </p>
 
         <div className="flex items-center gap-3">
           <input
