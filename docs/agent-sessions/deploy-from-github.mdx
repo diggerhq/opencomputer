@@ -1,0 +1,104 @@
+---
+mode: "wide"
+title: "Deploy from GitHub"
+description: "Define an agent in a repo and deploy on every push"
+---
+
+Keep an agent's definition in a Git repo and **deploy on push**. Connect a repo directory to an agent: pushing to the production branch deploys a new [revision](/agent-sessions/revisions) and activates it; pushing any other branch **stages** a revision you can test first. Rollback and history work exactly as with any deploy.
+
+## The agent directory
+
+An agent is a directory:
+
+```
+issue-fixer/
+  agent.toml      # name, model, runtime
+  prompt.md       # system prompt
+  skills/         # optional — one folder per skill, each with a SKILL.md
+    triage/
+      SKILL.md
+```
+
+```toml agent.toml
+name  = "issue-fixer"
+model = "anthropic/claude-sonnet-4-6"
+
+[runtime]
+family = "claude"          # claude | codex
+```
+
+The directory **is** the agent's definition — its content is exactly what gets deployed (no files outside the directory). MCP servers and custom runtimes are [coming soon](/agent-sessions/revisions#not-yet-supported).
+
+## Connect a repo
+
+First install the OpenComputer GitHub App on the repo (the agent page in the [dashboard](https://app.opencomputer.dev), or **Settings → GitHub**). Then link an agent to a directory + production branch:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+await oc.agents.deploymentSource.link("agt_123", {
+  repo: "acme/agents",
+  path: "issue-fixer",
+  productionRef: "main",
+});
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/agents/agt_123/deployment-source
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "repo": "acme/agents", "path": "issue-fixer", "production_ref": "main" }
+```
+
+```bash CLI
+oc agent link acme/agents --path issue-fixer --branch main
+```
+
+</CodeGroup>
+
+Linking **deploys the current `main` HEAD immediately** so "connected" isn't a no-op (pass `deploy_now: false` / `--no-deploy` to skip). An agent links to at most one repo directory.
+
+## Push to deploy
+
+Once linked, every push that touches the directory deploys:
+
+- push to **`main`** (the production branch) → a new revision, **activated**.
+- push to **any other branch** → a revision **staged** (created, not active) — test it, then [promote](/agent-sessions/revisions#roll-back-promote).
+- a push that doesn't touch the directory → **no-op**.
+- a push whose directory content is unchanged (e.g. a force-push that doesn't alter the agent) → **skipped**, no new revision.
+
+OpenComputer posts a **commit status** (queued → ready / failed), so a deploy's result is visible in GitHub.
+
+## Test a staged revision, then promote
+
+A branch push gives you a staged revision to try before it's live:
+
+```bash CLI
+oc agent revisions          # find the staged revision's number
+oc agent rollback 7         # "activate 7" — promote it to production
+```
+
+Start a [session](/agent-sessions/sessions) against the agent to exercise the staged revision first if you want; promoting is instant and never rebuilds.
+
+## Roll back
+
+A bad deploy rolls back like any other — re-activate the previous revision (one click in the dashboard, or `oc agent rollback <n>`). A manual rollback isn't silently undone by the next push.
+
+## What's guaranteed
+
+- **Your GitHub token never reaches the agent's sandbox.** OpenComputer pulls only the linked directory, at the exact pushed commit, in an isolated worker; the short-lived token is never persisted and never enters the agent's runtime.
+- **A deploy can only target what you connected.** Repo and path come from the link, so a push can't deploy behavior into the wrong agent.
+- **No code runs at deploy time.** Only `agent.toml`, `prompt.md`, and `skills/` are read; skills execute later, inside the agent's runtime, when a session runs.
+
+## From your machine
+
+You don't need a repo to deploy a directory — the CLI bundles a local agent directory and deploys it directly:
+
+```bash CLI
+oc agent deploy                       # deploy ./ as the agent named in agent.toml
+oc agent deploy ./agents/issue-fixer  # deploy a specific directory
+oc agent deploy --activation-policy manual   # stage instead of activate
+```
+
+This is the same deploy as a push — handy for CI that isn't GitHub, or for trying a change before committing.

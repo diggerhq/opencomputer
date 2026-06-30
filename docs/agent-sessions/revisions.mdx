@@ -1,12 +1,101 @@
 ---
 mode: "wide"
-title: "Revisions & skills"
-description: "Versioned agent behavior — deploy, roll back, and manage skills"
+title: "Deploys & revisions"
+description: "Deploy agent behavior, version it as immutable revisions, roll back instantly"
 ---
 
-An agent's behavior — its `prompt`, `model`, and **skills** — is versioned as **revisions**. Every change is a **deploy** that appends a new immutable revision; the agent's **active revision** is what new [sessions](/agent-sessions/sessions) use. Rolling back is just re-activating an earlier revision.
+You **deploy** an agent's behavior — its `prompt`, `model`, and [skills](#skills). Each deploy produces an immutable **revision**; the agent's **active revision** is what new [sessions](/agent-sessions/sessions) use. Roll back by re-activating an earlier revision.
 
-<Note>Revisions are **linear**: each deploy is a new revision (like a deployment on Vercel/Fly), and the number only goes up. Re-activating an older revision (rollback) moves the **active pointer** back, but never deletes or rewrites history. In-flight sessions keep the revision they started on; only new sessions pick up the change.</Note>
+Deploy three ways — all the same underneath: the **API/SDK**, the **`oc` CLI**, or [**push to GitHub**](/agent-sessions/deploy-from-github).
+
+<Note>Revisions are **linear**: each explicit deploy appends a new revision (the number only goes up), like a deployment on Vercel/Fly. Rollback moves the **active pointer** back — it never rewrites history. In-flight sessions keep the revision they started on; only new sessions pick up a change.</Note>
+
+## Deploy
+
+`POST /agents/:id/deploys` is the one command. `input.type: "inline"` sends behavior directly (API / CLI / dashboard); `input.type: "github"` deploys a linked repo — see [Deploy from GitHub](/agent-sessions/deploy-from-github).
+
+An inline payload is the **complete** behavior — omitted fields aren't inherited (`prompt` is required; omitted `skills` means *no skills*).
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const deploy = await oc.agents.deploys.create("agt_123", {
+  input: {
+    type: "inline",
+    prompt: "You triage pull requests.",
+    model: "anthropic/claude-opus-4-8",
+    skills: [{ path: "triage/SKILL.md", content: "---\nname: triage\ndescription: Triage a PR\n---\nSummarize the diff…" }],
+  },
+  activationPolicy: "auto",
+});
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/agents/agt_123/deploys
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "input": {
+    "type": "inline",
+    "prompt": "You triage pull requests.",
+    "model": "anthropic/claude-opus-4-8",
+    "skills": [{ "path": "triage/SKILL.md", "content": "---\nname: triage\ndescription: Triage a PR\n---\nSummarize the diff…" }]
+  },
+  "activation_policy": "auto"
+}
+```
+
+```bash CLI
+# from a directory holding agent.toml + prompt.md + skills/
+oc agent deploy
+```
+
+</CodeGroup>
+
+The response is a **deploy** object:
+
+```json
+{ "deploy": { "id": "dep_…", "state": "ready", "revision_id": "rev_…", "activation_policy": "auto" } }
+```
+
+Inline deploys finish synchronously (`state: "ready"` with a `revision_id`). Asynchronous deploys (GitHub) return `state: "queued"` — poll `GET /agents/:id/deploys/:deploy_id` or watch [events](/agent-sessions/events).
+
+### Activation
+
+`activation_policy` decides what happens once a deploy is ready:
+
+| Value | Effect |
+| --- | --- |
+| `auto` *(default)* | the new revision becomes **active** immediately |
+| `manual` | the revision is **staged** — created but not active; [promote](#roll-back-promote) it later |
+
+Staging lets you test before going live: deploy with `manual`, start a session against the staged revision, then promote it. (`auto_after_checks` is reserved for an upcoming eval gate.)
+
+<Tip>Editing `prompt`/`model` via [`PATCH /agents/:id`](/agent-sessions/agents) also deploys a revision — a shorthand for small edits.</Tip>
+
+## Roll back / promote
+
+Rollback and promote are the **same primitive** — set the active revision. Re-activate any earlier revision (rollback) or a staged one (promote):
+
+<CodeGroup>
+
+```ts TypeScript SDK
+await oc.agents.revisions.activate("agt_123", 3);
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/agents/agt_123/revisions/3/activate
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+```
+
+```bash CLI
+oc agent rollback 3
+```
+
+</CodeGroup>
+
+Instant — no rebuild. Running sessions are unaffected; new sessions use the newly-active revision.
 
 ## What's on a revision
 
@@ -14,107 +103,43 @@ An agent's behavior — its `prompt`, `model`, and **skills** — is versioned a
 |---|---|
 | `number` | Monotonic per agent (`1, 2, 3, …`). |
 | `prompt` / `model` | The behavior at deploy time. |
-| `skill_bundle_digest` | Points at the skill files (a content-addressed bundle); `null` when the agent has no skills. |
-| `digest` | A content hash of the behavior — two revisions with the same behavior share a digest (the bundle is also deduplicated in storage), but each deploy is still its own revision. |
+| `skill_bundle_digest` | The skill files (a content-addressed bundle); `null` when there are no skills. |
+| `digest` | A content hash of the behavior (used for change detection). |
 
-The agent row keeps only **identity + bindings** (`name`, `runtime`, `credential`, `limits`) plus a pointer to the active revision. `prompt`/`model` are served from that revision.
+The agent itself holds only **identity + bindings** (`name`, `runtime`, `credential`, `limits`) plus a pointer to the active revision; `prompt`/`model` are served from that revision.
 
-## Deploy a revision
-
-Editing an agent's `prompt` or `model` deploys a revision automatically (the response shape of [`PATCH /agents/:id`](/agent-sessions/agents) is unchanged):
+## Inspect
 
 ```http REST API
-PATCH https://api.opencomputer.dev/v3/agents/agt_123
-Authorization: Bearer $OPENCOMPUTER_API_KEY
-Content-Type: application/json
-
-{ "prompt": "You are a meticulous reviewer. Run the tests." }
-```
-
-For a full behavior payload (prompt + model + skills in one go), deploy directly. This is the **complete** behavior — omitted fields are not inherited (`prompt` is required; omitted `skills` means *no skills*).
-
-```http REST API
-POST https://api.opencomputer.dev/v3/agents/agt_123/revisions
-Authorization: Bearer $OPENCOMPUTER_API_KEY
-Content-Type: application/json
-
-{
-  "prompt": "You triage pull requests.",
-  "model": "anthropic/claude-opus-4-8",
-  "skills": [
-    { "path": "triage/SKILL.md", "content": "---\nname: triage\ndescription: Triage a PR\n---\nSummarize the diff…" }
-  ],
-  "activate": true
-}
-```
-
-```json Response (201)
-{
-  "deploy_id": "dep_…",
-  "state": "ready",
-  "result": "created",
-  "revision": { "id": "rev_…", "number": 5, "digest": "sha256:…", "active": true }
-}
-```
-
-`activate` defaults to `true` (deploy straight to production). Pass `activate: false` to stage a revision without changing what new sessions use.
-
-## Roll back / promote
-
-Re-activate any earlier revision by **number** or `rev_…` id — this moves the active pointer. Running sessions are unaffected; new sessions use it.
-
-```http REST API
-POST https://api.opencomputer.dev/v3/agents/agt_123/revisions/3/activate
-Authorization: Bearer $OPENCOMPUTER_API_KEY
-```
-
-```json Response (200)
-{ "active_revision_id": "rev_…" }
-```
-
-## Inspect history
-
-```http REST API
-GET  /v3/agents/agt_123/revisions        # history (newest first; `active` flags the current one)
-GET  /v3/agents/agt_123/revisions/5      # one revision + its skill file manifest
-GET  /v3/agents/agt_123/deploys          # deploy timeline (provenance + state)
-GET  /v3/agents/agt_123/activations      # pointer-move audit log
+GET /v3/agents/agt_123/deploys             # deploy timeline (state, source, actor)
+GET /v3/agents/agt_123/deploys/dep_123     # one deploy (poll async deploys to ready|failed)
+GET /v3/agents/agt_123/revisions           # revision history (newest first; active flagged)
+GET /v3/agents/agt_123/revisions/5         # one revision + its skill file manifest
+GET /v3/agents/agt_123/activations         # active-pointer audit log
 ```
 
 `GET /agents/:id` also includes an `active_revision` summary (`id`, `number`, `digest`).
 
 ## Skills
 
-A **skill** is a folder containing a `SKILL.md` (with YAML frontmatter — `name` + `description` — followed by instructions the agent loads at the start of a turn) plus any helper files it references. An agent can have several. Skills are materialized into the runtime when a session runs, so the agent can use them.
+A **skill** is a folder with a `SKILL.md` — YAML frontmatter (`name` + `description`) followed by instructions the agent loads when it needs them — plus any helper files. An agent can have several; they're materialized into the runtime when a session runs.
 
-Manage them as a sub-resource of the agent. **List** the active revision's skills:
+Manage them as a sub-resource. **List** the active revision's skills:
 
 ```http REST API
 GET https://api.opencomputer.dev/v3/agents/agt_123/skills
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 ```
 
-```json Response (200)
+```json Response
 {
   "revision": { "id": "rev_…", "number": 5, "digest": "sha256:…" },
   "skill_bundle_digest": "sha256:…",
-  "skills": [
-    { "name": "triage", "description": "Triage a PR", "files": [{ "path": "triage/SKILL.md", "mode": 420, "size": 812 }] }
-  ]
+  "skills": [{ "name": "triage", "description": "Triage a PR", "files": [{ "path": "triage/SKILL.md", "mode": 420, "size": 812 }] }]
 }
 ```
 
-**Upload** a `.zip` of your skills — the API unzips, validates, and deploys a new revision with those skills (keeping the agent's current prompt + model). The zip body is sent raw:
-
-```http REST API
-PUT https://api.opencomputer.dev/v3/agents/agt_123/skills
-Authorization: Bearer $OPENCOMPUTER_API_KEY
-Content-Type: application/zip
-
-<binary .zip>
-```
-
-The zip should contain **one folder per skill**, each with a `SKILL.md`:
+**Replace** all skills from a `.zip` (the API unzips, validates, and deploys a new revision keeping the current prompt + model). The zip holds one folder per skill, each with a `SKILL.md`:
 
 ```
 triage/
@@ -124,17 +149,31 @@ pr-review/
   SKILL.md
 ```
 
-A top-level `skills/` wrapper is fine too (it's stripped). **Remove** all skills (deploys a revision with none):
+<CodeGroup>
 
-```http REST API
-DELETE https://api.opencomputer.dev/v3/agents/agt_123/skills
-Authorization: Bearer $OPENCOMPUTER_API_KEY
+```bash CLI
+oc agent skills set ./skills.zip
 ```
 
-Uploading and removing are both **deploys** — each is a new revision (not a rollback). Limits: up to 64 files, 256 KiB total, UTF-8 text only, modes `0644`/`0755`.
+```http REST API
+PUT https://api.opencomputer.dev/v3/agents/agt_123/skills
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/zip
 
-<Note>**v1 supports skills on the `claude` runtime only.** Skills on a `codex` agent are rejected; custom runtimes and MCP servers are not yet supported.</Note>
+<binary .zip>
+```
+
+</CodeGroup>
+
+A top-level `skills/` wrapper is fine (it's stripped). **Remove** all skills with `DELETE …/skills`. Limits: up to 64 files, 256 KiB total, UTF-8 text, modes `0644`/`0755`.
+
+## Not yet supported
+
+These are **coming soon** — a deploy that includes them is rejected today:
+- **MCP servers** (`mcp.json`)
+- **Custom runtimes** (a `runtime/` directory)
+- **Skills on `codex` agents** — skills are `claude`-runtime only for now
 
 ## Dashboard
 
-Everything here is in the [dashboard](https://app.opencomputer.dev) on the agent page: a **Revisions** panel (history, the active revision, one-click rollback) and a **Skills** panel (the current skills with descriptions, plus upload-a-`.zip` and remove).
+The agent page in the [dashboard](https://app.opencomputer.dev) mirrors all of this: a **Revisions** panel (history, the active revision, one-click rollback) and a **Skills** panel (current skills, plus upload-`.zip` / remove).
