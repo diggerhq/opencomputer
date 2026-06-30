@@ -7,14 +7,8 @@ import {
   getAgentDeploys,
   activateRevision,
   type AgentRevision,
-  type AgentDeploy,
 } from '@/api/client'
-import {
-  Panel,
-  PanelContent,
-  PanelHeader,
-  PanelTitle,
-} from '@/components/panel'
+import { Panel, PanelHeader, PanelTitle } from '@/components/panel'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
@@ -39,10 +33,17 @@ export function AgentRevisions({ agentId }: { agentId: string }) {
     queryKey: ['agent-revisions', agentId],
     queryFn: () => getAgentRevisions(agentId),
   })
-  const { data: deploys = [], isLoading: loadingDeploys } = useQuery({
+  const { data: deploys = [] } = useQuery({
     queryKey: ['agent-deploys', agentId],
     queryFn: () => getAgentDeploys(agentId),
   })
+  // A revision's provenance lives on the deploy that CREATED it (one revision, many
+  // deploys — source is a deploy field). Fold source.via into the revisions table so
+  // we don't need a second, near-duplicate table.
+  const createdVia = new Map<string, string>()
+  for (const d of deploys) {
+    if (d.revision_id && d.result === 'created') createdVia.set(d.revision_id, sourceVia(d.source))
+  }
 
   const activateMutation = useMutation({
     mutationFn: (rev: AgentRevision) => activateRevision(agentId, rev.number),
@@ -66,6 +67,15 @@ export function AgentRevisions({ agentId }: { agentId: string }) {
       header: 'Revision',
       cell: (r) => (
         <span className="text-foreground font-mono text-[13px]">#{r.number}</span>
+      ),
+    },
+    {
+      key: 'source',
+      header: 'Source',
+      cell: (r) => (
+        <span className="text-muted-foreground text-xs capitalize">
+          {createdVia.get(r.id) ?? '—'}
+        </span>
       ),
     },
     {
@@ -108,40 +118,6 @@ export function AgentRevisions({ agentId }: { agentId: string }) {
     },
   ]
 
-  const deployColumns: Column<AgentDeploy>[] = [
-    {
-      key: 'via',
-      header: 'Source',
-      cell: (d) => (
-        <span className="text-foreground text-xs capitalize">{sourceVia(d.source)}</span>
-      ),
-    },
-    {
-      key: 'result',
-      header: 'Result',
-      cell: (d) => (
-        <span className="text-muted-foreground font-mono text-xs">
-          {d.result ?? '—'}
-        </span>
-      ),
-    },
-    {
-      key: 'state',
-      header: 'State',
-      cell: (d) => <StatusBadge status={d.state} />,
-    },
-    {
-      key: 'when',
-      header: 'When',
-      align: 'right',
-      cell: (d) => (
-        <span className="text-muted-foreground font-mono text-xs">
-          {new Date(d.created_at).toLocaleString()}
-        </span>
-      ),
-    },
-  ]
-
   return (
     <Panel className="overflow-hidden">
       <PanelHeader>
@@ -164,20 +140,6 @@ export function AgentRevisions({ agentId }: { agentId: string }) {
           />
         }
       />
-
-      {/* Deploy history — provenance + state, newest first. */}
-      {deploys.length > 0 || loadingDeploys ? (
-        <PanelContent className="border-t">
-          <p className="text-muted-foreground mb-2 text-xs font-medium">Deploy history</p>
-          <ResourceTable
-            columns={deployColumns}
-            rows={deploys.slice(0, 8)}
-            rowKey={(d) => d.id}
-            loading={loadingDeploys}
-            skeletonRows={3}
-          />
-        </PanelContent>
-      ) : null}
 
       <ConfirmDialog
         open={pending !== null}
