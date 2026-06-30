@@ -410,7 +410,7 @@ export default function AgentDetail() {
           <SlackConnect agentId={agent.id} agentName={agent.name} />
 
           {/* Skills — current files + upload-a-zip to deploy a new revision */}
-          <AgentSkills agentId={agent.id} agent={agent} />
+          <AgentSkills agentId={agent.id} />
 
           {/* Revisions — deploy history + active pointer + rollback */}
           <AgentRevisions agentId={agent.id} />

@@ -381,15 +381,12 @@ export const SkillManifestEntrySchema = z.object({
   size: z.number(),
   sha256: z.string(),
 })
-// A single revision with its skill manifest (GET …/revisions/:rev).
-export const AgentRevisionDetailSchema = z.object({
-  id: z.string(),
-  number: z.number(),
-  digest: z.string(),
-  prompt: z.string().nullish(),
-  model: z.string().nullish(),
+// The agent's skills (GET …/skills) — the active revision's skill files.
+export const AgentSkillsSchema = z.object({
+  revision: z
+    .object({ id: z.string(), number: z.number(), digest: z.string() })
+    .nullish(),
   skill_bundle_digest: z.string().nullish(),
-  created_at: z.string(),
   files: z.array(SkillManifestEntrySchema).default([]),
 })
 // The deploy-shaped response from POST …/revisions.
@@ -532,7 +529,7 @@ export const DeliverySchema = z.object({
 
 export type Agent = z.infer<typeof AgentSchema>
 export type AgentRevision = z.infer<typeof AgentRevisionSchema>
-export type AgentRevisionDetail = z.infer<typeof AgentRevisionDetailSchema>
+export type AgentSkills = z.infer<typeof AgentSkillsSchema>
 export type SkillManifestEntry = z.infer<typeof SkillManifestEntrySchema>
 export type AgentDeploy = z.infer<typeof AgentDeploySchema>
 export type Credential = z.infer<typeof CredentialSchema>

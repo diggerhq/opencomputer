@@ -29,7 +29,7 @@ export type {
   BrowserProfile,
   Agent,
   AgentRevision,
-  AgentRevisionDetail,
+  AgentSkills,
   SkillManifestEntry,
   AgentDeploy,
   Session,
@@ -451,26 +451,23 @@ export const activateRevision = (agentId: string, rev: string | number) =>
     S.ActivateRevisionSchema,
   )
 
-// A single revision + its skill manifest (file list, no bytes).
-export const getAgentRevision = (agentId: string, rev: string | number) =>
-  apiFetch(`/v3/agents/${agentId}/revisions/${rev}`, {}, S.AgentRevisionDetailSchema)
+// Skills sub-resource (design 009 §8) — the API owns zip → validate → bundle, so the
+// dashboard is a thin consumer: read the file list, upload a .zip, or clear.
+export const getAgentSkills = (agentId: string) =>
+  apiFetch(`/v3/agents/${agentId}/skills`, {}, S.AgentSkillsSchema)
 
-// Deploy a revision (create + activate by default). The body is the FULL behavior
-// payload — prompt is required, so callers pass the agent's current prompt/model when
-// only the skills change. `skills` is the complete set (a deploy replaces, not merges).
-export const deployAgentRevision = (
-  agentId: string,
-  body: {
-    prompt: string
-    model?: string
-    skills?: { path: string; content: string; mode?: number }[]
-  },
-) =>
+// Upload a .zip of skills → the API unzips + deploys a new revision (active behavior with
+// skills replaced). The raw file is the body; no client-side parsing.
+export const putAgentSkills = (agentId: string, zip: File | Blob) =>
   apiFetch(
-    `/v3/agents/${agentId}/revisions`,
-    { method: 'POST', body: JSON.stringify(body) },
+    `/v3/agents/${agentId}/skills`,
+    { method: 'PUT', body: zip, headers: { 'Content-Type': 'application/zip' } },
     S.DeployResultSchema,
   )
+
+// Remove all skills → deploys a revision from the active behavior with no skills.
+export const deleteAgentSkills = (agentId: string) =>
+  apiFetch(`/v3/agents/${agentId}/skills`, { method: 'DELETE' }, S.DeployResultSchema)
 
 // Slack — an agent's BYO Slack app (1 app ⟷ 1 agent ⟷ 1 workspace). Two-step
 // connect: START (manifest) returns the app manifest + guided steps; COMPLETE
