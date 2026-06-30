@@ -29,6 +29,7 @@ import { ResourceTable, type Column } from '@/components/resource-table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SlackConnect } from '@/components/slack-connect'
 import { AgentSkills } from '@/components/agent-skills'
+import { AgentDeploySource } from '@/components/agent-deploy-source'
 import { AgentRevisions } from '@/components/agent-revisions'
 import { getRuntime } from '@/lib/runtimes'
 
@@ -411,6 +412,9 @@ export default function AgentDetail() {
 
           {/* Skills — current files + upload-a-zip to deploy a new revision */}
           <AgentSkills agentId={agent.id} />
+
+          {/* Deploy from a repo — link a repo dir for push-to-deploy */}
+          <AgentDeploySource agentId={agent.id} />
 
           {/* Revisions — deploy history + active pointer + rollback */}
           <AgentRevisions agentId={agent.id} />

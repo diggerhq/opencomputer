@@ -404,6 +404,23 @@ export const DeployResultSchema = z.object({
     .nullish(),
 })
 
+// Deployment source — the agent ⟷ repo dir bind for push-to-deploy (deploy-from-github).
+export const DeploymentSourceSchema = z.object({
+  agent_id: z.string(),
+  repo_id: z.string(),
+  path: z.string(),
+  production_ref: z.string(),
+  status: z.string(), // active | path_missing | ref_missing | auth_required | repo_not_selected | app_suspended | error
+  latest_seen_sha: z.string().nullish(),
+  active_deployed_sha: z.string().nullish(),
+})
+export const DeploymentSourceResponseSchema = z.object({ source: DeploymentSourceSchema })
+export const LinkResultSchema = z.object({
+  source: DeploymentSourceSchema,
+  deployment_id: z.string().nullish(),
+  deploy_error: z.object({ type: z.string(), message: z.string() }).nullish(),
+})
+
 // Credentials — the reusable model-provider keys an agent/session resolves. The
 // raw key is write-only; the API returns only metadata (last4 for display).
 export const CredentialSchema = z.object({

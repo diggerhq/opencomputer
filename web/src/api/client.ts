@@ -469,6 +469,23 @@ export const putAgentSkills = (agentId: string, zip: File | Blob) =>
 export const deleteAgentSkills = (agentId: string) =>
   apiFetch(`/v3/agents/${agentId}/skills`, { method: 'DELETE' }, S.DeployResultSchema)
 
+// Deployment source — link an agent to a repo dir for push-to-deploy (deploy-from-github).
+export const getDeploymentSource = (agentId: string) =>
+  apiFetch(`/v3/agents/${agentId}/deployment-source`, {}, S.DeploymentSourceResponseSchema)
+
+export const linkDeploymentSource = (
+  agentId: string,
+  body: { repo: string; path: string; production_ref?: string; deploy_now?: boolean },
+) =>
+  apiFetch(
+    `/v3/agents/${agentId}/deployment-source`,
+    { method: 'POST', body: JSON.stringify(body) },
+    S.LinkResultSchema,
+  )
+
+export const unlinkDeploymentSource = (agentId: string) =>
+  apiFetch<void>(`/v3/agents/${agentId}/deployment-source`, { method: 'DELETE' })
+
 // Slack — an agent's BYO Slack app (1 app ⟷ 1 agent ⟷ 1 workspace). Two-step
 // connect: START (manifest) returns the app manifest + guided steps; COMPLETE
 // posts the three pasted values back. No secrets are ever returned.
