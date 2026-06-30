@@ -61,7 +61,7 @@ Inline deploys finish synchronously (`state: "ready"` with a `revision_id`). Asy
 
 ### Staging vs activating
 
-By default a ready deploy is **activated** — its revision becomes what new sessions use. Pass **`activate: false`** to **stage** instead: the revision is created but not made active, so you can test it (start a session against it) and [promote](#roll-back-promote) when ready.
+By default a ready deploy is **activated** — its revision becomes what new sessions use. Pass **`activate: false`** to **stage** instead: the revision is created but not made active, so you can test it (start a session against it) and [promote](#roll-back-and-promote) when ready.
 
 ```ts
 // stage a revision without going live
@@ -108,7 +108,7 @@ oc agent link acme/agents --path issue-fixer --branch main
 Linking deploys the current `main` HEAD right away (`deploy_now: false` / `--no-deploy` to skip). Then every push that touches the directory deploys:
 
 - push to **`main`** (production) → a new revision, **activated**.
-- push to **another branch** → a revision **staged** (test, then [promote](#roll-back-promote)).
+- push to **another branch** → a revision **staged** (test, then [promote](#roll-back-and-promote)).
 - a push not touching the directory → **no-op**; identical directory content → **skipped** (no churn).
 
 OpenComputer posts a **commit status** (queued → ready / failed) so a deploy's result shows in GitHub.
@@ -127,7 +127,7 @@ oc agent deploy --no-activate         # stage instead of activate
 
 Same deploy as a push — handy for CI that isn't GitHub, or trying a change before you commit.
 
-## Roll back / promote
+## Roll back and promote
 
 Rollback and promote are the **same primitive** — set the active revision. Re-activate any earlier revision (rollback) or a staged one (promote):
 
