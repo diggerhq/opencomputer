@@ -29,6 +29,8 @@ export type {
   BrowserProfile,
   Agent,
   AgentRevision,
+  AgentRevisionDetail,
+  SkillManifestEntry,
   AgentDeploy,
   Session,
   SessionEvent,
@@ -447,6 +449,27 @@ export const activateRevision = (agentId: string, rev: string | number) =>
     `/v3/agents/${agentId}/revisions/${rev}/activate`,
     { method: 'POST', body: JSON.stringify({}) },
     S.ActivateRevisionSchema,
+  )
+
+// A single revision + its skill manifest (file list, no bytes).
+export const getAgentRevision = (agentId: string, rev: string | number) =>
+  apiFetch(`/v3/agents/${agentId}/revisions/${rev}`, {}, S.AgentRevisionDetailSchema)
+
+// Deploy a revision (create + activate by default). The body is the FULL behavior
+// payload — prompt is required, so callers pass the agent's current prompt/model when
+// only the skills change. `skills` is the complete set (a deploy replaces, not merges).
+export const deployAgentRevision = (
+  agentId: string,
+  body: {
+    prompt: string
+    model?: string
+    skills?: { path: string; content: string; mode?: number }[]
+  },
+) =>
+  apiFetch(
+    `/v3/agents/${agentId}/revisions`,
+    { method: 'POST', body: JSON.stringify(body) },
+    S.DeployResultSchema,
   )
 
 // Slack — an agent's BYO Slack app (1 app ⟷ 1 agent ⟷ 1 workspace). Two-step

@@ -28,6 +28,7 @@ import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SlackConnect } from '@/components/slack-connect'
+import { AgentSkills } from '@/components/agent-skills'
 import { AgentRevisions } from '@/components/agent-revisions'
 import { getRuntime } from '@/lib/runtimes'
 
@@ -407,6 +408,9 @@ export default function AgentDetail() {
 
           {/* Slack — kept above Sessions so it's visible without scrolling */}
           <SlackConnect agentId={agent.id} agentName={agent.name} />
+
+          {/* Skills — current files + upload-a-zip to deploy a new revision */}
+          <AgentSkills agentId={agent.id} agent={agent} />
 
           {/* Revisions — deploy history + active pointer + rollback */}
           <AgentRevisions agentId={agent.id} />

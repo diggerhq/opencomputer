@@ -331,6 +331,11 @@ export const AgentSchema = z.object({
   runtime: z.string(),
   credential_id: z.string().nullable().optional(),
   revision: z.number().optional(),
+  // Agent Revisions (design 009): the active production pointer + a summary of it.
+  active_revision_id: z.string().nullish(),
+  active_revision: z
+    .object({ id: z.string(), number: z.number(), digest: z.string() })
+    .nullish(),
   limits: record.nullish(),
   created_at: z.string(),
 })
@@ -368,6 +373,33 @@ export const AgentDeployListSchema = z.object({
 // The pointer-move response from POST …/revisions/:rev/activate.
 export const ActivateRevisionSchema = z.object({
   active_revision_id: z.string(),
+})
+// A skill file in a bundle manifest (no bytes — path/mode/size/sha256).
+export const SkillManifestEntrySchema = z.object({
+  path: z.string(),
+  mode: z.number(),
+  size: z.number(),
+  sha256: z.string(),
+})
+// A single revision with its skill manifest (GET …/revisions/:rev).
+export const AgentRevisionDetailSchema = z.object({
+  id: z.string(),
+  number: z.number(),
+  digest: z.string(),
+  prompt: z.string().nullish(),
+  model: z.string().nullish(),
+  skill_bundle_digest: z.string().nullish(),
+  created_at: z.string(),
+  files: z.array(SkillManifestEntrySchema).default([]),
+})
+// The deploy-shaped response from POST …/revisions.
+export const DeployResultSchema = z.object({
+  deploy_id: z.string(),
+  state: z.string(),
+  result: z.string().nullish(),
+  revision: z
+    .object({ id: z.string(), number: z.number(), digest: z.string(), active: z.boolean() })
+    .nullish(),
 })
 
 // Credentials — the reusable model-provider keys an agent/session resolves. The
@@ -500,6 +532,8 @@ export const DeliverySchema = z.object({
 
 export type Agent = z.infer<typeof AgentSchema>
 export type AgentRevision = z.infer<typeof AgentRevisionSchema>
+export type AgentRevisionDetail = z.infer<typeof AgentRevisionDetailSchema>
+export type SkillManifestEntry = z.infer<typeof SkillManifestEntrySchema>
 export type AgentDeploy = z.infer<typeof AgentDeploySchema>
 export type Credential = z.infer<typeof CredentialSchema>
 export type SlackConnection = z.infer<typeof SlackConnectionSchema>
