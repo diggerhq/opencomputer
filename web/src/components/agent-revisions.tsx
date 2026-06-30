@@ -95,8 +95,9 @@ export function AgentRevisions({ agentId }: { agentId: string }) {
           <StatusBadge status="active" />
         ) : (
           <Button
-            variant="outline"
-            size="sm"
+            variant="ghost"
+            size="xs"
+            className="text-muted-foreground hover:text-foreground"
             disabled={activateMutation.isPending}
             onClick={() => setPending(r)}
           >
