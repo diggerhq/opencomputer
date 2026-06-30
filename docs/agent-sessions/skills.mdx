@@ -39,7 +39,7 @@ Skills are part of the agent's [revision](/agent-sessions/revisions): they're ve
 
 ## Add skills
 
-Three ways — each produces a new revision:
+Three ways. Each is a **[deploy](/agent-sessions/revisions)** that creates a new immutable **revision** (your new skills + the agent's current prompt & model) and activates it — so changing skills is **versioned and instantly [reversible](/agent-sessions/revisions#roll-back-promote)**, never a destructive edit.
 
 <Tabs>
 <Tab title="Upload a .zip">
@@ -69,7 +69,7 @@ Content-Type: application/zip
 
 </CodeGroup>
 
-In the [dashboard](https://app.opencomputer.dev), the agent's **Skills** panel uploads the same `.zip`. This keeps the agent's current prompt + model and replaces its skills.
+In the [dashboard](https://app.opencomputer.dev), the agent's **Skills** panel uploads the same `.zip`. This is a **deploy**: it creates a new **revision** (keeping the current prompt + model, replacing the skills) and activates it. The previous skills aren't lost — **roll back** anytime by re-activating the earlier revision (one click in the Revisions panel, or `oc agent rollback <n>`).
 </Tab>
 
 <Tab title="Inline in a deploy">
