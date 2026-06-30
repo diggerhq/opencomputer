@@ -27,6 +27,10 @@ function canDeleteBrowser(browser: BrowserSession) {
   return browser.status === 'active' && !browser.deleted_at
 }
 
+function canOpenLiveView(browser: BrowserSession) {
+  return browser.status === 'active' && !browser.deleted_at && !!browser.live_view_url
+}
+
 function browserMode(browser: BrowserSession) {
   return browser.headless ? 'Headless' : 'Headful'
 }
@@ -142,7 +146,7 @@ export default function Browsers() {
       align: 'right',
       cell: (browser) => (
         <div className="flex h-8 items-center justify-end gap-1">
-          {browser.live_view_url ? (
+          {canOpenLiveView(browser) ? (
             <Button
               asChild
               variant="ghost"
@@ -151,7 +155,7 @@ export default function Browsers() {
               aria-label="Open live view"
             >
               <a
-                href={browser.live_view_url}
+                href={browser.live_view_url ?? undefined}
                 target="_blank"
                 rel="noopener noreferrer"
               >

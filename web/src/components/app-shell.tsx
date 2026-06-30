@@ -78,7 +78,7 @@ const NAV: NavGroup[] = [
     items: [
       {
         to: '/browsers',
-        label: 'Browser sessions',
+        label: 'Browsers',
         icon: Monitor,
         preview: true,
       },
