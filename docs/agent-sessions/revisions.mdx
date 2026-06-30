@@ -26,7 +26,6 @@ const deploy = await oc.agents.deploys.create("agt_123", {
     model: "anthropic/claude-opus-4-8",
     skills: [{ path: "triage/SKILL.md", content: "---\nname: triage\ndescription: Triage a PR\n---\nSummarize the diff…" }],
   },
-  activationPolicy: "auto",
 });
 ```
 
@@ -41,8 +40,7 @@ Content-Type: application/json
     "prompt": "You triage pull requests.",
     "model": "anthropic/claude-opus-4-8",
     "skills": [{ "path": "triage/SKILL.md", "content": "---\nname: triage\ndescription: Triage a PR\n---\nSummarize the diff…" }]
-  },
-  "activation_policy": "auto"
+  }
 }
 ```
 
@@ -56,21 +54,21 @@ oc agent deploy
 The response is a **deploy** object:
 
 ```json
-{ "deploy": { "id": "dep_…", "state": "ready", "revision_id": "rev_…", "activation_policy": "auto" } }
+{ "deploy": { "id": "dep_…", "state": "ready", "revision_id": "rev_…", "active": true } }
 ```
 
 Inline deploys finish synchronously (`state: "ready"` with a `revision_id`). Asynchronous deploys (GitHub) return `state: "queued"` — poll `GET /agents/:id/deploys/:deploy_id` or watch [events](/agent-sessions/events).
 
-### Activation
+### Staging vs activating
 
-`activation_policy` decides what happens once a deploy is ready:
+By default a ready deploy is **activated** — its revision becomes what new sessions use. Pass **`activate: false`** to **stage** instead: the revision is created but not made active, so you can test it (start a session against it) and [promote](#roll-back-promote) when ready.
 
-| Value | Effect |
-| --- | --- |
-| `auto` *(default)* | the new revision becomes **active** immediately |
-| `manual` | the revision is **staged** — created but not active; [promote](#roll-back-promote) it later |
+```ts
+// stage a revision without going live
+await oc.agents.deploys.create("agt_123", { input: { type: "inline", prompt: "…" }, activate: false });
+```
 
-Staging lets you test before going live: deploy with `manual`, start a session against the staged revision, then promote it. (`auto_after_checks` is reserved for an upcoming eval gate.)
+For [repo deploys](#deploy-from-a-repo) the **branch decides**: pushes to the production branch activate, other branches stage — so you rarely set `activate` by hand.
 
 <Tip>Editing `prompt`/`model` via [`PATCH /agents/:id`](/agent-sessions/agents) also deploys a revision — a shorthand for small edits.</Tip>
 
@@ -124,7 +122,7 @@ No repo needed — the CLI bundles a local agent directory and deploys it:
 ```bash CLI
 oc agent deploy                       # deploy ./ (the agent named in agent.toml)
 oc agent deploy ./agents/issue-fixer  # a specific directory
-oc agent deploy --activation-policy manual   # stage instead of activate
+oc agent deploy --no-activate         # stage instead of activate
 ```
 
 Same deploy as a push — handy for CI that isn't GitHub, or trying a change before you commit.
