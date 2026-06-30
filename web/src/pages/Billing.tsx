@@ -30,10 +30,10 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { cn } from '@/lib/utils'
 
-type Tab = 'sandboxes' | 'invoices'
+type Tab = 'usage' | 'invoices'
 
 export default function Billing() {
-  const [tab, setTab] = useState<Tab>('sandboxes')
+  const [tab, setTab] = useState<Tab>('usage')
 
   return (
     <div>
@@ -43,7 +43,7 @@ export default function Billing() {
       />
 
       <div className="mb-6 flex gap-1 border-b">
-        {(['sandboxes', 'invoices'] as Tab[]).map((t) => (
+        {(['usage', 'invoices'] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -59,7 +59,7 @@ export default function Billing() {
         ))}
       </div>
 
-      {tab === 'sandboxes' ? <PlanTab /> : <InvoicesTab />}
+      {tab === 'usage' ? <PlanTab /> : <InvoicesTab />}
     </div>
   )
 }
