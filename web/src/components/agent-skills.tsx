@@ -61,9 +61,20 @@ export function AgentSkills({ agentId }: { agentId: string }) {
       </PanelHeader>
       <PanelContent className="space-y-3">
         {!isLoading && skills.length === 0 ? (
-          <p className="text-muted-foreground text-xs">
-            No skills yet — upload a .zip of skill folders (each a folder with a SKILL.md).
-          </p>
+          <div className="flex items-center justify-between gap-6 rounded-md border border-dashed px-4 py-3">
+            <p className="text-muted-foreground text-xs">
+              No skills yet. A skill is a folder with a SKILL.md — upload a .zip
+              like this:
+            </p>
+            <pre className="text-muted-foreground/70 shrink-0 text-left font-mono text-xs leading-snug">
+{`skills/
+├─ triage/
+│  └─ SKILL.md
+└─ pr-review/
+   ├─ SKILL.md
+   └─ run.sh`}
+            </pre>
+          </div>
         ) : (
           <ul className="divide-border divide-y">
             {skills.map((s) => (
