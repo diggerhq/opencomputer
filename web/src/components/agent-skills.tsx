@@ -63,8 +63,8 @@ export function AgentSkills({ agentId }: { agentId: string }) {
                 <FileArchive className="text-muted-foreground size-5" />
                 No skills yet
               </div>
-              <p className="text-muted-foreground max-w-xs text-xs">
-                A skill is a folder with a SKILL.md. Upload a .zip shaped like the example.
+              <p className="text-muted-foreground text-xs">
+                A skill is a folder with a SKILL.md — upload a .zip like this:
               </p>
             </div>
             <pre className="text-muted-foreground/70 shrink-0 text-left font-mono text-xs leading-relaxed">
