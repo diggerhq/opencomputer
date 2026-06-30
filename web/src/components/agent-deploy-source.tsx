@@ -35,10 +35,12 @@ const TONE: Record<'ok' | 'warn' | 'err', string> = {
 }
 
 /**
- * Deploy-from-a-repo panel (admin) — install the OpenComputer GitHub App, pick a repo it can reach,
- * choose a directory + branch, and a push then deploys. Mirrors the Vercel/Fly flow: not-installed →
- * install; installed → pick from the App's repos (+ "Configure" to add more); connected → status.
- * The OC App here is operator config (deployments), distinct from BYO product apps.
+ * Source panel (admin) — connect a GitHub repo as the agent's source: install the OpenComputer
+ * GitHub App, pick a repo it can reach, choose a directory + branch. Pushes then create new
+ * revisions; "Update" pulls the production-branch HEAD into a revision on demand. Vercel/Fly-style:
+ * not-installed → install; installed → pick from the App's repos (+ "Configure" to add more);
+ * connected → status + Update + Disconnect. The OC App here is operator config, distinct from BYO
+ * product apps. (User-facing language is revisions/source; "deployment" stays internal.)
  */
 export function AgentDeploySource({ agentId }: { agentId: string }) {
   const queryClient = useQueryClient()
@@ -72,9 +74,9 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
     onSuccess: (r) => {
       invalidate()
       if (r.deploy_error) {
-        notifyError(`Repo connected, but the first deploy couldn't run (${r.deploy_error.message}).`, new Error(r.deploy_error.type))
+        notifyError(`Repo connected, but the first revision couldn't be created (${r.deploy_error.message}).`, new Error(r.deploy_error.type))
       } else {
-        notifySuccess('Repo connected — deploying the production branch.')
+        notifySuccess('Repo connected — creating the first revision.')
       }
     },
     onError: (e) => notifyError("Couldn't connect the repo.", e),
@@ -91,9 +93,9 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
     mutationFn: () => deployFromGithub(agentId),
     onSuccess: () => {
       invalidate()
-      notifySuccess('Deploying the production branch — watch the deployments tab.')
+      notifySuccess('Updating — creating a revision from the production branch.')
     },
-    onError: (e) => notifyError("Couldn't start the deploy.", e),
+    onError: (e) => notifyError("Couldn't update from the repo.", e),
   })
 
   const pickRepo = (fullName: string) => {
@@ -107,8 +109,8 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
   return (
     <Panel className="overflow-hidden">
       <PanelHeader>
-        <PanelTitle>Deploy from a repo</PanelTitle>
-        <span className="text-muted-foreground text-xs">Push to a branch to deploy this agent.</span>
+        <PanelTitle>Source</PanelTitle>
+        <span className="text-muted-foreground text-xs">Connect a GitHub repo — pushes create new revisions.</span>
       </PanelHeader>
       <PanelContent className="space-y-4">
         {srcLoading || appLoading ? (
@@ -140,10 +142,10 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
                     className="text-muted-foreground hover:text-foreground"
                     disabled={deployNow.isPending}
                     onClick={() => deployNow.mutate()}
-                    title="Deploy the production branch's current HEAD now"
+                    title="Update: create a revision from the production branch's current HEAD"
                   >
                     <Rocket className="size-4" />
-                    {deployNow.isPending ? 'Deploying…' : 'Deploy now'}
+                    {deployNow.isPending ? 'Updating…' : 'Update'}
                   </Button>
                 ) : null}
                 <Button
@@ -160,8 +162,8 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
             </div>
             {st.tone === 'ok' ? (
               <p className="text-muted-foreground text-xs">
-                Pushes to <span className="font-mono">{source.production_ref}</span> deploy and activate;
-                other branches deploy a staged revision.
+                Pushes to <span className="font-mono">{source.production_ref}</span> create + activate a
+                revision; other branches create a staged revision.
               </p>
             ) : (
               <p className="text-muted-foreground text-xs">
@@ -180,7 +182,7 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
           /* ── App not installed ── */
           <div className="flex items-center justify-between gap-6 rounded-md border border-dashed px-5 py-6">
             <div className="space-y-1.5">
-              <div className="text-foreground text-sm font-medium">Connect GitHub to deploy on push</div>
+              <div className="text-foreground text-sm font-medium">Connect a GitHub repository</div>
               <p className="text-muted-foreground text-xs">
                 Install the OpenComputer GitHub App on the repos that hold your agent directories.
               </p>
@@ -231,7 +233,7 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
                 onClick={() => link.mutate()}
               >
                 <Plug className="size-4" />
-                {link.isPending ? 'Connecting…' : 'Connect & deploy'}
+                {link.isPending ? 'Connecting…' : 'Connect'}
               </Button>
             </div>
           </div>

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, MessagesSquare, Send, GitBranch, Rocket } from 'lucide-react'
+import { ArrowLeft, MessagesSquare, Send, GitBranch } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   getAgent,
@@ -10,10 +10,9 @@ import {
   createSession,
   getCredentials,
   createCredential,
-  getAgentDeploys,
+  getAgentRevisions,
   getDeploymentSource,
   type Agent,
-  type AgentDeploy,
 } from '@/api/client'
 import type { Session } from '@/api/schemas'
 import {
@@ -41,14 +40,14 @@ const ORG_DEFAULT = '__default__' // no pinned credential → org default resolv
 const NEW_CRED = '__new__' // create one inline
 const MANAGED = 'managed' // run via OpenComputer, no BYO key (token-billing §6.6)
 
-type Tab = 'overview' | 'deployments' | 'sessions'
+type Tab = 'overview' | 'revisions' | 'sessions'
 
 export default function AgentDetail() {
   const { agentId = '', tab } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const active: Tab =
-    tab === 'deployments' ? 'deployments' : tab === 'sessions' ? 'sessions' : 'overview'
+    tab === 'revisions' ? 'revisions' : tab === 'sessions' ? 'sessions' : 'overview'
 
   const {
     data: agent,
@@ -259,7 +258,7 @@ export default function AgentDetail() {
         </div>
         <nav className="-mb-px flex gap-1">
           <TabLink to={base} label="Overview" current={active === 'overview'} />
-          <TabLink to={`${base}/deployments`} label="Deployments" current={active === 'deployments'} />
+          <TabLink to={`${base}/revisions`} label="Revisions" current={active === 'revisions'} />
           <TabLink to={`${base}/sessions`} label="Sessions" current={active === 'sessions'} />
         </nav>
       </div>
@@ -289,9 +288,9 @@ export default function AgentDetail() {
                             </span>
                           </p>
                           <p className="text-muted-foreground">
-                            The repo is the source of truth. Edit there and push; or{' '}
-                            <Link className="underline underline-offset-4" to={`${base}/deployments`}>
-                              manage deployments
+                            The repo is the source of truth. Edit there and push, or{' '}
+                            <Link className="underline underline-offset-4" to={`${base}/revisions`}>
+                              browse revisions
                             </Link>
                             .
                           </p>
@@ -355,12 +354,12 @@ export default function AgentDetail() {
                 </PanelContent>
               </Panel>
 
-              {/* Deploy from GitHub + Skills */}
+              {/* Source (GitHub) + Skills */}
               <AgentDeploySource agentId={agent.id} />
               <AgentSkills agentId={agent.id} />
 
               {/* Recent activity — brief, linking to the full tabs */}
-              <RecentDeploys agentId={agent.id} base={base} />
+              <RecentRevisions agentId={agent.id} base={base} />
               <RecentSessions
                 sessions={sessions}
                 loading={loadingSessions}
@@ -461,9 +460,8 @@ export default function AgentDetail() {
           </div>
         )}
 
-        {active === 'deployments' && (
+        {active === 'revisions' && (
           <div className="space-y-6">
-            <DeployHistory agentId={agent.id} />
             <AgentRevisions agentId={agent.id} />
           </div>
         )}
@@ -631,49 +629,42 @@ function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)}d`
 }
 
-const deployVia = (d: AgentDeploy) =>
-  (d.source && typeof d.source.via === 'string' && d.source.via) || 'api'
-const deploySha = (d: AgentDeploy) => {
-  const s = d.source && typeof d.source.git_sha === 'string' ? d.source.git_sha : null
-  return s ? s.slice(0, 7) : null
-}
-
-// Compact "Recent deployments" card for the Overview dashboard.
-function RecentDeploys({ agentId, base }: { agentId: string; base: string }) {
-  const { data: deploys = [], isLoading } = useQuery({
-    queryKey: ['agent-deploys', agentId],
-    queryFn: () => getAgentDeploys(agentId),
+// Compact "Recent revisions" card for the Overview dashboard.
+function RecentRevisions({ agentId, base }: { agentId: string; base: string }) {
+  const { data: revisions = [], isLoading } = useQuery({
+    queryKey: ['agent-revisions', agentId],
+    queryFn: () => getAgentRevisions(agentId),
   })
-  const recent = deploys.slice(0, 3)
+  const recent = revisions.slice(0, 3)
   return (
     <Panel className="flex flex-col">
       <PanelHeader>
-        <PanelTitle>Recent deployments</PanelTitle>
+        <PanelTitle>Recent revisions</PanelTitle>
       </PanelHeader>
       <PanelContent className="flex-1 space-y-2">
         {isLoading ? (
           <p className="text-muted-foreground text-xs">Loading…</p>
         ) : recent.length === 0 ? (
-          <p className="text-muted-foreground text-xs">No deployments yet.</p>
+          <p className="text-muted-foreground text-xs">No revisions yet.</p>
         ) : (
-          recent.map((d) => (
-            <div key={d.id} className="flex items-center gap-2 text-xs">
-              <StatusBadge status={d.state} />
-              <span className="text-muted-foreground capitalize">{deployVia(d)}</span>
-              {deploySha(d) ? (
-                <span className="text-muted-foreground font-mono">{deploySha(d)}</span>
-              ) : null}
-              <span className="text-muted-foreground ml-auto">{timeAgo(d.created_at)}</span>
+          recent.map((r) => (
+            <div key={r.id} className="flex items-center gap-2 text-xs">
+              <span className="text-foreground font-mono">#{r.number}</span>
+              {r.active ? <StatusBadge status="active" /> : null}
+              <span className="text-muted-foreground truncate font-mono">
+                {r.digest.slice(0, 19)}
+              </span>
+              <span className="text-muted-foreground ml-auto">{timeAgo(r.created_at)}</span>
             </div>
           ))
         )}
       </PanelContent>
       <PanelFooter className="justify-end">
         <Link
-          to={`${base}/deployments`}
+          to={`${base}/revisions`}
           className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
         >
-          View all deployments →
+          View all revisions →
         </Link>
       </PanelFooter>
     </Panel>
@@ -730,66 +721,6 @@ function RecentSessions({
           </Link>
         </Button>
       </PanelFooter>
-    </Panel>
-  )
-}
-
-// Full deploy-history table for the Deployments tab.
-function DeployHistory({ agentId }: { agentId: string }) {
-  const { data: deploys = [], isLoading } = useQuery({
-    queryKey: ['agent-deploys', agentId],
-    queryFn: () => getAgentDeploys(agentId),
-  })
-  const columns: Column<AgentDeploy>[] = [
-    { key: 'state', header: 'State', cell: (d) => <StatusBadge status={d.state} /> },
-    {
-      key: 'via',
-      header: 'Source',
-      cell: (d) => <span className="text-muted-foreground text-xs capitalize">{deployVia(d)}</span>,
-    },
-    {
-      key: 'sha',
-      header: 'Commit',
-      cell: (d) => (
-        <span className="text-muted-foreground font-mono text-xs">{deploySha(d) ?? '—'}</span>
-      ),
-    },
-    {
-      key: 'result',
-      header: 'Result',
-      cell: (d) => <span className="text-muted-foreground text-xs">{d.result ?? '—'}</span>,
-    },
-    {
-      key: 'created',
-      header: 'When',
-      cell: (d) => (
-        <span className="text-muted-foreground font-mono text-xs">
-          {new Date(d.created_at).toLocaleString()}
-        </span>
-      ),
-    },
-  ]
-  return (
-    <Panel className="overflow-hidden">
-      <PanelHeader>
-        <PanelTitle>Deployments</PanelTitle>
-        <span className="text-muted-foreground text-xs">
-          Every deploy (inline or from GitHub) and its outcome.
-        </span>
-      </PanelHeader>
-      <ResourceTable
-        columns={columns}
-        rows={deploys}
-        rowKey={(d) => d.id}
-        loading={isLoading}
-        empty={
-          <EmptyState
-            icon={Rocket}
-            title="No deployments yet"
-            description="Edit the behavior, deploy a directory, or connect a repo to create one."
-          />
-        }
-      />
     </Panel>
   )
 }
