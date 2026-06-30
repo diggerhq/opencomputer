@@ -474,6 +474,51 @@ const agents = [
   },
 ]
 
+// ── Deploy from GitHub (admin) ───────────────────────────────────────────────
+// The AgentDeploySource panel renders one of three states off two endpoints
+// (GET /v3/github/deploy-app + GET …/deployment-source). The backend can't
+// produce these locally yet (no OC-App install record), so flip DEPLOY_PREVIEW
+// to eyeball each state with no backend:
+//   'not_installed' → the "Install GitHub App" CTA
+//   'installed'     → the repo picker (App installed, this agent not yet linked)
+//   'connected'     → a linked agent showing live status + Disconnect
+const DEPLOY_PREVIEW = 'installed' as 'not_installed' | 'installed' | 'connected'
+
+const deployAppInstalled = {
+  installed: true,
+  install_url: 'https://github.com/apps/opencomputerdev/installations/new',
+  configure_url:
+    'https://github.com/apps/opencomputerdev/installations/select_target',
+  account: 'acme',
+  repository_selection: 'selected' as const,
+  repositories: [
+    { full_name: 'acme/agents', default_branch: 'main', private: true },
+    { full_name: 'acme/support-bot', default_branch: 'main', private: false },
+    { full_name: 'acme/infra', default_branch: 'production', private: true },
+  ],
+}
+const deployAppNotInstalled = {
+  installed: false,
+  install_url: 'https://github.com/apps/opencomputerdev/installations/new',
+  configure_url: null,
+  account: null,
+  repository_selection: null,
+  repositories: [],
+}
+const deployApp =
+  DEPLOY_PREVIEW === 'not_installed' ? deployAppNotInstalled : deployAppInstalled
+
+// The linked source for the 'connected' preview (echoed for any agent id).
+const deploymentSource = {
+  agent_id: 'agt_3kf9xz',
+  repo_id: 'repo_acme_agents',
+  path: 'agents/pr-reviewer',
+  production_ref: 'main',
+  status: 'active',
+  latest_seen_sha: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
+  active_deployed_sha: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
+}
+
 // A connected Slack app for the first agent (the AgentDetail Slack panel).
 const slackConnection = {
   id: 'sla_5p6q7r',
@@ -711,6 +756,10 @@ const sandboxWebhookDeliveries = [
 
 type Handler = () => unknown
 
+// A handler may return NOT_FOUND to mimic a 404 (mockFetch throws, like a real
+// missing resource) — used for an agent with no deployment-source link.
+const NOT_FOUND = Symbol('not_found')
+
 // Ordered most-specific first. Matched against the path (without /api/dashboard).
 const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/me$/, () => me],
@@ -737,6 +786,11 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/agents$/, () => []],
   // Durable Agent Sessions — lists return the { data: [...] } envelope.
   [/^\/v3\/agents\/[^/]+\/slack$/, () => slackConnection],
+  [/^\/v3\/github\/deploy-app$/, () => deployApp],
+  [
+    /^\/v3\/agents\/[^/]+\/deployment-source$/,
+    () => (DEPLOY_PREVIEW === 'connected' ? { source: deploymentSource } : NOT_FOUND),
+  ],
   [/^\/v3\/agents\/[^/]+$/, () => agents[0]],
   [/^\/v3\/agents$/, () => ({ data: agents })],
   [/^\/v3\/credentials$/, () => ({ data: credentials })],
@@ -775,7 +829,11 @@ export function mockFetch<T>(path: string, options: RequestInit = {}): T {
     return {} as T
   }
   for (const [re, handler] of ROUTES) {
-    if (re.test(path)) return handler() as T
+    if (re.test(path)) {
+      const out = handler()
+      if (out === NOT_FOUND) throw new Error('Not found') // mimic a 404
+      return out as T
+    }
   }
   // Unknown GET: empty list is the safe default for the list-heavy screens.
   return [] as T
