@@ -4,7 +4,7 @@ title: "Agents"
 description: "Reusable agent configuration"
 ---
 
-An **agent** is reusable configuration: `name`, `prompt`, `model`, [`runtime`](/agent-sessions/runtimes), and optional [**skills**](/agent-sessions/revisions). Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like. The behavior (`prompt`/`model`/`skills`) is versioned as [**revisions**](/agent-sessions/revisions): every [deploy](/agent-sessions/revisions) — from the API, the CLI, or a [GitHub push](/agent-sessions/revisions#deploy-from-a-repo) — appends a new one, and you can roll back instantly.
+An **agent** is reusable configuration: `name`, `prompt`, `model`, [`runtime`](/agent-sessions/runtimes), and optional [**skills**](/agent-sessions/revisions). Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like. The behavior (`prompt`/`model`/`skills`) is versioned as [**revisions**](/agent-sessions/revisions): every [deployment](/agent-sessions/revisions) — from the API, the CLI, or a [GitHub push](/agent-sessions/revisions#deploy-from-a-repo) — appends a new one, and you can roll back instantly.
 
 <Note>You can create and edit agents in the [dashboard](https://app.opencomputer.dev) too — the create dialog also lets you pick or add a [credential](/agent-sessions/credentials) inline.</Note>
 

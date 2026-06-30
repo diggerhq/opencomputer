@@ -1,10 +1,10 @@
 ---
 mode: "wide"
-title: "Deploys & revisions"
+title: "Deployments & revisions"
 description: "Deploy agent behavior, version it as immutable revisions, roll back instantly"
 ---
 
-From a deploy's point of view, an agent **is a small directory**:
+What you deploy is a small directory:
 
 ```
 my-agent/
@@ -14,22 +14,35 @@ my-agent/
 └─ runtime/        # optional — a custom runtime image (coming soon)
 ```
 
-`agent.toml` + `prompt.md` are all an agent needs; `skills/` and `runtime/` are additive — add them only when you do. A **deploy** packages this directory into an immutable **revision**; the **active revision** is what new [sessions](/agent-sessions/sessions) use, and you roll back by re-activating an earlier one.
+`agent.toml` + `prompt.md` are all an agent needs; `skills/` and `runtime/` are additive — add them only when you do. A **deployment** packages this directory into an immutable [**revision**](#revisions); the **active revision** is what new [sessions](/agent-sessions/sessions) use, and you roll back by re-activating an earlier one.
 
 Deploy three ways — all the same underneath: the **API/SDK** (send it inline), the **`oc` CLI** (bundle a local directory), or a [**repo push**](#deploy-from-a-repo).
 
-<Note>Revisions are **linear**: each explicit deploy appends a new revision (the number only goes up), like a deployment on Vercel/Fly. Rollback moves the **active pointer** back — it never rewrites history. In-flight sessions keep the revision they started on; only new sessions pick up a change.</Note>
+## Revisions
+
+A **revision** is an immutable snapshot of an agent's behavior — the `prompt`, `model`, and skills from one deployment, frozen and numbered. Each deployment appends a new one; the agent's **active revision** is the one new [sessions](/agent-sessions/sessions) run.
+
+Revisions are **linear** (the number only goes up, like a Vercel/Fly deployment) and never rewritten — [rolling back](#roll-back-and-promote) just moves the active pointer to an earlier one. In-flight sessions keep the revision they started on; only new sessions pick up a change.
+
+| Field | |
+|---|---|
+| `number` | Monotonic per agent (`1, 2, 3, …`). |
+| `prompt` / `model` | The behavior at deployment time. |
+| `skill_bundle_digest` | The skill files (a content-addressed bundle); `null` when there are no skills. |
+| `digest` | A content hash of the behavior (used for change detection). |
+
+The agent itself holds only **identity + bindings** (`name`, `runtime`, `credential`, `limits`) plus a pointer to the active revision; `prompt`/`model` are served from that revision.
 
 ## Deploy
 
-`POST /agents/:id/deploys` is the one command. `input.type: "inline"` sends behavior directly (API / CLI / dashboard); `input.type: "github"` deploys a linked repo — see [Deploy from a repo](#deploy-from-a-repo).
+`POST /agents/:id/deployments` is the one command. `input.type: "inline"` sends behavior directly (API / CLI / dashboard); `input.type: "github"` deploys a linked repo — see [Deploy from a repo](#deploy-from-a-repo).
 
 An inline payload is the **complete** behavior — omitted fields aren't inherited (`prompt` is required; omitted `skills` means *no skills*).
 
 <CodeGroup>
 
 ```ts TypeScript SDK
-const deploy = await oc.agents.deploys.create("agt_123", {
+const deployment = await oc.agents.deployments.create("agt_123", {
   input: {
     type: "inline",
     prompt: "You triage pull requests.",
@@ -40,7 +53,7 @@ const deploy = await oc.agents.deploys.create("agt_123", {
 ```
 
 ```http REST API
-POST https://api.opencomputer.dev/v3/agents/agt_123/deploys
+POST https://api.opencomputer.dev/v3/agents/agt_123/deployments
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
 
@@ -61,24 +74,24 @@ oc agent deploy
 
 </CodeGroup>
 
-The response is a **deploy** object:
+The response is a **deployment**:
 
 ```json
-{ "deploy": { "id": "dep_…", "state": "ready", "revision_id": "rev_…", "active": true } }
+{ "deployment": { "id": "dep_…", "state": "ready", "revision_id": "rev_…", "active": true } }
 ```
 
-Inline deploys finish synchronously (`state: "ready"` with a `revision_id`). Asynchronous deploys (GitHub) return `state: "queued"` — poll `GET /agents/:id/deploys/:deploy_id` or watch [events](/agent-sessions/events).
+Inline deployments finish synchronously (`state: "ready"` with a `revision_id`). Asynchronous deployments (GitHub) return `state: "queued"` — poll `GET /agents/:id/deployments/:deployment_id` or watch [events](/agent-sessions/events).
 
 ### Staging vs activating
 
-By default a ready deploy is **activated** — its revision becomes what new sessions use. Pass **`activate: false`** to **stage** instead: the revision is created but not made active, so you can test it (start a session against it) and [promote](#roll-back-and-promote) when ready.
+By default a ready deployment is **activated** — its revision becomes what new sessions use. Pass **`activate: false`** to **stage** instead: the revision is created but not made active, so you can test it (start a session against it) and [promote](#roll-back-and-promote) when ready.
 
 ```ts
 // stage a revision without going live
-await oc.agents.deploys.create("agt_123", { input: { type: "inline", prompt: "…" }, activate: false });
+await oc.agents.deployments.create("agt_123", { input: { type: "inline", prompt: "…" }, activate: false });
 ```
 
-For [repo deploys](#deploy-from-a-repo) the **branch decides**: pushes to the production branch activate, other branches stage — so you rarely set `activate` by hand.
+For [repo deployments](#deploy-from-a-repo) the **branch decides**: pushes to the production branch activate, other branches stage — so you rarely set `activate` by hand.
 
 <Tip>Editing `prompt`/`model` via [`PATCH /agents/:id`](/agent-sessions/agents) also deploys a revision — a shorthand for small edits.</Tip>
 
@@ -112,9 +125,9 @@ Linking deploys the current `main` HEAD right away (`deploy_now: false` / `--no-
 - push to **another branch** → a revision **staged** (test, then [promote](#roll-back-and-promote)).
 - a push not touching the directory → **no-op**; identical directory content → **skipped** (no churn).
 
-OpenComputer posts a **commit status** (queued → ready / failed) so a deploy's result shows in GitHub.
+OpenComputer posts a **commit status** (queued → ready / failed) so a deployment's result shows in GitHub.
 
-Your **GitHub token never reaches the agent's sandbox** — OpenComputer pulls only the linked directory, at the exact commit, in an isolated worker; a deploy can only target the directory you connected; no code runs at deploy time. (Same token model as [repos](/agent-sessions/repos).)
+Your **GitHub token never reaches the agent's sandbox** — OpenComputer pulls only the linked directory, at the exact commit, in an isolated worker; a deployment can only target the directory you connected; no code runs at deploy time. (Same token model as [repos](/agent-sessions/repos).)
 
 ## Deploy from your machine
 
@@ -126,7 +139,7 @@ oc agent deploy ./agents/issue-fixer  # a specific directory
 oc agent deploy --no-activate         # stage instead of activate
 ```
 
-Same deploy as a push — handy for CI that isn't GitHub, or trying a change before you commit.
+Same as a repo push — handy for CI that isn't GitHub, or trying a change before you commit.
 
 ## Roll back and promote
 
@@ -151,38 +164,27 @@ oc agent rollback 3
 
 Instant — no rebuild. Running sessions are unaffected; new sessions use the newly-active revision.
 
-## What's on a revision
-
-| Field | |
-|---|---|
-| `number` | Monotonic per agent (`1, 2, 3, …`). |
-| `prompt` / `model` | The behavior at deploy time. |
-| `skill_bundle_digest` | The skill files (a content-addressed bundle); `null` when there are no skills. |
-| `digest` | A content hash of the behavior (used for change detection). |
-
-The agent itself holds only **identity + bindings** (`name`, `runtime`, `credential`, `limits`) plus a pointer to the active revision; `prompt`/`model` are served from that revision.
-
 ## Inspect
 
 ```http REST API
-GET /v3/agents/agt_123/deploys             # deploy timeline (state, source, actor)
-GET /v3/agents/agt_123/deploys/dep_123     # one deploy (poll async deploys to ready|failed)
-GET /v3/agents/agt_123/revisions           # revision history (newest first; active flagged)
-GET /v3/agents/agt_123/revisions/5         # one revision + its skill file manifest
-GET /v3/agents/agt_123/activations         # active-pointer audit log
+GET /v3/agents/agt_123/deployments              # deployment history (state, source, actor)
+GET /v3/agents/agt_123/deployments/dep_123      # one deployment (poll async ones to ready|failed)
+GET /v3/agents/agt_123/revisions                # revision history (newest first; active flagged)
+GET /v3/agents/agt_123/revisions/5              # one revision + its skill file manifest
+GET /v3/agents/agt_123/activations              # active-pointer audit log
 ```
 
 `GET /agents/:id` also includes an `active_revision` summary (`id`, `number`, `digest`).
 
 ## Skills
 
-Skills — reusable instruction folders the agent loads when relevant — are **part of a revision**, so they're deployed, versioned, and rolled back exactly like the prompt and model. Include them inline in a deploy (`skills:[…]`, above), upload a `.zip` (`PUT …/skills` / `oc agent skills set`), or ship a `skills/` directory [from a repo](#deploy-from-a-repo).
+Skills — reusable instruction folders the agent loads when relevant — are **part of a revision**, so they're deployed, versioned, and rolled back exactly like the prompt and model. Include them inline in a deployment (`skills:[…]`, above), upload a `.zip` (`PUT …/skills` / `oc agent skills set`), or ship a `skills/` directory [from a repo](#deploy-from-a-repo).
 
 See the **[Skills](/agent-sessions/skills)** page for the `SKILL.md` format, how skills are invoked, all three ways to add them, and limits.
 
 ## Not yet supported
 
-These are **coming soon** — a deploy that includes them is rejected today:
+These are **coming soon** — a deployment that includes them is rejected today:
 - **MCP servers** (`mcp.json`)
 - **Custom runtimes** (a `runtime/` directory)
 - **Skills on `codex` agents** — skills are `claude`-runtime only for now

@@ -35,11 +35,11 @@ description: Triage an incoming pull request
 
 When a session starts, the agent's skills are **materialized into its runtime**. The model sees each skill's `name` + `description` and **invokes** one when the task matches, then follows its instructions (and can read its helper files). Skills don't run on their own — the agent uses them like tools.
 
-Skills are part of the agent's [revision](/agent-sessions/revisions): they're versioned, rolled back, and activated together with the prompt and model. Changing skills is a [deploy](/agent-sessions/revisions#deploy).
+Skills are part of the agent's [revision](/agent-sessions/revisions): they're versioned, rolled back, and activated together with the prompt and model. Changing skills is a [deployment](/agent-sessions/revisions#deploy).
 
 ## Add skills
 
-Three ways. Each is a **[deploy](/agent-sessions/revisions)** that creates a new immutable **revision** (your new skills + the agent's current prompt & model) and activates it — so changing skills is **versioned and instantly [reversible](/agent-sessions/revisions#roll-back-and-promote)**, never a destructive edit.
+Three ways. Each is a **[deployment](/agent-sessions/revisions)** that creates a new immutable **revision** (your new skills + the agent's current prompt & model) and activates it — so changing skills is **versioned and instantly [reversible](/agent-sessions/revisions#roll-back-and-promote)**, never a destructive edit.
 
 <Tabs>
 <Tab title="Upload a .zip">
@@ -69,14 +69,14 @@ Content-Type: application/zip
 
 </CodeGroup>
 
-In the [dashboard](https://app.opencomputer.dev), the agent's **Skills** panel uploads the same `.zip`. This is a **deploy**: it creates a new **revision** (keeping the current prompt + model, replacing the skills) and activates it. The previous skills aren't lost — **roll back** anytime by re-activating the earlier revision (one click in the Revisions panel, or `oc agent rollback <n>`).
+In the [dashboard](https://app.opencomputer.dev), the agent's **Skills** panel uploads the same `.zip`. This is a **deployment**: it creates a new **revision** (keeping the current prompt + model, replacing the skills) and activates it. The previous skills aren't lost — **roll back** anytime by re-activating the earlier revision (one click in the Revisions panel, or `oc agent rollback <n>`).
 </Tab>
 
-<Tab title="Inline in a deploy">
-Include `skills` in a [deploy](/agent-sessions/revisions#deploy) payload — the complete behavior in one call:
+<Tab title="Inline in a deployment">
+Include `skills` in a [deployment](/agent-sessions/revisions#deploy) payload — the complete behavior in one call:
 
 ```ts TypeScript SDK
-await oc.agents.deploys.create("agt_123", {
+await oc.agents.deployments.create("agt_123", {
   input: {
     type: "inline",
     prompt: "You triage pull requests.",
