@@ -54,6 +54,11 @@ export interface DashboardEnv {
   // unset the proxy 503s.
   SESSIONS_API_URL?: string;
   OC_ORG_TOKEN_SECRET?: string;
+  // Browser Sessions dashboard proxy. The browser API remains a separate
+  // Worker; this edge Worker only translates dashboard cookie auth into the
+  // internal service token plus org/user headers.
+  BROWSER_API_URL?: string;
+  BROWSER_API_SECRET?: string;
 }
 
 const SESSION_COOKIE = "oc_session";
@@ -854,6 +859,37 @@ async function proxyToV3(
   return fetch(target, init);
 }
 
+async function proxyToBrowserAPI(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+  upstreamPath: string,
+): Promise<Response> {
+  if (!env.BROWSER_API_SECRET) {
+    return json({ error: "browser sessions proxy unavailable: browser API secret not configured" }, 503);
+  }
+
+  const base = (env.BROWSER_API_URL ?? "https://browser.opencomputer.dev").replace(/\/+$/, "");
+  const url = new URL(req.url);
+  const target = `${base}${upstreamPath}${url.search}`;
+
+  const headers = new Headers();
+  headers.set("authorization", `Bearer ${env.BROWSER_API_SECRET}`);
+  headers.set("x-opencomputer-org-id", caller.orgID);
+  headers.set("x-opencomputer-user-id", caller.userID);
+  const ct = req.headers.get("content-type");
+  if (ct) headers.set("content-type", ct);
+  const accept = req.headers.get("accept");
+  if (accept) headers.set("accept", accept);
+
+  const init: RequestInit = { method: req.method, headers, redirect: "manual" };
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    init.body = await req.text();
+  }
+
+  return fetch(target, init);
+}
+
 // ── dispatch ─────────────────────────────────────────────────────────────
 
 export async function handleDashboard(
@@ -876,6 +912,16 @@ export async function handleDashboard(
   if (sub === "/v3" || sub.startsWith("/v3/")) {
     return proxyToV3(req, env, caller, sub);
   }
+
+  // ── Browser Sessions — proxy to the dedicated browser Worker ───────────
+  if (sub === "/browsers" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/browsers");
+  {
+    const m = sub.match(/^\/browsers\/([^/]+)$/);
+    if (m && (method === "GET" || method === "DELETE")) {
+      return proxyToBrowserAPI(req, env, caller, `/v1/browsers/${encodeURIComponent(m[1])}`);
+    }
+  }
+  if (sub === "/browser-profiles" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/profiles");
 
   // ── Sandbox lifecycle webhooks ─────────────────────────────────────────
   // Reuse the public /api/webhooks handler with the cookie-derived org, so the
