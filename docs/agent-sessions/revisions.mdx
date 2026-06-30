@@ -84,12 +84,21 @@ Inline deployments finish synchronously (`state: "ready"` with a `revision_id`).
 
 ### Staging vs activating
 
-By default a ready deployment is **activated** — its revision becomes what new sessions use. Pass **`activate: false`** to **stage** instead: the revision is created but not made active, so you can test it (start a session against it) and [promote](#roll-back-and-promote) when ready.
+By default a ready deployment is **activated** — its revision becomes what new sessions use. Pass **`activate: false`** to **stage** instead: the revision is created but not made active, so you can test it before it goes live.
 
 ```ts
-// stage a revision without going live
-await oc.agents.deployments.create("agt_123", { input: { type: "inline", prompt: "…" }, activate: false });
+// 1. stage a revision (not activated)
+const { deployment } = await oc.agents.deployments.create("agt_123", { input: { type: "inline", prompt: "…" }, activate: false });
+
+// 2. test it — a session pins the agent's ACTIVE revision by default; pass `revision`
+//    to run the staged one instead
+const session = await oc.sessions.create({ agent: "agt_123", revision: deployment.revision_id, input: "…" });
+
+// 3. happy? promote it
+await oc.agents.revisions.activate("agt_123", deployment.revision_id);
 ```
+
+So `revision` on [session create](/agent-sessions/sessions) is how you exercise any non-active revision (a staged one, or an old one) without touching what's live.
 
 For [repo deployments](#deploy-from-a-repo) the **branch decides**: pushes to the production branch activate, other branches stage — so you rarely set `activate` by hand.
 
@@ -97,7 +106,7 @@ For [repo deployments](#deploy-from-a-repo) the **branch decides**: pushes to th
 
 ## Deploy from a repo
 
-Keep the agent directory (above) in Git and **push to deploy**. Install the OpenComputer GitHub App on the repo (the agent page in the [dashboard](https://app.opencomputer.dev), or **Settings → GitHub**), then connect it to an agent:
+Keep the agent directory (above) in Git and **push to deploy**. [Install the OpenComputer GitHub App](/agent-sessions/repos#connecting-github) on the repo (or bring your own), then connect it to an agent:
 
 <CodeGroup>
 
