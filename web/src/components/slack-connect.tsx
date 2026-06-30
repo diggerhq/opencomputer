@@ -228,19 +228,19 @@ export function SlackConnect({
         ) : isErrorStatus ? (
           <div className="flex items-center justify-between gap-2">
             <span className="text-status-error text-sm">● Connection error</span>
-            <Button size="sm" onClick={() => beginConnect()}>
+            <Button variant="outline" size="sm" onClick={() => beginConnect()}>
               Reconnect
             </Button>
           </div>
         ) : isPending ? (
           <div className="space-y-2">
             <CompactSteps current={stepIndex} />
-            <Button size="sm" onClick={() => beginConnect()}>
+            <Button variant="outline" size="sm" onClick={() => beginConnect()}>
               Continue setup
             </Button>
           </div>
         ) : (
-          <Button size="sm" onClick={() => beginConnect()}>
+          <Button variant="outline" size="sm" onClick={() => beginConnect()}>
             Connect Slack
           </Button>
         )}

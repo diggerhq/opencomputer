@@ -376,6 +376,7 @@ export default function AgentDetail() {
                             </Button>
                             <Button
                               type="button"
+                              variant="outline"
                               size="sm"
                               disabled={
                                 !promptDirty ||
@@ -524,6 +525,7 @@ export default function AgentDetail() {
                       </Button>
                       <Button
                         type="button"
+                        variant="outline"
                         size="sm"
                         disabled={
                           !newCredKey.trim() || addCredMutation.isPending

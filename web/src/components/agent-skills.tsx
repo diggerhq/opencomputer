@@ -131,7 +131,7 @@ export function AgentSkills({ agentId }: { agentId: string }) {
                 {remove.isPending ? 'Removing…' : 'Remove all'}
               </Button>
             ) : null}
-            <Button size="sm" disabled={busy} onClick={() => inputRef.current?.click()}>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}>
               <Upload className="size-4" />
               {upload.isPending
                 ? 'Uploading…'
