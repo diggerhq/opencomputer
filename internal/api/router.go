@@ -71,6 +71,8 @@ type Server struct {
 	redisClient     *redis.Client                     // nil if Redis not configured (for health checks)
 	adminEvents     *AdminEventBus                    // real-time event bus for admin dashboard
 	ready           int32                             // atomic: 1 = ready, 0 = not ready
+	browserAPIURL   string                            // Browser Sessions service base URL
+	browserAPISecret string                           // internal token for dashboard Browser Sessions proxy
 
 	// Axiom log query (sandbox session logs read API).
 	// Empty token = endpoint returns 503.
@@ -162,6 +164,8 @@ type ServerOpts struct {
 	SandboxAPIProxy *proxy.SandboxAPIProxy             // nil except in server mode (proxies data-plane to workers)
 	StripeClient    *billing.StripeClient              // nil if Stripe not configured
 	RedisClient     *redis.Client                     // nil if Redis not configured (for health checks)
+	BrowserAPIURL   string
+	BrowserAPISecret string
 }
 
 // NewServer creates a new API server with all routes configured.
@@ -213,6 +217,8 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.sandboxAPIProxy = opts.SandboxAPIProxy
 		s.stripeClient = opts.StripeClient
 		s.redisClient = opts.RedisClient
+		s.browserAPIURL = opts.BrowserAPIURL
+		s.browserAPISecret = opts.BrowserAPISecret
 		s.adminEvents = NewAdminEventBus()
 
 		// Wire up readiness waiting so the proxy blocks until async creates finish
@@ -691,6 +697,13 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		dash.DELETE("/agents/:agentId/subscriptions/:feature", s.dashboardCancelAgentFeature)
 
 		dash.Any("/agents/*", s.dashboardAgentsProxy)
+
+		// Browser Sessions — proxied to the dedicated browser Worker with
+		// dashboard cookie auth translated into org/user service headers.
+		dash.GET("/browsers", s.dashboardListBrowsers)
+		dash.GET("/browsers/:browserId", s.dashboardGetBrowser)
+		dash.DELETE("/browsers/:browserId", s.dashboardDeleteBrowser)
+		dash.GET("/browser-profiles", s.dashboardListBrowserProfiles)
 
 		// Session detail + stats
 		dash.GET("/sessions/:sandboxId", s.dashboardGetSession)

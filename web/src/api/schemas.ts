@@ -239,6 +239,45 @@ export const SandboxUsageSchema = z.object({
   sandboxes: z.array(SandboxUsageRowSchema),
 })
 
+export const BrowserSessionSchema = z.object({
+  id: z.string(),
+  provider: z.string(),
+  provider_session_id: z.string(),
+  status: z.string(),
+  cdp_ws_url: z.string(),
+  webdriver_ws_url: z.string(),
+  live_view_url: z.string().nullable().optional(),
+  base_url: z.string().nullable().optional(),
+  headless: z.boolean().optional(),
+  stealth: z.boolean().optional(),
+  gpu: z.boolean().optional(),
+  timeout_seconds: z.number().optional(),
+  replay_id: z.string().optional(),
+  replay_view_url: z.string().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  deleted_at: z.string().nullable().optional(),
+})
+export const BrowserSessionListSchema = z.object({
+  browsers: z.array(BrowserSessionSchema),
+})
+
+export const BrowserProfileSchema = z.object({
+  id: z.string(),
+  provider: z.string(),
+  provider_profile_id: z.string(),
+  name: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string().optional(),
+  deleted_at: z.string().nullable().optional(),
+  provider_created_at: z.string().optional(),
+  provider_updated_at: z.string().optional(),
+  provider_last_used_at: z.string().optional(),
+})
+export const BrowserProfileListSchema = z.object({
+  profiles: z.array(BrowserProfileSchema),
+})
+
 // Sandbox lifecycle webhooks (Svix-backed, served by the edge /api/webhooks*).
 // Org-scoped; shapes mirror the edge's toWire()/listDeliveries() camelCase.
 export const SandboxWebhookSchema = z.object({
@@ -449,6 +488,8 @@ export type AutumnBilling = z.infer<typeof AutumnBillingSchema>
 export type StripeInvoice = z.infer<typeof StripeInvoiceSchema>
 export type SandboxUsageRow = z.infer<typeof SandboxUsageRowSchema>
 export type SandboxUsage = z.infer<typeof SandboxUsageSchema>
+export type BrowserSession = z.infer<typeof BrowserSessionSchema>
+export type BrowserProfile = z.infer<typeof BrowserProfileSchema>
 export type SandboxWebhook = z.infer<typeof SandboxWebhookSchema>
 export type SandboxWebhookDelivery = z.infer<
   typeof SandboxWebhookDeliverySchema

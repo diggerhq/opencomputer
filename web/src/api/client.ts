@@ -25,6 +25,8 @@ export type {
   StripeInvoice,
   SandboxUsageRow,
   SandboxUsage,
+  BrowserSession,
+  BrowserProfile,
   Agent,
   Session,
   SessionEvent,
@@ -350,6 +352,31 @@ export const setAutumnAutoTopup = (cfg: {
 // Per-sandbox usage breakdown (compute cost over a recent window)
 export const getSandboxUsage = (days = 30) =>
   apiFetch(`/usage/sandboxes?days=${days}`, {}, S.SandboxUsageSchema)
+
+export const getBrowsers = (
+  params: { status?: string; limit?: number } = {},
+) => {
+  const q = new URLSearchParams()
+  if (params.status) q.set('status', params.status)
+  if (params.limit) q.set('limit', String(params.limit))
+  const qs = q.toString()
+  return apiFetch(
+    `/browsers${qs ? `?${qs}` : ''}`,
+    {},
+    S.BrowserSessionListSchema,
+  ).then((r) => r.browsers)
+}
+
+export const getBrowser = (id: string) =>
+  apiFetch(`/browsers/${encodeURIComponent(id)}`, {}, S.BrowserSessionSchema)
+
+export const deleteBrowser = (id: string) =>
+  apiFetch<void>(`/browsers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+
+export const getBrowserProfiles = () =>
+  apiFetch('/browser-profiles', {}, S.BrowserProfileListSchema).then(
+    (r) => r.profiles,
+  )
 
 // ── Durable Agent Sessions ───────────────────────────────────────────────────
 // A separate service (sessions-api). Reached through the OC edge under

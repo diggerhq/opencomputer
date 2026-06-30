@@ -102,6 +102,8 @@ func main() {
 		CFAdminSecret:    cfg.CFAdminSecret,
 		CFEventSecret:    cfg.CFEventSecret,
 		RequireCapToken:  proBillingEdge,
+		BrowserAPIURL:    cfg.BrowserAPIURL,
+		BrowserAPISecret: cfg.BrowserAPISecret,
 	}
 
 	// Initialize PostgreSQL if configured

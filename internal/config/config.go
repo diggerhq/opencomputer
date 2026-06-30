@@ -153,6 +153,11 @@ type Config struct {
 	// Autumn billing is edge-native (api-edge worker reads Autumn directly); the
 	// cell holds no Autumn client or secrets. See cloudflare-workers/api-edge.
 
+	// Browser Sessions API. Dashboard calls proxy through this server so the
+	// browser-facing app never receives the internal browser service token.
+	BrowserAPIURL    string
+	BrowserAPISecret string
+
 	// Per-agent paywalled-feature prices (set in Stripe dashboard, referenced
 	// by ID here). Empty = feature ungated on this deployment (dev mode).
 	StripeTelegramAgentPriceID string
@@ -385,6 +390,9 @@ func Load() (*Config, error) {
 		StripeTelegramAgentPriceID: os.Getenv("STRIPE_TELEGRAM_AGENT_PRICE_ID"),
 		StripeSuccessURL:    envOrDefault("STRIPE_SUCCESS_URL", "http://localhost:3000/billing?success=true"),
 		StripeCancelURL:     envOrDefault("STRIPE_CANCEL_URL", "http://localhost:3000/billing?cancelled=true"),
+
+		BrowserAPIURL:    envOrDefault("OPENSANDBOX_BROWSER_API_URL", "https://browser.opencomputer.dev"),
+		BrowserAPISecret: os.Getenv("OPENSANDBOX_BROWSER_API_SECRET"),
 
 		SegmentWriteKey: os.Getenv("SEGMENT_WRITE_KEY"),
 
