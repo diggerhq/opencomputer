@@ -200,6 +200,12 @@ export const AutumnAutoTopupSchema = z.object({
   quantity: z.number(),
 })
 
+export const AutumnMonthlyBudgetSchema = z.object({
+  enabled: z.boolean(),
+  limit: z.number(),
+  usage: z.number().nullable().optional(),
+})
+
 export const AutumnModelUsageSchema = z.object({
   enabled: z.boolean(),
   status: z.string(),
@@ -216,6 +222,7 @@ export const AutumnBillingSchema = z.object({
   isHalted: z.boolean(),
   hasToppedUp: z.boolean(),
   autoTopup: AutumnAutoTopupSchema.nullable(),
+  monthlyBudget: AutumnMonthlyBudgetSchema.nullable().optional(),
   modelUsage: AutumnModelUsageSchema.optional(),
 })
 
@@ -604,6 +611,7 @@ export type OrgInvitation = z.infer<typeof OrgInvitationSchema>
 export type Credits = z.infer<typeof CreditsSchema>
 export type BillingState = z.infer<typeof BillingStateSchema>
 export type AutumnAutoTopup = z.infer<typeof AutumnAutoTopupSchema>
+export type AutumnMonthlyBudget = z.infer<typeof AutumnMonthlyBudgetSchema>
 export type AutumnBilling = z.infer<typeof AutumnBillingSchema>
 export type StripeInvoice = z.infer<typeof StripeInvoiceSchema>
 export type SandboxUsageRow = z.infer<typeof SandboxUsageRowSchema>

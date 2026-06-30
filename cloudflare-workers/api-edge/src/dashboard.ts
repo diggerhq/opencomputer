@@ -24,6 +24,7 @@ import {
   autumnHasToppedUp,
   syncAutumnToD1,
   autumnSetAutoTopup,
+  autumnSetMonthlyBudget,
 } from "./autumn_webhook";
 import { handleWebhooksAPI, type WebhookEnv } from "./webhooks";
 
@@ -1128,6 +1129,9 @@ export async function handleDashboard(
   if (sub === "/billing/autumn/auto-topup" && method === "POST") {
     return handleAutumnAutoTopup(req, env, caller);
   }
+  if (sub === "/billing/autumn/monthly-budget" && method === "POST") {
+    return handleAutumnMonthlyBudget(req, env, caller);
+  }
   if (sub === "/billing/autumn/finalize-arm" && method === "GET") {
     return handleAutumnFinalizeArm(req, env, caller);
   }
@@ -1398,6 +1402,9 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   }
 
   const at = r.customer.billing_controls?.auto_topups?.find((a) => a.feature_id === "credits");
+  const monthlyBudget = r.customer.billing_controls?.usage_limits?.find(
+    (l) => l.feature_id === "credits" && l.interval === "month",
+  );
 
   // Has the customer charged a top-up? That's when auto-recharge becomes armed,
   // so the UI uses it to tell whether enabling auto-recharge will run a first
@@ -1434,6 +1441,9 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
     isHalted: r.halted,
     hasToppedUp,
     autoTopup: at ? { enabled: at.enabled, threshold: at.threshold, quantity: at.quantity } : null,
+    monthlyBudget: monthlyBudget && monthlyBudget.enabled !== false && monthlyBudget.limit > 0
+      ? { enabled: true, limit: monthlyBudget.limit, usage: monthlyBudget.usage ?? null }
+      : null,
     modelUsage: {
       enabled: modelStatus === "active",
       status: modelStatus,
@@ -1443,6 +1453,31 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
       activeKeyCount: model?.active_key_count ?? 0,
     },
   });
+}
+
+// POST /api/dashboard/billing/autumn/monthly-budget { enabled, limit }
+// — configure a monthly hard cap on credits usage. limit is in credits, where
+// one credit maps to $1 of prepaid balance in the current Autumn products.
+async function handleAutumnMonthlyBudget(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  if (!env.AUTUMN_SECRET_KEY) return json({ error: "autumn billing not configured" }, 503);
+  let body: { enabled?: boolean; limit?: number };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+  const enabled = !!body.enabled;
+  const limit = Math.floor(body.limit ?? 0);
+  if (enabled && (!Number.isFinite(limit) || limit < 1)) {
+    return json({ error: "monthly budget must be at least $1 when enabled" }, 400);
+  }
+  try {
+    await autumnSetMonthlyBudget(env, caller.orgID, { enabled, limit });
+    return json({ ok: true });
+  } catch (e) {
+    console.error("billing/autumn monthly-budget:", e);
+    return json({ error: (e as Error).message }, 502);
+  }
 }
 
 // POST /api/dashboard/billing/autumn/auto-topup { enabled, threshold, quantity }

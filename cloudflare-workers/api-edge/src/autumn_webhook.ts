@@ -66,6 +66,13 @@ export interface AutumnAutoTopup {
   threshold: number;
   quantity: number;
 }
+export interface AutumnUsageLimit {
+  feature_id: string;
+  enabled?: boolean;
+  limit: number;
+  interval: "day" | "week" | "month" | "year";
+  usage?: number;
+}
 export interface AutumnCustomer {
   id: string;
   subscriptions?: AutumnSubscription[];
@@ -75,7 +82,7 @@ export interface AutumnCustomer {
   // "auto-recharge will fire" signal (Autumn exposes no payment-method field).
   purchases?: Array<{ plan_id: string }>;
   balances?: Record<string, { remaining?: number }>;
-  billing_controls?: { auto_topups?: AutumnAutoTopup[] };
+  billing_controls?: { auto_topups?: AutumnAutoTopup[]; usage_limits?: AutumnUsageLimit[] };
 }
 
 function json(body: unknown, status = 200): Response {
@@ -530,6 +537,30 @@ export async function autumnSetAutoTopup(
     }),
   });
   if (!resp.ok) throw new Error(`autumn set auto-topup ${resp.status}: ${await resp.text()}`);
+}
+
+// autumnSetMonthlyBudget configures a windowed hard cap on the shared `credits`
+// balance. Autumn enforces usage_limits during check/track, so this caps monthly
+// credit spend even if the customer still has prepaid balance available.
+export async function autumnSetMonthlyBudget(
+  env: AutumnApiEnv,
+  customerID: string,
+  cfg: { enabled: boolean; limit: number },
+): Promise<void> {
+  const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
+  const usageLimit = cfg.enabled
+    ? { feature_id: CREDITS_FEATURE_ID, enabled: true, limit: cfg.limit, interval: "month" }
+    : { feature_id: CREDITS_FEATURE_ID, enabled: false, limit: 0, interval: "month" };
+  const resp = await fetch(`${base}/customers/${encodeURIComponent(customerID)}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      billing_controls: {
+        usage_limits: [usageLimit],
+      },
+    }),
+  });
+  if (!resp.ok) throw new Error(`autumn set monthly budget ${resp.status}: ${await resp.text()}`);
 }
 
 // ── cell dispatch (mirrors the DO's halt/resume fan-out) ───────────────────
