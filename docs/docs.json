@@ -75,7 +75,6 @@
           "agent-sessions/agents",
           "agent-sessions/revisions",
           "agent-sessions/skills",
-          "agent-sessions/deploy-from-github",
           "agent-sessions/sessions",
           "agent-sessions/credentials",
           "agent-sessions/repos",

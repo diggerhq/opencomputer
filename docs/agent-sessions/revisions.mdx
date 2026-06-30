@@ -6,13 +6,13 @@ description: "Deploy agent behavior, version it as immutable revisions, roll bac
 
 You **deploy** an agent's behavior — its `prompt`, `model`, and [skills](#skills). Each deploy produces an immutable **revision**; the agent's **active revision** is what new [sessions](/agent-sessions/sessions) use. Roll back by re-activating an earlier revision.
 
-Deploy three ways — all the same underneath: the **API/SDK**, the **`oc` CLI**, or [**push to GitHub**](/agent-sessions/deploy-from-github).
+Deploy three ways — all the same underneath: the **API/SDK**, the **`oc` CLI**, or [**push to GitHub**](#deploy-from-a-repo).
 
 <Note>Revisions are **linear**: each explicit deploy appends a new revision (the number only goes up), like a deployment on Vercel/Fly. Rollback moves the **active pointer** back — it never rewrites history. In-flight sessions keep the revision they started on; only new sessions pick up a change.</Note>
 
 ## Deploy
 
-`POST /agents/:id/deploys` is the one command. `input.type: "inline"` sends behavior directly (API / CLI / dashboard); `input.type: "github"` deploys a linked repo — see [Deploy from GitHub](/agent-sessions/deploy-from-github).
+`POST /agents/:id/deploys` is the one command. `input.type: "inline"` sends behavior directly (API / CLI / dashboard); `input.type: "github"` deploys a linked repo — see [Deploy from a repo](#deploy-from-a-repo).
 
 An inline payload is the **complete** behavior — omitted fields aren't inherited (`prompt` is required; omitted `skills` means *no skills*).
 
@@ -74,6 +74,61 @@ Staging lets you test before going live: deploy with `manual`, start a session a
 
 <Tip>Editing `prompt`/`model` via [`PATCH /agents/:id`](/agent-sessions/agents) also deploys a revision — a shorthand for small edits.</Tip>
 
+## Deploy from a repo
+
+Keep the agent's definition in Git and **push to deploy**. The agent is a directory:
+
+```
+issue-fixer/
+  agent.toml      # name, model, runtime
+  prompt.md       # system prompt
+  skills/         # optional — one folder per skill
+```
+
+Install the OpenComputer GitHub App on the repo (the agent page in the [dashboard](https://app.opencomputer.dev), or **Settings → GitHub**), then connect it to an agent:
+
+<CodeGroup>
+
+```ts TypeScript SDK
+await oc.agents.deploymentSource.link("agt_123", { repo: "acme/agents", path: "issue-fixer", productionRef: "main" });
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/agents/agt_123/deployment-source
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "repo": "acme/agents", "path": "issue-fixer", "production_ref": "main" }
+```
+
+```bash CLI
+oc agent link acme/agents --path issue-fixer --branch main
+```
+
+</CodeGroup>
+
+Linking deploys the current `main` HEAD right away (`deploy_now: false` / `--no-deploy` to skip). Then every push that touches the directory deploys:
+
+- push to **`main`** (production) → a new revision, **activated**.
+- push to **another branch** → a revision **staged** (test, then [promote](#roll-back-promote)).
+- a push not touching the directory → **no-op**; identical directory content → **skipped** (no churn).
+
+OpenComputer posts a **commit status** (queued → ready / failed) so a deploy's result shows in GitHub.
+
+Your **GitHub token never reaches the agent's sandbox** — OpenComputer pulls only the linked directory, at the exact commit, in an isolated worker; a deploy can only target the directory you connected; no code runs at deploy time. (Same token model as [repos](/agent-sessions/repos).)
+
+## Deploy from your machine
+
+No repo needed — the CLI bundles a local agent directory and deploys it:
+
+```bash CLI
+oc agent deploy                       # deploy ./ (the agent named in agent.toml)
+oc agent deploy ./agents/issue-fixer  # a specific directory
+oc agent deploy --activation-policy manual   # stage instead of activate
+```
+
+Same deploy as a push — handy for CI that isn't GitHub, or trying a change before you commit.
+
 ## Roll back / promote
 
 Rollback and promote are the **same primitive** — set the active revision. Re-activate any earlier revision (rollback) or a staged one (promote):
@@ -122,7 +177,7 @@ GET /v3/agents/agt_123/activations         # active-pointer audit log
 
 ## Skills
 
-Skills — reusable instruction folders the agent loads when relevant — are **part of a revision**, so they're deployed, versioned, and rolled back exactly like the prompt and model. Include them inline in a deploy (`skills:[…]`, above), upload a `.zip` (`PUT …/skills` / `oc agent skills set`), or ship a `skills/` directory [from a repo](/agent-sessions/deploy-from-github).
+Skills — reusable instruction folders the agent loads when relevant — are **part of a revision**, so they're deployed, versioned, and rolled back exactly like the prompt and model. Include them inline in a deploy (`skills:[…]`, above), upload a `.zip` (`PUT …/skills` / `oc agent skills set`), or ship a `skills/` directory [from a repo](#deploy-from-a-repo).
 
 See the **[Skills](/agent-sessions/skills)** page for the `SKILL.md` format, how skills are invoked, all three ways to add them, and limits.
 
