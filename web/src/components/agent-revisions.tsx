@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { History, RotateCcw, ArrowUp } from 'lucide-react'
+import { History, RotateCcw, ArrowUp, GitBranch } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   getAgentRevisions,
@@ -42,14 +42,19 @@ export function AgentRevisions({ agentId }: { agentId: string }) {
   // we don't need a second, near-duplicate table.
   const createdVia = new Map<string, string>()
   for (const d of deploys) {
-    if (d.revision_id && d.result === 'created') createdVia.set(d.revision_id, sourceVia(d.source))
+    if (d.revision_id && d.result === 'created')
+      createdVia.set(d.revision_id, sourceVia(d.source))
   }
 
   const activateMutation = useMutation({
     mutationFn: (rev: AgentRevision) => activateRevision(agentId, rev.number),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['agent-revisions', agentId] })
-      void queryClient.invalidateQueries({ queryKey: ['agent-deploys', agentId] })
+      void queryClient.invalidateQueries({
+        queryKey: ['agent-revisions', agentId],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ['agent-deploys', agentId],
+      })
       // prompt/model are sourced from the active revision → refresh the agent too.
       void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
@@ -66,17 +71,26 @@ export function AgentRevisions({ agentId }: { agentId: string }) {
       key: 'number',
       header: 'Revision',
       cell: (r) => (
-        <span className="text-foreground font-mono text-[13px]">#{r.number}</span>
+        <span className="text-foreground font-mono text-[13px]">
+          #{r.number}
+        </span>
       ),
     },
     {
       key: 'source',
       header: 'Source',
-      cell: (r) => (
-        <span className="text-muted-foreground text-xs capitalize">
-          {createdVia.get(r.id) ?? '—'}
-        </span>
-      ),
+      cell: (r) =>
+        r.sha ? (
+          <span className="text-muted-foreground inline-flex items-center gap-1 font-mono text-xs">
+            <GitBranch className="size-3 shrink-0" />
+            {r.ref ? `${r.ref} · ` : ''}
+            {r.sha.slice(0, 7)}
+          </span>
+        ) : (
+          <span className="text-muted-foreground text-xs capitalize">
+            {createdVia.get(r.id) ?? 'dashboard'}
+          </span>
+        ),
     },
     {
       key: 'digest',
@@ -118,7 +132,8 @@ export function AgentRevisions({ agentId }: { agentId: string }) {
             onClick={() => setPending(r)}
           >
             <Icon className="size-3.5 shrink-0" />
-            <span className="max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 ease-out group-hover:ml-1.5 group-hover:max-w-[6rem] group-hover:opacity-100 motion-reduce:transition-none motion-reduce:group-hover:ml-1.5">
+            {/* Reserve the label's width always so the reveal-on-hover doesn't reflow the column. */}
+            <span className="ml-1.5 inline-block w-[4.25rem] text-left opacity-0 transition-opacity duration-150 ease-out group-hover:opacity-100 motion-reduce:transition-none">
               {label}
             </span>
           </Button>
@@ -132,7 +147,8 @@ export function AgentRevisions({ agentId }: { agentId: string }) {
       <PanelHeader>
         <PanelTitle>Revisions</PanelTitle>
         <span className="text-muted-foreground text-xs">
-          Each deploy is an immutable revision. Rolling back re-points the active one.
+          Each deploy is an immutable revision. Rolling back re-points the
+          active one.
         </span>
       </PanelHeader>
 

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ComponentType } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, MessagesSquare, Send, GitBranch } from 'lucide-react'
@@ -10,15 +10,14 @@ import {
   createSession,
   getCredentials,
   createCredential,
-  getAgentRevisions,
   getDeploymentSource,
+  getSlackConnection,
   type Agent,
 } from '@/api/client'
 import type { Session } from '@/api/schemas'
 import {
   Panel,
   PanelContent,
-  PanelFooter,
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
@@ -40,14 +39,20 @@ const ORG_DEFAULT = '__default__' // no pinned credential → org default resolv
 const NEW_CRED = '__new__' // create one inline
 const MANAGED = 'managed' // run via OpenComputer, no BYO key (token-billing §6.6)
 
-type Tab = 'overview' | 'revisions' | 'sessions'
+type Tab = 'overview' | 'revisions' | 'sessions' | 'settings'
 
 export default function AgentDetail() {
   const { agentId = '', tab } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const active: Tab =
-    tab === 'revisions' ? 'revisions' : tab === 'sessions' ? 'sessions' : 'overview'
+    tab === 'revisions'
+      ? 'revisions'
+      : tab === 'sessions'
+        ? 'sessions'
+        : tab === 'settings'
+          ? 'settings'
+          : 'overview'
 
   const {
     data: agent,
@@ -78,13 +83,21 @@ export default function AgentDetail() {
     },
   })
 
+  // Slack connection (shared cache key with SlackConnect) — drives the Overview nudge.
+  const { data: slack } = useQuery({
+    queryKey: ['slack', agentId],
+    queryFn: () => getSlackConnection(agentId),
+  })
+
   // Credentials for the switch picker + to label the current one.
   const { data: credentials } = useQuery({
     queryKey: ['credentials'],
     queryFn: getCredentials,
   })
   const rt = getRuntime(agent?.runtime)
-  const providerCreds = (credentials ?? []).filter((c) => c.provider === rt.provider)
+  const providerCreds = (credentials ?? []).filter(
+    (c) => c.provider === rt.provider,
+  )
   const credLabel = (id: string) => {
     const c = providerCreds.find((x) => x.id === id)
     if (!c) return id
@@ -97,7 +110,10 @@ export default function AgentDetail() {
   const [task, setTask] = useState('')
   const startMutation = useMutation({
     mutationFn: () =>
-      createSession({ agent: agentId, input: task.trim() }, crypto.randomUUID()),
+      createSession(
+        { agent: agentId, input: task.trim() },
+        crypto.randomUUID(),
+      ),
     onSuccess: (session) => {
       void queryClient.invalidateQueries({ queryKey: ['sessions'] })
       void navigate(`/sessions/${session.id}`)
@@ -109,7 +125,9 @@ export default function AgentDetail() {
   const settleAgent = () => {
     void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
     void queryClient.invalidateQueries({ queryKey: ['agents'] })
-    void queryClient.invalidateQueries({ queryKey: ['agent-revisions', agentId] })
+    void queryClient.invalidateQueries({
+      queryKey: ['agent-revisions', agentId],
+    })
     void queryClient.invalidateQueries({ queryKey: ['agent-deploys', agentId] })
   }
   const optimistic = async (patch: Partial<Agent>) => {
@@ -147,7 +165,8 @@ export default function AgentDetail() {
   })
 
   const switchCredMutation = useMutation({
-    mutationFn: (credential: string | null) => updateAgent(agentId, { credential }),
+    mutationFn: (credential: string | null) =>
+      updateAgent(agentId, { credential }),
     onMutate: (credential) => optimistic({ credential_id: credential }),
     onError: (e, _v, prev) => {
       rollback(prev)
@@ -188,7 +207,9 @@ export default function AgentDetail() {
   const savedPrompt = agent?.prompt ?? ''
   const promptValue = promptDraft ?? savedPrompt
   const promptDirty = promptDraft !== undefined && promptDraft !== savedPrompt
-  const credSelectValue = credNew ? NEW_CRED : (agent?.credential_id ?? ORG_DEFAULT)
+  const credSelectValue = credNew
+    ? NEW_CRED
+    : (agent?.credential_id ?? ORG_DEFAULT)
   const credOptions = [
     { value: ORG_DEFAULT, label: 'Org default (no pinned credential)' },
     { value: MANAGED, label: 'Managed · no key needed' },
@@ -241,7 +262,9 @@ export default function AgentDetail() {
       <div className="bg-background sticky top-0 z-20 border-b">
         <div className="flex flex-wrap items-start justify-between gap-3 pb-3">
           <div className="min-w-0 space-y-1.5">
-            <h1 className="text-foreground truncate text-lg font-semibold">{agent.name}</h1>
+            <h1 className="text-foreground truncate text-lg font-semibold">
+              {agent.name}
+            </h1>
             <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
               <span className="font-mono">{agent.id}</span>
               <span className="capitalize">{agent.runtime}</span>
@@ -258,213 +281,163 @@ export default function AgentDetail() {
         </div>
         <nav className="-mb-px flex gap-1">
           <TabLink to={base} label="Overview" current={active === 'overview'} />
-          <TabLink to={`${base}/revisions`} label="Revisions" current={active === 'revisions'} />
-          <TabLink to={`${base}/sessions`} label="Sessions" current={active === 'sessions'} />
+          <TabLink
+            to={`${base}/revisions`}
+            label="Revisions"
+            current={active === 'revisions'}
+          />
+          <TabLink
+            to={`${base}/sessions`}
+            label="Sessions"
+            current={active === 'sessions'}
+          />
+          <TabLink
+            to={`${base}/settings`}
+            label="Settings"
+            current={active === 'settings'}
+          />
         </nav>
       </div>
 
       <div className="py-6">
         {active === 'overview' && (
           <div className="space-y-6">
-            <div className="grid gap-4 lg:grid-cols-2">
-              {/* Behavior — full width. Read-only when a repo drives the agent. */}
-              <Panel className="lg:col-span-2">
-                <PanelHeader>
-                  <PanelTitle>Behavior</PanelTitle>
-                  <span className="text-muted-foreground text-xs">
-                    Editing the model or prompt creates a new revision.
-                  </span>
-                </PanelHeader>
-                <PanelContent className="space-y-5">
-                  {source ? (
-                    <div className="space-y-4">
-                      <div className="border-border bg-panel-2 flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs">
-                        <GitBranch className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
-                        <div className="space-y-0.5">
-                          <p className="text-foreground">
-                            Managed from a connected repo —{' '}
-                            <span className="font-mono">
-                              {source.path || 'root'}@{source.production_ref}
-                            </span>
-                          </p>
-                          <p className="text-muted-foreground">
-                            The repo is the source of truth. Edit there and push, or{' '}
-                            <Link className="underline underline-offset-4" to={`${base}/revisions`}>
-                              browse revisions
-                            </Link>
-                            .
-                          </p>
-                        </div>
+            {/* Behavior — read-only when a repo drives the agent. */}
+            <Panel>
+              <PanelHeader>
+                <PanelTitle>Behavior</PanelTitle>
+                <span className="text-muted-foreground text-xs">
+                  Editing the model or prompt creates a new revision.
+                </span>
+              </PanelHeader>
+              <PanelContent className="space-y-5">
+                {source ? (
+                  <div className="space-y-4">
+                    <div className="border-border bg-panel-2 flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs">
+                      <GitBranch className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
+                      <div className="space-y-0.5">
+                        <p className="text-foreground">
+                          Managed from a connected repo —{' '}
+                          <span className="font-mono">
+                            {source.full_name ?? source.path ?? 'repo'}
+                            {source.full_name && source.path
+                              ? `/${source.path}`
+                              : ''}
+                            @{source.production_ref}
+                          </span>
+                        </p>
+                        <p className="text-muted-foreground">
+                          The repo is the source of truth. Edit there and push,
+                          or{' '}
+                          <Link
+                            className="underline underline-offset-4"
+                            to={`${base}/revisions`}
+                          >
+                            browse revisions
+                          </Link>
+                          .
+                        </p>
                       </div>
-                      <ReadOnlyField label="Model" value={agent.model} mono />
-                      <ReadOnlyField label="System prompt" value={savedPrompt || '—'} pre />
                     </div>
-                  ) : (
-                    <>
-                      <Field label="Model" htmlFor="agent-model">
-                        <div className="flex items-center gap-3">
-                          <Select
-                            id="agent-model"
-                            value={agent.model}
-                            onValueChange={(m) => modelMutation.mutate(m)}
-                            options={modelOptions}
-                            className="max-w-xs"
-                          />
-                          <Saving show={modelMutation.isPending} />
-                        </div>
-                      </Field>
-                      <Field label="System prompt" htmlFor="agent-prompt">
-                        <Textarea
-                          id="agent-prompt"
-                          value={promptValue}
-                          onChange={(e) => setPromptDraft(e.target.value)}
-                          placeholder="You are a meticulous code reviewer…"
-                          className="min-h-32"
+                    <ReadOnlyField label="Model" value={agent.model} mono />
+                    <ReadOnlyField
+                      label="System prompt"
+                      value={savedPrompt || '—'}
+                      pre
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <Field label="Model" htmlFor="agent-model">
+                      <div className="flex items-center gap-3">
+                        <Select
+                          id="agent-model"
+                          value={agent.model}
+                          onValueChange={(m) => modelMutation.mutate(m)}
+                          options={modelOptions}
+                          className="max-w-xs"
                         />
-                        <div className="mt-2 flex items-center gap-3">
-                          <p className="text-muted-foreground text-xs">
-                            How the agent behaves. Saving bumps the agent's revision.
-                          </p>
-                          <div className="ml-auto flex items-center gap-2">
-                            <Saving show={promptMutation.isPending} />
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              disabled={!promptDirty || promptMutation.isPending}
-                              onClick={() => setPromptDraft(undefined)}
-                            >
-                              Discard
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              disabled={
-                                !promptDirty || promptMutation.isPending || !promptValue.trim()
-                              }
-                              onClick={() => promptMutation.mutate(promptValue.trim())}
-                            >
-                              Save prompt
-                            </Button>
-                          </div>
-                        </div>
-                      </Field>
-                    </>
-                  )}
-                </PanelContent>
-              </Panel>
-
-              {/* Source (GitHub) + Skills */}
-              <AgentDeploySource agentId={agent.id} />
-              <AgentSkills agentId={agent.id} />
-
-              {/* Recent activity — brief, linking to the full tabs */}
-              <RecentRevisions agentId={agent.id} base={base} />
-              <RecentSessions
-                sessions={sessions}
-                loading={loadingSessions}
-                base={base}
-              />
-            </div>
-
-            {/* Settings — the lower section of Overview (no separate tab). */}
-            <section className="space-y-4">
-              <h2 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
-                Settings
-              </h2>
-              <div className="grid gap-4 lg:grid-cols-2">
-                <Panel>
-                  <PanelHeader>
-                    <PanelTitle>Credential</PanelTitle>
-                    <span className="text-muted-foreground text-xs">
-                      Which key this agent runs on.
-                    </span>
-                  </PanelHeader>
-                  <PanelContent className="space-y-3">
-                    <div className="flex items-center gap-3">
-                      <Select
-                        id="agent-cred"
-                        value={credSelectValue}
-                        onValueChange={onCredChange}
-                        options={credOptions}
-                        className="max-w-md"
+                        <Saving show={modelMutation.isPending} />
+                      </div>
+                    </Field>
+                    <Field label="System prompt" htmlFor="agent-prompt">
+                      <Textarea
+                        id="agent-prompt"
+                        value={promptValue}
+                        onChange={(e) => setPromptDraft(e.target.value)}
+                        placeholder="You are a meticulous code reviewer…"
+                        className="min-h-32"
                       />
-                      <Saving show={credSaving} />
-                    </div>
-                    {credNew ? (
-                      <div className="border-border bg-panel-2 grid grid-cols-1 gap-3 rounded-md border p-3 sm:grid-cols-2">
-                        <Field label="Credential name" htmlFor="new-cred-name">
-                          <Input
-                            id="new-cred-name"
-                            value={newCredName}
-                            onChange={(e) => setNewCredName(e.target.value)}
-                            placeholder="e.g. Production"
-                          />
-                        </Field>
-                        <Field
-                          label={rt.keyLabel}
-                          htmlFor="new-cred-key"
-                          description="Encrypted in a dedicated secret store."
-                        >
-                          <Input
-                            id="new-cred-key"
-                            type="password"
-                            value={newCredKey}
-                            onChange={(e) => setNewCredKey(e.target.value)}
-                            placeholder={rt.keyPlaceholder}
-                          />
-                        </Field>
-                        <div className="flex justify-end gap-2 sm:col-span-2">
+                      <div className="mt-2 flex items-center gap-3">
+                        <p className="text-muted-foreground text-xs">
+                          How the agent behaves. Saving bumps the agent's
+                          revision.
+                        </p>
+                        <div className="ml-auto flex items-center gap-2">
+                          <Saving show={promptMutation.isPending} />
                           <Button
                             type="button"
                             variant="ghost"
                             size="sm"
-                            onClick={() => {
-                              setCredNew(false)
-                              setNewCredName('')
-                              setNewCredKey('')
-                            }}
+                            disabled={!promptDirty || promptMutation.isPending}
+                            onClick={() => setPromptDraft(undefined)}
                           >
-                            Cancel
+                            Discard
                           </Button>
                           <Button
                             type="button"
                             size="sm"
-                            disabled={!newCredKey.trim() || addCredMutation.isPending}
-                            onClick={() => addCredMutation.mutate()}
+                            disabled={
+                              !promptDirty ||
+                              promptMutation.isPending ||
+                              !promptValue.trim()
+                            }
+                            onClick={() =>
+                              promptMutation.mutate(promptValue.trim())
+                            }
                           >
-                            {addCredMutation.isPending ? 'Adding…' : 'Add & use'}
+                            Save prompt
                           </Button>
                         </div>
                       </div>
-                    ) : null}
-                    <p className="text-muted-foreground text-xs">
-                      To change a key's value, rotate it on the Credentials page.
-                    </p>
-                  </PanelContent>
-                </Panel>
+                    </Field>
+                  </>
+                )}
+              </PanelContent>
+            </Panel>
 
-                <SlackConnect agentId={agent.id} agentName={agent.name} />
+            <div className="grid gap-4 lg:grid-cols-2">
+              <AgentSkills agentId={agent.id} />
+              <ShipRevisionCard connected={!!source} base={base} />
+            </div>
+
+            {/* Contextual nudges for unconfigured integrations (point to Settings). */}
+            {(!source || !slack) && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {!source && (
+                  <Nudge
+                    icon={GitBranch}
+                    title="Deploy from a GitHub repo"
+                    body="Connect a repo so every push ships a new revision."
+                    to={`${base}/settings`}
+                    cta="Connect in Settings →"
+                  />
+                )}
+                {!slack && (
+                  <Nudge
+                    icon={MessagesSquare}
+                    title="Connect Slack"
+                    body="Let people talk to this agent from Slack."
+                    to={`${base}/settings`}
+                    cta="Set up in Settings →"
+                  />
+                )}
               </div>
-
-              {/* Limits (read-only — editing isn't supported via the API yet). */}
-              <Panel>
-                <PanelHeader>
-                  <PanelTitle>Limits</PanelTitle>
-                </PanelHeader>
-                <PanelContent>
-                  <Limits limits={agent.limits} />
-                </PanelContent>
-              </Panel>
-            </section>
+            )}
           </div>
         )}
 
-        {active === 'revisions' && (
-          <div className="space-y-6">
-            <AgentRevisions agentId={agent.id} />
-          </div>
-        )}
+        {active === 'revisions' && <AgentRevisions agentId={agent.id} />}
 
         {active === 'sessions' && (
           <Panel className="overflow-hidden">
@@ -489,7 +462,8 @@ export default function AgentDetail() {
                   value={task}
                   onChange={(e) => setTask(e.target.value)}
                   onSend={() => {
-                    if (task.trim() && !startMutation.isPending) startMutation.mutate()
+                    if (task.trim() && !startMutation.isPending)
+                      startMutation.mutate()
                   }}
                   placeholder="Give this agent a task — it runs durably as a new session…"
                   className="min-h-20"
@@ -522,6 +496,90 @@ export default function AgentDetail() {
             />
           </Panel>
         )}
+
+        {active === 'settings' && (
+          <div className="space-y-6">
+            {/* Source — connect a GitHub repo as the agent's source. */}
+            <AgentDeploySource agentId={agent.id} />
+
+            {/* Slack — let people talk to the agent from Slack. */}
+            <SlackConnect agentId={agent.id} agentName={agent.name} />
+
+            {/* Credential — which key the agent runs on. */}
+            <Panel>
+              <PanelHeader>
+                <PanelTitle>Credential</PanelTitle>
+                <span className="text-muted-foreground text-xs">
+                  Which key this agent runs on.
+                </span>
+              </PanelHeader>
+              <PanelContent className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <Select
+                    id="agent-cred"
+                    value={credSelectValue}
+                    onValueChange={onCredChange}
+                    options={credOptions}
+                    className="max-w-md"
+                  />
+                  <Saving show={credSaving} />
+                </div>
+                {credNew ? (
+                  <div className="border-border bg-panel-2 grid grid-cols-1 gap-3 rounded-md border p-3 sm:grid-cols-2">
+                    <Field label="Credential name" htmlFor="new-cred-name">
+                      <Input
+                        id="new-cred-name"
+                        value={newCredName}
+                        onChange={(e) => setNewCredName(e.target.value)}
+                        placeholder="e.g. Production"
+                      />
+                    </Field>
+                    <Field
+                      label={rt.keyLabel}
+                      htmlFor="new-cred-key"
+                      description="Encrypted in a dedicated secret store."
+                    >
+                      <Input
+                        id="new-cred-key"
+                        type="password"
+                        value={newCredKey}
+                        onChange={(e) => setNewCredKey(e.target.value)}
+                        placeholder={rt.keyPlaceholder}
+                      />
+                    </Field>
+                    <div className="flex justify-end gap-2 sm:col-span-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setCredNew(false)
+                          setNewCredName('')
+                          setNewCredKey('')
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={
+                          !newCredKey.trim() || addCredMutation.isPending
+                        }
+                        onClick={() => addCredMutation.mutate()}
+                      >
+                        {addCredMutation.isPending ? 'Adding…' : 'Add & use'}
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+                <p className="text-muted-foreground text-xs">
+                  To change a key's value, rotate it on the Credentials page.
+                </p>
+              </PanelContent>
+            </Panel>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -541,7 +599,15 @@ function BackLink() {
   )
 }
 
-function TabLink({ to, label, current }: { to: string; label: string; current: boolean }) {
+function TabLink({
+  to,
+  label,
+  current,
+}: {
+  to: string
+  label: string
+  current: boolean
+}) {
   return (
     <Link
       to={to}
@@ -558,15 +624,24 @@ function TabLink({ to, label, current }: { to: string; label: string; current: b
   )
 }
 
-function SourceChip({ source }: { source: { path: string; production_ref: string } | null }) {
+function SourceChip({
+  source,
+}: {
+  source: {
+    full_name?: string | null
+    path: string
+    production_ref: string
+  } | null
+}) {
   if (!source) {
     return <span className="text-muted-foreground/70">no repo connected</span>
   }
+  const label = source.full_name ?? (source.path || 'repo')
   return (
     <span className="inline-flex items-center gap-1">
       <GitBranch className="size-3" />
       <span className="font-mono">
-        {source.path || 'root'}@{source.production_ref}
+        {label}@{source.production_ref}
       </span>
     </span>
   )
@@ -592,136 +667,96 @@ function ReadOnlyField({
     <div className="space-y-1.5">
       <div className="text-foreground text-sm font-medium">{label}</div>
       {pre ? (
-        <pre className="text-muted-foreground max-h-40 overflow-auto whitespace-pre-wrap text-xs">
+        <pre className="text-muted-foreground max-h-40 overflow-auto text-xs whitespace-pre-wrap">
           {value}
         </pre>
       ) : (
-        <div className={'text-muted-foreground text-sm' + (mono ? ' font-mono' : '')}>{value}</div>
+        <div
+          className={
+            'text-muted-foreground text-sm' + (mono ? ' font-mono' : '')
+          }
+        >
+          {value}
+        </div>
       )}
     </div>
   )
 }
 
-function Limits({ limits }: { limits?: Record<string, unknown> | null }) {
-  const entries = Object.entries(limits ?? {})
-  if (entries.length === 0) {
-    return <p className="text-muted-foreground text-xs">Org defaults apply.</p>
-  }
-  return (
-    <dl className="text-muted-foreground grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
-      {entries.map(([k, v]) => (
-        <div key={k} className="contents">
-          <dt className="capitalize">{k.replace(/_/g, ' ')}</dt>
-          <dd className="text-foreground font-mono">{String(v)}</dd>
-        </div>
-      ))}
-    </dl>
-  )
-}
-
-function timeAgo(iso: string): string {
-  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h`
-  return `${Math.floor(h / 24)}d`
-}
-
-// Compact "Recent revisions" card for the Overview dashboard.
-function RecentRevisions({ agentId, base }: { agentId: string; base: string }) {
-  const { data: revisions = [], isLoading } = useQuery({
-    queryKey: ['agent-revisions', agentId],
-    queryFn: () => getAgentRevisions(agentId),
-  })
-  const recent = revisions.slice(0, 3)
-  return (
-    <Panel className="flex flex-col">
-      <PanelHeader>
-        <PanelTitle>Recent revisions</PanelTitle>
-      </PanelHeader>
-      <PanelContent className="flex-1 space-y-2">
-        {isLoading ? (
-          <p className="text-muted-foreground text-xs">Loading…</p>
-        ) : recent.length === 0 ? (
-          <p className="text-muted-foreground text-xs">No revisions yet.</p>
-        ) : (
-          recent.map((r) => (
-            <div key={r.id} className="flex items-center gap-2 text-xs">
-              <span className="text-foreground font-mono">#{r.number}</span>
-              {r.active ? <StatusBadge status="active" /> : null}
-              <span className="text-muted-foreground truncate font-mono">
-                {r.digest.slice(0, 19)}
-              </span>
-              <span className="text-muted-foreground ml-auto">{timeAgo(r.created_at)}</span>
-            </div>
-          ))
-        )}
-      </PanelContent>
-      <PanelFooter className="justify-end">
-        <Link
-          to={`${base}/revisions`}
-          className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
-        >
-          View all revisions →
-        </Link>
-      </PanelFooter>
-    </Panel>
-  )
-}
-
-// Compact "Recent sessions" card for the Overview dashboard.
-function RecentSessions({
-  sessions,
-  loading,
+// Compact "how to ship a revision" helper for the Overview dashboard.
+function ShipRevisionCard({
+  connected,
   base,
 }: {
-  sessions: Session[]
-  loading: boolean
+  connected: boolean
   base: string
 }) {
-  const recent = sessions.slice(0, 3)
   return (
-    <Panel className="flex flex-col">
+    <Panel>
       <PanelHeader>
-        <PanelTitle>Recent sessions</PanelTitle>
+        <PanelTitle>Ship a new revision</PanelTitle>
       </PanelHeader>
-      <PanelContent className="flex-1 space-y-2">
-        {loading ? (
-          <p className="text-muted-foreground text-xs">Loading…</p>
-        ) : recent.length === 0 ? (
-          <p className="text-muted-foreground text-xs">No sessions yet.</p>
-        ) : (
-          recent.map((s) => (
-            <div key={s.id} className="flex items-center gap-2 text-xs">
-              <StatusBadge status={s.status} />
-              <Link
-                to={`/sessions/${s.id}`}
-                className="text-foreground truncate font-mono underline-offset-4 hover:underline"
-              >
-                {s.id}
-              </Link>
-              <span className="text-muted-foreground ml-auto">{timeAgo(s.created_at)}</span>
-            </div>
-          ))
-        )}
+      <PanelContent className="text-muted-foreground space-y-2 text-xs">
+        <p>Every change is an immutable revision. Three ways to ship one:</p>
+        <ul className="space-y-1.5">
+          <li>Edit the model or prompt above, then save.</li>
+          <li>
+            Run{' '}
+            <code className="bg-panel-2 text-foreground rounded px-1 py-0.5 font-mono">
+              oc agent deploy
+            </code>{' '}
+            from the agent directory.
+          </li>
+          <li>
+            {connected ? (
+              'Push to the connected repo — each push ships a revision.'
+            ) : (
+              <>
+                Connect a repo in{' '}
+                <Link
+                  className="underline underline-offset-4"
+                  to={`${base}/settings`}
+                >
+                  Settings
+                </Link>{' '}
+                — then every push ships one.
+              </>
+            )}
+          </li>
+        </ul>
       </PanelContent>
-      <PanelFooter className="justify-between">
-        <Link
-          to={`${base}/sessions`}
-          className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
-        >
-          View all sessions →
-        </Link>
-        <Button asChild size="xs" variant="ghost">
-          <Link to={`${base}/sessions`}>
-            <Send className="size-3.5" />
-            New
-          </Link>
-        </Button>
-      </PanelFooter>
     </Panel>
+  )
+}
+
+// A dashed-border nudge card pointing at an unconfigured integration in Settings.
+function Nudge({
+  icon: Icon,
+  title,
+  body,
+  to,
+  cta,
+}: {
+  icon: ComponentType<{ className?: string }>
+  title: string
+  body: string
+  to: string
+  cta: string
+}) {
+  return (
+    <Link
+      to={to}
+      className="group border-border hover:border-foreground/30 hover:bg-panel-2 flex items-start gap-3 rounded-md border border-dashed px-4 py-3 transition-colors"
+    >
+      <Icon className="text-muted-foreground mt-0.5 size-4 shrink-0" />
+      <div className="space-y-0.5">
+        <div className="text-foreground text-sm font-medium">{title}</div>
+        <p className="text-muted-foreground text-xs">{body}</p>
+        <span className="text-muted-foreground group-hover:text-foreground text-xs">
+          {cta}
+        </span>
+      </div>
+    </Link>
   )
 }
 
@@ -738,7 +773,11 @@ const sessionColumns: Column<Session>[] = [
       </Link>
     ),
   },
-  { key: 'status', header: 'Status', cell: (s) => <StatusBadge status={s.status} /> },
+  {
+    key: 'status',
+    header: 'Status',
+    cell: (s) => <StatusBadge status={s.status} />,
+  },
   {
     key: 'created',
     header: 'Created',

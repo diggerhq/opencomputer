@@ -49,7 +49,10 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
   const [branch, setBranch] = useState('main')
 
   // The org's OC-App install-state + pickable repos (admin), and this agent's current link.
-  const { data: app, isLoading: appLoading } = useQuery({ queryKey: ['deploy-app'], queryFn: getDeployApp })
+  const { data: app, isLoading: appLoading } = useQuery({
+    queryKey: ['deploy-app'],
+    queryFn: getDeployApp,
+  })
   const { data: source, isLoading: srcLoading } = useQuery({
     queryKey: ['agent-deploy-source', agentId],
     queryFn: async () => {
@@ -62,19 +65,30 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
   })
 
   const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ['agent-deploy-source', agentId] })
+    void queryClient.invalidateQueries({
+      queryKey: ['agent-deploy-source', agentId],
+    })
     void queryClient.invalidateQueries({ queryKey: ['agent-deploys', agentId] })
-    void queryClient.invalidateQueries({ queryKey: ['agent-revisions', agentId] })
+    void queryClient.invalidateQueries({
+      queryKey: ['agent-revisions', agentId],
+    })
     void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
   }
 
   const link = useMutation({
     mutationFn: () =>
-      linkDeploymentSource(agentId, { repo, path: path.trim(), production_ref: branch.trim() || 'main' }),
+      linkDeploymentSource(agentId, {
+        repo,
+        path: path.trim(),
+        production_ref: branch.trim() || 'main',
+      }),
     onSuccess: (r) => {
       invalidate()
       if (r.deploy_error) {
-        notifyError(`Repo connected, but the first revision couldn't be created (${r.deploy_error.message}).`, new Error(r.deploy_error.type))
+        notifyError(
+          `Repo connected, but the first revision couldn't be created (${r.deploy_error.message}).`,
+          new Error(r.deploy_error.type),
+        )
       } else {
         notifySuccess('Repo connected — creating the first revision.')
       }
@@ -93,7 +107,9 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
     mutationFn: () => deployFromGithub(agentId),
     onSuccess: () => {
       invalidate()
-      notifySuccess('Updating — creating a revision from the production branch.')
+      notifySuccess(
+        'Updating — creating a revision from the production branch.',
+      )
     },
     onError: (e) => notifyError("Couldn't update from the repo.", e),
   })
@@ -104,13 +120,17 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
     if (r?.default_branch) setBranch(r.default_branch)
   }
 
-  const st = source ? (STATUS[source.status] ?? { label: source.status, tone: 'warn' as const }) : null
+  const st = source
+    ? (STATUS[source.status] ?? { label: source.status, tone: 'warn' as const })
+    : null
 
   return (
     <Panel className="overflow-hidden">
       <PanelHeader>
         <PanelTitle>Source</PanelTitle>
-        <span className="text-muted-foreground text-xs">Connect a GitHub repo — pushes create new revisions.</span>
+        <span className="text-muted-foreground text-xs">
+          Connect a GitHub repo — pushes create new revisions.
+        </span>
       </PanelHeader>
       <PanelContent className="space-y-4">
         {srcLoading || appLoading ? (
@@ -121,7 +141,14 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
             <div className="flex items-center justify-between gap-3 rounded-md border px-4 py-3">
               <div className="space-y-1">
                 <div className="text-foreground flex items-center gap-2 font-mono text-[13px]">
-                  {source.path ? source.path : '(repo root)'}
+                  <span>
+                    {source.full_name ?? '(repo)'}
+                    {source.path ? (
+                      <span className="text-muted-foreground">
+                        /{source.path}
+                      </span>
+                    ) : null}
+                  </span>
                   <span className="text-muted-foreground inline-flex items-center gap-1">
                     <GitBranch className="size-3.5" />
                     {source.production_ref}
@@ -130,7 +157,9 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
                 <div className="flex items-center gap-2 text-xs">
                   <span className={TONE[st.tone]}>● {st.label}</span>
                   {source.active_deployed_sha ? (
-                    <span className="text-muted-foreground font-mono">@ {source.active_deployed_sha.slice(0, 7)}</span>
+                    <span className="text-muted-foreground font-mono">
+                      revision @ {source.active_deployed_sha.slice(0, 7)}
+                    </span>
                   ) : null}
                 </div>
               </div>
@@ -162,15 +191,27 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
             </div>
             {st.tone === 'ok' ? (
               <p className="text-muted-foreground text-xs">
-                Pushes to <span className="font-mono">{source.production_ref}</span> create + activate a
-                revision; other branches create a staged revision.
+                Pushes to{' '}
+                <span className="font-mono">{source.production_ref}</span>{' '}
+                create + activate a revision; other branches create a staged
+                revision.
               </p>
             ) : (
               <p className="text-muted-foreground text-xs">
-                {(source.status === 'auth_required' || source.status === 'repo_not_selected') && app?.configure_url ? (
+                {(source.status === 'auth_required' ||
+                  source.status === 'repo_not_selected') &&
+                app?.configure_url ? (
                   <>
                     Re-select this repo in the{' '}
-                    <a className="underline" href={app.configure_url} target="_blank" rel="noreferrer">GitHub App</a>, then push again.
+                    <a
+                      className="underline"
+                      href={app.configure_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      GitHub App
+                    </a>
+                    , then push again.
                   </>
                 ) : (
                   'Fix the issue in the repo, then push again.'
@@ -182,13 +223,20 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
           /* ── App not installed ── */
           <div className="flex items-center justify-between gap-6 rounded-md border border-dashed px-5 py-6">
             <div className="space-y-1.5">
-              <div className="text-foreground text-sm font-medium">Connect a GitHub repository</div>
+              <div className="text-foreground text-sm font-medium">
+                Connect a GitHub repository
+              </div>
               <p className="text-muted-foreground text-xs">
-                Install the OpenComputer GitHub App on the repos that hold your agent directories.
+                Install the OpenComputer GitHub App on the repos that hold your
+                agent directories.
               </p>
             </div>
             <Button size="sm" disabled={!app?.install_url} asChild>
-              <a href={app?.install_url ?? '#'} target="_blank" rel="noreferrer">
+              <a
+                href={app?.install_url ?? '#'}
+                target="_blank"
+                rel="noreferrer"
+              >
                 <Plug className="size-4" />
                 Install GitHub App
               </a>
@@ -202,16 +250,31 @@ export function AgentDeploySource({ agentId }: { agentId: string }) {
                 <Select
                   value={repo}
                   onValueChange={pickRepo}
-                  placeholder={app.repositories.length ? 'Select a repo' : 'No repos available'}
+                  placeholder={
+                    app.repositories.length
+                      ? 'Select a repo'
+                      : 'No repos available'
+                  }
                   disabled={app.repositories.length === 0}
-                  options={app.repositories.map((r) => ({ value: r.full_name, label: r.full_name }))}
+                  options={app.repositories.map((r) => ({
+                    value: r.full_name,
+                    label: r.full_name,
+                  }))}
                 />
               </Field>
               <Field label="Directory">
-                <Input value={path} onChange={(e) => setPath(e.target.value)} placeholder="agents/issue-fixer" />
+                <Input
+                  value={path}
+                  onChange={(e) => setPath(e.target.value)}
+                  placeholder="agents/issue-fixer"
+                />
               </Field>
               <Field label="Branch">
-                <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
+                <Input
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  placeholder="main"
+                />
               </Field>
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
