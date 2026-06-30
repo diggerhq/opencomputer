@@ -113,12 +113,23 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
+		// Two error shapes: the control plane returns {"error":"string"}; the
+		// sessions-api (/v3) returns {"error":{"type","message"}}. Extract a clean
+		// message from whichever applies (fall back to the raw body).
 		var errResp struct {
-			Error string `json:"error"`
+			Error json.RawMessage `json:"error"`
 		}
 		msg := string(body)
-		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
-			msg = errResp.Error
+		if json.Unmarshal(body, &errResp) == nil && len(errResp.Error) > 0 {
+			var s string
+			var obj struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(errResp.Error, &s) == nil && s != "" {
+				msg = s
+			} else if json.Unmarshal(errResp.Error, &obj) == nil && obj.Message != "" {
+				msg = obj.Message
+			}
 		}
 		return nil, &APIError{StatusCode: resp.StatusCode, Message: msg}
 	}

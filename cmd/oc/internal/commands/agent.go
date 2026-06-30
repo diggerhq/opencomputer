@@ -31,20 +31,20 @@ type RevisionRef struct {
 }
 
 type Agent struct {
-	ID               string         `json:"id"`
-	Name             string         `json:"name"`
-	Prompt           string         `json:"prompt,omitempty"`
-	Model            string         `json:"model"`
-	Runtime          string         `json:"runtime"`
-	CredentialID     *string        `json:"credential_id,omitempty"`
-	ActiveRevisionID string         `json:"active_revision_id,omitempty"`
+	ID               string       `json:"id"`
+	Name             string       `json:"name"`
+	Prompt           string       `json:"prompt,omitempty"`
+	Model            string       `json:"model"`
+	Runtime          string       `json:"runtime"`
+	CredentialID     *string      `json:"credential_id,omitempty"`
+	ActiveRevisionID string       `json:"active_revision_id,omitempty"`
 	ActiveRevision   *RevisionRef `json:"active_revision,omitempty"`
-	CreatedAt        string         `json:"created_at"`
+	CreatedAt        string       `json:"created_at"`
 }
 
 type AgentList struct {
 	Data       []Agent `json:"data"`
-	NextCursor *string   `json:"next_cursor,omitempty"`
+	NextCursor *string `json:"next_cursor,omitempty"`
 }
 
 type Revision struct {
@@ -94,7 +94,7 @@ type DeploymentSource struct {
 
 type SourceEnvelope struct {
 	Source       DeploymentSource `json:"source"`
-	DeploymentID string             `json:"deployment_id,omitempty"`
+	DeploymentID string           `json:"deployment_id,omitempty"`
 	DeployError  *struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`

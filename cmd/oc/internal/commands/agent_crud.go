@@ -9,7 +9,9 @@ import (
 var agentCreateCmd = &cobra.Command{
 	Use:   "create <name>",
 	Short: "Create an agent",
-	Args:  cobra.ExactArgs(1),
+	Example: "  oc agent create issue-fixer --prompt \"You fix issues.\" --model anthropic/claude-sonnet-4-6\n" +
+		"  (tip: `oc agent init` + `oc agent deploy` is the usual flow — create is for quick one-offs)",
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sc, err := sessionsClient(cmd)
 		if err != nil {

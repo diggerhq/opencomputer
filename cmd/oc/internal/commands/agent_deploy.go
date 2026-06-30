@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
@@ -136,12 +137,60 @@ func revisionNumber(cmd *cobra.Command, sc *client.Client, id, revisionID string
 	return 0
 }
 
+// ── async deployment polling ──
+
+func terminalState(s string) bool {
+	switch s {
+	case "ready", "failed", "skipped", "superseded":
+		return true
+	}
+	return false
+}
+
+func deployFailMsg(d Deployment) string {
+	if m, ok := d.Error["message"].(string); ok && m != "" {
+		return m
+	}
+	if d.ErrorClass != "" {
+		return d.ErrorClass
+	}
+	return "unknown error"
+}
+
+// pollDeployment polls a deployment until it reaches a terminal state or the
+// timeout elapses, printing each state transition to stderr on a TTY.
+func pollDeployment(cmd *cobra.Command, sc *client.Client, agentID, depID string, timeout time.Duration) (Deployment, error) {
+	deadline := time.Now().Add(timeout)
+	last := ""
+	for {
+		var d Deployment
+		if err := sc.Get(cmd.Context(), "/v3/agents/"+agentID+"/deployments/"+depID, &d); err != nil {
+			return d, err
+		}
+		if d.State != last && stdinIsTTY() && !jsonOutput {
+			fmt.Fprintf(os.Stderr, "  … %s\n", d.State)
+		}
+		last = d.State
+		if terminalState(d.State) {
+			return d, nil
+		}
+		if time.Now().After(deadline) {
+			return d, fmt.Errorf("timed out after %s waiting for deployment %s (last state: %s)", timeout, depID, d.State)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 // ── deploy ──
 
 var agentDeployCmd = &cobra.Command{
 	Use:   "deploy [dir]",
 	Short: "Deploy an agent from a directory (agent.toml + prompt.md + skills/)",
-	Args:  cobra.MaximumNArgs(1),
+	Example: "  oc agent deploy                 # deploy the agent.toml in the current directory\n" +
+		"  oc agent deploy ./agents/triage # deploy a specific directory\n" +
+		"  oc agent deploy --no-activate   # stage a revision without making it active\n" +
+		"  oc agent deploy --idempotency-key $GITHUB_SHA   # CI-safe (retries return the same deploy)",
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir := "."
 		if len(args) > 0 {
@@ -215,11 +264,18 @@ var agentDeployCmd = &cobra.Command{
 			input["skills"] = skills
 		}
 		body := map[string]interface{}{"input": input, "activate": !noActivate}
+		if idem, _ := cmd.Flags().GetString("idempotency-key"); idem != "" {
+			body["idempotency_key"] = idem
+		}
 		var env DeploymentEnvelope
 		if err := sc.Post(cmd.Context(), "/v3/agents/"+id+"/deployments", body, &env); err != nil {
 			return err
 		}
 		d := env.Deployment
+		if d.State == "failed" {
+			printer.Print(d, func() { fmt.Printf("Deploy failed: %s\n", deployFailMsg(d)) })
+			return &ExitError{Code: 1}
+		}
 		printer.Print(d, func() {
 			if d.State == "ready" {
 				n := revisionNumber(cmd, sc, id, d.RevisionID)
@@ -257,9 +313,10 @@ func ensureAgentByName(cmd *cobra.Command, sc *client.Client, name, prompt, mode
 // ── revisions / rollback / status ──
 
 var agentRevisionsCmd = &cobra.Command{
-	Use:   "revisions [id|name]",
-	Short: "List an agent's revisions",
-	Args:  cobra.MaximumNArgs(1),
+	Use:     "revisions [id|name]",
+	Short:   "List an agent's revisions",
+	Example: "  oc agent revisions issue-fixer\n  oc agent revisions            # uses the cwd agent.toml",
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sc, err := sessionsClient(cmd)
 		if err != nil {
@@ -294,9 +351,10 @@ var agentRevisionsCmd = &cobra.Command{
 }
 
 var agentRollbackCmd = &cobra.Command{
-	Use:   "rollback <revision>",
-	Short: "Activate an earlier revision (by number or rev_ id)",
-	Args:  cobra.ExactArgs(1),
+	Use:     "rollback <revision>",
+	Short:   "Activate an earlier revision (by number or rev_ id)",
+	Example: "  oc agent rollback 3 --agent issue-fixer\n  oc agent rollback 3            # uses the cwd agent.toml",
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sc, err := sessionsClient(cmd)
 		if err != nil {
@@ -363,7 +421,9 @@ var agentStatusCmd = &cobra.Command{
 var agentLinkCmd = &cobra.Command{
 	Use:   "link <owner/repo>",
 	Short: "Link a GitHub repo directory for push-to-deploy",
-	Args:  cobra.ExactArgs(1),
+	Example: "  oc agent link acme/agents --path agents/issue-fixer --agent issue-fixer\n" +
+		"  oc agent link acme/agents --path agents/issue-fixer --branch main --wait",
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sc, err := sessionsClient(cmd)
 		if err != nil {
@@ -389,6 +449,60 @@ var agentLinkCmd = &cobra.Command{
 				fmt.Printf("  deploying %s — poll: oc agent deployments\n", res.DeploymentID)
 			}
 		})
+		if wait, _ := cmd.Flags().GetBool("wait"); wait && res.DeploymentID != "" {
+			to, _ := cmd.Flags().GetInt("timeout")
+			d, perr := pollDeployment(cmd, sc, id, res.DeploymentID, time.Duration(to)*time.Second)
+			if perr != nil {
+				return perr
+			}
+			if d.State == "failed" {
+				fmt.Fprintf(os.Stderr, "Deploy failed: %s\n", deployFailMsg(d))
+				return &ExitError{Code: 1}
+			}
+			fmt.Printf("Deploy %s: %s\n", res.DeploymentID, d.State)
+		}
+		return nil
+	},
+}
+
+var agentDeploymentCmd = &cobra.Command{
+	Use:   "deployment <deployment-id>",
+	Short: "Show one deployment (use --wait to poll to a terminal state)",
+	Example: "  oc agent deployment dep_123 --agent issue-fixer\n" +
+		"  oc agent deployment dep_123 --wait   # block until ready|failed (exit non-zero on failure)",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sc, err := sessionsClient(cmd)
+		if err != nil {
+			return err
+		}
+		id, err := targetAgentID(cmd, sc, nil)
+		if err != nil {
+			return err
+		}
+		var d Deployment
+		if wait, _ := cmd.Flags().GetBool("wait"); wait {
+			to, _ := cmd.Flags().GetInt("timeout")
+			d, err = pollDeployment(cmd, sc, id, args[0], time.Duration(to)*time.Second)
+		} else {
+			err = sc.Get(cmd.Context(), "/v3/agents/"+id+"/deployments/"+args[0], &d)
+		}
+		if err != nil {
+			return err
+		}
+		printer.Print(d, func() {
+			fmt.Printf("%s  %s", d.ID, d.State)
+			if d.Result != "" {
+				fmt.Printf(" (%s)", d.Result)
+			}
+			fmt.Println()
+			if d.State == "failed" {
+				fmt.Printf("  error: %s\n", deployFailMsg(d))
+			}
+		})
+		if d.State == "failed" {
+			return &ExitError{Code: 1}
+		}
 		return nil
 	},
 }
@@ -464,15 +578,21 @@ func shortDigest(d string) string {
 func registerAgentDeploy() {
 	agentDeployCmd.Flags().String("agent", "", "Target agent id or name (else the manifest's [agent].id / name)")
 	agentDeployCmd.Flags().Bool("no-activate", false, "Create the revision without activating it (stage)")
+	agentDeployCmd.Flags().String("idempotency-key", "", "CI-safe key: a retry with the same key returns the same deployment")
 
-	for _, c := range []*cobra.Command{agentRevisionsCmd, agentRollbackCmd, agentStatusCmd, agentLinkCmd, agentUnlinkCmd, agentDeploymentsCmd} {
+	for _, c := range []*cobra.Command{agentRevisionsCmd, agentRollbackCmd, agentStatusCmd, agentLinkCmd, agentUnlinkCmd, agentDeploymentsCmd, agentDeploymentCmd} {
 		c.Flags().String("agent", "", "Target agent id or name (else the cwd agent.toml)")
 	}
 	agentLinkCmd.Flags().String("path", "", "Agent directory within the repo (e.g. agents/issue-fixer)")
 	agentLinkCmd.Flags().String("branch", "main", "Production branch that auto-activates on push")
 	agentLinkCmd.Flags().Bool("no-deploy", false, "Link only; don't deploy the current HEAD now")
+	agentLinkCmd.Flags().Bool("wait", false, "Wait for the initial deploy to reach a terminal state (exit non-zero on failure)")
+	agentLinkCmd.Flags().Int("timeout", 180, "Seconds to wait with --wait")
 	agentUnlinkCmd.Flags().Bool("yes", false, "Skip confirmation (required for non-interactive callers)")
+	agentDeploymentCmd.Flags().Bool("wait", false, "Poll until the deployment reaches a terminal state (exit non-zero on failure)")
+	agentDeploymentCmd.Flags().Int("timeout", 180, "Seconds to wait with --wait")
 
+	agentCmd.AddCommand(agentInitCmd)
 	agentCmd.AddCommand(agentDeployCmd)
 	agentCmd.AddCommand(agentRevisionsCmd)
 	agentCmd.AddCommand(agentRollbackCmd)
@@ -480,4 +600,5 @@ func registerAgentDeploy() {
 	agentCmd.AddCommand(agentLinkCmd)
 	agentCmd.AddCommand(agentUnlinkCmd)
 	agentCmd.AddCommand(agentDeploymentsCmd)
+	agentCmd.AddCommand(agentDeploymentCmd)
 }

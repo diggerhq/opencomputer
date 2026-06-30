@@ -45,6 +45,8 @@ var sessionCmd = &cobra.Command{
 var sessionCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Start a session on an agent",
+	Example: "  oc session create --agent issue-fixer --input \"triage issue #42\"\n" +
+		"  oc session create --agent issue-fixer --input \"...\" --revision 3   # pin a staged revision",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sc, err := sessionsClient(cmd)
 		if err != nil {
@@ -214,9 +216,10 @@ var sessionLogsCmd = &cobra.Command{
 }
 
 var sessionSteerCmd = &cobra.Command{
-	Use:   "steer <id> <text>",
-	Short: "Send a message to a running session",
-	Args:  cobra.ExactArgs(2),
+	Use:     "steer <id> <text>",
+	Short:   "Send a message to a running session",
+	Example: "  oc session steer ses_123 \"also check the changelog\"",
+	Args:    cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sc, err := sessionsClient(cmd)
 		if err != nil {
