@@ -10,7 +10,6 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { Button } from '@/components/ui/button'
-import { EmptyState } from '@/components/empty-state'
 
 const fmtBytes = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KiB`)
 
@@ -58,13 +57,17 @@ export function AgentSkills({ agentId }: { agentId: string }) {
       </PanelHeader>
       <PanelContent className="space-y-4">
         {!isLoading && skills.length === 0 ? (
-          <div className="space-y-3">
-            <EmptyState
-              icon={FileArchive}
-              title="No skills yet"
-              description="A skill is a folder with a SKILL.md. Upload a .zip shaped like:"
-            />
-            <pre className="text-muted-foreground/70 mx-auto w-fit text-left font-mono text-xs leading-relaxed">
+          <div className="flex items-center justify-between gap-6 rounded-md border border-dashed px-5 py-6">
+            <div className="space-y-1.5">
+              <div className="text-foreground flex items-center gap-2 text-sm font-medium">
+                <FileArchive className="text-muted-foreground size-5" />
+                No skills yet
+              </div>
+              <p className="text-muted-foreground max-w-xs text-xs">
+                A skill is a folder with a SKILL.md. Upload a .zip shaped like the example.
+              </p>
+            </div>
+            <pre className="text-muted-foreground/70 shrink-0 text-left font-mono text-xs leading-relaxed">
 {`skills/
 ├─ triage/
 │  └─ SKILL.md
