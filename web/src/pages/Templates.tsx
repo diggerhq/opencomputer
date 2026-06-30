@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Package } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
-import { deleteImage, getImages, type ImageCacheItem } from '@/api/client'
+import { deleteSnapshot, getImages, type ImageCacheItem } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
 import { Panel } from '@/components/panel'
 import { Button } from '@/components/ui/button'
@@ -58,14 +58,14 @@ export default function Templates() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteImage(id),
+    mutationFn: (name: string) => deleteSnapshot(name),
     onError: (error) => notifyError("Couldn't delete the template.", error),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['images'] }),
   })
 
   const confirmDelete = () => {
-    if (!toDelete) return
-    deleteMutation.mutate(toDelete.id, { onSuccess: () => setToDelete(null) })
+    if (!toDelete?.name) return
+    deleteMutation.mutate(toDelete.name, { onSuccess: () => setToDelete(null) })
   }
 
   const columns: Column<ImageCacheItem>[] = [

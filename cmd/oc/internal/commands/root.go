@@ -65,6 +65,7 @@ func init() {
 	rootCmd.AddCommand(execCmd)
 	rootCmd.AddCommand(shellCmd)
 	rootCmd.AddCommand(checkpointCmd)
+	rootCmd.AddCommand(templateCmd)
 	rootCmd.AddCommand(patchCmd)
 	rootCmd.AddCommand(previewCmd)
 	rootCmd.AddCommand(mountsCmd)
