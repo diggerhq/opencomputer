@@ -167,12 +167,18 @@ export function AgentDeploySource({
         {srcLoading || appLoading ? (
           <p className="text-muted-foreground text-xs">Loading…</p>
         ) : !app?.installed ? (
-          <Button size="sm" variant="outline" disabled={!app?.install_url} asChild>
-            <a href={app?.install_url ?? '#'} target="_blank" rel="noreferrer">
-              <GithubMark className="size-4" />
-              Connect GitHub
-            </a>
-          </Button>
+          <div className="space-y-3">
+            <Button size="sm" variant="outline" disabled={!app?.install_url} asChild>
+              <a href={app?.install_url ?? '#'} target="_blank" rel="noreferrer">
+                <GithubMark className="size-4" />
+                Connect repository
+              </a>
+            </Button>
+            <p className="text-muted-foreground text-xs">
+              Or deploy from the CLI:{' '}
+              <code className="font-mono">oc agent deploy</code>
+            </p>
+          </div>
         ) : (
           <div className="space-y-3" ref={pickerRef}>
             <Select

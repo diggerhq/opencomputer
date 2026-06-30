@@ -199,6 +199,7 @@ export function SlackConnect({
   return (
     <Panel className="overflow-hidden">
       <PanelContent className="space-y-3">
+        <div className="text-muted-foreground text-xs font-medium">Slack</div>
         {isLoading ? (
           <p className="text-muted-foreground text-xs">Checking…</p>
         ) : isError ? (
