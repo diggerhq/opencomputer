@@ -96,7 +96,7 @@ Session = { id, status, head, input_cursor, agent_id, credential_id,
             limits?: { tokens?, turn_seconds?, turns? } }
 Turn   = { id, state, yield_reason?, result_event_id?, error?, started_at?, completed_at? }
 Source = { repo, ref, sha, name? } | { url, ref, sha, name?, auth }
-  auth (inline only) = { type: "risky_short_lived_token", token, expires_at }   // can't refresh
+  auth (inline) = { type:"risky_short_lived_token", token, expires_at }   // can't refresh
 Summary= { name, status, path, sha, resolved_sha?, error_code?, error_message?, retryable? }
   status     = pending | materializing | resolved | failed | auth_required
   error_code = source.* — auth_required, repo_not_selected, permission_missing,
