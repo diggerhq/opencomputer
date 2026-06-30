@@ -12,6 +12,7 @@ const AgentDetail = lazy(() => import('./pages/AgentDetail'))
 const Credentials = lazy(() => import('./pages/Credentials'))
 const Sessions = lazy(() => import('./pages/Sessions'))
 const SessionDetail = lazy(() => import('./pages/SessionDetail'))
+const Browsers = lazy(() => import('./pages/Browsers'))
 const Sandboxes = lazy(() => import('./pages/Sandboxes'))
 const APIKeys = lazy(() => import('./pages/APIKeys'))
 const Checkpoints = lazy(() => import('./pages/Checkpoints'))
@@ -34,6 +35,7 @@ export default function App() {
             <Route path="credentials" element={<Credentials />} />
             <Route path="sessions" element={<Sessions />} />
             <Route path="sessions/:sessionId" element={<SessionDetail />} />
+            <Route path="browsers" element={<Browsers />} />
             {/* Sandbox plane */}
             <Route path="sandboxes" element={<Sandboxes />} />
             <Route path="sandboxes/:sandboxId" element={<SandboxDetail />} />
