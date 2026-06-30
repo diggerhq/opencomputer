@@ -100,7 +100,25 @@ A session pins the agent's active revision for its whole life — editing the ag
 | `metadata?` | object | opaque app routing state |
 | `key?` `created_at` | | get-or-create key, timestamp |
 
-**`Turn`** — `{ id, state, yield_reason?, result_event_id?, error?, started_at?, completed_at? }`. `yield_reason` ∈ `completed · needs_input · error · budget_exceeded · deadline_exceeded · max_turns · canceled` (`needs_input` → answer by [steering](#steer)).
+**`Turn`**
+
+| Field | Notes |
+|---|---|
+| `id` `state` | turn id, current state |
+| `yield_reason?` | why it ended (below) |
+| `result_event_id?` | the event carrying the result |
+| `error?` | failure detail, if any |
+| `started_at?` `completed_at?` | timing |
+
+A turn's **`yield_reason`** tells you why it stopped:
+
+| Value | Meaning |
+|---|---|
+| `completed` | finished normally |
+| `needs_input` | the agent asked a question — answer it by [steering](#steer) |
+| `error` | the turn failed (see `error`) |
+| `budget_exceeded` / `deadline_exceeded` / `max_turns` | a [limit](#sessions) tripped — tokens / wall-clock / auto-runs |
+| `canceled` | you cancelled it |
 
 **`SessionSource`** — one of two variants:
 
@@ -115,7 +133,7 @@ A session pins the agent's active revision for its whole life — editing the ag
 |---|---|
 | `name` `path` `sha` `resolved_sha?` | checkout identity + resolved commit |
 | `status` | `pending · materializing · resolved · failed · auth_required` |
-| `error_code?` `error_message?` `retryable?` | `error_code`: `source.{auth_required, repo_not_selected, permission_missing, mint_failed, ref_not_found, sha_mismatch}` |
+| `error_code?` `error_message?` `retryable?` | on failure. Codes: `auth_required` (App not installed), `repo_not_selected` (install doesn't cover the repo), `permission_missing`, `mint_failed`, `ref_not_found`, `sha_mismatch` |
 
 ## Events
 
@@ -289,7 +307,7 @@ You **deploy** an agent's behavior (`prompt` + `model` + `skills`); each deploym
 | Field | Notes |
 |---|---|
 | `id` `created_at` | |
-| `state` | `accepted · queued · fetching · validating · uploading · ready · failed · superseded · skipped` |
+| `state` | progresses `accepted → queued → fetching → validating → uploading → ready`; terminal: `failed`, `superseded` (a newer deploy won), `skipped` (content unchanged) |
 | `result` | `created · skipped · failed` |
 | `revision_id` | the revision it produced (`null` until `ready`) |
 | `active` | whether that revision is the active one |
@@ -426,7 +444,7 @@ Linking deploys the current production HEAD immediately (unless `deploy_now: fal
 |---|---|
 | `agent_id` `repo_id` `path` | the linked agent · repo · directory within it |
 | `production_ref` | branch that auto-activates on push |
-| `status` | `active · path_missing · auth_required · repo_not_selected · app_suspended · error` |
+| `status` | `active`, or a problem: `path_missing`, `auth_required`, `repo_not_selected`, `app_suspended`, `error` |
 | `latest_seen_sha?` `active_deployed_sha?` | newest sha observed · sha behind the active revision |
 
 ## Destinations
