@@ -4,9 +4,19 @@ title: "Deploys & revisions"
 description: "Deploy agent behavior, version it as immutable revisions, roll back instantly"
 ---
 
-You **deploy** an agent's behavior — its `prompt`, `model`, and [skills](#skills). Each deploy produces an immutable **revision**; the agent's **active revision** is what new [sessions](/agent-sessions/sessions) use. Roll back by re-activating an earlier revision.
+From a deploy's point of view, an agent **is a small directory**:
 
-Deploy three ways — all the same underneath: the **API/SDK**, the **`oc` CLI**, or [**push to GitHub**](#deploy-from-a-repo).
+```
+my-agent/
+├─ agent.toml      # name, model, runtime family
+├─ prompt.md       # the system prompt
+├─ skills/         # optional — folders the agent loads when it needs them
+└─ runtime/        # optional — a custom runtime image (coming soon)
+```
+
+`agent.toml` + `prompt.md` are all an agent needs; `skills/` and `runtime/` are additive — add them only when you do. A **deploy** packages this directory into an immutable **revision**; the **active revision** is what new [sessions](/agent-sessions/sessions) use, and you roll back by re-activating an earlier one.
+
+Deploy three ways — all the same underneath: the **API/SDK** (send it inline), the **`oc` CLI** (bundle a local directory), or a [**repo push**](#deploy-from-a-repo).
 
 <Note>Revisions are **linear**: each explicit deploy appends a new revision (the number only goes up), like a deployment on Vercel/Fly. Rollback moves the **active pointer** back — it never rewrites history. In-flight sessions keep the revision they started on; only new sessions pick up a change.</Note>
 
@@ -74,16 +84,7 @@ For [repo deploys](#deploy-from-a-repo) the **branch decides**: pushes to the pr
 
 ## Deploy from a repo
 
-Keep the agent's definition in Git and **push to deploy**. The agent is a directory:
-
-```
-issue-fixer/
-  agent.toml      # name, model, runtime
-  prompt.md       # system prompt
-  skills/         # optional — one folder per skill
-```
-
-Install the OpenComputer GitHub App on the repo (the agent page in the [dashboard](https://app.opencomputer.dev), or **Settings → GitHub**), then connect it to an agent:
+Keep the agent directory (above) in Git and **push to deploy**. Install the OpenComputer GitHub App on the repo (the agent page in the [dashboard](https://app.opencomputer.dev), or **Settings → GitHub**), then connect it to an agent:
 
 <CodeGroup>
 
