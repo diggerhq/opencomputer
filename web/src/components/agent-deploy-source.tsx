@@ -165,7 +165,7 @@ export function AgentDeploySource({
         ) : source && st ? (
           /* ── Connected ── */
           <div className="space-y-3">
-            <div className="flex items-center justify-between gap-3 rounded-md border px-4 py-3">
+            <div className="space-y-2 rounded-md border px-4 py-3">
               <div className="space-y-1">
                 <div className="text-foreground flex items-center gap-2 font-mono text-[13px]">
                   <span>
@@ -190,7 +190,7 @@ export function AgentDeploySource({
                   ) : null}
                 </div>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
+              <div className="flex items-center gap-1">
                 {st.tone === 'ok' ? (
                   <Button
                     variant="ghost"
@@ -272,7 +272,7 @@ export function AgentDeploySource({
         ) : (
           /* ── Installed → pick a repo ── */
           <div className="space-y-4" ref={pickerRef}>
-            <div className="grid gap-3 sm:grid-cols-[1.4fr_1fr_8rem]">
+            <div className="grid gap-3">
               <Field label="Repository">
                 <Select
                   value={repo}

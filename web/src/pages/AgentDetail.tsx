@@ -1,6 +1,6 @@
-import { useEffect, useState, type ComponentType } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, MessagesSquare, Send, GitBranch } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
@@ -11,8 +11,6 @@ import {
   getCredentials,
   createCredential,
   getDeploymentSource,
-  getDeployApp,
-  getSlackConnection,
   type Agent,
 } from '@/api/client'
 import type { Session } from '@/api/schemas'
@@ -46,20 +44,6 @@ export default function AgentDetail() {
   const { agentId = '', tab } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [searchParams, setSearchParams] = useSearchParams()
-  // ?connect=slack|github (set by an Overview setup CTA) auto-opens the matching
-  // flow on the Settings tab; the param is consumed once, then cleared so a
-  // refresh / re-render doesn't re-trigger it.
-  const connect = searchParams.get('connect')
-  useEffect(() => {
-    if (connect) {
-      const t = window.setTimeout(
-        () => setSearchParams({}, { replace: true }),
-        0,
-      )
-      return () => window.clearTimeout(t)
-    }
-  }, [connect, setSearchParams])
   const active: Tab =
     tab === 'revisions'
       ? 'revisions'
@@ -96,20 +80,6 @@ export default function AgentDetail() {
         return null
       }
     },
-  })
-
-  // Slack connection (shared cache key with SlackConnect) — drives the setup strip.
-  const { data: slack } = useQuery({
-    queryKey: ['slack', agentId],
-    queryFn: () => getSlackConnection(agentId),
-  })
-
-  // OC GitHub App install-state (shared key with the Source card) — lets the
-  // setup strip's GitHub CTA branch: not-installed → install link, installed →
-  // deep-link to the repo picker.
-  const { data: deployApp } = useQuery({
-    queryKey: ['deploy-app'],
-    queryFn: getDeployApp,
   })
 
   // Credentials for the switch picker + to label the current one.
@@ -277,48 +247,9 @@ export default function AgentDetail() {
   const activeRev = agent.active_revision?.number ?? agent.revision ?? 1
   const base = `/agents/${agent.id}`
 
-  // Setup-strip CTAs — each performs the first step, not just a nav to Settings.
-  const onConnectGithub = () => {
-    if (deployApp && !deployApp.installed && deployApp.install_url) {
-      // Not installed yet → straight to the GitHub App install (nothing to do in-app first).
-      window.open(deployApp.install_url, '_blank', 'noopener')
-    } else {
-      // Installed (or unknown) → Settings with the repo picker auto-opened.
-      void navigate(`${base}/settings?connect=github`)
-    }
-  }
-  const onConnectSlack = () => void navigate(`${base}/settings?connect=slack`)
-  const showStrip = active !== 'settings' && (!source || !slack)
-
   return (
     <div className="mx-auto max-w-5xl">
       <BackLink />
-
-      {/* Setup strip — prominent, above the tabs; only the steps not yet done. */}
-      {showStrip && (
-        <div className="mb-4 space-y-2">
-          {!source && (
-            <SetupRow
-              icon={GitBranch}
-              text="Connect a GitHub repo so every push ships a new revision."
-              cta={
-                deployApp && !deployApp.installed
-                  ? 'Install GitHub App'
-                  : 'Connect repo'
-              }
-              onClick={onConnectGithub}
-            />
-          )}
-          {!slack && (
-            <SetupRow
-              icon={MessagesSquare}
-              text="Connect Slack so people can @-mention this agent."
-              cta="Connect Slack"
-              onClick={onConnectSlack}
-            />
-          )}
-        </div>
-      )}
 
       {/* Sticky header: identity + status + primary action, with the tab bar. */}
       <div className="bg-background sticky top-0 z-20 border-b">
@@ -363,108 +294,113 @@ export default function AgentDetail() {
 
       <div className="py-6">
         {active === 'overview' && (
-          <div className="space-y-6">
-            {/* Behavior — read-only when a repo drives the agent. */}
-            <Panel>
-              <PanelContent className="space-y-5">
-                {source ? (
-                  <div className="space-y-4">
-                    <div className="border-border bg-panel-2 flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs">
-                      <GitBranch className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
-                      <div className="space-y-0.5">
-                        <p className="text-foreground">
-                          Managed from a connected repo —{' '}
-                          <span className="font-mono">
-                            {source.full_name ?? source.path ?? 'repo'}
-                            {source.full_name && source.path
-                              ? `/${source.path}`
-                              : ''}
-                            @{source.production_ref}
-                          </span>
-                        </p>
-                        <p className="text-muted-foreground">
-                          The repo is the source of truth. Edit there and push,
-                          or{' '}
-                          <Link
-                            className="underline underline-offset-4"
-                            to={`${base}/revisions`}
-                          >
-                            browse revisions
-                          </Link>
-                          .
-                        </p>
-                      </div>
-                    </div>
-                    <ReadOnlyField label="Model" value={agent.model} mono />
-                    <ReadOnlyField
-                      label="System prompt"
-                      value={savedPrompt || '—'}
-                      pre
-                    />
-                  </div>
-                ) : (
-                  <>
-                    <Field label="Model" htmlFor="agent-model">
-                      <div className="flex items-center gap-3">
-                        <Select
-                          id="agent-model"
-                          value={agent.model}
-                          onValueChange={(m) => modelMutation.mutate(m)}
-                          options={modelOptions}
-                          className="max-w-xs"
-                        />
-                        <Saving show={modelMutation.isPending} />
-                      </div>
-                    </Field>
-                    <Field label="System prompt" htmlFor="agent-prompt">
-                      <Textarea
-                        id="agent-prompt"
-                        value={promptValue}
-                        onChange={(e) => setPromptDraft(e.target.value)}
-                        placeholder="You are a meticulous code reviewer…"
-                        className="min-h-32"
-                      />
-                      <div className="mt-2 flex items-center gap-3">
-                        <p className="text-muted-foreground text-xs">
-                          How the agent behaves. Saving bumps the agent's
-                          revision.
-                        </p>
-                        <div className="ml-auto flex items-center gap-2">
-                          <Saving show={promptMutation.isPending} />
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            disabled={!promptDirty || promptMutation.isPending}
-                            onClick={() => setPromptDraft(undefined)}
-                          >
-                            Discard
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            disabled={
-                              !promptDirty ||
-                              promptMutation.isPending ||
-                              !promptValue.trim()
-                            }
-                            onClick={() =>
-                              promptMutation.mutate(promptValue.trim())
-                            }
-                          >
-                            Save prompt
-                          </Button>
+          <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
+            {/* Left: behavior (model/prompt) + skills — read-only when a repo drives the agent. */}
+            <div className="space-y-6">
+              <Panel>
+                <PanelContent className="space-y-5">
+                  {source ? (
+                    <div className="space-y-4">
+                      <div className="border-border bg-panel-2 flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs">
+                        <GitBranch className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
+                        <div className="space-y-0.5">
+                          <p className="text-foreground">
+                            Managed from a connected repo —{' '}
+                            <span className="font-mono">
+                              {source.full_name ?? source.path ?? 'repo'}
+                              {source.full_name && source.path
+                                ? `/${source.path}`
+                                : ''}
+                              @{source.production_ref}
+                            </span>
+                          </p>
+                          <p className="text-muted-foreground">
+                            The repo is the source of truth. Edit there and
+                            push, or{' '}
+                            <Link
+                              className="underline underline-offset-4"
+                              to={`${base}/revisions`}
+                            >
+                              browse revisions
+                            </Link>
+                            .
+                          </p>
                         </div>
                       </div>
-                    </Field>
-                  </>
-                )}
-              </PanelContent>
-            </Panel>
-
-            <div className="grid gap-4 lg:grid-cols-2">
+                      <ReadOnlyField label="Model" value={agent.model} mono />
+                      <ReadOnlyField
+                        label="System prompt"
+                        value={savedPrompt || '—'}
+                        pre
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <Field label="Model" htmlFor="agent-model">
+                        <div className="flex items-center gap-3">
+                          <Select
+                            id="agent-model"
+                            value={agent.model}
+                            onValueChange={(m) => modelMutation.mutate(m)}
+                            options={modelOptions}
+                            className="max-w-xs"
+                          />
+                          <Saving show={modelMutation.isPending} />
+                        </div>
+                      </Field>
+                      <Field label="System prompt" htmlFor="agent-prompt">
+                        <Textarea
+                          id="agent-prompt"
+                          value={promptValue}
+                          onChange={(e) => setPromptDraft(e.target.value)}
+                          placeholder="You are a meticulous code reviewer…"
+                          className="min-h-32"
+                        />
+                        <div className="mt-2 flex items-center gap-3">
+                          <p className="text-muted-foreground text-xs">
+                            How the agent behaves. Saving bumps the agent's
+                            revision.
+                          </p>
+                          <div className="ml-auto flex items-center gap-2">
+                            <Saving show={promptMutation.isPending} />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              disabled={
+                                !promptDirty || promptMutation.isPending
+                              }
+                              onClick={() => setPromptDraft(undefined)}
+                            >
+                              Discard
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={
+                                !promptDirty ||
+                                promptMutation.isPending ||
+                                !promptValue.trim()
+                              }
+                              onClick={() =>
+                                promptMutation.mutate(promptValue.trim())
+                              }
+                            >
+                              Save prompt
+                            </Button>
+                          </div>
+                        </div>
+                      </Field>
+                    </>
+                  )}
+                </PanelContent>
+              </Panel>
               <AgentSkills agentId={agent.id} />
-              <ShipRevisionCard connected={!!source} base={base} />
+            </div>
+            {/* Right rail: connect-or-status for the agent's source + Slack. */}
+            <div className="space-y-4">
+              <AgentDeploySource agentId={agent.id} />
+              <SlackConnect agentId={agent.id} agentName={agent.name} />
             </div>
           </div>
         )}
@@ -531,19 +467,6 @@ export default function AgentDetail() {
 
         {active === 'settings' && (
           <div className="space-y-6">
-            {/* Source — connect a GitHub repo as the agent's source. */}
-            <AgentDeploySource
-              agentId={agent.id}
-              autoFocusPicker={connect === 'github'}
-            />
-
-            {/* Slack — let people talk to the agent from Slack. */}
-            <SlackConnect
-              agentId={agent.id}
-              agentName={agent.name}
-              autoOpen={connect === 'slack'}
-            />
-
             {/* Credential — which key the agent runs on. */}
             <Panel>
               <PanelHeader>
@@ -718,75 +641,6 @@ function ReadOnlyField({
           {value}
         </div>
       )}
-    </div>
-  )
-}
-
-// Compact "how to ship a revision" helper for the Overview dashboard.
-function ShipRevisionCard({
-  connected,
-  base,
-}: {
-  connected: boolean
-  base: string
-}) {
-  return (
-    <Panel>
-      <PanelHeader>
-        <PanelTitle>Ship a new revision</PanelTitle>
-      </PanelHeader>
-      <PanelContent className="text-muted-foreground space-y-2 text-xs">
-        <p>Every change is an immutable revision. Three ways to ship one:</p>
-        <ul className="space-y-1.5">
-          <li>Edit the model or prompt above, then save.</li>
-          <li>
-            Run{' '}
-            <code className="bg-panel-2 text-foreground rounded px-1 py-0.5 font-mono">
-              oc agent deploy
-            </code>{' '}
-            from the agent directory.
-          </li>
-          <li>
-            {connected ? (
-              'Push to the connected repo — each push ships a revision.'
-            ) : (
-              <>
-                Connect a repo in{' '}
-                <Link
-                  className="underline underline-offset-4"
-                  to={`${base}/settings`}
-                >
-                  Settings
-                </Link>{' '}
-                — then every push ships one.
-              </>
-            )}
-          </li>
-        </ul>
-      </PanelContent>
-    </Panel>
-  )
-}
-
-// A setup-strip row: one not-yet-done step + a CTA button that does the first step.
-function SetupRow({
-  icon: Icon,
-  text,
-  cta,
-  onClick,
-}: {
-  icon: ComponentType<{ className?: string }>
-  text: string
-  cta: string
-  onClick: () => void
-}) {
-  return (
-    <div className="border-border bg-panel-2 flex flex-wrap items-center gap-3 rounded-md border px-4 py-2.5">
-      <Icon className="text-muted-foreground size-4 shrink-0" />
-      <span className="text-foreground min-w-0 flex-1 text-sm">{text}</span>
-      <Button size="sm" onClick={onClick}>
-        {cta}
-      </Button>
     </div>
   )
 }
