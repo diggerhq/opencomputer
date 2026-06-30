@@ -31,11 +31,6 @@ function browserMode(browser: BrowserSession) {
   return browser.headless ? 'Headless' : 'Headful'
 }
 
-function openExternal(url?: string | null) {
-  if (!url) return
-  window.open(url, '_blank', 'noopener,noreferrer')
-}
-
 export default function Browsers() {
   const queryClient = useQueryClient()
   const [status, setStatus] = useState('')
@@ -149,24 +144,36 @@ export default function Browsers() {
         <div className="flex h-8 items-center justify-end gap-1">
           {browser.live_view_url ? (
             <Button
+              asChild
               variant="ghost"
               size="icon"
               title="Open live view"
               aria-label="Open live view"
-              onClick={() => openExternal(browser.live_view_url)}
             >
-              <ExternalLink className="size-4" />
+              <a
+                href={browser.live_view_url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <ExternalLink className="size-4" />
+              </a>
             </Button>
           ) : null}
           {browser.replay_view_url ? (
             <Button
+              asChild
               variant="ghost"
               size="icon"
               title="Open replay"
               aria-label="Open replay"
-              onClick={() => openExternal(browser.replay_view_url)}
             >
-              <Monitor className="size-4" />
+              <a
+                href={browser.replay_view_url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Monitor className="size-4" />
+              </a>
             </Button>
           ) : null}
           {canDeleteBrowser(browser) ? (
@@ -190,7 +197,7 @@ export default function Browsers() {
     <div>
       <PageHeader
         title="Browser sessions"
-        description="Kernel-backed browser sessions, live views, and recordings."
+        description="Browser sessions, live views, and recordings."
         api={{
           method: 'POST',
           path: '/v1/browsers',
@@ -253,7 +260,7 @@ export default function Browsers() {
         open={toDelete !== null}
         onOpenChange={(open) => !open && setToDelete(null)}
         title={`Delete browser ${toDelete?.id ?? ''}?`}
-        description="The browser session will be stopped. Existing replay links remain available when Kernel recorded the session."
+        description="The browser session will be stopped. Existing replay links remain available when recording was enabled."
         confirmLabel="Delete browser"
         destructive
         pending={deleteMutation.isPending}
@@ -333,7 +340,7 @@ function ProfilesTable({
     },
     {
       key: 'provider',
-      header: 'Kernel profile',
+      header: 'Provider profile',
       cell: (profile) => (
         <span className="text-muted-foreground font-mono text-xs">
           {profile.provider_profile_id}

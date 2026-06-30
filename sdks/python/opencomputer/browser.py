@@ -1,4 +1,4 @@
-"""Browser entity for OpenComputer's Kernel-backed browser API."""
+"""Browser entity for OpenComputer's browser API."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def _resolve_browser_api_url(api_url: str | None) -> str:
 
 @dataclass
 class Browser:
-    """Kernel-backed browser session managed through OpenComputer."""
+    """Browser session managed through OpenComputer."""
 
     id: str
     provider: str
@@ -60,7 +60,7 @@ class Browser:
         chrome_policy: dict[str, Any] | None = None,
         telemetry: dict[str, Any] | None = None,
     ) -> Browser:
-        """Create a browser session and return Kernel's direct connection URLs."""
+        """Create a browser session and return direct connection URLs."""
         url = _resolve_browser_api_url(api_url)
         key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
         client = httpx.AsyncClient(base_url=url, headers=_headers(key), timeout=30.0)
