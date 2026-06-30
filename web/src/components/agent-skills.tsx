@@ -1,7 +1,7 @@
 import { useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileArchive, Upload } from 'lucide-react'
-import { notifyError } from '@/lib/errors'
+import { notifyError, notifySuccess } from '@/lib/errors'
 import { getAgentSkills, putAgentSkills, deleteAgentSkills } from '@/api/client'
 import {
   Panel,
@@ -37,12 +37,20 @@ export function AgentSkills({ agentId }: { agentId: string }) {
   }
   const upload = useMutation({
     mutationFn: (zip: File) => putAgentSkills(agentId, zip),
-    onSuccess: invalidate,
+    onSuccess: (r) => {
+      invalidate()
+      notifySuccess(`Skills deployed${r.revision ? ` — revision #${r.revision.number} active` : ''}`)
+    },
     onError: (e) => notifyError("Couldn't upload the skills.", e),
   })
   const remove = useMutation({
     mutationFn: () => deleteAgentSkills(agentId),
-    onSuccess: invalidate,
+    onSuccess: (r) => {
+      invalidate()
+      // Removing skills re-activates the matching no-skills revision (content-addressed), which
+      // may be an EARLIER number — name it so the pointer move is obvious, not surprising.
+      notifySuccess(`Skills removed${r.revision ? ` — now on revision #${r.revision.number}` : ''}`)
+    },
     onError: (e) => notifyError("Couldn't remove the skills.", e),
   })
   const busy = upload.isPending || remove.isPending

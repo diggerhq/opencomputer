@@ -16,3 +16,8 @@ export function notifyError(message: string, error?: unknown): void {
     detail && detail !== message ? { description: detail } : undefined,
   )
 }
+
+/** Show a brief success toast (e.g. confirming a deploy + which revision is now active). */
+export function notifySuccess(message: string, description?: string): void {
+  toast.success(message, description ? { description } : undefined)
+}
