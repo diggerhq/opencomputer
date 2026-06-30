@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FileArchive, Upload } from 'lucide-react'
+import { Upload } from 'lucide-react'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import { getAgentSkills, putAgentSkills, deleteAgentSkills } from '@/api/client'
 import {
@@ -58,35 +58,16 @@ export function AgentSkills({ agentId }: { agentId: string }) {
     <Panel className="overflow-hidden">
       <PanelHeader>
         <PanelTitle>Skills</PanelTitle>
-        <span className="text-muted-foreground text-xs">
-          Skill files the agent loads at run time.
-        </span>
       </PanelHeader>
-      <PanelContent className="space-y-4">
+      <PanelContent className="space-y-3">
         {!isLoading && skills.length === 0 ? (
-          <div className="flex items-center justify-between gap-6 rounded-md border border-dashed px-5 py-6">
-            <div className="space-y-1.5">
-              <div className="text-foreground flex items-center gap-2 text-sm font-medium">
-                <FileArchive className="text-muted-foreground size-5" />
-                No skills yet
-              </div>
-              <p className="text-muted-foreground text-xs">
-                A skill is a folder with a SKILL.md — upload a .zip like this:
-              </p>
-            </div>
-            <pre className="text-muted-foreground/70 shrink-0 text-left font-mono text-xs leading-relaxed">
-{`skills/
-├─ triage/
-│  └─ SKILL.md
-└─ pr-review/
-   ├─ SKILL.md
-   └─ run.sh`}
-            </pre>
-          </div>
+          <p className="text-muted-foreground text-xs">
+            No skills yet — upload a .zip of skill folders (each a folder with a SKILL.md).
+          </p>
         ) : (
-          <ul className="divide-border divide-y rounded-md border">
+          <ul className="divide-border divide-y">
             {skills.map((s) => (
-              <li key={s.name} className="px-3 py-2.5">
+              <li key={s.name} className="py-2 first:pt-0">
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="text-foreground font-mono text-[13px]">{s.name}</span>
                   <span className="text-muted-foreground shrink-0 text-xs">
@@ -96,15 +77,13 @@ export function AgentSkills({ agentId }: { agentId: string }) {
                 </div>
                 {s.description ? (
                   <p className="text-muted-foreground mt-0.5 text-xs">{s.description}</p>
-                ) : (
-                  <p className="text-muted-foreground/70 mt-0.5 text-xs italic">no description</p>
-                )}
+                ) : null}
               </li>
             ))}
           </ul>
         )}
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <input
             ref={inputRef}
             type="file"
@@ -116,30 +95,21 @@ export function AgentSkills({ agentId }: { agentId: string }) {
               e.target.value = '' // allow re-selecting the same file
             }}
           />
-          <p className="text-muted-foreground text-xs">
-            Deploys a new revision; prompt &amp; model unchanged.
-          </p>
-          <div className="ml-auto flex items-center gap-2">
-            {skills.length > 0 ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:text-foreground"
-                disabled={busy}
-                onClick={() => remove.mutate()}
-              >
-                {remove.isPending ? 'Removing…' : 'Remove all'}
-              </Button>
-            ) : null}
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}>
-              <Upload className="size-4" />
-              {upload.isPending
-                ? 'Uploading…'
-                : skills.length
-                  ? 'Replace skills (.zip)'
-                  : 'Upload skills (.zip)'}
+          {skills.length > 0 ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:text-foreground"
+              disabled={busy}
+              onClick={() => remove.mutate()}
+            >
+              {remove.isPending ? 'Removing…' : 'Remove all'}
             </Button>
-          </div>
+          ) : null}
+          <Button size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => inputRef.current?.click()}>
+            <Upload className="size-4" />
+            {upload.isPending ? 'Uploading…' : skills.length ? 'Replace .zip' : 'Upload .zip'}
+          </Button>
         </div>
       </PanelContent>
     </Panel>
