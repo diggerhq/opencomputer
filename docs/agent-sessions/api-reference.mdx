@@ -436,7 +436,7 @@ A skill is a folder with a `SKILL.md`; PUT/DELETE are **deployments** (versioned
 
 </Tabs>
 
-Linking deploys the current production HEAD immediately (unless `deploy_now: false` / `--no-deploy`); a push to the production branch activates, other branches stage. Requires `agents:link` + `agents:deploy`. Repo/path are server-anchored to the link. Full flow + guarantees: [Deploy from a repo](/agent-sessions/revisions#deploy-from-a-repo).
+Linking deploys the current production HEAD immediately (unless `deploy_now: false` / `--no-deploy`); a push to the production branch activates, other branches stage. **Scopes:** `deploy_now: false` needs `agents:link`; the default (with an initial deploy) needs `agents:link` + `agents:deploy`, plus `agents:activate` when that deploy auto-activates. Repo/path are server-anchored to the link. Deployment sources use the **OpenComputer App** (no BYO). Full flow + guarantees: [Deploy from a repo](/agent-sessions/revisions#deploy-from-a-repo).
 
 **`DeploymentSource`**
 
@@ -530,7 +530,7 @@ See [Webhooks](/agent-sessions/webhooks#signing-retries-and-dedupe) for signing,
 
 ## GitHub Apps and Repos
 
-A GitHub App lets OpenComputer mint short-lived, repo-scoped tokens; a **Repo** is a stable handle resolving to your configured App (the OpenComputer App by default). Used both for session [sources](#sessions) (work repos) and [deploy-from-a-repo](#deploy-from-a-repo) (definition repos). Install the [OpenComputer App](https://github.com/apps/opencomputerdev/installations/new), or bring your own.
+A GitHub App lets OpenComputer mint short-lived, repo-scoped tokens; a **Repo** is a stable handle resolving to your configured App (the OpenComputer App by default). Used for session [sources](#sessions) (work repos) and [deploy-from-a-repo](#deploy-from-a-repo) (the agent's definition repo). Install the [OpenComputer App](https://github.com/apps/opencomputerdev/installations/new). **Bring-your-own** Apps apply to **session sources / PR publishing** (your users acting on their own repos) — **deployment sources always use the OpenComputer App**.
 
 <Tabs>
 
