@@ -272,9 +272,9 @@ export default function AgentDetail() {
               <span className="text-foreground font-mono">{agent.id}</span>
               <span>Runtime</span>
               <span className="text-foreground capitalize">{agent.runtime}</span>
-              <span>Revision</span>
+              <span>Active revision</span>
               <span className="text-foreground font-mono">
-                {agent.revision ?? 1}
+                #{agent.active_revision?.number ?? agent.revision ?? 1}
               </span>
               <span>Created</span>
               <span className="text-foreground">

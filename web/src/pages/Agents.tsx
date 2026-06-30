@@ -185,11 +185,11 @@ export default function Agents() {
     },
     {
       key: 'revision',
-      header: 'Revision',
+      header: 'Active revision',
       align: 'right',
       cell: (a) => (
         <span className="text-muted-foreground font-mono text-xs">
-          {a.revision ?? 1}
+          #{a.active_revision?.number ?? a.revision ?? 1}
         </span>
       ),
     },

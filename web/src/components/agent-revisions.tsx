@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { History } from 'lucide-react'
+import { History, RotateCcw, ArrowUp } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   getAgentRevisions,
@@ -100,21 +100,30 @@ export function AgentRevisions({ agentId }: { agentId: string }) {
       key: 'action',
       header: '',
       align: 'right',
-      cell: (r) =>
-        r.active ? (
-          <StatusBadge status="active" />
-        ) : (
+      cell: (r) => {
+        if (r.active) return <StatusBadge status="active" />
+        // Activating an older revision is a rollback; a newer one is a promote. Show just the
+        // icon (it repeats down the column); the label slides in on hover so it stays legible.
+        const isRollback = !!revisions[0] && r.number < revisions[0].number
+        const Icon = isRollback ? RotateCcw : ArrowUp
+        const label = isRollback ? 'Roll back' : 'Activate'
+        return (
           <Button
             variant="ghost"
             size="xs"
-            className="text-muted-foreground hover:text-foreground"
+            aria-label={label}
+            title={label}
+            className="group text-muted-foreground hover:text-foreground gap-0"
             disabled={activateMutation.isPending}
             onClick={() => setPending(r)}
           >
-            {/* Activating an older revision is a rollback; a newer one is a promote. */}
-            {revisions[0] && r.number < revisions[0].number ? 'Roll back' : 'Activate'}
+            <Icon className="size-3.5 shrink-0" />
+            <span className="max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-200 ease-out group-hover:ml-1.5 group-hover:max-w-[6rem] group-hover:opacity-100 motion-reduce:transition-none motion-reduce:group-hover:ml-1.5">
+              {label}
+            </span>
           </Button>
-        ),
+        )
+      },
     },
   ]
 

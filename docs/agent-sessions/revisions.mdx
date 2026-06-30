@@ -85,7 +85,7 @@ GET  /v3/agents/agt_123/activations      # pointer-move audit log
 
 ## Skills
 
-A **skill** is a folder containing a `SKILL.md` (with YAML frontmatter — `name` + `description` — followed by instructions Claude Code loads at turn start) plus any helper files it references. An agent can have several. Skills are materialized into the runtime when a session runs, so the agent can use them.
+A **skill** is a folder containing a `SKILL.md` (with YAML frontmatter — `name` + `description` — followed by instructions the agent loads at the start of a turn) plus any helper files it references. An agent can have several. Skills are materialized into the runtime when a session runs, so the agent can use them.
 
 Manage them as a sub-resource of the agent. **List** the active revision's skills:
 

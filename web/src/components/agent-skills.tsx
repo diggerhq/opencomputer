@@ -59,7 +59,7 @@ export function AgentSkills({ agentId }: { agentId: string }) {
       <PanelHeader>
         <PanelTitle>Skills</PanelTitle>
         <span className="text-muted-foreground text-xs">
-          Files Claude Code loads for this agent.
+          Skill files the agent loads at run time.
         </span>
       </PanelHeader>
       <PanelContent className="space-y-4">
