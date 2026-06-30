@@ -21,7 +21,7 @@ oc whoami
 oc agent deploy        # deploy the agent directory in the cwd
 ```
 
-<Note>The SDK returns the same objects with **camelCase** fields (`client_token` → `session.clientToken`, `created_at` → `createdAt`, `last_turn` → `lastTurn`, …) and takes camelCase params (`idempotency_key` → `idempotencyKey`). The wire shapes below are the raw JSON. Truly opaque blobs — session `metadata`, event `refs`, event `raw` — pass through **verbatim** both directions; everything else, including event `body`, is camelCased. The CLI prints a human table by default and the raw JSON with `--json`.</Note>
+<Note>The SDK uses **camelCase** for fields and params (`last_turn` → `lastTurn`, `idempotency_key` → `idempotencyKey`); the wire shapes below are raw JSON. Opaque blobs — session `metadata`, event `refs`/`raw` — pass through **verbatim**; everything else (incl. event `body`) is camelCased. The CLI prints a table, or raw JSON with `--json`.</Note>
 
 ## Sessions
 
@@ -76,28 +76,34 @@ oc agent deploy        # deploy the agent directory in the cwd
 
 </Tabs>
 
-`agent` is **required** (create a saved [agent](#agents) first); the model must resolve to a source — **Managed** (billed to your credits, the default) or a usable [credential](#credentials) — else `422 no_credential` (or `422 managed_unavailable`). A session **pins the agent's active [revision](#deployments-and-revisions)** (prompt/model/skills) for its whole life; pass **`revision`** (a number or `rev_…` id) to pin a specific, non-active one — e.g. to test a [staged](/agent-sessions/revisions#staging-vs-activating) revision. `key` gives get-or-create (one session per key); a request-level `Idempotency-Key` header makes a keyless create retry-safe. `metadata` is opaque **application routing state** — a JSON object (≤ 16 KB) stored on the session, returned by get/list, and delivered **verbatim in webhooks**; never shown to the model, not indexed. `input` is the task — a string or a full [envelope](/agent-sessions/messaging#message-input); **truncate large inputs** and have the agent pull the rest through its [sandbox tools](/agent-sessions/runtime-tools). `limits` `{ tokens, turn_seconds, turns }` are **non-monetary**; hitting one ends the turn with a matching `last_turn.yield_reason`. `sources` checks out repositories **before the first turn** (the checkout credential never enters the sandbox; see [Repos & GitHub](#github-apps-and-repos)) — each entry is `{ repo, ref, sha, name? }` (registered repo / `owner/repo`) or inline `{ url, ref, sha, name?, auth }`; `ref` and `sha` are both **required**.
+**Create params** — `agent` is **required**; the model resolves to **Managed** (default) or a [credential](#credentials), else `422 no_credential` / `422 managed_unavailable`.
 
-Client tokens accept `scopes?` (subset of `read`, `steer`) and `ttl?` seconds, clamped 60–86400 (SDK: `ttlSeconds`).
+- `input` — the task (string or [envelope](/agent-sessions/messaging#message-input)). Truncate large inputs; let the agent fetch the rest via [sandbox tools](/agent-sessions/runtime-tools).
+- `revision?` — pin a specific revision (number / `rev_…`); default = the agent's active one. Use to test a [staged](/agent-sessions/revisions#staging-vs-activating) revision.
+- `key?` — get-or-create (one session per key). Keyless: an `Idempotency-Key` header makes create retry-safe.
+- `metadata?` — opaque routing state (≤ 16 KB); on get/list + **verbatim in webhooks**; never sent to the model, not indexed.
+- `limits?` `{ tokens, turn_seconds, turns }` — non-monetary; tripping one ends the turn (matching `yield_reason`).
+- `sources?` — repos checked out before turn 1 (the token never enters the sandbox; see [GitHub](#github-apps-and-repos)). Each `{ repo, ref, sha, name? }` or inline `{ url, ref, sha, name?, auth }`; `ref` + `sha` required.
+- Client tokens: `scopes?` (`read`/`steer`), `ttl?` 60–86400 s (SDK `ttlSeconds`).
+
+A session pins the agent's active revision for its whole life — editing the agent later never affects a running one.
 
 ```
-Session = { id, status, head, input_cursor,
-            agent_snapshot: { prompt_hash, model, runtime, revision },   // revision = the pinned revision number
-            agent_id, credential_id,   // resolved + pinned at create
+Session = { id, status, head, input_cursor, agent_id, credential_id,
+            key?, metadata?, created_at,
+            agent_snapshot: { prompt_hash, model, runtime, revision },   // revision = pinned #
             last_turn: { id, state, yield_reason?, result_event_id? },
-            limits: { tokens?, turn_seconds?, turns? },
-            metadata?, key?, created_at }
-
-Turn = { id, state, yield_reason?, result_event_id?, error?, started_at?, completed_at? }
-
-SessionSource = { repo, ref, sha, name? } | { url, ref, sha, name?, auth }
-SourceAuth    = { type: "risky_short_lived_token", token, expires_at }   // inline only; can't refresh
-SourceSummary = { name, status, path, sha, resolved_sha?, error_code?, error_message?, retryable? }
-//   status: pending | materializing | resolved | failed | auth_required
-//   error_code: source.auth_required | source.repo_not_selected | source.permission_missing | source.mint_failed | source.ref_not_found | source.sha_mismatch
+            limits?: { tokens?, turn_seconds?, turns? } }
+Turn   = { id, state, yield_reason?, result_event_id?, error?, started_at?, completed_at? }
+Source = { repo, ref, sha, name? } | { url, ref, sha, name?, auth }
+  auth (inline only) = { type: "risky_short_lived_token", token, expires_at }   // can't refresh
+Summary= { name, status, path, sha, resolved_sha?, error_code?, error_message?, retryable? }
+  status     = pending | materializing | resolved | failed | auth_required
+  error_code = source.* — auth_required, repo_not_selected, permission_missing,
+                          mint_failed, ref_not_found, sha_mismatch
 ```
 
-`yield_reason` (`completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled`) is the machine-readable "why the turn ended" — `needs_input` means the agent asked a question; answer it by [steering](#steer).
+`yield_reason` = `completed | needs_input | error | budget_exceeded | deadline_exceeded | max_turns | canceled` (why the turn ended; `needs_input` → answer by [steering](#steer)).
 
 ## Events
 
@@ -142,7 +148,8 @@ SourceSummary = { name, status, path, sha, resolved_sha?, error_code?, error_mes
 Filter by `type` (exact or `prefix.*`), `turn_id`, `limit`. `after` resumes from a `seq`; `level` is a **visibility threshold** — `user` < `progress` < `internal` (default `internal`; see [visibility levels](/agent-sessions/events#visibility-levels)). Switch on [`type`](/agent-sessions/events#event-shape), don't parse prose. `…/messages` is an alias for `level=user` + `type=*.message`.
 
 ```
-Event = { id, seq, ts, session, actor, type, level, body, turn_id?, content_ref?, body_truncated?, body_bytes? }
+Event = { id, seq, ts, session, actor, type, level, body, turn_id?,
+          content_ref?, body_truncated?, body_bytes? }
 ```
 
 ## Steer
@@ -216,9 +223,9 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 
 </Tabs>
 
-Create body: `name`, `prompt`, `model`, `runtime?` (`claude` | `codex`), `key?`, `credential?`, `limits?`. PATCH accepts `prompt?`, `model?`, `key?`, `credential?`, `limits?` — **not `runtime`** (fixed at creation). The `runtime` / `model` provider must agree (`claude`↔`anthropic/…`, `codex`↔`openai/…`), validated at create. `credential` is a closed value: a `cred_…` id (BYO, must match the provider) **or** the literal `"managed"` (run **via OpenComputer, billed to your credits**). `key`/`credential` are mutually exclusive.
+Body: `name`, `prompt`, `model`, `runtime?` (`claude`|`codex`), `key?`, `credential?`, `limits?`. PATCH takes the same **minus `runtime`** (fixed at create). `runtime`/`model` provider must agree (`claude`↔`anthropic/…`, `codex`↔`openai/…`). `credential`: a `cred_…` id (BYO, provider-matched) **or** `"managed"` (via OpenComputer, billed to credits) — mutually exclusive with `key`.
 
-`POST /agents` is **idempotent by `name`** — a fresh create returns **201**; a repeat with matching non-secret config returns the existing agent **200**; differing config **409**. Editing `prompt`/`model` (here, or via the [deploy API](#deployments-and-revisions)) creates a new **revision**; the agent carries a pointer to its **active revision** (`GET /agents/:id` includes an `active_revision` summary), and sessions pin it. The agent row itself holds only identity + bindings (`name`, `runtime`, `credential`, `limits`).
+`POST /agents` is **idempotent by `name`**: fresh → `201`, matching config → `200`, differing → `409`. Editing `prompt`/`model` (here or via [deploy](#deployments-and-revisions)) creates a **revision**; the agent keeps a pointer to its **active revision** (`GET /agents/:id` → `active_revision`) and sessions pin it. The agent row holds only identity + bindings.
 
 ## Deployments and revisions
 
@@ -258,11 +265,12 @@ You **deploy** an agent's behavior (`prompt` + `model` + `skills`); each deploym
 
 </Tabs>
 
-`input` is `{ type: "inline", prompt, model?, skills?, runtime? }` (the **complete** behavior — omitted `skills` means none) **or** `{ type: "github", ref?, sha? }` (deploys the agent's [linked repo](#deploy-from-a-repo); `repo`/`path` come from the link). `activate: false` **stages** the revision (test, then promote). Inline deployments are synchronous (`state: "ready"` with a `revision_id`); GitHub deployments are async (`state: "queued"`). `POST /agents/:id/revisions` remains as **inline-only sugar**.
+`input`: `{ type:"inline", prompt, model?, skills?, runtime? }` (the **complete** behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys the [linked repo](#deploy-from-a-repo); `repo`/`path` from the link). `activate:false` **stages** it. Inline = sync (`ready` + `revision_id`); GitHub = async (`queued`). `POST …/revisions` is inline-only sugar.
 
 ```
 Deployment = { id, state, revision_id|null, active, source?, error?, created_at }
-//   state: accepted | queued | fetching | validating | uploading | ready | failed | superseded | skipped
+//   state:  accepted | queued | fetching | validating | uploading
+//           | ready | failed | superseded | skipped
 //   result: created | skipped | failed
 ```
 
@@ -305,8 +313,8 @@ Deployment = { id, state, revision_id|null, active, source?, error?, created_at 
 Revisions are **linear** (numbered, immutable). `:rev` is a `number` or `rev_…` id. Activate moves the active pointer instantly (no rebuild); rollback (earlier) and promote (a staged one) are the same call.
 
 ```
-Revision = { id, number, digest, prompt, model, skill_bundle_digest?, runtime_ref, active, created_at,
-             files?: [{ path, mode, size }] }   // files on GET …/revisions/:rev
+Revision = { id, number, digest, prompt, model, skill_bundle_digest?, runtime_ref,
+             active, created_at, files?: [{ path, mode, size }] }   // files on GET …/:rev
 ```
 
 ### Skills
@@ -386,7 +394,8 @@ A skill is a folder with a `SKILL.md`; PUT/DELETE are **deployments** (versioned
 Linking deploys the current production HEAD immediately (unless `deploy_now: false` / `--no-deploy`); a push to the production branch activates, other branches stage. Requires `agents:link` + `agents:deploy`. Repo/path are server-anchored to the link. Full flow + guarantees: [Deploy from a repo](/agent-sessions/revisions#deploy-from-a-repo).
 
 ```
-DeploymentSource = { agent_id, repo_id, path, production_ref, status, latest_seen_sha?, active_deployed_sha?, … }
+DeploymentSource = { agent_id, repo_id, path, production_ref, status,
+                     latest_seen_sha?, active_deployed_sha?, … }
 //   status: active | path_missing | auth_required | repo_not_selected | app_suspended | error
 ```
 
@@ -453,8 +462,10 @@ Destination body: `url`, `secret?`, `level?` (`user`), `types?[]`, `include_raw?
 See [Webhooks](/agent-sessions/webhooks#signing-retries-and-dedupe) for signing, retries, dedupe.
 
 ```
-Destination = { id, session, kind, url, level, types, include_raw, enabled, has_secret, created_after_seq, created_at, updated_at }
-Delivery    = { id, session, destination, event_id, event_seq, status, attempts, last_attempt_at, response_code?, error?, created_at, updated_at }
+Destination = { id, session, kind, url, level, types, include_raw, enabled,
+                has_secret, created_after_seq, created_at, updated_at }
+Delivery    = { id, session, destination, event_id, event_seq, status, attempts,
+                last_attempt_at, response_code?, error?, created_at, updated_at }
 ```
 
 ## GitHub Apps and Repos
@@ -500,7 +511,7 @@ A GitHub App lets OpenComputer mint short-lived, repo-scoped tokens; a **Repo** 
 
 </Tabs>
 
-Repo create body: `owner`, `repo`, `provider?` (`github`), `name?`. **No `auth`** — it resolves through your App. **Idempotent by `(provider, owner, repo)`**. Responses **never** contain a token or secret. Registering a repo is **optional** under the OpenComputer App (reference `"owner/repo"` directly). App responses carry `id, mode, status, github_app_id?, app_name?, is_default?` — never a key. See the [Repos & GitHub guide](/agent-sessions/repos).
+Repo body: `owner`, `repo`, `provider?` (`github`), `name?` — **no `auth`** (resolves via your App); **idempotent by `(provider, owner, repo)`**. Registering is **optional** under the OpenComputer App (reference `"owner/repo"` directly). Responses **never** carry a token/secret; App responses have `id, mode, status, github_app_id?, app_name?, is_default?`. [Guide](/agent-sessions/repos).
 
 ```
 Repo = { id, provider, owner, repo, name?, created_at, updated_at }
