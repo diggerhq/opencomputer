@@ -1333,8 +1333,8 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   }>();
   const modelStatus = model?.status ?? "off";
   const modelMarkupBps = model?.markup_bps ?? 0;
-  const modelProviderSpendCents = Math.round((model?.committed_micro ?? 0) / 10_000);
-  const modelBilledCreditsCents = Math.round(modelProviderSpendCents * (1 + modelMarkupBps / 10_000));
+  const modelProviderSpendCents = (model?.committed_micro ?? 0) / 10_000;
+  const modelBilledCreditsCents = modelProviderSpendCents * (1 + modelMarkupBps / 10_000);
 
   return json({
     creditsRemainingCents: Math.round(r.creditsRemaining * 100),
