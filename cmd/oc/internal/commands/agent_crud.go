@@ -32,7 +32,7 @@ var agentCreateCmd = &cobra.Command{
 		if credential != "" {
 			body["credential"] = credential
 		}
-		var a v3Agent
+		var a Agent
 		if err := sc.Post(cmd.Context(), "/v3/agents", body, &a); err != nil {
 			return err
 		}
@@ -55,7 +55,7 @@ var agentListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		var resp v3AgentList
+		var resp AgentList
 		if err := sc.Get(cmd.Context(), "/v3/agents", &resp); err != nil {
 			return err
 		}
@@ -92,7 +92,7 @@ var agentGetCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		var a v3Agent
+		var a Agent
 		if err := sc.Get(cmd.Context(), "/v3/agents/"+id, &a); err != nil {
 			return err
 		}

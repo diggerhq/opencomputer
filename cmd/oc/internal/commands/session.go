@@ -10,22 +10,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type v3Session struct {
+type Session struct {
 	ID        string `json:"id"`
 	Status    string `json:"status"`
 	AgentID   string `json:"agent_id,omitempty"`
 	CreatedAt string `json:"created_at"`
 }
 
-type v3SessionEnvelope struct {
-	Session v3Session `json:"session"`
+type SessionEnvelope struct {
+	Session Session `json:"session"`
 }
 
-type v3SessionList struct {
-	Data []v3Session `json:"data"`
+type SessionList struct {
+	Data []Session `json:"data"`
 }
 
-type v3Event struct {
+type Event struct {
 	Seq   int         `json:"seq"`
 	Type  string      `json:"type"`
 	Level string      `json:"level"`
@@ -33,8 +33,8 @@ type v3Event struct {
 	TS    string      `json:"ts"`
 }
 
-type v3EventList struct {
-	Data []v3Event `json:"data"`
+type EventList struct {
+	Data []Event `json:"data"`
 }
 
 var sessionCmd = &cobra.Command{
@@ -72,7 +72,7 @@ var sessionCreateCmd = &cobra.Command{
 		if revision != "" {
 			body["revision"] = revision
 		}
-		var env v3SessionEnvelope
+		var env SessionEnvelope
 		if err := sc.Post(cmd.Context(), "/v3/sessions", body, &env); err != nil {
 			return err
 		}
@@ -101,7 +101,7 @@ var sessionListCmd = &cobra.Command{
 			}
 			path += "?agent=" + id
 		}
-		var resp v3SessionList
+		var resp SessionList
 		if err := sc.Get(cmd.Context(), path, &resp); err != nil {
 			return err
 		}
@@ -130,7 +130,7 @@ var sessionGetCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		var s v3Session
+		var s Session
 		if err := sc.Get(cmd.Context(), "/v3/sessions/"+args[0], &s); err != nil {
 			return err
 		}
@@ -192,7 +192,7 @@ var sessionLogsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		var resp v3EventList
+		var resp EventList
 		if err := sc.Get(cmd.Context(), "/v3/sessions/"+args[0]+"/events", &resp); err != nil {
 			return err
 		}

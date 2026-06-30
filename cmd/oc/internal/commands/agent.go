@@ -2,11 +2,11 @@ package commands
 
 // The `oc agent` command family, rebuilt on the v3 Durable Agent Sessions API
 // (/v3/agents/*). The legacy v1 managed-agents verbs (channels/packages/chat)
-// were removed wholesale — v3 agents are prompt+model+skills behaviors deployed
+// were removed wholesale — agents are prompt+model+skills behaviors deployed
 // as immutable revisions, a different model entirely.
 //
 // Verbs (each in its own file):
-//   agent.go         — parent command, shared v3 types, helpers, registration
+//   agent.go         — parent command, shared response types, helpers, registration
 //   agent_crud.go    — create / list / get
 //   agent_deploy.go  — deploy / revisions / rollback / status / link / unlink / deployments
 // Sessions live under `oc session` (session.go).
@@ -22,15 +22,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// ── Shared v3 types (mirror the sessions-api JSON, snake_case) ──
+// ── Shared response types (mirror the sessions-api JSON, snake_case) ──
 
-type v3RevisionRef struct {
+type RevisionRef struct {
 	ID     string `json:"id"`
 	Number int    `json:"number"`
 	Digest string `json:"digest"`
 }
 
-type v3Agent struct {
+type Agent struct {
 	ID               string         `json:"id"`
 	Name             string         `json:"name"`
 	Prompt           string         `json:"prompt,omitempty"`
@@ -38,16 +38,16 @@ type v3Agent struct {
 	Runtime          string         `json:"runtime"`
 	CredentialID     *string        `json:"credential_id,omitempty"`
 	ActiveRevisionID string         `json:"active_revision_id,omitempty"`
-	ActiveRevision   *v3RevisionRef `json:"active_revision,omitempty"`
+	ActiveRevision   *RevisionRef `json:"active_revision,omitempty"`
 	CreatedAt        string         `json:"created_at"`
 }
 
-type v3AgentList struct {
-	Data       []v3Agent `json:"data"`
+type AgentList struct {
+	Data       []Agent `json:"data"`
 	NextCursor *string   `json:"next_cursor,omitempty"`
 }
 
-type v3Revision struct {
+type Revision struct {
 	ID        string `json:"id"`
 	Number    int    `json:"number"`
 	Digest    string `json:"digest"`
@@ -55,11 +55,11 @@ type v3Revision struct {
 	Active    bool   `json:"active"`
 }
 
-type v3RevisionList struct {
-	Data []v3Revision `json:"data"`
+type RevisionList struct {
+	Data []Revision `json:"data"`
 }
 
-type v3Deployment struct {
+type Deployment struct {
 	ID         string                 `json:"id"`
 	State      string                 `json:"state"`
 	Result     string                 `json:"result,omitempty"`
@@ -74,15 +74,15 @@ type v3Deployment struct {
 	CreatedAt  string                 `json:"created_at,omitempty"`
 }
 
-type v3DeploymentEnvelope struct {
-	Deployment v3Deployment `json:"deployment"`
+type DeploymentEnvelope struct {
+	Deployment Deployment `json:"deployment"`
 }
 
-type v3DeploymentList struct {
-	Data []v3Deployment `json:"data"`
+type DeploymentList struct {
+	Data []Deployment `json:"data"`
 }
 
-type v3DeploymentSource struct {
+type DeploymentSource struct {
 	AgentID           string `json:"agent_id"`
 	RepoID            string `json:"repo_id"`
 	Path              string `json:"path"`
@@ -92,8 +92,8 @@ type v3DeploymentSource struct {
 	ActiveDeployedSha string `json:"active_deployed_sha,omitempty"`
 }
 
-type v3SourceEnvelope struct {
-	Source       v3DeploymentSource `json:"source"`
+type SourceEnvelope struct {
+	Source       DeploymentSource `json:"source"`
 	DeploymentID string             `json:"deployment_id,omitempty"`
 	DeployError  *struct {
 		Type    string `json:"type"`

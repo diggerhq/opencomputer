@@ -108,7 +108,7 @@ func resolveRef(cmd *cobra.Command, sc *client.Client, ref string) (string, erro
 	if strings.HasPrefix(ref, "agt_") {
 		return ref, nil
 	}
-	var list v3AgentList
+	var list AgentList
 	if err := sc.Get(cmd.Context(), "/v3/agents", &list); err != nil {
 		return "", err
 	}
@@ -124,7 +124,7 @@ func revisionNumber(cmd *cobra.Command, sc *client.Client, id, revisionID string
 	if revisionID == "" {
 		return 0
 	}
-	var revs v3RevisionList
+	var revs RevisionList
 	if err := sc.Get(cmd.Context(), "/v3/agents/"+id+"/revisions", &revs); err != nil {
 		return 0
 	}
@@ -194,7 +194,7 @@ var agentDeployCmd = &cobra.Command{
 		// A fresh agent with no skills: `create` already produced the first
 		// revision (the deploy) — don't append a redundant identical one.
 		if created && len(skills) == 0 {
-			var a v3Agent
+			var a Agent
 			_ = sc.Get(cmd.Context(), "/v3/agents/"+id, &a)
 			n := 0
 			if a.ActiveRevision != nil {
@@ -215,7 +215,7 @@ var agentDeployCmd = &cobra.Command{
 			input["skills"] = skills
 		}
 		body := map[string]interface{}{"input": input, "activate": !noActivate}
-		var env v3DeploymentEnvelope
+		var env DeploymentEnvelope
 		if err := sc.Post(cmd.Context(), "/v3/agents/"+id+"/deployments", body, &env); err != nil {
 			return err
 		}
@@ -237,7 +237,7 @@ var agentDeployCmd = &cobra.Command{
 }
 
 func ensureAgentByName(cmd *cobra.Command, sc *client.Client, name, prompt, model, runtime string) (string, bool, error) {
-	var list v3AgentList
+	var list AgentList
 	if err := sc.Get(cmd.Context(), "/v3/agents", &list); err != nil {
 		return "", false, err
 	}
@@ -247,7 +247,7 @@ func ensureAgentByName(cmd *cobra.Command, sc *client.Client, name, prompt, mode
 		}
 	}
 	body := map[string]interface{}{"name": name, "prompt": prompt, "model": model, "runtime": runtime}
-	var a v3Agent
+	var a Agent
 	if err := sc.Post(cmd.Context(), "/v3/agents", body, &a); err != nil {
 		return "", false, err
 	}
@@ -269,7 +269,7 @@ var agentRevisionsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		var revs v3RevisionList
+		var revs RevisionList
 		if err := sc.Get(cmd.Context(), "/v3/agents/"+id+"/revisions", &revs); err != nil {
 			return err
 		}
@@ -332,11 +332,11 @@ var agentStatusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		var a v3Agent
+		var a Agent
 		if err := sc.Get(cmd.Context(), "/v3/agents/"+id, &a); err != nil {
 			return err
 		}
-		var src v3SourceEnvelope
+		var src SourceEnvelope
 		hasLink := sc.Get(cmd.Context(), "/v3/agents/"+id+"/deployment-source", &src) == nil && src.Source.AgentID != ""
 		printer.Print(map[string]interface{}{"agent": a, "linked": hasLink, "source": src.Source}, func() {
 			fmt.Printf("%s (%s)\n", a.Name, a.ID)
@@ -377,7 +377,7 @@ var agentLinkCmd = &cobra.Command{
 		branch, _ := cmd.Flags().GetString("branch")
 		noDeploy, _ := cmd.Flags().GetBool("no-deploy")
 		body := map[string]interface{}{"repo": args[0], "path": path, "production_ref": branch, "deploy_now": !noDeploy}
-		var res v3SourceEnvelope
+		var res SourceEnvelope
 		if err := sc.Post(cmd.Context(), "/v3/agents/"+id+"/deployment-source", body, &res); err != nil {
 			return err
 		}
@@ -429,7 +429,7 @@ var agentDeploymentsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		var resp v3DeploymentList
+		var resp DeploymentList
 		if err := sc.Get(cmd.Context(), "/v3/agents/"+id+"/deployments", &resp); err != nil {
 			return err
 		}
