@@ -91,7 +91,7 @@ A session pins the agent's active revision for its whole life — editing the ag
 ```
 Session = { id, status, head, input_cursor, agent_id, credential_id,
             key?, metadata?, created_at,
-            agent_snapshot: { prompt_hash, model, runtime, revision },   // revision = pinned #
+            agent_snapshot: { prompt_hash, model, runtime, revision },   // revision = pinned
             last_turn: { id, state, yield_reason?, result_event_id? },
             limits?: { tokens?, turn_seconds?, turns? } }
 Turn   = { id, state, yield_reason?, result_event_id?, error?, started_at?, completed_at? }
@@ -396,7 +396,8 @@ Linking deploys the current production HEAD immediately (unless `deploy_now: fal
 ```
 DeploymentSource = { agent_id, repo_id, path, production_ref, status,
                      latest_seen_sha?, active_deployed_sha?, … }
-//   status: active | path_missing | auth_required | repo_not_selected | app_suspended | error
+//   status: active | path_missing | auth_required
+//           | repo_not_selected | app_suspended | error
 ```
 
 ## Destinations
