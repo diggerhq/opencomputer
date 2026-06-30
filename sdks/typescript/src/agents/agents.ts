@@ -1,5 +1,6 @@
 import type { Http, Query } from "./http.js";
 import type { Agent, CredentialRef, Limits, Runtime } from "./types.js";
+import { AgentRevisions } from "./revisions.js";
 
 export interface CreateAgentParams {
   name: string;
@@ -54,7 +55,17 @@ export interface ConnectSlackParams {
 
 /** Reusable agents — the "what" a session runs. */
 export class Agents {
-  constructor(private readonly http: Http) {}
+  /** Per-agent revision lifecycle (deploy / list / get / activate); methods take the agent id. */
+  readonly revisions: AgentRevisions;
+
+  constructor(private readonly http: Http) {
+    this.revisions = new AgentRevisions(http);
+  }
+
+  /** Roll back (or promote) an agent to an earlier revision — sugar for `revisions.activate`. */
+  rollback(agentId: string, ref: string | number): Promise<{ activeRevisionId: string }> {
+    return this.revisions.activate(agentId, ref);
+  }
 
   create(params: CreateAgentParams): Promise<Agent> {
     // Idempotent by name server-side → safe to auto-retry transient failures.

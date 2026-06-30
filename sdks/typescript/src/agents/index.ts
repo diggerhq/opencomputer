@@ -12,6 +12,11 @@ export type {
   CreateAgentParams, UpdateAgentParams, Page,
   SlackManifest, SlackConnection, ConnectSlackParams,
 } from "./agents.js";
+export { AgentRevisions } from "./revisions.js";
+export type {
+  SkillFileInput, DeployParams, DeployResult, RevisionRef, RevisionSummary,
+  Revision, SkillManifestEntry, DeployEvent, Activation,
+} from "./revisions.js";
 export { Repos, GitHub, GitHubApps, GitHubInstallations } from "./repos.js";
 export type {
   CreateRepoParams, UpdateRepoParams, Repo,

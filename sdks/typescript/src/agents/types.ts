@@ -35,6 +35,9 @@ export interface Agent {
   model: string;
   runtime: Runtime;
   revision?: number;
+  /** The active revision pointer (design 009). prompt/model are sourced from it. */
+  activeRevisionId?: string | null;
+  activeRevision?: { id: string; number: number; digest: string } | null;
   credentialId?: CredentialRef | null;
   limits?: Limits;
   createdAt?: string;
