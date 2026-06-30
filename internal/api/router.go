@@ -361,6 +361,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		// Proxy these here so dashboard can render per-cell image lists.
 		idash.GET("/images", s.dashboardListImages)
 		idash.DELETE("/images/:id", s.dashboardDeleteImage)
+		idash.DELETE("/snapshots/:name", s.dashboardDeleteSnapshot)
 		// Agents — currently proxied to an external service from each cell.
 		// Easier to keep that wiring intact than reimplement on the edge.
 		idash.Any("/agents", s.dashboardAgentsProxy)
@@ -657,6 +658,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		dash.DELETE("/checkpoints/:id", s.dashboardDeleteCheckpoint)
 		dash.GET("/images", s.dashboardListImages)
 		dash.DELETE("/images/:id", s.dashboardDeleteImage)
+		dash.DELETE("/snapshots/:name", s.dashboardDeleteSnapshot)
 
 		// Organization members and invitations
 		dash.GET("/org/members", s.dashboardListOrgMembers)

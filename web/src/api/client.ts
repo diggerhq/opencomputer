@@ -188,6 +188,9 @@ export const getImages = (all = false) =>
 export const deleteImage = (id: string) =>
   apiFetch<void>(`/images/${id}`, { method: 'DELETE' })
 
+export const deleteSnapshot = (name: string) =>
+  apiFetch<void>(`/snapshots/${encodeURIComponent(name)}`, { method: 'DELETE' })
+
 export const getSandboxDetail = (sandboxId: string) =>
   apiFetch(`/sessions/${sandboxId}`, {}, S.SandboxDetailSchema)
 
