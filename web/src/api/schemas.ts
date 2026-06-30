@@ -200,6 +200,15 @@ export const AutumnAutoTopupSchema = z.object({
   quantity: z.number(),
 })
 
+export const AutumnModelUsageSchema = z.object({
+  enabled: z.boolean(),
+  status: z.string(),
+  markupBps: z.number(),
+  providerSpendCents: z.number(),
+  billedCreditsCents: z.number(),
+  activeKeyCount: z.number(),
+})
+
 export const AutumnBillingSchema = z.object({
   creditsRemainingCents: z.number(),
   maxConcurrentSandboxes: z.number(),
@@ -207,6 +216,7 @@ export const AutumnBillingSchema = z.object({
   isHalted: z.boolean(),
   hasToppedUp: z.boolean(),
   autoTopup: AutumnAutoTopupSchema.nullable(),
+  modelUsage: AutumnModelUsageSchema.optional(),
 })
 
 export const StripeInvoiceSchema = z.object({

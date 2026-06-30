@@ -348,6 +348,8 @@ function PrepaidPlan() {
         hasToppedUp={autumn?.hasToppedUp ?? false}
       />
 
+      <ModelUsageCard usage={autumn?.modelUsage ?? null} />
+
       {/* Concurrency */}
       <Panel className="p-6">
         <h2 className="mb-2 text-sm font-semibold">Concurrency</h2>
@@ -431,6 +433,56 @@ function PrepaidPlan() {
         onConfirm={() => tier && planMutation.mutate(tier.id)}
       />
     </div>
+  )
+}
+
+function ModelUsageCard({
+  usage,
+}: {
+  usage: AutumnBilling['modelUsage'] | null
+}) {
+  const status = usage?.status ?? 'off'
+  const enabled = usage?.enabled ?? false
+  const markupPct = ((usage?.markupBps ?? 0) / 100).toFixed(1)
+
+  return (
+    <Panel className="p-6">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold">Managed model usage</h2>
+        <StatusBadge
+          status={enabled ? 'success' : status === 'error' ? 'error' : 'stopped'}
+          label={status}
+        />
+      </div>
+      <div className="flex items-baseline gap-2">
+        <span className="text-foreground font-mono text-3xl font-semibold">
+          {formatCost(usage?.billedCreditsCents ?? 0)}
+        </span>
+        <span className="text-muted-foreground text-xs">credits used</span>
+      </div>
+      <p className="text-muted-foreground mt-2 text-sm">
+        Managed agent models draw from the same prepaid credits balance as
+        sandbox compute.
+      </p>
+      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+        <div>
+          <div className="text-muted-foreground text-xs">Provider cost</div>
+          <div className="text-foreground font-mono">
+            {formatCost(usage?.providerSpendCents ?? 0)}
+          </div>
+        </div>
+        <div>
+          <div className="text-muted-foreground text-xs">Markup</div>
+          <div className="text-foreground font-mono">{markupPct}%</div>
+        </div>
+        <div>
+          <div className="text-muted-foreground text-xs">Active keys</div>
+          <div className="text-foreground font-mono">
+            {usage?.activeKeyCount ?? 0}
+          </div>
+        </div>
+      </div>
+    </Panel>
   )
 }
 

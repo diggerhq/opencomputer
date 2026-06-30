@@ -1313,6 +1313,29 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   // recharge or just save. Free — the customer is already loaded above.
   const hasToppedUp = (r.customer.purchases ?? []).some((p) => p.plan_id === "top_up");
 
+  const model = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT
+       o.model_billing_status AS status,
+       o.model_markup_bps AS markup_bps,
+       COUNT(CASE WHEN k.status = 'active' THEN 1 END) AS active_key_count,
+       COALESCE(SUM(k.committed_micro), 0) AS committed_micro
+     FROM orgs o
+     LEFT JOIN managed_model_keys k
+       ON k.org_id = o.id
+      AND k.status IN ('active', 'superseded', 'deleting')
+     WHERE o.id = ?1
+     GROUP BY o.model_billing_status, o.model_markup_bps`,
+  ).bind(caller.orgID).first<{
+    status: string;
+    markup_bps: number;
+    active_key_count: number;
+    committed_micro: number;
+  }>();
+  const modelStatus = model?.status ?? "off";
+  const modelMarkupBps = model?.markup_bps ?? 0;
+  const modelProviderSpendCents = Math.round((model?.committed_micro ?? 0) / 10_000);
+  const modelBilledCreditsCents = Math.round(modelProviderSpendCents * (1 + modelMarkupBps / 10_000));
+
   return json({
     creditsRemainingCents: Math.round(r.creditsRemaining * 100),
     maxConcurrentSandboxes: r.maxConcurrent,
@@ -1320,6 +1343,14 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
     isHalted: r.halted,
     hasToppedUp,
     autoTopup: at ? { enabled: at.enabled, threshold: at.threshold, quantity: at.quantity } : null,
+    modelUsage: {
+      enabled: modelStatus === "active",
+      status: modelStatus,
+      markupBps: modelMarkupBps,
+      providerSpendCents: modelProviderSpendCents,
+      billedCreditsCents: modelBilledCreditsCents,
+      activeKeyCount: model?.active_key_count ?? 0,
+    },
   });
 }
 
