@@ -304,9 +304,6 @@ export default function AgentDetail() {
           <div className="space-y-6">
             {/* Behavior — read-only when a repo drives the agent. */}
             <Panel>
-              <PanelHeader>
-                <PanelTitle>Behavior</PanelTitle>
-              </PanelHeader>
               <PanelContent className="space-y-5">
                 {source ? (
                   <div className="space-y-4">
