@@ -47,9 +47,8 @@ export function AgentSkills({ agentId }: { agentId: string }) {
     mutationFn: () => deleteAgentSkills(agentId),
     onSuccess: (r) => {
       invalidate()
-      // Removing skills re-activates the matching no-skills revision (content-addressed), which
-      // may be an EARLIER number — name it so the pointer move is obvious, not surprising.
-      notifySuccess(`Skills removed${r.revision ? ` — now on revision #${r.revision.number}` : ''}`)
+      // Removing skills deploys a new forward revision (no skills); name it for clear feedback.
+      notifySuccess(`Skills removed${r.revision ? ` — revision #${r.revision.number} active` : ''}`)
     },
     onError: (e) => notifyError("Couldn't remove the skills.", e),
   })
