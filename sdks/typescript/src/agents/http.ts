@@ -92,6 +92,13 @@ export class Http {
     if (!res.ok) throw errorFromResponse(res.status, (await safeJson(res))?.error, retryAfterSec(res));
     return res;
   }
+
+  /** Upload a raw (non-JSON) body — e.g. a skill `.zip`. Normalizes the JSON response. */
+  async upload<T>(method: string, path: string, body: BodyInit, contentType: string, signal?: AbortSignal): Promise<T> {
+    const res = await this.doFetch(this.url(path), { method, headers: this.headers({ "Content-Type": contentType }), body, signal });
+    if (!res.ok) throw errorFromResponse(res.status, (await safeJson(res))?.error, retryAfterSec(res));
+    return res.status === 204 ? (undefined as T) : normalize<T>(await res.json());
+  }
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

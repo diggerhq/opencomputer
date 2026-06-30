@@ -12,6 +12,14 @@ export type {
   CreateAgentParams, UpdateAgentParams, Page,
   SlackManifest, SlackConnection, ConnectSlackParams,
 } from "./agents.js";
+export {
+  Deployments, Revisions, Activations, Skills, DeploymentSourceResource,
+} from "./deployments.js";
+export type {
+  DeployInput, InlineDeployInput, GithubDeployInput, InlineSkillFile, CreateDeploymentParams,
+  Deployment, Revision, RevisionFile, Activation, AgentSkills, SkillSummary,
+  DeploymentSource, LinkParams, LinkResult, SkillZip,
+} from "./deployments.js";
 export { Repos, GitHub, GitHubApps, GitHubInstallations } from "./repos.js";
 export type {
   CreateRepoParams, UpdateRepoParams, Repo,
