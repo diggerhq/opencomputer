@@ -306,9 +306,6 @@ export default function AgentDetail() {
             <Panel>
               <PanelHeader>
                 <PanelTitle>Behavior</PanelTitle>
-                <span className="text-muted-foreground text-xs">
-                  Editing the model or prompt creates a new revision.
-                </span>
               </PanelHeader>
               <PanelContent className="space-y-5">
                 {source ? (
