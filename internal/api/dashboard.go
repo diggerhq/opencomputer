@@ -1360,3 +1360,26 @@ func (s *Server) dashboardDeleteImage(c echo.Context) error {
 
 	return c.NoContent(http.StatusNoContent)
 }
+
+// dashboardDeleteSnapshot deletes a named template/snapshot for the authenticated org.
+func (s *Server) dashboardDeleteSnapshot(c echo.Context) error {
+	if s.store == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "database not configured"})
+	}
+
+	orgID, ok := auth.GetOrgID(c)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "org context required"})
+	}
+
+	name := c.Param("name")
+	ic, _ := s.store.GetImageCacheByName(c.Request().Context(), orgID, name)
+	if err := s.store.DeleteImageCacheByName(c.Request().Context(), orgID, name); err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+	}
+	if ic != nil {
+		s.publishImageCacheEvent(c.Request().Context(), "image_cache_deleted", ic.ID, orgID, nil)
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
