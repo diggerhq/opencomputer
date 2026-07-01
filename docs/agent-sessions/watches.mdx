@@ -114,13 +114,12 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 
 | Status | Meaning |
 | --- | --- |
-| `pending_snapshot` | Created; taking the first authoritative snapshot. |
 | `active` | Watching; delivering events. |
-| `expired` | Hit the 30-day TTL. |
-| `closed` | The PR closed/merged, so the watch ended with it. |
+| `closed` | The PR merged or closed, so the watch ended with it. |
 | `revoked` | Removed via `unwatch_pull_request` or `DELETE`. |
-| `auth_required` | The App lacks the required permissions or event subscriptions — [re-accept them](#what-you-can-watch). |
-| `app_suspended` | The GitHub App installation is suspended. |
+| `auth_required` | The App lacks the required permissions or event subscriptions — [re-accept them](#what-you-can-watch). Re-declare the watch once fixed. |
+
+A watch that hits its 30-day TTL simply stops firing (its `expires_at` passes) — re-declare to renew it.
 
 ### Delivered events
 

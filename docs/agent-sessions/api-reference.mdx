@@ -237,7 +237,7 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 | `repo` `pr` | watched repo · PR number |
 | `wake_on` | wake condition: `checks` (default) · `review` (a review decision) · `comment` · `merge` (merged/closed) |
 | `intent?` | freeform note ("why"), replayed on wake |
-| `status` | `pending_snapshot · active · expired · closed · revoked · auth_required · app_suspended` |
+| `status` | `active · closed · revoked · auth_required` |
 | `origin` | how it was declared (runtime tool / management API) |
 | `last_snapshot_at?` `created_at` | last authoritative PR re-read · timestamp |
 
