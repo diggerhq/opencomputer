@@ -223,11 +223,11 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 
 | Method · Path | Purpose |
 | --- | --- |
-| `POST /sessions/:id/watches` | Declare a watch → `201 { watch }`. Body: `{ type:"github_pr", repo?, pr?, goal, intent?, events? }`. |
+| `POST /sessions/:id/watches` | Declare a watch → `201 { watch }`. Body: `{ type:"github_pr", repo?, pr?, wake_on, intent? }`. |
 | `GET /sessions/:id/watches` | List watches → `{ data: [watch] }`. |
 | `DELETE /sessions/:id/watches/:watchId` | Remove a watch → `{ ok: true }`. |
 
-`repo`/`pr` are optional — omitted, they resolve to the PR this session opened. A watch fires only on PRs the **same session** opened, on Connected-App (`oc_app`) repos. Limits: **10** active watches per session, **30-day** TTL (and never outlives the PR).
+`wake_on` is the wake condition (`checks` default · `review` · `comment` · `merge`); `intent` is the freeform "why," replayed on wake. `repo`/`pr` are optional — omitted, they resolve to the PR this session opened. A watch fires only on PRs the **same session** opened, on Connected-App (`oc_app`) repos. Limits: **10** active watches per session, **30-day** TTL (and never outlives the PR).
 
 **`Watch`**
 
@@ -235,9 +235,8 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 |---|---|
 | `id` `type` | `wch_…`; `type` = `github_pr` |
 | `repo` `pr` | watched repo · PR number |
-| `goal` | `wait_for_checks` (default) · `wait_for_review` · `wait_for_merge` · `respond_to_comments` |
-| `intent?` | freeform note, replayed on wake |
-| `events` | delivered event types this watch subscribes to |
+| `wake_on` | wake condition: `checks` (default) · `review` (a review decision) · `comment` · `merge` (merged/closed) |
+| `intent?` | freeform note ("why"), replayed on wake |
 | `status` | `pending_snapshot · active · expired · closed · revoked · auth_required · app_suspended` |
 | `origin` | how it was declared (runtime tool / management API) |
 | `last_snapshot_at?` `created_at` | last authoritative PR re-read · timestamp |
