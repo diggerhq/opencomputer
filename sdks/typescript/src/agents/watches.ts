@@ -8,7 +8,7 @@ export type WatchStatus = "active" | "closed" | "revoked" | "auth_required";
 
 export interface CreateWatchParams {
   /** Only `"github_pr"` today (the default). */
-  type?: string;
+  type?: "github_pr";
   /** `"owner/repo"` — omitted, resolves to the PR this session opened. */
   repo?: string;
   /** PR number — omitted, resolves to the session's sole owned PR. */

@@ -37,7 +37,7 @@ A session can only watch a PR it opened itself via [`github_publish_pull_request
 
 | `wake_on` | Wakes when |
 | --- | --- |
-| `checks` | CI / check suites finish (**default**). |
+| `checks` | GitHub **check runs/suites** for the head commit finish (**default**). Legacy commit *statuses* aren't watched. |
 | `review` | A review **decision** lands — approved or changes-requested (not plain comments). |
 | `comment` | A new comment on the PR (review comment or issue comment). |
 | `merge` | The PR reaches a terminal state — merged, or closed without merging. |
@@ -184,5 +184,5 @@ These join the standard session [event types](/agent-sessions/events#event-types
 
 1. Agent calls `github_publish_pull_request("web", "Refactor auth")` → PR opened on branch `oc/<session>/web-<id>`.
 2. Agent calls `watch_pull_request(wake_on: "review", intent: "Address review feedback")`, `say`s, ends the turn. Session goes idle.
-3. Reviewer comments. OpenComputer re-reads the PR, appends `github.pr.review_comment` (author, text, URL) at level `user`, and wakes the session.
+3. Reviewer comments. OpenComputer re-reads the PR, appends `github.pr.comment` (author, text, URL) at level `user`, and wakes the session.
 4. Agent edits the source and calls `github_publish_pull_request` again to push onto the same branch. Its own push is loop-suppressed. The watch runs until the PR merges or the TTL expires.
