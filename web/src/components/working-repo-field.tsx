@@ -1,47 +1,43 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { GitBranch, X, ExternalLink } from 'lucide-react'
+import { Select as SelectPrimitive } from 'radix-ui'
+import { Check, ChevronDown, GitBranch, X } from 'lucide-react'
 import { getDeployApp } from '@/api/client'
-import { Button } from '@/components/ui/button'
-import { Input, Select } from '@/components/form'
+import { GithubMark } from '@/components/github-mark'
+import { markFloatingLayerPointerDismiss } from '@/components/ui/floating-layer'
+import { cn } from '@/lib/utils'
 
-// The WORKING repo a session checks out and opens PRs from (design 010 §2). It is deliberately
-// SEPARATE from the agent's config/"connected" repo (where prompt + skills come from) — an agent
-// is typically configured from one repo and works across others, so this never defaults to the
-// connected repo. Optional: a session starts fine with none (chat/analysis need no repo); when
-// set, the agent can publish + (later) watch PRs against it.
+// The WORKING repo a session checks out and opens PRs from (design 010 §2). Deliberately SEPARATE
+// from the agent's config/"connected" repo (prompt + skills) — an agent is typically configured
+// from one repo and works across others, so this never defaults to the connected repo. Optional:
+// a session starts fine with none; when set, the agent can publish (and later watch) PRs.
 
 export interface WorkingRepo {
   repo: string // "owner/repo"
   ref: string // branch
 }
 
-const lastKey = (agentId: string) => `oc.workingRepo.${agentId}`
-
-/** Remember the last working repo chosen FOR THIS AGENT — offered as a suggestion next time,
- *  never auto-applied (a working repo is always an explicit choice). Best-effort; ignore quota. */
-function readLast(agentId: string): WorkingRepo | null {
-  try {
-    const raw = localStorage.getItem(lastKey(agentId))
-    if (!raw) return null
-    const v = JSON.parse(raw) as Partial<WorkingRepo>
-    return v.repo && v.ref ? { repo: v.repo, ref: v.ref } : null
-  } catch {
-    return null
-  }
-}
+/** Remember the last working repo chosen FOR THIS AGENT (used as a suggestion in a later slice;
+ *  never auto-applied — a working repo is always an explicit choice). Best-effort. */
 export function rememberWorkingRepo(agentId: string, wr: WorkingRepo): void {
   try {
-    localStorage.setItem(lastKey(agentId), JSON.stringify(wr))
+    localStorage.setItem(`oc.workingRepo.${agentId}`, JSON.stringify(wr))
   } catch {
-    /* ignore */
+    /* ignore quota */
   }
+}
+
+function splitRepo(full: string): [owner: string, name: string] {
+  const i = full.indexOf('/')
+  return i === -1 ? ['', full] : [full.slice(0, i), full.slice(i + 1)]
 }
 
 /**
- * Inline, secondary working-repo control for the session composer. Unset → a quiet ghost chip
- * ("Working repo"); starting works empty. Set → a solid removable chip (owner/repo · branch).
- * Clicking either opens a lightweight picker over the repos the OpenComputer App can reach.
+ * Inline, secondary working-repo control for the session composer. A compact, GitHub-marked
+ * dropdown — unselected by default (short "Working repo" placeholder); starting a session works
+ * empty. Selecting a repo reveals a branch pill (prefilled with the repo's default branch) and a
+ * clear (✕). Repos come from what the OpenComputer App can reach (getDeployApp). Custom-styled
+ * on the Radix primitive (no new dependency) so it reads as a deliberate control, not stock.
  */
 export function WorkingRepoField({
   agentId,
@@ -52,159 +48,122 @@ export function WorkingRepoField({
   value: WorkingRepo | null
   onChange: (v: WorkingRepo | null) => void
 }) {
-  const [open, setOpen] = useState(false)
   const { data: app, isLoading } = useQuery({
     queryKey: ['deploy-app'],
     queryFn: getDeployApp,
-    enabled: open,
     staleTime: 30_000,
   })
-
-  const repoOptions = useMemo(
-    () => (app?.repositories ?? []).map((r) => ({ value: r.full_name, label: r.full_name })),
-    [app],
-  )
-  const suggestion = useMemo(() => readLast(agentId), [agentId, open])
-
-  // Draft state while the picker is open.
-  const [repo, setRepo] = useState('')
-  const [branch, setBranch] = useState('')
-  useEffect(() => {
-    if (open) {
-      setRepo(value?.repo ?? '')
-      setBranch(value?.ref ?? '')
-    }
-  }, [open, value])
+  const repoOptions = useMemo(() => app?.repositories ?? [], [app])
+  const installed = app?.installed !== false // treat "still loading" as installed
+  const disabled = !installed || repoOptions.length === 0
 
   const pickRepo = (fullName: string) => {
-    setRepo(fullName)
-    const r = app?.repositories.find((x) => x.full_name === fullName)
-    setBranch((b) => b || r?.default_branch || 'main')
-  }
-
-  const apply = () => {
-    if (!repo || !branch.trim()) return
-    const wr = { repo, ref: branch.trim() }
+    const r = repoOptions.find((x) => x.full_name === fullName)
+    // Keep the current branch when re-picking the same repo; else the repo's default.
+    const ref = value?.repo === fullName ? value.ref : r?.default_branch || 'main'
+    const wr = { repo: fullName, ref }
     rememberWorkingRepo(agentId, wr)
     onChange(wr)
-    setOpen(false)
   }
 
-  // ── The chip (collapsed state) ──────────────────────────────────────────────
-  if (!open) {
-    if (value) {
-      return (
-        <span className="border-border bg-panel-2 inline-flex items-center gap-1.5 rounded-full border py-1 pr-1 pl-2.5 text-xs">
-          <button
-            type="button"
-            className="text-foreground hover:text-foreground/80 inline-flex items-center gap-1.5"
-            title="Change working repo"
-            onClick={() => setOpen(true)}
-          >
-            <GitBranch className="size-3 shrink-0" />
-            <span className="font-mono">
-              {value.repo} · {value.ref}
-            </span>
-          </button>
-          <button
-            type="button"
-            title="Remove working repo"
-            className="text-muted-foreground hover:text-foreground hover:bg-accent rounded-full p-0.5"
-            onClick={() => onChange(null)}
-          >
-            <X className="size-3" />
-          </button>
-        </span>
-      )
-    }
+  // Not installed → a quiet connect affordance instead of a dead control.
+  if (installed === false && app?.install_url) {
     return (
-      <button
-        type="button"
-        className="border-border text-muted-foreground hover:text-foreground hover:border-foreground/30 inline-flex items-center gap-1.5 rounded-full border border-dashed px-2.5 py-1 text-xs transition-colors"
-        title="Attach a repo for the agent to work in and open PRs from (optional)"
-        onClick={() => setOpen(true)}
+      <a
+        href={app.install_url}
+        target="_blank"
+        rel="noreferrer"
+        className="border-border text-muted-foreground hover:text-foreground hover:border-foreground/25 inline-flex h-8 items-center gap-2 rounded-md border border-dashed px-2.5 text-sm transition-colors"
+        title="Connect the OpenComputer GitHub App to work in a repo"
       >
-        <GitBranch className="size-3 shrink-0" />
-        Working repo
-      </button>
+        <GithubMark className="size-3.5" />
+        Connect GitHub
+      </a>
     )
   }
 
-  // ── The picker (expanded state) ─────────────────────────────────────────────
-  return (
-    <div className="border-border bg-panel-2 w-full max-w-md space-y-2 rounded-md border p-2.5 text-xs">
-      <div className="flex items-center justify-between">
-        <span className="text-foreground font-medium">Working repo</span>
-        <button
-          type="button"
-          className="text-muted-foreground hover:text-foreground"
-          onClick={() => setOpen(false)}
-          title="Close"
-        >
-          <X className="size-3.5" />
-        </button>
-      </div>
-      <p className="text-muted-foreground">
-        The repo this session checks out and opens PRs from. Separate from where the agent gets
-        its prompt + skills.
-      </p>
+  const [owner, name] = value ? splitRepo(value.repo) : ['', '']
 
-      {isLoading ? (
-        <p className="text-muted-foreground">Loading repos…</p>
-      ) : !app?.installed ? (
-        <div className="space-y-2">
-          <p className="text-muted-foreground">
-            Connect the OpenComputer GitHub App to pick a repo.
-          </p>
-          {app?.install_url ? (
-            <Button size="sm" variant="outline" asChild>
-              <a href={app.install_url} target="_blank" rel="noreferrer">
-                <ExternalLink className="size-3.5" />
-                Connect GitHub
-              </a>
-            </Button>
-          ) : null}
-        </div>
-      ) : (
-        <>
-          {suggestion && suggestion.repo !== repo ? (
-            <button
-              type="button"
-              className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 underline-offset-2 hover:underline"
-              onClick={() => {
-                setRepo(suggestion.repo)
-                setBranch(suggestion.ref)
-              }}
-            >
-              Recently used: <span className="font-mono">{suggestion.repo}</span>
-            </button>
-          ) : null}
-          <Select
-            value={repo}
-            onValueChange={pickRepo}
-            placeholder={repoOptions.length ? 'Select a repo' : 'No repos available'}
-            disabled={repoOptions.length === 0}
-            options={repoOptions}
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <SelectPrimitive.Root value={value?.repo ?? ''} onValueChange={pickRepo} disabled={disabled}>
+        <SelectPrimitive.Trigger
+          aria-label="Working repo"
+          title="Optional — the repo the agent works in and opens PRs from"
+          className={cn(
+            'border-border bg-panel-2 hover:border-foreground/25 focus-visible:border-foreground/40 data-[state=open]:border-foreground/35 group inline-flex h-8 max-w-64 min-w-40 items-center gap-2 rounded-md border px-2.5 text-sm outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+          )}
+        >
+          <GithubMark className="text-muted-foreground group-hover:text-foreground/70 size-3.5 shrink-0 transition-colors" />
+          <span className="min-w-0 flex-1 truncate text-left">
+            {value ? (
+              <span className="font-medium">
+                <span className="text-muted-foreground">{owner}/</span>
+                {name}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">
+                {disabled ? (isLoading ? 'Loading repos…' : 'No repos available') : 'Working repo'}
+              </span>
+            )}
+          </span>
+          <ChevronDown className="text-muted-foreground/50 size-3.5 shrink-0" />
+        </SelectPrimitive.Trigger>
+        <SelectPrimitive.Portal>
+          <SelectPrimitive.Content
+            position="popper"
+            sideOffset={5}
+            onPointerDownOutside={markFloatingLayerPointerDismiss}
+            className="bg-popover text-popover-foreground ring-foreground/10 shadow-overlay data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 z-50 max-h-(--radix-select-content-available-height) min-w-(--radix-select-trigger-width) origin-(--radix-select-content-transform-origin) overflow-hidden rounded-lg p-1 ring-1 duration-100"
+          >
+            <SelectPrimitive.Viewport>
+              {repoOptions.map((r) => {
+                const [o, n] = splitRepo(r.full_name)
+                return (
+                  <SelectPrimitive.Item
+                    key={r.full_name}
+                    value={r.full_name}
+                    className="focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-md py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
+                  >
+                    <GithubMark className="text-muted-foreground size-3.5 shrink-0" />
+                    <SelectPrimitive.ItemText>
+                      <span className="text-muted-foreground">{o}/</span>
+                      {n}
+                    </SelectPrimitive.ItemText>
+                    <span className="absolute right-2 flex items-center">
+                      <SelectPrimitive.ItemIndicator>
+                        <Check className="size-4" />
+                      </SelectPrimitive.ItemIndicator>
+                    </span>
+                  </SelectPrimitive.Item>
+                )
+              })}
+            </SelectPrimitive.Viewport>
+          </SelectPrimitive.Content>
+        </SelectPrimitive.Portal>
+      </SelectPrimitive.Root>
+
+      {value ? (
+        <span className="border-border bg-panel-2 focus-within:border-foreground/40 inline-flex h-8 items-center gap-1 rounded-md border pr-1 pl-2 transition-colors">
+          <GitBranch className="text-muted-foreground size-3.5 shrink-0" />
+          <input
+            value={value.ref}
+            onChange={(e) => onChange({ ...value, ref: e.target.value })}
+            placeholder="main"
+            aria-label="Branch"
+            spellCheck={false}
+            className="w-24 bg-transparent font-mono text-xs outline-none"
           />
-          <div className="flex items-center gap-2">
-            <Input
-              value={branch}
-              onChange={(e) => setBranch(e.target.value)}
-              placeholder="main"
-              className="max-w-40"
-              aria-label="Branch"
-            />
-            <div className="ml-auto flex gap-2">
-              <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
-              <Button size="sm" disabled={!repo || !branch.trim()} onClick={apply}>
-                Use repo
-              </Button>
-            </div>
-          </div>
-        </>
-      )}
+          <button
+            type="button"
+            title="Clear working repo"
+            className="text-muted-foreground hover:text-foreground hover:bg-accent rounded p-0.5"
+            onClick={() => onChange(null)}
+          >
+            <X className="size-3.5" />
+          </button>
+        </span>
+      ) : null}
     </div>
   )
 }

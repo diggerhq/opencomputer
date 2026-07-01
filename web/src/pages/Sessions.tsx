@@ -228,16 +228,11 @@ export default function Sessions() {
                 />
               </Field>
               {agentId ? (
-                <div className="flex items-center gap-2">
-                  <WorkingRepoField
-                    agentId={agentId}
-                    value={workingRepo}
-                    onChange={setWorkingRepo}
-                  />
-                  <span className="text-muted-foreground text-xs">
-                    optional — repo to work in &amp; open PRs from
-                  </span>
-                </div>
+                <WorkingRepoField
+                  agentId={agentId}
+                  value={workingRepo}
+                  onChange={setWorkingRepo}
+                />
               ) : null}
               <DialogFooter className="mt-2">
                 <Button
