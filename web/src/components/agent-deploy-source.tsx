@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query'
 import { Unplug, ExternalLink, RotateCw } from 'lucide-react'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
@@ -14,6 +19,28 @@ import { Button } from '@/components/ui/button'
 import { Input, Select } from '@/components/form'
 
 // GitHub mark (lucide's brand `Github` icon is deprecated/unexported — inline the SVG).
+// A connect / redeploy kicks off a GitHub deploy that runs ASYNC — the new revision (prompt +
+// skills) isn't live until it activates. Poll the source until the deploy lands
+// (active_deployed_sha caught up to latest_seen_sha), keeping the card in step, then refresh the
+// dependent views so the Overview + Skills update without a manual page reload. Bounded (~60s).
+async function pollDeployUntilActive(agentId: string, queryClient: QueryClient) {
+  for (let i = 0; i < 24; i++) {
+    await new Promise((r) => setTimeout(r, 2500))
+    try {
+      const src = (await getDeploymentSource(agentId)).source
+      queryClient.setQueryData(['agent-deploy-source', agentId], src)
+      if (src?.active_deployed_sha && src.active_deployed_sha === src.latest_seen_sha) {
+        void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
+        void queryClient.invalidateQueries({ queryKey: ['agent-skills', agentId] })
+        void queryClient.invalidateQueries({ queryKey: ['agent-revisions', agentId] })
+        return
+      }
+    } catch {
+      return
+    }
+  }
+}
+
 function GithubMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" fill="currentColor" className={className} aria-hidden="true">
@@ -100,6 +127,7 @@ export function AgentDeploySource({
     void queryClient.invalidateQueries({
       queryKey: ['agent-revisions', agentId],
     })
+    void queryClient.invalidateQueries({ queryKey: ['agent-skills', agentId] })
     void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
   }
 
@@ -120,9 +148,11 @@ export function AgentDeploySource({
       } else {
         notifySuccess(
           source
-            ? 'Updated — creating a revision from the latest commit.'
+            ? 'Redeploying — pulling the latest commit into a new revision.'
             : 'Connected — creating the first revision.',
         )
+        // The GitHub deploy runs async — refresh the prompt + skills once it activates.
+        void pollDeployUntilActive(agentId, queryClient)
       }
     },
     onError: (e) => notifyError("Couldn't connect the repo.", e),
