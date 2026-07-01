@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Unplug, ExternalLink } from 'lucide-react'
+import { Unplug, ExternalLink, RotateCw } from 'lucide-react'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
   ApiError,
@@ -20,18 +20,6 @@ function GithubMark({ className }: { className?: string }) {
       <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
     </svg>
   )
-}
-
-function statusTone(status?: string): string {
-  if (status === 'active') return 'text-green-600 dark:text-green-500'
-  if (
-    status === 'path_missing' ||
-    status === 'ref_missing' ||
-    status === 'app_suspended' ||
-    status === 'error'
-  )
-    return 'text-red-600 dark:text-red-500'
-  return 'text-amber-600 dark:text-amber-500'
 }
 
 /**
@@ -211,8 +199,7 @@ export function AgentDeploySource({
               </a>
             </Button>
             <p className="text-muted-foreground text-xs">
-              Or deploy from the CLI:{' '}
-              <code className="font-mono">oc agent deploy</code>
+              Or use the CLI: <code className="font-mono">oc agent deploy</code>
             </p>
           </div>
         ) : (
@@ -250,20 +237,28 @@ export function AgentDeploySource({
               />
             </div>
             <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={link.isPending || !repo}
-                onClick={() => link.mutate()}
-              >
-                {link.isPending
-                  ? source
-                    ? 'Updating…'
-                    : 'Deploying…'
-                  : source
-                    ? 'Update'
-                    : 'Deploy'}
-              </Button>
+              {source ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  title="Redeploy — pull the latest commit into a new revision"
+                  disabled={link.isPending || !repo}
+                  onClick={() => link.mutate()}
+                >
+                  <RotateCw
+                    className={`size-4 ${link.isPending ? 'animate-spin' : ''}`}
+                  />
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={link.isPending || !repo}
+                  onClick={() => link.mutate()}
+                >
+                  {link.isPending ? 'Deploying…' : 'Deploy'}
+                </Button>
+              )}
               {source ? (
                 <Button
                   variant="ghost"
@@ -275,14 +270,6 @@ export function AgentDeploySource({
                   <Unplug className="size-4" />
                   Disconnect
                 </Button>
-              ) : null}
-              {source?.active_deployed_sha ? (
-                <span
-                  className={`ml-auto font-mono text-xs ${statusTone(source.status)}`}
-                  title={source.status}
-                >
-                  ● @{source.active_deployed_sha.slice(0, 7)}
-                </span>
               ) : null}
             </div>
             {app.configure_url ? (
@@ -297,11 +284,7 @@ export function AgentDeploySource({
               </a>
             ) : null}
             <p className="text-muted-foreground text-xs">
-              Pushes to{' '}
-              <code className="font-mono">
-                {branch.trim() || 'the production branch'}
-              </code>{' '}
-              update the prompt + skills. Or from the CLI:{' '}
+              Or use the CLI:{' '}
               <code className="font-mono">oc agent deploy</code>
             </p>
           </div>
