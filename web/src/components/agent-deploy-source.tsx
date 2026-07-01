@@ -57,6 +57,9 @@ export function AgentDeploySource({
   const { data: app, isLoading: appLoading } = useQuery({
     queryKey: ['deploy-app'],
     queryFn: getDeployApp,
+    // The App is installed in another tab; refetch whenever the user returns so the
+    // card flips to the repo picker immediately (staleTime would otherwise hide it).
+    refetchOnWindowFocus: 'always',
   })
   const {
     data: source,
@@ -73,6 +76,7 @@ export function AgentDeploySource({
         throw e // a real failure (500/auth/proxy) must not masquerade as "not connected"
       }
     },
+    refetchOnWindowFocus: 'always',
   })
 
   // Pre-fill the picker from the current link once, so "connected" is an editable picker.
@@ -197,6 +201,16 @@ export function AgentDeploySource({
           </div>
         ) : (
           <div className="space-y-3" ref={pickerRef}>
+            {!source ? (
+              <p className="text-xs">
+                <span className="font-medium text-green-600 dark:text-green-500">
+                  GitHub connected.
+                </span>{' '}
+                <span className="text-muted-foreground">
+                  Last step — pick a repo to deploy from.
+                </span>
+              </p>
+            ) : null}
             <Select
               value={repo}
               onValueChange={pickRepo}
@@ -229,10 +243,10 @@ export function AgentDeploySource({
                 {link.isPending
                   ? source
                     ? 'Updating…'
-                    : 'Connecting…'
+                    : 'Deploying…'
                   : source
                     ? 'Update'
-                    : 'Connect'}
+                    : 'Deploy'}
               </Button>
               {source ? (
                 <Button
