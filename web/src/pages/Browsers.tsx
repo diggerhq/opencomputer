@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Monitor, Trash2 } from 'lucide-react'
+import { ExternalLink, Monitor, Trash2, X } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   deleteBrowser,
@@ -23,6 +23,12 @@ const STATUS_FILTERS = [
   { value: 'deleted', label: 'Deleted' },
 ] as const
 
+type InlineViewer = {
+  browserId: string
+  kind: 'live' | 'replay'
+  url: string
+}
+
 function canDeleteBrowser(browser: BrowserSession) {
   return browser.status === 'active' && !browser.deleted_at
 }
@@ -39,6 +45,7 @@ export default function Browsers() {
   const queryClient = useQueryClient()
   const [status, setStatus] = useState('')
   const [toDelete, setToDelete] = useState<BrowserSession | null>(null)
+  const [viewer, setViewer] = useState<InlineViewer | null>(null)
 
   const {
     data: browsers = [],
@@ -91,6 +98,14 @@ export default function Browsers() {
     deleteMutation.mutate(toDelete.id, {
       onSuccess: () => setToDelete(null),
     })
+  }
+
+  const toggleViewer = (next: InlineViewer) => {
+    setViewer((current) =>
+      current?.browserId === next.browserId && current.kind === next.kind
+        ? null
+        : next,
+    )
   }
 
   const columns: Column<BrowserSession>[] = [
@@ -148,36 +163,42 @@ export default function Browsers() {
         <div className="flex h-8 items-center justify-end gap-1">
           {canOpenLiveView(browser) ? (
             <Button
-              asChild
               variant="ghost"
               size="icon"
-              title="Open live view"
-              aria-label="Open live view"
+              title="Show live view"
+              aria-label="Show live view"
+              aria-pressed={
+                viewer?.browserId === browser.id && viewer.kind === 'live'
+              }
+              onClick={() =>
+                toggleViewer({
+                  browserId: browser.id,
+                  kind: 'live',
+                  url: browser.live_view_url ?? '',
+                })
+              }
             >
-              <a
-                href={browser.live_view_url ?? undefined}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <ExternalLink className="size-4" />
-              </a>
+              <ExternalLink className="size-4" />
             </Button>
           ) : null}
           {browser.replay_view_url ? (
             <Button
-              asChild
               variant="ghost"
               size="icon"
-              title="Open replay"
-              aria-label="Open replay"
+              title="Show replay"
+              aria-label="Show replay"
+              aria-pressed={
+                viewer?.browserId === browser.id && viewer.kind === 'replay'
+              }
+              onClick={() =>
+                toggleViewer({
+                  browserId: browser.id,
+                  kind: 'replay',
+                  url: browser.replay_view_url ?? '',
+                })
+              }
             >
-              <a
-                href={browser.replay_view_url}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <Monitor className="size-4" />
-              </a>
+              <Monitor className="size-4" />
             </Button>
           ) : null}
           {canDeleteBrowser(browser) ? (
@@ -253,6 +274,15 @@ export default function Browsers() {
                   }
                 />
               }
+              renderSubRow={(browser) =>
+                viewer?.browserId === browser.id ? (
+                  <InlineBrowserViewer
+                    viewer={viewer}
+                    browser={browser}
+                    onClose={() => setViewer(null)}
+                  />
+                ) : null
+              }
             />
           </Panel>
 
@@ -270,6 +300,48 @@ export default function Browsers() {
         pending={deleteMutation.isPending}
         onConfirm={confirmDelete}
       />
+    </div>
+  )
+}
+
+function InlineBrowserViewer({
+  viewer,
+  browser,
+  onClose,
+}: {
+  viewer: InlineViewer
+  browser: BrowserSession
+  onClose: () => void
+}) {
+  return (
+    <div className="bg-background border-t px-4 py-3">
+      <div className="mb-2 flex h-8 items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-foreground truncate text-sm font-medium">
+            {viewer.kind === 'live' ? 'Live view' : 'Replay'}
+          </div>
+          <div className="text-muted-foreground truncate font-mono text-xs">
+            {browser.id}
+          </div>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title="Close viewer"
+          aria-label="Close viewer"
+          onClick={onClose}
+        >
+          <X className="size-4" />
+        </Button>
+      </div>
+      <div className="bg-muted overflow-hidden rounded-md border">
+        <iframe
+          title={`${viewer.kind} for ${browser.id}`}
+          src={viewer.url}
+          className="block h-[520px] w-full bg-black"
+          allow="clipboard-read; clipboard-write; fullscreen"
+        />
+      </div>
     </div>
   )
 }
