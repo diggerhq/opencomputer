@@ -56,7 +56,8 @@ pr-review/
 <CodeGroup>
 
 ```bash CLI
-oc agent skills set ./skills.zip
+# Skills ship as part of a deploy — put them in a skills/ folder:
+oc agent deploy ./agent
 ```
 
 ```http REST API

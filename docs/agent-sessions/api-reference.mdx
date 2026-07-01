@@ -66,11 +66,10 @@ oc agent deploy        # deploy the agent directory in the cwd
 | `oc session create --agent <id\|name> [--revision <n>] [--input <text>]` | Start a session (`--revision` pins a specific revision; default = active). |
 | `oc session get <id>` | Fetch a session. |
 | `oc session list [--agent <id>] [--status <s>]` | List sessions. |
-| `oc session cancel <id>` · `oc session archive <id>` | Stop the active turn · close (read-only). |
+| `oc session cancel <id>` | Cooperatively stop the active turn. |
 | `oc session result <id>` | The resolved final result. |
-| `oc session turns <id>` | Per-turn history. |
-| `oc session sources <id>` | Source checkout status. |
-| *(client tokens — no CLI; mint via SDK/REST for browsers)* | |
+| `oc session steer <id> <text>` | Send input to a running or waiting session. |
+| *(archive · turns · sources · client tokens — REST/SDK only)* | |
 
 </Tab>
 
@@ -132,8 +131,8 @@ A turn's **`yield_reason`** tells you why it stopped:
 | Field | Notes |
 |---|---|
 | `name` `path` `sha` `resolved_sha?` | checkout identity + resolved commit |
-| `status` | `pending · materializing · resolved · failed · auth_required` |
-| `error_code?` `error_message?` `retryable?` | on failure. Codes: `auth_required` (App not installed), `repo_not_selected` (install doesn't cover the repo), `permission_missing`, `mint_failed`, `ref_not_found`, `sha_mismatch` |
+| `status` | `pending · materializing · resolved · failed · unavailable · auth_required` |
+| `error_code?` `error_message?` `retryable?` | on failure — `source.`-prefixed, e.g. `source.auth_required` (App not installed), `source.repo_not_selected` (install doesn't cover the repo), `source.permission_missing`, `source.mint_failed`, `source.ref_not_found`, `source.sha_mismatch`. [Full list](/agent-sessions/repos) |
 
 ## Events
 
@@ -168,8 +167,7 @@ A turn's **`yield_reason`** tells you why it stopped:
 | Command | Purpose |
 | --- | --- |
 | `oc session logs <id> [--follow] [--level <lvl>] [--type <t>]` | Read or live-stream events. |
-| `oc session event <id> <event-id>` | Fetch one event (add `--content` for the blob body). |
-| `oc session messages <id>` | User-message history. |
+| *(single event · event content · messages — REST/SDK only)* | |
 
 </Tab>
 
@@ -390,9 +388,9 @@ Revisions are **linear** (numbered, immutable). `:rev` is a `number` or `rev_…
 
 | Command | Purpose |
 | --- | --- |
-| `oc agent skills [--agent <id>]` | List the active revision's skills. |
-| `oc agent skills set <zip>` | Replace skills from a `.zip` → new revision. |
-| `oc agent skills remove` | Remove all skills → new revision. |
+| `oc agent deploy <dir>` | Deploy a directory; a `skills/` folder inside it ships as skills → new revision. |
+
+Skills have no dedicated CLI verb yet — deploy a directory that contains a `skills/` folder, or use the REST endpoints / dashboard.
 
 </Tab>
 
@@ -429,7 +427,7 @@ A skill is a folder with a `SKILL.md`; PUT/DELETE are **deployments** (versioned
 | Command | Purpose |
 | --- | --- |
 | `oc agent link <owner/repo> --path <p> [--branch <ref>] [--no-deploy]` | Link a repo directory. |
-| `oc agent source [--agent <id>]` | The link + status. |
+| `oc agent status [id\|name]` | The agent's active revision + link status. |
 | `oc agent unlink` | Remove the link. |
 
 </Tab>

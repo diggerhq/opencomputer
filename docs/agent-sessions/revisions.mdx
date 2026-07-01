@@ -79,7 +79,7 @@ The response is a **deployment**:
 { "deployment": { "id": "dep_…", "state": "ready", "revision_id": "rev_…", "active": true } }
 ```
 
-Inline deployments finish synchronously (`state: "ready"` with a `revision_id`). Asynchronous deployments (GitHub) return `state: "queued"` — poll `GET /agents/:id/deployments/:deployment_id`; a repo deploy also reports progress as a **commit status** on GitHub.
+Inline deployments finish synchronously (`state: "ready"` with a `revision_id`). Asynchronous deployments (GitHub) return `state: "accepted"` — poll `GET /agents/:id/deployments/:deployment_id` until `ready` (or `failed`/`skipped`/`superseded`); a repo deploy also reports progress as a **commit status** on GitHub.
 
 ### Staging vs activating
 
@@ -186,7 +186,7 @@ GET /v3/agents/agt_123/activations              # active-pointer audit log
 
 ## Skills
 
-Skills — reusable instruction folders the agent loads when relevant — are **part of a revision**, so they're deployed, versioned, and rolled back exactly like the prompt and model. Include them inline in a deployment (`skills:[…]`, above), upload a `.zip` (`PUT …/skills` / `oc agent skills set`), or ship a `skills/` directory [from a repo](#deploy-from-a-repo).
+Skills — reusable instruction folders the agent loads when relevant — are **part of a revision**, so they're deployed, versioned, and rolled back exactly like the prompt and model. Include them inline in a deployment (`skills:[…]`, above), upload a `.zip` (`PUT …/skills`), or ship a `skills/` directory [from a repo](#deploy-from-a-repo).
 
 See the **[Skills](/agent-sessions/skills)** page for the `SKILL.md` format, how skills are invoked, all three ways to add them, and limits.
 
