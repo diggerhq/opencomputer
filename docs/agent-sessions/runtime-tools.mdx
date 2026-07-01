@@ -32,15 +32,12 @@ The agent's final `say` is the session result. `ask` ends the turn with `yield_r
 
 ## GitHub tools
 
-<Warning>
-`github_publish_pull_request` is **temporarily unavailable** — the current agent runtime
-does not expose it yet, while the runtime is being updated. The description below is the
-intended behavior; the tool will be re-enabled in an upcoming runtime release.
-</Warning>
-
 | Tool | What it does |
 | --- | --- |
 | `github_publish_pull_request` | Open a pull request from a checked-out [Repo](/agent-sessions/repos) source. |
+| `add_source` | Check out an additional repo into `/workspace/sources/<name>` mid-session. |
+| `watch_pull_request` | Subscribe to events on a PR the session opened — the session is woken when checks finish, a review or comment lands, or it merges. |
+| `unwatch_pull_request` | Stop watching a PR. |
 
 `github_publish_pull_request` lets the agent open a PR **without ever holding a GitHub
 credential**. The agent edits files in `/workspace/sources/<source>` and makes local
@@ -58,10 +55,31 @@ just-in-time, write-scoped token — outside the agent sandbox. It returns the P
 
 <Note>
 `github_publish_pull_request` requires a **configured GitHub App** (the OpenComputer App or
-a [bring-your-own App](/agent-sessions/repos#github-app-modes)). It does **not** work with
+a [bring-your-own App](/agent-sessions/repos#bring-your-own-app)). It does **not** work with
 inline (`risky_short_lived_token`) auth, which is **checkout-only** — see
 [Repos & GitHub](/agent-sessions/repos#inline-short-lived-token).
 </Note>
+
+`add_source(repo, ref, name?)` checks out an **additional** repo into
+`/workspace/sources/<name>` mid-session. `repo` is `"owner/repo"` (or a `repo_…` id), `ref` a
+branch or `refs/pull/N/head`, `name` defaults to the repo name. Same zero-credential model as
+the initial checkout — a Git operations sandbox mints a just-in-time, read-only token; the
+agent never sees it. **Connected-App (`oc_app`) repos only.**
+
+`watch_pull_request(wake_on?, repo?, pr?, intent?)` subscribes the session to a PR it opened;
+OpenComputer wakes the session when the wake condition is met. It does **not** block — call it,
+then finish the turn.
+
+| Argument | Required | What it is |
+| --- | --- | --- |
+| `wake_on` | no | The wake condition: `checks` (default), `review` (a review decision), `comment` (a new comment), `merge` (merged/closed). |
+| `repo` | no | The watched repo. Defaults to the most recent PR the session opened. |
+| `pr` | no | The PR number. Defaults with `repo`. |
+| `intent` | no | Freeform note (the *why*), replayed on wake. |
+
+Watches cover PRs the **same session** opened, on **Connected-App (`oc_app`) repos only**.
+`unwatch_pull_request(repo?, pr?)` stops watching; both args default to the session's only
+active watch. Full flow, statuses, and delivered events: [Watches](/agent-sessions/watches).
 
 ## External systems
 

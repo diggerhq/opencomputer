@@ -82,7 +82,7 @@ oc agent deploy        # deploy the agent directory in the cwd
 - `key?` — get-or-create (one session per key). Keyless: an `Idempotency-Key` header makes create retry-safe.
 - `metadata?` — opaque routing state (≤ 16 KB); on get/list + **verbatim in webhooks**; never sent to the model, not indexed.
 - `limits?` `{ tokens, turn_seconds, turns }` — non-monetary; tripping one ends the turn (matching `yield_reason`).
-- `sources?` — repos checked out before turn 1 (the token never enters the sandbox; see [GitHub](#github-apps-and-repos)). Each `{ repo, ref, sha, name? }` or inline `{ url, ref, sha, name?, auth }`; `ref` + `sha` required.
+- `sources?` — repos checked out before turn 1 (the token never enters the sandbox; see [GitHub](#github-apps-and-repos)). Each registered `{ repo, ref, sha?, name? }` or inline `{ url, ref, sha, name?, auth }`. `ref` is required; `sha` is required for inline sources but **optional for a registered repo** — omit it and the control plane resolves `ref`→HEAD and pins that commit at create.
 - Client tokens: `scopes?` (`read`/`steer`), `ttl?` 60–86400 s (SDK `ttlSeconds`).
 
 A session pins the agent's active revision for its whole life — editing the agent later never affects a running one.
@@ -123,8 +123,8 @@ A turn's **`yield_reason`** tells you why it stopped:
 
 | Variant | Shape |
 |---|---|
-| registered | `{ repo, ref, sha, name? }` — `repo` is a `repo_…` id or `"owner/repo"`; App-backed auth |
-| inline | `{ url, ref, sha, name?, auth }` — `auth = { type:"risky_short_lived_token", token, expires_at }` (can't refresh) |
+| registered | `{ repo, ref, sha?, name? }` — `repo` is a `repo_…` id or `"owner/repo"`; App-backed auth. `sha` is **optional** (omit → control plane resolves `ref`→HEAD and pins it at create) |
+| inline | `{ url, ref, sha, name?, auth }` — `sha` **required**; `auth = { type:"risky_short_lived_token", token, expires_at }` (can't refresh) |
 
 **`SourceSummary`** (sanitized; on create + `GET …/sources`)
 
@@ -216,6 +216,32 @@ Filter by `type` (exact or `prefix.*`), `turn_id`, `limit`. `after` resumes from
 </Tabs>
 
 Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on idempotent replay) with `{ event: { id, seq }, session: { id, status, head } }`.
+
+## Watches
+
+*Managed with the SDK (`session.watches.create/list/delete`), the CLI (`oc session watch/watches/unwatch`), or REST — authenticate with your **org API key** (server-side). The agent-facing path is the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool. Full guide: [Watches](/agent-sessions/watches).*
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /sessions/:id/watches` | Declare a watch → `201 { watch }`. Body: `{ type:"github_pr", repo?, pr?, wake_on, intent? }`. |
+| `GET /sessions/:id/watches` | List watches → `{ data: [watch] }`. |
+| `DELETE /sessions/:id/watches/:watchId` | Remove a watch → `{ ok: true }`. |
+
+`wake_on` is the wake condition (`checks` default · `review` · `comment` · `merge`); `intent` is the freeform "why," replayed on wake. `repo`/`pr` are optional — omitted, they resolve to the PR this session opened. A watch fires only on PRs the **same session** opened, on Connected-App (`oc_app`) repos. Limits: **10** active watches per session, **30-day** TTL (and never outlives the PR).
+
+**`Watch`**
+
+| Field | Notes |
+|---|---|
+| `id` `type` | `wch_…`; `type` = `github_pr` |
+| `repo` `pr` | watched repo · PR number |
+| `wake_on` | wake condition: `checks` (default) · `review` (a review decision) · `comment` · `merge` (merged/closed) |
+| `intent?` | freeform note ("why"), replayed on wake |
+| `status` | `active · closed · revoked · auth_required` |
+| `origin` | how it was declared (runtime tool / management API) |
+| `last_snapshot_at?` `expires_at` `created_at` | last authoritative PR re-read · 30-day TTL lapse · timestamp |
+
+**Delivered events** — appended into the session log at level `user` with `source: "github"`, carrying a normalized summary (not the raw webhook): `github.pr.checks_completed` · `github.pr.review_submitted` · `github.pr.comment` · `github.pr.merged` · `github.pr.closed`.
 
 ## Agents
 

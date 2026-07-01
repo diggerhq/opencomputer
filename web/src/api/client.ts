@@ -610,10 +610,16 @@ export const getSessions = (
 export const getSession = (id: string) =>
   apiFetch(`/v3/sessions/${id}`, {}, S.SessionSchema)
 
-// The API wants { agent: <id>, input } (input required). The response is an envelope
+// The API wants { agent: <id>, input } (input required). An optional `sources[]` attaches
+// a WORKING repo the agent checks out + opens PRs from — the control plane pins the ref's
+// HEAD when `sha` is omitted (design 010 §24.0). The response is an envelope
 // { session, client_token } — return the session.
 export const createSession = (
-  body: { agent: string; input: string },
+  body: {
+    agent: string
+    input: string
+    sources?: { repo: string; ref: string; name?: string }[]
+  },
   idempotencyKey?: string,
 ) =>
   apiFetch(

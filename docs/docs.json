@@ -85,6 +85,7 @@
           "agent-sessions/slack",
           "agent-sessions/runtimes",
           "agent-sessions/runtime-tools",
+          "agent-sessions/watches",
           "agent-sessions/api-reference",
           {
             "group": "Labs",

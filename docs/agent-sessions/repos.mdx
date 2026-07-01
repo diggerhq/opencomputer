@@ -131,6 +131,8 @@ for checkout, write only to publish) — the agent never holds one.
 Use your own GitHub App so PRs, comments, and statuses come from **your** identity. OpenComputer
 stores the key encrypted and signs the same per-operation tokens with it.
 
+<Note>[Watches](/agent-sessions/watches) currently require PRs opened through the **OpenComputer** App — a PR published with a bring-your-own App isn't watchable yet.</Note>
+
 **Create one** — `createManifestUrl` returns a link; open it and GitHub walks you through
 creating the App, then OpenComputer captures the key and registers it. (Creating an App is a
 GitHub-UI flow, so it's a link to open, not a pure API call.)
@@ -285,7 +287,9 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 
 - **`ref`** (required) — the fetch ref (a branch or `refs/pull/N/head`); a private SHA
   can't be fetched directly.
-- **`sha`** (required) — the exact commit, pinned and verified after fetch.
+- **`sha`** — the exact commit, pinned and verified after fetch. **Optional for a
+  registered repo** (omit it and the control plane resolves `ref`→HEAD and pins that commit
+  at create); **required for inline sources**.
 
 You can also reference `"owner/repo"` directly instead of a registered id. A session can
 list several immutable sources, such as a PR's base and head.
@@ -315,12 +319,6 @@ After checkout, the agent works with ordinary files. It can inspect, edit, test,
 make local commits. Anything needing GitHub credentials runs outside the agent sandbox, so
 the agent never runs authenticated `git`/`gh` and never sees a token.
 
-<Warning>
-Opening PRs from the agent (`github_publish_pull_request`) is **temporarily unavailable**
-while the runtime is being updated — checkout (read) works today; the agent-driven PR-open
-described below will be re-enabled in an upcoming runtime release.
-</Warning>
-
 To open a pull request, the agent calls the
 [`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool —
 it is **not** an SDK method; the agent invokes it from inside the sandbox. It takes the
@@ -329,6 +327,16 @@ source's checked-out ref), and `draft`, and returns the PR URL. OpenComputer com
 agent's edits to an `oc/<session>/<source>-<id>` branch and opens the PR with a
 just-in-time, write-scoped token. This requires a **configured GitHub App** — the inline
 `risky_short_lived_token` path is checkout-only and **cannot** open PRs.
+
+**More repos mid-session.**
+[`add_source(repo, ref, name?)`](/agent-sessions/runtime-tools#github-tools) checks out an
+additional Connected-App repo into `/workspace/sources/<name>` after the first turn — same
+zero-credential model as the initial checkout.
+
+**React to PR events.** After opening a PR, the agent can
+[watch](/agent-sessions/watches) it with `watch_pull_request`; OpenComputer wakes the session
+when checks finish, a review or comment lands, or it merges, so the agent can respond (e.g.
+push a fix). Own-PR only, Connected-App repos only.
 
 ## Guarantees
 
