@@ -229,7 +229,6 @@ export default function Sessions() {
               </Field>
               {agentId ? (
                 <WorkingRepoField
-                  agentId={agentId}
                   value={workingRepo}
                   onChange={setWorkingRepo}
                 />

@@ -467,7 +467,6 @@ export default function AgentDetail() {
                 />
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <WorkingRepoField
-                    agentId={agentId}
                     value={workingRepo}
                     onChange={setWorkingRepo}
                   />

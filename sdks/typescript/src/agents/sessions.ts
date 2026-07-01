@@ -54,10 +54,13 @@ export interface RegisteredRepoSource {
   repo: string;
   url?: never;
   auth?: never;
-  /** Required fetch ref (branch or `refs/pull/N/head`). */
+  /** Fetch ref (branch or `refs/pull/N/head`). */
   ref: string;
-  /** Required exact commit; fetched, then pinned + verified. */
-  sha: string;
+  /**
+   * Exact commit to pin. OPTIONAL for a registered repo: omit it and the control plane resolves
+   * `ref`→HEAD and pins that sha at create. Pass it to pin an exact commit yourself.
+   */
+  sha?: string;
   /** Checkout slug → `/workspace/sources/<name>`. Defaults to the repo name. */
   name?: string;
 }

@@ -82,7 +82,7 @@ oc agent deploy        # deploy the agent directory in the cwd
 - `key?` — get-or-create (one session per key). Keyless: an `Idempotency-Key` header makes create retry-safe.
 - `metadata?` — opaque routing state (≤ 16 KB); on get/list + **verbatim in webhooks**; never sent to the model, not indexed.
 - `limits?` `{ tokens, turn_seconds, turns }` — non-monetary; tripping one ends the turn (matching `yield_reason`).
-- `sources?` — repos checked out before turn 1 (the token never enters the sandbox; see [GitHub](#github-apps-and-repos)). Each `{ repo, ref, sha, name? }` or inline `{ url, ref, sha, name?, auth }`; `ref` + `sha` required.
+- `sources?` — repos checked out before turn 1 (the token never enters the sandbox; see [GitHub](#github-apps-and-repos)). Each registered `{ repo, ref, sha?, name? }` or inline `{ url, ref, sha, name?, auth }`. `ref` is required; `sha` is required for inline sources but **optional for a registered repo** — omit it and the control plane resolves `ref`→HEAD and pins that commit at create.
 - Client tokens: `scopes?` (`read`/`steer`), `ttl?` 60–86400 s (SDK `ttlSeconds`).
 
 A session pins the agent's active revision for its whole life — editing the agent later never affects a running one.

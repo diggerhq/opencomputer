@@ -17,16 +17,6 @@ export interface WorkingRepo {
   ref: string // branch
 }
 
-/** Remember the last working repo chosen FOR THIS AGENT (used as a suggestion in a later slice;
- *  never auto-applied — a working repo is always an explicit choice). Best-effort. */
-export function rememberWorkingRepo(agentId: string, wr: WorkingRepo): void {
-  try {
-    localStorage.setItem(`oc.workingRepo.${agentId}`, JSON.stringify(wr))
-  } catch {
-    /* ignore quota */
-  }
-}
-
 function splitRepo(full: string): [owner: string, name: string] {
   const i = full.indexOf('/')
   return i === -1 ? ['', full] : [full.slice(0, i), full.slice(i + 1)]
@@ -40,15 +30,18 @@ function splitRepo(full: string): [owner: string, name: string] {
  * on the Radix primitive (no new dependency) so it reads as a deliberate control, not stock.
  */
 export function WorkingRepoField({
-  agentId,
   value,
   onChange,
 }: {
-  agentId: string
   value: WorkingRepo | null
   onChange: (v: WorkingRepo | null) => void
 }) {
-  const { data: app, isLoading } = useQuery({
+  const {
+    data: app,
+    isLoading,
+    isError,
+    refetch,
+  } = useQuery({
     queryKey: ['deploy-app'],
     queryFn: getDeployApp,
     staleTime: 30_000,
@@ -61,9 +54,22 @@ export function WorkingRepoField({
     const r = repoOptions.find((x) => x.full_name === fullName)
     // Keep the current branch when re-picking the same repo; else the repo's default.
     const ref = value?.repo === fullName ? value.ref : r?.default_branch || 'main'
-    const wr = { repo: fullName, ref }
-    rememberWorkingRepo(agentId, wr)
-    onChange(wr)
+    onChange({ repo: fullName, ref })
+  }
+
+  // Load failed → an explicit retry, not a silent "No repos available" dead-end.
+  if (isError) {
+    return (
+      <button
+        type="button"
+        onClick={() => void refetch()}
+        className="border-border inline-flex h-8 items-center gap-2 rounded-md border border-dashed px-2.5 text-sm text-red-600 transition-colors hover:border-red-400 dark:text-red-500"
+        title="Couldn't load your repos — click to retry"
+      >
+        <GithubMark className="size-3.5" />
+        Couldn’t load repos — retry
+      </button>
+    )
   }
 
   // Not installed → a quiet connect affordance instead of a dead control.

@@ -32,15 +32,12 @@ The agent's final `say` is the session result. `ask` ends the turn with `yield_r
 
 ## GitHub tools
 
-<Warning>
-`github_publish_pull_request` is **temporarily unavailable** — the current agent runtime
-does not expose it yet, while the runtime is being updated. The description below is the
-intended behavior; the tool will be re-enabled in an upcoming runtime release.
-</Warning>
-
 | Tool | What it does |
 | --- | --- |
 | `github_publish_pull_request` | Open a pull request from a checked-out [Repo](/agent-sessions/repos) source. |
+| `add_source` | Check out an additional repo into `/workspace/sources/<name>` mid-session. |
+| `watch_pull_request` | Subscribe to events on a PR the session opened — the session is woken when checks finish, a review or comment lands, or it merges. |
+| `unwatch_pull_request` | Stop watching a PR. |
 
 `github_publish_pull_request` lets the agent open a PR **without ever holding a GitHub
 credential**. The agent edits files in `/workspace/sources/<source>` and makes local
