@@ -35,6 +35,8 @@ export interface Agent {
   model: string;
   runtime: Runtime;
   revision?: number;
+  /** The agent's active revision (what new sessions run); `prompt`/`model` are served from it. */
+  activeRevision?: { id: string; number: number; digest: string } | null;
   credentialId?: CredentialRef | null;
   limits?: Limits;
   createdAt?: string;

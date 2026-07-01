@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, MessagesSquare, Send } from 'lucide-react'
+import { ArrowLeft, MessagesSquare, Send, GitBranch } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   getAgent,
@@ -10,10 +10,10 @@ import {
   createSession,
   getCredentials,
   createCredential,
+  getDeploymentSource,
   type Agent,
 } from '@/api/client'
 import type { Session } from '@/api/schemas'
-import { PageHeader } from '@/components/page-header'
 import {
   Panel,
   PanelContent,
@@ -29,19 +29,41 @@ import { ResourceTable, type Column } from '@/components/resource-table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SlackConnect } from '@/components/slack-connect'
 import { AgentSkills } from '@/components/agent-skills'
+import { AgentDeploySource } from '@/components/agent-deploy-source'
 import { AgentRevisions } from '@/components/agent-revisions'
+import { ApiHint, type ApiRef } from '@/components/api-hint'
 import { getRuntime } from '@/lib/runtimes'
 
-// Sentinels for the non-credential choices in the picker. The model list +
-// credential provider come from the agent's runtime (see @/lib/runtimes).
+const DOCS = 'https://docs.opencomputer.dev/agent-sessions'
+
+// Sentinels for the non-credential choices in the picker.
 const ORG_DEFAULT = '__default__' // no pinned credential → org default resolves
 const NEW_CRED = '__new__' // create one inline
 const MANAGED = 'managed' // run via OpenComputer, no BYO key (token-billing §6.6)
 
+type Tab = 'overview' | 'revisions' | 'sessions' | 'settings'
+
 export default function AgentDetail() {
-  const { agentId = '' } = useParams()
+  const { agentId = '', tab } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const active: Tab =
+    tab === 'revisions'
+      ? 'revisions'
+      : tab === 'sessions'
+        ? 'sessions'
+        : tab === 'settings'
+          ? 'settings'
+          : 'overview'
+
+  // Each tab is a thin control panel over one API resource — surface the call it drives
+  // (REST + SDK), same as the other pages, so the dashboard reads as programmable.
+  const tabApi: Record<Tab, ApiRef> = {
+    overview: { method: 'GET', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.get(id)', docs: `${DOCS}/agents` },
+    revisions: { method: 'GET', path: `/v3/agents/${agentId}/revisions`, sdk: 'oc.agents.revisions.list(id)', docs: `${DOCS}/revisions` },
+    sessions: { method: 'POST', path: '/v3/sessions', sdk: 'oc.sessions.create({ agent })', docs: `${DOCS}/sessions` },
+    settings: { method: 'PATCH', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.update(id, …)', docs: `${DOCS}/agents` },
+  }
 
   const {
     data: agent,
@@ -53,11 +75,23 @@ export default function AgentDetail() {
     enabled: !!agentId,
   })
 
-  // This agent's sessions — filtered server-side (not a client slice of an unfiltered
-  // first page, which would drop older sessions once the org is busy).
+  // This agent's sessions — filtered server-side.
   const { data: sessions = [], isLoading: loadingSessions } = useQuery({
     queryKey: ['sessions', { agent: agentId }],
     queryFn: () => getSessions({ agent: agentId }),
+  })
+
+  // The deployment-source link (shared cache key with the GitHub card). null = not linked.
+  // When linked, the repo is the source of truth, so the inline editor goes read-only.
+  const { data: source } = useQuery({
+    queryKey: ['agent-deploy-source', agentId],
+    queryFn: async () => {
+      try {
+        return (await getDeploymentSource(agentId)).source
+      } catch {
+        return null
+      }
+    },
   })
 
   // Credentials for the switch picker + to label the current one.
@@ -65,8 +99,6 @@ export default function AgentDetail() {
     queryKey: ['credentials'],
     queryFn: getCredentials,
   })
-  // Model list + credential provider follow the agent's runtime (immutable after
-  // create): claude→anthropic, codex→openai. Falls back to claude while loading.
   const rt = getRuntime(agent?.runtime)
   const providerCreds = (credentials ?? []).filter(
     (c) => c.provider === rt.provider,
@@ -79,11 +111,14 @@ export default function AgentDetail() {
     }`
   }
 
-  // ── Start a session (inline composer) ─────────────────────────────────────
+  // ── Start a session (used by the Sessions tab composer) ────────────────────
   const [task, setTask] = useState('')
   const startMutation = useMutation({
     mutationFn: () =>
-      createSession({ agent: agentId, input: task.trim() }, crypto.randomUUID()),
+      createSession(
+        { agent: agentId, input: task.trim() },
+        crypto.randomUUID(),
+      ),
     onSuccess: (session) => {
       void queryClient.invalidateQueries({ queryKey: ['sessions'] })
       void navigate(`/sessions/${session.id}`)
@@ -91,14 +126,13 @@ export default function AgentDetail() {
     onError: (e) => notifyError("Couldn't start the session.", e),
   })
 
-  // ── Live config controls (no edit mode) ───────────────────────────────────
-  // Dropdowns autosave on change (optimistic → no flicker); the prompt is a draft
-  // with Save/Discard that enable only when it differs from what's saved.
+  // ── Live config controls ───────────────────────────────────────────────────
   const settleAgent = () => {
     void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
     void queryClient.invalidateQueries({ queryKey: ['agents'] })
-    // A prompt/model save creates a new revision → refresh the Revisions panel too.
-    void queryClient.invalidateQueries({ queryKey: ['agent-revisions', agentId] })
+    void queryClient.invalidateQueries({
+      queryKey: ['agent-revisions', agentId],
+    })
     void queryClient.invalidateQueries({ queryKey: ['agent-deploys', agentId] })
   }
   const optimistic = async (patch: Partial<Agent>) => {
@@ -131,7 +165,7 @@ export default function AgentDetail() {
       rollback(prev)
       notifyError("Couldn't update the prompt.", e)
     },
-    onSuccess: () => setPromptDraft(undefined), // re-sync to saved
+    onSuccess: () => setPromptDraft(undefined),
     onSettled: settleAgent,
   })
 
@@ -146,7 +180,6 @@ export default function AgentDetail() {
     onSettled: settleAgent,
   })
 
-  // Create a new credential inline, then switch the agent to it.
   const [credNew, setCredNew] = useState(false)
   const [newCredName, setNewCredName] = useState('')
   const [newCredKey, setNewCredKey] = useState('')
@@ -170,7 +203,6 @@ export default function AgentDetail() {
     },
     onError: (e) => notifyError("Couldn't add the credential.", e),
   })
-
   const credSaving = switchCredMutation.isPending || addCredMutation.isPending
 
   // Derived control values.
@@ -183,14 +215,12 @@ export default function AgentDetail() {
   const credSelectValue = credNew
     ? NEW_CRED
     : (agent?.credential_id ?? ORG_DEFAULT)
-  // Managed is always offered (every org carries a managed credential); it has no provider.
   const credOptions = [
     { value: ORG_DEFAULT, label: 'Org default (no pinned credential)' },
     { value: MANAGED, label: 'Managed · no key needed' },
     ...providerCreds.map((c) => ({ value: c.id, label: credLabel(c.id) })),
     { value: NEW_CRED, label: '＋ New credential…' },
   ]
-  // ORG_DEFAULT → clear the pin (null); MANAGED → the "managed" sentinel; else a cred id.
   const onCredChange = (v: string) => {
     if (v === NEW_CRED) {
       setCredNew(true)
@@ -200,48 +230,18 @@ export default function AgentDetail() {
     switchCredMutation.mutate(v === ORG_DEFAULT ? null : v)
   }
 
-  const sessionColumns: Column<Session>[] = [
-    {
-      key: 'id',
-      header: 'Session',
-      cell: (s) => (
-        <Link
-          to={`/sessions/${s.id}`}
-          className="text-foreground font-mono text-[13px] underline-offset-4 hover:underline"
-        >
-          {s.id}
-        </Link>
-      ),
-    },
-    {
-      key: 'status',
-      header: 'Status',
-      cell: (s) => <StatusBadge status={s.status} />,
-    },
-    {
-      key: 'created',
-      header: 'Created',
-      cell: (s) => (
-        <span className="text-muted-foreground font-mono text-xs">
-          {new Date(s.created_at).toLocaleString()}
-        </span>
-      ),
-    },
-  ]
-
-  return (
-    <div className="max-w-4xl">
-      <Link
-        to="/agents"
-        className="text-muted-foreground hover:text-foreground mb-4 inline-flex items-center gap-1.5 text-sm"
-      >
-        <ArrowLeft className="size-4" />
-        Agents
-      </Link>
-
-      {isLoading ? (
+  if (isLoading) {
+    return (
+      <div className="mx-auto max-w-5xl">
+        <BackLink />
         <Skeleton className="h-40 w-full" />
-      ) : isError || !agent ? (
+      </div>
+    )
+  }
+  if (isError || !agent) {
+    return (
+      <div className="mx-auto max-w-5xl">
+        <BackLink />
         <EmptyState
           icon={MessagesSquare}
           title="Agent not found"
@@ -252,97 +252,246 @@ export default function AgentDetail() {
             </Button>
           }
         />
-      ) : (
-        <div className="space-y-6">
-          <PageHeader
-            title={agent.name}
-            description="A reusable definition. Sessions pin a snapshot of it at create time."
-            api={{
-              method: 'GET',
-              path: '/v3/agents/{id}',
-              sdk: 'oc.agents.get()',
-              docs: 'https://docs.opencomputer.dev/agent-sessions/agents',
-            }}
-          />
+      </div>
+    )
+  }
 
-          {/* Configuration — live controls; changes save in place. */}
-          <Panel className="space-y-5 p-5">
-            <div className="text-muted-foreground grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
-              <span>Agent ID</span>
-              <span className="text-foreground font-mono">{agent.id}</span>
-              <span>Runtime</span>
-              <span className="text-foreground capitalize">{agent.runtime}</span>
-              <span>Active revision</span>
-              <span className="text-foreground font-mono">
-                #{agent.active_revision?.number ?? agent.revision ?? 1}
-              </span>
-              <span>Created</span>
-              <span className="text-foreground">
-                {new Date(agent.created_at).toLocaleString()}
-              </span>
+  const activeRev = agent.active_revision?.number ?? agent.revision ?? 1
+  const base = `/agents/${agent.id}`
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <BackLink />
+
+      {/* Sticky header: identity + status + primary action, with the tab bar. */}
+      <div className="bg-background sticky top-0 z-20 border-b">
+        <div className="flex flex-wrap items-start justify-between gap-3 pb-3">
+          <div className="min-w-0 space-y-1.5">
+            <h1 className="text-foreground truncate text-lg font-semibold">
+              {agent.name}
+            </h1>
+            <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span className="font-mono">{agent.id}</span>
+              <span className="capitalize">{agent.runtime}</span>
+              <span className="font-mono">rev #{activeRev}</span>
+              <SourceChip source={source ?? null} />
             </div>
+          </div>
+          <Button asChild size="sm">
+            <Link to={`${base}/sessions`}>
+              <Send className="size-4" />
+              New session
+            </Link>
+          </Button>
+        </div>
+        <nav className="-mb-px flex gap-1">
+          <TabLink to={base} label="Overview" current={active === 'overview'} />
+          <TabLink
+            to={`${base}/revisions`}
+            label="Revisions"
+            current={active === 'revisions'}
+          />
+          <TabLink
+            to={`${base}/sessions`}
+            label="Sessions"
+            current={active === 'sessions'}
+          />
+          <TabLink
+            to={`${base}/settings`}
+            label="Settings"
+            current={active === 'settings'}
+          />
+        </nav>
+      </div>
 
-            <div className="space-y-5 border-t pt-5">
-              {/* Model — autosaves */}
-              <Field label="Model" htmlFor="agent-model">
-                <div className="flex items-center gap-3">
-                  <Select
-                    id="agent-model"
-                    value={agent.model}
-                    onValueChange={(m) => modelMutation.mutate(m)}
-                    options={modelOptions}
-                    className="max-w-xs"
-                  />
-                  <Saving show={modelMutation.isPending} />
-                </div>
-              </Field>
+      <div className="py-6">
+        <div className="mb-4">
+          <ApiHint {...tabApi[active]} />
+        </div>
+        {active === 'overview' && (
+          <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
+            {/* Left: behavior (model/prompt) + skills — read-only when a repo drives the agent. */}
+            <div className="space-y-6">
+              <Panel>
+                <PanelContent className="space-y-5">
+                  {source ? (
+                    <div className="space-y-4">
+                      <div className="border-border bg-panel-2 flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs">
+                        <GitBranch className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
+                        <div className="space-y-0.5">
+                          <p className="text-foreground">
+                            Managed from a connected repo —{' '}
+                            <span className="font-mono">
+                              {source.full_name ?? source.path ?? 'repo'}
+                              {source.full_name && source.path
+                                ? `/${source.path}`
+                                : ''}
+                              @{source.production_ref}
+                            </span>
+                          </p>
+                          <p className="text-muted-foreground">
+                            The repo is the source of truth. Edit there and
+                            push, or{' '}
+                            <Link
+                              className="underline underline-offset-4"
+                              to={`${base}/revisions`}
+                            >
+                              browse revisions
+                            </Link>
+                            .
+                          </p>
+                        </div>
+                      </div>
+                      <ReadOnlyField label="Model" value={agent.model} mono />
+                      <ReadOnlyField
+                        label="System prompt"
+                        value={savedPrompt || '—'}
+                        pre
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <Field label="Model" htmlFor="agent-model">
+                        <div className="flex items-center gap-3">
+                          <Select
+                            id="agent-model"
+                            value={agent.model}
+                            onValueChange={(m) => modelMutation.mutate(m)}
+                            options={modelOptions}
+                            className="max-w-xs"
+                          />
+                          <Saving show={modelMutation.isPending} />
+                        </div>
+                      </Field>
+                      <Field label="System prompt" htmlFor="agent-prompt">
+                        <Textarea
+                          id="agent-prompt"
+                          value={promptValue}
+                          onChange={(e) => setPromptDraft(e.target.value)}
+                          placeholder="You are a meticulous code reviewer…"
+                          className="min-h-32"
+                        />
+                        <div className="mt-2 flex items-center gap-3">
+                          <p className="text-muted-foreground text-xs">
+                            How the agent behaves. Saving bumps the agent's
+                            revision.
+                          </p>
+                          <div className="ml-auto flex items-center gap-2">
+                            <Saving show={promptMutation.isPending} />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              disabled={
+                                !promptDirty || promptMutation.isPending
+                              }
+                              onClick={() => setPromptDraft(undefined)}
+                            >
+                              Discard
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={
+                                !promptDirty ||
+                                promptMutation.isPending ||
+                                !promptValue.trim()
+                              }
+                              onClick={() =>
+                                promptMutation.mutate(promptValue.trim())
+                              }
+                            >
+                              Save prompt
+                            </Button>
+                          </div>
+                        </div>
+                      </Field>
+                    </>
+                  )}
+                </PanelContent>
+              </Panel>
+              <AgentSkills agentId={agent.id} />
+            </div>
+            {/* Right rail: connect-or-status for the agent's source + Slack. */}
+            <div className="space-y-4">
+              <AgentDeploySource agentId={agent.id} />
+              <SlackConnect agentId={agent.id} agentName={agent.name} />
+            </div>
+          </div>
+        )}
 
-              {/* Prompt — draft with Save/Discard */}
-              <Field label="System prompt" htmlFor="agent-prompt">
-                <Textarea
-                  id="agent-prompt"
-                  value={promptValue}
-                  onChange={(e) => setPromptDraft(e.target.value)}
-                  placeholder="You are a meticulous code reviewer…"
-                  className="min-h-32"
-                />
-                <div className="mt-2 flex items-center gap-3">
-                  <p className="text-muted-foreground text-xs">
-                    How the agent behaves. Saving bumps the agent's revision.
-                  </p>
-                  <div className="ml-auto flex items-center gap-2">
-                    <Saving show={promptMutation.isPending} />
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={!promptDirty || promptMutation.isPending}
-                      onClick={() => setPromptDraft(undefined)}
-                    >
-                      Discard
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={
-                        !promptDirty ||
-                        promptMutation.isPending ||
-                        !promptValue.trim()
-                      }
-                      onClick={() => promptMutation.mutate(promptValue.trim())}
-                    >
-                      Save prompt
-                    </Button>
-                  </div>
-                </div>
-              </Field>
+        {active === 'revisions' && <AgentRevisions agentId={agent.id} />}
 
-              {/* Credential — switch (autosaves) or create new inline */}
-              <Field
-                label="Credential"
-                htmlFor="agent-cred"
-                description="Which credential this agent runs on. To change a key's value, rotate it on the Credentials page."
+        {active === 'sessions' && (
+          <Panel className="overflow-hidden">
+            <PanelHeader>
+              <PanelTitle>Sessions</PanelTitle>
+              <Link
+                to="/sessions"
+                className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
               >
+                All sessions
+              </Link>
+            </PanelHeader>
+            <PanelContent className="border-b">
+              <form
+                className="space-y-2"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (task.trim()) startMutation.mutate()
+                }}
+              >
+                <ChatTextarea
+                  value={task}
+                  onChange={(e) => setTask(e.target.value)}
+                  onSend={() => {
+                    if (task.trim() && !startMutation.isPending)
+                      startMutation.mutate()
+                  }}
+                  placeholder="Give this agent a task — it runs durably as a new session…"
+                  className="min-h-20"
+                />
+                <div className="flex justify-end">
+                  <Button
+                    type="submit"
+                    size="sm"
+                    title="Enter to start · Shift+Enter for newline"
+                    disabled={startMutation.isPending || !task.trim()}
+                  >
+                    <Send className="size-4" />
+                    {startMutation.isPending ? 'Starting…' : 'Start session'}
+                  </Button>
+                </div>
+              </form>
+            </PanelContent>
+            <ResourceTable
+              columns={sessionColumns}
+              rows={sessions}
+              rowKey={(s) => s.id}
+              loading={loadingSessions}
+              empty={
+                <EmptyState
+                  icon={MessagesSquare}
+                  title="No sessions yet"
+                  description="Start a session above to give this agent a durable task."
+                />
+              }
+            />
+          </Panel>
+        )}
+
+        {active === 'settings' && (
+          <div className="space-y-6">
+            {/* Credential — which key the agent runs on. */}
+            <Panel>
+              <PanelHeader>
+                <PanelTitle>Credential</PanelTitle>
+                <span className="text-muted-foreground text-xs">
+                  Which key this agent runs on.
+                </span>
+              </PanelHeader>
+              <PanelContent className="space-y-3">
                 <div className="flex items-center gap-3">
                   <Select
                     id="agent-cred"
@@ -354,7 +503,7 @@ export default function AgentDetail() {
                   <Saving show={credSaving} />
                 </div>
                 {credNew ? (
-                  <div className="border-border bg-panel-2 mt-3 grid grid-cols-1 gap-3 rounded-md border p-3 sm:grid-cols-2">
+                  <div className="border-border bg-panel-2 grid grid-cols-1 gap-3 rounded-md border p-3 sm:grid-cols-2">
                     <Field label="Credential name" htmlFor="new-cred-name">
                       <Input
                         id="new-cred-name"
@@ -391,6 +540,7 @@ export default function AgentDetail() {
                       </Button>
                       <Button
                         type="button"
+                        variant="outline"
                         size="sm"
                         disabled={
                           !newCredKey.trim() || addCredMutation.isPending
@@ -402,86 +552,141 @@ export default function AgentDetail() {
                     </div>
                   </div>
                 ) : null}
-              </Field>
-            </div>
-          </Panel>
+                <p className="text-muted-foreground text-xs">
+                  To change a key's value, rotate it on the Credentials page.
+                </p>
+              </PanelContent>
+            </Panel>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
-          {/* Slack — kept above Sessions so it's visible without scrolling */}
-          <SlackConnect agentId={agent.id} agentName={agent.name} />
+// ── Small building blocks ─────────────────────────────────────────────────────
 
-          {/* Skills — current files + upload-a-zip to deploy a new revision */}
-          <AgentSkills agentId={agent.id} />
+function BackLink() {
+  return (
+    <Link
+      to="/agents"
+      className="text-muted-foreground hover:text-foreground mb-4 inline-flex items-center gap-1.5 text-sm"
+    >
+      <ArrowLeft className="size-4" />
+      Agents
+    </Link>
+  )
+}
 
-          {/* Revisions — deploy history + active pointer + rollback */}
-          <AgentRevisions agentId={agent.id} />
+function TabLink({
+  to,
+  label,
+  current,
+}: {
+  to: string
+  label: string
+  current: boolean
+}) {
+  return (
+    <Link
+      to={to}
+      aria-current={current ? 'page' : undefined}
+      className={
+        'border-b-2 px-3 py-2 text-sm transition-colors ' +
+        (current
+          ? 'border-foreground text-foreground font-medium'
+          : 'text-muted-foreground hover:text-foreground border-transparent')
+      }
+    >
+      {label}
+    </Link>
+  )
+}
 
-          {/* Sessions */}
-          <Panel className="overflow-hidden">
-            <PanelHeader>
-              <PanelTitle>Sessions</PanelTitle>
-              <Link
-                to="/sessions"
-                className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
-              >
-                All sessions
-              </Link>
-            </PanelHeader>
+function SourceChip({
+  source,
+}: {
+  source: {
+    full_name?: string | null
+    path: string
+    production_ref: string
+  } | null
+}) {
+  if (!source) {
+    return null
+  }
+  const label = source.full_name ?? (source.path || 'repo')
+  return (
+    <span className="inline-flex items-center gap-1">
+      <GitBranch className="size-3" />
+      <span className="font-mono">
+        {label}@{source.production_ref}
+      </span>
+    </span>
+  )
+}
 
-            <PanelContent className="border-b">
-              <form
-                className="space-y-2"
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  if (task.trim()) startMutation.mutate()
-                }}
-              >
-                <ChatTextarea
-                  value={task}
-                  onChange={(e) => setTask(e.target.value)}
-                  onSend={() => {
-                    if (task.trim() && !startMutation.isPending) {
-                      startMutation.mutate()
-                    }
-                  }}
-                  placeholder="Give this agent a task — it runs durably as a new session…"
-                  className="min-h-20"
-                />
-                <div className="flex justify-end">
-                  <Button
-                    type="submit"
-                    size="sm"
-                    title="Enter to start · Shift+Enter for newline"
-                    disabled={startMutation.isPending || !task.trim()}
-                  >
-                    <Send className="size-4" />
-                    {startMutation.isPending ? 'Starting…' : 'Start session'}
-                  </Button>
-                </div>
-              </form>
-            </PanelContent>
+function Saving({ show }: { show: boolean }) {
+  if (!show) return null
+  return <span className="text-muted-foreground text-xs">Saving…</span>
+}
 
-            <ResourceTable
-              columns={sessionColumns}
-              rows={sessions}
-              rowKey={(s) => s.id}
-              loading={loadingSessions}
-              empty={
-                <EmptyState
-                  icon={MessagesSquare}
-                  title="No sessions yet"
-                  description="Start a session above to give this agent a durable task."
-                />
-              }
-            />
-          </Panel>
+function ReadOnlyField({
+  label,
+  value,
+  mono,
+  pre,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+  pre?: boolean
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="text-foreground text-sm font-medium">{label}</div>
+      {pre ? (
+        <pre className="text-muted-foreground max-h-40 overflow-auto text-xs whitespace-pre-wrap">
+          {value}
+        </pre>
+      ) : (
+        <div
+          className={
+            'text-muted-foreground text-sm' + (mono ? ' font-mono' : '')
+          }
+        >
+          {value}
         </div>
       )}
     </div>
   )
 }
 
-// Subtle inline "Saving…" shown while an autosave is in flight.
-function Saving({ show }: { show: boolean }) {
-  if (!show) return null
-  return <span className="text-muted-foreground text-xs">Saving…</span>
-}
+const sessionColumns: Column<Session>[] = [
+  {
+    key: 'id',
+    header: 'Session',
+    cell: (s) => (
+      <Link
+        to={`/sessions/${s.id}`}
+        className="text-foreground font-mono text-[13px] underline-offset-4 hover:underline"
+      >
+        {s.id}
+      </Link>
+    ),
+  },
+  {
+    key: 'status',
+    header: 'Status',
+    cell: (s) => <StatusBadge status={s.status} />,
+  },
+  {
+    key: 'created',
+    header: 'Created',
+    cell: (s) => (
+      <span className="text-muted-foreground font-mono text-xs">
+        {new Date(s.created_at).toLocaleString()}
+      </span>
+    ),
+  },
+]

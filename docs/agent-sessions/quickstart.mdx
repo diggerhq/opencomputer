@@ -62,7 +62,7 @@ Content-Type: application/json
 Response:
 
 ```json
-{ "id": "agt_...", "name": "quickstart-coder", "revision": 1 }
+{ "id": "agt_...", "name": "quickstart-coder", "active_revision": { "number": 1 } }
 ```
 
 <Note>Your model `key` is held in OpenComputer's [secret store](/sandboxes/secrets) (encrypted, write-only) and **never enters the sandbox**. The agent runs with a placeholder; an **egress proxy substitutes the real key in-flight** on the outbound model-provider call. Reuse one key across agents via a [credential](/agent-sessions/credentials).</Note>

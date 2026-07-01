@@ -81,6 +81,17 @@ function errorMessage(body: unknown, status: number): string {
   return `Request failed: ${status}`
 }
 
+/** An error carrying the HTTP status, so callers can branch (e.g. 404 = not-found vs a real failure). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
@@ -107,12 +118,12 @@ export async function apiFetch<T>(
   if (res.status === 401) {
     // Don't auto-redirect — let ProtectedRoute handle auth flow.
     // This prevents a redirect loop on the login page.
-    throw new Error('Unauthorized')
+    throw new ApiError('Unauthorized', 401)
   }
 
   if (!res.ok) {
     const body: unknown = await res.json().catch(() => ({}))
-    throw new Error(errorMessage(body, res.status))
+    throw new ApiError(errorMessage(body, res.status), res.status)
   }
 
   if (res.status === 204) {
@@ -471,6 +482,34 @@ export const putAgentSkills = (agentId: string, zip: File | Blob) =>
 // Remove all skills → deploys a revision from the active behavior with no skills.
 export const deleteAgentSkills = (agentId: string) =>
   apiFetch(`/v3/agents/${agentId}/skills`, { method: 'DELETE' }, S.DeployResultSchema)
+
+// The OC GitHub App (deploy) install-state + pickable repos — org-scoped admin read.
+export const getDeployApp = () => apiFetch('/v3/github/deploy-app', {}, S.DeployAppSchema)
+
+// Deployment source — link an agent to a repo dir for push-to-deploy (deploy-from-github).
+export const getDeploymentSource = (agentId: string) =>
+  apiFetch(`/v3/agents/${agentId}/deployment-source`, {}, S.DeploymentSourceResponseSchema)
+
+export const linkDeploymentSource = (
+  agentId: string,
+  body: { repo: string; path: string; production_ref?: string; deploy_now?: boolean },
+) =>
+  apiFetch(
+    `/v3/agents/${agentId}/deployment-source`,
+    { method: 'POST', body: JSON.stringify(body) },
+    S.LinkResultSchema,
+  )
+
+export const unlinkDeploymentSource = (agentId: string) =>
+  apiFetch<void>(`/v3/agents/${agentId}/deployment-source`, { method: 'DELETE' })
+
+// Deploy the linked repo's current production-branch HEAD now (no git push needed).
+// Returns { deployment } — fire-and-refetch, so we don't validate the body.
+export const deployFromGithub = (agentId: string) =>
+  apiFetch<{ deployment?: { id: string; state: string } }>(
+    `/v3/agents/${agentId}/deployments`,
+    { method: 'POST', body: JSON.stringify({ input: { type: 'github' } }) },
+  )
 
 // Slack — an agent's BYO Slack app (1 app ⟷ 1 agent ⟷ 1 workspace). Two-step
 // connect: START (manifest) returns the app manifest + guided steps; COMPLETE

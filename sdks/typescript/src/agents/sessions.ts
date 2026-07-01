@@ -8,6 +8,11 @@ export type Envelope = { text?: string; [k: string]: unknown };
 export interface CreateSessionParams {
   agent: string;
   input: string | Envelope;
+  /**
+   * Pin a specific revision (number or `rev_…` id) instead of the agent's active one — e.g. to
+   * test a staged revision before promoting it. Defaults to the active revision.
+   */
+  revision?: number | string;
   /** get-or-create idempotency/routing key — one session per key. */
   key?: string;
   webhook?: string;

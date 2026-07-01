@@ -4,7 +4,7 @@ title: "Agents"
 description: "Reusable agent configuration"
 ---
 
-An **agent** is reusable configuration: `name`, `prompt`, `model`, [`runtime`](/agent-sessions/runtimes), and optional [**skills**](/agent-sessions/revisions). Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like. The behavior (`prompt`/`model`/`skills`) is versioned as [**revisions**](/agent-sessions/revisions): every edit deploys a new one, and you can roll back.
+An **agent** is reusable configuration: `name`, `prompt`, `model`, [`runtime`](/agent-sessions/runtimes), and optional [**skills**](/agent-sessions/revisions). Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like. The behavior (`prompt`/`model`/`skills`) is versioned as [**revisions**](/agent-sessions/revisions): every [deployment](/agent-sessions/revisions) — from the API, the CLI, or a [GitHub push](/agent-sessions/revisions#deploy-from-a-repo) — appends a new one, and you can roll back instantly.
 
 <Note>You can create and edit agents in the [dashboard](https://app.opencomputer.dev) too — the create dialog also lets you pick or add a [credential](/agent-sessions/credentials) inline.</Note>
 
@@ -43,6 +43,19 @@ Content-Type: application/json
 Pass your model `key` inline and it's stored as a [credential](/agent-sessions/credentials) and attached to the agent — sessions run the model on it. The provider is taken from `model` (Anthropic for `anthropic/…`, OpenAI for `openai/…`), so the key has to be for that provider. Already have a credential? Reference it with `credential: "cred_…"` instead. Or skip keys entirely with `credential: "managed"` to run the model **via OpenComputer, billed to your credits** (the default for new orgs). Omit both `key` and `credential` to use your org default. Optionally set default [`limits`](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) too; sessions inherit them.
 
 <Tip>Keep the org key and model key on your backend. Only return session-scoped client tokens to browsers.</Tip>
+
+## Start simple, add capability as you go
+
+The only thing an agent needs is a **model** and a **prompt** — create one and it runs on a **default, managed runtime that just works**. Everything beyond that is **additive**: reach for a rung only when you need it, and nothing earlier is undone.
+
+| Rung | What you add | What you get |
+|---|---|---|
+| **Default agent** | `name` + `model` (+ a prompt) | a working agent on the default runtime — no setup |
+| **+ Skills** | [`SKILL.md` folders](/agent-sessions/skills) (upload a `.zip`, or include in a repo) | reusable procedures the agent loads when relevant — still the default runtime |
+| **+ Deploy from a repo / CLI** | keep the agent's `prompt.md` + `skills/` in Git and [push to deploy](/agent-sessions/revisions#deploy-from-a-repo) | versioned, push-to-deploy, staged revisions + rollback — still the default runtime |
+| **+ Custom runtime** *(coming soon)* | bring your own runtime image | full control of the execution environment |
+
+At every rung the agent is just a small directory — at most `agent.toml` + `prompt.md` + `skills/`. You can stop at any rung; most agents never go past skills.
 
 ## Session-pinned config
 

@@ -353,6 +353,8 @@ export const AgentRevisionSchema = z.object({
   digest: z.string(),
   created_at: z.string(),
   active: z.boolean(),
+  sha: z.string().nullish(), // commit that produced it (null for dashboard/inline revisions)
+  ref: z.string().nullish(), // branch the commit came from
 })
 export const AgentRevisionListSchema = z.object({
   data: z.array(AgentRevisionSchema),
@@ -400,8 +402,48 @@ export const DeployResultSchema = z.object({
   state: z.string(),
   result: z.string().nullish(),
   revision: z
-    .object({ id: z.string(), number: z.number(), digest: z.string(), active: z.boolean() })
+    .object({
+      id: z.string(),
+      number: z.number(),
+      digest: z.string(),
+      active: z.boolean(),
+    })
     .nullish(),
+})
+
+// Deployment source — the agent ⟷ repo dir bind for push-to-deploy (deploy-from-github).
+export const DeploymentSourceSchema = z.object({
+  agent_id: z.string(),
+  repo_id: z.string(),
+  path: z.string(),
+  production_ref: z.string(),
+  status: z.string(), // active | path_missing | ref_missing | auth_required | repo_not_selected | app_suspended | error
+  latest_seen_sha: z.string().nullish(),
+  active_deployed_sha: z.string().nullish(),
+  full_name: z.string().nullish(), // "owner/repo" (joined from the repo row)
+})
+export const DeploymentSourceResponseSchema = z.object({
+  source: DeploymentSourceSchema,
+})
+
+// The OC GitHub App (deploy) install-state + pickable repos — admin/operator surface.
+export const DeployAppRepoSchema = z.object({
+  full_name: z.string(),
+  default_branch: z.string().nullish(),
+  private: z.boolean().nullish(),
+})
+export const DeployAppSchema = z.object({
+  installed: z.boolean(),
+  install_url: z.string().nullish(),
+  configure_url: z.string().nullish(),
+  account: z.string().nullish(),
+  repository_selection: z.enum(['all', 'selected']).nullish(),
+  repositories: z.array(DeployAppRepoSchema).default([]),
+})
+export const LinkResultSchema = z.object({
+  source: DeploymentSourceSchema,
+  deployment_id: z.string().nullish(),
+  deploy_error: z.object({ type: z.string(), message: z.string() }).nullish(),
 })
 
 // Credentials — the reusable model-provider keys an agent/session resolves. The

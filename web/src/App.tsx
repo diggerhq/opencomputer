@@ -32,6 +32,7 @@ export default function App() {
             {/* Agent plane */}
             <Route path="agents" element={<Agents />} />
             <Route path="agents/:agentId" element={<AgentDetail />} />
+            <Route path="agents/:agentId/:tab" element={<AgentDetail />} />
             <Route path="credentials" element={<Credentials />} />
             <Route path="sessions" element={<Sessions />} />
             <Route path="sessions/:sessionId" element={<SessionDetail />} />

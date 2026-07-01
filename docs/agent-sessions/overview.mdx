@@ -37,7 +37,7 @@ Create an agent, start a session, stream its event log, steer it with messages, 
 
 <Steps>
   <Step title="Define an agent">
-    Create a reusable `{ name, model, prompt, runtime }` from your backend — `runtime: "claude"` (Anthropic models) or `"codex"` (OpenAI models). Run **Managed** (`credential: "managed"`, billed to your OpenComputer credits — no key) or pass your own model `key` inline / reference a saved [credential](/agent-sessions/credentials). Every edit is versioned as a [revision](/agent-sessions/revisions), and you can attach [skills](/agent-sessions/revisions#skills). ([Agents](/agent-sessions/agents))
+    Create a reusable `{ name, model, prompt, runtime }` from your backend — `runtime: "claude"` (Anthropic models) or `"codex"` (OpenAI models). Run **Managed** (`credential: "managed"`, billed to your OpenComputer credits — no key) or pass your own model `key` inline / reference a saved [credential](/agent-sessions/credentials). Every [deployment](/agent-sessions/revisions) is versioned as a [revision](/agent-sessions/revisions) (roll back instantly), you can attach [skills](/agent-sessions/revisions#skills), and you can [deploy from a GitHub repo on push](/agent-sessions/revisions#deploy-from-a-repo). ([Agents](/agent-sessions/agents))
   </Step>
   <Step title="Start a session">
     Start a session with `{ agent, input }`. The agent starts immediately and returns a browser-safe `client_token`.
