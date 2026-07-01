@@ -81,6 +81,17 @@ function errorMessage(body: unknown, status: number): string {
   return `Request failed: ${status}`
 }
 
+/** An error carrying the HTTP status, so callers can branch (e.g. 404 = not-found vs a real failure). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
@@ -107,12 +118,12 @@ export async function apiFetch<T>(
   if (res.status === 401) {
     // Don't auto-redirect — let ProtectedRoute handle auth flow.
     // This prevents a redirect loop on the login page.
-    throw new Error('Unauthorized')
+    throw new ApiError('Unauthorized', 401)
   }
 
   if (!res.ok) {
     const body: unknown = await res.json().catch(() => ({}))
-    throw new Error(errorMessage(body, res.status))
+    throw new ApiError(errorMessage(body, res.status), res.status)
   }
 
   if (res.status === 204) {

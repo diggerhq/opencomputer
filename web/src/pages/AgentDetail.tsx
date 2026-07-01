@@ -31,7 +31,10 @@ import { SlackConnect } from '@/components/slack-connect'
 import { AgentSkills } from '@/components/agent-skills'
 import { AgentDeploySource } from '@/components/agent-deploy-source'
 import { AgentRevisions } from '@/components/agent-revisions'
+import { ApiHint, type ApiRef } from '@/components/api-hint'
 import { getRuntime } from '@/lib/runtimes'
+
+const DOCS = 'https://docs.opencomputer.dev/agent-sessions'
 
 // Sentinels for the non-credential choices in the picker.
 const ORG_DEFAULT = '__default__' // no pinned credential → org default resolves
@@ -52,6 +55,15 @@ export default function AgentDetail() {
         : tab === 'settings'
           ? 'settings'
           : 'overview'
+
+  // Each tab is a thin control panel over one API resource — surface the call it drives
+  // (REST + SDK), same as the other pages, so the dashboard reads as programmable.
+  const tabApi: Record<Tab, ApiRef> = {
+    overview: { method: 'GET', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.get(id)', docs: `${DOCS}/agents` },
+    revisions: { method: 'GET', path: `/v3/agents/${agentId}/revisions`, sdk: 'oc.agents.revisions.list(id)', docs: `${DOCS}/revisions` },
+    sessions: { method: 'POST', path: '/v3/sessions', sdk: 'oc.sessions.create({ agent })', docs: `${DOCS}/sessions` },
+    settings: { method: 'PATCH', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.update(id, …)', docs: `${DOCS}/agents` },
+  }
 
   const {
     data: agent,
@@ -293,6 +305,9 @@ export default function AgentDetail() {
       </div>
 
       <div className="py-6">
+        <div className="mb-4">
+          <ApiHint {...tabApi[active]} />
+        </div>
         {active === 'overview' && (
           <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
             {/* Left: behavior (model/prompt) + skills — read-only when a repo drives the agent. */}

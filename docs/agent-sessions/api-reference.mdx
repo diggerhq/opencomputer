@@ -300,14 +300,14 @@ You **deploy** an agent's behavior (`prompt` + `model` + `skills`); each deploym
 
 </Tabs>
 
-`input`: `{ type:"inline", prompt, model?, skills?, runtime? }` (the **complete** behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys the [linked repo](#deploy-from-a-repo); `repo`/`path` from the link). `activate:false` **stages** it — but only for `inline`; `github` deploys are **branch-driven** (the production branch activates, others stage) so `activate` is ignored. Inline = sync (`ready` + `revision_id`); GitHub = async (`queued`). `POST …/revisions` is inline-only sugar.
+`input`: `{ type:"inline", prompt, model?, skills?, runtime? }` (the **complete** behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys the [linked repo](#deploy-from-a-repo); `repo`/`path` from the link). `activate:false` **stages** it — but only for `inline`; `github` deploys are **branch-driven** (the production branch activates, others stage) so `activate` is ignored. Inline = sync (`ready` + `revision_id`); GitHub = async (`accepted`, then poll to `ready`). `POST …/revisions` is inline-only sugar.
 
 **`Deployment`**
 
 | Field | Notes |
 |---|---|
 | `id` `created_at` | |
-| `state` | progresses `accepted → queued → fetching → validating → uploading → ready`; terminal: `failed`, `superseded` (a newer deploy won), `skipped` (content unchanged) |
+| `state` | `accepted` (async — queued for the deploy worker) → terminal `ready`; other terminals: `failed`, `superseded` (a newer deploy won), `skipped` (content unchanged) |
 | `result` | `created · skipped · superseded · failed` (`null` until terminal) |
 | `revision_id` | the revision it produced (`null` until `ready`) |
 | `active` | whether that revision is the active one |

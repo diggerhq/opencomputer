@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Unplug, ExternalLink } from 'lucide-react'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
+  ApiError,
   getDeployApp,
   getDeploymentSource,
   linkDeploymentSource,
@@ -57,13 +58,19 @@ export function AgentDeploySource({
     queryKey: ['deploy-app'],
     queryFn: getDeployApp,
   })
-  const { data: source, isLoading: srcLoading } = useQuery({
+  const {
+    data: source,
+    isLoading: srcLoading,
+    isError: srcError,
+    refetch: refetchSource,
+  } = useQuery({
     queryKey: ['agent-deploy-source', agentId],
     queryFn: async () => {
       try {
         return (await getDeploymentSource(agentId)).source
-      } catch {
-        return null // 404 = not linked
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return null // not linked
+        throw e // a real failure (500/auth/proxy) must not masquerade as "not connected"
       }
     },
   })
@@ -166,6 +173,15 @@ export function AgentDeploySource({
       <PanelContent className="space-y-3">
         {srcLoading || appLoading ? (
           <p className="text-muted-foreground text-xs">Loading…</p>
+        ) : srcError ? (
+          <div className="space-y-2">
+            <p className="text-xs text-red-600 dark:text-red-500">
+              Couldn’t load the repo connection.
+            </p>
+            <Button size="sm" variant="outline" onClick={() => void refetchSource()}>
+              Retry
+            </Button>
+          </div>
         ) : !app?.installed ? (
           <div className="space-y-3">
             <Button size="sm" variant="outline" disabled={!app?.install_url} asChild>
