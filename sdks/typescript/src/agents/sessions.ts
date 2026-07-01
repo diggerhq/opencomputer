@@ -2,6 +2,7 @@ import type { Http, Query } from "./http.js";
 import type { Event, Level, Limits, LastTurn, SessionData, SessionStatus, Turn } from "./types.js";
 import { parseEventStream } from "./sse.js";
 import { Destinations, Deliveries } from "./destinations.js";
+import { Watches } from "./watches.js";
 
 export type Envelope = { text?: string; [k: string]: unknown };
 
@@ -235,6 +236,8 @@ export class Session extends ClientSession {
   /** Webhook destinations + delivery records for this session (org key). */
   readonly destinations: Destinations;
   readonly deliveries: Deliveries;
+  /** PR watches for this session — wake it when a PR it opened changes (org key). */
+  readonly watches: Watches;
   private data: SessionData;
   private _sources: SourceSummary[];
 
@@ -244,6 +247,7 @@ export class Session extends ClientSession {
     this._sources = sources ?? [];
     this.destinations = new Destinations(http, data.id);
     this.deliveries = new Deliveries(http, data.id);
+    this.watches = new Watches(http, data.id);
   }
 
   get status(): SessionStatus { return this.data.status; }

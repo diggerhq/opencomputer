@@ -59,42 +59,81 @@ The agent declares and clears watches from inside the sandbox. Full signatures: 
 
 ## Management API
 
-REST management, authenticated with your **org API key** (server-side). `repo`/`pr` are optional — omitted, they resolve to the PR this session opened.
-
-<Note>No SDK method or `oc` CLI command for watches yet — use these REST endpoints, or the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool from inside the sandbox.</Note>
+Manage watches from your backend with the SDK, the `oc` CLI, or REST — authenticated with your **org API key** (server-side). `repo`/`pr` are optional; omitted, they resolve to the PR this session opened.
 
 **Create a watch:**
 
-```http
+<CodeGroup>
+
+```ts TypeScript SDK
+const session = await oc.sessions.get("ses_...");
+const watch = await session.watches.create({
+  repo: "acme/web",          // optional — defaults to the PR this session opened
+  pr: 42,                    // optional
+  wakeOn: "review",          // checks (default) · review · comment · merge
+  intent: "Address review feedback on the auth refactor.",
+});
+// → { id: "wch_...", status: "active", ... }
+```
+
+```bash oc CLI
+oc session watch ses_... \
+  --repo acme/web --pr 42 \
+  --wake-on review \
+  --intent "Address review feedback on the auth refactor."
+```
+
+```http REST
 POST https://api.opencomputer.dev/v3/sessions/ses_.../watches
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 Content-Type: application/json
 
-{
-  "type": "github_pr",
-  "repo": "acme/web",
-  "pr": 42,
-  "wake_on": "review",
-  "intent": "Address review feedback on the auth refactor."
-}
-// → 201 { "watch": { … } }  ·  repo/pr optional (resolve to the session's owned PR)
+{ "type": "github_pr", "repo": "acme/web", "pr": 42,
+  "wake_on": "review", "intent": "Address review feedback on the auth refactor." }
+// → 201 { "watch": { … } }
 ```
+
+</CodeGroup>
 
 **List watches:**
 
-```http
+<CodeGroup>
+
+```ts TypeScript SDK
+const watches = await session.watches.list();
+```
+
+```bash oc CLI
+oc session watches ses_...
+```
+
+```http REST
 GET https://api.opencomputer.dev/v3/sessions/ses_.../watches
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 // → { "data": [ { … } ] }
 ```
 
+</CodeGroup>
+
 **Delete a watch:**
 
-```http
+<CodeGroup>
+
+```ts TypeScript SDK
+await session.watches.delete("wch_...");
+```
+
+```bash oc CLI
+oc session unwatch ses_... wch_...
+```
+
+```http REST
 DELETE https://api.opencomputer.dev/v3/sessions/ses_.../watches/wch_...
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 // → { "ok": true }
 ```
+
+</CodeGroup>
 
 ## The watch object
 

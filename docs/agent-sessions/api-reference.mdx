@@ -219,7 +219,7 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 
 ## Watches
 
-*Watches are managed via REST (no SDK method or `oc` command yet); the agent-facing path is the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool. Authenticate with your **org API key** (server-side). Full guide: [Watches](/agent-sessions/watches).*
+*Managed with the SDK (`session.watches.create/list/delete`), the CLI (`oc session watch/watches/unwatch`), or REST — authenticate with your **org API key** (server-side). The agent-facing path is the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool. Full guide: [Watches](/agent-sessions/watches).*
 
 | Method · Path | Purpose |
 | --- | --- |
