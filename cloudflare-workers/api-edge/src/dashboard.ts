@@ -854,7 +854,7 @@ async function proxyToV3(
 
   const init: RequestInit = { method: req.method, headers, redirect: "manual" };
   if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = await req.text();
+    init.body = await req.arrayBuffer(); // binary-safe — req.text() UTF-8-mangles zip/binary uploads
   }
   return fetch(target, init);
 }
@@ -884,7 +884,7 @@ async function proxyToBrowserAPI(
 
   const init: RequestInit = { method: req.method, headers, redirect: "manual" };
   if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = await req.text();
+    init.body = await req.arrayBuffer(); // binary-safe — req.text() UTF-8-mangles zip/binary uploads
   }
 
   return fetch(target, init);
