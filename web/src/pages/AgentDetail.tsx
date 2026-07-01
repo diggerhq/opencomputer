@@ -31,6 +31,10 @@ import { SlackConnect } from '@/components/slack-connect'
 import { AgentSkills } from '@/components/agent-skills'
 import { AgentDeploySource } from '@/components/agent-deploy-source'
 import { AgentRevisions } from '@/components/agent-revisions'
+import {
+  WorkingRepoField,
+  type WorkingRepo,
+} from '@/components/working-repo-field'
 import { ApiHint, type ApiRef } from '@/components/api-hint'
 import { getRuntime } from '@/lib/runtimes'
 
@@ -113,10 +117,19 @@ export default function AgentDetail() {
 
   // ── Start a session (used by the Sessions tab composer) ────────────────────
   const [task, setTask] = useState('')
+  // Optional working repo — the repo the agent checks out + opens PRs from. Explicitly chosen,
+  // never derived from the connected/config repo (design 010 §2).
+  const [workingRepo, setWorkingRepo] = useState<WorkingRepo | null>(null)
   const startMutation = useMutation({
     mutationFn: () =>
       createSession(
-        { agent: agentId, input: task.trim() },
+        {
+          agent: agentId,
+          input: task.trim(),
+          ...(workingRepo
+            ? { sources: [{ repo: workingRepo.repo, ref: workingRepo.ref }] }
+            : {}),
+        },
         crypto.randomUUID(),
       ),
     onSuccess: (session) => {
@@ -452,12 +465,18 @@ export default function AgentDetail() {
                   placeholder="Give this agent a task — it runs durably as a new session…"
                   className="min-h-20"
                 />
-                <div className="flex justify-end">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <WorkingRepoField
+                    agentId={agentId}
+                    value={workingRepo}
+                    onChange={setWorkingRepo}
+                  />
                   <Button
                     type="submit"
                     size="sm"
                     title="Enter to start · Shift+Enter for newline"
                     disabled={startMutation.isPending || !task.trim()}
+                    className="ml-auto"
                   >
                     <Send className="size-4" />
                     {startMutation.isPending ? 'Starting…' : 'Start session'}

@@ -17,6 +17,10 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Field, Label, Select } from '@/components/form'
+import {
+  WorkingRepoField,
+  type WorkingRepo,
+} from '@/components/working-repo-field'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
@@ -39,17 +43,26 @@ export default function Sessions() {
   const [showStart, setShowStart] = useState(false)
   const [agentId, setAgentId] = useState('')
   const [message, setMessage] = useState('')
+  // Optional working repo — explicitly chosen, per-agent (cleared when the agent changes).
+  const [workingRepo, setWorkingRepo] = useState<WorkingRepo | null>(null)
 
   const openStart = () => {
     setAgentId(agents?.[0]?.id ?? '')
     setMessage('')
+    setWorkingRepo(null)
     setShowStart(true)
   }
 
   const startMutation = useMutation({
     mutationFn: () =>
       createSession(
-        { agent: agentId, input: message.trim() },
+        {
+          agent: agentId,
+          input: message.trim(),
+          ...(workingRepo
+            ? { sources: [{ repo: workingRepo.repo, ref: workingRepo.ref }] }
+            : {}),
+        },
         crypto.randomUUID(),
       ),
     onSuccess: (session) => {
@@ -186,7 +199,10 @@ export default function Sessions() {
                 <Select
                   id="start-agent"
                   value={agentId}
-                  onValueChange={setAgentId}
+                  onValueChange={(v) => {
+                    setAgentId(v)
+                    setWorkingRepo(null) // a working repo is per-agent
+                  }}
                   options={(agents ?? []).map((a) => ({
                     value: a.id,
                     label: a.name,
@@ -211,6 +227,18 @@ export default function Sessions() {
                   className="min-h-24"
                 />
               </Field>
+              {agentId ? (
+                <div className="flex items-center gap-2">
+                  <WorkingRepoField
+                    agentId={agentId}
+                    value={workingRepo}
+                    onChange={setWorkingRepo}
+                  />
+                  <span className="text-muted-foreground text-xs">
+                    optional — repo to work in &amp; open PRs from
+                  </span>
+                </div>
+              ) : null}
               <DialogFooter className="mt-2">
                 <Button
                   type="button"
