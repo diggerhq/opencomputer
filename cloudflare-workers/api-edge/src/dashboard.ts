@@ -1010,6 +1010,12 @@ export async function handleDashboard(
       return handleDeleteImage(req, env, caller, m[1]);
     }
   }
+  {
+    const m = sub.match(/^\/snapshots\/([^/]+)$/);
+    if (m && method === "DELETE") {
+      return handleDeleteSnapshot(req, env, caller, decodeURIComponent(m[1]));
+    }
+  }
 
   // ── agents: proxy to home cell (cell-side hits external agents service) ─
   if (sub === "/agents" || sub.startsWith("/agents/")) {
@@ -1167,17 +1173,43 @@ async function handleDeleteImage(req: Request, env: DashboardEnv, caller: Caller
   if (!row) return json({ error: "image not found" }, 404);
   if (!row.name) return json({ error: "auto-cached images are managed by the cell — only named snapshots can be deleted via dashboard" }, 400);
 
+  return deleteSnapshotOnCell(req, env, caller, row.owner_cell_id, row.name);
+}
+
+async function handleDeleteSnapshot(req: Request, env: DashboardEnv, caller: Caller, name: string): Promise<Response> {
+  const row = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT owner_cell_id FROM images_index WHERE name = ?1 AND org_id = ?2`,
+  )
+    .bind(name, caller.orgID)
+    .first<{ owner_cell_id: string }>();
+  if (!row) return json({ error: "snapshot not found" }, 404);
+
+  return deleteSnapshotOnCell(req, env, caller, row.owner_cell_id, name);
+}
+
+async function deleteSnapshotOnCell(
+  req: Request,
+  env: DashboardEnv,
+  caller: Caller,
+  ownerCellID: string,
+  name: string,
+): Promise<Response> {
   // Find the cell's base_url and forward via tunnel.
   const cell = await env.OPENCOMPUTER_DB.prepare(
     `SELECT base_url FROM cells WHERE cell_id = ?1`,
   )
-    .bind(row.owner_cell_id)
+    .bind(ownerCellID)
     .first<{ base_url: string }>();
   if (!cell) return json({ error: "owning cell not registered" }, 503);
 
   // Reuse proxyToCell so the cap-token / cookie auth chain handles auth.
-  // Path mirrors what the legacy dashboard called: /internal/dashboard/images/{name}
-  return proxyToCell(req, env, caller, { cell_id: row.owner_cell_id, base_url: cell.base_url }, `/internal/dashboard/images/${row.name}`);
+  return proxyToCell(
+    req,
+    env,
+    caller,
+    { cell_id: ownerCellID, base_url: cell.base_url },
+    `/internal/dashboard/snapshots/${encodeURIComponent(name)}`,
+  );
 }
 
 // ── Stripe helpers ─────────────────────────────────────────────────────
