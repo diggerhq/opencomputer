@@ -4,28 +4,28 @@ title: "Watches"
 description: "Wake a session when a PR it opened gets checks, reviews, comments, or merges"
 ---
 
-A **watch** closes the loop after a session [opens a pull request](/agent-sessions/repos#what-the-agent-can-do). The agent opens a PR, declares a watch on it, and finishes the turn; when CI finishes, a review or comment lands, or the PR merges, OpenComputer **wakes the session** with a concise, normalized event so the agent reacts — the "open a PR, then respond to CI and reviews" loop, without you polling GitHub.
+A **watch** wakes a session when a PR it opened changes. The agent opens a PR, declares a watch, and ends the turn; when checks finish, a review or comment lands, or the PR merges, OpenComputer appends a normalized event and wakes the session to react. This is the open-a-PR-then-respond-to-CI loop without polling GitHub.
 
 <Note>**Preview** — APIs may change before general availability.</Note>
 
-A watch is declared from inside the sandbox with the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool, or managed from your backend with the REST endpoints [below](#management-api). The agent-facing path is the runtime tool.
+Declare a watch from inside the sandbox with the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool, or from your backend with the REST endpoints [below](#management-api).
 
 ## How it works
 
-A watch is a standing **wake trigger**, not a session state. The session just goes **idle** after the turn that declared it; when a real transition happens on the PR, OpenComputer appends an event and wakes the session exactly like a [steer](/agent-sessions/messaging). Four properties make this reliable:
+Declaring a watch doesn't change session state — the session goes **idle** after the turn like any other. On a PR transition, OpenComputer appends an event and wakes the session, the same path as a [steer](/agent-sessions/messaging).
 
-- **Snapshot is truth.** A webhook is only a *hint*. Before waking the session, OpenComputer re-reads the authoritative PR state from GitHub and wakes with that snapshot — so late, duplicate, or out-of-order webhooks all converge to the correct state.
-- **One wake per real transition.** Bursts are coalesced: a wave of check events for one commit becomes a single `checks_completed` wake, not one per check.
-- **Loop-suppressed.** The session's own comments, pushes, and activity never wake it — only third-party transitions do, so the agent can't spin against itself.
-- **Wake like a steer.** The delivered event is appended into the session log (level `user`, `source: "github"`) and the session resumes with its prior context, just as if you had steered it.
+- **Authoritative re-read.** A webhook is a hint. Before waking, OpenComputer re-reads PR state from GitHub and wakes with that snapshot, so late, duplicate, or out-of-order webhooks converge.
+- **Coalesced.** One wake per transition — a burst of check events for a commit is a single `checks_completed` wake.
+- **Loop-suppressed.** The session's own comments and pushes don't wake it; only third-party changes do.
+- **Delivered as `user` events.** The event is appended at level `user` (`source: "github"`) and the session resumes with prior context.
 
 <Warning>
-A watch lets the agent **react** to a PR event — it does not give the agent a GitHub write path back. There is no comment-write tool: the agent reads the delivered event and responds by, for example, [pushing a fix](/agent-sessions/repos#what-the-agent-can-do) to the branch or opening a follow-up PR. It cannot post a reply comment to GitHub.
+A watch lets the agent react; it doesn't grant a GitHub write path. There is no comment-write tool — the agent reads the event and responds by [pushing a fix](/agent-sessions/repos#what-the-agent-can-do) to the branch or opening a follow-up PR. It cannot post a reply comment to GitHub.
 </Warning>
 
 ## Ownership gate
 
-You can only watch a PR the **same session** opened, via [`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools). Watches are supported on **Connected-App (`oc_app`) repos only** — sources checked out with an inline `risky_short_lived_token` aren't watchable (that token is checkout-only and purged, so there's no durable, write-capable identity to poll or react with).
+You can only watch a PR the **same session** opened via [`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools). Connected-App (`oc_app`) repos only — inline `risky_short_lived_token` sources aren't watchable (the token is checkout-only and purged).
 
 <Note>
 **Owner-side prerequisite.** The OpenComputer GitHub App needs **Pull requests: Read**, **Checks: Read**, and **Issues: Read**, plus event subscriptions to **`pull_request`**, **`pull_request_review`**, **`pull_request_review_comment`**, **`check_suite`**, and **`issue_comment`**. Existing installs must **re-accept the new permissions**. Until they do, a watch is created but declares as `auth_required` and won't deliver events.
@@ -33,18 +33,18 @@ You can only watch a PR the **same session** opened, via [`github_publish_pull_r
 
 ## Goals
 
-A watch's `goal` tells the agent what it's waiting for; it's replayed on wake so the agent knows why it woke.
+The `goal` records what the watch waits for; it's replayed on wake.
 
 | `goal` | Waits for |
 | --- | --- |
-| `wait_for_checks` | CI / check suites to finish (**default**). |
+| `wait_for_checks` | Check suites to finish (**default**). |
 | `wait_for_review` | A review to be submitted. |
 | `wait_for_merge` | The PR to merge. |
-| `respond_to_comments` | New review comments or issue comments. |
+| `respond_to_comments` | New review or issue comments. |
 
 ## Runtime tools
 
-The agent declares and clears watches from inside the sandbox. Full signatures live in [Runtime tools](/agent-sessions/runtime-tools#github-tools).
+The agent declares and clears watches from inside the sandbox. Full signatures: [Runtime tools](/agent-sessions/runtime-tools#github-tools).
 
 | Tool | What it does |
 | --- | --- |
@@ -53,9 +53,9 @@ The agent declares and clears watches from inside the sandbox. Full signatures l
 
 ## Management API
 
-Watches are also managed over REST — public, authenticated with your **org API key** or a session [client token](/agent-sessions/authentication#client-tokens). `repo`/`pr` are optional: omit them and OpenComputer resolves the watch to the PR this session owns.
+REST management, authenticated with your **org API key** or a session [client token](/agent-sessions/authentication#client-tokens). `repo`/`pr` are optional — omitted, they resolve to the PR this session opened.
 
-<Note>There is **no SDK method and no `oc` CLI command** for watches yet — use the REST endpoints here, or the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool from inside the sandbox.</Note>
+<Note>No SDK method or `oc` CLI command for watches yet — use these REST endpoints, or the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool from inside the sandbox.</Note>
 
 **Create a watch:**
 
@@ -100,10 +100,10 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 | `repo` `pr` | the watched repo and PR number |
 | `goal` | what it's waiting for (table above) |
 | `intent?` | freeform note, replayed on wake |
-| `events` | the delivered event types this watch subscribes to |
+| `events` | delivered event types this watch subscribes to |
 | `status` | lifecycle status (below) |
-| `origin` | how it was declared (runtime tool vs. management API) |
-| `last_snapshot_at?` | when OpenComputer last re-read the authoritative PR state |
+| `origin` | how it was declared (runtime tool or management API) |
+| `last_snapshot_at?` | last authoritative PR re-read |
 | `created_at` | timestamp |
 
 ### Statuses
@@ -120,7 +120,7 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 
 ### Delivered events
 
-On each real transition, OpenComputer appends one event into the session log at level `user` with `source: "github"`. The `body` is a **concise, normalized summary** (e.g. a comment event carries the author, comment text, and URL) — never the raw webhook.
+One event per transition, appended at level `user` with `source: "github"`. The `body` is a normalized summary (a comment event carries author, text, and URL), never the raw webhook.
 
 | `type` | Fires on |
 | --- | --- |
@@ -137,11 +137,11 @@ These join the standard session [event types](/agent-sessions/events#event-types
 ## Limits
 
 - Max **10** active watches per session.
-- **30-day** TTL. A watch also never outlives its PR — it ends when the PR closes or merges.
+- **30-day** TTL, and never outlives the PR — the watch ends when the PR closes or merges.
 
-## Worked example
+## Example
 
-1. The agent edits a checked-out source and calls `github_publish_pull_request("web", "Refactor auth")`. OpenComputer commits to an `oc/<session>/web-<id>` branch and returns the PR URL.
-2. The agent calls `watch_pull_request(goal: "wait_for_review", intent: "Address review feedback")` and ends the turn with a `say`. The session goes **idle**.
-3. A reviewer leaves a comment. GitHub sends a webhook; OpenComputer re-reads the PR (**snapshot is truth**), confirms the transition, and appends a `github.pr.review_comment` event (level `user`, `source: "github"`) carrying the reviewer, the comment text, and its URL — then **wakes the session**.
-4. The agent wakes with the comment and its original `intent`, edits the source to address it, and calls `github_publish_pull_request` again to push the fix onto the same branch. (Its own push is **loop-suppressed** and won't wake it.) The watch keeps running until the PR merges or the 30-day TTL expires.
+1. Agent calls `github_publish_pull_request("web", "Refactor auth")` → PR opened on branch `oc/<session>/web-<id>`.
+2. Agent calls `watch_pull_request(goal: "wait_for_review", intent: "Address review feedback")`, `say`s, ends the turn. Session goes idle.
+3. Reviewer comments. OpenComputer re-reads the PR, appends `github.pr.review_comment` (author, text, URL) at level `user`, and wakes the session.
+4. Agent edits the source and calls `github_publish_pull_request` again to push onto the same branch. Its own push is loop-suppressed. The watch runs until the PR merges or the TTL expires.

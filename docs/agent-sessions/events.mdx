@@ -46,7 +46,7 @@ Treat **`type`** as the stable discriminator. Unknown types should render from t
 
 ### GitHub PR events
 
-When a session declares a [watch](/agent-sessions/watches) on a PR it opened, OpenComputer wakes it with a normalized PR event — level `user`, `source: "github"`, `body` a concise summary (e.g. author + comment text + url), never the raw webhook.
+When a session [watches](/agent-sessions/watches) a PR it opened, OpenComputer wakes it with a normalized event — level `user`, `source: "github"`, `body` a summary (author, text, url), never the raw webhook.
 
 | `type` | Fires on |
 | --- | --- |

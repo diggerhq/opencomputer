@@ -61,28 +61,25 @@ inline (`risky_short_lived_token`) auth, which is **checkout-only** — see
 </Note>
 
 `add_source(repo, ref, name?)` checks out an **additional** repo into
-`/workspace/sources/<name>` mid-session — for pulling in a second repo after the first turn.
-`repo` is `"owner/repo"` (or a `repo_…` id), `ref` is a branch or `refs/pull/N/head`, and
-`name` defaults to the repo name. It uses the same zero-credential model as the initial
-checkout: a Git operations sandbox mints a just-in-time, read-only token and the agent never
-sees it. **Connected-App (`oc_app`) repos only** — inline-token sources can't be added this
-way.
+`/workspace/sources/<name>` mid-session. `repo` is `"owner/repo"` (or a `repo_…` id), `ref` a
+branch or `refs/pull/N/head`, `name` defaults to the repo name. Same zero-credential model as
+the initial checkout — a Git operations sandbox mints a just-in-time, read-only token; the
+agent never sees it. **Connected-App (`oc_app`) repos only.**
 
 `watch_pull_request(goal?, repo?, pr?, intent?)` subscribes the session to events on a PR it
-opened; OpenComputer **wakes the session** when checks finish, a review or comment lands, or
-the PR merges. It does **not** block — call it, then finish the turn.
+opened; OpenComputer wakes the session when checks finish, a review or comment lands, or the
+PR merges. It does **not** block — call it, then finish the turn.
 
 | Argument | Required | What it is |
 | --- | --- | --- |
 | `goal` | no | What to wait for: `wait_for_checks` (default), `wait_for_review`, `wait_for_merge`, `respond_to_comments`. |
 | `repo` | no | The watched repo. Defaults to the most recent PR the session opened. |
 | `pr` | no | The PR number. Defaults with `repo`. |
-| `intent` | no | Freeform note replayed on wake, so the agent knows why it woke. |
+| `intent` | no | Freeform note replayed on wake. |
 
-You can only watch a PR the **same session** opened, on **Connected-App (`oc_app`) repos
-only**. `unwatch_pull_request(repo?, pr?)` stops watching; both args default to the session's
-only active watch. Full flow, statuses, and delivered event types:
-[Watches](/agent-sessions/watches).
+Watches cover PRs the **same session** opened, on **Connected-App (`oc_app`) repos only**.
+`unwatch_pull_request(repo?, pr?)` stops watching; both args default to the session's only
+active watch. Full flow, statuses, and delivered events: [Watches](/agent-sessions/watches).
 
 ## External systems
 

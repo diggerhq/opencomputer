@@ -326,16 +326,15 @@ agent's edits to an `oc/<session>/<source>-<id>` branch and opens the PR with a
 just-in-time, write-scoped token. This requires a **configured GitHub App** — the inline
 `risky_short_lived_token` path is checkout-only and **cannot** open PRs.
 
-**Check out more repos mid-session.** The agent can call
-[`add_source(repo, ref, name?)`](/agent-sessions/runtime-tools#github-tools) to check out an
-additional Connected-App repo into `/workspace/sources/<name>` after the first turn — the
-same zero-credential model as the initial checkout.
+**More repos mid-session.**
+[`add_source(repo, ref, name?)`](/agent-sessions/runtime-tools#github-tools) checks out an
+additional Connected-App repo into `/workspace/sources/<name>` after the first turn — same
+zero-credential model as the initial checkout.
 
-**React to PR events.** After opening a PR, the agent can declare a
-[watch](/agent-sessions/watches) on it with `watch_pull_request`: OpenComputer wakes the
-session when checks finish, a review or comment lands, or it merges, so the agent can respond
-(e.g. push a fix onto the branch). Watches cover PRs the same session opened, on Connected-App
-repos only.
+**React to PR events.** After opening a PR, the agent can
+[watch](/agent-sessions/watches) it with `watch_pull_request`; OpenComputer wakes the session
+when checks finish, a review or comment lands, or it merges, so the agent can respond (e.g.
+push a fix). Own-PR only, Connected-App repos only.
 
 ## Guarantees
 
