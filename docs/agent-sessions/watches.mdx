@@ -23,9 +23,9 @@ Declaring a watch doesn't change session state — the session goes **idle** aft
 A watch lets the agent react; it doesn't grant a GitHub write path. There is no comment-write tool — the agent reads the event and responds by [pushing a fix](/agent-sessions/repos#what-the-agent-can-do) to the branch or opening a follow-up PR. It cannot post a reply comment to GitHub.
 </Warning>
 
-## Ownership gate
+## What you can watch
 
-You can only watch a PR the **same session** opened via [`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools). Connected-App (`oc_app`) repos only — inline `risky_short_lived_token` sources aren't watchable (the token is checkout-only and purged).
+A session can only watch a PR it opened itself via [`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools). Connected-App (`oc_app`) repos only — inline `risky_short_lived_token` sources aren't watchable (the token is checkout-only and purged).
 
 <Note>
 **Owner-side prerequisite.** The OpenComputer GitHub App needs **Pull requests: Read**, **Checks: Read**, and **Issues: Read**, plus event subscriptions to **`pull_request`**, **`pull_request_review`**, **`pull_request_review_comment`**, **`check_suite`**, and **`issue_comment`**. Existing installs must **re-accept the new permissions**. Until they do, a watch is created but declares as `auth_required` and won't deliver events.
@@ -115,7 +115,7 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 | `expired` | Hit the 30-day TTL. |
 | `closed` | The PR closed/merged, so the watch ended with it. |
 | `revoked` | Removed via `unwatch_pull_request` or `DELETE`. |
-| `auth_required` | The App lacks the required permissions or event subscriptions — [re-accept them](#ownership-gate). |
+| `auth_required` | The App lacks the required permissions or event subscriptions — [re-accept them](#what-you-can-watch). |
 | `app_suspended` | The GitHub App installation is suspended. |
 
 ### Delivered events
