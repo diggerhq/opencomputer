@@ -51,9 +51,8 @@ When a session [watches](/agent-sessions/watches) a PR it opened, OpenComputer w
 | `type` | Fires on |
 | --- | --- |
 | `github.pr.checks_completed` | check suites finished (coalesced) |
-| `github.pr.review_submitted` | a review was submitted |
-| `github.pr.review_comment` | a review (diff) comment landed |
-| `github.pr.comment` | an issue-style comment landed on the PR |
+| `github.pr.review_submitted` | a review decision landed (approved / changes requested) |
+| `github.pr.comment` | a comment landed on the PR — issue-style or review (diff) comment |
 | `github.pr.merged` | the PR merged |
 | `github.pr.closed` | the PR closed without merging |
 | `github.pr.reopened` | a closed PR reopened |

@@ -219,7 +219,7 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 
 ## Watches
 
-*Watches are managed via REST (no SDK method or `oc` command yet); the agent-facing path is the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool. Authenticate with the org key or a client token. Full guide: [Watches](/agent-sessions/watches).*
+*Watches are managed via REST (no SDK method or `oc` command yet); the agent-facing path is the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool. Authenticate with your **org API key** (server-side). Full guide: [Watches](/agent-sessions/watches).*
 
 | Method · Path | Purpose |
 | --- | --- |
@@ -239,9 +239,9 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 | `intent?` | freeform note ("why"), replayed on wake |
 | `status` | `active · closed · revoked · auth_required` |
 | `origin` | how it was declared (runtime tool / management API) |
-| `last_snapshot_at?` `created_at` | last authoritative PR re-read · timestamp |
+| `last_snapshot_at?` `expires_at` `created_at` | last authoritative PR re-read · 30-day TTL lapse · timestamp |
 
-**Delivered events** — appended into the session log at level `user` with `source: "github"`, carrying a normalized summary (not the raw webhook): `github.pr.checks_completed` · `github.pr.review_submitted` · `github.pr.review_comment` · `github.pr.comment` · `github.pr.merged` · `github.pr.closed` · `github.pr.reopened`.
+**Delivered events** — appended into the session log at level `user` with `source: "github"`, carrying a normalized summary (not the raw webhook): `github.pr.checks_completed` · `github.pr.review_submitted` · `github.pr.comment` · `github.pr.merged` · `github.pr.closed`.
 
 ## Agents
 

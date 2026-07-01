@@ -25,10 +25,10 @@ A watch lets the agent react; it doesn't grant a GitHub write path. There is no 
 
 ## What you can watch
 
-A session can only watch a PR it opened itself via [`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools). Connected-App (`oc_app`) repos only — inline `risky_short_lived_token` sources aren't watchable (the token is checkout-only and purged).
+A session can only watch a PR it opened itself via [`github_publish_pull_request`](/agent-sessions/runtime-tools#github-tools). The PR must have been opened through the **OpenComputer GitHub App** (`oc_app` sources) — that App's webhook and read token are what drive the watch. Inline `risky_short_lived_token` sources aren't watchable (the token is checkout-only and purged).
 
 <Note>
-**Owner-side prerequisite.** The OpenComputer GitHub App needs **Pull requests: Read**, **Checks: Read**, and **Issues: Read**, plus event subscriptions to **`pull_request`**, **`pull_request_review`**, **`pull_request_review_comment`**, **`check_suite`**, and **`issue_comment`**. Existing installs must **re-accept the new permissions**. Until they do, a watch is created but declares as `auth_required` and won't deliver events.
+**Owner-side prerequisite.** The OpenComputer GitHub App needs **Pull requests: Read**, **Checks: Read**, and **Issues: Read**, plus event subscriptions to **`pull_request`**, **`pull_request_review`**, **`pull_request_review_comment`**, **`check_suite`**, **`check_run`**, and **`issue_comment`**. Existing installs must **re-accept the new permissions**. Until they do, a watch is created but declares as `auth_required` and won't deliver events.
 </Note>
 
 ## Wake conditions
@@ -59,7 +59,7 @@ The agent declares and clears watches from inside the sandbox. Full signatures: 
 
 ## Management API
 
-REST management, authenticated with your **org API key** or a session [client token](/agent-sessions/authentication#client-tokens). `repo`/`pr` are optional — omitted, they resolve to the PR this session opened.
+REST management, authenticated with your **org API key** (server-side). `repo`/`pr` are optional — omitted, they resolve to the PR this session opened.
 
 <Note>No SDK method or `oc` CLI command for watches yet — use these REST endpoints, or the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool from inside the sandbox.</Note>
 
@@ -108,6 +108,7 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 | `status` | lifecycle status (below) |
 | `origin` | how it was declared (runtime tool or management API) |
 | `last_snapshot_at?` | last authoritative PR re-read |
+| `expires_at` | when the 30-day TTL lapses; past this the watch stops firing (status stays `active`) |
 | `created_at` | timestamp |
 
 ### Statuses
@@ -128,12 +129,10 @@ One event per transition, appended at level `user` with `source: "github"`. The 
 | `type` | Fires on |
 | --- | --- |
 | `github.pr.checks_completed` | Check suites for the head commit finished (coalesced). |
-| `github.pr.review_submitted` | A review was submitted. |
-| `github.pr.review_comment` | A review (diff) comment landed. |
-| `github.pr.comment` | An issue-style comment landed on the PR. |
+| `github.pr.review_submitted` | A review decision was submitted (approved / changes requested). |
+| `github.pr.comment` | A comment landed on the PR — issue-style **or** review (diff) comment. |
 | `github.pr.merged` | The PR merged. |
 | `github.pr.closed` | The PR closed without merging. |
-| `github.pr.reopened` | A closed PR reopened. |
 
 These join the standard session [event types](/agent-sessions/events#event-types) — switch on `type`, don't parse prose.
 

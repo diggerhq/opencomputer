@@ -131,6 +131,8 @@ for checkout, write only to publish) — the agent never holds one.
 Use your own GitHub App so PRs, comments, and statuses come from **your** identity. OpenComputer
 stores the key encrypted and signs the same per-operation tokens with it.
 
+<Note>[Watches](/agent-sessions/watches) currently require PRs opened through the **OpenComputer** App — a PR published with a bring-your-own App isn't watchable yet.</Note>
+
 **Create one** — `createManifestUrl` returns a link; open it and GitHub walks you through
 creating the App, then OpenComputer captures the key and registers it. (Creating an App is a
 GitHub-UI flow, so it's a link to open, not a pure API call.)
