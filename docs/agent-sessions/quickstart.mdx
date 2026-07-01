@@ -108,6 +108,18 @@ Response:
 }
 ```
 
+<Tip>**Working on a repo?** Pass [`sources`](/agent-sessions/repos) to check code out before turn 1 — the GitHub token never enters the sandbox. For a registered repo, `sha` is optional (OpenComputer resolves `ref`→HEAD and pins it):</Tip>
+
+```ts
+const session = await oc.sessions.create({
+  agent: agent.id,
+  input: "Fix the failing test on this branch, then open a PR.",
+  sources: [{ repo: "acme/web", ref: "main" }],
+});
+```
+
+The agent can then open a PR with `github_publish_pull_request` and [watch](/agent-sessions/watches) it — waking when checks finish or a reviewer comments.
+
 ## 3. Stream events
 
 Use the `client_token` in the browser. Ask for `progress` for a good activity feed, or `internal` for an operator/debug view.

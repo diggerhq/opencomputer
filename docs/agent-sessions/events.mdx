@@ -44,6 +44,20 @@ Treat **`type`** as the stable discriminator. Unknown types should render from t
 | `exec.completed` | `{ command, exit_code, summary, content_ref?, bytes? }` | a finished command |
 | `error.runtime` · `error.model` · `error.task` | `{ code, message, retriable? }` | a failure |
 
+### GitHub PR events
+
+When a session declares a [watch](/agent-sessions/watches) on a PR it opened, OpenComputer wakes it with a normalized PR event — level `user`, `source: "github"`, `body` a concise summary (e.g. author + comment text + url), never the raw webhook.
+
+| `type` | Fires on |
+| --- | --- |
+| `github.pr.checks_completed` | check suites finished (coalesced) |
+| `github.pr.review_submitted` | a review was submitted |
+| `github.pr.review_comment` | a review (diff) comment landed |
+| `github.pr.comment` | an issue-style comment landed on the PR |
+| `github.pr.merged` | the PR merged |
+| `github.pr.closed` | the PR closed without merging |
+| `github.pr.reopened` | a closed PR reopened |
+
 ## Visibility levels
 
 Every event carries a `level`; use it to choose how much detail each client receives.

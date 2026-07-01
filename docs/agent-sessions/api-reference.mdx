@@ -123,8 +123,8 @@ A turn's **`yield_reason`** tells you why it stopped:
 
 | Variant | Shape |
 |---|---|
-| registered | `{ repo, ref, sha, name? }` — `repo` is a `repo_…` id or `"owner/repo"`; App-backed auth |
-| inline | `{ url, ref, sha, name?, auth }` — `auth = { type:"risky_short_lived_token", token, expires_at }` (can't refresh) |
+| registered | `{ repo, ref, sha?, name? }` — `repo` is a `repo_…` id or `"owner/repo"`; App-backed auth. `sha` is **optional** (omit → control plane resolves `ref`→HEAD and pins it at create) |
+| inline | `{ url, ref, sha, name?, auth }` — `sha` **required**; `auth = { type:"risky_short_lived_token", token, expires_at }` (can't refresh) |
 
 **`SourceSummary`** (sanitized; on create + `GET …/sources`)
 
@@ -216,6 +216,33 @@ Filter by `type` (exact or `prefix.*`), `turn_id`, `limit`. `after` resumes from
 </Tabs>
 
 Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on idempotent replay) with `{ event: { id, seq }, session: { id, status, head } }`.
+
+## Watches
+
+*Watches are managed via REST (no SDK method or `oc` command yet); the agent-facing path is the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool. Authenticate with the org key or a client token. Full guide: [Watches](/agent-sessions/watches).*
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /sessions/:id/watches` | Declare a watch → `201 { watch }`. Body: `{ type:"github_pr", repo?, pr?, goal, intent?, events? }`. |
+| `GET /sessions/:id/watches` | List watches → `{ data: [watch] }`. |
+| `DELETE /sessions/:id/watches/:watchId` | Remove a watch → `{ ok: true }`. |
+
+`repo`/`pr` are optional — omitted, they resolve to the PR this session opened. A watch fires only on PRs the **same session** opened, on Connected-App (`oc_app`) repos. Limits: **10** active watches per session, **30-day** TTL (and never outlives the PR).
+
+**`Watch`**
+
+| Field | Notes |
+|---|---|
+| `id` `type` | `wch_…`; `type` = `github_pr` |
+| `repo` `pr` | watched repo · PR number |
+| `goal` | `wait_for_checks` (default) · `wait_for_review` · `wait_for_merge` · `respond_to_comments` |
+| `intent?` | freeform note, replayed on wake |
+| `events` | delivered event types this watch subscribes to |
+| `status` | `pending_snapshot · active · expired · closed · revoked · auth_required · app_suspended` |
+| `origin` | how it was declared (runtime tool / management API) |
+| `last_snapshot_at?` `created_at` | last authoritative PR re-read · timestamp |
+
+**Delivered events** — appended into the session log at level `user` with `source: "github"`, carrying a normalized summary (not the raw webhook): `github.pr.checks_completed` · `github.pr.review_submitted` · `github.pr.review_comment` · `github.pr.comment` · `github.pr.merged` · `github.pr.closed` · `github.pr.reopened`.
 
 ## Agents
 
