@@ -53,6 +53,11 @@ export function AgentDeploySource({
   const [repo, setRepo] = useState('')
   const [path, setPath] = useState('')
   const [branch, setBranch] = useState('main')
+  // "You just connected" is a transient onboarding moment — only true when the App flips to
+  // installed *within this session* (i.e. the user returned from the install tab). NOT set on a
+  // fresh load of an already-installed agent, and cleared on Disconnect — so the "pick a repo"
+  // nudge never lingers on unlinked/inline-only agents or reappears after an explicit disconnect.
+  const [justConnected, setJustConnected] = useState(false)
 
   const { data: app, isLoading: appLoading } = useQuery({
     queryKey: ['deploy-app'],
@@ -78,6 +83,16 @@ export function AgentDeploySource({
     },
     refetchOnWindowFocus: 'always',
   })
+
+  // Detect the false→true install transition: latch "just connected" only if we saw the
+  // not-installed state earlier this session (so a fresh load of an already-installed agent
+  // doesn't look like a transition).
+  const seenNotInstalled = useRef(false)
+  useEffect(() => {
+    if (!app) return
+    if (!app.installed) seenNotInstalled.current = true
+    else if (seenNotInstalled.current) setJustConnected(true)
+  }, [app])
 
   // Pre-fill the picker from the current link once, so "connected" is an editable picker.
   const hydratedRef = useRef(false)
@@ -129,6 +144,7 @@ export function AgentDeploySource({
     onSuccess: () => {
       invalidate()
       hydratedRef.current = false
+      setJustConnected(false) // an explicit disconnect is not an onboarding moment
       setRepo('')
       setPath('')
       setBranch('main')
@@ -201,7 +217,7 @@ export function AgentDeploySource({
           </div>
         ) : (
           <div className="space-y-3" ref={pickerRef}>
-            {!source ? (
+            {justConnected && !source ? (
               <p className="text-xs">
                 <span className="font-medium text-green-600 dark:text-green-500">
                   GitHub connected.
