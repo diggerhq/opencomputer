@@ -28,7 +28,10 @@ import {
   DEFAULT_RUNTIME,
   defaultModelFor,
   getRuntime,
+  keyFieldFor,
+  providerForModel,
   runtimeOptions,
+  withModelGroups,
 } from '@/lib/runtimes'
 
 // Sentinels for the non-credential choices in the credential picker. The model
@@ -79,12 +82,14 @@ export default function Agents() {
   const [newCredName, setNewCredName] = useState('')
   const [newCredKey, setNewCredKey] = useState('')
 
-  // Everything model/credential-related follows the chosen runtime
-  // (claude→anthropic, codex→openai): the model list, the credential provider it
-  // filters to, and the key label.
+  // The model list follows the runtime; the credential provider + key field follow
+  // the selected MODEL's provider prefix. For claude/codex that prefix always equals
+  // the runtime's provider; for pi it varies by model, which is what makes pi work.
   const rt = getRuntime(runtime)
+  const provider = providerForModel(model) || rt.provider
+  const keyField = keyFieldFor(provider)
   const providerCreds = (credentials ?? []).filter(
-    (c) => c.provider === rt.provider,
+    (c) => c.provider === provider,
   )
   const hasDefault = providerCreds.some((c) => c.is_default)
 
@@ -115,15 +120,33 @@ export default function Agents() {
   // (runtime, model) pair or an off-provider credential.
   const onRuntimeChange = (value: string) => {
     setRuntime(value)
-    const next = getRuntime(value)
-    setModel(next.models[0].value)
+    const nextModel = defaultModelFor(value)
+    setModel(nextModel)
     setCredChoice(
       defaultCredFor(
-        (credentials ?? []).filter((c) => c.provider === next.provider),
+        (credentials ?? []).filter(
+          (c) => c.provider === providerForModel(nextModel),
+        ),
       ),
     )
     setNewCredName('')
     setNewCredKey('')
+  }
+
+  // Changing the model can change the provider (pi spans providers) — re-point the
+  // credential fields at the new provider so we never submit an off-provider key.
+  const onModelChange = (value: string) => {
+    setModel(value)
+    const nextProvider = providerForModel(value)
+    if (nextProvider !== provider) {
+      setCredChoice(
+        defaultCredFor(
+          (credentials ?? []).filter((c) => c.provider === nextProvider),
+        ),
+      )
+      setNewCredName('')
+      setNewCredKey('')
+    }
   }
 
   // Build options: Managed (always offered, no provider — runs without a BYO key) +
@@ -150,7 +173,7 @@ export default function Agents() {
       } else if (credChoice === NEW_CRED) {
         const cred = await createCredential({
           key: newCredKey.trim(),
-          provider: rt.provider,
+          provider: provider,
           name: newCredName.trim() || undefined,
           is_default: !hasDefault, // first key for this provider becomes its default
         })
@@ -338,8 +361,8 @@ export default function Agents() {
                   key={runtime}
                   id="agent-model"
                   value={model}
-                  onValueChange={setModel}
-                  options={rt.models}
+                  onValueChange={onModelChange}
+                  options={withModelGroups(rt.models)}
                 />
               </Field>
             </div>
@@ -349,11 +372,11 @@ export default function Agents() {
               description={
                 credChoice === MANAGED
                   ? 'Run via OpenComputer, billed to your credits — no key needed.'
-                  : `The ${rt.provider} key this agent runs on (matches the runtime). Reuse one from Credentials, or add a new one here.`
+                  : `The ${provider} key this agent runs on (matches the model). Reuse one from Credentials, or add a new one here.`
               }
             >
               <Select
-                key={runtime}
+                key={provider}
                 id="agent-cred"
                 value={credChoice}
                 onValueChange={setCredChoice}
@@ -372,7 +395,7 @@ export default function Agents() {
                   />
                 </Field>
                 <Field
-                  label={rt.keyLabel}
+                  label={keyField.keyLabel}
                   htmlFor="new-cred-key"
                   description="Encrypted in a dedicated secret store."
                 >
@@ -381,7 +404,7 @@ export default function Agents() {
                     type="password"
                     value={newCredKey}
                     onChange={(e) => setNewCredKey(e.target.value)}
-                    placeholder={rt.keyPlaceholder}
+                    placeholder={keyField.keyPlaceholder}
                   />
                 </Field>
               </div>

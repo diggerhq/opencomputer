@@ -12,7 +12,7 @@ const agentTomlTmpl = `name  = %q
 model = %q
 
 [runtime]
-family = %q   # claude | codex
+family = %q   # claude | codex | pi
 type   = "default"
 
 [limits]
@@ -39,7 +39,7 @@ var agentInitCmd = &cobra.Command{
 	Use:   "init [dir]",
 	Short: "Scaffold a deployable agent directory (agent.toml + prompt.md + skills/)",
 	Example: "  oc agent init\n" +
-		"  oc agent init ./agents/triage --name triage --model anthropic/claude-sonnet-4-6\n" +
+		"  oc agent init ./agents/triage --name triage --model anthropic/claude-sonnet-5\n" +
 		"  oc agent init && $EDITOR prompt.md && oc agent deploy",
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -86,6 +86,6 @@ var agentInitCmd = &cobra.Command{
 
 func init() {
 	agentInitCmd.Flags().String("name", "", "Agent name (default: the directory name)")
-	agentInitCmd.Flags().String("model", "anthropic/claude-sonnet-4-6", "Model")
-	agentInitCmd.Flags().String("runtime", "claude", "Runtime family (claude|codex)")
+	agentInitCmd.Flags().String("model", "anthropic/claude-sonnet-5", "Model")
+	agentInitCmd.Flags().String("runtime", "claude", "Runtime family (claude|codex|pi)")
 }

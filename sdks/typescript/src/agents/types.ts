@@ -9,10 +9,11 @@ export type YieldReason =
 
 export interface Limits { tokens?: number; turnSeconds?: number; turns?: number; }
 
-// The runtime an agent runs on. It fixes the model's provider — `claude` runs
-// `anthropic/…` models, `codex` runs `openai/…` (more land over time). The union
+// The runtime an agent runs on. `claude` and `pi` run `anthropic/…` models today and
+// `codex` runs `openai/…`. `pi` is built provider-agnostic (the provider comes from the
+// model's `provider/` prefix, not the runtime) — more providers land next. The union
 // keeps known values discoverable while still accepting future ones.
-export type Runtime = "claude" | "codex" | (string & {});
+export type Runtime = "claude" | "codex" | "pi" | (string & {});
 
 // A credential id (`newId("cred")` → `cred_…`). The template keeps the shape
 // checkable while still accepting any concrete id.

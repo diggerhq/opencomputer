@@ -1,8 +1,9 @@
 // The runtimes the dashboard exposes, with their models + credential provider.
-// The v3 API pairs each runtime with a provider (claude→anthropic, codex→openai)
-// and requires a provider-prefixed model id, so everything model/credential-related
-// keys off this one table — keeping the create dialog and the agent detail screen in
-// sync. More runtimes (and models) land here as they ship.
+// `claude` and `codex` each pair with one provider (claude→anthropic, codex→openai);
+// `pi` drives any provider, so for pi the provider comes from the selected model's
+// `provider/` prefix, not the runtime — see providerForModel + keyFieldFor, which the
+// create dialog uses so a pi agent's key field follows its model. More runtimes (and
+// models) land here as they ship.
 
 export type RuntimeModel = { value: string; label: string }
 
@@ -12,6 +13,10 @@ export type RuntimeOption = {
   provider: string // credential provider + model-id prefix
   keyLabel: string // label for the inline "new credential" key field
   keyPlaceholder: string
+  // Models are listed most-powerful-first within each provider. `defaultModel`
+  // is the one a new agent preselects (else models[0]) — so the list can be
+  // power-ordered while the default stays a mid-tier pick.
+  defaultModel?: string
   models: RuntimeModel[]
 }
 
@@ -22,9 +27,12 @@ export const RUNTIMES: RuntimeOption[] = [
     provider: 'anthropic',
     keyLabel: 'Anthropic API key',
     keyPlaceholder: 'sk-ant-…',
+    // Power-ordered; Sonnet 5 is the preselected default for new agents.
+    defaultModel: 'anthropic/claude-sonnet-5',
     models: [
       { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8' },
-      { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+      { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
+      { value: 'anthropic/claude-fable-5', label: 'Claude Fable 5' },
       { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
     ],
   },
@@ -44,7 +52,37 @@ export const RUNTIMES: RuntimeOption[] = [
       { value: 'openai/gpt-5.4-nano', label: 'GPT-5.4 Nano' },
     ],
   },
+  {
+    value: 'pi',
+    label: 'Pi',
+    // Pi drives ANY provider — this `provider` is only the default (the first model's
+    // prefix) for defaultModelFor/fallbacks. The create form derives the ACTUAL provider
+    // from the selected model via providerForModel, since a pi agent's provider (and so
+    // its key field + credential list) varies by model.
+    provider: 'anthropic',
+    keyLabel: 'Model provider API key',
+    keyPlaceholder: 'API key',
+    // Anthropic-only TODAY (what prod validates for pi). The runtime is built
+    // provider-agnostic; other providers' models land here when the platform accepts
+    // them (the create dialog already groups by provider via withModelGroups).
+    defaultModel: 'anthropic/claude-sonnet-5',
+    models: [
+      { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8' },
+      { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
+      { value: 'anthropic/claude-fable-5', label: 'Claude Fable 5' },
+      { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+    ],
+  },
 ]
+
+// Key-field copy per provider. Pi mixes providers within one runtime, so the create
+// dialog keys the credential field off the selected model's provider, not the runtime.
+export const PROVIDER_KEY_FIELDS: Record<string, { keyLabel: string; keyPlaceholder: string }> = {
+  anthropic: { keyLabel: 'Anthropic API key', keyPlaceholder: 'sk-ant-…' },
+  openai: { keyLabel: 'OpenAI API key', keyPlaceholder: 'sk-…' },
+  google: { keyLabel: 'Google AI API key', keyPlaceholder: 'AIza…' },
+  openrouter: { keyLabel: 'OpenRouter API key', keyPlaceholder: 'sk-or-…' },
+}
 
 export const DEFAULT_RUNTIME = RUNTIMES[0].value
 
@@ -60,5 +98,35 @@ export function getRuntime(value: string | undefined): RuntimeOption {
 }
 
 export function defaultModelFor(runtime: string): string {
-  return getRuntime(runtime).models[0].value
+  const rt = getRuntime(runtime)
+  return rt.defaultModel ?? rt.models[0].value
+}
+
+// The provider a model runs on is its `provider/` prefix — the API's source of truth.
+// Works for every runtime: claude/codex models all share one prefix; pi's vary.
+export function providerForModel(model: string): string {
+  return model.split('/')[0] || ''
+}
+
+// The key-field copy for a provider, with a generic fallback for uncurated providers.
+export function keyFieldFor(provider: string): { keyLabel: string; keyPlaceholder: string } {
+  return PROVIDER_KEY_FIELDS[provider] ?? { keyLabel: 'Model provider API key', keyPlaceholder: 'API key' }
+}
+
+// A Select option that is either a model or a group divider.
+export type ModelSelectOption = RuntimeModel | { separator: true }
+
+// Insert a divider between consecutive models from different providers, so a
+// multi-provider runtime's dropdown (pi) reads as grouped without vendor labels.
+// Single-provider runtimes (claude/codex) have no boundary, so nothing changes.
+export function withModelGroups(models: RuntimeModel[]): ModelSelectOption[] {
+  const out: ModelSelectOption[] = []
+  let prev: string | null = null
+  for (const m of models) {
+    const p = providerForModel(m.value)
+    if (prev !== null && p !== prev) out.push({ separator: true })
+    out.push(m)
+    prev = p
+  }
+  return out
 }

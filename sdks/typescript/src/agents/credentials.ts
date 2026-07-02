@@ -2,7 +2,7 @@ import type { Http } from "./http.js";
 import type { Credential } from "./types.js";
 
 export interface CreateCredentialParams {
-  /** The model provider this key is for (`anthropic` for the `claude` runtime, `openai` for `codex`). Defaults to `anthropic`. */
+  /** The model provider this key is for — `anthropic` for `claude` and `pi`, `openai` for `codex`. Defaults to `anthropic`. */
   provider?: "anthropic" | "openai" | (string & {});
   /** Write-only — never returned by the API. */
   key: string;

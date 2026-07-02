@@ -22,7 +22,9 @@ export function Select({
 }: {
   value: string
   onValueChange: (value: string) => void
-  options: { value: string; label: string }[]
+  // A `{ separator: true }` entry renders a divider between groups (e.g. models
+  // grouped by provider) rather than a selectable item.
+  options: ({ value: string; label: string } | { separator: true })[]
   id?: string
   placeholder?: string
   disabled?: boolean
@@ -56,20 +58,27 @@ export function Select({
           className="bg-popover text-popover-foreground ring-foreground/10 shadow-overlay data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 z-50 max-h-(--radix-select-content-available-height) min-w-(--radix-select-trigger-width) origin-(--radix-select-content-transform-origin) overflow-hidden rounded-lg p-1 ring-1 duration-100"
         >
           <SelectPrimitive.Viewport>
-            {options.map((o) => (
-              <SelectPrimitive.Item
-                key={o.value}
-                value={o.value}
-                className="focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center rounded-md py-1 pr-8 pl-2 text-sm outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50"
-              >
-                <SelectPrimitive.ItemText>{o.label}</SelectPrimitive.ItemText>
-                <span className="absolute right-2 flex items-center">
-                  <SelectPrimitive.ItemIndicator>
-                    <Check className="size-4" />
-                  </SelectPrimitive.ItemIndicator>
-                </span>
-              </SelectPrimitive.Item>
-            ))}
+            {options.map((o, i) =>
+              'separator' in o ? (
+                <SelectPrimitive.Separator
+                  key={`sep-${i}`}
+                  className="bg-border pointer-events-none -mx-1 my-1 h-px"
+                />
+              ) : (
+                <SelectPrimitive.Item
+                  key={o.value}
+                  value={o.value}
+                  className="focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center rounded-md py-1 pr-8 pl-2 text-sm outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50"
+                >
+                  <SelectPrimitive.ItemText>{o.label}</SelectPrimitive.ItemText>
+                  <span className="absolute right-2 flex items-center">
+                    <SelectPrimitive.ItemIndicator>
+                      <Check className="size-4" />
+                    </SelectPrimitive.ItemIndicator>
+                  </span>
+                </SelectPrimitive.Item>
+              ),
+            )}
           </SelectPrimitive.Viewport>
         </SelectPrimitive.Content>
       </SelectPrimitive.Portal>
