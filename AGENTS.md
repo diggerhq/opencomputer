@@ -40,8 +40,8 @@ truth they come from.
 Managed-agent product behavior is mostly **not** implemented here:
 
 - `sessions-api` — managed-agent control plane and orchestration
-- `ws-gstack` — design workspace for managed agents, channels, packages, and
-  product shape
+- `oc-bg-agents` — design + incubation for the managed background-agents product
+  (the current design source of truth; supersedes the old `ws-gstack` workspace)
 
 ## Local development (dev box + dashboard)
 
