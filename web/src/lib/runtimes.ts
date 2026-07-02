@@ -13,6 +13,10 @@ export type RuntimeOption = {
   provider: string // credential provider + model-id prefix
   keyLabel: string // label for the inline "new credential" key field
   keyPlaceholder: string
+  // Models are listed most-powerful-first within each provider. `defaultModel`
+  // is the one a new agent preselects (else models[0]) — so the list can be
+  // power-ordered while the default stays a mid-tier pick.
+  defaultModel?: string
   models: RuntimeModel[]
 }
 
@@ -23,10 +27,11 @@ export const RUNTIMES: RuntimeOption[] = [
     provider: 'anthropic',
     keyLabel: 'Anthropic API key',
     keyPlaceholder: 'sk-ant-…',
-    // First entry is the default model for a new agent (models[0]).
+    // Power-ordered; Sonnet 5 is the preselected default for new agents.
+    defaultModel: 'anthropic/claude-sonnet-5',
     models: [
-      { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8' },
+      { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'anthropic/claude-fable-5', label: 'Claude Fable 5' },
       { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
     ],
@@ -59,15 +64,16 @@ export const RUNTIMES: RuntimeOption[] = [
     keyPlaceholder: 'API key',
     // Curated, known-valid ids across providers to show pi's model-agnostic nature.
     // The create dialog groups these by provider with a separator (withModelGroups),
-    // so labels stay vendor-free. google/openrouter models land here once their
-    // catalog ids are verified at GA.
+    // so labels stay vendor-free. Power-ordered within each provider group.
+    // google/openrouter models land here once their catalog ids are verified at GA.
+    defaultModel: 'anthropic/claude-sonnet-5',
     models: [
-      { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8' },
+      { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'anthropic/claude-fable-5', label: 'Claude Fable 5' },
       { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-      { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
       { value: 'openai/gpt-5.5', label: 'GPT-5.5' },
+      { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
       { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 Mini' },
     ],
   },
@@ -96,7 +102,8 @@ export function getRuntime(value: string | undefined): RuntimeOption {
 }
 
 export function defaultModelFor(runtime: string): string {
-  return getRuntime(runtime).models[0].value
+  const rt = getRuntime(runtime)
+  return rt.defaultModel ?? rt.models[0].value
 }
 
 // The provider a model runs on is its `provider/` prefix — the API's source of truth.

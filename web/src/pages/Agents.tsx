@@ -120,8 +120,7 @@ export default function Agents() {
   // (runtime, model) pair or an off-provider credential.
   const onRuntimeChange = (value: string) => {
     setRuntime(value)
-    const next = getRuntime(value)
-    const nextModel = next.models[0].value
+    const nextModel = defaultModelFor(value)
     setModel(nextModel)
     setCredChoice(
       defaultCredFor(
