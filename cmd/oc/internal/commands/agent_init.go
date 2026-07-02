@@ -12,7 +12,7 @@ const agentTomlTmpl = `name  = %q
 model = %q
 
 [runtime]
-family = %q   # claude | codex
+family = %q   # claude | codex | pi
 type   = "default"
 
 [limits]
@@ -87,5 +87,5 @@ var agentInitCmd = &cobra.Command{
 func init() {
 	agentInitCmd.Flags().String("name", "", "Agent name (default: the directory name)")
 	agentInitCmd.Flags().String("model", "anthropic/claude-sonnet-4-6", "Model")
-	agentInitCmd.Flags().String("runtime", "claude", "Runtime family (claude|codex)")
+	agentInitCmd.Flags().String("runtime", "claude", "Runtime family (claude|codex|pi)")
 }

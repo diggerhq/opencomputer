@@ -63,6 +63,8 @@ Content-Type: application/json
 
 The adapter has already read the event log. Your brain receives the new turn input, not a session cursor.
 
+Everything in `config` is turn-invariant for the life of the box, so a resident brain may cache values like `mcp_endpoint`, `state_dir`, and the ports across turns. When something has to change — for example the session's skills — the platform restarts the brain rather than handing it a changed `config` mid-life.
+
 ## Step stream
 
 `POST /turn` responds with newline-delimited JSON. The brain streams its SDK's **native** events verbatim, one per line, then a terminal `done`:
@@ -80,6 +82,21 @@ The platform ships a **per-SDK adapter** that maps native SDK events to [session
 
 Tool calls, including user-visible `say` and `ask`, are made through MCP, not by emitting HTTP requests to OpenComputer.
 
+## Deadlines
+
+A turn runs under nested deadlines. Each inner clock expires before the one outside it, and the layer that enforces a deadline also cleans up the one below it.
+
+| Clock | Value | Enforced by |
+| --- | --- | --- |
+| Health check | 2s per probe | adapter → your `/healthz` |
+| Brain start | 30s to first `ready` | adapter (fails the turn if exceeded) |
+| Step cap | `config.max_turns` (24) per `/turn` | your SDK — end the stream cleanly when hit |
+| Model call | provider-dependent | your SDK |
+| Turn deadline | `min(agent turnSeconds, 1800s)` | platform — the turn is killed at the deadline |
+| Fence / cancel grace | 5s after the request is aborted | adapter, then the brain is restarted |
+
+If your brain runs past the turn deadline the turn ends `deadline_exceeded`; the session can be steered to continue. Aim to yield often — fresh config and input arrive on the next turn.
+
 ## Tools
 
 The adapter exposes tools at `config.mcp_endpoint`. Your brain connects through your SDK's MCP support.
@@ -94,6 +111,8 @@ The adapter exposes tools at `config.mcp_endpoint`. Your brain connects through 
 | `ask` | Ask for input and end the turn awaiting a reply. |
 
 The brain sandbox is for the model loop. The hands sandbox is where files and commands run.
+
+The MCP endpoint is live only during an in-flight `/turn`. Don't call tools from a background timer or a deferred flush between turns — the endpoint is gone once the turn ends. The adapter always provides `config.mcp_endpoint`; running a turn without connecting to it is not a supported mode.
 
 ## State and recovery
 

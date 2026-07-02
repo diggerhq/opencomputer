@@ -8,11 +8,11 @@ import {
 export interface CreateAgentParams {
   name: string;
   prompt: string;
-  /** `provider/model` id; must match the runtime's provider (`anthropic/…` for `claude`, `openai/…` for `codex`). */
+  /** `provider/model` id; the provider must be one the runtime can drive (`anthropic/…` for `claude`, `openai/…` for `codex`, any catalog provider for `pi`). */
   model: string;
-  /** Defaults to `claude`. Fixes the model's provider (see `model`); immutable after create. */
+  /** Defaults to `claude`. Determines which providers the model may use (see `model`); immutable after create. */
   runtime?: Runtime;
-  /** Model provider key for the runtime (Anthropic for `claude`, OpenAI for `codex`), stored as a sealed credential. Mutually exclusive with `credential`. */
+  /** Model provider key, stored as a sealed credential — Anthropic for `claude`, OpenAI for `codex`, the model's provider for `pi`. Mutually exclusive with `credential`. */
   key?: string;
   /** Model source: `"managed"` (run via OpenComputer, no provider key) or a `cred_…` id. Omit for the org default. Mutually exclusive with `key`. */
   credential?: CredentialRef;
@@ -21,7 +21,7 @@ export interface CreateAgentParams {
 
 export interface UpdateAgentParams {
   prompt?: string;
-  /** Stay within the agent's runtime provider (`anthropic/…` for `claude`, `openai/…` for `codex`); the runtime itself is immutable. */
+  /** Stay within what the agent's runtime can drive (`anthropic/…` for `claude`, `openai/…` for `codex`, any catalog provider for `pi`); the runtime itself is immutable. */
   model?: string;
   key?: string;
   /** Re-point the model source: `"managed"`, a `cred_…` id, or `null` to clear (org default). Mutually exclusive with `key`. */

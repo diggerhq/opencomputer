@@ -2,8 +2,8 @@ import type { Http } from "./http.js";
 import type { Credential } from "./types.js";
 
 export interface CreateCredentialParams {
-  /** The model provider this key is for (`anthropic` for the `claude` runtime, `openai` for `codex`). Defaults to `anthropic`. */
-  provider?: "anthropic" | "openai" | (string & {});
+  /** The model provider this key is for — `anthropic` for `claude`, `openai` for `codex`, or any catalog provider (e.g. `google`, `openrouter`) for `pi`. Defaults to `anthropic`. */
+  provider?: "anthropic" | "openai" | "google" | "openrouter" | (string & {});
   /** Write-only — never returned by the API. */
   key: string;
   name?: string;

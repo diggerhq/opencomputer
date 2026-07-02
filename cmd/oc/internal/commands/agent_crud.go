@@ -115,7 +115,7 @@ var agentGetCmd = &cobra.Command{
 func registerAgentCrud() {
 	agentCreateCmd.Flags().String("prompt", "", "System prompt (required)")
 	agentCreateCmd.Flags().String("model", "", "Model, e.g. anthropic/claude-sonnet-4-6 (required)")
-	agentCreateCmd.Flags().String("runtime", "claude", "Runtime family (claude|codex)")
+	agentCreateCmd.Flags().String("runtime", "claude", "Runtime family (claude|codex|pi)")
 	agentCreateCmd.Flags().String("credential", "", "Credential id (optional)")
 	agentGetCmd.Flags().String("agent", "", "Agent id or name (else the cwd agent.toml)")
 
