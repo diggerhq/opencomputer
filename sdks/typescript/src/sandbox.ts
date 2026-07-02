@@ -247,6 +247,16 @@ export interface AllowedHostsInfo {
   perSecretAllowedHosts: Record<string, string[]>;
 }
 
+export interface SandboxKillOptions {
+  /**
+   * Also delete the secret store currently attached to this sandbox.
+   *
+   * Defaults to false. Only set this for single-use stores that should not
+   * outlive the sandbox.
+   */
+  deleteSecretStore?: boolean;
+}
+
 export class Sandbox {
   readonly sandboxId: string;
   readonly id: string;
@@ -424,8 +434,9 @@ export class Sandbox {
     return this.previewAuthToken;
   }
 
-  async kill(): Promise<void> {
-    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}`, {
+  async kill(opts: SandboxKillOptions = {}): Promise<void> {
+    const query = opts.deleteSecretStore ? "?deleteSecretStore=true" : "";
+    const resp = await fetch(`${this.apiUrl}/sandboxes/${this.sandboxId}${query}`, {
       method: "DELETE",
       headers: this.apiKey ? { "X-API-Key": this.apiKey } : {},
     });

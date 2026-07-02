@@ -288,9 +288,16 @@ class Sandbox:
         which handles readiness waiting and proxies to workers."""
         return self._client
 
-    async def kill(self) -> None:
-        """Kill and remove the sandbox."""
-        resp = await self._client.delete(f"/sandboxes/{self.sandbox_id}")
+    async def kill(self, delete_secret_store: bool = False) -> None:
+        """Kill and remove the sandbox.
+
+        Args:
+            delete_secret_store: Also delete the secret store currently attached
+                to this sandbox. Defaults to ``False``. Only use this for
+                single-use stores that should not outlive the sandbox.
+        """
+        params = {"deleteSecretStore": "true"} if delete_secret_store else None
+        resp = await self._client.delete(f"/sandboxes/{self.sandbox_id}", params=params)
         resp.raise_for_status()
         self.status = "stopped"
 
