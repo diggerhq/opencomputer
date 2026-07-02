@@ -93,7 +93,7 @@ A turn runs under nested deadlines. Each inner clock expires before the one outs
 | Step cap | `config.max_turns` (24) per `/turn` | your SDK — end the stream cleanly when hit |
 | Model call | provider-dependent | your SDK |
 | Turn deadline | `min(agent turnSeconds, 1800s)` | platform — the turn is killed at the deadline |
-| Fence / cancel grace | 5s after the request is aborted | adapter, then the brain is restarted |
+| Fence / cancel grace | 5s after the request is aborted | adapter — a brain still busy is killed; the next turn restarts it |
 
 If your brain runs past the turn deadline the turn ends `deadline_exceeded`; the session can be steered to continue. Aim to yield often — fresh config and input arrive on the next turn.
 
@@ -112,7 +112,7 @@ The adapter exposes tools at `config.mcp_endpoint`. Your brain connects through 
 
 The brain sandbox is for the model loop. The hands sandbox is where files and commands run.
 
-The MCP endpoint is live only during an in-flight `/turn`. Don't call tools from a background timer or a deferred flush between turns — the endpoint is gone once the turn ends. The adapter always provides `config.mcp_endpoint`; running a turn without connecting to it is not a supported mode.
+The MCP endpoint is live only during an in-flight `/turn`. Don't call tools from a background timer or a deferred flush between turns — the endpoint is gone once the turn ends. The adapter always provides `config.mcp_endpoint`; connect to it — a brain that skips tools silently degrades to a chat-only agent.
 
 ## State and recovery
 

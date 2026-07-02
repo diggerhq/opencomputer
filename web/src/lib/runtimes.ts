@@ -62,19 +62,15 @@ export const RUNTIMES: RuntimeOption[] = [
     provider: 'anthropic',
     keyLabel: 'Model provider API key',
     keyPlaceholder: 'API key',
-    // Curated, known-valid ids across providers to show pi's model-agnostic nature.
-    // The create dialog groups these by provider with a separator (withModelGroups),
-    // so labels stay vendor-free. Power-ordered within each provider group.
-    // google/openrouter models land here once their catalog ids are verified at GA.
+    // Anthropic-only TODAY (what prod validates for pi). The runtime is built
+    // provider-agnostic; other providers' models land here when the platform accepts
+    // them (the create dialog already groups by provider via withModelGroups).
     defaultModel: 'anthropic/claude-sonnet-5',
     models: [
       { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8' },
       { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'anthropic/claude-fable-5', label: 'Claude Fable 5' },
       { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-      { value: 'openai/gpt-5.5', label: 'GPT-5.5' },
-      { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-      { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 Mini' },
     ],
   },
 ]

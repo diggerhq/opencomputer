@@ -10,13 +10,13 @@ A **runtime** executes the agent loop: provider SDK, model calls, and tool use. 
 | --- | --- | --- |
 | `claude` | `anthropic/…` (e.g. `anthropic/claude-opus-4-8`) | Managed, or an Anthropic key |
 | `codex` | `openai/…` (e.g. `openai/gpt-5-codex`) | Managed, or an OpenAI key |
-| `pi` | any provider in the catalog (`anthropic/…`, `openai/…`, `google/…`, `openrouter/…`) | Managed, or a key for that model's provider |
+| `pi` | `anthropic/…` today — the runtime is provider-agnostic by construction; more providers land next | Managed, or an Anthropic key |
 
 `model` is passed straight through to the provider, so any model that provider serves works — only the **`provider/` prefix** is validated against the runtime (a bad prefix is rejected at agent create, a model the provider doesn't recognize fails on the first turn). Common choices:
 
 - **`claude`:** `anthropic/claude-sonnet-5` (default, balanced), `anthropic/claude-opus-4-8` (most capable), `anthropic/claude-fable-5`, `anthropic/claude-haiku-4-5` (fastest/cheapest).
 - **`codex`:** `openai/gpt-5-codex`.
-- **`pi`:** any provider in the catalog — `anthropic/…`, `openai/…`, `google/…`, or `openrouter/…` for the long tail.
+- **`pi`:** the `anthropic/…` catalog above. The runtime itself is provider-agnostic; additional providers are next.
 
 Sessions, [events](/agent-sessions/events), [steering](/agent-sessions/messaging), [tools](/agent-sessions/runtime-tools), and [webhooks](/agent-sessions/webhooks) share the same API across runtimes. `runtime` is fixed once the agent exists; to switch engines, create a new agent.
 
@@ -50,7 +50,7 @@ Content-Type: application/json
 {
   "name": "reviewer",
   "runtime": "codex",
-  "model": "openai/gpt-5-codex",
+  "model": "anthropic/claude-sonnet-5",
   "prompt": "Review code in the sandbox. Run tests. Explain risks.",
   "key": "sk-..."
 }
@@ -58,7 +58,7 @@ Content-Type: application/json
 
 ## `pi`
 
-The [pi](https://github.com/earendil-works/pi) coding-agent harness (MIT). Unlike `claude` and `codex`, `pi` is not tied to one provider: point it at any `provider/model` in the catalog and it drives that provider, on Managed billing or a key for that model's provider. Sandbox tools, the event stream, steering, and recovery are the same as the other runtimes.
+The [pi](https://github.com/earendil-works/pi) coding-agent harness (MIT). `pi` is built provider-agnostic — the harness drives whatever provider the model's `provider/` prefix names. Today it ships with `anthropic/…` models, on Managed billing or your Anthropic key; additional providers land next. Sandbox tools, the event stream, steering, and recovery are the same as the other runtimes.
 
 ```http
 POST https://api.opencomputer.dev/v3/agents
@@ -68,19 +68,19 @@ Content-Type: application/json
 {
   "name": "reviewer",
   "runtime": "pi",
-  "model": "openai/gpt-5-codex",
+  "model": "anthropic/claude-sonnet-5",
   "prompt": "Review code in the sandbox. Run tests. Explain risks.",
   "credential": "managed"
 }
 ```
 
-The provider is taken from the model's `provider/` prefix, so running a different provider is just a different `model` on a `pi` agent — no separate runtime per provider.
+The provider is taken from the model's `provider/` prefix — so as more providers land, switching provider is just a different `model` on the same `pi` agent, not a separate runtime.
 
-The runtime, model, and credential have to agree. `claude` needs an `anthropic/…` model and an Anthropic key; `codex` needs an `openai/…` model and an OpenAI key; `pi` accepts any provider in the catalog and needs a key for that model's provider (or Managed). A mismatch is rejected when you create the agent, with a clear error — so a session never starts on a broken pairing. See [model credentials](/agent-sessions/credentials).
+The runtime, model, and credential have to agree. `claude` needs an `anthropic/…` model and an Anthropic key; `codex` needs an `openai/…` model and an OpenAI key; `pi` runs `anthropic/…` models today and needs an Anthropic key (or Managed). A mismatch is rejected when you create the agent, with a clear error — so a session never starts on a broken pairing. See [model credentials](/agent-sessions/credentials).
 
 ## Architecture
 
-The model is configuration, not part of the runtime image. The provider is always taken from the model's `provider/` prefix, never from the runtime — a runtime only declares which providers it can drive: `claude` drives Anthropic, `codex` drives OpenAI, and `pi` drives any provider in the catalog. You choose the exact `provider/model` and key.
+The model is configuration, not part of the runtime image. The provider is always taken from the model's `provider/` prefix, never from the runtime — a runtime only declares which providers it can drive: `claude` and `pi` drive Anthropic today (`pi` is built to drive any provider — more land next), `codex` drives OpenAI. You choose the exact `provider/model` and key.
 
 A runtime has two components:
 
