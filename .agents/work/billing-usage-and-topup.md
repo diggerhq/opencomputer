@@ -69,10 +69,72 @@ sessions-api `usage-not-wired`: the per-session `session.usage` (tokens / `activ
 ## Sequencing (slices)
 
 - **S0 (today, cheap):** default model off opus + sane grant + link the exhaustion message to top-up. Removes most of the pain immediately.
-- **S1:** surface model usage + remaining balance on the Billing page + low-balance banner.
-- **S2:** usage breakdown (compute vs model; by model; by agent if attribution feasible).
+- **S1 (FIRST BUILD):** clear path when credits run out — exhaustion CTA + low-balance banner + fast un-halt on top-up. **Full implementer-ready spec below.**
+- **S2:** surface model usage + remaining on the Billing page; usage breakdown (compute vs model; by model; by agent — needs `usage-not-wired`).
 - **S3:** auto-top-up **monthly cap** UX.
 - **S4:** in-context (sessions product) usage widget + top-up CTA.
+
+## Slice 1 (FIRST — implementer-ready): a clear path when model credits run out
+
+**Highest value, no new billing UI** — wire the *existing* top-up flow into the two moments a user
+needs it: when a turn dies on credits, and just before it does. Spans two repos.
+
+### Scope
+- **1a — Actionable exhaustion CTA** (turn already failed on credits).
+- **1b — Low-balance banner** (proactive, before the wall).
+- **1c — Fast un-halt on top-up** (so recovery is immediate, not next-cron). ← the real UX risk; do not skip.
+
+Explicitly **out of scope**: per-agent/model attribution (needs `usage-not-wired`), the monthly
+auto-top-up cap, and the full usage-breakdown UI. Those are S2–S4.
+
+### 1a — Actionable exhaustion CTA
+- **Signal already exists**, no runtime change needed: on a 402/credit error the runtime posts an
+  `error.runtime` event with `body.code = "insufficient_credits"` (`sessions-api
+  runtimes/v3-claude/src/adapter.ts`, the `isCreditError` branch) alongside the user-facing
+  "run out of model credits, top up" `agent.message`.
+- **Client change (opencomputer dashboard):** in the session/chat view
+  (`web/src/pages/SessionDetail*` — *confirm exact component + event renderer*), when the event
+  stream contains `error.runtime` with `code === "insufficient_credits"`, render an inline
+  **"Top up credits →"** button that deep-links to the Billing top-up (route from `Billing.tsx`,
+  *confirm route*; optionally pre-fill an amount). Client keys off the event `code` — the runtime
+  stays provider-agnostic and knows nothing about dashboard routes.
+- **Copy:** leave the runtime message as-is; the CTA is client chrome.
+
+### 1b — Low-balance banner
+- **Data:** org model-credit remaining from Autumn — `getAutumnCustomer().balances.credits.remaining`
+  (edge) surfaced via `getAutumnBilling` (*confirm `AutumnBilling` exposes credits-remaining; if
+  not, add the field to the billing response*).
+- **Trigger:** `remaining < THRESHOLD`. Start simple — a fixed `$5` (env/config), refine later to
+  "~N opus turns" once per-turn cost is known.
+- **Surface:** a dismissible banner in the sessions view (and/or global dashboard) — *"Model credits
+  low ($X left). Top up →"* — reusing the existing free-trial "credits exhausted — upgrade" banner
+  pattern in `Billing.tsx` for visual consistency.
+- **Scope guard:** managed (`billing_provider === "autumn"`) orgs only. BYO / legacy orgs have no
+  credit pool — no banner.
+
+### 1c — Fast un-halt on top-up (don't skip)
+At ≤0 the edge `model_meter` **halts** the org (`projectOrg`) and pushes the OR key cap to ~0. After
+a top-up the org must recover **promptly**, not on the next meter-cron tick. Wire the Autumn
+credit-grant/top-up webhook (`api-edge/src/autumn_webhook`) to **re-project caps immediately** on a
+balance increase (push the markup-correct OR cap off the new `remaining`, mirroring `pushCaps`).
+*Confirm current behavior first* — if a top-up already re-projects synchronously, 1c is a no-op;
+if it waits on the cron, that stale window is the top-up-then-still-stuck bug and must be fixed here.
+
+### Acceptance criteria
+1. A session that hits `insufficient_credits` renders a working "Top up →" CTA that lands on the
+   Billing top-up.
+2. When `remaining < THRESHOLD`, the low-balance banner shows in the sessions view (autumn orgs only).
+3. After a successful top-up, the org un-halts and the same session accepts a new message **within
+   seconds** (not on the cron), verified end-to-end (drive it: exhaust → top-up → re-message).
+4. Non-autumn / BYO orgs see neither banner nor CTA.
+
+### Touch points
+- sessions-api: `runtimes/v3-claude/src/adapter.ts` (signal — already emits; no change unless we add
+  `body.remediation:"topup"` for richer rendering — optional).
+- opencomputer web: `SessionDetail*` (CTA), a low-balance banner component, `api/client.ts`
+  `getAutumnBilling` (+ remaining field if missing), `Billing.tsx` top-up route.
+- opencomputer edge: `api-edge/src/autumn_webhook` + `model_meter` `pushCaps` (immediate re-project
+  on top-up).
 
 ## Appendix — evidence (2026-07-02)
 
