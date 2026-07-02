@@ -18,17 +18,23 @@ Report: "users running out of tokens." Investigation 2026-07-02 (telemetry + ses
 
 ## What already exists (do NOT rebuild)
 
-`web/src/pages/Billing.tsx` already wires: `autumnTopup` (one-off top-up), `setAutumnAutoTopup` (auto-recharge), `getSandboxUsage` (compute), `getAutumnBilling` (plan/credits), an invoices tab, promo codes, and upgrade-to-pro. Autumn is the credit ledger; `model_meter`/`autumn_meter` debit model/compute spend into it and halt at ≤0.
+**Billing IS wired end-to-end.** Do not confuse this with "usage-not-wired" (next). The edge `model_meter.ts` cron reads each managed OpenRouter key's cumulative spend, **debits the new spend WITH MARKUP to the org's Autumn `credits` pool** (exactly-once, persist-before-track), and **halts the org at ≤0** (pushing the markup-correct OR cap so total spend can't exceed the prepaid balance). Compute is metered the same way via `autumn_meter.ts`. So OpenRouter token spend **is** charged to the org's balance — verified live (`$0.226` debit on the token-billing rollout). We are not leaking free tokens (for `autumn` orgs; see the legacy caveat under Open Questions).
 
-So **top-up, auto-top-up, compute usage, and invoices already exist.** The work is *consolidation + gap-fill*, not greenfield. (Verify the exact capabilities/signatures of `autumnTopup`/`setAutumnAutoTopup` during build.)
+**The UI is largely built too** (`web/src/pages/Billing.tsx`): one-off top-up (`autumnTopup(credits)` + confirm dialog), **auto-top-up** (`AutoTopupCard`: enable + "when balance < threshold" + recharge quantity, incl. first-recharge card setup), compute usage (`getSandboxUsage`), invoices, promo codes, upgrade-to-pro. Schema `AutumnAutoTopup = {enabled, threshold, quantity}`.
+
+So this is **narrow gap-fill, not a build.**
+
+### "usage-not-wired" is a DIFFERENT layer (NOT a billing hole)
+
+sessions-api `usage-not-wired`: the per-session `session.usage` (tokens / `active_seconds`) and per-turn cost are **not captured** — the runtime's `agent.result` (which carries input/output tokens + `total_cost_usd`) isn't rolled into `session_turns`/`sessions`. Consequences: `limits.tokens` is a no-op, and we can't show **per-session / per-agent** model spend. **The money is still metered correctly** at the org/OR-key level (edge `model_meter` → Autumn); what's missing is *attribution/visibility inside the sessions product.* This is exactly what blocks the "for what" breakdown in the target UI — capturing `agent.result` → `session_turns` is a **prerequisite** for per-agent usage (and re-enables `limits.tokens`).
 
 ## Gaps vs the target
 
-1. **Model/token usage + remaining is not surfaced** — the hidden pool; users can't see the countdown before the 402.
-2. **No unified "what did I spend on" breakdown** — compute vs model, and within model per-model / per-agent.
-3. **Auto-top-up lacks a monthly spend cap** — the industry-standard "auto-recharge, but never more than $Z/month" guardrail (verify current `setAutumnAutoTopup` shape; likely no monthly ceiling).
+1. **Model/token usage + remaining is not surfaced** — the model pool is effectively hidden; users can't see the countdown before the 402. (Org balance/remaining is available from Autumn today; it's just not shown.)
+2. **No unified "what did I spend on" breakdown** — compute vs model, and within model per-model / per-agent. **Per-agent/per-session model attribution is blocked on the `usage-not-wired` fix** (capture `agent.result` → `session_turns`); org-level totals are available from Autumn now.
+3. **Auto-top-up has no monthly cap** — the card is built (enable + threshold + recharge amount); the missing piece is the "never auto-charge more than $Z/month" ceiling (schema is `{enabled, threshold, quantity}` — no monthly limit) + notify on cap hit.
 4. **Discoverability** — managed-sessions users live in the sessions product; the OC dashboard Billing page may be off their path.
-5. **Dead-end exhaustion message** — the runtime "top up" text has no in-context CTA.
+5. **Dead-end exhaustion path** — the runtime "run out of model credits, top up" message has no in-context link to the (existing) top-up flow. **This is the highest-value user-facing fix** and needs no new UI, just wiring.
 
 ## Target UX (industry-standard, one surface)
 
