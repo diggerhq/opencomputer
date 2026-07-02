@@ -204,6 +204,10 @@ just a refactor.
   think through both sides of the boundary.
 - **SDKs and CLI are public surfaces.** Prefer preserving behavior over
   rearranging internals for neatness.
+- **SDK publish is version-gated.** The `publish-ts-sdk` workflow only fires on a
+  version change, so any change under `sdks/typescript/` MUST bump `package.json`
+  **and** sync `package-lock.json` in the **same PR** — otherwise the change
+  silently never ships. One bump per PR, relative to the last-published version.
 - **Docs navigation is explicit.** Adding a page without wiring it into
   `docs/docs.json` leaves it effectively invisible.
 - **User-facing docs describe the product, not the implementation.**
