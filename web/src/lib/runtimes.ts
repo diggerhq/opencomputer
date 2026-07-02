@@ -58,12 +58,17 @@ export const RUNTIMES: RuntimeOption[] = [
     keyLabel: 'Model provider API key',
     keyPlaceholder: 'API key',
     // Curated, known-valid ids across providers to show pi's model-agnostic nature.
-    // google/openrouter models land here once their catalog ids are verified at GA.
+    // The create dialog groups these by provider with a separator (withModelGroups),
+    // so labels stay vendor-free. google/openrouter models land here once their
+    // catalog ids are verified at GA.
     models: [
-      { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5 · Anthropic' },
-      { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8 · Anthropic' },
-      { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex · OpenAI' },
-      { value: 'openai/gpt-5.5', label: 'GPT-5.5 · OpenAI' },
+      { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
+      { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8' },
+      { value: 'anthropic/claude-fable-5', label: 'Claude Fable 5' },
+      { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+      { value: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+      { value: 'openai/gpt-5.5', label: 'GPT-5.5' },
+      { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 Mini' },
     ],
   },
 ]
@@ -103,4 +108,22 @@ export function providerForModel(model: string): string {
 // The key-field copy for a provider, with a generic fallback for uncurated providers.
 export function keyFieldFor(provider: string): { keyLabel: string; keyPlaceholder: string } {
   return PROVIDER_KEY_FIELDS[provider] ?? { keyLabel: 'Model provider API key', keyPlaceholder: 'API key' }
+}
+
+// A Select option that is either a model or a group divider.
+export type ModelSelectOption = RuntimeModel | { separator: true }
+
+// Insert a divider between consecutive models from different providers, so a
+// multi-provider runtime's dropdown (pi) reads as grouped without vendor labels.
+// Single-provider runtimes (claude/codex) have no boundary, so nothing changes.
+export function withModelGroups(models: RuntimeModel[]): ModelSelectOption[] {
+  const out: ModelSelectOption[] = []
+  let prev: string | null = null
+  for (const m of models) {
+    const p = providerForModel(m.value)
+    if (prev !== null && p !== prev) out.push({ separator: true })
+    out.push(m)
+    prev = p
+  }
+  return out
 }

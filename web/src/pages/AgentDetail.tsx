@@ -36,7 +36,7 @@ import {
   type WorkingRepo,
 } from '@/components/working-repo-field'
 import { ApiHint, type ApiRef } from '@/components/api-hint'
-import { getRuntime, keyFieldFor, providerForModel } from '@/lib/runtimes'
+import { getRuntime, keyFieldFor, providerForModel, withModelGroups } from '@/lib/runtimes'
 
 const DOCS = 'https://docs.opencomputer.dev/agent-sessions'
 
@@ -374,7 +374,7 @@ export default function AgentDetail() {
                             id="agent-model"
                             value={agent.model}
                             onValueChange={(m) => modelMutation.mutate(m)}
-                            options={modelOptions}
+                            options={withModelGroups(modelOptions)}
                             className="max-w-xs"
                           />
                           <Saving show={modelMutation.isPending} />

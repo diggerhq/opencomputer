@@ -31,6 +31,7 @@ import {
   keyFieldFor,
   providerForModel,
   runtimeOptions,
+  withModelGroups,
 } from '@/lib/runtimes'
 
 // Sentinels for the non-credential choices in the credential picker. The model
@@ -362,7 +363,7 @@ export default function Agents() {
                   id="agent-model"
                   value={model}
                   onValueChange={onModelChange}
-                  options={rt.models}
+                  options={withModelGroups(rt.models)}
                 />
               </Field>
             </div>
