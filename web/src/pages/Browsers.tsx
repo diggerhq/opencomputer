@@ -181,7 +181,7 @@ export default function Browsers() {
               <ExternalLink className="size-4" />
             </Button>
           ) : null}
-          {browser.replay_view_url ? (
+          {browser.replay_id ? (
             <Button
               variant="ghost"
               size="icon"
@@ -194,7 +194,7 @@ export default function Browsers() {
                 toggleViewer({
                   browserId: browser.id,
                   kind: 'replay',
-                  url: browser.replay_view_url ?? '',
+                  url: `/api/dashboard/browsers/${encodeURIComponent(browser.id)}/replays/${encodeURIComponent(browser.replay_id ?? '')}`,
                 })
               }
             >
@@ -335,12 +335,20 @@ function InlineBrowserViewer({
         </Button>
       </div>
       <div className="bg-muted overflow-hidden rounded-md border">
-        <iframe
-          title={`${viewer.kind} for ${browser.id}`}
-          src={viewer.url}
-          className="block h-[520px] w-full bg-black"
-          allow="clipboard-read; clipboard-write; fullscreen"
-        />
+        {viewer.kind === 'replay' ? (
+          <video
+            src={viewer.url}
+            controls
+            className="block h-[520px] w-full bg-black"
+          />
+        ) : (
+          <iframe
+            title={`${viewer.kind} for ${browser.id}`}
+            src={viewer.url}
+            className="block h-[520px] w-full bg-black"
+            allow="clipboard-read; clipboard-write; fullscreen"
+          />
+        )}
       </div>
     </div>
   )

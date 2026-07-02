@@ -881,6 +881,8 @@ async function proxyToBrowserAPI(
   if (ct) headers.set("content-type", ct);
   const accept = req.headers.get("accept");
   if (accept) headers.set("accept", accept);
+  const range = req.headers.get("range");
+  if (range) headers.set("range", range);
 
   const init: RequestInit = { method: req.method, headers, redirect: "manual" };
   if (req.method !== "GET" && req.method !== "HEAD") {
@@ -915,6 +917,17 @@ export async function handleDashboard(
 
   // ── Browser Sessions — proxy to the dedicated browser Worker ───────────
   if (sub === "/browsers" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/browsers");
+  {
+    const m = sub.match(/^\/browsers\/([^/]+)\/replays\/([^/]+)$/);
+    if (m && method === "GET") {
+      return proxyToBrowserAPI(
+        req,
+        env,
+        caller,
+        `/v1/browsers/${encodeURIComponent(m[1])}/replays/${encodeURIComponent(m[2])}`,
+      );
+    }
+  }
   {
     const m = sub.match(/^\/browsers\/([^/]+)$/);
     if (m && (method === "GET" || method === "DELETE")) {
