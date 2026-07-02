@@ -14,7 +14,7 @@ A **runtime** executes the agent loop: provider SDK, model calls, and tool use. 
 
 `model` is passed straight through to the provider, so any model that provider serves works — only the **`provider/` prefix** is validated against the runtime (a bad prefix is rejected at agent create, a model the provider doesn't recognize fails on the first turn). Common choices:
 
-- **`claude`:** `anthropic/claude-opus-4-8` (most capable), `anthropic/claude-sonnet-4-6` (balanced), `anthropic/claude-haiku-4-5` (fastest/cheapest).
+- **`claude`:** `anthropic/claude-sonnet-5` (default, balanced), `anthropic/claude-opus-4-8` (most capable), `anthropic/claude-fable-5`, `anthropic/claude-haiku-4-5` (fastest/cheapest).
 - **`codex`:** `openai/gpt-5-codex`.
 - **`pi`:** any provider in the catalog — `anthropic/…`, `openai/…`, `google/…`, or `openrouter/…` for the long tail.
 

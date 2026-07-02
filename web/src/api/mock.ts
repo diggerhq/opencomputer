@@ -466,7 +466,7 @@ const agents = [
     prompt:
       'You write clear, friendly developer documentation. Prefer short sentences and runnable examples.',
     prompt_hash: 'sha256:42bd07',
-    model: 'anthropic/claude-sonnet-4-6',
+    model: 'anthropic/claude-sonnet-5',
     runtime: 'claude',
     credential_id: null,
     revision: 1,

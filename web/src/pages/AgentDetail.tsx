@@ -36,7 +36,7 @@ import {
   type WorkingRepo,
 } from '@/components/working-repo-field'
 import { ApiHint, type ApiRef } from '@/components/api-hint'
-import { getRuntime } from '@/lib/runtimes'
+import { getRuntime, keyFieldFor, providerForModel } from '@/lib/runtimes'
 
 const DOCS = 'https://docs.opencomputer.dev/agent-sessions'
 
@@ -104,8 +104,12 @@ export default function AgentDetail() {
     queryFn: getCredentials,
   })
   const rt = getRuntime(agent?.runtime)
+  // Provider follows the agent's MODEL prefix (pi spans providers within one runtime);
+  // for claude/codex it equals the runtime's provider.
+  const provider = providerForModel(agent?.model ?? '') || rt.provider
+  const keyField = keyFieldFor(provider)
   const providerCreds = (credentials ?? []).filter(
-    (c) => c.provider === rt.provider,
+    (c) => c.provider === provider,
   )
   const credLabel = (id: string) => {
     const c = providerCreds.find((x) => x.id === id)
@@ -200,7 +204,7 @@ export default function AgentDetail() {
     mutationFn: async () => {
       const cred = await createCredential({
         key: newCredKey.trim(),
-        provider: rt.provider,
+        provider: provider,
         name: newCredName.trim() || undefined,
         is_default: !providerCreds.some((c) => c.is_default),
       })
@@ -531,7 +535,7 @@ export default function AgentDetail() {
                       />
                     </Field>
                     <Field
-                      label={rt.keyLabel}
+                      label={keyField.keyLabel}
                       htmlFor="new-cred-key"
                       description="Encrypted in a dedicated secret store."
                     >
@@ -540,7 +544,7 @@ export default function AgentDetail() {
                         type="password"
                         value={newCredKey}
                         onChange={(e) => setNewCredKey(e.target.value)}
-                        placeholder={rt.keyPlaceholder}
+                        placeholder={keyField.keyPlaceholder}
                       />
                     </Field>
                     <div className="flex justify-end gap-2 sm:col-span-2">
