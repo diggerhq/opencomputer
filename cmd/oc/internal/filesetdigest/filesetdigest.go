@@ -16,7 +16,7 @@
 // mode as a bare decimal integer, sha256 the hex of sha256(content). The JSON is
 // hand-built (not encoding/json) so string escaping matches JavaScript's
 // JSON.stringify exactly — the digest is a cross-language content address, and
-// Go's default JSON escaping (HTML entities, /, U+2028/U+2029)
+// Go's default JSON escaping (HTML entities, /, U+2028/U+2029)
 // diverges from JS.
 package filesetdigest
 
