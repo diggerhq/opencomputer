@@ -46,9 +46,11 @@ oc session logs <session-id>
 ```
 
 Reply to an agent's question with `oc session steer <session-id> "..."`, or
-chat in the [dashboard](https://app.opencomputer.dev). To let the agent load
-[skills](/agent-sessions/skills), attach a repo containing `.agents/skills/**`
-as a session source: `oc session create --input "..." --source owner/repo`.
+chat in the [dashboard](https://app.opencomputer.dev). Skills in your app's
+`src/skills/**` ship with every deploy — no extra steps. To give the agent a
+**codebase to work on**, attach a repo as a session source
+(`oc session create --input "..." --source owner/repo`); any
+`.agents/skills/**` that repo carries becomes available too.
 
 ## The supported profile
 
@@ -60,7 +62,7 @@ mid-conversation.
 | One agent per app, exported via `serveOC` | Multiple agents per app |
 | `anthropic/…` models (Managed or your key) | Other providers |
 | Custom `defineTool` tools + subagents (run in-process with your app) | Flue channels (Slack/Discord ingress) |
-| Workspace skills (`.agents/skills/**` via a session source) | Packaged skill imports (`with { type: 'skill' }`) |
+| App skills (`src/skills/**` — ship with each deploy) and workspace skills from attached sources | Packaged skill imports (`with { type: 'skill' }`) |
 | GitHub watches as input events | Flue workflows / `?wait=result` |
 
 Rules the deploy enforces:
@@ -114,5 +116,7 @@ policy. Model traffic always routes through OpenComputer's credential proxy
   model isn't `anthropic/…`.
 - **`provider 401` on the first turn** — no usable model credential: enable
   Managed billing or attach an Anthropic credential to the agent.
-- **Skill not loading** — workspace skills need the repo attached as a
-  *session source* (`--source`), and the files under `.agents/skills/<name>/`.
+- **Skill not loading** — the agent's own skills belong in
+  `src/skills/<name>/SKILL.md` (they ship with the deploy); skills from a
+  codebase need that repo attached as a *session source* (`--source`) with
+  the files under `.agents/skills/<name>/`.
