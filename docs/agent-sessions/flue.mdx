@@ -123,9 +123,10 @@ connects it to the platform:
   is not repeated. Every step — model text, custom tool calls, sandbox
   operations — is written to the session's
   [event log](/agent-sessions/events).
-- **Retries and timeouts.** Flue's internal retry and timeout settings are
-  capped below the platform's turn deadline. Cancel, retry, and deadline
-  behavior is the platform's; there is no second layer to reason about.
+- **Retries and timeouts.** Flue's `durability` settings are overridden: one
+  engine attempt per turn, timeout wired to the platform's turn deadline.
+  Cancel, retry, and deadline behavior is the platform's; there is no second
+  layer to reason about.
 
 `oc-flue-build` (the package's build command, run by `oc agent deploy`)
 bundles `src/opencomputer.ts` with **your** installed Flue version via esbuild, collects
@@ -181,6 +182,37 @@ custom tools, not skills.
 (the template default), `anthropic/claude-opus-4-8`,
 `anthropic/claude-haiku-4-5`. Managed billing and BYO keys behave exactly as
 on `claude`/`pi`; see [credentials](/agent-sessions/credentials).
+
+## Limitations vs full Flue
+
+What the current profile does **not** cover, beyond the table above:
+
+- **Channels** (Slack, Discord, web ingress) don't run here — inbound is
+  session messages and [GitHub watches](/agent-sessions/watches). A full app
+  keeps its channels when self-hosting; code not imported by
+  `src/opencomputer.ts` never enters the artifact.
+- **Workflows** (`defineWorkflow`) don't run here; a workflow admission
+  throws at run time.
+- **One agent, one conversation per session.** `serveOC(agent)` hosts one
+  top-level agent, and a session is one conversation instance — Flue's
+  per-instance routing has no equivalent; fan out by creating sessions.
+- **Subagents** (`session.task()`) bundle and execute in-process, but they
+  are outside the tested profile: their definitions aren't triangle-checked,
+  and subagent steps may appear incompletely in the session event log.
+- **Anthropic models only.** Flue's other providers (OpenAI, Google, …)
+  aren't routable through the platform's credential injection yet.
+- **`durability` settings are ignored.** The platform pins one engine
+  attempt per turn under the turn deadline; retry and timeout policy is the
+  platform's. Setting `durability:` in `defineAgent` has no effect.
+- **Text in, text out.** Image/attachment content in Flue conversations
+  isn't wired to session messages.
+- **No HTTP surface.** A Flue app's own server/endpoints don't run; the
+  [sessions API](/agent-sessions/overview) is how the outside world reaches
+  the agent.
+
+Each of these is a candidate to widen; the profile is versioned
+(`profile_version` in the artifact), so a deployed agent never changes
+behavior until you rebuild.
 
 ## Deploying
 
