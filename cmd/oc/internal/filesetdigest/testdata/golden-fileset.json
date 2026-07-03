@@ -1,6 +1,6 @@
 {
-  "note": "Shared golden vector for the OpenComputer bundle fileset digest (flue-slice.md contract 4). computeFilesetDigest(files) MUST equal `digest` in all three implementations: cmd/oc filesetdigest (Go), sessions-api skill-bundle-canonical.ts, oc-runtimes adapter-core skills.ts. `mode` is decimal (0o644=420, 0o755=493); `content` is base64 UTF-8. `canonicalTarGzBase64` is a reference-produced canonical tar.gz — gzip framing is implementation-specific and NOT a byte-level golden; use it only to verify parseTar(gunzip(x)) recomputes `digest`.",
-  "digest": "sha256:1fe94fec330dfaf6deef0774e2fd55cfc2f29ba8fb37f03db13e21cd49cfe5ba",
+  "note": "Shared golden vector for the OpenComputer bundle fileset digest (flue-slice.md contract 4). The fileset digest over RAW file bytes MUST equal `digest` in all implementations: cmd/oc filesetdigest (Go), sessions-api skill-bundle-canonical.ts (computeFilesetDigestRaw), oc-runtimes adapter-core skills.ts. `mode` is decimal (0o644=420, 0o755=493). `contentBase64` is base64 of the RAW file bytes — the fileset INCLUDES a binary PNG (skills/triage/logo.png), so any impl that decodes to a utf8 string before hashing diverges (finding #13). `canonicalTarGzBase64` is a reference canonical tar.gz — gzip framing is implementation-specific and NOT a byte-level golden; use it only to verify parseTar(gunzip(x)) recomputes `digest`.",
+  "digest": "sha256:fbea3c2455fbec53f75b474924fe38e7e0fc20a67cd69a7942bd5670bc25b501",
   "files": [
     {
       "path": "artifact.json",
@@ -21,7 +21,12 @@
       "path": "bin/run.sh",
       "mode": 493,
       "contentBase64": "IyEvYmluL3NoCmVjaG8gaGkK"
+    },
+    {
+      "path": "skills/triage/logo.png",
+      "mode": 420,
+      "contentBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
     }
   ],
-  "canonicalTarGzBase64": "H4sIAAAAAAACE+2WTU7DMBBGvc4pjNmSZJxfKYgDILrjAMgEF7u4dmW7qAhxd5SyQERCrGKhdt5mrNnMZt7nET7qtRhjsQnOkmUAAOia5lgBYF4Bmu77PfU5NHVLKJAE7EMUnkCSWf+QdyZt9G9sYG4sNoFdsZ13a23kw6v0QTvLBv6REeREedS29HtbBLXcjEnqvm1/97+qfvoPfddW6H8KLi/KaQWCyuSoHFUaXT8rjqm/8Iw///+qmfnf9QDofwrkYed8pKOzIdIDvaH8GhPgjAgv2phQRq/Fsyzv725Xq2L7lNj/up7d/7zneP8nIc/zzIqtHOjXCmRTQ0ljHMYAgiDIKfMJy71XdQAUAAA="
+  "canonicalTarGzBase64": "H4sIAAAAAAACE+2XT0vDMBTAMxCRyvDkxYtdvbr2pesfmHhQJlocY6h3rTVbO2sykk4mIojoYeAX8eJn8ODdu5/Fg3QexIJ4WlCXH4SEB+Fd3u/lJeRZ0gmjzOwJRtFkAADwHGe8A0BxB3C8z3Mex+DUXKQDksBAZCFHICXXL+TSIDTjF0bdYJHZE8aq0eesk6Tk8JxwkTBq1PGVhhT/lOOEWnxATRFPLkcute+63/tv21/9B99zbeW/DFYqVl4CItZIFDM9TpTrU8W46084x4/vv+0U/Pd8AOW/DMiwz3imR4yKTB/q6zpeUx1gihCnSZoKK+NJ2CXW/m7QbJpnJ5L9r9UK8z/2sZr/pVCtVjUanpG6/lECWh6ISZoy1Qamz/+UdZnZp125/mMo/v9t7DnKfxmM2q3tsraUy14Odhp7CKFSvuZmEULLi88jhNB80Ng4GL5Gby9P7QU0c1e6vn24r+S3g61W43Hz6EZ5pFAoFH+Nd1JcnEEAGAAA"
 }
