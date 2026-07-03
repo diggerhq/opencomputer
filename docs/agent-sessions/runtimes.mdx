@@ -11,14 +11,14 @@ A **runtime** executes the agent loop: provider SDK, model calls, and tool use. 
 | `claude` | `anthropic/…` (e.g. `anthropic/claude-opus-4-8`) | Managed, or an Anthropic key |
 | `codex` | `openai/…` (e.g. `openai/gpt-5-codex`) | Managed, or an OpenAI key |
 | `pi` | `anthropic/…` today — the runtime is provider-agnostic by construction; more providers land next | Managed, or an Anthropic key |
-| `flue` <sup>Labs</sup> | `anthropic/…` today | Managed, or an Anthropic key |
+| `flue` <sup>experimental</sup> | `anthropic/…` today — bring your own [Flue](/agent-sessions/flue) app | Managed, or an Anthropic key |
 
 `model` is passed straight through to the provider, so any model that provider serves works — only the **`provider/` prefix** is validated against the runtime (a bad prefix is rejected at agent create, a model the provider doesn't recognize fails on the first turn). Common choices:
 
 - **`claude`:** `anthropic/claude-sonnet-5` (default, balanced), `anthropic/claude-opus-4-8` (most capable), `anthropic/claude-fable-5`, `anthropic/claude-haiku-4-5` (fastest/cheapest).
 - **`codex`:** `openai/gpt-5-codex`.
 - **`pi`:** the `anthropic/…` catalog above. The runtime itself is provider-agnostic; additional providers are next.
-- **`flue`** (Labs): the `anthropic/…` catalog above — but the model is declared in your app's code; see [Run Flue agents](/agent-sessions/flue).
+- **`flue`** (experimental): the `anthropic/…` catalog above — but the model is declared in your app's code; see [Run Flue agents](/agent-sessions/flue).
 
 Sessions, [events](/agent-sessions/events), [steering](/agent-sessions/messaging), [tools](/agent-sessions/runtime-tools), and [webhooks](/agent-sessions/webhooks) share the same API across runtimes. `runtime` is fixed once the agent exists; to switch engines, create a new agent.
 
@@ -78,7 +78,7 @@ Content-Type: application/json
 
 The provider is taken from the model's `provider/` prefix — so as more providers land, switching provider is just a different `model` on the same `pi` agent, not a separate runtime.
 
-## `flue` <sup>Labs</sup>
+## `flue` <sup>experimental</sup>
 
 Unlike the runtimes above, `flue` doesn't run a platform-provided harness —
 it runs **your app**, built with the [Flue framework](https://flueframework.com)
