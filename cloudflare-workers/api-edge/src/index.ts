@@ -1154,6 +1154,18 @@ interface WorkOSProfile {
   organization_id?: string;
 }
 
+// A post-login destination is only honored if it is a same-origin PATH: it must
+// start with a single "/", carry no host (no "//" protocol-relative form) and no
+// backslash tricks. Tampering with the WorkOS `state` can then at most pick a
+// different page on our own origin, so the value needs no signing. Anything else
+// → null and the caller falls back to /dashboard.
+export function safeReturnTo(raw: string | null | undefined): string | null {
+  if (!raw || raw.length > 2048) return null;
+  if (!raw.startsWith("/") || raw.startsWith("//")) return null;
+  if (raw.includes("\\")) return null;
+  return raw;
+}
+
 async function authLogin(req: Request, env: Env): Promise<Response> {
   const reqURL = new URL(req.url);
   const redirectURI = `${reqURL.origin}/auth/callback`;
@@ -1164,6 +1176,11 @@ async function authLogin(req: Request, env: Env): Promise<Response> {
   authURL.searchParams.set("provider", "authkit");
   authURL.searchParams.set("redirect_uri", redirectURI);
   authURL.searchParams.set("response_type", "code");
+  // Deferred deep link: carry the originally-requested path through WorkOS via
+  // the OAuth `state` param so the callback can land the user back on it (incl.
+  // a /do?action=… deferred action). Only same-origin paths survive validation.
+  const returnTo = safeReturnTo(reqURL.searchParams.get("returnTo"));
+  if (returnTo) authURL.searchParams.set("state", JSON.stringify({ returnTo }));
   return Response.redirect(authURL.toString(), 302);
 }
 
@@ -1271,12 +1288,23 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
   // Issuer so cell middleware can distinguish.
   const sessionJWT = await mintSessionJWT(env.SESSION_JWT_SECRET, orgID, userID, orgPlan, workosSessionID);
 
-  // Redirect to dashboard with the cookie set.
-  const dashURL = `${reqURL.origin}/dashboard`;
+  // Land on the deferred deep link if `state` carried a valid one, else the
+  // dashboard. Re-validate here: `state` is attacker-influenceable, so the path
+  // is only trusted after safeReturnTo passes a second time.
+  let returnTo: string | null = null;
+  const stateRaw = reqURL.searchParams.get("state");
+  if (stateRaw) {
+    try {
+      returnTo = safeReturnTo((JSON.parse(stateRaw) as { returnTo?: string }).returnTo);
+    } catch {
+      returnTo = null;
+    }
+  }
+  const landingURL = `${reqURL.origin}${returnTo ?? "/dashboard"}`;
   return new Response(null, {
     status: 302,
     headers: {
-      location: dashURL,
+      location: landingURL,
       "set-cookie": `${SESSION_COOKIE}=${sessionJWT}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_SEC}`,
     },
   });

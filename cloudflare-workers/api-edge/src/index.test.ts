@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import worker, { type Env } from "./index";
+import worker, { type Env, safeReturnTo } from "./index";
 
 const orgID = "org-1";
 const userID = "user-1";
@@ -311,5 +311,28 @@ describe("/internal/model-billing/enable — scoped-secret auth boundary", () =>
   it("stale timestamp → 401", async () => {
     const stale = (Math.floor(Date.now() / 1000) - 600).toString();
     expect((await post("/internal/model-billing/enable", MANAGED, { ts: stale })).status).toBe(401);
+  });
+});
+
+describe("safeReturnTo — deferred-action deep-link validation", () => {
+  it("accepts same-origin paths (incl. query strings)", () => {
+    expect(safeReturnTo("/do?action=abc")).toBe("/do?action=abc");
+    expect(safeReturnTo("/sessions/xyz")).toBe("/sessions/xyz");
+    expect(safeReturnTo("/")).toBe("/");
+  });
+  it("rejects absolute and protocol-relative URLs", () => {
+    expect(safeReturnTo("https://evil.com")).toBeNull();
+    expect(safeReturnTo("//evil.com")).toBeNull();
+    expect(safeReturnTo("javascript:alert(1)")).toBeNull();
+  });
+  it("rejects backslash tricks and non-path input", () => {
+    expect(safeReturnTo("/a\\b")).toBeNull();
+    expect(safeReturnTo("do?action=abc")).toBeNull();
+  });
+  it("rejects oversized, empty, and nullish input", () => {
+    expect(safeReturnTo("/" + "a".repeat(3000))).toBeNull();
+    expect(safeReturnTo("")).toBeNull();
+    expect(safeReturnTo(null)).toBeNull();
+    expect(safeReturnTo(undefined)).toBeNull();
   });
 });
