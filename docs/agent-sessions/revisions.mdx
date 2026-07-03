@@ -79,7 +79,7 @@ The response is a **deployment**:
 { "deployment": { "id": "dep_…", "state": "ready", "revision_id": "rev_…", "active": true } }
 ```
 
-Inline deployments finish synchronously (`state: "ready"` with a `revision_id`). Asynchronous deployments (GitHub) return `state: "accepted"` — poll `GET /agents/:id/deployments/:deployment_id` until `ready` (or `failed`/`skipped`/`superseded`); a repo deploy also reports progress as a **commit status** on GitHub.
+Inline deployments finish synchronously (`state: "ready"` with a `revision_id`) — except [flue](/agent-sessions/flue) deploys, which return `state: "verifying"` and boot the uploaded artifact in a throwaway sandbox before pinning the revision; poll them like an async deployment (`verifying` → `ready`/`failed`). Asynchronous deployments (GitHub) return `state: "accepted"` — poll `GET /agents/:id/deployments/:deployment_id` until `ready` (or `failed`/`skipped`/`superseded`); a repo deploy also reports progress as a **commit status** on GitHub.
 
 ### Staging vs activating
 

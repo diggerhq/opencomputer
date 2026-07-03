@@ -220,10 +220,19 @@ behavior until you rebuild.
 
 `oc agent deploy` = build (`oc-flue-build`, which initializes your agent to
 extract and check the profile) → upload the content-addressed artifact →
-**boot-verify it in a scratch sandbox** (your bundle is imported and booted
-to health; one that can't start never activates) → create and activate an
-immutable [revision](/agent-sessions/revisions). Sessions pin their revision
-at create; rollback is repointing.
+**boot-verify** → create and activate an immutable
+[revision](/agent-sessions/revisions). Sessions pin their revision at create;
+rollback is repointing.
+
+Boot-verify is the flue-specific step. Your artifact is your brain code, so
+the platform boots it in a throwaway sandbox and waits for a healthy boot
+before pinning a revision. A bundle that throws in `initialize()` — or can't
+otherwise reach a healthy boot — **fails the deploy** with that error; it
+never reaches a session, and the previously active revision keeps serving. So
+a flue deploy isn't instant: it polls through a `verifying` state (tens of
+seconds) while the boot runs, then activates. `--no-activate` still verifies —
+a staged revision is a verified one that isn't live yet. The verify sandbox is
+discarded afterward and never holds your model credential.
 
 ## Troubleshooting
 
