@@ -57,6 +57,7 @@ type LevelFilter = (typeof LEVELS)[number]['value']
 export default function SessionDetail() {
   const { sessionId = '' } = useParams()
   const queryClient = useQueryClient()
+  const halted = useHalted() // top-level: must run before any early return (Rules of Hooks)
   const [draft, setDraft] = useState('')
   const [level, setLevel] = useState<LevelFilter>('all')
   const [confirmCancel, setConfirmCancel] = useState(false)
@@ -163,7 +164,6 @@ export default function SessionDetail() {
 
   const status = session?.status ?? 'unknown'
   const archived = status === 'archived'
-  const halted = useHalted()
   const canSteer = !archived
   const canCancel = status === 'running' || status === 'awaiting_input'
 
