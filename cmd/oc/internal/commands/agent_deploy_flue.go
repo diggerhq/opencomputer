@@ -31,9 +31,14 @@ const (
 )
 
 // artifactUploadResponse is the reply from POST /v3/agents/:id/artifacts (contract 3).
+// AlreadyUploaded is set (and URL omitted) when the content-addressed object already exists:
+// R2 is write-once, so the server refuses to re-issue a PUT for a pinned digest (a re-issuable
+// PUT would let scan-clean bytes be swapped for key-bearing ones post-verify). The CLI then
+// skips the PUT and references the digest directly.
 type artifactUploadResponse struct {
-	URL       string `json:"url"`
-	ExpiresAt string `json:"expires_at"`
+	URL             string `json:"url"`
+	ExpiresAt       string `json:"expires_at"`
+	AlreadyUploaded bool   `json:"already_uploaded"`
 }
 
 func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, noActivate bool) error {
@@ -223,6 +228,10 @@ func uploadArtifact(ctx context.Context, sc *client.Client, agentID, digest stri
 	var resp artifactUploadResponse
 	if err := sc.Post(ctx, "/v3/agents/"+agentID+"/artifacts", reqBody, &resp); err != nil {
 		return fmt.Errorf("request artifact upload url: %w", err)
+	}
+	if resp.AlreadyUploaded {
+		// The digest's bytes are already in R2 (write-once); nothing to PUT.
+		return nil
 	}
 	if resp.URL == "" {
 		return fmt.Errorf("artifact upload url response was empty")
