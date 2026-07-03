@@ -16,7 +16,7 @@ steering, and watches as every other [runtime](/agent-sessions/runtimes).
 
 Your app stays plain Flue. You add one file:
 
-```ts src/oc.ts
+```ts src/opencomputer.ts
 import { serveOC } from '@opencomputer/flue';
 import agent from './agents/support-triage.ts';
 
@@ -49,12 +49,12 @@ the [dashboard](https://app.opencomputer.dev).
 
 The sandbox, persistence, model, skills, tool-name, and credential rows are
 enforced at build or deploy — violations fail before a session can exist.
-Channels and workflows aren't checked: code not imported by `src/oc.ts`
+Channels and workflows aren't checked: code not imported by `src/opencomputer.ts`
 isn't in the artifact.
 
 | | Stock Flue | On OpenComputer |
 | --- | --- | --- |
-| Entry | Flue's generated server (`flue build --target node`) | Add `src/oc.ts` calling `serveOC(agent)`. Your agent code is untouched; `flue dev` keeps working locally |
+| Entry | Flue's generated server (`flue build --target node`) | Add `src/opencomputer.ts` calling `serveOC(agent)`. Your agent code is untouched; `flue dev` keeps working locally |
 | Sandbox | You pick one (`local()`, containers, …) | **Leave `sandbox:` unset** — the session's workspace sandbox is supplied. Setting one fails the deploy |
 | Persistence | `db.ts` (or volatile in-memory default) | **No `db.ts`** — the conversation is stored durably in the session's state; survives restarts and hibernation |
 | Model credentials | Env keys or `registerProvider` in code | **No keys anywhere in the app** — the deploy scans the artifact for key-shaped strings and fails on a hit. Managed billing or an [OC credential](/agent-sessions/credentials); routing is injected at run time |
@@ -92,7 +92,7 @@ connects it to the platform:
   behavior is the platform's; there is no second layer to reason about.
 
 `oc-flue-build` (the package's build command, run by `oc agent deploy`)
-bundles `src/oc.ts` with **your** installed Flue version via esbuild, collects
+bundles `src/opencomputer.ts` with **your** installed Flue version via esbuild, collects
 `src/skills/**` into the artifact, and stamps the metadata (`model`, versions)
 the deploy validates against.
 
