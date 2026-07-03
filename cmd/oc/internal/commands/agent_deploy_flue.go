@@ -51,12 +51,20 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 		return &ExitError{Code: 1}
 	}
 
-	// 2. Build the artifact with the app's own @opencomputer/flue devDependency.
+	// 2. Resolve the target agent (create with runtime=flue + no prompt if new).
+	//    Done before the build so a runtime-family mismatch fails fast — ahead
+	//    of the build and the artifact upload, not after a late server reject.
+	id, err := resolveDeployAgent(cmd, sc, m)
+	if err != nil {
+		return err
+	}
+
+	// 3. Build the artifact with the app's own @opencomputer/flue devDependency.
 	if err := runFlueBuild(cmd.Context(), dir); err != nil {
 		return err
 	}
 
-	// 3. Hash dist-oc/ into the content-addressed digest + canonical tar.gz.
+	// 4. Hash dist-oc/ into the content-addressed digest + canonical tar.gz.
 	outDir := filepath.Join(dir, flueBuildOutputDir)
 	files, err := readArtifactFiles(outDir)
 	if err != nil {
@@ -69,12 +77,6 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 	}
 	if len(tarGz) > flueArtifactMaxBytes {
 		return fmt.Errorf("artifact is %d bytes, over the %d MiB limit", len(tarGz), flueArtifactMaxBytes>>20)
-	}
-
-	// 4. Resolve the target agent (create with runtime=flue + no prompt if new).
-	id, err := resolveDeployAgent(cmd, sc, m)
-	if err != nil {
-		return err
 	}
 
 	// 5. Upload: presigned PUT (contract 3).
@@ -140,21 +142,23 @@ func resolveDeployAgent(cmd *cobra.Command, sc *client.Client, m *manifest) (str
 }
 
 // runFlueBuild runs the app's oc-flue-build (its own devDependency). Prefers the
-// locally-installed bin (avoids npx fetching an arbitrary package from the
-// registry); falls back to `npx oc-flue-build`. Build output goes to stderr so
-// stdout stays clean for --json.
+// locally-installed bin; falls back to `npx --no-install`, which runs the
+// package only if it is already in node_modules and NEVER fetches a same-named
+// package from the registry (a supply-chain hole). Build output goes to stderr
+// so stdout stays clean for --json.
 func runFlueBuild(ctx context.Context, dir string) error {
 	bin := filepath.Join(dir, "node_modules", ".bin", "oc-flue-build")
 	var c *exec.Cmd
 	if _, err := os.Stat(bin); err == nil {
 		c = exec.CommandContext(ctx, bin)
 	} else {
-		c = exec.CommandContext(ctx, "npx", "oc-flue-build")
+		c = exec.CommandContext(ctx, "npx", "--no-install", "oc-flue-build")
 	}
 	c.Dir = dir
 	c.Stdout = os.Stderr
 	c.Stderr = os.Stderr
-	c.Stdin = os.Stdin
+	// No stdin: oc-flue-build is a non-interactive bundler, and wiring the
+	// terminal through let an npx install prompt hijack it.
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("oc-flue-build failed: %w\n(run `npm install` so @opencomputer/flue is available, node >= 22)", err)
 	}
