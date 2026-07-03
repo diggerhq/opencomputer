@@ -47,15 +47,17 @@ the [dashboard](https://app.opencomputer.dev).
 
 ## What changes vs a stock Flue app
 
-Everything below is validated at build or deploy — violations fail before a
-session can exist.
+The sandbox, persistence, model, skills, tool-name, and credential rows are
+enforced at build or deploy — violations fail before a session can exist.
+Channels and workflows aren't checked: code not imported by `src/oc.ts`
+isn't in the artifact.
 
 | | Stock Flue | On OpenComputer |
 | --- | --- | --- |
 | Entry | Flue's generated server (`flue build --target node`) | Add `src/oc.ts` calling `serveOC(agent)`. Your agent code is untouched; `flue dev` keeps working locally |
 | Sandbox | You pick one (`local()`, containers, …) | **Leave `sandbox:` unset** — the session's workspace sandbox is supplied. Setting one fails the deploy |
 | Persistence | `db.ts` (or volatile in-memory default) | **No `db.ts`** — the conversation is stored durably in the session's state; survives restarts and hibernation |
-| Model credentials | Env keys or `registerProvider` in code | **No keys anywhere in the app.** Managed billing or an [OC credential](/agent-sessions/credentials); routing is injected at run time |
+| Model credentials | Env keys or `registerProvider` in code | **No keys anywhere in the app** — the deploy scans the artifact for key-shaped strings and fails on a hit. Managed billing or an [OC credential](/agent-sessions/credentials); routing is injected at run time |
 | Model choice | In code | Still in code — but declared three times total (`defineAgent`, `agent.toml`, the OC agent) and all three **must be equal**; the deploy rejects divergence |
 | Skills | Packaged imports (`with {type:'skill'}`) or workspace files | **`src/skills/<name>/SKILL.md`** — ships with every deploy. Packaged imports are a build error (for now) |
 | Asking the user | No human-in-the-loop primitive | An **`ask` tool** is added: the session yields `needs_input` and hibernates until the user replies |
