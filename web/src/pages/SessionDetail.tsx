@@ -150,7 +150,25 @@ export default function SessionDetail() {
       if (e.session && e.session !== sessionId) continue
       byId.set(e.id, e)
     }
-    return [...byId.values()].sort((a, b) => a.seq - b.seq)
+    const sorted = [...byId.values()].sort((a, b) => a.seq - b.seq)
+    // Collapse the safety-net twin: the runtime emits a turn's final assistant text as
+    // BOTH agent.message@progress (streamed) and agent.message@user (the answer), so it
+    // would render twice in the "all" view. Drop the @progress copy when an identical-text
+    // @user message exists in the same turn.
+    const userAnswers = new Set(
+      sorted
+        .filter((e) => e.type === 'agent.message' && e.level === 'user')
+        .map((e) => `${e.turn_id ?? ''} ${bodyText(e) ?? ''}`),
+    )
+    return sorted.filter(
+      (e) =>
+        !(
+          e.type === 'agent.message' &&
+          e.level === 'progress' &&
+          bodyText(e) &&
+          userAnswers.has(`${e.turn_id ?? ''} ${bodyText(e) ?? ''}`)
+        ),
+    )
   }, [eventData, liveEvents, sessionId])
 
   if (isLoading) {
