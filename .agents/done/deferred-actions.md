@@ -1,6 +1,6 @@
 # Deferred actions — deeplink intents that survive signup
 
-Status: active (built on `feat/deferred-actions`, PR #483; pending review + live matrix)
+Status: complete — built + reviewed, landing via PR #483. Sole remaining item is the post-deploy live matrix (needs the prod edge; see Verification).
 Last updated: 2026-07-03
 Owns: the deferred-action mechanism — action envelope, `/do` executor route, auth-loop `returnTo` survival — and its first action type (`agent_prefill` from the launch site prompt box)
 Supersedes: —
