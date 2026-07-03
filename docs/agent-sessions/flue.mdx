@@ -18,9 +18,9 @@ usage on [Managed billing](/agent-sessions/credentials) or your Anthropic key.
 
 Your app stays plain Flue. The integration is one entry file:
 
-```ts oc.ts
+```ts src/oc.ts
 import { serveOC } from '@opencomputer/flue';
-import agent from './agents/support.ts';
+import agent from './agents/support-triage.ts';
 
 serveOC(agent);
 ```
