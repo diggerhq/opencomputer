@@ -1084,12 +1084,59 @@ func (s *Server) getSandboxSessionForCleanup(c echo.Context, sandboxID string) *
 }
 
 func (s *Server) deleteAttachedSecretStoreBestEffort(ctx context.Context, sandboxID string, session *db.SandboxSession) {
-	if s.store == nil || session == nil || session.SecretStoreID == nil {
+	if s.store == nil || session == nil {
+		return
+	}
+	if s.edge != nil {
+		if session.SecretStoreID != nil {
+			if err := s.edge.DeleteSecretStore(ctx, session.OrgID, *session.SecretStoreID); err != nil {
+				if !errors.Is(err, edgeclient.ErrNotFound) {
+					log.Printf("sandbox: failed to delete attached edge secret store %s for sandbox %s: %v", session.SecretStoreID.String(), sandboxID, err)
+					return
+				}
+				log.Printf("sandbox: attached secret store %s for sandbox %s already missing at edge; trying persisted name fallback", session.SecretStoreID.String(), sandboxID)
+			} else {
+				return
+			}
+		}
+		if s.store.Encryptor() == nil {
+			return
+		}
+		storeName := attachedSecretStoreName(session)
+		if storeName == "" {
+			return
+		}
+		bundle, err := s.edge.LookupSecretStore(ctx, session.OrgID, storeName, s.store.Encryptor())
+		if err != nil {
+			if errors.Is(err, edgeclient.ErrNotFound) {
+				log.Printf("sandbox: attached secret store %q for sandbox %s already missing at edge", storeName, sandboxID)
+				return
+			}
+			log.Printf("sandbox: failed to lookup attached edge secret store %q for sandbox %s: %v", storeName, sandboxID, err)
+			return
+		}
+		if err := s.edge.DeleteSecretStore(ctx, session.OrgID, bundle.Store.ID); err != nil && !errors.Is(err, edgeclient.ErrNotFound) {
+			log.Printf("sandbox: failed to delete attached edge secret store %s (%q) for sandbox %s: %v", bundle.Store.ID.String(), storeName, sandboxID, err)
+		}
+		return
+	}
+	if session.SecretStoreID == nil {
 		return
 	}
 	if err := s.store.DeleteSecretStore(ctx, session.OrgID, *session.SecretStoreID); err != nil {
 		log.Printf("sandbox: failed to delete attached secret store %s for sandbox %s: %v", session.SecretStoreID.String(), sandboxID, err)
 	}
+}
+
+func attachedSecretStoreName(session *db.SandboxSession) string {
+	if session == nil || len(session.Config) == 0 {
+		return ""
+	}
+	var cfg types.SandboxConfig
+	if err := json.Unmarshal(session.Config, &cfg); err != nil {
+		return ""
+	}
+	return cfg.SecretStore
 }
 
 func (s *Server) listSandboxes(c echo.Context) error {

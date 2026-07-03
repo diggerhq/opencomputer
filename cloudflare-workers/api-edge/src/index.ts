@@ -1838,8 +1838,9 @@ export default {
     {
       const m = path.match(/^\/internal\/secret-stores\/([^/]+)$/);
       if (m) {
-        if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
-        return secretStores.internalGetStore(req, env, m[1]);
+        if (req.method === "GET") return secretStores.internalGetStore(req, env, m[1]);
+        if (req.method === "DELETE") return secretStores.internalDeleteStore(req, env, m[1]);
+        return json({ error: "method not allowed" }, 405);
       }
     }
 

@@ -396,6 +396,26 @@ export async function internalGetStore(req: Request, env: SecretStoresEnv, store
   return bundleStore(env, store);
 }
 
+export async function internalDeleteStore(req: Request, env: SecretStoresEnv, storeID: string): Promise<Response> {
+  if (!(await verifyHMAC(req, env))) return json({ error: "signature mismatch" }, 401);
+  const url = new URL(req.url);
+  const orgID = url.searchParams.get("org_id") ?? "";
+  if (!orgID) return json({ error: "org_id is required" }, 400);
+
+  const row = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT id FROM secret_stores WHERE id = ?1 AND org_id = ?2`,
+  )
+    .bind(storeID, orgID)
+    .first<{ id: string }>();
+  if (!row) return json({ error: "secret store not found" }, 404);
+
+  await env.OPENCOMPUTER_DB.batch([
+    env.OPENCOMPUTER_DB.prepare(`DELETE FROM secret_store_entries WHERE store_id = ?1`).bind(storeID),
+    env.OPENCOMPUTER_DB.prepare(`DELETE FROM secret_stores WHERE id = ?1 AND org_id = ?2`).bind(storeID, orgID),
+  ]);
+  return new Response(null, { status: 204 });
+}
+
 // Lookup by (org_id, name) — what CP's resolveSecretStoreInto calls with
 // the user-supplied cfg.SecretStore string at sandbox-create time. Same
 // HMAC scheme as internalGetStore. Returns 404 if no store matches.

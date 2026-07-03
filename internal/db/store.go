@@ -3027,6 +3027,9 @@ func (s *Store) GetSecretStoreByName(ctx context.Context, orgID uuid.UUID, name 
 //
 //   - primaryID is sandbox_sessions.secret_store_id, the "winning" store on
 //     the row (last layer for env-collision resolution; nil if no store).
+//   - primaryName is config->>'secretStore', retained as a fallback for rows
+//     where the edge-owned store resolved at create time but secret_store_id
+//     was not persisted.
 //   - baseStoreName is config->>'baseSecretStore' (parent store from the
 //     fork chain), populated when a fork layered an additional store on top
 //     of an inherited one. Empty string when there's no parent.
@@ -3039,17 +3042,17 @@ func (s *Store) GetSecretStoreByName(ctx context.Context, orgID uuid.UUID, name 
 //
 // Org-scoped: sandbox IDs aren't globally unique, so a leaked ID from
 // another org won't return that org's data.
-func (s *Store) GetSandboxStoreRefs(ctx context.Context, orgID uuid.UUID, sandboxID string) (primaryID *uuid.UUID, baseStoreName string, err error) {
+func (s *Store) GetSandboxStoreRefs(ctx context.Context, orgID uuid.UUID, sandboxID string) (primaryID *uuid.UUID, primaryName string, baseStoreName string, err error) {
 	err = s.pool.QueryRow(ctx,
-		`SELECT secret_store_id, COALESCE(config->>'baseSecretStore', '')
+		`SELECT secret_store_id, COALESCE(config->>'secretStore', ''), COALESCE(config->>'baseSecretStore', '')
 		 FROM sandbox_sessions
 		 WHERE org_id = $1 AND sandbox_id = $2 ORDER BY started_at DESC LIMIT 1`,
 		orgID, sandboxID,
-	).Scan(&primaryID, &baseStoreName)
+	).Scan(&primaryID, &primaryName, &baseStoreName)
 	if err != nil {
-		return nil, "", fmt.Errorf("get sandbox store refs: %w", err)
+		return nil, "", "", fmt.Errorf("get sandbox store refs: %w", err)
 	}
-	return primaryID, baseStoreName, nil
+	return primaryID, primaryName, baseStoreName, nil
 }
 
 // ListSecretStores returns all secret stores for an org.

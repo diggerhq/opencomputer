@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/db"
+	"github.com/opensandbox/opensandbox/internal/edgeclient"
 )
 
 // AllowedHostsResponse is the shape returned by GET /api/sandboxes/:id/allowed-hosts.
@@ -57,14 +59,14 @@ func (s *Server) getSandboxAllowedHosts(c echo.Context) error {
 	sandboxID := c.Param("id")
 	ctx := c.Request().Context()
 
-	primaryID, baseStoreName, err := s.store.GetSandboxStoreRefs(ctx, orgID, sandboxID)
+	primaryID, primaryName, baseStoreName, err := s.store.GetSandboxStoreRefs(ctx, orgID, sandboxID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
 	}
 
 	// Sandbox has neither a primary store nor an inherited base. Return an
 	// empty (well-formed) response so callers always see the same shape.
-	if primaryID == nil && baseStoreName == "" {
+	if primaryID == nil && primaryName == "" && baseStoreName == "" {
 		return c.JSON(http.StatusOK, AllowedHostsResponse{
 			SandboxID:             sandboxID,
 			EgressAllowlist:       []string{},
@@ -81,16 +83,46 @@ func (s *Server) getSandboxAllowedHosts(c echo.Context) error {
 	// Fetch base store first so primary's per-secret entries can shadow on
 	// name collision (matches the runtime proxy: later layer wins for envs).
 	if baseStoreName != "" {
-		base, err := s.store.GetSecretStoreByName(ctx, orgID, baseStoreName)
-		if err == nil {
-			resp.BaseSecretStoreName = base.Name
-			mergeStoreInto(ctx, s.store, base, &resp)
+		if s.edge != nil && s.store.Encryptor() != nil {
+			base, err := s.edge.LookupSecretStore(ctx, orgID, baseStoreName, s.store.Encryptor())
+			if err == nil {
+				resp.BaseSecretStoreName = base.Store.Name
+				mergeSecretBundleInto(base, &resp)
+			} else if !errors.Is(err, edgeclient.ErrNotFound) {
+				return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+			}
+		} else {
+			base, err := s.store.GetSecretStoreByName(ctx, orgID, baseStoreName)
+			if err == nil {
+				resp.BaseSecretStoreName = base.Name
+				mergeStoreInto(ctx, s.store, base, &resp)
+			}
 		}
 		// Base store missing (deleted under us) is treated as a soft no-op
 		// rather than 500 — proxy already snapshotted whatever it needs.
 	}
 
-	if primaryID != nil {
+	if s.edge != nil && s.store.Encryptor() != nil {
+		if primaryID != nil {
+			primary, err := s.edge.LookupSecretStoreByID(ctx, *primaryID, s.store.Encryptor())
+			if err == nil {
+				resp.SecretStoreName = primary.Store.Name
+				mergeSecretBundleInto(primary, &resp)
+				return c.JSON(http.StatusOK, resp)
+			} else if !errors.Is(err, edgeclient.ErrNotFound) {
+				return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+			}
+		}
+		if primaryName != "" {
+			primary, err := s.edge.LookupSecretStore(ctx, orgID, primaryName, s.store.Encryptor())
+			if err == nil {
+				resp.SecretStoreName = primary.Store.Name
+				mergeSecretBundleInto(primary, &resp)
+			} else if !errors.Is(err, edgeclient.ErrNotFound) {
+				return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
+			}
+		}
+	} else if primaryID != nil {
 		primary, err := s.store.GetSecretStore(ctx, orgID, *primaryID)
 		if err == nil {
 			resp.SecretStoreName = primary.Name
@@ -133,3 +165,21 @@ func mergeStoreInto(ctx context.Context, store *db.Store, ss *db.SecretStore, re
 	}
 }
 
+func mergeSecretBundleInto(bundle *edgeclient.SecretStoreBundle, resp *AllowedHostsResponse) {
+	existing := make(map[string]bool, len(resp.EgressAllowlist))
+	for _, h := range resp.EgressAllowlist {
+		existing[h] = true
+	}
+	for _, h := range bundle.Store.EgressAllowlist {
+		if !existing[h] {
+			existing[h] = true
+			resp.EgressAllowlist = append(resp.EgressAllowlist, h)
+		}
+	}
+	for _, e := range bundle.Entries {
+		if len(e.AllowedHosts) == 0 {
+			continue
+		}
+		resp.PerSecretAllowedHosts[e.Name] = e.AllowedHosts
+	}
+}
