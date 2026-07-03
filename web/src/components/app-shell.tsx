@@ -19,6 +19,7 @@ import {
   Check,
   Menu,
   Loader2,
+  CircleAlert,
   type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
@@ -254,17 +255,18 @@ function HaltBanner() {
   })
   const halted = data?.isHalted ?? false
   if (!halted || location.pathname.startsWith('/billing')) return null
+  // Sticky + error-toned so the halt stays in view while scrolling and reads as a hard
+  // block, not a muted notice (out-of-credits doc, Part A1). Sits just below the top bar.
   return (
-    <div className="border-status-pending/20 bg-status-pending-bg text-status-pending border-b px-4 py-2.5 text-center text-sm sm:px-8">
-      Your agent sessions and sandboxes are paused — you&apos;re out of prepaid
-      credits.{' '}
-      <Link
-        to="/billing"
-        className="font-semibold underline underline-offset-2"
-      >
-        Top up &amp; turn on auto-recharge
-      </Link>{' '}
-      to resume now and prevent future pauses.
+    <div className="border-destructive/40 bg-status-error-bg text-destructive sticky top-14 z-20 flex items-center justify-center gap-2 border-b px-4 py-2.5 text-center text-sm font-medium md:top-16 sm:px-8">
+      <CircleAlert className="size-4 shrink-0" />
+      <span>
+        Your agent sessions and sandboxes are paused — you&apos;re out of prepaid credits.{' '}
+        <Link to="/billing" className="font-semibold underline underline-offset-2">
+          Top up &amp; turn on auto-recharge
+        </Link>{' '}
+        to resume.
+      </span>
     </div>
   )
 }
