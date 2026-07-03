@@ -61,24 +61,40 @@ Two design consequences we adopt from the pattern:
   **path** only; validation at both ends, enforcement at the callback; no
   signing (tampering can only pick a different page on our origin).
 - `agent_prefill` creates the agent (managed credential, default runtime +
-  model, random adjective-noun name) and lands on the agent's sessions tab
-  with the composer prefilled. **It does not create a session** — the first
+  model, deterministic prompt-derived name) and lands on the agent's sessions
+  tab with the composer prefilled. **It does not create a session** — the first
   turn spends credits, so it happens on an explicit user keypress. This also
   closes the drive-by case: a malicious link can at worst create a free
   agent, never spend money.
 - No confirm interstitial on `/do` (execution is free by construction). A
   per-type `requiresConfirm` flag can be added to the registry when an
   action type with real side effects arrives.
-- Prompt cap at envelope validation: 4000 chars after trim, min 1.
+- Prompt cap at envelope validation: **1000 chars** after trim, min 1. Kept
+  in lockstep with the edge `returnTo` length cap (**4096**) — a longer
+  prompt would make the `/do?action=` URL exceed what round-trips through
+  the WorkOS `state` param on the anonymous signup path. WorkOS documents no
+  `state` maximum, so we bound it ourselves rather than rely on a large
+  round-trip.
+- **Single entry — no `/?prompt=` shim.** There is exactly one way in:
+  `/do?action=<envelope>`. The launch site mints that URL directly (it uses
+  the same base64url algorithm as `encodeAction`). We deliberately do NOT
+  add a `/?prompt=` compatibility path — one behavior, no fork.
 - **Attribution params are first-class passengers.** `utm_*`, ad click IDs
   (`gclid`, `fbclid`, …), and `ref` ride as sibling query params next to
   `action` — never inside the envelope — so analytics tools read them from
   their standard positions. Everything that rewrites or strips URLs
-  preserves them: the shim carries them over, `/do` strips only `action`,
-  and `returnTo = pathname + search` round-trips them through auth
-  untouched. Our only reserved param names are `action` (on `/do`) and
-  `returnTo` (on `/auth/login`) — neither collides with any tracking
-  convention.
+  preserves them: `/do` strips only `action`, and
+  `returnTo = pathname + search` round-trips them through auth untouched.
+  Our only reserved param names are `action` (on `/do`) and `returnTo` (on
+  `/auth/login`) — neither collides with any tracking convention.
+- **Deterministic agent name** (`agent_prefill`): derived from the prompt
+  (slug + short stable hash), NOT random. So a retry — or the same link
+  clicked twice — resolves to the same `(owner, name)` and `/v3/agents`
+  create-or-get returns the existing agent instead of duplicating. That
+  endpoint dedupes on `(owner, name)`; it has no idempotency-key path.
+- **`safeReturnTo` rejects ASCII control chars** in addition to
+  host/protocol/backslash tricks — a CR/LF surviving URL-decoding would
+  corrupt or inject into the callback `Location` header.
 - `/do` sits OUTSIDE `ProtectedRoute` and owns its auth check. Reason: an
   anonymous arrival must fire `deferred_action_landed` while the UTM-laden
   URL is live, BEFORE bouncing to login — behind ProtectedRoute the page
@@ -129,14 +145,15 @@ export function decodeAction(raw: string): ActionEnvelope | null {
 }
 
 export const AgentPrefillParamsSchema = z.object({
-  prompt: z.string().trim().min(1).max(4000),
+  prompt: z.string().trim().min(1).max(1000), // lockstep with edge returnTo cap
 })
 ```
 
-Also extract the name generator so `/do` and the create dialog share it:
-move `NAME_ADJECTIVES`, `NAME_NOUNS`, `randomAgentName()` from
-`web/src/pages/Agents.tsx:48-59` into a new `web/src/lib/agent-names.ts`
-and import it back into `Agents.tsx` (no behavior change there).
+The `agent_prefill` handler derives a **deterministic** name from the prompt
+(a slug + short stable hash — `deriveAgentName`), so retries and repeat
+clicks hit the same `(owner, name)` and dedupe server-side. (No shared
+random-name module — `Agents.tsx` keeps its own `randomAgentName` for the
+interactive create dialog, where fresh names are wanted.)
 
 ### Step 2 — edge: `returnTo` through WorkOS `state`
 
@@ -147,11 +164,13 @@ File: `cloudflare-workers/api-edge/src/index.ts`. Route dispatch is at
 
 ```ts
 // Same-origin path only: no scheme, no host, no protocol-relative, no
-// backslash tricks. Anything else → null (caller falls back to /dashboard).
-export function safeReturnTo(raw: string | null): string | null {
-  if (!raw || raw.length > 2048) return null;
+// backslash tricks, no control chars. Anything else → null (caller falls
+// back to /dashboard). The 4096 cap is in lockstep with the prompt cap.
+export function safeReturnTo(raw: string | null | undefined): string | null {
+  if (!raw || raw.length > 4096) return null;
   if (!raw.startsWith("/") || raw.startsWith("//")) return null;
   if (raw.includes("\\")) return null;
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return null; // CR/LF header injection
   return raw;
 }
 ```
@@ -276,20 +295,15 @@ Router state doesn't survive refresh — acceptable; the agent already
 exists. Note the default tab for `/agents/:id` is overview (`:54-59`), so
 the handler navigates to `/agents/:id/sessions` explicitly.
 
-### Step 6 — SPA: legacy `/?prompt=` shim
+### Step 6 — Site emits `/do?action=` directly (no shim)
 
-The site already ships `/?prompt=<text>`. In `web/src/App.tsx`, wrap the
-index route: a tiny inline component that checks
-`window.location.search` for `prompt`; if present and non-blank, build the
-envelope with `encodeAction({v: 1, type: 'agent_prefill', params: {prompt:
-value.slice(0, 4000)}})`, and return `<Navigate to={...} replace />` where
-the target is `/do?action=<encoded>` **plus every other query param
-carried over verbatim** (delete `prompt` from a `URLSearchParams` copy, set
-`action`, keep the rest — dropping `utm_*`/`gclid` here would silently
-destroy attribution); otherwise render `<Dashboard />`. The site should
-migrate its hero to mint `/do?action=...` URLs directly (one-line change in
-`diggerhq/durableagentsessions`, separate repo — not this PR); the shim
-keeps the shipped link working meanwhile.
+**One way in, no fork.** The launch site (`diggerhq/durableagentsessions`,
+separate repo) mints `/do?action=<envelope>` URLs in its hero, using the
+same base64url algorithm as `encodeAction`, with any inbound `utm_*`/click
+IDs appended as sibling params. No `/?prompt=` compatibility path is added
+to the SPA — `App.tsx`'s index route stays `<Dashboard />`. (The site's
+current `/?prompt=` hero is pre-launch and switches to `/do` as part of
+shipping this; that one-line change lives in the site repo, not this PR.)
 
 ### Step 7 — PostHog funnel events + attribution
 
@@ -352,13 +366,16 @@ Automated (all must pass before push):
   to catch tsc -b project issues.
 - `cd cloudflare-workers/api-edge && npm test` — includes the new
   `safeReturnTo` cases.
-- Envelope codec unit test (vitest is not set up under `web/` — if adding
-  it is disproportionate, cover the codec with a round-trip + malformed-
-  input test in the edge test file by copying the two pure functions'
-  behavior contract, or verify by hand in the browser console and say so in
-  the PR).
-- Byte-scan the diff before push: `git diff origin/main | LC_ALL=C grep -P
-  '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]'` must return nothing.
+- `safeReturnTo` cases (cap, control chars, host/protocol tricks) live in
+  the edge test file. The codec has no `web/`-side vitest yet — verify by
+  hand in the browser console or add a runner later.
+- Byte-scan the diff before push. **Do NOT use `grep -P` alone** — a NUL
+  byte makes grep treat the file as binary and silently report no match
+  (this bit us during the review round). Use a NUL-safe scan, e.g.
+  `git diff origin/main | LC_ALL=C grep -aP '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]'`
+  (the `-a` forces text mode) and separately confirm no NUL:
+  `git grep -I -l $'\x00' $(git diff --name-only origin/main)` returns
+  nothing.
 
 Manual matrix (needs a deployed edge — record in the PR which rows ran;
 rows 1–2 need Igor's dev edge or a post-merge check, do not deploy from
@@ -370,17 +387,19 @@ this branch):
 3. Logged-in → prompt box → immediate execution, no auth bounce.
 4. Logged-out, shared session URL (no action) → login → lands on that
    session, not `/dashboard` (generic returnTo works).
-5. Tampered `returnTo` (`//evil.com`, `https://evil.com`, `\`) → `/dashboard`.
+5. Tampered `returnTo` (`//evil.com`, `https://evil.com`, `\`, a `%0d%0a`
+   CRLF) → `/dashboard`.
 6. Malformed / unknown-type envelope → unsupported-link screen.
 7. Refresh and back-button after execution → no duplicate agent (also
    verify in dev that StrictMode double-mount doesn't double-create).
-8. `/?prompt=` legacy shim → identical outcome to 1–3.
+8. Retry idempotency: force the create to fail once (offline), hit **Try
+   again**, and re-run the same link twice — deterministic name means one
+   agent, not several.
 9. Non-ASCII prompt (emoji, CJK) survives encode → decode → agent prompt.
 10. Attribution: `/do?action=...&utm_source=test&gclid=x` anonymous →
     signup → PostHog shows `deferred_action_landed` pre-auth with the UTM
-    props, and the identified person carries `$initial_utm_source=test`;
-    `/?prompt=...&utm_source=test` shim path preserves both params onto
-    `/do`.
+    props, the `deferred_action_executed` event carries `agent_id`, and the
+    identified person carries `$initial_utm_source=test`.
 
 ## Failure modes (behavior contract)
 
@@ -389,7 +408,7 @@ this branch):
 | Malformed / unknown-type / oversized action | Neutral "unsupported link" screen, dashboard link, `deferred_action_failed` |
 | `returnTo` fails validation | Callback falls back to `/dashboard` (today's behavior) |
 | Agent create fails (e.g. `managed_unavailable` 422) | `failed` state on `/do` with retry + dashboard link |
-| Refresh / back after execution | Param already stripped; no replay. Re-visiting the same envelope later creates a second agent (random name) — visible, not silent; acceptable |
+| Refresh / back after execution | Param already stripped; no replay. Re-visiting the same envelope later resolves to the same `(owner, name)` (deterministic name) → the existing agent, no duplicate |
 | User abandons WorkOS mid-flow | Nothing created; the link works when clicked again |
 | Email verification completed in another browser | `state` is bound to the WorkOS flow, not the browser — callback still lands on `returnTo` |
 
@@ -401,3 +420,32 @@ this branch):
 - Site-side URL migration and this doc's write-backs are the coordinator's,
   not the implementer's. If a frozen decision looks wrong while building,
   stop and flag it in the PR description rather than improvising.
+
+## Review round (2026-07-03) — changes from the first build
+
+Reviewer findings, all addressed on the branch (code is authoritative where a
+sketch above lagged):
+
+1. **Length lockstep (the launch-path bug).** The prompt cap (was 4000) and
+   the edge `returnTo` cap (was 2048) were inconsistent, so a valid long
+   prompt silently dropped to `/dashboard` after signup. Fixed: prompt cap
+   1000, `returnTo` cap 4096, sized so the encoded `/do?action=` URL always
+   fits the WorkOS `state` round-trip. WorkOS documents no `state` max, so we
+   bound it ourselves.
+2. **Dropped the `/?prompt=` shim entirely** (was behind ProtectedRoute, so
+   it never got the pre-auth `/do` behavior anyway). One entry, no fork — the
+   site emits `/do?action=` directly. Resolves the reviewer's finding 2 and
+   the "no forking without reason" directive together.
+3. **`safeReturnTo` rejects ASCII control chars** (CR/LF header injection),
+   with edge tests.
+4. **Retry-safe agent creation:** deterministic prompt-derived name (was
+   random), so retry / repeat-click dedupes on `(owner, name)` instead of
+   spawning duplicates. Reverted the now-unneeded `agent-names.ts`
+   extraction — `Agents.tsx` keeps its own random name for the create dialog.
+5. **Telemetry:** `deferred_action_executed` carries `agent_id` (via a
+   handler `analytics` field) as the contract specified, not `navigate_to`.
+
+Process note: the control-char regex was first written with **literal** NUL/
+0x1f/0x7f bytes (compiles green, binary in git). The `grep -P` byte-scan
+missed it — a NUL makes grep treat the file as binary and report no match.
+Use the NUL-safe scan in Verification above.

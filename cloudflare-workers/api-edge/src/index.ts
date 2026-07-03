@@ -1159,10 +1159,18 @@ interface WorkOSProfile {
 // backslash tricks. Tampering with the WorkOS `state` can then at most pick a
 // different page on our own origin, so the value needs no signing. Anything else
 // → null and the caller falls back to /dashboard.
+//
+// The 4096 cap is sized to comfortably fit an encoded /do?action=<envelope> for
+// the 1000-char prompt limit (web/src/lib/deferred-actions.ts) through the
+// WorkOS `state` round-trip — keep the two limits in sync. WorkOS documents no
+// `state` maximum, so we bound it here rather than rely on a large round-trip.
 export function safeReturnTo(raw: string | null | undefined): string | null {
-  if (!raw || raw.length > 2048) return null;
+  if (!raw || raw.length > 4096) return null;
   if (!raw.startsWith("/") || raw.startsWith("//")) return null;
   if (raw.includes("\\")) return null;
+  // Reject ASCII control chars: a CR/LF surviving URL-decoding would corrupt or
+  // inject into the callback's Location header (or throw a 500).
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return null;
   return raw;
 }
 

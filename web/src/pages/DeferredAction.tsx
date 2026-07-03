@@ -51,8 +51,8 @@ export default function DeferredAction() {
         const result = await handler(env.params)
         posthog.capture('deferred_action_executed', {
           action_type: env.type,
-          navigate_to: result.navigateTo, // carries the created agent id
           ms: Math.round(performance.now() - started),
+          ...(result.analytics ?? {}), // e.g. agent_id
         })
         void navigate(result.navigateTo, {
           replace: true,

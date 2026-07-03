@@ -329,8 +329,18 @@ describe("safeReturnTo — deferred-action deep-link validation", () => {
     expect(safeReturnTo("/a\\b")).toBeNull();
     expect(safeReturnTo("do?action=abc")).toBeNull();
   });
-  it("rejects oversized, empty, and nullish input", () => {
-    expect(safeReturnTo("/" + "a".repeat(3000))).toBeNull();
+  it("rejects ASCII control chars (CR/LF header injection)", () => {
+    expect(safeReturnTo("/do\r\nSet-Cookie: x=1")).toBeNull();
+    expect(safeReturnTo("/do\n")).toBeNull();
+    expect(safeReturnTo("/do\u0000")).toBeNull();
+    expect(safeReturnTo("/do\u007f")).toBeNull();
+  });
+  it("accepts a long-but-bounded action, rejects over the cap", () => {
+    const ok = "/do?action=" + "a".repeat(4000);
+    expect(safeReturnTo(ok)).toBe(ok);
+    expect(safeReturnTo("/" + "a".repeat(5000))).toBeNull();
+  });
+  it("rejects empty and nullish input", () => {
     expect(safeReturnTo("")).toBeNull();
     expect(safeReturnTo(null)).toBeNull();
     expect(safeReturnTo(undefined)).toBeNull();

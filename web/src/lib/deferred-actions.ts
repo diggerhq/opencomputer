@@ -10,7 +10,6 @@
 import { z } from 'zod'
 import { createAgent } from '@/api/client'
 import { DEFAULT_RUNTIME, defaultModelFor } from '@/lib/runtimes'
-import { randomAgentName } from '@/lib/agent-names'
 
 export const ActionEnvelopeSchema = z.object({
   v: z.literal(1),
@@ -21,6 +20,8 @@ export type ActionEnvelope = z.infer<typeof ActionEnvelopeSchema>
 
 // Unicode-safe base64url. btoa/atob operate on binary strings, so we round-trip
 // through UTF-8 bytes — a naive btoa(JSON.stringify(...)) throws on emoji/CJK.
+// This is the reference encoder: the launch site mints /do?action= URLs with
+// the identical algorithm, so keep them byte-compatible.
 export function encodeAction(envelope: ActionEnvelope): string {
   const bytes = new TextEncoder().encode(JSON.stringify(envelope))
   let bin = ''
@@ -47,12 +48,37 @@ export function decodeAction(raw: string): ActionEnvelope | null {
 // Each returns where to navigate on success. Add a new action type by adding a
 // schema + a handler here and registering it below.
 
-export type ActionResult = { navigateTo: string; navigateState?: unknown }
+export type ActionResult = {
+  navigateTo: string
+  navigateState?: unknown
+  // Extra props merged into the deferred_action_executed event (e.g. agent_id).
+  analytics?: Record<string, unknown>
+}
 export type ActionHandler = (params: unknown) => Promise<ActionResult>
 
+// Cap kept in sync with the edge safeReturnTo length limit — a longer prompt
+// would make the /do?action= URL exceed what round-trips through WorkOS `state`
+// on the anonymous signup path (see cloudflare-workers/api-edge/src/index.ts).
 export const AgentPrefillParamsSchema = z.object({
-  prompt: z.string().trim().min(1).max(4000),
+  prompt: z.string().trim().min(1).max(1000),
 })
+
+// Deterministic agent name from the prompt so a retry — or the same link
+// clicked twice — resolves to the SAME (owner, name) and the create-or-get
+// endpoint returns the existing agent instead of spawning a duplicate.
+// /v3/agents dedupes on (owner, name); it has no idempotency-key path.
+function deriveAgentName(prompt: string): string {
+  const slug = prompt
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32)
+    .replace(/-+$/g, '')
+  let h = 0
+  for (let i = 0; i < prompt.length; i++) h = (Math.imul(h, 31) + prompt.charCodeAt(i)) | 0
+  const suffix = (h >>> 0).toString(36)
+  return `${slug || 'agent'}-${suffix}`
+}
 
 // agent_prefill: create the agent (managed billing — free, zero-config for a
 // fresh org) and land on its sessions tab with the composer prefilled. It does
@@ -62,7 +88,7 @@ export const AgentPrefillParamsSchema = z.object({
 const agentPrefill: ActionHandler = async (params) => {
   const { prompt } = AgentPrefillParamsSchema.parse(params)
   const agent = await createAgent({
-    name: randomAgentName(),
+    name: deriveAgentName(prompt),
     prompt,
     model: defaultModelFor(DEFAULT_RUNTIME),
     runtime: DEFAULT_RUNTIME,
@@ -71,6 +97,7 @@ const agentPrefill: ActionHandler = async (params) => {
   return {
     navigateTo: `/agents/${agent.id}/sessions`,
     navigateState: { composerPrefill: prompt },
+    analytics: { agent_id: agent.id },
   }
 }
 

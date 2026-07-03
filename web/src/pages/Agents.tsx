@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Bot, Plus } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
-import { randomAgentName } from '@/lib/agent-names'
 import {
   getAgents,
   createAgent,
@@ -43,8 +42,20 @@ const NEW_CRED = '__new__'
 // Sent to the API as the reserved credential value "managed" (token-billing §6.6).
 const MANAGED = 'managed'
 
-// Friendly starting default so "Create agent" works with a single click: a memorable
-// random name (from @/lib/agent-names) + a usable general-purpose prompt.
+// Friendly starting defaults so "Create agent" works with a single click: a memorable
+// random name (adjective-noun) + a usable general-purpose prompt the user can keep or edit.
+const NAME_ADJECTIVES = [
+  'swift', 'calm', 'bright', 'clever', 'bold', 'quiet', 'keen', 'brave',
+  'nimble', 'sunny', 'lucid', 'witty', 'deft', 'mellow', 'crisp', 'vivid',
+]
+const NAME_NOUNS = [
+  'otter', 'harbor', 'falcon', 'cedar', 'comet', 'delta', 'ember', 'fjord',
+  'grove', 'heron', 'lynx', 'maple', 'nova', 'quartz', 'sparrow', 'willow',
+]
+function randomAgentName(): string {
+  const pick = (a: readonly string[]) => a[Math.floor(Math.random() * a.length)]
+  return `${pick(NAME_ADJECTIVES)}-${pick(NAME_NOUNS)}`
+}
 const DEFAULT_PROMPT =
   'You are a helpful AI assistant working in a sandboxed computer. Complete tasks end to end, use the tools available to you, and keep your answers clear and concise. When something is ambiguous, make a sensible assumption and say so.'
 
