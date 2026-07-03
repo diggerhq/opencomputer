@@ -1,0 +1,27 @@
+{
+  "note": "Shared golden vector for the OpenComputer bundle fileset digest (flue-slice.md contract 4). computeFilesetDigest(files) MUST equal `digest` in all three implementations: cmd/oc filesetdigest (Go), sessions-api skill-bundle-canonical.ts, oc-runtimes adapter-core skills.ts. `mode` is decimal (0o644=420, 0o755=493); `content` is base64 UTF-8. `canonicalTarGzBase64` is a reference-produced canonical tar.gz — gzip framing is implementation-specific and NOT a byte-level golden; use it only to verify parseTar(gunzip(x)) recomputes `digest`.",
+  "digest": "sha256:1fe94fec330dfaf6deef0774e2fd55cfc2f29ba8fb37f03db13e21cd49cfe5ba",
+  "files": [
+    {
+      "path": "artifact.json",
+      "mode": 420,
+      "contentBase64": "eyJlbnRyeSI6Im9jLmpzIiwicHJvZmlsZV92ZXJzaW9uIjoxfQo="
+    },
+    {
+      "path": "oc.js",
+      "mode": 420,
+      "contentBase64": "ZXhwb3J0IGNvbnN0IHggPSAxOwo="
+    },
+    {
+      "path": "skills/triage/SKILL.md",
+      "mode": 420,
+      "contentBase64": "LS0tCm5hbWU6IHRyaWFnZQotLS0KaGVsbG8K"
+    },
+    {
+      "path": "bin/run.sh",
+      "mode": 493,
+      "contentBase64": "IyEvYmluL3NoCmVjaG8gaGkK"
+    }
+  ],
+  "canonicalTarGzBase64": "H4sIAAAAAAACE+2WTU7DMBBGvc4pjNmSZJxfKYgDILrjAMgEF7u4dmW7qAhxd5SyQERCrGKhdt5mrNnMZt7nET7qtRhjsQnOkmUAAOia5lgBYF4Bmu77PfU5NHVLKJAE7EMUnkCSWf+QdyZt9G9sYG4sNoFdsZ13a23kw6v0QTvLBv6REeREedS29HtbBLXcjEnqvm1/97+qfvoPfddW6H8KLi/KaQWCyuSoHFUaXT8rjqm/8Iw///+qmfnf9QDofwrkYed8pKOzIdIDvaH8GhPgjAgv2phQRq/Fsyzv725Xq2L7lNj/up7d/7zneP8nIc/zzIqtHOjXCmRTQ0ljHMYAgiDIKfMJy71XdQAUAAA="
+}

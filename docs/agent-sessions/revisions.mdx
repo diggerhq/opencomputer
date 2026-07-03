@@ -149,6 +149,17 @@ oc agent deploy --no-activate         # stage instead of activate
 
 Same as a repo push — handy for CI that isn't GitHub, or trying a change before you commit.
 
+### Flue framework agents
+
+A [Flue](/agent-sessions/flue) agent (`[runtime] family = "flue"` in `agent.toml`) has no `prompt.md` or `skills/` — its behavior lives in code — so `oc agent deploy` builds and ships an artifact instead:
+
+```bash CLI
+oc agent create support-triage --runtime flue --model anthropic/claude-sonnet-5   # --prompt not needed
+oc agent deploy                                                                   # build → upload → verify → activate
+```
+
+Deploy runs the app's own build (`oc-flue-build`), uploads the content-addressed artifact, boot-verifies it in a scratch sandbox, then activates a revision — the same staging and rollback model as any other agent. See [Run Flue agents](/agent-sessions/flue).
+
 ## Roll back and promote
 
 Rollback and promote are the **same primitive** — set the active revision. Re-activate any earlier revision (rollback) or a staged one (promote):
