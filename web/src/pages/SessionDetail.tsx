@@ -375,6 +375,11 @@ function EventRow({ ev }: { ev: SessionEvent }) {
   // Conversation messages — the signal.
   if (ev.type === 'user.message' || ev.type === 'agent.message') {
     const isUser = ev.type === 'user.message'
+    // Out-of-credits notice (from the runtime's failPreExec) → make the "top up" actionable.
+    const outOfCredits =
+      ev.type === 'agent.message' &&
+      (ev.body as Record<string, unknown> | null | undefined)?.code ===
+        'insufficient_credits'
     return (
       <li className="px-4 py-3">
         <div className="mb-1 flex items-center gap-2">
@@ -386,6 +391,11 @@ function EventRow({ ev }: { ev: SessionEvent }) {
           </span>
         </div>
         <p className="text-foreground/90 text-sm whitespace-pre-wrap">{text}</p>
+        {outOfCredits && (
+          <Button asChild size="sm" className="mt-2">
+            <Link to="/billing">Top up</Link>
+          </Button>
+        )}
       </li>
     )
   }
