@@ -14,7 +14,9 @@ team. OpenComputer runs a Flue app as the resident process of a
 [durable session](/agent-sessions/overview) — same sessions API, events,
 steering, and watches as every other [runtime](/agent-sessions/runtimes).
 
-Your app stays plain Flue. You add one file:
+Your app stays plain Flue. You add one file — yours, committed, nothing is
+generated or injected. It plays the role Flue's layout gives `cloudflare.ts`:
+an optional platform-specific entry module.
 
 ```ts src/opencomputer.ts
 import { serveOC } from '@opencomputer/flue';
@@ -22,6 +24,10 @@ import agent from './agents/support-triage.ts';
 
 serveOC(agent);
 ```
+
+A full Flue app — with `app.ts`, channels, workflows — can add this file
+unchanged and keep self-hosting: only what it imports ends up in the
+OpenComputer artifact.
 
 Template: [`diggerhq/oc-flue-starter`](https://github.com/diggerhq/oc-flue-starter).
 
