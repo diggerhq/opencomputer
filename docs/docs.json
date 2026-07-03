@@ -92,6 +92,7 @@
             "tag": "Labs",
             "expanded": true,
             "pages": [
+              "agent-sessions/flue",
               "agent-sessions/custom-runtimes",
               "agent-sessions/triggers",
               "agent-sessions/channels",
