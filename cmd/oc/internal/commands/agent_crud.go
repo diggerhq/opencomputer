@@ -21,13 +21,18 @@ var agentCreateCmd = &cobra.Command{
 		model, _ := cmd.Flags().GetString("model")
 		runtime, _ := cmd.Flags().GetString("runtime")
 		credential, _ := cmd.Flags().GetString("credential")
-		if prompt == "" {
+		// Flue agents carry their instructions in code, so --prompt is optional
+		// for them (required for every other runtime).
+		if prompt == "" && runtime != "flue" {
 			return fmt.Errorf("--prompt is required")
 		}
 		if model == "" {
 			return fmt.Errorf("--model is required")
 		}
-		body := map[string]interface{}{"name": args[0], "prompt": prompt, "model": model}
+		body := map[string]interface{}{"name": args[0], "model": model}
+		if prompt != "" {
+			body["prompt"] = prompt
+		}
 		if runtime != "" {
 			body["runtime"] = runtime
 		}
@@ -113,9 +118,9 @@ var agentGetCmd = &cobra.Command{
 }
 
 func registerAgentCrud() {
-	agentCreateCmd.Flags().String("prompt", "", "System prompt (required)")
+	agentCreateCmd.Flags().String("prompt", "", "System prompt (required, except --runtime flue)")
 	agentCreateCmd.Flags().String("model", "", "Model, e.g. anthropic/claude-sonnet-5 (required)")
-	agentCreateCmd.Flags().String("runtime", "claude", "Runtime family (claude|codex|pi)")
+	agentCreateCmd.Flags().String("runtime", "claude", "Runtime family (claude|codex|pi|flue)")
 	agentCreateCmd.Flags().String("credential", "", "Credential id (optional)")
 	agentGetCmd.Flags().String("agent", "", "Agent id or name (else the cwd agent.toml)")
 
