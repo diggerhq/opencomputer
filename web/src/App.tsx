@@ -21,11 +21,15 @@ const Settings = lazy(() => import('./pages/Settings'))
 const Billing = lazy(() => import('./pages/Billing'))
 const SandboxDetail = lazy(() => import('./pages/SandboxDetail'))
 const SandboxWebhooks = lazy(() => import('./pages/SandboxWebhooks'))
+const DeferredAction = lazy(() => import('./pages/DeferredAction'))
 
 export default function App() {
   return (
     <AuthProvider>
       <Routes>
+        {/* Deferred-action executor — outside ProtectedRoute so the anonymous
+            branch can fire analytics + capture returnTo before login. */}
+        <Route path="do" element={<DeferredAction />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
             <Route index element={<Dashboard />} />

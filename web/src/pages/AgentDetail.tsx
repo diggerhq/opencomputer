@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, MessagesSquare, Send, GitBranch } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
@@ -120,7 +120,14 @@ export default function AgentDetail() {
   }
 
   // ── Start a session (used by the Sessions tab composer) ────────────────────
-  const [task, setTask] = useState('')
+  // Seed from a deferred action's prefill (agent_prefill lands here via router
+  // state). Doesn't survive refresh — fine; the agent already exists.
+  const location = useLocation()
+  const [task, setTask] = useState(
+    () =>
+      (location.state as { composerPrefill?: string } | null)?.composerPrefill ??
+      '',
+  )
   // Optional working repo — the repo the agent checks out + opens PRs from. Explicitly chosen,
   // never derived from the connected/config repo (design 010 §2).
   const [workingRepo, setWorkingRepo] = useState<WorkingRepo | null>(null)

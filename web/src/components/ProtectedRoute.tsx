@@ -10,9 +10,17 @@ export default function ProtectedRoute() {
   // (proxied by Vite) that 302s to the WorkOS hosted login, so we do a
   // full-page navigation rather than an in-app route. No intermediate
   // "Sign in" screen — the spinner below shows until the browser leaves.
+  // Carry the requested URL as `returnTo` so the login round-trip lands the
+  // user back where they aimed (a shared session link, a /do deferred action)
+  // instead of the dashboard. The edge threads it through the WorkOS `state`.
   useEffect(() => {
     if (!loading && !user) {
-      window.location.replace('/auth/login')
+      const returnTo = window.location.pathname + window.location.search
+      window.location.replace(
+        returnTo === '/'
+          ? '/auth/login'
+          : `/auth/login?returnTo=${encodeURIComponent(returnTo)}`,
+      )
     }
   }, [loading, user])
 
