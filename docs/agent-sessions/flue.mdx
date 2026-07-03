@@ -68,7 +68,7 @@ isn't in the artifact.
 | Skills | Packaged imports (`with {type:'skill'}`) or workspace files | **`src/skills/<name>/SKILL.md`** — ships with every deploy. Packaged imports are a build error (for now) |
 | Asking the user | No human-in-the-loop primitive | An **`ask` tool** is added: the session yields `needs_input` and hibernates until the user replies |
 | Channels / workflows | Slack/Discord ingress, `defineWorkflow` | Not supported — inbound is session messages + [GitHub watches](/agent-sessions/watches) |
-| Tool names | Anything | `bash`, `read`, `write`, `edit`, `ls`, `say`, `ask` are **reserved** (build error) |
+| Tool names | Anything | `bash`, `read`, `write`, `edit`, `ls`, `grep`, `glob`, `say`, `ask` are **reserved** (build error) |
 
 ## What `@opencomputer/flue` does
 
