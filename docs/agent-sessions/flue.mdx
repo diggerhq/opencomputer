@@ -37,7 +37,7 @@ Template: [`diggerhq/oc-flue-starter`](https://github.com/diggerhq/oc-flue-start
 git clone https://github.com/diggerhq/oc-flue-starter && cd oc-flue-starter
 npm install
 
-# create the agent (name must match agent.toml)
+# create the agent (optional — `oc agent deploy` creates it from agent.toml if missing)
 oc agent create support-triage --runtime flue --model anthropic/claude-sonnet-5
 
 # build + upload + boot-verify + activate a revision
@@ -79,10 +79,10 @@ connects it to the platform:
   session's state volume. History survives process restarts, hibernation,
   and machine moves. A `db.ts` is rejected at deploy because a second store
   would fork the conversation history.
-- **Sandbox.** Flue's built-in `read`/`write`/`edit`/`bash` tools execute on
-  the session's workspace sandbox — a separate machine from your app
-  process, where attached repos are checked out. Custom `defineTool` code
-  runs in-process with your app (see the network-access note below).
+- **Sandbox.** Flue's built-in `read`/`write`/`edit`/`bash`/`grep`/`glob`
+  tools execute on the session's workspace sandbox — a separate machine from
+  your app process, where attached repos are checked out. Custom `defineTool`
+  code runs in-process with your app (see the network-access note below).
 - **Two added tools.** `say` posts a message to the user mid-run. `ask` asks
   a question: the session yields `needs_input` and hibernates until the user
   replies, then the run continues with the answer.
@@ -150,11 +150,12 @@ on `claude`/`pi`; see [credentials](/agent-sessions/credentials).
 
 ## Deploying
 
-`oc agent deploy` = build (`oc-flue-build`) → upload the content-addressed
-artifact → **boot-verify it in a scratch sandbox** (your app is imported and
-initialized; a bundle that can't start never activates) → create and activate
-an immutable [revision](/agent-sessions/revisions). Sessions pin their
-revision at create; rollback is repointing.
+`oc agent deploy` = build (`oc-flue-build`, which initializes your agent to
+extract and check the profile) → upload the content-addressed artifact →
+**boot-verify it in a scratch sandbox** (your bundle is imported and booted
+to health; one that can't start never activates) → create and activate an
+immutable [revision](/agent-sessions/revisions). Sessions pin their revision
+at create; rollback is repointing.
 
 ## Troubleshooting
 
