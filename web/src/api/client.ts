@@ -81,11 +81,25 @@ function errorMessage(body: unknown, status: number): string {
   return `Request failed: ${status}`
 }
 
-/** An error carrying the HTTP status, so callers can branch (e.g. 404 = not-found vs a real failure). */
+// The typed discriminator sessions-api puts on `{error:{type,…}}` (e.g.
+// "insufficient_credits"), so callers can branch on the reason, not the status alone.
+function errorType(body: unknown): string | undefined {
+  if (body && typeof body === 'object') {
+    const err = (body as Record<string, unknown>).error
+    if (err && typeof err === 'object' && typeof (err as Record<string, unknown>).type === 'string') {
+      return (err as Record<string, unknown>).type as string
+    }
+  }
+  return undefined
+}
+
+/** An error carrying the HTTP status + the API's typed reason, so callers can branch
+ *  (e.g. 404 = not-found; 402 `insufficient_credits` = out of credits → top-up CTA). */
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly type?: string,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -123,7 +137,7 @@ export async function apiFetch<T>(
 
   if (!res.ok) {
     const body: unknown = await res.json().catch(() => ({}))
-    throw new ApiError(errorMessage(body, res.status), res.status)
+    throw new ApiError(errorMessage(body, res.status), res.status, errorType(body))
   }
 
   if (res.status === 204) {

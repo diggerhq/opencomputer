@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Send, Wrench } from 'lucide-react'
+import { ArrowLeft, Send, Wrench, CircleAlert } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
+import { useHalted } from '@/hooks/useHalted'
 import {
   getSession,
   getSessionEvents,
   sendMessage,
   cancelSession,
   archiveSession,
+  ApiError,
   type SessionEvent,
 } from '@/api/client'
 import { SessionEventSchema } from '@/api/schemas'
@@ -119,7 +121,14 @@ export default function SessionDetail() {
       setDraft('')
       invalidate()
     },
-    onError: (e) => notifyError("Couldn't send the message.", e),
+    onError: (e) => {
+      // Race/stale-state fallback: if the server refused on credits, refresh the halt
+      // state so the banner + composer gating appear at once (don't wait for the poll).
+      if (e instanceof ApiError && e.type === 'insufficient_credits') {
+        void queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
+      }
+      notifyError("Couldn't send the message.", e)
+    },
   })
   const cancelMutation = useMutation({
     mutationFn: () => cancelSession(sessionId),
@@ -154,6 +163,7 @@ export default function SessionDetail() {
 
   const status = session?.status ?? 'unknown'
   const archived = status === 'archived'
+  const halted = useHalted()
   const canSteer = !archived
   const canCancel = status === 'running' || status === 'awaiting_input'
 
@@ -290,33 +300,47 @@ export default function SessionDetail() {
 
         {/* Steer */}
         <div className="border-t p-3">
+          {halted && !archived && (
+            <div className="text-destructive mb-2 flex items-center gap-1.5 text-xs">
+              <CircleAlert className="size-3.5 shrink-0" />
+              <span>
+                Out of credits —{' '}
+                <Link to="/billing" className="font-medium underline underline-offset-2">
+                  top up to resume
+                </Link>
+                .
+              </span>
+            </div>
+          )}
           <form
             className="flex items-end gap-2"
             onSubmit={(e) => {
               e.preventDefault()
-              if (draft.trim() && canSteer) steerMutation.mutate()
+              if (draft.trim() && canSteer && !halted) steerMutation.mutate()
             }}
           >
             <ChatTextarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onSend={() => {
-                if (draft.trim() && canSteer && !steerMutation.isPending) {
+                if (draft.trim() && canSteer && !halted && !steerMutation.isPending) {
                   steerMutation.mutate()
                 }
               }}
               placeholder={
-                canSteer
-                  ? 'Send a message to steer the session…'
-                  : 'Session archived'
+                halted
+                  ? 'Out of credits — top up to resume'
+                  : canSteer
+                    ? 'Send a message to steer the session…'
+                    : 'Session archived'
               }
-              disabled={!canSteer}
+              disabled={!canSteer || halted}
               className="min-h-10 flex-1"
             />
             <Button
               type="submit"
               title="Enter to send · Shift+Enter for newline"
-              disabled={!draft.trim() || !canSteer || steerMutation.isPending}
+              disabled={!draft.trim() || !canSteer || halted || steerMutation.isPending}
             >
               <Send className="size-4" />
               Send
