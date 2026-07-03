@@ -942,14 +942,21 @@ func (s *Server) killSandbox(c echo.Context) error {
 }
 
 func (s *Server) killSandboxByID(c echo.Context, sandboxID string) error {
+	deleteSecretStore := shouldDeleteAttachedSecretStore(c)
+
 	// Server mode with worker registry: dispatch destroy via gRPC
 	if s.workerRegistry != nil {
-		return s.killSandboxRemote(c, sandboxID)
+		return s.killSandboxRemote(c, sandboxID, deleteSecretStore)
 	}
 
 	// Combined/worker mode: kill locally
 	if s.manager == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
+	}
+
+	var session *db.SandboxSession
+	if deleteSecretStore && s.store != nil {
+		session = s.getSandboxSessionForCleanup(c, sandboxID)
 	}
 
 	// Mark stopped immediately so it no longer counts toward concurrency limits.
@@ -973,11 +980,15 @@ func (s *Server) killSandboxByID(c echo.Context, sandboxID string) error {
 		_ = s.sandboxDBs.Remove(sandboxID)
 	}
 
+	if deleteSecretStore {
+		s.deleteAttachedSecretStoreBestEffort(c.Request().Context(), sandboxID, session)
+	}
+
 	return c.NoContent(http.StatusNoContent)
 }
 
 // killSandboxRemote dispatches sandbox destruction to the appropriate worker via gRPC.
-func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
+func (s *Server) killSandboxRemote(c echo.Context, sandboxID string, deleteSecretStore bool) error {
 	if s.store == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{
 			"error": "database not configured",
@@ -1005,6 +1016,9 @@ func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
 		// while cell PG says "stopped". Emit a CP-side fallback to close the
 		// drift. status is already marked stopped on cell PG above.
 		s.publishSandboxLifecycleEvent(c.Request().Context(), "stopped", sandboxID, session.OrgID, session.WorkerID, "worker_unreachable")
+		if deleteSecretStore {
+			s.deleteAttachedSecretStoreBestEffort(c.Request().Context(), sandboxID, session)
+		}
 		return c.NoContent(http.StatusNoContent)
 	}
 
@@ -1026,6 +1040,10 @@ func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
 		s.sandboxAPIProxy.InvalidateRouteCache(sandboxID)
 	}
 
+	if deleteSecretStore {
+		s.deleteAttachedSecretStoreBestEffort(c.Request().Context(), sandboxID, session)
+	}
+
 	s.emitEvent("destroy", sandboxID, session.WorkerID, "destroyed")
 	// Note: the worker emits the "stopped" lifecycle event via sdb.LogEvent
 	// in its DestroySandbox handler, and the SandboxDBManager.OnRemove hook
@@ -1033,6 +1051,92 @@ func (s *Server) killSandboxRemote(c echo.Context, sandboxID string) error {
 	// removed. events-ingest sees that event and updates D1 sandboxes_index.
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+func shouldDeleteAttachedSecretStore(c echo.Context) bool {
+	switch strings.ToLower(strings.TrimSpace(c.QueryParam("deleteSecretStore"))) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) getSandboxSessionForCleanup(c echo.Context, sandboxID string) *db.SandboxSession {
+	if s.store == nil {
+		return nil
+	}
+	ctx := c.Request().Context()
+	if orgID, ok := auth.GetOrgID(c); ok {
+		session, err := s.store.GetSandboxSessionInOrg(ctx, orgID, sandboxID)
+		if err == nil {
+			return session
+		}
+		log.Printf("sandbox: failed to load sandbox session %s in org for cleanup: %v", sandboxID, err)
+		return nil
+	}
+	session, err := s.store.GetSandboxSession(ctx, sandboxID)
+	if err != nil {
+		log.Printf("sandbox: failed to load sandbox session %s for cleanup: %v", sandboxID, err)
+		return nil
+	}
+	return session
+}
+
+func (s *Server) deleteAttachedSecretStoreBestEffort(ctx context.Context, sandboxID string, session *db.SandboxSession) {
+	if s.store == nil || session == nil {
+		return
+	}
+	if s.edge != nil {
+		if session.SecretStoreID != nil {
+			if err := s.edge.DeleteSecretStore(ctx, session.OrgID, *session.SecretStoreID); err != nil {
+				if !errors.Is(err, edgeclient.ErrNotFound) {
+					log.Printf("sandbox: failed to delete attached edge secret store %s for sandbox %s: %v", session.SecretStoreID.String(), sandboxID, err)
+					return
+				}
+				log.Printf("sandbox: attached secret store %s for sandbox %s already missing at edge; trying persisted name fallback", session.SecretStoreID.String(), sandboxID)
+			} else {
+				return
+			}
+		}
+		if s.store.Encryptor() == nil {
+			return
+		}
+		storeName := attachedSecretStoreName(session)
+		if storeName == "" {
+			return
+		}
+		bundle, err := s.edge.LookupSecretStore(ctx, session.OrgID, storeName, s.store.Encryptor())
+		if err != nil {
+			if errors.Is(err, edgeclient.ErrNotFound) {
+				log.Printf("sandbox: attached secret store %q for sandbox %s already missing at edge", storeName, sandboxID)
+				return
+			}
+			log.Printf("sandbox: failed to lookup attached edge secret store %q for sandbox %s: %v", storeName, sandboxID, err)
+			return
+		}
+		if err := s.edge.DeleteSecretStore(ctx, session.OrgID, bundle.Store.ID); err != nil && !errors.Is(err, edgeclient.ErrNotFound) {
+			log.Printf("sandbox: failed to delete attached edge secret store %s (%q) for sandbox %s: %v", bundle.Store.ID.String(), storeName, sandboxID, err)
+		}
+		return
+	}
+	if session.SecretStoreID == nil {
+		return
+	}
+	if err := s.store.DeleteSecretStore(ctx, session.OrgID, *session.SecretStoreID); err != nil {
+		log.Printf("sandbox: failed to delete attached secret store %s for sandbox %s: %v", session.SecretStoreID.String(), sandboxID, err)
+	}
+}
+
+func attachedSecretStoreName(session *db.SandboxSession) string {
+	if session == nil || len(session.Config) == 0 {
+		return ""
+	}
+	var cfg types.SandboxConfig
+	if err := json.Unmarshal(session.Config, &cfg); err != nil {
+		return ""
+	}
+	return cfg.SecretStore
 }
 
 func (s *Server) listSandboxes(c echo.Context) error {

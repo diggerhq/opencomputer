@@ -14,6 +14,7 @@ export {
   type AutoscaleStatus,
   type ScalingLockStatus,
   type AllowedHostsInfo,
+  type SandboxKillOptions,
 } from "./sandbox.js";
 export { Browser, BrowserProfile, type BrowserCreateOpts, type BrowserData, type BrowserProfileCreateOpts, type BrowserProfileData } from "./browser.js";
 export { SandboxAgent, type SandboxAgentEvent, type SandboxAgentConfig, type SandboxAgentStartOpts, type SandboxAgentSession, type McpServerConfig } from "./agent.js";

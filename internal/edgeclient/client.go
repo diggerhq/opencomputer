@@ -393,6 +393,24 @@ func (c *Client) LookupSecretStoreByID(ctx context.Context, id uuid.UUID, enc *c
 	return c.lookupStoreByQuery(ctx, "/internal/secret-stores/"+escapeQuery(id.String()), enc)
 }
 
+// DeleteSecretStore deletes an org-scoped secret store from the edge D1 store.
+// Used by the CP's single-use-store cleanup path after it has already verified
+// the sandbox belongs to orgID.
+func (c *Client) DeleteSecretStore(ctx context.Context, orgID, id uuid.UUID) error {
+	q := "/internal/secret-stores/" + escapeQuery(id.String()) + "?org_id=" + escapeQuery(orgID.String())
+	body, status, err := c.do(ctx, "DELETE", q, nil)
+	if err != nil {
+		return err
+	}
+	if status == 404 {
+		return ErrNotFound
+	}
+	if status != 204 {
+		return fmt.Errorf("edge status %d: %s", status, string(body))
+	}
+	return nil
+}
+
 // ── Webhooks (inline-on-create) ──────────────────────────────────────────
 
 // RegisterInlineWebhooks registers inline sandbox webhooks at the edge (Svix

@@ -742,6 +742,7 @@ type SandboxSession struct {
 	MigratingToWorker   string          `json:"migratingToWorker,omitempty"`
 	PatchError          *string         `json:"patchError,omitempty"`
 	GoldenVersion       *string         `json:"goldenVersion,omitempty"`
+	SecretStoreID       *uuid.UUID      `json:"secretStoreId,omitempty"`
 	// PreviewAuthHash is the SHA-256 hex of the bearer token required on
 	// preview-URL requests. NULL = open (the default). Plaintext is never
 	// stored — set once via SetSandboxPreviewAuth and rotated via the same.
@@ -1307,12 +1308,12 @@ func (s *Store) ReapStalePendingSessions(ctx context.Context, olderThan time.Dur
 func (s *Store) GetSandboxSession(ctx context.Context, sandboxID string) (*SandboxSession, error) {
 	session := &SandboxSession{}
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, stopped_at, error_msg, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version, preview_auth_hash, preview_auth_scheme
+		`SELECT id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, stopped_at, error_msg, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version, secret_store_id, preview_auth_hash, preview_auth_scheme
 		 FROM sandbox_sessions WHERE sandbox_id = $1 ORDER BY started_at DESC LIMIT 1`, sandboxID,
 	).Scan(&session.ID, &session.SandboxID, &session.OrgID, &session.UserID, &session.Template,
 		&session.Region, &session.WorkerID, &session.Status, &session.Config, &session.Metadata,
 		&session.StartedAt, &session.StoppedAt, &session.ErrorMsg, &session.BasedOnCheckpointID, &session.LastPatchSequence, &session.PatchError, &session.GoldenVersion,
-		&session.PreviewAuthHash, &session.PreviewAuthScheme)
+		&session.SecretStoreID, &session.PreviewAuthHash, &session.PreviewAuthScheme)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox session not found: %w", err)
 	}
@@ -1328,14 +1329,14 @@ func (s *Store) GetSandboxSession(ctx context.Context, sandboxID string) (*Sandb
 func (s *Store) GetSandboxSessionInOrg(ctx context.Context, orgID uuid.UUID, sandboxID string) (*SandboxSession, error) {
 	session := &SandboxSession{}
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, stopped_at, error_msg, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version, preview_auth_hash, preview_auth_scheme
+		`SELECT id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, stopped_at, error_msg, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version, secret_store_id, preview_auth_hash, preview_auth_scheme
 		 FROM sandbox_sessions
 		 WHERE org_id = $1 AND sandbox_id = $2
 		 ORDER BY started_at DESC LIMIT 1`, orgID, sandboxID,
 	).Scan(&session.ID, &session.SandboxID, &session.OrgID, &session.UserID, &session.Template,
 		&session.Region, &session.WorkerID, &session.Status, &session.Config, &session.Metadata,
 		&session.StartedAt, &session.StoppedAt, &session.ErrorMsg, &session.BasedOnCheckpointID, &session.LastPatchSequence, &session.PatchError, &session.GoldenVersion,
-		&session.PreviewAuthHash, &session.PreviewAuthScheme)
+		&session.SecretStoreID, &session.PreviewAuthHash, &session.PreviewAuthScheme)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox session not found: %w", err)
 	}
@@ -3026,6 +3027,9 @@ func (s *Store) GetSecretStoreByName(ctx context.Context, orgID uuid.UUID, name 
 //
 //   - primaryID is sandbox_sessions.secret_store_id, the "winning" store on
 //     the row (last layer for env-collision resolution; nil if no store).
+//   - primaryName is config->>'secretStore', retained as a fallback for rows
+//     where the edge-owned store resolved at create time but secret_store_id
+//     was not persisted.
 //   - baseStoreName is config->>'baseSecretStore' (parent store from the
 //     fork chain), populated when a fork layered an additional store on top
 //     of an inherited one. Empty string when there's no parent.
@@ -3038,17 +3042,17 @@ func (s *Store) GetSecretStoreByName(ctx context.Context, orgID uuid.UUID, name 
 //
 // Org-scoped: sandbox IDs aren't globally unique, so a leaked ID from
 // another org won't return that org's data.
-func (s *Store) GetSandboxStoreRefs(ctx context.Context, orgID uuid.UUID, sandboxID string) (primaryID *uuid.UUID, baseStoreName string, err error) {
+func (s *Store) GetSandboxStoreRefs(ctx context.Context, orgID uuid.UUID, sandboxID string) (primaryID *uuid.UUID, primaryName string, baseStoreName string, err error) {
 	err = s.pool.QueryRow(ctx,
-		`SELECT secret_store_id, COALESCE(config->>'baseSecretStore', '')
+		`SELECT secret_store_id, COALESCE(config->>'secretStore', ''), COALESCE(config->>'baseSecretStore', '')
 		 FROM sandbox_sessions
 		 WHERE org_id = $1 AND sandbox_id = $2 ORDER BY started_at DESC LIMIT 1`,
 		orgID, sandboxID,
-	).Scan(&primaryID, &baseStoreName)
+	).Scan(&primaryID, &primaryName, &baseStoreName)
 	if err != nil {
-		return nil, "", fmt.Errorf("get sandbox store refs: %w", err)
+		return nil, "", "", fmt.Errorf("get sandbox store refs: %w", err)
 	}
-	return primaryID, baseStoreName, nil
+	return primaryID, primaryName, baseStoreName, nil
 }
 
 // ListSecretStores returns all secret stores for an org.

@@ -154,7 +154,12 @@ var sandboxKillCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c := client.FromContext(cmd.Context())
-		if err := c.Delete(cmd.Context(), "/sandboxes/"+args[0]); err != nil {
+		path := "/sandboxes/" + args[0]
+		deleteSecretStore, _ := cmd.Flags().GetBool("delete-secret-store")
+		if deleteSecretStore {
+			path += "?deleteSecretStore=true"
+		}
+		if err := c.Delete(cmd.Context(), path); err != nil {
 			return err
 		}
 		fmt.Printf("Sandbox %s killed.\n", args[0])
@@ -299,6 +304,7 @@ func init() {
 
 	// sandbox wake flags
 	sandboxWakeCmd.Flags().Int("timeout", 0, "Idle timeout in seconds after wake (0 = never hibernate)")
+	sandboxKillCmd.Flags().Bool("delete-secret-store", false, "Also delete the secret store attached to the sandbox")
 
 	sandboxCmd.AddCommand(sandboxCreateCmd)
 	sandboxCmd.AddCommand(sandboxListCmd)
