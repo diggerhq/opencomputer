@@ -88,6 +88,13 @@
           "agent-sessions/watches",
           "agent-sessions/api-reference",
           {
+            "group": "Frameworks",
+            "expanded": true,
+            "pages": [
+              "agent-sessions/flue"
+            ]
+          },
+          {
             "group": "Labs",
             "tag": "Labs",
             "expanded": true,
