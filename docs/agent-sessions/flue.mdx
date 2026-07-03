@@ -158,7 +158,8 @@ Two rules that follow from tools running inside the deployed artifact:
   data and templates (as above); the repo checkout is not on the app's
   filesystem.
 - **Outbound network**: custom tools currently have unrestricted outbound
-  access from the agent's sandbox. An egress policy is planned; until it
+  access from your app's process — where `defineTool` code runs, a separate
+  machine from the workspace sandbox. An egress policy is planned; until it
   exists, don't embed secrets in the bundle to call your own APIs — prefer
   self-contained tools.
 
@@ -234,8 +235,9 @@ at create; rollback is repointing.
   top-level crash in your code (something that only happens at import time).
 - **Model rejected at deploy** — the three model declarations diverge
   (`defineAgent`, `agent.toml`, the OC agent).
-- **`provider 401` on the first turn** — no usable model credential: enable
-  managed billing or attach an Anthropic credential to the agent.
+- **`provider 401` on the first turn** — no usable model credential. Managed
+  billing is the default, so this usually means the org's billing isn't set
+  up yet — set up billing, or attach a valid Anthropic credential to the agent.
 - **Skill not loading** — the agent's own skills go in
   `src/skills/<name>/SKILL.md`; skills from a codebase require that repo
   attached as a session source (`--source`).

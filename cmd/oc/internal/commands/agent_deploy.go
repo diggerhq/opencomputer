@@ -304,6 +304,14 @@ func ensureAgentByName(cmd *cobra.Command, sc *client.Client, name, prompt, mode
 	}
 	for _, a := range list.Data {
 		if a.Name == name {
+			// Fail fast on a runtime-family mismatch. The server rejects the
+			// deployment anyway, but only after the build + artifact upload — a
+			// flue deploy onto an existing claude agent would waste both.
+			if runtime != "" && a.Runtime != "" && a.Runtime != runtime {
+				return "", false, fmt.Errorf(
+					"agent %q already exists with runtime %q, but this deploy is %q — rename the agent in agent.toml, or deploy the matching runtime",
+					name, a.Runtime, runtime)
+			}
 			return a.ID, false, nil
 		}
 	}

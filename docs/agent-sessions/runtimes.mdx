@@ -18,7 +18,7 @@ A **runtime** executes the agent loop: provider SDK, model calls, and tool use. 
 - **`claude`:** `anthropic/claude-sonnet-5` (default, balanced), `anthropic/claude-opus-4-8` (most capable), `anthropic/claude-fable-5`, `anthropic/claude-haiku-4-5` (fastest/cheapest).
 - **`codex`:** `openai/gpt-5-codex`.
 - **`pi`:** the `anthropic/…` catalog above. The runtime itself is provider-agnostic; additional providers are next.
-- **`flue`** (experimental): the `anthropic/…` catalog above — but the model is declared in your app's code; see [Run Flue agents](/agent-sessions/flue).
+- **`flue`** (experimental): an `anthropic/…` model, declared in your app's code — see [Run Flue agents](/agent-sessions/flue) for the supported ids.
 
 Sessions, [events](/agent-sessions/events), [steering](/agent-sessions/messaging), [tools](/agent-sessions/runtime-tools), and [webhooks](/agent-sessions/webhooks) share the same API across runtimes. `runtime` is fixed once the agent exists; to switch engines, create a new agent.
 
