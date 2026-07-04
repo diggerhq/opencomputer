@@ -283,6 +283,13 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 }
 ```
 
+```bash CLI
+# --source owner/repo[@ref] — repeatable; ref defaults to HEAD (the repo's default branch)
+oc session create --agent issue-fixer \
+  --input "Review this pull request." \
+  --source acme/agents@refs/pull/42/head
+```
+
 </CodeGroup>
 
 - **`ref`** (required) — the fetch ref (a branch or `refs/pull/N/head`); a private SHA
@@ -292,7 +299,8 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
   at create); **required for inline sources**.
 
 You can also reference `"owner/repo"` directly instead of a registered id. A session can
-list several immutable sources, such as a PR's base and head.
+list several immutable sources, such as a PR's base and head. On the CLI, repeat
+`--source owner/repo[@ref]` for each — a missing `@ref` resolves to the repo's default branch.
 
 ## Check source status
 

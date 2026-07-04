@@ -6,6 +6,7 @@ package commands
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -73,6 +74,14 @@ var sessionCreateCmd = &cobra.Command{
 		body := map[string]interface{}{"agent": ref, "input": input}
 		if revision != "" {
 			body["revision"] = revision
+		}
+		specs, _ := cmd.Flags().GetStringArray("source")
+		sources, err := parseSources(specs)
+		if err != nil {
+			return err
+		}
+		if len(sources) > 0 {
+			body["sources"] = sources
 		}
 		var env SessionEnvelope
 		if err := sc.Post(cmd.Context(), "/v3/sessions", body, &env); err != nil {
@@ -233,6 +242,32 @@ var sessionSteerCmd = &cobra.Command{
 	},
 }
 
+// parseSources turns --source "owner/repo[@ref]" specs into connection-backed
+// source objects for POST /v3/sessions (validated server-side by sources/validate).
+// A missing @ref defaults to HEAD — the repo's default branch, pinned to a sha at
+// create by the control plane (needs the OpenComputer GitHub App connected).
+func parseSources(specs []string) ([]map[string]interface{}, error) {
+	var out []map[string]interface{}
+	for _, raw := range specs {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			continue
+		}
+		repo, ref := s, "HEAD"
+		if at := strings.Index(s, "@"); at >= 0 {
+			repo, ref = s[:at], s[at+1:]
+		}
+		if ref == "" {
+			ref = "HEAD"
+		}
+		if strings.Count(repo, "/") != 1 || strings.HasPrefix(repo, "/") || strings.HasSuffix(repo, "/") {
+			return nil, fmt.Errorf("--source %q must be owner/repo[@ref]", raw)
+		}
+		out = append(out, map[string]interface{}{"repo": repo, "ref": ref})
+	}
+	return out, nil
+}
+
 // bodyText pulls a short human string out of an event body for the log view.
 func bodyText(body interface{}) (string, bool) {
 	m, ok := body.(map[string]interface{})
@@ -251,6 +286,7 @@ func init() {
 	sessionCreateCmd.Flags().String("agent", "", "Agent id or name to run (else the cwd agent.toml)")
 	sessionCreateCmd.Flags().String("input", "", "First message to the agent (required)")
 	sessionCreateCmd.Flags().String("revision", "", "Pin a specific revision (number or rev_ id; default = active)")
+	sessionCreateCmd.Flags().StringArray("source", nil, "Attach a GitHub repo as a working source: owner/repo[@ref] (default ref: HEAD). Repeatable.")
 	sessionListCmd.Flags().String("agent", "", "Filter by agent id or name")
 
 	sessionCmd.AddCommand(sessionCreateCmd)

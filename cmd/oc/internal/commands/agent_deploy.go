@@ -210,6 +210,11 @@ var agentDeployCmd = &cobra.Command{
 		if m.Model == "" {
 			return fmt.Errorf("agent.toml needs a `model`")
 		}
+		// Flue agents deploy a built artifact, not prompt.md/skills/ (§11.7.8).
+		if m.Runtime.Family == "flue" {
+			noActivate, _ := cmd.Flags().GetBool("no-activate")
+			return deployFlue(cmd, sc, dir, m, noActivate)
+		}
 		prompt, err := readPrompt(dir)
 		if err != nil {
 			return fmt.Errorf("read prompt.md: %w", err)
@@ -299,10 +304,21 @@ func ensureAgentByName(cmd *cobra.Command, sc *client.Client, name, prompt, mode
 	}
 	for _, a := range list.Data {
 		if a.Name == name {
+			// Fail fast on a runtime-family mismatch. The server rejects the
+			// deployment anyway, but only after the build + artifact upload — a
+			// flue deploy onto an existing claude agent would waste both.
+			if runtime != "" && a.Runtime != "" && a.Runtime != runtime {
+				return "", false, fmt.Errorf(
+					"agent %q already exists with runtime %q, but this deploy is %q — rename the agent in agent.toml, or deploy the matching runtime",
+					name, a.Runtime, runtime)
+			}
 			return a.ID, false, nil
 		}
 	}
-	body := map[string]interface{}{"name": name, "prompt": prompt, "model": model, "runtime": runtime}
+	body := map[string]interface{}{"name": name, "model": model, "runtime": runtime}
+	if prompt != "" {
+		body["prompt"] = prompt // flue agents carry instructions in code — no prompt
+	}
 	var a Agent
 	if err := sc.Post(cmd.Context(), "/v3/agents", body, &a); err != nil {
 		return "", false, err
@@ -579,6 +595,7 @@ func registerAgentDeploy() {
 	agentDeployCmd.Flags().String("agent", "", "Target agent id or name (else the manifest's [agent].id / name)")
 	agentDeployCmd.Flags().Bool("no-activate", false, "Create the revision without activating it (stage)")
 	agentDeployCmd.Flags().String("idempotency-key", "", "CI-safe key: a retry with the same key returns the same deployment")
+	agentDeployCmd.Flags().Int("timeout", 180, "Seconds to wait for a flue deploy to boot-verify (poll to terminal state)")
 
 	for _, c := range []*cobra.Command{agentRevisionsCmd, agentRollbackCmd, agentStatusCmd, agentLinkCmd, agentUnlinkCmd, agentDeploymentsCmd, agentDeploymentCmd} {
 		c.Flags().String("agent", "", "Target agent id or name (else the cwd agent.toml)")
