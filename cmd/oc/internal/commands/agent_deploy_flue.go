@@ -21,7 +21,7 @@ import (
 
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/credscan"
-	"github.com/opensandbox/opensandbox/cmd/oc/internal/filesetdigest"
+	"github.com/opensandbox/opensandbox/cmd/oc/internal/bundle"
 	"github.com/spf13/cobra"
 )
 
@@ -69,17 +69,18 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 		return err
 	}
 
-	// 4. Hash dist-oc/ into the content-addressed digest + canonical tar.gz.
+	// 4. Pack dist-oc/ into the tar.gz and content-address it: the digest is
+	//    sha256 of the blob the server and box will hash byte-for-byte.
 	outDir := filepath.Join(dir, flueBuildOutputDir)
 	files, err := readArtifactFiles(outDir)
 	if err != nil {
 		return err
 	}
-	digest := filesetdigest.Digest(files)
-	tarGz, err := filesetdigest.TarGz(files)
+	tarGz, err := bundle.Pack(files)
 	if err != nil {
 		return fmt.Errorf("pack artifact: %w", err)
 	}
+	digest := bundle.Digest(tarGz)
 	if len(tarGz) > flueArtifactMaxBytes {
 		return fmt.Errorf("artifact is %d bytes, over the %d MiB limit", len(tarGz), flueArtifactMaxBytes>>20)
 	}
@@ -172,11 +173,11 @@ func runFlueBuild(ctx context.Context, dir string) error {
 
 // readArtifactFiles walks the build output into a fileset with normalized modes,
 // requiring artifact.json (the manifest the host validates + pins).
-func readArtifactFiles(outDir string) ([]filesetdigest.File, error) {
+func readArtifactFiles(outDir string) ([]bundle.File, error) {
 	if info, err := os.Stat(outDir); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("build output %s not found — did oc-flue-build run?", outDir)
 	}
-	var files []filesetdigest.File
+	var files []bundle.File
 	hasManifest := false
 	err := filepath.WalkDir(outDir, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -201,9 +202,9 @@ func readArtifactFiles(outDir string) ([]filesetdigest.File, error) {
 		if rel == "artifact.json" {
 			hasManifest = true
 		}
-		files = append(files, filesetdigest.File{
+		files = append(files, bundle.File{
 			Path:    rel,
-			Mode:    filesetdigest.NormalizeMode(int(st.Mode().Perm())),
+			Mode:    bundle.NormalizeMode(int(st.Mode().Perm())),
 			Content: content,
 		})
 		return nil

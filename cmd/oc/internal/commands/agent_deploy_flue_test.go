@@ -22,7 +22,7 @@ import (
 	"testing"
 
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
-	"github.com/opensandbox/opensandbox/cmd/oc/internal/filesetdigest"
+	"github.com/opensandbox/opensandbox/cmd/oc/internal/bundle"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -107,15 +107,15 @@ func TestDeployFlueEndToEnd(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "node_modules", ".bin", "oc-flue-build"), buildScript, 0o755)
 
 	// What the CLI must produce from that dist-oc/ (mode normalized to 0644).
-	expectedFiles := []filesetdigest.File{
+	expectedFiles := []bundle.File{
 		{Path: "artifact.json", Mode: 0o644, Content: []byte(e2eArtifactBody + "\n")},
 		{Path: "oc.js", Mode: 0o644, Content: []byte(e2eOcBody + "\n")},
 	}
-	expectedDigest := filesetdigest.Digest(expectedFiles)
-	expectedTarGz, err := filesetdigest.TarGz(expectedFiles)
+	expectedTarGz, err := bundle.Pack(expectedFiles)
 	if err != nil {
 		t.Fatal(err)
 	}
+	expectedDigest := bundle.Digest(expectedTarGz)
 
 	// Fake control plane.
 	f := &fakeCP{}
