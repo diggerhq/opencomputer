@@ -112,7 +112,7 @@ func TestDeployFlueEndToEnd(t *testing.T) {
 		{Path: "oc.js", Mode: 0o644, Content: []byte(e2eOcBody + "\n")},
 	}
 	expectedDigest := filesetdigest.Digest(expectedFiles)
-	expectedTarGz, err := filesetdigest.CanonicalTarGz(expectedFiles)
+	expectedTarGz, err := filesetdigest.TarGz(expectedFiles)
 	if err != nil {
 		t.Fatal(err)
 	}

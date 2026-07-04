@@ -1,6 +1,6 @@
 {
-  "note": "Shared golden vector for the OpenComputer bundle fileset digest (flue-slice.md contract 4). The fileset digest over RAW file bytes MUST equal `digest` in all implementations: cmd/oc filesetdigest (Go), sessions-api skill-bundle-canonical.ts (computeFilesetDigestRaw), oc-runtimes adapter-core skills.ts. `mode` is decimal (0o644=420, 0o755=493). `contentBase64` is base64 of the RAW file bytes — the fileset INCLUDES a binary PNG (skills/triage/logo.png), so any impl that decodes to a utf8 string before hashing diverges (finding #13). `canonicalTarGzBase64` is a reference canonical tar.gz — gzip framing is implementation-specific and NOT a byte-level golden; use it only to verify parseTar(gunzip(x)) recomputes `digest`.",
-  "digest": "sha256:fbea3c2455fbec53f75b474924fe38e7e0fc20a67cd69a7942bd5670bc25b501",
+  "note": "Shared golden vector for the OpenComputer bundle fileset digest (flue-slice.md contract 4, sha256 scheme). The fileset digest over RAW file bytes MUST equal `digest` in all implementations: cmd/oc filesetdigest (Go), sessions-api skill-bundle-canonical.ts (filesetDigest), oc-runtimes adapter-core skills.ts. Pre-image = u32be(count) then per entry (sorted by UTF-8 path bytes) sha256(content)[32] ‖ u32be(mode) ‖ u32be(len(path)) ‖ path_utf8; digest = 'sha256:' + hex(sha256(preimage)). `mode` is decimal (0o644=420, 0o755=493). `contentBase64` is base64 of the RAW file bytes — the fileset INCLUDES a binary PNG (skills/triage/logo.png), so any impl that decodes to a utf8 string before hashing diverges. Transport is a plain (non-canonical) tar.gz — the digest is over the unpacked fileset, so no tar bytes are pinned here.",
+  "digest": "sha256:cab805ea6500039cdd09da801f90b1d6aff177710f106acc647a875c2dcdceea",
   "files": [
     {
       "path": "artifact.json",
@@ -27,6 +27,5 @@
       "mode": 420,
       "contentBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
     }
-  ],
-  "canonicalTarGzBase64": "H4sIAAAAAAACE+2XT0vDMBTAMxCRyvDkxYtdvbr2pesfmHhQJlocY6h3rTVbO2sykk4mIojoYeAX8eJn8ODdu5/Fg3QexIJ4WlCXH4SEB+Fd3u/lJeRZ0gmjzOwJRtFkAADwHGe8A0BxB3C8z3Mex+DUXKQDksBAZCFHICXXL+TSIDTjF0bdYJHZE8aq0eesk6Tk8JxwkTBq1PGVhhT/lOOEWnxATRFPLkcute+63/tv21/9B99zbeW/DFYqVl4CItZIFDM9TpTrU8W46084x4/vv+0U/Pd8AOW/DMiwz3imR4yKTB/q6zpeUx1gihCnSZoKK+NJ2CXW/m7QbJpnJ5L9r9UK8z/2sZr/pVCtVjUanpG6/lECWh6ISZoy1Qamz/+UdZnZp125/mMo/v9t7DnKfxmM2q3tsraUy14Odhp7CKFSvuZmEULLi88jhNB80Ng4GL5Gby9P7QU0c1e6vn24r+S3g61W43Hz6EZ5pFAoFH+Nd1JcnEEAGAAA"
+  ]
 }

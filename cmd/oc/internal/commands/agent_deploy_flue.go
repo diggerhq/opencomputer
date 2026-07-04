@@ -76,7 +76,7 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 		return err
 	}
 	digest := filesetdigest.Digest(files)
-	tarGz, err := filesetdigest.CanonicalTarGz(files)
+	tarGz, err := filesetdigest.TarGz(files)
 	if err != nil {
 		return fmt.Errorf("pack artifact: %w", err)
 	}

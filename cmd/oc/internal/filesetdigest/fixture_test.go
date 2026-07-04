@@ -1,19 +1,16 @@
 package filesetdigest
 
 import (
-	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"os"
-	"strings"
 	"testing"
 )
 
 // goldenFixture mirrors testdata/golden-fileset.json — the SHARED cross-language
 // golden vector for contract 4. The same file is consumed by the sessions-api and
-// oc-runtimes test suites; computeFilesetDigest(files) must equal `digest` in all
-// three. Regenerate with scratch gen-fixture.mjs (reference JS) if the vector changes.
+// oc-runtimes test suites; filesetDigest(files) must equal `digest` in all three.
+// Regenerate with scratch gen-fixture.mjs (reference JS) if the vector changes.
 type goldenFixture struct {
 	Digest string `json:"digest"`
 	Files  []struct {
@@ -21,7 +18,6 @@ type goldenFixture struct {
 		Mode          int    `json:"mode"`
 		ContentBase64 string `json:"contentBase64"`
 	} `json:"files"`
-	CanonicalTarGzBase64 string `json:"canonicalTarGzBase64"`
 }
 
 func loadFixture(t *testing.T) goldenFixture {
@@ -55,28 +51,5 @@ func TestGoldenFixtureDigest(t *testing.T) {
 	}
 	if got := Digest(files); got != fx.Digest {
 		t.Fatalf("Digest(fixture files) = %s, want %s", got, fx.Digest)
-	}
-}
-
-// TestGoldenFixtureTarballInterop proves the SERVER verify path works on a
-// FOREIGN-produced bundle: unpack the reference (JS)-produced canonical tar.gz
-// with our ustar reader and recompute the digest. Cross-language bundle interop.
-func TestGoldenFixtureTarballInterop(t *testing.T) {
-	fx := loadFixture(t)
-	tarGz, err := base64.StdEncoding.DecodeString(fx.CanonicalTarGzBase64)
-	if err != nil {
-		t.Fatalf("decode tar.gz: %v", err)
-	}
-	// sanity: it really is gzip
-	if zr, err := gzip.NewReader(strings.NewReader(string(tarGz))); err == nil {
-		_, _ = io.Copy(io.Discard, zr)
-		_ = zr.Close()
-	}
-	files, err := parseTarGz(tarGz)
-	if err != nil {
-		t.Fatalf("parse reference tar.gz: %v", err)
-	}
-	if got := Digest(files); got != fx.Digest {
-		t.Fatalf("digest of reference tarball = %s, want %s", got, fx.Digest)
 	}
 }

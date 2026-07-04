@@ -1,14 +1,13 @@
 package filesetdigest
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -16,8 +15,8 @@ import (
 // goldenFiles is the SHARED cross-repo golden vector (flue-slice.md contract 4).
 // The same fileset must produce goldenDigest in all three implementations:
 // this package, oc-runtimes/adapter-core, and sessions-api. It includes a real
-// binary file (logo.png) so a utf8 round-trip in ANY impl would change the digest
-// (finding #13). Kept byte-identical to testdata/golden-fileset.json.
+// binary file (logo.png) so a utf8 round-trip in ANY impl would change the
+// digest. Kept byte-identical to testdata/golden-fileset.json.
 var goldenFiles = []File{
 	{Path: "artifact.json", Mode: 0o644, Content: []byte("{\"entry\":\"oc.js\",\"profile_version\":1}\n")},
 	{Path: "oc.js", Mode: 0o644, Content: []byte("export const x = 1;\n")},
@@ -34,7 +33,9 @@ func mustB64(s string) []byte {
 	return b
 }
 
-const goldenDigest = "sha256:fbea3c2455fbec53f75b474924fe38e7e0fc20a67cd69a7942bd5670bc25b501"
+// The ocfs1 fileset digest of goldenFiles. Regenerated across all three repos
+// whenever the algorithm changes (it must not, without a scheme bump).
+const goldenDigest = "sha256:cab805ea6500039cdd09da801f90b1d6aff177710f106acc647a875c2dcdceea"
 
 func TestGoldenDigest(t *testing.T) {
 	if got := Digest(goldenFiles); got != goldenDigest {
@@ -48,29 +49,29 @@ func TestDigestIndependentOfInputOrder(t *testing.T) {
 	for i, f := range goldenFiles {
 		rev[len(goldenFiles)-1-i] = f
 	}
-	if got := Digest(rev); got != goldenDigest {
-		t.Fatalf("digest is order-dependent: got %s want %s", got, goldenDigest)
+	if got := Digest(rev); got != Digest(goldenFiles) {
+		t.Fatalf("digest is order-dependent: got %s want %s", got, Digest(goldenFiles))
 	}
 }
 
-// TestCanonicalTarGzRoundTrip reproduces the SERVER's verify path: unpack the
-// tar.gz with a minimal POSIX-ustar reader (a port of adapter-core parseTar) and
-// recompute the digest from the unpacked bytes. It must equal Digest(files) —
-// this is exactly the check the deploy-verify executor performs before pinning.
-func TestCanonicalTarGzRoundTrip(t *testing.T) {
-	tarGz, err := CanonicalTarGz(goldenFiles)
+// TestTarGzRoundTrip reproduces the server/box verify path: pack the fileset,
+// unpack it with a standard tar reader, and recompute the digest from the
+// unpacked bytes. It must equal Digest(files) — the check the deploy-verify
+// executor and the box materializer both perform before pinning.
+func TestTarGzRoundTrip(t *testing.T) {
+	tarGz, err := TarGz(goldenFiles)
 	if err != nil {
-		t.Fatalf("CanonicalTarGz: %v", err)
+		t.Fatalf("TarGz: %v", err)
 	}
-	unpacked, err := parseTarGz(tarGz)
+	unpacked, err := readTarGz(tarGz)
 	if err != nil {
-		t.Fatalf("parse: %v", err)
+		t.Fatalf("read: %v", err)
 	}
 	if len(unpacked) != len(goldenFiles) {
 		t.Fatalf("unpacked %d files, want %d", len(unpacked), len(goldenFiles))
 	}
-	if got := Digest(unpacked); got != goldenDigest {
-		t.Fatalf("round-trip digest mismatch: got %s want %s", got, goldenDigest)
+	if got := Digest(unpacked); got != Digest(goldenFiles) {
+		t.Fatalf("round-trip digest mismatch: got %s want %s", got, Digest(goldenFiles))
 	}
 	byPath := map[string]File{}
 	for _, f := range unpacked {
@@ -90,17 +91,22 @@ func TestCanonicalTarGzRoundTrip(t *testing.T) {
 	}
 }
 
-func TestCanonicalTarGzDeterministic(t *testing.T) {
-	a, err := CanonicalTarGz(goldenFiles)
+// TestTarGzLongPath is the case the old hand-rolled ustar codec had to special-
+// case (name/prefix split, "path too long" errors): a path over 100 bytes must
+// round-trip cleanly through the standard tar codec.
+func TestTarGzLongPath(t *testing.T) {
+	long := "skills/" + strings.Repeat("a/", 60) + "SKILL.md" // ~130 bytes
+	files := []File{{Path: long, Mode: 0o644, Content: []byte("x")}}
+	tarGz, err := TarGz(files)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("TarGz long path: %v", err)
 	}
-	b, err := CanonicalTarGz(goldenFiles)
+	unpacked, err := readTarGz(tarGz)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read long path: %v", err)
 	}
-	if !bytes.Equal(a, b) {
-		t.Fatal("CanonicalTarGz is not deterministic")
+	if len(unpacked) != 1 || unpacked[0].Path != long {
+		t.Fatalf("long path did not round-trip: %+v", unpacked)
 	}
 }
 
@@ -113,86 +119,31 @@ func TestNormalizeMode(t *testing.T) {
 	}
 }
 
-// TestJSMarshalString locks the JS-faithful escaping (the reason we hand-roll
-// instead of using encoding/json). Expected values are JSON.stringify output.
-func TestJSMarshalString(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"abc", `"abc"`},
-		{`a"b\c`, `"a\"b\\c"`},
-		{"tab\tnl\n", `"tab\tnl\n"`},
-		{"\b\f\r", `"\b\f\r"`},
-		// / < > & and non-ASCII are emitted RAW (Go's default JSON would escape some).
-		{"a<b>&/z", `"a<b>&/z"`},
-		{"café/☃", `"café/☃"`},
-	}
-	for _, c := range cases {
-		if got := jsMarshalString(c.in); got != c.want {
-			t.Errorf("jsMarshalString(%q) = %s, want %s", c.in, got, c.want)
-		}
-	}
-	// C0 control chars without a short form -> lowercase \u00xx (matches JS
-	// JSON.stringify). Checked via the property to avoid hand-typing escapes.
-	for _, b := range []byte{0x00, 0x01, 0x1f} {
-		got := jsMarshalString(string(rune(b)))
-		want := "\"" + fmt.Sprintf("\\u%04x", b) + "\""
-		if got != want {
-			t.Errorf("jsMarshalString(%#x) = %s, want %s", b, got, want)
-		}
-	}
-}
-
-// ── minimal ustar reader for the round-trip test (mirror of adapter-core parseTar) ──
-
-func parseTarGz(tarGz []byte) ([]File, error) {
+func readTarGz(tarGz []byte) ([]File, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(tarGz))
 	if err != nil {
 		return nil, err
 	}
-	tar, err := io.ReadAll(zr)
-	if err != nil {
-		return nil, err
-	}
-	readStr := func(o, n int) string {
-		s := tar[o : o+n]
-		if i := bytes.IndexByte(s, 0); i >= 0 {
-			s = s[:i]
-		}
-		return string(s)
-	}
+	tr := tar.NewReader(zr)
 	var out []File
-	off := 0
-	for off+512 <= len(tar) {
-		header := tar[off : off+512]
-		if isAllZero(header) {
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
 			break
 		}
-		name := readStr(off+0, 100)
-		prefix := readStr(off+345, 155)
-		path := name
-		if prefix != "" {
-			path = prefix + "/" + name
+		if err != nil {
+			return nil, err
 		}
-		mode, _ := strconv.ParseInt(strings.TrimSpace(readStr(off+100, 8)), 8, 32)
-		size, _ := strconv.ParseInt(strings.TrimSpace(readStr(off+124, 12)), 8, 64)
-		typeflag := tar[off+156]
-		off += 512
-		if typeflag == '0' || typeflag == 0 {
-			content := make([]byte, size)
-			copy(content, tar[off:off+int(size)])
-			out = append(out, File{Path: path, Mode: int(mode) & 0o7777, Content: content})
+		if hdr.Typeflag != tar.TypeReg {
+			continue
 		}
-		off += int((size+511)/512) * 512
+		content, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, File{Path: hdr.Name, Mode: int(hdr.Mode) & 0o7777, Content: content})
 	}
 	return out, nil
-}
-
-func isAllZero(b []byte) bool {
-	for _, x := range b {
-		if x != 0 {
-			return false
-		}
-	}
-	return true
 }
 
 func TestContentShaSanity(t *testing.T) {
