@@ -1,0 +1,25 @@
+name = "oc-gateway"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+# The per-session spend counter + hard-limit gate (design 013 §4/§8).
+[[durable_objects.bindings]]
+name = "SESSION_BUDGET"
+class_name = "SessionBudget"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionBudget"]
+
+# Secrets (set with `wrangler secret put …`, never in this file):
+#   GATEWAY_TOKEN_PUBLIC_KEY — base64url raw 32-byte Ed25519 PUBLIC key (minter holds the private key)
+#   GATEWAY_ORKEY_SECRET     — bearer for the dedicated sessions-api org-OR-key seam (carries a live key)
+#   TEST_OR_KEY              — acceptance-test single OR key override (bypasses the seam); never in prod
+#   OC_INGEST_AUTH           — optional, per-session spend telemetry auth
+
+[vars]
+# GATEWAY_ORKEY_URL — the internal sessions-api route that returns an org's OR key {org}→{key}.
+# OPENROUTER_BASE   — leave unset for prod (https://openrouter.ai/api); override for a mock in tests.
+# CACHE_CONTROL_UNSAFE_MODELS — extra comma-separated model patterns to strip cache_control for.
+# OC_INGEST_URL     — optional per-session spend sink.
