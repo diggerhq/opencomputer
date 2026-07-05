@@ -3,15 +3,6 @@ name: Apply D1 Migrations
 on:
   workflow_dispatch:
     inputs:
-      target:
-        description: 'D1 target'
-        required: true
-        default: 'prod'
-        type: choice
-        options:
-          - prod
-          - dev
-          - igor-dev
       action:
         description: 'Migration action'
         required: true
@@ -22,7 +13,7 @@ on:
           - apply
 
 concurrency:
-  group: apply-d1-migrations-${{ inputs.target }}
+  group: apply-d1-migrations-prod
   cancel-in-progress: false
 
 jobs:
@@ -38,27 +29,11 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Resolve target
+      - name: Resolve prod target
         id: target
         run: |
-          case "${{ inputs.target }}" in
-            prod)
-              echo "config=wrangler.prod.toml" >> "$GITHUB_OUTPUT"
-              echo "database=opencomputer-prod" >> "$GITHUB_OUTPUT"
-              ;;
-            dev)
-              echo "config=wrangler.toml" >> "$GITHUB_OUTPUT"
-              echo "database=opencomputer-dev" >> "$GITHUB_OUTPUT"
-              ;;
-            igor-dev)
-              echo "config=wrangler.igor-dev.toml" >> "$GITHUB_OUTPUT"
-              echo "database=opencomputer-igor-dev" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "unknown target: ${{ inputs.target }}" >&2
-              exit 1
-              ;;
-          esac
+          echo "config=wrangler.prod.toml" >> "$GITHUB_OUTPUT"
+          echo "database=opencomputer-prod" >> "$GITHUB_OUTPUT"
 
       - name: Install api-edge dependencies
         working-directory: cloudflare-workers/api-edge

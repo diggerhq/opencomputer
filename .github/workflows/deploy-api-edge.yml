@@ -9,15 +9,6 @@ on:
       - 'web/**'
       - '.github/workflows/deploy-api-edge.yml'
   workflow_dispatch:
-    inputs:
-      target:
-        description: 'Cloudflare Worker target'
-        required: true
-        default: 'prod'
-        type: choice
-        options:
-          - prod
-          - dev
 
 concurrency:
   group: deploy-api-edge
@@ -39,28 +30,9 @@ jobs:
       - name: Resolve target
         id: target
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TARGET="${{ inputs.target }}"
-          else
-            TARGET="prod"
-          fi
-
-          case "$TARGET" in
-            prod)
-              echo "config=wrangler.prod.toml" >> "$GITHUB_OUTPUT"
-              echo "database=opencomputer-prod" >> "$GITHUB_OUTPUT"
-              echo "name=opencomputer-edge-prod" >> "$GITHUB_OUTPUT"
-              ;;
-            dev)
-              echo "config=wrangler.toml" >> "$GITHUB_OUTPUT"
-              echo "database=opencomputer-dev" >> "$GITHUB_OUTPUT"
-              echo "name=opensandbox-edge-dev" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "unknown target: $TARGET" >&2
-              exit 1
-              ;;
-          esac
+          echo "config=wrangler.prod.toml" >> "$GITHUB_OUTPUT"
+          echo "database=opencomputer-prod" >> "$GITHUB_OUTPUT"
+          echo "name=opencomputer-edge-prod" >> "$GITHUB_OUTPUT"
 
       - name: Build dashboard assets
         working-directory: web

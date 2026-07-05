@@ -8,8 +8,8 @@ are never applied by Wrangler migrations.
 
 ## Existing databases
 
-Do not apply `../schema-snapshots/current_schema.sql` to existing dev or prod databases.
-For existing environments, use the Wrangler migration ledger:
+Do not apply `../schema-snapshots/current_schema.sql` to the existing prod database.
+For prod, use the Wrangler migration ledger:
 
 ```bash
 cd cloudflare-workers/api-edge
@@ -17,8 +17,8 @@ npx wrangler d1 migrations list opencomputer-prod --remote -c wrangler.prod.toml
 npx wrangler d1 migrations apply opencomputer-prod --remote -c wrangler.prod.toml
 ```
 
-The API edge deploy workflow applies pending numbered migrations before
-deploying the Worker.
+The API edge deploy workflow applies pending prod migrations before deploying
+the prod Worker.
 
 ## Fresh databases
 
