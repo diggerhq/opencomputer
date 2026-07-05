@@ -1,8 +1,8 @@
-# oc-gateway — thin per-session Worker over OpenRouter
+# oc-gateway — thin OC Worker over OpenRouter (W3, productionized)
 
-**W3 (productionized) / Lane L2** for the Flue-native agent type (`oc-bg-agents .agents/work/flue-native-buildout.md`, design `013 §4`). Implements **inter-lane Contract #1** (Gateway HTTP contract), hardened from the 1a spike (`spike/oc-gateway`, #486) and **live-verified** against real OpenRouter.
+**Buildout W3** for the Flue-native agent type (`oc-bg-agents .agents/work/flue-native-buildout.md`, design `013 §4`, contract **#1**). Productionizes the `spike/oc-gateway` (#486) reference to the **resolved token seam** (2026-07-05, option b + the co-location refinement).
 
-It **extends** the shipped managed-model path (does not replace it): org-level spend keeps flowing through the org's single OpenRouter inference key → the existing `model_meter` cron → Autumn (`opencomputer/cloudflare-workers/api-edge/src/{model_billing,model_meter,openrouter}.ts`, `token-billing.md`). The gateway only adds the injection point a CF Worker needs (it can't use the box secrets-proxy) plus **per-session sub-metering + on-path budget enforcement**.
+It **extends** the shipped managed-model path (does not replace it): org-level spend keeps flowing through the org's single OpenRouter inference key → the existing `model_meter` cron → Autumn (`opencomputer/cloudflare-workers/api-edge/src/{model_billing,model_meter,openrouter}.ts`, `token-billing.md`). The gateway only adds the injection point a CF Worker needs (it can't use the box secrets-proxy) plus **org+agt budget enforcement + best-effort per-session sub-metering**. It pushes **nothing** to Autumn.
 
 ---
 
@@ -10,9 +10,17 @@ It **extends** the shipped managed-model path (does not replace it): org-level s
 
 ### 1. Path shape
 
+An unmodified Flue app registers a managed provider at the gateway **inside `defineAgent`**:
+
 ```ts
-registerProvider('anthropic', { baseUrl: `${env.OC_GATEWAY}/anthropic`, apiKey: <session_token> });
+registerProvider('anthropic', {
+  baseUrl: `${env.OC_GATEWAY}/anthropic`,
+  apiKey: env.OC_SESSION_TOKEN,        // the per-DEPLOY token (bound by W7 as an env var)
+  headers: { 'X-OC-Session': id },     // the DO's own init id = ses_… — best-effort attribution
+});
 ```
+
+The provider client appends its native tail; the gateway strips the provider prefix and forwards to the OpenRouter base the box path already uses (`credential.ts` `MANAGED_ANTHROPIC_BASE = https://openrouter.ai/api`):
 
 | Gateway request | Forwarded to OpenRouter |
 |---|---|
@@ -22,44 +30,58 @@ registerProvider('anthropic', { baseUrl: `${env.OC_GATEWAY}/anthropic`, apiKey: 
 
 Rule: `/{provider}/<tail>` → `<OR base for provider> + <tail>`, query string preserved. `cloudflare/<model>` is **out of scope** — `env.AI.run()` bypasses `fetch`, so the gateway can't meter it (design §4).
 
-### 2. Per-session token — EdDSA, with a lease-epoch fence
+### 2. The deploy token — per-DEPLOY, EdDSA, lease-fenced
 
-A compact **EdDSA (Ed25519) JWT** the tenant Worker holds as the provider `apiKey`. The **minter** (control plane / session DO) holds the private key; the **gateway holds only the public key** (`GATEWAY_TOKEN_PUBLIC_KEY` = base64url raw 32-byte Ed25519 public key) — the same asymmetry as the turn token, so a compromised gateway can't forge tokens.
+**Resolved token seam.** The token is **per-DEPLOY**, not per-session. Flue's `registerProvider` `apiKey` is a static string only, and its provider registry is isolate-global while CF co-locates many session-DOs of one agent's script in one isolate — so per-session data injected via `registerProvider` (the token OR the header) **races** across co-located sessions. Therefore the token carries only `(org, agt)` and the **hard cost-safety boundary is at the org+agt grain**.
 
-**Claims:** `{ sub: ses_, org, agt, bud?, ep?, iat, exp }` — `sub` = sub-meter/budget key; `org` selects the org's OR key; `bud` = per-session USD cap (omit/0 = uncapped); `ep` = lease/turn epoch.
+**Claims:** `{ org, agt, iat, exp, ep? }` — **no** `sub:session`, **no** `bud`.
+- `org` — selects the org's OpenRouter inference key (never leaves the gateway).
+- `agt` — the deploy this token authorizes; the enforcement + lease-fence key with `org`.
+- `ep` — optional monotonic deploy epoch; a token below the current lease floor is fenced.
 
-**Transport:** `Authorization: Bearer <token>` or `x-api-key: <token>`. **Verify:** alg pinned to `EdDSA` (rejects `none`/HS256 swaps) + signature + `exp`/`iat` + required claims → `401` on failure.
+**Prod hardening over the spike:**
+- **EdDSA (Ed25519):** the minter (W7 deploy pipeline) holds the private key; the gateway holds only `GATEWAY_TOKEN_PUBLIC_KEY` — a compromised gateway can't forge tokens. Alg pinned (rejects `none`/HS256 swaps).
+- **Lease-epoch fence** (`DeployLease` DO, per `${org}:${agt}`): the floor rises to a token's `ep` on first use, so a **rotated** deploy's higher-epoch token instantly supersedes older tokens (401 `token_superseded`). A **revoke without redeploy** is `POST /admin/lease/bump {org, agt, min_epoch}`.
 
-**Lease-epoch fence:** the `SessionBudget` DO tracks a monotonic `max_epoch`; a token whose `ep` is below it is **superseded** → `401 {code:"token_superseded"}`. A newer epoch bumps the watermark, invalidating older-epoch tokens still in flight (DO-serialized). Omitted `ep` skips the fence.
+**Transport:** `Authorization: Bearer <token>` **or** `x-api-key: <token>`. Verify = alg-pin + signature + `exp`/`iat` + `org`/`agt` present. Failure → `401`.
 
-> **Mint↔verify seam (confirm with the orchestrator):** W1 signs the EdDSA token; default delivery = per-turn token (option a) read by Flue's `getApiKey`, so the meter attributes by `sub` unspoofably. The gateway is configured with the public key only.
+### 3. Enforcement grain (co-location refinement)
 
-### 3. Request/response passthrough
+- **HARD (the 402): org+agt.** `SpendCounter` DO keyed `agt:${org}:${agt}` — race-free (the value comes from the token, identical for every co-located session of the agent). `/check` gates **before** the call; over → `402 budget_exceeded`. Budget is looked up **server-side** (provisioned via `/admin/agent/budget`, else `AGENT_BUDGET_USD_DEFAULT`) — **never** carried in the token.
+- **BEST-EFFORT per session: `X-OC-Session`.** `SpendCounter` DO keyed `sess:<session>` — the gateway only **records** spend here for per-session visibility (dashboard W11). It is **never gated**, so a co-location race can't wrongly block a legitimate session. Exact per-session enforcement is deferred to an upstream Flue per-request resolver (tracked ask — see below).
 
-- **Body:** buffered (small), **`cache_control` stripped for caching-unsafe models** (§6), `usage:{include:true}` injected so OR echoes cost, re-serialized; all else preserved.
-- **Auth swap:** the tenant token is stripped; `Authorization: Bearer <org OR key>` set; `http-referer`/`x-title` added. Everything else (`anthropic-version`, …) passes through.
-- **Response:** OR's status/headers/body returned **untouched** — JSON or `text/event-stream` (SSE straight through). Transparent proxy on the response path.
+### 4. Request/response passthrough
 
-### 4. Metering + reconciliation
+- **Request body:** buffered (model requests are small), `usage:{include:true}` injected so OpenRouter echoes cost, re-serialized. `cache_control` stripped for caching-unsafe models (§6). All other fields preserved.
+- **Auth swap:** the tenant's `Authorization`/`x-api-key` **and** the `X-OC-Session` header are stripped; `Authorization: Bearer <org OR key>` set. `http-referer`/`x-title` added for OR attribution. Everything else passes through. **No raw provider key ever reaches the tenant** — it holds only the deploy token; the OR key lives in the gateway.
+- **Response:** OpenRouter's status, headers, body returned **untouched** — JSON or `text/event-stream`.
 
-- **On-path sub-meter** in a `SessionBudget` **DO** (strongly consistent — serializes concurrent calls so subagents can't double-spend). `POST /check` gates **before** (`spent < budget`) + runs the epoch fence; `POST /add` commits cost **after** (via `waitUntil`), idempotent on the OR generation id.
-- **Cost source:** the `usage.cost` (USD) OR echoes per response (`cost.ts`; SSE terminal usage). Fallback `GET /api/v1/generation?id=` (unwired).
-- **One cost-source-of-truth:** the gateway forwards through the **org's existing OR key**, so OR's per-key usage still captures Flue spend → `model_meter` cron → Autumn, **exactly as the brain-box path does**. The gateway builds no billing path and pushes nothing to Autumn; its counter is enforcement + per-session display only (optionally emitted to `OC_INGEST`).
-- **Budget refusal:** `402 {error:{type:"budget_exceeded", code:"insufficient_quota"}, oc:{spent_usd,budget_usd}}` — a provider-style error so the turn terminates and the tailer maps it to outcome `budget_exceeded`. Bounded **one-call overshoot** (a call that passes pre-check but tips the total over) is accepted.
+### 5. Metering + reconciliation — one cost-source-of-truth
 
-### 5. Org OpenRouter key resolution
+- **On-path sub-meter:** `/check` gates (org+agt) before; `/add` commits cost after (off the response path via `waitUntil`), idempotent on the OpenRouter generation id. Recorded at the org+agt grain (authoritative for enforcement) **and** best-effort per session.
+- **Cost source:** the `usage.cost` (USD) OpenRouter echoes per response (`cost.ts`; SSE terminal usage). Exact-cost fallback `GET /api/v1/generation?id=<id>` (documented, unwired).
+- **Reconciliation:** the gateway forwards through the **org's existing OR inference key**, so OR's per-key cumulative usage still captures Flue spend → `model_meter` cron → Autumn, **exactly as the brain-box path does today**. The gateway builds **no** billing path and pushes **nothing** to Autumn. Its counters are for **enforcement + display only**; they and OR's per-key usage are independent by design.
+- **Budget refusal:** `402 {error:{type:"budget_exceeded", code:"insufficient_quota"}, oc:{org,agent,spent_usd,budget_usd}}` — a provider-style error so the Flue turn terminates and the tailer maps it to outcome `budget_exceeded` (§8). *The exact shape Flue surfaces cleanly is a live-verify item.*
 
-The gateway maps `org_id → OR inference key`. The plaintext lives in **Infisical**, sealed by sessions-api (edge `managed_model_keys` owns the key lifecycle; `credential.ts resolveManagedSecret`). A CF Worker can't reach Infisical, so the gateway resolves through a **dedicated internal sessions-api seam** (mirrors the edge's dedicated-secret plaintext-key hand-off — a route carrying a live key gets its own secret):
+### 6. Org OpenRouter key resolution (from Infisical, via a sessions-api seam)
+
+The managed OR **inference** key's plaintext lives in **Infisical**, referenced by the org's managed credential and resolved only by `sessions-api` `resolveManagedSecret` (`credential.ts`). A CF Worker can't reach Infisical or the box secrets-proxy (design §4), so the gateway resolves it through a **dedicated internal sessions-api route** — mirroring the edge's dedicated-secret plaintext-key hand-off (`model_billing.ts §6.7.5`: a route carrying a live key gets its **own** secret, not the generic internal-auth one):
 
 ```
-POST {GATEWAY_ORKEY_URL}   Authorization: Bearer {GATEWAY_ORKEY_SECRET}   {"org": orgId}  →  {"key": "sk-or-..."}
+POST {GATEWAY_ORKEY_URL}   Authorization: Bearer {GATEWAY_ORKEY_SECRET}   body {"org": orgId}
+  → 200 {"key": "sk-or-..."}   (resolveManagedSecret for the org's active managed credential)
 ```
 
-Cached per org in-isolate (60s TTL — bounds exposure + avoids per-call hits). `TEST_OR_KEY` short-circuits resolution for the acceptance run. **L3 seam to build:** the route reusing `resolveManagedSecret` (flagged in the W3 PR).
+The plaintext is cached per-org in-isolate with a 60 s TTL. `TEST_OR_KEY` short-circuits resolution for the acceptance run. **This route is the one control-plane seam W3 needs sessions-api to add** (see "seam questions").
 
-### 6. Prompt-caching safety
+### 7. Prompt-caching safety
 
-Some models route (via OR) to a backend that rejects Anthropic `cache_control` — `anthropic/claude-3-haiku` (→ Bedrock) **400s** the whole request. The gateway **strips `cache_control`** from the body for an env-extensible denylist (`models.ts`, `CACHE_CONTROL_UNSAFE_MODELS`); caching-capable models are untouched.
+Some models route (via OpenRouter) to a backend that rejects Anthropic `cache_control` breakpoints (`claude-3-haiku` → OR→Bedrock 400s; `claude-haiku-4.5` works). The gateway **strips `cache_control`** from the body for an env-extensible denylist (`CACHE_CONTROL_UNSAFE_MODELS`) so the call still completes; caching-safe models are untouched.
+
+### 8. Control-plane admin routes (guarded by `GATEWAY_ADMIN_SECRET`)
+
+- `POST /admin/agent/budget {org, agt, budget_usd|null}` — provision the org+agt hard cap (W1/W7 seam).
+- `POST /admin/lease/bump {org, agt, min_epoch}` — revoke deploy tokens below `min_epoch` (no redeploy).
 
 ---
 
@@ -67,37 +89,41 @@ Some models route (via OR) to a backend that rejects Anthropic `cache_control` �
 
 | File | Role |
 |---|---|
-| `src/index.ts` | the Worker: verify → epoch-fence + budget gate → org-key inject → cache-safe + usage → forward → tee-meter → passthrough |
-| `src/token.ts` | EdDSA session token verify + mint/keygen helpers (Web Crypto, no deps) |
-| `src/budget.ts` | `SessionBudget` DO — per-session spend counter + hard gate + epoch fence (µ$ integers) |
-| `src/orgkey.ts` | org OR-key resolver — internal seam + per-isolate cache + test override |
-| `src/models.ts` | `cache_control` safety (unsafe-model denylist + strip) |
+| `src/index.ts` | verify deploy token → lease fence → org+agt hard gate → org-key inject → forward → tee-meter → passthrough |
+| `src/token.ts` | EdDSA per-deploy token mint/verify (Web Crypto, no deps) |
+| `src/budget.ts` | `SpendCounter` DO — keyed spend counter + hard gate (µ$ integers); org+agt (hard) + per-session (tracked) |
+| `src/deploylease.ts` | `DeployLease` DO — per-(org,agt) lease-epoch floor (rotation/revocation fence) |
+| `src/orgkey.ts` | org OR-key resolution via the dedicated sessions-api seam (`TEST_OR_KEY` override for tests) |
 | `src/cost.ts` | per-response cost extraction (JSON + SSE) |
-| `scripts/mint.ts` | EdDSA mint helper (generates a keypair; mints a session token) |
-| `test/` | `logic` (15) + `integration` (8, real handler + real DO vs mock OR) — **23 green** |
+| `src/models.ts` | `cache_control` safety (strip for unsafe models) |
+| `scripts/mint.ts` | mint a per-deploy token for live verification |
+| `test/` | `logic` (20) + `integration` (11) — **31 green** |
 
-## Verification
+## Verification status
 
-**Unit + integration (`npx vitest run`, 23 green):** EdDSA mint/verify + alg-pin + wrong-key/expired/tamper; `SessionBudget` epoch fence + budget gate + `/add` idempotency; `cache_control` strip; cost extraction; and the full on-path flow through the real handler (401 no/bad token, org-key injection with the session token never reaching OR, `usage.include`, passthrough, on-path 402, epoch fence 401, cache_control strip).
+- **In-process integration (green, CI-able):** `npx vitest run` drives the real worker handler + real `SpendCounter`/`DeployLease` DOs with `fetch` stubbed to a mock OpenRouter. Proves: 401 (no/expired/superseded token), forward with **org-key injection** (deploy token never reaches OR; session header never egresses) + `usage.include`, body passthrough, **org+agt hard enforcement** with bounded overshoot, **co-location** (two sessions share the org+agt cap), **per-session tracked-but-never-gated**, `cache_control` strip, admin provision.
+- **Live turn:** one real `anthropic/*` turn through a local `wrangler dev` gateway → OpenRouter, against a **$1-capped throwaway** OR inference key minted from `OPENROUTER_PROVISIONING_KEY` and torn down after.
 
-**Live acceptance (run 2026-07-05 against real OpenRouter via `wrangler dev --local`, throwaway $1-capped OR key, torn down after):**
-- Happy path — a real `anthropic/claude-haiku-4.5` turn completed gateway → OpenRouter → `200`, answer `pong`, `usage.cost` echoed; **no OR key in the response**; token ≠ key.
-- Budget — `bud=$0.000001`: call 1 `200` (spent $3.8e-05) → call 2 **`402 budget_exceeded`** on-path.
-- cache_control — `claude-3-haiku` with a `cache_control` block: **via gateway `200`** (stripped) vs **direct-to-OR `400`** (proves the strip is necessary and works).
-- Epoch fence — epoch 2 adopted → epoch 1 **`401 token_superseded`**. Auth — no/garbage token **`401`**.
-
-### Reproduce the live run
+### Live verification
 
 ```bash
-# secrets in .dev.vars (gitignored): the gateway's public key + a real OR key
-GATEWAY_TOKEN_PUBLIC_KEY=<from scripts/mint.ts stderr>
-TEST_OR_KEY=<a real openrouter inference key>
-
-npx wrangler dev --port 8791 --local
-# mint a token with the matching private key, then POST a real turn:
-GATEWAY_TOKEN_PRIVATE_KEY=<b64url pkcs8> node --experimental-strip-types scripts/mint.ts \
-  --session ses_live --org org_1 --budget 0.05
-curl -sN -X POST http://localhost:8791/anthropic/v1/messages \
-  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"model":"anthropic/claude-haiku-4.5","max_tokens":16,"messages":[{"role":"user","content":"say pong"}]}'
+nvm use 22.19
+# 1. mint a $1-capped throwaway OR inference key + an Ed25519 keypair + a deploy token; write .dev.vars
+#    (helper reads OPENROUTER_PROVISIONING_KEY from a path arg — never sourced, never printed)
+# 2. run the gateway locally (real DOs, real egress to openrouter.ai)
+npx wrangler dev --port 8799
+# 3. one real anthropic turn THROUGH the gateway (unmodified-Flue shape)
+curl -sN -X POST http://localhost:8799/anthropic/v1/messages \
+  -H "authorization: Bearer $TOKEN" -H "x-oc-session: ses_live" -H 'content-type: application/json' \
+  -d '{"model":"anthropic/claude-haiku-4.5","max_tokens":64,"messages":[{"role":"user","content":"say hi"}]}'
+#    → a real completion; OR bills the throwaway key; a low AGENT_BUDGET_USD_DEFAULT makes the 2nd call 402.
+# 4. tear down: DELETE the OR key (by hash) and stop wrangler.
 ```
+
+**Acceptance (buildout W3):** a real turn completes gateway → OpenRouter; the deploy token verifies (org+agt) and yields **no raw provider key** to the tenant; the org+agt budget refuses on-path (402); per-session spend is tracked by `X-OC-Session`. Org spend stays on the existing OpenRouter→Autumn cron.
+
+## Seam questions for the control plane (W1/W7)
+
+1. **Org OR-key route (required to leave `TEST_OR_KEY`):** sessions-api must expose `POST {GATEWAY_ORKEY_URL}` (dedicated bearer) returning `{key}` = `resolveManagedSecret` for the org's active managed credential.
+2. **Per-agent budget provisioning (optional):** if a per-(org,agt) cap other than `AGENT_BUDGET_USD_DEFAULT` is wanted, W1/W7 calls `POST /admin/agent/budget`.
+3. **Lease epoch (`ep`) minting:** W7 should mint a monotonic per-(org,agt) `ep` into the deploy token so rotation auto-fences; a leaked token is revoked via `POST /admin/lease/bump`.

@@ -1,13 +1,14 @@
-// Mint a per-session gateway token (EdDSA). The control plane mints these in prod; this is the
-// dev/e2e helper. On first use it also generates an Ed25519 keypair.
+// Mint a per-DEPLOY gateway token (EdDSA). The control plane / deploy pipeline (W7) mints these in
+// prod, binding the token as the tenant script's OC_SESSION_TOKEN env var; this is the dev/e2e helper.
+// On first use it also generates an Ed25519 keypair.
 //
-// Generate + mint (PUBLIC key + PRIVATE key printed on stderr; the token on stdout):
-//   node --experimental-strip-types scripts/mint.ts --session ses_test --org org_1 --budget 0.50
-//     → set the gateway's secret from the printed GATEWAY_TOKEN_PUBLIC_KEY.
+// Generate + mint (PUBLIC + PRIVATE key printed on stderr; the token on stdout):
+//   node --experimental-strip-types scripts/mint.ts --org org_1 --agent agt_1 --ep 1
+//     → set the gateway's GATEWAY_TOKEN_PUBLIC_KEY secret from the printed value.
 // Reuse a private key so the gateway's public key stays fixed across mints:
-//   GATEWAY_TOKEN_PRIVATE_KEY=<b64url-pkcs8> node ... scripts/mint.ts --session ses_x --ep 2
+//   GATEWAY_TOKEN_PRIVATE_KEY=<b64url-pkcs8> node ... scripts/mint.ts --org org_1 --agent agt_1 --ep 2
 
-import { mintSessionToken, type SessionClaims } from "../src/token.ts";
+import { mintDeployToken, type DeployClaims } from "../src/token.ts";
 
 const b64url = (buf: ArrayBuffer) => Buffer.from(buf).toString("base64url");
 const fromB64url = (s: string) => Buffer.from(s, "base64url");
@@ -32,15 +33,12 @@ if (existing) {
 
 const now = Math.floor(Date.now() / 1000);
 const ttl = Number(arg("ttl", "3600"));
-const budget = Number(arg("budget", "0")); // USD; 0 = uncapped
 const ep = arg("ep");
-const claims: SessionClaims = {
-  sub: arg("session", "ses_test")!,
+const claims: DeployClaims = {
   org: arg("org", "org_1")!,
   agt: arg("agent", "agt_1")!,
-  bud: budget > 0 ? budget : undefined,
   ep: ep != null ? Number(ep) : undefined,
   iat: now,
   exp: now + ttl,
 };
-console.log(await mintSessionToken(privateKey, claims));
+console.log(await mintDeployToken(privateKey, claims));
