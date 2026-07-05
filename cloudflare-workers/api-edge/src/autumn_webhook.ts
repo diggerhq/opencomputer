@@ -6,7 +6,8 @@
 // data.customer_id (= our org id). We then GET the customer from Autumn and
 // project the *authoritative* balance + plans into D1:
 //   - orgs.is_halted / halted_at        (credits balance <= 0)
-//   - orgs.max_concurrent_sandboxes     (highest active concurrency plan)
+//   - orgs.max_concurrent_sandboxes     (highest active concurrency plan,
+//                                        unless autumn_concurrency_override is set)
 // On a halt/resume transition we dispatch /admin/halt-org or /admin/resume-org
 // to the cells running the org's sandboxes (same HMAC scheme the DO used).
 //
@@ -211,13 +212,14 @@ export async function syncAutumnToD1(env: AutumnSyncEnv, orgID: string): Promise
 
   const creditsRemaining = cust.balances?.[CREDITS_FEATURE_ID]?.remaining ?? 0;
   const halted = creditsRemaining <= 0;
-  const maxConcurrent = maxConcurrency(cust.subscriptions ?? []);
+  const projectedMaxConcurrent = maxConcurrency(cust.subscriptions ?? []);
   const nowSec = Math.floor(Date.now() / 1000);
 
-  const prevRow = await env.OPENCOMPUTER_DB.prepare("SELECT is_halted FROM orgs WHERE id = ?1")
+  const prevRow = await env.OPENCOMPUTER_DB.prepare("SELECT is_halted, autumn_concurrency_override FROM orgs WHERE id = ?1")
     .bind(orgID)
-    .first<{ is_halted: number }>();
+    .first<{ is_halted: number; autumn_concurrency_override: number | null }>();
   const wasHalted = prevRow?.is_halted === 1;
+  const maxConcurrent = prevRow?.autumn_concurrency_override ?? projectedMaxConcurrent;
 
   await env.OPENCOMPUTER_DB.prepare(
     `UPDATE orgs SET is_halted = ?1, halted_at = ?2, max_concurrent_sandboxes = ?3, updated_at = ?4 WHERE id = ?5`,
