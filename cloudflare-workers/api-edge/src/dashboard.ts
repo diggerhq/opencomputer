@@ -216,6 +216,7 @@ function cellToRegion(cellID: string): string {
 interface OrgRow {
   id: string; name: string; slug: string; plan: string;
   max_concurrent_sandboxes: number; max_sandbox_timeout_sec: number;
+  autumn_concurrency_override: number | null;
   created_at: number; updated_at: number;
   custom_domain: string | null; cf_hostname_id: string | null;
   domain_verification_status: string; domain_ssl_status: string;
@@ -231,6 +232,7 @@ function shapeOrg(r: OrgRow): Record<string, unknown> {
   return {
     id: r.id, name: r.name, slug: r.slug, plan: r.plan,
     maxConcurrentSandboxes: r.max_concurrent_sandboxes,
+    autumnConcurrencyOverride: r.autumn_concurrency_override ?? undefined,
     maxSandboxTimeoutSec: r.max_sandbox_timeout_sec,
     createdAt: epochToISORequired(r.created_at),
     updatedAt: epochToISORequired(r.updated_at),
@@ -1046,12 +1048,12 @@ export async function handleDashboard(
   // dashboard renders instead of 404-erroring on a missing route.
   if (sub === "/billing" && method === "GET") {
     const org = await env.OPENCOMPUTER_DB.prepare(
-      `SELECT plan, stripe_customer_id, stripe_subscription_id, free_credits_remaining_cents, credit_balance_cents, is_halted, max_concurrent_sandboxes, billing_provider
+      `SELECT plan, stripe_customer_id, stripe_subscription_id, free_credits_remaining_cents, credit_balance_cents, is_halted, max_concurrent_sandboxes, autumn_concurrency_override, billing_provider
          FROM orgs WHERE id = ?1`,
     ).bind(caller.orgID).first<{
       plan: string; stripe_customer_id: string | null; stripe_subscription_id: string | null;
       free_credits_remaining_cents: number; credit_balance_cents: number; is_halted: number;
-      max_concurrent_sandboxes: number; billing_provider: string;
+      max_concurrent_sandboxes: number; autumn_concurrency_override: number | null; billing_provider: string;
     }>();
     if (!org) return json({ error: "org not found" }, 404);
     // Managed is a universal capability (every org gets a managed credential provisioned
@@ -1087,6 +1089,7 @@ export async function handleDashboard(
       creditBalanceCents: org.credit_balance_cents,
       isHalted: !!org.is_halted,
       maxConcurrentSandboxes: org.max_concurrent_sandboxes,
+      autumnConcurrencyOverride: org.autumn_concurrency_override ?? undefined,
       billingProvider: org.billing_provider,
       // Upcoming-invoice + meters would come from Stripe API on demand;
       // surface stubs for now so the UI has stable keys to render against.
