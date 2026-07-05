@@ -1,0 +1,28 @@
+name = "oc-gateway"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+# The per-session spend counter + hard-limit gate (design 013 §4/§8).
+[[durable_objects.bindings]]
+name = "SESSION_BUDGET"
+class_name = "SessionBudget"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionBudget"]
+
+# org_id → OpenRouter inference key. SPIKE stand-in for the prod credential-store resolution.
+# Create with: wrangler kv namespace create ORG_KEYS   (then paste the id below)
+# [[kv_namespaces]]
+# binding = "ORG_KEYS"
+# id = "<kv-namespace-id>"
+
+# Secrets (set with `wrangler secret put …`, never in this file):
+#   GATEWAY_TOKEN_SECRET  — HS256 secret shared with the token minter (session DO / sessions-api)
+#   SPIKE_OR_KEY          — a single OpenRouter inference key for one-org spike verification
+#   OC_INGEST_AUTH        — optional, per-session spend telemetry auth
+
+[vars]
+# OPENROUTER_BASE — leave unset for prod (https://openrouter.ai/api); override for a mock in tests.
+# OC_INGEST_URL   — optional per-session spend sink.
