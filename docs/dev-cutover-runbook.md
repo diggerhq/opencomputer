@@ -66,7 +66,8 @@ parity has been clean for 24h+.
 
 - [ ] CF infra provisioned:
   - [ ] D1 database `opencomputer-dev` (`wrangler d1 create opencomputer-dev`)
-  - [ ] D1 schema applied (`wrangler d1 execute opencomputer-dev --file cloudflare-workers/schema.sql`)
+  - [ ] D1 schema applied from the API edge snapshot for fresh databases only
+        (`cd cloudflare-workers/api-edge && wrangler d1 execute opencomputer-dev --file schema-snapshots/current_schema.sql`)
   - [ ] KV namespace `SESSIONS_KV` (`wrangler kv:namespace create sessions_kv`)
   - [ ] R2 bucket `events-archive-dev` (`wrangler r2 bucket create events-archive-dev`)
   - [ ] DNS: GoDaddy NS flipped to `fred.ns.cloudflare.com` / `lovisa.ns.cloudflare.com`

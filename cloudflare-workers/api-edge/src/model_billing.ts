@@ -326,7 +326,7 @@ export async function enableManagedBilling(env: ModelBillingEnv, orgId: string):
       });
     } catch (e) {
       // Lost a concurrent enable race — the unique "one active key per org" index
-      // (schema_phase9) rejected this insert. Adopt the row the winner created.
+      // unique partial index rejected this insert. Adopt the row the winner created.
       row = await getResumableRow(env, orgId);
       if (!row) throw e;
     }

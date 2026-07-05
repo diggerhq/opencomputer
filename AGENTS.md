@@ -61,9 +61,10 @@ the quirks that bite, are documented in **`.agents/reference/dev-edge-setup.md`*
   never `grep|cut` (the literal `${...}` string breaks WorkOS as `invalid_client`).
 - `cloudflare-workers/api-edge/wrangler.toml` points at **prod** — always pass
   `--config wrangler.igor-dev.toml` for personal-dev `wrangler` commands.
-- D1: apply only `cloudflare-workers/schema.sql` (it is the full current
-  snapshot; the `schema_phase*.sql` files are baked in and error with
-  `duplicate column` on a fresh DB).
+- D1: for a fresh API edge database, bootstrap from
+  `cloudflare-workers/api-edge/schema-snapshots/current_schema.sql`, then use
+  Wrangler migrations from `cloudflare-workers/api-edge/migrations/`.
+  Existing dev/prod databases must not receive the snapshot.
 
 ## Hard rules
 
