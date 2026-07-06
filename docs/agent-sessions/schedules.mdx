@@ -16,12 +16,12 @@ A platform tick runs every minute: it claims schedules whose `next_fire_at` has 
 
 | Mechanic | Behavior |
 | --- | --- |
-| **Cron** | 5 fields, 1-minute resolution (a seconds field is rejected). `tz` is an IANA name; omit for UTC. DST follows the cron library — a skipped or repeated wall-clock hour resolves to the next real occurrence. |
+| **Cron** | 5 fields, 1-minute resolution (a seconds field is rejected). `tz` is an IANA name; omit for UTC. DST follows the cron library — a match in a skipped hour fires at the next real occurrence; a repeated hour fires once. |
 | **Attribution** | The first `user.message` carries `actor { kind: "schedule", id, display }`; the session carries `metadata.schedule = { id, run_id, scheduled_for }`. |
 | **Idempotency** | One session per slot, keyed `sch_<id>:<slot>`. A tick that crashes and retries converges on the same session. |
 | **Overlap** | `skip` (default): if the previous run's session is still `queued`/`running`, record `skipped` and advance. `allow`: fire regardless. |
 | **Catch-up** | After downtime, fire **once** for the most recent missed slot, then advance past now — never replays a backlog. |
-| **Failure** | Five consecutive *enactment* failures (missing credential, no credit) → `auto_paused` with `last_error`. Session outcomes never change schedule state. |
+| **Failure** | Five consecutive scheduled-firing *enactment* failures (missing credential, no credit) → `auto_paused` with `last_error`. Session outcomes never change schedule state; neither do manual fires. |
 
 **Common crons** (`minute hour day-of-month month day-of-week`):
 
@@ -66,7 +66,7 @@ Org-key authenticated, server-side. Schedules are addressed under the agent.
 <CodeGroup>
 
 ```ts TypeScript SDK
-const schedule = await oc.agents.schedules("agt_...").create({
+const schedule = await oc.agents.schedules.create("agt_...", {
   name: "morning-docs-sweep",
   cron: "0 9 * * 1-5",
   tz: "Europe/London",       // optional — UTC if omitted
@@ -99,8 +99,8 @@ Content-Type: application/json
 <CodeGroup>
 
 ```ts TypeScript SDK
-const schedules = await oc.agents.schedules("agt_...").list();
-const schedule = await oc.agents.schedules("agt_...").get("sch_...");
+const schedules = await oc.agents.schedules.list("agt_...");
+const schedule = await oc.agents.schedules.get("agt_...", "sch_...");
 ```
 
 ```bash oc CLI
@@ -121,9 +121,9 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 <CodeGroup>
 
 ```ts TypeScript SDK
-await oc.agents.schedules("agt_...").update("sch_...", { cron: "0 7 * * *" });
-await oc.agents.schedules("agt_...").update("sch_...", { paused: true });   // pause
-await oc.agents.schedules("agt_...").update("sch_...", { paused: false });  // resume
+await oc.agents.schedules.update("agt_...", "sch_...", { cron: "0 7 * * *" });
+await oc.agents.schedules.update("agt_...", "sch_...", { paused: true });   // pause
+await oc.agents.schedules.update("agt_...", "sch_...", { paused: false });  // resume
 ```
 
 ```bash oc CLI
@@ -146,7 +146,7 @@ Content-Type: application/json
 <CodeGroup>
 
 ```ts TypeScript SDK
-await oc.agents.schedules("agt_...").del("sch_...");
+await oc.agents.schedules.delete("agt_...", "sch_...");
 ```
 
 ```bash oc CLI
@@ -161,12 +161,12 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 
 </CodeGroup>
 
-**Fire now** — enacts immediately in any state (paused included) and doesn't advance the cron. The test loop is `create` then `fire`.
+**Fire now** — enacts immediately in any state (paused included) and doesn't advance the cron. The test loop is `create` then `fire`. A failed manual fire returns the run with `outcome: "failed"` and updates `last_error`, but never changes the schedule's state or failure counter.
 
 <CodeGroup>
 
 ```ts TypeScript SDK
-const run = await oc.agents.schedules("agt_...").fire("sch_...");
+const run = await oc.agents.schedules.fire("agt_...", "sch_...");
 // → { id: "srn_...", outcome: "enacted", sessionId: "ses_..." }
 ```
 
@@ -178,7 +178,7 @@ oc agent schedule fire morning-docs-sweep --agent agt_...
 ```http REST
 POST https://api.opencomputer.dev/v3/agents/agt_.../schedules/sch_.../fire
 Authorization: Bearer $OPENCOMPUTER_API_KEY
-// → 202 { "run": { … } }
+// → 201 { "run": { … } }
 ```
 
 </CodeGroup>
@@ -188,7 +188,7 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 <CodeGroup>
 
 ```ts TypeScript SDK
-const { runs, nextCursor } = await oc.agents.schedules("agt_...").runs("sch_...", { limit: 50 });
+const { runs, nextCursor } = await oc.agents.schedules.runs("agt_...", "sch_...", { limit: 50 });
 ```
 
 ```bash oc CLI
@@ -233,7 +233,7 @@ Each firing decision appends a `srn_…` run, so the history shows why a slot di
 | --- | --- |
 | `enacted` | A session was created — `session_id` is set. |
 | `skipped` | The previous run was still going and `overlap` is `skip`. |
-| `failed` | Enactment errored; `error` is set and it counts toward auto-pause. |
+| `failed` | Enactment errored; `error` is set. Scheduled firings count toward auto-pause; manual fires don't. |
 
 Fields: `id` (`srn_…`), `scheduled_for?` (the slot; `null` for a manual fire), `fired_at`, `outcome`, `session_id?`, `error?`.
 
