@@ -1,7 +1,7 @@
 """OpenComputer Python SDK - cloud sandbox platform."""
 
 from opencomputer.sandbox import Sandbox, ScalingLockedError, PlanLimitError, SandboxFamilyLimitError
-from opencomputer.browser import Browser, BrowserProfile
+from opencomputer.browser import Browser, BrowserProfile, BrowserRun, BrowserWorkflow, BrowserWorkflowRun
 from opencomputer.agent import Agent, AgentEvent, AgentSession, AgentSessionInfo
 from opencomputer.filesystem import Filesystem
 from opencomputer.exec import Exec, ProcessResult, ExecSession, ExecSessionInfo
@@ -31,6 +31,9 @@ __all__ = [
     "Sandbox",
     "Browser",
     "BrowserProfile",
+    "BrowserRun",
+    "BrowserWorkflow",
+    "BrowserWorkflowRun",
     "ScalingLockedError",
     "PlanLimitError",
     "SandboxFamilyLimitError",
@@ -68,4 +71,4 @@ __all__ = [
     "TagKeyInfo",
 ]
 
-__version__ = "0.6.7"
+__version__ = "0.6.8"

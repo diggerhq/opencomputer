@@ -253,6 +253,225 @@ browser = await Browser.create(
 
 </CodeGroup>
 
+## Browser Runs and Workflows
+
+Browser Runs and Workflows are also in preview. They run Playwright automation
+against Browser Sessions and return durable status, step outputs, errors, and
+browser metadata through the Browser Sessions API.
+
+Use a **Browser Run** for one task against one browser:
+
+<CodeGroup>
+
+```typescript TypeScript
+import { BrowserRun } from "@opencomputer/sdk";
+
+const run = await BrowserRun.create({
+  browser: {
+    profile: { name: "linkedin-login", save_changes: true },
+    headless: false,
+    start_url: "https://www.linkedin.com/",
+  },
+  task: "linkedin.checkInbox",
+  input: {
+    limit: 5,
+  },
+});
+
+const result = await run.wait();
+
+console.log(result.status);
+console.log(result.output);
+console.log(result.steps);
+```
+
+```python Python
+from opencomputer import BrowserRun
+
+run = await BrowserRun.create(
+    browser={
+        "profile": {"name": "linkedin-login", "save_changes": True},
+        "headless": False,
+        "start_url": "https://www.linkedin.com/",
+    },
+    task="linkedin.checkInbox",
+    input={"limit": 5},
+)
+
+result = await run.wait()
+
+print(result.status)
+print(result.output)
+print(result.steps)
+```
+
+</CodeGroup>
+
+Use a **Browser Workflow** when you want reusable jobs and steps. Each job owns
+one browser session; every step inside that job runs in the same browser.
+
+<CodeGroup>
+
+```typescript TypeScript
+import { BrowserWorkflow } from "@opencomputer/sdk";
+
+const workflow = await BrowserWorkflow.create({
+  name: "linkedin.sendAndVerify",
+  concurrency: "sequential",
+  jobs: {
+    send: {
+      browser: {
+        profile: { name: "{{input.profileName}}", save_changes: true },
+        headless: false,
+        start_url: "https://www.linkedin.com/",
+      },
+      saveProfile: true,
+      steps: [
+        {
+          id: "send_message",
+          task: "linkedin.sendMessage",
+          input: {
+            target: "{{input.target}}",
+            message: "{{input.message}}",
+          },
+        },
+      ],
+    },
+    verify: {
+      needs: ["send"],
+      browser: {
+        profile: { name: "{{input.profileName}}" },
+        headless: true,
+        start_url: "https://www.linkedin.com/messaging/",
+      },
+      steps: [
+        {
+          id: "verify_sent",
+          task: "linkedin.verifyMessageSent",
+          input: {
+            target: "{{input.target}}",
+            message: "{{input.message}}",
+            sendResult: "{{jobs.send.steps.send_message.output}}",
+          },
+        },
+      ],
+    },
+  },
+});
+
+const run = await workflow.run({
+  input: {
+    profileName: "linkedin-login",
+    target: "Utpal Nadiger",
+    message: "Hey Utpal, wanted to reach out.",
+  },
+});
+
+const result = await run.wait();
+console.log(result.status);
+console.log(result.output);
+```
+
+```python Python
+from opencomputer import BrowserWorkflow
+
+workflow = await BrowserWorkflow.create(
+    name="linkedin.sendAndVerify",
+    concurrency="sequential",
+    jobs={
+        "send": {
+            "browser": {
+                "profile": {"name": "{{input.profileName}}", "save_changes": True},
+                "headless": False,
+                "start_url": "https://www.linkedin.com/",
+            },
+            "saveProfile": True,
+            "steps": [
+                {
+                    "id": "send_message",
+                    "task": "linkedin.sendMessage",
+                    "input": {
+                        "target": "{{input.target}}",
+                        "message": "{{input.message}}",
+                    },
+                }
+            ],
+        },
+        "verify": {
+            "needs": ["send"],
+            "browser": {
+                "profile": {"name": "{{input.profileName}}"},
+                "headless": True,
+                "start_url": "https://www.linkedin.com/messaging/",
+            },
+            "steps": [
+                {
+                    "id": "verify_sent",
+                    "task": "linkedin.verifyMessageSent",
+                    "input": {
+                        "target": "{{input.target}}",
+                        "message": "{{input.message}}",
+                        "sendResult": "{{jobs.send.steps.send_message.output}}",
+                    },
+                }
+            ],
+        },
+    },
+)
+
+run = await workflow.run(
+    input={
+        "profileName": "linkedin-login",
+        "target": "Utpal Nadiger",
+        "message": "Hey Utpal, wanted to reach out.",
+    }
+)
+
+result = await run.wait()
+print(result.status)
+print(result.output)
+```
+
+</CodeGroup>
+
+Jobs without `needs` are parallel-eligible when `concurrency` is set to
+`parallel`. By default, workflows run sequentially. Jobs that use the same
+profile should be ordered with `needs` so the profile can be saved and reused
+cleanly.
+
+Raw Playwright mode is available only for approved organizations:
+
+```typescript TypeScript
+import { BrowserRun } from "@opencomputer/sdk";
+
+const run = await BrowserRun.create({
+  mode: "raw_playwright",
+  browser: { headless: true },
+  script: `
+    export default async function run({ page, input }) {
+      await page.goto(input.url);
+      return { title: await page.title(), url: page.url() };
+    }
+  `,
+  input: {
+    url: "https://example.com",
+  },
+});
+
+console.log((await run.wait()).output);
+```
+
+Runs remain queryable after completion:
+
+```typescript TypeScript
+import { BrowserRun } from "@opencomputer/sdk";
+
+const run = await BrowserRun.connect("bwrun_...");
+console.log(run.status);
+console.log(run.jobs);
+console.log(run.steps);
+```
+
 ## Authentication
 
 The SDK uses your OpenComputer API key:

@@ -16,7 +16,28 @@ export {
   type AllowedHostsInfo,
   type SandboxKillOptions,
 } from "./sandbox.js";
-export { Browser, BrowserProfile, type BrowserCreateOpts, type BrowserData, type BrowserProfileCreateOpts, type BrowserProfileData } from "./browser.js";
+export {
+  Browser,
+  BrowserProfile,
+  BrowserRun,
+  BrowserWorkflow,
+  BrowserWorkflowRun,
+  type BrowserCreateOpts,
+  type BrowserData,
+  type BrowserProfileCreateOpts,
+  type BrowserProfileData,
+  type BrowserRunCreateOpts,
+  type BrowserRunData,
+  type BrowserRunStatus,
+  type BrowserStepMode,
+  type BrowserWaitOpts,
+  type BrowserWorkflowCreateOpts,
+  type BrowserWorkflowData,
+  type BrowserWorkflowDefinition,
+  type BrowserWorkflowJob,
+  type BrowserWorkflowRunCreateOpts,
+  type BrowserWorkflowStep,
+} from "./browser.js";
 export { SandboxAgent, type SandboxAgentEvent, type SandboxAgentConfig, type SandboxAgentStartOpts, type SandboxAgentSession, type McpServerConfig } from "./agent.js";
 // Managed Durable Agent Sessions (the OpenComputer client + Session handle).
 export * from "./agents/index.js";

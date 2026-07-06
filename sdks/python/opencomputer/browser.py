@@ -245,6 +245,233 @@ class BrowserProfile:
         )
 
 
+@dataclass
+class BrowserRun:
+    """Browser runner execution state."""
+
+    id: str
+    status: str
+    type: str = "workflow"
+    workflow_id: str | None = None
+    concurrency: str | None = None
+    input: dict[str, Any] | None = None
+    definition: dict[str, Any] | None = None
+    output: Any = None
+    error: Any = None
+    trigger_run_id: str | None = None
+    jobs: list[dict[str, Any]] | None = None
+    steps: list[dict[str, Any]] | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    canceled_at: str | None = None
+    _api_url: str = ""
+    _api_key: str = ""
+    _client: httpx.AsyncClient | None = None
+
+    @classmethod
+    async def create(
+        cls,
+        *,
+        api_key: str | None = None,
+        api_url: str | None = None,
+        browser: dict[str, Any] | None = None,
+        mode: str | None = None,
+        task: str | None = None,
+        script: str | None = None,
+        input: dict[str, Any] | None = None,
+        save_profile: bool | None = None,
+        close_browser: bool | None = None,
+    ) -> BrowserRun:
+        """Create a single browser run."""
+        url = _resolve_browser_api_url(api_url)
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
+        client = httpx.AsyncClient(base_url=url, headers=_headers(key), timeout=30.0)
+        body = _create_body(
+            browser=browser,
+            mode=mode,
+            task=task,
+            script=script,
+            input=input,
+            saveProfile=save_profile,
+            closeBrowser=close_browser,
+        )
+        resp = await client.post("/v1/browser-runs", json=body)
+        resp.raise_for_status()
+        return cls._from_data(resp.json(), url, key, client)
+
+    @classmethod
+    async def connect(
+        cls,
+        run_id: str,
+        *,
+        api_key: str | None = None,
+        api_url: str | None = None,
+    ) -> BrowserRun:
+        """Load a browser run by ID."""
+        url = _resolve_browser_api_url(api_url)
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
+        client = httpx.AsyncClient(base_url=url, headers=_headers(key), timeout=30.0)
+        endpoint = "browser-runs" if run_id.startswith("brun_") else "browser-workflow-runs"
+        resp = await client.get(f"/v1/{endpoint}/{run_id}")
+        resp.raise_for_status()
+        return cls._from_data(resp.json(), url, key, client)
+
+    async def refresh(self) -> BrowserRun:
+        """Reload the run state."""
+        return await BrowserRun.connect(self.id, api_key=self._api_key, api_url=self._api_url)
+
+    async def wait(self, *, interval_seconds: float = 1.0, timeout_seconds: float = 300.0) -> BrowserRun:
+        """Poll until the run reaches a terminal status."""
+        import asyncio
+        import time
+
+        deadline = time.monotonic() + timeout_seconds
+        current: BrowserRun = self
+        while current.status not in {"completed", "failed", "canceled", "expired"}:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"Timed out waiting for browser run {self.id}")
+            await asyncio.sleep(interval_seconds)
+            current = await current.refresh()
+        return current
+
+    @classmethod
+    def _from_data(
+        cls,
+        data: dict[str, Any],
+        api_url: str,
+        api_key: str,
+        client: httpx.AsyncClient,
+    ) -> BrowserRun:
+        return cls(
+            id=data["id"],
+            type=data.get("type", "workflow"),
+            status=data["status"],
+            workflow_id=data.get("workflow_id"),
+            concurrency=data.get("concurrency"),
+            input=data.get("input"),
+            definition=data.get("definition"),
+            output=data.get("output"),
+            error=data.get("error"),
+            trigger_run_id=data.get("trigger_run_id"),
+            jobs=data.get("jobs", []),
+            steps=data.get("steps", []),
+            created_at=data.get("created_at"),
+            updated_at=data.get("updated_at"),
+            started_at=data.get("started_at"),
+            finished_at=data.get("finished_at"),
+            canceled_at=data.get("canceled_at"),
+            _api_url=api_url,
+            _api_key=api_key,
+            _client=client,
+        )
+
+
+@dataclass
+class BrowserWorkflow:
+    """Reusable browser workflow definition."""
+
+    id: str
+    name: str
+    definition: dict[str, Any]
+    description: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    deleted_at: str | None = None
+    _api_url: str = ""
+    _api_key: str = ""
+    _client: httpx.AsyncClient | None = None
+
+    @classmethod
+    async def create(
+        cls,
+        *,
+        api_key: str | None = None,
+        api_url: str | None = None,
+        name: str,
+        jobs: dict[str, Any],
+        description: str | None = None,
+        concurrency: str | None = None,
+    ) -> BrowserWorkflow:
+        """Create a reusable browser workflow."""
+        url = _resolve_browser_api_url(api_url)
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
+        client = httpx.AsyncClient(base_url=url, headers=_headers(key), timeout=30.0)
+        body = _create_body(name=name, description=description, concurrency=concurrency, jobs=jobs)
+        resp = await client.post("/v1/browser-workflows", json=body)
+        resp.raise_for_status()
+        return cls._from_data(resp.json(), url, key, client)
+
+    @classmethod
+    async def connect(
+        cls,
+        workflow_id: str,
+        *,
+        api_key: str | None = None,
+        api_url: str | None = None,
+    ) -> BrowserWorkflow:
+        """Load a browser workflow by ID."""
+        url = _resolve_browser_api_url(api_url)
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
+        client = httpx.AsyncClient(base_url=url, headers=_headers(key), timeout=30.0)
+        resp = await client.get(f"/v1/browser-workflows/{workflow_id}")
+        resp.raise_for_status()
+        return cls._from_data(resp.json(), url, key, client)
+
+    async def run(self, *, input: dict[str, Any] | None = None) -> BrowserRun:
+        """Start a run from this workflow."""
+        return await BrowserWorkflowRun.create(
+            workflow_id=self.id,
+            input=input,
+            api_key=self._api_key,
+            api_url=self._api_url,
+        )
+
+    @classmethod
+    def _from_data(
+        cls,
+        data: dict[str, Any],
+        api_url: str,
+        api_key: str,
+        client: httpx.AsyncClient,
+    ) -> BrowserWorkflow:
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            description=data.get("description"),
+            definition=data["definition"],
+            created_at=data.get("created_at"),
+            updated_at=data.get("updated_at"),
+            deleted_at=data.get("deleted_at"),
+            _api_url=api_url,
+            _api_key=api_key,
+            _client=client,
+        )
+
+
+class BrowserWorkflowRun:
+    """Factory for workflow executions."""
+
+    @classmethod
+    async def create(
+        cls,
+        *,
+        api_key: str | None = None,
+        api_url: str | None = None,
+        workflow_id: str | None = None,
+        workflow: dict[str, Any] | None = None,
+        input: dict[str, Any] | None = None,
+    ) -> BrowserRun:
+        url = _resolve_browser_api_url(api_url)
+        key = api_key or os.environ.get("OPENCOMPUTER_API_KEY", "")
+        client = httpx.AsyncClient(base_url=url, headers=_headers(key), timeout=30.0)
+        body = _create_body(workflowId=workflow_id, workflow=workflow, input=input)
+        resp = await client.post("/v1/browser-workflow-runs", json=body)
+        resp.raise_for_status()
+        return BrowserRun._from_data(resp.json(), url, key, client)
+
+
 def _headers(api_key: str) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if api_key:
