@@ -30,6 +30,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { SlackConnect } from '@/components/slack-connect'
 import { AgentSkills } from '@/components/agent-skills'
 import { AgentDeploySource } from '@/components/agent-deploy-source'
+import { AgentSchedules } from '@/components/agent-schedules'
 import { AgentRevisions } from '@/components/agent-revisions'
 import {
   WorkingRepoField,
@@ -437,9 +438,10 @@ export default function AgentDetail() {
               </Panel>
               <AgentSkills agentId={agent.id} />
             </div>
-            {/* Right rail: connect-or-status for the agent's source + Slack. */}
+            {/* Right rail: connect-or-status for the agent's source + Slack + schedules. */}
             <div className="space-y-4">
               <AgentDeploySource agentId={agent.id} />
+              <AgentSchedules agentId={agent.id} />
               <SlackConnect agentId={agent.id} agentName={agent.name} />
             </div>
           </div>
