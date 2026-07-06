@@ -74,17 +74,34 @@ const COMMON_TZS = [
   'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Shanghai', 'Asia/Tokyo', 'Australia/Sydney',
 ]
 const prettyTz = (z: string) => z.replace(/_/g, ' ')
+// Current UTC offset for a zone — e.g. "UTC-5", "UTC+5:30", "UTC+0" (DST-dependent: the offset in effect now).
+function tzOffset(z: string): string {
+  try {
+    const name =
+      new Intl.DateTimeFormat('en-US', { timeZone: z, timeZoneName: 'shortOffset' })
+        .formatToParts(new Date())
+        .find((p) => p.type === 'timeZoneName')?.value ?? ''
+    return name.replace('GMT', 'UTC').replace(/^UTC$/, 'UTC+0')
+  } catch {
+    return ''
+  }
+}
+function tzLabel(z: string): string {
+  if (z === 'UTC') return 'UTC'
+  const off = tzOffset(z)
+  return off ? `${prettyTz(z)} (${off})` : prettyTz(z)
+}
 function tzOptions(current: string): ({ value: string; label: string } | { separator: true })[] {
   const items: ({ value: string; label: string } | { separator: true })[] = []
   const seen = new Set<string>()
   const push = (z: string, label?: string) => {
     if (z && !seen.has(z)) {
       seen.add(z)
-      items.push({ value: z, label: label ?? prettyTz(z) })
+      items.push({ value: z, label: label ?? tzLabel(z) })
     }
   }
-  push('UTC', 'UTC')
-  if (LOCAL_TZ && LOCAL_TZ !== 'UTC') push(LOCAL_TZ, `${prettyTz(LOCAL_TZ)} (your timezone)`)
+  push('UTC')
+  if (LOCAL_TZ && LOCAL_TZ !== 'UTC') push(LOCAL_TZ, `${tzLabel(LOCAL_TZ)} · your timezone`)
   if (current && current !== 'UTC') push(current) // keep an already-set uncommon zone selectable
   items.push({ separator: true })
   for (const z of COMMON_TZS) push(z)
