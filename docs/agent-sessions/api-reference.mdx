@@ -471,6 +471,68 @@ Linking deploys the current production HEAD immediately (unless `deploy_now: fal
 | `status` | `active`, or a problem: `path_missing`, `ref_missing` (production branch deleted), `auth_required`, `repo_not_selected`, `app_suspended`, `error` |
 | `latest_seen_sha?` `active_deployed_sha?` | newest sha observed · sha behind the active revision |
 
+## Schedules
+
+*Run an agent on a cron — each firing starts a session. Managed with the SDK, the `oc` CLI, or REST (org key). Full guide: [Schedules](/agent-sessions/schedules).*
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.schedules(id).create(params)` | Create a schedule (`{ name, cron, tz?, input, overlap? }`). |
+| `oc.agents.schedules(id).list()` · `.get(sid)` | List / fetch. |
+| `oc.agents.schedules(id).update(sid, params)` | Edit `cron`/`tz`/`input`/`overlap`, or `{ paused }`. |
+| `oc.agents.schedules(id).del(sid)` | Delete (run history kept). |
+| `oc.agents.schedules(id).fire(sid)` | Fire now → a run; doesn't advance the cron. |
+| `oc.agents.schedules(id).runs(sid, { cursor?, limit? })` | Run history (each carries `sessionId`). |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /agents/:id/schedules` | Create → `201 { schedule }`. Body `{ name, cron, tz?, input, overlap? }`. |
+| `GET /agents/:id/schedules` · `…/:sid` | List / fetch. |
+| `PATCH /agents/:id/schedules/:sid` | Edit `cron`/`tz`/`input`/`overlap`, or `{ paused }`. |
+| `DELETE /agents/:id/schedules/:sid` | Delete → `204` (runs kept). |
+| `POST /agents/:id/schedules/:sid/fire` | Fire now → `202 { run }`; doesn't advance the cron. |
+| `GET /agents/:id/schedules/:sid/runs?cursor=&limit=` | Run history → `{ runs, next_cursor }`. |
+
+</Tab>
+
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc agent schedule create <name> --agent <id> --cron <c> [--tz <z>] --input <s>` | Create a schedule. |
+| `oc agent schedules [--agent <id>]` · `oc agent schedule get <name>` | List / fetch. |
+| `oc agent schedule pause\|resume <name>` | Pause / resume. |
+| `oc agent schedule delete <name>` | Delete. |
+| `oc agent schedule fire <name>` | Fire now (prints the `ses_…`). |
+| `oc agent schedule runs <name>` | Run history. |
+
+</Tab>
+
+</Tabs>
+
+`cron` is a 5-field expression (**1-minute** floor); `tz` is an IANA name (UTC if omitted); `input` (**≤ 32 KiB**) is the first message of every run; `overlap` is `skip` (default) or `allow`. Schedules are also **synced from [`agent.toml`](/agent-sessions/schedules#agent-toml)** on deploy — a repo-driven agent rejects edits other than pause/resume (`409`). Max **20** per agent.
+
+**`Schedule`**
+
+| Field | Notes |
+|---|---|
+| `id` `agent_id` | `sch_…` · the owning agent |
+| `name` `cron` `tz?` `input` | handle (unique per agent) · 5-field cron · IANA tz · first message |
+| `overlap` | `skip` (default) · `allow` |
+| `state` | `active · paused · auto_paused` (five straight enactment failures auto-pause) |
+| `next_fire_at` `last_fired_at?` | next occurrence · last fire |
+| `consecutive_failures` `last_error?` | in-a-row enactment failures · last error (cleared on success) |
+
+**`Run`** — one per firing decision, newest-first: `srn_…` with `outcome` (`enacted` · `skipped` · `failed`), `scheduled_for?` (`null` for a manual fire), `fired_at`, `session_id?` (when enacted), `error?`. Chain `session_id` into `GET /sessions/:id`.
+
 ## Destinations
 
 *Webhooks are configured via SDK/REST (no `oc` command).*
