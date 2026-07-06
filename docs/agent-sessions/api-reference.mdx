@@ -481,12 +481,12 @@ Linking deploys the current production HEAD immediately (unless `deploy_now: fal
 
 | Call | Purpose |
 | --- | --- |
-| `oc.agents.schedules(id).create(params)` | Create a schedule (`{ name, cron, tz?, input, overlap? }`). |
-| `oc.agents.schedules(id).list()` · `.get(sid)` | List / fetch. |
-| `oc.agents.schedules(id).update(sid, params)` | Edit `cron`/`tz`/`input`/`overlap`, or `{ paused }`. |
-| `oc.agents.schedules(id).del(sid)` | Delete (run history kept). |
-| `oc.agents.schedules(id).fire(sid)` | Fire now → a run; doesn't advance the cron. |
-| `oc.agents.schedules(id).runs(sid, { cursor?, limit? })` | Run history (each carries `sessionId`). |
+| `oc.agents.schedules.create(id, params)` | Create a schedule (`{ name, cron, tz?, input, overlap? }`). |
+| `oc.agents.schedules.list(id)` · `.get(id, sid)` | List / fetch. |
+| `oc.agents.schedules.update(id, sid, params)` | Edit `cron`/`tz`/`input`/`overlap`, or `{ paused }`. |
+| `oc.agents.schedules.delete(id, sid)` | Delete (run history kept). |
+| `oc.agents.schedules.fire(id, sid)` | Fire now → a run; doesn't advance the cron. |
+| `oc.agents.schedules.runs(id, sid, { cursor?, limit? })` | Run history (each carries `sessionId`). |
 
 </Tab>
 
@@ -498,7 +498,7 @@ Linking deploys the current production HEAD immediately (unless `deploy_now: fal
 | `GET /agents/:id/schedules` · `…/:sid` | List / fetch. |
 | `PATCH /agents/:id/schedules/:sid` | Edit `cron`/`tz`/`input`/`overlap`, or `{ paused }`. |
 | `DELETE /agents/:id/schedules/:sid` | Delete → `204` (runs kept). |
-| `POST /agents/:id/schedules/:sid/fire` | Fire now → `202 { run }`; doesn't advance the cron. |
+| `POST /agents/:id/schedules/:sid/fire` | Fire now → `201 { run }`; doesn't advance the cron. |
 | `GET /agents/:id/schedules/:sid/runs?cursor=&limit=` | Run history → `{ runs, next_cursor }`. |
 
 </Tab>
@@ -527,7 +527,7 @@ Linking deploys the current production HEAD immediately (unless `deploy_now: fal
 | `id` `agent_id` | `sch_…` · the owning agent |
 | `name` `cron` `tz?` `input` | handle (unique per agent) · 5-field cron · IANA tz · first message |
 | `overlap` | `skip` (default) · `allow` |
-| `state` | `active · paused · auto_paused` (five straight enactment failures auto-pause) |
+| `state` | `active · paused · auto_paused` (five straight scheduled-firing failures auto-pause) |
 | `next_fire_at` `last_fired_at?` | next occurrence · last fire |
 | `consecutive_failures` `last_error?` | in-a-row enactment failures · last error (cleared on success) |
 
