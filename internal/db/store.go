@@ -199,6 +199,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{49, "migrations/049_sandbox_webhooks.up.sql"},
 		{50, "migrations/050_checkpoint_kind.up.sql"},
 		{51, "migrations/051_image_cache_is_public.up.sql"},
+		{52, "migrations/052_paused_hibernation_mode.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -748,6 +749,13 @@ type SandboxSession struct {
 	// stored — set once via SetSandboxPreviewAuth and rotated via the same.
 	PreviewAuthHash   *string `json:"-"`
 	PreviewAuthScheme *string `json:"-"`
+
+	// Two-tier hibernation (customer status stays "hibernated"):
+	//   HibernationMode: nil while running, "paused" (RAM-resident on WorkerID),
+	//   or "deep" (savevm'd + evicted). PausedAt is set iff mode == "paused".
+	// Only populated by GetSandboxSession / GetSandboxSessionInOrg.
+	HibernationMode *string    `json:"-"`
+	PausedAt        *time.Time `json:"-"`
 }
 
 // SetSandboxPreviewAuth installs or rotates the per-sandbox bearer-token gate
@@ -1308,12 +1316,12 @@ func (s *Store) ReapStalePendingSessions(ctx context.Context, olderThan time.Dur
 func (s *Store) GetSandboxSession(ctx context.Context, sandboxID string) (*SandboxSession, error) {
 	session := &SandboxSession{}
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, stopped_at, error_msg, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version, secret_store_id, preview_auth_hash, preview_auth_scheme
+		`SELECT id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, stopped_at, error_msg, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version, secret_store_id, preview_auth_hash, preview_auth_scheme, hibernation_mode, paused_at
 		 FROM sandbox_sessions WHERE sandbox_id = $1 ORDER BY started_at DESC LIMIT 1`, sandboxID,
 	).Scan(&session.ID, &session.SandboxID, &session.OrgID, &session.UserID, &session.Template,
 		&session.Region, &session.WorkerID, &session.Status, &session.Config, &session.Metadata,
 		&session.StartedAt, &session.StoppedAt, &session.ErrorMsg, &session.BasedOnCheckpointID, &session.LastPatchSequence, &session.PatchError, &session.GoldenVersion,
-		&session.SecretStoreID, &session.PreviewAuthHash, &session.PreviewAuthScheme)
+		&session.SecretStoreID, &session.PreviewAuthHash, &session.PreviewAuthScheme, &session.HibernationMode, &session.PausedAt)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox session not found: %w", err)
 	}
@@ -1329,14 +1337,14 @@ func (s *Store) GetSandboxSession(ctx context.Context, sandboxID string) (*Sandb
 func (s *Store) GetSandboxSessionInOrg(ctx context.Context, orgID uuid.UUID, sandboxID string) (*SandboxSession, error) {
 	session := &SandboxSession{}
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, stopped_at, error_msg, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version, secret_store_id, preview_auth_hash, preview_auth_scheme
+		`SELECT id, sandbox_id, org_id, user_id, template, region, worker_id, status, config, metadata, started_at, stopped_at, error_msg, based_on_checkpoint_id, last_patch_sequence, patch_error, golden_version, secret_store_id, preview_auth_hash, preview_auth_scheme, hibernation_mode, paused_at
 		 FROM sandbox_sessions
 		 WHERE org_id = $1 AND sandbox_id = $2
 		 ORDER BY started_at DESC LIMIT 1`, orgID, sandboxID,
 	).Scan(&session.ID, &session.SandboxID, &session.OrgID, &session.UserID, &session.Template,
 		&session.Region, &session.WorkerID, &session.Status, &session.Config, &session.Metadata,
 		&session.StartedAt, &session.StoppedAt, &session.ErrorMsg, &session.BasedOnCheckpointID, &session.LastPatchSequence, &session.PatchError, &session.GoldenVersion,
-		&session.SecretStoreID, &session.PreviewAuthHash, &session.PreviewAuthScheme)
+		&session.SecretStoreID, &session.PreviewAuthHash, &session.PreviewAuthScheme, &session.HibernationMode, &session.PausedAt)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox session not found: %w", err)
 	}

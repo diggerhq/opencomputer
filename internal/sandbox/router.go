@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ const (
 	StateWaking
 	StateHibernating // transitional: hibernate in progress, blocks new operations
 	StateCreating    // async creation in progress — commands wait until ready
+	StatePaused      // RAM-resident on this worker (QMP stop + guest RAM paged out); instant resume via QMP cont
 )
 
 func (s SandboxState) String() string {
@@ -34,6 +36,8 @@ func (s SandboxState) String() string {
 		return "hibernating"
 	case StateCreating:
 		return "creating"
+	case StatePaused:
+		return "paused"
 	default:
 		return "unknown"
 	}
@@ -79,6 +83,12 @@ type SandboxRouter struct {
 	onHibernate     func(sandboxID string, result *HibernateResult)
 	onKill          func(sandboxID string)
 
+	// pausePromoteAfter is how long a box may stay in the RAM-resident paused
+	// tier before it's promoted to deep hibernation (savevm + evict), reclaiming
+	// its worker RAM/swap. Armed as a per-box timer on pause. Default 1h;
+	// override via OSB_PAUSE_PROMOTE_AFTER (Go duration) for testing.
+	pausePromoteAfter time.Duration
+
 	mu        sync.RWMutex
 	sandboxes map[string]*sandboxEntry
 
@@ -88,16 +98,23 @@ type SandboxRouter struct {
 // NewSandboxRouter creates a new sandbox router.
 func NewSandboxRouter(cfg RouterConfig) *SandboxRouter {
 	dt := cfg.DefaultTimeout
+	promoteAfter := time.Hour
+	if v := os.Getenv("OSB_PAUSE_PROMOTE_AFTER"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			promoteAfter = d
+		}
+	}
 	// 0 = no auto-timeout (sandboxes run until explicitly killed/hibernated)
 	return &SandboxRouter{
-		manager:         cfg.Manager,
-		checkpointStore: cfg.CheckpointStore,
-		store:           cfg.Store,
-		workerID:        cfg.WorkerID,
-		defaultTimeout:  dt,
-		onHibernate:     cfg.OnHibernate,
-		onKill:          cfg.OnKill,
-		sandboxes:       make(map[string]*sandboxEntry),
+		manager:           cfg.Manager,
+		checkpointStore:   cfg.CheckpointStore,
+		store:             cfg.Store,
+		workerID:          cfg.WorkerID,
+		defaultTimeout:    dt,
+		onHibernate:       cfg.OnHibernate,
+		onKill:            cfg.OnKill,
+		pausePromoteAfter: promoteAfter,
+		sandboxes:         make(map[string]*sandboxEntry),
 	}
 }
 
@@ -404,6 +421,25 @@ func (r *SandboxRouter) ensureRunning(ctx context.Context, sandboxID string) err
 			return ctx.Err()
 		}
 
+	case StatePaused:
+		// RAM-resident on this worker — resume is an instant QMP cont, not a
+		// checkpoint restore. Reuse the StateWaking machinery so concurrent
+		// requests queue on the single resume.
+		entry.state = StateWaking
+		entry.wakeCh = make(chan struct{})
+		entry.wakeErr = nil
+		entry.mu.Unlock()
+
+		r.doResume(ctx, sandboxID, entry)
+
+		entry.mu.Lock()
+		err := entry.wakeErr
+		entry.mu.Unlock()
+		if err != nil {
+			return fmt.Errorf("auto-resume failed for sandbox %s: %w", sandboxID, err)
+		}
+		return nil
+
 	default:
 		entry.mu.Unlock()
 		return fmt.Errorf("sandbox %s in unexpected state: %v", sandboxID, entry.state)
@@ -489,6 +525,160 @@ func (r *SandboxRouter) doWake(ctx context.Context, sandboxID string, entry *san
 	entry.mu.Unlock()
 }
 
+// pausableManager is the optional Manager capability for the RAM-resident pause
+// tier (implemented by the QEMU manager). Type-asserted so non-QEMU backends
+// aren't forced to implement it.
+type pausableManager interface {
+	Pause(ctx context.Context, sandboxID string) (reclaimedBytes uint64, err error)
+	Resume(ctx context.Context, sandboxID string) error
+}
+
+// MarkPaused records that a sandbox was paused out-of-band (e.g. an explicit
+// customer hibernate handled at the control plane via the PauseSandbox RPC), so
+// the router routes the next request through doResume instead of a checkpoint
+// wake. No-op if the sandbox isn't tracked.
+func (r *SandboxRouter) MarkPaused(sandboxID string) {
+	r.mu.RLock()
+	entry, ok := r.sandboxes[sandboxID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	entry.mu.Lock()
+	if entry.timer != nil {
+		entry.timer.Stop()
+		entry.timer = nil
+	}
+	entry.state = StatePaused
+	entry.mu.Unlock()
+	r.armPromoteTimer(sandboxID)
+}
+
+// armPromoteTimer (re)arms the per-box timer that promotes a paused VM to deep
+// hibernation after pausePromoteAfter (default 1h), reclaiming its worker
+// RAM/swap. Event-driven — no polling. A resume or promotion stops it.
+func (r *SandboxRouter) armPromoteTimer(sandboxID string) {
+	if r.pausePromoteAfter <= 0 {
+		return
+	}
+	r.mu.RLock()
+	entry, ok := r.sandboxes[sandboxID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	entry.mu.Lock()
+	if entry.state == StatePaused {
+		if entry.timer != nil {
+			entry.timer.Stop()
+		}
+		entry.timer = time.AfterFunc(r.pausePromoteAfter, func() { r.promoteToDeep(sandboxID) })
+	}
+	entry.mu.Unlock()
+}
+
+// promoteToDeep deep-hibernates a still-paused VM (savevm + evict). manager
+// Hibernate handles the paused case internally (it un-freezes the vCPUs so the
+// guest can quiesce before savevm). DB goes mode paused→deep (status stays
+// "hibernated"); no-op if the box already resumed or was promoted.
+func (r *SandboxRouter) promoteToDeep(sandboxID string) {
+	r.mu.RLock()
+	entry, ok := r.sandboxes[sandboxID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	entry.mu.Lock()
+	if entry.state != StatePaused || r.checkpointStore == nil {
+		entry.mu.Unlock()
+		return
+	}
+	entry.state = StateHibernating // block routing during savevm
+	entry.timer = nil
+	entry.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// Fully un-pause through the tested Resume path (QMP cont) and let the guest
+	// fault its RAM back from swap and settle, THEN run the normal Hibernate.
+	// This routes promotion through the exact savevm path a running-box hibernate
+	// uses, instead of a Cont-then-immediately-savevm special case that could
+	// capture the disk mid-flush.
+	if pm, ok := r.manager.(pausableManager); ok {
+		if err := pm.Resume(ctx, sandboxID); err != nil {
+			log.Printf("router: promote %s: resume-before-hibernate failed, keeping paused: %v", sandboxID, err)
+			entry.mu.Lock()
+			entry.state = StatePaused
+			entry.mu.Unlock()
+			return
+		}
+		time.Sleep(time.Second) // let the guest settle after faulting RAM back in
+	}
+
+	result, err := r.manager.Hibernate(ctx, sandboxID, r.checkpointStore)
+	if err != nil {
+		log.Printf("router: promote %s to deep failed, keeping paused: %v", sandboxID, err)
+		entry.mu.Lock()
+		entry.state = StatePaused
+		entry.mu.Unlock()
+		return
+	}
+	if r.store != nil {
+		if _, dbErr := r.store.SetSandboxDeep(ctx, sandboxID); dbErr != nil {
+			log.Printf("router: promote %s: SetSandboxDeep failed: %v", sandboxID, dbErr)
+		}
+	}
+	entry.mu.Lock()
+	entry.state = StateHibernated
+	entry.timer = nil
+	entry.mu.Unlock()
+	if r.onHibernate != nil {
+		r.onHibernate(sandboxID, result)
+	}
+	log.Printf("router: promoted paused sandbox %s to deep hibernation", sandboxID)
+}
+
+// doResume brings a paused VM back with an instant QMP cont (no checkpoint
+// restore). Mirrors doWake's queueing contract: the caller has moved the entry
+// to StateWaking with a fresh wakeCh; we set wakeErr and the terminal state,
+// then close wakeCh.
+func (r *SandboxRouter) doResume(_ context.Context, sandboxID string, entry *sandboxEntry) {
+	resumeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var resumeErr error
+	defer func() {
+		entry.mu.Lock()
+		entry.wakeErr = resumeErr
+		if resumeErr != nil {
+			entry.state = StatePaused // revert — still resident, just not resumed
+		} else {
+			entry.state = StateRunning
+			if entry.timeout > 0 {
+				entry.timer = time.AfterFunc(entry.timeout, func() { r.onTimeout(sandboxID) })
+			}
+		}
+		close(entry.wakeCh)
+		entry.wakeCh = nil
+		entry.mu.Unlock()
+	}()
+
+	pm, ok := r.manager.(pausableManager)
+	if !ok {
+		resumeErr = fmt.Errorf("resume not supported by this backend")
+		return
+	}
+	if err := pm.Resume(resumeCtx, sandboxID); err != nil {
+		resumeErr = err
+		return
+	}
+	if r.store != nil {
+		_ = r.store.SetSandboxResumed(resumeCtx, sandboxID)
+	}
+	log.Printf("router: auto-resumed paused sandbox %s", sandboxID)
+}
+
 // resetTimeout resets the rolling timeout for a sandbox.
 func (r *SandboxRouter) resetTimeout(sandboxID string) {
 	r.mu.RLock()
@@ -539,6 +729,30 @@ func (r *SandboxRouter) onTimeout(sandboxID string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	// Prefer the RAM-resident pause tier: instant, unbilled, no savevm, and it
+	// stays on this worker for a fast resume. Deep hibernation happens later,
+	// off the hot path, via the promotion reconciler (1h idle / per-org cap) or
+	// memory pressure. Fall through to deep hibernate if pause is unsupported or
+	// fails.
+	if pm, ok := r.manager.(pausableManager); ok {
+		if _, err := pm.Pause(ctx, sandboxID); err == nil {
+			if r.store != nil {
+				if _, dbErr := r.store.SetSandboxPaused(ctx, sandboxID); dbErr != nil {
+					log.Printf("router: sandbox %s paused but DB update failed: %v", sandboxID, dbErr)
+				}
+			}
+			entry.mu.Lock()
+			entry.state = StatePaused
+			entry.timer = nil
+			entry.mu.Unlock()
+			r.armPromoteTimer(sandboxID)
+			log.Printf("router: sandbox %s paused on idle (RAM-resident)", sandboxID)
+			return
+		} else {
+			log.Printf("router: pause failed for %s, falling back to deep hibernate: %v", sandboxID, err)
+		}
+	}
 
 	// Try hibernate if checkpoint store is available
 	if r.checkpointStore != nil {

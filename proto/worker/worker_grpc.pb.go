@@ -36,6 +36,8 @@ const (
 	SandboxWorker_ExecSessionResult_FullMethodName         = "/worker.SandboxWorker/ExecSessionResult"
 	SandboxWorker_HibernateSandbox_FullMethodName          = "/worker.SandboxWorker/HibernateSandbox"
 	SandboxWorker_WakeSandbox_FullMethodName               = "/worker.SandboxWorker/WakeSandbox"
+	SandboxWorker_PauseSandbox_FullMethodName              = "/worker.SandboxWorker/PauseSandbox"
+	SandboxWorker_ResumeSandbox_FullMethodName             = "/worker.SandboxWorker/ResumeSandbox"
 	SandboxWorker_RebootSandbox_FullMethodName             = "/worker.SandboxWorker/RebootSandbox"
 	SandboxWorker_PowerCycleSandbox_FullMethodName         = "/worker.SandboxWorker/PowerCycleSandbox"
 	SandboxWorker_SaveAsTemplate_FullMethodName            = "/worker.SandboxWorker/SaveAsTemplate"
@@ -73,6 +75,12 @@ type SandboxWorkerClient interface {
 	ExecSessionResult(ctx context.Context, in *ExecSessionResultRequest, opts ...grpc.CallOption) (*ExecSessionResultResponse, error)
 	HibernateSandbox(ctx context.Context, in *HibernateSandboxRequest, opts ...grpc.CallOption) (*HibernateSandboxResponse, error)
 	WakeSandbox(ctx context.Context, in *WakeSandboxRequest, opts ...grpc.CallOption) (*WakeSandboxResponse, error)
+	// Pause = QMP stop + proactive guest-RAM pageout (RAM-resident fast tier that
+	// stays on this worker). Resume = QMP cont. The customer-facing hibernate/wake
+	// maps here for the common case; deep savevm hibernation stays on
+	// HibernateSandbox/WakeSandbox.
+	PauseSandbox(ctx context.Context, in *PauseSandboxRequest, opts ...grpc.CallOption) (*PauseSandboxResponse, error)
+	ResumeSandbox(ctx context.Context, in *ResumeSandboxRequest, opts ...grpc.CallOption) (*ResumeSandboxResponse, error)
 	// Reboot performs a soft, in-place guest reset (QMP system_reset). The
 	// QEMU process, network, and workspace stay in place; only the guest
 	// kernel and processes are reset. Recovers from in-guest wedges (zombie
@@ -296,6 +304,26 @@ func (c *sandboxWorkerClient) WakeSandbox(ctx context.Context, in *WakeSandboxRe
 	return out, nil
 }
 
+func (c *sandboxWorkerClient) PauseSandbox(ctx context.Context, in *PauseSandboxRequest, opts ...grpc.CallOption) (*PauseSandboxResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PauseSandboxResponse)
+	err := c.cc.Invoke(ctx, SandboxWorker_PauseSandbox_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sandboxWorkerClient) ResumeSandbox(ctx context.Context, in *ResumeSandboxRequest, opts ...grpc.CallOption) (*ResumeSandboxResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResumeSandboxResponse)
+	err := c.cc.Invoke(ctx, SandboxWorker_ResumeSandbox_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *sandboxWorkerClient) RebootSandbox(ctx context.Context, in *RebootSandboxRequest, opts ...grpc.CallOption) (*RebootSandboxResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RebootSandboxResponse)
@@ -457,6 +485,12 @@ type SandboxWorkerServer interface {
 	ExecSessionResult(context.Context, *ExecSessionResultRequest) (*ExecSessionResultResponse, error)
 	HibernateSandbox(context.Context, *HibernateSandboxRequest) (*HibernateSandboxResponse, error)
 	WakeSandbox(context.Context, *WakeSandboxRequest) (*WakeSandboxResponse, error)
+	// Pause = QMP stop + proactive guest-RAM pageout (RAM-resident fast tier that
+	// stays on this worker). Resume = QMP cont. The customer-facing hibernate/wake
+	// maps here for the common case; deep savevm hibernation stays on
+	// HibernateSandbox/WakeSandbox.
+	PauseSandbox(context.Context, *PauseSandboxRequest) (*PauseSandboxResponse, error)
+	ResumeSandbox(context.Context, *ResumeSandboxRequest) (*ResumeSandboxResponse, error)
 	// Reboot performs a soft, in-place guest reset (QMP system_reset). The
 	// QEMU process, network, and workspace stay in place; only the guest
 	// kernel and processes are reset. Recovers from in-guest wedges (zombie
@@ -548,6 +582,12 @@ func (UnimplementedSandboxWorkerServer) HibernateSandbox(context.Context, *Hiber
 }
 func (UnimplementedSandboxWorkerServer) WakeSandbox(context.Context, *WakeSandboxRequest) (*WakeSandboxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method WakeSandbox not implemented")
+}
+func (UnimplementedSandboxWorkerServer) PauseSandbox(context.Context, *PauseSandboxRequest) (*PauseSandboxResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PauseSandbox not implemented")
+}
+func (UnimplementedSandboxWorkerServer) ResumeSandbox(context.Context, *ResumeSandboxRequest) (*ResumeSandboxResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResumeSandbox not implemented")
 }
 func (UnimplementedSandboxWorkerServer) RebootSandbox(context.Context, *RebootSandboxRequest) (*RebootSandboxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RebootSandbox not implemented")
@@ -900,6 +940,42 @@ func _SandboxWorker_WakeSandbox_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SandboxWorker_PauseSandbox_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PauseSandboxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxWorkerServer).PauseSandbox(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxWorker_PauseSandbox_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxWorkerServer).PauseSandbox(ctx, req.(*PauseSandboxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SandboxWorker_ResumeSandbox_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResumeSandboxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxWorkerServer).ResumeSandbox(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxWorker_ResumeSandbox_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxWorkerServer).ResumeSandbox(ctx, req.(*ResumeSandboxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SandboxWorker_RebootSandbox_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RebootSandboxRequest)
 	if err := dec(in); err != nil {
@@ -1218,6 +1294,14 @@ var SandboxWorker_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "WakeSandbox",
 			Handler:    _SandboxWorker_WakeSandbox_Handler,
+		},
+		{
+			MethodName: "PauseSandbox",
+			Handler:    _SandboxWorker_PauseSandbox_Handler,
+		},
+		{
+			MethodName: "ResumeSandbox",
+			Handler:    _SandboxWorker_ResumeSandbox_Handler,
 		},
 		{
 			MethodName: "RebootSandbox",

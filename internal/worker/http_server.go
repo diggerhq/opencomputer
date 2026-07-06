@@ -2,6 +2,7 @@ package worker
 
 import (
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/labstack/echo/v4"
@@ -77,6 +78,14 @@ func NewHTTPServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, execMgr *san
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok", "role": "worker"})
 	})
 
+	// Debug-only pause/resume hooks for measuring the RAM-resident pause tier
+	// (localhost, no auth). Gated by OSB_DEBUG_PAUSE=1 — never registered in
+	// normal operation. Scaffolding for Phase-1 validation; remove before GA.
+	if os.Getenv("OSB_DEBUG_PAUSE") == "1" {
+		e.POST("/debug/pause/:id", s.debugPause)
+		e.POST("/debug/resume/:id", s.debugResume)
+	}
+
 	// All sandbox routes require JWT auth
 	api := e.Group("")
 	api.Use(auth.SandboxJWTMiddleware(jwtIssuer))
@@ -135,4 +144,29 @@ func (s *HTTPServer) Start(addr string) error {
 // Close gracefully shuts down the server.
 func (s *HTTPServer) Close() error {
 	return s.echo.Close()
+}
+
+// debugPause / debugResume are OSB_DEBUG_PAUSE-gated measurement hooks for the
+// RAM-resident pause tier. Not part of the product surface.
+func (s *HTTPServer) debugPause(c echo.Context) error {
+	pm, ok := s.manager.(pausableManager)
+	if !ok {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "pause not supported"})
+	}
+	reclaimed, err := pm.Pause(c.Request().Context(), c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"reclaimedBytes": reclaimed})
+}
+
+func (s *HTTPServer) debugResume(c echo.Context) error {
+	pm, ok := s.manager.(pausableManager)
+	if !ok {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "resume not supported"})
+	}
+	if err := pm.Resume(c.Request().Context(), c.Param("id")); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "resumed"})
 }

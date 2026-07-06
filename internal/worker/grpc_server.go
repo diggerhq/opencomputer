@@ -744,6 +744,51 @@ func (s *GRPCServer) ExecSessionResult(ctx context.Context, req *pb.ExecSessionR
 	return resp, nil
 }
 
+// pausableManager is the optional capability a manager backend implements to
+// support the RAM-resident pause tier (QEMU: stop + guest-RAM pageout). Kept as
+// a local capability interface (like LiveMigrator) so non-QEMU backends and
+// test mocks don't have to implement it.
+type pausableManager interface {
+	Pause(ctx context.Context, sandboxID string) (reclaimedBytes uint64, err error)
+	Resume(ctx context.Context, sandboxID string) error
+}
+
+// PauseSandbox freezes the VM's vCPUs and pages its guest RAM out to swap — the
+// RAM-resident fast tier. The VM stays on this worker (no checkpoint store
+// needed); ResumeSandbox brings it back instantly.
+func (s *GRPCServer) PauseSandbox(ctx context.Context, req *pb.PauseSandboxRequest) (*pb.PauseSandboxResponse, error) {
+	pm, ok := s.manager.(pausableManager)
+	if !ok {
+		return nil, fmt.Errorf("pause not supported by this worker backend")
+	}
+	reclaimed, err := pm.Pause(ctx, req.SandboxId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pause sandbox: %w", err)
+	}
+	// Record it in the router so the next routed request resumes (QMP cont)
+	// instead of attempting a checkpoint wake.
+	if s.router != nil {
+		s.router.MarkPaused(req.SandboxId)
+	}
+	return &pb.PauseSandboxResponse{
+		SandboxId:      req.SandboxId,
+		ReclaimedBytes: int64(reclaimed),
+	}, nil
+}
+
+// ResumeSandbox restores a paused VM's vCPUs (QMP cont). Paged-out guest memory
+// faults back from swap lazily — instant, no savevm/loadvm restore.
+func (s *GRPCServer) ResumeSandbox(ctx context.Context, req *pb.ResumeSandboxRequest) (*pb.ResumeSandboxResponse, error) {
+	pm, ok := s.manager.(pausableManager)
+	if !ok {
+		return nil, fmt.Errorf("resume not supported by this worker backend")
+	}
+	if err := pm.Resume(ctx, req.SandboxId); err != nil {
+		return nil, fmt.Errorf("failed to resume sandbox: %w", err)
+	}
+	return &pb.ResumeSandboxResponse{SandboxId: req.SandboxId}, nil
+}
+
 func (s *GRPCServer) HibernateSandbox(ctx context.Context, req *pb.HibernateSandboxRequest) (*pb.HibernateSandboxResponse, error) {
 	if s.checkpointStore == nil {
 		return nil, fmt.Errorf("hibernation not configured on this worker")
@@ -764,6 +809,16 @@ func (s *GRPCServer) HibernateSandbox(ctx context.Context, req *pb.HibernateSand
 	// Mark hibernated in sandbox router
 	if s.router != nil {
 		s.router.MarkHibernated(req.SandboxId, 600*time.Second)
+	}
+
+	// Record the deep tier: a HibernateSandbox always produces a savevm'd,
+	// evicted checkpoint. CAS on mode='paused' (the box was in the pause tier
+	// and is being promoted); a no-op otherwise. Lets the proxy route wake to
+	// the deep-restore path instead of trying the (now-evicted) worker.
+	if s.store != nil {
+		if _, err := s.store.SetSandboxDeep(ctx, req.SandboxId); err != nil {
+			log.Printf("grpc: SetSandboxDeep(%s) failed: %v", req.SandboxId, err)
+		}
 	}
 
 	// Emit hibernated lifecycle event BEFORE removing the per-sandbox SQLite.

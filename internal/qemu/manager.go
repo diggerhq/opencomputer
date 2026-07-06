@@ -274,6 +274,11 @@ type VMInstance struct {
 	// ticked) but doesn't represent a running sandbox here. The stale-incoming
 	// reaper destroys any whose migration never completes within the timeout.
 	incomingMigrationAt time.Time
+
+	// Set when the VM is paused (QMP stop + guest-RAM paged out to swap) — the
+	// customer-facing "hibernated" fast tier that stays resident on this worker.
+	// Zero = running. Drives the paused→deep promotion sweep. Guarded by opMu.
+	pausedAt time.Time
 }
 
 // SandboxMeta is persisted to sandbox-meta.json for recovery after hard kills.

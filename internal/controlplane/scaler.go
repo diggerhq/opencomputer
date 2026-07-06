@@ -629,22 +629,30 @@ func (s *Scaler) hibernateBatch(workerID string, count int) {
 	}
 
 	hibernated := 0
-	for _, sb := range listResp.Sandboxes {
+	// Prefer paused victims: they're already stopped/idle and customer-invisible
+	// ("hibernated" either way), so promoting them to deep is the least
+	// disruptive way to relieve pressure. Only evict running (active) sandboxes
+	// if paused victims aren't enough.
+	for _, want := range []string{"paused", "running"} {
 		if hibernated >= count {
 			break
 		}
-		if sb.Status != "running" {
-			continue
+		for _, sb := range listResp.Sandboxes {
+			if hibernated >= count {
+				break
+			}
+			if sb.Status != want {
+				continue
+			}
+			if _, err := client.HibernateSandbox(ctx, &pb.HibernateSandboxRequest{
+				SandboxId: sb.SandboxId,
+			}); err != nil {
+				log.Printf("scaler: emergency: hibernate %s failed: %v", sb.SandboxId, err)
+				continue
+			}
+			hibernated++
+			log.Printf("scaler: emergency: hibernated %s (%s) on worker %s", sb.SandboxId, want, workerID)
 		}
-		_, err := client.HibernateSandbox(ctx, &pb.HibernateSandboxRequest{
-			SandboxId: sb.SandboxId,
-		})
-		if err != nil {
-			log.Printf("scaler: emergency: hibernate %s failed: %v", sb.SandboxId, err)
-			continue
-		}
-		hibernated++
-		log.Printf("scaler: emergency: hibernated %s on worker %s", sb.SandboxId, workerID)
 	}
 
 	log.Printf("scaler: emergency batch complete for %s: %d/%d hibernated",

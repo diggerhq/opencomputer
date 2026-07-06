@@ -260,6 +260,17 @@ func (p *SandboxAPIProxy) ProxyHandler(c echo.Context) error {
 
 	// If hibernated, wake on demand.
 	if session.Status == "hibernated" {
+		// Paused tier: the VM is RAM-resident on its worker (QMP stop), not
+		// savevm'd. Forward straight to that worker, which resumes it (QMP cont)
+		// on this request via the router — instant, no checkpoint restore, no
+		// 524. Only if the worker is gone do we fall through to the deep-restore
+		// paths below (its RAM is lost with the worker, same as a running box).
+		if session.HibernationMode != nil && *session.HibernationMode == "paused" {
+			if w := p.registry.GetWorker(session.WorkerID); w != nil && w.HTTPAddr != "" {
+				return p.forward(c, sandboxID, w.HTTPAddr, session.WorkerID)
+			}
+			log.Printf("sandbox-api-proxy: paused sandbox %s: owning worker %s gone, trying recovery", sandboxID, session.WorkerID)
+		}
 		// Async exec path (POST /exec/run-async, GET …/result): never hold the
 		// connection on the restore — a large cold checkpoint can exceed
 		// Cloudflare's 100s and 524. Claim a worker (atomic CAS) and forward

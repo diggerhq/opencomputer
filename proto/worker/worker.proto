@@ -28,6 +28,13 @@ service SandboxWorker {
   rpc HibernateSandbox(HibernateSandboxRequest) returns (HibernateSandboxResponse);
   rpc WakeSandbox(WakeSandboxRequest) returns (WakeSandboxResponse);
 
+  // Pause = QMP stop + proactive guest-RAM pageout (RAM-resident fast tier that
+  // stays on this worker). Resume = QMP cont. The customer-facing hibernate/wake
+  // maps here for the common case; deep savevm hibernation stays on
+  // HibernateSandbox/WakeSandbox.
+  rpc PauseSandbox(PauseSandboxRequest) returns (PauseSandboxResponse);
+  rpc ResumeSandbox(ResumeSandboxRequest) returns (ResumeSandboxResponse);
+
   // Reboot performs a soft, in-place guest reset (QMP system_reset). The
   // QEMU process, network, and workspace stay in place; only the guest
   // kernel and processes are reset. Recovers from in-guest wedges (zombie
@@ -254,6 +261,21 @@ message WakeSandboxRequest {
 message WakeSandboxResponse {
   string sandbox_id = 1;
   string status = 2;
+}
+
+message PauseSandboxRequest {
+  string sandbox_id = 1;
+}
+message PauseSandboxResponse {
+  string sandbox_id = 1;
+  // Bytes advised out to swap (MADV_PAGEOUT) — for reclaim observability.
+  int64 reclaimed_bytes = 2;
+}
+message ResumeSandboxRequest {
+  string sandbox_id = 1;
+}
+message ResumeSandboxResponse {
+  string sandbox_id = 1;
 }
 
 message SaveAsTemplateRequest {

@@ -1921,6 +1921,10 @@ func (s *Server) hibernateSandboxRemote(c echo.Context, sandboxID string) error 
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
 	}
 	if session.Status != "running" {
+		// Idempotent: an already-hibernated (paused or deep) box is "hibernated".
+		if session.Status == "hibernated" {
+			return c.JSON(http.StatusOK, map[string]interface{}{"sandboxID": sandboxID, "status": "hibernated"})
+		}
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox is not running"})
 	}
 
@@ -1929,44 +1933,27 @@ func (s *Server) hibernateSandboxRemote(c echo.Context, sandboxID string) error 
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker unreachable"})
 	}
 
-	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 60*time.Second)
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 30*time.Second)
 	defer cancel()
 
-	grpcResp, err := client.HibernateSandbox(grpcCtx, &pb.HibernateSandboxRequest{
-		SandboxId: sandboxID,
+	// Customer "hibernate" maps to the RAM-resident pause tier: instant (QMP
+	// stop + guest-RAM pageout), unbilled, stays on this worker for a fast
+	// resume. The platform silently promotes it to deep (savevm) hibernation
+	// later — idle age (1h), the per-org paused cap, or memory pressure — so the
+	// customer only ever sees "hibernated". No checkpoint key/size to return.
+	if _, err := client.PauseSandbox(grpcCtx, &pb.PauseSandboxRequest{SandboxId: sandboxID}); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "hibernate failed: " + err.Error()})
+	}
+	if _, err := s.store.SetSandboxPaused(c.Request().Context(), sandboxID); err != nil {
+		log.Printf("hibernate: sandbox %s paused but DB update failed: %v", sandboxID, err)
+	}
+
+	// No route-cache invalidation: a paused box stays on session.WorkerID, and
+	// the proxy forwards resume traffic straight there.
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"sandboxID": sandboxID,
+		"status":    "hibernated",
 	})
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "hibernate failed: " + err.Error(),
-		})
-	}
-
-	// Record hibernation in PG
-	orgID, _ := auth.GetOrgID(c)
-	_, superseded, _ := s.store.CreateHibernation(c.Request().Context(), sandboxID, orgID,
-		grpcResp.CheckpointKey, grpcResp.SizeBytes,
-		session.Region, session.Template, session.Config)
-	s.deleteSupersededHibernation(superseded)
-	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "hibernated", nil)
-
-	// Invalidate the proxy route cache: wake may land the sandbox on a
-	// different worker, so subsequent data-plane requests must re-resolve
-	// the routing from the DB instead of hitting the old worker.
-	if s.sandboxAPIProxy != nil {
-		s.sandboxAPIProxy.InvalidateRouteCache(sandboxID)
-	}
-
-	resp := map[string]interface{}{
-		"sandboxID":      sandboxID,
-		"status":         "hibernated",
-		"hibernationKey": grpcResp.CheckpointKey,
-		"sizeBytes":      grpcResp.SizeBytes,
-	}
-
-	// Worker emits the "hibernated" lifecycle event before removing the
-	// per-sandbox SQLite — events-ingest picks it up and updates D1.
-
-	return c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) wakeSandbox(c echo.Context) error {

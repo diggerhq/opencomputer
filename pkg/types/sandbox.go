@@ -14,6 +14,12 @@ const (
 	SandboxStatusStopped    SandboxStatus = "stopped"
 	SandboxStatusError      SandboxStatus = "error"
 	SandboxStatusHibernated SandboxStatus = "hibernated"
+	// SandboxStatusPaused is a worker-internal status: the VM is RAM-resident but
+	// vCPU-stopped with guest RAM paged out (the fast hibernation tier). Not
+	// billed (usage ticker skips non-running) but distinct from "hibernated" so
+	// emergency hibernation can prefer paused victims. The control plane always
+	// projects it as "hibernated" to customers.
+	SandboxStatusPaused SandboxStatus = "paused"
 )
 
 // Sandbox represents a running sandbox instance.
