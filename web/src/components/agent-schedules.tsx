@@ -59,49 +59,62 @@ const CRON_PRESETS: { label: string; cron: string }[] = [
   { label: 'Every 15m', cron: '*/15 * * * *' },
 ]
 
-// The user's own zone (auto-detected) + UTC + common zones. The Radix Select isn't searchable, so a
-// curated list beats the ~400-entry IANA set — and the local zone covers most users anyway.
-const LOCAL_TZ = (() => {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone
-  } catch {
-    return ''
-  }
-})()
-const COMMON_TZS = [
-  'America/Los_Angeles', 'America/Denver', 'America/Chicago', 'America/New_York', 'America/Sao_Paulo',
-  'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Madrid', 'Africa/Johannesburg',
-  'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Shanghai', 'Asia/Tokyo', 'Australia/Sydney',
-]
 const prettyTz = (z: string) => z.replace(/_/g, ' ')
-// Current offset as a bare "+5:30" / "-4" / "+0" (DST-dependent: the offset in effect now).
-function tzOffset(z: string): string {
-  try {
-    const name =
-      new Intl.DateTimeFormat('en-US', { timeZone: z, timeZoneName: 'shortOffset' })
-        .formatToParts(new Date())
-        .find((p) => p.type === 'timeZoneName')?.value ?? ''
-    return name.replace(/^(?:GMT|UTC)/, '') || '+0'
-  } catch {
-    return ''
-  }
-}
+// Fixed UTC offsets - exactly one entry per offset, so the list is stable (no DST shifting the
+// offsets around). Values are fixed-offset IANA zones the API + cron accept: Etc/GMT has an INVERTED
+// sign (Etc/GMT+5 = UTC-5), and the fractional offsets use the region's non-DST zone. The city is
+// just a recognizable example of that offset.
+const TZ_OFFSETS: { value: string; city: string; hint: string }[] = [
+  { value: 'Etc/GMT+11', city: 'Midway', hint: '-11' },
+  { value: 'Etc/GMT+10', city: 'Honolulu', hint: '-10' },
+  { value: 'Etc/GMT+9', city: 'Anchorage', hint: '-9' },
+  { value: 'Etc/GMT+8', city: 'Los Angeles', hint: '-8' },
+  { value: 'Etc/GMT+7', city: 'Denver', hint: '-7' },
+  { value: 'Etc/GMT+6', city: 'Mexico City', hint: '-6' },
+  { value: 'Etc/GMT+5', city: 'New York', hint: '-5' },
+  { value: 'Etc/GMT+4', city: 'Halifax', hint: '-4' },
+  { value: 'Etc/GMT+3', city: 'Sao Paulo', hint: '-3' },
+  { value: 'Etc/GMT+2', city: 'South Georgia', hint: '-2' },
+  { value: 'Etc/GMT+1', city: 'Azores', hint: '-1' },
+  { value: 'Etc/GMT-1', city: 'Berlin', hint: '+1' },
+  { value: 'Etc/GMT-2', city: 'Cairo', hint: '+2' },
+  { value: 'Etc/GMT-3', city: 'Moscow', hint: '+3' },
+  { value: 'Asia/Tehran', city: 'Tehran', hint: '+3:30' },
+  { value: 'Etc/GMT-4', city: 'Dubai', hint: '+4' },
+  { value: 'Asia/Kabul', city: 'Kabul', hint: '+4:30' },
+  { value: 'Etc/GMT-5', city: 'Karachi', hint: '+5' },
+  { value: 'Asia/Kolkata', city: 'Mumbai', hint: '+5:30' },
+  { value: 'Asia/Kathmandu', city: 'Kathmandu', hint: '+5:45' },
+  { value: 'Etc/GMT-6', city: 'Dhaka', hint: '+6' },
+  { value: 'Asia/Yangon', city: 'Yangon', hint: '+6:30' },
+  { value: 'Etc/GMT-7', city: 'Bangkok', hint: '+7' },
+  { value: 'Etc/GMT-8', city: 'Singapore', hint: '+8' },
+  { value: 'Etc/GMT-9', city: 'Tokyo', hint: '+9' },
+  { value: 'Australia/Darwin', city: 'Darwin', hint: '+9:30' },
+  { value: 'Etc/GMT-10', city: 'Sydney', hint: '+10' },
+  { value: 'Etc/GMT-11', city: 'Noumea', hint: '+11' },
+  { value: 'Etc/GMT-12', city: 'Auckland', hint: '+12' },
+  { value: 'Etc/GMT-13', city: "Nuku'alofa", hint: '+13' },
+  { value: 'Etc/GMT-14', city: 'Kiritimati', hint: '+14' },
+]
 function tzOptions(current: string): ({ value: string; label: string; hint?: string } | { separator: true })[] {
-  const items: ({ value: string; label: string; hint?: string } | { separator: true })[] = []
-  const seen = new Set<string>()
-  const push = (z: string, label?: string) => {
-    if (z && !seen.has(z)) {
-      seen.add(z)
-      // The offset rides in `hint` (muted, right-aligned); UTC needs none.
-      items.push({ value: z, label: label ?? prettyTz(z), hint: z === 'UTC' ? undefined : tzOffset(z) })
-    }
+  const items: ({ value: string; label: string; hint?: string } | { separator: true })[] = [
+    { value: 'UTC', label: 'UTC' },
+    { separator: true },
+    ...TZ_OFFSETS.map((o) => ({ value: o.value, label: o.city, hint: o.hint })),
+  ]
+  // Preserve a zone set elsewhere (CLI/toml) that isn't one of our fixed offsets.
+  if (current && current !== 'UTC' && !items.some((i) => 'value' in i && i.value === current)) {
+    items.push({ separator: true }, { value: current, label: prettyTz(current) })
   }
-  push('UTC')
-  if (LOCAL_TZ && LOCAL_TZ !== 'UTC') push(LOCAL_TZ, `${prettyTz(LOCAL_TZ)} · your timezone`)
-  if (current && current !== 'UTC') push(current) // keep an already-set uncommon zone selectable
-  items.push({ separator: true })
-  for (const z of COMMON_TZS) push(z)
   return items
+}
+const TZ_BY_VALUE = new Map(TZ_OFFSETS.map((o) => [o.value, o]))
+// Friendly display of a stored tz on a schedule card (the raw Etc/GMT+5 has a confusing inverted sign).
+function tzDisplay(tz: string | null): string {
+  if (!tz || tz === 'UTC') return 'UTC'
+  const o = TZ_BY_VALUE.get(tz)
+  return o ? `UTC${o.hint}` : prettyTz(tz)
 }
 
 function StateBadge({ s }: { s: Schedule }) {
@@ -421,7 +434,7 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                       <code className="text-foreground font-mono">{s.cron}</code>
                       {gloss ? <span>{gloss}</span> : null}
                       <span className="text-border">·</span>
-                      <span>{s.tz ?? 'UTC'}</span>
+                      <span>{tzDisplay(s.tz)}</span>
                       <span className="text-border">·</span>
                       <span className="inline-flex items-center gap-1">
                         <CalendarClock className="size-3" />
