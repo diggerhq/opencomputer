@@ -30,7 +30,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { SlackConnect } from '@/components/slack-connect'
 import { AgentSkills } from '@/components/agent-skills'
 import { AgentDeploySource } from '@/components/agent-deploy-source'
-import { AgentSchedules } from '@/components/agent-schedules'
+import { AgentSchedulesTab } from '@/components/agent-schedules'
 import { AgentRevisions } from '@/components/agent-revisions'
 import {
   WorkingRepoField,
@@ -46,7 +46,7 @@ const ORG_DEFAULT = '__default__' // no pinned credential → org default resolv
 const NEW_CRED = '__new__' // create one inline
 const MANAGED = 'managed' // run via OpenComputer, no BYO key (token-billing §6.6)
 
-type Tab = 'overview' | 'revisions' | 'sessions' | 'settings'
+type Tab = 'overview' | 'revisions' | 'sessions' | 'schedules' | 'settings'
 
 export default function AgentDetail() {
   const { agentId = '', tab } = useParams()
@@ -57,9 +57,11 @@ export default function AgentDetail() {
       ? 'revisions'
       : tab === 'sessions'
         ? 'sessions'
-        : tab === 'settings'
-          ? 'settings'
-          : 'overview'
+        : tab === 'schedules'
+          ? 'schedules'
+          : tab === 'settings'
+            ? 'settings'
+            : 'overview'
 
   // Each tab is a thin control panel over one API resource — surface the call it drives
   // (REST + SDK), same as the other pages, so the dashboard reads as programmable.
@@ -67,6 +69,7 @@ export default function AgentDetail() {
     overview: { method: 'GET', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.get(id)', docs: `${DOCS}/agents` },
     revisions: { method: 'GET', path: `/v3/agents/${agentId}/revisions`, sdk: 'oc.agents.revisions.list(id)', docs: `${DOCS}/revisions` },
     sessions: { method: 'POST', path: '/v3/sessions', sdk: 'oc.sessions.create({ agent })', docs: `${DOCS}/sessions` },
+    schedules: { method: 'GET', path: `/v3/agents/${agentId}/schedules`, sdk: 'oc.agents.schedules.list(id)', docs: `${DOCS}/schedules` },
     settings: { method: 'PATCH', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.update(id, …)', docs: `${DOCS}/agents` },
   }
 
@@ -322,6 +325,11 @@ export default function AgentDetail() {
             current={active === 'sessions'}
           />
           <TabLink
+            to={`${base}/schedules`}
+            label="Schedules"
+            current={active === 'schedules'}
+          />
+          <TabLink
             to={`${base}/settings`}
             label="Settings"
             current={active === 'settings'}
@@ -438,16 +446,16 @@ export default function AgentDetail() {
               </Panel>
               <AgentSkills agentId={agent.id} />
             </div>
-            {/* Right rail: connect-or-status for the agent's source + Slack + schedules. */}
+            {/* Right rail: connect-or-status for the agent's source + Slack. */}
             <div className="space-y-4">
               <AgentDeploySource agentId={agent.id} />
-              <AgentSchedules agentId={agent.id} />
               <SlackConnect agentId={agent.id} agentName={agent.name} />
             </div>
           </div>
         )}
 
         {active === 'revisions' && <AgentRevisions agentId={agent.id} />}
+        {active === 'schedules' && <AgentSchedulesTab agentId={agent.id} />}
 
         {active === 'sessions' && (
           <Panel className="overflow-hidden">
