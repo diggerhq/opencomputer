@@ -64,6 +64,8 @@ func schedStr(p *string) string {
 }
 
 // resolveScheduleID maps a "sch_…" id (used as-is) or a schedule NAME (looked up on the agent) to id.
+// The prefix check is unambiguous: schedule names are strict slugs (^[a-z0-9][a-z0-9-]{0,63}$, no
+// underscores), so a name can never begin with "sch_".
 func resolveScheduleID(cmd *cobra.Command, sc *client.Client, agentID, ref string) (string, error) {
 	if strings.HasPrefix(ref, "sch_") {
 		return ref, nil

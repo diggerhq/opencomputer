@@ -28,6 +28,7 @@ import {
 } from '@/api/client'
 import { Panel, PanelContent } from '@/components/panel'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Field, Input, Select, Textarea } from '@/components/form'
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -123,6 +124,7 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<FormState | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<Schedule | null>(null)
 
   const { data: repoManaged } = useQuery({
     queryKey: ['agent-deploy-source', agentId],
@@ -190,6 +192,7 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
     mutationFn: (s: Schedule) => deleteSchedule(agentId, s.id),
     onSuccess: () => {
       invalidate()
+      setPendingDelete(null)
       notifySuccess('Schedule deleted.')
     },
     onError: (e) => notifyError("Couldn't delete the schedule.", e),
@@ -235,7 +238,7 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                 id="sch-name"
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="Morning docs sweep"
+                placeholder="morning-docs-sweep"
                 disabled={!!form.id}
               />
               {form.id ? <p className="text-muted-foreground mt-1 text-xs">Name can’t be changed after creation.</p> : null}
@@ -369,8 +372,7 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                               variant="ghost"
                               className="text-muted-foreground hover:text-red-600"
                               title="Delete"
-                              disabled={remove.isPending}
-                              onClick={() => remove.mutate(s)}
+                              onClick={() => setPendingDelete(s)}
                             >
                               <Trash2 className="size-4" />
                             </Button>
@@ -439,6 +441,17 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
       <p className="text-muted-foreground text-xs">
         Or from the CLI: <code className="font-mono">oc agent schedule create &lt;name&gt; --cron "0 9 * * 1-5" --input …</code>
       </p>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+        title={`Delete "${pendingDelete?.name ?? ''}"?`}
+        description="This schedule stops firing immediately. Run history is kept."
+        confirmLabel="Delete"
+        destructive
+        pending={remove.isPending}
+        onConfirm={() => pendingDelete && remove.mutate(pendingDelete)}
+      />
     </div>
   )
 }

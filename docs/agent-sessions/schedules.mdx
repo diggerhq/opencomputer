@@ -20,7 +20,7 @@ A platform tick runs every minute: it claims schedules whose `next_fire_at` has 
 | **Attribution** | The first `user.message` carries `actor { kind: "schedule", id, display }`; the session carries `metadata.schedule = { id, run_id, scheduled_for }`. |
 | **Idempotency** | One session per slot, keyed `sch_<id>:<slot>`. A tick that crashes and retries converges on the same session. |
 | **Overlap** | `skip` (default): if the previous run's session is still `queued`/`running`, record `skipped` and advance. `allow`: fire regardless. |
-| **Catch-up** | After downtime, fire **once** for the most recent missed slot, then advance past now — never replays a backlog. |
+| **Catch-up** | After downtime, a schedule fires **once** — the run's `scheduled_for` is the slot that was due — then advances past now. It never replays a backlog. |
 | **Failure** | Five consecutive scheduled-firing *enactment* failures (missing credential, no credit) → `auto_paused` with `last_error`. Session outcomes never change schedule state; neither do manual fires. |
 
 **Common crons** (`minute hour day-of-month month day-of-week`):
@@ -249,7 +249,7 @@ Scheduled sessions run unattended — cap them. Set agent [`limits`](/agent-sess
 
 ## Dashboard
 
-The agent's **Schedules** card lists each schedule with its next fire and state, a create dialog that previews upcoming fire times as you type the cron, and per-schedule run history linked to the sessions. Repo-linked schedules are read-only except pause/resume; `auto_paused` shows the last error.
+The agent's **Schedules** tab lists each schedule with its next fire and state, plus controls (pause/resume, test-fire, edit, delete) and per-schedule run history. The create form takes a cron — with quick presets and a plain-English gloss for common expressions — and a message; schedules created here run in **UTC** (a zone set via the API/CLI still displays). Repo-linked schedules are read-only except pause/resume; `auto_paused` shows the last error.
 
 ## Example
 
