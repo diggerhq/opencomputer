@@ -1,0 +1,259 @@
+---
+mode: "wide"
+title: "Schedules"
+description: "Run an agent on a cron — each firing starts a new session"
+---
+
+A **schedule** fires an agent on a cron: each firing starts one [session](/agent-sessions/sessions) with a fixed first message, so a recurring job needs no scheduler of your own. The session is ordinary — same runtime, streaming, and [destinations](/agent-sessions/webhooks) as any other.
+
+<Note>**Preview** — APIs may change before general availability.</Note>
+
+Declare schedules in the agent's [`agent.toml`](#agent-toml), or manage them over the [SDK, CLI, or REST](#management-api). They live on the **agent**, not a session.
+
+## How it works
+
+A platform tick runs every minute: it claims schedules whose `next_fire_at` has passed, enacts each, and advances `next_fire_at` to the next occurrence. Enacting starts a session on the agent's **active [revision](/agent-sessions/revisions) at fire time** with `input` as the first message; everything downstream — boot, events, SSE, destinations — is the normal session path.
+
+| Mechanic | Behavior |
+| --- | --- |
+| **Cron** | 5 fields, 1-minute resolution (a seconds field is rejected). `tz` is an IANA name; omit for UTC. DST follows the cron library — a skipped or repeated wall-clock hour resolves to the next real occurrence. |
+| **Attribution** | The first `user.message` carries `actor { kind: "schedule", id, display }`; the session carries `metadata.schedule = { id, run_id, scheduled_for }`. |
+| **Idempotency** | One session per slot, keyed `sch_<id>:<slot>`. A tick that crashes and retries converges on the same session. |
+| **Overlap** | `skip` (default): if the previous run's session is still `queued`/`running`, record `skipped` and advance. `allow`: fire regardless. |
+| **Catch-up** | After downtime, fire **once** for the most recent missed slot, then advance past now — never replays a backlog. |
+| **Failure** | Five consecutive *enactment* failures (missing credential, no credit) → `auto_paused` with `last_error`. Session outcomes never change schedule state. |
+
+**Common crons** (`minute hour day-of-month month day-of-week`):
+
+| Cron | Fires |
+| --- | --- |
+| `*/15 * * * *` | every 15 minutes |
+| `0 9 * * 1-5` | 09:00 on weekdays |
+| `0 0 * * 0` | Sundays at midnight |
+| `0 0 1 * *` | first of the month |
+
+## agent.toml
+
+An agent can carry several schedules — the same behavior on different cadences and inputs — each a `[[schedules]]` entry keyed by a `name` unique to the agent.
+
+```toml
+[[schedules]]
+name  = "docs-sweep"
+cron  = "0 9 * * 1-5"        # weekdays 09:00
+tz    = "Europe/London"      # optional; UTC if omitted
+input = "Reconcile docs/ against changes since yesterday; open a draft PR if anything drifted."
+
+[[schedules]]
+name  = "dep-audit"
+cron  = "0 0 * * 0"          # Sundays 00:00 UTC
+input = "Audit dependencies for CVEs; file an issue per finding."
+```
+
+`input` is the entire first message and no human is in the loop, so write it as a self-contained instruction.
+
+Each deploy (`git push` or `oc agent deploy`) syncs the table: upsert by `name`, drop schedules no longer declared, preserve `paused`. Omitting the `[[schedules]]` table syncs nothing — existing schedules are left alone.
+
+A schedule is a binding, not behavior: it sits outside the [revision](/agent-sessions/revisions) digest, so editing one doesn't cut a revision and a rollback doesn't touch it.
+
+<Note>For a [repo-linked](/agent-sessions/revisions#deploy-from-a-repo) agent the `agent.toml` owns the schedules — the API and dashboard can pause/resume but reject other edits (`409`), same as `prompt`/`model`.</Note>
+
+## Management API
+
+Org-key authenticated, server-side. Schedules are addressed under the agent.
+
+**Create:**
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const schedule = await oc.agents.schedules("agt_...").create({
+  name: "morning-docs-sweep",
+  cron: "0 9 * * 1-5",
+  tz: "Europe/London",       // optional — UTC if omitted
+  input: "Reconcile docs/ against changes since yesterday; open a draft PR if anything drifted.",
+  overlap: "skip",           // skip (default) · allow
+});
+// → { id: "sch_...", state: "active", nextFireAt: "2026-07-07T08:00:00Z", ... }
+```
+
+```bash oc CLI
+oc agent schedule create morning-docs-sweep --agent agt_... \
+  --cron "0 9 * * 1-5" --tz Europe/London \
+  --input "Reconcile docs/ against changes since yesterday; open a draft PR if anything drifted."
+```
+
+```http REST
+POST https://api.opencomputer.dev/v3/agents/agt_.../schedules
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "name": "morning-docs-sweep", "cron": "0 9 * * 1-5", "tz": "Europe/London",
+  "input": "Reconcile docs/ against changes since yesterday; open a draft PR if anything drifted." }
+// → 201 { "schedule": { … } }
+```
+
+</CodeGroup>
+
+**List and fetch:**
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const schedules = await oc.agents.schedules("agt_...").list();
+const schedule = await oc.agents.schedules("agt_...").get("sch_...");
+```
+
+```bash oc CLI
+oc agent schedules --agent agt_...
+oc agent schedule get morning-docs-sweep --agent agt_...
+```
+
+```http REST
+GET https://api.opencomputer.dev/v3/agents/agt_.../schedules
+GET https://api.opencomputer.dev/v3/agents/agt_.../schedules/sch_...
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+```
+
+</CodeGroup>
+
+**Update, pause, resume.** `PATCH` accepts `cron`, `tz`, `input`, `overlap`, and `paused`. A `cron`/`tz` change recomputes `next_fire_at` from now; resume recomputes from now and resets the failure counter — the paused window never back-fires.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+await oc.agents.schedules("agt_...").update("sch_...", { cron: "0 7 * * *" });
+await oc.agents.schedules("agt_...").update("sch_...", { paused: true });   // pause
+await oc.agents.schedules("agt_...").update("sch_...", { paused: false });  // resume
+```
+
+```bash oc CLI
+oc agent schedule pause  morning-docs-sweep --agent agt_...
+oc agent schedule resume morning-docs-sweep --agent agt_...
+```
+
+```http REST
+PATCH https://api.opencomputer.dev/v3/agents/agt_.../schedules/sch_...
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "cron": "0 7 * * *" }          // or { "paused": true } / { "paused": false }
+```
+
+</CodeGroup>
+
+**Delete** — removes the schedule; run history is retained.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+await oc.agents.schedules("agt_...").del("sch_...");
+```
+
+```bash oc CLI
+oc agent schedule delete morning-docs-sweep --agent agt_...
+```
+
+```http REST
+DELETE https://api.opencomputer.dev/v3/agents/agt_.../schedules/sch_...
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+// → 204
+```
+
+</CodeGroup>
+
+**Fire now** — enacts immediately in any state (paused included) and doesn't advance the cron. The test loop is `create` then `fire`.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const run = await oc.agents.schedules("agt_...").fire("sch_...");
+// → { id: "srn_...", outcome: "enacted", sessionId: "ses_..." }
+```
+
+```bash oc CLI
+oc agent schedule fire morning-docs-sweep --agent agt_...
+# prints the ses_… → oc session logs ses_…
+```
+
+```http REST
+POST https://api.opencomputer.dev/v3/agents/agt_.../schedules/sch_.../fire
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+// → 202 { "run": { … } }
+```
+
+</CodeGroup>
+
+**Runs** — newest-first; each row carries `session_id` to chain into [`GET /sessions/:id`](/agent-sessions/api-reference#sessions).
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const { runs, nextCursor } = await oc.agents.schedules("agt_...").runs("sch_...", { limit: 50 });
+```
+
+```bash oc CLI
+oc agent schedule runs morning-docs-sweep --agent agt_...
+```
+
+```http REST
+GET https://api.opencomputer.dev/v3/agents/agt_.../schedules/sch_.../runs?limit=50&cursor=…
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+// → { "runs": [ … ], "next_cursor": … }
+```
+
+</CodeGroup>
+
+## The schedule object
+
+| Field | Notes |
+| --- | --- |
+| `id` `agent_id` | `sch_…` · the agent whose active revision each run uses |
+| `name` | `^[a-z0-9][a-z0-9-]{0,63}$`, unique per agent — the `agent.toml` / CLI handle |
+| `cron` `tz?` | 5-field cron · IANA name, or `null` for UTC |
+| `input` | first user message of every run (≤ 32 KiB) |
+| `overlap` | `skip` (default) · `allow` |
+| `state` | `active · paused · auto_paused` |
+| `next_fire_at` `last_fired_at?` | next occurrence, UTC (derived) · last fire |
+| `consecutive_failures` `last_error?` | in-a-row enactment failures (`≥ 5` → `auto_paused`) · last error, cleared on success |
+| `created_at` `updated_at` | timestamps |
+
+### States
+
+| State | Meaning |
+| --- | --- |
+| `active` | Firing on schedule. |
+| `paused` | You paused it; the cron is ignored until resume. |
+| `auto_paused` | Five straight enactment failures paused it; `last_error` says why. |
+
+## Runs
+
+Each firing decision appends a `srn_…` run, so the history shows why a slot did or didn't produce a session.
+
+| `outcome` | When |
+| --- | --- |
+| `enacted` | A session was created — `session_id` is set. |
+| `skipped` | The previous run was still going and `overlap` is `skip`. |
+| `failed` | Enactment errored; `error` is set and it counts toward auto-pause. |
+
+Fields: `id` (`srn_…`), `scheduled_for?` (the slot; `null` for a manual fire), `fired_at`, `outcome`, `session_id?`, `error?`.
+
+## Limits
+
+- **≤ 20** schedules per agent.
+- `input` **≤ 32 KiB**.
+- Cron floor **1 minute**.
+
+<Warning>
+Scheduled sessions run unattended — cap them. Set agent [`limits`](/agent-sessions/sessions#limits) `turns` and `turn_seconds` (every run inherits them). `limits.tokens` is not enforced yet, so don't rely on it to bound spend.
+</Warning>
+
+## Dashboard
+
+The agent's **Schedules** card lists each schedule with its next fire and state, a create dialog that previews upcoming fire times as you type the cron, and per-schedule run history linked to the sessions. Repo-linked schedules are read-only except pause/resume; `auto_paused` shows the last error.
+
+## Example
+
+1. `agent.toml` declares `[[schedules]] name = "morning-docs-sweep", cron = "0 9 * * 1-5"`. `git push` deploys the agent and the schedule goes `active`.
+2. Weekday 09:00 → a session starts on the active revision, first message = `input`, `actor.kind = "schedule"`.
+3. The agent reconciles `docs/` and opens a draft PR — an ordinary session on the dashboard and your destinations.
+4. Next 09:00, if the prior run is still `running` (`overlap: "skip"`) → the firing records `skipped` and the schedule advances.
