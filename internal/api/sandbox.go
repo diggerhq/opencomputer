@@ -1956,6 +1956,46 @@ func (s *Server) hibernateSandboxRemote(c echo.Context, sandboxID string) error 
 	})
 }
 
+// internalDeepHibernate promotes a specific paused sandbox to deep hibernation.
+// Called by the api-edge cross-cell paused-cap enforcer (which has the org-global
+// view via D1) against the cell that currently hosts the sandbox. Only acts on
+// paused boxes; a no-op if the box already resumed or was promoted, so it's safe
+// to call redundantly.
+func (s *Server) internalDeepHibernate(c echo.Context) error {
+	id := c.Param("id")
+	if s.store == nil || s.workerRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "not available in this mode"})
+	}
+	session, err := s.store.GetSandboxSession(c.Request().Context(), id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+	}
+	// Only promote boxes still in the paused tier.
+	if session.HibernationMode == nil || *session.HibernationMode != "paused" {
+		mode := "none"
+		if session.HibernationMode != nil {
+			mode = *session.HibernationMode
+		}
+		return c.JSON(http.StatusOK, map[string]string{"sandboxID": id, "status": "skipped", "mode": mode})
+	}
+	client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker unreachable"})
+	}
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 120*time.Second)
+	defer cancel()
+	// The worker's HibernateSandbox un-freezes the paused VM, savevm's + evicts,
+	// records the checkpoint, and sets mode=deep.
+	if _, err := client.HibernateSandbox(grpcCtx, &pb.HibernateSandboxRequest{SandboxId: id}); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "deep hibernate failed: " + err.Error()})
+	}
+	// Wake may land the box on a different worker — drop the cached route.
+	if s.sandboxAPIProxy != nil {
+		s.sandboxAPIProxy.InvalidateRouteCache(id)
+	}
+	return c.JSON(http.StatusOK, map[string]string{"sandboxID": id, "status": "hibernated", "mode": "deep"})
+}
+
 func (s *Server) wakeSandbox(c echo.Context) error {
 	id := c.Param("id")
 	ctx := c.Request().Context()

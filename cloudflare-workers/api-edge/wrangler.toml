@@ -102,6 +102,9 @@ crons = ["*/5 * * * *"]
 
 [vars]
 WORKER_ENV = "dev"
+# Dev override of the per-org paused-sandbox cap (prod defaults to 100) so the
+# promotion path can be exercised without pausing hundreds of boxes.
+PAUSED_CAP = "10"
 # Cells eligible for new-org home assignment are NOT configured here anymore —
 # it's the `accepts_new_orgs` column on the D1 `cells` table (single source of
 # truth, toggled per-row without a deploy). See pickHomeCell in src/index.ts.

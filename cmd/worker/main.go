@@ -561,6 +561,25 @@ func main() {
 				_ = sandboxDBMgr.Remove(sandboxID)
 			}
 		},
+		OnPause: func(sandboxID string) {
+			// RAM-resident pause tier. The VM stays on this worker, so keep the
+			// per-sandbox SQLite; just emit "paused" so events-ingest flips D1
+			// sandboxes_index to hibernated/mode=paused (kept in sync + feeds the
+			// cross-cell paused cap). DB session status/mode is written by the
+			// router (SetSandboxPaused) already.
+			if sandboxDBMgr != nil {
+				if sdb, dbErr := sandboxDBMgr.Get(sandboxID); dbErr == nil {
+					_ = sdb.LogEvent("paused", map[string]string{"sandbox_id": sandboxID})
+				}
+			}
+		},
+		OnResume: func(sandboxID string) {
+			if sandboxDBMgr != nil {
+				if sdb, dbErr := sandboxDBMgr.Get(sandboxID); dbErr == nil {
+					_ = sdb.LogEvent("woke", map[string]string{"sandbox_id": sandboxID, "reason": "resume"})
+				}
+			}
+		},
 		OnKill: func(sandboxID string) {
 			log.Printf("opensandbox-worker: sandbox %s killed on timeout", sandboxID)
 			execMgr.RemoveSessions(sandboxID)
