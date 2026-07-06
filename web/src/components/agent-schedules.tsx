@@ -59,6 +59,38 @@ const CRON_PRESETS: { label: string; cron: string }[] = [
   { label: 'Every 15m', cron: '*/15 * * * *' },
 ]
 
+// The user's own zone (auto-detected) + UTC + common zones. The Radix Select isn't searchable, so a
+// curated list beats the ~400-entry IANA set — and the local zone covers most users anyway.
+const LOCAL_TZ = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone
+  } catch {
+    return ''
+  }
+})()
+const COMMON_TZS = [
+  'America/Los_Angeles', 'America/Denver', 'America/Chicago', 'America/New_York', 'America/Sao_Paulo',
+  'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Madrid', 'Africa/Johannesburg',
+  'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Shanghai', 'Asia/Tokyo', 'Australia/Sydney',
+]
+const prettyTz = (z: string) => z.replace(/_/g, ' ')
+function tzOptions(current: string): ({ value: string; label: string } | { separator: true })[] {
+  const items: ({ value: string; label: string } | { separator: true })[] = []
+  const seen = new Set<string>()
+  const push = (z: string, label?: string) => {
+    if (z && !seen.has(z)) {
+      seen.add(z)
+      items.push({ value: z, label: label ?? prettyTz(z) })
+    }
+  }
+  push('UTC', 'UTC')
+  if (LOCAL_TZ && LOCAL_TZ !== 'UTC') push(LOCAL_TZ, `${prettyTz(LOCAL_TZ)} (your timezone)`)
+  if (current && current !== 'UTC') push(current) // keep an already-set uncommon zone selectable
+  items.push({ separator: true })
+  for (const z of COMMON_TZS) push(z)
+  return items
+}
+
 function StateBadge({ s }: { s: Schedule }) {
   const cls =
     s.state === 'active'
@@ -142,14 +174,15 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
 
   const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['agent-schedules', agentId] })
 
-  const openCreate = () => setForm({ name: '', cron: '0 9 * * 1-5', tz: '', input: '', overlap: 'skip' })
+  const openCreate = () => setForm({ name: '', cron: '0 9 * * 1-5', tz: 'UTC', input: '', overlap: 'skip' })
   const openEdit = (s: Schedule) =>
-    setForm({ id: s.id, name: s.name, cron: s.cron, tz: s.tz ?? '', input: s.input, overlap: s.overlap })
+    setForm({ id: s.id, name: s.name, cron: s.cron, tz: s.tz ?? 'UTC', input: s.input, overlap: s.overlap })
 
   const save = useMutation({
     mutationFn: () => {
       const f = form!
-      const patch = { cron: f.cron.trim(), tz: f.tz.trim() || null, input: f.input.trim(), overlap: f.overlap }
+      // 'UTC' (the default) maps to null on the wire — the API treats null as UTC.
+      const patch = { cron: f.cron.trim(), tz: f.tz && f.tz !== 'UTC' ? f.tz : null, input: f.input.trim(), overlap: f.overlap }
       return f.id
         ? updateSchedule(agentId, f.id, patch)
         : createSchedule(agentId, { name: f.name.trim(), ...patch })
@@ -242,12 +275,11 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                   placeholder="0 9 * * 1-5"
                   className="font-mono"
                 />
-                <Input
-                  value={form.tz}
-                  onChange={(e) => setForm({ ...form, tz: e.target.value })}
-                  placeholder="UTC"
-                  className="max-w-40"
-                  aria-label="Time zone"
+                <Select
+                  value={form.tz || 'UTC'}
+                  onValueChange={(v) => setForm({ ...form, tz: v })}
+                  options={tzOptions(form.tz)}
+                  className="max-w-48"
                 />
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -267,7 +299,7 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                   </button>
                 ))}
                 <span className="text-muted-foreground ml-auto text-xs">
-                  {cronGloss ? cronGloss : '5-field cron · IANA time zone (UTC if blank)'}
+                  {cronGloss ? cronGloss : '5-field cron'}
                 </span>
               </div>
             </Field>
