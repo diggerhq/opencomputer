@@ -4,6 +4,7 @@ import {
   Deployments, Revisions, Activations, Skills, DeploymentSourceResource,
   type Deployment, type InlineSkillFile,
 } from "./deployments.js";
+import { Schedules } from "./schedules.js";
 
 export interface CreateAgentParams {
   name: string;
@@ -68,6 +69,8 @@ export class Agents {
   readonly skills: Skills;
   /** Repo linkage for push-to-deploy. */
   readonly deploymentSource: DeploymentSourceResource;
+  /** Cron for agents — schedules that fire a session per slot (015). */
+  readonly schedules: Schedules;
 
   constructor(private readonly http: Http) {
     this.deployments = new Deployments(http);
@@ -75,6 +78,7 @@ export class Agents {
     this.activations = new Activations(http);
     this.skills = new Skills(http);
     this.deploymentSource = new DeploymentSourceResource(http);
+    this.schedules = new Schedules(http);
   }
 
   create(params: CreateAgentParams): Promise<Agent> {
