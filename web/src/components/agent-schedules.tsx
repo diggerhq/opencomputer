@@ -60,61 +60,10 @@ const CRON_PRESETS: { label: string; cron: string }[] = [
 ]
 
 const prettyTz = (z: string) => z.replace(/_/g, ' ')
-// Fixed UTC offsets - exactly one entry per offset, so the list is stable (no DST shifting the
-// offsets around). Values are fixed-offset IANA zones the API + cron accept: Etc/GMT has an INVERTED
-// sign (Etc/GMT+5 = UTC-5), and the fractional offsets use the region's non-DST zone. The city is
-// just a recognizable example of that offset.
-const TZ_OFFSETS: { value: string; city: string; hint: string }[] = [
-  { value: 'Etc/GMT+11', city: 'Midway', hint: '-11' },
-  { value: 'Etc/GMT+10', city: 'Honolulu', hint: '-10' },
-  { value: 'Etc/GMT+9', city: 'Anchorage', hint: '-9' },
-  { value: 'Etc/GMT+8', city: 'Los Angeles', hint: '-8' },
-  { value: 'Etc/GMT+7', city: 'Denver', hint: '-7' },
-  { value: 'Etc/GMT+6', city: 'Mexico City', hint: '-6' },
-  { value: 'Etc/GMT+5', city: 'New York', hint: '-5' },
-  { value: 'Etc/GMT+4', city: 'Halifax', hint: '-4' },
-  { value: 'Etc/GMT+3', city: 'Sao Paulo', hint: '-3' },
-  { value: 'Etc/GMT+2', city: 'South Georgia', hint: '-2' },
-  { value: 'Etc/GMT+1', city: 'Azores', hint: '-1' },
-  { value: 'Etc/GMT-1', city: 'Berlin', hint: '+1' },
-  { value: 'Etc/GMT-2', city: 'Cairo', hint: '+2' },
-  { value: 'Etc/GMT-3', city: 'Moscow', hint: '+3' },
-  { value: 'Asia/Tehran', city: 'Tehran', hint: '+3:30' },
-  { value: 'Etc/GMT-4', city: 'Dubai', hint: '+4' },
-  { value: 'Asia/Kabul', city: 'Kabul', hint: '+4:30' },
-  { value: 'Etc/GMT-5', city: 'Karachi', hint: '+5' },
-  { value: 'Asia/Kolkata', city: 'Mumbai', hint: '+5:30' },
-  { value: 'Asia/Kathmandu', city: 'Kathmandu', hint: '+5:45' },
-  { value: 'Etc/GMT-6', city: 'Dhaka', hint: '+6' },
-  { value: 'Asia/Yangon', city: 'Yangon', hint: '+6:30' },
-  { value: 'Etc/GMT-7', city: 'Bangkok', hint: '+7' },
-  { value: 'Etc/GMT-8', city: 'Singapore', hint: '+8' },
-  { value: 'Etc/GMT-9', city: 'Tokyo', hint: '+9' },
-  { value: 'Australia/Darwin', city: 'Darwin', hint: '+9:30' },
-  { value: 'Etc/GMT-10', city: 'Sydney', hint: '+10' },
-  { value: 'Etc/GMT-11', city: 'Noumea', hint: '+11' },
-  { value: 'Etc/GMT-12', city: 'Auckland', hint: '+12' },
-  { value: 'Etc/GMT-13', city: "Nuku'alofa", hint: '+13' },
-  { value: 'Etc/GMT-14', city: 'Kiritimati', hint: '+14' },
-]
-function tzOptions(current: string): ({ value: string; label: string; hint?: string } | { separator: true })[] {
-  const items: ({ value: string; label: string; hint?: string } | { separator: true })[] = [
-    { value: 'UTC', label: 'UTC' },
-    { separator: true },
-    ...TZ_OFFSETS.map((o) => ({ value: o.value, label: o.city, hint: o.hint })),
-  ]
-  // Preserve a zone set elsewhere (CLI/toml) that isn't one of our fixed offsets.
-  if (current && current !== 'UTC' && !items.some((i) => 'value' in i && i.value === current)) {
-    items.push({ separator: true }, { value: current, label: prettyTz(current) })
-  }
-  return items
-}
-const TZ_BY_VALUE = new Map(TZ_OFFSETS.map((o) => [o.value, o]))
-// Friendly display of a stored tz on a schedule card (the raw Etc/GMT+5 has a confusing inverted sign).
+// UTC-only in the UI for now (shown as a fixed label, no picker). A schedule pointed at another zone
+// via the API/CLI still renders correctly — the server's validateTz accepts any IANA zone.
 function tzDisplay(tz: string | null): string {
-  if (!tz || tz === 'UTC') return 'UTC'
-  const o = TZ_BY_VALUE.get(tz)
-  return o ? `UTC${o.hint}` : prettyTz(tz)
+  return !tz || tz === 'UTC' ? 'UTC' : prettyTz(tz)
 }
 
 function StateBadge({ s }: { s: Schedule }) {
@@ -166,7 +115,7 @@ function ScheduleRuns({ agentId, scheduleId }: { agentId: string; scheduleId: st
   )
 }
 
-type FormState = { id?: string; name: string; cron: string; tz: string; input: string; overlap: ScheduleOverlap }
+type FormState = { id?: string; name: string; cron: string; input: string; overlap: ScheduleOverlap }
 
 // ── the tab ─────────────────────────────────────────────────────────────────────
 
@@ -200,18 +149,18 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
 
   const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['agent-schedules', agentId] })
 
-  const openCreate = () => setForm({ name: '', cron: '0 9 * * 1-5', tz: 'UTC', input: '', overlap: 'skip' })
+  const openCreate = () => setForm({ name: '', cron: '0 9 * * 1-5', input: '', overlap: 'skip' })
   const openEdit = (s: Schedule) =>
-    setForm({ id: s.id, name: s.name, cron: s.cron, tz: s.tz ?? 'UTC', input: s.input, overlap: s.overlap })
+    setForm({ id: s.id, name: s.name, cron: s.cron, input: s.input, overlap: s.overlap })
 
   const save = useMutation({
     mutationFn: () => {
       const f = form!
-      // 'UTC' (the default) maps to null on the wire — the API treats null as UTC.
-      const patch = { cron: f.cron.trim(), tz: f.tz && f.tz !== 'UTC' ? f.tz : null, input: f.input.trim(), overlap: f.overlap }
+      const common = { cron: f.cron.trim(), input: f.input.trim(), overlap: f.overlap }
+      // Create is UTC-only (tz: null). Edit omits tz entirely so it never clobbers a zone set via the API/CLI.
       return f.id
-        ? updateSchedule(agentId, f.id, patch)
-        : createSchedule(agentId, { name: f.name.trim(), ...patch })
+        ? updateSchedule(agentId, f.id, common)
+        : createSchedule(agentId, { name: f.name.trim(), tz: null, ...common })
     },
     onSuccess: () => {
       const editing = !!form?.id
@@ -293,7 +242,7 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
             </Field>
 
             <Field label="Schedule" htmlFor="sch-cron">
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
                 <Input
                   id="sch-cron"
                   value={form.cron}
@@ -301,12 +250,12 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                   placeholder="0 9 * * 1-5"
                   className="font-mono"
                 />
-                <Select
-                  value={form.tz || 'UTC'}
-                  onValueChange={(v) => setForm({ ...form, tz: v })}
-                  options={tzOptions(form.tz)}
-                  className="max-w-48"
-                />
+                <span
+                  className="border-border text-muted-foreground shrink-0 rounded-md border px-2.5 py-1 text-sm"
+                  title="Schedules run in UTC"
+                >
+                  UTC
+                </span>
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 {CRON_PRESETS.map((p) => (
