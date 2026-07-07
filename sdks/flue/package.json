@@ -1,0 +1,48 @@
+{
+  "name": "@opencomputer/flue",
+  "version": "0.2.0",
+  "description": "Make a stock Flue agent OpenComputer-native — OC model gateway, OC-fleet sandbox, publish/repo tools, and the default hosting app.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./app": {
+      "types": "./dist/app.d.ts",
+      "default": "./dist/app.js"
+    },
+    "./wire": {
+      "types": "./dist/wire.d.ts",
+      "default": "./dist/wire.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "sideEffects": [
+    "./dist/wire.js"
+  ],
+  "peerDependencies": {
+    "@flue/runtime": "1.0.0-beta.9"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "valibot": "^1.1.0"
+  },
+  "devDependencies": {
+    "@flue/runtime": "1.0.0-beta.9",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  }
+}
