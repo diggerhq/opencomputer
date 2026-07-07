@@ -2167,6 +2167,24 @@ func (m *Manager) Count(ctx context.Context) (int, error) {
 	return len(m.vms), nil
 }
 
+// ActiveCount returns the number of non-paused VMs. This is the count that
+// should gate placement against MaxCapacity and drive scale-up utilization:
+// paused VMs have paged their guest RAM out to swap (~no resource use) and
+// resume instantly, so they must not consume placement slots or trigger
+// scale-up. The RSS/CPU/disk hard caps remain the real capacity limits;
+// MaxCapacity then caps only the resource-using (active) boxes per worker.
+func (m *Manager) ActiveCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, vm := range m.vms {
+		if vm.pausedAt.IsZero() {
+			n++
+		}
+	}
+	return n
+}
+
 // Close stops all VMs and cleans up.
 func (m *Manager) Close() {
 	m.stopGhostReaper()

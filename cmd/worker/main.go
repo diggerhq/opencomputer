@@ -704,7 +704,16 @@ func main() {
 				log.Printf("opensandbox-worker: machine ID (hostname): %s", hostname)
 			}
 			hb.Start(func() (int, int, float64, float64, float64) {
-				count, _ := mgr.Count(context.Background())
+				// Report the ACTIVE (non-paused) VM count as the slot usage:
+				// paused VMs reclaimed their RAM and resume instantly, so they
+				// must not consume placement slots or drive scale-up. The
+				// RSS/CPU/disk hard caps remain the real capacity limits.
+				var count int
+				if qemuMgr != nil {
+					count = qemuMgr.ActiveCount()
+				} else {
+					count, _ = mgr.Count(context.Background())
+				}
 				cpuPct, memPct, diskPct := worker.SystemStats()
 				return cfg.MaxCapacity, count, cpuPct, memPct, diskPct
 			})
