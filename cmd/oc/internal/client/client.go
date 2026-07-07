@@ -181,6 +181,34 @@ func (c *Client) Post(ctx context.Context, path string, body, result interface{}
 	return nil
 }
 
+// Patch performs a PATCH request with a JSON body and decodes the response.
+func (c *Client) Patch(ctx context.Context, path string, body, result interface{}) error {
+	var bodyReader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, "PATCH", c.baseURL+path, bodyReader)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if result != nil {
+		return json.NewDecoder(resp.Body).Decode(result)
+	}
+	return nil
+}
+
 // GetStream performs a GET request and returns the raw response so the
 // caller can stream chunks (e.g. SSE log feeds). Caller closes resp.Body.
 func (c *Client) GetStream(ctx context.Context, path string) (*http.Response, error) {

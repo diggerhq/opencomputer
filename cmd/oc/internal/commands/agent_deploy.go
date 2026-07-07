@@ -25,7 +25,17 @@ type manifest struct {
 	Agent struct {
 		ID string `toml:"id"`
 	} `toml:"agent"`
-	Limits map[string]interface{} `toml:"limits"`
+	Limits    map[string]interface{} `toml:"limits"`
+	Schedules []scheduleDecl         `toml:"schedules"` // cron for agents (015); synced on deploy-activate
+}
+
+// One agent.toml [[schedules]] entry. Rides the deployment input; the server syncs on activate.
+type scheduleDecl struct {
+	Name    string `toml:"name" json:"name"`
+	Cron    string `toml:"cron" json:"cron"`
+	TZ      string `toml:"tz,omitempty" json:"tz,omitempty"`
+	Input   string `toml:"input" json:"input"`
+	Overlap string `toml:"overlap,omitempty" json:"overlap,omitempty"`
 }
 
 type skillFile struct {
@@ -267,6 +277,11 @@ var agentDeployCmd = &cobra.Command{
 		input := map[string]interface{}{"type": "inline", "prompt": prompt, "model": m.Model, "runtime": map[string]string{"type": rt}}
 		if len(skills) > 0 {
 			input["skills"] = skills
+		}
+		// [[schedules]] present in agent.toml → carry them so the server syncs on activate (015 §3).
+		// Absent → omit the key entirely (no sync; existing schedules untouched).
+		if len(m.Schedules) > 0 {
+			input["schedules"] = m.Schedules
 		}
 		body := map[string]interface{}{"input": input, "activate": !noActivate}
 		if idem, _ := cmd.Flags().GetString("idempotency-key"); idem != "" {
