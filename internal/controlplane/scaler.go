@@ -1162,6 +1162,19 @@ func (s *Scaler) replaceOneStale(ctx context.Context, region string, target *Wor
 		log.Printf("scaler: rolling replace: %s unreachable, can't confirm empty — NOT terminating", target.ID)
 		return
 	}
+	// Before terminating, wait for any in-flight hibernation checkpoint uploads
+	// to land in S3. A deep-hibernated (drained) box — or a leftover hibernated
+	// by the fallback above — drops off the sandbox count the instant its VM is
+	// evicted, but its checkpoint archive uploads in a background goroutine ON
+	// THIS worker. Terminating now would kill that goroutine and lose the
+	// checkpoint, leaving the box permanently unwakeable. The upload goroutine
+	// has its own ~5-min timeout that records uploaded_at or upload_error, so
+	// this wait always resolves; on timeout we skip termination and let the next
+	// tick re-attempt (by which point the upload has settled).
+	if !s.waitForHibernationUploads(target.ID, drainUploadWait) {
+		log.Printf("scaler: rolling replace: %s still has hibernation upload(s) in flight after %s — NOT terminating; next tick re-attempts", target.ID, drainUploadWait)
+		return
+	}
 	if s.pool != nil && target.MachineID != "" {
 		termCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		if err := s.pool.DestroyMachine(termCtx, target.MachineID); err != nil {
@@ -1419,13 +1432,14 @@ func (s *Scaler) checkDrainingWorkers(ctx context.Context, region string) {
 		// Check if drain timed out
 		if time.Since(state.StartedAt) > drainTimeout {
 			sandboxCount := s.getDrainingWorkerSandboxCount(state.WorkerID)
-			if sandboxCount == 0 {
+			if sandboxCount == 0 && s.hibernationUploadsSettled(state.WorkerID) {
 				// Sandboxes expired naturally — safe to destroy
 				log.Printf("scaler: drain timeout for worker %s but 0 sandboxes remain, destroying", state.WorkerID)
 				s.destroyDrainedMachine(machineID)
 				s.state.RemoveDraining(machineID)
 			} else {
-				// Still has sandboxes — cancel drain, keep worker alive
+				// Still has sandboxes (or in-flight hibernation uploads) — cancel
+				// drain, keep worker alive rather than lose a checkpoint.
 				log.Printf("scaler: drain timeout for worker %s (machine=%s) with %d sandboxes — cancelling drain, keeping alive",
 					state.WorkerID, machineID, sandboxCount)
 				s.state.RemoveDraining(machineID)
@@ -1433,10 +1447,20 @@ func (s *Scaler) checkDrainingWorkers(ctx context.Context, region string) {
 			continue
 		}
 
-		// Check if worker has 0 sandboxes
+		// Check if worker has 0 sandboxes AND no hibernation uploads are still in
+		// flight. A deep-hibernated (drained) box drops off the worker's sandbox
+		// count the moment its VM is evicted, but its checkpoint archive uploads
+		// to S3 in a background goroutine ON THE WORKER — destroying the worker
+		// before that finishes loses the checkpoint and makes the box permanently
+		// unwakeable. Gate teardown on the upload being settled.
 		workers := s.registry.GetWorkersByRegion(region)
 		for _, w := range workers {
 			if w.MachineID == machineID && w.Current == 0 {
+				if !s.hibernationUploadsSettled(state.WorkerID) {
+					log.Printf("scaler: worker %s drained (0 sandboxes) but hibernation upload(s) still in flight — deferring teardown",
+						state.WorkerID)
+					break
+				}
 				log.Printf("scaler: worker %s fully drained (0 sandboxes), destroying machine %s",
 					state.WorkerID, machineID)
 				s.destroyDrainedMachine(machineID)
@@ -1457,6 +1481,51 @@ func (s *Scaler) getDrainingWorkerSandboxCount(workerID string) int {
 		}
 	}
 	return -1
+}
+
+// hibernationUploadsSettled reports whether every deep-hibernated box on this
+// worker has finished (or failed) its async checkpoint upload to S3. Returns
+// false while any upload is still in flight, so the caller must not destroy the
+// worker yet — the upload runs on the worker, and tearing it down mid-upload
+// loses the checkpoint with the VM. Fails safe (false) on a query error so a
+// transient DB blip can't trigger a data-losing teardown; the drainTimeout path
+// bounds how long this can defer.
+func (s *Scaler) hibernationUploadsSettled(workerID string) bool {
+	if s.store == nil {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	n, err := s.store.CountPendingHibernationUploads(ctx, workerID)
+	if err != nil {
+		log.Printf("scaler: drain: CountPendingHibernationUploads(%s) failed: %v — deferring teardown", workerID, err)
+		return false
+	}
+	return n == 0
+}
+
+// drainUploadWait bounds how long the synchronous rolling-replace path blocks
+// waiting for a drained worker's checkpoint uploads to finish before it gives up
+// and defers termination to a later tick. Sized above the upload goroutine's own
+// ~5-min timeout so a normal upload always completes within the window.
+const drainUploadWait = 6 * time.Minute
+
+// waitForHibernationUploads blocks until every deep-hibernated box on the worker
+// has finished (or failed) its S3 upload, or the timeout elapses. Used by the
+// synchronous rolling-replace teardown; the async smart-drain path instead
+// re-checks hibernationUploadsSettled across reconciler ticks. Returns true if
+// uploads settled, false on timeout (caller must not terminate the worker).
+func (s *Scaler) waitForHibernationUploads(workerID string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if s.hibernationUploadsSettled(workerID) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(3 * time.Second)
+	}
 }
 
 // hibernateAllOnWorker attempts to hibernate all running sandboxes on a worker.

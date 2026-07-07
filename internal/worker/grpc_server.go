@@ -779,6 +779,19 @@ func (s *GRPCServer) PauseSandbox(ctx context.Context, req *pb.PauseSandboxReque
 // ResumeSandbox restores a paused VM's vCPUs (QMP cont). Paged-out guest memory
 // faults back from swap lazily — instant, no savevm/loadvm restore.
 func (s *GRPCServer) ResumeSandbox(ctx context.Context, req *pb.ResumeSandboxRequest) (*pb.ResumeSandboxResponse, error) {
+	// Route through the sandbox router so an explicit resume does the COMPLETE
+	// job — QMP cont, flip the session back to running (SetSandboxResumed), emit
+	// the "woke" lifecycle event for D1, and re-arm the idle timer — exactly like
+	// an on-demand data-plane resume. Calling manager.Resume directly would cont
+	// the vCPUs but leave the session status and D1 stale. (This RPC is the
+	// explicit-/wake path for a paused box; data-plane requests already resume
+	// via the router when the proxy forwards them.)
+	if s.router != nil {
+		if err := s.router.Route(ctx, req.SandboxId, "resume", func(context.Context) error { return nil }); err != nil {
+			return nil, fmt.Errorf("failed to resume sandbox: %w", err)
+		}
+		return &pb.ResumeSandboxResponse{SandboxId: req.SandboxId}, nil
+	}
 	pm, ok := s.manager.(pausableManager)
 	if !ok {
 		return nil, fmt.Errorf("resume not supported by this worker backend")
@@ -818,6 +831,30 @@ func (s *GRPCServer) HibernateSandbox(ctx context.Context, req *pb.HibernateSand
 	if s.store != nil {
 		if _, err := s.store.SetSandboxDeep(ctx, req.SandboxId); err != nil {
 			log.Printf("grpc: SetSandboxDeep(%s) failed: %v", req.SandboxId, err)
+		}
+
+		// Record the checkpoint so wake can find it. Every REMOTE deep-hibernation
+		// (paused→deep promotion, worker drain, and the CP's version-skew fallback)
+		// funnels through this handler; without a sandbox_hibernations row,
+		// wakeSandboxRemote's GetActiveHibernation lookup 404s and the box — though
+		// savevm'd to blob — can never wake. The record must be written here (the
+		// one shared chokepoint) rather than per-caller. Pull org/region/template/
+		// config off the session; the worker has cell-PG access. Best-effort
+		// superseded-blob cleanup bounds storage to one checkpoint per sandbox.
+		if sess, serr := s.store.GetSandboxSession(ctx, req.SandboxId); serr == nil && sess != nil {
+			_, superseded, herr := s.store.CreateHibernation(ctx, req.SandboxId, sess.OrgID,
+				result.HibernationKey, result.SizeBytes, sess.Region, sess.Template, sess.Config)
+			if herr != nil {
+				log.Printf("grpc: CreateHibernation(%s) failed: %v — box will not be wakeable", req.SandboxId, herr)
+			} else if superseded != "" && s.checkpointStore != nil && !strings.HasPrefix(superseded, "local://") {
+				delCtx, delCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				if derr := s.checkpointStore.Delete(delCtx, superseded); derr != nil {
+					log.Printf("grpc: delete superseded hibernation %s failed: %v", superseded, derr)
+				}
+				delCancel()
+			}
+		} else if serr != nil {
+			log.Printf("grpc: GetSandboxSession(%s) for hibernation record failed: %v — box will not be wakeable", req.SandboxId, serr)
 		}
 	}
 

@@ -1138,8 +1138,14 @@ func (s *Store) MarkOrphanedOnWorker(ctx context.Context, workerID, errorMsg str
 	}
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx,
+		// Paused boxes are worker-bound: their state is RAM-resident QEMU-pause on
+		// this specific worker, so a dead worker means the state is gone — reap
+		// them like running boxes. Deep-hibernated boxes (mode != 'paused') have a
+		// durable S3 checkpoint and wake on any worker, so they are left alone.
 		`UPDATE sandbox_sessions SET status = 'error', migrating_to_worker = '', stopped_at = now(), error_msg = $2
-		 WHERE worker_id = $1 AND status IN ('running', 'migrating')
+		 WHERE worker_id = $1
+		   AND (status IN ('running', 'migrating')
+		        OR (status = 'hibernated' AND hibernation_mode = 'paused'))
 		 RETURNING sandbox_id, org_id, worker_id`,
 		workerID, errorMsg)
 	if err != nil {
@@ -1201,7 +1207,13 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 	// on a *live* worker is left alone (it may still be mid-create); only pending
 	// rows on a dead worker are reaped.
 	rows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT worker_id FROM sandbox_sessions WHERE status IN ('running', 'pending')`)
+		// Include workers that host only paused boxes: a paused box is worker-
+		// bound (RAM-resident QEMU pause), so if its worker is dead the box must be
+		// reaped too. Without this, a worker holding only paused boxes would never
+		// be seen as "dead" and its boxes would stay stuck 'hibernated' forever.
+		`SELECT DISTINCT worker_id FROM sandbox_sessions
+		  WHERE status IN ('running', 'pending')
+		     OR (status = 'hibernated' AND hibernation_mode = 'paused')`)
 	if err != nil {
 		return nil, err
 	}
@@ -1228,8 +1240,13 @@ func (s *Store) MarkOrphanedSandboxes(ctx context.Context, liveWorkers map[strin
 			continue
 		}
 		upd, err := tx.Query(ctx,
+			// Paused boxes are worker-bound (RAM-resident) — a dead worker loses
+			// their state, so reap them like running boxes. Deep-hibernated boxes
+			// (mode != 'paused') have a durable S3 checkpoint and are left alone.
 			`UPDATE sandbox_sessions SET status = 'error', error_msg = 'worker lost', stopped_at = now()
-			 WHERE worker_id = $1 AND status IN ('running', 'pending')
+			 WHERE worker_id = $1
+			   AND (status IN ('running', 'pending')
+			        OR (status = 'hibernated' AND hibernation_mode = 'paused'))
 			 RETURNING sandbox_id, org_id, worker_id`, workerID)
 		if err != nil {
 			tx.Rollback(ctx)
@@ -1814,6 +1831,27 @@ func (s *Store) MarkHibernationUploadFailed(ctx context.Context, hibernationKey,
 		 WHERE hibernation_key = $1`,
 		hibernationKey, errMsg)
 	return err
+}
+
+// CountPendingHibernationUploads counts sandboxes still assigned to a worker
+// whose active hibernation's async S3 upload has neither completed (uploaded_at)
+// nor failed (upload_error) — i.e. the upload goroutine is still in flight on
+// that worker. The scaler gates destroying a drained worker on this being zero:
+// the upload runs ON the worker, so tearing it down mid-upload loses the
+// checkpoint and the box becomes permanently unwakeable. A failed upload
+// (upload_error set) is not counted — it won't finish by waiting, so it must not
+// hang the drain (the loss is already recorded, loudly).
+func (s *Store) CountPendingHibernationUploads(ctx context.Context, workerID string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT count(*)
+		   FROM sandbox_sessions ss
+		   JOIN sandbox_hibernations h ON h.sandbox_id = ss.sandbox_id
+		  WHERE ss.worker_id = $1
+		    AND ss.status = 'hibernated'
+		    AND h.restored_at IS NULL AND h.expired_at IS NULL
+		    AND h.uploaded_at IS NULL AND h.upload_error IS NULL`, workerID).Scan(&n)
+	return n, err
 }
 
 // UpdateSandboxSessionForWake changes a hibernated session back to running on a new worker.
