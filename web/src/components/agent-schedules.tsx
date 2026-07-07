@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
   CalendarClock,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   GitBranch,
@@ -25,6 +27,7 @@ import {
   updateSchedule,
   type Schedule,
   type ScheduleOverlap,
+  type ScheduleRun,
 } from '@/api/client'
 import { Panel, PanelContent } from '@/components/panel'
 import { Button } from '@/components/ui/button'
@@ -40,6 +43,11 @@ function rel(iso: string | null): string {
   const m = Math.max(1, Math.round(Math.abs(delta) / 60000))
   const unit = m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`
   return delta >= 0 ? `in ${unit}` : `${unit} ago`
+}
+// Next-fire label: a due/overdue slot sits briefly in the past (until the tick catches up, < ~60s) —
+// read that as "due now", never "1m ago".
+function nextFireLabel(iso: string): string {
+  return new Date(iso).getTime() <= Date.now() ? 'due now' : rel(iso)
 }
 
 // A friendly gloss for the common crons; unknown expressions just show the raw fields.
@@ -77,14 +85,33 @@ function StateBadge({ s }: { s: Schedule }) {
   return <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>{s.state.replace('_', ' ')}</span>
 }
 
-function OutcomeBadge({ outcome }: { outcome: string }) {
-  const cls =
-    outcome === 'enacted'
-      ? 'text-green-700 dark:text-green-400'
-      : outcome === 'failed'
-        ? 'text-red-600 dark:text-red-500'
-        : 'text-muted-foreground'
-  return <span className={`font-medium ${cls}`}>{outcome}</span>
+// A run's outcome in plain language. "enacted" → a session was started (linked); "failed" → it
+// didn't start (with the error); "skipped" → the previous run was still going.
+function RunStatus({ run }: { run: ScheduleRun }) {
+  if (run.outcome === 'enacted') {
+    const inner = (
+      <>
+        <CheckCircle2 className="size-3.5 shrink-0 text-green-600 dark:text-green-500" />
+        Session started
+      </>
+    )
+    return run.session_id ? (
+      <Link to={`/sessions/${run.session_id}`} className="text-foreground inline-flex items-center gap-1 hover:underline">
+        {inner}
+      </Link>
+    ) : (
+      <span className="inline-flex items-center gap-1">{inner}</span>
+    )
+  }
+  if (run.outcome === 'skipped') {
+    return <span className="text-muted-foreground">Skipped — previous run still running</span>
+  }
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1 text-red-600 dark:text-red-500" title={run.error ?? undefined}>
+      <AlertTriangle className="size-3.5 shrink-0" />
+      <span className="truncate">Didn’t start{run.error ? ` — ${run.error}` : ''}</span>
+    </span>
+  )
 }
 
 // Recent runs for a schedule — lazily fetched when a row is expanded.
@@ -92,6 +119,7 @@ function ScheduleRuns({ agentId, scheduleId }: { agentId: string; scheduleId: st
   const { data: runs, isLoading } = useQuery({
     queryKey: ['schedule-runs', agentId, scheduleId],
     queryFn: () => getScheduleRuns(agentId, scheduleId, 5),
+    refetchInterval: 15_000, // schedules fire in the background — keep the runs list live while open
   })
   if (isLoading) return <p className="text-muted-foreground px-3 py-2 text-xs">Loading runs…</p>
   if (!runs || runs.length === 0) return <p className="text-muted-foreground px-3 py-2 text-xs">No runs yet.</p>
@@ -99,17 +127,10 @@ function ScheduleRuns({ agentId, scheduleId }: { agentId: string; scheduleId: st
     <ul className="divide-border/60 divide-y text-xs">
       {runs.map((r) => (
         <li key={r.id} className="flex items-center gap-2 px-3 py-1.5">
-          <OutcomeBadge outcome={r.outcome} />
-          <span className="text-muted-foreground">{rel(r.fired_at)}</span>
-          {r.session_id ? (
-            <code className="text-muted-foreground ml-auto font-mono text-[11px]" title={r.session_id}>
-              {r.session_id.slice(0, 12)}…
-            </code>
-          ) : r.error ? (
-            <span className="ml-auto max-w-[16rem] truncate text-red-600 dark:text-red-500" title={r.error}>
-              {r.error}
-            </span>
-          ) : null}
+          <div className="min-w-0 flex-1">
+            <RunStatus run={r} />
+          </div>
+          <span className="text-muted-foreground shrink-0">{rel(r.fired_at)}</span>
         </li>
       ))}
     </ul>
@@ -147,6 +168,7 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
   } = useQuery({
     queryKey: ['agent-schedules', agentId],
     queryFn: () => getSchedules(agentId),
+    refetchInterval: 20_000, // schedules fire in the background — reflect next-fire / last-ran live
   })
 
   const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['agent-schedules', agentId] })
@@ -389,7 +411,7 @@ export function AgentSchedulesTab({ agentId }: { agentId: string }) {
                       <span className="text-border">·</span>
                       <span className="inline-flex items-center gap-1">
                         <CalendarClock className="size-3" />
-                        next {s.state === 'active' ? rel(s.next_fire_at) : '—'}
+                        next {s.state === 'active' ? nextFireLabel(s.next_fire_at) : '—'}
                       </span>
                       {s.last_fired_at ? <span>· last ran {rel(s.last_fired_at)}</span> : null}
                     </div>
