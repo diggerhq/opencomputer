@@ -18,6 +18,8 @@ on   = "issue.labeled:agent"
 - **Routing:** a routing key groups events into sessions — by default one session per issue; a comment on a PR the agent opened resumes the session that opened it.
 - **Who can trigger:** restricted to members of your organization by default, configurable per agent.
 
+To fire an agent on a **cron** rather than an external event, use [Schedules](/agent-sessions/schedules) — a time-based trigger with its own stable API.
+
 ## Integrations
 
 Triggers and outbound deliveries run through platform integrations, so the agent holds no
