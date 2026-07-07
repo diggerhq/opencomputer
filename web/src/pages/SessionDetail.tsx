@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Send, Wrench, CircleAlert } from 'lucide-react'
+import {
+  ArrowLeft,
+  Send,
+  Wrench,
+  CircleAlert,
+  Brain,
+  CheckCircle2,
+  XCircle,
+  FileWarning,
+} from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import { useHalted } from '@/hooks/useHalted'
 import {
@@ -19,12 +28,16 @@ import { Button } from '@/components/ui/button'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/status-badge'
+import { RuntimeBadge } from '@/components/runtime-badge'
+import { MetricCard } from '@/components/metric-card'
+import { SessionTurns } from '@/components/session-turns'
 import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { SessionWebhooks } from '@/components/session-webhooks'
 import { ApiHint } from '@/components/api-hint'
 import { MessagesSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { formatSpend, usageTokens } from '@/lib/usage'
 
 // body is unknown (inline JSON ≤32KB); pull the common shapes defensively.
 function bodyText(ev: SessionEvent): string | null {
@@ -43,6 +56,30 @@ function toolSummary(ev: SessionEvent): string {
   const tool = typeof b.tool === 'string' ? b.tool : 'tool'
   const input = typeof b.input === 'string' ? b.input : ''
   return input ? `${tool} · ${input}` : tool
+}
+// A tool RESULT — brain-box emits `exec.completed`, the flue tailer emits `tool.result`;
+// both land here so flue + brain-box render identically.
+function isToolResult(ev: SessionEvent): boolean {
+  return ev.type === 'exec.completed' || ev.type === 'tool.result'
+}
+function toolResult(ev: SessionEvent): { text: string; isError: boolean } {
+  const b = (ev.body ?? {}) as Record<string, unknown>
+  const tool = typeof b.tool === 'string' ? b.tool : 'tool'
+  const isError = b.is_error === true || b.error != null
+  const summary =
+    (typeof b.summary === 'string' && b.summary) ||
+    (typeof b.output === 'string' && b.output) ||
+    (typeof b.text === 'string' && b.text) ||
+    ''
+  const dur = typeof b.duration_ms === 'number' ? ` · ${b.duration_ms}ms` : ''
+  return { text: summary ? `${tool} → ${summary}${dur}` : `${tool} →${dur}`, isError }
+}
+// The body spilled to blob storage (event > 32KB) — surface an affordance instead of
+// rendering an empty bubble.
+function truncationNote(ev: SessionEvent): string | null {
+  if (!ev.body_truncated && !ev.content_ref) return null
+  const kb = ev.body_bytes ? ` (${Math.round(ev.body_bytes / 1024)} KB)` : ''
+  return `Output too large to inline${kb} — stored in blob`
 }
 function humanizeType(t: string): string {
   return t.replace(/[._]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
@@ -202,11 +239,14 @@ export default function SessionDetail() {
       <Panel className="mb-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-1.5">
-            <div className="flex items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-2.5">
               <code className="text-foreground font-mono text-sm">
                 {sessionId}
               </code>
               <StatusBadge status={status} />
+              {session?.agent_snapshot?.runtime ? (
+                <RuntimeBadge runtime={session.agent_snapshot.runtime} />
+              ) : null}
             </div>
             <p className="text-muted-foreground text-xs">
               {session?.head ?? 0} events · created{' '}
@@ -269,6 +309,21 @@ export default function SessionDetail() {
           </div>
         </div>
       </Panel>
+
+      {/* Spend / usage — derived from the session's opaque usage object (no dedicated
+          spend endpoint). Tokens shown only when the runtime reports them (flue meters
+          at the gateway and reports none here). */}
+      <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-3">
+        <MetricCard label="Spend" value={formatSpend(session?.usage)} />
+        <MetricCard
+          label="Tokens"
+          value={usageTokens(session?.usage)?.toLocaleString() ?? '—'}
+        />
+        <MetricCard
+          label="Events"
+          value={(session?.head ?? 0).toLocaleString()}
+        />
+      </div>
 
       {/* Event stream */}
       <Panel className="overflow-hidden">
@@ -367,6 +422,15 @@ export default function SessionDetail() {
         </div>
       </Panel>
 
+      <SessionTurns
+        sessionId={sessionId}
+        active={
+          status === 'running' ||
+          status === 'awaiting_input' ||
+          status === 'queued'
+        }
+      />
+
       <SessionWebhooks sessionId={sessionId} />
 
       <ConfirmDialog
@@ -389,6 +453,18 @@ export default function SessionDetail() {
 
 function EventRow({ ev }: { ev: SessionEvent }) {
   const text = bodyText(ev)
+  const trunc = truncationNote(ev)
+
+  // Reasoning — muted, set apart from the answer. (flue tailer + brain-box both emit this.)
+  if (ev.type === 'agent.thinking') {
+    if (!text && !trunc) return null
+    return (
+      <li className="text-muted-foreground flex gap-2 px-4 py-2 text-xs italic">
+        <Brain className="mt-0.5 size-3.5 shrink-0 opacity-60" />
+        <span className="whitespace-pre-wrap">{text ?? trunc}</span>
+      </li>
+    )
+  }
 
   // Conversation messages — the signal.
   if (ev.type === 'user.message' || ev.type === 'agent.message') {
@@ -408,7 +484,16 @@ function EventRow({ ev }: { ev: SessionEvent }) {
             #{ev.seq}
           </span>
         </div>
-        <p className="text-foreground/90 text-sm whitespace-pre-wrap">{text}</p>
+        {text ? (
+          <p className="text-foreground/90 text-sm whitespace-pre-wrap">
+            {text}
+          </p>
+        ) : trunc ? (
+          <p className="text-muted-foreground flex items-center gap-1.5 text-xs italic">
+            <FileWarning className="size-3.5 shrink-0" />
+            {trunc}
+          </p>
+        ) : null}
         {outOfCredits && (
           <Button asChild size="sm" className="mt-2">
             <Link to="/billing">Top up</Link>
@@ -428,11 +513,35 @@ function EventRow({ ev }: { ev: SessionEvent }) {
     )
   }
 
-  // Errors.
-  if (ev.type.startsWith('error')) {
+  // Tool results — `exec.completed` (brain-box) or `tool.result` (flue). Error results
+  // get the error tone; success stays quiet. Body-spill falls back to the truncation note.
+  if (isToolResult(ev)) {
+    const { text: rtext, isError } = toolResult(ev)
+    const Icon = isError ? XCircle : CheckCircle2
     return (
-      <li className="bg-status-error-bg/40 text-status-error px-4 py-2 text-xs">
-        {text ?? humanizeType(ev.type)}
+      <li
+        className={cn(
+          'flex items-center gap-2 px-4 py-1.5 font-mono text-xs',
+          isError ? 'text-status-error' : 'text-muted-foreground',
+        )}
+      >
+        <Icon className="size-3.5 shrink-0 opacity-70" />
+        <span className="truncate">{trunc ?? rtext}</span>
+      </li>
+    )
+  }
+
+  // Failures — turn.failed + any error* event.
+  if (ev.type === 'turn.failed' || ev.type.startsWith('error')) {
+    const reason =
+      typeof (ev.body as Record<string, unknown> | null | undefined)
+        ?.yield_reason === 'string'
+        ? String((ev.body as Record<string, unknown>).yield_reason)
+        : null
+    return (
+      <li className="bg-status-error-bg/40 text-status-error flex items-center gap-2 px-4 py-2 text-xs">
+        <CircleAlert className="size-3.5 shrink-0" />
+        <span>{text ?? reason ?? humanizeType(ev.type)}</span>
       </li>
     )
   }
