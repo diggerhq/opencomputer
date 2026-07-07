@@ -12,10 +12,14 @@
 
 import { registerProvider } from "@flue/runtime";
 import type { AgentInitializerContext, AgentRouteHandler } from "@flue/runtime";
+import { ocResolveEnv } from "./cf-env.js";
 
 /** Default managed model — MUST be prompt-caching-safe (Constraint): `claude-3-haiku` fails via
- *  OpenRouter→Bedrock; `claude-haiku-4.5` works. Cheap + caching-safe for the scaffolded starter. */
-export const DEFAULT_MODEL = "anthropic/claude-haiku-4.5";
+ *  OpenRouter→Bedrock; `claude-haiku-4-5` works. Use the pi-ai CATALOG id with DASHES
+ *  (`claude-haiku-4-5`), never a dot (`claude-haiku-4.5`): the dotted id is absent from pi-ai's model
+ *  catalog, so pi-ai can't derive the model's max output tokens and defaults `max_tokens` to 1 → empty
+ *  completions. The dashed id resolves in the catalog and OpenRouter routes it too. Cheap + caching-safe. */
+export const DEFAULT_MODEL = "anthropic/claude-haiku-4-5";
 
 export interface OcEnv {
   /** Deployed gateway Worker base URL (set per tenant script by the OC deploy). */
@@ -30,16 +34,20 @@ export interface OcEnv {
 /**
  * Point the managed `anthropic` provider at the OC gateway. **Call this INSIDE the `defineAgent`
  * initializer** — top-level module code is stripped by the CF build (proven in 1a), and the initializer
- * body runs per harness init with `env` available. No-op when `OC_GATEWAY` is unset (local `flue dev`
- * falls through to pi-ai's env-var key lookup). `anthropic` is a catalog id, so `baseUrl` alone rehydrates
- * the wire protocol.
+ * body runs per harness init. Reads the CF ambient env (`cloudflare:workers`), not `ctx.env`: on the
+ * `--target cloudflare` build the real Worker bindings live on the ambient env and `ctx.env` is empty
+ * for them (Flue's generated entry threads `instance.env`, which lacks the OC bindings), so reading
+ * `ctx.env` alone would leave `OC_GATEWAY` unset and the provider unregistered ("Unknown model
+ * specifier"). No-op when `OC_GATEWAY` is unset (local `flue dev` falls through to pi-ai's env-var key
+ * lookup). `anthropic` is a catalog id, so `baseUrl` alone rehydrates the wire protocol.
  */
 export function useOcGateway(ctx: AgentInitializerContext<OcEnv>): void {
-  const gw = ctx.env.OC_GATEWAY;
+  const env = ocResolveEnv<OcEnv>(ctx.env);
+  const gw = env.OC_GATEWAY;
   if (!gw) return;
   registerProvider("anthropic", {
     baseUrl: `${gw.replace(/\/+$/, "")}/anthropic`,
-    ...(ctx.env.OC_SESSION_TOKEN ? { apiKey: ctx.env.OC_SESSION_TOKEN } : {}),
+    ...(env.OC_SESSION_TOKEN ? { apiKey: env.OC_SESSION_TOKEN } : {}),
   });
 }
 

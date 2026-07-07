@@ -14,6 +14,7 @@
 import { createSandboxSessionEnv } from "@flue/runtime";
 import type { SandboxApi, SandboxFactory, FileStat, ShellResult, SessionEnv } from "@flue/runtime";
 import type { OcEnv } from "./gateway.js";
+import { ocResolveEnv } from "./cf-env.js";
 
 /** Constant workspace cwd (matches the OC session contract — flue resolves skills at `${cwd}/.agents/skills`). */
 export const WORKSPACE_CWD = "/workspace";
@@ -108,16 +109,22 @@ async function resolveSandboxId(env: OcSandboxEnv, sessionId: string): Promise<s
  * The OC-fleet sandbox factory. Set `sandbox: ocSandbox(env)` in your `defineAgent` initializer; the OC
  * template scaffolds exactly this. Lazily resolves the session's sandbox (keyed by the DO instance id =
  * `ses_`) on first tool use, so no sandbox is provisioned for tool-free turns (§5).
+ *
+ * Reads the CF ambient env (`cloudflare:workers`), not the passed `ctx.env`: on the `--target
+ * cloudflare` build the real `OC_SANDBOX_*`/`OC_SESSION_TOKEN` bindings live on the ambient env and
+ * `ctx.env` is empty for them (same reason as `useOcGateway`). The resolution happens lazily inside
+ * `createSessionEnv`, so a tool-free turn never touches the sandbox config.
  */
 export function ocSandbox(env: OcSandboxEnv, opts?: { cwd?: string }): SandboxFactory {
   const cwd = opts?.cwd ?? WORKSPACE_CWD;
   return {
     async createSessionEnv({ id }: { id: string }): Promise<SessionEnv> {
-      if (!env.OC_SANDBOX_API && !env.OC_SANDBOX_ID) {
+      const resolved = ocResolveEnv<OcSandboxEnv>(env);
+      if (!resolved.OC_SANDBOX_API && !resolved.OC_SANDBOX_ID) {
         throw new Error("[oc-flue] ocSandbox: set OC_SANDBOX_API (+ OC_SESSION_TOKEN) or OC_SANDBOX_ID — the OC sandbox binding is not configured.");
       }
-      const sandboxId = await resolveSandboxId(env, id);
-      const api = new OcSandboxApi((env.OC_SANDBOX_API ?? "").replace(/\/+$/, ""), env.OC_SESSION_TOKEN ?? "", sandboxId);
+      const sandboxId = await resolveSandboxId(resolved, id);
+      const api = new OcSandboxApi((resolved.OC_SANDBOX_API ?? "").replace(/\/+$/, ""), resolved.OC_SESSION_TOKEN ?? "", sandboxId);
       return createSandboxSessionEnv(api, cwd);
     },
   };
