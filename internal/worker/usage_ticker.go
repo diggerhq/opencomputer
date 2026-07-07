@@ -165,6 +165,7 @@ func (t *UsageTicker) tick(ctx context.Context) {
 	now := time.Now()
 	emitted := 0
 	skippedDead := 0
+	skippedPaused := 0
 	aliveIDs := make([]string, 0, len(list))
 	for _, sb := range list {
 		// Defense in depth: even if manager.List() returns a ghost entry
@@ -183,6 +184,15 @@ func (t *UsageTicker) tick(ctx context.Context) {
 			skippedDead++
 			t.dropState(sb.ID)
 			log.Printf("usage_ticker: %s: not alive (ghost m.vms entry?) — skipping; reaper should drain it", sb.ID)
+			continue
+		}
+		// Paused (RAM-resident hibernation tier): the VM is alive but has paged
+		// its guest RAM out and is unbilled. Skip it and drop its billing state
+		// so a later resume starts a fresh interval instead of back-billing the
+		// entire paused gap.
+		if sb.Status == types.SandboxStatusPaused {
+			skippedPaused++
+			t.dropState(sb.ID)
 			continue
 		}
 		aliveIDs = append(aliveIDs, sb.ID)
@@ -228,7 +238,7 @@ func (t *UsageTicker) tick(ctx context.Context) {
 	// already handled above) AND outright disappearance (destroy between
 	// ticks where the sandbox is gone from List entirely).
 	t.pruneStateNotIn(aliveIDs)
-	log.Printf("usage_ticker: tick: emitted %d usage_tick event(s) for %d listed sandbox(es) (skipped %d as not-alive)", emitted, len(list), skippedDead)
+	log.Printf("usage_ticker: tick: emitted %d usage_tick event(s) for %d listed sandbox(es) (skipped %d as not-alive, %d as paused)", emitted, len(list), skippedDead, skippedPaused)
 }
 
 // intervalSecondsFor returns the actual elapsed time to attribute to this emit

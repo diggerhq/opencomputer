@@ -24,6 +24,17 @@ apt-get install -y -qq \
     e2fsprogs git podman uidmap slirp4netns \
     postgresql-client jq curl zstd
 
+# Host kernel extras — provide the zram module for the compressed-swap tier the
+# pause/hibernate reclaim uses. zram.ko lives in linux-modules-extra, which the
+# Azure base image does NOT ship by default. Install the -azure META package so
+# the extras track whatever azure kernel actually boots (the apt upgrade above
+# may bump the kernel; a versioned package would then mismatch on reboot). Fall
+# back to the currently-booted kernel's versioned package. Non-fatal: without
+# zram the disk-swap tier still carries the pause feature (just less dense).
+apt-get install -y -qq linux-modules-extra-azure \
+    || apt-get install -y -qq "linux-modules-extra-$(uname -r)" \
+    || echo "WARNING: linux-modules-extra (zram) not installed — pause tier will fall back to disk swap only"
+
 # --- Docker ---
 echo "Installing Docker..."
 if ! command -v docker &>/dev/null; then
@@ -143,8 +154,98 @@ net.ipv4.neigh.default.gc_thresh3 = 8192
 fs.file-max = 1000000
 fs.inotify.max_user_watches = 524288
 fs.inotify.max_user_instances = 8192
+
+# --- Memory reclaim / pause-tier tuning ---
+# The pause/hibernate tier reclaims a paused guest's RAM via explicit
+# process_madvise(MADV_PAGEOUT) into swap (zram + disk, set up below). That
+# path does not depend on swappiness — so keep swappiness LOW so the kernel's
+# *background* reclaim does not eagerly swap out the RAM of running (active)
+# guests under transient pressure and add latency. Swap stays available for the
+# explicit pageout and for genuine emergencies.
+vm.swappiness = 10
+# Each QEMU has many memory regions (base RAM, virtio-mem pool, device BARs);
+# at high VM density per host the default 65530 map limit can be hit. Raise it.
+vm.max_map_count = 1048576
 EOF
 sysctl --system -q
+
+# --- Memory density: zram compressed swap + KSM (pause-tier prerequisites) ---
+# These are the hard prerequisites for the RAM-resident "pause" hibernation
+# tier: without a swap target, process_madvise(MADV_PAGEOUT) has nowhere to
+# page a paused guest's RAM and reclaim collapses to ~1x. zram is the
+# high-priority compressed tier (idle guest pages are zero-heavy, ~3-4x); a
+# file-backed disk swap on /data is the lower-priority overflow, set up at
+# first boot by the worker cloud-init (it needs /data mounted first).
+#
+# Sizing is computed at BOOT from live RAM (the AMI builder VM is smaller than
+# the runtime worker), so this is a boot-time oneshot, not baked-in numbers.
+echo "Installing memory-tuning (zram + KSM) setup..."
+cat > /usr/local/bin/opensandbox-memory-setup.sh << 'MEMEOF'
+#!/usr/bin/env bash
+# Set up the zram compressed-swap tier and enable KSM. Sized from live RAM.
+set -euo pipefail
+
+MEM_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+MEM_BYTES=$((MEM_KB * 1024))
+
+# --- zram: high-priority compressed swap ---
+# Expose 1.5x RAM of logical swap, but hard-cap the REAL RAM zram may consume
+# at 40% of RAM (mem_limit). The 1.5x is only reachable when pages compress
+# well — which paused guests do — so this never eats more than the cap.
+DISKSIZE=$(( MEM_BYTES * 3 / 2 ))
+MEMLIMIT=$(( MEM_BYTES * 2 / 5 ))
+
+modprobe zram num_devices=1 2>/dev/null || true
+if [ ! -e /sys/block/zram0/disksize ]; then
+  echo "zram device not available — skipping zram (disk swap still applies)"
+else
+  # Idempotent: reset a previously-configured device before reconfiguring.
+  if [ "$(cat /sys/block/zram0/disksize)" != "0" ]; then
+    swapoff /dev/zram0 2>/dev/null || true
+    echo 1 > /sys/block/zram0/reset 2>/dev/null || true
+  fi
+  echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+  echo "$MEMLIMIT" > /sys/block/zram0/mem_limit
+  echo "$DISKSIZE" > /sys/block/zram0/disksize
+  mkswap -U clear /dev/zram0 >/dev/null
+  swapon --priority 100 /dev/zram0
+  echo "zram0: disksize=$DISKSIZE mem_limit=$MEMLIMIT (zstd), swap priority 100"
+fi
+
+# --- KSM: dedup identical guest pages across VMs ---
+# QEMU advises guest RAM MADV_MERGEABLE by default (machine mem-merge=on), so
+# KSM finds cross-VM duplicates (shared golden pages, zeroed regions) for extra
+# density on top of the pause tier. Best-effort — skip cleanly if unsupported.
+if [ -d /sys/kernel/mm/ksm ]; then
+  echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+  echo 20   > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
+  echo 1    > /sys/kernel/mm/ksm/merge_across_nodes 2>/dev/null || true
+  echo 1    > /sys/kernel/mm/ksm/run 2>/dev/null || true
+  echo "KSM enabled (pages_to_scan=1000 sleep_millisecs=20)"
+else
+  echo "KSM not supported by kernel — skipping"
+fi
+MEMEOF
+chmod +x /usr/local/bin/opensandbox-memory-setup.sh
+
+cat > /etc/systemd/system/opensandbox-memory.service << 'EOF'
+[Unit]
+Description=OpenSandbox memory density (zram swap + KSM) for the pause tier
+DefaultDependencies=no
+After=local-fs.target
+# Swap must be online and KSM enabled before the worker launches any guests.
+Before=opensandbox-worker.service swap.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/opensandbox-memory-setup.sh
+ExecStop=/bin/sh -c 'swapoff /dev/zram0 2>/dev/null || true; echo 1 > /sys/block/zram0/reset 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 # --- Directory structure ---
 mkdir -p /data/sandboxes /data/firecracker/images /data/checkpoints /etc/opensandbox
@@ -222,7 +323,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable opensandbox-worker opensandbox-server
+systemctl enable opensandbox-worker opensandbox-server opensandbox-memory
 
 echo "=== Azure host setup complete ==="
 echo "  QEMU: $(qemu-system-x86_64 --version | head -1)"
