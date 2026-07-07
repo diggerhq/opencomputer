@@ -1,47 +1,45 @@
 package commands
 
-// Contract-mock end-to-end for the Flue deploy flow. A fake control plane
-// implements contract 3 (POST /v3/agents/:id/artifacts + the presigned PUT) and
-// contract 10 (deployment create + a verifying→ready poll). A throwaway
-// `node_modules/.bin/oc-flue-build` script stands in for @opencomputer/flue, so
-// the real runFlueBuild exec path runs and produces a dist-oc/. deployFlue is
-// driven end to end; we assert the uploaded bytes are byte-exactly the canonical
-// bundle for the digest the CLI advertised — the whole content-address chain.
+// Contract-mock end-to-end for the Flue DO deploy flow (design 013 §6). A fake
+// control plane implements the deployment create + a verifying→ready poll. A throwaway
+// `node_modules/.bin/flue` script stands in for the app's flue CLI, so the real
+// runFlueBuild exec path runs and produces a dist/<app>/ (the entry module + the
+// generated wrangler.json). deployFlue is driven end to end; we assert the POSTed
+// deployment body is the well-formed DO-deploy request: input.type=inline, no prompt,
+// no framework_artifact_digest, flue_module={filename,contentB64} carrying the base64
+// of the built entry module, flue_wrangler=the generated wrangler object, and
+// flue_agent_name=the agent.toml name — then that verifying→ready was actually polled.
 
 import (
-	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
-	"github.com/opensandbox/opensandbox/cmd/oc/internal/bundle"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/output"
 	"github.com/spf13/cobra"
 )
 
-// The exact bytes the fake build emits into dist-oc/ (heredoc appends a newline).
+// The exact bytes the fake `flue build` emits into dist/e2e_flue/ (heredoc appends a
+// trailing newline). The wrangler is nested a directory deep to also exercise the
+// dist/<app>/ discovery.
 const (
-	e2eArtifactBody = `{"entry":"oc.js","profile_version":1,"model":"anthropic/claude-sonnet-5"}`
-	e2eOcBody       = `export const agent = "e2e";`
+	e2eModuleBody   = `export default { fetch() { return new Response("ok"); } };`
+	e2eWranglerBody = `{"name":"e2e-flue","main":"index.js","compatibility_date":"2026-04-01","compatibility_flags":["nodejs_compat"],"durable_objects":{"bindings":[{"name":"AGENT","class_name":"FlueE2EAgent"}]},"migrations":[{"tag":"v1","new_sqlite_classes":["FlueE2EAgent"]}]}`
 )
 
 type fakeCP struct {
-	mu             sync.Mutex
-	self           string
-	createBody     map[string]any
-	artifactDigest string
-	artifactSize   float64
-	uploaded       []byte
-	deployBody     map[string]any
-	getCount       int
+	mu         sync.Mutex
+	createBody map[string]any
+	deployBody map[string]any
+	getCount   int
 }
 
 func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,21 +55,6 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && r.URL.Path == "/v3/agents":
 		_ = json.NewDecoder(r.Body).Decode(&f.createBody)
 		writeJSON(map[string]any{"id": "agt_e2e", "name": "e2e-flue", "model": "anthropic/claude-sonnet-5", "runtime": "flue"})
-	case r.Method == "POST" && r.URL.Path == "/v3/agents/agt_e2e/artifacts":
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		f.artifactDigest, _ = body["digest"].(string)
-		f.artifactSize, _ = body["size_bytes"].(float64)
-		writeJSON(map[string]any{"url": f.self + "/upload/" + f.artifactDigest, "expires_at": "2099-01-01T00:00:00Z"})
-	case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/upload/"):
-		if ct := r.Header.Get("Content-Type"); ct != "application/gzip" {
-			http.Error(w, "bad content-type: "+ct, http.StatusBadRequest)
-			return
-		}
-		buf := new(bytes.Buffer)
-		_, _ = buf.ReadFrom(r.Body)
-		f.uploaded = buf.Bytes()
-		w.WriteHeader(http.StatusOK)
 	case r.Method == "POST" && r.URL.Path == "/v3/agents/agt_e2e/deployments":
 		_ = json.NewDecoder(r.Body).Decode(&f.deployBody)
 		writeJSON(map[string]any{"deployment": map[string]any{"id": "dep_1", "state": "verifying"}})
@@ -89,39 +72,27 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func TestDeployFlueEndToEnd(t *testing.T) {
+func TestDeployFlueDoEndToEnd(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("fake oc-flue-build is a POSIX shell script")
+		t.Skip("fake flue build is a POSIX shell script")
 	}
 
-	// A Flue app dir: manifest + clean source + a stand-in build bin.
+	// A Flue app dir: manifest + clean source + a stand-in `flue` bin whose
+	// `build --target cloudflare` writes a deterministic dist/e2e_flue/.
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "agent.toml"),
 		"name  = \"e2e-flue\"\nmodel = \"anthropic/claude-sonnet-5\"\n\n[runtime]\nfamily = \"flue\"\n", 0o644)
 	writeFile(t, filepath.Join(dir, "src", "opencomputer.ts"),
 		"import { serveOC } from '@opencomputer/flue';\nexport default serveOC(agent);\n", 0o644)
-	// The build emits a deterministic dist-oc/ (mirrors what oc-flue-build would).
-	buildScript := "#!/bin/sh\nset -e\nmkdir -p dist-oc\n" +
-		"cat > dist-oc/artifact.json <<'JSON'\n" + e2eArtifactBody + "\nJSON\n" +
-		"cat > dist-oc/oc.js <<'JS'\n" + e2eOcBody + "\nJS\n"
-	writeFile(t, filepath.Join(dir, "node_modules", ".bin", "oc-flue-build"), buildScript, 0o755)
-
-	// What the CLI must produce from that dist-oc/ (mode normalized to 0644).
-	expectedFiles := []bundle.File{
-		{Path: "artifact.json", Mode: 0o644, Content: []byte(e2eArtifactBody + "\n")},
-		{Path: "oc.js", Mode: 0o644, Content: []byte(e2eOcBody + "\n")},
-	}
-	expectedTarGz, err := bundle.Pack(expectedFiles)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expectedDigest := bundle.Digest(expectedTarGz)
+	buildScript := "#!/bin/sh\nset -e\nmkdir -p dist/e2e_flue\n" +
+		"cat > dist/e2e_flue/index.js <<'JS'\n" + e2eModuleBody + "\nJS\n" +
+		"cat > dist/e2e_flue/wrangler.json <<'JSON'\n" + e2eWranglerBody + "\nJSON\n"
+	writeFile(t, filepath.Join(dir, "node_modules", ".bin", "flue"), buildScript, 0o755)
 
 	// Fake control plane.
 	f := &fakeCP{}
 	srv := httptest.NewServer(f)
 	defer srv.Close()
-	f.self = srv.URL
 
 	// Drive the real deployFlue.
 	sc := client.NewSessionsAPI(srv.URL, "test-key")
@@ -149,30 +120,53 @@ func TestDeployFlueEndToEnd(t *testing.T) {
 		t.Errorf("create body carried a prompt for a flue agent: %v", f.createBody["prompt"])
 	}
 
-	// Content address the CLI advertised == the digest of the known fileset.
-	if f.artifactDigest != expectedDigest {
-		t.Errorf("advertised digest = %s, want %s", f.artifactDigest, expectedDigest)
-	}
-	// size_bytes is honest, and the PUT body is byte-exactly the canonical bundle
-	// for that digest — the full upload integrity chain.
-	if int(f.artifactSize) != len(f.uploaded) {
-		t.Errorf("size_bytes %d != uploaded len %d", int(f.artifactSize), len(f.uploaded))
-	}
-	if !bytes.Equal(f.uploaded, expectedTarGz) {
-		t.Errorf("uploaded bytes are not the canonical bundle for the digest (len got %d want %d)", len(f.uploaded), len(expectedTarGz))
-	}
-
-	// Deployment referenced the same digest, via input.framework_artifact_digest.
+	// The DO-deploy request body is well-formed.
 	input, _ := f.deployBody["input"].(map[string]any)
 	if input == nil {
 		t.Fatalf("deployment body had no input: %v", f.deployBody)
 	}
-	if input["framework_artifact_digest"] != expectedDigest {
-		t.Errorf("deployment digest = %v, want %s", input["framework_artifact_digest"], expectedDigest)
+	if input["type"] != "inline" {
+		t.Errorf("input.type = %v, want inline", input["type"])
 	}
+	if f.deployBody["activate"] != true {
+		t.Errorf("activate = %v, want true (no --no-activate)", f.deployBody["activate"])
+	}
+	if input["flue_agent_name"] != "e2e-flue" {
+		t.Errorf("flue_agent_name = %v, want e2e-flue", input["flue_agent_name"])
+	}
+	// The DO model must NOT carry the pre-013 fields.
 	if _, ok := input["prompt"]; ok {
-		t.Errorf("deployment input carried a prompt: %v", input["prompt"])
+		t.Errorf("flue DO deploy carried a prompt: %v", input["prompt"])
 	}
+	if _, ok := input["framework_artifact_digest"]; ok {
+		t.Errorf("flue DO deploy carried a framework_artifact_digest: %v", input["framework_artifact_digest"])
+	}
+
+	// flue_module: filename from wrangler.main, contentB64 = base64 of the built entry.
+	mod, _ := input["flue_module"].(map[string]any)
+	if mod == nil {
+		t.Fatalf("input.flue_module missing: %v", input)
+	}
+	if mod["filename"] != "index.js" {
+		t.Errorf("flue_module.filename = %v, want index.js (from wrangler.main)", mod["filename"])
+	}
+	wantB64 := base64.StdEncoding.EncodeToString([]byte(e2eModuleBody + "\n"))
+	if mod["contentB64"] != wantB64 {
+		t.Errorf("flue_module.contentB64 is not the base64 of the built entry module")
+	}
+
+	// flue_wrangler: the generated wrangler forwarded verbatim (DO bindings intact).
+	wr, _ := input["flue_wrangler"].(map[string]any)
+	if wr == nil {
+		t.Fatalf("input.flue_wrangler missing: %v", input)
+	}
+	if wr["main"] != "index.js" {
+		t.Errorf("flue_wrangler.main = %v, want index.js", wr["main"])
+	}
+	if wr["durable_objects"] == nil {
+		t.Errorf("flue_wrangler lost durable_objects: %v", wr)
+	}
+
 	// The verifying→ready sequence was actually polled.
 	if f.getCount < 2 {
 		t.Errorf("expected the poll to observe verifying→ready (got %d GETs)", f.getCount)
