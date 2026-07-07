@@ -31,6 +31,7 @@ run_worker_first = true
 binding = "OPENCOMPUTER_DB"
 database_name = "opencomputer-prod"
 database_id = "8329e0f0-100d-445a-bf89-95c065f15dbb"
+migrations_dir = "migrations"
 
 [[kv_namespaces]]
 binding = "SESSIONS_KV"

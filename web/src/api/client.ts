@@ -479,6 +479,77 @@ export const activateRevision = (agentId: string, rev: string | number) =>
     S.ActivateRevisionSchema,
   )
 
+// Schedules sub-resource (design 015) — cron for agents. A schedule fires an agent on a cron;
+// each firing starts one session on the active revision. Reached via the /v3 passthrough.
+export type ScheduleOverlap = 'skip' | 'allow'
+export type ScheduleState = 'active' | 'paused' | 'auto_paused'
+export type ScheduleRunOutcome = 'enacted' | 'skipped' | 'failed'
+
+export interface Schedule {
+  id: string
+  agent_id: string
+  name: string
+  cron: string
+  tz: string | null
+  input: string
+  overlap: ScheduleOverlap
+  state: ScheduleState
+  next_fire_at: string
+  last_fired_at: string | null
+  consecutive_failures: number
+  last_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ScheduleRun {
+  id: string
+  schedule_id: string
+  scheduled_for: string | null
+  fired_at: string
+  outcome: ScheduleRunOutcome
+  session_id: string | null
+  error: string | null
+}
+
+export const getSchedules = (agentId: string) =>
+  apiFetch<{ schedules: Schedule[] }>(`/v3/agents/${agentId}/schedules`).then((r) => r.schedules)
+
+export const createSchedule = (
+  agentId: string,
+  body: { name: string; cron: string; tz?: string | null; input: string; overlap?: ScheduleOverlap },
+) =>
+  apiFetch<{ schedule: Schedule }>(
+    `/v3/agents/${agentId}/schedules`,
+    { method: 'POST', body: JSON.stringify(body) },
+  ).then((r) => r.schedule)
+
+// PATCH accepts any of { cron, tz, input, overlap, paused }. `paused` toggles pause/resume.
+export const updateSchedule = (
+  agentId: string,
+  scheduleId: string,
+  body: Partial<{ cron: string; tz: string | null; input: string; overlap: ScheduleOverlap; paused: boolean }>,
+) =>
+  apiFetch<{ schedule: Schedule }>(
+    `/v3/agents/${agentId}/schedules/${scheduleId}`,
+    { method: 'PATCH', body: JSON.stringify(body) },
+  ).then((r) => r.schedule)
+
+export const deleteSchedule = (agentId: string, scheduleId: string) =>
+  apiFetch<void>(`/v3/agents/${agentId}/schedules/${scheduleId}`, { method: 'DELETE' })
+
+// Test-fire now — enacts synchronously (a failed fire still returns a run with outcome:"failed").
+export const fireSchedule = (agentId: string, scheduleId: string) =>
+  apiFetch<{ run: ScheduleRun }>(
+    `/v3/agents/${agentId}/schedules/${scheduleId}/fire`,
+    { method: 'POST', body: JSON.stringify({}) },
+  ).then((r) => r.run)
+
+export const getScheduleRuns = (agentId: string, scheduleId: string, limit = 10) =>
+  apiFetch<{ runs: ScheduleRun[]; next_cursor: string | null }>(
+    `/v3/agents/${agentId}/schedules/${scheduleId}/runs?limit=${limit}`,
+  ).then((r) => r.runs)
+
 // Skills sub-resource (design 009 §8) — the API owns zip → validate → bundle, so the
 // dashboard is a thin consumer: read the file list, upload a .zip, or clear.
 export const getAgentSkills = (agentId: string) =>
