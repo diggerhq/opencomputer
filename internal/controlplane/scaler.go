@@ -877,6 +877,20 @@ func (s *Scaler) evacuateBatch(sourceWorkerID string, count int) {
 		if migrated >= count {
 			break
 		}
+		// Paused boxes off a hot worker: deep-hibernate to free their swap +
+		// resident remainder (they have no migratable running state). Counts
+		// toward the batch as a unit of pressure relief.
+		if sb.Status == "paused" {
+			hibCtx, hibCancel := context.WithTimeout(ctx, 120*time.Second)
+			if _, herr := sourceClient.HibernateSandbox(hibCtx, &pb.HibernateSandboxRequest{SandboxId: sb.SandboxId}); herr == nil {
+				migrated++
+				log.Printf("scaler: evacuate: deep-hibernated paused %s on %s", sb.SandboxId, sourceWorkerID)
+			} else {
+				log.Printf("scaler: evacuate: deep-hibernate paused %s failed: %v", sb.SandboxId, herr)
+			}
+			hibCancel()
+			continue
+		}
 		if sb.Status != "running" {
 			continue
 		}
@@ -1225,6 +1239,23 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 		// handle truly session-less VMs.
 		var running []string
 		for _, sb := range listResp.Sandboxes {
+			// Paused boxes are RAM-resident only (no checkpoint) — a drain would
+			// otherwise lose them. Deep-hibernate them so they survive as a
+			// restorable checkpoint (evicted to blob, wakeable on any worker).
+			// Chosen over resume→migrate→re-pause because that would bill the
+			// customer for platform-initiated migration time (they hibernated
+			// expecting no charge). The only cost here is one slower wake if the
+			// box is woken after the drain — negligible for an infrequent event.
+			if sb.Status == "paused" {
+				hibCtx, hibCancel := context.WithTimeout(ctx, 120*time.Second)
+				if _, herr := sourceClient.HibernateSandbox(hibCtx, &pb.HibernateSandboxRequest{SandboxId: sb.SandboxId}); herr != nil {
+					log.Printf("scaler: drain: deep-hibernate paused %s on %s failed: %v", sb.SandboxId, workerID, herr)
+				} else {
+					log.Printf("scaler: drain: deep-hibernated paused %s on %s (evicted to checkpoint)", sb.SandboxId, workerID)
+				}
+				hibCancel()
+				continue
+			}
 			if sb.Status != "running" {
 				continue
 			}
