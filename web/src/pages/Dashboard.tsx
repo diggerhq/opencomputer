@@ -1,13 +1,15 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
-import { Boxes, MessagesSquare } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Boxes, MessagesSquare, Sparkles } from 'lucide-react'
 import {
   createAPIKey,
   getAPIKeys,
   getSandboxes,
   getSessions,
   getAgents,
+  createAgent,
+  createSession,
   type Sandbox,
 } from '@/api/client'
 import type { Session } from '@/api/schemas'
@@ -19,8 +21,26 @@ import { CopyRow } from '@/components/copy-row'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
+import { Button } from '@/components/ui/button'
+import { DEFAULT_RUNTIME, defaultModelFor } from '@/lib/runtimes'
 
 const SKILL_INSTALL_CMD = 'npx skills add diggerhq/opencomputer'
+
+// One-click launch defaults. Mirrors the Create-agent dialog's defaults so the
+// dashboard button produces the same agent the modal would — but with the
+// "managed" credential (run via OpenComputer, billed to credits, no BYO key) so
+// a brand-new user with no key can go straight to a live session.
+const QUICKLAUNCH_PROMPT =
+  'You are a helpful AI assistant working in a sandboxed computer. Complete tasks end to end, use the tools available to you, and keep your answers clear and concise. When something is ambiguous, make a sensible assumption and say so.'
+// Starter task so the agent does something visible the moment the session opens.
+const QUICKLAUNCH_TASK =
+  'Give me a quick tour of this sandbox: check the OS and what tools/languages are installed, then suggest three things we could build together.'
+const QL_ADJ = ['swift', 'calm', 'bright', 'clever', 'bold', 'quiet', 'keen', 'brave', 'nimble', 'lucid', 'deft', 'vivid']
+const QL_NOUN = ['otter', 'harbor', 'falcon', 'cedar', 'comet', 'ember', 'grove', 'heron', 'lynx', 'nova', 'quartz', 'willow']
+function quicklaunchName(): string {
+  const pick = (a: readonly string[]) => a[Math.floor(Math.random() * a.length)]
+  return `${pick(QL_ADJ)}-${pick(QL_NOUN)}`
+}
 
 function formatDuration(sandbox: Sandbox): string {
   const start = new Date(sandbox.startedAt).getTime()
@@ -287,9 +307,30 @@ function GettingStarted() {
   })
   const autoCreateRef = useRef(false)
 
+  const navigate = useNavigate()
+
   const createMutation = useMutation({
     mutationFn: () => createAPIKey('Default'),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['api-keys'] }),
+  })
+
+  // One click: create a managed agent + start a session on it, then drop the
+  // user straight onto the live session screen. No skill, no key, no terminal.
+  const launchMutation = useMutation({
+    mutationFn: async () => {
+      const agent = await createAgent({
+        name: quicklaunchName(),
+        prompt: QUICKLAUNCH_PROMPT,
+        model: defaultModelFor(DEFAULT_RUNTIME),
+        runtime: DEFAULT_RUNTIME,
+        credential: 'managed', // run via OpenComputer, billed to credits, no BYO key
+      })
+      return createSession({ agent: agent.id, input: QUICKLAUNCH_TASK })
+    },
+    onSuccess: (session) => {
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      void navigate(`/sessions/${session.id}`)
+    },
   })
 
   const hasKeys = (keys?.length ?? 0) > 0
@@ -309,6 +350,46 @@ function GettingStarted() {
 
   return (
     <div className="space-y-4">
+      <Panel className="p-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <h3 className="text-foreground text-base font-semibold">
+              Launch an agent
+            </h3>
+            <p className="text-muted-foreground text-sm">
+              Spin up a Claude agent in a fresh sandbox and watch it work — no
+              setup, no API key. Runs on OpenComputer, billed to your credits.
+            </p>
+          </div>
+          <Button
+            size="lg"
+            className="shrink-0"
+            onClick={() => launchMutation.mutate()}
+            disabled={launchMutation.isPending}
+          >
+            <Sparkles className="size-4" />
+            {launchMutation.isPending ? 'Launching…' : 'Launch agent'}
+          </Button>
+        </div>
+        {launchMutation.isError ? (
+          <div className="mt-3 flex items-center gap-3">
+            <span className="text-status-error text-sm">
+              Couldn&apos;t launch the agent.
+            </span>
+            <button
+              className="text-foreground text-sm font-medium underline underline-offset-4"
+              onClick={() => launchMutation.mutate()}
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+      </Panel>
+
+      <p className="text-muted-foreground px-1 text-xs">
+        Or drive OpenComputer from your terminal:
+      </p>
+
       <StepCard
         index={1}
         title="Install the OpenComputer skill"
