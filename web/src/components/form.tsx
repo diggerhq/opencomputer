@@ -23,8 +23,9 @@ export function Select({
   value: string
   onValueChange: (value: string) => void
   // A `{ separator: true }` entry renders a divider between groups (e.g. models
-  // grouped by provider) rather than a selectable item.
-  options: ({ value: string; label: string } | { separator: true })[]
+  // grouped by provider) rather than a selectable item. An optional `hint` renders
+  // right-aligned + muted (e.g. a timezone's UTC offset).
+  options: ({ value: string; label: string; hint?: string } | { separator: true })[]
   id?: string
   placeholder?: string
   disabled?: boolean
@@ -71,6 +72,11 @@ export function Select({
                   className="focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center rounded-md py-1 pr-8 pl-2 text-sm outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50"
                 >
                   <SelectPrimitive.ItemText>{o.label}</SelectPrimitive.ItemText>
+                  {o.hint ? (
+                    <span className="text-muted-foreground ml-auto pl-4 text-xs tabular-nums">
+                      {o.hint}
+                    </span>
+                  ) : null}
                   <span className="absolute right-2 flex items-center">
                     <SelectPrimitive.ItemIndicator>
                       <Check className="size-4" />

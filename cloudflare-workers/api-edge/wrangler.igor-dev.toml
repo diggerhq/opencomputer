@@ -42,6 +42,7 @@ run_worker_first = true
 binding = "OPENCOMPUTER_DB"
 database_name = "opencomputer-igor-dev"
 database_id = "d5bbb12a-0491-4a95-9d7d-32ed8c3ce15d"
+migrations_dir = "migrations"
 
 # CreditAccount DO is self-hosted by this worker (script_name defaults to self).
 [[durable_objects.bindings]]

@@ -91,7 +91,7 @@ isn't in the artifact.
 | Sandbox | You pick one (`local()`, containers, …) | **Leave `sandbox:` unset** — the session's workspace sandbox is supplied (build error) |
 | Persistence | `db.ts` (or volatile in-memory default) | **No `db.ts`** — the conversation is stored durably in the session's state; survives restarts and hibernation (build error) |
 | Model credentials | Env keys or `registerProvider` in code | **No keys anywhere in the app** — the deploy scans the artifact for key-shaped strings and fails on a hit. Managed billing or an [OC credential](/agent-sessions/credentials); routing is injected at run time |
-| Model choice | In code | Still in code — but declared three times total (`defineAgent`, `agent.toml`, the OC agent) and all three **must be equal**; the deploy rejects divergence |
+| Model choice | In code | Still in code — but declared three times total (`defineAgent`, `agent.toml`, the OC agent) and all three **must be equal**; the deploy rejects divergence. Fixed for good at deploy: a [session](/agent-sessions/sessions#model) **can't override** a flue agent's model — passing `model` on a flue session is rejected |
 | Skills | Packaged imports (`with {type:'skill'}`) or workspace files | **`src/skills/<name>/SKILL.md`** — ships with every deploy. Packaged imports are a build error (for now) |
 | Asking the user | No human-in-the-loop primitive | An **`ask` tool** is added: the session yields `needs_input` and hibernates until the user replies |
 | Channels / workflows | Slack/Discord ingress, `defineWorkflow` | Not supported — inbound is session messages + [GitHub watches](/agent-sessions/watches) |

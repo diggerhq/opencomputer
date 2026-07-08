@@ -13,7 +13,7 @@ A **runtime** executes the agent loop: provider SDK, model calls, and tool use. 
 | `pi` | `anthropic/…` today — the runtime is provider-agnostic by construction; more providers land next | Managed, or an Anthropic key |
 | `flue` <sup>experimental</sup> | `anthropic/…` today — bring your own [Flue](/agent-sessions/flue) app | Managed, or an Anthropic key |
 
-`model` is passed straight through to the provider, so any model that provider serves works — only the **`provider/` prefix** is validated against the runtime (a bad prefix is rejected at agent create, a model the provider doesn't recognize fails on the first turn). Common choices:
+`model` is passed straight through to the provider, so any model that provider serves works — only the **`provider/` prefix** is validated against the runtime (a bad prefix is rejected at agent create, a model the provider doesn't recognize fails on the first turn). A [session](/agent-sessions/sessions#model) can override this per run — pass `model` at create to run one session on a different model than its agent, validated the same way (brain-box runtimes `claude`/`codex`/`pi`; not `flue`, which pins its model in the artifact). Common choices:
 
 - **`claude`:** `anthropic/claude-sonnet-5` (default, balanced), `anthropic/claude-opus-4-8` (most capable), `anthropic/claude-fable-5`, `anthropic/claude-haiku-4-5` (fastest/cheapest).
 - **`codex`:** `openai/gpt-5-codex`.
