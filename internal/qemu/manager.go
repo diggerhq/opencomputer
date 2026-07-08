@@ -279,6 +279,14 @@ type VMInstance struct {
 	// customer-facing "hibernated" fast tier that stays resident on this worker.
 	// Zero = running. Drives the paused→deep promotion sweep. Guarded by opMu.
 	pausedAt time.Time
+
+	// billingSuppressed marks a RUNNING VM whose time should not be billed —
+	// used during an unbilled paused-tier migration: the box is genuinely resumed
+	// (vCPUs running, agent live) so the migration is a normal live migration, but
+	// the usage ticker skips it so the customer isn't charged for the platform-
+	// initiated move. Cleared when the box is re-paused on the target (or when a
+	// customer request touches it mid-move, which resumes it for real + bills).
+	billingSuppressed bool
 }
 
 // SandboxMeta is persisted to sandbox-meta.json for recovery after hard kills.
@@ -4302,6 +4310,17 @@ func (m *Manager) getReadyVM(ctx context.Context, id string) (*VMInstance, error
 }
 
 // vmToSandbox converts a VMInstance to a types.Sandbox.
+// IsBillingSuppressed reports whether a RUNNING VM is currently exempt from
+// billing (an in-flight unbilled paused-tier migration). The usage ticker checks
+// this so a genuinely-running box being moved off a draining worker isn't charged.
+func (m *Manager) IsBillingSuppressed(sandboxID string) bool {
+	vm, err := m.getVM(sandboxID)
+	if err != nil {
+		return false
+	}
+	return vm.billingSuppressed
+}
+
 func vmToSandbox(vm *VMInstance) *types.Sandbox {
 	return &types.Sandbox{
 		ID:        vm.ID,

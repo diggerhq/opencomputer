@@ -195,6 +195,14 @@ func (t *UsageTicker) tick(ctx context.Context) {
 			t.dropState(sb.ID)
 			continue
 		}
+		// Billing-suppressed: a genuinely-running box mid unbilled paused-tier
+		// migration (moved off a draining worker). Skip it — the customer isn't
+		// charged for the platform-initiated move.
+		if bs, ok := t.manager.(interface{ IsBillingSuppressed(string) bool }); ok && bs.IsBillingSuppressed(sb.ID) {
+			skippedPaused++
+			t.dropState(sb.ID)
+			continue
+		}
 		aliveIDs = append(aliveIDs, sb.ID)
 
 		intervalSec, newRemainder := t.intervalSecondsFor(sb, now)

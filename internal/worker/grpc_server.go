@@ -751,6 +751,14 @@ func (s *GRPCServer) ExecSessionResult(ctx context.Context, req *pb.ExecSessionR
 type pausableManager interface {
 	Pause(ctx context.Context, sandboxID string) (reclaimedBytes uint64, err error)
 	Resume(ctx context.Context, sandboxID string) error
+	// ResumeUnbilled genuinely resumes a paused box for an unbilled migration.
+	ResumeUnbilled(ctx context.Context, sandboxID string) error
+	// SetBillingSuppressed marks a receiving migration's running VM unbilled, so
+	// the usage ticker skips the transfer window.
+	SetBillingSuppressed(sandboxID string) error
+	// RepauseAfterMigration does a normal pause of the settled, just-migrated box
+	// on the target and clears the billing-suppression flag.
+	RepauseAfterMigration(ctx context.Context, sandboxID string) (reclaimedBytes uint64, err error)
 }
 
 // PauseSandbox freezes the VM's vCPUs and pages its guest RAM out to swap — the
@@ -800,6 +808,41 @@ func (s *GRPCServer) ResumeSandbox(ctx context.Context, req *pb.ResumeSandboxReq
 		return nil, fmt.Errorf("failed to resume sandbox: %w", err)
 	}
 	return &pb.ResumeSandboxResponse{SandboxId: req.SandboxId}, nil
+}
+
+// PauseAfterMigration returns an arrive_paused migrated box to the RAM-resident
+// paused state on the target: QMP stop + reclaim, no billing hook. The box's
+// status stayed "paused" through the whole move, so nothing was billed; this
+// just frees the RAM again and marks the router so the next request resumes it.
+func (s *GRPCServer) PauseAfterMigration(ctx context.Context, req *pb.PauseAfterMigrationRequest) (*pb.PauseAfterMigrationResponse, error) {
+	pm, ok := s.manager.(pausableManager)
+	if !ok {
+		return nil, fmt.Errorf("pause not supported by this worker backend")
+	}
+	reclaimed, err := pm.RepauseAfterMigration(ctx, req.SandboxId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pause after migration: %w", err)
+	}
+	if s.router != nil {
+		s.router.MarkPaused(req.SandboxId)
+	}
+	return &pb.PauseAfterMigrationResponse{
+		SandboxId:      req.SandboxId,
+		ReclaimedBytes: int64(reclaimed),
+	}, nil
+}
+
+// ResumeUnbilled genuinely resumes a paused box (vCPUs + agent live) for an
+// unbilled migration. The box then live-migrates as a normal running VM.
+func (s *GRPCServer) ResumeUnbilled(ctx context.Context, req *pb.ResumeUnbilledRequest) (*pb.ResumeUnbilledResponse, error) {
+	pm, ok := s.manager.(pausableManager)
+	if !ok {
+		return nil, fmt.Errorf("resume not supported by this worker backend")
+	}
+	if err := pm.ResumeUnbilled(ctx, req.SandboxId); err != nil {
+		return nil, fmt.Errorf("failed to resume unbilled: %w", err)
+	}
+	return &pb.ResumeUnbilledResponse{SandboxId: req.SandboxId}, nil
 }
 
 func (s *GRPCServer) HibernateSandbox(ctx context.Context, req *pb.HibernateSandboxRequest) (*pb.HibernateSandboxResponse, error) {
@@ -1437,6 +1480,17 @@ func (s *GRPCServer) PrepareMigrationIncoming(ctx context.Context, req *pb.Prepa
 	if err != nil {
 		return nil, fmt.Errorf("prepare incoming migration: %w", err)
 	}
+	// arrive_paused: flip the just-registered VM to the paused status NOW, before
+	// the source starts streaming RAM into it, so the usage ticker never bills it
+	// during the transfer. The vCPUs are still parked in -incoming; the scaler
+	// re-stops + reclaims via PauseAfterMigration once completion has run.
+	if req.ArrivePaused {
+		if pm, ok := s.manager.(pausableManager); ok {
+			if perr := pm.SetBillingSuppressed(req.SandboxId); perr != nil {
+				log.Printf("grpc: SetBillingSuppressed(%s) failed: %v — migration may bill briefly", req.SandboxId, perr)
+			}
+		}
+	}
 	return &pb.PrepareMigrationIncomingResponse{
 		IncomingAddr: addr,
 		HostPort:     int32(hostPort),
@@ -1460,6 +1514,19 @@ func (s *GRPCServer) CompleteMigrationIncoming(ctx context.Context, req *pb.Comp
 	if err := s.migrator.CompleteIncomingMigration(ctx, req.SandboxId); err != nil {
 		return nil, fmt.Errorf("complete incoming migration: %w", err)
 	}
+
+	// Register the just-arrived box in the target worker's router. Without this,
+	// the migrated box has no router entry, so a later PauseSandbox → MarkPaused
+	// is a no-op and an explicit /wake → ResumeSandbox → Route("resume") never
+	// reaches doResume/Manager.Resume — the box stays frozen and its agent is
+	// unreachable ("agent not available" / keepalive timeout on the wake exec).
+	// CreateSandbox and WakeSandbox register here for exactly the same reason;
+	// live-migration-incoming was the one running-state entry point that didn't.
+	// timeout 0 → the router's default idle timeout (same as a fresh box).
+	if s.router != nil {
+		s.router.Register(req.SandboxId, 0)
+	}
+
 	return &pb.CompleteMigrationIncomingResponse{}, nil
 }
 

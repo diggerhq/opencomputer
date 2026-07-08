@@ -94,6 +94,9 @@ func (m *Manager) Resume(_ context.Context, sandboxID string) error {
 	}
 	vm.pausedAt = time.Time{}
 	vm.Status = types.SandboxStatusRunning
+	// A customer-driven resume always bills: if this box was mid unbilled
+	// migration (billingSuppressed), the touch flips it to a normal billed box.
+	vm.billingSuppressed = false
 
 	// Resume billing (the VM is a live running sandbox again).
 	if m.lifecycleObs != nil {
@@ -101,6 +104,89 @@ func (m *Manager) Resume(_ context.Context, sandboxID string) error {
 	}
 	log.Printf("qemu: resume %s: vCPUs running", sandboxID)
 	return nil
+}
+
+// ResumeUnbilled genuinely resumes a paused VM (QMP cont, vCPUs running, agent
+// live) for an unbilled platform-initiated migration — but marks it
+// billingSuppressed so the usage ticker skips it and fires NO OnSandboxWake
+// billing hook. From this point the box is a normal live VM (so the migration is
+// a normal live migration and the agent stays healthy), it just isn't charged.
+// A customer request that touches it mid-move goes through the normal resume,
+// which clears billingSuppressed and starts billing from the touch.
+func (m *Manager) ResumeUnbilled(_ context.Context, sandboxID string) error {
+	vm, err := m.getVM(sandboxID)
+	if err != nil {
+		return err
+	}
+	if !vm.opMu.TryLock() {
+		return fmt.Errorf("another operation is in progress on sandbox %s — try again shortly", sandboxID)
+	}
+	defer vm.opMu.Unlock()
+
+	if vm.qmp == nil {
+		return fmt.Errorf("no QMP client for sandbox %s", sandboxID)
+	}
+	if !vm.pausedAt.IsZero() {
+		if err := vm.qmp.Cont(); err != nil {
+			return fmt.Errorf("qmp cont: %w", err)
+		}
+		vm.pausedAt = time.Time{}
+	}
+	vm.Status = types.SandboxStatusRunning
+	vm.billingSuppressed = true
+	log.Printf("qemu: resume-unbilled %s: vCPUs running (billing suppressed for migration)", sandboxID)
+	return nil
+}
+
+// SetBillingSuppressed marks a RUNNING VM as billing-suppressed as soon as it's
+// registered on the migration target, so the usage ticker never charges for the
+// live-migration transfer window. It does NOT change run-state — the box arrives
+// and completes as a normal running migration (agent healthy); RepauseAfterMigration
+// does the real pause afterward.
+func (m *Manager) SetBillingSuppressed(sandboxID string) error {
+	vm, err := m.getVM(sandboxID)
+	if err != nil {
+		return err
+	}
+	vm.billingSuppressed = true
+	return nil
+}
+
+// RepauseAfterMigration performs a NORMAL pause of a healthy, running, just-
+// migrated box on the target — QMP stop + reclaim, clearing billingSuppressed.
+// Because it runs on a fully-settled running sandbox (the live migration left it
+// running with a live agent), this is identical to a routine Pause, so wake works
+// exactly like any paused box. Fires no billing hook (the box was suppressed, so
+// there is no running slice to flush).
+func (m *Manager) RepauseAfterMigration(_ context.Context, sandboxID string) (reclaimedBytes uint64, err error) {
+	vm, err := m.getVM(sandboxID)
+	if err != nil {
+		return 0, err
+	}
+	if !vm.opMu.TryLock() {
+		return 0, fmt.Errorf("another operation is in progress on sandbox %s — try again shortly", sandboxID)
+	}
+	defer vm.opMu.Unlock()
+
+	if vm.qmp == nil {
+		return 0, fmt.Errorf("no QMP client for sandbox %s", sandboxID)
+	}
+	if err := vm.qmp.Stop(); err != nil {
+		return 0, fmt.Errorf("qmp stop: %w", err)
+	}
+	vm.pausedAt = time.Now()
+	vm.Status = types.SandboxStatusPaused
+	vm.billingSuppressed = false
+
+	t0 := time.Now()
+	advised, rErr := reclaimGuestRAM(vm.pid, pauseReclaimMinRegionBytes)
+	if rErr != nil {
+		log.Printf("qemu: repause-after-migration %s: stopped; reclaim best-effort failed: %v", sandboxID, rErr)
+	} else {
+		log.Printf("qemu: repause-after-migration %s: stopped + advised %d MiB to swap in %dms",
+			sandboxID, advised>>20, time.Since(t0).Milliseconds())
+	}
+	return advised, nil
 }
 
 // IsPaused reports whether the VM is currently paused and, if so, since when.

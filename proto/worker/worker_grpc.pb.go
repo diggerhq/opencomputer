@@ -38,6 +38,8 @@ const (
 	SandboxWorker_WakeSandbox_FullMethodName               = "/worker.SandboxWorker/WakeSandbox"
 	SandboxWorker_PauseSandbox_FullMethodName              = "/worker.SandboxWorker/PauseSandbox"
 	SandboxWorker_ResumeSandbox_FullMethodName             = "/worker.SandboxWorker/ResumeSandbox"
+	SandboxWorker_PauseAfterMigration_FullMethodName       = "/worker.SandboxWorker/PauseAfterMigration"
+	SandboxWorker_ResumeUnbilled_FullMethodName            = "/worker.SandboxWorker/ResumeUnbilled"
 	SandboxWorker_RebootSandbox_FullMethodName             = "/worker.SandboxWorker/RebootSandbox"
 	SandboxWorker_PowerCycleSandbox_FullMethodName         = "/worker.SandboxWorker/PowerCycleSandbox"
 	SandboxWorker_SaveAsTemplate_FullMethodName            = "/worker.SandboxWorker/SaveAsTemplate"
@@ -81,6 +83,15 @@ type SandboxWorkerClient interface {
 	// HibernateSandbox/WakeSandbox.
 	PauseSandbox(ctx context.Context, in *PauseSandboxRequest, opts ...grpc.CallOption) (*PauseSandboxResponse, error)
 	ResumeSandbox(ctx context.Context, in *ResumeSandboxRequest, opts ...grpc.CallOption) (*ResumeSandboxResponse, error)
+	// PauseAfterMigration re-stops + reclaims a box that was migrated with
+	// arrive_paused: after CompleteMigrationIncoming's Cont (which runs the vCPUs
+	// briefly to reconnect the agent), this returns it to the RAM-resident paused
+	// state without firing the billing hooks — the box was never billed for the move.
+	PauseAfterMigration(ctx context.Context, in *PauseAfterMigrationRequest, opts ...grpc.CallOption) (*PauseAfterMigrationResponse, error)
+	// ResumeUnbilled genuinely resumes a paused box (vCPUs running, agent live) for
+	// an unbilled platform-initiated migration — the usage ticker skips it, no
+	// billing hook fires. The box then live-migrates as a normal running VM.
+	ResumeUnbilled(ctx context.Context, in *ResumeUnbilledRequest, opts ...grpc.CallOption) (*ResumeUnbilledResponse, error)
 	// Reboot performs a soft, in-place guest reset (QMP system_reset). The
 	// QEMU process, network, and workspace stay in place; only the guest
 	// kernel and processes are reset. Recovers from in-guest wedges (zombie
@@ -324,6 +335,26 @@ func (c *sandboxWorkerClient) ResumeSandbox(ctx context.Context, in *ResumeSandb
 	return out, nil
 }
 
+func (c *sandboxWorkerClient) PauseAfterMigration(ctx context.Context, in *PauseAfterMigrationRequest, opts ...grpc.CallOption) (*PauseAfterMigrationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PauseAfterMigrationResponse)
+	err := c.cc.Invoke(ctx, SandboxWorker_PauseAfterMigration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sandboxWorkerClient) ResumeUnbilled(ctx context.Context, in *ResumeUnbilledRequest, opts ...grpc.CallOption) (*ResumeUnbilledResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResumeUnbilledResponse)
+	err := c.cc.Invoke(ctx, SandboxWorker_ResumeUnbilled_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *sandboxWorkerClient) RebootSandbox(ctx context.Context, in *RebootSandboxRequest, opts ...grpc.CallOption) (*RebootSandboxResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RebootSandboxResponse)
@@ -491,6 +522,15 @@ type SandboxWorkerServer interface {
 	// HibernateSandbox/WakeSandbox.
 	PauseSandbox(context.Context, *PauseSandboxRequest) (*PauseSandboxResponse, error)
 	ResumeSandbox(context.Context, *ResumeSandboxRequest) (*ResumeSandboxResponse, error)
+	// PauseAfterMigration re-stops + reclaims a box that was migrated with
+	// arrive_paused: after CompleteMigrationIncoming's Cont (which runs the vCPUs
+	// briefly to reconnect the agent), this returns it to the RAM-resident paused
+	// state without firing the billing hooks — the box was never billed for the move.
+	PauseAfterMigration(context.Context, *PauseAfterMigrationRequest) (*PauseAfterMigrationResponse, error)
+	// ResumeUnbilled genuinely resumes a paused box (vCPUs running, agent live) for
+	// an unbilled platform-initiated migration — the usage ticker skips it, no
+	// billing hook fires. The box then live-migrates as a normal running VM.
+	ResumeUnbilled(context.Context, *ResumeUnbilledRequest) (*ResumeUnbilledResponse, error)
 	// Reboot performs a soft, in-place guest reset (QMP system_reset). The
 	// QEMU process, network, and workspace stay in place; only the guest
 	// kernel and processes are reset. Recovers from in-guest wedges (zombie
@@ -588,6 +628,12 @@ func (UnimplementedSandboxWorkerServer) PauseSandbox(context.Context, *PauseSand
 }
 func (UnimplementedSandboxWorkerServer) ResumeSandbox(context.Context, *ResumeSandboxRequest) (*ResumeSandboxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResumeSandbox not implemented")
+}
+func (UnimplementedSandboxWorkerServer) PauseAfterMigration(context.Context, *PauseAfterMigrationRequest) (*PauseAfterMigrationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PauseAfterMigration not implemented")
+}
+func (UnimplementedSandboxWorkerServer) ResumeUnbilled(context.Context, *ResumeUnbilledRequest) (*ResumeUnbilledResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResumeUnbilled not implemented")
 }
 func (UnimplementedSandboxWorkerServer) RebootSandbox(context.Context, *RebootSandboxRequest) (*RebootSandboxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RebootSandbox not implemented")
@@ -976,6 +1022,42 @@ func _SandboxWorker_ResumeSandbox_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SandboxWorker_PauseAfterMigration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PauseAfterMigrationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxWorkerServer).PauseAfterMigration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxWorker_PauseAfterMigration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxWorkerServer).PauseAfterMigration(ctx, req.(*PauseAfterMigrationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SandboxWorker_ResumeUnbilled_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResumeUnbilledRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxWorkerServer).ResumeUnbilled(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxWorker_ResumeUnbilled_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxWorkerServer).ResumeUnbilled(ctx, req.(*ResumeUnbilledRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SandboxWorker_RebootSandbox_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RebootSandboxRequest)
 	if err := dec(in); err != nil {
@@ -1302,6 +1384,14 @@ var SandboxWorker_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResumeSandbox",
 			Handler:    _SandboxWorker_ResumeSandbox_Handler,
+		},
+		{
+			MethodName: "PauseAfterMigration",
+			Handler:    _SandboxWorker_PauseAfterMigration_Handler,
+		},
+		{
+			MethodName: "ResumeUnbilled",
+			Handler:    _SandboxWorker_ResumeUnbilled_Handler,
 		},
 		{
 			MethodName: "RebootSandbox",
