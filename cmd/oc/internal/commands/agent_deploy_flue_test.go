@@ -1,12 +1,15 @@
 package commands
 
-// Contract-mock end-to-end for the Flue deploy flow. A fake control plane
-// implements contract 3 (POST /v3/agents/:id/artifacts + the presigned PUT) and
-// contract 10 (deployment create + a verifying→ready poll). A throwaway
-// `node_modules/.bin/oc-flue-build` script stands in for @opencomputer/flue, so
-// the real runFlueBuild exec path runs and produces a dist-oc/. deployFlue is
-// driven end to end; we assert the uploaded bytes are byte-exactly the canonical
-// bundle for the digest the CLI advertised — the whole content-address chain.
+// Contract-mock end-to-end for the Flue DO deploy flow (design 013 §6). A fake control
+// plane implements the presigned-PUT bundle upload (POST /v3/agents/:id/artifacts + the
+// signed PUT) and the deployment create + a verifying→ready poll. A throwaway
+// `node_modules/.bin/flue` script stands in for the app's flue CLI, so the real
+// runFlueBuild exec path runs and produces a dist/<app>/ with the entry module + an
+// assets/ file. deployFlue is driven end to end; we assert the uploaded bytes are
+// byte-exactly the canonical tar.gz of the whole build dir for the digest the CLI
+// advertised (the content-address chain), and that the POSTed deployment body is the
+// byte-free DO request: flue_bundle_digest + flue_wrangler + flue_agent_name, with no
+// module bytes / no framework_artifact_digest.
 
 import (
 	"bytes"
@@ -21,16 +24,19 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/bundle"
+	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/output"
 	"github.com/spf13/cobra"
 )
 
-// The exact bytes the fake build emits into dist-oc/ (heredoc appends a newline).
+// The exact bytes the fake `flue build` emits into dist/e2e_flue/ (heredoc appends a
+// trailing newline). The build is nested a directory deep, with an assets/ file, to
+// exercise the dist/<app>/ discovery and prove the WHOLE tree is staged.
 const (
-	e2eArtifactBody = `{"entry":"oc.js","profile_version":1,"model":"anthropic/claude-sonnet-5"}`
-	e2eOcBody       = `export const agent = "e2e";`
+	e2eModuleBody   = `export default { fetch() { return new Response("ok"); } };`
+	e2eAssetBody    = `export const chunk = 1;`
+	e2eWranglerBody = `{"name":"e2e-flue","main":"index.js","compatibility_date":"2026-04-01","compatibility_flags":["nodejs_compat"],"durable_objects":{"bindings":[{"name":"AGENT","class_name":"FlueE2EAgent"}]},"migrations":[{"tag":"v1","new_sqlite_classes":["FlueE2EAgent"]}]}`
 )
 
 type fakeCP struct {
@@ -89,27 +95,31 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func TestDeployFlueEndToEnd(t *testing.T) {
+func TestDeployFlueDoEndToEnd(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("fake oc-flue-build is a POSIX shell script")
+		t.Skip("fake flue build is a POSIX shell script")
 	}
 
-	// A Flue app dir: manifest + clean source + a stand-in build bin.
+	// A Flue app dir: manifest + clean source + a stand-in `flue` bin whose
+	// `build --target cloudflare` writes a deterministic dist/e2e_flue/ (entry + asset
+	// + wrangler), a directory deep.
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "agent.toml"),
 		"name  = \"e2e-flue\"\nmodel = \"anthropic/claude-sonnet-5\"\n\n[runtime]\nfamily = \"flue\"\n", 0o644)
 	writeFile(t, filepath.Join(dir, "src", "opencomputer.ts"),
 		"import { serveOC } from '@opencomputer/flue';\nexport default serveOC(agent);\n", 0o644)
-	// The build emits a deterministic dist-oc/ (mirrors what oc-flue-build would).
-	buildScript := "#!/bin/sh\nset -e\nmkdir -p dist-oc\n" +
-		"cat > dist-oc/artifact.json <<'JSON'\n" + e2eArtifactBody + "\nJSON\n" +
-		"cat > dist-oc/oc.js <<'JS'\n" + e2eOcBody + "\nJS\n"
-	writeFile(t, filepath.Join(dir, "node_modules", ".bin", "oc-flue-build"), buildScript, 0o755)
+	buildScript := "#!/bin/sh\nset -e\nmkdir -p dist/e2e_flue/assets\n" +
+		"cat > dist/e2e_flue/index.js <<'JS'\n" + e2eModuleBody + "\nJS\n" +
+		"cat > dist/e2e_flue/assets/chunk.js <<'JS'\n" + e2eAssetBody + "\nJS\n" +
+		"cat > dist/e2e_flue/wrangler.json <<'JSON'\n" + e2eWranglerBody + "\nJSON\n"
+	writeFile(t, filepath.Join(dir, "node_modules", ".bin", "flue"), buildScript, 0o755)
 
-	// What the CLI must produce from that dist-oc/ (mode normalized to 0644).
+	// What the CLI must produce from that dist/e2e_flue/ (modes normalized to 0644,
+	// rooted at the wrangler's dir so index.js/assets are at the tar root).
 	expectedFiles := []bundle.File{
-		{Path: "artifact.json", Mode: 0o644, Content: []byte(e2eArtifactBody + "\n")},
-		{Path: "oc.js", Mode: 0o644, Content: []byte(e2eOcBody + "\n")},
+		{Path: "index.js", Mode: 0o644, Content: []byte(e2eModuleBody + "\n")},
+		{Path: "assets/chunk.js", Mode: 0o644, Content: []byte(e2eAssetBody + "\n")},
+		{Path: "wrangler.json", Mode: 0o644, Content: []byte(e2eWranglerBody + "\n")},
 	}
 	expectedTarGz, err := bundle.Pack(expectedFiles)
 	if err != nil {
@@ -149,12 +159,11 @@ func TestDeployFlueEndToEnd(t *testing.T) {
 		t.Errorf("create body carried a prompt for a flue agent: %v", f.createBody["prompt"])
 	}
 
-	// Content address the CLI advertised == the digest of the known fileset.
+	// The content address the CLI advertised == the digest of the whole-dir bundle, and
+	// the PUT body is byte-exactly that canonical tar.gz — the full upload integrity chain.
 	if f.artifactDigest != expectedDigest {
 		t.Errorf("advertised digest = %s, want %s", f.artifactDigest, expectedDigest)
 	}
-	// size_bytes is honest, and the PUT body is byte-exactly the canonical bundle
-	// for that digest — the full upload integrity chain.
 	if int(f.artifactSize) != len(f.uploaded) {
 		t.Errorf("size_bytes %d != uploaded len %d", int(f.artifactSize), len(f.uploaded))
 	}
@@ -162,17 +171,46 @@ func TestDeployFlueEndToEnd(t *testing.T) {
 		t.Errorf("uploaded bytes are not the canonical bundle for the digest (len got %d want %d)", len(f.uploaded), len(expectedTarGz))
 	}
 
-	// Deployment referenced the same digest, via input.framework_artifact_digest.
+	// The deployment body is the byte-free DO request.
 	input, _ := f.deployBody["input"].(map[string]any)
 	if input == nil {
 		t.Fatalf("deployment body had no input: %v", f.deployBody)
 	}
-	if input["framework_artifact_digest"] != expectedDigest {
-		t.Errorf("deployment digest = %v, want %s", input["framework_artifact_digest"], expectedDigest)
+	if input["type"] != "inline" {
+		t.Errorf("input.type = %v, want inline", input["type"])
+	}
+	if f.deployBody["activate"] != true {
+		t.Errorf("activate = %v, want true (no --no-activate)", f.deployBody["activate"])
+	}
+	if input["flue_bundle_digest"] != expectedDigest {
+		t.Errorf("flue_bundle_digest = %v, want %s", input["flue_bundle_digest"], expectedDigest)
+	}
+	if input["flue_agent_name"] != "e2e-flue" {
+		t.Errorf("flue_agent_name = %v, want e2e-flue", input["flue_agent_name"])
+	}
+	// No module bytes, no pre-013 digest field.
+	if _, ok := input["flue_module"]; ok {
+		t.Errorf("byte-free contract violated: input carried flue_module: %v", input["flue_module"])
 	}
 	if _, ok := input["prompt"]; ok {
-		t.Errorf("deployment input carried a prompt: %v", input["prompt"])
+		t.Errorf("flue DO deploy carried a prompt: %v", input["prompt"])
 	}
+	if _, ok := input["framework_artifact_digest"]; ok {
+		t.Errorf("flue DO deploy carried a framework_artifact_digest: %v", input["framework_artifact_digest"])
+	}
+
+	// flue_wrangler: the generated wrangler forwarded verbatim (DO bindings intact).
+	wr, _ := input["flue_wrangler"].(map[string]any)
+	if wr == nil {
+		t.Fatalf("input.flue_wrangler missing: %v", input)
+	}
+	if wr["main"] != "index.js" {
+		t.Errorf("flue_wrangler.main = %v, want index.js", wr["main"])
+	}
+	if wr["durable_objects"] == nil {
+		t.Errorf("flue_wrangler lost durable_objects: %v", wr)
+	}
+
 	// The verifying→ready sequence was actually polled.
 	if f.getCount < 2 {
 		t.Errorf("expected the poll to observe verifying→ready (got %d GETs)", f.getCount)
