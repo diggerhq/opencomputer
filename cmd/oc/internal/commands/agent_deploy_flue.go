@@ -2,38 +2,51 @@ package commands
 
 // Flue deploy flow (design 013 §6 — the Worker-for-Platforms Durable-Object model).
 // When agent.toml declares `[runtime] family = "flue"`, `oc agent deploy` does NOT
-// read prompt.md/skills/; it runs the app's own `flue build --target cloudflare` and
-// POSTs the built Worker module + the generated wrangler to the control plane. The CP
-// owns compose (synthesize the migration ledger) + per-deploy token mint + WfP upload
-// + canary-verify + activate — because the CF creds and the signing key live
-// server-side and the CLI must not hold them. The existing deployment poll absorbs the
-// verify latency (verifying → ready|failed).
+// read prompt.md/skills/; it runs the app's own `flue build --target cloudflare`, then
+// stages the WHOLE built dir (the entry module + the no_bundle assets/ tree) as one
+// tar.gz in R2 via a presigned PUT, and POSTs the deployment referencing only the R2
+// bundle digest + the (small, strict-JSON) generated wrangler + the entrypoint agent
+// name — NO module bytes in the JSON, so the API host stays byte-free. The CP records
+// a `verifying` deploy; an off-host runner fetches the bundle, composes, mints the
+// per-deploy token, WfP-uploads, and canary-verifies before activating. The existing
+// deployment poll absorbs the verify latency (verifying → ready|failed).
 
 import (
+	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
 
+	"github.com/opensandbox/opensandbox/cmd/oc/internal/bundle"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/credscan"
 	"github.com/spf13/cobra"
 )
 
-// flueBuildOutputDir is `flue build --target cloudflare`'s output root; the tool
-// writes the Cloudflare build under dist/<app>/ (wrangler.json + the entry module +
-// assets/), so we discover the wrangler beneath it rather than assume a flat layout.
-const flueBuildOutputDir = "dist"
+const (
+	// flueBuildOutputDir is `flue build --target cloudflare`'s output root; the tool
+	// writes the Cloudflare build under dist/<app>/ (wrangler.json + the entry module +
+	// assets/), so we discover the wrangler beneath it rather than assume a flat layout.
+	flueBuildOutputDir = "dist"
+	flueBundleMaxBytes = 64 << 20 // server caps the staged bundle at 64 MiB — fail early
+)
 
-// flueModule is the built Worker entry module, forwarded to the CP verbatim (the CP
-// uploads it to WfP as metadata.main_module — its filename must equal wrangler.main).
-type flueModule struct {
-	Filename   string `json:"filename"`
-	ContentB64 string `json:"contentB64"`
+// artifactUploadResponse is the reply from POST /v3/agents/:id/artifacts. AlreadyUploaded
+// is set (and URL omitted) when the content-addressed object already exists: R2 is
+// write-once, so the server refuses to re-issue a PUT for a pinned digest (a re-issuable
+// PUT would let scan-clean bytes be swapped for key-bearing ones post-verify). The CLI
+// then skips the PUT and references the digest directly.
+type artifactUploadResponse struct {
+	URL             string `json:"url"`
+	ExpiresAt       string `json:"expires_at"`
+	AlreadyUploaded bool   `json:"already_uploaded"`
 }
 
 func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, noActivate bool) error {
@@ -53,7 +66,7 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 
 	// 2. Resolve the target agent (create with runtime=flue + no prompt if new).
 	//    Done before the build so a runtime-family mismatch fails fast — ahead of the
-	//    build, not after it.
+	//    build and the upload, not after.
 	id, err := resolveDeployAgent(cmd, sc, m)
 	if err != nil {
 		return err
@@ -64,26 +77,41 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 		return err
 	}
 
-	// 4. Read the generated wrangler + the entry module the CP needs.
-	module, wrangler, err := readFlueBuildOutput(filepath.Join(dir, flueBuildOutputDir))
+	// 4. Stage the whole built dir as one content-addressed tar.gz + read the wrangler.
+	//    The digest is sha256 of the blob the server and box will hash byte-for-byte.
+	files, wrangler, err := readFlueBundle(filepath.Join(dir, flueBuildOutputDir))
 	if err != nil {
 		return err
 	}
+	tarGz, err := bundle.Pack(files)
+	if err != nil {
+		return fmt.Errorf("pack bundle: %w", err)
+	}
+	digest := bundle.Digest(tarGz)
+	if len(tarGz) > flueBundleMaxBytes {
+		return fmt.Errorf("bundle is %d bytes, over the %d MiB limit", len(tarGz), flueBundleMaxBytes>>20)
+	}
 
-	// 5. Deployment carrying the module + wrangler (no prompt/skills path). The CP
-	//    keys the flue-DO path off the agent's runtime="flue" + the presence of
-	//    flue_module/flue_wrangler, then composes + mints + WfP-uploads → verifying.
+	// 5. Upload: presigned PUT to R2 (the API host never sees the bytes).
+	if err := uploadArtifact(cmd.Context(), sc, id, digest, tarGz); err != nil {
+		return err
+	}
+
+	// 6. Deployment referencing the R2 bundle digest + the generated wrangler (no
+	//    module bytes in the JSON). The CP keys the flue-DO path off the agent's
+	//    runtime="flue" + the presence of flue_bundle_digest/flue_wrangler, then hands
+	//    off to the off-host runner (fetch → compose → mint → WfP-upload) → verifying.
 	rt := m.Runtime.Type
 	if rt == "" {
 		rt = "default"
 	}
 	input := map[string]interface{}{
-		"type":            "inline",
-		"model":           m.Model,
-		"runtime":         map[string]string{"type": rt},
-		"flue_module":     module,   // { filename, contentB64 }
-		"flue_wrangler":   wrangler, // the generated wrangler.json object, verbatim
-		"flue_agent_name": m.Name,   // entrypoint agent (agent.toml name → DO admit address)
+		"type":               "inline",
+		"model":              m.Model,
+		"runtime":            map[string]string{"type": rt},
+		"flue_bundle_digest": digest,   // sha256: of the tar.gz staged in R2
+		"flue_wrangler":      wrangler, // the generated wrangler.json object, verbatim
+		"flue_agent_name":    m.Name,   // entrypoint agent (agent.toml name → DO admit address)
 	}
 	body := map[string]interface{}{"input": input, "activate": !noActivate}
 	if idem, _ := cmd.Flags().GetString("idempotency-key"); idem != "" {
@@ -95,7 +123,7 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 	}
 	d := env.Deployment
 
-	// 6. Poll to terminal — the CP canary boots the tenant DO before activating.
+	// 7. Poll to terminal — the CP canary boots the tenant DO before activating.
 	if !terminalState(d.State) && d.State != "" {
 		to, _ := cmd.Flags().GetInt("timeout")
 		d, err = pollDeployment(cmd, sc, id, d.ID, time.Duration(to)*time.Second)
@@ -113,7 +141,7 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 		if d.Active {
 			status = "active"
 		}
-		fmt.Printf("Deployed revision %d — %s\n", n, status)
+		fmt.Printf("Deployed revision %d — %s (%s)\n", n, status, shortDigest(digest))
 	})
 	return nil
 }
@@ -156,37 +184,49 @@ func runFlueBuild(ctx context.Context, dir string) error {
 	return nil
 }
 
-// readFlueBuildOutput locates the generated wrangler under the `flue build` output and
-// reads the entry module it names. `flue build --target cloudflare` writes
-// dist/<app>/{wrangler.json, <main>, assets/…}; a flat dist/ is also accepted. The
-// wrangler's `main` names the entry module (its filename MUST equal the CP's
-// metadata.main_module), so we read `main` rather than hardcode a name.
-func readFlueBuildOutput(distDir string) (flueModule, map[string]interface{}, error) {
+// readFlueBundle locates the generated wrangler under the `flue build` output, parses
+// it, and reads the whole build dir into a fileset (the entry module + the assets/
+// tree). `flue build --target cloudflare` writes dist/<app>/{wrangler.json, <main>,
+// assets/…}; a flat dist/ is also accepted. The fileset is rooted at the wrangler's dir
+// so wrangler.main resolves at the bundle root. Returns the fileset + the wrangler
+// object (forwarded to the CP verbatim as flue_wrangler).
+func readFlueBundle(distDir string) ([]bundle.File, map[string]interface{}, error) {
 	wranglerPath, err := findGeneratedWrangler(distDir)
 	if err != nil {
-		return flueModule{}, nil, err
+		return nil, nil, err
 	}
 	raw, err := os.ReadFile(wranglerPath)
 	if err != nil {
-		return flueModule{}, nil, fmt.Errorf("read %s: %w", wranglerPath, err)
+		return nil, nil, fmt.Errorf("read %s: %w", wranglerPath, err)
 	}
 	var wrangler map[string]interface{}
 	if err := json.Unmarshal(raw, &wrangler); err != nil {
-		return flueModule{}, nil, fmt.Errorf("parse %s: %w", wranglerPath, err)
+		return nil, nil, fmt.Errorf("parse %s: %w", wranglerPath, err)
 	}
 	main, _ := wrangler["main"].(string)
 	if main == "" {
-		return flueModule{}, nil, fmt.Errorf("%s has no `main` — the flue build did not produce a Worker entry module", wranglerPath)
+		return nil, nil, fmt.Errorf("%s has no `main` — the flue build did not produce a Worker entry module", wranglerPath)
 	}
-	modPath := filepath.Join(filepath.Dir(wranglerPath), filepath.FromSlash(main))
-	modBytes, err := os.ReadFile(modPath)
+
+	bundleRoot := filepath.Dir(wranglerPath)
+	files, err := readBundleFiles(bundleRoot)
 	if err != nil {
-		return flueModule{}, nil, fmt.Errorf("read entry module %s: %w", modPath, err)
+		return nil, nil, err
 	}
-	return flueModule{
-		Filename:   filepath.ToSlash(main),
-		ContentB64: base64.StdEncoding.EncodeToString(modBytes),
-	}, wrangler, nil
+	// The entry module wrangler.main names MUST be in the bundle (the runner uploads it
+	// to WfP as metadata.main_module).
+	mainRel := filepath.ToSlash(main)
+	found := false
+	for _, f := range files {
+		if f.Path == mainRel {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, nil, fmt.Errorf("entry module %q (wrangler.main) is not in the build output %s", mainRel, bundleRoot)
+	}
+	return files, wrangler, nil
 }
 
 // findGeneratedWrangler returns the generated wrangler.json path — dist/wrangler.json
@@ -209,4 +249,80 @@ func findGeneratedWrangler(distDir string) (string, error) {
 	default:
 		return "", fmt.Errorf("multiple wrangler.json under %s (%v) — ambiguous flue build output", distDir, matches)
 	}
+}
+
+// readBundleFiles walks the build output into a fileset with normalized modes and
+// forward-slash, root-relative paths (the tar the CP fetches + unpacks off-host).
+func readBundleFiles(root string) ([]bundle.File, error) {
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("build output %s not found — did `flue build --target cloudflare` run?", root)
+	}
+	var files []bundle.File
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		content, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		st, err := d.Info()
+		if err != nil {
+			return err
+		}
+		files = append(files, bundle.File{
+			Path:    filepath.ToSlash(rel),
+			Mode:    bundle.NormalizeMode(int(st.Mode().Perm())),
+			Content: content,
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", root, err)
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("build output %s is empty", root)
+	}
+	return files, nil
+}
+
+// uploadArtifact requests a presigned PUT URL, then PUTs the bundle to it. The PUT
+// carries no OC auth (the signature is in the URL); Content-Type must match what the
+// server signed for the object (application/gzip).
+func uploadArtifact(ctx context.Context, sc *client.Client, agentID, digest string, tarGz []byte) error {
+	reqBody := map[string]interface{}{"digest": digest, "size_bytes": len(tarGz)}
+	var resp artifactUploadResponse
+	if err := sc.Post(ctx, "/v3/agents/"+agentID+"/artifacts", reqBody, &resp); err != nil {
+		return fmt.Errorf("request bundle upload url: %w", err)
+	}
+	if resp.AlreadyUploaded {
+		// The digest's bytes are already in R2 (write-once); nothing to PUT.
+		return nil
+	}
+	if resp.URL == "" {
+		return fmt.Errorf("bundle upload url response was empty")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, resp.URL, bytes.NewReader(tarGz))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/gzip")
+	req.ContentLength = int64(len(tarGz))
+	put, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("upload bundle: %w", err)
+	}
+	defer put.Body.Close()
+	if put.StatusCode >= 300 {
+		snippet, _ := io.ReadAll(io.LimitReader(put.Body, 512))
+		return fmt.Errorf("bundle upload failed (HTTP %d): %s", put.StatusCode, string(snippet))
+	}
+	return nil
 }
