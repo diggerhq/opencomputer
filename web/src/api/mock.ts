@@ -657,10 +657,14 @@ const credentials = [
 
 const sessions = [
   {
+    // A flue (CF-native) session — meters at the gateway, so its `usage` is empty here
+    // (spend renders "—"); the runtime badge is accented to set it apart from brain-box.
     id: 'ses_a1b2c3',
     status: 'running',
     agent_id: 'agt_3kf9xz',
+    agent_snapshot: { runtime: 'flue', model: 'anthropic/claude-haiku-4-5' },
     head: 24,
+    usage: {},
     created_at: at(0, 1),
     last_turn: { state: 'running' },
     sandboxes: { brain: 'sbx_a1b2c3d4e5', hands: 'sbx_f6g7h8i9j0' },
@@ -669,7 +673,9 @@ const sessions = [
     id: 'ses_d4e5f6',
     status: 'awaiting_input',
     agent_id: 'agt_3kf9xz',
+    agent_snapshot: { runtime: 'claude', model: 'anthropic/claude-sonnet-5' },
     head: 12,
+    usage: { cost_usd: 0.0231, input_tokens: 8200, output_tokens: 640 },
     created_at: at(0, 3),
     last_turn: { state: 'ok', yield_reason: 'needs_input' },
   },
@@ -677,7 +683,10 @@ const sessions = [
     id: 'ses_g7h8i9',
     status: 'idle',
     agent_id: 'agt_7mq2aa',
+    agent_snapshot: { runtime: 'pi', model: 'anthropic/claude-sonnet-5' },
     head: 41,
+    // No cost reported → the spend column falls back to a token total.
+    usage: { input_tokens: 15000, output_tokens: 2200 },
     created_at: at(1, 2),
     last_turn: { state: 'ok', yield_reason: 'completed' },
   },
@@ -685,7 +694,9 @@ const sessions = [
     id: 'ses_j1k2l3',
     status: 'failed',
     agent_id: 'agt_3kf9xz',
+    agent_snapshot: { runtime: 'codex', model: 'openai/gpt-5.3-codex' },
     head: 8,
+    usage: { cost_usd: 0.11 },
     created_at: at(2, 5),
     last_turn: { state: 'error', yield_reason: 'error' },
   },
@@ -693,7 +704,9 @@ const sessions = [
     id: 'ses_m4n5o6',
     status: 'archived',
     agent_id: 'agt_7mq2aa',
+    agent_snapshot: { runtime: 'claude', model: 'anthropic/claude-opus-4-8' },
     head: 60,
+    usage: { cost_usd: 1.42, input_tokens: 320000, output_tokens: 18400 },
     created_at: at(4, 1),
     last_turn: { state: 'ok', yield_reason: 'completed' },
   },
@@ -722,6 +735,17 @@ const sessionEvents = [
   {
     id: 'evt_3',
     seq: 3,
+    type: 'agent.thinking',
+    level: 'progress',
+    actor: { type: 'agent', display: 'PR Reviewer' },
+    body: {
+      text: 'Fetch the PR head, then read the auth middleware diff before commenting.',
+    },
+    ts: at(0, 1),
+  },
+  {
+    id: 'evt_4',
+    seq: 4,
     type: 'tool.call',
     level: 'progress',
     actor: { type: 'runtime' },
@@ -729,8 +753,21 @@ const sessionEvents = [
     ts: at(0, 1),
   },
   {
-    id: 'evt_4',
-    seq: 4,
+    id: 'evt_5',
+    seq: 5,
+    type: 'exec.completed',
+    level: 'progress',
+    actor: { type: 'runtime' },
+    body: {
+      tool: 'bash',
+      summary: 'fetched pull/412/head → FETCH_HEAD',
+      duration_ms: 412,
+    },
+    ts: at(0, 1),
+  },
+  {
+    id: 'evt_6',
+    seq: 6,
     type: 'agent.message',
     level: 'user',
     actor: { type: 'agent', display: 'PR Reviewer' },
@@ -740,13 +777,36 @@ const sessionEvents = [
     ts: at(0, 1),
   },
   {
-    id: 'evt_5',
-    seq: 5,
+    id: 'evt_7',
+    seq: 7,
     type: 'turn.completed',
     level: 'user',
     actor: { type: 'runtime' },
     body: { yield_reason: 'needs_input' },
     ts: at(0, 1),
+  },
+]
+
+// Turns power the submission-health panel (GET /v3/sessions/:id/turns), newest first.
+const sessionTurns = [
+  {
+    id: 'trn_2',
+    state: 'ok',
+    yield_reason: 'needs_input',
+    started_at: at(0, 1),
+    completed_at: at(0, 1),
+    active_seconds: 6.4,
+    usage: { cost_usd: 0.0121, input_tokens: 4200, output_tokens: 310 },
+  },
+  {
+    id: 'trn_1',
+    state: 'error',
+    yield_reason: 'error',
+    started_at: at(0, 2),
+    completed_at: at(0, 2),
+    active_seconds: 2.1,
+    usage: {},
+    error: { code: 'provision_infra', message: 'brain sandbox failed to start' },
   },
 ]
 
@@ -767,8 +827,8 @@ const deliveries = [
   {
     id: 'dlv_1',
     destination: 'dst_1',
-    event_id: 'evt_5',
-    event_seq: 5,
+    event_id: 'evt_7',
+    event_seq: 7,
     status: 'delivered',
     attempts: 1,
     last_attempt_at: at(0, 1),
@@ -778,8 +838,8 @@ const deliveries = [
   {
     id: 'dlv_2',
     destination: 'dst_1',
-    event_id: 'evt_4',
-    event_seq: 4,
+    event_id: 'evt_6',
+    event_seq: 6,
     status: 'failed',
     attempts: 3,
     last_attempt_at: at(0, 1),
@@ -876,6 +936,11 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/v3\/agents$/, () => ({ data: agents })],
   [/^\/v3\/credentials$/, () => ({ data: credentials })],
   [/^\/v3\/sessions\/[^/]+\/events/, () => ({ data: sessionEvents })],
+  [/^\/v3\/sessions\/[^/]+\/turns$/, () => ({ data: sessionTurns })],
+  [
+    /^\/v3\/sessions\/[^/]+\/result$/,
+    () => ({ last_turn: sessionTurns[0], result: sessionEvents[6] }),
+  ],
   [/^\/v3\/sessions\/[^/]+\/destinations$/, () => ({ data: destinations })],
   [/^\/v3\/sessions\/[^/]+\/deliveries$/, () => ({ data: deliveries })],
   [/^\/v3\/sessions\/[^/]+$/, () => sessions[0]],

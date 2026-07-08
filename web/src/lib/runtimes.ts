@@ -86,6 +86,25 @@ export const PROVIDER_KEY_FIELDS: Record<string, { keyLabel: string; keyPlacehol
 
 export const DEFAULT_RUNTIME = RUNTIMES[0].value
 
+// Display labels for EVERY runtime a session can report — a superset of the create
+// picker (RUNTIMES). `flue` is intentionally NOT in RUNTIMES (its behavior ships in a
+// deployed artifact — there's no model/key to pick here), but read-only views must
+// still label it correctly instead of falling back to "Claude". `hands` is the
+// tool-sandbox runtime, shown only if it ever surfaces on a session.
+export const RUNTIME_LABELS: Record<string, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  pi: 'Pi',
+  flue: 'Flue',
+  hands: 'Hands',
+}
+
+// A stable label for any runtime string (display-only — does NOT gate the create picker).
+export function runtimeLabel(runtime: string | null | undefined): string {
+  if (!runtime) return '—'
+  return RUNTIME_LABELS[runtime] ?? runtime
+}
+
 export const runtimeOptions = RUNTIMES.map((r) => ({
   value: r.value,
   label: r.label,
