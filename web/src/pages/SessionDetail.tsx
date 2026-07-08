@@ -25,19 +25,12 @@ import { SessionWebhooks } from '@/components/session-webhooks'
 import { ApiHint } from '@/components/api-hint'
 import { MessagesSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import {
+  MessageBubble,
+  TurnConversation,
+} from '@/components/session-conversation'
+import { bodyText, groupIntoTurns, isOutOfCredits } from '@/lib/session-turns'
 
-// body is unknown (inline JSON ≤32KB); pull the common shapes defensively.
-function bodyText(ev: SessionEvent): string | null {
-  const b = ev.body
-  if (
-    b &&
-    typeof b === 'object' &&
-    typeof (b as Record<string, unknown>).text === 'string'
-  ) {
-    return (b as Record<string, string>).text
-  }
-  return null
-}
 function toolSummary(ev: SessionEvent): string {
   const b = (ev.body ?? {}) as Record<string, unknown>
   const tool = typeof b.tool === 'string' ? b.tool : 'tool'
@@ -46,6 +39,12 @@ function toolSummary(ev: SessionEvent): string {
 }
 function humanizeType(t: string): string {
   return t.replace(/[._]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
+}
+
+interface TurnStartInfo {
+  from: number | null
+  to: number | null
+  preview: string | null
 }
 
 const LEVELS = [
@@ -59,7 +58,7 @@ export default function SessionDetail() {
   const queryClient = useQueryClient()
   const halted = useHalted() // top-level: must run before any early return (Rules of Hooks)
   const [draft, setDraft] = useState('')
-  const [level, setLevel] = useState<LevelFilter>('all')
+  const [level, setLevel] = useState<LevelFilter>('user')
   const [confirmCancel, setConfirmCancel] = useState(false)
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
   const [streamOk, setStreamOk] = useState(false)
@@ -171,6 +170,28 @@ export default function SessionDetail() {
     )
   }, [eventData, liveEvents, sessionId])
 
+  // Group the (unfiltered) stream by turn: turn.started is level:progress, so it
+  // must be read from allEvents, never the level==='user' filter.
+  const grouped = useMemo(() => groupIntoTurns(allEvents), [allEvents])
+  // Seqs of input events typed but not yet claimed by a turn → tagged "queued".
+  const pendingSeqs = useMemo(
+    () => new Set(grouped.pending.map((e) => e.seq)),
+    [grouped],
+  )
+  // Per-turn seq range + input preview, so the All log's turn.started row is
+  // self-describing instead of a bare orphan marker.
+  const turnStartInfo = useMemo(() => {
+    const m = new Map<string, TurnStartInfo>()
+    for (const g of grouped.groups) {
+      const firstInput = g.events.find((e) => e.turn_id == null)
+      const raw = firstInput ? bodyText(firstInput) : null
+      const preview =
+        raw && raw.length > 40 ? `${raw.slice(0, 40)}…` : (raw ?? null)
+      m.set(g.turnId, { from: g.fromSeq, to: g.toSeq, preview })
+    }
+    return m
+  }, [grouped])
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -185,8 +206,10 @@ export default function SessionDetail() {
   const canSteer = !archived
   const canCancel = status === 'running' || status === 'awaiting_input'
 
-  const events =
-    level === 'user' ? allEvents.filter((e) => e.level === 'user') : allEvents
+  const isEmpty =
+    level === 'user'
+      ? grouped.groups.length === 0 && grouped.pending.length === 0
+      : allEvents.length === 0
 
   return (
     <div className="max-w-4xl">
@@ -302,16 +325,23 @@ export default function SessionDetail() {
           </div>
         </div>
 
-        {events.length === 0 ? (
+        {isEmpty ? (
           <EmptyState
             icon={MessagesSquare}
             title="No events yet"
             description="Events from the agent's turns will stream in here."
           />
+        ) : level === 'user' ? (
+          <TurnConversation grouped={grouped} halted={halted} />
         ) : (
           <ul className="divide-y">
-            {events.map((ev) => (
-              <EventRow key={ev.id} ev={ev} />
+            {allEvents.map((ev) => (
+              <EventRow
+                key={ev.id}
+                ev={ev}
+                pending={pendingSeqs}
+                bounds={turnStartInfo}
+              />
             ))}
           </ul>
         )}
@@ -323,7 +353,10 @@ export default function SessionDetail() {
               <CircleAlert className="size-3.5 shrink-0" />
               <span>
                 Out of credits —{' '}
-                <Link to="/billing" className="font-medium underline underline-offset-2">
+                <Link
+                  to="/billing"
+                  className="font-medium underline underline-offset-2"
+                >
                   top up to resume
                 </Link>
                 .
@@ -341,7 +374,12 @@ export default function SessionDetail() {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onSend={() => {
-                if (draft.trim() && canSteer && !halted && !steerMutation.isPending) {
+                if (
+                  draft.trim() &&
+                  canSteer &&
+                  !halted &&
+                  !steerMutation.isPending
+                ) {
                   steerMutation.mutate()
                 }
               }}
@@ -358,12 +396,19 @@ export default function SessionDetail() {
             <Button
               type="submit"
               title="Enter to send · Shift+Enter for newline"
-              disabled={!draft.trim() || !canSteer || halted || steerMutation.isPending}
+              disabled={
+                !draft.trim() || !canSteer || halted || steerMutation.isPending
+              }
             >
               <Send className="size-4" />
               Send
             </Button>
           </form>
+          {status === 'running' && !halted && !archived ? (
+            <p className="text-muted-foreground mt-2 text-xs">
+              Agent is working — your message will run in the next turn.
+            </p>
+          ) : null}
         </div>
       </Panel>
 
@@ -387,33 +432,52 @@ export default function SessionDetail() {
   )
 }
 
-function EventRow({ ev }: { ev: SessionEvent }) {
+function EventRow({
+  ev,
+  pending,
+  bounds,
+}: {
+  ev: SessionEvent
+  pending: Set<number>
+  bounds: Map<string, TurnStartInfo>
+}) {
   const text = bodyText(ev)
 
   // Conversation messages — the signal.
   if (ev.type === 'user.message' || ev.type === 'agent.message') {
     const isUser = ev.type === 'user.message'
-    // Out-of-credits notice (from the runtime's failPreExec) → make the "top up" actionable.
-    const outOfCredits =
-      ev.type === 'agent.message' &&
-      (ev.body as Record<string, unknown> | null | undefined)?.code ===
-        'insufficient_credits'
     return (
       <li className="px-4 py-3">
-        <div className="mb-1 flex items-center gap-2">
-          <span className="text-foreground text-xs font-semibold">
-            {ev.actor?.display ?? (isUser ? 'You' : 'Agent')}
-          </span>
-          <span className="text-muted-foreground/70 font-mono text-[10px]">
-            #{ev.seq}
-          </span>
-        </div>
-        <p className="text-foreground/90 text-sm whitespace-pre-wrap">{text}</p>
-        {outOfCredits && (
-          <Button asChild size="sm" className="mt-2">
-            <Link to="/billing">Top up</Link>
-          </Button>
-        )}
+        <MessageBubble
+          label={ev.actor?.display ?? (isUser ? 'You' : 'Agent')}
+          text={text}
+          seq={ev.seq}
+          // Input typed while a turn was running but not yet claimed by a turn.
+          meta={
+            isUser && pending.has(ev.seq) ? (
+              <span className="text-muted-foreground text-[10px]">
+                · queued
+              </span>
+            ) : undefined
+          }
+          outOfCredits={isOutOfCredits(ev)}
+        />
+      </li>
+    )
+  }
+
+  // Turn started — de-orphaned: self-describing with its seq range + input preview.
+  if (ev.type === 'turn.started') {
+    const info = bounds.get(ev.turn_id ?? '')
+    const range =
+      info && info.from != null
+        ? ` · running #${info.from}${info.to != null && info.to > info.from ? `–#${info.to}` : ''}`
+        : ''
+    const preview = info?.preview ? ` : "${info.preview}"` : ''
+    return (
+      <li className="text-muted-foreground flex items-center gap-2 px-4 py-1.5 text-xs">
+        <span className="bg-border h-px w-4 shrink-0" />
+        {`Turn started${range}${preview}`}
       </li>
     )
   }
