@@ -45,6 +45,9 @@ Managed-agent product behavior is mostly **not** implemented here:
 
 ## Local development (dev box + dashboard)
 
+Quickstart — commands, the env matrix, and the `/me` "Loading…" trap (missing
+`source` / per-worktree `npm install`): **`web/README.md`**.
+
 The dashboard (`web/`) + control plane run against a personal **GCP dev box**
 (`deploy/gcp/deploy-qemu-dev.sh`; config in the gitignored
 `~/.opensandbox-gcp-dev.env`). The dashboard can be run two ways — both, plus
