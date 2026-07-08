@@ -702,6 +702,30 @@ func (p *AzurePool) buildUserData(opts MachineOpts) string {
 	sb.WriteString("  echo 'Copied retained bases from /opt/opensandbox/images/bases to /data/firecracker/images/bases'\n")
 	sb.WriteString("fi\n\n")
 
+	// Disk swap tier for the pause/hibernate RAM reclaim. The image sets up
+	// zram (high-priority compressed swap) via opensandbox-memory.service; this
+	// file-backed swap on the NVMe /data disk is the lower-priority OVERFLOW so
+	// that many paused boxes on one host don't exhaust zram's RAM cap. It lives
+	// here (cloud-init) rather than the image because it needs /data mounted
+	// first — anything written to /data at bake time is shadowed by the NVMe
+	// mount. Note: /data is XFS, which rejects fallocate'd swapfiles (unwritten
+	// extents), so the file must be fully written with dd.
+	sb.WriteString("# Disk swap overflow tier (behind zram) for the pause/hibernate reclaim\n")
+	sb.WriteString("SWAPFILE=/data/swapfile\n")
+	sb.WriteString("SWAP_GB=32\n")
+	sb.WriteString("if ! swapon --show=NAME --noheadings 2>/dev/null | grep -qx \"$SWAPFILE\"; then\n")
+	sb.WriteString("  if [ ! -f \"$SWAPFILE\" ]; then\n")
+	sb.WriteString("    dd if=/dev/zero of=\"$SWAPFILE\" bs=1M count=$((SWAP_GB*1024)) status=none\n")
+	sb.WriteString("    chmod 600 \"$SWAPFILE\"\n")
+	sb.WriteString("    mkswap \"$SWAPFILE\" >/dev/null\n")
+	sb.WriteString("  fi\n")
+	sb.WriteString("  swapon --priority 10 \"$SWAPFILE\" || echo 'swapon /data/swapfile failed (non-fatal)'\n")
+	// Persist for reboots at a LOWER priority than zram (100). systemd derives
+	// the RequiresMountsFor=/data ordering from the swapfile path, so the swap
+	// only activates after the /data XFS mount comes up.
+	sb.WriteString("  grep -q \"$SWAPFILE\" /etc/fstab 2>/dev/null || echo \"$SWAPFILE none swap sw,pri=10 0 0\" >> /etc/fstab\n")
+	sb.WriteString("fi\n\n")
+
 	// Write worker env file from injected WorkerSpec.
 	p.mu.RLock()
 	envContent := BuildWorkerEnv(p.spec)

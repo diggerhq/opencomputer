@@ -629,22 +629,30 @@ func (s *Scaler) hibernateBatch(workerID string, count int) {
 	}
 
 	hibernated := 0
-	for _, sb := range listResp.Sandboxes {
+	// Prefer paused victims: they're already stopped/idle and customer-invisible
+	// ("hibernated" either way), so promoting them to deep is the least
+	// disruptive way to relieve pressure. Only evict running (active) sandboxes
+	// if paused victims aren't enough.
+	for _, want := range []string{"paused", "running"} {
 		if hibernated >= count {
 			break
 		}
-		if sb.Status != "running" {
-			continue
+		for _, sb := range listResp.Sandboxes {
+			if hibernated >= count {
+				break
+			}
+			if sb.Status != want {
+				continue
+			}
+			if _, err := client.HibernateSandbox(ctx, &pb.HibernateSandboxRequest{
+				SandboxId: sb.SandboxId,
+			}); err != nil {
+				log.Printf("scaler: emergency: hibernate %s failed: %v", sb.SandboxId, err)
+				continue
+			}
+			hibernated++
+			log.Printf("scaler: emergency: hibernated %s (%s) on worker %s", sb.SandboxId, want, workerID)
 		}
-		_, err := client.HibernateSandbox(ctx, &pb.HibernateSandboxRequest{
-			SandboxId: sb.SandboxId,
-		})
-		if err != nil {
-			log.Printf("scaler: emergency: hibernate %s failed: %v", sb.SandboxId, err)
-			continue
-		}
-		hibernated++
-		log.Printf("scaler: emergency: hibernated %s on worker %s", sb.SandboxId, workerID)
 	}
 
 	log.Printf("scaler: emergency batch complete for %s: %d/%d hibernated",
@@ -869,13 +877,27 @@ func (s *Scaler) evacuateBatch(sourceWorkerID string, count int) {
 		if migrated >= count {
 			break
 		}
+		// Paused boxes off a hot worker: deep-hibernate to free their swap +
+		// resident remainder (they have no migratable running state). Counts
+		// toward the batch as a unit of pressure relief.
+		if sb.Status == "paused" {
+			hibCtx, hibCancel := context.WithTimeout(ctx, 120*time.Second)
+			if _, herr := sourceClient.HibernateSandbox(hibCtx, &pb.HibernateSandboxRequest{SandboxId: sb.SandboxId}); herr == nil {
+				migrated++
+				log.Printf("scaler: evacuate: deep-hibernated paused %s on %s", sb.SandboxId, sourceWorkerID)
+			} else {
+				log.Printf("scaler: evacuate: deep-hibernate paused %s failed: %v", sb.SandboxId, herr)
+			}
+			hibCancel()
+			continue
+		}
 		if sb.Status != "running" {
 			continue
 		}
 		// Empty targetWorkerID → liveMigrateSandbox re-picks per call. This is
 		// what produces the load-distribution behavior described in the
 		// function comment.
-		if err := s.liveMigrateSandbox(ctx, sb.SandboxId, sourceWorkerID, ""); err != nil {
+		if err := s.liveMigrateSandbox(ctx, sb.SandboxId, sourceWorkerID, "", false); err != nil {
 			log.Printf("scaler: evacuate: migrate %s failed: %v", sb.SandboxId, err)
 			continue
 		}
@@ -1140,6 +1162,19 @@ func (s *Scaler) replaceOneStale(ctx context.Context, region string, target *Wor
 		log.Printf("scaler: rolling replace: %s unreachable, can't confirm empty — NOT terminating", target.ID)
 		return
 	}
+	// Before terminating, wait for any in-flight hibernation checkpoint uploads
+	// to land in S3. A deep-hibernated (drained) box — or a leftover hibernated
+	// by the fallback above — drops off the sandbox count the instant its VM is
+	// evicted, but its checkpoint archive uploads in a background goroutine ON
+	// THIS worker. Terminating now would kill that goroutine and lose the
+	// checkpoint, leaving the box permanently unwakeable. The upload goroutine
+	// has its own ~5-min timeout that records uploaded_at or upload_error, so
+	// this wait always resolves; on timeout we skip termination and let the next
+	// tick re-attempt (by which point the upload has settled).
+	if !s.waitForHibernationUploads(target.ID, drainUploadWait) {
+		log.Printf("scaler: rolling replace: %s still has hibernation upload(s) in flight after %s — NOT terminating; next tick re-attempts", target.ID, drainUploadWait)
+		return
+	}
 	if s.pool != nil && target.MachineID != "" {
 		termCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		if err := s.pool.DestroyMachine(termCtx, target.MachineID); err != nil {
@@ -1217,6 +1252,33 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 		// handle truly session-less VMs.
 		var running []string
 		for _, sb := range listResp.Sandboxes {
+			// Paused boxes are RAM-resident only (no checkpoint) — a drain would
+			// otherwise be lost. MOVE them to another worker without billing:
+			// genuinely resume the box (unbilled), live-migrate it as a normal
+			// running VM (so the agent stays healthy — identical to any live
+			// migration), then re-pause it on the target. The customer isn't
+			// charged for the platform-initiated move, and the box keeps its
+			// instant-resume RAM-resident state. Fall back to deep-hibernate if it
+			// can't be migrated (no target, or a failure mid-move).
+			if sb.Status == "paused" {
+				migErr := s.migratePausedUnbilled(ctx, sb.SandboxId, workerID, sourceClient)
+				if migErr != nil {
+					log.Printf("scaler: drain: migrate-paused %s off %s failed: %v — deep-hibernating instead", sb.SandboxId, workerID, migErr)
+					hibCtx, hibCancel := context.WithTimeout(ctx, 120*time.Second)
+					if _, herr := sourceClient.HibernateSandbox(hibCtx, &pb.HibernateSandboxRequest{SandboxId: sb.SandboxId}); herr != nil {
+						log.Printf("scaler: drain: deep-hibernate paused %s on %s failed: %v", sb.SandboxId, workerID, herr)
+					} else {
+						if s.store != nil {
+							_ = s.store.UpdateSandboxSessionStatus(context.Background(), sb.SandboxId, "hibernated", nil)
+						}
+						log.Printf("scaler: drain: deep-hibernated paused %s on %s (migrate fallback)", sb.SandboxId, workerID)
+					}
+					hibCancel()
+				} else {
+					log.Printf("scaler: drain: migrated paused %s off %s, re-paused on target (unbilled)", sb.SandboxId, workerID)
+				}
+				continue
+			}
 			if sb.Status != "running" {
 				continue
 			}
@@ -1330,7 +1392,7 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 			wg.Add(1)
 			go func(sbID string) {
 				defer wg.Done()
-				if err := s.liveMigrateSandbox(ctx, sbID, workerID, ""); err != nil {
+				if err := s.liveMigrateSandbox(ctx, sbID, workerID, "", false); err != nil {
 					log.Printf("scaler: drain: migrate %s failed: %v", sbID, err)
 					atomic.AddInt64(&failCount, 1)
 				}
@@ -1380,13 +1442,14 @@ func (s *Scaler) checkDrainingWorkers(ctx context.Context, region string) {
 		// Check if drain timed out
 		if time.Since(state.StartedAt) > drainTimeout {
 			sandboxCount := s.getDrainingWorkerSandboxCount(state.WorkerID)
-			if sandboxCount == 0 {
+			if sandboxCount == 0 && s.hibernationUploadsSettled(state.WorkerID) {
 				// Sandboxes expired naturally — safe to destroy
 				log.Printf("scaler: drain timeout for worker %s but 0 sandboxes remain, destroying", state.WorkerID)
 				s.destroyDrainedMachine(machineID)
 				s.state.RemoveDraining(machineID)
 			} else {
-				// Still has sandboxes — cancel drain, keep worker alive
+				// Still has sandboxes (or in-flight hibernation uploads) — cancel
+				// drain, keep worker alive rather than lose a checkpoint.
 				log.Printf("scaler: drain timeout for worker %s (machine=%s) with %d sandboxes — cancelling drain, keeping alive",
 					state.WorkerID, machineID, sandboxCount)
 				s.state.RemoveDraining(machineID)
@@ -1394,10 +1457,20 @@ func (s *Scaler) checkDrainingWorkers(ctx context.Context, region string) {
 			continue
 		}
 
-		// Check if worker has 0 sandboxes
+		// Check if worker has 0 sandboxes AND no hibernation uploads are still in
+		// flight. A deep-hibernated (drained) box drops off the worker's sandbox
+		// count the moment its VM is evicted, but its checkpoint archive uploads
+		// to S3 in a background goroutine ON THE WORKER — destroying the worker
+		// before that finishes loses the checkpoint and makes the box permanently
+		// unwakeable. Gate teardown on the upload being settled.
 		workers := s.registry.GetWorkersByRegion(region)
 		for _, w := range workers {
 			if w.MachineID == machineID && w.Current == 0 {
+				if !s.hibernationUploadsSettled(state.WorkerID) {
+					log.Printf("scaler: worker %s drained (0 sandboxes) but hibernation upload(s) still in flight — deferring teardown",
+						state.WorkerID)
+					break
+				}
 				log.Printf("scaler: worker %s fully drained (0 sandboxes), destroying machine %s",
 					state.WorkerID, machineID)
 				s.destroyDrainedMachine(machineID)
@@ -1418,6 +1491,51 @@ func (s *Scaler) getDrainingWorkerSandboxCount(workerID string) int {
 		}
 	}
 	return -1
+}
+
+// hibernationUploadsSettled reports whether every deep-hibernated box on this
+// worker has finished (or failed) its async checkpoint upload to S3. Returns
+// false while any upload is still in flight, so the caller must not destroy the
+// worker yet — the upload runs on the worker, and tearing it down mid-upload
+// loses the checkpoint with the VM. Fails safe (false) on a query error so a
+// transient DB blip can't trigger a data-losing teardown; the drainTimeout path
+// bounds how long this can defer.
+func (s *Scaler) hibernationUploadsSettled(workerID string) bool {
+	if s.store == nil {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	n, err := s.store.CountPendingHibernationUploads(ctx, workerID)
+	if err != nil {
+		log.Printf("scaler: drain: CountPendingHibernationUploads(%s) failed: %v — deferring teardown", workerID, err)
+		return false
+	}
+	return n == 0
+}
+
+// drainUploadWait bounds how long the synchronous rolling-replace path blocks
+// waiting for a drained worker's checkpoint uploads to finish before it gives up
+// and defers termination to a later tick. Sized above the upload goroutine's own
+// ~5-min timeout so a normal upload always completes within the window.
+const drainUploadWait = 6 * time.Minute
+
+// waitForHibernationUploads blocks until every deep-hibernated box on the worker
+// has finished (or failed) its S3 upload, or the timeout elapses. Used by the
+// synchronous rolling-replace teardown; the async smart-drain path instead
+// re-checks hibernationUploadsSettled across reconciler ticks. Returns true if
+// uploads settled, false on timeout (caller must not terminate the worker).
+func (s *Scaler) waitForHibernationUploads(workerID string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if s.hibernationUploadsSettled(workerID) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(3 * time.Second)
+	}
 }
 
 // hibernateAllOnWorker attempts to hibernate all running sandboxes on a worker.
@@ -1594,7 +1712,7 @@ func (s *Scaler) getWorkerInfo(workerID string) *WorkerInfo {
 // its own copy that bypassed all of these, so any caller of the API could
 // trigger the same parallel-migration OOM cascade the scaler's drain fixed.
 func (s *Scaler) LiveMigrateSandbox(ctx context.Context, sandboxID, sourceWorkerID, targetWorkerID string) error {
-	return s.liveMigrateSandbox(ctx, sandboxID, sourceWorkerID, targetWorkerID)
+	return s.liveMigrateSandbox(ctx, sandboxID, sourceWorkerID, targetWorkerID, false)
 }
 
 // liveMigrateSandbox performs a full live migration of a sandbox between workers.
@@ -1606,7 +1724,43 @@ func (s *Scaler) LiveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 // a specific destination (e.g. evacuateBatch, which uses a pre-scored
 // target for the whole batch; or the API handler when the user names a
 // target) pass it explicitly.
-func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorkerID, targetWorkerID string) error {
+// migratePausedUnbilled moves a paused-tier box off a draining worker without
+// billing the customer: it genuinely resumes the box (ResumeUnbilled — vCPUs +
+// agent live, but the usage ticker skips it), flips the session row to running so
+// the standard live-migration transitions apply, then live-migrates it. The
+// migration is a completely normal running-VM live migration (so the agent stays
+// healthy), and liveMigrateSandbox(keepPaused) re-pauses it on the target + puts
+// the row back to hibernated/paused. Returns an error if it can't be moved, so
+// the caller falls back to deep-hibernate.
+func (s *Scaler) migratePausedUnbilled(ctx context.Context, sandboxID, sourceWorkerID string, sourceClient pb.SandboxWorkerClient) error {
+	ruCtx, ruCancel := context.WithTimeout(ctx, 15*time.Second)
+	_, err := sourceClient.ResumeUnbilled(ruCtx, &pb.ResumeUnbilledRequest{SandboxId: sandboxID})
+	ruCancel()
+	if err != nil {
+		return fmt.Errorf("resume-unbilled: %w", err)
+	}
+	// DB → running so the migration's SetMigrating (CAS on running) matches. It's
+	// unbilled on the worker (billingSuppressed); the row is transiently running.
+	if s.store != nil {
+		if err := s.store.SetSandboxResumed(ctx, sandboxID); err != nil {
+			log.Printf("scaler: migrate-paused %s: SetSandboxResumed failed: %v", sandboxID, err)
+		}
+	}
+	return s.liveMigrateSandbox(ctx, sandboxID, sourceWorkerID, "", true)
+}
+
+// liveMigrateSandbox live-migrates a sandbox from source to target. When
+// keepPaused is true the sandbox belongs to the RAM-resident PAUSED tier and is
+// being moved off a draining worker unbilled. The caller (migratePausedUnbilled)
+// has already resumed it, so this is a NORMAL running-VM live migration (that's
+// what keeps the agent healthy) — the target is just told arrive_paused so the
+// usage ticker never bills the transfer, and once the move completes the box is
+// re-stopped + reclaimed (PauseAfterMigration) and the session row goes back to
+// hibernated/paused. Net: a paused box moves off a draining worker for free and
+// stays paused. A customer request mid-move is rejected (503, status=migrating)
+// until the move lands, then resumes the box on the new worker via the normal
+// wake path (billed from that touch); the migration window itself is unbilled.
+func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorkerID, targetWorkerID string, keepPaused bool) error {
 	// Prevent double-migrate
 	if !s.state.AcquireMigrationLock(sandboxID) {
 		return fmt.Errorf("migration already in progress for %s", sandboxID)
@@ -1792,6 +1946,9 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 		SealedTokens:    preCopyResp.SealedTokens,
 		EgressAllowlist: preCopyResp.EgressAllowlist,
 		TokenHosts:      preCopyResp.TokenHosts,
+		// Paused-tier move: target registers Status=paused so the usage ticker
+		// never bills it while the RAM streams in.
+		ArrivePaused: keepPaused,
 	})
 	if err != nil {
 		return fmt.Errorf("prepare target: %w", err)
@@ -1855,6 +2012,35 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 	// Mirror the worker_id change to D1 sandboxes_index so the dashboard's
 	// cross-cell view + proxyToCellSDK routing reflect the new home worker.
 	s.publishMigrated(context.Background(), sandboxID, targetWorkerID, migratedOrgID, "scaler_migrate")
+
+	if keepPaused {
+		// Paused-tier move: the box was genuinely resumed (unbilled) and live-
+		// migrated as a normal running VM, so it's now a healthy running sandbox on
+		// the target with a live agent. Do a REAL pause of it (RepauseAfterMigration
+		// = the same QMP stop + reclaim a routine pause does) and flip the session
+		// back to hibernated/paused. Because CompleteMigrationIncoming now
+		// registers the box in the target worker's router, the repause
+		// (PauseAfterMigration → RepauseAfterMigration → MarkPaused) is tracked and
+		// the customer's later wake routes through doResume/Manager.Resume exactly
+		// like any paused box. The customer was never billed (the
+		// usage ticker skipped it via billingSuppressed the whole move). A request
+		// that raced the move resumed it for real (clearing suppression, billing
+		// from the touch) — that path leaves it running, and this pause is a no-op
+		// race the customer's next interaction re-resolves.
+		rpCtx, rpCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if _, perr := targetClient.PauseAfterMigration(rpCtx, &pb.PauseAfterMigrationRequest{SandboxId: sandboxID}); perr != nil {
+			log.Printf("scaler: migrate %s: repause on %s failed: %v — box left running+billed on target (safe-fail)", sandboxID, targetWorkerID, perr)
+		}
+		rpCancel()
+		if s.store != nil {
+			pgCtx, pgCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if _, perr := s.store.SetSandboxPaused(pgCtx, sandboxID); perr != nil {
+				log.Printf("scaler: migrate %s: SetSandboxPaused after move failed: %v", sandboxID, perr)
+			}
+			pgCancel()
+		}
+		PublishLifecycle(context.Background(), s.rdb, s.cellID, "paused", sandboxID, targetWorkerID, migratedOrgID, "scaler_migrate_repause")
+	}
 
 	elapsed := time.Since(t0).Milliseconds()
 	log.Printf("scaler: migrate %s: complete in %dms (source=%s target=%s)", sandboxID, elapsed, sourceWorkerID, targetWorkerID)

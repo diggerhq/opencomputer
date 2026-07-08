@@ -28,6 +28,22 @@ service SandboxWorker {
   rpc HibernateSandbox(HibernateSandboxRequest) returns (HibernateSandboxResponse);
   rpc WakeSandbox(WakeSandboxRequest) returns (WakeSandboxResponse);
 
+  // Pause = QMP stop + proactive guest-RAM pageout (RAM-resident fast tier that
+  // stays on this worker). Resume = QMP cont. The customer-facing hibernate/wake
+  // maps here for the common case; deep savevm hibernation stays on
+  // HibernateSandbox/WakeSandbox.
+  rpc PauseSandbox(PauseSandboxRequest) returns (PauseSandboxResponse);
+  rpc ResumeSandbox(ResumeSandboxRequest) returns (ResumeSandboxResponse);
+  // PauseAfterMigration re-stops + reclaims a box that was migrated with
+  // arrive_paused: after CompleteMigrationIncoming's Cont (which runs the vCPUs
+  // briefly to reconnect the agent), this returns it to the RAM-resident paused
+  // state without firing the billing hooks — the box was never billed for the move.
+  rpc PauseAfterMigration(PauseAfterMigrationRequest) returns (PauseAfterMigrationResponse);
+  // ResumeUnbilled genuinely resumes a paused box (vCPUs running, agent live) for
+  // an unbilled platform-initiated migration — the usage ticker skips it, no
+  // billing hook fires. The box then live-migrates as a normal running VM.
+  rpc ResumeUnbilled(ResumeUnbilledRequest) returns (ResumeUnbilledResponse);
+
   // Reboot performs a soft, in-place guest reset (QMP system_reset). The
   // QEMU process, network, and workspace stay in place; only the guest
   // kernel and processes are reset. Recovers from in-guest wedges (zombie
@@ -256,6 +272,34 @@ message WakeSandboxResponse {
   string status = 2;
 }
 
+message PauseSandboxRequest {
+  string sandbox_id = 1;
+}
+message PauseSandboxResponse {
+  string sandbox_id = 1;
+  // Bytes advised out to swap (MADV_PAGEOUT) — for reclaim observability.
+  int64 reclaimed_bytes = 2;
+}
+message ResumeSandboxRequest {
+  string sandbox_id = 1;
+}
+message ResumeSandboxResponse {
+  string sandbox_id = 1;
+}
+message PauseAfterMigrationRequest {
+  string sandbox_id = 1;
+}
+message PauseAfterMigrationResponse {
+  string sandbox_id = 1;
+  int64 reclaimed_bytes = 2;
+}
+message ResumeUnbilledRequest {
+  string sandbox_id = 1;
+}
+message ResumeUnbilledResponse {
+  string sandbox_id = 1;
+}
+
 message SaveAsTemplateRequest {
   string sandbox_id = 1;
   string template_id = 2;  // UUID assigned by control plane
@@ -453,6 +497,11 @@ message PrepareMigrationIncomingRequest {
   repeated string egress_allowlist = 14;
   map<string, HostList> token_hosts = 15;
   map<string, string> sealed_names = 16;
+  // If true, the migrated VM arrives in the RAM-resident PAUSED tier: the target
+  // registers it with Status=paused (so the usage_ticker never bills it) and the
+  // scaler re-stops + reclaims its RAM via PauseAfterMigration once the transfer
+  // completes. Used to move a paused box off a draining worker without billing.
+  bool arrive_paused = 17;
 }
 
 message PrepareMigrationIncomingResponse {

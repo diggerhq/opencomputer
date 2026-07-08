@@ -24,6 +24,15 @@ apt-get install -y -qq \
     e2fsprogs git podman uidmap slirp4netns \
     postgresql-client jq curl zstd
 
+# zram.ko lives in linux-modules-extra, which the Azure base image omits. Use the
+# -azure META package so the extras track whatever kernel actually boots (the apt
+# upgrade above may bump it; a versioned package would mismatch on reboot); fall
+# back to the booted kernel's versioned package. Non-fatal — without zram the
+# disk-swap tier still carries the pause feature, just less dense.
+apt-get install -y -qq linux-modules-extra-azure \
+    || apt-get install -y -qq "linux-modules-extra-$(uname -r)" \
+    || echo "WARNING: linux-modules-extra (zram) not installed — pause tier will fall back to disk swap only"
+
 # --- Docker ---
 echo "Installing Docker..."
 if ! command -v docker &>/dev/null; then
@@ -143,8 +152,75 @@ net.ipv4.neigh.default.gc_thresh3 = 8192
 fs.file-max = 1000000
 fs.inotify.max_user_watches = 524288
 fs.inotify.max_user_instances = 8192
+
+# --- Memory reclaim / pause-tier tuning ---
+# Pause reclaims via explicit MADV_PAGEOUT (swappiness-independent), so keep
+# swappiness low to stop background reclaim from swapping running guests' RAM.
+vm.swappiness = 10
+# Many memory regions per QEMU × high VM density can exceed the default map cap.
+vm.max_map_count = 1048576
 EOF
 sysctl --system -q
+
+# --- Memory density: zram compressed swap (pause-tier prerequisite) ---
+# The pause tier reclaims a paused guest's RAM via MADV_PAGEOUT into swap; zram
+# is the high-priority compressed tier, with a file-backed disk swap on /data as
+# the lower-priority overflow (set up by the worker cloud-init, which needs /data
+# mounted first). Sized at boot from live RAM. KSM is intentionally not enabled
+# (multi-tenant side-channel). See PR/design notes for the rationale and the
+# mem_limit-vs-disk-overflow density tradeoff.
+echo "Installing memory-tuning (zram) setup..."
+cat > /usr/local/bin/opensandbox-memory-setup.sh << 'MEMEOF'
+#!/usr/bin/env bash
+# Set up the zram compressed-swap tier. Sized from live RAM.
+set -euo pipefail
+
+MEM_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+MEM_BYTES=$((MEM_KB * 1024))
+
+# zram: 1.5x RAM of logical swap, real RAM usage hard-capped at 40% (mem_limit).
+# mem_limit is the density knob — higher keeps more boxes in the fast compressed
+# tier before spilling to the disk overflow.
+DISKSIZE=$(( MEM_BYTES * 3 / 2 ))
+MEMLIMIT=$(( MEM_BYTES * 2 / 5 ))
+
+modprobe zram num_devices=1 2>/dev/null || true
+if [ ! -e /sys/block/zram0/disksize ]; then
+  echo "zram device not available — skipping zram (disk swap still applies)"
+else
+  # Idempotent: reset a previously-configured device before reconfiguring.
+  if [ "$(cat /sys/block/zram0/disksize)" != "0" ]; then
+    swapoff /dev/zram0 2>/dev/null || true
+    echo 1 > /sys/block/zram0/reset 2>/dev/null || true
+  fi
+  echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+  echo "$MEMLIMIT" > /sys/block/zram0/mem_limit
+  echo "$DISKSIZE" > /sys/block/zram0/disksize
+  mkswap -U clear /dev/zram0 >/dev/null
+  swapon --priority 100 /dev/zram0
+  echo "zram0: disksize=$DISKSIZE mem_limit=$MEMLIMIT (zstd), swap priority 100"
+fi
+MEMEOF
+chmod +x /usr/local/bin/opensandbox-memory-setup.sh
+
+cat > /etc/systemd/system/opensandbox-memory.service << 'EOF'
+[Unit]
+Description=OpenSandbox memory density (zram compressed swap) for the pause tier
+DefaultDependencies=no
+After=local-fs.target
+# Swap must be online before the worker launches any guests.
+Before=opensandbox-worker.service swap.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/opensandbox-memory-setup.sh
+ExecStop=/bin/sh -c 'swapoff /dev/zram0 2>/dev/null || true; echo 1 > /sys/block/zram0/reset 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 # --- Directory structure ---
 mkdir -p /data/sandboxes /data/firecracker/images /data/checkpoints /etc/opensandbox
@@ -222,7 +298,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable opensandbox-worker opensandbox-server
+systemctl enable opensandbox-worker opensandbox-server opensandbox-memory
 
 echo "=== Azure host setup complete ==="
 echo "  QEMU: $(qemu-system-x86_64 --version | head -1)"

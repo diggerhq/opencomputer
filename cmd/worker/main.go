@@ -561,6 +561,25 @@ func main() {
 				_ = sandboxDBMgr.Remove(sandboxID)
 			}
 		},
+		OnPause: func(sandboxID string) {
+			// RAM-resident pause tier. The VM stays on this worker, so keep the
+			// per-sandbox SQLite; just emit "paused" so events-ingest flips D1
+			// sandboxes_index to hibernated/mode=paused (kept in sync + feeds the
+			// cross-cell paused cap). DB session status/mode is written by the
+			// router (SetSandboxPaused) already.
+			if sandboxDBMgr != nil {
+				if sdb, dbErr := sandboxDBMgr.Get(sandboxID); dbErr == nil {
+					_ = sdb.LogEvent("paused", map[string]string{"sandbox_id": sandboxID})
+				}
+			}
+		},
+		OnResume: func(sandboxID string) {
+			if sandboxDBMgr != nil {
+				if sdb, dbErr := sandboxDBMgr.Get(sandboxID); dbErr == nil {
+					_ = sdb.LogEvent("woke", map[string]string{"sandbox_id": sandboxID, "reason": "resume"})
+				}
+			}
+		},
 		OnKill: func(sandboxID string) {
 			log.Printf("opensandbox-worker: sandbox %s killed on timeout", sandboxID)
 			execMgr.RemoveSessions(sandboxID)
@@ -685,7 +704,16 @@ func main() {
 				log.Printf("opensandbox-worker: machine ID (hostname): %s", hostname)
 			}
 			hb.Start(func() (int, int, float64, float64, float64) {
-				count, _ := mgr.Count(context.Background())
+				// Report the ACTIVE (non-paused) VM count as the slot usage:
+				// paused VMs reclaimed their RAM and resume instantly, so they
+				// must not consume placement slots or drive scale-up. The
+				// RSS/CPU/disk hard caps remain the real capacity limits.
+				var count int
+				if qemuMgr != nil {
+					count = qemuMgr.ActiveCount()
+				} else {
+					count, _ = mgr.Count(context.Background())
+				}
 				cpuPct, memPct, diskPct := worker.SystemStats()
 				return cfg.MaxCapacity, count, cpuPct, memPct, diskPct
 			})

@@ -152,7 +152,14 @@ export default {
     );
     const lifecycleHibernated = env.OPENCOMPUTER_DB.prepare(
       `UPDATE sandboxes_index
-          SET status = 'hibernated', last_event_at = ?1
+          SET status = 'hibernated', hibernation_mode = 'deep', last_event_at = ?1
+        WHERE id = ?2 AND (last_event_at IS NULL OR last_event_at < ?1)`,
+    );
+    // Paused tier: customer status is "hibernated", internal mode "paused".
+    // last_event_at doubles as the pause time for the cap's oldest-first order.
+    const lifecyclePaused = env.OPENCOMPUTER_DB.prepare(
+      `UPDATE sandboxes_index
+          SET status = 'hibernated', hibernation_mode = 'paused', last_event_at = ?1
         WHERE id = ?2 AND (last_event_at IS NULL OR last_event_at < ?1)`,
     );
     // INSERT ON CONFLICT, not plain UPDATE — the previous UPDATE-only shape
@@ -177,6 +184,7 @@ export default {
        VALUES (?2, ?3, ?4, ?5, 'running', ?1, ?1)
        ON CONFLICT(id) DO UPDATE SET
          status = 'running',
+         hibernation_mode = NULL,
          worker_id = COALESCE(excluded.worker_id, sandboxes_index.worker_id),
          stopped_at = NULL,
          last_event_at = ?1
@@ -188,7 +196,7 @@ export default {
     // not worker_id otherwise).
     const lifecycleMigrated = env.OPENCOMPUTER_DB.prepare(
       `UPDATE sandboxes_index
-          SET status = 'running', worker_id = ?1, stopped_at = NULL, last_event_at = ?2
+          SET status = 'running', hibernation_mode = NULL, worker_id = ?1, stopped_at = NULL, last_event_at = ?2
         WHERE id = ?3 AND (last_event_at IS NULL OR last_event_at < ?2)`,
     );
     const capacityBatches = fresh
@@ -211,10 +219,15 @@ export default {
       });
 
     const lifecycleBatches = fresh
-      .filter((e) => e.sandbox_id && (e.type === "stopped" || e.type === "hibernated" || e.type === "running" || e.type === "woke" || e.type === "created" || e.type === "migrated"))
+      .filter((e) => e.sandbox_id && (e.type === "stopped" || e.type === "hibernated" || e.type === "paused" || e.type === "running" || e.type === "woke" || e.type === "created" || e.type === "migrated"))
       .map((e) => {
         const tsSec = Math.floor((Date.parse(e.timestamp) || Date.now()) / 1000);
         if (e.type === "stopped") return lifecycleStopped.bind(tsSec, e.sandbox_id);
+        // Two-tier hibernation: "paused" = RAM-resident tier (mode=paused),
+        // "hibernated" = deep tier (mode=deep — now only deep hibernation emits
+        // it; the pause tier emits "paused"). Both keep customer status
+        // "hibernated"; the mode feeds the cross-cell paused cap.
+        if (e.type === "paused") return lifecyclePaused.bind(tsSec, e.sandbox_id);
         if (e.type === "hibernated") return lifecycleHibernated.bind(tsSec, e.sandbox_id);
         if (e.type === "migrated" || e.type === "woke") {
           // worker_id moves with the sandbox. For "migrated" the scaler

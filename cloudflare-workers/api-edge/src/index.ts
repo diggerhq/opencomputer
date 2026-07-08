@@ -37,6 +37,9 @@ export interface Env extends DashboardEnv {
   CF_ADMIN_SECRET: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
+  // Per-org cross-cell paused-sandbox cap (default 100). Set lower on dev to
+  // exercise the promotion path without paused hundreds of boxes.
+  PAUSED_CAP?: string;
   // Autumn (useautumn.com) billing. AUTUMN_WEBHOOK_SECRET is the Svix signing
   // secret (whsec_…) for /webhooks/autumn. AUTUMN_SECRET_KEY / AUTUMN_BASE_URL
   // are inherited from DashboardEnv. Unset on deployments not yet on Autumn.
@@ -849,13 +852,17 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // changes on DELETE / hibernate / wake. Otherwise the dashboard accumulates
   // phantoms — D1 rows stuck at "running" after the actual sandbox stopped.
   const path = url.pathname;
-  let postUpdate: { status: string; setStopped: boolean } | null = null;
+  // mode mirrors hibernation_mode: customer hibernate = the paused tier, wake =
+  // running (NULL). Set it here (authoritative + immediate) so the cross-cell
+  // paused-cap sees the box right away; the cell's async "paused" event would
+  // otherwise no-op against this write's newer last_event_at.
+  let postUpdate: { status: string; setStopped: boolean; mode: string | null } | null = null;
   if (req.method === "DELETE" && path === `/api/sandboxes/${id}`) {
-    postUpdate = { status: "stopped", setStopped: true };
+    postUpdate = { status: "stopped", setStopped: true, mode: null };
   } else if (req.method === "POST" && path === `/api/sandboxes/${id}/hibernate`) {
-    postUpdate = { status: "hibernated", setStopped: false };
+    postUpdate = { status: "hibernated", setStopped: false, mode: "paused" };
   } else if (req.method === "POST" && path === `/api/sandboxes/${id}/wake`) {
-    postUpdate = { status: "running", setStopped: false };
+    postUpdate = { status: "running", setStopped: false, mode: null };
     // Halt-gate the wake. D1 is authoritative for is_halted. The cell-side
     // gate that used to do this read the dropped orgs table post-041 and
     // silently fell through, letting halted orgs wake. Mirror the create
@@ -902,13 +909,13 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   if (postUpdate && resp.status >= 200 && resp.status < 300) {
     const nowSec = Math.floor(Date.now() / 1000);
     const updateSQL = postUpdate.setStopped
-      ? "UPDATE sandboxes_index SET status = ?1, stopped_at = ?2, last_event_at = ?2 WHERE id = ?3"
-      : "UPDATE sandboxes_index SET status = ?1, last_event_at = ?2 WHERE id = ?3";
+      ? "UPDATE sandboxes_index SET status = ?1, hibernation_mode = ?4, stopped_at = ?2, last_event_at = ?2 WHERE id = ?3"
+      : "UPDATE sandboxes_index SET status = ?1, hibernation_mode = ?4, last_event_at = ?2 WHERE id = ?3";
     // ctx.waitUntil keeps the background D1 write alive after the response
     // returns. Without it the Worker terminates the in-flight Promise and
     // the UPDATE never runs — sandboxes_index drifts behind cell PG.
     ctx.waitUntil(
-      env.OPENCOMPUTER_DB.prepare(updateSQL).bind(postUpdate.status, nowSec, id).run().catch((e) => {
+      env.OPENCOMPUTER_DB.prepare(updateSQL).bind(postUpdate.status, nowSec, id, postUpdate.mode).run().catch((e) => {
         console.error(`sandboxes_index ${postUpdate!.status} update failed for ${id}:`, e);
       }),
     );
@@ -1743,6 +1750,58 @@ async function verifyStripeSignature(secret: string, header: string, body: strin
 
 // ── entrypoint ───────────────────────────────────────────────────────────
 
+// DEFAULT_PAUSED_CAP is the max RAM-resident paused sandboxes an org may hold
+// across all cells. Paused boxes are free + off-quota, so this bounds per-tenant
+// paused RAM; the oldest excess is promoted to deep hibernation (evicted to a
+// checkpoint). Overridable per-deployment via env.PAUSED_CAP (dev lowers it to
+// exercise the path). Enforced here because only D1 has the cross-cell view.
+const DEFAULT_PAUSED_CAP = 100;
+
+// runPausedCapEnforcer promotes each over-cap org's oldest paused sandboxes to
+// deep hibernation, by calling the cell that hosts each one. Runs on the 5-min
+// cron; the cell endpoint is idempotent (no-ops if the box already resumed or
+// was promoted), so redundant calls are safe.
+async function runPausedCapEnforcer(env: Env): Promise<void> {
+  const cap = Number(env.PAUSED_CAP) || DEFAULT_PAUSED_CAP;
+  const overCap = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT org_id, COUNT(*) AS n FROM sandboxes_index
+      WHERE hibernation_mode = 'paused'
+      GROUP BY org_id HAVING n > ?1`,
+  )
+    .bind(cap)
+    .all<{ org_id: string; n: number }>();
+
+  for (const org of overCap.results ?? []) {
+    const excess = org.n - cap;
+    const victims = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT s.id, s.cell_id, c.base_url
+         FROM sandboxes_index s
+         JOIN cells c ON s.cell_id = c.cell_id
+        WHERE s.org_id = ?1 AND s.hibernation_mode = 'paused'
+        ORDER BY s.last_event_at ASC
+        LIMIT ?2`,
+    )
+      .bind(org.org_id, excess)
+      .all<{ id: string; cell_id: string; base_url: string }>();
+
+    let promoted = 0;
+    for (const v of victims.results ?? []) {
+      try {
+        const token = await mintCapToken(env.SESSION_JWT_SECRET, org.org_id, v.cell_id, "", "", null);
+        const resp = await fetch(
+          v.base_url.replace(/\/$/, "") + `/internal/sandboxes/${v.id}/deep-hibernate`,
+          { method: "POST", headers: { authorization: "Bearer " + token } },
+        );
+        if (resp.ok) promoted++;
+        else console.error(`paused-cap: deep-hibernate ${v.id} on ${v.cell_id} → ${resp.status}`);
+      } catch (err) {
+        console.error(`paused-cap: deep-hibernate ${v.id} failed`, err);
+      }
+    }
+    console.log(`paused-cap: org ${org.org_id} at ${org.n}/${cap} paused, promoted ${promoted} oldest to deep`);
+  }
+}
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
@@ -1780,6 +1839,13 @@ export default {
     if (path === "/internal/run-autumn-meter" && req.method === "POST") {
       if (env.WORKER_ENV === "prod") return new Response("not found", { status: 404 });
       await runAutumnMeter(env, Date.now());
+      return json({ ok: true });
+    }
+    // Dev-only: force a paused-cap enforcement run (cron is */5). Deterministic
+    // testing aid for the promotion path.
+    if (path === "/internal/run-paused-cap" && req.method === "POST") {
+      if (env.WORKER_ENV === "prod") return new Response("not found", { status: 404 });
+      await runPausedCapEnforcer(env);
       return json({ ok: true });
     }
     // Force a model-meter run (token billing §5.4). HMAC-auth'd (CF_ADMIN_SECRET) so
@@ -2199,6 +2265,10 @@ export default {
   // key's spend → debit Autumn `model_spend` → push the markup-correct cap + halt.
   // Dormant unless OPENROUTER_PROVISIONING_KEY is set + managed keys exist.
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Cross-cell paused-cap enforcement runs regardless of billing config.
+    ctx.waitUntil(
+      runPausedCapEnforcer(env).catch((err) => console.error("paused-cap: run failed", err)),
+    );
     if (!env.AUTUMN_SECRET_KEY) return;
     ctx.waitUntil(
       runAutumnMeter(env, Date.now()).catch((err) => console.error("autumn-meter: run failed", err)),

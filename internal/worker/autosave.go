@@ -200,6 +200,21 @@ func (a *WorkspaceAutosaver) syncOne(sandboxID string) syncOutcome {
 	lastMtime := state.lastSyncedMtime
 	a.mu.Unlock()
 
+	// Skip paused (RAM-resident) boxes: their vCPUs are frozen, so SyncFS can't
+	// reach the in-guest agent — it just burns a 10s redial timeout every tick
+	// and trips the circuit breaker. A paused guest has no in-flight writes to
+	// flush (the pre-pause sync already captured its workspace), so skipping is
+	// correct, not a durability gap. The pause tier introduced this "resident but
+	// frozen" state; before it, boxes were either running (syncable) or deep-
+	// hibernated (evicted from the worker, absent from the sandbox list).
+	if pausable, ok := a.manager.(interface {
+		IsPaused(string) (time.Time, bool)
+	}); ok {
+		if _, paused := pausable.IsPaused(sandboxID); paused {
+			return syncSkipped
+		}
+	}
+
 	// Gate on workspace mtime — skip if nothing changed since last successful sync.
 	wsPath, err := a.syncer.GetWorkspacePath(sandboxID)
 	if err == nil && wsPath != "" {
