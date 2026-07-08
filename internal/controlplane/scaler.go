@@ -1750,14 +1750,16 @@ func (s *Scaler) migratePausedUnbilled(ctx context.Context, sandboxID, sourceWor
 }
 
 // liveMigrateSandbox live-migrates a sandbox from source to target. When
-// keepPaused is true the sandbox is in the RAM-resident PAUSED tier: it migrates
-// while paused (source vCPUs stay stopped — PreCopyDrives/QMP migrate work on a
-// stopped VM), the target registers it Status=paused (arrive_paused) so the
-// usage ticker never bills the transfer, and once the move completes it is
-// re-stopped + reclaimed (PauseAfterMigration) and the session row is put back to
+// keepPaused is true the sandbox belongs to the RAM-resident PAUSED tier and is
+// being moved off a draining worker unbilled. The caller (migratePausedUnbilled)
+// has already resumed it, so this is a NORMAL running-VM live migration (that's
+// what keeps the agent healthy) — the target is just told arrive_paused so the
+// usage ticker never bills the transfer, and once the move completes the box is
+// re-stopped + reclaimed (PauseAfterMigration) and the session row goes back to
 // hibernated/paused. Net: a paused box moves off a draining worker for free and
-// stays paused. A customer request mid-move resumes it on the target (billed from
-// that point) via the normal wake path — the migration window itself is unbilled.
+// stays paused. A customer request mid-move is rejected (503, status=migrating)
+// until the move lands, then resumes the box on the new worker via the normal
+// wake path (billed from that touch); the migration window itself is unbilled.
 func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorkerID, targetWorkerID string, keepPaused bool) error {
 	// Prevent double-migrate
 	if !s.state.AcquireMigrationLock(sandboxID) {
