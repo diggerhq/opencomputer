@@ -1,16 +1,17 @@
 // OC model-gateway wiring (design 013 §4). A stock Flue app points its managed `anthropic` provider at
 // the OC gateway (a thin Worker over OpenRouter that injects the org key + meters per session).
 //
-// TOKEN SEAM — RESOLVED (2026-07-08). The per-deploy OC_SESSION_TOKEN is a SECRET, surfaced on the CF
-// ambient env only once the request AsyncLocalStorage is entered — NOT at defineAgent-init (which runs in
-// DO-construction scope, where the ambient env shows plain vars like OC_GATEWAY but the secret reads
-// falsy). So an init-time registerProvider gets an empty apiKey -> "No API key for provider: anthropic".
-// Fix: bind the apiKey at RUN scope from the exported `route` middleware — the SAME lifecycle phase where
-// ocSandbox reads the token (in createSessionEnv) and succeeds. Because the token is per-DEPLOY (identical
-// for every session of the deploy), the MODULE(isolate)-scoped provider registry holds one static value
-// with NO cross-session race; the upstream per-request headers(ctx)/getApiKey(ctx) ask is only needed IF a
-// PER-SESSION token is later introduced (buildout "Upstream asks"). registerProvider still takes a static
-// apiKey and getApiKey(providerId) still has no turn context (providers.ts:199) — that's fine here.
+// TOKEN SEAM — RESOLVED + VALIDATED end-to-end (2026-07-08). The per-deploy OC_SESSION_TOKEN is a Worker
+// SECRET. Secrets are NOT on the CF ambient env (`cloudflare:workers`) at all — only plain vars like
+// OC_GATEWAY are — and `ctx.env` at defineAgent-init is empty for the OC bindings too. So an init-time
+// registerProvider reads the token falsy and every model call throws "No API key for provider: anthropic".
+// The secret DOES live on the per-REQUEST env (`c.env`) — the same source ocSandbox reads at run time.
+// Fix: bind the apiKey at RUN scope from the exported `route` middleware, reading OC_SESSION_TOKEN from
+// `c.env` by DIRECT property access (NEVER spread c.env — the CF env is a proxy and spreading it throws)
+// and OC_GATEWAY from the ambient snapshot, once per isolate. The token is per-DEPLOY (identical for every
+// session), so the MODULE(isolate)-scoped registry holds one static value with NO cross-session race; the
+// upstream per-request headers(ctx)/getApiKey(ctx) ask is only needed IF a PER-SESSION token is later
+// introduced. registerProvider still takes a static apiKey / getApiKey has no turn context — fine here.
 
 import { registerProvider } from "@flue/runtime";
 import type { AgentInitializerContext, AgentRouteHandler } from "@flue/runtime";
@@ -33,16 +34,6 @@ export interface OcEnv {
   [key: string]: unknown;
 }
 
-/**
- * Point the managed `anthropic` provider at the OC gateway. **Call this INSIDE the `defineAgent`
- * initializer** — top-level module code is stripped by the CF build (proven in 1a), and the initializer
- * body runs per harness init. Reads the CF ambient env (`cloudflare:workers`), not `ctx.env`: on the
- * `--target cloudflare` build the real Worker bindings live on the ambient env and `ctx.env` is empty
- * for them (Flue's generated entry threads `instance.env`, which lacks the OC bindings), so reading
- * `ctx.env` alone would leave `OC_GATEWAY` unset and the provider unregistered ("Unknown model
- * specifier"). No-op when `OC_GATEWAY` is unset (local `flue dev` falls through to pi-ai's env-var key
- * lookup). `anthropic` is a catalog id, so `baseUrl` alone rehydrates the wire protocol.
- */
 /** Register the managed `anthropic` provider from an OC env snapshot. Always registers the baseUrl (so the
  *  model specifier resolves); attaches the apiKey only when the per-deploy OC_SESSION_TOKEN is present in
  *  this snapshot. Returns true only when the apiKey actually landed — callers use that to stop rebinding.
@@ -82,7 +73,16 @@ let ocProviderBound = false;
  * first `?view=updates` read that predates the token just leaves the flag false and retries next request.
  * The OC dispatch Worker is the auth boundary (013 §3 B5), so the transport itself adds none.
  */
-export const route: AgentRouteHandler = async (_c, next) => {
-  if (!ocProviderBound) ocProviderBound = bindOcProvider(ocResolveEnv<OcEnv>(undefined));
+export const route: AgentRouteHandler = async (c, next) => {
+  // OC_SESSION_TOKEN is a Worker SECRET; secrets are absent from the ambient `cloudflare:workers` env
+  // (only vars like OC_GATEWAY live there), so the ambient-only read leaves the apiKey empty ("No API
+  // key"). The secret IS on the REQUEST env (c.env) — the same source ocSandbox reads in createSessionEnv.
+  // Read the token from c.env by DIRECT property access (never spread c.env — the CF env is a proxy and
+  // spreading it throws, which would break the request), and take OC_GATEWAY from the ambient snapshot.
+  if (!ocProviderBound) {
+    const amb = ocResolveEnv<OcEnv>(undefined);
+    const token = (c.env as OcEnv | undefined)?.OC_SESSION_TOKEN ?? amb.OC_SESSION_TOKEN;
+    ocProviderBound = bindOcProvider({ ...amb, ...(token ? { OC_SESSION_TOKEN: token } : {}) });
+  }
   return next();
 };
