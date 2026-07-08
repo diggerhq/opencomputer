@@ -14,6 +14,13 @@ export interface CreateSessionParams {
    * test a staged revision before promoting it. Defaults to the active revision.
    */
   revision?: number | string;
+  /**
+   * Override the agent's model for this session — the session runs this model instead of the
+   * one pinned by the agent's revision. Same `provider/model` form as the agent's model, and
+   * must resolve to the agent's runtime's provider. Defaults to the agent's model. Not
+   * supported for `flue` agents (their model is fixed in the deployed artifact).
+   */
+  model?: string;
   /** get-or-create idempotency/routing key — one session per key. */
   key?: string;
   webhook?: string;

@@ -59,7 +59,7 @@ At every rung the agent is just a small directory — at most `agent.toml` + `pr
 
 ## Session-pinned config
 
-When a session is created it **freezes** the agent's **active [revision](/agent-sessions/revisions)** — `prompt`, `model`, `runtime`, and `skills` — into the session, and pins the resolved credential too. Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change. (Rotating a credential's **key value** is the exception — that flows to running sessions, so a compromised key can be replaced; see [credentials](/agent-sessions/credentials).)
+When a session is created it **freezes** the agent's **active [revision](/agent-sessions/revisions)** — `prompt`, `model`, `runtime`, and `skills` — into the session, and pins the resolved credential too. (A session can start with a one-off [`model`](/agent-sessions/sessions#model) override in place of the agent's, pinned the same way for that session's life.) Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change. (Rotating a credential's **key value** is the exception — that flows to running sessions, so a compromised key can be replaced; see [credentials](/agent-sessions/credentials).)
 
 ## Model
 

@@ -703,6 +703,9 @@ export const createSession = (
   body: {
     agent: string
     input: string
+    // Optional per-session model override — runs this model instead of the agent's.
+    // Omit to inherit the agent's model. Not supported for flue agents.
+    model?: string
     sources?: { repo: string; ref: string; name?: string }[]
   },
   idempotencyKey?: string,

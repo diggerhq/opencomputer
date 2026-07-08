@@ -10,7 +10,7 @@ A **session** is an [agent](/agent-sessions/agents) run with an append-only [eve
 
 ## Session flow
 
-1. You create a session from an [agent](/agent-sessions/agents). It **pins the agent's active [revision](/agent-sessions/revisions)** (prompt / model / skills) for its whole life — editing the agent later never affects a running session. Pass `revision` to pin a specific one instead (e.g. to test a [staged](/agent-sessions/revisions#staging-vs-activating) revision before promoting). The model runs **Managed** (billed to your credits, no key — the default) or on a [model credential](/agent-sessions/credentials) you supply. Pass [`sources`](/agent-sessions/repos) to check repos out into `/workspace/sources/` before turn 1 — the GitHub token never enters the sandbox. The session starts immediately.
+1. You create a session from an [agent](/agent-sessions/agents). It **pins the agent's active [revision](/agent-sessions/revisions)** (prompt / model / skills) for its whole life — editing the agent later never affects a running session. Pass `revision` to pin a specific one instead (e.g. to test a [staged](/agent-sessions/revisions#staging-vs-activating) revision before promoting). Pass `model` to run this one session on a different model than the agent's — same `provider/model` form, and it must resolve to the agent's runtime's provider ([flue](/agent-sessions/flue) agents don't take an override; their model is fixed in the artifact). The model runs **Managed** (billed to your credits, no key — the default) or on a [model credential](/agent-sessions/credentials) you supply. Pass [`sources`](/agent-sessions/repos) to check repos out into `/workspace/sources/` before turn 1 — the GitHub token never enters the sandbox. The session starts immediately.
 2. The [runtime](/agent-sessions/runtimes) executes the agent in a sandbox, appending [events](/agent-sessions/events) to the log as it works.
 3. With nothing left to do, the session goes **idle** and the sandbox **hibernates**.
 4. A [steer](/agent-sessions/messaging) message wakes it; it resumes with its prior context. Repeat.
@@ -82,6 +82,36 @@ Three independent knobs — don't overload one for another:
 ## Limits
 
 Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are runtime limits, not spend controls; model usage is billed to your provider key (BYO) or to your OpenComputer credits (Managed). Hitting one ends the turn with the matching `yield_reason`.
+
+## Model
+
+A session runs the model pinned in its agent snapshot. Pass `model` at create to run **this one session** on a different model — omit it and the session inherits the agent's model (the default). The override is the same `provider/model` form as the agent's model, and its provider must match the agent's [runtime](/agent-sessions/runtimes) (e.g. `anthropic/…` for a `claude` agent — a mismatched prefix is rejected at create, a model the provider doesn't recognize fails on the [first turn](/agent-sessions/runtimes)). Like the rest of the snapshot it's **pinned for the session's life** — there's no mid-session model switch; start another session to run another model.
+
+Not available for [flue](/agent-sessions/flue) agents: their model is fixed in the deployed artifact (the [model triangle](/agent-sessions/flue)), so a `model` on a flue session is rejected.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const session = await oc.sessions.create({
+  agent: "agt_...",
+  input: "Summarize the incident channel and draft a postmortem.",
+  model: "anthropic/claude-sonnet-5", // this session only; omit to use the agent's model
+});
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/sessions
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{
+  "agent": "agt_...",
+  "input": "Summarize the incident channel and draft a postmortem.",
+  "model": "anthropic/claude-sonnet-5"
+}
+```
+
+</CodeGroup>
 
 ## Stop a session
 
