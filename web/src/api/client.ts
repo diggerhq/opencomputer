@@ -21,6 +21,7 @@ export type {
   Credits,
   BillingState,
   AutumnAutoTopup,
+  AutumnMonthlyBudget,
   AutumnBilling,
   StripeInvoice,
   SandboxUsageRow,
@@ -377,6 +378,12 @@ export const setAutumnAutoTopup = (cfg: {
   quantity: number
 }) =>
   apiFetch<{ ok: boolean; url?: string | null }>('/billing/autumn/auto-topup', {
+    method: 'POST',
+    body: JSON.stringify(cfg),
+  })
+
+export const setAutumnMonthlyBudget = (cfg: { enabled: boolean; limit: number }) =>
+  apiFetch<{ ok: boolean }>('/billing/autumn/monthly-budget', {
     method: 'POST',
     body: JSON.stringify(cfg),
   })

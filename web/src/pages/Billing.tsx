@@ -15,6 +15,7 @@ import {
   getSandboxUsage,
   redeemPromoCode,
   setAutumnAutoTopup,
+  setAutumnMonthlyBudget,
   type AutumnBilling,
   type StripeInvoice,
 } from '@/api/client'
@@ -348,6 +349,8 @@ function PrepaidPlan() {
         hasToppedUp={autumn?.hasToppedUp ?? false}
       />
 
+      <MonthlyBudgetCard current={autumn?.monthlyBudget ?? null} />
+
       <ModelUsageCard usage={autumn?.modelUsage ?? null} />
 
       {/* Concurrency */}
@@ -621,6 +624,115 @@ function AutoTopupCard({
         pending={mutation.isPending}
         onConfirm={() => mutation.mutate()}
       />
+    </Panel>
+  )
+}
+
+function MonthlyBudgetCard({
+  current,
+}: {
+  current: AutumnBilling['monthlyBudget'] | null
+}) {
+  const queryClient = useQueryClient()
+  const [draft, setDraft] = useState<{
+    enabled?: boolean
+    limit?: number
+  }>({})
+  const enabled = draft.enabled ?? current?.enabled ?? false
+  const limit = draft.limit ?? current?.limit ?? 100
+  const [saved, markSaved] = useTransientFlag(3000)
+
+  const mutation = useMutation({
+    mutationFn: () => setAutumnMonthlyBudget({ enabled, limit }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['autumn-billing'] })
+      setDraft({})
+      markSaved()
+    },
+    onError: (e) => notifyError("Couldn't save monthly budget.", e),
+  })
+
+  const usage = current?.usage ?? null
+  const usagePct =
+    enabled && usage != null && limit > 0
+      ? Math.min(100, Math.round((usage / limit) * 100))
+      : null
+
+  return (
+    <Panel className="p-6">
+      <h2 className="mb-2 text-sm font-semibold">Monthly budget</h2>
+      <p className="text-muted-foreground mb-4 text-sm">
+        Set a monthly hard cap on prepaid credit usage. Autumn resets this
+        window each month.
+      </p>
+
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id="monthly-budget"
+          checked={enabled}
+          onCheckedChange={(v) =>
+            setDraft((d) => ({ ...d, enabled: v === true }))
+          }
+        />
+        <Label htmlFor="monthly-budget" className="cursor-pointer font-normal">
+          Enable monthly budget
+        </Label>
+      </div>
+
+      {enabled ? (
+        <div className="mt-4 flex flex-wrap items-end gap-5">
+          <Field label="Monthly cap" htmlFor="monthly-budget-limit">
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground text-sm">$</span>
+              <Input
+                id="monthly-budget-limit"
+                type="number"
+                min={1}
+                value={limit}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    limit: Math.max(
+                      1,
+                      Math.floor(Number(e.target.value) || 0),
+                    ),
+                  }))
+                }
+                className="w-24 font-mono"
+              />
+            </div>
+          </Field>
+          {usagePct != null ? (
+            <div className="min-w-44">
+              <div className="text-muted-foreground mb-1.5 text-xs">
+                ${usage?.toFixed(2)} used this month ({usagePct}%)
+              </div>
+              <div className="bg-muted h-1.5 overflow-hidden rounded-full">
+                <div
+                  className="bg-foreground h-full"
+                  style={{ width: `${usagePct}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="mt-4">
+        <Button
+          variant="outline"
+          disabled={mutation.isPending || (enabled && limit < 1)}
+          onClick={() => mutation.mutate()}
+        >
+          {mutation.isPending ? 'Saving…' : saved ? 'Saved' : 'Save'}
+        </Button>
+      </div>
+
+      {enabled ? (
+        <p className="text-muted-foreground mt-3 text-xs">
+          New usage pauses once credit spend reaches this cap for the month.
+        </p>
+      ) : null}
     </Panel>
   )
 }
