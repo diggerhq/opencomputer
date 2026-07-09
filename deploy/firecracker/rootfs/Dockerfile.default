@@ -1,5 +1,5 @@
 # Default rootfs for OpenSandbox Firecracker VMs
-# Includes Python 3, Node.js 20 LTS, build tools, and common utilities.
+# Includes Python 3, Node.js 22 LTS, build tools, and common utilities.
 # Build: scripts/build-rootfs.sh default
 FROM ubuntu:22.04
 
@@ -95,8 +95,8 @@ RUN ln -sf /usr/bin/python3 /usr/bin/python \
     && pip3 install --no-cache-dir --upgrade \
        pip setuptools wheel
 
-# ── Node.js 20 LTS ──────────────────────────────────────────────────────────
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+# ── Node.js 22 LTS ──────────────────────────────────────────────────────────
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g npm@latest
