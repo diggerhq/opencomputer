@@ -1039,6 +1039,31 @@ export async function handleDashboard(
     if (!cell) return json({ error: "home cell unavailable" }, 503);
     return proxyToCell(req, env, caller, cell, `/internal/dashboard${sub}`);
   }
+
+  // ── sandboxes: one-click create from the dashboard → the org's home cell.
+  // Reuses the cap-token /internal/sandboxes/create path (same token shape the
+  // /api/sandboxes create mints); the cell stamps ownership from the token's org.
+  if (sub === "/sandboxes" && method === "POST") {
+    const cell = await homeCell(env, caller.orgID);
+    if (!cell) return json({ error: "home cell unavailable" }, 503);
+    return proxyToCell(req, env, caller, cell, "/internal/sandboxes/create");
+  }
+
+  // ── sandbox preview URLs: expose/list/unexpose a port on a running sandbox.
+  // Proxies to the public /api/sandboxes/:id/preview, which accepts this same
+  // edge cap-token (PGAPIKeyMiddleware validates it and sets the org), so no
+  // cell-side handler is needed. POST create, GET list, DELETE /:port unexpose.
+  {
+    const pv = sub.match(/^\/sandboxes\/([^/]+)\/preview(?:\/(\d+))?$/);
+    if (pv) {
+      const cell = await homeCell(env, caller.orgID);
+      if (!cell) return json({ error: "home cell unavailable" }, 503);
+      const cellPath = pv[2]
+        ? `/api/sandboxes/${pv[1]}/preview/${pv[2]}`
+        : `/api/sandboxes/${pv[1]}/preview`;
+      return proxyToCell(req, env, caller, cell, cellPath);
+    }
+  }
   if (sub === "/billing/agent-subscriptions" && method === "GET") return handleListAgentSubscriptions(req, env, caller);
 
   // /billing — basic billing read used by the dashboard billing page.

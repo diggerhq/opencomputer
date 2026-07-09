@@ -180,6 +180,35 @@ export const getSandboxes = (status?: string) =>
     S.SandboxListSchema,
   )
 
+// Create a sandbox from the dashboard. Proxied by the edge to the org's home
+// cell (POST /api/dashboard/sandboxes → cell /internal/sandboxes/create with a
+// cap-token), so the box is owned by + billed to the logged-in org. Returns the
+// new sandbox id so the caller can navigate straight into its live terminal.
+export const createSandbox = (body: {
+  memoryMB?: number
+  cpuCount?: number
+  networkEnabled?: boolean
+  image?: string
+}) =>
+  apiFetch<{ sandboxID: string; status?: string }>('/sandboxes', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+// Expose a port on a running sandbox → a public preview URL (proxied edge→cell
+// to the cap-token-authed /api/sandboxes/:id/preview). Returns the registered
+// row incl. hostname; the sandbox detail page renders it in Preview URLs.
+export const createPreviewUrl = (sandboxId: string, port: number) =>
+  apiFetch<{ id: string; sandboxId: string; hostname: string; port: number }>(
+    `/sandboxes/${sandboxId}/preview`,
+    { method: 'POST', body: JSON.stringify({ port }) },
+  )
+
+export const deletePreviewUrl = (sandboxId: string, port: number) =>
+  apiFetch<void>(`/sandboxes/${sandboxId}/preview/${port}`, {
+    method: 'DELETE',
+  })
+
 export const getAPIKeys = () =>
   apiFetch('/api-keys', {}, z.array(S.APIKeySchema))
 

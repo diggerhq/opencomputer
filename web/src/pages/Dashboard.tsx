@@ -1,7 +1,17 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
-import { Boxes, MessagesSquare, Sparkles } from 'lucide-react'
+import {
+  ArrowLeft,
+  BarChart3,
+  Boxes,
+  ChevronDown,
+  Code2,
+  Globe,
+  MessagesSquare,
+  Sparkles,
+  Terminal,
+} from 'lucide-react'
 import {
   createAPIKey,
   getAPIKeys,
@@ -10,6 +20,9 @@ import {
   getAgents,
   createAgent,
   createSession,
+  createSandbox,
+  getMe,
+  getBilling,
   type Sandbox,
 } from '@/api/client'
 import type { Session } from '@/api/schemas'
@@ -40,6 +53,69 @@ const QL_NOUN = ['otter', 'harbor', 'falcon', 'cedar', 'comet', 'ember', 'grove'
 function quicklaunchName(): string {
   const pick = (a: readonly string[]) => a[Math.floor(Math.random() * a.length)]
   return `${pick(QL_ADJ)}-${pick(QL_NOUN)}`
+}
+
+// Example tasks shown as chips on the launch card — concrete starting points so a
+// new user sees what the product actually does, instead of a blank button.
+const QUICKLAUNCH_TASKS: { icon: typeof BarChart3; label: string; task: string }[] = [
+  {
+    icon: BarChart3,
+    label: 'Analyze a CSV',
+    task: 'Create a small sample sales CSV, analyze it with Python, and produce a chart summarizing the key trends.',
+  },
+  {
+    icon: Globe,
+    label: 'Build a web app',
+    task: 'Build a small working single-page web app, start a dev server, and give me the preview URL so I can see it.',
+  },
+  {
+    icon: Terminal,
+    label: 'Write & run a script',
+    task: 'Write a short Python script that prints the current date/time and basic system info, then run it and show me the output.',
+  },
+]
+
+// Sandbox example chips. Unlike the agent chips (which are tasks for Claude), a
+// sandbox has no "task" — so each chip creates the box and lands you somewhere
+// useful: two auto-run a starter command in the terminal; "Drive it from code"
+// jumps to the Connect panel (SDK snippets). Commands lean on python3 (always
+// present on the base image) so the demo is self-contained — no external routing.
+// "Host a web app" is a webApp intent (not a static command): the sandbox page
+// exposes :8000, then builds the terminal command with the real preview hostname
+// so it can echo the live URL. See buildWebAppCommand in SandboxDetail.
+const SANDBOX_TRY_TOOL_CMD =
+  `echo "Python $(python3 --version 2>&1 | cut -d' ' -f2)  ·  Node $(node --version)  ·  $(uname -sr)" && echo "It's a real machine — try: pip install <pkg>  or  npm i <pkg>"`
+
+type SandboxIntent = {
+  startupCommand?: string
+  focus?: 'connect'
+  exposePort?: number
+  webApp?: boolean
+}
+const SANDBOX_EXAMPLES: {
+  icon: typeof Globe
+  label: string
+  intent: SandboxIntent
+}[] = [
+  {
+    icon: Globe,
+    label: 'Host a web app',
+    intent: { exposePort: 8000, webApp: true },
+  },
+  {
+    icon: Terminal,
+    label: 'Try a tool instantly',
+    intent: { startupCommand: SANDBOX_TRY_TOOL_CMD },
+  },
+  { icon: Code2, label: 'Drive it from code', intent: { focus: 'connect' } },
+]
+
+// Derive a friendly first name from an email local part (brian+test81@… → "Brian").
+function firstNameFromEmail(email: string | undefined): string {
+  if (!email) return ''
+  const local = email.split('@')[0]?.split('+')[0] ?? ''
+  const first = local.replace(/[._-]+/g, ' ').trim().split(' ')[0] ?? ''
+  return first ? first.charAt(0).toUpperCase() + first.slice(1) : ''
 }
 
 function formatDuration(sandbox: Sandbox): string {
@@ -73,6 +149,8 @@ const isLiveSession = (s: Session) =>
 
 export default function Dashboard() {
   const prefetch = usePrefetchSandbox()
+  // Returning users can re-open the getting-started screen from the header.
+  const [showGettingStarted, setShowGettingStarted] = useState(false)
 
   const { data: runningSandboxesData, isLoading: loadingRunningSandboxes } =
     useQuery({
@@ -115,6 +193,9 @@ export default function Dashboard() {
     !loadingSessions &&
     allSandboxes.length === 0 &&
     sessions.length === 0
+
+  // Genuine first-run auto-shows onboarding; returning users opt in via the link.
+  const showOnboarding = isFirstRun || showGettingStarted
 
   const sessionColumns: Column<Session>[] = [
     {
@@ -201,17 +282,27 @@ export default function Dashboard() {
 
   return (
     <div>
-      <PageHeader
-        title={isFirstRun ? 'Welcome to OpenComputer' : 'Dashboard'}
-        description={
-          isFirstRun
-            ? 'Get started in two steps'
-            : 'Overview of your agent sessions and sandboxes'
-        }
-      />
+      {!showOnboarding && (
+        <PageHeader
+          title="Dashboard"
+          description="Overview of your agent sessions and sandboxes"
+          actions={
+            <button
+              type="button"
+              onClick={() => setShowGettingStarted(true)}
+              className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 text-sm underline-offset-4 hover:underline"
+            >
+              <Sparkles className="size-3.5" />
+              Getting started
+            </button>
+          }
+        />
+      )}
 
-      {isFirstRun ? (
-        <GettingStarted />
+      {showOnboarding ? (
+        <GettingStarted
+          onBack={!isFirstRun ? () => setShowGettingStarted(false) : undefined}
+        />
       ) : (
         <div className="space-y-6">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -295,7 +386,7 @@ export default function Dashboard() {
 }
 
 /* ── First-run onboarding ─────────────────────────────────────────────────── */
-function GettingStarted() {
+function GettingStarted({ onBack }: { onBack?: () => void }) {
   const queryClient = useQueryClient()
   const {
     data: keys,
@@ -305,7 +396,10 @@ function GettingStarted() {
     queryKey: ['api-keys'],
     queryFn: getAPIKeys,
   })
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe })
+  const { data: billing } = useQuery({ queryKey: ['billing'], queryFn: getBilling })
   const autoCreateRef = useRef(false)
+  const [showTerminal, setShowTerminal] = useState(false)
 
   const navigate = useNavigate()
 
@@ -314,10 +408,11 @@ function GettingStarted() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['api-keys'] }),
   })
 
-  // One click: create a managed agent + start a session on it, then drop the
-  // user straight onto the live session screen. No skill, no key, no terminal.
+  // One click: create a managed agent + start a session on it (with the given
+  // task), then drop the user straight onto the live session screen. No skill,
+  // no key, no terminal. The task varies by which chip/button the user picked.
   const launchMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (task: string) => {
       const agent = await createAgent({
         name: quicklaunchName(),
         prompt: QUICKLAUNCH_PROMPT,
@@ -325,16 +420,40 @@ function GettingStarted() {
         runtime: DEFAULT_RUNTIME,
         credential: 'managed', // run via OpenComputer, billed to credits, no BYO key
       })
-      return createSession({ agent: agent.id, input: QUICKLAUNCH_TASK })
+      return createSession({ agent: agent.id, input: task })
     },
     onSuccess: (session) => {
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
       void navigate(`/sessions/${session.id}`)
     },
   })
+  const launching = launchMutation.isPending
+
+  // Second door: create a real sandbox and drop into its live terminal. Goes
+  // through the CP (edge → home cell → /internal/sandboxes/create), so unlike
+  // the managed-agent path this works end to end today.
+  const createSandboxMutation = useMutation({
+    mutationFn: (_intent: SandboxIntent) =>
+      createSandbox({ memoryMB: 1024, cpuCount: 1, networkEnabled: true }),
+    onSuccess: (sb, intent) => {
+      void queryClient.invalidateQueries({ queryKey: ['sandboxes'] })
+      void navigate(`/sandboxes/${sb.sandboxID}`, {
+        state:
+          intent.startupCommand ||
+          intent.focus ||
+          intent.exposePort ||
+          intent.webApp
+            ? intent
+            : undefined,
+      })
+    },
+  })
+  const creatingSandbox = createSandboxMutation.isPending
 
   const hasKeys = (keys?.length ?? 0) > 0
   const createdKey = createMutation.data?.key ?? null
+  const firstName = firstNameFromEmail(me?.email)
+  const freeCents = billing?.freeCreditsRemainingCents ?? null
 
   // On first signup (no keys), auto-create a Default key so the user sees it
   // immediately without clicking anything.
@@ -349,7 +468,38 @@ function GettingStarted() {
   }, [keysLoaded, hasKeys, createdKey, createMutation])
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
+      {onBack ? (
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-muted-foreground hover:text-foreground -mb-1 inline-flex items-center gap-1.5 text-sm underline-offset-4 hover:underline"
+        >
+          <ArrowLeft className="size-3.5" />
+          Back to dashboard
+        </button>
+      ) : null}
+
+      {/* Personalized welcome + reassurance in the first paint */}
+      <div className="space-y-2">
+        <h2 className="text-foreground text-2xl font-semibold tracking-tight">
+          Welcome{firstName ? `, ${firstName}` : ''}.
+        </h2>
+        <p className="text-muted-foreground text-sm">
+          {freeCents != null && freeCents > 0
+            ? `You've got $${(freeCents / 100).toFixed(2)} in free credits — enough to run a real agent right now. No card, no setup.`
+            : 'Run a real Claude agent in a fresh sandbox — no setup, no API key required.'}
+        </p>
+        <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 pt-0.5 text-xs">
+          <span>Real Claude Opus</span>
+          <span aria-hidden>·</span>
+          <span>Isolated cloud VM</span>
+          <span aria-hidden>·</span>
+          <span>Watch it work live</span>
+        </div>
+      </div>
+
+      {/* Agent card — primary door, with concrete example tasks */}
       <Panel className="p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
@@ -357,20 +507,41 @@ function GettingStarted() {
               Launch an agent
             </h3>
             <p className="text-muted-foreground text-sm">
-              Spin up a Claude agent in a fresh sandbox and watch it work — no
-              setup, no API key. Runs on OpenComputer, billed to your credits.
+              Spin up a Claude agent in a fresh sandbox and watch it work —
+              billed to your credits, no API key.
             </p>
           </div>
           <Button
             size="lg"
             className="shrink-0"
-            onClick={() => launchMutation.mutate()}
-            disabled={launchMutation.isPending}
+            onClick={() => launchMutation.mutate(QUICKLAUNCH_TASK)}
+            disabled={launching}
           >
             <Sparkles className="size-4" />
-            {launchMutation.isPending ? 'Launching…' : 'Launch agent'}
+            {launching ? 'Launching…' : 'Launch agent'}
           </Button>
         </div>
+
+        <div className="border-border/60 mt-4 border-t pt-4">
+          <p className="text-muted-foreground mb-2 text-xs">
+            Or start with an example:
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {QUICKLAUNCH_TASKS.map((t) => (
+              <button
+                key={t.label}
+                type="button"
+                onClick={() => launchMutation.mutate(t.task)}
+                disabled={launching}
+                className="border-border bg-background hover:bg-secondary text-foreground inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
+              >
+                <t.icon className="size-3.5" />
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {launchMutation.isError ? (
           <div className="mt-3 flex items-center gap-3">
             <span className="text-status-error text-sm">
@@ -378,7 +549,9 @@ function GettingStarted() {
             </span>
             <button
               className="text-foreground text-sm font-medium underline underline-offset-4"
-              onClick={() => launchMutation.mutate()}
+              onClick={() =>
+                launchMutation.mutate(launchMutation.variables ?? QUICKLAUNCH_TASK)
+              }
             >
               Retry
             </button>
@@ -386,72 +559,148 @@ function GettingStarted() {
         ) : null}
       </Panel>
 
-      <p className="text-muted-foreground px-1 text-xs">
-        Or drive OpenComputer from your terminal:
-      </p>
-
-      <StepCard
-        index={1}
-        title="Install the OpenComputer skill"
-        description="Adds OpenComputer controls to Claude Code so you can create and manage agents, sessions, and sandboxes from your terminal."
-      >
-        <CopyRow value={SKILL_INSTALL_CMD} />
-      </StepCard>
-
-      <StepCard
-        index={2}
-        title="Your API key"
-        description="The skill uses this key to authenticate with OpenComputer. We've created a Default key for you — copy it now, you won't be able to see it again."
-      >
-        {loadingKeys || createMutation.isPending ? (
-          <p className="text-muted-foreground text-sm">
-            Preparing your API key…
-          </p>
-        ) : null}
-
-        {createdKey ? (
-          <div className="space-y-2.5">
-            <CopyRow value={createdKey} maskable />
-            <p className="text-muted-foreground text-xs">
-              Then run this in your terminal to configure the CLI:
+      {/* Second door: a real sandbox — a full VM you drive yourself */}
+      <Panel className="p-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <h3 className="text-foreground text-base font-semibold">
+              Build with a sandbox
+            </h3>
+            <p className="text-muted-foreground text-sm">
+              Spin up a real cloud computer — a full Linux shell, files, and
+              ports — and drive it from the browser or your code.
             </p>
-            <CopyRow
-              value={createdKey}
-              maskable
-              transform={(s) => `oc config set api-key ${s}`}
-            />
           </div>
-        ) : null}
+          <Button
+            size="lg"
+            variant="outline"
+            className="shrink-0"
+            onClick={() => createSandboxMutation.mutate({})}
+            disabled={creatingSandbox}
+          >
+            <Boxes className="size-4" />
+            {creatingSandbox ? 'Creating…' : 'Create a sandbox'}
+          </Button>
+        </div>
 
-        {!createdKey && !createMutation.isPending && hasKeys ? (
-          <p className="text-muted-foreground text-sm">
-            You already have {keys!.length} API key
-            {keys!.length === 1 ? '' : 's'} from a previous session. For
-            security, existing key values can&apos;t be re-displayed.{' '}
-            <Link
-              to="/api-keys"
-              className="text-foreground font-medium underline underline-offset-4"
-            >
-              Manage keys
-            </Link>{' '}
-            to rotate.
-          </p>
-        ) : null}
+        <div className="border-border/60 mt-4 border-t pt-4">
+          <p className="text-muted-foreground mb-2 text-xs">Or jump straight in:</p>
+          <div className="flex flex-wrap gap-2">
+            {SANDBOX_EXAMPLES.map((ex) => (
+              <button
+                key={ex.label}
+                type="button"
+                onClick={() => createSandboxMutation.mutate(ex.intent)}
+                disabled={creatingSandbox}
+                className="border-border bg-background hover:bg-secondary text-foreground inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
+              >
+                <ex.icon className="size-3.5" />
+                {ex.label}
+              </button>
+            ))}
+          </div>
+        </div>
 
-        {createMutation.isError ? (
-          <div className="flex items-center gap-3">
+        <p className="text-muted-foreground mt-3 text-xs">
+          {creatingSandbox
+            ? 'Booting a fresh cloud VM — this can take 10–20s…'
+            : 'Ubuntu · Python & Node preinstalled · opens a live terminal'}
+        </p>
+        {createSandboxMutation.isError ? (
+          <div className="mt-3 flex items-center gap-3">
             <span className="text-status-error text-sm">
-              Failed to create your API key.
+              Couldn&apos;t create the sandbox.
             </span>
             <button
               className="text-foreground text-sm font-medium underline underline-offset-4"
-              onClick={() => createMutation.mutate()}
+              onClick={() => createSandboxMutation.mutate({})}
             >
               Retry
             </button>
           </div>
         ) : null}
-      </StepCard>
+      </Panel>
+
+      {/* Terminal / power-user path — available, not the required first step */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowTerminal((v) => !v)}
+          className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 px-1 text-xs font-medium"
+        >
+          <ChevronDown
+            className={`size-3.5 transition-transform ${showTerminal ? '' : '-rotate-90'}`}
+          />
+          Prefer your terminal? Drive OpenComputer from Claude Code or the CLI
+        </button>
+
+        {showTerminal ? (
+          <div className="mt-3 space-y-4">
+            <StepCard
+              index={1}
+              title="Install the OpenComputer skill"
+              description="Adds OpenComputer controls to Claude Code so you can create and manage agents, sessions, and sandboxes from your terminal."
+            >
+              <CopyRow value={SKILL_INSTALL_CMD} />
+            </StepCard>
+
+            <StepCard
+              index={2}
+              title="Your API key"
+              description="The skill uses this key to authenticate with OpenComputer. We've created a Default key for you — copy it now, you won't be able to see it again."
+            >
+              {loadingKeys || createMutation.isPending ? (
+                <p className="text-muted-foreground text-sm">
+                  Preparing your API key…
+                </p>
+              ) : null}
+
+              {createdKey ? (
+                <div className="space-y-2.5">
+                  <CopyRow value={createdKey} maskable />
+                  <p className="text-muted-foreground text-xs">
+                    Then run this in your terminal to configure the CLI:
+                  </p>
+                  <CopyRow
+                    value={createdKey}
+                    maskable
+                    transform={(s) => `oc config set api-key ${s}`}
+                  />
+                </div>
+              ) : null}
+
+              {!createdKey && !createMutation.isPending && hasKeys ? (
+                <p className="text-muted-foreground text-sm">
+                  You already have {keys!.length} API key
+                  {keys!.length === 1 ? '' : 's'} from a previous session. For
+                  security, existing key values can&apos;t be re-displayed.{' '}
+                  <Link
+                    to="/api-keys"
+                    className="text-foreground font-medium underline underline-offset-4"
+                  >
+                    Manage keys
+                  </Link>{' '}
+                  to rotate.
+                </p>
+              ) : null}
+
+              {createMutation.isError ? (
+                <div className="flex items-center gap-3">
+                  <span className="text-status-error text-sm">
+                    Failed to create your API key.
+                  </span>
+                  <button
+                    className="text-foreground text-sm font-medium underline underline-offset-4"
+                    onClick={() => createMutation.mutate()}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : null}
+            </StepCard>
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 }
