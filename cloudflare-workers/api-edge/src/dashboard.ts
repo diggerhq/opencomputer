@@ -24,6 +24,7 @@ import {
   autumnHasToppedUp,
   syncAutumnToD1,
   autumnSetAutoTopup,
+  autumnOpenCustomerPortal,
 } from "./autumn_webhook";
 import { handleWebhooksAPI, type WebhookEnv } from "./webhooks";
 
@@ -1081,10 +1082,31 @@ export async function handleDashboard(
         console.error("billing: DO snapshot failed, falling back to D1 mirror:", e);
       }
     }
+    // Whether a card is on file + any Stripe promotional credit. Both drive the
+    // Billing UI (the "manage payment method" portal gate + the promo-credit
+    // line) and are REQUIRED by the client schema, so we must always return
+    // them. Derived from the Stripe customer when one exists; a fetch failure
+    // degrades to (no card, no credit) rather than breaking the billing page.
+    // Only the direct-Stripe (legacy/Pro) path uses this; Autumn orgs manage
+    // their card through Autumn's portal + surface hasToppedUp in /billing/autumn,
+    // and this edge has no STRIPE_API_KEY for Autumn's account anyway.
+    let hasPaymentMethod = false;
+    let stripeCreditCents = 0;
+    if (org.stripe_customer_id && org.billing_provider !== "autumn") {
+      try {
+        const cust = await stripeApi(env, `/v1/customers/${org.stripe_customer_id}`, null, "GET");
+        hasPaymentMethod = !!(cust?.invoice_settings?.default_payment_method || cust?.default_source);
+        if (typeof cust?.balance === "number" && cust.balance < 0) stripeCreditCents = -cust.balance;
+      } catch (e) {
+        console.error("billing: stripe customer fetch failed:", e);
+      }
+    }
     return json({
       plan: org.plan,
       stripeCustomerId: org.stripe_customer_id ?? undefined,
       stripeSubscriptionId: org.stripe_subscription_id ?? undefined,
+      hasPaymentMethod,
+      stripeCreditCents,
       freeCreditsRemainingCents: liveBalance,
       creditBalanceCents: org.credit_balance_cents,
       isHalted: !!org.is_halted,
@@ -1130,6 +1152,9 @@ export async function handleDashboard(
   }
   if (sub === "/billing/autumn/auto-topup" && method === "POST") {
     return handleAutumnAutoTopup(req, env, caller);
+  }
+  if (sub === "/billing/autumn/portal" && method === "POST") {
+    return handleAutumnPortal(req, env, caller);
   }
   if (sub === "/billing/autumn/finalize-arm" && method === "GET") {
     return handleAutumnFinalizeArm(req, env, caller);
@@ -1275,7 +1300,7 @@ async function handleBillingPortal(req: Request, env: DashboardEnv, caller: { or
   const org = await loadOrgStripe(env, caller.orgID);
   if (!org) return json({ error: "org not found" }, 404);
   if (!org.stripe_customer_id) {
-    return json({ error: "no billing customer — upgrade to Pro first" }, 400);
+    return json({ error: "no billing account on file yet — add a payment method first" }, 400);
   }
   // Bounce back wherever the dashboard came from when the user closes the portal.
   const returnURL = req.headers.get("referer") ?? `${new URL(req.url).origin}/dashboard/billing`;
@@ -1287,6 +1312,21 @@ async function handleBillingPortal(req: Request, env: DashboardEnv, caller: { or
     return json({ url: session.url });
   } catch (e) {
     console.error("billing/portal:", e);
+    return json({ error: (e as Error).message }, 500);
+  }
+}
+
+// Autumn-org billing portal — the card lives under Autumn's Stripe account, so
+// we broker the portal session through Autumn (the org id IS the Autumn
+// customer id), NOT the edge's direct STRIPE_API_KEY.
+async function handleAutumnPortal(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
+  const returnURL = req.headers.get("referer") ?? `${new URL(req.url).origin}/dashboard/billing`;
+  try {
+    const { url } = await autumnOpenCustomerPortal(env, { customerId: caller.orgID, returnUrl: returnURL });
+    if (!url) return json({ error: "no billing account on file yet — add a payment method first" }, 400);
+    return json({ url });
+  } catch (e) {
+    console.error("billing/autumn/portal:", e);
     return json({ error: (e as Error).message }, 500);
   }
 }
