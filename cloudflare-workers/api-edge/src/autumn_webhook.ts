@@ -478,6 +478,32 @@ export async function autumnSetupPayment(
   return { url: d.url ?? null };
 }
 
+// autumnOpenCustomerPortal creates a Stripe billing-portal session (hosted by
+// Stripe, brokered by Autumn) so the customer can view / update / remove their
+// saved card and download invoices — POST /billing.open_customer_portal.
+// Compliance: anyone with a card on file must be able to manage it. The card for
+// an Autumn org lives under Autumn's Stripe account, so this — NOT the edge's
+// direct /billing/portal — is the correct surface for prepaid orgs. Returns the
+// hosted portal URL (null if the customer has no billing account yet).
+export async function autumnOpenCustomerPortal(
+  env: AutumnApiEnv,
+  params: { customerId: string; returnUrl: string },
+): Promise<{ url: string | null }> {
+  const base = env.AUTUMN_BASE_URL || DEFAULT_BASE_URL;
+  const resp = await fetch(`${base}/billing.open_customer_portal`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.AUTUMN_SECRET_KEY}`,
+      "content-type": "application/json",
+      "x-api-version": "2.3.0",
+    },
+    body: JSON.stringify({ customer_id: params.customerId, return_url: params.returnUrl }),
+  });
+  if (!resp.ok) throw new Error(`autumn open_customer_portal ${resp.status}: ${await resp.text()}`);
+  const d = (await resp.json()) as { url?: string };
+  return { url: d.url ?? null };
+}
+
 // autumnTopUpCharge buys `quantity` credits while ensuring the card ends up saved
 // OFF-SESSION — so a top-up also ARMS auto-recharge. No single Autumn hosted flow
 // does both (a /checkout top-up charges but leaves the card on-session-only;

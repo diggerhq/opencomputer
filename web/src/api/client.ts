@@ -369,6 +369,10 @@ export const autumnSubscribeConcurrency = (plan: string) =>
     body: JSON.stringify({ plan }),
   })
 
+// Open Autumn's Stripe-hosted billing portal to manage the saved card + invoices.
+export const autumnBillingPortal = () =>
+  apiFetch<{ url: string }>('/billing/autumn/portal', { method: 'POST' })
+
 // url is non-null when enabling auto-recharge requires capturing an off-session
 // card first — the caller redirects there (a no-charge Stripe setup session).
 export const setAutumnAutoTopup = (cfg: {
