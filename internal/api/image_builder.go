@@ -1,12 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -147,63 +150,6 @@ func translateStepToCommand(step ImageStep) (string, error) {
 			return "", fmt.Errorf("workdir: path must be a string")
 		}
 		return fmt.Sprintf("sudo mkdir -p %s", pathStr), nil
-
-	case "add_file":
-		remotePath, ok := step.Args["path"]
-		if !ok {
-			return "", fmt.Errorf("add_file: missing path")
-		}
-		pathStr, ok := remotePath.(string)
-		if !ok {
-			return "", fmt.Errorf("add_file: path must be a string")
-		}
-		content, ok := step.Args["content"]
-		if !ok {
-			return "", fmt.Errorf("add_file: missing content")
-		}
-		contentStr, ok := content.(string)
-		if !ok {
-			return "", fmt.Errorf("add_file: content must be a string")
-		}
-		// Create parent directory and decode base64 content
-		dir := pathStr[:strings.LastIndex(pathStr, "/")]
-		return fmt.Sprintf("sudo mkdir -p %s && echo '%s' | base64 -d | sudo tee %s > /dev/null", dir, contentStr, pathStr), nil
-
-	case "add_dir":
-		remotePath, ok := step.Args["path"]
-		if !ok {
-			return "", fmt.Errorf("add_dir: missing path")
-		}
-		pathStr, ok := remotePath.(string)
-		if !ok {
-			return "", fmt.Errorf("add_dir: path must be a string")
-		}
-		filesRaw, ok := step.Args["files"]
-		if !ok {
-			return "", fmt.Errorf("add_dir: missing files")
-		}
-		filesArr, ok := filesRaw.([]interface{})
-		if !ok {
-			return "", fmt.Errorf("add_dir: files must be an array")
-		}
-
-		var parts []string
-		parts = append(parts, fmt.Sprintf("sudo mkdir -p %s", pathStr))
-		for _, fileRaw := range filesArr {
-			fileMap, ok := fileRaw.(map[string]interface{})
-			if !ok {
-				return "", fmt.Errorf("add_dir: each file must be an object")
-			}
-			relPath, _ := fileMap["relativePath"].(string)
-			fileContent, _ := fileMap["content"].(string)
-			if relPath == "" || fileContent == "" {
-				continue
-			}
-			fullPath := pathStr + "/" + relPath
-			dir := fullPath[:strings.LastIndex(fullPath, "/")]
-			parts = append(parts, fmt.Sprintf("sudo mkdir -p %s && echo '%s' | base64 -d | sudo tee %s > /dev/null", dir, fileContent, fullPath))
-		}
-		return strings.Join(parts, " && "), nil
 
 	default:
 		return "", fmt.Errorf("unknown step type: %s", step.Type)
@@ -528,6 +474,34 @@ func (s *Server) buildImage(ctx context.Context, orgID uuid.UUID, manifest *Imag
 
 	// Execute each step
 	for i, step := range manifest.Steps {
+		switch step.Type {
+		case "add_file":
+			log.Printf("image-builder: [%s] step %d/%d: %s", buildSandboxID, i+1, len(manifest.Steps), stepDescription(step))
+			if logFn != nil {
+				logFn(i+1, step.Type, fmt.Sprintf("Step %d/%d: %s", i+1, len(manifest.Steps), stepDescription(step)))
+			}
+			if err := s.applyAddFileStep(ctx, grpcClient, buildSandboxID, i, step); err != nil {
+				return uuid.Nil, err
+			}
+			if logFn != nil {
+				logFn(i+1, step.Type, fmt.Sprintf("Step %d/%d completed", i+1, len(manifest.Steps)))
+			}
+			continue
+
+		case "add_dir":
+			log.Printf("image-builder: [%s] step %d/%d: %s", buildSandboxID, i+1, len(manifest.Steps), stepDescription(step))
+			if logFn != nil {
+				logFn(i+1, step.Type, fmt.Sprintf("Step %d/%d: %s", i+1, len(manifest.Steps), stepDescription(step)))
+			}
+			if err := s.applyAddDirStep(ctx, grpcClient, buildSandboxID, i, step); err != nil {
+				return uuid.Nil, err
+			}
+			if logFn != nil {
+				logFn(i+1, step.Type, fmt.Sprintf("Step %d/%d completed", i+1, len(manifest.Steps)))
+			}
+			continue
+		}
+
 		cmd, err := translateStepToCommand(step)
 		if err != nil {
 			return uuid.Nil, fmt.Errorf("step %d (%s): %w", i, step.Type, err)
@@ -643,6 +617,200 @@ func (s *Server) buildImage(ctx context.Context, orgID uuid.UUID, manifest *Imag
 	}
 
 	return checkpointID, nil
+}
+
+func (s *Server) applyAddFileStep(ctx context.Context, grpcClient pb.SandboxWorkerClient, sandboxID string, stepIdx int, step ImageStep) error {
+	filePath, content, err := parseAddFileStep(step)
+	if err != nil {
+		return fmt.Errorf("step %d (add_file): %w", stepIdx, err)
+	}
+	if err := s.writeBuildFile(ctx, grpcClient, sandboxID, stepIdx, "add_file", filePath, content); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) applyAddDirStep(ctx context.Context, grpcClient pb.SandboxWorkerClient, sandboxID string, stepIdx int, step ImageStep) error {
+	dir, files, err := parseAddDirStep(step)
+	if err != nil {
+		return fmt.Errorf("step %d (add_dir): %w", stepIdx, err)
+	}
+	if err := s.execBuildStep(ctx, grpcClient, sandboxID, stepIdx, "add_dir", fmt.Sprintf("sudo mkdir -p %s", shellQuote(dir))); err != nil {
+		return fmt.Errorf("step %d (add_dir %s) mkdir failed: %w", stepIdx, dir, err)
+	}
+	for _, file := range files {
+		if err := s.writeBuildFile(ctx, grpcClient, sandboxID, stepIdx, "add_dir", file.path, file.content); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) writeBuildFile(ctx context.Context, grpcClient pb.SandboxWorkerClient, sandboxID string, stepIdx int, stepType, filePath string, content []byte) error {
+	dir := path.Dir(filePath)
+	if err := s.execBuildStep(ctx, grpcClient, sandboxID, stepIdx, stepType, fmt.Sprintf("sudo mkdir -p %s", shellQuote(dir))); err != nil {
+		return fmt.Errorf("step %d (%s %s, %d bytes) mkdir failed: %w", stepIdx, stepType, filePath, len(content), err)
+	}
+
+	writeCtx, cancel := context.WithTimeout(ctx, 300*time.Second)
+	defer cancel()
+	if grpcClient != nil {
+		if _, err := grpcClient.WriteFile(writeCtx, &pb.WriteFileRequest{
+			SandboxId: sandboxID,
+			Path:      filePath,
+			Content:   content,
+		}); err != nil {
+			return fmt.Errorf("step %d (%s %s, %d bytes) write failed: %w", stepIdx, stepType, filePath, len(content), err)
+		}
+		return nil
+	}
+	if s.manager != nil {
+		if _, err := s.manager.WriteFileStream(writeCtx, sandboxID, filePath, 0644, bytes.NewReader(content)); err != nil {
+			return fmt.Errorf("step %d (%s %s, %d bytes) write failed: %w", stepIdx, stepType, filePath, len(content), err)
+		}
+		return nil
+	}
+	return fmt.Errorf("step %d (%s %s, %d bytes) write failed: no execution backend available", stepIdx, stepType, filePath, len(content))
+}
+
+type buildFile struct {
+	path    string
+	content []byte
+}
+
+func parseAddFileStep(step ImageStep) (string, []byte, error) {
+	remotePath, ok := step.Args["path"]
+	if !ok {
+		return "", nil, fmt.Errorf("missing path")
+	}
+	pathStr, ok := remotePath.(string)
+	if !ok {
+		return "", nil, fmt.Errorf("path must be a string")
+	}
+	if err := validateAbsoluteBuildPath(pathStr); err != nil {
+		return "", nil, fmt.Errorf("path %q is invalid: %w", pathStr, err)
+	}
+	content, err := decodeBuildFileContent(step.Args)
+	if err != nil {
+		return "", nil, err
+	}
+	return path.Clean(pathStr), content, nil
+}
+
+func parseAddDirStep(step ImageStep) (string, []buildFile, error) {
+	remotePath, ok := step.Args["path"]
+	if !ok {
+		return "", nil, fmt.Errorf("missing path")
+	}
+	pathStr, ok := remotePath.(string)
+	if !ok {
+		return "", nil, fmt.Errorf("path must be a string")
+	}
+	if err := validateAbsoluteBuildPath(pathStr); err != nil {
+		return "", nil, fmt.Errorf("path %q is invalid: %w", pathStr, err)
+	}
+	basePath := path.Clean(pathStr)
+	filesRaw, ok := step.Args["files"]
+	if !ok {
+		return "", nil, fmt.Errorf("missing files")
+	}
+	filesArr, ok := filesRaw.([]interface{})
+	if !ok {
+		return "", nil, fmt.Errorf("files must be an array")
+	}
+
+	files := make([]buildFile, 0, len(filesArr))
+	for i, fileRaw := range filesArr {
+		fileMap, ok := fileRaw.(map[string]interface{})
+		if !ok {
+			return "", nil, fmt.Errorf("file %d must be an object", i)
+		}
+		relPathRaw, ok := fileMap["relativePath"]
+		if !ok {
+			return "", nil, fmt.Errorf("file %d missing relativePath", i)
+		}
+		relPath, ok := relPathRaw.(string)
+		if !ok {
+			return "", nil, fmt.Errorf("file %d relativePath must be a string", i)
+		}
+		cleanRel, err := cleanBuildRelativePath(relPath)
+		if err != nil {
+			return "", nil, fmt.Errorf("file %d relativePath %q is invalid: %w", i, relPath, err)
+		}
+		content, err := decodeBuildFileContent(fileMap)
+		if err != nil {
+			return "", nil, fmt.Errorf("file %d %s: %w", i, relPath, err)
+		}
+		files = append(files, buildFile{
+			path:    path.Join(basePath, cleanRel),
+			content: content,
+		})
+	}
+	return basePath, files, nil
+}
+
+func decodeBuildFileContent(args map[string]interface{}) ([]byte, error) {
+	content, ok := args["content"]
+	if !ok {
+		return nil, fmt.Errorf("missing content")
+	}
+	contentStr, ok := content.(string)
+	if !ok {
+		return nil, fmt.Errorf("content must be a string")
+	}
+	if encodingRaw, ok := args["encoding"]; ok {
+		encoding, ok := encodingRaw.(string)
+		if !ok {
+			return nil, fmt.Errorf("encoding must be a string")
+		}
+		if encoding != "" && encoding != "base64" {
+			return nil, fmt.Errorf("unsupported encoding %q", encoding)
+		}
+	}
+	decoded, err := base64.StdEncoding.DecodeString(contentStr)
+	if err != nil {
+		return nil, fmt.Errorf("content must be valid base64: %w", err)
+	}
+	return decoded, nil
+}
+
+func validateAbsoluteBuildPath(p string) error {
+	if p == "" {
+		return fmt.Errorf("must be non-empty")
+	}
+	if strings.ContainsRune(p, '\x00') {
+		return fmt.Errorf("must not contain NUL")
+	}
+	if !path.IsAbs(p) {
+		return fmt.Errorf("must be absolute")
+	}
+	return nil
+}
+
+func cleanBuildRelativePath(p string) (string, error) {
+	if p == "" {
+		return "", fmt.Errorf("must be non-empty")
+	}
+	if strings.ContainsRune(p, '\x00') {
+		return "", fmt.Errorf("must not contain NUL")
+	}
+	if path.IsAbs(p) {
+		return "", fmt.Errorf("must be relative")
+	}
+	clean := path.Clean(p)
+	if clean == "." {
+		return "", fmt.Errorf("must name a file")
+	}
+	for _, part := range strings.Split(clean, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("must not contain path traversal")
+		}
+	}
+	return clean, nil
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 // resolveSnapshot looks up a named snapshot and returns its checkpoint ID.
