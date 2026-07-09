@@ -40,6 +40,12 @@ on:
       - 'go.sum'
       - '.github/workflows/build-worker-ami.yml'
   workflow_dispatch:
+    inputs:
+      vm_size:
+        description: 'Builder VM size (Azure SKU). MUST stay NVMe (v6/v7 *ads*) — the image is NVMe-built. Blank = repo var WORKER_AMI_VM_SIZE or the default.'
+        required: false
+        type: string
+        default: ''
 
 env:
   AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
@@ -50,6 +56,14 @@ env:
   # build region — must list every cell region running workers. e.g.
   # '["westus2","westus3"]'. Empty = build region only (single-cell).
   AZURE_REPLICATION_REGIONS: ${{ vars.AZURE_REPLICATION_REGIONS || '[]' }}
+  # Builder VM size. MUST stay NVMe (v6/v7 *ads*) — the worker image is built
+  # NVMe-specific, so a SCSI (v5 or older) builder would produce an incompatible
+  # image. Precedence: manual-dispatch input > repo var WORKER_AMI_VM_SIZE >
+  # default. Default is a v6 ads SKU (offered in all eastus2 zones) because
+  # D*ads_v7 is frequently capacity-constrained in eastus2 (v7 is zone-2 only
+  # there). v6 and v7 share the same Gen2/x64/NVMe contract, so a v6-built image
+  # runs unchanged on v7 workers.
+  VM_SIZE: ${{ inputs.vm_size || vars.WORKER_AMI_VM_SIZE || 'Standard_D4ads_v6' }}
 
 jobs:
   build-image:
@@ -150,6 +164,7 @@ jobs:
             -var "subscription_id=$AZURE_SUBSCRIPTION_ID" \
             -var "resource_group=$AZURE_RESOURCE_GROUP" \
             -var "location=$AZURE_LOCATION" \
+            -var "vm_size=$VM_SIZE" \
             -var "replication_regions=$AZURE_REPLICATION_REGIONS" \
             -var "gallery_name=$AZURE_GALLERY_NAME" \
             -var "image_version_patch=$PATCH" \
