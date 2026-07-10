@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useParams, useLocation } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Send, Wrench, CircleAlert } from 'lucide-react'
+import { ArrowLeft, Send, Wrench, CircleAlert, Sparkles } from 'lucide-react'
+import { GuidedTour, type GuideStep } from '@/components/guided-tour'
 import { notifyError } from '@/lib/errors'
 import { useHalted } from '@/hooks/useHalted'
 import {
@@ -63,6 +64,103 @@ export default function SessionDetail() {
   const [confirmCancel, setConfirmCancel] = useState(false)
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
   const [streamOk, setStreamOk] = useState(false)
+
+  // Guided first-run overlay: the chip launch passes { guide: 'agent' } via nav
+  // state; the "How it works" button reopens it any time. Anchors point at the
+  // real regions below (header / event stream / composer).
+  const location = useLocation()
+  const headerRef = useRef<HTMLDivElement>(null)
+  const eventsRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLFormElement>(null)
+  const [guideOpen, setGuideOpen] = useState(
+    () => (location.state as { guide?: string } | null)?.guide === 'agent',
+  )
+  const guideSteps: GuideStep[] = useMemo(
+    () => [
+      {
+        target: headerRef,
+        title: 'This session came from two API calls',
+        body: 'Clicking the example created a managed agent, then started a session on it — the dashboard just called the public API on your behalf.',
+        api: 'POST /v3/agents · POST /v3/sessions',
+        code: [
+          {
+            label: 'SDK',
+            code: `import { OpenComputer } from "@opencomputer/sdk";
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY });
+
+const agent = await oc.agents.create({
+  runtime: "claude",
+  model: "anthropic/claude-opus-4-8",
+  credential: "managed",
+});
+
+const session = await oc.sessions.create({
+  agent: agent.id,
+  input: "Give me a quick tour of this sandbox.",
+});`,
+          },
+          {
+            label: 'API',
+            code: `# 1. Create a managed agent
+curl -X POST https://api.opencomputer.dev/v3/agents \\
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"runtime":"claude","model":"anthropic/claude-opus-4-8","credential":"managed"}'
+
+# 2. Start a session on that agent
+curl -X POST https://api.opencomputer.dev/v3/sessions \\
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"agent":"agt_...","input":"Give me a quick tour of this sandbox."}'`,
+          },
+        ],
+        docs: 'https://docs.opencomputer.dev/agent-sessions/quickstart',
+      },
+      {
+        target: eventsRef,
+        title: "This is the session's live event log",
+        body: 'Every turn the agent takes streams here over SSE — the same feed you consume in code, no polling.',
+        api: 'GET /v3/sessions/:id/events',
+        code: [
+          {
+            label: 'SDK',
+            code: `// session is the handle returned by oc.sessions.create()
+for await (const event of session.events()) {
+  console.log(event.type, event.body);
+}`,
+          },
+          {
+            label: 'API',
+            code: `curl -N https://api.opencomputer.dev/v3/sessions/$SESSION_ID/events?stream=sse \\
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY"
+# server-sent events stream: one event per line`,
+          },
+        ],
+        docs: 'https://docs.opencomputer.dev/agent-sessions/sessions',
+      },
+      {
+        target: composerRef,
+        title: 'Steer it from here',
+        body: 'Sending a message posts more input to the same session — the agent picks it up on its next turn.',
+        api: 'POST /v3/sessions/:id/messages',
+        code: [
+          {
+            label: 'SDK',
+            code: `await session.steer("Also add a dark mode toggle.");`,
+          },
+          {
+            label: 'API',
+            code: `curl -X POST https://api.opencomputer.dev/v3/sessions/$SESSION_ID/messages \\
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"text":"Also add a dark mode toggle."}'`,
+          },
+        ],
+        docs: 'https://docs.opencomputer.dev/agent-sessions/messaging',
+      },
+    ],
+    [],
+  )
 
   const { data: session, isLoading } = useQuery({
     queryKey: ['session', sessionId],
@@ -190,6 +288,11 @@ export default function SessionDetail() {
 
   return (
     <div className="max-w-4xl">
+      <GuidedTour
+        steps={guideSteps}
+        open={guideOpen}
+        onClose={() => setGuideOpen(false)}
+      />
       <Link
         to="/sessions"
         className="text-muted-foreground hover:text-foreground mb-4 inline-flex items-center gap-1.5 text-sm"
@@ -199,7 +302,7 @@ export default function SessionDetail() {
       </Link>
 
       {/* Header */}
-      <Panel className="mb-4 p-5">
+      <Panel ref={headerRef} className="mb-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-1.5">
             <div className="flex items-center gap-2.5">
@@ -246,6 +349,15 @@ export default function SessionDetail() {
             />
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => setGuideOpen(true)}
+            >
+              <Sparkles className="size-3.5" />
+              How it works
+            </Button>
             {canCancel ? (
               <Button
                 variant="outline"
@@ -271,7 +383,7 @@ export default function SessionDetail() {
       </Panel>
 
       {/* Event stream */}
-      <Panel className="overflow-hidden">
+      <Panel ref={eventsRef} className="overflow-hidden">
         <div className="flex items-center justify-between border-b px-4 py-2.5">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold">Events</h2>
@@ -331,6 +443,7 @@ export default function SessionDetail() {
             </div>
           )}
           <form
+            ref={composerRef}
             className="flex items-end gap-2"
             onSubmit={(e) => {
               e.preventDefault()

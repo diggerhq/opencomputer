@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifyError } from '@/lib/errors'
@@ -11,7 +11,9 @@ import {
   Trash2,
   ChevronRight,
   Loader2,
+  Sparkles,
 } from 'lucide-react'
+import { GuidedTour, type GuideStep } from '@/components/guided-tour'
 import {
   ApiError,
   createPreviewUrl,
@@ -104,6 +106,109 @@ export default function SandboxDetail() {
   const [portInput, setPortInput] = useState('')
   const connectRef = useRef<HTMLDivElement>(null)
   const scrolledRef = useRef(false)
+
+  // Guided first-run overlay: maps this sandbox's UI to the API/SDK/CLI that
+  // achieves each thing. Ordered so the chip you launched from leads (after the
+  // create step). Anchors: header, Terminal button, Preview panel, Connect panel.
+  const headerRef = useRef<HTMLDivElement>(null)
+  const terminalBtnRef = useRef<HTMLButtonElement>(null)
+  const previewRef = useRef<HTMLDivElement>(null)
+  const [guideOpen, setGuideOpen] = useState(
+    () => (location.state as { guide?: boolean } | null)?.guide === true,
+  )
+  const guideSteps: GuideStep[] = useMemo(() => {
+    const id = sandboxId || '<id>'
+    const stepCreate: GuideStep = {
+      target: headerRef,
+      title: 'You created a real cloud sandbox',
+      body: 'One call spun up a persistent Linux VM. It stays alive until you kill it or it idles out.',
+      api: 'POST /api/sandboxes',
+      code: [
+        {
+          label: 'SDK',
+          code: `import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create();`,
+        },
+        { label: 'CLI', code: `oc create` },
+        {
+          label: 'API',
+          code: `curl -X POST https://app.opencomputer.dev/api/sandboxes \\
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"memoryMB":1024,"cpuCount":1,"networkEnabled":true}'`,
+        },
+      ],
+      docs: 'https://docs.opencomputer.dev/quickstart',
+    }
+    const stepExec: GuideStep = {
+      target: terminalBtnRef,
+      title: 'Run commands in it',
+      body: 'This terminal runs against the live VM. In code it is exec — install packages, run scripts, anything.',
+      api: 'sandbox.exec.run(…)',
+      code: [
+        {
+          label: 'SDK',
+          code: `const { stdout } = await sandbox.exec.run("python3 --version");
+console.log(stdout);`,
+        },
+        { label: 'CLI', code: `oc exec ${id} -- python3 --version` },
+        {
+          label: 'API',
+          code: `curl -X POST https://app.opencomputer.dev/api/sandboxes/${id}/exec/run \\
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"cmd":"python3 --version"}'`,
+        },
+      ],
+      docs: 'https://docs.opencomputer.dev/sandboxes/overview',
+    }
+    const stepExpose: GuideStep = {
+      target: previewRef,
+      title: 'Expose a port → public URL',
+      body: 'Start a server in the box, then expose its port to get a public https URL — great for web apps and webhooks.',
+      api: 'sandbox.createPreviewURL({ port })',
+      code: [
+        {
+          label: 'SDK',
+          code: `await sandbox.exec.run("python3 -m http.server 8000 &");
+const preview = await sandbox.createPreviewURL({ port: 8000 });
+console.log(preview.url);`,
+        },
+        { label: 'CLI', code: `oc preview create ${id} 8000` },
+        {
+          label: 'API',
+          code: `curl -X POST https://app.opencomputer.dev/api/sandboxes/${id}/preview \\
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"port":8000}'`,
+        },
+      ],
+      docs: 'https://docs.opencomputer.dev/sandboxes/preview-urls',
+    }
+    const stepConnect: GuideStep = {
+      target: connectRef,
+      title: 'Drive it from your code',
+      body: 'Reconnect to this exact box by id from your own app and keep working — same VM, same state.',
+      api: `Sandbox.connect("${id}")`,
+      code: [
+        {
+          label: 'SDK',
+          code: `import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.connect("${id}");
+const { stdout } = await sandbox.exec.run("echo hello from code");`,
+        },
+        { label: 'CLI', code: `oc shell ${id}` },
+      ],
+      docs: 'https://docs.opencomputer.dev/sandboxes/overview',
+    }
+    // Lead with the step matching the chip that launched this box.
+    if (webApp || exposePort) return [stepCreate, stepExpose, stepExec, stepConnect]
+    if (focusConnect) return [stepCreate, stepConnect, stepExec, stepExpose]
+    if (startupCommand) return [stepCreate, stepExec, stepExpose, stepConnect]
+    return [stepCreate, stepExec, stepExpose, stepConnect]
+  }, [sandboxId, webApp, exposePort, focusConnect, startupCommand])
 
   // On arrival from an example chip: open the terminal (so the startup command
   // has somewhere to run) and wipe history state so a refresh doesn't re-fire.
@@ -273,7 +378,7 @@ export default function SandboxDetail() {
               </p>
               <p className="text-muted-foreground text-xs">
                 Booting a fresh cloud VM
-                {sandboxId ? ` · ${sandboxId}` : ''}. This takes a few seconds.
+                {sandboxId ? ` · ${sandboxId}` : ''}…
               </p>
             </div>
           </div>
@@ -318,8 +423,14 @@ export default function SandboxDetail() {
         Back to Sandboxes
       </Link>
 
+      <GuidedTour
+        steps={guideSteps}
+        open={guideOpen}
+        onClose={() => setGuideOpen(false)}
+      />
+
       {/* Header */}
-      <Panel className="mb-4 p-6">
+      <Panel ref={headerRef} className="mb-4 p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-3">
@@ -336,6 +447,15 @@ export default function SandboxDetail() {
 
           <div className="flex flex-wrap gap-2">
             <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => setGuideOpen(true)}
+            >
+              <Sparkles className="size-4" />
+              How it works
+            </Button>
+            <Button
               variant={showLogs ? 'default' : 'outline'}
               size="sm"
               onClick={() => setShowLogs((v) => !v)}
@@ -346,6 +466,7 @@ export default function SandboxDetail() {
             {isRunning ? (
               <>
                 <Button
+                  ref={terminalBtnRef}
                   variant={showTerminal ? 'default' : 'outline'}
                   size="sm"
                   onClick={() => setShowTerminal((v) => !v)}
@@ -440,7 +561,7 @@ export default function SandboxDetail() {
 
       {/* Preview URLs — expose a port to get a public https URL */}
       {isRunning || (session.previewUrls?.length ?? 0) > 0 ? (
-        <Panel className="mb-4 p-6">
+        <Panel ref={previewRef} className="mb-4 p-6">
           <h2 className="mb-3 text-sm font-semibold">Preview URLs</h2>
           {session.previewUrls && session.previewUrls.length > 0 ? (
             <div className="space-y-2">

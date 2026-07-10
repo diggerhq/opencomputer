@@ -31,6 +31,7 @@ import { PageHeader } from '@/components/page-header'
 import { Panel, PanelHeader, PanelTitle } from '@/components/panel'
 import { MetricCard } from '@/components/metric-card'
 import { CopyRow } from '@/components/copy-row'
+import { CodeOffRamp, type CodeTab } from '@/components/code-off-ramp'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
@@ -108,6 +109,80 @@ const SANDBOX_EXAMPLES: {
     intent: { startupCommand: SANDBOX_TRY_TOOL_CMD },
   },
   { icon: Code2, label: 'Use from code', intent: { focus: 'connect' } },
+]
+
+// Dev off-ramps: the exact public API/SDK/CLI calls each one-click card runs
+// under the hood. Surfaced (collapsed) so technical users see the dashboard is a
+// thin client over the API and can copy the real call. Kept in sync with the
+// launchMutation / createSandboxMutation bodies below.
+const AGENT_CODE: CodeTab[] = [
+  {
+    label: 'SDK',
+    code: `import { OpenComputer } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY });
+
+// Create a managed agent — billed to your OpenComputer credits, no model key
+const agent = await oc.agents.create({
+  name: "my-agent",
+  runtime: "claude",
+  model: "anthropic/claude-opus-4-8",
+  prompt: "You are a helpful AI assistant working in a sandboxed computer.",
+  credential: "managed",
+});
+
+// Start a session — returns a browser-safe client token you can stream from
+const session = await oc.sessions.create({
+  agent: agent.id,
+  input: "Give me a quick tour of this sandbox.",
+});
+console.log(session.id, session.clientToken);`,
+  },
+  {
+    label: 'cURL',
+    code: `# 1. Create a managed agent
+curl -X POST https://api.opencomputer.dev/v3/agents \\
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"name":"my-agent","runtime":"claude","model":"anthropic/claude-opus-4-8","prompt":"You are a helpful AI assistant.","credential":"managed"}'
+
+# 2. Start a session on that agent
+curl -X POST https://api.opencomputer.dev/v3/sessions \\
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"agent":"agt_...","input":"Give me a quick tour of this sandbox."}'`,
+  },
+]
+
+const SANDBOX_CODE: CodeTab[] = [
+  {
+    label: 'SDK',
+    code: `import { Sandbox } from "@opencomputer/sdk";
+
+const sandbox = await Sandbox.create();
+
+const result = await sandbox.commands.run("python3 --version");
+console.log(result.stdout);
+
+// It stays alive until you kill it or it idles out
+await sandbox.kill();`,
+  },
+  {
+    label: 'CLI',
+    code: `# Create a sandbox
+oc create
+
+# Run a command in it — or drop into an interactive shell
+oc exec <sandbox-id> "python3 --version"
+oc shell <sandbox-id>`,
+  },
+  {
+    label: 'cURL',
+    code: `curl -X POST https://app.opencomputer.dev/api/sandboxes \\
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"memoryMB":1024,"cpuCount":1,"networkEnabled":true}'`,
+  },
 ]
 
 // Derive a friendly first name from an email local part (brian+test81@… → "Brian").
@@ -424,7 +499,9 @@ function GettingStarted({ onBack }: { onBack?: () => void }) {
     },
     onSuccess: (session) => {
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
-      void navigate(`/sessions/${session.id}`)
+      // Land on the session with the first-run guided overlay (maps this UI to
+      // the API calls that produced it). SessionDetail reads this nav state.
+      void navigate(`/sessions/${session.id}`, { state: { guide: 'agent' } })
     },
   })
   const launching = launchMutation.isPending
@@ -437,14 +514,10 @@ function GettingStarted({ onBack }: { onBack?: () => void }) {
       createSandbox({ memoryMB: 1024, cpuCount: 1, networkEnabled: true }),
     onSuccess: (sb, intent) => {
       void queryClient.invalidateQueries({ queryKey: ['sandboxes'] })
+      // Always land with the first-run guided overlay (SandboxDetail reads
+      // `guide`); the chip's intent fields order the tour to lead with its step.
       void navigate(`/sandboxes/${sb.sandboxID}`, {
-        state:
-          intent.startupCommand ||
-          intent.focus ||
-          intent.exposePort ||
-          intent.webApp
-            ? intent
-            : undefined,
+        state: { ...intent, guide: true },
       })
     },
   })
@@ -540,6 +613,11 @@ function GettingStarted({ onBack }: { onBack?: () => void }) {
               </button>
             ))}
           </div>
+          <CodeOffRamp
+            className="mt-3"
+            tabs={AGENT_CODE}
+            docs="https://docs.opencomputer.dev/agent-sessions/quickstart"
+          />
         </div>
 
         {launchMutation.isError ? (
@@ -599,11 +677,16 @@ function GettingStarted({ onBack }: { onBack?: () => void }) {
               </button>
             ))}
           </div>
+          <CodeOffRamp
+            className="mt-3"
+            tabs={SANDBOX_CODE}
+            docs="https://docs.opencomputer.dev/quickstart"
+          />
         </div>
 
         <p className="text-muted-foreground mt-3 text-xs">
           {creatingSandbox
-            ? 'Booting a fresh cloud VM — this can take 10–20s…'
+            ? 'Booting a fresh cloud VM…'
             : 'Ubuntu · Python and Node.js preinstalled · Interactive terminal'}
         </p>
         {createSandboxMutation.isError ? (
