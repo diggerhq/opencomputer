@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
 import {
   ArrowLeft,
   BarChart3,
@@ -139,6 +139,14 @@ const session = await oc.sessions.create({
 console.log(session.id, session.clientToken);`,
   },
   {
+    label: 'CLI',
+    code: `oc agent create my-agent \\
+  --runtime claude --model anthropic/claude-opus-4-8 --credential managed
+
+oc session create --agent my-agent \\
+  --input "Give me a quick tour of this sandbox."`,
+  },
+  {
     label: 'cURL',
     code: `# 1. Create a managed agent
 curl -X POST https://api.opencomputer.dev/v3/agents \\
@@ -224,8 +232,11 @@ const isLiveSession = (s: Session) =>
 
 export default function Dashboard() {
   const prefetch = usePrefetchSandbox()
-  // Returning users can re-open the getting-started screen from the header.
-  const [showGettingStarted, setShowGettingStarted] = useState(false)
+  const location = useLocation()
+  const navigate = useNavigate()
+  // Getting started is its own left-nav item (/getting-started). Brand-new orgs
+  // also see it inline on first run (at /).
+  const onGettingStartedRoute = location.pathname === '/getting-started'
 
   const { data: runningSandboxesData, isLoading: loadingRunningSandboxes } =
     useQuery({
@@ -269,8 +280,9 @@ export default function Dashboard() {
     allSandboxes.length === 0 &&
     sessions.length === 0
 
-  // Genuine first-run auto-shows onboarding; returning users opt in via the link.
-  const showOnboarding = isFirstRun || showGettingStarted
+  // Genuine first-run auto-shows onboarding; returning users reach it via the
+  // left-nav "Getting started" item (/getting-started).
+  const showOnboarding = isFirstRun || onGettingStartedRoute
 
   const sessionColumns: Column<Session>[] = [
     {
@@ -361,22 +373,12 @@ export default function Dashboard() {
         <PageHeader
           title="Dashboard"
           description="Overview of your agent sessions and sandboxes"
-          actions={
-            <button
-              type="button"
-              onClick={() => setShowGettingStarted(true)}
-              className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 text-sm underline-offset-4 hover:underline"
-            >
-              <Sparkles className="size-3.5" />
-              Getting started
-            </button>
-          }
         />
       )}
 
       {showOnboarding ? (
         <GettingStarted
-          onBack={!isFirstRun ? () => setShowGettingStarted(false) : undefined}
+          onBack={onGettingStartedRoute ? () => navigate('/') : undefined}
         />
       ) : (
         <div className="space-y-6">

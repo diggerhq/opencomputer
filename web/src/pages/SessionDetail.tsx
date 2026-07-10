@@ -100,6 +100,14 @@ const session = await oc.sessions.create({
 });`,
           },
           {
+            label: 'CLI',
+            code: `oc agent create my-agent \\
+  --runtime claude --model anthropic/claude-opus-4-8 --credential managed
+
+oc session create --agent my-agent \\
+  --input "Give me a quick tour of this sandbox."`,
+          },
+          {
             label: 'API',
             code: `# 1. Create a managed agent
 curl -X POST https://api.opencomputer.dev/v3/agents \\
@@ -129,6 +137,7 @@ for await (const event of session.events()) {
   console.log(event.type, event.body);
 }`,
           },
+          { label: 'CLI', code: `oc session logs $SESSION_ID` },
           {
             label: 'API',
             code: `curl -N https://api.opencomputer.dev/v3/sessions/$SESSION_ID/events?stream=sse \\
@@ -147,6 +156,10 @@ for await (const event of session.events()) {
           {
             label: 'SDK',
             code: `await session.steer("Also add a dark mode toggle.");`,
+          },
+          {
+            label: 'CLI',
+            code: `oc session steer $SESSION_ID "Also add a dark mode toggle."`,
           },
           {
             label: 'API',

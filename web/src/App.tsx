@@ -33,6 +33,7 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
             <Route index element={<Dashboard />} />
+            <Route path="getting-started" element={<Dashboard />} />
             {/* Agent plane */}
             <Route path="agents" element={<Agents />} />
             <Route path="agents/:agentId" element={<AgentDetail />} />
