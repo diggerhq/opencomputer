@@ -104,10 +104,10 @@ const SANDBOX_EXAMPLES: {
   },
   {
     icon: Terminal,
-    label: 'Try a tool instantly',
+    label: 'Try a tool',
     intent: { startupCommand: SANDBOX_TRY_TOOL_CMD },
   },
-  { icon: Code2, label: 'Drive it from code', intent: { focus: 'connect' } },
+  { icon: Code2, label: 'Use from code', intent: { focus: 'connect' } },
 ]
 
 // Derive a friendly first name from an email local part (brian+test81@… → "Brian").
@@ -487,15 +487,15 @@ function GettingStarted({ onBack }: { onBack?: () => void }) {
         </h2>
         <p className="text-muted-foreground text-sm">
           {freeCents != null && freeCents > 0
-            ? `You've got $${(freeCents / 100).toFixed(2)} in free credits — enough to run a real agent right now. No card, no setup.`
-            : 'Run a real Claude agent in a fresh sandbox — no setup, no API key required.'}
+            ? `$${(freeCents / 100).toFixed(2)} in free credits. Give your agent a real computer.`
+            : 'Run a managed Claude agent in an isolated cloud sandbox, ready in seconds.'}
         </p>
         <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 pt-0.5 text-xs">
-          <span>Real Claude Opus</span>
+          <span>Claude Opus</span>
           <span aria-hidden>·</span>
           <span>Isolated cloud VM</span>
           <span aria-hidden>·</span>
-          <span>Watch it work live</span>
+          <span>Real-time execution</span>
         </div>
       </div>
 
@@ -504,11 +504,11 @@ function GettingStarted({ onBack }: { onBack?: () => void }) {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
             <h3 className="text-foreground text-base font-semibold">
-              Launch an agent
+              Run an agent
             </h3>
             <p className="text-muted-foreground text-sm">
-              Spin up a Claude agent in a fresh sandbox and watch it work —
-              billed to your credits, no API key.
+              Run a Claude agent in an isolated sandbox and monitor its work in
+              real time. Billed to your account credits.
             </p>
           </div>
           <Button
@@ -524,7 +524,7 @@ function GettingStarted({ onBack }: { onBack?: () => void }) {
 
         <div className="border-border/60 mt-4 border-t pt-4">
           <p className="text-muted-foreground mb-2 text-xs">
-            Or start with an example:
+            Start from a template:
           </p>
           <div className="flex flex-wrap gap-2">
             {QUICKLAUNCH_TASKS.map((t) => (
@@ -564,11 +564,11 @@ function GettingStarted({ onBack }: { onBack?: () => void }) {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
             <h3 className="text-foreground text-base font-semibold">
-              Build with a sandbox
+              Work in a sandbox
             </h3>
             <p className="text-muted-foreground text-sm">
-              Spin up a real cloud computer — a full Linux shell, files, and
-              ports — and drive it from the browser or your code.
+              Provision an isolated Linux environment with full shell, file, and
+              network access. Control it from the browser or programmatically.
             </p>
           </div>
           <Button
@@ -584,7 +584,7 @@ function GettingStarted({ onBack }: { onBack?: () => void }) {
         </div>
 
         <div className="border-border/60 mt-4 border-t pt-4">
-          <p className="text-muted-foreground mb-2 text-xs">Or jump straight in:</p>
+          <p className="text-muted-foreground mb-2 text-xs">Get started:</p>
           <div className="flex flex-wrap gap-2">
             {SANDBOX_EXAMPLES.map((ex) => (
               <button
@@ -604,7 +604,7 @@ function GettingStarted({ onBack }: { onBack?: () => void }) {
         <p className="text-muted-foreground mt-3 text-xs">
           {creatingSandbox
             ? 'Booting a fresh cloud VM — this can take 10–20s…'
-            : 'Ubuntu · Python & Node preinstalled · opens a live terminal'}
+            : 'Ubuntu · Python and Node.js preinstalled · Interactive terminal'}
         </p>
         {createSandboxMutation.isError ? (
           <div className="mt-3 flex items-center gap-3">
@@ -631,7 +631,7 @@ function GettingStarted({ onBack }: { onBack?: () => void }) {
           <ChevronDown
             className={`size-3.5 transition-transform ${showTerminal ? '' : '-rotate-90'}`}
           />
-          Prefer your terminal? Drive OpenComputer from Claude Code or the CLI
+          Prefer the command line? Use OpenComputer with Claude Code or the CLI
         </button>
 
         {showTerminal ? (
