@@ -9,14 +9,30 @@ import { cn } from '@/lib/utils'
 interface TerminalProps {
   sandboxId: string
   onClose?: () => void
+  /** Typed into the shell once connected — used by dashboard example chips. */
+  startupCommand?: string
+  /** Fired once after the startup command is sent (parent clears it so a
+   * later manual reopen of the terminal doesn't re-run it). */
+  onStarted?: () => void
 }
 
-export default function Terminal({ sandboxId, onClose }: TerminalProps) {
+export default function Terminal({
+  sandboxId,
+  onClose,
+  startupCommand,
+  onStarted,
+}: TerminalProps) {
   const termRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerm | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const ptySessionIdRef = useRef<string | null>(null)
+  // Latest-value refs so the PTY effect can stay keyed on [sandboxId] alone
+  // (a changing startupCommand/onStarted must not tear down the connection).
+  const startupRef = useRef(startupCommand)
+  startupRef.current = startupCommand
+  const onStartedRef = useRef(onStarted)
+  onStartedRef.current = onStarted
   const [status, setStatus] = useState<
     'connecting' | 'connected' | 'disconnected' | 'error'
   >('connecting')
@@ -122,6 +138,16 @@ export default function Terminal({ sandboxId, onClose }: TerminalProps) {
           setStatus('connected')
           term.clear()
           term.focus()
+          // Auto-run a starter command (from a dashboard example chip). Small
+          // delay so the shell's first prompt has painted before we type in.
+          const cmd = startupRef.current
+          if (cmd) {
+            setTimeout(() => {
+              if (disposed || ws.readyState !== WebSocket.OPEN) return
+              ws.send(new TextEncoder().encode(cmd + '\n'))
+              onStartedRef.current?.()
+            }, 500)
+          }
         }
 
         ws.onmessage = (event) => {
