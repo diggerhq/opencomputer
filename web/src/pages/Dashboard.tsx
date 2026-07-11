@@ -181,7 +181,7 @@ await sandbox.kill();`,
 oc create
 
 # Run a command in it — or drop into an interactive shell
-oc exec <sandbox-id> "python3 --version"
+oc exec <sandbox-id> -- python3 --version
 oc shell <sandbox-id>`,
   },
   {
