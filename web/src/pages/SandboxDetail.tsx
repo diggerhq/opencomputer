@@ -171,11 +171,12 @@ console.log(stdout);`,
       code: [
         {
           label: 'SDK',
-          code: `await sandbox.exec.run("python3 -m http.server 8000 &");
+          code: `// exec.start() runs the server in the background (exec.run() would block)
+await sandbox.exec.start("python3 -m http.server 8000");
 const preview = await sandbox.createPreviewURL({ port: 8000 });
-console.log(preview.url);`,
+console.log(preview.hostname);`,
         },
-        { label: 'CLI', code: `oc preview create ${id} 8000` },
+        { label: 'CLI', code: `oc preview create ${id} --port 8000` },
         {
           label: 'API',
           code: `curl -X POST https://app.opencomputer.dev/api/sandboxes/${id}/preview \\
