@@ -59,6 +59,7 @@ class Browser:
         start_url: str | None = None,
         chrome_policy: dict[str, Any] | None = None,
         telemetry: dict[str, Any] | None = None,
+        recording: bool | None = None,
     ) -> Browser:
         """Create a browser session and return direct connection URLs."""
         url = _resolve_browser_api_url(api_url)
@@ -80,6 +81,7 @@ class Browser:
             start_url=start_url,
             chrome_policy=chrome_policy,
             telemetry=telemetry,
+            recording=recording,
         )
         resp = await client.post("/v1/browsers", json=body)
         resp.raise_for_status()
