@@ -8,10 +8,9 @@
 // The secret DOES live on the per-REQUEST env (`c.env`) — the same source ocSandbox reads at run time.
 // Fix: bind the apiKey at RUN scope from the exported `route` middleware, reading OC_SESSION_TOKEN from
 // `c.env` by DIRECT property access (NEVER spread c.env — the CF env is a proxy and spreading it throws)
-// and OC_GATEWAY from the ambient snapshot, once per isolate. The token is per-DEPLOY (identical for every
-// session), so the MODULE(isolate)-scoped registry holds one static value with NO cross-session race; the
-// upstream per-request headers(ctx)/getApiKey(ctx) ask is only needed IF a PER-SESSION token is later
-// introduced. registerProvider still takes a static apiKey / getApiKey has no turn context — fine here.
+// and OC_GATEWAY from the ambient snapshot, once per isolate. The token is per-DEPLOY (identical for
+// every session), so the module-scoped provider registry needs one stable binding and no per-session
+// mutation. Exact attribution remains an upstream per-request headers(ctx) concern.
 
 import { registerProvider } from "@flue/runtime";
 import type { AgentInitializerContext, AgentRouteHandler } from "@flue/runtime";
@@ -27,7 +26,7 @@ export const DEFAULT_MODEL = "anthropic/claude-haiku-4-5";
 export interface OcEnv {
   /** Deployed gateway Worker base URL (set per tenant script by the OC deploy). */
   OC_GATEWAY?: string;
-  /** Signed session/deploy JWT the gateway verifies (`{sub, org, agt, bud}`); never a raw provider key. */
+  /** Signed deploy JWT the gateway verifies (`{org, agt, ep}`); never a raw provider key. */
   OC_SESSION_TOKEN?: string;
   /** Telemetry sink for `observe()` (operator panel + spend attribution). */
   OC_INGEST?: string;
@@ -61,16 +60,16 @@ export function useOcGateway(ctx: AgentInitializerContext<OcEnv>): void {
   bindOcProvider(ocResolveEnv<OcEnv>(ctx.env));
 }
 
-/** Set once the run-scope apiKey bind lands (module/isolate-scoped; the token is deploy-static so one
- *  bind serves every co-located session — no per-session race). */
+/** Set only after the run-scope secret lands. A tokenless read can never overwrite a working
+ * isolate-global provider binding. */
 let ocProviderBound = false;
 
 /**
  * The HTTP-transport opt-in every OC-hosted agent MUST export as `route` (an agent is reachable at
  * `/agents/:name/:id` only when its module exports `route` — flue-app.ts). ALSO the run-scope binder for
- * the token seam: on each request (where the request ALS is entered and OC_SESSION_TOKEN is readable) it
- * (re)binds the provider's apiKey, once per isolate, BEFORE the turn's model call runs via `next()`. A
- * first `?view=updates` read that predates the token just leaves the flag false and retries next request.
+ * the token seam: on the first request carrying OC_SESSION_TOKEN it binds the provider's apiKey before
+ * the turn's model call runs via `next()`. The provider registry is isolate-global and the token is
+ * deploy-static, so later requests must not mutate it.
  * The OC dispatch Worker is the auth boundary (013 §3 B5), so the transport itself adds none.
  */
 export const route: AgentRouteHandler = async (c, next) => {

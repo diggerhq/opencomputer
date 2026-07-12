@@ -116,10 +116,12 @@ describe("DeployLease DO — lease-epoch fence + bump (revocation)", () => {
     expect(stale.fenced).toBe(true);
     expect(stale.ok).toBe(false);
   });
-  it("a token with no epoch is never fenced (opt-in fence)", async () => {
+  it("an epoch-less token fails closed once a floor exists", async () => {
     const l = new DeployLease(fakeState());
     await call(l, "/gate", { ep: 5 }); // raise the floor
-    expect((await call(l, "/gate", {})).fenced).toBe(false); // no ep → passes
+    const missing = await call(l, "/gate", {});
+    expect(missing.fenced).toBe(true);
+    expect(missing.ok).toBe(false);
   });
   it("bump revokes without a redeploy (raise the floor above the live token)", async () => {
     const l = new DeployLease(fakeState());

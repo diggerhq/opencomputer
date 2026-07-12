@@ -94,6 +94,9 @@ export async function verifyDeployToken(publicKeyB64url: string, token: string, 
   if (typeof claims.exp !== "number" || claims.exp <= nowSec) return { ok: false, reason: "expired" };
   if (typeof claims.iat === "number" && claims.iat > nowSec + 60) return { ok: false, reason: "future_iat" };
   if (!claims.org || !claims.agt) return { ok: false, reason: "missing_claims" };
+  if (claims.ep !== undefined && (!Number.isSafeInteger(claims.ep) || claims.ep < 0)) {
+    return { ok: false, reason: "bad_epoch" };
+  }
   return { ok: true, claims };
 }
 

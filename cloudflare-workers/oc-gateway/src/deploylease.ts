@@ -37,7 +37,8 @@ export class DeployLease {
     if (url.pathname === "/gate") {
       const l = await this.load();
       const ep = typeof body.ep === "number" ? body.ep : null;
-      if (ep == null) return Response.json({ ok: true, fenced: false, floor: l.floor }); // no epoch → no fence
+      // Rollout compatibility only while unprovisioned. Once a floor exists, omission fails closed.
+      if (ep == null) return Response.json({ ok: l.floor === 0, fenced: l.floor > 0, floor: l.floor, missing_epoch: l.floor > 0 });
       if (ep < l.floor) return Response.json({ ok: false, fenced: true, floor: l.floor });
       if (ep > l.floor) {
         l.floor = ep;

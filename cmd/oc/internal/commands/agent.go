@@ -173,6 +173,7 @@ var agentCmd = &cobra.Command{
 func init() {
 	registerAgentCrud()
 	registerAgentDeploy()
+	registerAgentConfig()
 	registerAgentSchedules()
 	rootCmd.AddCommand(sessionCmd)
 }

@@ -542,7 +542,9 @@ export const SessionEventSchema = z.object({
   // `body` is absent/partial, `content_ref` points at the blob, `body_bytes` is the size.
   content_ref: z.string().nullish(),
   body_truncated: z.boolean().nullish(),
-  body_bytes: z.number().nullish(),
+  // PostgreSQL bigint values are serialized as strings by the sessions API.
+  // Coerce here so spilled event bodies remain visible in the live timeline.
+  body_bytes: z.coerce.number().nullish(),
   refs: record.nullish(),
   source: z.string().optional(),
   turn_id: z.string().nullable().optional(),

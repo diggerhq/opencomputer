@@ -43,6 +43,7 @@ type fakeCP struct {
 	mu             sync.Mutex
 	self           string
 	createBody     map[string]any
+	configPutBody  map[string]any
 	artifactDigest string
 	artifactSize   float64
 	uploaded       []byte
@@ -63,6 +64,11 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && r.URL.Path == "/v3/agents":
 		_ = json.NewDecoder(r.Body).Decode(&f.createBody)
 		writeJSON(map[string]any{"id": "agt_e2e", "name": "e2e-flue", "model": "anthropic/claude-sonnet-5", "runtime": "flue"})
+	case r.Method == "PUT" && r.URL.Path == "/v3/agents/agt_e2e/config":
+		_ = json.NewDecoder(r.Body).Decode(&f.configPutBody)
+		writeJSON(map[string]any{
+			"vars": f.configPutBody["vars"], "deployment_required": true,
+		})
 	case r.Method == "POST" && r.URL.Path == "/v3/agents/agt_e2e/artifacts":
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -214,6 +220,28 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 	// The verifying→ready sequence was actually polled.
 	if f.getCount < 2 {
 		t.Errorf("expected the poll to observe verifying→ready (got %d GETs)", f.getCount)
+	}
+	if vars, ok := f.configPutBody["vars"].(map[string]any); !ok || len(vars) != 0 {
+		t.Errorf("manifest without [vars] should clear desired vars, got %#v", f.configPutBody)
+	}
+}
+
+func TestSyncManifestVarsReplacesDesiredVars(t *testing.T) {
+	f := &fakeCP{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	f.self = srv.URL
+
+	sc := client.NewSessionsAPI(srv.URL, "test-key")
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	m := &manifest{Vars: map[string]string{"PUBLIC_MODE": "careful", "MAX_ITEMS": "12"}}
+	if err := syncManifestVars(cmd, sc, "agt_e2e", m); err != nil {
+		t.Fatalf("syncManifestVars: %v", err)
+	}
+	vars, _ := f.configPutBody["vars"].(map[string]any)
+	if vars["PUBLIC_MODE"] != "careful" || vars["MAX_ITEMS"] != "12" {
+		t.Errorf("vars PUT = %#v", f.configPutBody["vars"])
 	}
 }
 

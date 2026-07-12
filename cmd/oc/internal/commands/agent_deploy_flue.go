@@ -71,6 +71,13 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 	if err != nil {
 		return err
 	}
+	// [vars] is part of the deployment input even though the values live in the
+	// agent config resource. Persist it before enqueueing so the off-host runner
+	// cannot race ahead and compose the Worker with stale bindings. Secrets are
+	// intentionally CLI/API only and are resolved by that same runner.
+	if err := syncManifestVars(cmd, sc, id, m); err != nil {
+		return err
+	}
 
 	// 3. Build the app with its own `flue` CLI (a devDependency).
 	if err := runFlueBuild(cmd.Context(), dir); err != nil {

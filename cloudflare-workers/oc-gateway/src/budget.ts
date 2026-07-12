@@ -59,8 +59,10 @@ export class SpendCounter {
 
     // POST /check {default_budget_micro?} → GATE a NEW call (used ONLY at the hard org+agt grain). On
     // first sight of an unprovisioned key, adopt the gateway's default cap (server-side; never from the
-    // token). Allowed while spent < budget; the last in-flight call can overshoot by at most one call's
-    // cost — bounded and acceptable for "refuse past the limit". Runs BEFORE the model call, DO-serialized.
+    // token). Allowed while spent < budget. Because /add lands after each response, the real overshoot
+    // bound is budget + the sum of every call concurrently in flight at the check boundary (not one
+    // call). The org's OpenRouter key cap remains the hard monetary ceiling. Runs before the call and
+    // is DO-serialized.
     if (url.pathname === "/check") {
       const s = await this.load();
       if (!s.provisioned && typeof body.default_budget_micro === "number") {

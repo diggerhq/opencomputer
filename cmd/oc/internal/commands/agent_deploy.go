@@ -16,8 +16,11 @@ import (
 // ── agent.toml manifest + deploy bundle ──
 
 type manifest struct {
-	Name    string `toml:"name"`
-	Model   string `toml:"model"`
+	Name  string `toml:"name"`
+	Model string `toml:"model"`
+	// Non-secret Flue Worker bindings. The manifest is authoritative: omitting
+	// [vars] clears prior values on deploy. Secrets never belong in agent.toml.
+	Vars    map[string]string `toml:"vars"`
 	Runtime struct {
 		Family string `toml:"family"`
 		Type   string `toml:"type"`

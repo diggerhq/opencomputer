@@ -81,6 +81,18 @@ function bearer(h: Headers): string | null {
   return x ? x.trim() : null;
 }
 
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function validSessionId(value: string | null): string | null {
+  const id = value?.trim() ?? "";
+  return id.length <= 128 && /^ses_[A-Za-z0-9_-]+$/.test(id) ? id : null;
+}
+
 const json = (obj: unknown, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
 
@@ -112,7 +124,7 @@ export default {
 
     // Best-effort per-session attribution — the header may be stale under co-location; used for
     // tracking only, never gated. Absent → we simply skip the per-session record (the call proceeds).
-    const sessionId = req.headers.get("x-oc-session")?.trim() || null;
+    const sessionId = validSessionId(req.headers.get("x-oc-session"));
 
     // (b) lease-epoch fence — a rotated/revoked deploy token stops verifying (per org+agt, DO-serialized).
     const leaseStub = env.DEPLOY_LEASE.get(env.DEPLOY_LEASE.idFromName(`${orgId}:${agentId}`));
@@ -186,7 +198,9 @@ export default {
     ctx.waitUntil(
       meter(meterCopy, isStream, env, {
         agentBudget,
-        sessionCounter: sessionId ? env.SPEND_COUNTER.get(env.SPEND_COUNTER.idFromName(`sess:${sessionId}`)) : null,
+        sessionCounter: sessionId
+          ? env.SPEND_COUNTER.get(env.SPEND_COUNTER.idFromName(`sess:${orgId}:${agentId}:${sessionId}`))
+          : null,
         sessionId, orgId, agentId,
       }),
     );
@@ -208,7 +222,7 @@ function parseUsdMicro(usd?: string): number | null {
 async function admin(req: Request, env: Env, url: URL): Promise<Response> {
   if (!env.GATEWAY_ADMIN_SECRET) return json({ error: { type: "not_found" } }, 404);
   const auth = bearer(req.headers);
-  if (auth !== env.GATEWAY_ADMIN_SECRET) return json({ error: { type: "unauthorized" } }, 401);
+  if (!auth || !timingSafeEqual(auth, env.GATEWAY_ADMIN_SECRET)) return json({ error: { type: "unauthorized" } }, 401);
   if (req.method !== "POST") return json({ error: { type: "method_not_allowed" } }, 405);
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
