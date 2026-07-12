@@ -32,6 +32,8 @@ describe("Browser", () => {
       stealth: true,
       timeoutSeconds: 120,
       startUrl: "https://example.com",
+      telemetry: { enabled: true },
+      recording: false,
       viewport: { width: 1280, height: 800, refreshRate: 60 },
       profile: { name: "default", saveChanges: true },
     });
@@ -50,6 +52,8 @@ describe("Browser", () => {
           profile: { name: "default", save_changes: true },
           viewport: { width: 1280, height: 800, refresh_rate: 60 },
           start_url: "https://example.com",
+          telemetry: { enabled: true },
+          recording: false,
         }),
       }),
     );
