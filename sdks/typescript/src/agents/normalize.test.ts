@@ -31,6 +31,11 @@ describe("normalize (API response → idiomatic TS)", () => {
     });
     expect(out.refs).toEqual({ pull_number: 42, owner_repo: "acme/widgets", nested: { keep_me: true } });
   });
+
+  it("passes env binding names through verbatim", () => {
+    const out = normalize<{ vars?: Record<string, string> }>({ vars: { PUBLIC_MODE: "safe" } });
+    expect(out.vars).toEqual({ PUBLIC_MODE: "safe" });
+  });
 });
 
 describe("serialize (request body → snake_case)", () => {
@@ -43,5 +48,10 @@ describe("serialize (request body → snake_case)", () => {
   it("leaves refs opaque on request bodies", () => {
     const out = serialize({ refs: { pullNumber: 42, owner_repo: "acme/widgets" } }) as Record<string, unknown>;
     expect(out.refs).toEqual({ pullNumber: 42, owner_repo: "acme/widgets" });
+  });
+
+  it("leaves env binding names opaque on request bodies", () => {
+    const out = serialize({ vars: { PUBLIC_MODE: "safe" } }) as Record<string, unknown>;
+    expect(out.vars).toEqual({ PUBLIC_MODE: "safe" });
   });
 });

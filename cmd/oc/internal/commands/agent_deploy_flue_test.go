@@ -43,6 +43,8 @@ type fakeCP struct {
 	mu             sync.Mutex
 	self           string
 	createBody     map[string]any
+	configGets     int
+	configPutBody  map[string]any
 	artifactDigest string
 	artifactSize   float64
 	uploaded       []byte
@@ -63,6 +65,15 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && r.URL.Path == "/v3/agents":
 		_ = json.NewDecoder(r.Body).Decode(&f.createBody)
 		writeJSON(map[string]any{"id": "agt_e2e", "name": "e2e-flue", "model": "anthropic/claude-sonnet-5", "runtime": "flue"})
+	case r.Method == "GET" && r.URL.Path == "/v3/agents/agt_e2e/config":
+		f.configGets++
+		writeJSON(map[string]any{"vars": map[string]string{}, "egress_allowlist": []string{"api.example.com"}})
+	case r.Method == "PUT" && r.URL.Path == "/v3/agents/agt_e2e/config":
+		_ = json.NewDecoder(r.Body).Decode(&f.configPutBody)
+		writeJSON(map[string]any{
+			"vars": f.configPutBody["vars"], "egress_allowlist": f.configPutBody["egress_allowlist"],
+			"deployment_required": true,
+		})
 	case r.Method == "POST" && r.URL.Path == "/v3/agents/agt_e2e/artifacts":
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -214,6 +225,48 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 	// The verifying→ready sequence was actually polled.
 	if f.getCount < 2 {
 		t.Errorf("expected the poll to observe verifying→ready (got %d GETs)", f.getCount)
+	}
+	if f.configGets != 0 || f.configPutBody != nil {
+		t.Errorf("manifest without [vars] unexpectedly touched remote config: gets=%d put=%v", f.configGets, f.configPutBody)
+	}
+}
+
+func TestSyncManifestVarsPreservesEgress(t *testing.T) {
+	f := &fakeCP{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	f.self = srv.URL
+
+	sc := client.NewSessionsAPI(srv.URL, "test-key")
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	m := &manifest{Vars: map[string]string{"PUBLIC_MODE": "careful", "MAX_ITEMS": "12"}}
+	if err := syncManifestVars(cmd, sc, "agt_e2e", m); err != nil {
+		t.Fatalf("syncManifestVars: %v", err)
+	}
+	if f.configGets != 1 {
+		t.Fatalf("config GETs = %d, want 1", f.configGets)
+	}
+	vars, _ := f.configPutBody["vars"].(map[string]any)
+	if vars["PUBLIC_MODE"] != "careful" || vars["MAX_ITEMS"] != "12" {
+		t.Errorf("vars PUT = %#v", f.configPutBody["vars"])
+	}
+	hosts, _ := f.configPutBody["egress_allowlist"].([]any)
+	if len(hosts) != 1 || hosts[0] != "api.example.com" {
+		t.Errorf("egress allowlist was not preserved: %#v", f.configPutBody["egress_allowlist"])
+	}
+}
+
+func TestParseConfigVars(t *testing.T) {
+	got, err := parseConfigVars([]string{"MODE=fast", "EMPTY="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["MODE"] != "fast" || got["EMPTY"] != "" {
+		t.Fatalf("parsed = %#v", got)
+	}
+	if _, err := parseConfigVars([]string{"BROKEN"}); err == nil {
+		t.Fatal("expected malformed --var to fail")
 	}
 }
 

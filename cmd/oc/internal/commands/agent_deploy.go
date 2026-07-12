@@ -16,8 +16,12 @@ import (
 // ── agent.toml manifest + deploy bundle ──
 
 type manifest struct {
-	Name    string `toml:"name"`
-	Model   string `toml:"model"`
+	Name  string `toml:"name"`
+	Model string `toml:"model"`
+	// Non-secret Flue Worker bindings. A nil map means the [vars] section was
+	// omitted and deploy must leave the remote config untouched; an explicitly
+	// empty [vars] section clears it. Secrets never belong in agent.toml.
+	Vars    map[string]string `toml:"vars"`
 	Runtime struct {
 		Family string `toml:"family"`
 		Type   string `toml:"type"`
