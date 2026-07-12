@@ -32,6 +32,8 @@ export type {
   AgentSkills,
   SkillItem,
   AgentDeploy,
+  FlueAgentConfig,
+  FlueAgentSecret,
   Session,
   AgentSnapshot,
   SessionEvent,
@@ -88,7 +90,11 @@ function errorMessage(body: unknown, status: number): string {
 function errorType(body: unknown): string | undefined {
   if (body && typeof body === 'object') {
     const err = (body as Record<string, unknown>).error
-    if (err && typeof err === 'object' && typeof (err as Record<string, unknown>).type === 'string') {
+    if (
+      err &&
+      typeof err === 'object' &&
+      typeof (err as Record<string, unknown>).type === 'string'
+    ) {
       return (err as Record<string, unknown>).type as string
     }
   }
@@ -139,7 +145,11 @@ export async function apiFetch<T>(
 
   if (!res.ok) {
     const body: unknown = await res.json().catch(() => ({}))
-    throw new ApiError(errorMessage(body, res.status), res.status, errorType(body))
+    throw new ApiError(
+      errorMessage(body, res.status),
+      res.status,
+      errorType(body),
+    )
   }
 
   if (res.status === 204) {
@@ -461,13 +471,47 @@ export const updateAgent = (
     S.AgentSchema,
   )
 
+// Flue Worker config. PUT is a replacement operation, so UI/SDK callers that
+// want merge semantics read first and send both vars + egress_allowlist.
+export const getFlueAgentConfig = (id: string) =>
+  apiFetch(`/v3/agents/${id}/config`, {}, S.FlueAgentConfigSchema)
+
+export const putFlueAgentConfig = (
+  id: string,
+  body: { vars: Record<string, string>; egress_allowlist: string[] },
+) =>
+  apiFetch(
+    `/v3/agents/${id}/config`,
+    { method: 'PUT', body: JSON.stringify(body) },
+    S.FlueAgentConfigSchema,
+  )
+
+export const getFlueAgentSecrets = (id: string) =>
+  apiFetch(`/v3/agents/${id}/secrets`, {}, S.FlueAgentSecretListSchema).then(
+    (r) => r.data,
+  )
+
+export const putFlueAgentSecret = (id: string, name: string, value: string) =>
+  apiFetch(
+    `/v3/agents/${id}/secrets/${encodeURIComponent(name)}`,
+    { method: 'PUT', body: JSON.stringify({ value }) },
+    S.FlueAgentSecretSchema,
+  )
+
+export const deleteFlueAgentSecret = (id: string, name: string) =>
+  apiFetch<void>(`/v3/agents/${id}/secrets/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
+
 // Agent Revisions (design 009) — the deploy history of an agent's behavior. List
 // endpoints wrap rows in { data: [...] }; callers want the array. Rollback = activate
 // an earlier revision (by id or number); it moves the production pointer.
 export const getAgentRevisions = (agentId: string) =>
-  apiFetch(`/v3/agents/${agentId}/revisions`, {}, S.AgentRevisionListSchema).then(
-    (r) => r.data,
-  )
+  apiFetch(
+    `/v3/agents/${agentId}/revisions`,
+    {},
+    S.AgentRevisionListSchema,
+  ).then((r) => r.data)
 
 export const getAgentDeploys = (agentId: string) =>
   apiFetch(`/v3/agents/${agentId}/deploys`, {}, S.AgentDeployListSchema).then(
@@ -515,22 +559,36 @@ export interface ScheduleRun {
 }
 
 export const getSchedules = (agentId: string) =>
-  apiFetch<{ schedules: Schedule[] }>(`/v3/agents/${agentId}/schedules`).then((r) => r.schedules)
+  apiFetch<{ schedules: Schedule[] }>(`/v3/agents/${agentId}/schedules`).then(
+    (r) => r.schedules,
+  )
 
 export const createSchedule = (
   agentId: string,
-  body: { name: string; cron: string; tz?: string | null; input: string; overlap?: ScheduleOverlap },
+  body: {
+    name: string
+    cron: string
+    tz?: string | null
+    input: string
+    overlap?: ScheduleOverlap
+  },
 ) =>
-  apiFetch<{ schedule: Schedule }>(
-    `/v3/agents/${agentId}/schedules`,
-    { method: 'POST', body: JSON.stringify(body) },
-  ).then((r) => r.schedule)
+  apiFetch<{ schedule: Schedule }>(`/v3/agents/${agentId}/schedules`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }).then((r) => r.schedule)
 
 // PATCH accepts any of { cron, tz, input, overlap, paused }. `paused` toggles pause/resume.
 export const updateSchedule = (
   agentId: string,
   scheduleId: string,
-  body: Partial<{ cron: string; tz: string | null; input: string; overlap: ScheduleOverlap; paused: boolean }>,
+  body: Partial<{
+    cron: string
+    tz: string | null
+    input: string
+    overlap: ScheduleOverlap
+    paused: boolean
+  }>,
 ) =>
   apiFetch<{ schedule: Schedule }>(
     `/v3/agents/${agentId}/schedules/${scheduleId}`,
@@ -538,7 +596,9 @@ export const updateSchedule = (
   ).then((r) => r.schedule)
 
 export const deleteSchedule = (agentId: string, scheduleId: string) =>
-  apiFetch<void>(`/v3/agents/${agentId}/schedules/${scheduleId}`, { method: 'DELETE' })
+  apiFetch<void>(`/v3/agents/${agentId}/schedules/${scheduleId}`, {
+    method: 'DELETE',
+  })
 
 // Test-fire now — enacts synchronously (a failed fire still returns a run with outcome:"failed").
 export const fireSchedule = (agentId: string, scheduleId: string) =>
@@ -547,7 +607,11 @@ export const fireSchedule = (agentId: string, scheduleId: string) =>
     { method: 'POST', body: JSON.stringify({}) },
   ).then((r) => r.run)
 
-export const getScheduleRuns = (agentId: string, scheduleId: string, limit = 10) =>
+export const getScheduleRuns = (
+  agentId: string,
+  scheduleId: string,
+  limit = 10,
+) =>
   apiFetch<{ runs: ScheduleRun[]; next_cursor: string | null }>(
     `/v3/agents/${agentId}/schedules/${scheduleId}/runs?limit=${limit}`,
   ).then((r) => r.runs)
@@ -562,24 +626,42 @@ export const getAgentSkills = (agentId: string) =>
 export const putAgentSkills = (agentId: string, zip: File | Blob) =>
   apiFetch(
     `/v3/agents/${agentId}/skills`,
-    { method: 'PUT', body: zip, headers: { 'Content-Type': 'application/zip' } },
+    {
+      method: 'PUT',
+      body: zip,
+      headers: { 'Content-Type': 'application/zip' },
+    },
     S.DeployResultSchema,
   )
 
 // Remove all skills → deploys a revision from the active behavior with no skills.
 export const deleteAgentSkills = (agentId: string) =>
-  apiFetch(`/v3/agents/${agentId}/skills`, { method: 'DELETE' }, S.DeployResultSchema)
+  apiFetch(
+    `/v3/agents/${agentId}/skills`,
+    { method: 'DELETE' },
+    S.DeployResultSchema,
+  )
 
 // The OC GitHub App (deploy) install-state + pickable repos — org-scoped admin read.
-export const getDeployApp = () => apiFetch('/v3/github/deploy-app', {}, S.DeployAppSchema)
+export const getDeployApp = () =>
+  apiFetch('/v3/github/deploy-app', {}, S.DeployAppSchema)
 
 // Deployment source — link an agent to a repo dir for push-to-deploy (deploy-from-github).
 export const getDeploymentSource = (agentId: string) =>
-  apiFetch(`/v3/agents/${agentId}/deployment-source`, {}, S.DeploymentSourceResponseSchema)
+  apiFetch(
+    `/v3/agents/${agentId}/deployment-source`,
+    {},
+    S.DeploymentSourceResponseSchema,
+  )
 
 export const linkDeploymentSource = (
   agentId: string,
-  body: { repo: string; path: string; production_ref?: string; deploy_now?: boolean },
+  body: {
+    repo: string
+    path: string
+    production_ref?: string
+    deploy_now?: boolean
+  },
 ) =>
   apiFetch(
     `/v3/agents/${agentId}/deployment-source`,
@@ -588,7 +670,9 @@ export const linkDeploymentSource = (
   )
 
 export const unlinkDeploymentSource = (agentId: string) =>
-  apiFetch<void>(`/v3/agents/${agentId}/deployment-source`, { method: 'DELETE' })
+  apiFetch<void>(`/v3/agents/${agentId}/deployment-source`, {
+    method: 'DELETE',
+  })
 
 // Deploy the linked repo's current production-branch HEAD now (no git push needed).
 // Returns { deployment } — fire-and-refetch, so we don't validate the body.
@@ -679,7 +763,12 @@ export const rotateCredential = (id: string, key: string) =>
 
 // Sessions — the durable runs.
 export const getSessions = (
-  params: { agent?: string; status?: string; limit?: number; cursor?: string } = {},
+  params: {
+    agent?: string
+    status?: string
+    limit?: number
+    cursor?: string
+  } = {},
 ) => {
   const q = new URLSearchParams()
   if (params.agent) q.set('agent', params.agent)
@@ -741,11 +830,9 @@ export const getSessionEvents = (id: string, level?: string) =>
 // Turns — the per-submission execution records behind a session (state, timing,
 // usage, error). Read-only; powers the submission-health panel. Newest first.
 export const getSessionTurns = (id: string) =>
-  apiFetch(
-    `/v3/sessions/${id}/turns`,
-    {},
-    S.SessionTurnListSchema,
-  ).then((r) => r.data)
+  apiFetch(`/v3/sessions/${id}/turns`, {}, S.SessionTurnListSchema).then(
+    (r) => r.data,
+  )
 
 // The latest turn + its result event (if the turn produced one).
 export const getSessionResult = (id: string) =>

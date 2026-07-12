@@ -32,12 +32,18 @@ import { AgentSkills } from '@/components/agent-skills'
 import { AgentDeploySource } from '@/components/agent-deploy-source'
 import { AgentSchedulesTab } from '@/components/agent-schedules'
 import { AgentRevisions } from '@/components/agent-revisions'
+import { AgentFlueConfig } from '@/components/agent-flue-config'
 import {
   WorkingRepoField,
   type WorkingRepo,
 } from '@/components/working-repo-field'
 import { ApiHint, type ApiRef } from '@/components/api-hint'
-import { getRuntime, keyFieldFor, providerForModel, withModelGroups } from '@/lib/runtimes'
+import {
+  getRuntime,
+  keyFieldFor,
+  providerForModel,
+  withModelGroups,
+} from '@/lib/runtimes'
 
 const DOCS = 'https://docs.opencomputer.dev/agent-sessions'
 
@@ -66,11 +72,36 @@ export default function AgentDetail() {
   // Each tab is a thin control panel over one API resource — surface the call it drives
   // (REST + SDK), same as the other pages, so the dashboard reads as programmable.
   const tabApi: Record<Tab, ApiRef> = {
-    overview: { method: 'GET', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.get(id)', docs: `${DOCS}/agents` },
-    revisions: { method: 'GET', path: `/v3/agents/${agentId}/revisions`, sdk: 'oc.agents.revisions.list(id)', docs: `${DOCS}/revisions` },
-    sessions: { method: 'POST', path: '/v3/sessions', sdk: 'oc.sessions.create({ agent })', docs: `${DOCS}/sessions` },
-    schedules: { method: 'GET', path: `/v3/agents/${agentId}/schedules`, sdk: 'oc.agents.schedules.list(id)', docs: `${DOCS}/schedules` },
-    settings: { method: 'PATCH', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.update(id, …)', docs: `${DOCS}/agents` },
+    overview: {
+      method: 'GET',
+      path: `/v3/agents/${agentId}`,
+      sdk: 'oc.agents.get(id)',
+      docs: `${DOCS}/agents`,
+    },
+    revisions: {
+      method: 'GET',
+      path: `/v3/agents/${agentId}/revisions`,
+      sdk: 'oc.agents.revisions.list(id)',
+      docs: `${DOCS}/revisions`,
+    },
+    sessions: {
+      method: 'POST',
+      path: '/v3/sessions',
+      sdk: 'oc.sessions.create({ agent })',
+      docs: `${DOCS}/sessions`,
+    },
+    schedules: {
+      method: 'GET',
+      path: `/v3/agents/${agentId}/schedules`,
+      sdk: 'oc.agents.schedules.list(id)',
+      docs: `${DOCS}/schedules`,
+    },
+    settings: {
+      method: 'PATCH',
+      path: `/v3/agents/${agentId}`,
+      sdk: 'oc.agents.update(id, …)',
+      docs: `${DOCS}/agents`,
+    },
   }
 
   const {
@@ -129,8 +160,8 @@ export default function AgentDetail() {
   const location = useLocation()
   const [task, setTask] = useState(
     () =>
-      (location.state as { composerPrefill?: string } | null)?.composerPrefill ??
-      '',
+      (location.state as { composerPrefill?: string } | null)
+        ?.composerPrefill ?? '',
   )
   // Optional working repo — the repo the agent checks out + opens PRs from. Explicitly chosen,
   // never derived from the connected/config repo (design 010 §2).
@@ -292,7 +323,7 @@ export default function AgentDetail() {
       <BackLink />
 
       {/* Sticky header: identity + status + primary action, with the tab bar. */}
-      <div className="bg-background sticky top-0 z-20 border-b">
+      <div className="bg-background sticky top-0 z-20 min-w-0 border-b">
         <div className="flex flex-wrap items-start justify-between gap-3 pb-3">
           <div className="min-w-0 space-y-1.5">
             <h1 className="text-foreground truncate text-lg font-semibold">
@@ -312,7 +343,7 @@ export default function AgentDetail() {
             </Link>
           </Button>
         </div>
-        <nav className="-mb-px flex gap-1">
+        <nav className="-mb-px flex max-w-full gap-1 overflow-x-auto">
           <TabLink to={base} label="Overview" current={active === 'overview'} />
           <TabLink
             to={`${base}/revisions`}
@@ -596,6 +627,9 @@ export default function AgentDetail() {
                 </p>
               </PanelContent>
             </Panel>
+            {agent.runtime === 'flue' ? (
+              <AgentFlueConfig agentId={agent.id} />
+            ) : null}
           </div>
         )}
       </div>
