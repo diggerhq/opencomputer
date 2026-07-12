@@ -472,37 +472,6 @@ const agents = [
     revision: 1,
     created_at: at(6),
   },
-  {
-    id: 'agt_flue_demo',
-    name: 'Issue Fixer',
-    prompt: null,
-    prompt_hash: null,
-    model: 'anthropic/claude-haiku-4-5',
-    runtime: 'flue',
-    credential_id: 'managed',
-    revision: 4,
-    created_at: at(2),
-  },
-]
-
-const flueConfig = {
-  vars: { LOG_LEVEL: 'info', PUBLIC_MODE: 'careful' },
-  egress_allowlist: ['api.github.com', '*.linear.app'],
-}
-
-const flueSecrets = [
-  {
-    name: 'LINEAR_API_KEY',
-    last4: '8fa2',
-    updated_at: at(1),
-    sync_status: 'synced',
-  },
-  {
-    name: 'SENTRY_DSN',
-    last4: '91bc',
-    updated_at: at(3),
-    sync_status: 'pending_deploy',
-  },
 ]
 
 // ── Deploy from GitHub (admin) ───────────────────────────────────────────────
@@ -837,10 +806,7 @@ const sessionTurns = [
     completed_at: at(0, 2),
     active_seconds: 2.1,
     usage: {},
-    error: {
-      code: 'provision_infra',
-      message: 'brain sandbox failed to start',
-    },
+    error: { code: 'provision_infra', message: 'brain sandbox failed to start' },
   },
 ]
 
@@ -957,8 +923,6 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/agents$/, () => []],
   // Durable Agent Sessions — lists return the { data: [...] } envelope.
   [/^\/v3\/agents\/[^/]+\/slack$/, () => slackConnection],
-  [/^\/v3\/agents\/[^/]+\/config$/, () => flueConfig],
-  [/^\/v3\/agents\/[^/]+\/secrets$/, () => ({ data: flueSecrets })],
   [/^\/v3\/github\/deploy-app$/, () => deployApp],
   [
     /^\/v3\/agents\/[^/]+\/deployment-source$/,
@@ -968,7 +932,6 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/v3\/agents\/[^/]+\/deploys$/, () => ({ data: agentDeploys })],
   [/^\/v3\/agents\/[^/]+\/revisions$/, () => ({ data: agentRevisions })],
   [/^\/v3\/agents\/[^/]+\/skills$/, () => agentSkills],
-  [/^\/v3\/agents\/agt_flue_demo$/, () => agents[2]],
   [/^\/v3\/agents\/[^/]+$/, () => agents[0]],
   [/^\/v3\/agents$/, () => ({ data: agents })],
   [/^\/v3\/credentials$/, () => ({ data: credentials })],
@@ -996,19 +959,6 @@ const ROUTES: Array<[RegExp, Handler]> = [
 // Mutations the preview needs to echo something parseable (e.g. the Slack
 // wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
 const POST_ROUTES: [RegExp, () => unknown][] = [
-  [
-    /^\/v3\/agents\/[^/]+\/config$/,
-    () => ({ ...flueConfig, deployment_required: true }),
-  ],
-  [
-    /^\/v3\/agents\/[^/]+\/secrets\/[^/]+$/,
-    () => ({
-      name: 'NEW_SECRET',
-      last4: 'cdef',
-      updated_at: at(0),
-      sync_status: 'synced',
-    }),
-  ],
   [/^\/v3\/agents\/[^/]+\/slack\/manifest$/, () => slackManifest],
   [
     /^\/v3\/agents\/[^/]+\/slack$/,

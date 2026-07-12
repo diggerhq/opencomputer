@@ -73,8 +73,8 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 	}
 	// [vars] is part of the deployment input even though the values live in the
 	// agent config resource. Persist it before enqueueing so the off-host runner
-	// cannot race ahead and compose the Worker with stale bindings. Preserve the
-	// separately managed egress allowlist. Secrets are intentionally CLI/API only.
+	// cannot race ahead and compose the Worker with stale bindings. Secrets are
+	// intentionally CLI/API only and are resolved by that same runner.
 	if err := syncManifestVars(cmd, sc, id, m); err != nil {
 		return err
 	}

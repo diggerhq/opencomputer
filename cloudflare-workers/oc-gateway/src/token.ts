@@ -17,7 +17,7 @@
 //      explicitly-revoked deploy token stops verifying even before `exp`.
 //
 // MINT↔VERIFY CONTRACT (W7 mints; the gateway verifies):
-//   alg "EdDSA"; claims { org, agt, iat, exp, ep?, scopes[] }; the gateway is configured with
+//   alg "EdDSA"; claims { org, agt, iat, exp, ep? }; the gateway is configured with
 //   GATEWAY_TOKEN_PUBLIC_KEY = base64url(raw 32-byte Ed25519 public key).
 
 export interface DeployClaims {
@@ -27,8 +27,6 @@ export interface DeployClaims {
   agt: string;
   /** lease/deploy epoch (monotonic per (org, agt)). Below the DeployLease floor → fenced. Omit = no fence. */
   ep?: number;
-  /** Explicit tenant capabilities; the gateway requires `gateway:invoke`. */
-  scopes: Array<"gateway:invoke" | "sandbox:use" | "repo:use" | "ingest:write">;
   /** issued-at / expiry (seconds). */
   iat: number;
   exp: number;
@@ -59,12 +57,7 @@ async function importPublicKey(publicKeyB64url: string): Promise<CryptoKey> {
 export type VerifyResult = { ok: true; claims: DeployClaims } | { ok: false; reason: string };
 
 /** Verify a per-deploy EdDSA token: alg pin + signature + exp/iat + required claims (org, agt). */
-export async function verifyDeployToken(
-  publicKeyB64url: string,
-  token: string,
-  nowSec: number,
-  requiredScope?: DeployClaims["scopes"][number],
-): Promise<VerifyResult> {
+export async function verifyDeployToken(publicKeyB64url: string, token: string, nowSec: number): Promise<VerifyResult> {
   const parts = token.split(".");
   if (parts.length !== 3) return { ok: false, reason: "malformed" };
   const [header, payload, sig] = parts;
@@ -101,14 +94,9 @@ export async function verifyDeployToken(
   if (typeof claims.exp !== "number" || claims.exp <= nowSec) return { ok: false, reason: "expired" };
   if (typeof claims.iat === "number" && claims.iat > nowSec + 60) return { ok: false, reason: "future_iat" };
   if (!claims.org || !claims.agt) return { ok: false, reason: "missing_claims" };
-  if (!Array.isArray(claims.scopes) || claims.scopes.some((scope) =>
-    scope !== "gateway:invoke" && scope !== "sandbox:use" && scope !== "repo:use" && scope !== "ingest:write")) {
-    return { ok: false, reason: "bad_scopes" };
-  }
   if (claims.ep !== undefined && (!Number.isSafeInteger(claims.ep) || claims.ep < 0)) {
     return { ok: false, reason: "bad_epoch" };
   }
-  if (requiredScope && !claims.scopes.includes(requiredScope)) return { ok: false, reason: "missing_scope" };
   return { ok: true, claims };
 }
 

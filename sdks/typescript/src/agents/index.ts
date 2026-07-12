@@ -37,10 +37,6 @@ export type {
   Schedule, ScheduleRun, ScheduleState, RunOutcome, Overlap,
   CreateScheduleParams, UpdateScheduleParams, RunsPage,
 } from "./schedules.js";
-export { AgentConfigResource } from "./config.js";
-export type {
-  FlueAgentConfig, PutFlueAgentConfigParams, FlueAgentSecret,
-} from "./config.js";
 export { verifyWebhook, WebhookVerificationError } from "./webhooks.js";
 export type { WebhookDelivery, VerifyWebhookOptions } from "./webhooks.js";
 

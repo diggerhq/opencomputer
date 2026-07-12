@@ -118,7 +118,7 @@ export default {
     const token = bearer(req.headers);
     if (!token) return json({ error: { type: "unauthorized", message: "missing deploy token" } }, 401);
     const nowSec = Math.floor(Date.now() / 1000);
-    const v = await verifyDeployToken(env.GATEWAY_TOKEN_PUBLIC_KEY, token, nowSec, "gateway:invoke");
+    const v = await verifyDeployToken(env.GATEWAY_TOKEN_PUBLIC_KEY, token, nowSec);
     if (!v.ok) return json({ error: { type: "unauthorized", message: `invalid deploy token: ${v.reason}` } }, 401);
     const { org: orgId, agt: agentId, ep } = v.claims;
 

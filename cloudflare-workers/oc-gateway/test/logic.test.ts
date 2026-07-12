@@ -13,7 +13,7 @@ import { DeployLease } from "../src/deploylease.js";
 const now = 1_800_000_000;
 const b64url = (o: unknown) => btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const claims = (o: Partial<DeployClaims> = {}): DeployClaims => ({
-  org: "org_1", agt: "agt_1", ep: 2, scopes: ["gateway:invoke", "sandbox:use"], iat: now, exp: now + 3600, ...o,
+  org: "org_1", agt: "agt_1", ep: 2, iat: now, exp: now + 3600, ...o,
 });
 
 function fakeState(): DurableObjectState {
@@ -58,17 +58,10 @@ describe("deploy token (EdDSA, per-deploy {org, agt})", () => {
   });
   it("rejects a token missing org/agt", async () => {
     const { privateKey, publicKeyB64url } = await generateKeyPair();
-    const t = await mintDeployToken(privateKey, { org: "", agt: "", scopes: ["gateway:invoke"], iat: now, exp: now + 3600 });
+    const t = await mintDeployToken(privateKey, { org: "", agt: "", iat: now, exp: now + 3600 });
     const v = await verifyDeployToken(publicKeyB64url, t, now);
     expect(v.ok).toBe(false);
     if (!v.ok) expect(v.reason).toBe("missing_claims");
-  });
-  it("requires the named capability", async () => {
-    const { privateKey, publicKeyB64url } = await generateKeyPair();
-    const token = await mintDeployToken(privateKey, claims({ scopes: ["sandbox:use"] }));
-    const v = await verifyDeployToken(publicKeyB64url, token, now, "gateway:invoke");
-    expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.reason).toBe("missing_scope");
   });
   it("pins alg=EdDSA — rejects an alg-swap (none/HS256) header", async () => {
     const { privateKey, publicKeyB64url } = await generateKeyPair();

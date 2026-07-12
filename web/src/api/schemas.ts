@@ -345,23 +345,6 @@ export const AgentListSchema = z.object({
   next_cursor: z.string().nullish(),
 })
 
-// Flue Worker bindings. Vars are intentionally plain/readable; secret values
-// are write-only and only their metadata crosses back into the dashboard.
-export const FlueAgentConfigSchema = z.object({
-  vars: z.record(z.string(), z.string()),
-  egress_allowlist: z.array(z.string()),
-  deployment_required: z.boolean().optional(),
-})
-export const FlueAgentSecretSchema = z.object({
-  name: z.string(),
-  last4: z.string(),
-  updated_at: z.string(),
-  sync_status: z.string(),
-})
-export const FlueAgentSecretListSchema = z.object({
-  data: z.array(FlueAgentSecretSchema),
-})
-
 // Agent Revisions (design 009) — immutable deployed versions of an agent's behavior.
 // `active` flags the production pointer; rollback = activate an earlier revision.
 export const AgentRevisionSchema = z.object({
@@ -622,8 +605,6 @@ export const DeliverySchema = z.object({
 })
 
 export type Agent = z.infer<typeof AgentSchema>
-export type FlueAgentConfig = z.infer<typeof FlueAgentConfigSchema>
-export type FlueAgentSecret = z.infer<typeof FlueAgentSecretSchema>
 export type AgentRevision = z.infer<typeof AgentRevisionSchema>
 export type AgentSkills = z.infer<typeof AgentSkillsSchema>
 export type SkillItem = z.infer<typeof SkillItemSchema>

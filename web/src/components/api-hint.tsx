@@ -14,9 +14,9 @@ export type ApiRef = {
 export function ApiHint({ method, path, sdk, docs }: ApiRef) {
   if (!path && !sdk && !docs) return null
   return (
-    <div className="text-muted-foreground/70 flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 overflow-hidden pt-1 text-xs">
+    <div className="text-muted-foreground/70 flex flex-wrap items-center gap-x-2.5 gap-y-1 pt-1 text-xs">
       {path ? (
-        <span className="max-w-full truncate font-mono">
+        <span className="font-mono">
           {method ? (
             <span className="text-muted-foreground/50">{method} </span>
           ) : null}
@@ -24,7 +24,7 @@ export function ApiHint({ method, path, sdk, docs }: ApiRef) {
         </span>
       ) : null}
       {sdk ? (
-        <span className="text-muted-foreground/50 max-w-full truncate font-mono">
+        <span className="text-muted-foreground/50 font-mono">
           {path ? '· ' : ''}
           {sdk}
         </span>

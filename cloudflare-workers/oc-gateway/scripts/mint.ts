@@ -48,7 +48,6 @@ const claims: DeployClaims = {
   org: arg("org", "org_1")!,
   agt: arg("agent", "agt_1")!,
   ep: ep != null ? Number(ep) : undefined,
-  scopes: ["gateway:invoke", "sandbox:use", "repo:use", "ingest:write"],
   iat: now,
   exp: now + ttl,
 };

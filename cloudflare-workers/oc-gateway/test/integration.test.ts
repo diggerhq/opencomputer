@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, beforeAll, vi, afterEach } from "vite
 import worker, { Env } from "../src/index.js";
 import { SpendCounter } from "../src/budget.js";
 import { DeployLease } from "../src/deploylease.js";
-import { generateKeyPair, mintDeployToken, type DeployClaims } from "../src/token.js";
+import { generateKeyPair, mintDeployToken } from "../src/token.js";
 
 const OR_KEY = "sk-or-v1-FAKE-org-key";
 const OR_BASE = "https://mock-openrouter.test/api";
@@ -89,9 +89,9 @@ const post = (token?: string, session?: string, body = MSG) => new Request("http
   },
   body,
 });
-const mint = async (o: Partial<{ org: string; agt: string; ep: number; scopes: DeployClaims["scopes"]; iat: number; exp: number }> = {}) => {
+const mint = async (o: Partial<{ org: string; agt: string; ep: number; iat: number; exp: number }> = {}) => {
   const now = Math.floor(Date.now() / 1000);
-  return mintDeployToken(PRIV, { org: "org_1", agt: "agt_1", scopes: ["gateway:invoke"], iat: now, exp: now + 3600, ...o });
+  return mintDeployToken(PRIV, { org: "org_1", agt: "agt_1", iat: now, exp: now + 3600, ...o });
 };
 const stateOf = async (inst: { fetch(r: Request): Promise<Response> }) =>
   (await inst.fetch(new Request("https://do/state"))).json() as Promise<{ spent_micro: number }>;
