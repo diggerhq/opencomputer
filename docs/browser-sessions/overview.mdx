@@ -30,7 +30,6 @@ import { Browser } from "@opencomputer/sdk";
 const browser = await Browser.create({
   headless: false,
   stealth: true,
-  recording: false,
   startUrl: "https://example.com",
   timeoutSeconds: 120,
 });
@@ -48,7 +47,6 @@ from opencomputer import Browser
 browser = await Browser.create(
     headless=False,
     stealth=True,
-    recording=False,
     start_url="https://example.com",
     timeout_seconds=120,
 )
@@ -63,8 +61,9 @@ await browser.delete()
 </CodeGroup>
 
 Headful browsers return a live-view URL. Headless browsers are lighter, but do
-not provide a live view. Set `recording: false` / `recording=False` to disable
-replay recording for a headful browser session.
+not provide a live view. Replay recording is disabled by default. Set
+`recording: true` / `recording=True` to enable replay recording for a headful
+browser session.
 
 ## Playwright
 
@@ -134,7 +133,6 @@ import { startBrowserAgent } from "magnitude-core";
 const ocBrowser = await Browser.create({
   headless: false,
   stealth: true,
-  recording: false,
   startUrl: "https://example.com",
 });
 
