@@ -8,10 +8,10 @@
 // The secret DOES live on the per-REQUEST env (`c.env`) — the same source ocSandbox reads at run time.
 // Fix: bind the apiKey at RUN scope from the exported `route` middleware, reading OC_SESSION_TOKEN from
 // `c.env` by DIRECT property access (NEVER spread c.env — the CF env is a proxy and spreading it throws)
-// and OC_GATEWAY from the ambient snapshot, once per isolate. The token is per-DEPLOY (identical for every
-// session), so the MODULE(isolate)-scoped registry holds one static value with NO cross-session race; the
-// upstream per-request headers(ctx)/getApiKey(ctx) ask is only needed IF a PER-SESSION token is later
-// introduced. registerProvider still takes a static apiKey / getApiKey has no turn context — fine here.
+// and OC_GATEWAY from the ambient snapshot. The token is per-DEPLOY (identical for every session), so
+// rebinding it is race-free. The route also sets a best-effort X-OC-Session header; that static registry
+// header can race under co-location and is never an authorization boundary. Exact attribution still needs
+// the upstream per-request headers(ctx) resolver.
 
 import { registerProvider } from "@flue/runtime";
 import type { AgentInitializerContext, AgentRouteHandler } from "@flue/runtime";
@@ -38,12 +38,13 @@ export interface OcEnv {
  *  model specifier resolves); attaches the apiKey only when the per-deploy OC_SESSION_TOKEN is present in
  *  this snapshot. Returns true only when the apiKey actually landed — callers use that to stop rebinding.
  *  No-op when OC_GATEWAY is unset (local `flue dev` falls through to pi-ai's env-var key lookup). */
-function bindOcProvider(env: OcEnv): boolean {
+function bindOcProvider(env: OcEnv, sessionId?: string): boolean {
   const gw = env.OC_GATEWAY;
   if (!gw) return false;
   registerProvider("anthropic", {
     baseUrl: `${gw.replace(/\/+$/, "")}/anthropic`,
     ...(env.OC_SESSION_TOKEN ? { apiKey: env.OC_SESSION_TOKEN } : {}),
+    ...(sessionId ? { headers: { "X-OC-Session": sessionId } } : {}),
   });
   return Boolean(env.OC_SESSION_TOKEN);
 }
@@ -61,16 +62,13 @@ export function useOcGateway(ctx: AgentInitializerContext<OcEnv>): void {
   bindOcProvider(ocResolveEnv<OcEnv>(ctx.env));
 }
 
-/** Set once the run-scope apiKey bind lands (module/isolate-scoped; the token is deploy-static so one
- *  bind serves every co-located session — no per-session race). */
-let ocProviderBound = false;
-
 /**
  * The HTTP-transport opt-in every OC-hosted agent MUST export as `route` (an agent is reachable at
  * `/agents/:name/:id` only when its module exports `route` — flue-app.ts). ALSO the run-scope binder for
  * the token seam: on each request (where the request ALS is entered and OC_SESSION_TOKEN is readable) it
- * (re)binds the provider's apiKey, once per isolate, BEFORE the turn's model call runs via `next()`. A
- * first `?view=updates` read that predates the token just leaves the flag false and retries next request.
+ * (re)binds the provider's apiKey and best-effort session attribution BEFORE the turn's model call
+ * runs via `next()`. The provider registry is isolate-global, so the session header is visibility-only
+ * until Flue exposes a per-request provider resolver; hard enforcement remains org+agent in the token.
  * The OC dispatch Worker is the auth boundary (013 §3 B5), so the transport itself adds none.
  */
 export const route: AgentRouteHandler = async (c, next) => {
@@ -79,10 +77,9 @@ export const route: AgentRouteHandler = async (c, next) => {
   // key"). The secret IS on the REQUEST env (c.env) — the same source ocSandbox reads in createSessionEnv.
   // Read the token from c.env by DIRECT property access (never spread c.env — the CF env is a proxy and
   // spreading it throws, which would break the request), and take OC_GATEWAY from the ambient snapshot.
-  if (!ocProviderBound) {
-    const amb = ocResolveEnv<OcEnv>(undefined);
-    const token = (c.env as OcEnv | undefined)?.OC_SESSION_TOKEN ?? amb.OC_SESSION_TOKEN;
-    ocProviderBound = bindOcProvider({ ...amb, ...(token ? { OC_SESSION_TOKEN: token } : {}) });
-  }
+  const amb = ocResolveEnv<OcEnv>(undefined);
+  const token = (c.env as OcEnv | undefined)?.OC_SESSION_TOKEN ?? amb.OC_SESSION_TOKEN;
+  const sessionId = c.req.param("id") || undefined;
+  bindOcProvider({ ...amb, ...(token ? { OC_SESSION_TOKEN: token } : {}) }, sessionId);
   return next();
 };

@@ -2,16 +2,23 @@
 // prod, binding the token as the tenant script's OC_SESSION_TOKEN env var; this is the dev/e2e helper.
 // On first use it also generates an Ed25519 keypair.
 //
-// Generate + mint (PUBLIC + PRIVATE key printed on stderr; the token on stdout):
+// Generate + mint (the exact CP + gateway provisioning values on stderr; token on stdout):
 //   node --experimental-strip-types scripts/mint.ts --org org_1 --agent agt_1 --ep 1
 //     → set the gateway's GATEWAY_TOKEN_PUBLIC_KEY secret from the printed value.
-// Reuse a private key so the gateway's public key stays fixed across mints:
-//   GATEWAY_TOKEN_PRIVATE_KEY=<b64url-pkcs8> node ... scripts/mint.ts --org org_1 --agent agt_1 --ep 2
+// Reuse the control-plane private value so the gateway public key stays fixed:
+//   V3_GATEWAY_TOKEN_PRIVATE_KEY=<base64-pkcs8-pem> node ... scripts/mint.ts ...
 
 import { mintDeployToken, type DeployClaims } from "../src/token.ts";
 
 const b64url = (buf: ArrayBuffer) => Buffer.from(buf).toString("base64url");
-const fromB64url = (s: string) => Buffer.from(s, "base64url");
+const pemFromDer = (der: ArrayBuffer) => {
+  const body = Buffer.from(der).toString("base64").match(/.{1,64}/g)?.join("\n") ?? "";
+  return `-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----\n`;
+};
+const derFromPemB64 = (value: string) => {
+  const pem = Buffer.from(value, "base64").toString("utf8");
+  return Buffer.from(pem.replace(/-----[^-]+-----/g, "").replace(/\s/g, ""), "base64");
+};
 
 function arg(name: string, def?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -21,14 +28,17 @@ function arg(name: string, def?: string): string | undefined {
 const ED = { name: "Ed25519" } as const;
 
 let privateKey: CryptoKey;
-const existing = process.env.GATEWAY_TOKEN_PRIVATE_KEY;
+const existing = process.env.V3_GATEWAY_TOKEN_PRIVATE_KEY;
 if (existing) {
-  privateKey = await crypto.subtle.importKey("pkcs8", fromB64url(existing), ED, true, ["sign"]);
+  privateKey = await crypto.subtle.importKey("pkcs8", derFromPemB64(existing), ED, true, ["sign"]);
 } else {
   const kp = (await crypto.subtle.generateKey(ED, true, ["sign", "verify"])) as CryptoKeyPair;
   privateKey = kp.privateKey;
-  console.error(`GATEWAY_TOKEN_PUBLIC_KEY=${b64url(await crypto.subtle.exportKey("raw", kp.publicKey))}`);
-  console.error(`GATEWAY_TOKEN_PRIVATE_KEY=${b64url(await crypto.subtle.exportKey("pkcs8", kp.privateKey))}`);
+  const publicValue = b64url(await crypto.subtle.exportKey("raw", kp.publicKey));
+  const privateValue = Buffer.from(pemFromDer(await crypto.subtle.exportKey("pkcs8", kp.privateKey)), "utf8").toString("base64");
+  console.error(`V3_GATEWAY_TOKEN_PRIVATE_KEY=${privateValue}`);
+  console.error(`V3_GATEWAY_TOKEN_PUBLIC_KEY=${publicValue}`);
+  console.error(`GATEWAY_TOKEN_PUBLIC_KEY=${publicValue}`);
 }
 
 const now = Math.floor(Date.now() / 1000);
@@ -38,6 +48,7 @@ const claims: DeployClaims = {
   org: arg("org", "org_1")!,
   agt: arg("agent", "agt_1")!,
   ep: ep != null ? Number(ep) : undefined,
+  scopes: ["gateway:invoke", "sandbox:use", "repo:use", "ingest:write"],
   iat: now,
   exp: now + ttl,
 };

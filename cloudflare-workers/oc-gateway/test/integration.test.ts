@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, beforeAll, vi, afterEach } from "vite
 import worker, { Env } from "../src/index.js";
 import { SpendCounter } from "../src/budget.js";
 import { DeployLease } from "../src/deploylease.js";
-import { generateKeyPair, mintDeployToken } from "../src/token.js";
+import { generateKeyPair, mintDeployToken, type DeployClaims } from "../src/token.js";
 
 const OR_KEY = "sk-or-v1-FAKE-org-key";
 const OR_BASE = "https://mock-openrouter.test/api";
@@ -89,9 +89,9 @@ const post = (token?: string, session?: string, body = MSG) => new Request("http
   },
   body,
 });
-const mint = async (o: Partial<{ org: string; agt: string; ep: number; iat: number; exp: number }> = {}) => {
+const mint = async (o: Partial<{ org: string; agt: string; ep: number; scopes: DeployClaims["scopes"]; iat: number; exp: number }> = {}) => {
   const now = Math.floor(Date.now() / 1000);
-  return mintDeployToken(PRIV, { org: "org_1", agt: "agt_1", iat: now, exp: now + 3600, ...o });
+  return mintDeployToken(PRIV, { org: "org_1", agt: "agt_1", scopes: ["gateway:invoke"], iat: now, exp: now + 3600, ...o });
 };
 const stateOf = async (inst: { fetch(r: Request): Promise<Response> }) =>
   (await inst.fetch(new Request("https://do/state"))).json() as Promise<{ spent_micro: number }>;
@@ -180,8 +180,8 @@ describe("gateway on-path flow (resolved seam)", () => {
     expect(ry.status).toBe(200);
     expect(rz.status).toBe(402); // org+agt cap hit across sessions
     // best-effort per-session tracking recorded each session's own spend separately
-    expect((await stateOf(spend.instances.get("sess:ses_x")!)).spent_micro).toBe(20_000);
-    expect((await stateOf(spend.instances.get("sess:ses_y")!)).spent_micro).toBe(20_000);
+    expect((await stateOf(spend.instances.get("sess:org_1:agt_1:ses_x")!)).spent_micro).toBe(20_000);
+    expect((await stateOf(spend.instances.get("sess:org_1:agt_1:ses_y")!)).spent_micro).toBe(20_000);
     // and the authoritative org+agt grain summed them
     expect((await stateOf(spend.instances.get("agt:org_1:agt_1")!)).spent_micro).toBe(40_000);
   });
@@ -192,7 +192,7 @@ describe("gateway on-path flow (resolved seam)", () => {
     const token = await mint();
     for (let i = 0; i < 3; i++) { const c = ctx(); const r = await worker.fetch(post(token, "ses_hot"), env, c); await drain(c); expect(r.status).toBe(200); }
     // the session accumulated $0.30 but was never blocked (no per-session hard gate)
-    expect((await stateOf(spend.instances.get("sess:ses_hot")!)).spent_micro).toBe(300_000);
+    expect((await stateOf(spend.instances.get("sess:org_1:agt_1:ses_hot")!)).spent_micro).toBe(300_000);
   });
 
   it("fences a superseded deploy lease epoch (401 token_superseded)", async () => {
