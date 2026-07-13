@@ -3,7 +3,7 @@
 // On first use it also generates an Ed25519 keypair.
 //
 // Generate + mint (the exact CP + gateway provisioning values on stderr; token on stdout):
-//   node --experimental-strip-types scripts/mint.ts --org org_1 --agent agt_1 --ep 1
+//   node --experimental-strip-types scripts/mint.ts --org 11111111-1111-4111-8111-111111111111 --agent agt_0123456789abcdef01234567 --ep 1
 //     → set the gateway's GATEWAY_TOKEN_PUBLIC_KEY secret from the printed value.
 // Reuse the control-plane private value so the gateway public key stays fixed:
 //   V3_GATEWAY_TOKEN_PRIVATE_KEY=<base64-pkcs8-pem> node ... scripts/mint.ts ...
@@ -45,8 +45,8 @@ const now = Math.floor(Date.now() / 1000);
 const ttl = Number(arg("ttl", "3600"));
 const ep = arg("ep");
 const claims: DeployClaims = {
-  org: arg("org", "org_1")!,
-  agt: arg("agent", "agt_1")!,
+  org: arg("org", "11111111-1111-4111-8111-111111111111")!,
+  agt: arg("agent", "agt_0123456789abcdef01234567")!,
   ep: ep != null ? Number(ep) : undefined,
   iat: now,
   exp: now + ttl,

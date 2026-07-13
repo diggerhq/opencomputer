@@ -13,14 +13,12 @@
 //   → 404/other on no active managed key.
 //
 // The plaintext is cached PER ORG in-isolate with a short TTL — it bounds exposure (evaporates with
-// the isolate) and avoids hammering the seam on every model call in a turn. TEST_OR_KEY short-circuits
-// resolution for the acceptance run against a throwaway $1-capped key (no sealed dev credential needed).
+// the isolate) and avoids hammering the seam on every model call in a turn. There is deliberately no
+// single-key override: every environment exercises the org-scoped seam and missing config fails closed.
 
 export interface OrgKeyEnv {
   GATEWAY_ORKEY_URL?: string;
   GATEWAY_ORKEY_SECRET?: string;
-  /** Acceptance-test / single-key override — bypasses the seam. Never set in multi-org prod. */
-  TEST_OR_KEY?: string;
 }
 
 interface CacheEntry {
@@ -32,8 +30,6 @@ const cache = new Map<string, CacheEntry>();
 
 /** Resolve the org's OpenRouter inference key, or null if unavailable. Never throws. */
 export async function resolveOrgKey(env: OrgKeyEnv, orgId: string, nowMs: number): Promise<string | null> {
-  if (env.TEST_OR_KEY) return env.TEST_OR_KEY;
-
   const hit = cache.get(orgId);
   if (hit && hit.exp > nowMs) return hit.key;
 

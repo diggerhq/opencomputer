@@ -4,12 +4,12 @@ package commands
 // plane implements the presigned-PUT bundle upload (POST /v3/agents/:id/artifacts + the
 // signed PUT) and the deployment create + a verifying→ready poll. A throwaway
 // `node_modules/.bin/flue` script stands in for the app's flue CLI, so the real
-// runFlueBuild exec path runs and produces a dist/<app>/ with the entry module + an
-// assets/ file. deployFlue is driven end to end; we assert the uploaded bytes are
-// byte-exactly the canonical tar.gz of the whole build dir for the digest the CLI
+// runFlueBuild exec path runs and produces a deliberately noisy dist/<app>/. deployFlue
+// is driven end to end; we assert the uploaded bytes are byte-exactly the canonical
+// module-only tar.gz for the digest the CLI
 // advertised (the content-address chain), and that the POSTed deployment body is the
-// byte-free DO request: flue_bundle_digest + flue_wrangler + flue_agent_name, with no
-// module bytes / no framework_artifact_digest.
+// byte-free DO request: flue_bundle_digest + the canonical flue_wrangler descriptor +
+// flue_agent_name, with no raw Wrangler dump, module bytes, or framework_artifact_digest.
 
 import (
 	"bytes"
@@ -34,9 +34,11 @@ import (
 // trailing newline). The build is nested a directory deep, with an assets/ file, to
 // exercise the dist/<app>/ discovery and prove the WHOLE tree is staged.
 const (
+	fakeAgentID     = "agt_0123456789abcdef01234567"
 	e2eModuleBody   = `export default { fetch() { return new Response("ok"); } };`
 	e2eAssetBody    = `export const chunk = 1;`
-	e2eWranglerBody = `{"name":"e2e-flue","main":"index.js","compatibility_date":"2026-04-01","compatibility_flags":["nodejs_compat"],"durable_objects":{"bindings":[{"name":"AGENT","class_name":"FlueE2EAgent"}]},"migrations":[{"tag":"v1","new_sqlite_classes":["FlueE2EAgent"]}]}`
+	e2eRuntimeBody  = `export const runtime = "flue";`
+	e2eWranglerBody = `{"$schema":"../../node_modules/wrangler/config-schema.json","name":"e2e-flue","main":"index.js","compatibility_date":"2026-04-01","compatibility_flags":["nodejs_compat"],"no_bundle":true,"configPath":"/Users/developer/project/flue.config.ts","userConfigPath":"/Users/developer/project/wrangler.json","durable_objects":{"bindings":[{"name":"AGENT","class_name":"FlueE2EAgent"},{"name":"FLUE_REGISTRY","class_name":"FlueRegistry"}]},"vars":{"MUST_NOT_LEAVE":"raw-wrangler"},"migrations":[{"tag":"attacker-owned","new_sqlite_classes":["Wrong"]}],"routes":["example.com/*"],"services":[{"binding":"OTHER","service":"victim"}]}`
 )
 
 type fakeCP struct {
@@ -63,13 +65,13 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(map[string]any{"data": []any{}})
 	case r.Method == "POST" && r.URL.Path == "/v3/agents":
 		_ = json.NewDecoder(r.Body).Decode(&f.createBody)
-		writeJSON(map[string]any{"id": "agt_e2e", "name": "e2e-flue", "model": "anthropic/claude-sonnet-5", "runtime": "flue"})
-	case r.Method == "PUT" && r.URL.Path == "/v3/agents/agt_e2e/config":
+		writeJSON(map[string]any{"id": fakeAgentID, "name": "e2e-flue", "model": "anthropic/claude-sonnet-5", "runtime": "flue"})
+	case r.Method == "PUT" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/config":
 		_ = json.NewDecoder(r.Body).Decode(&f.configPutBody)
 		writeJSON(map[string]any{
 			"vars": f.configPutBody["vars"], "deployment_required": true,
 		})
-	case r.Method == "POST" && r.URL.Path == "/v3/agents/agt_e2e/artifacts":
+	case r.Method == "POST" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/artifacts":
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.artifactDigest, _ = body["digest"].(string)
@@ -84,17 +86,17 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = buf.ReadFrom(r.Body)
 		f.uploaded = buf.Bytes()
 		w.WriteHeader(http.StatusOK)
-	case r.Method == "POST" && r.URL.Path == "/v3/agents/agt_e2e/deployments":
+	case r.Method == "POST" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/deployments":
 		_ = json.NewDecoder(r.Body).Decode(&f.deployBody)
 		writeJSON(map[string]any{"deployment": map[string]any{"id": "dep_1", "state": "verifying"}})
-	case r.Method == "GET" && r.URL.Path == "/v3/agents/agt_e2e/deployments/dep_1":
+	case r.Method == "GET" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/deployments/dep_1":
 		f.getCount++
 		if f.getCount < 2 {
 			writeJSON(map[string]any{"id": "dep_1", "state": "verifying"}) // verifying → …
 		} else {
 			writeJSON(map[string]any{"id": "dep_1", "state": "ready", "active": true, "revision_id": "rev_1"}) // → terminal
 		}
-	case r.Method == "GET" && r.URL.Path == "/v3/agents/agt_e2e/revisions":
+	case r.Method == "GET" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/revisions":
 		writeJSON(map[string]any{"data": []any{}})
 	default:
 		http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
@@ -107,25 +109,27 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 	}
 
 	// A Flue app dir: manifest + clean source + a stand-in `flue` bin whose
-	// `build --target cloudflare` writes a deterministic dist/e2e_flue/ (entry + asset
-	// + wrangler), a directory deep.
+	// `build --target cloudflare` writes a deterministic but noisy dist/e2e_flue/.
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "agent.toml"),
 		"name  = \"e2e-flue\"\nmodel = \"anthropic/claude-sonnet-5\"\n\n[runtime]\nfamily = \"flue\"\n", 0o644)
 	writeFile(t, filepath.Join(dir, "src", "opencomputer.ts"),
 		"import { serveOC } from '@opencomputer/flue';\nexport default serveOC(agent);\n", 0o644)
-	buildScript := "#!/bin/sh\nset -e\nmkdir -p dist/e2e_flue/assets\n" +
+	buildScript := "#!/bin/sh\nset -e\nmkdir -p dist/e2e_flue/assets dist/e2e_flue/.vite dist/e2e_flue/.flue-vite\n" +
 		"cat > dist/e2e_flue/index.js <<'JS'\n" + e2eModuleBody + "\nJS\n" +
 		"cat > dist/e2e_flue/assets/chunk.js <<'JS'\n" + e2eAssetBody + "\nJS\n" +
+		"cat > dist/e2e_flue/.flue-vite/runtime.mjs <<'JS'\n" + e2eRuntimeBody + "\nJS\n" +
+		"printf '%s' '{\"version\":3}' > dist/e2e_flue/.vite/manifest.json\n" +
+		"printf '%s' '{\"version\":3}' > dist/e2e_flue/index.js.map\n" +
 		"cat > dist/e2e_flue/wrangler.json <<'JSON'\n" + e2eWranglerBody + "\nJSON\n"
 	writeFile(t, filepath.Join(dir, "node_modules", ".bin", "flue"), buildScript, 0o755)
 
-	// What the CLI must produce from that dist/e2e_flue/ (modes normalized to 0644,
-	// rooted at the wrangler's dir so index.js/assets are at the tar root).
+	// Only regular modules leave the machine. Raw Wrangler metadata, .vite state and
+	// source maps are absent; .flue-vite is a legitimate module path.
 	expectedFiles := []bundle.File{
 		{Path: "index.js", Mode: 0o644, Content: []byte(e2eModuleBody + "\n")},
 		{Path: "assets/chunk.js", Mode: 0o644, Content: []byte(e2eAssetBody + "\n")},
-		{Path: "wrangler.json", Mode: 0o644, Content: []byte(e2eWranglerBody + "\n")},
+		{Path: ".flue-vite/runtime.mjs", Mode: 0o644, Content: []byte(e2eRuntimeBody + "\n")},
 	}
 	expectedTarGz, err := bundle.Pack(expectedFiles)
 	if err != nil {
@@ -165,7 +169,7 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 		t.Errorf("create body carried a prompt for a flue agent: %v", f.createBody["prompt"])
 	}
 
-	// The content address the CLI advertised == the digest of the whole-dir bundle, and
+	// The content address the CLI advertised == the digest of the module-only bundle, and
 	// the PUT body is byte-exactly that canonical tar.gz — the full upload integrity chain.
 	if f.artifactDigest != expectedDigest {
 		t.Errorf("advertised digest = %s, want %s", f.artifactDigest, expectedDigest)
@@ -205,7 +209,7 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 		t.Errorf("flue DO deploy carried a framework_artifact_digest: %v", input["framework_artifact_digest"])
 	}
 
-	// flue_wrangler: the generated wrangler forwarded verbatim (DO bindings intact).
+	// flue_wrangler is the exact canonical descriptor, not the generated resolution dump.
 	wr, _ := input["flue_wrangler"].(map[string]any)
 	if wr == nil {
 		t.Fatalf("input.flue_wrangler missing: %v", input)
@@ -216,6 +220,27 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 	if wr["durable_objects"] == nil {
 		t.Errorf("flue_wrangler lost durable_objects: %v", wr)
 	}
+	wantKeys := map[string]bool{
+		"main": true, "compatibility_date": true, "compatibility_flags": true,
+		"no_bundle": true, "durable_objects": true,
+	}
+	if len(wr) != len(wantKeys) {
+		t.Errorf("flue_wrangler keys = %v, want only canonical descriptor", wr)
+	}
+	for key := range wr {
+		if !wantKeys[key] {
+			t.Errorf("raw Wrangler capability %q escaped into deployment: %v", key, wr[key])
+		}
+	}
+	if wr["compatibility_date"] != flueCompatibilityDate || wr["no_bundle"] != true {
+		t.Errorf("flue_wrangler profile changed: %v", wr)
+	}
+	encodedWrangler, _ := json.Marshal(wr)
+	for _, leaked := range []string{"/Users/developer", "MUST_NOT_LEAVE", "attacker-owned", "example.com", "victim"} {
+		if strings.Contains(string(encodedWrangler), leaked) {
+			t.Errorf("raw Wrangler value %q escaped into deployment: %s", leaked, encodedWrangler)
+		}
+	}
 
 	// The verifying→ready sequence was actually polled.
 	if f.getCount < 2 {
@@ -223,6 +248,80 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 	}
 	if vars, ok := f.configPutBody["vars"].(map[string]any); !ok || len(vars) != 0 {
 		t.Errorf("manifest without [vars] should clear desired vars, got %#v", f.configPutBody)
+	}
+}
+
+func TestExtractFlueWranglerDescriptorRejectsCapabilityVariation(t *testing.T) {
+	valid := func() map[string]any {
+		var value map[string]any
+		if err := json.Unmarshal([]byte(e2eWranglerBody), &value); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "unsafe main", mutate: func(value map[string]any) { value["main"] = "../index.js" }},
+		{name: "profile variation", mutate: func(value map[string]any) { value["compatibility_date"] = "2026-07-01" }},
+		{name: "extra compatibility flag", mutate: func(value map[string]any) {
+			value["compatibility_flags"] = []any{"nodejs_compat", "unsafe"}
+		}},
+		{name: "bundling enabled", mutate: func(value map[string]any) { value["no_bundle"] = false }},
+		{name: "foreign script binding", mutate: func(value map[string]any) {
+			bindings := value["durable_objects"].(map[string]any)["bindings"].([]any)
+			bindings[0].(map[string]any)["script_name"] = "victim-worker"
+		}},
+		{name: "missing registry", mutate: func(value map[string]any) {
+			value["durable_objects"].(map[string]any)["bindings"] = []any{
+				map[string]any{"name": "AGENT", "class_name": "FlueE2EAgent"},
+			}
+		}},
+		{name: "duplicate binding name", mutate: func(value map[string]any) {
+			value["durable_objects"].(map[string]any)["bindings"] = []any{
+				map[string]any{"name": "FLUE_REGISTRY", "class_name": "FlueE2EAgent"},
+				map[string]any{"name": "FLUE_REGISTRY", "class_name": "FlueRegistry"},
+			}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			value := valid()
+			tc.mutate(value)
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := extractFlueWranglerDescriptor(raw); err == nil {
+				t.Fatalf("expected %s to be rejected", tc.name)
+			}
+		})
+	}
+}
+
+func TestReadBundleModulesRejectsSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.js")
+	writeFile(t, outside, "export const secret = true;", 0o644)
+	writeFile(t, filepath.Join(root, "index.js"), "export {};", 0o644)
+	if err := os.Symlink(outside, filepath.Join(root, "leak.js")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readBundleModules(root); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestReadBundleModulesRejectsUnexpectedRegularFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "index.js"), "export {};", 0o644)
+	writeFile(t, filepath.Join(root, "runtime.wasm"), "not really wasm", 0o644)
+	if _, err := readBundleModules(root); err == nil || !strings.Contains(err.Error(), "unsupported file") {
+		t.Fatalf("expected unsupported-file rejection, got %v", err)
 	}
 }
 
@@ -236,7 +335,7 @@ func TestSyncManifestVarsReplacesDesiredVars(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	m := &manifest{Vars: map[string]string{"PUBLIC_MODE": "careful", "MAX_ITEMS": "12"}}
-	if err := syncManifestVars(cmd, sc, "agt_e2e", m); err != nil {
+	if err := syncManifestVars(cmd, sc, fakeAgentID, m); err != nil {
 		t.Fatalf("syncManifestVars: %v", err)
 	}
 	vars, _ := f.configPutBody["vars"].(map[string]any)

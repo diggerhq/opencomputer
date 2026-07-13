@@ -3,17 +3,20 @@
 // and cost extraction. The full on-path flow (forward + meter) is exercised by test/integration.test.ts.
 // Run: npx vitest run
 
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { generateKeyPair, mintDeployToken, verifyDeployToken, type DeployClaims } from "../src/token.js";
 import { costFromJson, costFromStream } from "../src/cost.js";
 import { unsafeModelMatchers, modelNeedsCacheStrip, stripCacheControl } from "../src/models.js";
 import { SpendCounter } from "../src/budget.js";
 import { DeployLease } from "../src/deploylease.js";
+import { _clearOrgKeyCache, resolveOrgKey } from "../src/orgkey.js";
 
 const now = 1_800_000_000;
+const ORG_ID = "11111111-1111-4111-8111-111111111111";
+const AGENT_ID = "agt_0123456789abcdef01234567";
 const b64url = (o: unknown) => btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const claims = (o: Partial<DeployClaims> = {}): DeployClaims => ({
-  org: "org_1", agt: "agt_1", ep: 2, iat: now, exp: now + 3600, ...o,
+  org: ORG_ID, agt: AGENT_ID, ep: 2, iat: now, exp: now + 3600, ...o,
 });
 
 function fakeState(): DurableObjectState {
@@ -29,8 +32,8 @@ describe("deploy token (EdDSA, per-deploy {org, agt})", () => {
     const v = await verifyDeployToken(publicKeyB64url, await mintDeployToken(privateKey, claims()), now);
     expect(v.ok).toBe(true);
     if (v.ok) {
-      expect(v.claims.org).toBe("org_1");
-      expect(v.claims.agt).toBe("agt_1");
+      expect(v.claims.org).toBe(ORG_ID);
+      expect(v.claims.agt).toBe(AGENT_ID);
       expect(v.claims.ep).toBe(2);
       // resolved seam: no per-session data in the token
       const raw = v.claims as unknown as Record<string, unknown>;
@@ -63,12 +66,57 @@ describe("deploy token (EdDSA, per-deploy {org, agt})", () => {
     expect(v.ok).toBe(false);
     if (!v.ok) expect(v.reason).toBe("missing_claims");
   });
+  it.each([
+    ["canonical owner instead of bare UUID", { org: `oc-org:${ORG_ID}` }, "bad_org"],
+    ["uppercase org UUID", { org: "ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF" }, "bad_org"],
+    ["non-canonical agent id", { agt: "agt_1" }, "bad_agent"],
+  ])("rejects %s", async (_name, overrides, reason) => {
+    const { privateKey, publicKeyB64url } = await generateKeyPair();
+    const token = await mintDeployToken(privateKey, claims(overrides));
+    const verified = await verifyDeployToken(publicKeyB64url, token, now);
+    expect(verified.ok).toBe(false);
+    if (!verified.ok) expect(verified.reason).toBe(reason);
+  });
   it("pins alg=EdDSA — rejects an alg-swap (none/HS256) header", async () => {
     const { privateKey, publicKeyB64url } = await generateKeyPair();
     const [, p, s] = (await mintDeployToken(privateKey, claims())).split(".");
     const v = await verifyDeployToken(publicKeyB64url, `${b64url({ alg: "none", typ: "JWT" })}.${p}.${s}`, now);
     expect(v.ok).toBe(false);
     if (!v.ok) expect(v.reason).toBe("unexpected_alg");
+  });
+});
+
+describe("org-key identity seam", () => {
+  afterEach(() => { _clearOrgKeyCache(); vi.restoreAllMocks(); });
+
+  it("fails closed without the dedicated route and bearer", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    expect(await resolveOrgKey({}, ORG_ID, Date.now())).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends the token's bare UUID exactly once to the sessions API", async () => {
+    let request: { url: string; auth: string | null; body: unknown } | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      request = {
+        url: String(input),
+        auth: new Headers(init?.headers).get("authorization"),
+        body: JSON.parse(String(init?.body)),
+      };
+      return new Response(JSON.stringify({ key: "test-only-key" }), { status: 200 });
+    }));
+
+    const key = await resolveOrgKey({
+      GATEWAY_ORKEY_URL: "https://api.opencomputer.dev/internal/gateway/org-key",
+      GATEWAY_ORKEY_SECRET: "dedicated-bearer",
+    }, ORG_ID, Date.now());
+
+    expect(key).toBe("test-only-key");
+    expect(request).toEqual({
+      url: "https://api.opencomputer.dev/internal/gateway/org-key",
+      auth: "Bearer dedicated-bearer",
+      body: { org: ORG_ID },
+    });
   });
 });
 

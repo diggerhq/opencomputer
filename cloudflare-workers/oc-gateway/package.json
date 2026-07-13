@@ -1,11 +1,12 @@
 {
-  "name": "oc-gateway",
+  "name": "oc-agent-gateway",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "node -e \"throw new Error('choose an explicit environment; production is deploy:production')\"",
+    "deploy:production": "wrangler deploy --env production",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "mint": "node --experimental-strip-types scripts/mint.ts"

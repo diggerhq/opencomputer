@@ -1,4 +1,4 @@
-// oc-gateway — the thin OC Worker over OpenRouter (design 013 §4, buildout contract #1 / W3).
+// oc-agent-gateway — the thin OC Worker over OpenRouter (design 013 §4, contract #1 / W3).
 //
 // An unmodified Flue app registers the managed provider INSIDE defineAgent (resolved token seam):
 //   registerProvider('anthropic', {
@@ -46,8 +46,6 @@ export interface Env {
   // Org OR-key seam (orgkey.ts): dedicated internal sessions-api route + its bearer secret.
   GATEWAY_ORKEY_URL?: string;
   GATEWAY_ORKEY_SECRET?: string;
-  // Acceptance-test single-key override (bypasses the seam). Never set in multi-org prod.
-  TEST_OR_KEY?: string;
   // Bearer that guards the control-plane admin routes (/admin/*). Unset → admin routes 404.
   GATEWAY_ADMIN_SECRET?: string;
   // Override OpenRouter base for tests; default = prod.
@@ -60,6 +58,8 @@ export interface Env {
 }
 
 const OR_BASE_DEFAULT = "https://openrouter.ai/api"; // == credential.ts MANAGED_ANTHROPIC_BASE
+const ORG_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const AGENT_ID = /^agt_[0-9a-f]{24}$/;
 
 // Map a gateway path prefix → the OpenRouter path prefix (credential.ts managed bases).
 //   /anthropic/v1/messages  → https://openrouter.ai/api/v1/messages   (Claude-Code path)
@@ -101,7 +101,7 @@ export default {
     const url = new URL(req.url);
 
     if (req.method === "GET" && url.pathname === "/healthz") {
-      return json({ status: "ok", service: "oc-gateway" });
+      return json({ status: "ok", service: "oc-agent-gateway" });
     }
 
     // Control-plane admin routes (provision an org+agt budget, revoke a deploy lease). Guarded by a
@@ -230,7 +230,9 @@ async function admin(req: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/admin/agent/budget") {
     const org = typeof body.org === "string" ? body.org : null;
     const agt = typeof body.agt === "string" ? body.agt : null;
-    if (!org || !agt) return json({ error: { type: "bad_request", message: "org, agt required" } }, 400);
+    if (!org || !agt || !ORG_ID.test(org) || !AGENT_ID.test(agt)) {
+      return json({ error: { type: "bad_request", message: "canonical bare org UUID and agent id required" } }, 400);
+    }
     const budgetMicro = body.budget_usd === null ? null : parseUsdMicro(String(body.budget_usd));
     const stub = env.SPEND_COUNTER.get(env.SPEND_COUNTER.idFromName(`agt:${org}:${agt}`));
     const r = await stub.fetch("https://do/provision", { method: "POST", body: JSON.stringify({ budget_micro: budgetMicro }) });
@@ -242,7 +244,9 @@ async function admin(req: Request, env: Env, url: URL): Promise<Response> {
     const org = typeof body.org === "string" ? body.org : null;
     const agt = typeof body.agt === "string" ? body.agt : null;
     const minEpoch = typeof body.min_epoch === "number" ? body.min_epoch : null;
-    if (!org || !agt || minEpoch == null) return json({ error: { type: "bad_request", message: "org, agt, min_epoch required" } }, 400);
+    if (!org || !agt || !ORG_ID.test(org) || !AGENT_ID.test(agt) || minEpoch == null) {
+      return json({ error: { type: "bad_request", message: "canonical bare org UUID, agent id and min_epoch required" } }, 400);
+    }
     const stub = env.DEPLOY_LEASE.get(env.DEPLOY_LEASE.idFromName(`${org}:${agt}`));
     const r = await stub.fetch("https://do/bump", { method: "POST", body: JSON.stringify({ min_epoch: minEpoch }) });
     return new Response(r.body, { status: r.status, headers: { "content-type": "application/json" } });
