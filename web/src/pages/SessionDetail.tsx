@@ -43,7 +43,12 @@ import {
   MessageBubble,
   TurnConversation,
 } from '@/components/session-conversation'
-import { bodyText, groupIntoTurns, isOutOfCredits } from '@/lib/session-turns'
+import {
+  bodyText,
+  groupIntoTurns,
+  isOutOfCredits,
+  isTurnInput,
+} from '@/lib/session-turns'
 
 function toolSummary(ev: SessionEvent): string {
   const b = (ev.body ?? {}) as Record<string, unknown>
@@ -80,6 +85,16 @@ function truncationNote(ev: SessionEvent): string | null {
 }
 function humanizeType(t: string): string {
   return t.replace(/[._]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
+}
+
+function turnCompletionLabel(ev: SessionEvent): string | null {
+  if (ev.type !== 'turn.completed' || !ev.body) return null
+  const body = ev.body as Record<string, unknown>
+  if (typeof body.outcome === 'string') return humanizeType(body.outcome)
+  if (typeof body.yield_reason === 'string') {
+    return humanizeType(body.yield_reason)
+  }
+  return null
 }
 
 interface TurnStartInfo {
@@ -324,9 +339,17 @@ for await (const event of session.events()) {
   // Group the (unfiltered) stream by turn: turn.started is level:progress, so it
   // must be read from allEvents, never the level==='user' filter.
   const grouped = useMemo(() => groupIntoTurns(allEvents), [allEvents])
-  // Seqs of input events typed but not yet claimed by a turn → tagged "queued".
+  // Inputs whose neutral turn has not crossed the durable start boundary.
   const pendingSeqs = useMemo(
-    () => new Set(grouped.pending.map((e) => e.seq)),
+    () =>
+      new Set([
+        ...grouped.pending.map((event) => event.seq),
+        ...grouped.groups
+          .filter((group) => group.state === 'queued')
+          .flatMap((group) =>
+            group.events.filter(isTurnInput).map((event) => event.seq),
+          ),
+      ]),
     [grouped],
   )
   // Per-turn seq range + input preview, so the All log's turn.started row is
@@ -334,7 +357,7 @@ for await (const event of session.events()) {
   const turnStartInfo = useMemo(() => {
     const m = new Map<string, TurnStartInfo>()
     for (const g of grouped.groups) {
-      const firstInput = g.events.find((e) => e.turn_id == null)
+      const firstInput = g.events.find(isTurnInput)
       const raw = firstInput ? bodyText(firstInput) : null
       const preview =
         raw && raw.length > 40 ? `${raw.slice(0, 40)}…` : (raw ?? null)
@@ -515,7 +538,11 @@ for await (const event of session.events()) {
             description="Events from the agent's turns will stream in here."
           />
         ) : level === 'user' ? (
-          <TurnConversation grouped={grouped} halted={halted} />
+          <TurnConversation
+            grouped={grouped}
+            halted={halted}
+            sessionStatus={status}
+          />
         ) : (
           <ul className="divide-y">
             {allEvents.map((ev) => (
@@ -636,6 +663,7 @@ function EventRow({
 }) {
   const text = bodyText(ev)
   const trunc = truncationNote(ev)
+  const completion = turnCompletionLabel(ev)
 
   // Reasoning — muted, set apart from the answer. (flue tailer + brain-box both emit this.)
   if (ev.type === 'agent.thinking') {
@@ -735,11 +763,7 @@ function EventRow({
     <li className="text-muted-foreground flex items-center gap-2 px-4 py-1.5 text-xs">
       <span className="bg-border h-px w-4 shrink-0" />
       {humanizeType(ev.type)}
-      {ev.type === 'turn.completed' &&
-      ev.body &&
-      typeof (ev.body as Record<string, unknown>).yield_reason === 'string'
-        ? ` · ${humanizeType(String((ev.body as Record<string, unknown>).yield_reason))}`
-        : ''}
+      {completion ? ` · ${completion}` : ''}
     </li>
   )
 }

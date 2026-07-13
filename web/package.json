@@ -10,6 +10,7 @@
     "dev": "vite",
     "dev:preview": "VITE_PREVIEW=1 vite",
     "build": "tsc -b && vite build",
+    "test": "vitest run",
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -55,6 +56,7 @@
     "tailwindcss": "^4.3.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.62.0",
-    "vite": "^8.1.0"
+    "vite": "^8.1.0",
+    "vitest": "^4.1.10"
   }
 }
