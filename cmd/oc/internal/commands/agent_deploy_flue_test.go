@@ -107,6 +107,7 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake flue build is a POSIX shell script")
 	}
+	t.Setenv("WRANGLER_LOG", "")
 
 	// A Flue app dir: manifest + clean source + a stand-in `flue` bin whose
 	// `build --target cloudflare` writes a deterministic but noisy dist/e2e_flue/.
@@ -115,7 +116,7 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 		"name  = \"e2e-flue\"\nmodel = \"anthropic/claude-sonnet-5\"\n\n[runtime]\nfamily = \"flue\"\n", 0o644)
 	writeFile(t, filepath.Join(dir, "src", "opencomputer.ts"),
 		"import { serveOC } from '@opencomputer/flue';\nexport default serveOC(agent);\n", 0o644)
-	buildScript := "#!/bin/sh\nset -e\nmkdir -p dist/e2e_flue/assets dist/e2e_flue/.vite dist/e2e_flue/.flue-vite\n" +
+	buildScript := "#!/bin/sh\nset -e\ntest \"${WRANGLER_LOG:-}\" = error\nmkdir -p dist/e2e_flue/assets dist/e2e_flue/.vite dist/e2e_flue/.flue-vite\n" +
 		"cat > dist/e2e_flue/index.js <<'JS'\n" + e2eModuleBody + "\nJS\n" +
 		"cat > dist/e2e_flue/assets/chunk.js <<'JS'\n" + e2eAssetBody + "\nJS\n" +
 		"cat > dist/e2e_flue/.flue-vite/runtime.mjs <<'JS'\n" + e2eRuntimeBody + "\nJS\n" +
@@ -249,6 +250,16 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 	if vars, ok := f.configPutBody["vars"].(map[string]any); !ok || len(vars) != 0 {
 		t.Errorf("manifest without [vars] should clear desired vars, got %#v", f.configPutBody)
 	}
+}
+
+func TestFlueBuildEnvPreservesExplicitWranglerLog(t *testing.T) {
+	t.Setenv("WRANGLER_LOG", "debug")
+	for _, value := range flueBuildEnv() {
+		if value == "WRANGLER_LOG=debug" {
+			return
+		}
+	}
+	t.Fatal("flueBuildEnv did not preserve explicit WRANGLER_LOG=debug")
 }
 
 func TestExtractFlueWranglerDescriptorRejectsCapabilityVariation(t *testing.T) {
