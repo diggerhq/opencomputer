@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { type ReactNode, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Monitor, Trash2, X } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   deleteBrowser,
   getBrowserProfiles,
+  getBrowserUsage,
   getBrowsers,
   type BrowserProfile,
   type BrowserSession,
@@ -41,6 +42,34 @@ function browserMode(browser: BrowserSession) {
   return browser.headless ? 'Headless' : 'Headful'
 }
 
+function browserCost(browser: BrowserSession) {
+  return browser.estimated_cost_usd ?? 0
+}
+
+function browserSeconds(browser: BrowserSession) {
+  return browser.billable_seconds ?? browser.metered_seconds ?? 0
+}
+
+function formatCurrency(value: number) {
+  return value.toLocaleString(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: value < 1 ? 4 : 2,
+    maximumFractionDigits: value < 1 ? 4 : 2,
+  })
+}
+
+function formatDuration(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '—'
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.round(seconds % 60)
+  if (mins < 1) return String(secs) + 's'
+  const hours = Math.floor(mins / 60)
+  const remMins = mins % 60
+  if (hours < 1) return String(mins) + 'm ' + String(secs) + 's'
+  return String(hours) + 'h ' + String(remMins) + 'm'
+}
+
 export default function Browsers() {
   const queryClient = useQueryClient()
   const [status, setStatus] = useState('')
@@ -59,6 +88,11 @@ export default function Browsers() {
   const { data: profiles = [], isLoading: loadingProfiles } = useQuery({
     queryKey: ['browser-profiles'],
     queryFn: getBrowserProfiles,
+  })
+  const { data: browserUsage } = useQuery({
+    queryKey: ['browser-usage'],
+    queryFn: getBrowserUsage,
+    retry: false,
   })
 
   const deleteMutation = useMutation({
@@ -89,6 +123,10 @@ export default function Browsers() {
 
   const activeCount = useMemo(
     () => browsers.filter((browser) => canDeleteBrowser(browser)).length,
+    [browsers],
+  )
+  const visibleBrowserCost = useMemo(
+    () => browsers.reduce((sum, browser) => sum + browserCost(browser), 0),
     [browsers],
   )
   const accessPlaceholder = browserAccessPlaceholder(browsersError)
@@ -145,6 +183,28 @@ export default function Browsers() {
           {browser.replay_id ? 'On' : browser.headless ? 'Unavailable' : '—'}
         </span>
       ),
+    },
+    {
+      key: 'duration',
+      header: 'Duration',
+      cell: (browser) => (
+        <span className="text-muted-foreground font-mono text-xs">
+          {formatDuration(browserSeconds(browser))}
+        </span>
+      ),
+    },
+    {
+      key: 'cost',
+      header: 'Cost',
+      cell: (browser) => (
+        <div className="text-right font-mono text-xs">
+          <div className="text-foreground">{formatCurrency(browserCost(browser))}</div>
+          {browser.metering_error ? (
+            <div className="text-status-warning">pending</div>
+          ) : null}
+        </div>
+      ),
+      align: 'right',
     },
     {
       key: 'created',
@@ -238,10 +298,14 @@ export default function Browsers() {
         />
       ) : (
         <>
-          <div className="mb-4 grid gap-3 sm:grid-cols-3">
+          <div className="mb-4 grid gap-3 sm:grid-cols-4">
             <Metric label="Visible sessions" value={browsers.length} />
             <Metric label="Active" value={activeCount} />
             <Metric label="Profiles" value={profiles.length} />
+            <Metric
+              label="Browser session cost"
+              value={formatCurrency(browserUsage?.total_cost_usd ?? visibleBrowserCost)}
+            />
           </div>
 
           <div className="mb-4 flex flex-wrap gap-1.5">
@@ -354,7 +418,7 @@ function InlineBrowserViewer({
   )
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+function Metric({ label, value }: { label: string; value: ReactNode }) {
   return (
     <Panel className="px-4 py-3">
       <div className="text-muted-foreground text-xs">{label}</div>

@@ -22,6 +22,7 @@ import {
   autumnWebhook,
   autumnProjectInternal,
   autumnSetProviderInternal,
+  browserUsageInternal,
   selfHealHalt,
   createAutumnCustomer,
 } from "./autumn_webhook";
@@ -44,6 +45,9 @@ export interface Env extends DashboardEnv {
   // secret (whsec_…) for /webhooks/autumn. AUTUMN_SECRET_KEY / AUTUMN_BASE_URL
   // are inherited from DashboardEnv. Unset on deployments not yet on Autumn.
   AUTUMN_WEBHOOK_SECRET: string;
+  // HMAC secret used by Browser API to submit runtime usage. Falls back to
+  // EVENT_SECRET in the handler when unset for compatibility during rollout.
+  BROWSER_USAGE_HMAC_SECRET?: string;
   // Shared with every CP via Infisical /shared/ → per-cell KV/SM. Used for
   // envelope encryption of secret_store_entries.encrypted_value. Matches
   // internal/crypto.Encryptor key format (hex-encoded 32 bytes).
@@ -1829,6 +1833,12 @@ export default {
       if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
       return autumnProjectInternal(req, env);
     }
+    // Browser API runtime usage → Autumn browser_runtime (BROWSER_USAGE_HMAC_SECRET HMAC).
+    if (path === "/internal/browser-usage") {
+      if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+      return browserUsageInternal(req, env);
+    }
+
     // Migrate tool: flip D1 billing_provider for one org (EVENT_SECRET HMAC).
     if (path === "/internal/autumn-set-provider") {
       if (req.method !== "POST") return json({ error: "method not allowed" }, 405);

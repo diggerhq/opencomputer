@@ -34,6 +34,7 @@ export interface AutumnEnv extends AutumnSyncEnv {
   CF_ADMIN_SECRET: string;
   EVENT_SECRET: string;
   AUTUMN_WEBHOOK_SECRET: string;
+  BROWSER_USAGE_HMAC_SECRET?: string;
 }
 
 const DEFAULT_BASE_URL = "https://api.useautumn.com/v1";
@@ -155,6 +156,66 @@ export async function autumnProjectInternal(req: Request, env: AutumnEnv): Promi
     return json({ error: "projection failed" }, 502);
   }
   return json({ ok: true, org_id: payload.org_id });
+}
+
+
+// browserUsageInternal records Browser Session runtime into Autumn. Browser API
+// sends micro-USD usage at the flat OpenComputer rate and owns the idempotency
+// key, so this endpoint only authenticates, validates, tracks, and projects.
+export async function browserUsageInternal(req: Request, env: AutumnEnv): Promise<Response> {
+  const rawBody = await req.text();
+  const ts = req.headers.get("X-Timestamp") ?? "";
+  const sig = req.headers.get("X-Signature") ?? "";
+  if (!ts || !sig) return json({ error: "missing signature headers" }, 400);
+  const tsNum = parseInt(ts, 10);
+  if (!Number.isFinite(tsNum) || Math.abs(Date.now() / 1000 - tsNum) > SVIX_TOLERANCE_SEC) {
+    return json({ error: "timestamp out of window" }, 401);
+  }
+  const secret = env.BROWSER_USAGE_HMAC_SECRET || env.EVENT_SECRET;
+  const url = new URL(req.url);
+  const expected = await hmacHex(secret, `${ts}.${url.pathname}.${rawBody}`);
+  if (!timingSafeEqual(expected, sig)) return json({ error: "signature mismatch" }, 401);
+
+  let p: {
+    org_id?: string;
+    browser_id?: string;
+    provider_session_id?: string;
+    seconds?: number;
+    value?: number;
+    usage_micro?: number;
+    idempotency_key?: string;
+    feature_id?: string;
+    metadata?: unknown;
+  };
+  try {
+    p = JSON.parse(rawBody);
+  } catch {
+    return json({ error: "bad json" }, 400);
+  }
+
+  const featureID = p.feature_id || "browser_runtime";
+  if (!p.org_id || !p.browser_id || !p.idempotency_key) {
+    return json({ error: "org_id, browser_id, and idempotency_key required" }, 400);
+  }
+  if (featureID !== "browser_runtime") return json({ error: "unsupported feature_id" }, 400);
+  const value = p.value ?? p.seconds;
+  if (!Number.isFinite(value) || Number(value) < 0) {
+    return json({ error: "value must be a non-negative number of browser seconds" }, 400);
+  }
+
+  try {
+    const remaining = await trackAutumnUsage(env, {
+      customerID: p.org_id,
+      featureID,
+      value: Math.ceil(Number(value)),
+      idempotencyKey: p.idempotency_key,
+    });
+    if (remaining !== null && remaining <= 0) await projectOrg(env, p.org_id);
+    return json({ ok: true, billed: true, org_id: p.org_id, browser_id: p.browser_id, remaining });
+  } catch (err) {
+    console.error(`browser-usage: track failed org=${p.org_id} browser=${p.browser_id}`, err);
+    return json({ error: "browser usage billing failed" }, 502);
+  }
 }
 
 // ── self-healing gate ──────────────────────────────────────────────────────
