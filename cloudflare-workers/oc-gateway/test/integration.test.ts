@@ -11,9 +11,11 @@ import worker, { Env } from "../src/index.js";
 import { SpendCounter } from "../src/budget.js";
 import { DeployLease } from "../src/deploylease.js";
 import { generateKeyPair, mintDeployToken } from "../src/token.js";
+import { _clearOrgKeyCache } from "../src/orgkey.js";
 
 const OR_KEY = "sk-or-v1-FAKE-org-key";
 const OR_BASE = "https://mock-openrouter.test/api";
+const OR_KEY_URL = "https://api.opencomputer.dev/internal/gateway/org-key";
 const ORG_ID = "11111111-1111-4111-8111-111111111111";
 const AGENT_ID = "agt_0123456789abcdef01234567";
 
@@ -53,6 +55,14 @@ let lastHeadersToOR: Headers | null;
 function mockFetch(perCallCost: number) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
+    if (url === OR_KEY_URL) {
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer dedicated-org-key-bearer");
+      expect(JSON.parse(String(init?.body))).toEqual({ org: ORG_ID });
+      return new Response(JSON.stringify({ key: OR_KEY }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
     lastHeadersToOR = new Headers(init?.headers);
     lastAuthToOR = lastHeadersToOR.get("authorization");
     lastBodyToOR = init?.body ? JSON.parse(init.body as string) : null;
@@ -70,7 +80,15 @@ function mockFetch(perCallCost: number) {
 function mkEnv(extra: Partial<Env> = {}) {
   const spend = fakeNamespace(SpendCounter);
   const lease = fakeNamespace(DeployLease);
-  const env = { GATEWAY_TOKEN_PUBLIC_KEY: PUB, TEST_OR_KEY: OR_KEY, OPENROUTER_BASE: OR_BASE, SPEND_COUNTER: spend.ns, DEPLOY_LEASE: lease.ns, ...extra } as Env;
+  const env = {
+    GATEWAY_TOKEN_PUBLIC_KEY: PUB,
+    GATEWAY_ORKEY_URL: OR_KEY_URL,
+    GATEWAY_ORKEY_SECRET: "dedicated-org-key-bearer",
+    OPENROUTER_BASE: OR_BASE,
+    SPEND_COUNTER: spend.ns,
+    DEPLOY_LEASE: lease.ns,
+    ...extra,
+  } as Env;
   return { env, spend, lease };
 }
 
@@ -99,7 +117,12 @@ const stateOf = async (inst: { fetch(r: Request): Promise<Response> }) =>
   (await inst.fetch(new Request("https://do/state"))).json() as Promise<{ spent_micro: number }>;
 
 describe("gateway on-path flow (resolved seam)", () => {
-  beforeEach(() => { lastAuthToOR = null; lastBodyToOR = null; lastHeadersToOR = null; });
+  beforeEach(() => {
+    _clearOrgKeyCache();
+    lastAuthToOR = null;
+    lastBodyToOR = null;
+    lastHeadersToOR = null;
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("GET /healthz → ok", async () => {

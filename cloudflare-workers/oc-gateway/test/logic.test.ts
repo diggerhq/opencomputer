@@ -89,6 +89,12 @@ describe("deploy token (EdDSA, per-deploy {org, agt})", () => {
 describe("org-key identity seam", () => {
   afterEach(() => { _clearOrgKeyCache(); vi.restoreAllMocks(); });
 
+  it("fails closed without the dedicated route and bearer", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    expect(await resolveOrgKey({}, ORG_ID, Date.now())).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("sends the token's bare UUID exactly once to the sessions API", async () => {
     let request: { url: string; auth: string | null; body: unknown } | undefined;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

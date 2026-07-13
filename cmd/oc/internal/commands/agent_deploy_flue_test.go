@@ -121,12 +121,11 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 		"cat > dist/e2e_flue/.flue-vite/runtime.mjs <<'JS'\n" + e2eRuntimeBody + "\nJS\n" +
 		"printf '%s' '{\"version\":3}' > dist/e2e_flue/.vite/manifest.json\n" +
 		"printf '%s' '{\"version\":3}' > dist/e2e_flue/index.js.map\n" +
-		"printf '%s' 'not a module' > dist/e2e_flue/README.txt\n" +
 		"cat > dist/e2e_flue/wrangler.json <<'JSON'\n" + e2eWranglerBody + "\nJSON\n"
 	writeFile(t, filepath.Join(dir, "node_modules", ".bin", "flue"), buildScript, 0o755)
 
-	// Only regular modules leave the machine. Raw Wrangler metadata, .vite state,
-	// source maps and non-modules are absent; .flue-vite is a legitimate module path.
+	// Only regular modules leave the machine. Raw Wrangler metadata, .vite state and
+	// source maps are absent; .flue-vite is a legitimate module path.
 	expectedFiles := []bundle.File{
 		{Path: "index.js", Mode: 0o644, Content: []byte(e2eModuleBody + "\n")},
 		{Path: "assets/chunk.js", Mode: 0o644, Content: []byte(e2eAssetBody + "\n")},
@@ -314,6 +313,15 @@ func TestReadBundleModulesRejectsSymlink(t *testing.T) {
 	}
 	if _, err := readBundleModules(root); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestReadBundleModulesRejectsUnexpectedRegularFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "index.js"), "export {};", 0o644)
+	writeFile(t, filepath.Join(root, "runtime.wasm"), "not really wasm", 0o644)
+	if _, err := readBundleModules(root); err == nil || !strings.Contains(err.Error(), "unsupported file") {
+		t.Fatalf("expected unsupported-file rejection, got %v", err)
 	}
 }
 

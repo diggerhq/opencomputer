@@ -46,8 +46,6 @@ export interface Env {
   // Org OR-key seam (orgkey.ts): dedicated internal sessions-api route + its bearer secret.
   GATEWAY_ORKEY_URL?: string;
   GATEWAY_ORKEY_SECRET?: string;
-  // Acceptance-test single-key override (bypasses the seam). Never set in multi-org prod.
-  TEST_OR_KEY?: string;
   // Bearer that guards the control-plane admin routes (/admin/*). Unset → admin routes 404.
   GATEWAY_ADMIN_SECRET?: string;
   // Override OpenRouter base for tests; default = prod.

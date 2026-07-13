@@ -74,8 +74,8 @@ POST {GATEWAY_ORKEY_URL}   Authorization: Bearer {GATEWAY_ORKEY_SECRET}   body {
   → 200 {"key": "sk-or-..."}   (resolveManagedSecret for the org's active managed credential)
 ```
 
-The plaintext is cached per-org in-isolate with a 60 s TTL. `TEST_OR_KEY` is an in-process/local-test
-override only and must be absent from the production Worker.
+The plaintext is cached per-org in-isolate with a 60 s TTL. There is no single-key test or production
+override: missing seam configuration returns no key, and tests exercise the same org-scoped request.
 
 ### 7. Prompt-caching safety
 
@@ -96,18 +96,18 @@ Some models route (via OpenRouter) to a backend that rejects Anthropic `cache_co
 | `src/token.ts` | EdDSA per-deploy token mint/verify (Web Crypto, no deps) |
 | `src/budget.ts` | `SpendCounter` DO — keyed spend counter + hard gate (µ$ integers); org+agt (hard) + per-session (tracked) |
 | `src/deploylease.ts` | `DeployLease` DO — per-(org,agt) lease-epoch floor (rotation/revocation fence) |
-| `src/orgkey.ts` | org OR-key resolution via the dedicated sessions-api seam (`TEST_OR_KEY` is test-only) |
+| `src/orgkey.ts` | fail-closed org OR-key resolution via the dedicated sessions-api seam |
 | `src/cost.ts` | per-response cost extraction (JSON + SSE) |
 | `src/models.ts` | `cache_control` safety (strip for unsafe models) |
 | `scripts/mint.ts` | mint a per-deploy token for live verification |
-| `test/` | `logic` (20) + `integration` (11) — **31 green** |
+| `test/` | `logic` (25) + `integration` (11) — **36 green** |
 
 ## Production deployment
 
 The permanent Worker identity is `oc-agent-gateway-prod`, exposed only at its Workers.dev URL. Its
 fresh `SpendCounter` and `DeployLease` state is owned by that Worker. Production config fixes
 `GATEWAY_ORKEY_URL` to `https://api.opencomputer.dev/internal/gateway/org-key`; it does not configure
-`TEST_OR_KEY` or `AGENT_BUDGET_USD_DEFAULT`.
+`AGENT_BUDGET_USD_DEFAULT`.
 
 Default deploy fails intentionally. Production requires the explicit command:
 

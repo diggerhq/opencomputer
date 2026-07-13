@@ -225,7 +225,8 @@ func runFlueBuild(ctx context.Context, dir string) error {
 
 // readFlueBundle locates the generated wrangler, extracts the exact Flue descriptor,
 // and reads only regular .js/.mjs modules rooted at the wrangler's directory. The raw
-// wrangler resolution dump, .vite state, source maps and non-modules are never archived.
+// wrangler resolution dump, .vite state and source maps are known control artifacts and
+// are never archived; any other non-module fails loudly instead of producing a broken deploy.
 func readFlueBundle(distDir string) ([]bundle.File, flueWranglerDescriptor, error) {
 	wranglerPath, err := findGeneratedWrangler(distDir)
 	if err != nil {
@@ -362,7 +363,8 @@ func findGeneratedWrangler(distDir string) (string, error) {
 }
 
 // readBundleModules walks the output into a module-only fileset with normalized modes
-// and forward-slash, root-relative paths. Symlinks and special files fail closed.
+// and forward-slash, root-relative paths. Symlinks, special files and unexpected regular
+// files fail closed. Only the generated wrangler, source maps and .vite state are ignored.
 func readBundleModules(root string) ([]bundle.File, error) {
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("build output %s not found — did `flue build --target cloudflare` run?", root)
@@ -386,19 +388,22 @@ func readBundleModules(root string) ([]bundle.File, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if !safeFlueModulePath(rel) {
-			return nil // excludes wrangler.json, source maps and every non-.js/.mjs file
-		}
-		content, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
 		st, err := d.Info()
 		if err != nil {
 			return err
 		}
 		if !st.Mode().IsRegular() {
-			return fmt.Errorf("build output contains non-regular module %s", p)
+			return fmt.Errorf("build output contains non-regular file %s", p)
+		}
+		if rel == "wrangler.json" || strings.HasSuffix(rel, ".map") {
+			return nil
+		}
+		if !safeFlueModulePath(rel) {
+			return fmt.Errorf("build output contains unsupported file %q; expected only .js/.mjs modules", rel)
+		}
+		content, err := os.ReadFile(p)
+		if err != nil {
+			return err
 		}
 		files = append(files, bundle.File{
 			Path:    rel,
