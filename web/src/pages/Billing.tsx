@@ -5,6 +5,7 @@ import { CircleAlert, CircleCheck } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import {
+  autumnBillingPortal,
   autumnSubscribeConcurrency,
   autumnTopup,
   billingPortal,
@@ -180,7 +181,7 @@ function PlanTab() {
         </p>
       </Panel>
 
-      {isPro ? (
+      {isPro || billing?.hasPaymentMethod ? (
         <Panel className="p-6">
           <h2 className="mb-2 text-sm font-semibold">
             Usage &amp; payment method
@@ -280,12 +281,25 @@ function PrepaidPlan() {
     onError: (e) => notifyError("Couldn't update your subscription.", e),
   })
 
+  // Whether a card is on file → offer the Stripe portal to manage it. Compliance
+  // requires that anyone with a saved card can view/update/remove it.
+  const { data: billing } = useQuery({ queryKey: ['billing'], queryFn: getBilling })
+  const portalMutation = useMutation({
+    mutationFn: autumnBillingPortal,
+    onSuccess: (data) => {
+      window.location.href = data.url
+    },
+    onError: (e) => notifyError("Couldn't open the billing portal.", e),
+  })
+
   if (isLoading) return <Skeleton className="h-64 max-w-2xl" />
 
   const credits = (autumn?.creditsRemainingCents ?? 0) / 100
   const halted = autumn?.isHalted ?? false
   const currentPlan = autumn?.concurrencyPlan ?? 'base'
   const tier = CONCURRENCY_TIERS.find((t) => t.id === confirmPlanId)
+  const hasCard =
+    (billing?.hasPaymentMethod ?? false) || (autumn?.hasToppedUp ?? false)
 
   return (
     <div className="grid max-w-5xl grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
@@ -347,6 +361,25 @@ function PrepaidPlan() {
         current={autumn?.autoTopup ?? null}
         hasToppedUp={autumn?.hasToppedUp ?? false}
       />
+
+      {hasCard ? (
+        <Panel className="p-6">
+          <h2 className="mb-2 text-sm font-semibold">Payment method</h2>
+          <p className="text-muted-foreground mb-3 text-sm">
+            Update your card, download invoices, or remove your payment method on
+            Stripe.
+          </p>
+          <Button
+            variant="outline"
+            onClick={() => portalMutation.mutate()}
+            disabled={portalMutation.isPending}
+          >
+            {portalMutation.isPending
+              ? 'Opening Stripe…'
+              : 'Manage payment method ↗'}
+          </Button>
+        </Panel>
+      ) : null}
 
       <ModelUsageCard usage={autumn?.modelUsage ?? null} />
 

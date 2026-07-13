@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useParams, useLocation } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
@@ -9,8 +9,9 @@ import {
   Brain,
   CheckCircle2,
   XCircle,
-  FileWarning,
+  Sparkles,
 } from 'lucide-react'
+import { GuidedTour, type GuideStep } from '@/components/guided-tour'
 import { notifyError } from '@/lib/errors'
 import { useHalted } from '@/hooks/useHalted'
 import {
@@ -38,19 +39,12 @@ import { ApiHint } from '@/components/api-hint'
 import { MessagesSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatSpend, usageTokens } from '@/lib/usage'
+import {
+  MessageBubble,
+  TurnConversation,
+} from '@/components/session-conversation'
+import { bodyText, groupIntoTurns, isOutOfCredits } from '@/lib/session-turns'
 
-// body is unknown (inline JSON ≤32KB); pull the common shapes defensively.
-function bodyText(ev: SessionEvent): string | null {
-  const b = ev.body
-  if (
-    b &&
-    typeof b === 'object' &&
-    typeof (b as Record<string, unknown>).text === 'string'
-  ) {
-    return (b as Record<string, string>).text
-  }
-  return null
-}
 function toolSummary(ev: SessionEvent): string {
   const b = (ev.body ?? {}) as Record<string, unknown>
   const tool = typeof b.tool === 'string' ? b.tool : 'tool'
@@ -72,7 +66,10 @@ function toolResult(ev: SessionEvent): { text: string; isError: boolean } {
     (typeof b.text === 'string' && b.text) ||
     ''
   const dur = typeof b.duration_ms === 'number' ? ` · ${b.duration_ms}ms` : ''
-  return { text: summary ? `${tool} → ${summary}${dur}` : `${tool} →${dur}`, isError }
+  return {
+    text: summary ? `${tool} → ${summary}${dur}` : `${tool} →${dur}`,
+    isError,
+  }
 }
 // The body spilled to blob storage (event > 32KB) — surface an affordance instead of
 // rendering an empty bubble.
@@ -83,6 +80,12 @@ function truncationNote(ev: SessionEvent): string | null {
 }
 function humanizeType(t: string): string {
   return t.replace(/[._]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
+}
+
+interface TurnStartInfo {
+  from: number | null
+  to: number | null
+  preview: string | null
 }
 
 const LEVELS = [
@@ -96,10 +99,120 @@ export default function SessionDetail() {
   const queryClient = useQueryClient()
   const halted = useHalted() // top-level: must run before any early return (Rules of Hooks)
   const [draft, setDraft] = useState('')
-  const [level, setLevel] = useState<LevelFilter>('all')
+  const [level, setLevel] = useState<LevelFilter>('user')
   const [confirmCancel, setConfirmCancel] = useState(false)
   const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
   const [streamOk, setStreamOk] = useState(false)
+
+  // Guided first-run overlay: the chip launch passes { guide: 'agent' } via nav
+  // state; the "How it works" button reopens it any time. Anchors point at the
+  // real regions below (header / event stream / composer).
+  const location = useLocation()
+  const headerRef = useRef<HTMLDivElement>(null)
+  const eventsRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLFormElement>(null)
+  const [guideOpen, setGuideOpen] = useState(
+    () => (location.state as { guide?: string } | null)?.guide === 'agent',
+  )
+  const guideSteps: GuideStep[] = useMemo(
+    () => [
+      {
+        target: headerRef,
+        title: 'This session came from two API calls',
+        body: 'Clicking the example created a managed agent, then started a session on it — the dashboard just called the public API on your behalf.',
+        api: 'POST /v3/agents · POST /v3/sessions',
+        code: [
+          {
+            label: 'SDK',
+            code: `import { OpenComputer } from "@opencomputer/sdk";
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY });
+
+const agent = await oc.agents.create({
+  runtime: "claude",
+  model: "anthropic/claude-opus-4-8",
+  credential: "managed",
+});
+
+const session = await oc.sessions.create({
+  agent: agent.id,
+  input: "Give me a quick tour of this sandbox.",
+});`,
+          },
+          {
+            label: 'CLI',
+            code: `oc agent create my-agent \\
+  --runtime claude --model anthropic/claude-opus-4-8 --credential managed
+
+oc session create --agent my-agent \\
+  --input "Give me a quick tour of this sandbox."`,
+          },
+          {
+            label: 'API',
+            code: `# 1. Create a managed agent
+curl -X POST https://api.opencomputer.dev/v3/agents \\
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"runtime":"claude","model":"anthropic/claude-opus-4-8","credential":"managed"}'
+
+# 2. Start a session on that agent
+curl -X POST https://api.opencomputer.dev/v3/sessions \\
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"agent":"agt_...","input":"Give me a quick tour of this sandbox."}'`,
+          },
+        ],
+        docs: 'https://docs.opencomputer.dev/agent-sessions/quickstart',
+      },
+      {
+        target: eventsRef,
+        title: "This is the session's live event log",
+        body: 'Every turn the agent takes streams here over SSE — the same feed you consume in code, no polling.',
+        api: 'GET /v3/sessions/:id/events',
+        code: [
+          {
+            label: 'SDK',
+            code: `// session is the handle returned by oc.sessions.create()
+for await (const event of session.events()) {
+  console.log(event.type, event.body);
+}`,
+          },
+          { label: 'CLI', code: `oc session logs $SESSION_ID` },
+          {
+            label: 'API',
+            code: `curl -N https://api.opencomputer.dev/v3/sessions/$SESSION_ID/events?stream=sse \\
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY"
+# server-sent events stream: one event per line`,
+          },
+        ],
+        docs: 'https://docs.opencomputer.dev/agent-sessions/sessions',
+      },
+      {
+        target: composerRef,
+        title: 'Steer it from here',
+        body: 'Sending a message posts more input to the same session — the agent picks it up on its next turn.',
+        api: 'POST /v3/sessions/:id/messages',
+        code: [
+          {
+            label: 'SDK',
+            code: `await session.steer("Also add a dark mode toggle.");`,
+          },
+          {
+            label: 'CLI',
+            code: `oc session steer $SESSION_ID "Also add a dark mode toggle."`,
+          },
+          {
+            label: 'API',
+            code: `curl -X POST https://api.opencomputer.dev/v3/sessions/$SESSION_ID/messages \\
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"text":"Also add a dark mode toggle."}'`,
+          },
+        ],
+        docs: 'https://docs.opencomputer.dev/agent-sessions/messaging',
+      },
+    ],
+    [],
+  )
 
   const { data: session, isLoading } = useQuery({
     queryKey: ['session', sessionId],
@@ -208,6 +321,28 @@ export default function SessionDetail() {
     )
   }, [eventData, liveEvents, sessionId])
 
+  // Group the (unfiltered) stream by turn: turn.started is level:progress, so it
+  // must be read from allEvents, never the level==='user' filter.
+  const grouped = useMemo(() => groupIntoTurns(allEvents), [allEvents])
+  // Seqs of input events typed but not yet claimed by a turn → tagged "queued".
+  const pendingSeqs = useMemo(
+    () => new Set(grouped.pending.map((e) => e.seq)),
+    [grouped],
+  )
+  // Per-turn seq range + input preview, so the All log's turn.started row is
+  // self-describing instead of a bare orphan marker.
+  const turnStartInfo = useMemo(() => {
+    const m = new Map<string, TurnStartInfo>()
+    for (const g of grouped.groups) {
+      const firstInput = g.events.find((e) => e.turn_id == null)
+      const raw = firstInput ? bodyText(firstInput) : null
+      const preview =
+        raw && raw.length > 40 ? `${raw.slice(0, 40)}…` : (raw ?? null)
+      m.set(g.turnId, { from: g.fromSeq, to: g.toSeq, preview })
+    }
+    return m
+  }, [grouped])
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -222,11 +357,18 @@ export default function SessionDetail() {
   const canSteer = !archived
   const canCancel = status === 'running' || status === 'awaiting_input'
 
-  const events =
-    level === 'user' ? allEvents.filter((e) => e.level === 'user') : allEvents
+  const isEmpty =
+    level === 'user'
+      ? grouped.groups.length === 0 && grouped.pending.length === 0
+      : allEvents.length === 0
 
   return (
     <div className="max-w-4xl">
+      <GuidedTour
+        steps={guideSteps}
+        open={guideOpen}
+        onClose={() => setGuideOpen(false)}
+      />
       <Link
         to="/sessions"
         className="text-muted-foreground hover:text-foreground mb-4 inline-flex items-center gap-1.5 text-sm"
@@ -236,7 +378,7 @@ export default function SessionDetail() {
       </Link>
 
       {/* Header */}
-      <Panel className="mb-4 p-5">
+      <Panel ref={headerRef} className="mb-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-1.5">
             <div className="flex flex-wrap items-center gap-2.5">
@@ -286,6 +428,15 @@ export default function SessionDetail() {
             />
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => setGuideOpen(true)}
+            >
+              <Sparkles className="size-3.5" />
+              How it works
+            </Button>
             {canCancel ? (
               <Button
                 variant="outline"
@@ -326,7 +477,7 @@ export default function SessionDetail() {
       </div>
 
       {/* Event stream */}
-      <Panel className="overflow-hidden">
+      <Panel ref={eventsRef} className="overflow-hidden">
         <div className="flex items-center justify-between border-b px-4 py-2.5">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold">Events</h2>
@@ -357,16 +508,23 @@ export default function SessionDetail() {
           </div>
         </div>
 
-        {events.length === 0 ? (
+        {isEmpty ? (
           <EmptyState
             icon={MessagesSquare}
             title="No events yet"
             description="Events from the agent's turns will stream in here."
           />
+        ) : level === 'user' ? (
+          <TurnConversation grouped={grouped} halted={halted} />
         ) : (
           <ul className="divide-y">
-            {events.map((ev) => (
-              <EventRow key={ev.id} ev={ev} />
+            {allEvents.map((ev) => (
+              <EventRow
+                key={ev.id}
+                ev={ev}
+                pending={pendingSeqs}
+                bounds={turnStartInfo}
+              />
             ))}
           </ul>
         )}
@@ -378,7 +536,10 @@ export default function SessionDetail() {
               <CircleAlert className="size-3.5 shrink-0" />
               <span>
                 Out of credits —{' '}
-                <Link to="/billing" className="font-medium underline underline-offset-2">
+                <Link
+                  to="/billing"
+                  className="font-medium underline underline-offset-2"
+                >
                   top up to resume
                 </Link>
                 .
@@ -386,6 +547,7 @@ export default function SessionDetail() {
             </div>
           )}
           <form
+            ref={composerRef}
             className="flex items-end gap-2"
             onSubmit={(e) => {
               e.preventDefault()
@@ -396,7 +558,12 @@ export default function SessionDetail() {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onSend={() => {
-                if (draft.trim() && canSteer && !halted && !steerMutation.isPending) {
+                if (
+                  draft.trim() &&
+                  canSteer &&
+                  !halted &&
+                  !steerMutation.isPending
+                ) {
                   steerMutation.mutate()
                 }
               }}
@@ -413,12 +580,19 @@ export default function SessionDetail() {
             <Button
               type="submit"
               title="Enter to send · Shift+Enter for newline"
-              disabled={!draft.trim() || !canSteer || halted || steerMutation.isPending}
+              disabled={
+                !draft.trim() || !canSteer || halted || steerMutation.isPending
+              }
             >
               <Send className="size-4" />
               Send
             </Button>
           </form>
+          {status === 'running' && !halted && !archived ? (
+            <p className="text-muted-foreground mt-2 text-xs">
+              Agent is working — your message will run in the next turn.
+            </p>
+          ) : null}
         </div>
       </Panel>
 
@@ -451,7 +625,15 @@ export default function SessionDetail() {
   )
 }
 
-function EventRow({ ev }: { ev: SessionEvent }) {
+function EventRow({
+  ev,
+  pending,
+  bounds,
+}: {
+  ev: SessionEvent
+  pending: Set<number>
+  bounds: Map<string, TurnStartInfo>
+}) {
   const text = bodyText(ev)
   const trunc = truncationNote(ev)
 
@@ -469,36 +651,38 @@ function EventRow({ ev }: { ev: SessionEvent }) {
   // Conversation messages — the signal.
   if (ev.type === 'user.message' || ev.type === 'agent.message') {
     const isUser = ev.type === 'user.message'
-    // Out-of-credits notice (from the runtime's failPreExec) → make the "top up" actionable.
-    const outOfCredits =
-      ev.type === 'agent.message' &&
-      (ev.body as Record<string, unknown> | null | undefined)?.code ===
-        'insufficient_credits'
     return (
       <li className="px-4 py-3">
-        <div className="mb-1 flex items-center gap-2">
-          <span className="text-foreground text-xs font-semibold">
-            {ev.actor?.display ?? (isUser ? 'You' : 'Agent')}
-          </span>
-          <span className="text-muted-foreground/70 font-mono text-[10px]">
-            #{ev.seq}
-          </span>
-        </div>
-        {text ? (
-          <p className="text-foreground/90 text-sm whitespace-pre-wrap">
-            {text}
-          </p>
-        ) : trunc ? (
-          <p className="text-muted-foreground flex items-center gap-1.5 text-xs italic">
-            <FileWarning className="size-3.5 shrink-0" />
-            {trunc}
-          </p>
-        ) : null}
-        {outOfCredits && (
-          <Button asChild size="sm" className="mt-2">
-            <Link to="/billing">Top up</Link>
-          </Button>
-        )}
+        <MessageBubble
+          label={ev.actor?.display ?? (isUser ? 'You' : 'Agent')}
+          text={text ?? trunc}
+          seq={ev.seq}
+          // Input typed while a turn was running but not yet claimed by a turn.
+          meta={
+            isUser && pending.has(ev.seq) ? (
+              <span className="text-muted-foreground text-[10px]">
+                · queued
+              </span>
+            ) : undefined
+          }
+          outOfCredits={isOutOfCredits(ev)}
+        />
+      </li>
+    )
+  }
+
+  // Turn started — de-orphaned: self-describing with its seq range + input preview.
+  if (ev.type === 'turn.started') {
+    const info = bounds.get(ev.turn_id ?? '')
+    const range =
+      info && info.from != null
+        ? ` · running #${info.from}${info.to != null && info.to > info.from ? `–#${info.to}` : ''}`
+        : ''
+    const preview = info?.preview ? ` : "${info.preview}"` : ''
+    return (
+      <li className="text-muted-foreground flex items-center gap-2 px-4 py-1.5 text-xs">
+        <span className="bg-border h-px w-4 shrink-0" />
+        {`Turn started${range}${preview}`}
       </li>
     )
   }

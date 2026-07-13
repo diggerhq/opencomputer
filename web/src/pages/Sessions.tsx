@@ -18,6 +18,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Field, Label, Select } from '@/components/form'
+import { Input } from '@/components/ui/input'
 import {
   WorkingRepoField,
   type WorkingRepo,
@@ -47,12 +48,20 @@ export default function Sessions() {
   const [showStart, setShowStart] = useState(false)
   const [agentId, setAgentId] = useState('')
   const [message, setMessage] = useState('')
+  // Optional per-session model override — empty inherits the agent's model
+  // (cleared when the agent changes, since a model is runtime-specific).
+  const [model, setModel] = useState('')
   // Optional working repo — explicitly chosen, per-agent (cleared when the agent changes).
   const [workingRepo, setWorkingRepo] = useState<WorkingRepo | null>(null)
+
+  const selectedAgent = agents?.find((a) => a.id === agentId)
+  // flue agents pin their model in the deployed artifact — no per-session override.
+  const isFlueAgent = selectedAgent?.runtime === 'flue'
 
   const openStart = () => {
     setAgentId(agents?.[0]?.id ?? '')
     setMessage('')
+    setModel('')
     setWorkingRepo(null)
     setShowStart(true)
   }
@@ -63,6 +72,8 @@ export default function Sessions() {
         {
           agent: agentId,
           input: message.trim(),
+          // Only send a model when overridden — omitting it inherits the agent's.
+          ...(model.trim() && !isFlueAgent ? { model: model.trim() } : {}),
           ...(workingRepo
             ? { sources: [{ repo: workingRepo.repo, ref: workingRepo.ref }] }
             : {}),
@@ -234,6 +245,7 @@ export default function Sessions() {
                   value={agentId}
                   onValueChange={(v) => {
                     setAgentId(v)
+                    setModel('') // a model override is per-agent (runtime-specific)
                     setWorkingRepo(null) // a working repo is per-agent
                   }}
                   options={(agents ?? []).map((a) => ({
@@ -260,6 +272,26 @@ export default function Sessions() {
                   className="min-h-24"
                 />
               </Field>
+              {agentId && !isFlueAgent ? (
+                <Field
+                  label="Model"
+                  htmlFor="start-model"
+                  description={
+                    selectedAgent?.model
+                      ? `Optional — overrides just this session. Defaults to the agent's model (${selectedAgent.model}).`
+                      : "Optional — overrides just this session. Defaults to the agent's model."
+                  }
+                >
+                  <Input
+                    id="start-model"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder={selectedAgent?.model ?? 'provider/model'}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </Field>
+              ) : null}
               {agentId ? (
                 <WorkingRepoField
                   value={workingRepo}

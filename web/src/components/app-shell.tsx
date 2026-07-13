@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   LayoutGrid,
+  Rocket,
   Bot,
   MessagesSquare,
   Monitor,
@@ -55,7 +56,12 @@ type NavGroup = { label?: string; items: NavItem[] }
 // (sandbox) plane, plus account/org. Groups render with spacing + a small muted
 // label rather than hard dividers.
 const NAV: NavGroup[] = [
-  { items: [{ to: '/', label: 'Dashboard', icon: LayoutGrid, end: true }] },
+  {
+    items: [
+      { to: '/', label: 'Dashboard', icon: LayoutGrid, end: true },
+      { to: '/getting-started', label: 'Getting started', icon: Rocket },
+    ],
+  },
   {
     label: 'Agents',
     items: [

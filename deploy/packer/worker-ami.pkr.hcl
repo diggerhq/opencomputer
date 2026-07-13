@@ -63,8 +63,8 @@ variable "replication_regions" {
 
 variable "vm_size" {
   type        = string
-  default     = "Standard_D4ads_v7"
-  description = "Builder VM size. Must match the autoscaled worker VM family for disk controller compatibility."
+  default     = "Standard_D4ads_v6"
+  description = "Builder VM size. MUST stay an NVMe family (v6/v7 *ads*) — the image is built NVMe-specific, so a SCSI (v5 or older) builder yields an incompatible image. v6 and v7 share the same Gen2/x64/NVMe contract, so a v6-built image runs unchanged on v7 workers. Default is D4ads_v6 (offered in all eastus2 zones) because D*ads_v7 is frequently capacity-constrained there (eastus2 offers v7 in zone 2 only)."
 }
 
 variable "image_name_prefix" {

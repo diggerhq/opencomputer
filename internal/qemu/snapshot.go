@@ -62,6 +62,18 @@ type SnapshotMeta struct {
 func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointStore *storage.CheckpointStore) (*sandbox.HibernateResult, error) {
 	t0 := time.Now()
 
+	// Deep-hibernating a VM that's in the paused tier: its vCPUs are frozen and
+	// guest RAM is paged out. Un-freeze (raw QMP cont — no billing change, both
+	// tiers are unbilled) so the guest can quiesce (agent sync) before savevm;
+	// the paged-out RAM faults back in as savevm reads it. Handles every deep
+	// entrypoint uniformly (idle promotion, emergency, cross-cell cap).
+	if !vm.pausedAt.IsZero() && vm.qmp != nil {
+		if err := vm.qmp.Cont(); err != nil {
+			return nil, fmt.Errorf("hibernate %s: un-pause before savevm: %w", vm.ID, err)
+		}
+		vm.pausedAt = time.Time{}
+	}
+
 	snapshotDir := filepath.Join(vm.sandboxDir, "snapshot")
 	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
 		return nil, fmt.Errorf("mkdir snapshot dir: %w", err)

@@ -21,6 +21,7 @@ export interface BrowserCreateOpts {
   startUrl?: string;
   chromePolicy?: Record<string, unknown>;
   telemetry?: Record<string, unknown> | null;
+  recording?: boolean;
 }
 
 export interface BrowserData {
@@ -253,6 +254,7 @@ function toCreateBody(opts: BrowserCreateOpts): Record<string, unknown> {
   if (opts.startUrl !== undefined) body.start_url = opts.startUrl;
   if (opts.chromePolicy !== undefined) body.chrome_policy = opts.chromePolicy;
   if (opts.telemetry !== undefined) body.telemetry = opts.telemetry;
+  if (opts.recording !== undefined) body.recording = opts.recording;
   return body;
 }
 

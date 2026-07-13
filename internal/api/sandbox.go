@@ -21,6 +21,8 @@ import (
 	"github.com/opensandbox/opensandbox/internal/storage"
 	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -1921,6 +1923,10 @@ func (s *Server) hibernateSandboxRemote(c echo.Context, sandboxID string) error 
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
 	}
 	if session.Status != "running" {
+		// Idempotent: an already-hibernated (paused or deep) box is "hibernated".
+		if session.Status == "hibernated" {
+			return c.JSON(http.StatusOK, map[string]interface{}{"sandboxID": sandboxID, "status": "hibernated"})
+		}
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox is not running"})
 	}
 
@@ -1929,44 +1935,121 @@ func (s *Server) hibernateSandboxRemote(c echo.Context, sandboxID string) error 
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker unreachable"})
 	}
 
-	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 60*time.Second)
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 30*time.Second)
 	defer cancel()
 
-	grpcResp, err := client.HibernateSandbox(grpcCtx, &pb.HibernateSandboxRequest{
-		SandboxId: sandboxID,
-	})
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "hibernate failed: " + err.Error(),
-		})
+	// Customer "hibernate" maps to the RAM-resident pause tier: instant (QMP
+	// stop + guest-RAM pageout), unbilled, stays on this worker for a fast
+	// resume. The platform silently promotes it to deep (savevm) hibernation
+	// later — idle age (1h), the per-org paused cap, or memory pressure — so the
+	// customer only ever sees "hibernated". No checkpoint key/size to return.
+	if _, err := client.PauseSandbox(grpcCtx, &pb.PauseSandboxRequest{SandboxId: sandboxID}); err != nil {
+		// Version-skew fallback. This PR ships the pause tier in BOTH the control
+		// plane and the worker, but they roll independently: the CP deploys in
+		// minutes while the worker AMI takes ~30 min to build + roll. During that
+		// window a not-yet-rolled worker runs the old binary, which has no
+		// PauseSandbox RPC and returns Unimplemented. Rather than 500 the
+		// customer's hibernate, fall back to the legacy deep HibernateSandbox
+		// (which old workers do support). The customer still sees "hibernated";
+		// it's just a deep hibernate instead of a pause until the fleet rolls,
+		// after which this branch stops firing. Any other error is a real
+		// failure and surfaces as before.
+		if status.Code(err) == codes.Unimplemented {
+			return s.hibernateDeepFallback(c, session)
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "hibernate failed: " + err.Error()})
+	}
+	if _, err := s.store.SetSandboxPaused(c.Request().Context(), sandboxID); err != nil {
+		log.Printf("hibernate: sandbox %s paused but DB update failed: %v", sandboxID, err)
 	}
 
-	// Record hibernation in PG
-	orgID, _ := auth.GetOrgID(c)
-	_, superseded, _ := s.store.CreateHibernation(c.Request().Context(), sandboxID, orgID,
-		grpcResp.CheckpointKey, grpcResp.SizeBytes,
-		session.Region, session.Template, session.Config)
-	s.deleteSupersededHibernation(superseded)
+	// No route-cache invalidation: a paused box stays on session.WorkerID, and
+	// the proxy forwards resume traffic straight there.
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"sandboxID": sandboxID,
+		"status":    "hibernated",
+	})
+}
+
+// hibernateDeepFallback performs a legacy deep (savevm) hibernation of a running
+// sandbox. It is the version-skew path for hibernateSandboxRemote: when the
+// owning worker predates the pause tier (returns Unimplemented for PauseSandbox
+// during a CP-ahead-of-workers deploy window), we deep-hibernate instead so the
+// customer's hibernate keeps working. Mirrors the pre-pause hibernate flow
+// exactly: checkpoint record + status=hibernated. hibernation_mode stays NULL,
+// which the wake proxy treats as deep-restore — identical to every deep box
+// before this PR — so wake works correctly whether or not the fleet has rolled.
+func (s *Server) hibernateDeepFallback(c echo.Context, session *db.SandboxSession) error {
+	sandboxID := session.SandboxID
+	client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker unreachable"})
+	}
+	// Deep hibernate (savevm + evict) is slower than a pause — allow more time.
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 120*time.Second)
+	defer cancel()
+
+	if _, err := client.HibernateSandbox(grpcCtx, &pb.HibernateSandboxRequest{SandboxId: sandboxID}); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "hibernate failed: " + err.Error()})
+	}
+
+	// The worker's HibernateSandbox handler writes the sandbox_hibernations
+	// record (the shared chokepoint for all remote deep-hibernations), so we
+	// don't create it here — doing so would double-create with the same key and
+	// the superseded-cleanup would delete the live checkpoint blob. We only need
+	// to flip the session status: the worker's SetSandboxDeep CASes on
+	// mode='paused', which is a no-op for this running box, so status stays
+	// 'running' until we set it here.
 	_ = s.store.UpdateSandboxSessionStatus(c.Request().Context(), sandboxID, "hibernated", nil)
 
-	// Invalidate the proxy route cache: wake may land the sandbox on a
-	// different worker, so subsequent data-plane requests must re-resolve
-	// the routing from the DB instead of hitting the old worker.
+	// Wake may land the box on a different worker — drop the cached route.
 	if s.sandboxAPIProxy != nil {
 		s.sandboxAPIProxy.InvalidateRouteCache(sandboxID)
 	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"sandboxID": sandboxID,
+		"status":    "hibernated",
+	})
+}
 
-	resp := map[string]interface{}{
-		"sandboxID":      sandboxID,
-		"status":         "hibernated",
-		"hibernationKey": grpcResp.CheckpointKey,
-		"sizeBytes":      grpcResp.SizeBytes,
+// internalDeepHibernate promotes a specific paused sandbox to deep hibernation.
+// Called by the api-edge cross-cell paused-cap enforcer (which has the org-global
+// view via D1) against the cell that currently hosts the sandbox. Only acts on
+// paused boxes; a no-op if the box already resumed or was promoted, so it's safe
+// to call redundantly.
+func (s *Server) internalDeepHibernate(c echo.Context) error {
+	id := c.Param("id")
+	if s.store == nil || s.workerRegistry == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "not available in this mode"})
 	}
-
-	// Worker emits the "hibernated" lifecycle event before removing the
-	// per-sandbox SQLite — events-ingest picks it up and updates D1.
-
-	return c.JSON(http.StatusOK, resp)
+	session, err := s.store.GetSandboxSession(c.Request().Context(), id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+	}
+	// Only promote boxes still in the paused tier.
+	if session.HibernationMode == nil || *session.HibernationMode != "paused" {
+		mode := "none"
+		if session.HibernationMode != nil {
+			mode = *session.HibernationMode
+		}
+		return c.JSON(http.StatusOK, map[string]string{"sandboxID": id, "status": "skipped", "mode": mode})
+	}
+	client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker unreachable"})
+	}
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 120*time.Second)
+	defer cancel()
+	// The worker's HibernateSandbox un-freezes the paused VM, savevm's + evicts,
+	// records the checkpoint, and sets mode=deep.
+	if _, err := client.HibernateSandbox(grpcCtx, &pb.HibernateSandboxRequest{SandboxId: id}); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "deep hibernate failed: " + err.Error()})
+	}
+	// Wake may land the box on a different worker — drop the cached route.
+	if s.sandboxAPIProxy != nil {
+		s.sandboxAPIProxy.InvalidateRouteCache(id)
+	}
+	return c.JSON(http.StatusOK, map[string]string{"sandboxID": id, "status": "hibernated", "mode": "deep"})
 }
 
 func (s *Server) wakeSandbox(c echo.Context) error {
@@ -2049,14 +2132,38 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 		})
 	}
 
-	hibernation, err := s.store.GetActiveHibernation(c.Request().Context(), sandboxID)
-	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "no active hibernation found"})
-	}
-
 	session, err := s.store.GetSandboxSession(c.Request().Context(), sandboxID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox session not found"})
+	}
+
+	// Paused (RAM-resident) tier: there is no checkpoint to restore — the VM is
+	// frozen on its owning worker. Resume it in place via QMP cont. A customer-
+	// hibernated box is paused, and the SDK's sandbox.wake() calls this endpoint,
+	// so /wake must handle the paused tier (not just deep). This mirrors the
+	// proxy's on-demand resume for data-plane requests; ResumeSandbox routes
+	// through the worker's router, flipping the session back to running + emitting
+	// the woke event.
+	if session.HibernationMode != nil && *session.HibernationMode == "paused" {
+		if session.Status == "running" {
+			return c.JSON(http.StatusOK, map[string]interface{}{"sandboxID": sandboxID, "status": "running"})
+		}
+		client, err := s.workerRegistry.GetWorkerClient(session.WorkerID)
+		if err != nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "worker unreachable"})
+		}
+		rctx, cancel := context.WithTimeout(c.Request().Context(), 30*time.Second)
+		defer cancel()
+		if _, err := client.ResumeSandbox(rctx, &pb.ResumeSandboxRequest{SandboxId: sandboxID}); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "resume failed: " + err.Error()})
+		}
+		// The box never left session.WorkerID, so no route-cache invalidation.
+		return c.JSON(http.StatusOK, map[string]interface{}{"sandboxID": sandboxID, "status": "running"})
+	}
+
+	hibernation, err := s.store.GetActiveHibernation(c.Request().Context(), sandboxID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "no active hibernation found"})
 	}
 	if session.Status != "hibernated" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox is not hibernated"})

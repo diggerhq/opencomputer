@@ -274,6 +274,19 @@ type VMInstance struct {
 	// ticked) but doesn't represent a running sandbox here. The stale-incoming
 	// reaper destroys any whose migration never completes within the timeout.
 	incomingMigrationAt time.Time
+
+	// Set when the VM is paused (QMP stop + guest-RAM paged out to swap) — the
+	// customer-facing "hibernated" fast tier that stays resident on this worker.
+	// Zero = running. Drives the paused→deep promotion sweep. Guarded by opMu.
+	pausedAt time.Time
+
+	// billingSuppressed marks a RUNNING VM whose time should not be billed —
+	// used during an unbilled paused-tier migration: the box is genuinely resumed
+	// (vCPUs running, agent live) so the migration is a normal live migration, but
+	// the usage ticker skips it so the customer isn't charged for the platform-
+	// initiated move. Cleared when the box is re-paused on the target (or when a
+	// customer request touches it mid-move, which resumes it for real + bills).
+	billingSuppressed bool
 }
 
 // SandboxMeta is persisted to sandbox-meta.json for recovery after hard kills.
@@ -2160,6 +2173,24 @@ func (m *Manager) Count(ctx context.Context) (int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.vms), nil
+}
+
+// ActiveCount returns the number of non-paused VMs. This is the count that
+// should gate placement against MaxCapacity and drive scale-up utilization:
+// paused VMs have paged their guest RAM out to swap (~no resource use) and
+// resume instantly, so they must not consume placement slots or trigger
+// scale-up. The RSS/CPU/disk hard caps remain the real capacity limits;
+// MaxCapacity then caps only the resource-using (active) boxes per worker.
+func (m *Manager) ActiveCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, vm := range m.vms {
+		if vm.pausedAt.IsZero() {
+			n++
+		}
+	}
+	return n
 }
 
 // Close stops all VMs and cleans up.
@@ -4279,6 +4310,17 @@ func (m *Manager) getReadyVM(ctx context.Context, id string) (*VMInstance, error
 }
 
 // vmToSandbox converts a VMInstance to a types.Sandbox.
+// IsBillingSuppressed reports whether a RUNNING VM is currently exempt from
+// billing (an in-flight unbilled paused-tier migration). The usage ticker checks
+// this so a genuinely-running box being moved off a draining worker isn't charged.
+func (m *Manager) IsBillingSuppressed(sandboxID string) bool {
+	vm, err := m.getVM(sandboxID)
+	if err != nil {
+		return false
+	}
+	return vm.billingSuppressed
+}
+
 func vmToSandbox(vm *VMInstance) *types.Sandbox {
 	return &types.Sandbox{
 		ID:        vm.ID,

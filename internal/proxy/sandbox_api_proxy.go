@@ -165,7 +165,8 @@ func (p *SandboxAPIProxy) ResolveWorker(c echo.Context, sandboxID string) (*Reso
 		return nil, echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("sandbox %s not found", sandboxID))
 	}
 	if session.Status == "migrating" {
-		return nil, echo.NewHTTPError(http.StatusServiceUnavailable, fmt.Sprintf("sandbox %s is migrating, retry shortly", sandboxID))
+		c.Response().Header().Set("Retry-After", "1")
+		return nil, echo.NewHTTPError(http.StatusServiceUnavailable, fmt.Sprintf("sandbox %s is migrating to a new host, retry shortly", sandboxID))
 	}
 	if session.Status == "hibernated" {
 		worker, workerURL, err := p.wakeHibernatedSandbox(ctx, sandboxID)
@@ -251,15 +252,46 @@ func (p *SandboxAPIProxy) ProxyHandler(c echo.Context) error {
 		})
 	}
 
-	// If migrating, reject requests until migration completes
+	// If migrating, reject requests until migration completes. Signal it as a
+	// transient, retryable condition — Retry-After + a stable `code` — so the SDK
+	// can transparently retry (the move is normally sub-second) instead of
+	// surfacing a bare 503 to the caller.
 	if session.Status == "migrating" {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{
-			"error": fmt.Sprintf("sandbox %s is migrating, retry shortly", sandboxID),
+		c.Response().Header().Set("Retry-After", "1")
+		return c.JSON(http.StatusServiceUnavailable, map[string]any{
+			"error":     fmt.Sprintf("sandbox %s is migrating to a new host, retry shortly", sandboxID),
+			"code":      "sandbox_migrating",
+			"retryable": true,
 		})
 	}
 
 	// If hibernated, wake on demand.
 	if session.Status == "hibernated" {
+		// Paused tier: the VM is RAM-resident on its worker (QMP stop), not
+		// savevm'd. Forward straight to that worker, which resumes it (QMP cont)
+		// on this request via the router — instant, no checkpoint restore, no
+		// 524. Only if the worker is gone do we fall through to the deep-restore
+		// paths below (its RAM is lost with the worker, same as a running box).
+		if session.HibernationMode != nil && *session.HibernationMode == "paused" {
+			// Mid-move: the drain is migrating this paused box to another worker
+			// (unbilled). Do NOT forward to session.WorkerID — that's the draining
+			// SOURCE whose VM is transferring out. Make the caller retry; by then
+			// the move has landed (worker_id updated, migrating_to_worker cleared)
+			// and the retry resumes the box on the new worker — billed from this
+			// touch, since the customer reached for it mid-migration.
+			if session.MigratingToWorker != "" {
+				c.Response().Header().Set("Retry-After", "1")
+				return c.JSON(http.StatusServiceUnavailable, map[string]any{
+					"error":     fmt.Sprintf("sandbox %s is migrating to a new host, retry shortly", sandboxID),
+					"code":      "sandbox_migrating",
+					"retryable": true,
+				})
+			}
+			if w := p.registry.GetWorker(session.WorkerID); w != nil && w.HTTPAddr != "" {
+				return p.forward(c, sandboxID, w.HTTPAddr, session.WorkerID)
+			}
+			log.Printf("sandbox-api-proxy: paused sandbox %s: owning worker %s gone, trying recovery", sandboxID, session.WorkerID)
+		}
 		// Async exec path (POST /exec/run-async, GET …/result): never hold the
 		// connection on the restore — a large cold checkpoint can exceed
 		// Cloudflare's 100s and 524. Claim a worker (atomic CAS) and forward

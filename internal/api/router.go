@@ -335,6 +335,10 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	if s.capTokenIssuer != nil && s.workerRegistry != nil {
 		internal := e.Group("/internal", s.capTokenMiddleware)
 		internal.POST("/sandboxes/create", s.internalCreateSandbox)
+		// Cross-cell paused-cap enforcement: the edge (which has the org-global
+		// view via D1) calls this to promote a specific paused sandbox to deep
+		// hibernation, reclaiming its worker RAM.
+		internal.POST("/sandboxes/:id/deep-hibernate", s.internalDeepHibernate)
 
 		// Edge-proxied dashboard routes. Same handler functions as
 		// /api/dashboard/* (gated below by WorkOS session cookie), exposed

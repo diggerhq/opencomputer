@@ -182,6 +182,35 @@ export const getSandboxes = (status?: string) =>
     S.SandboxListSchema,
   )
 
+// Create a sandbox from the dashboard. Proxied by the edge to the org's home
+// cell (POST /api/dashboard/sandboxes → cell /internal/sandboxes/create with a
+// cap-token), so the box is owned by + billed to the logged-in org. Returns the
+// new sandbox id so the caller can navigate straight into its live terminal.
+export const createSandbox = (body: {
+  memoryMB?: number
+  cpuCount?: number
+  networkEnabled?: boolean
+  image?: string
+}) =>
+  apiFetch<{ sandboxID: string; status?: string }>('/sandboxes', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+// Expose a port on a running sandbox → a public preview URL (proxied edge→cell
+// to the cap-token-authed /api/sandboxes/:id/preview). Returns the registered
+// row incl. hostname; the sandbox detail page renders it in Preview URLs.
+export const createPreviewUrl = (sandboxId: string, port: number) =>
+  apiFetch<{ id: string; sandboxId: string; hostname: string; port: number }>(
+    `/sandboxes/${sandboxId}/preview`,
+    { method: 'POST', body: JSON.stringify({ port }) },
+  )
+
+export const deletePreviewUrl = (sandboxId: string, port: number) =>
+  apiFetch<void>(`/sandboxes/${sandboxId}/preview/${port}`, {
+    method: 'DELETE',
+  })
+
 export const getAPIKeys = () =>
   apiFetch('/api-keys', {}, z.array(S.APIKeySchema))
 
@@ -370,6 +399,10 @@ export const autumnSubscribeConcurrency = (plan: string) =>
     method: 'POST',
     body: JSON.stringify({ plan }),
   })
+
+// Open Autumn's Stripe-hosted billing portal to manage the saved card + invoices.
+export const autumnBillingPortal = () =>
+  apiFetch<{ url: string }>('/billing/autumn/portal', { method: 'POST' })
 
 // url is non-null when enabling auto-recharge requires capturing an off-session
 // card first — the caller redirects there (a no-charge Stripe setup session).
@@ -705,6 +738,9 @@ export const createSession = (
   body: {
     agent: string
     input: string
+    // Optional per-session model override — runs this model instead of the agent's.
+    // Omit to inherit the agent's model. Not supported for flue agents.
+    model?: string
     sources?: { repo: string; ref: string; name?: string }[]
   },
   idempotencyKey?: string,
