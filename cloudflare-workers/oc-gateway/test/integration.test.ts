@@ -14,6 +14,8 @@ import { generateKeyPair, mintDeployToken } from "../src/token.js";
 
 const OR_KEY = "sk-or-v1-FAKE-org-key";
 const OR_BASE = "https://mock-openrouter.test/api";
+const ORG_ID = "11111111-1111-4111-8111-111111111111";
+const AGENT_ID = "agt_0123456789abcdef01234567";
 
 // EdDSA keypair for the suite: the minter (control plane) holds PRIV, the gateway holds PUB.
 let PRIV: CryptoKey;
@@ -91,7 +93,7 @@ const post = (token?: string, session?: string, body = MSG) => new Request("http
 });
 const mint = async (o: Partial<{ org: string; agt: string; ep: number; iat: number; exp: number }> = {}) => {
   const now = Math.floor(Date.now() / 1000);
-  return mintDeployToken(PRIV, { org: "org_1", agt: "agt_1", iat: now, exp: now + 3600, ...o });
+  return mintDeployToken(PRIV, { org: ORG_ID, agt: AGENT_ID, iat: now, exp: now + 3600, ...o });
 };
 const stateOf = async (inst: { fetch(r: Request): Promise<Response> }) =>
   (await inst.fetch(new Request("https://do/state"))).json() as Promise<{ spent_micro: number }>;
@@ -180,10 +182,10 @@ describe("gateway on-path flow (resolved seam)", () => {
     expect(ry.status).toBe(200);
     expect(rz.status).toBe(402); // org+agt cap hit across sessions
     // best-effort per-session tracking recorded each session's own spend separately
-    expect((await stateOf(spend.instances.get("sess:org_1:agt_1:ses_x")!)).spent_micro).toBe(20_000);
-    expect((await stateOf(spend.instances.get("sess:org_1:agt_1:ses_y")!)).spent_micro).toBe(20_000);
+    expect((await stateOf(spend.instances.get(`sess:${ORG_ID}:${AGENT_ID}:ses_x`)!)).spent_micro).toBe(20_000);
+    expect((await stateOf(spend.instances.get(`sess:${ORG_ID}:${AGENT_ID}:ses_y`)!)).spent_micro).toBe(20_000);
     // and the authoritative org+agt grain summed them
-    expect((await stateOf(spend.instances.get("agt:org_1:agt_1")!)).spent_micro).toBe(40_000);
+    expect((await stateOf(spend.instances.get(`agt:${ORG_ID}:${AGENT_ID}`)!)).spent_micro).toBe(40_000);
   });
 
   it("per-session counter is TRACKED but NEVER gated: a session over its own spend is not 402'd", async () => {
@@ -192,12 +194,12 @@ describe("gateway on-path flow (resolved seam)", () => {
     const token = await mint();
     for (let i = 0; i < 3; i++) { const c = ctx(); const r = await worker.fetch(post(token, "ses_hot"), env, c); await drain(c); expect(r.status).toBe(200); }
     // the session accumulated $0.30 but was never blocked (no per-session hard gate)
-    expect((await stateOf(spend.instances.get("sess:org_1:agt_1:ses_hot")!)).spent_micro).toBe(300_000);
+    expect((await stateOf(spend.instances.get(`sess:${ORG_ID}:${AGENT_ID}:ses_hot`)!)).spent_micro).toBe(300_000);
   });
 
   it("fences a superseded deploy lease epoch (401 token_superseded)", async () => {
     vi.stubGlobal("fetch", mockFetch(0.001));
-    const { env } = mkEnv(); // same DEPLOY_LEASE namespace → same lease for org_1:agt_1
+    const { env } = mkEnv(); // same DEPLOY_LEASE namespace → same lease for the canonical org+agent
     const t2 = await mint({ ep: 2 });
     const c2 = ctx(); const r2 = await worker.fetch(post(t2, "ses_ep"), env, c2); await drain(c2);
     expect(r2.status).toBe(200); // adopt epoch 2
@@ -226,10 +228,10 @@ describe("gateway on-path flow (resolved seam)", () => {
     vi.stubGlobal("fetch", mockFetch(0.05));
     const { env } = mkEnv({ GATEWAY_ADMIN_SECRET: "adm" });
     // unauthorized admin call is rejected
-    const bad = await worker.fetch(new Request("https://gw.test/admin/agent/budget", { method: "POST", headers: { authorization: "Bearer nope", "content-type": "application/json" }, body: JSON.stringify({ org: "org_1", agt: "agt_1", budget_usd: 0.04 }) }), env, ctx());
+    const bad = await worker.fetch(new Request("https://gw.test/admin/agent/budget", { method: "POST", headers: { authorization: "Bearer nope", "content-type": "application/json" }, body: JSON.stringify({ org: ORG_ID, agt: AGENT_ID, budget_usd: 0.04 }) }), env, ctx());
     expect(bad.status).toBe(401);
     // provision a $0.04 cap
-    const prov = await worker.fetch(new Request("https://gw.test/admin/agent/budget", { method: "POST", headers: { authorization: "Bearer adm", "content-type": "application/json" }, body: JSON.stringify({ org: "org_1", agt: "agt_1", budget_usd: 0.04 }) }), env, ctx());
+    const prov = await worker.fetch(new Request("https://gw.test/admin/agent/budget", { method: "POST", headers: { authorization: "Bearer adm", "content-type": "application/json" }, body: JSON.stringify({ org: ORG_ID, agt: AGENT_ID, budget_usd: 0.04 }) }), env, ctx());
     expect(prov.status).toBe(200);
     const token = await mint();
     const c1 = ctx(); const r1 = await worker.fetch(post(token, "s1"), env, c1); await drain(c1); // 0→0.05

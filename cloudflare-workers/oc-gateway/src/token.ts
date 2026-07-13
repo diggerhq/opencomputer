@@ -21,7 +21,7 @@
 //   GATEWAY_TOKEN_PUBLIC_KEY = base64url(raw 32-byte Ed25519 public key).
 
 export interface DeployClaims {
-  /** org id — selects the org's OpenRouter inference key (never leaves the gateway). */
+  /** Bare lowercase org UUID — selects the org's OpenRouter inference key. */
   org: string;
   /** agent id — the deploy this token authorizes; attribution + the lease-fence key with `org`. */
   agt: string;
@@ -35,6 +35,8 @@ export interface DeployClaims {
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const ED = { name: "Ed25519" } as const;
+const ORG_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const AGENT_ID = /^agt_[0-9a-f]{24}$/;
 
 function b64urlEncode(bytes: Uint8Array): string {
   let s = "";
@@ -91,9 +93,12 @@ export async function verifyDeployToken(publicKeyB64url: string, token: string, 
   } catch {
     return { ok: false, reason: "bad_payload" };
   }
-  if (typeof claims.exp !== "number" || claims.exp <= nowSec) return { ok: false, reason: "expired" };
-  if (typeof claims.iat === "number" && claims.iat > nowSec + 60) return { ok: false, reason: "future_iat" };
+  if (!Number.isSafeInteger(claims.exp) || claims.exp <= nowSec) return { ok: false, reason: "expired" };
+  if (!Number.isSafeInteger(claims.iat) || claims.iat <= 0) return { ok: false, reason: "bad_iat" };
+  if (claims.iat > nowSec + 60) return { ok: false, reason: "future_iat" };
   if (!claims.org || !claims.agt) return { ok: false, reason: "missing_claims" };
+  if (!ORG_ID.test(claims.org)) return { ok: false, reason: "bad_org" };
+  if (!AGENT_ID.test(claims.agt)) return { ok: false, reason: "bad_agent" };
   if (claims.ep !== undefined && (!Number.isSafeInteger(claims.ep) || claims.ep < 0)) {
     return { ok: false, reason: "bad_epoch" };
   }
