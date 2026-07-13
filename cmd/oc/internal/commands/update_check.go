@@ -29,7 +29,7 @@ type updateCheckCache struct {
 // per 24h. Any error bails silently — the CLI must never block or warn
 // on a failed version check.
 func maybePromptUpdate() {
-	if Version == "dev" {
+	if !isReleaseVersion(Version) {
 		return
 	}
 	if os.Getenv("OC_NO_UPDATE_CHECK") != "" {
@@ -73,6 +73,27 @@ func maybePromptUpdate() {
 			"\nA new oc release is available: v%s (current: v%s). Run `oc update` to install. Disable this check with OC_NO_UPDATE_CHECK=1.\n",
 			latest, Version)
 	}
+}
+
+// isReleaseVersion distinguishes published dotted-numeric versions from local
+// builds labelled with a branch, commit, or the default "dev". Comparing a label
+// such as "flue-native-67bf0ee" as numeric zero produces a bogus update nag.
+func isReleaseVersion(version string) bool {
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func updateCheckCachePath() (string, error) {

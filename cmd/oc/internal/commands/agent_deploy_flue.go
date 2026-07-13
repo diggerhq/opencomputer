@@ -213,6 +213,7 @@ func runFlueBuild(ctx context.Context, dir string) error {
 		c = exec.CommandContext(ctx, "npx", append([]string{"--no-install", "flue"}, args...)...)
 	}
 	c.Dir = dir
+	c.Env = flueBuildEnv()
 	c.Stdout = os.Stderr
 	c.Stderr = os.Stderr
 	// No stdin: `flue build` is a non-interactive bundler, and wiring the terminal
@@ -221,6 +222,29 @@ func runFlueBuild(ctx context.Context, dir string) error {
 		return fmt.Errorf("flue build failed: %w\n(run `npm install` so the flue CLI is available, node >= 22.19)", err)
 	}
 	return nil
+}
+
+// flueBuildEnv keeps Wrangler's platform-deployment warnings out of `oc agent
+// deploy`. OpenComputer consumes a strict subset of the generated descriptor and
+// owns the eventual Worker-for-Platforms composition, so warnings about directly
+// deploying that scratch Wrangler config (notably declarative Durable Object
+// exports) are not actionable here. Errors still print. An explicit
+// WRANGLER_LOG setting wins, which leaves a debugging escape hatch.
+func flueBuildEnv() []string {
+	const key = "WRANGLER_LOG"
+	const fallback = key + "=error"
+	env := os.Environ()
+	prefix := key + "="
+	for i, value := range env {
+		if !strings.HasPrefix(value, prefix) {
+			continue
+		}
+		if value == prefix {
+			env[i] = fallback
+		}
+		return env
+	}
+	return append(env, fallback)
 }
 
 // readFlueBundle locates the generated wrangler, extracts the exact Flue descriptor,
