@@ -254,18 +254,18 @@ def create_snapshot(args: argparse.Namespace) -> None:
     expected_name = coordinate["snapshot"]["name"]
     if args.confirm_name != expected_name:
         raise SnapshotError(f"--confirm-name must exactly equal {expected_name}")
-    if os.environ.get("AGENT_BUILD_SNAPSHOT_ALLOW_CREATE") != "1":
-        raise SnapshotError("set AGENT_BUILD_SNAPSHOT_ALLOW_CREATE=1 to permit snapshot creation")
+    if os.environ.get("FLUE_BUILD_SNAPSHOT_ALLOW_CREATE") != "1":
+        raise SnapshotError("set FLUE_BUILD_SNAPSHOT_ALLOW_CREATE=1 to permit snapshot creation")
 
     api_url = args.api_url or os.environ.get("OPENCOMPUTER_API_URL", "")
     if not api_url:
         raise SnapshotError("provide --api-url or OPENCOMPUTER_API_URL")
     normalized = normalize_api_url(api_url)
     parsed = parse.urlsplit(normalized)
-    if parsed.scheme == "http" and os.environ.get("AGENT_BUILD_SNAPSHOT_ALLOW_HTTP") != "1":
-        raise SnapshotError("HTTP API URLs require AGENT_BUILD_SNAPSHOT_ALLOW_HTTP=1")
-    if parsed.hostname in PRODUCTION_HOSTS and os.environ.get("AGENT_BUILD_SNAPSHOT_ALLOW_PRODUCTION") != "1":
-        raise SnapshotError("production snapshot creation requires AGENT_BUILD_SNAPSHOT_ALLOW_PRODUCTION=1")
+    if parsed.scheme == "http" and os.environ.get("FLUE_BUILD_SNAPSHOT_ALLOW_HTTP") != "1":
+        raise SnapshotError("HTTP API URLs require FLUE_BUILD_SNAPSHOT_ALLOW_HTTP=1")
+    if parsed.hostname in PRODUCTION_HOSTS and os.environ.get("FLUE_BUILD_SNAPSHOT_ALLOW_PRODUCTION") != "1":
+        raise SnapshotError("production snapshot creation requires FLUE_BUILD_SNAPSHOT_ALLOW_PRODUCTION=1")
 
     api_key = os.environ.get(args.api_key_env, "")
     if not api_key:
@@ -311,7 +311,7 @@ def create_snapshot(args: argparse.Namespace) -> None:
         raise SnapshotError(f"snapshot ended in status {current.get('status')!r}")
     write_receipt(Path(args.receipt), current, coordinate)
     print(f"Snapshot is ready; immutable checkpoint receipt written to {args.receipt}")
-    print("Set AGENT_BUILD_SANDBOX_CHECKPOINT_ID from that receipt before running the sandbox probe.")
+    print("Set FLUE_BUILD_SANDBOX_CHECKPOINT_ID from that receipt before running the sandbox probe.")
 
 
 def parse_args() -> argparse.Namespace:

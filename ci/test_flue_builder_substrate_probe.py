@@ -45,8 +45,8 @@ class SandboxProbeTest(unittest.TestCase):
         with mock.patch.dict(
             os.environ,
             {
-                "AGENT_BUILD_PROBE_ALLOW_PRODUCTION": "1",
-                "AGENT_BUILD_PROBE_ALLOW_HTTP": "1",
+                "FLUE_BUILD_PROBE_ALLOW_PRODUCTION": "1",
+                "FLUE_BUILD_PROBE_ALLOW_HTTP": "1",
             },
             clear=True,
         ):

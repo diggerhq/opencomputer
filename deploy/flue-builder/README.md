@@ -76,8 +76,8 @@ without printing it and run:
 ```bash
 export OPENCOMPUTER_API_URL='https://app.opencomputer.dev'
 export OPENCOMPUTER_API_KEY='...'
-export AGENT_BUILD_SNAPSHOT_ALLOW_CREATE=1
-export AGENT_BUILD_SNAPSHOT_ALLOW_PRODUCTION=1
+export FLUE_BUILD_SNAPSHOT_ALLOW_CREATE=1
+export FLUE_BUILD_SNAPSHOT_ALLOW_PRODUCTION=1
 
 python3 deploy/flue-builder/snapshot.py create \
   --confirm-name flue-build-node22-19-0-oc-c39b315-r3 \
@@ -87,18 +87,18 @@ python3 deploy/flue-builder/snapshot.py create \
 The command is idempotent only when an existing snapshot has the exact pinned
 manifest. It never deletes or replaces a snapshot. A mismatch fails and
 requires a new snapshot name. Known production hosts require the separate
-production guard; local HTTP requires `AGENT_BUILD_SNAPSHOT_ALLOW_HTTP=1`.
+production guard; local HTTP requires `FLUE_BUILD_SNAPSHOT_ALLOW_HTTP=1`.
 
 Store the receipt in non-secret release metadata. Do not commit environment
 files or API keys. Configure the build worker from the coordinate and receipt:
 
 ```text
-AGENT_BUILD_SANDBOX_SNAPSHOT=flue-build-node22-19-0-oc-c39b315-r3
-AGENT_BUILD_SANDBOX_CHECKPOINT_ID=<receipt checkpointId>
-AGENT_BUILD_NODE_VERSION=22.19.0
-AGENT_BUILD_NPM_VERSION=10.9.3
-AGENT_BUILD_OC_VERSION=oc@c39b31560cb78e0d5708a9eda4cfb30ec372eed9
-AGENT_BUILD_OC_BINARY_SHA256=7f7286095aefe78c3027efb79465442070370c6dcf3cda67c9b1315949a42bc1
+FLUE_BUILD_SANDBOX_SNAPSHOT=flue-build-node22-19-0-oc-c39b315-r3
+FLUE_BUILD_SANDBOX_CHECKPOINT_ID=<receipt checkpointId>
+FLUE_BUILD_NODE_VERSION=22.19.0
+FLUE_BUILD_NPM_VERSION=10.9.3
+FLUE_BUILD_OC_VERSION=oc@c39b31560cb78e0d5708a9eda4cfb30ec372eed9
+FLUE_BUILD_OC_BINARY_SHA256=7f7286095aefe78c3027efb79465442070370c6dcf3cda67c9b1315949a42bc1
 ```
 
 Worker readiness must compare the live snapshot manifest and checkpoint ID to
@@ -124,19 +124,19 @@ and prints only the sandbox ID for operator cleanup.
 ```bash
 export OPENCOMPUTER_API_URL='https://app.opencomputer.dev'
 export OPENCOMPUTER_API_KEY='...'
-export AGENT_BUILD_SANDBOX_SNAPSHOT='flue-build-node22-19-0-oc-c39b315-r3'
-export AGENT_BUILD_SANDBOX_CHECKPOINT_ID='<receipt checkpointId>'
-export AGENT_BUILD_NODE_VERSION='22.19.0'
-export AGENT_BUILD_NPM_VERSION='10.9.3'
-export AGENT_BUILD_OC_VERSION='oc@c39b31560cb78e0d5708a9eda4cfb30ec372eed9'
-export AGENT_BUILD_OC_BINARY_SHA256='7f7286095aefe78c3027efb79465442070370c6dcf3cda67c9b1315949a42bc1'
-export AGENT_BUILD_PROBE_ALLOW_PRODUCTION=1
+export FLUE_BUILD_SANDBOX_SNAPSHOT='flue-build-node22-19-0-oc-c39b315-r3'
+export FLUE_BUILD_SANDBOX_CHECKPOINT_ID='<receipt checkpointId>'
+export FLUE_BUILD_NODE_VERSION='22.19.0'
+export FLUE_BUILD_NPM_VERSION='10.9.3'
+export FLUE_BUILD_OC_VERSION='oc@c39b31560cb78e0d5708a9eda4cfb30ec372eed9'
+export FLUE_BUILD_OC_BINARY_SHA256='7f7286095aefe78c3027efb79465442070370c6dcf3cda67c9b1315949a42bc1'
+export FLUE_BUILD_PROBE_ALLOW_PRODUCTION=1
 
 python3 ci/flue-builder-substrate-probe.py --run
 ```
 
 The script refuses known production hosts without the production guard and
-refuses HTTP control planes without `AGENT_BUILD_PROBE_ALLOW_HTTP=1`.
+refuses HTTP control planes without `FLUE_BUILD_PROBE_ALLOW_HTTP=1`.
 
 This proof deliberately tests the repository-deploy feature as a consumer of
 OpenComputer's existing public sandbox contract, without feature-specific

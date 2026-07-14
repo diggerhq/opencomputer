@@ -27,16 +27,30 @@ STARTER_REF = "5c51d7edbbf2472fbe48386c4f9b192279330c9b"
 # command was still running, which made its worker-local async handle disappear.
 SANDBOX_TIMEOUT_SECONDS = 30 * 60
 FORBIDDEN_CREDENTIAL_NAMES = (
+    "V3_DATABASE_URL",
+    "AGENTS_DATABASE_URL",
     "OPENCOMPUTER_API_KEY",
     "GITHUB_TOKEN",
     "GH_TOKEN",
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_APP_PRIVATE_KEY_BASE64",
     "AGENT_BUILD_SOURCE_TOKEN",
     "AGENT_BUILD_SOURCE_BROKER_SECRET",
+    "AGENT_BUILD_BROKER_AUTH_SECRET",
+    "AGENT_BUILD_TRIGGER_AUTH_SECRET",
     "AGENT_WORKER_WFP_API_TOKEN",
+    "AGENT_WORKER_WFP_ACCOUNT_ID",
     "WFP_API_TOKEN",
+    "V3_INTERNAL_AUTH_SECRET",
+    "INFISICAL_TOKEN",
+    "V3_SECRET_STORE_KEY",
     "CLOUDFLARE_API_TOKEN",
     "R2_ACCESS_KEY_ID",
     "R2_SECRET_ACCESS_KEY",
+    "REPO_ARTIFACTS_R2_ACCESS_KEY_ID",
+    "REPO_ARTIFACTS_R2_SECRET_ACCESS_KEY",
+    "AGENT_BUNDLES_R2_ACCESS_KEY_ID",
+    "AGENT_BUNDLES_R2_SECRET_ACCESS_KEY",
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
@@ -72,10 +86,10 @@ def safe_api_url(raw: str) -> str:
     except SNAPSHOT.SnapshotError as exc:
         raise ProbeError(str(exc)) from exc
     parsed = parse.urlsplit(normalized)
-    if parsed.scheme == "http" and os.environ.get("AGENT_BUILD_PROBE_ALLOW_HTTP") != "1":
-        raise ProbeError("HTTP API URLs require AGENT_BUILD_PROBE_ALLOW_HTTP=1")
-    if parsed.hostname in PRODUCTION_HOSTS and os.environ.get("AGENT_BUILD_PROBE_ALLOW_PRODUCTION") != "1":
-        raise ProbeError("production probing requires AGENT_BUILD_PROBE_ALLOW_PRODUCTION=1")
+    if parsed.scheme == "http" and os.environ.get("FLUE_BUILD_PROBE_ALLOW_HTTP") != "1":
+        raise ProbeError("HTTP API URLs require FLUE_BUILD_PROBE_ALLOW_HTTP=1")
+    if parsed.hostname in PRODUCTION_HOSTS and os.environ.get("FLUE_BUILD_PROBE_ALLOW_PRODUCTION") != "1":
+        raise ProbeError("production probing requires FLUE_BUILD_PROBE_ALLOW_PRODUCTION=1")
     return normalized
 
 
@@ -106,21 +120,21 @@ class LiveProbe:
         self.api_url = safe_api_url(require_env("OPENCOMPUTER_API_URL"))
         self.api_key = require_env("OPENCOMPUTER_API_KEY")
         self.api = SNAPSHOT.API(self.api_url, self.api_key)
-        self.checkpoint_id = require_env("AGENT_BUILD_SANDBOX_CHECKPOINT_ID")
+        self.checkpoint_id = require_env("FLUE_BUILD_SANDBOX_CHECKPOINT_ID")
         try:
             uuid.UUID(self.checkpoint_id)
         except ValueError as exc:
             raise ProbeError(
-                "AGENT_BUILD_SANDBOX_CHECKPOINT_ID must be a UUID from snapshot.py's receipt"
+                "FLUE_BUILD_SANDBOX_CHECKPOINT_ID must be a UUID from snapshot.py's receipt"
             ) from exc
 
         expected = coordinate["attestation"]
         configured = {
-            "AGENT_BUILD_SANDBOX_SNAPSHOT": self.snapshot_name,
-            "AGENT_BUILD_NODE_VERSION": expected["node"]["version"],
-            "AGENT_BUILD_NPM_VERSION": expected["npm"]["version"],
-            "AGENT_BUILD_OC_VERSION": expected["oc"]["version"],
-            "AGENT_BUILD_OC_BINARY_SHA256": expected["oc"]["binarySha256"],
+            "FLUE_BUILD_SANDBOX_SNAPSHOT": self.snapshot_name,
+            "FLUE_BUILD_NODE_VERSION": expected["node"]["version"],
+            "FLUE_BUILD_NPM_VERSION": expected["npm"]["version"],
+            "FLUE_BUILD_OC_VERSION": expected["oc"]["version"],
+            "FLUE_BUILD_OC_BINARY_SHA256": expected["oc"]["binarySha256"],
         }
         for name, expected_value in configured.items():
             if require_env(name) != expected_value:

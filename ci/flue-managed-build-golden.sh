@@ -8,15 +8,15 @@ set -euo pipefail
 #   STARTER_REF=<commit> ./ci/flue-managed-build-golden.sh
 STARTER_REPO="${STARTER_REPO:-https://github.com/diggerhq/oc-flue-starter.git}"
 STARTER_REF="${STARTER_REF:-5c51d7edbbf2472fbe48386c4f9b192279330c9b}"
-AGENT_BUILD_NODE_VERSION="22.19.0"
+FLUE_BUILD_NODE_VERSION="22.19.0"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 NODE_VERSION="$(node -p 'process.versions.node')"
-if [[ "$NODE_VERSION" != "$AGENT_BUILD_NODE_VERSION" ]]; then
-  echo "managed-build golden requires Node $AGENT_BUILD_NODE_VERSION (found $NODE_VERSION)" >&2
+if [[ "$NODE_VERSION" != "$FLUE_BUILD_NODE_VERSION" ]]; then
+  echo "managed-build golden requires Node $FLUE_BUILD_NODE_VERSION (found $NODE_VERSION)" >&2
   exit 1
 fi
 
