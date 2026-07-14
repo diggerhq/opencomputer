@@ -22,7 +22,12 @@ export default function Agents() {
       key: 'name',
       header: 'Name',
       cell: (agent) => (
-        <span className="text-foreground font-medium">{agent.name}</span>
+        <Link
+          to={`/agents/${agent.id}`}
+          className="text-foreground font-medium underline-offset-4 hover:underline"
+        >
+          {agent.name}
+        </Link>
       ),
     },
     {
@@ -55,8 +60,6 @@ export default function Agents() {
             to={`/agents/${agent.id}/deployments/${deploymentId}`}
             aria-label={`Open latest deployment for ${agent.name}: ${status.replace(/_/g, ' ')}`}
             className="focus-visible:ring-ring/50 inline-flex rounded-md outline-none focus-visible:ring-3"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => event.stopPropagation()}
           >
             <StatusBadge status={status} />
           </Link>
@@ -114,7 +117,6 @@ export default function Agents() {
           columns={columns}
           rows={agents ?? []}
           rowKey={(agent) => agent.id}
-          onRowClick={(agent) => void navigate(`/agents/${agent.id}`)}
           loading={isLoading}
           empty={
             <EmptyState

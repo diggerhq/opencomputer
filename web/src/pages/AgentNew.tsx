@@ -12,6 +12,7 @@ import {
   Search,
 } from 'lucide-react'
 import {
+  ApiError,
   getDeployApp,
   importAgentFromGithub,
   inspectFlueRepository,
@@ -39,6 +40,24 @@ const IMPORT_COMMAND_STORAGE = 'oc.flue-import-command.v1'
 
 type ImportBody = Parameters<typeof importAgentFromGithub>[0]
 type ImportCommand = { fingerprint: string; key: string }
+
+function existingAgentFromError(
+  error: unknown,
+): { id: string; name: string } | null {
+  if (
+    !(error instanceof ApiError) ||
+    (error.type !== 'name_conflict' && error.type !== 'source_already_linked')
+  ) {
+    return null
+  }
+  const existing = error.details?.existing_agent
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing))
+    return null
+  const row = existing as Record<string, unknown>
+  return typeof row.id === 'string' && typeof row.name === 'string'
+    ? { id: row.id, name: row.name }
+    : null
+}
 
 function isValidRoot(root: string): boolean {
   if (root.includes('\0') || root.includes('\\') || root.startsWith('/'))
@@ -284,6 +303,7 @@ function GithubImport() {
   }
 
   const inspection = inspectMutation.data
+  const existingAgent = existingAgentFromError(importMutation.error)
   const canInspect =
     !!selectedRepo &&
     !!productionRef.trim() &&
@@ -585,6 +605,15 @@ function GithubImport() {
                     ? importMutation.error.message
                     : 'The import request failed. You can retry without creating a duplicate.'}
                 </AlertDescription>
+                {existingAgent ? (
+                  <div className="mt-3">
+                    <Button size="sm" variant="outline" asChild>
+                      <Link to={`/agents/${existingAgent.id}`}>
+                        Open {existingAgent.name}
+                      </Link>
+                    </Button>
+                  </div>
+                ) : null}
               </Alert>
             ) : null}
             <div className="flex justify-end">

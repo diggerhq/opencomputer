@@ -21,7 +21,7 @@ export function agentDeploymentDisplayStatus(
   const liveWasTouched = deployment?.live_touched ?? agent.flue?.live != null
 
   if (status === 'ready' && liveWasTouched && liveStatus !== 'verified') {
-    return liveStatus === 'uploading' ? 'uploading' : 'unverified'
+    return liveStatus === 'updating' ? 'updating' : 'unverified'
   }
 
   return status

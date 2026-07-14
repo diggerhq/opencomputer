@@ -91,11 +91,23 @@ function errorMessage(body: unknown, status: number): string {
 function errorType(body: unknown): string | undefined {
   if (body && typeof body === 'object') {
     const err = (body as Record<string, unknown>).error
-    if (err && typeof err === 'object' && typeof (err as Record<string, unknown>).type === 'string') {
+    if (
+      err &&
+      typeof err === 'object' &&
+      typeof (err as Record<string, unknown>).type === 'string'
+    ) {
       return (err as Record<string, unknown>).type as string
     }
   }
   return undefined
+}
+
+function errorDetails(body: unknown): Record<string, unknown> | undefined {
+  if (!body || typeof body !== 'object') return undefined
+  const error = (body as Record<string, unknown>).error
+  return error && typeof error === 'object' && !Array.isArray(error)
+    ? (error as Record<string, unknown>)
+    : undefined
 }
 
 /** An error carrying the HTTP status + the API's typed reason, so callers can branch
@@ -105,6 +117,7 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly type?: string,
+    readonly details?: Record<string, unknown>,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -142,7 +155,12 @@ export async function apiFetch<T>(
 
   if (!res.ok) {
     const body: unknown = await res.json().catch(() => ({}))
-    throw new ApiError(errorMessage(body, res.status), res.status, errorType(body))
+    throw new ApiError(
+      errorMessage(body, res.status),
+      res.status,
+      errorType(body),
+      errorDetails(body),
+    )
   }
 
   if (res.status === 204) {

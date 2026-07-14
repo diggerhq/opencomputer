@@ -31,6 +31,23 @@ describe('agent deployment display status', () => {
     ).toBe('unverified')
   })
 
+  it('uses the live updating state rather than the artifact-uploading phase', () => {
+    expect(
+      agentDeploymentDisplayStatus({
+        ...baseAgent,
+        deployment_status: {
+          deployment_id: 'dep_123',
+          state: 'ready',
+          result: 'created',
+          error_class: null,
+          live_touched: true,
+          live_status: 'updating',
+          updated_at: '2026-07-14T20:00:00.000Z',
+        },
+      }),
+    ).toBe('updating')
+  })
+
   it('keeps a terminal failure visible even when an older live revision exists', () => {
     expect(
       agentDeploymentDisplayStatus({

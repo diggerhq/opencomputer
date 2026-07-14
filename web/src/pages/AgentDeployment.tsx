@@ -33,6 +33,7 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
+import { agentDeploymentOutcome } from '@/lib/agent-deployment-outcome'
 import { cn } from '@/lib/utils'
 
 const PHASES = [
@@ -85,11 +86,6 @@ function stableCommandKey(
     // The in-memory key still makes repeated submits stable for this page load.
   }
   return key
-}
-
-function errorMessage(deployment: AgentDeployment): string | undefined {
-  if (deployment.error?.message) return deployment.error.message
-  return undefined
 }
 
 function failedPhase(deployment: AgentDeployment): string | undefined {
@@ -248,58 +244,35 @@ function formatBytes(value: number | undefined): string {
 }
 
 function Outcome({ deployment }: { deployment: AgentDeployment }) {
-  if (deployment.state === 'ready') {
+  const outcome = agentDeploymentOutcome(deployment)
+
+  if (outcome.kind === 'success') {
     return (
       <Alert className="bg-status-running-bg text-status-running border-status-running/25">
         <Check className="size-4" />
-        <AlertTitle>Deployment ready</AlertTitle>
+        <AlertTitle>{outcome.title}</AlertTitle>
         <AlertDescription className="text-status-running">
-          {deployment.revision?.number
-            ? `Revision #${deployment.revision.number} is ready to run.`
-            : 'The agent passed verification and is ready to run.'}
+          {outcome.description}
         </AlertDescription>
       </Alert>
     )
   }
 
-  if (deployment.state === 'failed') {
+  if (outcome.kind === 'error') {
     return (
       <Alert variant="destructive">
         <CircleAlert className="size-4" />
-        <AlertTitle>
-          {deployment.live_touched
-            ? 'Live deployment could not be verified'
-            : 'Deployment failed'}
-        </AlertTitle>
-        <AlertDescription>
-          {errorMessage(deployment) ??
-            (deployment.live_touched
-              ? 'The live Worker may have changed. Check the persisted log before starting new work.'
-              : 'The live agent was not changed. Check the persisted log and fix the repository before deploying again.')}
-        </AlertDescription>
+        <AlertTitle>{outcome.title}</AlertTitle>
+        <AlertDescription>{outcome.description}</AlertDescription>
       </Alert>
     )
   }
 
-  if (
-    deployment.state === 'canceled' ||
-    deployment.state === 'superseded' ||
-    deployment.state === 'skipped'
-  ) {
+  if (outcome.kind === 'info') {
     return (
       <Alert>
-        <AlertTitle>
-          {deployment.state === 'skipped'
-            ? 'No changes to deploy'
-            : deployment.state === 'canceled'
-              ? 'Deployment canceled'
-              : 'Deployment superseded'}
-        </AlertTitle>
-        <AlertDescription>
-          {deployment.state === 'skipped'
-            ? 'The built result matches the active revision, so the live agent was left unchanged.'
-            : 'This attempt ended without producing a new revision.'}
-        </AlertDescription>
+        <AlertTitle>{outcome.title}</AlertTitle>
+        <AlertDescription>{outcome.description}</AlertDescription>
       </Alert>
     )
   }
@@ -307,10 +280,8 @@ function Outcome({ deployment }: { deployment: AgentDeployment }) {
   return (
     <Alert>
       <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
-      <AlertTitle>Deployment in progress</AlertTitle>
-      <AlertDescription>
-        This page polls the durable deployment record and build log.
-      </AlertDescription>
+      <AlertTitle>{outcome.title}</AlertTitle>
+      <AlertDescription>{outcome.description}</AlertDescription>
     </Alert>
   )
 }

@@ -64,6 +64,12 @@ const STATUS: Record<string, Meta> = {
     icon: Loader2,
     spin: true,
   },
+  updating: {
+    tone: 'pending',
+    label: 'Updating',
+    icon: Loader2,
+    spin: true,
+  },
   deploying: {
     tone: 'pending',
     label: 'Deploying',

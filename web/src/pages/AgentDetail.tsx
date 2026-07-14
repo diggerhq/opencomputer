@@ -305,7 +305,7 @@ export default function AgentDetail() {
     agent.deployment_status?.live_status ?? agent.flue?.live?.status ?? null
   const canStartNewSession =
     activeRev !== null &&
-    (agent.runtime !== 'flue' || !liveStatus || liveStatus === 'verified')
+    (agent.runtime !== 'flue' || liveStatus === 'verified')
 
   return (
     <div className="mx-auto max-w-5xl">
