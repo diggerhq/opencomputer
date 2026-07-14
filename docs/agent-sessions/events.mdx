@@ -17,7 +17,7 @@ turn.started
 turn.completed      needs_input
 ```
 
-Everything between `turn.started` and `turn.completed` is that turn's work. **`turn.completed` is the "done" signal — await it** and read its `yield_reason` (here, `needs_input`). The `body` each type carries is in the table below.
+Everything between `turn.started` and `turn.completed` is that turn's work. **`turn.completed` is the done signal, so await it.** New neutral completions report `outcome`; existing built-in runtime events may report the equivalent `yield_reason`. The `body` each type carries is in the table below.
 
 Each event is one envelope:
 
@@ -39,7 +39,7 @@ Treat **`type`** as the stable discriminator. Unknown types should render from t
 | `agent.message` | `{ text }` | agent output (the result is whichever one `turn.completed` points to) |
 | `user.message` | `{ text }` | a steer you sent |
 | `turn.started` | `{ turn_id, input_from_seq, input_to_seq }` | a turn began, consuming input events in `[from,to]` |
-| `turn.completed` | `{ turn_id, yield_reason, result_event_id? }` | **the "done" signal — await this** |
+| `turn.completed` | `{ turn_id, outcome?, yield_reason?, result_event_id?, usage? }` | the done signal; normalize `outcome` and legacy `yield_reason` as the terminal reason |
 | `tool.call` | `{ tool, args_summary }` | the agent invoked a tool |
 | `exec.completed` | `{ command, exit_code, summary, content_ref?, bytes? }` | a finished command |
 | `error.runtime` · `error.model` · `error.task` | `{ code, message, retriable? }` | a failure |
@@ -86,7 +86,7 @@ Read or stream with `after=<seq>` to get everything since that point — this is
 
 <AccordionGroup>
   <Accordion title="Correlate a steer to its turn">
-    Steers coalesce — one turn can pick up several — so [`POST /messages`](/agent-sessions/messaging) returns the *event* `seq`, not a turn. The turn that consumes your steer emits `turn.started` with `input_from_seq ≤ your_seq ≤ input_to_seq`; await its `turn.completed`, then `GET …/events?turn_id=` for everything it produced.
+    [`POST /messages`](/agent-sessions/messaging) returns the input event `seq`, not a turn id. Built-in runtimes may consume several queued inputs in one turn; Flue allocates one ordered turn for each accepted input. In both cases, `turn.started` reports the consumed `input_from_seq` and `input_to_seq`. Await its matching `turn.completed`, then use `GET …/events?turn_id=` for the turn's output.
   </Accordion>
   <Accordion title="Large output and artifacts">
     A large `body` is offloaded to a `content_ref`; fetch the bytes with `GET /sessions/:id/events/:eventId/content` (e.g. full `exec.completed` output). For named files, diffs, screenshots, reports, and previews, see [Artifacts & previews](/agent-sessions/artifacts) in Labs.

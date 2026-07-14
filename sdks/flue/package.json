@@ -1,7 +1,7 @@
 {
   "name": "@opencomputer/flue",
   "version": "0.2.0",
-  "description": "Make a stock Flue agent OpenComputer-native — OC model gateway, OC-fleet sandbox, publish/repo tools, and the default hosting app.",
+  "description": "Run a Flue app as an OpenComputer agent with managed models and optional demand-driven sandboxes.",
   "license": "MIT",
   "type": "module",
   "engines": {

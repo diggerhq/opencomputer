@@ -4,9 +4,9 @@ title: "Agents"
 description: "Reusable agent configuration"
 ---
 
-An **agent** is reusable configuration: `name`, `prompt`, `model`, [`runtime`](/agent-sessions/runtimes), and optional [**skills**](/agent-sessions/revisions). Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like. The behavior (`prompt`/`model`/`skills`) is versioned as [**revisions**](/agent-sessions/revisions): every [deployment](/agent-sessions/revisions) — from the API, the CLI, or a [GitHub push](/agent-sessions/revisions#deploy-from-a-repo) — appends a new one, and you can roll back instantly.
+An **agent** is a reusable identity, runtime, model, and deployed behavior. Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like. For the built-in runtimes, behavior is `prompt` plus optional skills and is frozen into independently routable [revisions](/agent-sessions/revisions). A [Flue](/agent-sessions/flue) agent instead carries its instructions, tools, and packaged skills in a compiled Flue app.
 
-<Note>You can create and edit agents in the [dashboard](https://app.opencomputer.dev) too — the create dialog also lets you pick or add a [credential](/agent-sessions/credentials) inline.</Note>
+<Note>You can create and edit built-in runtime agents in the [dashboard](https://app.opencomputer.dev). Flue agents are created and deployed from their app with `oc agent deploy`, then appear in the same agent and session views.</Note>
 
 <CodeGroup>
 
@@ -46,7 +46,7 @@ Pass your model `key` inline and it's stored as a [credential](/agent-sessions/c
 
 ## Start simple, add capability as you go
 
-The only thing an agent needs is a **model** and a **prompt** — create one and it runs on a **default, managed runtime that just works**. Everything beyond that is **additive**: reach for a rung only when you need it, and nothing earlier is undone.
+For a built-in runtime, the only behavior an agent needs is a **model** and a **prompt**. Everything beyond that is additive: reach for a rung only when you need it, and nothing earlier is undone. Flue has a separate [app deployment path](/agent-sessions/flue#add-opencomputer-to-a-flue-app).
 
 | Rung | What you add | What you get |
 |---|---|---|
@@ -55,12 +55,16 @@ The only thing an agent needs is a **model** and a **prompt** — create one and
 | **+ Deploy from a repo / CLI** | keep the agent's `prompt.md` + `skills/` in Git and [push to deploy](/agent-sessions/revisions#deploy-from-a-repo) | versioned, push-to-deploy, staged revisions + rollback — still the default runtime |
 | **+ Custom runtime** *(coming soon)* | bring your own runtime image | full control of the execution environment |
 
-At every rung the agent is just a small directory — at most `agent.toml` + `prompt.md` + `skills/`. You can stop at any rung; most agents never go past skills.
+At every built-in rung the agent is a small directory, at most `agent.toml` + `prompt.md` + `skills/`. You can stop at any rung; most agents never go past skills.
 
 ## Session-pinned config
 
-When a session is created it **freezes** the agent's **active [revision](/agent-sessions/revisions)** — `prompt`, `model`, `runtime`, and `skills` — into the session, and pins the resolved credential too. (A session can start with a one-off [`model`](/agent-sessions/sessions#model) override in place of the agent's, pinned the same way for that session's life.) Editing the named agent afterwards never changes a running or resumed session — its behavior is pinned for its whole life. Update an agent freely: existing sessions keep what they started with, new sessions pick up the change. (Rotating a credential's **key value** is the exception — that flows to running sessions, so a compromised key can be replaced; see [credentials](/agent-sessions/credentials).)
+For a built-in runtime, creating a session **freezes** the agent's active [revision](/agent-sessions/revisions), including its `prompt`, `model`, `runtime`, and `skills`. It also pins the resolved credential. A one-off [`model`](/agent-sessions/sessions#model) override is pinned in the same way. Editing the named agent does not change a running or resumed session: existing sessions keep what they started with, while new sessions pick up the change. Rotating a credential's **key value** is the exception, so a compromised key can be replaced; see [credentials](/agent-sessions/credentials).
+
+That isolation applies to the built-in runtimes. A Flue session records the selected deployment, but all sessions for that agent execute on its one live Worker. Deploying a new Flue Worker can therefore change existing sessions; see [Flue deployment behavior](/agent-sessions/flue#deployment-and-revision-behavior).
 
 ## Model
 
 `model` is a `provider/model` id, and its provider must match the [runtime](/agent-sessions/runtimes): `claude` runs `anthropic/…` (e.g. `anthropic/claude-opus-4-8`), `codex` runs `openai/…` (e.g. `openai/gpt-5-codex`). The model runs either **Managed** (via OpenComputer, billed to your credits — no key) or on [your own key](/agent-sessions/credentials) for that provider, so a key isn't required. The `runtime` / `model` / credential pairing is validated when you **create** the agent. `runtime` is fixed at creation — to switch engines, create a new agent; you can still update `model` later, but keep it within the runtime's provider.
+
+Flue currently uses Managed Anthropic access. Its model is declared in both the compiled app and `agent.toml`; per-session model overrides are not supported.
