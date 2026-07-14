@@ -117,6 +117,45 @@ class SandboxProbeTest(unittest.TestCase):
             live.create_sandbox()
         self.assertEqual(live.sandboxes, ["sb-test"])
 
+    def test_exec_uses_the_public_async_result_contract(self) -> None:
+        live = PROBE.LiveProbe.__new__(PROBE.LiveProbe)
+        calls: list[tuple[str, str, object]] = []
+        responses = iter(
+            [
+                (202, {"execId": "exec-test", "running": True}),
+                (200, {"running": True}),
+                (200, {"running": False, "exitCode": 0, "stdout": "ok", "stderr": ""}),
+            ]
+        )
+
+        def fake_call(
+            method: str,
+            path: str,
+            body: object = None,
+            allowed_statuses: set[int] | None = None,
+            timeout: float = 60,
+        ) -> tuple[int, object]:
+            calls.append((method, path, body))
+            return next(responses)
+
+        live.call = fake_call
+        with mock.patch.object(PROBE.time, "sleep"):
+            result = live.exec("sb-test", "/bin/echo", ["ok"], {"CI": "1"}, timeout=5)
+
+        self.assertEqual(result["stdout"], "ok")
+        self.assertEqual(calls[0], (
+            "POST",
+            "/sandboxes/sb-test/exec/run-async",
+            {"cmd": "/bin/echo", "args": ["ok"], "timeout": 5, "envs": {"CI": "1"}},
+        ))
+        self.assertEqual(
+            [call[:2] for call in calls[1:]],
+            [
+                ("GET", "/sandboxes/sb-test/exec/exec-test/result"),
+                ("GET", "/sandboxes/sb-test/exec/exec-test/result"),
+            ],
+        )
+
     def test_destroy_attempts_every_created_sandbox(self) -> None:
         live = PROBE.LiveProbe.__new__(PROBE.LiveProbe)
         live.sandboxes = ["sb-one", "sb-two"]

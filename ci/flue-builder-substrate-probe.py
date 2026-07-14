@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import secrets
 import sys
+import time
 from typing import Any
 from urllib import error, parse, request
 import uuid
@@ -184,16 +185,37 @@ class LiveProbe:
         if envs is not None:
             body["envs"] = envs
         quoted = parse.quote(sandbox_id, safe="")
-        _, response = self.call(
+        _, handle = self.call(
             "POST",
-            f"/sandboxes/{quoted}/exec/run",
+            f"/sandboxes/{quoted}/exec/run-async",
             body,
-            allowed_statuses={200},
-            timeout=timeout + 20,
+            allowed_statuses={202},
+            timeout=60,
         )
-        if not isinstance(response, dict) or not isinstance(response.get("exitCode"), int):
-            raise ProbeError("exec response is missing exitCode")
-        return response
+        if not isinstance(handle, dict) or not isinstance(handle.get("execId"), str):
+            raise ProbeError("async exec response is missing execId")
+
+        exec_id = parse.quote(handle["execId"], safe="")
+        deadline = time.monotonic() + timeout + 60
+        delay = 0.2
+        while time.monotonic() < deadline:
+            _, response = self.call(
+                "GET",
+                f"/sandboxes/{quoted}/exec/{exec_id}/result",
+                allowed_statuses={200},
+                timeout=30,
+            )
+            if not isinstance(response, dict) or not isinstance(response.get("running"), bool):
+                raise ProbeError("async exec result is invalid")
+            if not response["running"]:
+                if response.get("error"):
+                    raise ProbeError("async exec failed before returning a process result")
+                if not isinstance(response.get("exitCode"), int):
+                    raise ProbeError("async exec result is missing exitCode")
+                return response
+            time.sleep(delay)
+            delay = min(delay * 2, 2.0)
+        raise ProbeError("async exec result exceeded the bounded client wait")
 
     def read_guest_file(self, sandbox_id: str, path: str, max_bytes: int = 512 * 1024) -> bytes:
         quoted_id = parse.quote(sandbox_id, safe="")
