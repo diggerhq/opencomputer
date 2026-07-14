@@ -86,7 +86,7 @@ The selected root is its own build context and must contain `agent.toml`, `packa
 committed `package-lock.json`. The package must declare a Node engine compatible with the exact
 builder version shown during inspection and a semver dependency on the Flue CLI. npm workspaces,
 files above the selected root, private registries, submodules, Git LFS, custom install/build
-commands, and build-time secrets are not supported in the first repository-build profile.
+commands, and build-time secrets are not supported.
 
 OpenComputer resolves the selected branch to one commit, fetches only that tracked tree in a
 short-lived Git sandbox, and transfers tokenless source to a separate build sandbox. The build runs
@@ -96,7 +96,7 @@ Workers credential, secret store, inbound port, or preview URL.
 
 <Note>
 Repository import currently creates the initial deployment from the selected production branch.
-Automatic deployment of later pushes is not enabled in this first release; return to the agent and
+Automatic deployment of later pushes is not enabled; return to the agent and
 deploy the latest branch head, or use the CLI path below, after changing the repository.
 </Note>
 

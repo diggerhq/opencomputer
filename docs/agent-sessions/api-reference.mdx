@@ -388,8 +388,8 @@ different fields returns `409 idempotency_conflict`. A name or repository-root c
 behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys an already-linked
 repository; `repo`/`path` come from the server-owned link). `activate:false` stages an inline built-in
 deployment. Built-in GitHub links remain branch-driven. A new Flue repository agent instead starts
-with [`POST /agents/import`](#import-a-flue-repository); its first profile deploys only an explicitly
-requested production-branch head and has no preview/staged Worker. `POST …/revisions` is inline-only
+with [`POST /agents/import`](#import-a-flue-repository); it deploys only an explicitly requested
+production-branch head and has no preview/staged Worker. `POST …/revisions` is inline-only
 sugar.
 
 **`Deployment`**

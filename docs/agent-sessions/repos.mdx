@@ -133,8 +133,9 @@ A different sandbox receives that archive without `.git` or GitHub auth, runs th
 build commands with public-Internet-only egress, and emits an artifact. The Workers deployment
 credential belongs to another trusted service and is never present during source or build work.
 
-This first Flue profile supports one self-contained npm root with `agent.toml`, `package.json`, and
-`package-lock.json`. Automatic deployment on later pushes is not enabled yet; explicitly deploy the
+Flue repository deployment currently supports one self-contained npm root with `agent.toml`,
+`package.json`, and `package-lock.json`. Automatic deployment on later pushes is not enabled;
+explicitly deploy the
 latest production-branch head from the agent page after changing the repository. See
 [Flue deployment](/agent-sessions/flue#deploy-from-github) for the full build contract and failure
 journey.
