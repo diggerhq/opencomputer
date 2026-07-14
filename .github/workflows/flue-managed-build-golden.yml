@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.19'
+          node-version: '22.19.0'
 
       - name: Verify current CLI against pinned starter artifact
         run: ./ci/flue-managed-build-golden.sh
