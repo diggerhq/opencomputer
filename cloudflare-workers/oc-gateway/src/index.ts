@@ -218,6 +218,13 @@ function parseUsdMicro(usd?: string): number | null {
   return Math.round(n * 1e6);
 }
 
+function parseAdminBudgetMicro(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
+  const micro = Math.round(value * 1e6);
+  return Number.isSafeInteger(micro) ? micro : undefined;
+}
+
 // ── Control-plane admin routes (guarded by GATEWAY_ADMIN_SECRET) ──
 async function admin(req: Request, env: Env, url: URL): Promise<Response> {
   if (!env.GATEWAY_ADMIN_SECRET) return json({ error: { type: "not_found" } }, 404);
@@ -233,7 +240,10 @@ async function admin(req: Request, env: Env, url: URL): Promise<Response> {
     if (!org || !agt || !ORG_ID.test(org) || !AGENT_ID.test(agt)) {
       return json({ error: { type: "bad_request", message: "canonical bare org UUID and agent id required" } }, 400);
     }
-    const budgetMicro = body.budget_usd === null ? null : parseUsdMicro(String(body.budget_usd));
+    const budgetMicro = parseAdminBudgetMicro(body.budget_usd);
+    if (budgetMicro === undefined) {
+      return json({ error: { type: "bad_request", message: "budget_usd must be a non-negative finite number or null" } }, 400);
+    }
     const stub = env.SPEND_COUNTER.get(env.SPEND_COUNTER.idFromName(`agt:${org}:${agt}`));
     const r = await stub.fetch("https://do/provision", { method: "POST", body: JSON.stringify({ budget_micro: budgetMicro }) });
     return new Response(r.body, { status: r.status, headers: { "content-type": "application/json" } });

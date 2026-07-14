@@ -22,7 +22,10 @@ test("records a silent HTTP 5xx even when the invocation outcome is ok", async (
       outcome: "ok",
       eventTimestamp: Date.parse("2026-07-13T20:00:00Z"),
       event: {
-        request: { method: "POST", url: "https://dispatch.test/agents/example/session" },
+        request: {
+          method: "POST",
+          url: "https://user:password@dispatch.test/agents/example/session?token=secret#fragment",
+        },
         response: { status: 500 },
       },
       logs: [],
@@ -37,6 +40,9 @@ test("records a silent HTTP 5xx even when the invocation outcome is ok", async (
   assert.equal(records[0]?.msg, "worker request returned HTTP 500");
   assert.equal(records[0]?.service, "agt_test");
   assert.equal(records[0]?.response_status, 500);
+  assert.equal(records[0]?.request_url, "https://dispatch.test/agents/example/session");
+  assert.equal(JSON.stringify(records[0]).includes("secret"), false);
+  assert.equal(JSON.stringify(records[0]).includes("password"), false);
 });
 
 test("fails the collector invocation when the durable sink rejects a batch", async () => {
