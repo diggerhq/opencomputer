@@ -5,14 +5,20 @@ on:
     branches: [main]
     paths:
       - 'cmd/oc/**'
+      - 'ci/flue-builder-substrate-probe.py'
+      - 'ci/test_flue_builder_substrate_probe.py'
       - 'ci/flue-managed-build-golden.sh'
+      - 'deploy/flue-builder/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/flue-managed-build-golden.yml'
   pull_request:
     paths:
       - 'cmd/oc/**'
+      - 'ci/flue-builder-substrate-probe.py'
+      - 'ci/test_flue_builder_substrate_probe.py'
       - 'ci/flue-managed-build-golden.sh'
+      - 'deploy/flue-builder/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/flue-managed-build-golden.yml'
@@ -34,6 +40,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.19.0'
+
+      - name: Verify pinned builder snapshot and substrate probe
+        run: |
+          python3 deploy/flue-builder/snapshot.py check
+          python3 ci/flue-builder-substrate-probe.py --check
+          python3 -m unittest ci/test_flue_builder_substrate_probe.py
 
       - name: Verify current CLI against pinned starter artifact
         run: ./ci/flue-managed-build-golden.sh
