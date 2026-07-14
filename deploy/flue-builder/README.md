@@ -13,7 +13,7 @@ changes to lower sandbox-platform layers.
 
 `coordinate.json` is the reviewed logical coordinate. It pins:
 
-- snapshot name `flue-build-node22-19-0-oc-c39b315-r2` (never reuse it for a
+- snapshot name `flue-build-node22-19-0-oc-c39b315-r3` (never reuse it for a
   different recipe or checkpoint);
 - Ubuntu 22.04 / x86-64 platform assertion;
 - Node 22.19.0 and its upstream archive digest;
@@ -80,8 +80,8 @@ export AGENT_BUILD_SNAPSHOT_ALLOW_CREATE=1
 export AGENT_BUILD_SNAPSHOT_ALLOW_PRODUCTION=1
 
 python3 deploy/flue-builder/snapshot.py create \
-  --confirm-name flue-build-node22-19-0-oc-c39b315-r2 \
-  --receipt /secure/operator-state/flue-build-node22-19-0-oc-c39b315-r2.json
+  --confirm-name flue-build-node22-19-0-oc-c39b315-r3 \
+  --receipt /secure/operator-state/flue-build-node22-19-0-oc-c39b315-r3.json
 ```
 
 The command is idempotent only when an existing snapshot has the exact pinned
@@ -93,7 +93,7 @@ Store the receipt in non-secret release metadata. Do not commit environment
 files or API keys. Configure the build worker from the coordinate and receipt:
 
 ```text
-AGENT_BUILD_SANDBOX_SNAPSHOT=flue-build-node22-19-0-oc-c39b315-r2
+AGENT_BUILD_SANDBOX_SNAPSHOT=flue-build-node22-19-0-oc-c39b315-r3
 AGENT_BUILD_SANDBOX_CHECKPOINT_ID=<receipt checkpointId>
 AGENT_BUILD_NODE_VERSION=22.19.0
 AGENT_BUILD_NPM_VERSION=10.9.3
@@ -123,7 +123,7 @@ and prints only the sandbox ID for operator cleanup.
 ```bash
 export OPENCOMPUTER_API_URL='https://app.opencomputer.dev'
 export OPENCOMPUTER_API_KEY='...'
-export AGENT_BUILD_SANDBOX_SNAPSHOT='flue-build-node22-19-0-oc-c39b315-r2'
+export AGENT_BUILD_SANDBOX_SNAPSHOT='flue-build-node22-19-0-oc-c39b315-r3'
 export AGENT_BUILD_SANDBOX_CHECKPOINT_ID='<receipt checkpointId>'
 export AGENT_BUILD_NODE_VERSION='22.19.0'
 export AGENT_BUILD_NPM_VERSION='10.9.3'

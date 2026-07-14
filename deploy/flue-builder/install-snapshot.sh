@@ -5,7 +5,7 @@ set -euo pipefail
 # downloaded input immutable and verified: the resulting checkpoint is trusted
 # to execute arbitrary repository lifecycle code without receiving credentials.
 
-SNAPSHOT_NAME="flue-build-node22-19-0-oc-c39b315-r2"
+SNAPSHOT_NAME="flue-build-node22-19-0-oc-c39b315-r3"
 BASE_IMAGE="base"
 OS_ID="ubuntu"
 OS_VERSION_ID="22.04"
@@ -176,14 +176,20 @@ attest() {
 }
 
 verify() {
+  local expected_attestation
   assert_platform
   [[ "$(node --version)" == "v${NODE_VERSION}" ]] || die "Node verification failed"
   [[ "$(npm --version)" == "$NPM_VERSION" ]] || die "npm verification failed"
   printf '%s  %s\n' "$OC_BINARY_SHA256" "$OC_BIN" | sha256sum --check --status \
     || die "oc digest verification failed"
   [[ -f "$ATTESTATION" ]] || die "snapshot attestation is missing"
-  cmp -s "$ATTESTATION" <(write_attestation /dev/stdout) \
-    || die "snapshot attestation does not match the installer contract"
+  expected_attestation="$(mktemp)"
+  write_attestation "$expected_attestation"
+  if ! cmp -s "$ATTESTATION" "$expected_attestation"; then
+    rm -f "$expected_attestation"
+    die "snapshot attestation does not match the installer contract"
+  fi
+  rm -f "$expected_attestation"
 }
 
 case "${1:-}" in

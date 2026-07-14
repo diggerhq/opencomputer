@@ -26,6 +26,15 @@ class SandboxProbeTest(unittest.TestCase):
         self.assertEqual(manifest["runtimeMemoryMB"], 1024)
         self.assertEqual(PROBE.STARTER_REF, "5c51d7edbbf2472fbe48386c4f9b192279330c9b")
 
+    def test_runtime_attestation_compare_uses_a_writable_temp_file(self) -> None:
+        installer = (
+            PROBE.ROOT / "deploy" / "flue-builder" / "install-snapshot.sh"
+        ).read_text()
+        verify = installer.split("verify() {", 1)[1].split("\n}", 1)[0]
+
+        self.assertIn("expected_attestation=\"$(mktemp)\"", verify)
+        self.assertNotIn("/dev/stdout", verify)
+
     def test_production_and_http_urls_require_separate_guards(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(PROBE.ProbeError):
