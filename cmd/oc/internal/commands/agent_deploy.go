@@ -610,6 +610,7 @@ func shortDigest(d string) string {
 }
 
 func registerAgentDeploy() {
+	agentCmd.AddCommand(agentBuildCmd)
 	agentDeployCmd.Flags().String("agent", "", "Target agent id or name (else the manifest's [agent].id / name)")
 	agentDeployCmd.Flags().Bool("no-activate", false, "Create the revision without activating it (stage)")
 	agentDeployCmd.Flags().String("idempotency-key", "", "CI-safe key: a retry with the same key returns the same deployment")

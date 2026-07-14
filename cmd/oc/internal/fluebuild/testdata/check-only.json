@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "flue": {
+    "entrypoint": "flue-starter"
+  },
+  "model": "anthropic/claude-sonnet-5",
+  "vars": {
+    "MAX_ITEMS": "12",
+    "PUBLIC_MODE": "careful"
+  },
+  "runtime": {
+    "family": "flue",
+    "type": "default"
+  },
+  "builder": {
+    "version": "0.6.0.9-test"
+  }
+}

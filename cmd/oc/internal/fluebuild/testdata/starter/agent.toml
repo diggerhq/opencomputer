@@ -1,0 +1,9 @@
+name = "flue-starter"
+model = "anthropic/claude-sonnet-5"
+
+[runtime]
+family = "flue"
+
+[vars]
+PUBLIC_MODE = "careful"
+MAX_ITEMS = "12"
