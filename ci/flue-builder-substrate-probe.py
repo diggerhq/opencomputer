@@ -240,7 +240,9 @@ class LiveProbe:
     @staticmethod
     def expect_success(label: str, response: dict[str, Any]) -> str:
         if response["exitCode"] != 0:
-            raise ProbeError(f"{label} failed inside the sandbox")
+            raise ProbeError(
+                f"{label} failed inside the sandbox (exit {response['exitCode']})"
+            )
         return str(response.get("stdout", ""))
 
     def assert_builder_runtime(self, sandbox_id: str) -> None:
@@ -287,20 +289,16 @@ process.stdout.write(JSON.stringify({
             raise ProbeError("builder snapshot is missing git")
 
     def prove_golden_build(self, sandbox_id: str) -> None:
-        script = r"""
+        prepare = r"""
 set -euo pipefail
 root=/workspace/flue-builder-probe
 rm -rf "$root"
 mkdir -p "$root" "$HOME" "$npm_config_cache"
-trap 'rm -rf "$root" "$HOME" "$npm_config_cache"' EXIT
 git init -q "$root"
 git -C "$root" remote add origin "$1"
 git -C "$root" fetch -q --depth=1 origin "$2"
 git -C "$root" checkout -q --detach FETCH_HEAD
 test "$(git -C "$root" rev-parse HEAD)" = "$2"
-cd "$root"
-npm ci --no-audit --no-fund
-OC_BIN=/opt/opencomputer/bin/oc npm run test:fixtures
 """.strip()
         clean_env = {
             "PATH": "/opt/opencomputer/bin:/usr/local/bin:/usr/bin:/bin",
@@ -311,13 +309,37 @@ OC_BIN=/opt/opencomputer/bin/oc npm run test:fixtures
             "TZ": "UTC",
         }
         self.expect_success(
-            "public npm install and golden Flue artifact build",
+            "pinned public starter checkout",
             self.exec(
                 sandbox_id,
                 "/bin/bash",
-                ["-c", script, "probe", STARTER_REPO, STARTER_REF],
+                ["-c", prepare, "probe", STARTER_REPO, STARTER_REF],
                 clean_env,
-                timeout=300,
+                timeout=120,
+            ),
+        )
+        self.expect_success(
+            "public npm install",
+            self.exec(
+                sandbox_id,
+                "/bin/bash",
+                ["-c", "cd /workspace/flue-builder-probe && npm ci --no-audit --no-fund"],
+                clean_env,
+                timeout=600,
+            ),
+        )
+        self.expect_success(
+            "golden Flue artifact build",
+            self.exec(
+                sandbox_id,
+                "/bin/bash",
+                [
+                    "-c",
+                    "cd /workspace/flue-builder-probe && "
+                    "OC_BIN=/opt/opencomputer/bin/oc npm run test:fixtures",
+                ],
+                clean_env,
+                timeout=600,
             ),
         )
 
@@ -401,19 +423,21 @@ process.stdout.write(JSON.stringify({
         return failures
 
     def run(self) -> None:
-        print("[1/5] validating immutable snapshot name, manifest, and checkpoint")
+        print("[1/7] validating immutable snapshot name, manifest, and checkpoint")
         self.validate_snapshot()
 
-        print("[2/5] creating an ordinary disposable OpenComputer sandbox")
+        print("[2/7] creating an ordinary disposable OpenComputer sandbox")
         sandbox_id = self.create_sandbox()
 
-        print("[3/5] verifying the exact toolchain and writable workspace")
+        print("[3/7] verifying the exact toolchain and writable workspace")
         self.assert_builder_runtime(sandbox_id)
 
-        print("[4/5] running public npm install and the golden Flue artifact build")
+        print("[4/7] checking out the pinned public starter")
+        print("[5/7] running public npm install")
+        print("[6/7] running the golden Flue artifact build")
         self.prove_golden_build(sandbox_id)
 
-        print("[5/5] proving coordinator credential sentinels were not passed to the sandbox")
+        print("[7/7] proving coordinator credential sentinels were not passed to the sandbox")
         self.scan_guest_for_credentials(sandbox_id)
 
 

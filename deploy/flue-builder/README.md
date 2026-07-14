@@ -113,9 +113,10 @@ The guarded live probe:
    `{"snapshot": "...", "timeout": 600}` request;
 3. verifies the exact Node, npm, and `oc` versions/digests and a writable
    `/workspace`;
-4. fetches the pinned public starter, runs `npm ci`, and reproduces its golden
-   Flue artifact with the pinned `oc`; and
-5. confirms coordinator credential sentinels were not passed into the sandbox.
+4. fetches the pinned public starter;
+5. runs `npm ci` through the public asynchronous exec/result contract;
+6. reproduces the golden Flue artifact with the pinned `oc`; and
+7. confirms coordinator credential sentinels were not passed into the sandbox.
 
 The probe destroys every sandbox in `finally`; a cleanup failure fails the run
 and prints only the sandbox ID for operator cleanup.
