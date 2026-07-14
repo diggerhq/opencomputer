@@ -689,6 +689,7 @@ const failedFlueDeployment = {
     retryable: false,
   },
   error_class: 'install_failed',
+  allowed_actions: ['view_commit', 'deploy_latest'],
   finished_at: at(0, 0),
   timing: {
     ...flueDeployment.timing,
@@ -1136,7 +1137,22 @@ const ROUTES: Array<[RegExp, Handler]> = [
     /^\/v3\/agents\/[^/]+\/deployments\/dep_flue_failed$/,
     () => failedFlueDeployment,
   ],
+  [
+    /^\/v3\/agents\/agt_flue_import\/deployments(?:\?.*)?$/,
+    () => ({
+      data: [flueDeployment, failedFlueDeployment],
+      next_cursor: null,
+    }),
+  ],
+  [
+    /^\/v3\/agents\/[^/]+\/deployments(?:\?.*)?$/,
+    () => ({ data: [], next_cursor: null }),
+  ],
   [/^\/v3\/agents\/[^/]+\/deployments\/[^/]+$/, () => flueDeployment],
+  [
+    /^\/v3\/agents\/agt_flue_import\/deployment-source$/,
+    () => ({ source: importedSource }),
+  ],
   [
     /^\/v3\/agents\/[^/]+\/deployment-source$/,
     () =>
@@ -1147,7 +1163,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/v3\/agents\/[^/]+\/skills$/, () => agentSkills],
   [/^\/v3\/agents\/agt_flue_import$/, () => importedAgent],
   [/^\/v3\/agents\/[^/]+$/, () => agents[0]],
-  [/^\/v3\/agents$/, () => ({ data: agents })],
+  [/^\/v3\/agents$/, () => ({ data: [...agents, importedAgent] })],
   [/^\/v3\/credentials$/, () => ({ data: credentials })],
   [/^\/v3\/sessions\/[^/]+\/events/, () => ({ data: sessionEvents })],
   [/^\/v3\/sessions\/[^/]+\/turns$/, () => ({ data: sessionTurns })],
@@ -1180,6 +1196,17 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
       agent: importedAgent,
       source: importedSource,
       deployment: flueDeployment,
+    }),
+  ],
+  [
+    /^\/v3\/agents\/[^/]+\/deployments$/,
+    () => ({
+      deployment: {
+        id: flueDeployment.id,
+        state: flueDeployment.state,
+        revision_id: flueDeployment.revision_id,
+        active: flueDeployment.active,
+      },
     }),
   ],
   [/^\/v3\/agents$/, () => agents[0]],

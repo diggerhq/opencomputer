@@ -661,12 +661,31 @@ export const unlinkDeploymentSource = (agentId: string) =>
   apiFetch<void>(`/v3/agents/${agentId}/deployment-source`, { method: 'DELETE' })
 
 // Deploy the linked repo's current production-branch HEAD now (no git push needed).
-// Returns { deployment } — fire-and-refetch, so we don't validate the body.
-export const deployFromGithub = (agentId: string) =>
-  apiFetch<{ deployment?: { id: string; state: string } }>(
-    `/v3/agents/${agentId}/deployments`,
-    { method: 'POST', body: JSON.stringify({ input: { type: 'github' } }) },
+export const deployFromGithub = (agentId: string, idempotencyKey: string) =>
+  apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/deployments`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ input: { type: 'github' } }),
+      headers: { 'Idempotency-Key': idempotencyKey },
+    },
+    S.AgentDeploymentCommandResponseSchema,
   )
+
+export const getAgentDeployments = (
+  agentId: string,
+  options: { before?: string; limit?: number } = {},
+) => {
+  const query = new URLSearchParams()
+  if (options.before) query.set('before', options.before)
+  if (options.limit) query.set('limit', String(options.limit))
+  const qs = query.toString()
+  return apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/deployments${qs ? `?${qs}` : ''}`,
+    {},
+    S.AgentDeploymentListSchema,
+  )
+}
 
 export const getAgentDeployment = (agentId: string, deploymentId: string) =>
   apiFetch(

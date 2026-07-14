@@ -1,6 +1,6 @@
-import { Fragment, useEffect } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useParams } from 'react-router-dom'
+import { Fragment, useEffect, useRef } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
   ArrowRight,
@@ -11,8 +11,11 @@ import {
   ExternalLink,
   GitCommitHorizontal,
   Loader2,
+  RotateCw,
 } from 'lucide-react'
 import {
+  ApiError,
+  deployFromGithub,
   getAgent,
   getAgentDeployment,
   getAgentDeploymentLogs,
@@ -40,6 +43,49 @@ const PHASES = [
   { label: 'Deploy', states: ['deploying'] },
   { label: 'Verify', states: ['verifying'] },
 ] as const
+const DEPLOY_COMMAND_STORAGE = 'oc.flue-deploy-latest-command.v1'
+
+type DeployCommand = { fingerprint: string; key: string }
+
+function newCommandKey(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `deploy-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  )
+}
+
+function stableCommandKey(
+  fingerprint: string,
+  storageKey: string,
+  memory: { current: DeployCommand | null },
+): string {
+  if (memory.current?.fingerprint === fingerprint) return memory.current.key
+
+  try {
+    const stored = window.sessionStorage.getItem(storageKey)
+    if (stored) {
+      const parsed = JSON.parse(stored) as Partial<DeployCommand>
+      if (parsed.fingerprint === fingerprint && parsed.key) {
+        memory.current = { fingerprint, key: parsed.key }
+        return parsed.key
+      }
+    }
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+
+  const key = newCommandKey()
+  memory.current = { fingerprint, key }
+  try {
+    window.sessionStorage.setItem(
+      storageKey,
+      JSON.stringify({ fingerprint, key }),
+    )
+  } catch {
+    // The in-memory key still makes repeated submits stable for this page load.
+  }
+  return key
+}
 
 function errorMessage(deployment: AgentDeployment): string | undefined {
   if (deployment.error?.message) return deployment.error.message
@@ -371,7 +417,10 @@ function Metadata({ deployment }: { deployment: AgentDeployment }) {
 
 export default function AgentDeployment() {
   const { agentId = '', deploymentId = '' } = useParams()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const deployCommand = useRef<DeployCommand | null>(null)
+  const deployCommandStorage = `${DEPLOY_COMMAND_STORAGE}:${agentId}`
   const deploymentQuery = useQuery({
     queryKey: ['agent-deployment', agentId, deploymentId],
     queryFn: () => getAgentDeployment(agentId, deploymentId),
@@ -415,6 +464,27 @@ export default function AgentDeployment() {
     enabled: !!agentId && !!deploymentId,
     refetchInterval: deploymentQuery.data?.terminal ? false : 1500,
   })
+  const deployLatestMutation = useMutation({
+    mutationFn: (fingerprint: string) =>
+      deployFromGithub(
+        agentId,
+        stableCommandKey(fingerprint, deployCommandStorage, deployCommand),
+      ),
+    onSuccess: ({ deployment }) => {
+      deployCommand.current = null
+      try {
+        window.sessionStorage.removeItem(deployCommandStorage)
+      } catch {
+        // Storage can be unavailable in privacy-restricted browser contexts.
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ['agent-deployments', agentId],
+      })
+      void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      void navigate(`/agents/${agentId}/deployments/${deployment.id}`)
+    },
+  })
 
   const terminal = deploymentQuery.data?.terminal ?? false
   const refetchLogs = logsQuery.refetch
@@ -437,9 +507,9 @@ export default function AgentDeployment() {
     return (
       <div className="space-y-5">
         <Button variant="ghost" size="sm" asChild>
-          <Link to={`/agents/${agentId}`}>
+          <Link to={`/agents/${agentId}/deployments`}>
             <ArrowLeft className="size-4" />
-            Back to agent
+            Back to deployments
           </Link>
         </Button>
         <Alert variant="destructive">
@@ -476,16 +546,28 @@ export default function AgentDeployment() {
     deployment.allowed_actions.includes('view_commit') && !!commitUrl
   const canOpenAgent = deployment.allowed_actions.includes('open_agent')
   const canStartSession = deployment.allowed_actions.includes('start_session')
+  const canDeployLatest = deployment.allowed_actions.includes('deploy_latest')
+  const deployLatestFingerprint = JSON.stringify({
+    agent_id: agentId,
+    repo_id: deployment.source_relation?.repo?.id ?? null,
+    path: deployment.source_relation?.path ?? '',
+    production_ref: deployment.source_relation?.production_ref ?? null,
+  })
+  const deployLatestConflict =
+    deployLatestMutation.error instanceof ApiError &&
+    deployLatestMutation.error.status === 409
 
   return (
     <div className="space-y-5">
       <div>
         <Link
-          to={`/agents/${agentId}`}
+          to={`/agents/${agentId}/deployments`}
           className="text-muted-foreground hover:text-foreground mb-4 inline-flex items-center gap-1.5 text-sm"
         >
           <ArrowLeft className="size-4" />
-          {agent?.name ? `Back to ${agent.name}` : 'Back to agent'}
+          {agent?.name
+            ? `Back to ${agent.name} deployments`
+            : 'Back to deployments'}
         </Link>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -514,6 +596,27 @@ export default function AgentDeployment() {
                 <Link to={`/agents/${agentId}`}>Open agent</Link>
               </Button>
             ) : null}
+            {canDeployLatest ? (
+              <Button
+                size="sm"
+                variant={canStartSession ? 'outline' : 'default'}
+                disabled={deployLatestMutation.isPending}
+                onClick={() =>
+                  deployLatestMutation.mutate(deployLatestFingerprint)
+                }
+              >
+                <RotateCw
+                  className={cn(
+                    'size-4',
+                    deployLatestMutation.isPending &&
+                      'animate-spin motion-reduce:animate-none',
+                  )}
+                />
+                {deployLatestMutation.isPending
+                  ? 'Starting deployment…'
+                  : 'Deploy latest'}
+              </Button>
+            ) : null}
             {canStartSession ? (
               <Button size="sm" asChild>
                 <Link to={`/agents/${agentId}/sessions`}>
@@ -525,6 +628,22 @@ export default function AgentDeployment() {
           </div>
         </div>
       </div>
+
+      {deployLatestMutation.isError ? (
+        <Alert variant="destructive">
+          <CircleAlert className="size-4" />
+          <AlertTitle>
+            {deployLatestConflict
+              ? 'Repository needs attention'
+              : 'Deployment could not start'}
+          </AlertTitle>
+          <AlertDescription>
+            {deployLatestMutation.error instanceof Error
+              ? deployLatestMutation.error.message
+              : 'No new deployment was started. Retry when the repository is available.'}
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       <Outcome deployment={deployment} />
 

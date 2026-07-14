@@ -518,6 +518,20 @@ export const AgentDeploymentSchema = z.object({
   finished_at: z.string().nullish(),
 })
 
+export const AgentDeploymentListSchema = z.object({
+  data: z.array(AgentDeploymentSchema),
+  next_cursor: z.string().nullable(),
+})
+
+export const AgentDeploymentCommandResponseSchema = z.object({
+  deployment: z.object({
+    id: z.string(),
+    state: z.string(),
+    revision_id: z.string().nullish(),
+    active: z.boolean(),
+  }),
+})
+
 export const AgentDeploymentLogSchema = z.object({
   // Postgres bigint serializers may return a decimal string. Treat this as an
   // opaque cursor/identity in the dashboard rather than narrowing it to JS's

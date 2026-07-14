@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AgentDeploymentCommandResponseSchema,
+  AgentDeploymentListSchema,
   AgentDeploymentLogsSchema,
   AgentDeploymentSchema,
   DeployAppSchema,
@@ -104,6 +106,39 @@ describe('repository deployment API schemas', () => {
     })
 
     expect(parsed.data[0]?.seq).toBe(seq)
+  })
+
+  it('parses the exact cursor envelope for deployment history', () => {
+    const parsed = AgentDeploymentListSchema.parse({
+      data: [deployment],
+      next_cursor: 'opaque-history-cursor',
+    })
+
+    expect(parsed.data[0]?.id).toBe(deployment.id)
+    expect(parsed.next_cursor).toBe('opaque-history-cursor')
+    expect(() =>
+      AgentDeploymentListSchema.parse({ data: [deployment] }),
+    ).toThrow()
+  })
+
+  it('requires the deployment id returned by a deploy command', () => {
+    const response = {
+      deployment: {
+        id: 'dep_0123456789abcdef01234567',
+        state: 'accepted',
+        revision_id: null,
+        active: false,
+      },
+    }
+
+    expect(
+      AgentDeploymentCommandResponseSchema.parse(response).deployment.id,
+    ).toBe(response.deployment.id)
+    expect(() =>
+      AgentDeploymentCommandResponseSchema.parse({
+        deployment: { ...response.deployment, id: undefined },
+      }),
+    ).toThrow()
   })
 
   it('filters repositories without a registered import coordinate safely', () => {

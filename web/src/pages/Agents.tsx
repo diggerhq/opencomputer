@@ -1,12 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Bot, Plus } from 'lucide-react'
 import { getAgents, type Agent } from '@/api/client'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { Panel } from '@/components/panel'
 import { ResourceTable, type Column } from '@/components/resource-table'
+import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
+import { agentDeploymentDisplayStatus } from '@/lib/agent-deployment-status'
 
 export default function Agents() {
   const navigate = useNavigate()
@@ -42,6 +44,26 @@ export default function Agents() {
       ),
     },
     {
+      key: 'deployment',
+      header: 'Deployment',
+      cell: (agent) => {
+        const status = agentDeploymentDisplayStatus(agent)
+        const deploymentId = agent.deployment_status?.deployment_id
+        if (!deploymentId) return <StatusBadge status={status} />
+        return (
+          <Link
+            to={`/agents/${agent.id}/deployments/${deploymentId}`}
+            aria-label={`Open latest deployment for ${agent.name}: ${status.replace(/_/g, ' ')}`}
+            className="focus-visible:ring-ring/50 inline-flex rounded-md outline-none focus-visible:ring-3"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            <StatusBadge status={status} />
+          </Link>
+        )
+      },
+    },
+    {
       key: 'revision',
       header: 'Active revision',
       align: 'right',
@@ -72,7 +94,7 @@ export default function Agents() {
     <div>
       <PageHeader
         title="Agents"
-        description="Reusable definitions: a prompt, model, and runtime a session runs."
+        description="Reusable agents, from built-in prompts to Flue code deployed from a repository."
         api={{
           method: 'POST',
           path: '/v3/agents',
