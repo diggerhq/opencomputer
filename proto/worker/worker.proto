@@ -110,6 +110,10 @@ message CreateSandboxRequest {
   // before injection into the VM. Disjoint from `envs` (which is plaintext).
   map<string, string> secret_envs = 15;
   int32 disk_mb = 16;  // workspace disk size in MB (0 = default 20GB)
+  // Host-enforced egress-only boundary. Empty preserves normal sandbox
+  // networking; "public" disables inbound ports and blocks guest→host,
+  // private, link-local, metadata, reserved, and spoofed-source traffic.
+  string network_policy = 17;
 }
 
 message CreateSandboxResponse {
@@ -469,6 +473,7 @@ message PreCopyDrivesResponse {
   // migration. Without it, post-migration secret-store updates would silently
   // miss because the destination's session has no name → token mapping.
   map<string, string> sealed_names = 10;
+  string network_policy = 11;
 }
 
 // HostList is a wrapper because proto3 maps cannot have a repeated value type.
@@ -502,6 +507,7 @@ message PrepareMigrationIncomingRequest {
   // scaler re-stops + reclaims its RAM via PauseAfterMigration once the transfer
   // completes. Used to move a paused box off a draining worker without billing.
   bool arrive_paused = 17;
+  string network_policy = 18;
 }
 
 message PrepareMigrationIncomingResponse {

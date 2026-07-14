@@ -71,3 +71,65 @@ describe("Sandbox checkpoint requests", () => {
     });
   });
 });
+
+describe("Sandbox public network policy", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sends public policy on a fresh create", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ sandboxID: "sb_1", status: "running" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await Sandbox.create({
+      apiUrl: "https://api.example.test",
+      apiKey: "osb_test",
+      networkPolicy: "public",
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toMatchObject({ networkPolicy: "public" });
+  });
+
+  it("sends public policy through named-snapshot create", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        'event: result\ndata: {"sandboxID":"sb_2","status":"running"}\n\n',
+        { status: 201, headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+
+    await Sandbox.create({
+      apiUrl: "https://api.example.test",
+      snapshot: "flue-builder",
+      networkPolicy: "public",
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      snapshot: "flue-builder",
+      networkPolicy: "public",
+    });
+  });
+
+  it("sends public policy on direct checkpoint create", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ sandboxID: "sb_3", status: "running" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await Sandbox.createFromCheckpoint("cp_1", {
+      apiUrl: "https://api.example.test",
+      networkPolicy: "public",
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toEqual({ networkPolicy: "public" });
+  });
+});

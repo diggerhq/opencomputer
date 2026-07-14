@@ -852,6 +852,28 @@ func (s *Store) UpdateSandboxSessionStatus(ctx context.Context, sandboxID, statu
 	return s.updateSandboxSessionStatus(ctx, sandboxID, status, errorMsg, "")
 }
 
+// UpdateSandboxSessionConfig replaces the persisted config for one active
+// session. It is intentionally keyed by the session UUID rather than the
+// caller-supplied sandbox ID so a restore cannot mutate another tenant's row
+// if sandbox IDs collide. The restore path uses this for monotonic policy
+// tightening before the worker changes the live VM's network boundary.
+func (s *Store) UpdateSandboxSessionConfig(ctx context.Context, sessionID uuid.UUID, config json.RawMessage) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE sandbox_sessions
+		    SET config = $1
+		  WHERE id = $2
+		    AND status = 'running'`,
+		config, sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("update sandbox session config: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("running sandbox session %s not found", sessionID)
+	}
+	return nil
+}
+
 // UpdateSandboxSessionStatusReason is UpdateSandboxSessionStatus with an explicit
 // sandbox.stopped reason (one of user_requested | expired | crash). Use it where
 // the reason is known — e.g. "expired" for an idle-timeout kill. An empty reason

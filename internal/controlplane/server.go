@@ -96,15 +96,16 @@ func (s *Server) Close() error {
 
 func (s *Server) createSandbox(c echo.Context) error {
 	var req struct {
-		TemplateID string            `json:"templateID"`
-		Timeout    int               `json:"timeout"`
-		Region     string            `json:"region"`
-		Envs       map[string]string `json:"envs"`
-		MemoryMB   int               `json:"memoryMB"`
-		CpuCount   int               `json:"cpuCount"`
-		Metadata   map[string]string `json:"metadata"`
-		NetworkEnabled *bool         `json:"networkEnabled"`
-		SecretStore    string        `json:"secretStore"` // secret store name — resolves secrets + egress config
+		TemplateID     string            `json:"templateID"`
+		Timeout        int               `json:"timeout"`
+		Region         string            `json:"region"`
+		Envs           map[string]string `json:"envs"`
+		MemoryMB       int               `json:"memoryMB"`
+		CpuCount       int               `json:"cpuCount"`
+		Metadata       map[string]string `json:"metadata"`
+		NetworkEnabled *bool             `json:"networkEnabled"`
+		NetworkPolicy  string            `json:"networkPolicy"`
+		SecretStore    string            `json:"secretStore"` // secret store name — resolves secrets + egress config
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request: " + err.Error()})
@@ -209,6 +210,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 		MemoryMb:           int32(req.MemoryMB),
 		CpuCount:           int32(req.CpuCount),
 		NetworkEnabled:     *req.NetworkEnabled,
+		NetworkPolicy:      req.NetworkPolicy,
 		EgressAllowlist:    egressAllowlist,
 		SecretAllowedHosts: secretAllowedHosts,
 	})

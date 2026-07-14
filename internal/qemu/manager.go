@@ -248,6 +248,9 @@ type VMInstance struct {
 	MemoryMB  int
 	HostPort  int
 	GuestPort int
+	// NetworkPolicy is the host-enforced network boundary that must survive
+	// wake, restore, fork, power-cycle, and live migration.
+	NetworkPolicy types.NetworkPolicy
 
 	// VM internals
 	pid                  int
@@ -291,11 +294,12 @@ type VMInstance struct {
 
 // SandboxMeta is persisted to sandbox-meta.json for recovery after hard kills.
 type SandboxMeta struct {
-	SandboxID string `json:"sandboxId"`
-	Template  string `json:"template"`
-	CpuCount  int    `json:"cpuCount"`
-	MemoryMB  int    `json:"memoryMB"`
-	GuestPort int    `json:"guestPort"`
+	SandboxID     string              `json:"sandboxId"`
+	Template      string              `json:"template"`
+	CpuCount      int                 `json:"cpuCount"`
+	MemoryMB      int                 `json:"memoryMB"`
+	GuestPort     int                 `json:"guestPort"`
+	NetworkPolicy types.NetworkPolicy `json:"networkPolicy,omitempty"`
 }
 
 // SecretsProxyIntegration provides the interface for the secrets proxy to integrate
@@ -905,7 +909,7 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	if err != nil {
 		return fmt.Errorf("allocate golden subnet: %w", err)
 	}
-	if err := CreateTAP(netCfg); err != nil {
+	if err := CreateTAP(netCfg, types.NetworkPolicyNone); err != nil {
 		m.subnets.Release(netCfg.TAPName)
 		return fmt.Errorf("create golden TAP: %w", err)
 	}
@@ -1192,7 +1196,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		os.RemoveAll(sandboxDir)
 		return nil, fmt.Errorf("allocate subnet: %w", err)
 	}
-	if err := CreateTAP(netCfg); err != nil {
+	if err := CreateTAP(netCfg, cfg.NetworkPolicy); err != nil {
 		m.subnets.Release(netCfg.TAPName)
 		os.RemoveAll(sandboxDir)
 		return nil, fmt.Errorf("create TAP: %w", err)
@@ -1202,21 +1206,12 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	if guestPort == 0 {
 		guestPort = m.cfg.DefaultPort
 	}
-	hostPort, err := FindFreePort()
+	hostPort, err := configureIngress(netCfg, cfg.NetworkPolicy, guestPort)
 	if err != nil {
 		DeleteTAP(netCfg.TAPName)
 		m.subnets.Release(netCfg.TAPName)
 		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("find free port: %w", err)
-	}
-	netCfg.HostPort = hostPort
-	netCfg.GuestPort = guestPort
-
-	if err := AddDNAT(netCfg); err != nil {
-		DeleteTAP(netCfg.TAPName)
-		m.subnets.Release(netCfg.TAPName)
-		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("add DNAT: %w", err)
+		return nil, fmt.Errorf("configure ingress: %w", err)
 	}
 
 	// Add metadata service DNAT (169.254.169.254:80 → host:8888)
@@ -1332,6 +1327,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		baseMemoryMB:  memMB,
 		HostPort:      hostPort,
 		GuestPort:     guestPort,
+		NetworkPolicy: cfg.NetworkPolicy,
 		pid:           cmd.Process.Pid,
 		cmd:           cmd,
 		network:       netCfg,
@@ -1450,11 +1446,12 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	}
 
 	sbMeta := SandboxMeta{
-		SandboxID: id,
-		Template:  template,
-		CpuCount:  cpus,
-		MemoryMB:  memMB,
-		GuestPort: guestPort,
+		SandboxID:     id,
+		Template:      template,
+		CpuCount:      cpus,
+		MemoryMB:      memMB,
+		GuestPort:     guestPort,
+		NetworkPolicy: cfg.NetworkPolicy,
 	}
 	if metaJSON, err := json.Marshal(sbMeta); err == nil {
 		if writeErr := os.WriteFile(filepath.Join(sandboxDir, "sandbox-meta.json"), metaJSON, 0644); writeErr != nil {
@@ -1760,7 +1757,7 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 		os.RemoveAll(sandboxDir)
 		return nil, fmt.Errorf("allocate subnet: %w", err)
 	}
-	if err := CreateTAP(netCfg); err != nil {
+	if err := CreateTAP(netCfg, cfg.NetworkPolicy); err != nil {
 		m.subnets.Release(netCfg.TAPName)
 		os.RemoveAll(sandboxDir)
 		return nil, fmt.Errorf("create TAP: %w", err)
@@ -1770,21 +1767,12 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 	if guestPort == 0 {
 		guestPort = m.cfg.DefaultPort
 	}
-	hostPort, err := FindFreePort()
+	hostPort, err := configureIngress(netCfg, cfg.NetworkPolicy, guestPort)
 	if err != nil {
 		DeleteTAP(netCfg.TAPName)
 		m.subnets.Release(netCfg.TAPName)
 		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("find free port: %w", err)
-	}
-	netCfg.HostPort = hostPort
-	netCfg.GuestPort = guestPort
-
-	if err := AddDNAT(netCfg); err != nil {
-		DeleteTAP(netCfg.TAPName)
-		m.subnets.Release(netCfg.TAPName)
-		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("add DNAT: %w", err)
+		return nil, fmt.Errorf("configure ingress: %w", err)
 	}
 
 	// Add metadata service DNAT (169.254.169.254:80 → host:8888)
@@ -1866,6 +1854,7 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 		baseMemoryMB:  memMB,
 		HostPort:      hostPort,
 		GuestPort:     guestPort,
+		NetworkPolicy: cfg.NetworkPolicy,
 		pid:           cmd.Process.Pid,
 		cmd:           cmd,
 		network:       netCfg,
@@ -1917,11 +1906,12 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 	}
 
 	sbMeta := SandboxMeta{
-		SandboxID: id,
-		Template:  template,
-		CpuCount:  cpus,
-		MemoryMB:  memMB,
-		GuestPort: guestPort,
+		SandboxID:     id,
+		Template:      template,
+		CpuCount:      cpus,
+		MemoryMB:      memMB,
+		GuestPort:     guestPort,
+		NetworkPolicy: cfg.NetworkPolicy,
 	}
 	if metaJSON, err := json.Marshal(sbMeta); err == nil {
 		if writeErr := os.WriteFile(filepath.Join(sandboxDir, "sandbox-meta.json"), metaJSON, 0644); writeErr != nil {
@@ -3270,6 +3260,7 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 		BaseMemoryMB:  vm.baseMemoryMB,
 		Template:      vm.Template,
 		GuestPort:     vm.GuestPort,
+		NetworkPolicy: vm.NetworkPolicy,
 		GoldenVersion: vm.goldenVersion,
 		SnapshotedAt:  time.Now(),
 	}
@@ -3471,6 +3462,7 @@ func (m *Manager) CreateDiskOnlyCheckpoint(ctx context.Context, sandboxID, check
 		BaseMemoryMB:  vm.baseMemoryMB,
 		Template:      vm.Template,
 		GuestPort:     vm.GuestPort,
+		NetworkPolicy: vm.NetworkPolicy,
 		GoldenVersion: vm.goldenVersion,
 		SnapshotedAt:  time.Now(),
 	}
@@ -3586,6 +3578,12 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 	if metaData, err := os.ReadFile(filepath.Join(cacheDir, "snapshot", "snapshot-meta.json")); err == nil {
 		json.Unmarshal(metaData, &cpMeta)
 	}
+	restoreNetworkPolicy := cpMeta.NetworkPolicy
+	if restoreNetworkPolicy == types.NetworkPolicyNone {
+		// Checkpoints created before networkPolicy was persisted have an empty
+		// value. Never silently weaken a currently restricted sandbox on restore.
+		restoreNetworkPolicy = vm.NetworkPolicy
+	}
 
 	// Determine restore mode: prefer migration-based (-incoming) over savevm (loadvm).
 	// CreateCheckpoint uses QEMU migrate which produces a standalone mem dump file.
@@ -3629,22 +3627,19 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 	if err != nil {
 		return fmt.Errorf("allocate subnet: %w", err)
 	}
-	if err := CreateTAP(netCfg); err != nil {
+	if err := CreateTAP(netCfg, restoreNetworkPolicy); err != nil {
 		m.subnets.Release(netCfg.TAPName)
 		return fmt.Errorf("create TAP: %w", err)
 	}
-	hostPort, err := FindFreePort()
+	guestPort := vm.GuestPort
+	if guestPort == 0 {
+		guestPort = m.cfg.DefaultPort
+	}
+	hostPort, err := configureIngress(netCfg, restoreNetworkPolicy, guestPort)
 	if err != nil {
 		DeleteTAP(netCfg.TAPName)
 		m.subnets.Release(netCfg.TAPName)
-		return fmt.Errorf("find free port: %w", err)
-	}
-	netCfg.HostPort = hostPort
-	netCfg.GuestPort = vm.GuestPort
-	if err := AddDNAT(netCfg); err != nil {
-		DeleteTAP(netCfg.TAPName)
-		m.subnets.Release(netCfg.TAPName)
-		return fmt.Errorf("add DNAT: %w", err)
+		return fmt.Errorf("configure ingress: %w", err)
 	}
 	if err := AddMetadataDNAT(netCfg.TAPName, netCfg.HostIP); err != nil {
 		log.Printf("qemu: RestoreFromCheckpoint %s: metadata DNAT failed: %v", sandboxID, err)
@@ -3811,6 +3806,8 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 	vm.agent = agentClient
 	vm.network = netCfg
 	vm.HostPort = hostPort
+	vm.GuestPort = guestPort
+	vm.NetworkPolicy = restoreNetworkPolicy
 	vm.qmpSockPath = qmpSockPath
 	vm.agentSockPath = agentSockPath
 	vm.guestMAC = guestMAC
@@ -3863,6 +3860,10 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	if data, err := os.ReadFile(metaPath); err == nil {
 		json.Unmarshal(data, &meta)
 	}
+	forkNetworkPolicy := cfg.NetworkPolicy
+	if forkNetworkPolicy == types.NetworkPolicyNone {
+		forkNetworkPolicy = meta.NetworkPolicy
+	}
 
 	id := cfg.SandboxID
 	if id == "" {
@@ -3895,7 +3896,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		os.RemoveAll(sandboxDir)
 		return nil, fmt.Errorf("allocate subnet: %w", err)
 	}
-	if err := CreateTAP(netCfg); err != nil {
+	if err := CreateTAP(netCfg, forkNetworkPolicy); err != nil {
 		m.subnets.Release(netCfg.TAPName)
 		os.RemoveAll(sandboxDir)
 		return nil, fmt.Errorf("create TAP: %w", err)
@@ -3905,20 +3906,12 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	if guestPort == 0 {
 		guestPort = m.cfg.DefaultPort
 	}
-	hostPort, err := FindFreePort()
+	hostPort, err := configureIngress(netCfg, forkNetworkPolicy, guestPort)
 	if err != nil {
 		DeleteTAP(netCfg.TAPName)
 		m.subnets.Release(netCfg.TAPName)
 		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("find free port: %w", err)
-	}
-	netCfg.HostPort = hostPort
-	netCfg.GuestPort = guestPort
-	if err := AddDNAT(netCfg); err != nil {
-		DeleteTAP(netCfg.TAPName)
-		m.subnets.Release(netCfg.TAPName)
-		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("add DNAT: %w", err)
+		return nil, fmt.Errorf("configure ingress: %w", err)
 	}
 
 	// Add metadata service DNAT (169.254.169.254:80 → host:8888)
@@ -4214,6 +4207,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		virtioMemRequestedMB: virtioMemAddedMB,
 		HostPort:             hostPort,
 		GuestPort:            guestPort,
+		NetworkPolicy:        forkNetworkPolicy,
 		pid:                  cmd.Process.Pid,
 		cmd:                  cmd,
 		network:              netCfg,
@@ -4449,7 +4443,7 @@ func (m *Manager) CleanupOrphanedProcesses() {
 			}
 			tapName := strings.TrimSuffix(fields[1], ":")
 			if strings.HasPrefix(tapName, "qm-") {
-				_ = exec.Command("ip", "link", "del", tapName).Run()
+				DeleteTAP(tapName)
 				log.Printf("qemu: cleaned up orphaned TAP %s", tapName)
 			}
 		}
@@ -4491,11 +4485,12 @@ func (m *Manager) RecoverLocalSandboxes() []LocalRecovery {
 						SandboxID:   sandboxID,
 						HasSnapshot: true,
 						Meta: SandboxMeta{
-							SandboxID: sandboxID,
-							Template:  snapMeta.Template,
-							CpuCount:  snapMeta.CpuCount,
-							MemoryMB:  snapMeta.MemoryMB,
-							GuestPort: snapMeta.GuestPort,
+							SandboxID:     sandboxID,
+							Template:      snapMeta.Template,
+							CpuCount:      snapMeta.CpuCount,
+							MemoryMB:      snapMeta.MemoryMB,
+							GuestPort:     snapMeta.GuestPort,
+							NetworkPolicy: snapMeta.NetworkPolicy,
 						},
 					})
 					continue

@@ -113,6 +113,9 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 	// networkEnabled=false (the zero value) into sandbox_sessions.config_json,
 	// so forks of that sandbox inherited a no-network config.
 	cfg.EnsureNetworkEnabledDefault()
+	if err := cfg.NetworkPolicy.Validate(); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
 
 	// Validate inline webhook specs up-front, exactly as the public createSandbox
 	// handler does at its entry. Without this the edge→CP create path skips
@@ -186,7 +189,7 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 		c.SetParamValues(checkpointID.String())
 		// Forward user-supplied envs + secret store + metadata so they're
 		// applied at fork time. Same semantics as the public path.
-		result, status, cpErr := s.createFromCheckpointCore(c, cfg.Envs, cfg.SecretStore, cfg.Metadata, cfg.MemoryMB)
+		result, status, cpErr := s.createFromCheckpointCore(c, cfg.Envs, cfg.SecretStore, cfg.Metadata, cfg.MemoryMB, cfg.NetworkPolicy)
 		if cpErr != nil {
 			return c.JSON(status, map[string]string{"error": cpErr.Error()})
 		}

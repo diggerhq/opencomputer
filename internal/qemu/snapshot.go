@@ -22,27 +22,28 @@ import (
 
 // SnapshotMeta holds metadata persisted alongside snapshot files.
 type SnapshotMeta struct {
-	SandboxID     string         `json:"sandboxId"`
-	Network       *NetworkConfig `json:"network"`
-	GuestCID      uint32         `json:"guestCID"`
-	GuestMAC      string         `json:"guestMAC"`
-	BootArgs      string         `json:"bootArgs"`
-	RootfsPath    string         `json:"rootfsPath"`
-	WorkspacePath string         `json:"workspacePath"`
-	CpuCount      int            `json:"cpuCount"`
-	MemoryMB      int            `json:"memoryMB"`
-	BaseMemoryMB  int            `json:"baseMemoryMB,omitempty"`
-	Template      string         `json:"template"`
-	GuestPort        int                 `json:"guestPort"`
-	GoldenVersion    string              `json:"goldenVersion,omitempty"`
-	SnapshotedAt     time.Time           `json:"snapshotedAt,omitempty"`
-	SealedTokens     map[string]string   `json:"sealedTokens,omitempty"`
+	SandboxID     string              `json:"sandboxId"`
+	Network       *NetworkConfig      `json:"network"`
+	GuestCID      uint32              `json:"guestCID"`
+	GuestMAC      string              `json:"guestMAC"`
+	BootArgs      string              `json:"bootArgs"`
+	RootfsPath    string              `json:"rootfsPath"`
+	WorkspacePath string              `json:"workspacePath"`
+	CpuCount      int                 `json:"cpuCount"`
+	MemoryMB      int                 `json:"memoryMB"`
+	BaseMemoryMB  int                 `json:"baseMemoryMB,omitempty"`
+	Template      string              `json:"template"`
+	GuestPort     int                 `json:"guestPort"`
+	NetworkPolicy types.NetworkPolicy `json:"networkPolicy,omitempty"`
+	GoldenVersion string              `json:"goldenVersion,omitempty"`
+	SnapshotedAt  time.Time           `json:"snapshotedAt,omitempty"`
+	SealedTokens  map[string]string   `json:"sealedTokens,omitempty"`
 	// SealedNames is the env-var-name → sealed-token index. Persisted alongside
 	// SealedTokens so secret-store refresh-by-name (UpdateSecretValue) keeps
 	// working after a wake or migration handoff.
-	SealedNames      map[string]string   `json:"sealedNames,omitempty"`
-	EgressAllowlist  []string            `json:"egressAllowlist,omitempty"`
-	TokenHosts       map[string][]string `json:"tokenHosts,omitempty"`
+	SealedNames     map[string]string   `json:"sealedNames,omitempty"`
+	EgressAllowlist []string            `json:"egressAllowlist,omitempty"`
+	TokenHosts      map[string][]string `json:"tokenHosts,omitempty"`
 }
 
 // doHibernate pauses a running VM, saves VM state via QMP migrate, and kicks off
@@ -169,6 +170,7 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		BaseMemoryMB:  vm.baseMemoryMB,
 		Template:      vm.Template,
 		GuestPort:     vm.GuestPort,
+		NetworkPolicy: vm.NetworkPolicy,
 		GoldenVersion: vm.goldenVersion,
 		SnapshotedAt:  time.Now(),
 	}
@@ -439,27 +441,20 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 			return nil, fmt.Errorf("allocate subnet: %w", err)
 		}
 	}
-	if err := CreateTAP(netCfg); err != nil {
+	if err := CreateTAP(netCfg, meta.NetworkPolicy); err != nil {
 		m.subnets.Release(netCfg.TAPName)
 		return nil, fmt.Errorf("create TAP: %w", err)
 	}
 
-	hostPort, err := FindFreePort()
+	guestPort := meta.GuestPort
+	if guestPort == 0 {
+		guestPort = 80
+	}
+	hostPort, err := configureIngress(netCfg, meta.NetworkPolicy, guestPort)
 	if err != nil {
 		DeleteTAP(netCfg.TAPName)
 		m.subnets.Release(netCfg.TAPName)
-		return nil, fmt.Errorf("find free port: %w", err)
-	}
-	netCfg.HostPort = hostPort
-	netCfg.GuestPort = meta.GuestPort
-	if netCfg.GuestPort == 0 {
-		netCfg.GuestPort = 80
-	}
-
-	if err := AddDNAT(netCfg); err != nil {
-		DeleteTAP(netCfg.TAPName)
-		m.subnets.Release(netCfg.TAPName)
-		return nil, fmt.Errorf("add DNAT: %w", err)
+		return nil, fmt.Errorf("configure ingress: %w", err)
 	}
 	if err := AddMetadataDNAT(netCfg.TAPName, netCfg.HostIP); err != nil {
 		log.Printf("qemu: warning: metadata DNAT failed: %v", err)
@@ -644,18 +639,19 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		baseMemoryMB:         baseMem,
 		virtioMemRequestedMB: pluggedMB,
 		HostPort:             hostPort,
-		GuestPort:             netCfg.GuestPort,
-		pid:           cmd.Process.Pid,
-		cmd:           cmd,
-		network:       netCfg,
-		sandboxDir:    sandboxDir,
-		qmpSockPath:   qmpSockPath,
-		agentSockPath: agentSockPath,
-		qmp:           qmpClient,
-		guestMAC:      guestMAC,
-		guestCID:      guestCID,
-		bootArgs:      bootArgs,
-		goldenVersion: m.goldenVersion, // set on wake — VM runs on the current worker's base
+		GuestPort:            netCfg.GuestPort,
+		NetworkPolicy:        meta.NetworkPolicy,
+		pid:                  cmd.Process.Pid,
+		cmd:                  cmd,
+		network:              netCfg,
+		sandboxDir:           sandboxDir,
+		qmpSockPath:          qmpSockPath,
+		agentSockPath:        agentSockPath,
+		qmp:                  qmpClient,
+		guestMAC:             guestMAC,
+		guestCID:             guestCID,
+		bootArgs:             bootArgs,
+		goldenVersion:        m.goldenVersion, // set on wake — VM runs on the current worker's base
 	}
 	// Recompute virtio-mem amount from the meta. Without this the field
 	// stays at zero on wake, which would (a) make grow deltas under-charge
@@ -803,11 +799,12 @@ func (m *Manager) coldBootLocalInner(ctx context.Context, sandboxID string, time
 			return nil, fmt.Errorf("parse snapshot-meta.json (sandbox-meta.json fallback): %w", err)
 		}
 		meta = SandboxMeta{
-			SandboxID: sandboxID,
-			Template:  snap.Template,
-			CpuCount:  snap.CpuCount,
-			MemoryMB:  snap.MemoryMB,
-			GuestPort: snap.GuestPort,
+			SandboxID:     sandboxID,
+			Template:      snap.Template,
+			CpuCount:      snap.CpuCount,
+			MemoryMB:      snap.MemoryMB,
+			GuestPort:     snap.GuestPort,
+			NetworkPolicy: snap.NetworkPolicy,
 		}
 		log.Printf("qemu: cold-boot-local %s: sandbox-meta.json absent — recovered config from snapshot-meta.json (template=%q, mem=%dMB, cpu=%d)",
 			sandboxID, meta.Template, meta.MemoryMB, meta.CpuCount)
@@ -838,28 +835,20 @@ func (m *Manager) coldBootLocalInner(ctx context.Context, sandboxID string, time
 	if err != nil {
 		return nil, fmt.Errorf("allocate subnet: %w", err)
 	}
-	if err := CreateTAP(netCfg); err != nil {
+	if err := CreateTAP(netCfg, meta.NetworkPolicy); err != nil {
 		m.subnets.Release(netCfg.TAPName)
 		return nil, fmt.Errorf("create TAP: %w", err)
 	}
 
-	hostPort, err := FindFreePort()
-	if err != nil {
-		DeleteTAP(netCfg.TAPName)
-		m.subnets.Release(netCfg.TAPName)
-		return nil, fmt.Errorf("find free port: %w", err)
-	}
 	guestPort := meta.GuestPort
 	if guestPort == 0 {
 		guestPort = 80
 	}
-	netCfg.HostPort = hostPort
-	netCfg.GuestPort = guestPort
-
-	if err := AddDNAT(netCfg); err != nil {
+	hostPort, err := configureIngress(netCfg, meta.NetworkPolicy, guestPort)
+	if err != nil {
 		DeleteTAP(netCfg.TAPName)
 		m.subnets.Release(netCfg.TAPName)
-		return nil, fmt.Errorf("add DNAT: %w", err)
+		return nil, fmt.Errorf("configure ingress: %w", err)
 	}
 
 	// Add metadata service DNAT (169.254.169.254:80 → host:8888)
@@ -937,6 +926,7 @@ func (m *Manager) coldBootLocalInner(ctx context.Context, sandboxID string, time
 		baseMemoryMB:  memMB,
 		HostPort:      hostPort,
 		GuestPort:     guestPort,
+		NetworkPolicy: meta.NetworkPolicy,
 		pid:           cmd.Process.Pid,
 		cmd:           cmd,
 		network:       netCfg,
