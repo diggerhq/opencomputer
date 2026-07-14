@@ -11,12 +11,12 @@ Create an agent, start a session, stream its event log, steer it with messages, 
 ## Core behavior
 
 <CardGroup cols={2}>
-  <Card title="Supervised runtime" icon="heart-pulse">
+  <Card title="Built-in runtime supervision" icon="heart-pulse">
     - Runtime crashes restart automatically
     - Idle sessions hibernate and wake on the next message
     - Hung runs stop cleanly instead of staying stuck
   </Card>
-  <Card title="Brain / hands sandboxing" icon="shield-halved">
+  <Card title="Built-in brain / hands sandboxing" icon="shield-halved">
     - **Brain**: agent loop. **Hands**: files and commands.
     - Untrusted work stays contained in the hands sandbox
     - Your model key stays in the [secret store](/sandboxes/secrets), never in a sandbox
@@ -33,11 +33,13 @@ Create an agent, start a session, stream its event log, steer it with messages, 
   </Card>
 </CardGroup>
 
+<Note>[Flue](/agent-sessions/flue) uses the same session, event, steering, and webhook APIs on a different execution substrate. Your compiled Flue app is the runtime, each session gets its own Durable Object, and no Linux sandbox is created unless the app explicitly uses `ocSandbox`.</Note>
+
 ## Get started
 
 <Steps>
   <Step title="Define an agent">
-    Create a reusable `{ name, model, prompt, runtime }` from your backend — `runtime: "claude"` (Anthropic models) or `"codex"` (OpenAI models). Run **Managed** (`credential: "managed"`, billed to your OpenComputer credits — no key) or pass your own model `key` inline / reference a saved [credential](/agent-sessions/credentials). Every [deployment](/agent-sessions/revisions) is versioned as a [revision](/agent-sessions/revisions) (roll back instantly), you can attach [skills](/agent-sessions/revisions#skills), and you can [deploy from a GitHub repo on push](/agent-sessions/revisions#deploy-from-a-repo). ([Agents](/agent-sessions/agents))
+    Create a reusable `{ name, model, prompt, runtime }` from your backend, using `runtime: "claude"` for Anthropic models or `"codex"` for OpenAI models. Run **Managed** (`credential: "managed"`, billed to your OpenComputer credits) or pass your own model key. Built-in runtime deployments support isolated revisions, skills, repo push-to-deploy, and pointer rollback. To deploy your own Flue app instead, use the [Flue guide](/agent-sessions/flue). ([Agents](/agent-sessions/agents))
   </Step>
   <Step title="Start a session">
     Start a session with `{ agent, input }`. The agent starts immediately and returns a browser-safe `client_token`.
@@ -53,7 +55,7 @@ Create an agent, start a session, stream its event log, steer it with messages, 
   <img src="/images/durable-agent-sessions-architecture.svg" alt="Durable Agent Sessions architecture: your app starts, steers, and streams a durable event-log session; a managed runtime adapter commits events while the brain drives the agent loop and acts through the hands sandbox; the model runs on your key from the secret store, which never enters a sandbox; user-level events are delivered out via your webhook." />
 </Frame>
 
-The event log is the durable record. Your app starts sessions, streams events, and steers with messages. The runtime drives the agent loop, acts through the hands sandbox for file and command work, and commits user-level events for webhook delivery. Your model key stays in the secret store.
+The event log is the durable consumer record. Your app starts sessions, streams events, and steers with messages. Built-in runtimes drive the agent loop through brain and hands sandboxes. Flue executes in its Worker and Durable Object, then projects the same public milestone events. Managed model credentials stay outside both execution substrates.
 
 ## When to use sessions
 

@@ -1,9 +1,9 @@
 ---
 title: "Deployments & revisions"
-description: "Deploy agent behavior, version it as immutable revisions, roll back instantly"
+description: "Deploy and version agent behavior"
 ---
 
-What you deploy is a small directory:
+For the built-in runtimes, what you deploy is a small directory:
 
 ```
 my-agent/
@@ -13,15 +13,17 @@ my-agent/
 └─ runtime/        # optional — a custom runtime image (coming soon)
 ```
 
-`agent.toml` + `prompt.md` are all an agent needs; `skills/` and `runtime/` are additive — add them only when you do. A **deployment** packages this directory into an immutable [**revision**](#revisions); the **active revision** is what new [sessions](/agent-sessions/sessions) use, and you roll back by re-activating an earlier one.
+`agent.toml` + `prompt.md` are all a built-in agent needs; `skills/` and `runtime/` are additive. A **deployment** packages this directory into an immutable [**revision**](#revisions), and the **active revision** is what new [sessions](/agent-sessions/sessions) use.
 
-Deploy three ways — all the same underneath: the **API/SDK** (send it inline), the **`oc` CLI** (bundle a local directory), or a [**repo push**](#deploy-from-a-repo).
+<Note>A [Flue](/agent-sessions/flue) deployment packages a compiled Cloudflare app instead. It records revisions in the same API, but currently has one live Worker per agent rather than independently routable revision artifacts. Its staging and rollback behavior is therefore different.</Note>
+
+Built-in runtime behavior can be deployed through the **API/SDK**, the **`oc` CLI**, or a [**repo push**](#deploy-from-a-repo). The current Flue profile uses `oc agent deploy` from a local app checkout because its build must run the app's installed Flue toolchain.
 
 ## Revisions
 
-A **revision** is an immutable snapshot of an agent's behavior — the `prompt`, `model`, and skills from one deployment, frozen and numbered. Every deploy appends a new one (a repo push that changes nothing is skipped); the agent's **active revision** is the one new [sessions](/agent-sessions/sessions) run.
+A **revision** is an immutable, numbered record of one deployment. For a built-in runtime, it freezes the `prompt`, `model`, and skills used by new sessions. For Flue, it records the app deployment and Worker version that passed verification.
 
-Revisions are **linear** (the number only goes up, like a Vercel/Fly deployment) and never rewritten — [rolling back](#roll-back-and-promote) just moves the active pointer to an earlier one. In-flight sessions keep the revision they started on; only new sessions pick up a change.
+Revisions are **linear** (the number only goes up) and never rewritten. Built-in runtime sessions keep the revision they started on; only new sessions pick up a change. Flue sessions share the agent's live Worker, so a Worker deployment also changes the code used by existing sessions.
 
 | Field | |
 |---|---|
@@ -79,9 +81,11 @@ The response is a **deployment**:
 { "deployment": { "id": "dep_…", "state": "ready", "revision_id": "rev_…", "active": true } }
 ```
 
-Inline deployments finish synchronously (`state: "ready"` with a `revision_id`) — except [flue](/agent-sessions/flue) deploys, which return `state: "verifying"` and boot the uploaded artifact in a throwaway sandbox before pinning the revision; poll them like an async deployment (`verifying` → `ready`/`failed`). Asynchronous deployments (GitHub) return `state: "accepted"` — poll `GET /agents/:id/deployments/:deployment_id` until `ready` (or `failed`/`skipped`/`superseded`); a repo deploy also reports progress as a **commit status** on GitHub.
+Inline deployments finish synchronously (`state: "ready"` with a `revision_id`) for the built-in runtimes. A [Flue](/agent-sessions/flue) deploy returns `state: "verifying"` while the managed deploy runner uploads the agent Worker and waits for two consecutive healthy responses from that exact live Worker. Poll it like an asynchronous deployment (`verifying` to `ready` or `failed`). GitHub deployments return `state: "accepted"`; poll `GET /agents/:id/deployments/:deployment_id` until terminal, and use the commit status on GitHub for the same result.
 
 ### Staging vs activating
+
+<Warning>Isolated staging is not available for Flue. A Flue upload changes the one live Worker even when deployment metadata requests `activate: false`. Do not use `--no-activate` or a pinned revision as a Flue canary. See [Flue deployment behavior](/agent-sessions/flue#deployment-and-revision-behavior).</Warning>
 
 By default a ready deployment is **activated** — its revision becomes what new sessions use. Pass **`activate: false`** to **stage** instead: the revision is created but not made active, so you can test it before it goes live.
 
@@ -104,6 +108,8 @@ For [repo deployments](#deploy-from-a-repo) the **branch decides** and `activate
 <Tip>Editing `prompt`/`model` via [`PATCH /agents/:id`](/agent-sessions/agents) also deploys a revision — a shorthand for small edits.</Tip>
 
 ## Deploy from a repo
+
+<Note>Repo-linked push-to-deploy is not available for Flue apps yet. Deploy their compiled Cloudflare target with `oc agent deploy` from a local or CI checkout.</Note>
 
 Keep the agent directory (above) in Git and **push to deploy**. [Install the OpenComputer GitHub App](/agent-sessions/repos#connecting-github) on the repo, then connect it to an agent:
 
@@ -144,21 +150,20 @@ No repo needed — the CLI bundles a local agent directory and deploys it:
 ```bash CLI
 oc agent deploy                       # deploy ./ (the agent named in agent.toml)
 oc agent deploy ./agents/issue-fixer  # a specific directory
-oc agent deploy --no-activate         # stage instead of activate
+oc agent deploy --no-activate         # stage a built-in runtime revision
 ```
 
 Same as a repo push — handy for CI that isn't GitHub, or trying a change before you commit.
 
 ### Flue framework agents
 
-A [Flue](/agent-sessions/flue) agent (`[runtime] family = "flue"` in `agent.toml`) has no `prompt.md` or `skills/` — its behavior lives in code — so `oc agent deploy` builds and ships an artifact instead:
+A [Flue](/agent-sessions/flue) agent (`[runtime] family = "flue"` in `agent.toml`) carries its instructions, tools, and packaged skills in code, so `oc agent deploy` builds and ships the Cloudflare app instead of reading `prompt.md` and the top-level `skills/` directory:
 
 ```bash CLI
-oc agent create support-triage --runtime flue --model anthropic/claude-sonnet-5   # --prompt not needed
-oc agent deploy                                                                   # build → upload → verify → activate
+oc agent deploy   # flue build --target cloudflare, upload, verify live Worker
 ```
 
-Deploy runs the app's own build (`oc-flue-build`), uploads the content-addressed artifact, boot-verifies it in a scratch sandbox, then activates a revision — the same staging and rollback model as any other agent. See [Run Flue agents](/agent-sessions/flue).
+The CLI creates the agent from `agent.toml` when needed, runs the locally installed Flue build, uploads the generated JavaScript modules, and waits for the exact live Worker to become stable. See [Run Flue agents](/agent-sessions/flue) for the required app wiring and current deployment constraints.
 
 ## Roll back and promote
 
@@ -182,6 +187,8 @@ oc agent rollback 3
 </CodeGroup>
 
 Instant — no rebuild. Running sessions are unaffected; new sessions use the newly-active revision.
+
+<Warning>The pointer-only rollback above applies to the built-in runtimes. It does not replace a Flue agent's live Worker bytes. To restore a Flue build, check out the known-good source and run `oc agent deploy` again. Do not downgrade across an incompatible Flue Durable Object schema version.</Warning>
 
 ## Inspect
 

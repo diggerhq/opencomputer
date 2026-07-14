@@ -1,141 +1,170 @@
 ---
 mode: "wide"
 title: "Flue"
-description: "Deploy a Flue app to OpenComputer as a durable session"
+description: "Deploy a Flue app as an OpenComputer agent"
 ---
 
-<Note>**Experimental.** The supported profile below is intentionally
-constrained and will widen. Flue is pre-1.0; each deploy bundles **your exact
-Flue version** into the artifact, so upstream releases never break a deployed
-agent — only new builds pick them up.</Note>
+<Note>
+**Experimental.** The supported profile is intentionally narrow. It currently covers direct text
+sessions on managed Anthropic models, with an optional OpenComputer sandbox. Flue is pre-1.0, and
+each deployment includes the exact Flue version installed in your app.
+</Note>
 
-[Flue](https://flueframework.com) is a TypeScript agent framework by the Astro
-team. OpenComputer runs a Flue app as the resident process of a
-[durable session](/agent-sessions/overview) — same sessions API, events,
-steering, and watches as every other [runtime](/agent-sessions/runtimes).
+[Flue](https://flueframework.com) is a TypeScript framework for durable agents. OpenComputer runs the
+application Flue builds and connects it to OpenComputer agents, sessions, events, steering, model
+billing, and optional sandboxes.
 
-Your app stays plain Flue. You add one file — yours, committed, nothing is
-generated or injected. It plays the role Flue's layout gives `cloudflare.ts`:
-an optional platform-specific entry module.
+Template: [`diggerhq/oc-flue-starter`](https://github.com/diggerhq/oc-flue-starter)
 
-```ts src/opencomputer.ts
-import { serveOC } from '@opencomputer/flue';
-import agent from './agents/support-triage.ts';
+## How Flue differs from the built-in runtimes
 
-serveOC(agent);
+The built-in runtimes run Claude Code, Codex, or pi as a managed coding agent. A Flue agent is
+different: **your application is the runtime**. OpenComputer deploys and operates that app.
+
+| Concern | Built-in runtimes | Flue |
+| --- | --- | --- |
+| Agent loop | OpenComputer runs Claude Code, Codex, or pi | Your compiled Flue app contains the loop |
+| Session compute | Managed per-session brain and workspace sandboxes | One deployed app, with one Durable Object instance per session |
+| Conversation state | Checkpointed runtime files plus the OpenComputer event log | Flue stores its conversation in Durable Object SQLite; OpenComputer projects public milestones into its event log |
+| Tools and skills | Platform tools plus uploaded `prompt.md` and `skills/` | `defineTool` code and packaged skill imports compiled into the Worker |
+| Linux workspace | Part of the normal runtime | Absent by default; `ocSandbox` creates one only when an operation needs it |
+| Deployment | Upload prompt, model, and skill configuration | Build and deploy the compiled app |
+
+Under the hood, OpenComputer runs Flue's Cloudflare target as an agent Worker and gives each session
+its own Durable Object. This architecture lets a Flue session start without provisioning a virtual
+machine. A model-only agent, or one whose custom tools use bundled data, never needs a sandbox.
+
+## How a turn runs
+
+```mermaid
+sequenceDiagram
+    participant Client as Dashboard or API client
+    participant OC as OpenComputer sessions API
+    participant Worker as Deployed agent Worker
+    participant DO as Session Durable Object
+    participant Gateway as OpenComputer model gateway
+    participant Model as Model provider
+    participant Sandbox as Optional sandbox
+
+    Client->>OC: Create session or send message
+    OC->>OC: Store input and allocate turn
+    OC-->>Client: Accepted
+    OC->>Worker: Dispatch accepted input
+    Worker->>DO: Admit the turn
+    DO->>Gateway: Model request
+    Gateway->>Model: Metered provider request
+    Model-->>DO: Response
+    opt First real shell or file operation
+        DO->>Sandbox: Resolve or create session sandbox
+        Sandbox-->>DO: Operation result
+    end
+    DO-->>OC: Durable conversation updates
+    OC->>OC: Append messages, tools, errors, and completion
+    OC-->>Client: Event stream update
 ```
 
-A full Flue app — with `app.ts`, channels, workflows — can add this file
-unchanged and keep self-hosting: only what it imports ends up in the
-OpenComputer artifact.
+OpenComputer returns after it has durably accepted the input. It does not wait for dispatch, the
+Durable Object, a model call, or sandbox creation. Flue executes one turn at a time for each session;
+messages sent while a turn is working remain queued and run in order.
 
-Template: [`diggerhq/oc-flue-starter`](https://github.com/diggerhq/oc-flue-starter).
+Flue's Durable Object is the runtime's conversation store. The OpenComputer event log is the stable
+consumer view used by the dashboard, API, and webhooks. OpenComputer resumes projection from a saved
+cursor after an interruption, so clients do not need to understand Flue submission ids or stream
+offsets.
 
 ## Quickstart
 
+Requirements: Node 22.19 or newer, the `oc` CLI, and an OpenComputer organization with Managed model
+access.
+
 ```sh
-git clone https://github.com/diggerhq/oc-flue-starter && cd oc-flue-starter
+git clone https://github.com/diggerhq/oc-flue-starter
+cd oc-flue-starter
 npm install
 
-# create the agent (optional — `oc agent deploy` creates it from agent.toml if missing)
-oc agent create support-triage --runtime flue --model anthropic/claude-sonnet-5
-
-# build + upload + boot-verify + activate a revision
+# Builds the Cloudflare target, deploys it, verifies the live Worker, and activates a revision.
+# The agent is created from agent.toml when it does not exist yet.
 oc agent deploy
 
-# talk to it
-oc session create --input "Customer says order 1042 hasn't arrived — what do I tell them?"
-oc session logs <session-id>
+oc session create \
+  --agent support-triage \
+  --input "Order 2203 arrived with a torn shoulder strap. What happens next?"
 ```
 
-Answer the agent's questions with `oc session steer <session-id> "..."` or in
-the [dashboard](https://app.opencomputer.dev).
+Continue the session with `oc session steer <session-id> "..."`, inspect it with
+`oc session logs <session-id>`, or open it in the
+[dashboard](https://app.opencomputer.dev).
 
-## Add to an existing Flue app
+## Add OpenComputer to a Flue app
 
-Three files, no changes to your agent code:
+Install the integration alongside Flue:
 
 ```sh
 npm install @opencomputer/flue
 ```
 
-```ts src/opencomputer.ts
-import { serveOC } from '@opencomputer/flue';
-import agent from './agents/your-agent.ts';
+Export the OpenComputer route and register the managed model gateway inside your agent initializer:
 
-serveOC(agent);
+```ts src/agents/support-triage.ts
+import { defineAgent, defineAgentProfile } from '@flue/runtime';
+import { DEFAULT_MODEL, route, useOcGateway } from '@opencomputer/flue';
+
+export { route };
+
+export default defineAgent((ctx) => {
+  useOcGateway(ctx);
+
+  return {
+    profile: defineAgentProfile({
+      instructions: 'Triage customer requests and give the next concrete action.',
+    }),
+    model: DEFAULT_MODEL,
+  };
+});
 ```
 
+Use the default hosting app, which mounts Flue's routes, the deployment health endpoint, and
+OpenComputer telemetry:
+
+```ts src/app.ts
+export { default } from '@opencomputer/flue/app';
+```
+
+Declare the deployment target:
+
 ```toml agent.toml
-name  = "your-agent"                    # the OpenComputer agent name
-model = "anthropic/claude-sonnet-5"     # must equal the model in defineAgent
+name = "support-triage"
+model = "anthropic/claude-haiku-4-5"
 
 [runtime]
 family = "flue"
 ```
 
-Then `oc agent deploy` from the app root — it creates the agent on first
-deploy. If the app sets `sandbox:` or has a `db.ts`, the build tells you
-(both are supplied by the platform — see the table below).
+The manifest name must identify the exported Flue agent, and its model must match the model returned
+by `defineAgent`. `DEFAULT_MODEL` currently resolves to `anthropic/claude-haiku-4-5`.
 
-## What changes vs a stock Flue app
+If your project owns a custom `app.ts`, keep Flue's routes, import `@opencomputer/flue/wire` for
+telemetry, and expose a `GET /health` route that returns success. The default app is the simpler
+choice when you do not need additional routes.
 
-The sandbox, persistence, model, skills, tool-name, and credential rows are
-enforced at build or deploy — violations fail before a session can exist.
-Channels and workflows aren't checked: code not imported by `src/opencomputer.ts`
-isn't in the artifact.
+## What `@opencomputer/flue` supplies
 
-| | Stock Flue | On OpenComputer |
-| --- | --- | --- |
-| Entry | Flue's generated server (`flue build --target node`) | Add `src/opencomputer.ts` calling `serveOC(agent)`. Your agent code is untouched; `flue dev` keeps working locally |
-| Sandbox | You pick one (`local()`, containers, …) | **Leave `sandbox:` unset** — the session's workspace sandbox is supplied (build error) |
-| Persistence | `db.ts` (or volatile in-memory default) | **No `db.ts`** — the conversation is stored durably in the session's state; survives restarts and hibernation (build error) |
-| Model credentials | Env keys or `registerProvider` in code | **No keys anywhere in the app** — the deploy scans the artifact for key-shaped strings and fails on a hit. Managed billing or an [OC credential](/agent-sessions/credentials); routing is injected at run time |
-| Model choice | In code | Still in code — but declared three times total (`defineAgent`, `agent.toml`, the OC agent) and all three **must be equal**; the deploy rejects divergence. Fixed for good at deploy: a [session](/agent-sessions/sessions#model) **can't override** a flue agent's model — passing `model` on a flue session is rejected |
-| Skills | Packaged imports (`with {type:'skill'}`) or workspace files | **`src/skills/<name>/SKILL.md`** — ships with every deploy. Packaged imports are a build error (for now) |
-| Asking the user | No human-in-the-loop primitive | An **`ask` tool** is added: the session yields `needs_input` and hibernates until the user replies |
-| Channels / workflows | Slack/Discord ingress, `defineWorkflow` | Not supported — inbound is session messages + [GitHub watches](/agent-sessions/watches) |
-| Tool names | Anything | `bash`, `read`, `write`, `edit`, `ls`, `grep`, `glob`, `say`, `ask` are **reserved** (build error) |
+| Export | Purpose |
+| --- | --- |
+| `useOcGateway(ctx)` | Registers the managed Anthropic endpoint inside the Flue initializer |
+| `route` | Opts an agent into the HTTP transport used by managed dispatch |
+| `DEFAULT_MODEL` | Selects the supported prompt-caching-safe default model |
+| `@opencomputer/flue/app` | Provides Flue routes, `GET /health`, and telemetry wiring |
+| `@opencomputer/flue/wire` | Adds telemetry when your project owns its hosting app |
+| `ocSandbox(ctx.env)` | Adds an optional, demand-driven Linux shell and filesystem |
 
-## What `@opencomputer/flue` does
+OpenComputer binds a platform-managed credential for its gateway during deployment. Your provider
+key is not compiled into the app or exposed to the Worker.
 
-`serveOC(agent)` runs your agent as the session's resident process and
-connects it to the platform:
+## Custom tools and packaged skills
 
-- **Conversation persistence.** Opens Flue's conversation store on the
-  session's state volume. History survives process restarts, hibernation,
-  and machine moves. A `db.ts` is rejected at build because a second store
-  would fork the conversation history.
-- **Sandbox.** Flue's built-in `read`/`write`/`edit`/`bash`/`grep`/`glob`
-  tools execute on the session's workspace sandbox — a separate machine from
-  your app process, where attached repos are checked out. Custom `defineTool`
-  code runs in-process with your app (see the network-access note below).
-- **Two added tools.** `say` posts a message to the user mid-run. `ask` asks
-  a question: the session yields `needs_input` and hibernates until the user
-  replies, then the run continues with the answer.
-- **Model credentials.** Registers the Anthropic provider with credentials
-  resolved from the platform — managed metering or your key. The bundle and
-  repo contain no credentials.
-- **Turn handling.** Each session turn is admitted into Flue's engine with
-  an idempotent id, so platform-level retries can't double-run it. If the
-  platform side of a turn dies mid-run, the retry **re-attaches to the
-  still-running engine** and streams from where it left off — the model call
-  is not repeated. Every step — model text, custom tool calls, sandbox
-  operations — is written to the session's
-  [event log](/agent-sessions/events).
-- **Retries and timeouts.** Flue's `durability` settings are overridden: one
-  engine attempt per turn, with the timeout set to the platform's turn
-  deadline. Cancel, retry, and deadline behavior is the platform's; there is
-  no second layer to reason about.
-
-`oc-flue-build` (the package's build command, run by `oc agent deploy`)
-bundles `src/opencomputer.ts` with **your** installed Flue version via esbuild, collects
-`src/skills/**` into the artifact, and stamps the metadata (`model`, versions)
-the deploy validates against.
-
-## Custom tools
-
-Plain `defineTool` — typed with valibot, running in-process:
+Custom `defineTool` handlers run inside the Worker. Import any data or templates they need so the
+Cloudflare build includes those files:
 
 ```ts src/tools/lookup-order.ts
 import { defineTool } from '@flue/runtime';
@@ -152,101 +181,157 @@ export const lookupOrder = defineTool({
 });
 ```
 
-Two rules that follow from tools running inside the deployed artifact:
+Package an agent-owned skill through Flue's supported import mechanism, then add it to the agent:
 
-- **Anything a tool needs at run time must be bundled** — `import` fixture
-  data and templates (as above); the repo checkout is not on the app's
-  filesystem.
-- **Outbound network**: custom tools currently have unrestricted outbound
-  access from your app's process — where `defineTool` code runs, a separate
-  machine from the workspace sandbox. An egress policy is planned; until it
-  exists, don't embed secrets in the bundle to call your own APIs — prefer
-  self-contained tools.
+```ts
+import triage from '../skills/triage/SKILL.md' with { type: 'skill' };
 
-## Skills
+// Inside the object returned by defineAgent:
+{
+  tools: [lookupOrder],
+  skills: [triage],
+}
+```
 
-Put the agent's own skills at `src/skills/<name>/SKILL.md`
-([SKILL.md format](/agent-sessions/skills)). The build packages them into the
-artifact; at run time they are written into the agent's workspace, where
-Flue's normal discovery finds them. Changing a skill is a redeploy; a
-rollback also reverts skills. Separately, a repo attached as a session source
-contributes its own `.agents/skills/**` (that convention means "skills for
-agents working on that repo"); on a name clash, the app's skill wins.
+The skill is part of the Worker module graph. It is not copied into a workspace, and loading it does
+not require a sandbox. Changing a tool, imported data file, or packaged skill requires another
+deployment.
 
-Skills take effect **on OpenComputer only**: `flue dev`'s default local
-environment is an empty in-memory filesystem, so it exercises your loop and
-custom tools, not skills.
+Custom tools in the Worker can currently reach only platform-managed outbound hosts. Arbitrary
+external `fetch` destinations are not part of the supported profile. Commands run through an
+optional OpenComputer sandbox follow the sandbox's separate network policy.
 
-## Models
+## Optional sandbox
 
-`anthropic/<id>`, same ids as the other runtimes — `anthropic/claude-sonnet-5`
-(the template default), `anthropic/claude-opus-4-8`,
-`anthropic/claude-haiku-4-5`. Managed billing and BYO keys behave exactly as
-on `claude`/`pi`; see [credentials](/agent-sessions/credentials).
+Add `ocSandbox` only when the agent needs a Linux shell or durable files:
 
-## Limitations vs full Flue
+```ts
+import { defineAgent, defineAgentProfile } from '@flue/runtime';
+import {
+  DEFAULT_MODEL,
+  ocSandbox,
+  route,
+  useOcGateway,
+} from '@opencomputer/flue';
 
-What the current profile does **not** cover, beyond the table above:
+export { route };
 
-- **Channels** (Slack, Discord, web ingress) don't run here — inbound is
-  session messages and [GitHub watches](/agent-sessions/watches). A full app
-  keeps its channels when self-hosting; code not imported by
-  `src/opencomputer.ts` never enters the artifact.
-- **Workflows** (`defineWorkflow`) don't run here; a workflow admission
-  throws at run time.
-- **One agent, one conversation per session.** `serveOC(agent)` hosts one
-  top-level agent, and a session is one conversation instance — Flue's
-  per-instance routing has no equivalent; fan out by creating sessions.
-- **Subagents** (`session.task()`) bundle and execute in-process, but they
-  are outside the tested profile: their model declarations aren't validated
-  the way the top-level agent's is, and subagent steps may appear
-  incompletely in the session event log.
-- **Anthropic models only.** Flue itself supports other providers (OpenAI,
-  Google, …); on OpenComputer there is no credential source for them yet.
-- **`durability` settings are ignored.** The platform pins one engine
-  attempt per turn under the turn deadline; retry and timeout policy is the
-  platform's. Setting `durability:` in `defineAgent` has no effect.
-- **Text in, text out.** Sessions exchange text; there is no way to send
-  the agent an image or a file attachment.
-- **No HTTP endpoints.** A Flue app's own server doesn't run; requests
-  reach the agent only through the
-  [sessions API](/agent-sessions/overview).
+export default defineAgent((ctx) => {
+  useOcGateway(ctx);
 
-Expect this list to shrink. The profile is versioned
-(`profile_version` in the artifact), so a deployed agent never changes
-behavior until you rebuild.
+  return {
+    profile: defineAgentProfile({
+      instructions: 'Work in the sandbox only when a shell or file operation is needed.',
+    }),
+    model: DEFAULT_MODEL,
+    sandbox: ocSandbox(ctx.env),
+  };
+});
+```
 
-## Deploying
+Declaring `ocSandbox` performs no provisioning during Worker startup or Flue runtime initialization.
+The first real shell or file operation resolves one sandbox for the session; later operations and
+turns reuse it.
 
-`oc agent deploy` = build (`oc-flue-build`, which initializes your agent to
-extract and check the profile) → upload the content-addressed artifact →
-**boot-verify** → create and activate an immutable
-[revision](/agent-sessions/revisions). Sessions pin their revision at create;
-rollback is repointing.
+The workspace starts empty. Repository sources and workspace skill discovery are not implemented for
+Flue sessions, so passing `sources` at session creation is rejected.
 
-Boot-verify is the flue-specific step. Your artifact is your brain code, so
-the platform boots it in a throwaway sandbox and waits for a healthy boot
-before pinning a revision. A bundle that throws in `initialize()` — or can't
-otherwise reach a healthy boot — **fails the deploy** with that error; it
-never reaches a session, and the previously active revision keeps serving. So
-a flue deploy isn't instant: it polls through a `verifying` state (tens of
-seconds) while the boot runs, then activates. `--no-activate` still verifies —
-a staged revision is a verified one that isn't live yet. The verify sandbox is
-discarded afterward and never holds your model credential.
+## Variables and secrets
+
+Non-secret Worker variables belong in `agent.toml`:
+
+```toml agent.toml
+[vars]
+SUPPORT_REGION = "eu-west"
+```
+
+Pipe secret values over standard input. Values are write-only and never returned by the API:
+
+```sh
+printf '%s' "$SUPPORT_API_KEY" | oc agent secret set SUPPORT_API_KEY --from-stdin
+oc agent secret list
+
+# A configuration change takes effect on the next deployment.
+oc agent deploy
+```
+
+Deleting a secret also requires a deployment before the Worker changes:
+
+```sh
+oc agent secret delete SUPPORT_API_KEY
+oc agent deploy
+```
+
+Binding names use uppercase letters, digits, and underscores. Names beginning with `OC_` or `FLUE_`
+are reserved for the platform. Never put a secret in `agent.toml` or source code.
+
+## Deployment and revision behavior
+
+`oc agent deploy` performs these operations:
+
+1. Scans the source tree for credential-shaped values.
+2. Runs the app's installed `flue build --target cloudflare`.
+3. Uploads only the generated JavaScript modules and a restricted deployment descriptor.
+4. Applies platform-owned bindings, variables, secrets, and Durable Object migrations, then uploads
+   the agent Worker.
+5. Keeps the deployment in `verifying` until the exact live Worker returns two consecutive healthy
+   responses. Only then does the CLI report the revision as ready.
+
+<Warning>
+Flue currently has one live Worker per agent. Uploading a deployment changes the code used by new and
+existing sessions before revision verification finishes. There is no isolated staged Worker, canary
+route, or automatic Worker rollback. `--no-activate`, an old revision pin, and a pointer-only
+`oc agent rollback` do not restore older Worker code.
+
+To restore a known-good build, check out that source and run `oc agent deploy` again. Flue and Durable
+Object schema changes are forward-only, so do not downgrade across an incompatible Flue storage
+version.
+</Warning>
+
+## Session behavior
+
+Flue uses the same session ids, text input, event stream, steering, cancellation, result endpoint,
+and dashboard as the other runtimes. The important differences are:
+
+- Session creation and steering return after durable acceptance. Model execution continues
+  asynchronously.
+- Each accepted input receives an OpenComputer `trn_...` id. Flue's internal submission identity is
+  not part of the public API.
+- Follow-up messages queue behind the working turn and run in order.
+- The model is compiled into the deployed app. Per-session model overrides are rejected.
+- Generic `tokens`, `turn_seconds`, and `turns` limits are not yet enforced on the Flue execution
+  path. Do not use them as a safety boundary for this runtime.
+- Archiving makes the OpenComputer session read-only but retains the Flue conversation in Durable
+  Object storage. Each session is subject to Cloudflare's
+  [10 GB Durable Object storage limit](https://developers.cloudflare.com/durable-objects/platform/limits/).
+
+## Current limitations
+
+- Direct text session messages are the supported ingress. Flue channels and workflows are not
+  connected to OpenComputer yet.
+- Repository sources, checkout, pull-request publishing, watches, and repo-backed workspaces are not
+  supported for Flue sessions.
+- File and image attachments are not supported.
+- The managed gateway currently supports Anthropic models and requires Managed model access for the
+  organization. Per-session model selection is not supported.
+- Worker code has a platform-managed outbound allowlist. Tenant-configurable egress is not available.
+- Platform turn deadlines, maximum-turn enforcement, automatic conversation compaction, and
+  automatic tenant-Worker rollback are not available yet.
+- Subagents may execute inside Flue, but their event projection and lifecycle are outside the tested
+  profile.
 
 ## Troubleshooting
 
-- **Build fails (`oc-flue-build`)** — a profile violation, named in the
-  error: `sandbox:` set, a `db.ts`, a packaged-skill import, a reserved tool
-  name, or a model that isn't `anthropic/…`. Nothing is uploaded.
-- **Deploy fails at verification** — the bundle built but didn't boot in the
-  scratch sandbox; the deploy output carries the probe error. Usual cause: a
-  top-level crash in your code (something that only happens at import time).
-- **Model rejected at deploy** — the three model declarations diverge
-  (`defineAgent`, `agent.toml`, the OC agent).
-- **`provider 401` on the first turn** — no usable model credential. Managed
-  billing is the default, so this usually means the org's billing isn't set
-  up yet — set up billing, or attach a valid Anthropic credential to the agent.
-- **Skill not loading** — the agent's own skills go in
-  `src/skills/<name>/SKILL.md`; skills from a codebase require that repo
-  attached as a session source (`--source`).
+- **`flue build` is unavailable**: run `npm install` with Node 22.19 or newer. `oc agent deploy` never
+  downloads a missing build tool for you.
+- **Credential scan refuses the deploy**: remove the reported key from source and store application
+  secrets with `oc agent secret set ... --from-stdin`.
+- **Deployment fails while verifying**: the uploaded Worker did not reach a stable healthy response.
+  Inspect the deployment error, correct the import-time or health-route failure, and deploy again.
+- **Provider authentication fails on the first turn**: confirm that Managed model access is active for
+  the organization and that the agent uses an `anthropic/...` model.
+- **A skill is missing**: import its `SKILL.md` with `with { type: 'skill' }` and include it in the
+  agent's `skills` array.
+- **A session shows an error or stops advancing**: inspect the dashboard's **All events** view or run
+  `oc session logs <session-id>`. Runtime failures are recorded without requiring a diagnostic
+  redeployment.

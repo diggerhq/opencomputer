@@ -11,16 +11,16 @@ A **runtime** executes the agent loop: provider SDK, model calls, and tool use. 
 | `claude` | `anthropic/…` (e.g. `anthropic/claude-opus-4-8`) | Managed, or an Anthropic key |
 | `codex` | `openai/…` (e.g. `openai/gpt-5-codex`) | Managed, or an OpenAI key |
 | `pi` | `anthropic/…` today — the runtime is provider-agnostic by construction; more providers land next | Managed, or an Anthropic key |
-| `flue` <sup>experimental</sup> | `anthropic/…` today — bring your own [Flue](/agent-sessions/flue) app | Managed, or an Anthropic key |
+| `flue` <sup>experimental</sup> | `anthropic/…` today, declared by your [Flue](/agent-sessions/flue) app | Managed |
 
-`model` is passed straight through to the provider, so any model that provider serves works — only the **`provider/` prefix** is validated against the runtime (a bad prefix is rejected at agent create, a model the provider doesn't recognize fails on the first turn). A [session](/agent-sessions/sessions#model) can override this per run — pass `model` at create to run one session on a different model than its agent, validated the same way (brain-box runtimes `claude`/`codex`/`pi`; not `flue`, which pins its model in the artifact). Common choices:
+For the built-in runtimes, `model` is passed straight through to the provider. The **`provider/` prefix** is validated against the runtime; an unknown provider model fails on the first turn. A [session](/agent-sessions/sessions#model) can override the model for one run. Flue instead declares its model in the app and `agent.toml`, and rejects per-session overrides. Common choices:
 
 - **`claude`:** `anthropic/claude-sonnet-5` (default, balanced), `anthropic/claude-opus-4-8` (most capable), `anthropic/claude-fable-5`, `anthropic/claude-haiku-4-5` (fastest/cheapest).
 - **`codex`:** `openai/gpt-5-codex`.
 - **`pi`:** the `anthropic/…` catalog above. The runtime itself is provider-agnostic; additional providers are next.
-- **`flue`** (experimental): an `anthropic/…` model, declared in your app's code — see [Run Flue agents](/agent-sessions/flue) for the supported ids.
+- **`flue`** (experimental): an `anthropic/…` model declared in your app and routed through Managed access. See [Run Flue agents](/agent-sessions/flue).
 
-Sessions, [events](/agent-sessions/events), [steering](/agent-sessions/messaging), [tools](/agent-sessions/runtime-tools), and [webhooks](/agent-sessions/webhooks) share the same API across runtimes. `runtime` is fixed once the agent exists; to switch engines, create a new agent.
+Sessions, [events](/agent-sessions/events), [steering](/agent-sessions/messaging), and [webhooks](/agent-sessions/webhooks) share the same consumer API across runtimes. Execution, tools, persistence, and recovery depend on the runtime. `runtime` is fixed once the agent exists; to switch engines, create a new agent.
 
 ## `claude`
 
@@ -60,7 +60,7 @@ Content-Type: application/json
 
 ## `pi`
 
-The [pi](https://github.com/earendil-works/pi) coding-agent harness (MIT). `pi` is built provider-agnostic — the harness drives whatever provider the model's `provider/` prefix names. Today it ships with `anthropic/…` models, on Managed billing or your Anthropic key; additional providers land next. Sandbox tools, the event stream, steering, and recovery are the same as the other runtimes.
+The [pi](https://github.com/earendil-works/pi) coding agent (MIT). `pi` is provider-independent by design: it drives whatever provider the model's `provider/` prefix names. Today it ships with `anthropic/…` models, on Managed billing or your Anthropic key; additional providers land next. Sandbox tools, the event stream, steering, and recovery are the same as the other built-in runtimes.
 
 ```http
 POST https://api.opencomputer.dev/v3/agents
@@ -80,19 +80,23 @@ The provider is taken from the model's `provider/` prefix — so as more provide
 
 ## `flue` <sup>experimental</sup>
 
-Unlike the runtimes above, `flue` doesn't run a platform-provided harness —
-it runs **your app**, built with the [Flue framework](https://flueframework.com)
-and deployed with `oc agent deploy`. Your code defines the agent
-(instructions, typed tools, subagents); OpenComputer provides the durable
-session around it: the event log, sandbox tools, steering, hibernation, and
-recovery are the same as every other runtime. `anthropic/…` models today,
-Managed or your Anthropic key. Experimental — see
-[Run Flue agents](/agent-sessions/flue) for the supported profile and
-quickstart.
+Unlike the runtimes above, `flue` does not run a platform-provided coding agent. It
+runs **your compiled Flue app** as an agent Worker, with one Durable Object
+instance holding each session's conversation. OpenComputer durably accepts
+input, dispatches turns, routes managed model calls, and projects Flue's
+durable updates into the shared event log.
+
+A Flue agent has no Linux sandbox by default. Add `ocSandbox` only when the
+agent needs shell or file operations; the first real operation creates it.
+This different hosting and recovery model is explained in
+[How Flue differs from the built-in runtimes](/agent-sessions/flue#how-flue-differs-from-the-built-in-runtimes).
 
 The runtime, model, and credential have to agree. `claude` needs an `anthropic/…` model and an Anthropic key; `codex` needs an `openai/…` model and an OpenAI key; `pi` runs `anthropic/…` models today and needs an Anthropic key (or Managed). A mismatch is rejected when you create the agent, with a clear error — so a session never starts on a broken pairing. See [model credentials](/agent-sessions/credentials).
 
-## Architecture
+## Built-in runtime architecture
+
+The remainder of this page describes `claude`, `codex`, and `pi`. Flue uses the
+Worker and Durable Object architecture described on the [Flue page](/agent-sessions/flue).
 
 The model is configuration, not part of the runtime image. The provider is always taken from the model's `provider/` prefix, never from the runtime — a runtime only declares which providers it can drive: `claude` and `pi` drive Anthropic today (`pi` is built to drive any provider — more land next), `codex` drives OpenAI. You choose the exact `provider/model` and key.
 
@@ -103,7 +107,7 @@ A runtime has two components:
 
 The brain knows the SDK, the model, the prompt, its resumable state directory, and the sandbox tools exposed to it. It does **not** write OpenComputer events directly and does not call the sandbox API itself. The adapter reads new input from the [event log](/agent-sessions/events), sends a bounded turn to the brain, translates the brain's stream into session events, handles fencing/idempotency, and only declares the turn done after committed output is durable.
 
-The built-in runtimes are built this way. See [example runtimes](https://github.com/diggerhq/oc-runtime-examples) for `claude` and `codex` brain servers side by side, and [custom runtimes](/agent-sessions/custom-runtimes) in Labs for the same brain/adapter contract applied to your own harness.
+The built-in runtimes are built this way. See [example runtimes](https://github.com/diggerhq/oc-runtime-examples) for `claude` and `codex` brain servers side by side, and [custom runtimes](/agent-sessions/custom-runtimes) in Labs for the same brain/adapter contract applied to your own runtime implementation.
 
 A runtime also **starts fast**: the engine is prepared ahead of time and baked into the image, so a new or recreated session doesn't wait on a per-session download before its first step.
 
@@ -127,7 +131,7 @@ Across turns the brain keeps provider-specific state under a checkpointed state 
 
 When a session starts it pins the runtime and version it began on (alongside the rest of the [agent snapshot](/agent-sessions/agents#session-pinned-config)). `runtime` is fixed at agent creation — to run a different engine, create a new agent. Other agent edits (`model`, `prompt`, `limits`) never affect a running or resumed session: new sessions pick up the change, in-flight ones keep what they started with.
 
-## Supervision and recovery
+## Built-in supervision and recovery
 
 OpenComputer supervises runtime execution:
 
