@@ -202,12 +202,22 @@ def check_recipe() -> tuple[dict[str, Any], dict[str, Any]]:
     for command in (
         '[[ "$(id -G)" == "1000" ]]',
         "sudo executable was restored",
-        "a sudo path remains on the runtime root filesystem",
+        "a sudo executable entrypoint remains on the runtime root filesystem",
         "sha256sum --check --status",
         'mktemp "/workspace/.flue-builder-write.XXXXXX"',
     ):
         if command not in runtime_verifier.stdout:
             raise SnapshotError(f"generated runtime verifier is missing {command!r}")
+
+    sudo_entrypoint_scan = (
+        r"find / -xdev \( -type f -o -type l \) "
+        r"\( -name sudo -o -name sudoedit \)"
+    )
+    installer_source = installer_path.read_text()
+    if installer_source.count(sudo_entrypoint_scan) < 2:
+        raise SnapshotError(
+            "finalizer and runtime verifier must scan sudo executable entrypoints without matching directories"
+        )
 
     return coordinate, manifest
 

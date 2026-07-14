@@ -455,7 +455,11 @@ if failures:
             result = json.loads(str(response.get("stdout", "")))
         except json.JSONDecodeError as exc:
             raise ProbeError("guest-agent isolation probe returned invalid JSON") from exc
-        if not isinstance(result.get("checked"), list) or result.get("failures") != []:
+        if (
+            not isinstance(result.get("checked"), list)
+            or not result["checked"]
+            or result.get("failures") != []
+        ):
             raise ProbeError("guest-agent isolation probe returned an invalid result")
 
     def prove_control_paths(self, sandbox_id: str) -> None:

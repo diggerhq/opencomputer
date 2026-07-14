@@ -9,10 +9,10 @@
   },
   "recipe": {
     "installer": "install-snapshot.sh",
-    "installerSha256": "0e4eeb46adb311a783890cfe8afff90e88dbff5d2e2bef7c3decba0318b911aa",
+    "installerSha256": "8210ac33b9690de36689a97851cd7ac8b29c0d0fc8c25fe0454fbc1486875ce9",
     "imageTemplate": "image.json",
     "imageTemplateSha256": "e5e8827412e76e6da94f8c2f9b97ddfe25579637905ef4e6d2f7fa563712683f",
-    "materializedManifestSha256": "d16ba78183df34ea6cfc55e76a78346430bf78c0222a9150dca032762ce91190"
+    "materializedManifestSha256": "8b11a2f879a2ceedc2bd858019a886f06e9dacec43b719f9cf23447b7989d9a5"
   },
   "attestation": {
     "schemaVersion": 1,

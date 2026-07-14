@@ -234,8 +234,8 @@ printf '%s  %s\n' "$attestation_sha" "$ATTESTATION" | sha256sum --check --status
 [[ ! -w "/opt/opencomputer/bin" ]] || fail "toolchain bin directory is writable"
 [[ ! -w "$NODE_ROOT" ]] || fail "Node toolchain is writable"
 [[ ! -e /usr/bin/sudo && ! -e /bin/sudo ]] || fail "sudo executable was restored"
-[[ -z "\$(find / -xdev -name sudo -print -quit 2>/dev/null)" ]] \
-  || fail "a sudo path remains on the runtime root filesystem"
+[[ -z "\$(find / -xdev \( -type f -o -type l \) \( -name sudo -o -name sudoedit \) -print -quit 2>/dev/null)" ]] \
+  || fail "a sudo executable entrypoint remains on the runtime root filesystem"
 [[ -d "$WORKSPACE" && -w "$WORKSPACE" ]] || fail "workspace is not writable"
 probe="\$(mktemp "$WORKSPACE/.flue-builder-write.XXXXXX")" \
   || fail "cannot create a workspace file"
@@ -264,10 +264,14 @@ remove_runtime_privilege_surfaces() {
   # Sudoers is a rich policy language (aliases, groups, includes, commands).
   # Trying to prove every policy path denied is brittle, so the managed image
   # removes the setuid entrypoint itself after the last trusted sudo command.
-  # Search the root filesystem rather than assuming one package path.
-  find / -xdev -name sudo -exec rm -f -- {} + 2>/dev/null
-  [[ -z "$(find / -xdev -name sudo -print -quit 2>/dev/null)" ]] \
-    || die "could not remove every sudo path"
+  # Search the root filesystem rather than assuming one package path. Remove
+  # regular files and symlinks named sudo/sudoedit, including alternate PATH
+  # locations and the sudoedit entrypoint, while preserving inert package
+  # directories such as /usr/share/doc/sudo and /usr/lib/*/sudo.
+  find / -xdev \( -type f -o -type l \) \( -name sudo -o -name sudoedit \) \
+    -exec rm -f -- {} + 2>/dev/null
+  [[ -z "$(find / -xdev \( -type f -o -type l \) \( -name sudo -o -name sudoedit \) -print -quit 2>/dev/null)" ]] \
+    || die "could not remove every sudo executable entrypoint"
 }
 
 harden_agent_transport_nodes() {

@@ -18,7 +18,7 @@ func listenVsock() (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := restrictAgentEndpoint(sockPath); err != nil {
+	if err := restrictAgentEndpointForOwner(sockPath, os.Geteuid(), os.Getegid()); err != nil {
 		lis.Close()
 		os.Remove(sockPath)
 		return nil, err
@@ -36,7 +36,7 @@ func listenPortForPTY(port uint32) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pty unix listen port %d: %w", port, err)
 	}
-	if err := restrictAgentEndpoint(sockPath); err != nil {
+	if err := restrictAgentEndpointForOwner(sockPath, os.Geteuid(), os.Getegid()); err != nil {
 		lis.Close()
 		os.Remove(sockPath)
 		return nil, err

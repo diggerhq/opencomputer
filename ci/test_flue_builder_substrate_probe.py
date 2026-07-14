@@ -61,6 +61,17 @@ class SubstrateProbeTest(unittest.TestCase):
             },
         )
 
+    def test_sudo_scan_targets_entrypoints_not_package_directories(self) -> None:
+        installer = (PROBE.ROOT / "deploy" / "flue-builder" / "install-snapshot.sh").read_text()
+        entrypoint_scan = (
+            r"find / -xdev \( -type f -o -type l \) "
+            r"\( -name sudo -o -name sudoedit \)"
+        )
+        self.assertGreaterEqual(installer.count(entrypoint_scan), 2)
+        self.assertNotIn("find / -xdev -name sudo", installer)
+        self.assertIn("/usr/share/doc/sudo", installer)
+        self.assertIn("/usr/lib/*/sudo", installer)
+
     def test_private_canary_requires_literal_private_or_cgnat_address(self) -> None:
         for value in (
             "http://10.1.2.3/probe",
@@ -125,6 +136,10 @@ class SubstrateProbeTest(unittest.TestCase):
             "exitCode": 42,
             "stdout": '{"checked":["vsock:1:1024"],"failures":["vsock:1:1024"]}',
         }
+        with self.assertRaises(PROBE.ProbeError):
+            live.prove_guest_agent_isolation("sb-test")
+
+        live.exec.return_value = {"exitCode": 0, "stdout": '{"checked":[],"failures":[]}'}
         with self.assertRaises(PROBE.ProbeError):
             live.prove_guest_agent_isolation("sb-test")
 
