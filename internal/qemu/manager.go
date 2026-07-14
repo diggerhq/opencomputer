@@ -1006,6 +1006,29 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		log.Printf("qemu: golden: /home/sandbox unmounted and synced")
 	}
 
+	// Freeze the rootfs before the snapshot so the golden RAM's ext4 metadata is
+	// consistent with the golden disk. Without this the vCPUs keep running for
+	// ~2.5s after the sync above (agent close + settle below) and can dirty
+	// rootfs metadata that never reaches the golden disk — producing a golden
+	// whose RAM and disk disagree. Every base sandbox inherits that skew, and a
+	// full-savevm checkpoint of it then fails the post-loadvm ext4 metadata_csum
+	// integrity check when forked (issue #521). fsfreeze flushes and then blocks
+	// further writes, so the ~2.5s window can no longer poison the snapshot.
+	// createFromGolden thaws on restore, exactly as the hibernate→wake path does;
+	// the golden VM itself is Migrated then Quit, so it is never resumed here.
+	freezeCtx, freezeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	_, freezeErr := agentClient.Exec(freezeCtx, &pb.ExecRequest{
+		Command:   "/bin/sh",
+		Args:      []string{"-c", "sync; blockdev --flushbufs /dev/vda 2>/dev/null || true; fsfreeze --freeze / 2>/dev/null; true"},
+		RunAsRoot: true,
+	})
+	freezeCancel()
+	if freezeErr != nil {
+		log.Printf("qemu: golden: rootfs freeze before snapshot failed: %v (golden may capture inconsistent ext4 metadata)", freezeErr)
+	} else {
+		log.Printf("qemu: golden: rootfs frozen for consistent snapshot")
+	}
+
 	// Close agent connection before migration. Use a timeout because gRPC's
 	// graceful close over vsock can hang if vhost-vsock doesn't drain cleanly.
 	closeDone := make(chan struct{})
@@ -1358,6 +1381,13 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	}
 	vm.agent = agentClient
 	log.Printf("qemu: golden-create %s: agent connected (%dms)", id, time.Since(t0).Milliseconds())
+
+	// The golden RAM is captured with the rootfs fsfrozen for a consistent
+	// snapshot (see PrepareGoldenSnapshot). Thaw it now — before block_resize,
+	// env injection, or any customer write — exactly as the wake path thaws
+	// after loadvm. Best-effort + idempotent: on older goldens that predate the
+	// freeze, unfreezing an unfrozen fs just errors harmlessly.
+	m.agentFsThawAfterWake(context.Background(), id, agentClient)
 
 	// If we resized the workspace qcow2 before launch, notify QEMU via QMP
 	// block_resize so virtio-blk fires a capacity-change event to the guest.
@@ -4110,6 +4140,23 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 			qmpClient.Close()
 			cmd.Process.Kill()
 			cmd.Wait()
+			// Only fail-fast on DETERMINISTIC boot failure: the guest never
+			// reached userspace AND printed an explicit kernel/init panic — the
+			// fingerprint of a checkpoint rebased onto the wrong base golden,
+			// where retrying the same boot is pointless. A booted-but-slow guest
+			// (agent flake) or an ambiguous slow boot keeps the normal "agent
+			// connect" retry path. Log the serial tail whenever the guest didn't
+			// boot so operators can diagnose either way.
+			booted, sig, tail := classifyGuestBoot(sandboxDir)
+			if !booted && tail != "" {
+				log.Printf("qemu: ForkFromCheckpoint %s → %s: guest did not reach init-ready (sig=%q). serial tail:\n%s",
+					checkpointID, id, sig, tail)
+			}
+			if sig != "" {
+				return nil, nil, nil, fmt.Errorf(
+					"guest failed to boot (%s): checkpoint %s is likely pinned to the wrong base golden — recreate the checkpoint/template",
+					sig, checkpointID)
+			}
 			return nil, nil, nil, fmt.Errorf("agent connect: %w", err)
 		}
 		return cmd, qmpClient, agent, nil
@@ -4142,18 +4189,44 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	m.agentFsThawAfterWake(context.Background(), id, agent)
 
 	// Verify the forked VM landed in a healthy state (savevm/loadvm ext4
-	// metadata_csum corruption sentinel). If broken, abort the fork — the
-	// customer gets a clear error instead of a sandbox that fails every
-	// subsequent fork/exec.
+	// metadata_csum corruption sentinel). If broken, don't hand the customer a
+	// 500: the poison is in the RESTORED MEMORY (the golden RAM was captured
+	// with ext4 metadata inconsistent with the golden disk — issue #521 — and
+	// every base sandbox + checkpoint inherits it), while the checkpoint's
+	// ON-DISK rootfs is self-consistent. Cold-boot the already-copied checkpoint
+	// disks (discarding the poisoned RAM) via the same two-stage recovery the
+	// wake path uses. Costs restored process state; rootfs files/packages and
+	// the workspace survive.
 	if err := m.verifyWakeIntegrity(context.Background(), id, agent); err != nil {
-		log.Printf("qemu: ForkFromCheckpoint %s → %s: ABORT post-loadvm integrity failed: %v",
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: post-loadvm integrity failed (%v) — recovering via cold boot from checkpoint disks",
 			checkpointID, id, err)
 		_ = agent.Close()
 		_ = qmpClient.Close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		m.cleanupVM(netCfg, sandboxDir)
-		return nil, fmt.Errorf("fork %s from checkpoint %s: post-loadvm integrity check failed: %w", id, checkpointID, err)
+		m.cleanupVM(netCfg, "") // keep sandboxDir — it holds the checkpoint's copied disks
+		timeoutSec := cfg.Timeout
+		if timeoutSec <= 0 {
+			timeoutSec = 300
+		}
+		sb, rerr := m.recoverCorruptWake(ctx, id, timeoutSec)
+		if rerr != nil {
+			return nil, fmt.Errorf("fork %s from checkpoint %s: post-loadvm integrity failed and cold-boot recovery failed: %w", id, checkpointID, rerr)
+		}
+		// The recovery cold-booted a fresh guest, so re-apply the env/secret
+		// injection the normal fork path does just below this check.
+		m.mu.RLock()
+		rvm := m.vms[id]
+		m.mu.RUnlock()
+		if rvm != nil && rvm.agent != nil {
+			if envs := m.sealSandboxEnvs(context.Background(), id, rvm.network, rvm.agent, cfg); len(envs) > 0 {
+				envCtx, envCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				rvm.agent.SetEnvs(envCtx, envs)
+				envCancel()
+			}
+		}
+		log.Printf("qemu: ForkFromCheckpoint %s → %s: recovered via cold boot from checkpoint disks", checkpointID, id)
+		return sb, nil
 	}
 
 	// Patch network (fork gets new IPs) + sync clock — both LOAD-BEARING.
@@ -4202,6 +4275,20 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	}
 
 	virtioMemAddedMB := alignVirtioMemBlock(desiredMemMB - memMB)
+	// A fork's disk sits on the CHECKPOINT's golden base, not necessarily this
+	// worker's current golden: ensureCheckpointRebased repointed the overlay to
+	// the base for meta.GoldenVersion (downloading an older base if the golden
+	// has since rolled). Stamping m.goldenVersion here is a latent corruption
+	// bug — a later disk_only checkpoint of this fork would inherit the wrong
+	// golden, and forking THAT would rebase the overlay (built on the old base)
+	// onto the new base, producing an inconsistent rootfs the guest can't mount
+	// ("agent not ready" on custom-template forks after a golden roll). Record
+	// the golden the disk actually rests on; fall back to the worker golden only
+	// for legacy checkpoints that never recorded one.
+	forkGolden := meta.GoldenVersion
+	if forkGolden == "" {
+		forkGolden = m.goldenVersion
+	}
 	vm := &VMInstance{
 		ID:                   id,
 		Template:             meta.Template,
@@ -4225,7 +4312,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		guestCID:             guestCID,
 		bootArgs:             bootArgs,
 		agent:                agent,
-		goldenVersion:        m.goldenVersion, // set on wake — VM uses the current base image
+		goldenVersion:        forkGolden,
 	}
 
 	m.mu.Lock()
