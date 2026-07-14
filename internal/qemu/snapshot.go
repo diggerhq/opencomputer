@@ -770,6 +770,75 @@ func (m *Manager) coldBootLocal(ctx context.Context, sandboxID string, timeout i
 	return sb, err
 }
 
+// guestBootMarker is the last line the in-guest init prints before the agent
+// starts accepting. Its presence means the guest reached a healthy userspace;
+// its ABSENCE after an agent timeout means the guest never finished booting.
+const guestBootMarker = "cgroup sandbox ready"
+
+// classifyGuestBoot inspects a VM's qemu serial log after an agent-connect
+// timeout to tell apart three cases, so the caller can retry safely and only
+// fail-fast on deterministic corruption:
+//
+//   - booted=true: the guest reached healthy userspace (guestBootMarker present).
+//     The agent socket just wasn't ready in time — a transient virtio-serial
+//     flake. Caller should RETRY. Precedence matters: a booted guest is never
+//     flagged as a failure even if an earlier, survived kernel message matches a
+//     signature (else we'd suppress a legitimate retry).
+//   - booted=false, sig!="": the guest did NOT boot AND an explicit kernel/init
+//     failure signature is present — deterministic (a rootfs rebased onto the
+//     wrong base golden can't mount root or exec init). Caller should FAIL FAST
+//     with an actionable error; retrying the same boot is pointless.
+//   - booted=false, sig=="": the guest didn't reach the marker but printed no
+//     explicit failure — ambiguous (e.g. an unusually slow cold boot). Caller
+//     should keep the normal RETRY path; we only log the tail for diagnosis.
+//
+// tail is the last serial lines, for the worker log.
+func classifyGuestBoot(sandboxDir string) (booted bool, sig, tail string) {
+	data, err := os.ReadFile(filepath.Join(sandboxDir, "qemu.log"))
+	if err != nil {
+		return false, "", ""
+	}
+	s := string(data)
+	tail = lastLines(s, 12)
+
+	// Reaching the in-guest init's ready marker means userspace came up healthy,
+	// whatever transient messages appeared earlier — treat as a bootable guest.
+	if strings.Contains(s, guestBootMarker) {
+		return true, "", tail
+	}
+	// Guest did not finish booting — look for an explicit failure signature
+	// (rootfs mount failure from metadata corruption, or an init-exec failure
+	// from corrupt base binaries) to classify it as deterministic.
+	for _, m := range []string{
+		"Unable to mount root fs",
+		"Cannot open root device",
+		"unable to read superblock",
+		"EXT4-fs error",
+		"Attempted to kill init",
+		"No working init found",
+		"Failed to execute",
+		"Kernel panic",
+		"segfault",
+	} {
+		if strings.Contains(s, m) {
+			return false, m, tail
+		}
+	}
+	return false, "", tail
+}
+
+// lastLines returns up to n trailing non-empty lines of s.
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	out := make([]string, 0, n)
+	for i := len(lines) - 1; i >= 0 && len(out) < n; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			out = append([]string{lines[i]}, out...)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 func (m *Manager) coldBootLocalInner(ctx context.Context, sandboxID string, timeout int) (*types.Sandbox, error) {
 	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
 	workspacePath := detectDrivePath(sandboxDir, "workspace")

@@ -4110,6 +4110,23 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 			qmpClient.Close()
 			cmd.Process.Kill()
 			cmd.Wait()
+			// Only fail-fast on DETERMINISTIC boot failure: the guest never
+			// reached userspace AND printed an explicit kernel/init panic — the
+			// fingerprint of a checkpoint rebased onto the wrong base golden,
+			// where retrying the same boot is pointless. A booted-but-slow guest
+			// (agent flake) or an ambiguous slow boot keeps the normal "agent
+			// connect" retry path. Log the serial tail whenever the guest didn't
+			// boot so operators can diagnose either way.
+			booted, sig, tail := classifyGuestBoot(sandboxDir)
+			if !booted && tail != "" {
+				log.Printf("qemu: ForkFromCheckpoint %s → %s: guest did not reach init-ready (sig=%q). serial tail:\n%s",
+					checkpointID, id, sig, tail)
+			}
+			if sig != "" {
+				return nil, nil, nil, fmt.Errorf(
+					"guest failed to boot (%s): checkpoint %s is likely pinned to the wrong base golden — recreate the checkpoint/template",
+					sig, checkpointID)
+			}
 			return nil, nil, nil, fmt.Errorf("agent connect: %w", err)
 		}
 		return cmd, qmpClient, agent, nil
@@ -4202,6 +4219,20 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	}
 
 	virtioMemAddedMB := alignVirtioMemBlock(desiredMemMB - memMB)
+	// A fork's disk sits on the CHECKPOINT's golden base, not necessarily this
+	// worker's current golden: ensureCheckpointRebased repointed the overlay to
+	// the base for meta.GoldenVersion (downloading an older base if the golden
+	// has since rolled). Stamping m.goldenVersion here is a latent corruption
+	// bug — a later disk_only checkpoint of this fork would inherit the wrong
+	// golden, and forking THAT would rebase the overlay (built on the old base)
+	// onto the new base, producing an inconsistent rootfs the guest can't mount
+	// ("agent not ready" on custom-template forks after a golden roll). Record
+	// the golden the disk actually rests on; fall back to the worker golden only
+	// for legacy checkpoints that never recorded one.
+	forkGolden := meta.GoldenVersion
+	if forkGolden == "" {
+		forkGolden = m.goldenVersion
+	}
 	vm := &VMInstance{
 		ID:                   id,
 		Template:             meta.Template,
@@ -4225,7 +4256,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		guestCID:             guestCID,
 		bootArgs:             bootArgs,
 		agent:                agent,
-		goldenVersion:        m.goldenVersion, // set on wake — VM uses the current base image
+		goldenVersion:        forkGolden,
 	}
 
 	m.mu.Lock()
