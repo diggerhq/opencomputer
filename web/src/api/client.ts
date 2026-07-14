@@ -34,6 +34,7 @@ export type {
   AgentDeploy,
   AgentDeployment,
   AgentDeploymentLog,
+  DeployApp,
   FlueSourceInspection,
   Session,
   AgentSnapshot,

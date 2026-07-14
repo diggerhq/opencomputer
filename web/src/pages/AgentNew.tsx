@@ -16,6 +16,7 @@ import {
   getDeployApp,
   importAgentFromGithub,
   inspectFlueRepository,
+  type DeployApp,
   type FlueSourceInspection,
 } from '@/api/client'
 import { Field, FieldError, Input } from '@/components/form'
@@ -32,6 +33,10 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  resolveAgentCreationMode,
+  type AgentCreationMode,
+} from '@/lib/agent-creation-mode'
 import { cn } from '@/lib/utils'
 
 const STARTER_URL = 'https://github.com/diggerhq/oc-flue-starter'
@@ -225,7 +230,7 @@ function DetectedAgent({ inspection }: { inspection: FlueSourceInspection }) {
   )
 }
 
-function GithubImport() {
+function GithubImport({ app }: { app: DeployApp }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const importCommand = useRef<ImportCommand | null>(null)
@@ -235,20 +240,9 @@ function GithubImport() {
   const [root, setRoot] = useState('')
   const [name, setName] = useState('')
 
-  const {
-    data: app,
-    isLoading,
-    isError,
-    refetch,
-  } = useQuery({
-    queryKey: ['deploy-app'],
-    queryFn: getDeployApp,
-    refetchOnWindowFocus: 'always',
-  })
-
   const repositories = useMemo(() => {
     const needle = repoSearch.trim().toLowerCase()
-    return (app?.repositories ?? [])
+    return app.repositories
       .filter(
         (repo): repo is typeof repo & { id: string } =>
           typeof repo.id === 'string' && repo.id.length > 0,
@@ -256,9 +250,9 @@ function GithubImport() {
       .filter(
         (repo) => !needle || repo.full_name.toLowerCase().includes(needle),
       )
-  }, [app?.repositories, repoSearch])
+  }, [app.repositories, repoSearch])
 
-  const selectedRepo = app?.repositories.find((repo) => repo.id === repoId)
+  const selectedRepo = app.repositories.find((repo) => repo.id === repoId)
   const rootValid = isValidRoot(root.trim())
 
   const inspectMutation = useMutation({
@@ -294,7 +288,7 @@ function GithubImport() {
   }
 
   const selectRepo = (id: string) => {
-    const repo = app?.repositories.find((candidate) => candidate.id === id)
+    const repo = app.repositories.find((candidate) => candidate.id === id)
     setRepoId(id)
     setProductionRef(repo?.default_branch || 'main')
     setRoot('')
@@ -327,34 +321,6 @@ function GithubImport() {
       },
       credential: 'managed',
     })
-  }
-
-  if (isLoading) {
-    return (
-      <Panel>
-        <PanelContent className="space-y-3 py-6">
-          <Skeleton className="h-4 w-40" />
-          <Skeleton className="h-8 w-full" />
-          <Skeleton className="h-8 w-3/4" />
-        </PanelContent>
-      </Panel>
-    )
-  }
-
-  if (isError || !app) {
-    return (
-      <Alert variant="destructive">
-        <AlertTitle>GitHub connection could not be loaded</AlertTitle>
-        <AlertDescription>
-          Retry the request. No repository or agent was changed.
-        </AlertDescription>
-        <div className="mt-2">
-          <Button size="sm" variant="outline" onClick={() => void refetch()}>
-            Retry
-          </Button>
-        </div>
-      </Alert>
-    )
   }
 
   if (!app.installed) {
@@ -636,12 +602,36 @@ function GithubImport() {
 }
 
 export default function AgentNew() {
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const mode = searchParams.get('mode') === 'manual' ? 'manual' : 'github'
-  const setMode = (next: 'github' | 'manual') =>
+  const deployAppQuery = useQuery({
+    queryKey: ['deploy-app'],
+    queryFn: getDeployApp,
+    refetchOnWindowFocus: 'always',
+  })
+  const availableDeployApp =
+    !deployAppQuery.isError &&
+    deployAppQuery.data?.repository_deploys_available === true
+      ? deployAppQuery.data
+      : null
+  const repositoryDeploysAvailable = availableDeployApp !== null
+  const mode = resolveAgentCreationMode(
+    searchParams.get('mode'),
+    repositoryDeploysAvailable,
+  )
+  const setMode = (next: AgentCreationMode) =>
     setSearchParams(next === 'github' ? {} : { mode: 'manual' }, {
       replace: true,
     })
+
+  // A cold request starts in the fully usable manual flow. If someone begins
+  // using it before the availability read returns, keep that choice instead
+  // of replacing their in-progress form with the repository flow.
+  const preserveManualIntent = () => {
+    if (!repositoryDeploysAvailable && searchParams.get('mode') !== 'manual') {
+      setMode('manual')
+    }
+  }
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -656,73 +646,97 @@ export default function AgentNew() {
       <div className="mb-6">
         <h1 className="text-xl font-semibold tracking-tight">Create agent</h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          Deploy an existing Flue repository or configure an agent manually.
+          {repositoryDeploysAvailable
+            ? 'Deploy an existing Flue repository or configure an agent manually.'
+            : 'Configure an agent from a prompt, runtime, and model.'}
         </p>
       </div>
 
-      <div className="bg-muted mb-6 flex flex-col gap-1 rounded-lg p-1 sm:flex-row">
-        <ModeButton
-          active={mode === 'github'}
-          onClick={() => setMode('github')}
-          icon={GithubMark}
-          title="Import from GitHub"
-          description="Build and deploy an existing Flue agent."
-        />
-        <ModeButton
-          active={mode === 'manual'}
-          onClick={() => setMode('manual')}
-          icon={Bot}
-          title="Configure manually"
-          description="Create a built-in runtime agent from a prompt."
-        />
-      </div>
+      {deployAppQuery.isLoading ? (
+        <div
+          className="bg-muted mb-6 rounded-lg p-1"
+          role="status"
+          aria-label="Checking available creation methods"
+        >
+          <Skeleton className="h-[58px] w-full rounded-md" />
+        </div>
+      ) : repositoryDeploysAvailable ? (
+        <div className="bg-muted mb-6 flex flex-col gap-1 rounded-lg p-1 sm:flex-row">
+          <ModeButton
+            active={mode === 'github'}
+            onClick={() => setMode('github')}
+            icon={GithubMark}
+            title="Import from GitHub"
+            description="Build and deploy an existing Flue agent."
+          />
+          <ModeButton
+            active={mode === 'manual'}
+            onClick={() => setMode('manual')}
+            icon={Bot}
+            title="Configure manually"
+            description="Create a built-in runtime agent from a prompt."
+          />
+        </div>
+      ) : null}
 
-      {mode === 'github' ? (
-        <GithubImport />
+      {availableDeployApp && mode === 'github' ? (
+        <GithubImport app={availableDeployApp} />
       ) : (
-        <Panel>
-          <PanelHeader>
-            <div>
-              <PanelTitle>Configure manually</PanelTitle>
-              <PanelDescription className="mt-1">
-                Sessions pin a snapshot of this definition when they are
-                created.
-              </PanelDescription>
-            </div>
-          </PanelHeader>
-          <PanelContent>
-            <ManualAgentForm onCancel={() => setMode('github')} />
-          </PanelContent>
-        </Panel>
+        <div onFocusCapture={preserveManualIntent}>
+          <Panel>
+            <PanelHeader>
+              <div>
+                <PanelTitle>Configure manually</PanelTitle>
+                <PanelDescription className="mt-1">
+                  Sessions pin a snapshot of this definition when they are
+                  created.
+                </PanelDescription>
+              </div>
+            </PanelHeader>
+            <PanelContent>
+              <ManualAgentForm
+                onCancel={() => {
+                  if (repositoryDeploysAvailable) setMode('github')
+                  else void navigate('/agents')
+                }}
+              />
+            </PanelContent>
+          </Panel>
+        </div>
       )}
 
-      <section className="mt-8 border-t pt-6" aria-labelledby="starter-heading">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="max-w-xl">
-            <h2 id="starter-heading" className="text-sm font-semibold">
-              Need a starting point?
-            </h2>
-            <p className="text-muted-foreground mt-1 text-sm">
-              Fork the Flue starter, add your agent logic, then return here to
-              deploy it.
-            </p>
+      {repositoryDeploysAvailable ? (
+        <section
+          className="mt-8 border-t pt-6"
+          aria-labelledby="starter-heading"
+        >
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="max-w-xl">
+              <h2 id="starter-heading" className="text-sm font-semibold">
+                Need a starting point?
+              </h2>
+              <p className="text-muted-foreground mt-1 text-sm">
+                Fork the Flue starter, add your agent logic, then return here to
+                deploy it.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" asChild>
+                <a href={STARTER_URL} target="_blank" rel="noreferrer">
+                  View repository
+                  <ExternalLink className="size-3.5" />
+                </a>
+              </Button>
+              <Button variant="outline" size="sm" asChild>
+                <a href={STARTER_FORK_URL} target="_blank" rel="noreferrer">
+                  Fork on GitHub
+                  <ExternalLink className="size-3.5" />
+                </a>
+              </Button>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" asChild>
-              <a href={STARTER_URL} target="_blank" rel="noreferrer">
-                View repository
-                <ExternalLink className="size-3.5" />
-              </a>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <a href={STARTER_FORK_URL} target="_blank" rel="noreferrer">
-                Fork on GitHub
-                <ExternalLink className="size-3.5" />
-              </a>
-            </Button>
-          </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
     </div>
   )
 }

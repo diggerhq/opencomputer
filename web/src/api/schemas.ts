@@ -614,6 +614,9 @@ export const DeployAppRepoSchema = z.object({
   private: z.boolean().nullish(),
 })
 export const DeployAppSchema = z.object({
+  // Rollout is owner-gated server-side. Missing stays unavailable so an older
+  // API cannot accidentally expose repository deploy controls.
+  repository_deploys_available: z.boolean().default(false),
   installed: z.boolean(),
   install_url: z.string().nullish(),
   configure_url: z.string().nullish(),
@@ -831,6 +834,7 @@ export type SkillItem = z.infer<typeof SkillItemSchema>
 export type AgentDeploy = z.infer<typeof AgentDeploySchema>
 export type AgentDeployment = z.infer<typeof AgentDeploymentSchema>
 export type AgentDeploymentLog = z.infer<typeof AgentDeploymentLogSchema>
+export type DeployApp = z.infer<typeof DeployAppSchema>
 export type FlueSourceInspection = z.infer<typeof FlueSourceInspectionSchema>
 export type Credential = z.infer<typeof CredentialSchema>
 export type SlackConnection = z.infer<typeof SlackConnectionSchema>

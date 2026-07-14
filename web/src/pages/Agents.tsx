@@ -1,7 +1,7 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { Bot, Plus } from 'lucide-react'
-import { getAgents, type Agent } from '@/api/client'
+import { getAgents, getDeployApp, type Agent } from '@/api/client'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { Panel } from '@/components/panel'
@@ -12,6 +12,7 @@ import { agentDeploymentDisplayStatus } from '@/lib/agent-deployment-status'
 
 export default function Agents() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { data: agents, isLoading } = useQuery({
     queryKey: ['agents'],
     queryFn: getAgents,
@@ -91,7 +92,23 @@ export default function Agents() {
     },
   ]
 
-  const openCreate = () => void navigate('/agents/new')
+  const prefetchCreate = () => {
+    void import('@/pages/AgentNew')
+    void queryClient.prefetchQuery({
+      queryKey: ['deploy-app'],
+      queryFn: getDeployApp,
+      staleTime: 30_000,
+    })
+  }
+  const openCreate = () => {
+    prefetchCreate()
+    void navigate('/agents/new')
+  }
+
+  const createIntentProps = {
+    onPointerEnter: prefetchCreate,
+    onFocus: prefetchCreate,
+  }
 
   return (
     <div>
@@ -105,7 +122,7 @@ export default function Agents() {
           docs: 'https://docs.opencomputer.dev/agent-sessions/agents',
         }}
         actions={
-          <Button onClick={openCreate}>
+          <Button onClick={openCreate} {...createIntentProps}>
             <Plus className="size-4" />
             Create agent
           </Button>
@@ -124,7 +141,7 @@ export default function Agents() {
               title="No agents yet"
               description="Define an agent once, then start durable sessions from it."
               action={
-                <Button size="sm" onClick={openCreate}>
+                <Button size="sm" onClick={openCreate} {...createIntentProps}>
                   <Plus className="size-4" />
                   Create agent
                 </Button>
