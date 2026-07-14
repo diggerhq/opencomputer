@@ -2,7 +2,24 @@
   "name": "@opencomputer/flue",
   "version": "0.2.0",
   "description": "Run a Flue app as an OpenComputer agent with managed models and optional demand-driven sandboxes.",
-  "license": "MIT",
+  "keywords": [
+    "agents",
+    "flue",
+    "opencomputer",
+    "cloudflare-workers",
+    "durable-objects"
+  ],
+  "author": "OpenComputer",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/diggerhq/opencomputer.git",
+    "directory": "sdks/flue"
+  },
+  "homepage": "https://github.com/diggerhq/opencomputer/tree/main/sdks/flue",
+  "bugs": {
+    "url": "https://github.com/diggerhq/opencomputer/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.19"
@@ -22,12 +39,16 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm test && npm run build"
   },
   "sideEffects": [
     "./dist/wire.js"
@@ -35,9 +56,8 @@
   "peerDependencies": {
     "@flue/runtime": "1.0.0-beta.9"
   },
-  "dependencies": {
-    "hono": "^4.6.0",
-    "valibot": "^1.1.0"
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@flue/runtime": "1.0.0-beta.9",

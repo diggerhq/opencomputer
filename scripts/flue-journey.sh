@@ -4,48 +4,32 @@ set -euo pipefail
 # Flue agent — the stranger's journey (design 012 §11.8), run end to end against
 # a live sessions-api. clone → deploy → chat, using only the `oc` CLI.
 #
-# This is the acceptance harness for the Flue slice: when the artifact-upload
-# endpoint and the flue runtime image are live in prod, this script exercises the
-# whole path a real user follows.
-#
-# ── Branch CLI build notes ──────────────────────────────────────────────────
-# The Flue deploy flow (`oc agent deploy` on a family="flue" app) is not in a
-# released `oc` yet — build it from this branch:
-#
-#     cd cmd/oc && go build -o /tmp/oc-flue . && export OC=/tmp/oc-flue
-#
-# or just run this script from a checkout of the branch — with no $OC set it
-# builds `oc` from ./cmd/oc automatically (needs a Go toolchain).
+# This is the acceptance journey for the Flue slice. It exercises the same
+# clone → install → deploy → session path a user follows.
 #
 # ── Prerequisites ───────────────────────────────────────────────────────────
-#   - node >= 22.19 and npm (a Flue developer has these; oc-flue-build needs them)
-#   - OPENCOMPUTER_API_KEY exported (an OpenComputer API key)
+#   - node >= 22.19 and npm (required by the current Flue toolchain)
+#   - an authenticated `oc` CLI (`oc auth login` or OPENCOMPUTER_API_KEY)
 #   - git
 #
 # ── Usage ───────────────────────────────────────────────────────────────────
-#   OPENCOMPUTER_API_KEY=oc_... scripts/flue-journey.sh
+#   scripts/flue-journey.sh
 #
 # Env overrides:
-#   OC                  path to the oc binary            (default: build from ./cmd/oc)
+#   OC                  path to the oc binary            (default: oc from PATH)
 #   STARTER_REPO        starter git URL                  (default: diggerhq/oc-flue-starter)
 #   SESSIONS_API_URL    control-plane URL                (default: the CLI default, prod)
 #   AGENT_NAME          agent name                       (default: from the starter's agent.toml)
 #   INPUT               first message to the agent
-#   SOURCE              optional owner/repo[@ref] to attach as a working source
 #   KEEP                set to 1 to keep the temp workdir
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STARTER_REPO="${STARTER_REPO:-https://github.com/diggerhq/oc-flue-starter}"
-INPUT="${INPUT:-Customer says order 1042 has not arrived yet - what should I tell them?}"
+INPUT="${INPUT:-Customer says order 2203 arrived with a torn shoulder strap - what should I tell them?}"
 
-: "${OPENCOMPUTER_API_KEY:?export OPENCOMPUTER_API_KEY first}"
-
-# Resolve the oc binary — build from this branch if none was provided.
-OC="${OC:-}"
-if [[ -z "$OC" ]]; then
-  OC="$(mktemp -d)/oc"
-  echo "→ building oc from $REPO_ROOT/cmd/oc"
-  ( cd "$REPO_ROOT/cmd/oc" && go build -o "$OC" . )
+OC="${OC:-oc}"
+if ! command -v "$OC" >/dev/null 2>&1; then
+  echo "oc CLI not found; install it or set OC=/path/to/oc" >&2
+  exit 1
 fi
 echo "→ using oc: $OC"
 "$OC" --version 2>/dev/null || true
@@ -58,7 +42,7 @@ echo "→ clone $STARTER_REPO"
 git clone --depth 1 "$STARTER_REPO" "$WORK/app"
 cd "$WORK/app"
 
-echo "→ npm install (brings in @opencomputer/flue → oc-flue-build)"
+echo "→ npm install (Flue toolchain + OpenComputer integration)"
 npm install
 
 # Agent name: explicit override, else the starter's agent.toml [name].
@@ -80,7 +64,6 @@ echo "→ oc agent deploy   (build → upload → boot-verify → activate)"
 echo "→ oc session create"
 create_args=(--input "$INPUT")
 [[ -n "${AGENT_NAME:-}" ]] && create_args+=(--agent "$AGENT_NAME")
-[[ -n "${SOURCE:-}" ]] && create_args+=(--source "$SOURCE")
 SID="$("$OC" session create "${create_args[@]}" --json | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
 echo "  session: $SID"
 
