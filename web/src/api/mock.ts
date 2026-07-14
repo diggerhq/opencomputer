@@ -495,9 +495,24 @@ const deployAppInstalled = {
   account: 'acme',
   repository_selection: 'selected' as const,
   repositories: [
-    { full_name: 'acme/agents', default_branch: 'main', private: true },
-    { full_name: 'acme/support-bot', default_branch: 'main', private: false },
-    { full_name: 'acme/infra', default_branch: 'production', private: true },
+    {
+      id: 'repo_01k0acmeagents000000000',
+      full_name: 'acme/agents',
+      default_branch: 'main',
+      private: true,
+    },
+    {
+      id: 'repo_01k0supportbot00000000',
+      full_name: 'acme/support-bot',
+      default_branch: 'main',
+      private: false,
+    },
+    {
+      id: 'repo_01k0acmeinfra000000000',
+      full_name: 'acme/infra',
+      default_branch: 'production',
+      private: true,
+    },
   ],
 }
 const deployAppNotInstalled = {
@@ -524,6 +539,191 @@ const deploymentSource = {
   active_deployed_sha: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
   full_name: 'acme/agents',
 }
+
+const flueInspection = {
+  repository: {
+    id: 'repo_01k0supportbot00000000',
+    full_name: 'acme/support-bot',
+    default_branch: 'main',
+  },
+  root: '',
+  production_ref: 'main',
+  sha: 'cbb8766d972199b01d03389d2680970dc29d1d34',
+  manifest: {
+    schema_version: 1 as const,
+    entrypoint: 'support-triage',
+    model: 'anthropic/claude-haiku-4-5',
+    runtime: { family: 'flue' as const, type: 'default' },
+    vars: { SUPPORT_QUEUE: 'priority' },
+  },
+  package: {
+    name: 'oc-flue-starter',
+    node_engine: '>=22.19 <23',
+    flue_cli: '0.1.0',
+  },
+  lockfile: { version: 3 },
+  builder: { node: '22.19.0' },
+  source: { files: 28, bytes: 164_208 },
+  variable_names: ['SUPPORT_QUEUE'],
+  warnings: [],
+}
+
+const importedAgent = {
+  id: 'agt_flue_import',
+  name: 'Support triage',
+  prompt: null,
+  prompt_hash: null,
+  model: 'anthropic/claude-haiku-4-5',
+  runtime: 'flue',
+  credential_id: 'managed',
+  revision: 0,
+  active_revision_id: null,
+  active_revision: null,
+  deployment_status: {
+    deployment_id: 'dep_flue_building',
+    state: 'building',
+    result: null,
+    error_class: null,
+    live_touched: false,
+    live_status: null,
+    updated_at: at(0, 0),
+  },
+  flue: { agent_name: 'support-triage', live: null },
+  created_at: at(0, 1),
+}
+
+const importedSource = {
+  agent_id: importedAgent.id,
+  repo_id: flueInspection.repository.id,
+  path: '',
+  production_ref: 'main',
+  status: 'active',
+  latest_seen_sha: flueInspection.sha,
+  active_deployed_sha: null,
+  full_name: flueInspection.repository.full_name,
+}
+
+const flueDeployment = {
+  id: 'dep_flue_building',
+  state: 'building',
+  phase: 'build',
+  terminal: false,
+  result: null,
+  input_type: 'github',
+  revision_id: null,
+  revision: null,
+  source: {
+    via: 'repo',
+    repo_id: flueInspection.repository.id,
+    path: '',
+    git_sha: flueInspection.sha,
+  },
+  source_relation: {
+    repo: {
+      id: flueInspection.repository.id,
+      full_name: flueInspection.repository.full_name,
+    },
+    path: '',
+    production_ref: 'main',
+    status: 'active',
+    ref: 'main',
+    sha: flueInspection.sha,
+    commit_url: `https://github.com/${flueInspection.repository.full_name}/commit/${flueInspection.sha}`,
+  },
+  actor: { kind: 'human', id: 'user_2abc' },
+  ref: 'main',
+  sha: flueInspection.sha,
+  error: null,
+  error_class: null,
+  build: {
+    schema_version: 1,
+    root: '',
+    node: '22.19.0',
+    npm: '10.9.3',
+    lockfile_version: 3,
+    builder: 'oc@dev',
+    attempts: 1,
+    source_files: 28,
+    source_bytes: 164_208,
+  },
+  configuration: {
+    entrypoint: 'support-triage',
+    model: 'anthropic/claude-haiku-4-5',
+    runtime: { family: 'flue', type: 'default' },
+    variable_names: ['SUPPORT_QUEUE'],
+  },
+  log_bytes: 862,
+  log_truncated: false,
+  live_touched: false,
+  agent_live: null,
+  restore_eligibility: 'none',
+  redeploy_of: null,
+  allowed_actions: ['view_commit'],
+  active: false,
+  timing: {
+    accepted_at: at(0, 1),
+    started_at: at(0, 1),
+    finished_at: null,
+    cancel_requested_at: null,
+    queue_ms: 420,
+    run_ms: null,
+    total_ms: null,
+  },
+  created_at: at(0, 1),
+  updated_at: at(0, 0),
+  started_at: at(0, 1),
+  finished_at: null,
+}
+
+const failedFlueDeployment = {
+  ...flueDeployment,
+  id: 'dep_flue_failed',
+  state: 'failed',
+  phase: 'failed',
+  terminal: true,
+  result: 'failed',
+  error: {
+    class: 'install_failed',
+    phase: 'install',
+    message: 'npm ci failed because package-lock.json is out of date.',
+    retryable: false,
+  },
+  error_class: 'install_failed',
+  finished_at: at(0, 0),
+  timing: {
+    ...flueDeployment.timing,
+    finished_at: at(0, 0),
+    run_ms: 12_000,
+    total_ms: 12_420,
+  },
+}
+
+const flueDeploymentLogs = [
+  {
+    seq: '101',
+    cursor: 'deployment-log-101',
+    recorded_at: at(0, 1),
+    phase: 'source',
+    stream: 'system',
+    chunk: 'Materialized acme/support-bot at cbb8766',
+  },
+  {
+    seq: '102',
+    cursor: 'deployment-log-102',
+    recorded_at: at(0, 1),
+    phase: 'install',
+    stream: 'stdout',
+    chunk: 'added 214 packages in 4s\n',
+  },
+  {
+    seq: '103',
+    cursor: 'deployment-log-103',
+    recorded_at: at(0, 0),
+    phase: 'build',
+    stream: 'system',
+    chunk: 'Running offline Flue artifact builder',
+  },
+]
 
 // Revisions / deploys / skills for the agent Overview + Deployments tab.
 const agentRevisions = [
@@ -925,6 +1125,19 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/v3\/agents\/[^/]+\/slack$/, () => slackConnection],
   [/^\/v3\/github\/deploy-app$/, () => deployApp],
   [
+    /^\/v3\/agents\/[^/]+\/deployments\/[^/]+\/logs(?:\?.*)?$/,
+    () => ({
+      data: flueDeploymentLogs,
+      next_cursor: 'deployment-log-103',
+      has_more: false,
+    }),
+  ],
+  [
+    /^\/v3\/agents\/[^/]+\/deployments\/dep_flue_failed$/,
+    () => failedFlueDeployment,
+  ],
+  [/^\/v3\/agents\/[^/]+\/deployments\/[^/]+$/, () => flueDeployment],
+  [
     /^\/v3\/agents\/[^/]+\/deployment-source$/,
     () =>
       DEPLOY_PREVIEW === 'connected' ? { source: deploymentSource } : NOT_FOUND,
@@ -932,6 +1145,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/v3\/agents\/[^/]+\/deploys$/, () => ({ data: agentDeploys })],
   [/^\/v3\/agents\/[^/]+\/revisions$/, () => ({ data: agentRevisions })],
   [/^\/v3\/agents\/[^/]+\/skills$/, () => agentSkills],
+  [/^\/v3\/agents\/agt_flue_import$/, () => importedAgent],
   [/^\/v3\/agents\/[^/]+$/, () => agents[0]],
   [/^\/v3\/agents$/, () => ({ data: agents })],
   [/^\/v3\/credentials$/, () => ({ data: credentials })],
@@ -959,6 +1173,16 @@ const ROUTES: Array<[RegExp, Handler]> = [
 // Mutations the preview needs to echo something parseable (e.g. the Slack
 // wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
 const POST_ROUTES: [RegExp, () => unknown][] = [
+  [/^\/v3\/github\/deploy-app\/inspect$/, () => flueInspection],
+  [
+    /^\/v3\/agents\/import$/,
+    () => ({
+      agent: importedAgent,
+      source: importedSource,
+      deployment: flueDeployment,
+    }),
+  ],
+  [/^\/v3\/agents$/, () => agents[0]],
   [/^\/v3\/agents\/[^/]+\/slack\/manifest$/, () => slackManifest],
   [
     /^\/v3\/agents\/[^/]+\/slack$/,

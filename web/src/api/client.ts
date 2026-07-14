@@ -32,6 +32,9 @@ export type {
   AgentSkills,
   SkillItem,
   AgentDeploy,
+  AgentDeployment,
+  AgentDeploymentLog,
+  FlueSourceInspection,
   Session,
   AgentSnapshot,
   SessionEvent,
@@ -606,6 +609,40 @@ export const deleteAgentSkills = (agentId: string) =>
 // The OC GitHub App (deploy) install-state + pickable repos — org-scoped admin read.
 export const getDeployApp = () => apiFetch('/v3/github/deploy-app', {}, S.DeployAppSchema)
 
+export const inspectFlueRepository = (body: {
+  repo: string
+  path: string
+  production_ref: string
+}) =>
+  apiFetch(
+    '/v3/github/deploy-app/inspect',
+    { method: 'POST', body: JSON.stringify(body) },
+    S.FlueSourceInspectionSchema,
+  )
+
+export const importAgentFromGithub = (
+  body: {
+    name: string
+    source: {
+      type: 'github'
+      repo: string
+      path: string
+      production_ref: string
+    }
+    credential: 'managed'
+  },
+  idempotencyKey: string,
+) =>
+  apiFetch(
+    '/v3/agents/import',
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Idempotency-Key': idempotencyKey },
+    },
+    S.ImportAgentResponseSchema,
+  )
+
 // Deployment source — link an agent to a repo dir for push-to-deploy (deploy-from-github).
 export const getDeploymentSource = (agentId: string) =>
   apiFetch(`/v3/agents/${agentId}/deployment-source`, {}, S.DeploymentSourceResponseSchema)
@@ -630,6 +667,29 @@ export const deployFromGithub = (agentId: string) =>
     `/v3/agents/${agentId}/deployments`,
     { method: 'POST', body: JSON.stringify({ input: { type: 'github' } }) },
   )
+
+export const getAgentDeployment = (agentId: string, deploymentId: string) =>
+  apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/deployments/${encodeURIComponent(deploymentId)}`,
+    {},
+    S.AgentDeploymentSchema,
+  )
+
+export const getAgentDeploymentLogs = (
+  agentId: string,
+  deploymentId: string,
+  options: { after?: string; limit?: number } = {},
+) => {
+  const query = new URLSearchParams()
+  if (options.after) query.set('after', options.after)
+  if (options.limit) query.set('limit', String(options.limit))
+  const qs = query.toString()
+  return apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/deployments/${encodeURIComponent(deploymentId)}/logs${qs ? `?${qs}` : ''}`,
+    {},
+    S.AgentDeploymentLogsSchema,
+  )
+}
 
 // Slack — an agent's BYO Slack app (1 app ⟷ 1 agent ⟷ 1 workspace). Two-step
 // connect: START (manifest) returns the app manifest + guided steps; COMPLETE
