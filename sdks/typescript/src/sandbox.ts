@@ -39,13 +39,6 @@ export interface SandboxOpts {
   diskMB?: number;
   /** Secret store name — resolves encrypted secrets and egress allowlist. */
   secretStore?: string;
-  /**
-   * Host-enforced public-Internet-only, egress-only networking. Blocks inbound
-   * preview/public ports plus guest access to the worker host, private/service
-   * networks, link-local metadata, CGNAT, multicast, and reserved ranges even
-   * if guest code changes proxy settings.
-   */
-  networkPolicy?: "public";
   /** Declarative image definition. The server builds and caches it as a checkpoint. */
   image?: Image;
   /** Name of a pre-built snapshot to create the sandbox from. */
@@ -357,7 +350,6 @@ export class Sandbox {
     if (opts.memoryMB != null) body.memoryMB = opts.memoryMB;
     if (opts.diskMB != null) body.diskMB = opts.diskMB;
     if (opts.secretStore) body.secretStore = opts.secretStore;
-    if (opts.networkPolicy) body.networkPolicy = opts.networkPolicy;
     if (opts.image) body.image = opts.image.toJSON();
     if (opts.snapshot) body.snapshot = opts.snapshot;
     if (opts.webhooks?.length) body.webhooks = opts.webhooks;
@@ -793,7 +785,7 @@ export class Sandbox {
     (this as any).pty = new Pty(this.apiUrl, this.apiKey, this.sandboxId, "");
   }
 
-  static async createFromCheckpoint(checkpointId: string, opts: Pick<SandboxOpts, "apiKey" | "apiUrl" | "timeout" | "envs" | "secretStore" | "networkPolicy"> = {}): Promise<Sandbox> {
+  static async createFromCheckpoint(checkpointId: string, opts: Pick<SandboxOpts, "apiKey" | "apiUrl" | "timeout" | "envs" | "secretStore"> = {}): Promise<Sandbox> {
     const apiUrl = resolveApiUrl(opts.apiUrl ?? process.env.OPENCOMPUTER_API_URL ?? "https://app.opencomputer.dev");
     const apiKey = opts.apiKey ?? process.env.OPENCOMPUTER_API_KEY ?? "";
 
@@ -801,7 +793,6 @@ export class Sandbox {
     if (opts.timeout != null) body.timeout = opts.timeout;
     if (opts.envs) body.envs = opts.envs;
     if (opts.secretStore) body.secretStore = opts.secretStore;
-    if (opts.networkPolicy) body.networkPolicy = opts.networkPolicy;
 
     const resp = await fetch(`${apiUrl}/sandboxes/from-checkpoint/${checkpointId}`, {
       method: "POST",

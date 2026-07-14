@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	scaleUpThreshold    = 0.50             // Scale up when utilization > 50% (gives ~3 min runway for new worker to boot)
-	scaleDownThreshold  = 0.20             // Scale down when utilization < 20%
-	maxWorkersPerRegion = 10               // Hard cap to prevent runaway launches
+	scaleUpThreshold   = 0.50 // Scale up when utilization > 50% (gives ~3 min runway for new worker to boot)
+	scaleDownThreshold = 0.20 // Scale down when utilization < 20%
+	maxWorkersPerRegion = 10  // Hard cap to prevent runaway launches
 	pendingWorkerTTL    = 10 * time.Minute // How long to wait for a launched worker to register
 
 	// Resource-based scaling thresholds (applied per-worker, trigger on ANY worker exceeding)
@@ -40,8 +40,8 @@ const (
 	emergencyCPUThreshold  = 95.0
 	emergencyMemThreshold  = 95.0
 	emergencyDiskThreshold = 90.0
-	evacuationBatchSize    = 3                // sandboxes to migrate per eval cycle per worker
-	evacuationCooldown     = 60 * time.Second // per-worker cooldown between evacuation batches
+	evacuationBatchSize    = 3                  // sandboxes to migrate per eval cycle per worker
+	evacuationCooldown     = 60 * time.Second   // per-worker cooldown between evacuation batches
 	// drainTimeout caps total wall-clock time for a single drain. With
 	// per-target serialization (one in-flight migration per target), a
 	// drain bottlenecked on a single target processes sandboxes serially
@@ -51,7 +51,7 @@ const (
 	// of a full drain. Bumping to 6h leaves headroom for large workloads;
 	// genuine stuck drains are caught by per-migration timeouts + the
 	// natural-expiry fallback in drainWorker.
-	drainTimeout = 6 * time.Hour
+	drainTimeout           = 6 * time.Hour
 
 	creationFailureThreshold = 3                // consecutive failures before exponential backoff
 	creationBackoffMin       = 1 * time.Minute  // initial backoff after threshold hit
@@ -85,14 +85,14 @@ type OrphanCleaner interface {
 type ScalerConfig struct {
 	Pool        compute.Pool
 	Registry    ScalerRegistry
-	Store       *db.Store        // for updating session worker_id after migration
+	Store       *db.Store     // for updating session worker_id after migration
 	StateStore  ScalerStateStore // optional: persists scaler state to Redis (nil = in-memory)
 	WorkerImage string
 	Cooldown    time.Duration // minimum time between scale-up actions per region
 	Interval    time.Duration // how often to evaluate scaling (0 = default 30s)
-	MinWorkers  int           // minimum total workers per region (0 = default 1). Always kept running.
-	MaxWorkers  int           // maximum workers per region (0 = default 10). Hard cap to prevent runaway launches.
-	IdleReserve int           // target idle (0 sandbox) workers for burst absorption (0 = default 1). Separate from MinWorkers.
+	MinWorkers     int        // minimum total workers per region (0 = default 1). Always kept running.
+	MaxWorkers     int        // maximum workers per region (0 = default 10). Hard cap to prevent runaway launches.
+	IdleReserve    int        // target idle (0 sandbox) workers for burst absorption (0 = default 1). Separate from MinWorkers.
 
 	// Event emit for D1 sandboxes_index sync. After a scaler-triggered
 	// migration succeeds (rolling replace, evacuation), XADD a "migrated"
@@ -132,17 +132,17 @@ type Scaler struct {
 	image       string
 	cooldown    time.Duration
 	interval    time.Duration
-	minWorkers  int
-	maxWorkers  int
-	idleReserve int
+	minWorkers   int
+	maxWorkers   int
+	idleReserve  int
 
-	rdb    *redis.Client
-	cellID string
+	rdb     *redis.Client
+	cellID  string
 
-	mu      sync.Mutex // protects stop/cancel
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	running bool
+	mu       sync.Mutex     // protects stop/cancel
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	running  bool
 
 	machineSizes []string // ranked list of provider-specific sizes for scale-up fallback
 
@@ -1946,7 +1946,6 @@ func (s *Scaler) liveMigrateSandbox(ctx context.Context, sandboxID, sourceWorker
 		SealedTokens:    preCopyResp.SealedTokens,
 		EgressAllowlist: preCopyResp.EgressAllowlist,
 		TokenHosts:      preCopyResp.TokenHosts,
-		NetworkPolicy:   preCopyResp.NetworkPolicy,
 		// Paused-tier move: target registers Status=paused so the usage ticker
 		// never bills it while the RAM streams in.
 		ArrivePaused: keepPaused,

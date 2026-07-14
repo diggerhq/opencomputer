@@ -6,8 +6,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-
-	"github.com/opensandbox/opensandbox/pkg/types"
 )
 
 // NetworkConfig holds the networking state for a single VM.
@@ -119,9 +117,8 @@ func (a *SubnetAllocator) Release(tapName string) {
 	delete(a.used, block)
 }
 
-// CreateTAP creates a TAP device, configures it with the host IP, and applies
-// any host-enforced network policy before the guest can start.
-func CreateTAP(cfg *NetworkConfig, policy types.NetworkPolicy) error {
+// CreateTAP creates a TAP device and configures it with the host IP.
+func CreateTAP(cfg *NetworkConfig) error {
 	if err := run("ip", "tuntap", "add", "dev", cfg.TAPName, "mode", "tap"); err != nil {
 		return fmt.Errorf("create tap %s: %w", cfg.TAPName, err)
 	}
@@ -145,11 +142,6 @@ func CreateTAP(cfg *NetworkConfig, policy types.NetworkPolicy) error {
 	// link speed while still bounding aggregate worker NIC pressure.
 	applyRateLimit(cfg.TAPName)
 
-	if err := applyNetworkPolicy(cfg, policy); err != nil {
-		DeleteTAP(cfg.TAPName)
-		return fmt.Errorf("apply network policy %q to %s: %w", policy, cfg.TAPName, err)
-	}
-
 	return nil
 }
 
@@ -162,178 +154,10 @@ func applyRateLimit(tapName string) {
 		"rate", "500mbit", "burst", "10mb", "latency", "50ms")
 }
 
-// DeleteTAP removes a TAP device, its tc qdisc, and any per-TAP firewall
-// policy. Firewall cleanup is unconditional so a recycled TAP name cannot
-// inherit rules from an interrupted sandbox lifecycle.
+// DeleteTAP removes a TAP device and its tc qdisc.
 func DeleteTAP(tapName string) {
-	cleanupNetworkPolicy(tapName)
 	_ = run("tc", "qdisc", "del", "dev", tapName, "root")
 	_ = run("ip", "link", "del", tapName)
-}
-
-type networkCommand struct {
-	name string
-	args []string
-}
-
-type networkCommandRunner func(name string, args ...string) error
-
-var publicBlockedIPv4CIDRs = []string{
-	"0.0.0.0/8",
-	"10.0.0.0/8",
-	"100.64.0.0/10",
-	"127.0.0.0/8",
-	"169.254.0.0/16",
-	"172.16.0.0/12",
-	"192.0.0.0/24",
-	"192.0.2.0/24",
-	"192.88.99.0/24",
-	"192.168.0.0/16",
-	"198.18.0.0/15",
-	"198.51.100.0/24",
-	"203.0.113.0/24",
-	"224.0.0.0/4",
-	"240.0.0.0/4",
-}
-
-func networkPolicyChainNames(tapName string) (input4, egress4, ingress4, input6, egress6, ingress6 string) {
-	return "OCPI-" + tapName, "OCPE-" + tapName, "OCPN-" + tapName,
-		"OC6I-" + tapName, "OC6E-" + tapName, "OC6N-" + tapName
-}
-
-func validateTAPName(tapName string) error {
-	if tapName == "" || len(tapName) > 15 {
-		return fmt.Errorf("invalid TAP name %q", tapName)
-	}
-	for _, r := range tapName {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
-			continue
-		}
-		return fmt.Errorf("invalid TAP name %q", tapName)
-	}
-	return nil
-}
-
-// publicNetworkPolicyCommands returns the fail-closed firewall program for a
-// public-only sandbox. The per-TAP jumps are inserted ahead of the worker's
-// broad 172.16/16 forwarding rules. INPUT denies guest-to-worker access,
-// including the metadata DNAT target. The egress chain rejects spoofed source
-// addresses and non-public IPv4 destinations before permitting ordinary public
-// IPv4. The separate ingress chain permits established replies but rejects new
-// connections from forwarded and host-originated traffic (including a stale
-// local DNAT rule). IPv6 is denied because the worker does not currently
-// provide a public-IPv6 route with an equivalent allow contract.
-func publicNetworkPolicyCommands(cfg *NetworkConfig) []networkCommand {
-	tapName := cfg.TAPName
-	input4, egress4, ingress4, input6, egress6, ingress6 := networkPolicyChainNames(tapName)
-	commands := []networkCommand{
-		{name: "iptables", args: []string{"-N", input4}},
-		{name: "iptables", args: []string{"-A", input4, "-j", "DROP"}},
-		{name: "iptables", args: []string{"-N", egress4}},
-		{name: "iptables", args: []string{"-A", egress4, "!", "-s", cfg.GuestIP + "/32", "-j", "DROP"}},
-	}
-	for _, cidr := range publicBlockedIPv4CIDRs {
-		commands = append(commands, networkCommand{
-			name: "iptables",
-			args: []string{"-A", egress4, "-d", cidr, "-j", "DROP"},
-		})
-	}
-	commands = append(commands,
-		networkCommand{name: "iptables", args: []string{"-A", egress4, "-j", "ACCEPT"}},
-		networkCommand{name: "iptables", args: []string{"-N", ingress4}},
-		networkCommand{name: "iptables", args: []string{"-A", ingress4, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"}},
-		networkCommand{name: "iptables", args: []string{"-A", ingress4, "-j", "DROP"}},
-		networkCommand{name: "ip6tables", args: []string{"-N", input6}},
-		networkCommand{name: "ip6tables", args: []string{"-A", input6, "-j", "DROP"}},
-		networkCommand{name: "ip6tables", args: []string{"-N", egress6}},
-		networkCommand{name: "ip6tables", args: []string{"-A", egress6, "-j", "DROP"}},
-		networkCommand{name: "ip6tables", args: []string{"-N", ingress6}},
-		networkCommand{name: "ip6tables", args: []string{"-A", ingress6, "-j", "DROP"}},
-		// Install jumps only after every chain has been populated. CreateTAP
-		// fails and deletes the TAP if any command above or below fails.
-		networkCommand{name: "iptables", args: []string{"-I", "INPUT", "1", "-i", tapName, "-j", input4}},
-		networkCommand{name: "iptables", args: []string{"-I", "FORWARD", "1", "-i", tapName, "-j", egress4}},
-		networkCommand{name: "iptables", args: []string{"-I", "FORWARD", "1", "-o", tapName, "-j", ingress4}},
-		networkCommand{name: "iptables", args: []string{"-I", "OUTPUT", "1", "-o", tapName, "-j", ingress4}},
-		networkCommand{name: "ip6tables", args: []string{"-I", "INPUT", "1", "-i", tapName, "-j", input6}},
-		networkCommand{name: "ip6tables", args: []string{"-I", "FORWARD", "1", "-i", tapName, "-j", egress6}},
-		networkCommand{name: "ip6tables", args: []string{"-I", "FORWARD", "1", "-o", tapName, "-j", ingress6}},
-		networkCommand{name: "ip6tables", args: []string{"-I", "OUTPUT", "1", "-o", tapName, "-j", ingress6}},
-	)
-	return commands
-}
-
-func networkPolicyCleanupCommands(tapName string) []networkCommand {
-	input4, egress4, ingress4, input6, egress6, ingress6 := networkPolicyChainNames(tapName)
-	return []networkCommand{
-		{name: "iptables", args: []string{"-D", "INPUT", "-i", tapName, "-j", input4}},
-		{name: "iptables", args: []string{"-D", "FORWARD", "-i", tapName, "-j", egress4}},
-		{name: "iptables", args: []string{"-D", "FORWARD", "-o", tapName, "-j", ingress4}},
-		{name: "iptables", args: []string{"-D", "OUTPUT", "-o", tapName, "-j", ingress4}},
-		{name: "iptables", args: []string{"-F", input4}},
-		{name: "iptables", args: []string{"-X", input4}},
-		{name: "iptables", args: []string{"-F", egress4}},
-		{name: "iptables", args: []string{"-X", egress4}},
-		{name: "iptables", args: []string{"-F", ingress4}},
-		{name: "iptables", args: []string{"-X", ingress4}},
-		{name: "ip6tables", args: []string{"-D", "INPUT", "-i", tapName, "-j", input6}},
-		{name: "ip6tables", args: []string{"-D", "FORWARD", "-i", tapName, "-j", egress6}},
-		{name: "ip6tables", args: []string{"-D", "FORWARD", "-o", tapName, "-j", ingress6}},
-		{name: "ip6tables", args: []string{"-D", "OUTPUT", "-o", tapName, "-j", ingress6}},
-		{name: "ip6tables", args: []string{"-F", input6}},
-		{name: "ip6tables", args: []string{"-X", input6}},
-		{name: "ip6tables", args: []string{"-F", egress6}},
-		{name: "ip6tables", args: []string{"-X", egress6}},
-		{name: "ip6tables", args: []string{"-F", ingress6}},
-		{name: "ip6tables", args: []string{"-X", ingress6}},
-	}
-}
-
-func applyNetworkPolicy(cfg *NetworkConfig, policy types.NetworkPolicy) error {
-	return applyNetworkPolicyWithRunner(cfg, policy, run)
-}
-
-func applyNetworkPolicyWithRunner(cfg *NetworkConfig, policy types.NetworkPolicy, runner networkCommandRunner) error {
-	if cfg == nil {
-		return fmt.Errorf("network config is required")
-	}
-	if err := validateTAPName(cfg.TAPName); err != nil {
-		return err
-	}
-	if err := policy.Validate(); err != nil {
-		return err
-	}
-	if policy == types.NetworkPolicyNone {
-		return nil
-	}
-	if ip := net.ParseIP(cfg.GuestIP); ip == nil || ip.To4() == nil {
-		return fmt.Errorf("invalid guest IPv4 address %q", cfg.GuestIP)
-	}
-
-	// An interrupted prior lifecycle may have left per-TAP chains behind. Best
-	// effort cleanup makes setup idempotent; any residue that cannot be removed
-	// makes a subsequent -N/-I command fail and the sandbox creation fails closed.
-	cleanupNetworkPolicyWithRunner(cfg.TAPName, runner)
-	for _, command := range publicNetworkPolicyCommands(cfg) {
-		if err := runner(command.name, command.args...); err != nil {
-			cleanupNetworkPolicyWithRunner(cfg.TAPName, runner)
-			return fmt.Errorf("%s %s: %w", command.name, strings.Join(command.args, " "), err)
-		}
-	}
-	return nil
-}
-
-func cleanupNetworkPolicy(tapName string) {
-	if validateTAPName(tapName) != nil {
-		return
-	}
-	cleanupNetworkPolicyWithRunner(tapName, run)
-}
-
-func cleanupNetworkPolicyWithRunner(tapName string, runner networkCommandRunner) {
-	for _, command := range networkPolicyCleanupCommands(tapName) {
-		_ = runner(command.name, command.args...)
-	}
 }
 
 // AddDNAT adds an iptables DNAT rule: hostPort → guestIP:guestPort.
@@ -379,31 +203,6 @@ func RemoveDNAT(cfg *NetworkConfig) {
 		"-p", "tcp", "--dport", fmt.Sprintf("%d", cfg.HostPort),
 		"-j", "DNAT", "--to-destination",
 		fmt.Sprintf("%s:%d", cfg.GuestIP, cfg.GuestPort))
-}
-
-// configureIngress exposes the guest port for unrestricted sandboxes. A
-// public-only sandbox is intentionally egress-only: it gets neither a host
-// port allocation nor DNAT rules, and its FORWARD policy independently drops
-// new traffic headed to the TAP as defense in depth.
-func configureIngress(cfg *NetworkConfig, policy types.NetworkPolicy, guestPort int) (int, error) {
-	if err := policy.Validate(); err != nil {
-		return 0, err
-	}
-	cfg.GuestPort = guestPort
-	if policy == types.NetworkPolicyPublic {
-		cfg.HostPort = 0
-		return 0, nil
-	}
-
-	hostPort, err := FindFreePort()
-	if err != nil {
-		return 0, fmt.Errorf("find free port: %w", err)
-	}
-	cfg.HostPort = hostPort
-	if err := AddDNAT(cfg); err != nil {
-		return 0, err
-	}
-	return hostPort, nil
 }
 
 // AddMetadataDNAT adds an iptables rule to redirect 169.254.169.254:80 from a VM's TAP

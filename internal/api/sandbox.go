@@ -63,9 +63,6 @@ func (s *Server) createSandbox(c echo.Context) error {
 	// Default networkEnabled=true when caller omits it, so the value persisted
 	// to sandbox_sessions.config_json is explicit and forks inherit it correctly.
 	cfg.EnsureNetworkEnabledDefault()
-	if err := cfg.NetworkPolicy.Validate(); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
-	}
 
 	// Validate CPU/memory against allowed tiers.
 	// Self-serve tiers (memoryMB → vCPU): 1024→1, 4096→1, 8192→2, 16384→4.
@@ -212,7 +209,7 @@ func (s *Server) createSandbox(c echo.Context) error {
 		// on the fork. User envs override checkpoint's stored envs.
 		// Secret store: if checkpoint has none, user can attach one at fork time.
 		// If checkpoint already has one, user cannot override it.
-		result, status, cpErr := s.createFromCheckpointCore(c, cfg.Envs, cfg.SecretStore, cfg.Metadata, cfg.MemoryMB, cfg.NetworkPolicy)
+		result, status, cpErr := s.createFromCheckpointCore(c, cfg.Envs, cfg.SecretStore, cfg.Metadata, cfg.MemoryMB)
 		if cpErr != nil {
 			return c.JSON(status, map[string]string{"error": cpErr.Error()})
 		}
@@ -400,7 +397,7 @@ func (s *Server) createSandboxWithSSE(c echo.Context, ctx context.Context, orgID
 
 	c.SetParamNames("checkpointId")
 	c.SetParamValues(checkpointID.String())
-	result, _, cpErr := s.createFromCheckpointCore(c, cfg.Envs, cfg.SecretStore, cfg.Metadata, cfg.MemoryMB, cfg.NetworkPolicy)
+	result, _, cpErr := s.createFromCheckpointCore(c, cfg.Envs, cfg.SecretStore, cfg.Metadata, cfg.MemoryMB)
 	if cpErr != nil {
 		emit("error", map[string]string{"error": cpErr.Error()})
 		return nil
@@ -558,96 +555,6 @@ func cfgForPersistence(cfg types.SandboxConfig) types.SandboxConfig {
 	}
 	cfg.EgressAllowlist = nil
 	return cfg
-}
-
-func effectiveForkNetworkPolicy(inherited, requested types.NetworkPolicy) (types.NetworkPolicy, error) {
-	if err := inherited.Validate(); err != nil {
-		return types.NetworkPolicyNone, fmt.Errorf("checkpoint has invalid network policy: %w", err)
-	}
-	if err := requested.Validate(); err != nil {
-		return types.NetworkPolicyNone, err
-	}
-	// A fork may tighten an unrestricted checkpoint, but it cannot weaken a
-	// public-only checkpoint. With the v1 none/public lattice, public wins.
-	if inherited == types.NetworkPolicyPublic || requested == types.NetworkPolicyPublic {
-		return types.NetworkPolicyPublic, nil
-	}
-	return types.NetworkPolicyNone, nil
-}
-
-// effectiveRestoreSessionConfig computes the monotonic network policy for an
-// in-place checkpoint restore and returns the API-visible session config that
-// must be persisted before dispatching the restore. QEMU independently applies
-// the same public-wins rule from the live VM and checkpoint metadata. Keeping
-// the session row in lockstep is load-bearing: preview URL admission reads this
-// config, so a stale unrestricted value could otherwise re-enable ingress for
-// a VM that the worker strengthened to public-only during restore.
-func effectiveRestoreSessionConfig(sessionConfig, checkpointConfig json.RawMessage) (json.RawMessage, bool, error) {
-	decode := func(label string, raw json.RawMessage) (types.SandboxConfig, map[string]json.RawMessage, error) {
-		if len(raw) == 0 {
-			raw = json.RawMessage(`{}`)
-		}
-		var cfg types.SandboxConfig
-		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return types.SandboxConfig{}, nil, fmt.Errorf("cannot verify %s network policy: %w", label, err)
-		}
-		if err := cfg.NetworkPolicy.Validate(); err != nil {
-			return types.SandboxConfig{}, nil, fmt.Errorf("cannot verify %s network policy: %w", label, err)
-		}
-		var object map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &object); err != nil {
-			return types.SandboxConfig{}, nil, fmt.Errorf("cannot preserve %s config: %w", label, err)
-		}
-		if object == nil {
-			object = make(map[string]json.RawMessage)
-		}
-		return cfg, object, nil
-	}
-
-	sessionCfg, sessionObject, err := decode("sandbox", sessionConfig)
-	if err != nil {
-		return nil, false, err
-	}
-	checkpointCfg, _, err := decode("checkpoint", checkpointConfig)
-	if err != nil {
-		return nil, false, err
-	}
-
-	effective := sessionCfg.NetworkPolicy
-	if checkpointCfg.NetworkPolicy == types.NetworkPolicyPublic {
-		effective = types.NetworkPolicyPublic
-	}
-	if effective == sessionCfg.NetworkPolicy {
-		return sessionConfig, false, nil
-	}
-
-	encodedPolicy, err := json.Marshal(effective)
-	if err != nil {
-		return nil, false, fmt.Errorf("encode effective network policy: %w", err)
-	}
-	sessionObject["networkPolicy"] = encodedPolicy
-	updated, err := json.Marshal(sessionObject)
-	if err != nil {
-		return nil, false, fmt.Errorf("encode restored sandbox config: %w", err)
-	}
-	return updated, true, nil
-}
-
-func validatePreviewNetworkPolicy(config json.RawMessage) error {
-	if len(config) == 0 {
-		return nil
-	}
-	var cfg types.SandboxConfig
-	if err := json.Unmarshal(config, &cfg); err != nil {
-		return fmt.Errorf("cannot verify sandbox network policy: %w", err)
-	}
-	if err := cfg.NetworkPolicy.Validate(); err != nil {
-		return fmt.Errorf("cannot verify sandbox network policy: %w", err)
-	}
-	if cfg.NetworkPolicy == types.NetworkPolicyPublic {
-		return fmt.Errorf("preview URLs are disabled for networkPolicy=%q sandboxes", types.NetworkPolicyPublic)
-	}
-	return nil
 }
 
 // flattenSecretAllowedHosts converts the internal per-secret allowed-hosts map
@@ -813,7 +720,6 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 		Timeout:              int32(cfg.Timeout),
 		Envs:                 cfg.Envs,
 		NetworkEnabled:       cfg.IsNetworkEnabled(),
-		NetworkPolicy:        string(cfg.NetworkPolicy),
 		Port:                 int32(cfg.Port),
 		TemplateRootfsKey:    templateRootfsKey,
 		TemplateWorkspaceKey: templateWorkspaceKey,
@@ -1885,7 +1791,6 @@ func (s *Server) migrateForScale(ctx context.Context, sandboxID string, session 
 		EgressAllowlist: preCopyResp.EgressAllowlist,
 		TokenHosts:      preCopyResp.TokenHosts,
 		SealedNames:     preCopyResp.SealedNames,
-		NetworkPolicy:   preCopyResp.NetworkPolicy,
 	})
 	if err != nil {
 		log.Printf("scale-migrate %s: prepare target failed: %v", sandboxID, err)
@@ -2779,7 +2684,6 @@ func (s *Server) promoteCheckpointToFull(ctx context.Context, checkpointID, prom
 			MemoryMb:             int32(cfg.MemoryMB),
 			CpuCount:             int32(cfg.CpuCount),
 			NetworkEnabled:       cfg.IsNetworkEnabled(),
-			NetworkPolicy:        string(cfg.NetworkPolicy),
 			Port:                 int32(cfg.Port),
 			TemplateRootfsKey:    rootfsKey,
 			TemplateWorkspaceKey: workspaceKey,
@@ -2910,22 +2814,6 @@ func (s *Server) restoreCheckpoint(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "checkpoint is not ready (status: " + cp.Status + ")"})
 	}
 
-	// A restore can only preserve or tighten the sandbox's network boundary.
-	// Persist the effective value before the asynchronous worker call so every
-	// API surface (especially preview URL creation) observes the same policy the
-	// worker will enforce. If persistence fails, do not begin a restore that
-	// could leave the worker and API disagreeing about ingress eligibility.
-	restoredConfig, policyChanged, policyErr := effectiveRestoreSessionConfig(session.Config, cp.SandboxConfig)
-	if policyErr != nil {
-		return c.JSON(http.StatusConflict, map[string]string{"error": policyErr.Error()})
-	}
-	if policyChanged {
-		if err := s.store.UpdateSandboxSessionConfig(ctx, session.ID, restoredConfig); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to persist restored sandbox network policy: " + err.Error()})
-		}
-		session.Config = restoredConfig
-	}
-
 	// Dispatch restore in background — return immediately.
 	// Commands will block until restore completes (via pendingCreates + waitForReady).
 	pending := &pendingCreate{ready: make(chan struct{})}
@@ -2989,14 +2877,13 @@ func (s *Server) createFromCheckpoint(c echo.Context) error {
 	// (caller wins) so callers can stamp identifiers like agent_id without
 	// losing whatever the snapshot author originally set.
 	var body struct {
-		Envs          map[string]string   `json:"envs"`
-		SecretStore   string              `json:"secretStore"`
-		Metadata      map[string]string   `json:"metadata"`
-		MemoryMB      int                 `json:"memoryMB"`
-		NetworkPolicy types.NetworkPolicy `json:"networkPolicy"`
+		Envs        map[string]string `json:"envs"`
+		SecretStore string            `json:"secretStore"`
+		Metadata    map[string]string `json:"metadata"`
+		MemoryMB    int               `json:"memoryMB"`
 	}
 	_ = c.Bind(&body)
-	result, httpStatus, err := s.createFromCheckpointCore(c, body.Envs, body.SecretStore, body.Metadata, body.MemoryMB, body.NetworkPolicy)
+	result, httpStatus, err := s.createFromCheckpointCore(c, body.Envs, body.SecretStore, body.Metadata, body.MemoryMB)
 	if err != nil {
 		return c.JSON(httpStatus, map[string]string{"error": err.Error()})
 	}
@@ -3022,7 +2909,7 @@ func (s *Server) createFromCheckpoint(c echo.Context) error {
 // metadata before the sandbox session row is recorded — so callers can
 // stamp request-time identifiers (e.g. agent_id) without losing whatever
 // the snapshot author baked in.
-func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]string, userSecretStore string, userMetadata map[string]string, userMemoryMB int, userNetworkPolicy types.NetworkPolicy) (map[string]interface{}, int, error) {
+func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]string, userSecretStore string, userMetadata map[string]string, userMemoryMB int) (map[string]interface{}, int, error) {
 	checkpointIDStr := c.Param("checkpointId")
 	ctx := c.Request().Context()
 
@@ -3109,15 +2996,6 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 	// Parse the original sandbox config to reuse settings
 	var originalCfg types.SandboxConfig
 	_ = json.Unmarshal(cp.SandboxConfig, &originalCfg)
-	effectivePolicy, policyErr := effectiveForkNetworkPolicy(originalCfg.NetworkPolicy, userNetworkPolicy)
-	if policyErr != nil {
-		status := http.StatusBadRequest
-		if originalCfg.NetworkPolicy.Validate() != nil {
-			status = http.StatusConflict
-		}
-		return nil, status, policyErr
-	}
-	originalCfg.NetworkPolicy = effectivePolicy
 	// Older checkpoints predate the networkEnabled default-to-true normalization
 	// and persisted no value (or false from the old non-pointer bool). Forks
 	// should still come up with networking on.
@@ -3306,7 +3184,6 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 			MemoryMb:             int32(originalCfg.MemoryMB),
 			CpuCount:             int32(originalCfg.CpuCount),
 			NetworkEnabled:       originalCfg.IsNetworkEnabled(),
-			NetworkPolicy:        string(originalCfg.NetworkPolicy),
 			Port:                 int32(originalCfg.Port),
 			TemplateRootfsKey:    forkRootfsKey,
 			TemplateWorkspaceKey: forkWorkspaceKey,
@@ -3813,15 +3690,6 @@ func (s *Server) createPreviewURL(c echo.Context) error {
 			"error": "org context required",
 		})
 	}
-	session, sessionErr := s.store.GetSandboxSessionInOrg(ctx, orgID, sandboxID)
-	if sessionErr != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "sandbox is not running or not found",
-		})
-	}
-	if err := validatePreviewNetworkPolicy(session.Config); err != nil {
-		return c.JSON(http.StatusConflict, map[string]string{"error": err.Error()})
-	}
 
 	// Parse request body — port is required
 	var req struct {
@@ -3850,8 +3718,9 @@ func (s *Server) createPreviewURL(c echo.Context) error {
 			sandboxRunning = true
 		}
 	}
-	if !sandboxRunning {
-		if session.Status == "running" {
+	if !sandboxRunning && s.store != nil {
+		session, err := s.store.GetSandboxSession(ctx, sandboxID)
+		if err == nil && session.Status == "running" && session.OrgID == orgID {
 			sandboxRunning = true
 		}
 	}

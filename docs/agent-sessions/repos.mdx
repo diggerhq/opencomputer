@@ -130,8 +130,9 @@ implementation itself. The dashboard uses the OpenComputer App to:
 
 The Git box writes a bounded, digest-checked source archive to object storage and is destroyed.
 A different sandbox receives that archive without `.git` or GitHub auth, runs the fixed install and
-build commands with public-Internet-only egress, and emits an artifact. The Workers deployment
-credential belongs to another trusted service and is never present during source or build work.
+build commands as an ordinary disposable OpenComputer sandbox, and emits an artifact. The Workers
+deployment credential belongs to another trusted service and is never present during source or
+build work.
 
 Flue repository deployment currently supports one self-contained npm root with `agent.toml`,
 `package.json`, and `package-lock.json`. Automatic deployment on later pushes is not enabled;

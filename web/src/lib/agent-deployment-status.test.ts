@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { agentDeploymentDisplayStatus } from './agent-deployment-status'
+import {
+  agentCanStartNewSession,
+  agentDeploymentDisplayStatus,
+} from './agent-deployment-status'
 
 const baseAgent = {
   runtime: 'flue',
@@ -88,5 +91,61 @@ describe('agent deployment display status', () => {
         flue: { agent_name: 'support', live: null },
       }),
     ).toBe('not_deployed')
+  })
+})
+
+describe('agent session admission', () => {
+  it('admits an active legacy Flue agent only from the server proof', () => {
+    const legacy = {
+      ...baseAgent,
+      flue: { agent_name: 'support', live: null },
+      deployment_status: {
+        deployment_id: 'dep_legacy',
+        state: 'ready',
+        result: 'created',
+        error_class: null,
+        live_touched: false,
+        live_status: null,
+        legacy_live_compatible: true,
+        updated_at: '2026-07-14T20:00:00.000Z',
+      },
+    }
+
+    expect(agentCanStartNewSession(legacy)).toBe(true)
+    expect(agentDeploymentDisplayStatus(legacy)).not.toBe('verified')
+  })
+
+  it('does not let the compatibility proof replace an active revision', () => {
+    expect(
+      agentCanStartNewSession({
+        runtime: 'flue',
+        revision: 0,
+        active_revision_id: null,
+        deployment_status: {
+          deployment_id: null,
+          state: 'not_deployed',
+          result: null,
+          error_class: null,
+          live_touched: false,
+          live_status: null,
+          legacy_live_compatible: true,
+          updated_at: null,
+        },
+        flue: { agent_name: 'support', live: null },
+      }),
+    ).toBe(false)
+  })
+
+  it('keeps verified Flue and active built-in agents startable', () => {
+    expect(agentCanStartNewSession(baseAgent)).toBe(true)
+    expect(
+      agentCanStartNewSession({
+        runtime: 'claude',
+        revision: 1,
+        active_revision_id: 'rev_builtin',
+        deployment_status: undefined,
+        flue: null,
+      }),
+    ).toBe(true)
   })
 })

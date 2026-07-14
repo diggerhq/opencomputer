@@ -38,7 +38,10 @@ import {
   type WorkingRepo,
 } from '@/components/working-repo-field'
 import { ApiHint, type ApiRef } from '@/components/api-hint'
-import { agentDeploymentDisplayStatus } from '@/lib/agent-deployment-status'
+import {
+  agentCanStartNewSession,
+  agentDeploymentDisplayStatus,
+} from '@/lib/agent-deployment-status'
 import { getRuntime, keyFieldFor, providerForModel, withModelGroups } from '@/lib/runtimes'
 
 const DOCS = 'https://docs.opencomputer.dev/agent-sessions'
@@ -301,11 +304,7 @@ export default function AgentDetail() {
   const base = `/agents/${agent.id}`
   const latestDeploymentId = agent.deployment_status?.deployment_id
   const deploymentStatus = agentDeploymentDisplayStatus(agent)
-  const liveStatus =
-    agent.deployment_status?.live_status ?? agent.flue?.live?.status ?? null
-  const canStartNewSession =
-    activeRev !== null &&
-    (agent.runtime !== 'flue' || liveStatus === 'verified')
+  const canStartNewSession = agentCanStartNewSession(agent)
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -519,7 +518,9 @@ export default function AgentDetail() {
             </div>
             {/* Right rail: connect-or-status for the agent's source + Slack. */}
             <div className="space-y-4">
-              <AgentDeploySource agentId={agent.id} />
+              {agent.runtime !== 'flue' ? (
+                <AgentDeploySource agentId={agent.id} />
+              ) : null}
               <SlackConnect agentId={agent.id} agentName={agent.name} />
             </div>
           </div>

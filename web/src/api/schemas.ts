@@ -345,6 +345,7 @@ export const AgentSchema = z.object({
       error_class: z.string().nullish(),
       live_touched: z.boolean(),
       live_status: z.string().nullish(),
+      legacy_live_compatible: z.boolean().optional(),
       updated_at: z.string().nullish(),
     })
     .optional(),

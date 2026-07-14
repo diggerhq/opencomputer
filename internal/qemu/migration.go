@@ -362,7 +362,7 @@ func (mc *MigrationCoordinator) LiveMigrate(ctx context.Context, sandboxID, inco
 
 // PrepareIncomingMigration sets up QEMU on the target worker to receive a live migration.
 // Returns the TCP address for the source to connect to.
-func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string, networkPolicy types.NetworkPolicy) (incomingAddr string, hostPort int, err error) {
+func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string) (incomingAddr string, hostPort int, err error) {
 	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
 	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
 		return "", 0, fmt.Errorf("mkdir: %w", err)
@@ -395,19 +395,27 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 	if err != nil {
 		return "", 0, fmt.Errorf("allocate subnet: %w", err)
 	}
-	if err := CreateTAP(netCfg, networkPolicy); err != nil {
+	if err := CreateTAP(netCfg); err != nil {
 		m.subnets.Release(netCfg.TAPName)
 		return "", 0, fmt.Errorf("create TAP: %w", err)
 	}
 
-	if guestPort == 0 {
-		guestPort = 80
-	}
-	hp, err := configureIngress(netCfg, networkPolicy, guestPort)
+	hp, err := FindFreePort()
 	if err != nil {
 		DeleteTAP(netCfg.TAPName)
 		m.subnets.Release(netCfg.TAPName)
-		return "", 0, fmt.Errorf("configure ingress: %w", err)
+		return "", 0, fmt.Errorf("find free port: %w", err)
+	}
+	netCfg.HostPort = hp
+	netCfg.GuestPort = guestPort
+	if netCfg.GuestPort == 0 {
+		netCfg.GuestPort = 80
+	}
+
+	if err := AddDNAT(netCfg); err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		return "", 0, fmt.Errorf("add DNAT: %w", err)
 	}
 	if err := AddMetadataDNAT(netCfg.TAPName, netCfg.HostIP); err != nil {
 		log.Printf("qemu: warning: metadata DNAT failed: %v", err)
@@ -509,7 +517,6 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 		baseMemoryMB:  memMB,
 		HostPort:      hp,
 		GuestPort:     netCfg.GuestPort,
-		NetworkPolicy: networkPolicy,
 		pid:           cmd.Process.Pid,
 		cmd:           cmd,
 		network:       netCfg,
@@ -653,7 +660,6 @@ func (m *Manager) PreCopyDrives(ctx context.Context, sandboxID string, checkpoin
 		baseCPU = vm.CpuCount
 		baseMem = vm.baseMemoryMB
 		pid = vm.pid
-		secrets.NetworkPolicy = string(vm.NetworkPolicy)
 		if vm.network != nil {
 			guestIP = vm.network.GuestIP
 		}
@@ -778,7 +784,7 @@ func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID,
 		return "", 0, r.err
 	}
 
-	incomingAddr, hostPort, err = m.PrepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template, types.NetworkPolicy(secrets.NetworkPolicy))
+	incomingAddr, hostPort, err = m.PrepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template)
 	if err != nil {
 		return "", 0, err
 	}

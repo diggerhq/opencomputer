@@ -90,9 +90,9 @@ commands, and build-time secrets are not supported.
 
 OpenComputer resolves the selected branch to one commit, fetches only that tracked tree in a
 short-lived Git sandbox, and transfers tokenless source to a separate build sandbox. The build runs
-fixed `npm ci --no-audit --no-fund` and offline `oc agent build` commands. Repository code receives
-public-Internet-only egress for npm, but no GitHub token, OpenComputer key, model credential,
-Workers credential, secret store, inbound port, or preview URL.
+fixed `npm ci --no-audit --no-fund` and offline `oc agent build` commands in an ordinary disposable
+OpenComputer sandbox. The build request carries no GitHub token, OpenComputer key, model
+credential, Workers credential, or secret store.
 
 <Note>
 Repository import currently creates the initial deployment from the selected production branch.

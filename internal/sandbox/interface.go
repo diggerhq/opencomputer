@@ -29,10 +29,6 @@ type MigrationSecrets struct {
 	SealedTokens    map[string]string
 	EgressAllowlist []string
 	TokenHosts      map[string][]string
-	// NetworkPolicy is not a secret, but it follows the same source→target
-	// handoff so the destination installs the sandbox's host firewall before
-	// QEMU starts receiving migration state.
-	NetworkPolicy string
 	// SealedNames is the env-var-name → sealed-token index. Carried across
 	// migration so refresh-by-name (UpdateSecretValue) keeps working on the
 	// destination. Without it, post-migration secret-store updates would
@@ -44,10 +40,10 @@ type MigrationSecrets struct {
 // Runtime-agnostic interface for sandbox resource stats.
 type SandboxStats struct {
 	CPUPercent float64 `json:"cpuPercent"`
-	MemUsage   uint64  `json:"memUsage"`  // bytes
-	MemLimit   uint64  `json:"memLimit"`  // bytes
-	NetInput   uint64  `json:"netInput"`  // bytes
-	NetOutput  uint64  `json:"netOutput"` // bytes
+	MemUsage   uint64  `json:"memUsage"` // bytes
+	MemLimit   uint64  `json:"memLimit"` // bytes
+	NetInput   uint64  `json:"netInput"` // bytes
+	NetOutput  uint64  `json:"netOutput"`// bytes
 	PIDs       int     `json:"pids"`
 }
 

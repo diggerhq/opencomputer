@@ -56,11 +56,6 @@ func listenPortForPTY(port uint32) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pty unix listen port %d: %w", port, err)
 	}
-	if err := restrictAgentEndpoint(sockPath); err != nil {
-		lis.Close()
-		os.Remove(sockPath)
-		return nil, err
-	}
 	log.Printf("agent: PTY data listening on %s", sockPath)
 	return lis, nil
 }
@@ -83,10 +78,6 @@ func listenVirtioSerial(path string) (net.Listener, error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open virtio-serial %s: %w", path, err)
-	}
-	if err := restrictAgentEndpoint(path); err != nil {
-		f.Close()
-		return nil, err
 	}
 
 	// Mark CLOEXEC so the fd is closed on agent re-exec (upgrade).
@@ -293,7 +284,7 @@ func (a vsockAddr) String() string  { return fmt.Sprintf("vsock(%d:%d)", a.cid, 
 
 func (l *vsockListener) Accept() (net.Conn, error) {
 	for {
-		nfd, remote, err := unix.Accept(l.fd)
+		nfd, _, err := unix.Accept(l.fd)
 		if err != nil {
 			select {
 			case <-l.closed:
@@ -301,14 +292,6 @@ func (l *vsockListener) Accept() (net.Conn, error) {
 			default:
 			}
 			return nil, fmt.Errorf("vsock accept: %w", err)
-		}
-		remoteVM, ok := remote.(*unix.SockaddrVM)
-		if !ok || !isTrustedAgentVsockPeer(remoteVM.CID) {
-			// The agent RPC surface includes root exec, root file writes, and
-			// binary upgrade. It is intentionally reachable only from CID 2,
-			// the hypervisor host. In-guest AF_VSOCK loopback is untrusted.
-			unix.Close(nfd)
-			continue
 		}
 		return newRawVsockConn(nfd), nil
 	}
@@ -354,11 +337,6 @@ func listenUnix(vsockErr error) (net.Listener, error) {
 	lis, err := net.Listen("unix", sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("unix listen: %w (vsock: %v)", err, vsockErr)
-	}
-	if err := restrictAgentEndpoint(sockPath); err != nil {
-		lis.Close()
-		os.Remove(sockPath)
-		return nil, err
 	}
 	log.Printf("agent: listening on %s (vsock not available: %v)", sockPath, vsockErr)
 	return lis, nil

@@ -120,8 +120,8 @@ The managed path is deliberately narrow: one self-contained npm root, a committe
 `package-lock.json`, a compatible `engines.node`, and a local `@flue/cli` dependency. OpenComputer
 fetches the exact commit with a repository-scoped GitHub App token in a source sandbox, removes Git
 metadata and auth, then runs `npm ci` and the offline builder in a separate tokenless sandbox. npm
-lifecycle scripts do run, but that build sandbox has only host-enforced public-Internet egress and
-no platform or deployment credential.
+lifecycle scripts do run in that ordinary disposable OpenComputer sandbox, but its request carries
+no source, platform, model, or deployment credential.
 
 The deployment detail page groups the attempt into **Queued**, **Source**, **Install**, **Build**,
 **Artifact**, **Deploy**, and **Verify**, with one persisted chronological log. An install/build

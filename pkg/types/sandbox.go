@@ -24,23 +24,23 @@ const (
 
 // Sandbox represents a running sandbox instance.
 type Sandbox struct {
-	ID        string            `json:"sandboxID"`
-	Template  string            `json:"templateID,omitempty"`
-	Alias     string            `json:"alias,omitempty"`
-	ClientID  string            `json:"clientID,omitempty"`
-	Status    SandboxStatus     `json:"status"`
-	StartedAt time.Time         `json:"startedAt"`
-	EndAt     time.Time         `json:"endAt"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
-	CpuCount  int               `json:"cpuCount"`
-	MemoryMB  int               `json:"memoryMB"`
-	MachineID string            `json:"machineID,omitempty"`
+	ID         string            `json:"sandboxID"`
+	Template   string            `json:"templateID,omitempty"`
+	Alias      string            `json:"alias,omitempty"`
+	ClientID   string            `json:"clientID,omitempty"`
+	Status     SandboxStatus     `json:"status"`
+	StartedAt  time.Time         `json:"startedAt"`
+	EndAt      time.Time         `json:"endAt"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	CpuCount   int               `json:"cpuCount"`
+	MemoryMB   int               `json:"memoryMB"`
+	MachineID  string            `json:"machineID,omitempty"`
 	// ConnectURL and Token are currently unused by SDKs. All data-plane traffic
 	// flows through the control plane's SandboxAPIProxy, which proxies to workers
 	// over the internal VPC network. Direct worker access support coming in a future release.
-	ConnectURL string `json:"connectURL,omitempty"`
-	Token      string `json:"token,omitempty"`
-	HostPort   int    `json:"hostPort,omitempty"` // Mapped host port for the sandbox's container port
+	ConnectURL string            `json:"connectURL,omitempty"`
+	Token      string            `json:"token,omitempty"`
+	HostPort   int               `json:"hostPort,omitempty"`   // Mapped host port for the sandbox's container port
 	// PreviewAuthToken is the plaintext bearer token for the sandbox's
 	// preview URL, returned exactly once on create when previewAuth was
 	// requested. Empty otherwise. Mirrors the SDK field by the same name.
@@ -61,7 +61,7 @@ type SandboxPreviewAuth struct {
 	// Token is "auto" (or omitted) to have the server generate a 256-bit
 	// random token, or an explicit string of at least 16 chars to bring
 	// your own. Echoed back as Sandbox.PreviewAuthToken on success.
-	Token string `json:"token,omitempty"`
+	Token  string `json:"token,omitempty"`
 }
 
 // SandboxConfig is the request body for creating a sandbox.
@@ -69,10 +69,10 @@ type SandboxConfig struct {
 	Template    string              `json:"templateID,omitempty"`
 	Alias       string              `json:"alias,omitempty"`
 	Metadata    map[string]string   `json:"metadata,omitempty"`
-	Timeout     int                 `json:"timeout,omitempty"`  // seconds, default 300
-	CpuCount    int                 `json:"cpuCount,omitempty"` // default 1
-	MemoryMB    int                 `json:"memoryMB,omitempty"` // default 256
-	DiskMB      int                 `json:"diskMB,omitempty"`   // workspace disk in MB (default 20480)
+	Timeout     int                 `json:"timeout,omitempty"`    // seconds, default 300
+	CpuCount    int                 `json:"cpuCount,omitempty"`   // default 1
+	MemoryMB    int                 `json:"memoryMB,omitempty"`   // default 256
+	DiskMB      int                 `json:"diskMB,omitempty"`    // workspace disk in MB (default 20480)
 	Envs        map[string]string   `json:"envs,omitempty"`
 	PreviewAuth *SandboxPreviewAuth `json:"previewAuth,omitempty"`
 	// Webhooks registers sandbox lifecycle webhooks atomically with the
@@ -80,18 +80,11 @@ type SandboxConfig struct {
 	// separate webhooks.create could know the sandbox id). See
 	// .agents/work/sandbox-lifecycle-webhooks.md.
 	Webhooks []SandboxWebhookSpec `json:"webhooks,omitempty"`
-	Port     int                  `json:"port,omitempty"` // container port to expose via subdomain (default 80)
+	Port       int               `json:"port,omitempty"`       // container port to expose via subdomain (default 80)
 	// NetworkEnabled is a pointer so we can distinguish "unset" from
 	// "explicitly false". Unset defaults to true (see IsNetworkEnabled).
-	NetworkEnabled *bool `json:"networkEnabled,omitempty"`
-	// NetworkPolicy is an optional host-enforced network boundary. "public"
-	// permits ordinary public IPv4 egress (including DNS), disables inbound
-	// ports, and denies guest access to the worker host, private/service
-	// networks, link-local metadata, CGNAT, multicast, reserved ranges, and
-	// spoofed-source traffic. It is enforced outside the guest and cannot be
-	// disabled by repository code changing proxy environment vars.
-	NetworkPolicy NetworkPolicy `json:"networkPolicy,omitempty"`
-	ImageRef      string        `json:"imageRef,omitempty"` // resolved ECR URI for custom templates
+	NetworkEnabled *bool         `json:"networkEnabled,omitempty"`
+	ImageRef       string        `json:"imageRef,omitempty"`       // resolved ECR URI for custom templates
 	// Sandbox snapshot template: S3 keys for rootfs and workspace drives.
 	// When set, the sandbox boots from these drives instead of the standard base image.
 	TemplateRootfsKey    string `json:"templateRootfsKey,omitempty"`
@@ -136,22 +129,6 @@ type SandboxConfig struct {
 	// persisted (json:"-") and never set directly by the SDK — populated by
 	// the API layer in resolveSecretStoreInto and re-derived on every fork.
 	SecretEnvs map[string]string `json:"-"`
-}
-
-type NetworkPolicy string
-
-const (
-	NetworkPolicyNone   NetworkPolicy = ""
-	NetworkPolicyPublic NetworkPolicy = "public"
-)
-
-func (p NetworkPolicy) Validate() error {
-	switch p {
-	case NetworkPolicyNone, NetworkPolicyPublic:
-		return nil
-	default:
-		return fmt.Errorf("networkPolicy must be empty or %q", NetworkPolicyPublic)
-	}
 }
 
 // ResourceTier defines an allowed memory/CPU combination.

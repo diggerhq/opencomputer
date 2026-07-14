@@ -219,15 +219,22 @@ func (m *Manager) PowerCycleSandbox(ctx context.Context, sandboxID string) (host
 	if err != nil {
 		return 0, fmt.Errorf("allocate subnet: %w", err)
 	}
-	if err := CreateTAP(netCfg, vm.NetworkPolicy); err != nil {
+	if err := CreateTAP(netCfg); err != nil {
 		m.subnets.Release(netCfg.TAPName)
 		return 0, fmt.Errorf("create TAP: %w", err)
 	}
-	freshPort, err := configureIngress(netCfg, vm.NetworkPolicy, guestPort)
+	freshPort, err := FindFreePort()
 	if err != nil {
 		DeleteTAP(netCfg.TAPName)
 		m.subnets.Release(netCfg.TAPName)
-		return 0, fmt.Errorf("configure ingress: %w", err)
+		return 0, fmt.Errorf("find free port: %w", err)
+	}
+	netCfg.HostPort = freshPort
+	netCfg.GuestPort = guestPort
+	if err := AddDNAT(netCfg); err != nil {
+		DeleteTAP(netCfg.TAPName)
+		m.subnets.Release(netCfg.TAPName)
+		return 0, fmt.Errorf("add DNAT: %w", err)
 	}
 	if err := AddMetadataDNAT(netCfg.TAPName, netCfg.HostIP); err != nil {
 		log.Printf("qemu: PowerCycleSandbox %s: metadata DNAT failed: %v", sandboxID, err)

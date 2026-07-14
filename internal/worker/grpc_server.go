@@ -33,7 +33,7 @@ import (
 // GRPCServer implements the SandboxWorker gRPC service for control plane communication.
 // LiveMigrator is implemented by VM managers that support live migration (e.g. QEMU).
 type LiveMigrator interface {
-	PrepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string, networkPolicy types.NetworkPolicy) (incomingAddr string, hostPort int, err error)
+	PrepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string) (incomingAddr string, hostPort int, err error)
 	PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID, rootfsS3Key, workspaceS3Key string, cpus, memMB, guestPort int, template string, checkpointStore *storage.CheckpointStore, overlayMode bool, sourceGoldenVersion string, secrets sandbox.MigrationSecrets) (incomingAddr string, hostPort int, err error)
 	PreCopyDrives(ctx context.Context, sandboxID string, checkpointStore *storage.CheckpointStore) (rootfsKey, workspaceKey, goldenVersion string, baseCPU, baseMem, actualMem int, secrets sandbox.MigrationSecrets, err error)
 	CompleteIncomingMigration(ctx context.Context, sandboxID string) error
@@ -211,7 +211,6 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		MemoryMB:           int(req.MemoryMb),
 		CpuCount:           int(req.CpuCount),
 		NetworkEnabled:     &req.NetworkEnabled,
-		NetworkPolicy:      types.NetworkPolicy(req.NetworkPolicy),
 		ImageRef:           req.ImageRef,
 		Port:               int(req.Port),
 		SandboxID:          req.SandboxId,    // use server-assigned ID if provided
@@ -220,9 +219,6 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		SecretAllowedHosts: parseSecretAllowedHosts(req.SecretAllowedHosts),
 		SecretEnvs:         req.SecretEnvs,
 		DiskMB:             int(req.DiskMb),
-	}
-	if err := cfg.NetworkPolicy.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid sandbox network policy: %w", err)
 	}
 
 	// Warm fork: if checkpoint_id is set, fork from the local checkpoint cache.
@@ -1407,7 +1403,6 @@ func (s *GRPCServer) PreCopyDrives(ctx context.Context, req *pb.PreCopyDrivesReq
 		BaseMemoryMb:   int32(baseMem),
 		BaseCpuCount:   int32(baseCPU),
 		ActualMemoryMb: int32(actualMem),
-		NetworkPolicy:  secrets.NetworkPolicy,
 	}
 	// Marshal the secrets-proxy session into the proto. Skipped silently
 	// when the sandbox has no secret store registered (empty maps).
@@ -1428,9 +1423,6 @@ func (s *GRPCServer) PreCopyDrives(ctx context.Context, req *pb.PreCopyDrivesReq
 func (s *GRPCServer) PrepareMigrationIncoming(ctx context.Context, req *pb.PrepareMigrationIncomingRequest) (*pb.PrepareMigrationIncomingResponse, error) {
 	if s.migrator == nil {
 		return nil, fmt.Errorf("live migration not supported on this worker")
-	}
-	if err := types.NetworkPolicy(req.NetworkPolicy).Validate(); err != nil {
-		return nil, fmt.Errorf("invalid migration network policy: %w", err)
 	}
 
 	// Capacity guard — actual-memory-based. The caller passes the source VM's
@@ -1456,7 +1448,7 @@ func (s *GRPCServer) PrepareMigrationIncoming(ctx context.Context, req *pb.Prepa
 	// Unmarshal the secrets-proxy session from the request, if any. The
 	// orchestrator will have copied this from PreCopyDrives. Empty when
 	// the sandbox has no secret store.
-	secrets := sandbox.MigrationSecrets{NetworkPolicy: req.NetworkPolicy}
+	var secrets sandbox.MigrationSecrets
 	if len(req.SealedTokens) > 0 {
 		secrets.SealedTokens = req.SealedTokens
 		secrets.EgressAllowlist = req.EgressAllowlist
@@ -1483,7 +1475,7 @@ func (s *GRPCServer) PrepareMigrationIncoming(ctx context.Context, req *pb.Prepa
 	} else {
 		addr, hostPort, err = s.migrator.PrepareIncomingMigration(ctx,
 			req.SandboxId, req.RootfsPath, req.WorkspacePath,
-			int(req.CpuCount), int(req.MemoryMb), int(req.GuestPort), req.Template, types.NetworkPolicy(req.NetworkPolicy))
+			int(req.CpuCount), int(req.MemoryMb), int(req.GuestPort), req.Template)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("prepare incoming migration: %w", err)

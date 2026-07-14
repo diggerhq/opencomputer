@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AgentSchema,
   AgentDeploymentCommandResponseSchema,
   AgentDeploymentListSchema,
   AgentDeploymentLogsSchema,
@@ -86,6 +87,33 @@ describe('repository deployment API schemas', () => {
     expect(parsed.state).toBe('building')
     expect(parsed.source_relation?.repo?.full_name).toBe('example/flue-agent')
     expect('future_server_field' in parsed).toBe(false)
+  })
+
+  it('preserves the legacy Flue admission proof without inventing live status', () => {
+    const parsed = AgentSchema.parse({
+      id: 'agt_legacy',
+      name: 'Legacy Flue agent',
+      prompt: null,
+      model: 'anthropic/claude-haiku-4-5',
+      runtime: 'flue',
+      revision: 1,
+      active_revision_id: 'rev_legacy',
+      deployment_status: {
+        deployment_id: 'dep_legacy',
+        state: 'ready',
+        result: 'created',
+        error_class: null,
+        live_touched: false,
+        live_status: null,
+        legacy_live_compatible: true,
+        updated_at: '2026-07-14T20:00:00.000Z',
+      },
+      flue: { agent_name: 'legacy', live: null },
+      created_at: '2026-07-14T00:00:00.000Z',
+    })
+
+    expect(parsed.deployment_status?.legacy_live_compatible).toBe(true)
+    expect(parsed.deployment_status?.live_status).toBeNull()
   })
 
   it('keeps deployment-log sequence identity as an opaque string', () => {

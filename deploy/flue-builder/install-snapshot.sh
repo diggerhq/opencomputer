@@ -29,11 +29,6 @@ OC_VERSION="oc@${OC_SOURCE_COMMIT}"
 NODE_ROOT="/opt/opencomputer/node-v${NODE_VERSION}"
 OC_BIN="/opt/opencomputer/bin/oc"
 ATTESTATION="/opt/opencomputer/agent-build-snapshot.json"
-RUNTIME_VERIFIER="/opt/opencomputer/bin/verify-flue-builder-runtime"
-RUNTIME_USER="sandbox"
-RUNTIME_UID="1000"
-RUNTIME_GID="1000"
-WORKSPACE="/workspace"
 
 die() {
   echo "flue builder snapshot: $*" >&2
@@ -92,17 +87,6 @@ write_attestation() {
   "buildToolchain": {
     "goVersion": "$GO_VERSION",
     "goArchiveSha256": "$GO_ARCHIVE_SHA256"
-  },
-  "security": {
-    "runtimeUser": "$RUNTIME_USER",
-    "runtimeUid": $RUNTIME_UID,
-    "runtimeGid": $RUNTIME_GID,
-    "supplementaryGroups": [],
-    "sudoPolicy": "binary-removed",
-    "agentControl": "host-only",
-    "toolchainOwner": "root",
-    "workspace": "$WORKSPACE",
-    "workspaceWritable": true
   }
 }
 EOF
@@ -202,129 +186,9 @@ verify() {
     || die "snapshot attestation does not match the installer contract"
 }
 
-write_runtime_verifier() {
-  local output="$1"
-  local attestation_sha="$2"
-  cat >"$output" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-
-fail() {
-  echo "flue builder runtime verification failed: \$*" >&2
-  exit 1
-}
-
-# shellcheck disable=SC1091
-source /etc/os-release
-[[ "\${ID:-}" == "$OS_ID" ]] || fail "OS changed"
-[[ "\${VERSION_ID:-}" == "$OS_VERSION_ID" ]] || fail "OS version changed"
-[[ "\$(uname -m)" == "$ARCHITECTURE" ]] || fail "architecture changed"
-[[ "\$(id -u)" == "$RUNTIME_UID" ]] || fail "expected uid $RUNTIME_UID"
-[[ "\$(id -un)" == "$RUNTIME_USER" ]] || fail "expected user $RUNTIME_USER"
-[[ "\$(id -g)" == "$RUNTIME_GID" ]] || fail "expected gid $RUNTIME_GID"
-[[ "\$(id -G)" == "$RUNTIME_GID" ]] || fail "supplementary groups are present"
-[[ "\$(node --version)" == "v${NODE_VERSION}" ]] || fail "Node version changed"
-[[ "\$(npm --version)" == "$NPM_VERSION" ]] || fail "npm version changed"
-[[ "\$($OC_BIN --version)" == "oc version $OC_SOURCE_COMMIT" ]] || fail "oc version changed"
-printf '%s  %s\n' "$OC_BINARY_SHA256" "$OC_BIN" | sha256sum --check --status \
-  || fail "oc binary digest changed"
-printf '%s  %s\n' "$attestation_sha" "$ATTESTATION" | sha256sum --check --status \
-  || fail "snapshot attestation changed"
-[[ ! -w "$OC_BIN" ]] || fail "oc binary is writable"
-[[ ! -w "/opt/opencomputer/bin" ]] || fail "toolchain bin directory is writable"
-[[ ! -w "$NODE_ROOT" ]] || fail "Node toolchain is writable"
-[[ ! -e /usr/bin/sudo && ! -e /bin/sudo ]] || fail "sudo executable was restored"
-[[ -z "\$(find / -xdev \( -type f -o -type l \) \( -name sudo -o -name sudoedit \) -print -quit 2>/dev/null)" ]] \
-  || fail "a sudo executable entrypoint remains on the runtime root filesystem"
-[[ -d "$WORKSPACE" && -w "$WORKSPACE" ]] || fail "workspace is not writable"
-probe="\$(mktemp "$WORKSPACE/.flue-builder-write.XXXXXX")" \
-  || fail "cannot create a workspace file"
-rm -f "\$probe"
-EOF
-}
-
-install_runtime_verifier() {
-  require_root
-
-  local attestation_sha
-  attestation_sha="$(sha256sum "$ATTESTATION" | awk '{print $1}')"
-  write_runtime_verifier "$RUNTIME_VERIFIER" "$attestation_sha"
-  chown root:root "$RUNTIME_VERIFIER"
-  chmod 0555 "$RUNTIME_VERIFIER"
-}
-
-remove_runtime_privilege_surfaces() {
-  # Empty the complete supplementary-group list. This is intentionally not an
-  # allow/deny list of familiar administrator groups: a base-image change must
-  # not silently preserve privilege through a differently named group.
-  usermod -G '' "$RUNTIME_USER"
-  usermod --lock "$RUNTIME_USER"
-  rm -rf "/run/sudo/ts/$RUNTIME_USER" "/var/run/sudo/ts/$RUNTIME_USER"
-
-  # Sudoers is a rich policy language (aliases, groups, includes, commands).
-  # Trying to prove every policy path denied is brittle, so the managed image
-  # removes the setuid entrypoint itself after the last trusted sudo command.
-  # Search the root filesystem rather than assuming one package path. Remove
-  # regular files and symlinks named sudo/sudoedit, including alternate PATH
-  # locations and the sudoedit entrypoint, while preserving inert package
-  # directories such as /usr/share/doc/sudo and /usr/lib/*/sudo.
-  find / -xdev \( -type f -o -type l \) \( -name sudo -o -name sudoedit \) \
-    -exec rm -f -- {} + 2>/dev/null
-  [[ -z "$(find / -xdev \( -type f -o -type l \) \( -name sudo -o -name sudoedit \) -print -quit 2>/dev/null)" ]] \
-    || die "could not remove every sudo executable entrypoint"
-}
-
-harden_agent_transport_nodes() {
-  local path
-
-  # The root guest agent owns root exec, filesystem, and upgrade RPCs. QEMU's
-  # virtio-serial device and the test-only Unix fallback must not be openable
-  # by repository code. AF_VSOCK peer rejection is enforced by osb-agent and
-  # exercised by the live substrate probe.
-  for path in /dev/virtio-ports/agent /dev/vport0p1 /dev/vport1p1 /dev/vport2p1 \
-    /tmp/osb-agent.sock; do
-    if [[ -e "$path" || -S "$path" ]]; then
-      chmod 0600 "$path"
-    fi
-  done
-}
-
-finalize() {
-  require_root
-  assert_platform
-  verify
-  install_runtime_verifier
-
-  # Repository code must be able to write only its workspace. The trusted
-  # toolchain and attestation remain root-owned and immutable to uid 1000.
-  chown -R root:root /opt/opencomputer
-  chmod -R go-w /opt/opencomputer
-  chmod 0555 "$OC_BIN" "$RUNTIME_VERIFIER"
-  chmod 0444 "$ATTESTATION"
-  if [[ -d /home/sandbox ]]; then
-    chown -R "$RUNTIME_USER:$RUNTIME_USER" /home/sandbox
-  fi
-  if [[ -d "$WORKSPACE" && ! -L "$WORKSPACE" ]]; then
-    chown -R "$RUNTIME_USER:$RUNTIME_USER" "$WORKSPACE"
-  fi
-
-  harden_agent_transport_nodes
-  remove_runtime_privilege_surfaces
-  [[ "$(runuser -u "$RUNTIME_USER" -- id -G)" == "$RUNTIME_GID" ]] \
-    || die "runtime user retains supplementary groups"
-
-  # No later image-build operation needs privilege. Remove the root-capable
-  # installer before returning to the non-root image builder.
-  rm -f -- "$0"
-}
-
 case "${1:-}" in
   coordinate)
     write_attestation /dev/stdout
-    ;;
-  runtime-verifier)
-    write_runtime_verifier /dev/stdout \
-      0000000000000000000000000000000000000000000000000000000000000000
     ;;
   node)
     install_node
@@ -338,10 +202,7 @@ case "${1:-}" in
   verify)
     verify
     ;;
-  finalize)
-    finalize
-    ;;
   *)
-    die "usage: $0 {coordinate|runtime-verifier|node|oc|attest|verify|finalize}"
+    die "usage: $0 {coordinate|node|oc|attest|verify}"
     ;;
 esac

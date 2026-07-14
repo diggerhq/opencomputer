@@ -41,7 +41,7 @@ jobs:
         with:
           node-version: '22.19.0'
 
-      - name: Verify pinned builder snapshot and substrate probe
+      - name: Verify pinned builder snapshot and sandbox probe
         run: |
           python3 deploy/flue-builder/snapshot.py check
           python3 ci/flue-builder-substrate-probe.py --check
