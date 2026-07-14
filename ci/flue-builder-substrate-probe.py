@@ -22,6 +22,10 @@ SNAPSHOT_MODULE_PATH = ROOT / "deploy" / "flue-builder" / "snapshot.py"
 PRODUCTION_HOSTS = {"app.opencomputer.dev", "api.opencomputer.dev"}
 STARTER_REPO = "https://github.com/diggerhq/oc-flue-starter.git"
 STARTER_REF = "5c51d7edbbf2472fbe48386c4f9b192279330c9b"
+# The sandbox lifetime must cover checkout + the independently bounded install
+# and golden-build phases. A 10-minute VM expired correctly while the latter
+# command was still running, which made its worker-local async handle disappear.
+SANDBOX_TIMEOUT_SECONDS = 30 * 60
 FORBIDDEN_CREDENTIAL_NAMES = (
     "OPENCOMPUTER_API_KEY",
     "GITHUB_TOKEN",
@@ -163,7 +167,7 @@ class LiveProbe:
     def create_sandbox(self) -> str:
         # This is deliberately the normal public create shape. In particular it
         # carries no credentials, secret store, or feature-specific policy.
-        body = {"snapshot": self.snapshot_name, "timeout": 600}
+        body = {"snapshot": self.snapshot_name, "timeout": SANDBOX_TIMEOUT_SECONDS}
         _, response = self.call("POST", "/sandboxes", body, allowed_statuses={201}, timeout=180)
         if not isinstance(response, dict) or not isinstance(response.get("sandboxID"), str):
             raise ProbeError("sandbox create response is missing sandboxID")

@@ -90,7 +90,7 @@ class SandboxProbeTest(unittest.TestCase):
                     "/sandboxes",
                     {
                         "snapshot": "snapshot-coordinate",
-                        "timeout": 600,
+                        "timeout": PROBE.SANDBOX_TIMEOUT_SECONDS,
                     },
                 )
             ],
