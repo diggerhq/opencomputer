@@ -29,6 +29,10 @@ OC_VERSION="oc@${OC_SOURCE_COMMIT}"
 NODE_ROOT="/opt/opencomputer/node-v${NODE_VERSION}"
 OC_BIN="/opt/opencomputer/bin/oc"
 ATTESTATION="/opt/opencomputer/agent-build-snapshot.json"
+RUNTIME_VERIFIER="/opt/opencomputer/bin/verify-flue-builder-runtime"
+RUNTIME_USER="sandbox"
+RUNTIME_UID="1000"
+WORKSPACE="/workspace"
 
 die() {
   echo "flue builder snapshot: $*" >&2
@@ -87,6 +91,14 @@ write_attestation() {
   "buildToolchain": {
     "goVersion": "$GO_VERSION",
     "goArchiveSha256": "$GO_ARCHIVE_SHA256"
+  },
+  "security": {
+    "runtimeUser": "$RUNTIME_USER",
+    "runtimeUid": $RUNTIME_UID,
+    "sudoPolicy": "denied",
+    "toolchainOwner": "root",
+    "workspace": "$WORKSPACE",
+    "workspaceWritable": true
   }
 }
 EOF
@@ -186,9 +198,120 @@ verify() {
     || die "snapshot attestation does not match the installer contract"
 }
 
+write_runtime_verifier() {
+  local output="$1"
+  local attestation_sha="$2"
+  cat >"$output" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+  echo "flue builder runtime verification failed: \$*" >&2
+  exit 1
+}
+
+# shellcheck disable=SC1091
+source /etc/os-release
+[[ "\${ID:-}" == "$OS_ID" ]] || fail "OS changed"
+[[ "\${VERSION_ID:-}" == "$OS_VERSION_ID" ]] || fail "OS version changed"
+[[ "\$(uname -m)" == "$ARCHITECTURE" ]] || fail "architecture changed"
+[[ "\$(id -u)" == "$RUNTIME_UID" ]] || fail "expected uid $RUNTIME_UID"
+[[ "\$(id -un)" == "$RUNTIME_USER" ]] || fail "expected user $RUNTIME_USER"
+[[ "\$(node --version)" == "v${NODE_VERSION}" ]] || fail "Node version changed"
+[[ "\$(npm --version)" == "$NPM_VERSION" ]] || fail "npm version changed"
+[[ "\$($OC_BIN --version)" == "oc version $OC_SOURCE_COMMIT" ]] || fail "oc version changed"
+printf '%s  %s\n' "$OC_BINARY_SHA256" "$OC_BIN" | sha256sum --check --status \
+  || fail "oc binary digest changed"
+printf '%s  %s\n' "$attestation_sha" "$ATTESTATION" | sha256sum --check --status \
+  || fail "snapshot attestation changed"
+[[ ! -w "$OC_BIN" ]] || fail "oc binary is writable"
+[[ ! -w "/opt/opencomputer/bin" ]] || fail "toolchain bin directory is writable"
+[[ ! -w "$NODE_ROOT" ]] || fail "Node toolchain is writable"
+[[ -x /usr/bin/sudo ]] || fail "sudo executable is missing"
+[[ "\$(stat -c '%u:%a' /usr/bin/sudo)" == "0:4755" ]] \
+  || fail "sudo executable metadata changed"
+sudo_rc=0
+/usr/bin/sudo -n /usr/bin/true >/dev/null 2>&1 || sudo_rc=\$?
+[[ "\$sudo_rc" == "1" ]] || fail "sudo denial changed (exit \$sudo_rc)"
+[[ -d "$WORKSPACE" && -w "$WORKSPACE" ]] || fail "workspace is not writable"
+probe="\$(mktemp "$WORKSPACE/.flue-builder-write.XXXXXX")" \
+  || fail "cannot create a workspace file"
+rm -f "\$probe"
+EOF
+}
+
+install_runtime_verifier() {
+  require_root
+
+  local attestation_sha
+  attestation_sha="$(sha256sum "$ATTESTATION" | awk '{print $1}')"
+  write_runtime_verifier "$RUNTIME_VERIFIER" "$attestation_sha"
+  chown root:root "$RUNTIME_VERIFIER"
+  chmod 0555 "$RUNTIME_VERIFIER"
+}
+
+remove_direct_sudo_grants() {
+  local file
+
+  # The base image currently grants `sandbox ALL=(ALL) NOPASSWD:ALL` directly
+  # in /etc/sudoers. Remove any direct sandbox rule as well as membership in
+  # conventional administrator groups so a future base-image variant fails
+  # closed instead of retaining an equivalent grant.
+  sed -i -E '/^[[:space:]]*sandbox[[:space:]]+ALL[[:space:]]*=/d' /etc/sudoers
+  if [[ -d /etc/sudoers.d ]]; then
+    while IFS= read -r -d '' file; do
+      sed -i -E '/^[[:space:]]*sandbox[[:space:]]+ALL[[:space:]]*=/d' "$file"
+    done < <(find /etc/sudoers.d -maxdepth 1 -type f -print0)
+  fi
+  for group in sudo admin wheel; do
+    if id -nG "$RUNTIME_USER" | tr ' ' '\n' | grep -Fxq "$group"; then
+      gpasswd -d "$RUNTIME_USER" "$group" >/dev/null
+    fi
+  done
+  usermod --lock "$RUNTIME_USER"
+  rm -rf "/run/sudo/ts/$RUNTIME_USER" "/var/run/sudo/ts/$RUNTIME_USER"
+  visudo -cf /etc/sudoers >/dev/null
+}
+
+finalize() {
+  local sudo_rc=0
+
+  require_root
+  assert_platform
+  verify
+  install_runtime_verifier
+
+  # Repository code must be able to write only its workspace. The trusted
+  # toolchain and attestation remain root-owned and immutable to uid 1000.
+  chown -R root:root /opt/opencomputer
+  chmod -R go-w /opt/opencomputer
+  chmod 0555 "$OC_BIN" "$RUNTIME_VERIFIER"
+  chmod 0444 "$ATTESTATION"
+  if [[ -d /home/sandbox ]]; then
+    chown -R "$RUNTIME_USER:$RUNTIME_USER" /home/sandbox
+  fi
+  if [[ -d "$WORKSPACE" && ! -L "$WORKSPACE" ]]; then
+    chown -R "$RUNTIME_USER:$RUNTIME_USER" "$WORKSPACE"
+  fi
+
+  remove_direct_sudo_grants
+  runuser -u "$RUNTIME_USER" -- /usr/bin/sudo -n /usr/bin/true \
+    >/dev/null 2>&1 || sudo_rc=$?
+  [[ "$sudo_rc" == "1" ]] \
+    || die "runtime sudo denial returned unexpected exit $sudo_rc"
+
+  # No later image-build operation needs privilege. Remove the root-capable
+  # installer before returning to the non-root image builder.
+  rm -f -- "$0"
+}
+
 case "${1:-}" in
   coordinate)
     write_attestation /dev/stdout
+    ;;
+  runtime-verifier)
+    write_runtime_verifier /dev/stdout \
+      0000000000000000000000000000000000000000000000000000000000000000
     ;;
   node)
     install_node
@@ -202,7 +325,10 @@ case "${1:-}" in
   verify)
     verify
     ;;
+  finalize)
+    finalize
+    ;;
   *)
-    die "usage: $0 {coordinate|node|oc|attest|verify}"
+    die "usage: $0 {coordinate|runtime-verifier|node|oc|attest|verify|finalize}"
     ;;
 esac

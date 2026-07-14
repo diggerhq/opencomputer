@@ -19,7 +19,44 @@ class SubstrateProbeTest(unittest.TestCase):
     def test_static_contract_is_pinned(self) -> None:
         coordinate, manifest = PROBE.static_check()
         self.assertEqual(coordinate["snapshot"]["networkPolicy"], "public")
+        self.assertEqual(coordinate["snapshot"]["roles"], ["source", "build"])
         self.assertEqual(manifest["runtimeMemoryMB"], 1024)
+        self.assertEqual(
+            coordinate["attestation"]["security"],
+            {
+                "runtimeUser": "sandbox",
+                "runtimeUid": 1000,
+                "sudoPolicy": "denied",
+                "toolchainOwner": "root",
+                "workspace": "/workspace",
+                "workspaceWritable": True,
+            },
+        )
+
+    def test_root_finalization_precedes_non_root_runtime_proof(self) -> None:
+        _, manifest = PROBE.static_check()
+        self.assertEqual(
+            manifest["steps"][-2],
+            {
+                "type": "run",
+                "args": {
+                    "commands": [
+                        "sudo -n bash /tmp/opencomputer-flue-builder-install.sh finalize"
+                    ]
+                },
+            },
+        )
+        self.assertEqual(
+            manifest["steps"][-1],
+            {
+                "type": "run",
+                "args": {
+                    "commands": [
+                        "bash /opt/opencomputer/bin/verify-flue-builder-runtime"
+                    ]
+                },
+            },
+        )
 
     def test_private_canary_requires_literal_private_or_cgnat_address(self) -> None:
         for value in (
@@ -70,6 +107,12 @@ class SubstrateProbeTest(unittest.TestCase):
         for exit_code in (0, 22, 35, 127):
             with self.subTest(exit_code=exit_code), self.assertRaises(PROBE.ProbeError):
                 PROBE.LiveProbe.expect_transport_block("target", {"exitCode": exit_code})
+
+    def test_runtime_sudo_must_be_policy_denied(self) -> None:
+        PROBE.LiveProbe.expect_sudo_denied({"exitCode": 1})
+        for exit_code in (0, 2, 126, 127):
+            with self.subTest(exit_code=exit_code), self.assertRaises(PROBE.ProbeError):
+                PROBE.LiveProbe.expect_sudo_denied({"exitCode": exit_code})
 
     def test_create_body_is_allowlisted_and_final_topology_is_explicit(self) -> None:
         live = PROBE.LiveProbe.__new__(PROBE.LiveProbe)

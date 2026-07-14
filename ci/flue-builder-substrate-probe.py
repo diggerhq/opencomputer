@@ -219,6 +219,22 @@ class LiveProbe:
             raise ProbeError("exec response is missing exitCode")
         return response
 
+    def read_guest_file(self, sandbox_id: str, path: str, max_bytes: int = 512 * 1024) -> bytes:
+        quoted_id = parse.quote(sandbox_id, safe="")
+        quoted_path = parse.quote(path, safe="")
+        req = request.Request(
+            f"{self.api_url}/sandboxes/{quoted_id}/files?path={quoted_path}",
+            headers={"Accept": "application/octet-stream", "X-API-Key": self.api_key},
+        )
+        try:
+            with self.api.opener.open(req, timeout=30) as response:
+                value = response.read(max_bytes + 1)
+        except (error.HTTPError, error.URLError) as exc:
+            raise ProbeError(f"trusted file read could not inspect {path}") from exc
+        if len(value) > max_bytes:
+            raise ProbeError(f"trusted file read exceeded its bound for {path}")
+        return value
+
     @staticmethod
     def expect_success(label: str, response: dict[str, Any]) -> str:
         if response["exitCode"] != 0:
@@ -233,6 +249,13 @@ class LiveProbe:
         if exit_code not in {7, 28}:
             raise ProbeError(
                 f"{label} failed with exit {exit_code}, not a curl connection refusal/timeout"
+            )
+
+    @staticmethod
+    def expect_sudo_denied(response: dict[str, Any]) -> None:
+        if response["exitCode"] != 1:
+            raise ProbeError(
+                "runtime `sudo -n true` did not return the expected policy-denied exit 1"
             )
 
     @staticmethod
@@ -251,6 +274,20 @@ class LiveProbe:
         ]
 
     def assert_builder_attestation(self, sandbox_id: str) -> None:
+        self.expect_success(
+            "non-root runtime verifier",
+            self.exec(
+                sandbox_id,
+                "/opt/opencomputer/bin/verify-flue-builder-runtime",
+            ),
+        )
+        sudo = self.exec(
+            sandbox_id,
+            "/usr/bin/sudo",
+            ["-n", "/usr/bin/true"],
+        )
+        self.expect_sudo_denied(sudo)
+
         javascript = r"""
 const cp = require("child_process");
 const fs = require("fs");
@@ -261,6 +298,15 @@ const result = {
   ocVersion: run("/opt/opencomputer/bin/oc", ["--version"]),
   ocSha256: run("/usr/bin/sha256sum", ["/opt/opencomputer/bin/oc"]).split(/\s+/)[0],
   gitVersion: run("/usr/bin/git", ["--version"]),
+  runtimeUid: process.getuid(),
+  nodeUid: fs.statSync("/opt/opencomputer/node-v22.19.0/bin/node").uid,
+  nodeMode: fs.statSync("/opt/opencomputer/node-v22.19.0/bin/node").mode & 0o777,
+  ocUid: fs.statSync("/opt/opencomputer/bin/oc").uid,
+  ocMode: fs.statSync("/opt/opencomputer/bin/oc").mode & 0o777,
+  verifierUid: fs.statSync("/opt/opencomputer/bin/verify-flue-builder-runtime").uid,
+  verifierMode: fs.statSync("/opt/opencomputer/bin/verify-flue-builder-runtime").mode & 0o777,
+  attestationUid: fs.statSync("/opt/opencomputer/agent-build-snapshot.json").uid,
+  attestationMode: fs.statSync("/opt/opencomputer/agent-build-snapshot.json").mode & 0o777,
   installerRemoved: !fs.existsSync("/tmp/opencomputer-flue-builder-install.sh"),
   attestation: JSON.parse(fs.readFileSync("/opt/opencomputer/agent-build-snapshot.json", "utf8"))
 };
@@ -278,6 +324,15 @@ process.stdout.write(JSON.stringify(result));
             "nodeVersion": attestation["node"]["version"],
             "npmVersion": attestation["npm"]["version"],
             "ocSha256": attestation["oc"]["binarySha256"],
+            "runtimeUid": attestation["security"]["runtimeUid"],
+            "nodeUid": 0,
+            "nodeMode": 0o755,
+            "ocUid": 0,
+            "ocMode": 0o555,
+            "verifierUid": 0,
+            "verifierMode": 0o555,
+            "attestationUid": 0,
+            "attestationMode": 0o444,
             "attestation": attestation,
         }
         for key, value in expected.items():
@@ -487,7 +542,6 @@ const add = (candidate) => {
     total += value.length + candidate.length + 2;
   } catch (_) {}
 };
-add("/proc/1/environ");
 for (const candidate of [
   "/etc/environment", "/etc/profile", "/etc/bash.bashrc", "/etc/npmrc",
   "/root/.npmrc", "/root/.config/npm/npmrc",
@@ -507,12 +561,7 @@ process.stdout.write(JSON.stringify({
 """.strip()
         raw_result = self.expect_success(
             "credential sentinel scan",
-            self.exec(
-                sandbox_id,
-                "/usr/bin/sudo",
-                ["-n", "node", "-e", javascript],
-                timeout=30,
-            ),
+            self.exec(sandbox_id, "node", ["-e", javascript], timeout=30),
         ).strip()
         try:
             scan = json.loads(raw_result)
@@ -520,13 +569,16 @@ process.stdout.write(JSON.stringify({
             seen = set(scan["seen"])
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise ProbeError("credential sentinel scan returned an invalid result") from exc
-        for required in (
-            "process.env",
-            "/proc/1/environ",
-            "/opt/opencomputer/agent-build-snapshot.json",
-        ):
+        for required in ("process.env", "/opt/opencomputer/agent-build-snapshot.json"):
             if required not in seen:
                 raise ProbeError(f"credential sentinel scan could not inspect {required}")
+
+        # Exec correctly runs as the unprivileged repository user. The trusted
+        # coordinator's file API is serviced by PID 1 and can still inspect
+        # PID 1's environment without restoring sudo to repository code.
+        guest_bytes += b"\n/proc/1/environ\n" + self.read_guest_file(
+            sandbox_id, "/proc/1/environ"
+        )
 
         matches: list[str] = []
         for name, value in self.sentinels.items():

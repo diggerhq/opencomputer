@@ -2,16 +2,17 @@
   "schemaVersion": 1,
   "snapshot": {
     "name": "flue-build-node22-19-0-oc-c39b315-r1",
+    "roles": ["source", "build"],
     "networkPolicy": "public",
     "builderMemoryMB": 4096,
     "runtimeMemoryMB": 1024
   },
   "recipe": {
     "installer": "install-snapshot.sh",
-    "installerSha256": "1a4e60e0c72a1a2b5333c7456ed4d9e21fa193e446254ea3e4e8b78b8396ad6f",
+    "installerSha256": "60793ed4e3a481dfd6b9df1e3a2b0ec014c7428259bdfd2a122206e8ff50a087",
     "imageTemplate": "image.json",
-    "imageTemplateSha256": "d1fc4f3cd27fd1248327f52d9d768a99c9a922d4f0fabf8bf0d6913e2d1e7cd2",
-    "materializedManifestSha256": "4363cbdb960c8fceb12afbb87f9460c4e472a715bee3c06029f72b1539f7fa84"
+    "imageTemplateSha256": "e5e8827412e76e6da94f8c2f9b97ddfe25579637905ef4e6d2f7fa563712683f",
+    "materializedManifestSha256": "f334cd2ee291c707fc1c1efff5c6c38263fb78c2b8d8ca326d0d401b06004f32"
   },
   "attestation": {
     "schemaVersion": 1,
@@ -38,6 +39,14 @@
     "buildToolchain": {
       "goVersion": "1.25.0",
       "goArchiveSha256": "2852af0cb20a13139b3448992e69b868e50ed0f8a1e5940ee1de9e19a123b613"
+    },
+    "security": {
+      "runtimeUser": "sandbox",
+      "runtimeUid": 1000,
+      "sudoPolicy": "denied",
+      "toolchainOwner": "root",
+      "workspace": "/workspace",
+      "workspaceWritable": true
     }
   }
 }

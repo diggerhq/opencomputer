@@ -108,11 +108,44 @@ def check_recipe() -> tuple[dict[str, Any], dict[str, Any]]:
         raise SnapshotError("snapshot name and attestation snapshotName differ")
     if snapshot.get("networkPolicy") != "public":
         raise SnapshotError("the Flue builder snapshot must declare networkPolicy=public")
+    if snapshot.get("roles") != ["source", "build"]:
+        raise SnapshotError("the hardened snapshot must be pinned for source and build roles")
     if manifest.get("base") != expected_attestation.get("baseImage"):
         raise SnapshotError("image base and attestation baseImage differ")
     for key in ("builderMemoryMB", "runtimeMemoryMB"):
         if manifest.get(key) != snapshot.get(key):
             raise SnapshotError(f"manifest and coordinate disagree on {key}")
+
+    expected_finalize = {
+        "type": "run",
+        "args": {
+            "commands": [
+                "sudo -n bash /tmp/opencomputer-flue-builder-install.sh finalize"
+            ]
+        },
+    }
+    expected_runtime_proof = {
+        "type": "run",
+        "args": {
+            "commands": [
+                "bash /opt/opencomputer/bin/verify-flue-builder-runtime"
+            ]
+        },
+    }
+    if manifest["steps"][-2:] != [expected_finalize, expected_runtime_proof]:
+        raise SnapshotError(
+            "image must end with the root finalize step followed by the non-root runtime proof"
+        )
+    security = expected_attestation.get("security")
+    if security != {
+        "runtimeUser": "sandbox",
+        "runtimeUid": 1000,
+        "sudoPolicy": "denied",
+        "toolchainOwner": "root",
+        "workspace": "/workspace",
+        "workspaceWritable": True,
+    }:
+        raise SnapshotError("attestation must pin the hardened non-root runtime contract")
 
     syntax = subprocess.run(
         ["bash", "-n", str(installer_path)],
@@ -139,6 +172,39 @@ def check_recipe() -> tuple[dict[str, Any], dict[str, Any]]:
         raise SnapshotError("installer coordinate did not emit valid JSON") from exc
     if actual_attestation != expected_attestation:
         raise SnapshotError("installer attestation and coordinate.json attestation differ")
+
+    runtime_verifier = subprocess.run(
+        ["bash", str(installer_path), "runtime-verifier"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if runtime_verifier.returncode != 0:
+        raise SnapshotError(
+            f"installer runtime-verifier failed: {runtime_verifier.stderr.strip()}"
+        )
+    verifier_syntax = subprocess.run(
+        ["bash", "-n", "/dev/stdin"],
+        input=runtime_verifier.stdout,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if verifier_syntax.returncode != 0:
+        raise SnapshotError(
+            f"generated runtime verifier fails bash -n: {verifier_syntax.stderr.strip()}"
+        )
+    for command in (
+        "/usr/bin/sudo -n /usr/bin/true",
+        "sudo executable metadata changed",
+        '[[ "$sudo_rc" == "1" ]]',
+        "sha256sum --check --status",
+        'mktemp "/workspace/.flue-builder-write.XXXXXX"',
+    ):
+        if command not in runtime_verifier.stdout:
+            raise SnapshotError(f"generated runtime verifier is missing {command!r}")
 
     return coordinate, manifest
 

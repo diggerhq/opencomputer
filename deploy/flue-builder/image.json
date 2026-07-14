@@ -32,8 +32,23 @@
       "args": {
         "commands": [
           "sudo -n bash /tmp/opencomputer-flue-builder-install.sh attest",
-          "bash /tmp/opencomputer-flue-builder-install.sh verify",
-          "sudo -n rm -f /tmp/opencomputer-flue-builder-install.sh"
+          "bash /tmp/opencomputer-flue-builder-install.sh verify"
+        ]
+      }
+    },
+    {
+      "type": "run",
+      "args": {
+        "commands": [
+          "sudo -n bash /tmp/opencomputer-flue-builder-install.sh finalize"
+        ]
+      }
+    },
+    {
+      "type": "run",
+      "args": {
+        "commands": [
+          "bash /opt/opencomputer/bin/verify-flue-builder-runtime"
         ]
       }
     }
