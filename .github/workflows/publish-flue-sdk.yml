@@ -1,0 +1,65 @@
+name: Publish Flue SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdks/flue/**'
+      - '.github/workflows/publish-flue-sdk.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: publish-flue-sdk
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: sdks/flue
+
+jobs:
+  publish:
+    name: Test, build & publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check if this exact version is already published
+        id: check
+        run: |
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          if LOOKUP=$(npm view "@opencomputer/flue@$LOCAL_VERSION" version 2>&1); then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Version $LOCAL_VERSION is already published; skipping."
+          elif [[ "$LOOKUP" == *"E404"* ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Publishing version $LOCAL_VERSION."
+          else
+            echo "npm registry lookup failed; refusing to guess that the version is unpublished." >&2
+            echo "$LOOKUP" >&2
+            exit 1
+          fi
+
+      - name: Test
+        if: steps.check.outputs.skip == 'false'
+        run: npm test
+
+      - name: Build
+        if: steps.check.outputs.skip == 'false'
+        run: npm run build
+
+      - name: Publish
+        if: steps.check.outputs.skip == 'false'
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

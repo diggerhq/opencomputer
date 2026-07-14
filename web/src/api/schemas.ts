@@ -487,10 +487,23 @@ export const SlackManifestResponseSchema = z.object({
   status: z.string(),
 })
 
+// The pinned effective agent tuple (design 009 §3.5) the session ran with. `runtime`
+// is what distinguishes flue from the brain-box runtimes (claude/codex/pi) in read views.
+export const AgentSnapshotSchema = z.object({
+  runtime: z.string().nullish(),
+  model: z.string().nullish(),
+  prompt_hash: z.string().nullish(),
+  revision: z.union([z.string(), z.number()]).nullish(),
+  agent_revision_number: z.number().nullish(),
+  digest: z.string().nullish(),
+  skill_bundle_digest: z.string().nullish(),
+})
+
 export const SessionSchema = z.object({
   id: z.string(),
   status: z.string(),
   agent_id: z.string().nullable().optional(),
+  agent_snapshot: AgentSnapshotSchema.nullish(),
   credential_id: z.string().nullable().optional(),
   head: z.coerce.number().optional(), // current event seq; API returns it as a string ("0")
   last_turn: record.nullish(),
@@ -525,7 +538,13 @@ export const SessionEventSchema = z.object({
   level: z.string(),
   actor: ActorSchema.optional(),
   body: z.unknown().optional(),
-  content_ref: z.string().nullish(), // set when body spilled to blob storage
+  // Set together when the body spilled to blob storage (body > 32KB): the inline
+  // `body` is absent/partial, `content_ref` points at the blob, `body_bytes` is the size.
+  content_ref: z.string().nullish(),
+  body_truncated: z.boolean().nullish(),
+  // PostgreSQL bigint values are serialized as strings by the sessions API.
+  // Coerce here so spilled event bodies remain visible in the live timeline.
+  body_bytes: z.coerce.number().nullish(),
   refs: record.nullish(),
   source: z.string().optional(),
   turn_id: z.string().nullable().optional(),
@@ -544,8 +563,19 @@ export const TurnSchema = z.object({
   attempt: z.number().optional(),
   started_at: z.string().nullable().optional(),
   completed_at: z.string().nullable().optional(),
-  usage: record.optional(),
-  error: z.string().nullable().optional(),
+  active_seconds: z.number().nullish(),
+  result_event_id: z.string().nullish(),
+  usage: record.nullish(),
+  error: z.unknown().nullish(), // server serializes the error as an opaque object, not a string
+})
+export const SessionTurnListSchema = z.object({
+  data: z.array(TurnSchema),
+  next_cursor: z.string().nullish(),
+})
+// GET /v3/sessions/:id/result → the latest turn + its result event (if any).
+export const SessionResultSchema = z.object({
+  last_turn: TurnSchema.nullable(),
+  result: SessionEventSchema.nullable(),
 })
 
 export const DestinationSchema = z.object({
@@ -583,8 +613,10 @@ export type Credential = z.infer<typeof CredentialSchema>
 export type SlackConnection = z.infer<typeof SlackConnectionSchema>
 export type SlackManifestResponse = z.infer<typeof SlackManifestResponseSchema>
 export type Session = z.infer<typeof SessionSchema>
+export type AgentSnapshot = z.infer<typeof AgentSnapshotSchema>
 export type SessionEvent = z.infer<typeof SessionEventSchema>
 export type Turn = z.infer<typeof TurnSchema>
+export type SessionResult = z.infer<typeof SessionResultSchema>
 export type Destination = z.infer<typeof DestinationSchema>
 export type Delivery = z.infer<typeof DeliverySchema>
 

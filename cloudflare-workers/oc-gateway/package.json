@@ -1,0 +1,20 @@
+{
+  "name": "oc-agent-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "node -e \"throw new Error('choose an explicit environment; production is deploy:production')\"",
+    "deploy:production": "wrangler deploy --env production",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "mint": "node --experimental-strip-types scripts/mint.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240924.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "wrangler": "^4.92.0"
+  }
+}

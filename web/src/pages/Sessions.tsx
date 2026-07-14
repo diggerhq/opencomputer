@@ -25,8 +25,10 @@ import {
 } from '@/components/working-repo-field'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { StatusBadge } from '@/components/status-badge'
+import { RuntimeBadge } from '@/components/runtime-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
+import { formatSpend } from '@/lib/usage'
 
 export default function Sessions() {
   const navigate = useNavigate()
@@ -122,12 +124,27 @@ export default function Sessions() {
       ),
     },
     {
+      key: 'runtime',
+      header: 'Runtime',
+      cell: (s) => <RuntimeBadge runtime={s.agent_snapshot?.runtime} />,
+    },
+    {
       key: 'events',
       header: 'Events',
       align: 'right',
       cell: (s) => (
         <span className="text-muted-foreground font-mono text-xs">
           {s.head ?? 0}
+        </span>
+      ),
+    },
+    {
+      key: 'spend',
+      header: 'Spend',
+      align: 'right',
+      cell: (s) => (
+        <span className="text-muted-foreground font-mono text-xs tabular-nums">
+          {formatSpend(s.usage)}
         </span>
       ),
     },

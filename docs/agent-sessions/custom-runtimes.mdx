@@ -1,14 +1,14 @@
 ---
 mode: "wide"
 title: "Custom runtimes"
-description: "Package your own agent harness as a runtime"
+description: "Package your own agent implementation as a runtime"
 ---
 
 <Note>**Labs preview.** Custom runtimes are not part of the stable Durable Sessions API. Production sessions use the built-in [runtimes](/agent-sessions/runtimes): `claude`, `codex`, and `pi`.</Note>
 
-Building on the [Flue framework](https://flueframework.com)? There's a supported path that skips all of this: [Run Flue agents](/agent-sessions/flue) deploys your Flue app onto the platform's brain contract directly. Custom runtimes remain the general escape hatch for any other harness.
+Building on the [Flue framework](https://flueframework.com)? Use the supported [Flue runtime](/agent-sessions/flue) instead. It deploys Flue's Cloudflare target as an agent Worker with one Durable Object per session, so it does not use the custom brain-box contract described here. Custom runtimes remain the general escape hatch for other agent implementations.
 
-A custom runtime lets you run your own agent harness on Durable Agent Sessions. Once registered, select it on an agent with `runtime: "<name>"`; sessions, events, steering, webhooks, recovery, and sandbox tools use the same public API as built-in runtimes.
+A custom runtime lets you run your own agent implementation on Durable Agent Sessions. Once registered, select it on an agent with `runtime: "<name>"`; sessions, events, steering, webhooks, recovery, and sandbox tools use the same public API as built-in runtimes.
 
 The runtime image contains a **brain server**: a resident process around your agent SDK. OpenComputer supplies the platform adapter that reads the session log, owns fencing and idempotency, exposes tools, calls your brain over localhost, and commits the brain's stream as durable events.
 

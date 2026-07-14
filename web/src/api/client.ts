@@ -33,8 +33,10 @@ export type {
   SkillItem,
   AgentDeploy,
   Session,
+  AgentSnapshot,
   SessionEvent,
   Turn,
+  SessionResult,
   Destination,
   Delivery,
   SandboxWebhook,
@@ -771,6 +773,19 @@ export const getSessionEvents = (id: string, level?: string) =>
     {},
     S.SessionEventListSchema,
   ).then((r) => r.data)
+
+// Turns — the per-submission execution records behind a session (state, timing,
+// usage, error). Read-only; powers the submission-health panel. Newest first.
+export const getSessionTurns = (id: string) =>
+  apiFetch(
+    `/v3/sessions/${id}/turns`,
+    {},
+    S.SessionTurnListSchema,
+  ).then((r) => r.data)
+
+// The latest turn + its result event (if the turn produced one).
+export const getSessionResult = (id: string) =>
+  apiFetch(`/v3/sessions/${id}/result`, {}, S.SessionResultSchema)
 
 // Steer — post a user message into a session.
 export const sendMessage = (

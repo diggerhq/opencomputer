@@ -1,12 +1,15 @@
 package commands
 
-// Contract-mock end-to-end for the Flue deploy flow. A fake control plane
-// implements contract 3 (POST /v3/agents/:id/artifacts + the presigned PUT) and
-// contract 10 (deployment create + a verifying→ready poll). A throwaway
-// `node_modules/.bin/oc-flue-build` script stands in for @opencomputer/flue, so
-// the real runFlueBuild exec path runs and produces a dist-oc/. deployFlue is
-// driven end to end; we assert the uploaded bytes are byte-exactly the canonical
-// bundle for the digest the CLI advertised — the whole content-address chain.
+// Contract-mock end-to-end for the Flue DO deploy flow (design 013 §6). A fake control
+// plane implements the presigned-PUT bundle upload (POST /v3/agents/:id/artifacts + the
+// signed PUT) and the deployment create + a verifying→ready poll. A throwaway
+// `node_modules/.bin/flue` script stands in for the app's flue CLI, so the real
+// runFlueBuild exec path runs and produces a deliberately noisy dist/<app>/. deployFlue
+// is driven end to end; we assert the uploaded bytes are byte-exactly the canonical
+// module-only tar.gz for the digest the CLI
+// advertised (the content-address chain), and that the POSTed deployment body is the
+// byte-free DO request: flue_bundle_digest + the canonical flue_wrangler descriptor +
+// flue_agent_name, with no raw Wrangler dump, module bytes, or framework_artifact_digest.
 
 import (
 	"bytes"
@@ -21,22 +24,28 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/bundle"
+	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/output"
 	"github.com/spf13/cobra"
 )
 
-// The exact bytes the fake build emits into dist-oc/ (heredoc appends a newline).
+// The exact bytes the fake `flue build` emits into dist/e2e_flue/ (heredoc appends a
+// trailing newline). The build is nested a directory deep, with an assets/ file, to
+// exercise the dist/<app>/ discovery and prove the WHOLE tree is staged.
 const (
-	e2eArtifactBody = `{"entry":"oc.js","profile_version":1,"model":"anthropic/claude-sonnet-5"}`
-	e2eOcBody       = `export const agent = "e2e";`
+	fakeAgentID     = "agt_0123456789abcdef01234567"
+	e2eModuleBody   = `export default { fetch() { return new Response("ok"); } };`
+	e2eAssetBody    = `export const chunk = 1;`
+	e2eRuntimeBody  = `export const runtime = "flue";`
+	e2eWranglerBody = `{"$schema":"../../node_modules/wrangler/config-schema.json","name":"e2e-flue","main":"index.js","compatibility_date":"2026-04-01","compatibility_flags":["nodejs_compat"],"no_bundle":true,"configPath":"/Users/developer/project/flue.config.ts","userConfigPath":"/Users/developer/project/wrangler.json","durable_objects":{"bindings":[{"name":"AGENT","class_name":"FlueE2EAgent"},{"name":"FLUE_REGISTRY","class_name":"FlueRegistry"}]},"vars":{"MUST_NOT_LEAVE":"raw-wrangler"},"migrations":[{"tag":"attacker-owned","new_sqlite_classes":["Wrong"]}],"routes":["example.com/*"],"services":[{"binding":"OTHER","service":"victim"}]}`
 )
 
 type fakeCP struct {
 	mu             sync.Mutex
 	self           string
 	createBody     map[string]any
+	configPutBody  map[string]any
 	artifactDigest string
 	artifactSize   float64
 	uploaded       []byte
@@ -56,8 +65,13 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(map[string]any{"data": []any{}})
 	case r.Method == "POST" && r.URL.Path == "/v3/agents":
 		_ = json.NewDecoder(r.Body).Decode(&f.createBody)
-		writeJSON(map[string]any{"id": "agt_e2e", "name": "e2e-flue", "model": "anthropic/claude-sonnet-5", "runtime": "flue"})
-	case r.Method == "POST" && r.URL.Path == "/v3/agents/agt_e2e/artifacts":
+		writeJSON(map[string]any{"id": fakeAgentID, "name": "e2e-flue", "model": "anthropic/claude-sonnet-5", "runtime": "flue"})
+	case r.Method == "PUT" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/config":
+		_ = json.NewDecoder(r.Body).Decode(&f.configPutBody)
+		writeJSON(map[string]any{
+			"vars": f.configPutBody["vars"], "deployment_required": true,
+		})
+	case r.Method == "POST" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/artifacts":
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.artifactDigest, _ = body["digest"].(string)
@@ -72,44 +86,51 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = buf.ReadFrom(r.Body)
 		f.uploaded = buf.Bytes()
 		w.WriteHeader(http.StatusOK)
-	case r.Method == "POST" && r.URL.Path == "/v3/agents/agt_e2e/deployments":
+	case r.Method == "POST" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/deployments":
 		_ = json.NewDecoder(r.Body).Decode(&f.deployBody)
 		writeJSON(map[string]any{"deployment": map[string]any{"id": "dep_1", "state": "verifying"}})
-	case r.Method == "GET" && r.URL.Path == "/v3/agents/agt_e2e/deployments/dep_1":
+	case r.Method == "GET" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/deployments/dep_1":
 		f.getCount++
 		if f.getCount < 2 {
 			writeJSON(map[string]any{"id": "dep_1", "state": "verifying"}) // verifying → …
 		} else {
 			writeJSON(map[string]any{"id": "dep_1", "state": "ready", "active": true, "revision_id": "rev_1"}) // → terminal
 		}
-	case r.Method == "GET" && r.URL.Path == "/v3/agents/agt_e2e/revisions":
+	case r.Method == "GET" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/revisions":
 		writeJSON(map[string]any{"data": []any{}})
 	default:
 		http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
 	}
 }
 
-func TestDeployFlueEndToEnd(t *testing.T) {
+func TestDeployFlueDoEndToEnd(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("fake oc-flue-build is a POSIX shell script")
+		t.Skip("fake flue build is a POSIX shell script")
 	}
+	t.Setenv("WRANGLER_LOG", "")
 
-	// A Flue app dir: manifest + clean source + a stand-in build bin.
+	// A Flue app dir: manifest + clean source + a stand-in `flue` bin whose
+	// `build --target cloudflare` writes a deterministic but noisy dist/e2e_flue/.
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "agent.toml"),
 		"name  = \"e2e-flue\"\nmodel = \"anthropic/claude-sonnet-5\"\n\n[runtime]\nfamily = \"flue\"\n", 0o644)
 	writeFile(t, filepath.Join(dir, "src", "opencomputer.ts"),
 		"import { serveOC } from '@opencomputer/flue';\nexport default serveOC(agent);\n", 0o644)
-	// The build emits a deterministic dist-oc/ (mirrors what oc-flue-build would).
-	buildScript := "#!/bin/sh\nset -e\nmkdir -p dist-oc\n" +
-		"cat > dist-oc/artifact.json <<'JSON'\n" + e2eArtifactBody + "\nJSON\n" +
-		"cat > dist-oc/oc.js <<'JS'\n" + e2eOcBody + "\nJS\n"
-	writeFile(t, filepath.Join(dir, "node_modules", ".bin", "oc-flue-build"), buildScript, 0o755)
+	buildScript := "#!/bin/sh\nset -e\ntest \"${WRANGLER_LOG:-}\" = error\nmkdir -p dist/e2e_flue/assets dist/e2e_flue/.vite dist/e2e_flue/.flue-vite\n" +
+		"cat > dist/e2e_flue/index.js <<'JS'\n" + e2eModuleBody + "\nJS\n" +
+		"cat > dist/e2e_flue/assets/chunk.js <<'JS'\n" + e2eAssetBody + "\nJS\n" +
+		"cat > dist/e2e_flue/.flue-vite/runtime.mjs <<'JS'\n" + e2eRuntimeBody + "\nJS\n" +
+		"printf '%s' '{\"version\":3}' > dist/e2e_flue/.vite/manifest.json\n" +
+		"printf '%s' '{\"version\":3}' > dist/e2e_flue/index.js.map\n" +
+		"cat > dist/e2e_flue/wrangler.json <<'JSON'\n" + e2eWranglerBody + "\nJSON\n"
+	writeFile(t, filepath.Join(dir, "node_modules", ".bin", "flue"), buildScript, 0o755)
 
-	// What the CLI must produce from that dist-oc/ (mode normalized to 0644).
+	// Only regular modules leave the machine. Raw Wrangler metadata, .vite state and
+	// source maps are absent; .flue-vite is a legitimate module path.
 	expectedFiles := []bundle.File{
-		{Path: "artifact.json", Mode: 0o644, Content: []byte(e2eArtifactBody + "\n")},
-		{Path: "oc.js", Mode: 0o644, Content: []byte(e2eOcBody + "\n")},
+		{Path: "index.js", Mode: 0o644, Content: []byte(e2eModuleBody + "\n")},
+		{Path: "assets/chunk.js", Mode: 0o644, Content: []byte(e2eAssetBody + "\n")},
+		{Path: ".flue-vite/runtime.mjs", Mode: 0o644, Content: []byte(e2eRuntimeBody + "\n")},
 	}
 	expectedTarGz, err := bundle.Pack(expectedFiles)
 	if err != nil {
@@ -149,12 +170,11 @@ func TestDeployFlueEndToEnd(t *testing.T) {
 		t.Errorf("create body carried a prompt for a flue agent: %v", f.createBody["prompt"])
 	}
 
-	// Content address the CLI advertised == the digest of the known fileset.
+	// The content address the CLI advertised == the digest of the module-only bundle, and
+	// the PUT body is byte-exactly that canonical tar.gz — the full upload integrity chain.
 	if f.artifactDigest != expectedDigest {
 		t.Errorf("advertised digest = %s, want %s", f.artifactDigest, expectedDigest)
 	}
-	// size_bytes is honest, and the PUT body is byte-exactly the canonical bundle
-	// for that digest — the full upload integrity chain.
 	if int(f.artifactSize) != len(f.uploaded) {
 		t.Errorf("size_bytes %d != uploaded len %d", int(f.artifactSize), len(f.uploaded))
 	}
@@ -162,20 +182,206 @@ func TestDeployFlueEndToEnd(t *testing.T) {
 		t.Errorf("uploaded bytes are not the canonical bundle for the digest (len got %d want %d)", len(f.uploaded), len(expectedTarGz))
 	}
 
-	// Deployment referenced the same digest, via input.framework_artifact_digest.
+	// The deployment body is the byte-free DO request.
 	input, _ := f.deployBody["input"].(map[string]any)
 	if input == nil {
 		t.Fatalf("deployment body had no input: %v", f.deployBody)
 	}
-	if input["framework_artifact_digest"] != expectedDigest {
-		t.Errorf("deployment digest = %v, want %s", input["framework_artifact_digest"], expectedDigest)
+	if input["type"] != "inline" {
+		t.Errorf("input.type = %v, want inline", input["type"])
+	}
+	if f.deployBody["activate"] != true {
+		t.Errorf("activate = %v, want true (no --no-activate)", f.deployBody["activate"])
+	}
+	if input["flue_bundle_digest"] != expectedDigest {
+		t.Errorf("flue_bundle_digest = %v, want %s", input["flue_bundle_digest"], expectedDigest)
+	}
+	if input["flue_agent_name"] != "e2e-flue" {
+		t.Errorf("flue_agent_name = %v, want e2e-flue", input["flue_agent_name"])
+	}
+	// No module bytes, no pre-013 digest field.
+	if _, ok := input["flue_module"]; ok {
+		t.Errorf("byte-free contract violated: input carried flue_module: %v", input["flue_module"])
 	}
 	if _, ok := input["prompt"]; ok {
-		t.Errorf("deployment input carried a prompt: %v", input["prompt"])
+		t.Errorf("flue DO deploy carried a prompt: %v", input["prompt"])
 	}
+	if _, ok := input["framework_artifact_digest"]; ok {
+		t.Errorf("flue DO deploy carried a framework_artifact_digest: %v", input["framework_artifact_digest"])
+	}
+
+	// flue_wrangler is the exact canonical descriptor, not the generated resolution dump.
+	wr, _ := input["flue_wrangler"].(map[string]any)
+	if wr == nil {
+		t.Fatalf("input.flue_wrangler missing: %v", input)
+	}
+	if wr["main"] != "index.js" {
+		t.Errorf("flue_wrangler.main = %v, want index.js", wr["main"])
+	}
+	if wr["durable_objects"] == nil {
+		t.Errorf("flue_wrangler lost durable_objects: %v", wr)
+	}
+	wantKeys := map[string]bool{
+		"main": true, "compatibility_date": true, "compatibility_flags": true,
+		"no_bundle": true, "durable_objects": true,
+	}
+	if len(wr) != len(wantKeys) {
+		t.Errorf("flue_wrangler keys = %v, want only canonical descriptor", wr)
+	}
+	for key := range wr {
+		if !wantKeys[key] {
+			t.Errorf("raw Wrangler capability %q escaped into deployment: %v", key, wr[key])
+		}
+	}
+	if wr["compatibility_date"] != "2026-04-01" || wr["no_bundle"] != true {
+		t.Errorf("flue_wrangler profile changed: %v", wr)
+	}
+	encodedWrangler, _ := json.Marshal(wr)
+	for _, leaked := range []string{"/Users/developer", "MUST_NOT_LEAVE", "attacker-owned", "example.com", "victim"} {
+		if strings.Contains(string(encodedWrangler), leaked) {
+			t.Errorf("raw Wrangler value %q escaped into deployment: %s", leaked, encodedWrangler)
+		}
+	}
+
 	// The verifying→ready sequence was actually polled.
 	if f.getCount < 2 {
 		t.Errorf("expected the poll to observe verifying→ready (got %d GETs)", f.getCount)
+	}
+	if vars, ok := f.configPutBody["vars"].(map[string]any); !ok || len(vars) != 0 {
+		t.Errorf("manifest without [vars] should clear desired vars, got %#v", f.configPutBody)
+	}
+}
+
+func TestFlueBuildEnvPreservesExplicitWranglerLog(t *testing.T) {
+	t.Setenv("WRANGLER_LOG", "debug")
+	for _, value := range flueBuildEnv() {
+		if value == "WRANGLER_LOG=debug" {
+			return
+		}
+	}
+	t.Fatal("flueBuildEnv did not preserve explicit WRANGLER_LOG=debug")
+}
+
+func TestExtractFlueWranglerDescriptorRejectsUnsafeInput(t *testing.T) {
+	valid := func() map[string]any {
+		var value map[string]any
+		if err := json.Unmarshal([]byte(e2eWranglerBody), &value); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "unsafe main", mutate: func(value map[string]any) { value["main"] = "../index.js" }},
+		{name: "invalid compatibility date", mutate: func(value map[string]any) { value["compatibility_date"] = "2026-02-30" }},
+		{name: "invalid compatibility flag", mutate: func(value map[string]any) {
+			value["compatibility_flags"] = []any{"nodejs_compat", "unsafe flag"}
+		}},
+		{name: "duplicate compatibility flag", mutate: func(value map[string]any) {
+			value["compatibility_flags"] = []any{"nodejs_compat", "nodejs_compat"}
+		}},
+		{name: "bundling enabled", mutate: func(value map[string]any) { value["no_bundle"] = false }},
+		{name: "foreign script binding", mutate: func(value map[string]any) {
+			bindings := value["durable_objects"].(map[string]any)["bindings"].([]any)
+			bindings[0].(map[string]any)["script_name"] = "victim-worker"
+		}},
+		{name: "missing durable objects", mutate: func(value map[string]any) {
+			value["durable_objects"].(map[string]any)["bindings"] = []any{}
+		}},
+		{name: "duplicate binding name", mutate: func(value map[string]any) {
+			value["durable_objects"].(map[string]any)["bindings"] = []any{
+				map[string]any{"name": "FLUE_REGISTRY", "class_name": "FlueE2EAgent"},
+				map[string]any{"name": "FLUE_REGISTRY", "class_name": "FlueRegistry"},
+			}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			value := valid()
+			tc.mutate(value)
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := extractFlueWranglerDescriptor(raw); err == nil {
+				t.Fatalf("expected %s to be rejected", tc.name)
+			}
+		})
+	}
+}
+
+func TestExtractFlueWranglerDescriptorPreservesBuildProfile(t *testing.T) {
+	var value map[string]any
+	if err := json.Unmarshal([]byte(e2eWranglerBody), &value); err != nil {
+		t.Fatal(err)
+	}
+	value["compatibility_date"] = "2026-07-01"
+	value["compatibility_flags"] = []any{"nodejs_compat", "nodejs_als"}
+	bindings := value["durable_objects"].(map[string]any)["bindings"].([]any)
+	bindings[1] = map[string]any{"name": "FLUE_STATE", "class_name": "FlueState"}
+
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := extractFlueWranglerDescriptor(raw)
+	if err != nil {
+		t.Fatalf("extract descriptor: %v", err)
+	}
+	if descriptor.CompatibilityDate != "2026-07-01" {
+		t.Fatalf("compatibility date = %q", descriptor.CompatibilityDate)
+	}
+	if strings.Join(descriptor.CompatibilityFlags, ",") != "nodejs_compat,nodejs_als" {
+		t.Fatalf("compatibility flags = %v", descriptor.CompatibilityFlags)
+	}
+	if descriptor.DurableObjects.Bindings[1].Name != "FLUE_STATE" || descriptor.DurableObjects.Bindings[1].ClassName != "FlueState" {
+		t.Fatalf("renamed Flue internal binding was not preserved: %v", descriptor.DurableObjects.Bindings)
+	}
+}
+
+func TestReadBundleModulesRejectsSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.js")
+	writeFile(t, outside, "export const secret = true;", 0o644)
+	writeFile(t, filepath.Join(root, "index.js"), "export {};", 0o644)
+	if err := os.Symlink(outside, filepath.Join(root, "leak.js")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readBundleModules(root); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestReadBundleModulesRejectsUnexpectedRegularFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "index.js"), "export {};", 0o644)
+	writeFile(t, filepath.Join(root, "runtime.wasm"), "not really wasm", 0o644)
+	if _, err := readBundleModules(root); err == nil || !strings.Contains(err.Error(), "unsupported file") {
+		t.Fatalf("expected unsupported-file rejection, got %v", err)
+	}
+}
+
+func TestSyncManifestVarsReplacesDesiredVars(t *testing.T) {
+	f := &fakeCP{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	f.self = srv.URL
+
+	sc := client.NewSessionsAPI(srv.URL, "test-key")
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	m := &manifest{Vars: map[string]string{"PUBLIC_MODE": "careful", "MAX_ITEMS": "12"}}
+	if err := syncManifestVars(cmd, sc, fakeAgentID, m); err != nil {
+		t.Fatalf("syncManifestVars: %v", err)
+	}
+	vars, _ := f.configPutBody["vars"].(map[string]any)
+	if vars["PUBLIC_MODE"] != "careful" || vars["MAX_ITEMS"] != "12" {
+		t.Errorf("vars PUT = %#v", f.configPutBody["vars"])
 	}
 }
 

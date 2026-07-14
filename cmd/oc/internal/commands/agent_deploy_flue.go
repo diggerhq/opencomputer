@@ -1,40 +1,81 @@
 package commands
 
-// Flue deploy flow (design 012 §11.7.8, flue-slice.md W4 + contracts 3/4/5/10).
-// When agent.toml declares `[runtime] family = "flue"`, `oc agent deploy` does
-// NOT read prompt.md/skills/; instead it builds the app into a content-addressed
-// artifact, uploads it via a presigned PUT, and references the digest in the
-// deployment. The host boot-verifies the artifact (a ~30–60s scratch-sandbox
-// probe) before activating the revision — the existing poll absorbs that latency.
+// Flue deploy flow (design 013 §6 — the Worker-for-Platforms Durable-Object model).
+// When agent.toml declares `[runtime] family = "flue"`, `oc agent deploy` does NOT
+// read prompt.md/skills/; it runs the app's own `flue build --target cloudflare`, then
+// stages only regular .js/.mjs modules as one tar.gz in R2 via a presigned PUT, and
+// POSTs the deployment referencing only the R2 bundle digest + a small canonical
+// Flue descriptor + the entrypoint agent name — NO module bytes in the JSON, so the
+// API host stays byte-free. The CP records
+// a `verifying` deploy; an off-host runner fetches the bundle, composes, mints the
+// per-deploy token, WfP-uploads, and finalizes. The existing deployment poll absorbs
+// the runner latency (verifying → ready|failed).
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
+	pathpkg "path"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
+	"github.com/opensandbox/opensandbox/cmd/oc/internal/bundle"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/credscan"
-	"github.com/opensandbox/opensandbox/cmd/oc/internal/bundle"
 	"github.com/spf13/cobra"
 )
 
 const (
-	flueBuildOutputDir   = "dist-oc" // oc-flue-build's output (gitignored in the app)
-	flueArtifactMaxBytes = 64 << 20  // contract 3: server caps at 64 MiB — fail early
+	// flueBuildOutputDir is `flue build --target cloudflare`'s output root; the tool
+	// writes the Cloudflare build under dist/<app>/ (wrangler.json + the entry module +
+	// assets/), so we discover the wrangler beneath it rather than assume a flat layout.
+	flueBuildOutputDir = "dist"
+	flueBundleMaxBytes = 64 << 20 // server caps the staged bundle at 64 MiB — fail early
 )
 
-// artifactUploadResponse is the reply from POST /v3/agents/:id/artifacts (contract 3).
-// AlreadyUploaded is set (and URL omitted) when the content-addressed object already exists:
-// R2 is write-once, so the server refuses to re-issue a PUT for a pinned digest (a re-issuable
-// PUT would let scan-clean bytes be swapped for key-bearing ones post-verify). The CLI then
-// skips the PUT and references the digest directly.
+var (
+	flueBindingIdentifier = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+	flueCompatibilityFlag = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+)
+
+type flueDOBinding struct {
+	Name      string `json:"name"`
+	ClassName string `json:"class_name"`
+}
+
+type flueWranglerDescriptor struct {
+	Main               string   `json:"main"`
+	CompatibilityDate  string   `json:"compatibility_date"`
+	CompatibilityFlags []string `json:"compatibility_flags"`
+	NoBundle           bool     `json:"no_bundle"`
+	DurableObjects     struct {
+		Bindings []flueDOBinding `json:"bindings"`
+	} `json:"durable_objects"`
+}
+
+type generatedFlueWrangler struct {
+	Main               string   `json:"main"`
+	CompatibilityDate  string   `json:"compatibility_date"`
+	CompatibilityFlags []string `json:"compatibility_flags"`
+	NoBundle           bool     `json:"no_bundle"`
+	DurableObjects     struct {
+		Bindings []json.RawMessage `json:"bindings"`
+	} `json:"durable_objects"`
+}
+
+// artifactUploadResponse is the reply from POST /v3/agents/:id/artifacts. AlreadyUploaded
+// is set (and URL omitted) when the content-addressed object already exists: R2 is
+// write-once, so the server refuses to re-issue a PUT for a pinned digest (a re-issuable
+// PUT would let scan-clean bytes be swapped for key-bearing ones post-verify). The CLI
+// then skips the PUT and references the digest directly.
 type artifactUploadResponse struct {
 	URL             string `json:"url"`
 	ExpiresAt       string `json:"expires_at"`
@@ -42,8 +83,8 @@ type artifactUploadResponse struct {
 }
 
 func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, noActivate bool) error {
-	// 1. Primary credential scan over the user's pre-bundle sources (§11.2.6):
-	//    model keys come from the OC credential, never from committed code.
+	// 1. Primary credential scan over the user's source (§11.2.6): model keys come
+	//    from the OC credential, never from committed code. Stays client-side.
 	findings, err := credscan.ScanDir(dir)
 	if err != nil {
 		return fmt.Errorf("credential scan: %w", err)
@@ -57,49 +98,61 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 	}
 
 	// 2. Resolve the target agent (create with runtime=flue + no prompt if new).
-	//    Done before the build so a runtime-family mismatch fails fast — ahead
-	//    of the build and the artifact upload, not after a late server reject.
+	//    Done before the build so a runtime-family mismatch fails fast — ahead of the
+	//    build and the upload, not after.
 	id, err := resolveDeployAgent(cmd, sc, m)
 	if err != nil {
 		return err
 	}
+	// [vars] is part of the deployment input even though the values live in the
+	// agent config resource. Persist it before enqueueing so the off-host runner
+	// cannot race ahead and compose the Worker with stale bindings. Secrets are
+	// intentionally CLI/API only and are resolved by that same runner.
+	if err := syncManifestVars(cmd, sc, id, m); err != nil {
+		return err
+	}
 
-	// 3. Build the artifact with the app's own @opencomputer/flue devDependency.
+	// 3. Build the app with its own `flue` CLI (a devDependency).
 	if err := runFlueBuild(cmd.Context(), dir); err != nil {
 		return err
 	}
 
-	// 4. Pack dist-oc/ into the tar.gz and content-address it: the digest is
-	//    sha256 of the blob the server and box will hash byte-for-byte.
-	outDir := filepath.Join(dir, flueBuildOutputDir)
-	files, err := readArtifactFiles(outDir)
+	// 4. Extract the strict descriptor and stage only regular module files. Raw
+	//    wrangler.json contains build-local paths and never leaves this machine.
+	//    The digest is sha256 of the blob the server and box will hash byte-for-byte.
+	files, wrangler, err := readFlueBundle(filepath.Join(dir, flueBuildOutputDir))
 	if err != nil {
 		return err
 	}
 	tarGz, err := bundle.Pack(files)
 	if err != nil {
-		return fmt.Errorf("pack artifact: %w", err)
+		return fmt.Errorf("pack bundle: %w", err)
 	}
 	digest := bundle.Digest(tarGz)
-	if len(tarGz) > flueArtifactMaxBytes {
-		return fmt.Errorf("artifact is %d bytes, over the %d MiB limit", len(tarGz), flueArtifactMaxBytes>>20)
+	if len(tarGz) > flueBundleMaxBytes {
+		return fmt.Errorf("bundle is %d bytes, over the %d MiB limit", len(tarGz), flueBundleMaxBytes>>20)
 	}
 
-	// 5. Upload: presigned PUT (contract 3).
+	// 5. Upload: presigned PUT to R2 (the API host never sees the bytes).
 	if err := uploadArtifact(cmd.Context(), sc, id, digest, tarGz); err != nil {
 		return err
 	}
 
-	// 6. Deployment referencing the digest (contract 10 — no prompt/skills path).
+	// 6. Deployment referencing the R2 bundle digest + the canonical descriptor (no
+	//    module bytes in the JSON). The CP keys the flue-DO path off the agent's
+	//    runtime="flue" + the presence of flue_bundle_digest/flue_wrangler, then hands
+	//    off to the off-host runner (fetch → compose → mint → WfP-upload) → verifying.
 	rt := m.Runtime.Type
 	if rt == "" {
 		rt = "default"
 	}
 	input := map[string]interface{}{
-		"type":                      "inline",
-		"model":                     m.Model,
-		"runtime":                   map[string]string{"type": rt},
-		"framework_artifact_digest": digest,
+		"type":               "inline",
+		"model":              m.Model,
+		"runtime":            map[string]string{"type": rt},
+		"flue_bundle_digest": digest,   // sha256: of the tar.gz staged in R2
+		"flue_wrangler":      wrangler, // strict adapter descriptor; never raw wrangler.json
+		"flue_agent_name":    m.Name,   // entrypoint agent (agent.toml name → DO admit address)
 	}
 	body := map[string]interface{}{"input": input, "activate": !noActivate}
 	if idem, _ := cmd.Flags().GetString("idempotency-key"); idem != "" {
@@ -111,7 +164,7 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 	}
 	d := env.Deployment
 
-	// 7. Poll to terminal — deploy boots a verify sandbox before activating.
+	// 7. Poll to terminal while the off-host runner uploads and finalizes the deployment.
 	if !terminalState(d.State) && d.State != "" {
 		to, _ := cmd.Flags().GetInt("timeout")
 		d, err = pollDeployment(cmd, sc, id, d.ID, time.Duration(to)*time.Second)
@@ -147,60 +200,239 @@ func resolveDeployAgent(cmd *cobra.Command, sc *client.Client, m *manifest) (str
 	return id, err
 }
 
-// runFlueBuild runs the app's oc-flue-build (its own devDependency). Prefers the
-// locally-installed bin; falls back to `npx --no-install`, which runs the
-// package only if it is already in node_modules and NEVER fetches a same-named
-// package from the registry (a supply-chain hole). Build output goes to stderr
-// so stdout stays clean for --json.
+// runFlueBuild runs the app's own `flue` CLI: `flue build --target cloudflare`.
+// Prefers the locally-installed bin; falls back to `npx --no-install`, which runs the
+// package only if it is already in node_modules and NEVER fetches a same-named package
+// from the registry (a supply-chain hole). Build output goes to stderr so stdout stays
+// clean for --json.
 func runFlueBuild(ctx context.Context, dir string) error {
-	bin := filepath.Join(dir, "node_modules", ".bin", "oc-flue-build")
+	args := []string{"build", "--target", "cloudflare"}
+	bin := filepath.Join(dir, "node_modules", ".bin", "flue")
 	var c *exec.Cmd
 	if _, err := os.Stat(bin); err == nil {
-		c = exec.CommandContext(ctx, bin)
+		c = exec.CommandContext(ctx, bin, args...)
 	} else {
-		c = exec.CommandContext(ctx, "npx", "--no-install", "oc-flue-build")
+		c = exec.CommandContext(ctx, "npx", append([]string{"--no-install", "flue"}, args...)...)
 	}
 	c.Dir = dir
+	c.Env = flueBuildEnv()
 	c.Stdout = os.Stderr
 	c.Stderr = os.Stderr
-	// No stdin: oc-flue-build is a non-interactive bundler, and wiring the
-	// terminal through let an npx install prompt hijack it.
+	// No stdin: `flue build` is a non-interactive bundler, and wiring the terminal
+	// through would let an npx install prompt hijack it.
 	if err := c.Run(); err != nil {
-		return fmt.Errorf("oc-flue-build failed: %w\n(run `npm install` so @opencomputer/flue is available, node >= 22)", err)
+		return fmt.Errorf("flue build failed: %w\n(run `npm install` so the flue CLI is available, node >= 22.19)", err)
 	}
 	return nil
 }
 
-// readArtifactFiles walks the build output into a fileset with normalized modes,
-// requiring artifact.json (the manifest the host validates + pins).
-func readArtifactFiles(outDir string) ([]bundle.File, error) {
-	if info, err := os.Stat(outDir); err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("build output %s not found — did oc-flue-build run?", outDir)
+// flueBuildEnv keeps Wrangler's platform-deployment warnings out of `oc agent
+// deploy`. OpenComputer consumes a strict subset of the generated descriptor and
+// owns the eventual Worker-for-Platforms composition, so warnings about directly
+// deploying that scratch Wrangler config (notably declarative Durable Object
+// exports) are not actionable here. Errors still print. An explicit
+// WRANGLER_LOG setting wins, which leaves a debugging escape hatch.
+func flueBuildEnv() []string {
+	const key = "WRANGLER_LOG"
+	const fallback = key + "=error"
+	env := os.Environ()
+	prefix := key + "="
+	for i, value := range env {
+		if !strings.HasPrefix(value, prefix) {
+			continue
+		}
+		if value == prefix {
+			env[i] = fallback
+		}
+		return env
+	}
+	return append(env, fallback)
+}
+
+// readFlueBundle locates the generated wrangler, extracts the exact Flue descriptor,
+// and reads only regular .js/.mjs modules rooted at the wrangler's directory. The raw
+// wrangler resolution dump, .vite state and source maps are known control artifacts and
+// are never archived; any other non-module fails loudly instead of producing a broken deploy.
+func readFlueBundle(distDir string) ([]bundle.File, flueWranglerDescriptor, error) {
+	wranglerPath, err := findGeneratedWrangler(distDir)
+	if err != nil {
+		return nil, flueWranglerDescriptor{}, err
+	}
+	raw, err := os.ReadFile(wranglerPath)
+	if err != nil {
+		return nil, flueWranglerDescriptor{}, fmt.Errorf("read %s: %w", wranglerPath, err)
+	}
+	wrangler, err := extractFlueWranglerDescriptor(raw)
+	if err != nil {
+		return nil, flueWranglerDescriptor{}, fmt.Errorf("parse %s: %w", wranglerPath, err)
+	}
+
+	bundleRoot := filepath.Dir(wranglerPath)
+	files, err := readBundleModules(bundleRoot)
+	if err != nil {
+		return nil, flueWranglerDescriptor{}, err
+	}
+	// The entry module wrangler.main names MUST be in the bundle (the runner uploads it
+	// to WfP as metadata.main_module).
+	mainRel := wrangler.Main
+	found := false
+	for _, f := range files {
+		if f.Path == mainRel {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, flueWranglerDescriptor{}, fmt.Errorf("entry module %q (wrangler.main) is not in the module output %s", mainRel, bundleRoot)
+	}
+	return files, wrangler, nil
+}
+
+func safeFlueModulePath(value string) bool {
+	if value == "" || strings.HasPrefix(value, "/") || strings.Contains(value, `\`) {
+		return false
+	}
+	if ext := pathpkg.Ext(value); ext != ".js" && ext != ".mjs" {
+		return false
+	}
+	if pathpkg.Clean(value) != value {
+		return false
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func extractFlueWranglerDescriptor(raw []byte) (flueWranglerDescriptor, error) {
+	var generated generatedFlueWrangler
+	if err := json.Unmarshal(raw, &generated); err != nil {
+		return flueWranglerDescriptor{}, err
+	}
+	if !safeFlueModulePath(generated.Main) {
+		return flueWranglerDescriptor{}, fmt.Errorf("main must be a safe relative .js/.mjs module path")
+	}
+	if parsed, err := time.Parse("2006-01-02", generated.CompatibilityDate); err != nil || parsed.Format("2006-01-02") != generated.CompatibilityDate {
+		return flueWranglerDescriptor{}, fmt.Errorf("compatibility_date must be a valid YYYY-MM-DD date")
+	}
+	if generated.CompatibilityFlags == nil || len(generated.CompatibilityFlags) > 64 {
+		return flueWranglerDescriptor{}, fmt.Errorf("compatibility_flags must be a unique array of valid flag names")
+	}
+	seenFlags := map[string]bool{}
+	for _, flag := range generated.CompatibilityFlags {
+		if !flueCompatibilityFlag.MatchString(flag) || seenFlags[flag] {
+			return flueWranglerDescriptor{}, fmt.Errorf("compatibility_flags must be a unique array of valid flag names")
+		}
+		seenFlags[flag] = true
+	}
+	if !generated.NoBundle {
+		return flueWranglerDescriptor{}, fmt.Errorf("no_bundle must be true")
+	}
+
+	bindings := make([]flueDOBinding, 0, len(generated.DurableObjects.Bindings))
+	names := map[string]bool{}
+	classes := map[string]bool{}
+	for _, rawBinding := range generated.DurableObjects.Bindings {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(rawBinding, &fields); err != nil {
+			return flueWranglerDescriptor{}, fmt.Errorf("invalid durable-object binding: %w", err)
+		}
+		if len(fields) != 2 || fields["name"] == nil || fields["class_name"] == nil {
+			return flueWranglerDescriptor{}, fmt.Errorf("durable-object bindings may contain only name and class_name")
+		}
+		var binding flueDOBinding
+		if err := json.Unmarshal(rawBinding, &binding); err != nil {
+			return flueWranglerDescriptor{}, fmt.Errorf("invalid durable-object binding: %w", err)
+		}
+		if !flueBindingIdentifier.MatchString(binding.Name) || !flueBindingIdentifier.MatchString(binding.ClassName) {
+			return flueWranglerDescriptor{}, fmt.Errorf("durable-object binding names and class names must be non-empty JavaScript identifiers")
+		}
+		if names[binding.Name] || classes[binding.ClassName] {
+			return flueWranglerDescriptor{}, fmt.Errorf("durable-object binding names and class names must be unique")
+		}
+		names[binding.Name] = true
+		classes[binding.ClassName] = true
+		bindings = append(bindings, binding)
+	}
+	if len(bindings) == 0 {
+		return flueWranglerDescriptor{}, fmt.Errorf("at least one same-script durable-object binding is required")
+	}
+
+	var descriptor flueWranglerDescriptor
+	descriptor.Main = generated.Main
+	descriptor.CompatibilityDate = generated.CompatibilityDate
+	descriptor.CompatibilityFlags = append([]string(nil), generated.CompatibilityFlags...)
+	descriptor.NoBundle = true
+	descriptor.DurableObjects.Bindings = bindings
+	return descriptor, nil
+}
+
+// findGeneratedWrangler returns the generated wrangler.json path — dist/wrangler.json
+// (flat) or the single dist/<app>/wrangler.json `flue build` writes. Zero or more than
+// one candidate is an error (nothing built / ambiguous output).
+func findGeneratedWrangler(distDir string) (string, error) {
+	if info, err := os.Stat(distDir); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("build output %s not found — did `flue build --target cloudflare` run?", distDir)
+	}
+	flat := filepath.Join(distDir, "wrangler.json")
+	if _, err := os.Stat(flat); err == nil {
+		return flat, nil
+	}
+	matches, _ := filepath.Glob(filepath.Join(distDir, "*", "wrangler.json"))
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no wrangler.json under %s — `flue build --target cloudflare` produced no Cloudflare build", distDir)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("multiple wrangler.json under %s (%v) — ambiguous flue build output", distDir, matches)
+	}
+}
+
+// readBundleModules walks the output into a module-only fileset with normalized modes
+// and forward-slash, root-relative paths. Symlinks, special files and unexpected regular
+// files fail closed. Only the generated wrangler, source maps and .vite state are ignored.
+func readBundleModules(root string) ([]bundle.File, error) {
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("build output %s not found — did `flue build --target cloudflare` run?", root)
 	}
 	var files []bundle.File
-	hasManifest := false
-	err := filepath.WalkDir(outDir, func(p string, d fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if d.IsDir() {
+			if p != root && d.Name() == ".vite" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
-		rel, err := filepath.Rel(outDir, p)
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("build output contains symlink %s; only regular modules are allowed", p)
+		}
+		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		content, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
 		st, err := d.Info()
 		if err != nil {
 			return err
 		}
-		if rel == "artifact.json" {
-			hasManifest = true
+		if !st.Mode().IsRegular() {
+			return fmt.Errorf("build output contains non-regular file %s", p)
+		}
+		if rel == "wrangler.json" || strings.HasSuffix(rel, ".map") {
+			return nil
+		}
+		if !safeFlueModulePath(rel) {
+			return fmt.Errorf("build output contains unsupported file %q; expected only .js/.mjs modules", rel)
+		}
+		content, err := os.ReadFile(p)
+		if err != nil {
+			return err
 		}
 		files = append(files, bundle.File{
 			Path:    rel,
@@ -210,32 +442,29 @@ func readArtifactFiles(outDir string) ([]bundle.File, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", outDir, err)
+		return nil, fmt.Errorf("read %s: %w", root, err)
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("build output %s is empty", outDir)
-	}
-	if !hasManifest {
-		return nil, fmt.Errorf("%s/artifact.json missing — build did not produce a valid artifact", outDir)
+		return nil, fmt.Errorf("build output %s is empty", root)
 	}
 	return files, nil
 }
 
-// uploadArtifact requests a presigned PUT URL, then PUTs the bundle to it. The
-// PUT carries no OC auth (the signature is in the URL); Content-Type must match
-// what the server signed for the object (application/gzip).
+// uploadArtifact requests a presigned PUT URL, then PUTs the bundle to it. The PUT
+// carries no OC auth (the signature is in the URL); Content-Type must match what the
+// server signed for the object (application/gzip).
 func uploadArtifact(ctx context.Context, sc *client.Client, agentID, digest string, tarGz []byte) error {
 	reqBody := map[string]interface{}{"digest": digest, "size_bytes": len(tarGz)}
 	var resp artifactUploadResponse
 	if err := sc.Post(ctx, "/v3/agents/"+agentID+"/artifacts", reqBody, &resp); err != nil {
-		return fmt.Errorf("request artifact upload url: %w", err)
+		return fmt.Errorf("request bundle upload url: %w", err)
 	}
 	if resp.AlreadyUploaded {
 		// The digest's bytes are already in R2 (write-once); nothing to PUT.
 		return nil
 	}
 	if resp.URL == "" {
-		return fmt.Errorf("artifact upload url response was empty")
+		return fmt.Errorf("bundle upload url response was empty")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, resp.URL, bytes.NewReader(tarGz))
 	if err != nil {
@@ -245,12 +474,12 @@ func uploadArtifact(ctx context.Context, sc *client.Client, agentID, digest stri
 	req.ContentLength = int64(len(tarGz))
 	put, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("upload artifact: %w", err)
+		return fmt.Errorf("upload bundle: %w", err)
 	}
 	defer put.Body.Close()
 	if put.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(put.Body, 512))
-		return fmt.Errorf("artifact upload failed (HTTP %d): %s", put.StatusCode, string(snippet))
+		return fmt.Errorf("bundle upload failed (HTTP %d): %s", put.StatusCode, string(snippet))
 	}
 	return nil
 }

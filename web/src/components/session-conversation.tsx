@@ -5,7 +5,10 @@ import { Button } from '@/components/ui/button'
 import {
   bodyText,
   isOutOfCredits,
+  isTerminalSessionStatus,
+  isTurnInput,
   type GroupedTimeline,
+  type TurnState,
 } from '@/lib/session-turns'
 
 // A single chat bubble (You / Agent). Shared between the grouped Conversation
@@ -44,69 +47,84 @@ export function MessageBubble({
   )
 }
 
-// "A reply is coming" — a gentle agent-side typing indicator. Three dots pulse
-// in sequence; no failure is implied. Shown while a turn is running with no
-// answer yet, OR while input sits queued waiting for its follow-up turn to
-// dispatch (the ~gap the user otherwise reads as "stuck").
+function TurnStateChip({
+  state,
+}: {
+  state: Extract<TurnState, 'queued' | 'running'>
+}) {
+  return (
+    <span className="text-muted-foreground bg-muted inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium">
+      {state === 'queued' ? (
+        <Hourglass className="size-2.5" aria-hidden="true" />
+      ) : (
+        <span
+          className="bg-status-running size-1.5 rounded-full"
+          aria-hidden="true"
+        />
+      )}
+      {state === 'queued' ? 'Queued' : 'Working'}
+    </span>
+  )
+}
+
+// A static operational state, not a theatrical typing animation. It appears
+// only after the durable turn.started boundary and disappears on completion.
 function ReplyIndicator() {
   return (
-    <li className="px-4 py-3">
-      <div className="mb-1 flex items-center gap-2">
-        <span className="text-foreground/70 text-xs font-semibold">Agent</span>
-      </div>
-      <span
-        className="flex items-center gap-1"
-        role="status"
-        aria-label="Agent is responding"
-      >
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            className="bg-muted-foreground/50 size-1.5 animate-pulse rounded-full"
-            style={{ animationDelay: `${i * 200}ms`, animationDuration: '1s' }}
-          />
-        ))}
-      </span>
-    </li>
+    <div
+      className="flex items-center gap-2 pt-1"
+      role="status"
+      aria-live="polite"
+    >
+      <span className="text-foreground/70 text-xs font-semibold">Agent</span>
+      <TurnStateChip state="running" />
+    </div>
   )
 }
 
 // Grouped chat view: one block per turn (its inputs as "You", its agent.message
-// outputs as "Agent"), an error affordance on failure, and a single trailing
-// "reply coming" indicator while the agent still owes a response. Lifecycle
+// outputs as "Agent"), an error affordance on failure, and one static working
+// state while the agent still owes a response. Lifecycle
 // chrome (turn.started/turn.completed/agent.result/tool.call) is hidden here.
 // Queued input — typed while a turn was running and not yet claimed by a
 // follow-up turn — trails the groups.
 export function TurnConversation({
   grouped,
   halted = false,
+  sessionStatus,
 }: {
   grouped: GroupedTimeline
   halted?: boolean
+  sessionStatus?: string
 }) {
-  const last = grouped.groups[grouped.groups.length - 1]
-  const runningNoAnswer =
-    !!last &&
-    last.state === 'running' &&
-    !last.events.some((e) => e.type === 'agent.message')
-  // A response is expected (no failure) when a turn is mid-flight without an
-  // answer yet, or input is queued for a not-yet-dispatched turn. Suppressed
-  // when halted (out of credits → nothing runs until top-up).
-  const replyPending = !halted && (runningNoAnswer || grouped.pending.length > 0)
+  const sessionTerminal = isTerminalSessionStatus(sessionStatus)
 
   return (
     <ul className="divide-y">
       {grouped.groups.map((group) => {
         const errorEv = group.events.find((e) => e.type.startsWith('error'))
+        const groupInputs = group.events.filter(isTurnInput)
+        const activeInputId = groupInputs[groupInputs.length - 1]?.id
+        const runningNoAnswer =
+          group.state === 'running' &&
+          !group.events.some((event) => event.type === 'agent.message')
+        const showActiveState = !halted && !sessionTerminal
         return (
           <li key={group.turnId} className="space-y-3 px-4 py-3">
             {group.events.map((ev) => {
-              if (ev.turn_id == null) {
+              if (ev.type === 'user.message') {
                 return (
                   <MessageBubble
                     key={ev.id}
                     label={ev.actor?.display ?? 'You'}
                     text={bodyText(ev)}
+                    meta={
+                      showActiveState &&
+                      ev.id === activeInputId &&
+                      group.state === 'queued' ? (
+                        <TurnStateChip state="queued" />
+                      ) : undefined
+                    }
                   />
                 )
               }
@@ -122,9 +140,11 @@ export function TurnConversation({
               }
               return null // hide agent.result / tool.call / error chrome
             })}
+            {showActiveState && runningNoAnswer ? <ReplyIndicator /> : null}
             {group.state === 'error' ? (
               <div className="bg-status-error-bg/40 text-status-error rounded-sm px-3 py-2 text-xs">
-                {(errorEv && bodyText(errorEv)) ??
+                {group.errorMessage ??
+                  (errorEv && bodyText(errorEv)) ??
                   'The agent hit an error on this turn.'}
               </div>
             ) : null}
@@ -137,15 +157,13 @@ export function TurnConversation({
             label={ev.actor?.display ?? 'You'}
             text={bodyText(ev)}
             meta={
-              <span className="text-muted-foreground bg-muted inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium">
-                <Hourglass className="size-2.5" />
-                Queued · runs next
-              </span>
+              !halted && !sessionTerminal ? (
+                <TurnStateChip state="queued" />
+              ) : undefined
             }
           />
         </li>
       ))}
-      {replyPending ? <ReplyIndicator /> : null}
     </ul>
   )
 }

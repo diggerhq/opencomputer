@@ -54,6 +54,22 @@ function safeStringify(v: unknown): string {
   catch { return String(v); }
 }
 
+// Request query strings can carry browser client tokens (`?token=...`). Keep
+// the route useful for diagnostics without copying credentials into Axiom.
+function requestUrlForLogs(value?: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 // Map CF console level → Axiom-friendly level string matching what our Go
 // slog handler emits ("INFO", "WARN", "ERROR", "DEBUG").
 function level(l: TraceLog["level"]): string {
@@ -76,7 +92,7 @@ export default {
         cell_id: "cf-edge",
         region: "global",
         outcome: item.outcome,
-        request_url: item.event?.request?.url,
+        request_url: requestUrlForLogs(item.event?.request?.url),
         request_method: item.event?.request?.method,
         response_status: item.event?.response?.status,
         cron: item.event?.cron,
@@ -104,15 +120,20 @@ export default {
         });
       }
 
-      // Synthetic record when a request ended in exception/exceededCpu/etc
-      // but had no console output — gives us a row to count "failed
-      // requests by script" in Axiom without joining streams.
-      if (item.outcome !== "ok" && item.logs.length === 0 && item.exceptions.length === 0) {
+      // Synthetic record when a request failed without logging. A Worker can
+      // catch an exception and return 5xx while Cloudflare still reports the
+      // invocation outcome as "ok", so response status is part of the failure
+      // contract too. This keeps silent server errors searchable in Axiom.
+      const responseStatus = item.event?.response?.status;
+      const serverError = typeof responseStatus === "number" && responseStatus >= 500;
+      if ((item.outcome !== "ok" || serverError) && item.logs.length === 0 && item.exceptions.length === 0) {
         records.push({
           _time: new Date(item.eventTimestamp ?? Date.now()).toISOString(),
           time: new Date(item.eventTimestamp ?? Date.now()).toISOString(),
           level: "ERROR",
-          msg: `worker request ended with outcome=${item.outcome}`,
+          msg: serverError
+            ? `worker request returned HTTP ${responseStatus}`
+            : `worker request ended with outcome=${item.outcome}`,
           ...baseEnvelope,
         });
       }
@@ -131,7 +152,12 @@ export default {
     });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
-      console.error(`axiom ingest failed status=${resp.status} body=${body.slice(0, 200)}`);
+      const message = `axiom ingest failed status=${resp.status} body=${body.slice(0, 200)}`;
+      console.error(message);
+      // The collector has Cloudflare Workers Logs enabled as an independent
+      // fallback. Throwing makes a broken durable sink an observable failed
+      // invocation instead of an apparently healthy, lossy success.
+      throw new Error(message);
     }
   },
 };

@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useLocation } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Send, Wrench, CircleAlert, Sparkles } from 'lucide-react'
+import {
+  ArrowLeft,
+  Send,
+  Wrench,
+  CircleAlert,
+  Brain,
+  CheckCircle2,
+  XCircle,
+  Sparkles,
+} from 'lucide-react'
 import { GuidedTour, type GuideStep } from '@/components/guided-tour'
 import { notifyError } from '@/lib/errors'
 import { useHalted } from '@/hooks/useHalted'
@@ -20,17 +29,26 @@ import { Button } from '@/components/ui/button'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/status-badge'
+import { RuntimeBadge } from '@/components/runtime-badge'
+import { MetricCard } from '@/components/metric-card'
+import { SessionTurns } from '@/components/session-turns'
 import { EmptyState } from '@/components/empty-state'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { SessionWebhooks } from '@/components/session-webhooks'
 import { ApiHint } from '@/components/api-hint'
 import { MessagesSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { formatSpend, usageTokens } from '@/lib/usage'
 import {
   MessageBubble,
   TurnConversation,
 } from '@/components/session-conversation'
-import { bodyText, groupIntoTurns, isOutOfCredits } from '@/lib/session-turns'
+import {
+  bodyText,
+  groupIntoTurns,
+  isOutOfCredits,
+  isTurnInput,
+} from '@/lib/session-turns'
 
 function toolSummary(ev: SessionEvent): string {
   const b = (ev.body ?? {}) as Record<string, unknown>
@@ -38,8 +56,45 @@ function toolSummary(ev: SessionEvent): string {
   const input = typeof b.input === 'string' ? b.input : ''
   return input ? `${tool} · ${input}` : tool
 }
+// A tool RESULT — brain-box emits `exec.completed`, the flue tailer emits `tool.result`;
+// both land here so flue + brain-box render identically.
+function isToolResult(ev: SessionEvent): boolean {
+  return ev.type === 'exec.completed' || ev.type === 'tool.result'
+}
+function toolResult(ev: SessionEvent): { text: string; isError: boolean } {
+  const b = (ev.body ?? {}) as Record<string, unknown>
+  const tool = typeof b.tool === 'string' ? b.tool : 'tool'
+  const isError = b.is_error === true || b.error != null
+  const summary =
+    (typeof b.summary === 'string' && b.summary) ||
+    (typeof b.output === 'string' && b.output) ||
+    (typeof b.text === 'string' && b.text) ||
+    ''
+  const dur = typeof b.duration_ms === 'number' ? ` · ${b.duration_ms}ms` : ''
+  return {
+    text: summary ? `${tool} → ${summary}${dur}` : `${tool} →${dur}`,
+    isError,
+  }
+}
+// The body spilled to blob storage (event > 32KB) — surface an affordance instead of
+// rendering an empty bubble.
+function truncationNote(ev: SessionEvent): string | null {
+  if (!ev.body_truncated && !ev.content_ref) return null
+  const kb = ev.body_bytes ? ` (${Math.round(ev.body_bytes / 1024)} KB)` : ''
+  return `Output too large to inline${kb} — stored in blob`
+}
 function humanizeType(t: string): string {
   return t.replace(/[._]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
+}
+
+function turnCompletionLabel(ev: SessionEvent): string | null {
+  if (ev.type !== 'turn.completed' || !ev.body) return null
+  const body = ev.body as Record<string, unknown>
+  if (typeof body.outcome === 'string') return humanizeType(body.outcome)
+  if (typeof body.yield_reason === 'string') {
+    return humanizeType(body.yield_reason)
+  }
+  return null
 }
 
 interface TurnStartInfo {
@@ -61,8 +116,12 @@ export default function SessionDetail() {
   const [draft, setDraft] = useState('')
   const [level, setLevel] = useState<LevelFilter>('user')
   const [confirmCancel, setConfirmCancel] = useState(false)
-  const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
-  const [streamOk, setStreamOk] = useState(false)
+  const [liveStream, setLiveStream] = useState<{
+    sessionId: string
+    events: SessionEvent[]
+    connected: boolean
+  }>(() => ({ sessionId, events: [], connected: false }))
+  const streamOk = liveStream.sessionId === sessionId && liveStream.connected
 
   // Guided first-run overlay: the chip launch passes { guide: 'agent' } via nav
   // state; the "How it works" button reopens it any time. Anchors point at the
@@ -191,15 +250,17 @@ for await (const event of session.events()) {
   // auto-reconnects with Last-Event-ID. Skipped under the preview mock (no
   // backend) — the query renders there.
   useEffect(() => {
-    // Reset per session so a previously-viewed session's events never bleed in.
-    setLiveEvents([])
-    setStreamOk(false)
     if (!sessionId || import.meta.env.VITE_PREVIEW === '1') return
     const es = new EventSource(
       `/api/dashboard/v3/sessions/${sessionId}/events?stream=sse`,
       { withCredentials: true },
     )
-    es.onopen = () => setStreamOk(true)
+    es.onopen = () =>
+      setLiveStream((prev) => ({
+        sessionId,
+        events: prev.sessionId === sessionId ? prev.events : [],
+        connected: true,
+      }))
     es.onmessage = (e) => {
       let raw: unknown
       try {
@@ -210,12 +271,22 @@ for await (const event of session.events()) {
       const parsed = SessionEventSchema.safeParse(raw)
       if (!parsed.success) return
       const ev = parsed.data
-      setLiveEvents((prev) =>
-        // Cap the in-memory live buffer (older events remain in query history).
-        prev.some((x) => x.id === ev.id) ? prev : [...prev, ev].slice(-2000),
-      )
+      setLiveStream((prev) => {
+        const events = prev.sessionId === sessionId ? prev.events : []
+        return {
+          sessionId,
+          connected: prev.sessionId === sessionId && prev.connected,
+          // Cap the in-memory live buffer (older events remain in query history).
+          events: events.some((x) => x.id === ev.id)
+            ? events
+            : [...events, ev].slice(-2000),
+        }
+      })
     }
-    es.onerror = () => setStreamOk(false) // EventSource retries on its own
+    es.onerror = () =>
+      setLiveStream((prev) =>
+        prev.sessionId === sessionId ? { ...prev, connected: false } : prev,
+      ) // EventSource retries on its own
     return () => es.close()
   }, [sessionId])
 
@@ -254,6 +325,8 @@ for await (const event of session.events()) {
 
   // History (query) ∪ this session's live SSE events, deduped by id, by seq.
   const allEvents = useMemo(() => {
+    const liveEvents =
+      liveStream.sessionId === sessionId ? liveStream.events : []
     const byId = new Map<string, SessionEvent>()
     for (const e of eventData ?? []) byId.set(e.id, e)
     for (const e of liveEvents) {
@@ -279,14 +352,22 @@ for await (const event of session.events()) {
           userAnswers.has(`${e.turn_id ?? ''} ${bodyText(e) ?? ''}`)
         ),
     )
-  }, [eventData, liveEvents, sessionId])
+  }, [eventData, liveStream, sessionId])
 
   // Group the (unfiltered) stream by turn: turn.started is level:progress, so it
   // must be read from allEvents, never the level==='user' filter.
   const grouped = useMemo(() => groupIntoTurns(allEvents), [allEvents])
-  // Seqs of input events typed but not yet claimed by a turn → tagged "queued".
+  // Inputs whose neutral turn has not crossed the durable start boundary.
   const pendingSeqs = useMemo(
-    () => new Set(grouped.pending.map((e) => e.seq)),
+    () =>
+      new Set([
+        ...grouped.pending.map((event) => event.seq),
+        ...grouped.groups
+          .filter((group) => group.state === 'queued')
+          .flatMap((group) =>
+            group.events.filter(isTurnInput).map((event) => event.seq),
+          ),
+      ]),
     [grouped],
   )
   // Per-turn seq range + input preview, so the All log's turn.started row is
@@ -294,7 +375,7 @@ for await (const event of session.events()) {
   const turnStartInfo = useMemo(() => {
     const m = new Map<string, TurnStartInfo>()
     for (const g of grouped.groups) {
-      const firstInput = g.events.find((e) => e.turn_id == null)
+      const firstInput = g.events.find(isTurnInput)
       const raw = firstInput ? bodyText(firstInput) : null
       const preview =
         raw && raw.length > 40 ? `${raw.slice(0, 40)}…` : (raw ?? null)
@@ -341,11 +422,14 @@ for await (const event of session.events()) {
       <Panel ref={headerRef} className="mb-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-1.5">
-            <div className="flex items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-2.5">
               <code className="text-foreground font-mono text-sm">
                 {sessionId}
               </code>
               <StatusBadge status={status} />
+              {session?.agent_snapshot?.runtime ? (
+                <RuntimeBadge runtime={session.agent_snapshot.runtime} />
+              ) : null}
             </div>
             <p className="text-muted-foreground text-xs">
               {session?.head ?? 0} events · created{' '}
@@ -418,6 +502,21 @@ for await (const event of session.events()) {
         </div>
       </Panel>
 
+      {/* Spend / usage — derived from the session's opaque usage object (no dedicated
+          spend endpoint). Tokens shown only when the runtime reports them (flue meters
+          at the gateway and reports none here). */}
+      <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-3">
+        <MetricCard label="Spend" value={formatSpend(session?.usage)} />
+        <MetricCard
+          label="Tokens"
+          value={usageTokens(session?.usage)?.toLocaleString() ?? '—'}
+        />
+        <MetricCard
+          label="Events"
+          value={(session?.head ?? 0).toLocaleString()}
+        />
+      </div>
+
       {/* Event stream */}
       <Panel ref={eventsRef} className="overflow-hidden">
         <div className="flex items-center justify-between border-b px-4 py-2.5">
@@ -457,7 +556,11 @@ for await (const event of session.events()) {
             description="Events from the agent's turns will stream in here."
           />
         ) : level === 'user' ? (
-          <TurnConversation grouped={grouped} halted={halted} />
+          <TurnConversation
+            grouped={grouped}
+            halted={halted}
+            sessionStatus={status}
+          />
         ) : (
           <ul className="divide-y">
             {allEvents.map((ev) => (
@@ -538,6 +641,15 @@ for await (const event of session.events()) {
         </div>
       </Panel>
 
+      <SessionTurns
+        sessionId={sessionId}
+        active={
+          status === 'running' ||
+          status === 'awaiting_input' ||
+          status === 'queued'
+        }
+      />
+
       <SessionWebhooks sessionId={sessionId} />
 
       <ConfirmDialog
@@ -568,6 +680,19 @@ function EventRow({
   bounds: Map<string, TurnStartInfo>
 }) {
   const text = bodyText(ev)
+  const trunc = truncationNote(ev)
+  const completion = turnCompletionLabel(ev)
+
+  // Reasoning — muted, set apart from the answer. (flue tailer + brain-box both emit this.)
+  if (ev.type === 'agent.thinking') {
+    if (!text && !trunc) return null
+    return (
+      <li className="text-muted-foreground flex gap-2 px-4 py-2 text-xs italic">
+        <Brain className="mt-0.5 size-3.5 shrink-0 opacity-60" />
+        <span className="whitespace-pre-wrap">{text ?? trunc}</span>
+      </li>
+    )
+  }
 
   // Conversation messages — the signal.
   if (ev.type === 'user.message' || ev.type === 'agent.message') {
@@ -576,7 +701,7 @@ function EventRow({
       <li className="px-4 py-3">
         <MessageBubble
           label={ev.actor?.display ?? (isUser ? 'You' : 'Agent')}
-          text={text}
+          text={text ?? trunc}
           seq={ev.seq}
           // Input typed while a turn was running but not yet claimed by a turn.
           meta={
@@ -618,11 +743,35 @@ function EventRow({
     )
   }
 
-  // Errors.
-  if (ev.type.startsWith('error')) {
+  // Tool results — `exec.completed` (brain-box) or `tool.result` (flue). Error results
+  // get the error tone; success stays quiet. Body-spill falls back to the truncation note.
+  if (isToolResult(ev)) {
+    const { text: rtext, isError } = toolResult(ev)
+    const Icon = isError ? XCircle : CheckCircle2
     return (
-      <li className="bg-status-error-bg/40 text-status-error px-4 py-2 text-xs">
-        {text ?? humanizeType(ev.type)}
+      <li
+        className={cn(
+          'flex items-center gap-2 px-4 py-1.5 font-mono text-xs',
+          isError ? 'text-status-error' : 'text-muted-foreground',
+        )}
+      >
+        <Icon className="size-3.5 shrink-0 opacity-70" />
+        <span className="truncate">{trunc ?? rtext}</span>
+      </li>
+    )
+  }
+
+  // Failures — turn.failed + any error* event.
+  if (ev.type === 'turn.failed' || ev.type.startsWith('error')) {
+    const reason =
+      typeof (ev.body as Record<string, unknown> | null | undefined)
+        ?.yield_reason === 'string'
+        ? String((ev.body as Record<string, unknown>).yield_reason)
+        : null
+    return (
+      <li className="bg-status-error-bg/40 text-status-error flex items-center gap-2 px-4 py-2 text-xs">
+        <CircleAlert className="size-3.5 shrink-0" />
+        <span>{text ?? reason ?? humanizeType(ev.type)}</span>
       </li>
     )
   }
@@ -632,11 +781,7 @@ function EventRow({
     <li className="text-muted-foreground flex items-center gap-2 px-4 py-1.5 text-xs">
       <span className="bg-border h-px w-4 shrink-0" />
       {humanizeType(ev.type)}
-      {ev.type === 'turn.completed' &&
-      ev.body &&
-      typeof (ev.body as Record<string, unknown>).yield_reason === 'string'
-        ? ` · ${humanizeType(String((ev.body as Record<string, unknown>).yield_reason))}`
-        : ''}
+      {completion ? ` · ${completion}` : ''}
     </li>
   )
 }

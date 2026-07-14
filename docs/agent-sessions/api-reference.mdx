@@ -78,15 +78,15 @@ oc agent deploy        # deploy the agent directory in the cwd
 **Create params** — `agent` is **required**; the model resolves to **Managed** (default) or a [credential](#credentials), else `422 no_credential` / `422 managed_unavailable`.
 
 - `input` — the task (string or [envelope](/agent-sessions/messaging#message-input)). Truncate large inputs; let the agent fetch the rest via [sandbox tools](/agent-sessions/runtime-tools).
-- `revision?` — pin a specific revision (number / `rev_…`); default = the agent's active one. Use to test a [staged](/agent-sessions/revisions#staging-vs-activating) revision.
+- `revision?`: pin a specific revision (number / `rev_…`); default = the agent's active one. Use to test a [staged](/agent-sessions/revisions#staging-vs-activating) built-in runtime revision. A Flue agent has one live Worker, so an old revision does not isolate older Worker code.
 - `model?` — run this session on a different model than the agent's (same `provider/model` form; its provider must match the agent's [runtime](/agent-sessions/runtimes), e.g. `anthropic/…` for `claude`). Default = the agent's model. Pinned for the session's life like the rest of the snapshot. Rejected (`400 invalid`) for [flue](/agent-sessions/flue) agents — their model is fixed in the deployed artifact.
 - `key?` — get-or-create (one session per key). Keyless: an `Idempotency-Key` header makes create retry-safe.
 - `metadata?` — opaque routing state (≤ 16 KB); on get/list + **verbatim in webhooks**; never sent to the model, not indexed.
-- `limits?` `{ tokens, turn_seconds, turns }` — non-monetary; tripping one ends the turn (matching `yield_reason`).
-- `sources?` — repos checked out before turn 1 (the token never enters the sandbox; see [GitHub](#github-apps-and-repos)). Each registered `{ repo, ref, sha?, name? }` or inline `{ url, ref, sha, name?, auth }`. `ref` is required; `sha` is required for inline sources but **optional for a registered repo** — omit it and the control plane resolves `ref`→HEAD and pins that commit at create.
+- `limits?` `{ tokens, turn_seconds, turns }`: non-monetary; tripping one ends a built-in runtime turn with the matching `yield_reason`. These limits are stored but not yet enforced for Flue sessions.
+- `sources?`: repos checked out before turn 1 for built-in runtimes (the token never enters the sandbox; see [GitHub](#github-apps-and-repos)). Each registered `{ repo, ref, sha?, name? }` or inline `{ url, ref, sha, name?, auth }`. `ref` is required; `sha` is required for inline sources but **optional for a registered repo**. Flue sessions reject `sources` with `422 sources_not_supported`.
 - Client tokens: `scopes?` (`read`/`steer`), `ttl?` 60–86400 s (SDK `ttlSeconds`).
 
-A session pins the agent's active revision for its whole life — editing the agent later never affects a running one.
+A built-in runtime session pins the agent's active revision for its whole life. A Flue session records its selected deployment but executes on the agent's one live Worker; deploying that Worker can therefore affect an existing session.
 
 **`Session`**
 
