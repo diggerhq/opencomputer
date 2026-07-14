@@ -26,7 +26,10 @@ class SubstrateProbeTest(unittest.TestCase):
             {
                 "runtimeUser": "sandbox",
                 "runtimeUid": 1000,
-                "sudoPolicy": "denied",
+                "runtimeGid": 1000,
+                "supplementaryGroups": [],
+                "sudoPolicy": "binary-removed",
+                "agentControl": "host-only",
                 "toolchainOwner": "root",
                 "workspace": "/workspace",
                 "workspaceWritable": True,
@@ -108,11 +111,22 @@ class SubstrateProbeTest(unittest.TestCase):
             with self.subTest(exit_code=exit_code), self.assertRaises(PROBE.ProbeError):
                 PROBE.LiveProbe.expect_transport_block("target", {"exitCode": exit_code})
 
-    def test_runtime_sudo_must_be_policy_denied(self) -> None:
-        PROBE.LiveProbe.expect_sudo_denied({"exitCode": 1})
-        for exit_code in (0, 2, 126, 127):
-            with self.subTest(exit_code=exit_code), self.assertRaises(PROBE.ProbeError):
-                PROBE.LiveProbe.expect_sudo_denied({"exitCode": exit_code})
+    def test_guest_agent_isolation_requires_adversarial_probe_success(self) -> None:
+        live = PROBE.LiveProbe.__new__(PROBE.LiveProbe)
+        live.exec = mock.Mock(
+            return_value={"exitCode": 0, "stdout": '{"checked":["vsock:1:1024"],"failures":[]}'}
+        )
+        live.prove_guest_agent_isolation("sb-test")
+        command = live.exec.call_args.args
+        self.assertEqual(command[:2], ("sb-test", "/usr/bin/python3"))
+        self.assertIn("HTTP2_PREFACE", command[2][1])
+
+        live.exec.return_value = {
+            "exitCode": 42,
+            "stdout": '{"checked":["vsock:1:1024"],"failures":["vsock:1:1024"]}',
+        }
+        with self.assertRaises(PROBE.ProbeError):
+            live.prove_guest_agent_isolation("sb-test")
 
     def test_create_body_is_allowlisted_and_final_topology_is_explicit(self) -> None:
         live = PROBE.LiveProbe.__new__(PROBE.LiveProbe)

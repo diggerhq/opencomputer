@@ -4,14 +4,16 @@ This directory owns the immutable runtime used by the managed Flue repository
 builder. It is an internal deployment asset, not a customer-selectable image.
 Repository code runs here with public-only networking and without GitHub,
 OpenComputer, R2, Cloudflare, WfP, or coordinator credentials. It runs as uid
-1000 with no passwordless sudo; the pinned toolchain is root-owned while
-`/workspace` remains writable.
+1000 with no `sudo` binary or supplementary groups; the pinned toolchain is
+root-owned while `/workspace` remains writable. The root guest-agent control
+transport remains available to the trusted host but is unreachable from
+repository processes inside the guest.
 
 ## Pinned coordinate
 
 `coordinate.json` is the reviewed logical coordinate. It pins:
 
-- snapshot name `flue-build-node22-19-0-oc-c39b315-r1` (never reuse it for a
+- snapshot name `flue-build-node22-19-0-oc-c39b315-r2` (never reuse it for a
   different recipe or checkpoint);
 - Ubuntu 22.04 / x86-64 platform assertion;
 - Node 22.19.0 and its upstream archive digest;
@@ -21,8 +23,9 @@ OpenComputer, R2, Cloudflare, WfP, or coordinator credentials. It runs as uid
 - the reproducible Linux/amd64 `oc` binary digest;
 - raw installer, image-template, and materialized-manifest digests;
 - the required runtime `networkPolicy=public`; and
-- the hardened runtime contract: `sandbox` uid 1000, `sudo -n true` denied,
-  root-owned read-only toolchain, and writable `/workspace`.
+- the hardened runtime contract: `sandbox` uid/gid 1000 with no supplementary
+  groups, no `sudo` path, host-only guest-agent control, a root-owned read-only
+  toolchain, and writable `/workspace`.
 
 The named snapshot is not the complete physical coordinate. The snapshot API's
 ready response supplies its immutable `checkpointId`. `snapshot.py create`
@@ -39,11 +42,20 @@ toolchain versions do not change.
 
 The base image normally grants `sandbox ALL=(ALL) NOPASSWD:ALL`. The recipe uses
 that privilege only for trusted installation steps. Its penultimate step runs a
-root finalizer that removes direct sudo grants and administrator-group
-membership, locks the account password, makes `/opt/opencomputer` root-owned
-and non-writable, preserves the user-owned workspace, installs a read-only
-runtime verifier, and removes the installer. The last image step runs that
-verifier as the ordinary sandbox user. No privileged step follows finalization.
+root finalizer that clears every supplementary group, removes every `sudo` path
+from the root filesystem, locks the account password, restricts the active
+virtio-serial/Unix agent nodes to root, makes `/opt/opencomputer` root-owned and
+non-writable, preserves the user-owned workspace, installs a read-only runtime
+verifier, and removes the installer. Removing `sudo` avoids relying on parsing
+its alias/group/include policy language. The last image step runs the verifier
+as the ordinary sandbox user. No privileged step follows finalization.
+
+`osb-agent` is a root PID-1 gRPC server whose trusted host API necessarily
+includes root exec, filesystem operations, and binary upgrade. Its AF_VSOCK
+listener accepts only Linux host CID 2; guest-local/own-CID connections are
+closed before gRPC sees them. The virtio-serial device and Unix fallback are
+mode `0600`. This keeps host orchestration working without exposing that RPC
+surface to untrusted lifecycle scripts.
 
 ## Offline validation
 
@@ -79,8 +91,8 @@ export AGENT_BUILD_SNAPSHOT_ALLOW_CREATE=1
 export AGENT_BUILD_SNAPSHOT_ALLOW_PRODUCTION=1
 
 python3 deploy/flue-builder/snapshot.py create \
-  --confirm-name flue-build-node22-19-0-oc-c39b315-r1 \
-  --receipt /secure/operator-state/flue-build-node22-19-0-oc-c39b315-r1.json
+  --confirm-name flue-build-node22-19-0-oc-c39b315-r2 \
+  --receipt /secure/operator-state/flue-build-node22-19-0-oc-c39b315-r2.json
 ```
 
 The command never deletes or replaces a snapshot. Its existing-name path is
@@ -95,7 +107,7 @@ not commit environment files or API keys. Configure the build worker from the
 receipt:
 
 ```text
-AGENT_BUILD_SANDBOX_SNAPSHOT=flue-build-node22-19-0-oc-c39b315-r1
+AGENT_BUILD_SANDBOX_SNAPSHOT=flue-build-node22-19-0-oc-c39b315-r2
 AGENT_BUILD_SANDBOX_CHECKPOINT_ID=<receipt checkpointId>
 AGENT_BUILD_NODE_VERSION=22.19.0
 AGENT_BUILD_NETWORK_POLICY=public
@@ -106,7 +118,7 @@ token-bearing source sandbox and the tokenless build sandbox until a smaller,
 independently pinned source image exists:
 
 ```text
-AGENT_SOURCE_SANDBOX_SNAPSHOT=flue-build-node22-19-0-oc-c39b315-r1
+AGENT_SOURCE_SANDBOX_SNAPSHOT=flue-build-node22-19-0-oc-c39b315-r2
 AGENT_SOURCE_SANDBOX_CHECKPOINT_ID=<same receipt checkpointId>
 ```
 
@@ -127,9 +139,13 @@ The live probe creates two short-lived sandboxes from the same checkpoint:
 2. the final `networkPolicy=public` sandbox, proving public npm registry and
    tarball access succeeds while those targets and inbound exposure fail.
 
-It also requires `sudo -n true` to fail as uid 1000, writes and deletes a
-workspace probe, verifies exact Node/npm/`oc` versions and the `oc` digest, and
-checks root ownership/read-only modes for the trusted binaries. It checks that
+It also requires the `sudo` binary to be absent, uid/gid 1000 to have no
+supplementary groups, writes and deletes a workspace probe, verifies exact
+Node/npm/`oc` versions and the `oc` digest, and checks root ownership/read-only
+modes for the trusted binaries. An adversarial uid-1000 check sends an HTTP/2
+preface to guest-local AF_VSOCK and Unix agent endpoints and fails if root gRPC
+answers; it also tries to open every known virtio-serial agent node. It checks
+that
 the create response has no host port, proves a temporary non-secret server is
 publicly reachable through the unrestricted control, then requires preview
 creation to return 409 and the equivalent restricted guest server to remain
@@ -149,7 +165,7 @@ credentials in its URL or marker. Then run:
 ```bash
 export OPENCOMPUTER_API_URL='<approved-production-api>'
 export OPENCOMPUTER_API_KEY='...'
-export AGENT_BUILD_SANDBOX_SNAPSHOT='flue-build-node22-19-0-oc-c39b315-r1'
+export AGENT_BUILD_SANDBOX_SNAPSHOT='flue-build-node22-19-0-oc-c39b315-r2'
 export AGENT_BUILD_SANDBOX_CHECKPOINT_ID='<receipt checkpointId>'
 export AGENT_BUILD_NODE_VERSION='22.19.0'
 export AGENT_BUILD_PRIVATE_CANARY_URL='http://10.0.0.10:8080/flue-probe'

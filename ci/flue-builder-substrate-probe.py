@@ -252,13 +252,6 @@ class LiveProbe:
             )
 
     @staticmethod
-    def expect_sudo_denied(response: dict[str, Any]) -> None:
-        if response["exitCode"] != 1:
-            raise ProbeError(
-                "runtime `sudo -n true` did not return the expected policy-denied exit 1"
-            )
-
-    @staticmethod
     def curl_args(url: str) -> list[str]:
         return [
             "--noproxy",
@@ -281,17 +274,15 @@ class LiveProbe:
                 "/opt/opencomputer/bin/verify-flue-builder-runtime",
             ),
         )
-        sudo = self.exec(
-            sandbox_id,
-            "/usr/bin/sudo",
-            ["-n", "/usr/bin/true"],
-        )
-        self.expect_sudo_denied(sudo)
 
         javascript = r"""
 const cp = require("child_process");
 const fs = require("fs");
 const run = (cmd, args) => cp.execFileSync(cmd, args, {encoding: "utf8"}).trim();
+const endpointPaths = [
+  "/dev/virtio-ports/agent", "/dev/vport0p1", "/dev/vport1p1", "/dev/vport2p1",
+  "/tmp/osb-agent.sock"
+];
 const result = {
   nodeVersion: process.versions.node,
   npmVersion: run("/usr/local/bin/npm", ["--version"]),
@@ -299,6 +290,8 @@ const result = {
   ocSha256: run("/usr/bin/sha256sum", ["/opt/opencomputer/bin/oc"]).split(/\s+/)[0],
   gitVersion: run("/usr/bin/git", ["--version"]),
   runtimeUid: process.getuid(),
+  runtimeGid: process.getgid(),
+  runtimeGroups: process.getgroups().sort((a, b) => a - b),
   nodeUid: fs.statSync("/opt/opencomputer/node-v22.19.0/bin/node").uid,
   nodeMode: fs.statSync("/opt/opencomputer/node-v22.19.0/bin/node").mode & 0o777,
   ocUid: fs.statSync("/opt/opencomputer/bin/oc").uid,
@@ -307,6 +300,11 @@ const result = {
   verifierMode: fs.statSync("/opt/opencomputer/bin/verify-flue-builder-runtime").mode & 0o777,
   attestationUid: fs.statSync("/opt/opencomputer/agent-build-snapshot.json").uid,
   attestationMode: fs.statSync("/opt/opencomputer/agent-build-snapshot.json").mode & 0o777,
+  sudoPresent: fs.existsSync("/usr/bin/sudo") || fs.existsSync("/bin/sudo"),
+  agentEndpoints: endpointPaths.filter((path) => fs.existsSync(path)).map((path) => {
+    const stat = fs.statSync(path);
+    return {path, uid: stat.uid, mode: stat.mode & 0o777};
+  }),
   installerRemoved: !fs.existsSync("/tmp/opencomputer-flue-builder-install.sh"),
   attestation: JSON.parse(fs.readFileSync("/opt/opencomputer/agent-build-snapshot.json", "utf8"))
 };
@@ -325,6 +323,8 @@ process.stdout.write(JSON.stringify(result));
             "npmVersion": attestation["npm"]["version"],
             "ocSha256": attestation["oc"]["binarySha256"],
             "runtimeUid": attestation["security"]["runtimeUid"],
+            "runtimeGid": attestation["security"]["runtimeGid"],
+            "runtimeGroups": [attestation["security"]["runtimeGid"]],
             "nodeUid": 0,
             "nodeMode": 0o755,
             "ocUid": 0,
@@ -333,6 +333,7 @@ process.stdout.write(JSON.stringify(result));
             "verifierMode": 0o555,
             "attestationUid": 0,
             "attestationMode": 0o444,
+            "sudoPresent": False,
             "attestation": attestation,
         }
         for key, value in expected.items():
@@ -345,6 +346,117 @@ process.stdout.write(JSON.stringify(result));
             raise ProbeError("builder snapshot is missing git")
         if observed.get("installerRemoved") is not True:
             raise ProbeError("builder installer was left in the runtime snapshot")
+        endpoints = observed.get("agentEndpoints")
+        if not isinstance(endpoints, list):
+            raise ProbeError("builder endpoint attestation is invalid")
+        for endpoint in endpoints:
+            if (
+                not isinstance(endpoint, dict)
+                or endpoint.get("uid") != 0
+                or endpoint.get("mode") != 0o600
+            ):
+                raise ProbeError("a guest agent transport node is accessible to repository code")
+
+        self.prove_guest_agent_isolation(sandbox_id)
+
+    def prove_guest_agent_isolation(self, sandbox_id: str) -> None:
+        # osb-agent is PID 1 and its unauthenticated RPC surface includes root
+        # exec, root file writes, and binary upgrade. This adversarial probe
+        # runs as uid 1000. It sends an HTTP/2 client preface to guest-local
+        # AF_VSOCK/Unix endpoints and fails if the root gRPC server answers;
+        # it also attempts to open every known virtio-serial agent device.
+        python = r'''
+import array
+import fcntl
+import glob
+import json
+import os
+import socket
+import sys
+
+HTTP2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+EMPTY_SETTINGS = b"\x00\x00\x00\x04\x00\x00\x00\x00\x00"
+failures = []
+checked = []
+
+def root_grpc_answered(sock):
+    sock.settimeout(1.0)
+    sock.sendall(HTTP2_PREFACE + EMPTY_SETTINGS)
+    try:
+        return bool(sock.recv(9))
+    except (ConnectionError, OSError, TimeoutError):
+        return False
+
+if hasattr(socket, "AF_VSOCK"):
+    cids = {getattr(socket, "VMADDR_CID_LOCAL", 1)}
+    try:
+        values = array.array("I", [0])
+        with open("/dev/vsock", "rb", buffering=0) as device:
+            fcntl.ioctl(device.fileno(), 0x7B9, values, True)
+        cids.add(values[0])
+    except OSError:
+        pass
+    for cid in sorted(cids):
+        checked.append(f"vsock:{cid}:1024")
+        client = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+        client.settimeout(1.0)
+        try:
+            client.connect((cid, 1024))
+            if root_grpc_answered(client):
+                failures.append(f"vsock:{cid}:1024")
+        except OSError:
+            pass
+        finally:
+            client.close()
+
+devices = sorted(set(
+    glob.glob("/dev/virtio-ports/agent")
+    + glob.glob("/dev/vport0p1")
+    + glob.glob("/dev/vport1p1")
+    + glob.glob("/dev/vport2p1")
+))
+for path in devices:
+    checked.append(path)
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+    except OSError:
+        continue
+    else:
+        os.close(descriptor)
+        failures.append(path)
+
+unix_path = "/tmp/osb-agent.sock"
+if os.path.exists(unix_path):
+    checked.append(unix_path)
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(1.0)
+    try:
+        client.connect(unix_path)
+        if root_grpc_answered(client):
+            failures.append(unix_path)
+    except OSError:
+        pass
+    finally:
+        client.close()
+
+print(json.dumps({"checked": checked, "failures": failures}, sort_keys=True))
+if failures:
+    sys.exit(42)
+'''.strip()
+        response = self.exec(
+            sandbox_id,
+            "/usr/bin/python3",
+            ["-c", python],
+            timeout=15,
+        )
+        if response["exitCode"] != 0:
+            raise ProbeError("repository code reached a root guest-agent control transport")
+        try:
+            result = json.loads(str(response.get("stdout", "")))
+        except json.JSONDecodeError as exc:
+            raise ProbeError("guest-agent isolation probe returned invalid JSON") from exc
+        if not isinstance(result.get("checked"), list) or result.get("failures") != []:
+            raise ProbeError("guest-agent isolation probe returned an invalid result")
 
     def prove_control_paths(self, sandbox_id: str) -> None:
         private = self.expect_success(

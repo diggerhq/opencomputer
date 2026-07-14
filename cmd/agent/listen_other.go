@@ -18,6 +18,11 @@ func listenVsock() (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := restrictAgentEndpoint(sockPath); err != nil {
+		lis.Close()
+		os.Remove(sockPath)
+		return nil, err
+	}
 	log.Printf("agent: listening on %s (non-Linux, vsock not available)", sockPath)
 	return lis, nil
 }
@@ -30,6 +35,11 @@ func listenPortForPTY(port uint32) (net.Listener, error) {
 	lis, err := net.Listen("unix", sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("pty unix listen port %d: %w", port, err)
+	}
+	if err := restrictAgentEndpoint(sockPath); err != nil {
+		lis.Close()
+		os.Remove(sockPath)
+		return nil, err
 	}
 	log.Printf("agent: PTY data listening on %s (vsock not available)", sockPath)
 	return lis, nil

@@ -140,7 +140,10 @@ def check_recipe() -> tuple[dict[str, Any], dict[str, Any]]:
     if security != {
         "runtimeUser": "sandbox",
         "runtimeUid": 1000,
-        "sudoPolicy": "denied",
+        "runtimeGid": 1000,
+        "supplementaryGroups": [],
+        "sudoPolicy": "binary-removed",
+        "agentControl": "host-only",
         "toolchainOwner": "root",
         "workspace": "/workspace",
         "workspaceWritable": True,
@@ -197,9 +200,9 @@ def check_recipe() -> tuple[dict[str, Any], dict[str, Any]]:
             f"generated runtime verifier fails bash -n: {verifier_syntax.stderr.strip()}"
         )
     for command in (
-        "/usr/bin/sudo -n /usr/bin/true",
-        "sudo executable metadata changed",
-        '[[ "$sudo_rc" == "1" ]]',
+        '[[ "$(id -G)" == "1000" ]]',
+        "sudo executable was restored",
+        "a sudo path remains on the runtime root filesystem",
         "sha256sum --check --status",
         'mktemp "/workspace/.flue-builder-write.XXXXXX"',
     ):

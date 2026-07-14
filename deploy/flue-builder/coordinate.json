@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "snapshot": {
-    "name": "flue-build-node22-19-0-oc-c39b315-r1",
+    "name": "flue-build-node22-19-0-oc-c39b315-r2",
     "roles": ["source", "build"],
     "networkPolicy": "public",
     "builderMemoryMB": 4096,
@@ -9,14 +9,14 @@
   },
   "recipe": {
     "installer": "install-snapshot.sh",
-    "installerSha256": "60793ed4e3a481dfd6b9df1e3a2b0ec014c7428259bdfd2a122206e8ff50a087",
+    "installerSha256": "0e4eeb46adb311a783890cfe8afff90e88dbff5d2e2bef7c3decba0318b911aa",
     "imageTemplate": "image.json",
     "imageTemplateSha256": "e5e8827412e76e6da94f8c2f9b97ddfe25579637905ef4e6d2f7fa563712683f",
-    "materializedManifestSha256": "f334cd2ee291c707fc1c1efff5c6c38263fb78c2b8d8ca326d0d401b06004f32"
+    "materializedManifestSha256": "d16ba78183df34ea6cfc55e76a78346430bf78c0222a9150dca032762ce91190"
   },
   "attestation": {
     "schemaVersion": 1,
-    "snapshotName": "flue-build-node22-19-0-oc-c39b315-r1",
+    "snapshotName": "flue-build-node22-19-0-oc-c39b315-r2",
     "baseImage": "base",
     "platform": {
       "osId": "ubuntu",
@@ -43,7 +43,10 @@
     "security": {
       "runtimeUser": "sandbox",
       "runtimeUid": 1000,
-      "sudoPolicy": "denied",
+      "runtimeGid": 1000,
+      "supplementaryGroups": [],
+      "sudoPolicy": "binary-removed",
+      "agentControl": "host-only",
       "toolchainOwner": "root",
       "workspace": "/workspace",
       "workspaceWritable": true
