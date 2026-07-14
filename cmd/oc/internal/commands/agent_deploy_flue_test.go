@@ -233,7 +233,7 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 			t.Errorf("raw Wrangler capability %q escaped into deployment: %v", key, wr[key])
 		}
 	}
-	if wr["compatibility_date"] != flueCompatibilityDate || wr["no_bundle"] != true {
+	if wr["compatibility_date"] != "2026-04-01" || wr["no_bundle"] != true {
 		t.Errorf("flue_wrangler profile changed: %v", wr)
 	}
 	encodedWrangler, _ := json.Marshal(wr)
@@ -262,7 +262,7 @@ func TestFlueBuildEnvPreservesExplicitWranglerLog(t *testing.T) {
 	t.Fatal("flueBuildEnv did not preserve explicit WRANGLER_LOG=debug")
 }
 
-func TestExtractFlueWranglerDescriptorRejectsCapabilityVariation(t *testing.T) {
+func TestExtractFlueWranglerDescriptorRejectsUnsafeInput(t *testing.T) {
 	valid := func() map[string]any {
 		var value map[string]any
 		if err := json.Unmarshal([]byte(e2eWranglerBody), &value); err != nil {
@@ -275,19 +275,20 @@ func TestExtractFlueWranglerDescriptorRejectsCapabilityVariation(t *testing.T) {
 		mutate func(map[string]any)
 	}{
 		{name: "unsafe main", mutate: func(value map[string]any) { value["main"] = "../index.js" }},
-		{name: "profile variation", mutate: func(value map[string]any) { value["compatibility_date"] = "2026-07-01" }},
-		{name: "extra compatibility flag", mutate: func(value map[string]any) {
-			value["compatibility_flags"] = []any{"nodejs_compat", "unsafe"}
+		{name: "invalid compatibility date", mutate: func(value map[string]any) { value["compatibility_date"] = "2026-02-30" }},
+		{name: "invalid compatibility flag", mutate: func(value map[string]any) {
+			value["compatibility_flags"] = []any{"nodejs_compat", "unsafe flag"}
+		}},
+		{name: "duplicate compatibility flag", mutate: func(value map[string]any) {
+			value["compatibility_flags"] = []any{"nodejs_compat", "nodejs_compat"}
 		}},
 		{name: "bundling enabled", mutate: func(value map[string]any) { value["no_bundle"] = false }},
 		{name: "foreign script binding", mutate: func(value map[string]any) {
 			bindings := value["durable_objects"].(map[string]any)["bindings"].([]any)
 			bindings[0].(map[string]any)["script_name"] = "victim-worker"
 		}},
-		{name: "missing registry", mutate: func(value map[string]any) {
-			value["durable_objects"].(map[string]any)["bindings"] = []any{
-				map[string]any{"name": "AGENT", "class_name": "FlueE2EAgent"},
-			}
+		{name: "missing durable objects", mutate: func(value map[string]any) {
+			value["durable_objects"].(map[string]any)["bindings"] = []any{}
 		}},
 		{name: "duplicate binding name", mutate: func(value map[string]any) {
 			value["durable_objects"].(map[string]any)["bindings"] = []any{
@@ -308,6 +309,35 @@ func TestExtractFlueWranglerDescriptorRejectsCapabilityVariation(t *testing.T) {
 				t.Fatalf("expected %s to be rejected", tc.name)
 			}
 		})
+	}
+}
+
+func TestExtractFlueWranglerDescriptorPreservesBuildProfile(t *testing.T) {
+	var value map[string]any
+	if err := json.Unmarshal([]byte(e2eWranglerBody), &value); err != nil {
+		t.Fatal(err)
+	}
+	value["compatibility_date"] = "2026-07-01"
+	value["compatibility_flags"] = []any{"nodejs_compat", "nodejs_als"}
+	bindings := value["durable_objects"].(map[string]any)["bindings"].([]any)
+	bindings[1] = map[string]any{"name": "FLUE_STATE", "class_name": "FlueState"}
+
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := extractFlueWranglerDescriptor(raw)
+	if err != nil {
+		t.Fatalf("extract descriptor: %v", err)
+	}
+	if descriptor.CompatibilityDate != "2026-07-01" {
+		t.Fatalf("compatibility date = %q", descriptor.CompatibilityDate)
+	}
+	if strings.Join(descriptor.CompatibilityFlags, ",") != "nodejs_compat,nodejs_als" {
+		t.Fatalf("compatibility flags = %v", descriptor.CompatibilityFlags)
+	}
+	if descriptor.DurableObjects.Bindings[1].Name != "FLUE_STATE" || descriptor.DurableObjects.Bindings[1].ClassName != "FlueState" {
+		t.Fatalf("renamed Flue internal binding was not preserved: %v", descriptor.DurableObjects.Bindings)
 	}
 }
 
