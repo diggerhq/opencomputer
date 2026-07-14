@@ -151,6 +151,26 @@ func TestCheckOnlyRejectsUnsupportedBuilderNode(t *testing.T) {
 	}
 }
 
+func TestCheckOnlyRejectsUnsupportedRuntimeType(t *testing.T) {
+	dir := copyFixture(t)
+	manifestPath := filepath.Join(dir, "agent.toml")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest = bytes.Replace(manifest, []byte(`family = "flue"`), []byte("family = \"flue\"\ntype = \"durable\""), 1)
+	if err := os.WriteFile(manifestPath, manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Build(context.Background(), Options{
+		Dir: dir, CheckOnly: true, BuilderVersion: testBuilderVersion, NodeVersion: testNodeVersion,
+	})
+	if err == nil || !strings.Contains(err.Error(), `runtime.type "durable" is unsupported`) || !strings.Contains(err.Error(), `requires "default"`) {
+		t.Fatalf("expected actionable runtime.type rejection, got %v", err)
+	}
+}
+
 func TestParseDeploymentRejectsUnknownFields(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "check-only.json"))
 	if err != nil {
@@ -159,6 +179,17 @@ func TestParseDeploymentRejectsUnknownFields(t *testing.T) {
 	raw = bytes.Replace(raw, []byte(`"schema_version": 1`), []byte(`"schema_version": 1, "source_path": "/tmp/leak"`), 1)
 	if _, err := ParseDeployment(raw, false); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("expected unknown-field rejection, got %v", err)
+	}
+}
+
+func TestParseDeploymentRejectsUnsupportedRuntimeType(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "check-only.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.Replace(raw, []byte(`"type": "default"`), []byte(`"type": "durable"`), 1)
+	if _, err := ParseDeployment(raw, false); err == nil || !strings.Contains(err.Error(), `type="default"`) {
+		t.Fatalf("expected frozen runtime type rejection, got %v", err)
 	}
 }
 

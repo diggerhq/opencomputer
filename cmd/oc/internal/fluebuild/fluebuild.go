@@ -270,8 +270,8 @@ func ValidateDeployment(deployment Deployment, requireArtifact bool) error {
 	if deployment.Vars == nil {
 		return fmt.Errorf("deployment vars must be an object")
 	}
-	if deployment.Runtime.Family != "flue" || deployment.Runtime.Type == "" {
-		return fmt.Errorf("deployment runtime must contain family=flue and a type")
+	if deployment.Runtime.Family != "flue" || deployment.Runtime.Type != "default" {
+		return fmt.Errorf("deployment runtime must be family=%q, type=%q", "flue", "default")
 	}
 	if !strings.HasPrefix(deployment.Builder.Version, "oc@") || strings.TrimPrefix(deployment.Builder.Version, "oc@") == "" {
 		return fmt.Errorf("deployment builder.version must use oc@<version>")
@@ -326,6 +326,9 @@ func inspect(ctx context.Context, dir, builderVersion, nodeVersion string) (Depl
 	}
 	if m.Runtime.Type == "" {
 		m.Runtime.Type = "default"
+	}
+	if m.Runtime.Type != "default" {
+		return Deployment{}, fmt.Errorf("agent.toml runtime.type %q is unsupported; managed Flue currently requires %q", m.Runtime.Type, "default")
 	}
 	if m.Vars == nil {
 		m.Vars = Vars{}

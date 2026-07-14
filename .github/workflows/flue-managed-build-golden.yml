@@ -1,0 +1,39 @@
+name: Flue managed-build golden
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cmd/oc/**'
+      - 'ci/flue-managed-build-golden.sh'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/flue-managed-build-golden.yml'
+  pull_request:
+    paths:
+      - 'cmd/oc/**'
+      - 'ci/flue-managed-build-golden.sh'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/flue-managed-build-golden.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  golden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19'
+
+      - name: Verify current CLI against pinned starter artifact
+        run: ./ci/flue-managed-build-golden.sh
