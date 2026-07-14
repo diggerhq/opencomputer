@@ -177,6 +177,9 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if opts.BuilderVersion == "" {
 		opts.BuilderVersion = "dev"
 	}
+	if !strings.HasPrefix(opts.BuilderVersion, "oc@") {
+		opts.BuilderVersion = "oc@" + opts.BuilderVersion
+	}
 
 	projection, err := inspect(ctx, opts.Dir, opts.BuilderVersion, opts.NodeVersion)
 	if err != nil {
@@ -270,8 +273,8 @@ func ValidateDeployment(deployment Deployment, requireArtifact bool) error {
 	if deployment.Runtime.Family != "flue" || deployment.Runtime.Type == "" {
 		return fmt.Errorf("deployment runtime must contain family=flue and a type")
 	}
-	if strings.TrimSpace(deployment.Builder.Version) == "" {
-		return fmt.Errorf("deployment builder.version is required")
+	if !strings.HasPrefix(deployment.Builder.Version, "oc@") || strings.TrimPrefix(deployment.Builder.Version, "oc@") == "" {
+		return fmt.Errorf("deployment builder.version must use oc@<version>")
 	}
 	if !requireArtifact {
 		if deployment.Flue.Wrangler != nil || deployment.Bundle != nil {
