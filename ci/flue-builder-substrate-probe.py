@@ -235,6 +235,88 @@ class LiveProbe:
             delay = min(delay * 2, 2.0)
         raise ProbeError("async exec result exceeded the bounded client wait")
 
+    def exec_long(
+        self,
+        sandbox_id: str,
+        command: str,
+        args: list[str] | None = None,
+        envs: dict[str, str] | None = None,
+        timeout: int = 600,
+    ) -> dict[str, Any]:
+        """Run via the public long-lived exec-session/list contract.
+
+        The result-handle API is suitable for short commands, but production
+        workers may forget a handle during a long build. Exec sessions are the
+        public reattachable/background surface; this probe needs only the exit
+        code, so it polls the session list without transporting output.
+        """
+        body: dict[str, Any] = {
+            "cmd": command,
+            "args": args or [],
+            "timeout": timeout,
+            "maxRunAfterDisconnect": timeout + 90,
+        }
+        if envs is not None:
+            body["envs"] = envs
+        quoted = parse.quote(sandbox_id, safe="")
+        _, started = self.call(
+            "POST",
+            f"/sandboxes/{quoted}/exec",
+            body,
+            allowed_statuses={200, 201, 202},
+            timeout=60,
+        )
+        if not isinstance(started, dict) or not isinstance(started.get("sessionID"), str):
+            raise ProbeError("long exec response is missing sessionID")
+        session_id = started["sessionID"]
+        deadline = time.monotonic() + timeout + 90
+        delay = 0.2
+        seen = False
+        while time.monotonic() < deadline:
+            _, sessions = self.call(
+                "GET",
+                f"/sandboxes/{quoted}/exec",
+                allowed_statuses={200},
+                timeout=30,
+            )
+            if not isinstance(sessions, list):
+                raise ProbeError("long exec session list is invalid")
+            current = next(
+                (
+                    item for item in sessions
+                    if isinstance(item, dict) and item.get("sessionID") == session_id
+                ),
+                None,
+            )
+            if current is not None:
+                seen = True
+                if not isinstance(current.get("running"), bool):
+                    raise ProbeError("long exec session state is invalid")
+                if not current["running"]:
+                    if not isinstance(current.get("exitCode"), int):
+                        raise ProbeError("long exec session is missing exitCode")
+                    return {
+                        "exitCode": current["exitCode"],
+                        "stdout": "",
+                        "stderr": "",
+                    }
+            elif seen:
+                raise ProbeError("long exec session disappeared")
+            time.sleep(delay)
+            delay = min(delay * 2, 2.0)
+        try:
+            encoded = parse.quote(session_id, safe="")
+            self.call(
+                "POST",
+                f"/sandboxes/{quoted}/exec/{encoded}/kill",
+                {"signal": 9},
+                allowed_statuses={200, 204},
+                timeout=30,
+            )
+        except ProbeError:
+            pass
+        raise ProbeError("long exec session exceeded the bounded client wait")
+
     def read_guest_file(self, sandbox_id: str, path: str, max_bytes: int = 512 * 1024) -> bytes:
         quoted_id = parse.quote(sandbox_id, safe="")
         quoted_path = parse.quote(path, safe="")
@@ -328,7 +410,7 @@ test "$(git -C "$root" rev-parse HEAD)" = "$2"
         }
         self.expect_success(
             "pinned public starter checkout",
-            self.exec(
+            self.exec_long(
                 sandbox_id,
                 "/bin/bash",
                 ["-c", prepare, "probe", STARTER_REPO, STARTER_REF],
@@ -338,7 +420,7 @@ test "$(git -C "$root" rev-parse HEAD)" = "$2"
         )
         self.expect_success(
             "public npm install",
-            self.exec(
+            self.exec_long(
                 sandbox_id,
                 "/bin/bash",
                 ["-c", "cd /workspace/flue-builder-probe && npm ci --no-audit --no-fund"],
@@ -348,7 +430,7 @@ test "$(git -C "$root" rev-parse HEAD)" = "$2"
         )
         self.expect_success(
             "golden Flue artifact build",
-            self.exec(
+            self.exec_long(
                 sandbox_id,
                 "/bin/bash",
                 [

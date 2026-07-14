@@ -156,6 +156,63 @@ class SandboxProbeTest(unittest.TestCase):
             ],
         )
 
+    def test_long_exec_uses_the_public_reattachable_session_contract(self) -> None:
+        live = PROBE.LiveProbe.__new__(PROBE.LiveProbe)
+        calls: list[tuple[str, str, object]] = []
+        responses = iter(
+            [
+                (201, {"sessionID": "session-long"}),
+                (200, [{"sessionID": "session-long", "running": True}]),
+                (
+                    200,
+                    [{"sessionID": "session-long", "running": False, "exitCode": 0}],
+                ),
+            ]
+        )
+
+        def fake_call(
+            method: str,
+            path: str,
+            body: object = None,
+            allowed_statuses: set[int] | None = None,
+            timeout: float = 60,
+        ) -> tuple[int, object]:
+            calls.append((method, path, body))
+            return next(responses)
+
+        live.call = fake_call
+        with mock.patch.object(PROBE.time, "sleep"):
+            result = live.exec_long(
+                "sb-test",
+                "/bin/sh",
+                ["-c", "long-build"],
+                {"CI": "1"},
+                timeout=600,
+            )
+
+        self.assertEqual(result["exitCode"], 0)
+        self.assertEqual(
+            calls[0],
+            (
+                "POST",
+                "/sandboxes/sb-test/exec",
+                {
+                    "cmd": "/bin/sh",
+                    "args": ["-c", "long-build"],
+                    "timeout": 600,
+                    "maxRunAfterDisconnect": 690,
+                    "envs": {"CI": "1"},
+                },
+            ),
+        )
+        self.assertEqual(
+            [call[:2] for call in calls[1:]],
+            [
+                ("GET", "/sandboxes/sb-test/exec"),
+                ("GET", "/sandboxes/sb-test/exec"),
+            ],
+        )
+
     def test_destroy_attempts_every_created_sandbox(self) -> None:
         live = PROBE.LiveProbe.__new__(PROBE.LiveProbe)
         live.sandboxes = ["sb-one", "sb-two"]

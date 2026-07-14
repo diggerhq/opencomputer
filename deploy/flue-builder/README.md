@@ -114,7 +114,9 @@ The guarded live probe:
 3. verifies the exact Node, npm, and `oc` versions/digests and a writable
    `/workspace`;
 4. fetches the pinned public starter;
-5. runs `npm ci` through the public asynchronous exec/result contract;
+5. runs `npm ci` and the golden build through the public long-lived
+   exec-session/list contract, while short attestation commands use the public
+   asynchronous result contract;
 6. reproduces the golden Flue artifact with the pinned `oc`; and
 7. confirms coordinator credential sentinels were not passed into the sandbox.
 
