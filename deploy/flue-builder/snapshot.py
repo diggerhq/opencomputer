@@ -274,8 +274,9 @@ def create_snapshot(args: argparse.Namespace) -> None:
     quoted_name = parse.quote(expected_name, safe="")
 
     status, current = api.call("GET", f"/snapshots/{quoted_name}", allowed_statuses={200, 404})
-    if status == 404:
-        print(f"Creating immutable builder snapshot {expected_name}")
+    created_here = status == 404
+    if created_here:
+        print(f"Creating immutable builder snapshot {expected_name}", flush=True)
         _, current = api.call(
             "POST",
             "/snapshots?async=1",
@@ -291,7 +292,19 @@ def create_snapshot(args: argparse.Namespace) -> None:
         if time.monotonic() >= deadline:
             raise SnapshotError("timed out waiting for snapshot build")
         time.sleep(args.poll_seconds)
-        _, current = api.call("GET", f"/snapshots/{quoted_name}", allowed_statuses={200})
+        # The production edge indexes a newly accepted async snapshot only
+        # after the regional builder publishes its first state. During that
+        # bounded read-after-write window the same authenticated GET is 404.
+        # Tolerate it only in the process that received the 202; an ordinary
+        # validation run still treats a missing named snapshot as absent.
+        status, observed = api.call(
+            "GET",
+            f"/snapshots/{quoted_name}",
+            allowed_statuses={200, 404} if created_here else {200},
+        )
+        if status == 404:
+            continue
+        current = observed
         current = assert_snapshot_matches(current, coordinate, manifest)
 
     if current.get("status") != "ready":
