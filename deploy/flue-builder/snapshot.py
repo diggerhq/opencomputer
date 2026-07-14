@@ -20,6 +20,7 @@ from urllib import error, parse, request
 ROOT = Path(__file__).resolve().parent
 COORDINATE_PATH = ROOT / "coordinate.json"
 PRODUCTION_HOSTS = {"app.opencomputer.dev", "api.opencomputer.dev"}
+USER_AGENT = "OpenComputer-Flue-Builder/1.0"
 
 
 class SnapshotError(RuntimeError):
@@ -169,7 +170,11 @@ class API:
     ) -> tuple[int, Any]:
         allowed = allowed_statuses or {200}
         payload = None if body is None else canonical_json(body)
-        headers = {"Accept": "application/json", "X-API-Key": self.api_key}
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+            "X-API-Key": self.api_key,
+        }
         if payload is not None:
             headers["Content-Type"] = "application/json"
         req = request.Request(

@@ -200,7 +200,11 @@ class LiveProbe:
         quoted_path = parse.quote(path, safe="")
         req = request.Request(
             f"{self.api_url}/sandboxes/{quoted_id}/files?path={quoted_path}",
-            headers={"Accept": "application/octet-stream", "X-API-Key": self.api_key},
+            headers={
+                "Accept": "application/octet-stream",
+                "User-Agent": SNAPSHOT.USER_AGENT,
+                "X-API-Key": self.api_key,
+            },
         )
         try:
             with self.api.opener.open(req, timeout=30) as response:
