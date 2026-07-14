@@ -72,12 +72,78 @@ func (m *Manager) ensureCheckpointRebased(ctx context.Context, checkpointID stri
 
 // rebaseMetadataOnly runs qemu-img rebase -u to repoint an overlay's backing
 // file without touching data clusters.
+//
+// rebase -u is UNSAFE: it trusts that newBasePath holds exactly the content the
+// overlay was built against and only rewrites the backing pointer. Handing it
+// the wrong base silently corrupts the guest filesystem (the overlay's clusters
+// index the old base's block layout). Two cheap guards before we pull that
+// trigger:
+//   - Refuse if newBasePath's size != the overlay's virtual size. A size
+//     mismatch is an unambiguously wrong base (different template / corrupt
+//     golden); rebasing would guarantee corruption, so fail loud instead.
+//   - Skip entirely if the overlay already backs onto newBasePath — no need to
+//     re-run an unsafe op that would be a no-op.
+//
+// This does NOT catch a same-size, different-content base (golden skew); that is
+// prevented upstream by pinning the overlay to the golden it was actually built
+// on (see ForkFromCheckpoint stamping meta.GoldenVersion). This guard is
+// defense-in-depth for the grossly-wrong-base case and a safety net if a pin is
+// ever wrong again.
 func rebaseMetadataOnly(ctx context.Context, overlayPath, newBasePath string) error {
+	// Best-effort guard: if we can read BOTH the target base's size and the
+	// overlay's virtual size and they disagree, the base is unambiguously wrong
+	// (different template / corrupt golden) — refuse rather than corrupt. If
+	// introspection is unavailable (qemu-img missing, unreadable overlay), fall
+	// through to the rebase; that's no worse than the pre-guard behavior. Also
+	// skip a rebase that would be a no-op (overlay already on newBasePath).
+	if baseInfo, statErr := os.Stat(newBasePath); statErr == nil {
+		if overlayVSize, verr := qcowVirtualSize(ctx, overlayPath); verr == nil {
+			if overlayVSize != baseInfo.Size() {
+				return fmt.Errorf(
+					"refusing unsafe rebase of %s onto %s: base size %d != overlay virtual size %d (wrong base image — recreate the checkpoint)",
+					filepath.Base(overlayPath), newBasePath, baseInfo.Size(), overlayVSize)
+			}
+			if cur, berr := qcowBackingFile(ctx, overlayPath); berr == nil && cur == newBasePath {
+				return nil // already correctly based
+			}
+		}
+	}
 	cmd := exec.CommandContext(ctx, "qemu-img", "rebase", "-u", "-b", newBasePath, "-F", "raw", overlayPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("qemu-img rebase -u: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// qcowVirtualSize returns a qcow2 image's virtual (guest-visible) size in bytes,
+// which must equal its backing file's size for the overlay to be valid.
+func qcowVirtualSize(ctx context.Context, path string) (int64, error) {
+	out, err := exec.CommandContext(ctx, "qemu-img", "info", "--output=json", path).Output()
+	if err != nil {
+		return 0, err
+	}
+	var info struct {
+		VirtualSize int64 `json:"virtual-size"`
+	}
+	if err := json.Unmarshal(out, &info); err != nil {
+		return 0, err
+	}
+	return info.VirtualSize, nil
+}
+
+// qcowBackingFile returns an overlay's current backing-file path ("" if none).
+func qcowBackingFile(ctx context.Context, path string) (string, error) {
+	out, err := exec.CommandContext(ctx, "qemu-img", "info", "--output=json", path).Output()
+	if err != nil {
+		return "", err
+	}
+	var info struct {
+		BackingFilename string `json:"backing-filename"`
+	}
+	if err := json.Unmarshal(out, &info); err != nil {
+		return "", err
+	}
+	return info.BackingFilename, nil
 }
 
 // resolveBaseForVersion returns a local path to the base image matching the
