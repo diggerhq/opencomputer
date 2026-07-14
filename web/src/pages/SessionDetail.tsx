@@ -116,8 +116,12 @@ export default function SessionDetail() {
   const [draft, setDraft] = useState('')
   const [level, setLevel] = useState<LevelFilter>('user')
   const [confirmCancel, setConfirmCancel] = useState(false)
-  const [liveEvents, setLiveEvents] = useState<SessionEvent[]>([])
-  const [streamOk, setStreamOk] = useState(false)
+  const [liveStream, setLiveStream] = useState<{
+    sessionId: string
+    events: SessionEvent[]
+    connected: boolean
+  }>(() => ({ sessionId, events: [], connected: false }))
+  const streamOk = liveStream.sessionId === sessionId && liveStream.connected
 
   // Guided first-run overlay: the chip launch passes { guide: 'agent' } via nav
   // state; the "How it works" button reopens it any time. Anchors point at the
@@ -246,15 +250,17 @@ for await (const event of session.events()) {
   // auto-reconnects with Last-Event-ID. Skipped under the preview mock (no
   // backend) — the query renders there.
   useEffect(() => {
-    // Reset per session so a previously-viewed session's events never bleed in.
-    setLiveEvents([])
-    setStreamOk(false)
     if (!sessionId || import.meta.env.VITE_PREVIEW === '1') return
     const es = new EventSource(
       `/api/dashboard/v3/sessions/${sessionId}/events?stream=sse`,
       { withCredentials: true },
     )
-    es.onopen = () => setStreamOk(true)
+    es.onopen = () =>
+      setLiveStream((prev) => ({
+        sessionId,
+        events: prev.sessionId === sessionId ? prev.events : [],
+        connected: true,
+      }))
     es.onmessage = (e) => {
       let raw: unknown
       try {
@@ -265,12 +271,22 @@ for await (const event of session.events()) {
       const parsed = SessionEventSchema.safeParse(raw)
       if (!parsed.success) return
       const ev = parsed.data
-      setLiveEvents((prev) =>
-        // Cap the in-memory live buffer (older events remain in query history).
-        prev.some((x) => x.id === ev.id) ? prev : [...prev, ev].slice(-2000),
-      )
+      setLiveStream((prev) => {
+        const events = prev.sessionId === sessionId ? prev.events : []
+        return {
+          sessionId,
+          connected: prev.sessionId === sessionId && prev.connected,
+          // Cap the in-memory live buffer (older events remain in query history).
+          events: events.some((x) => x.id === ev.id)
+            ? events
+            : [...events, ev].slice(-2000),
+        }
+      })
     }
-    es.onerror = () => setStreamOk(false) // EventSource retries on its own
+    es.onerror = () =>
+      setLiveStream((prev) =>
+        prev.sessionId === sessionId ? { ...prev, connected: false } : prev,
+      ) // EventSource retries on its own
     return () => es.close()
   }, [sessionId])
 
@@ -309,6 +325,8 @@ for await (const event of session.events()) {
 
   // History (query) ∪ this session's live SSE events, deduped by id, by seq.
   const allEvents = useMemo(() => {
+    const liveEvents =
+      liveStream.sessionId === sessionId ? liveStream.events : []
     const byId = new Map<string, SessionEvent>()
     for (const e of eventData ?? []) byId.set(e.id, e)
     for (const e of liveEvents) {
@@ -334,7 +352,7 @@ for await (const event of session.events()) {
           userAnswers.has(`${e.turn_id ?? ''} ${bodyText(e) ?? ''}`)
         ),
     )
-  }, [eventData, liveEvents, sessionId])
+  }, [eventData, liveStream, sessionId])
 
   // Group the (unfiltered) stream by turn: turn.started is level:progress, so it
   // must be read from allEvents, never the level==='user' filter.

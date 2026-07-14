@@ -54,6 +54,22 @@ function safeStringify(v: unknown): string {
   catch { return String(v); }
 }
 
+// Request query strings can carry browser client tokens (`?token=...`). Keep
+// the route useful for diagnostics without copying credentials into Axiom.
+function requestUrlForLogs(value?: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 // Map CF console level → Axiom-friendly level string matching what our Go
 // slog handler emits ("INFO", "WARN", "ERROR", "DEBUG").
 function level(l: TraceLog["level"]): string {
@@ -76,7 +92,7 @@ export default {
         cell_id: "cf-edge",
         region: "global",
         outcome: item.outcome,
-        request_url: item.event?.request?.url,
+        request_url: requestUrlForLogs(item.event?.request?.url),
         request_method: item.event?.request?.method,
         response_status: item.event?.response?.status,
         cron: item.event?.cron,

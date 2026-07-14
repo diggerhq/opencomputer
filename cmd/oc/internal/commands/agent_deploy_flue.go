@@ -37,12 +37,14 @@ const (
 	// flueBuildOutputDir is `flue build --target cloudflare`'s output root; the tool
 	// writes the Cloudflare build under dist/<app>/ (wrangler.json + the entry module +
 	// assets/), so we discover the wrangler beneath it rather than assume a flat layout.
-	flueBuildOutputDir    = "dist"
-	flueBundleMaxBytes    = 64 << 20 // server caps the staged bundle at 64 MiB — fail early
-	flueCompatibilityDate = "2026-04-01"
+	flueBuildOutputDir = "dist"
+	flueBundleMaxBytes = 64 << 20 // server caps the staged bundle at 64 MiB — fail early
 )
 
-var flueBindingIdentifier = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+var (
+	flueBindingIdentifier = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+	flueCompatibilityFlag = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+)
 
 type flueDOBinding struct {
 	Name      string `json:"name"`
@@ -312,11 +314,18 @@ func extractFlueWranglerDescriptor(raw []byte) (flueWranglerDescriptor, error) {
 	if !safeFlueModulePath(generated.Main) {
 		return flueWranglerDescriptor{}, fmt.Errorf("main must be a safe relative .js/.mjs module path")
 	}
-	if generated.CompatibilityDate != flueCompatibilityDate {
-		return flueWranglerDescriptor{}, fmt.Errorf("compatibility_date must be %s", flueCompatibilityDate)
+	if parsed, err := time.Parse("2006-01-02", generated.CompatibilityDate); err != nil || parsed.Format("2006-01-02") != generated.CompatibilityDate {
+		return flueWranglerDescriptor{}, fmt.Errorf("compatibility_date must be a valid YYYY-MM-DD date")
 	}
-	if len(generated.CompatibilityFlags) != 1 || generated.CompatibilityFlags[0] != "nodejs_compat" {
-		return flueWranglerDescriptor{}, fmt.Errorf(`compatibility_flags must be exactly ["nodejs_compat"]`)
+	if generated.CompatibilityFlags == nil || len(generated.CompatibilityFlags) > 64 {
+		return flueWranglerDescriptor{}, fmt.Errorf("compatibility_flags must be a unique array of valid flag names")
+	}
+	seenFlags := map[string]bool{}
+	for _, flag := range generated.CompatibilityFlags {
+		if !flueCompatibilityFlag.MatchString(flag) || seenFlags[flag] {
+			return flueWranglerDescriptor{}, fmt.Errorf("compatibility_flags must be a unique array of valid flag names")
+		}
+		seenFlags[flag] = true
 	}
 	if !generated.NoBundle {
 		return flueWranglerDescriptor{}, fmt.Errorf("no_bundle must be true")
@@ -325,7 +334,6 @@ func extractFlueWranglerDescriptor(raw []byte) (flueWranglerDescriptor, error) {
 	bindings := make([]flueDOBinding, 0, len(generated.DurableObjects.Bindings))
 	names := map[string]bool{}
 	classes := map[string]bool{}
-	registryCount := 0
 	for _, rawBinding := range generated.DurableObjects.Bindings {
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(rawBinding, &fields); err != nil {
@@ -346,19 +354,16 @@ func extractFlueWranglerDescriptor(raw []byte) (flueWranglerDescriptor, error) {
 		}
 		names[binding.Name] = true
 		classes[binding.ClassName] = true
-		if binding.Name == "FLUE_REGISTRY" && binding.ClassName == "FlueRegistry" {
-			registryCount++
-		}
 		bindings = append(bindings, binding)
 	}
-	if registryCount != 1 {
-		return flueWranglerDescriptor{}, fmt.Errorf("FLUE_REGISTRY must bind FlueRegistry exactly once")
+	if len(bindings) == 0 {
+		return flueWranglerDescriptor{}, fmt.Errorf("at least one same-script durable-object binding is required")
 	}
 
 	var descriptor flueWranglerDescriptor
 	descriptor.Main = generated.Main
-	descriptor.CompatibilityDate = flueCompatibilityDate
-	descriptor.CompatibilityFlags = []string{"nodejs_compat"}
+	descriptor.CompatibilityDate = generated.CompatibilityDate
+	descriptor.CompatibilityFlags = append([]string(nil), generated.CompatibilityFlags...)
 	descriptor.NoBundle = true
 	descriptor.DurableObjects.Bindings = bindings
 	return descriptor, nil

@@ -262,4 +262,30 @@ describe("gateway on-path flow (resolved seam)", () => {
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(402);
   });
+
+  it("admin: a zero budget is a real cap, while missing or invalid values are rejected", async () => {
+    vi.stubGlobal("fetch", mockFetch(0.01));
+    const { env } = mkEnv({ GATEWAY_ADMIN_SECRET: "adm" });
+    const headers = { authorization: "Bearer adm", "content-type": "application/json" };
+    const endpoint = "https://gw.test/admin/agent/budget";
+
+    for (const budget_usd of [undefined, -1, "1", Number.MAX_VALUE]) {
+      const invalid = await worker.fetch(new Request(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ org: ORG_ID, agt: AGENT_ID, ...(budget_usd === undefined ? {} : { budget_usd }) }),
+      }), env, ctx());
+      expect(invalid.status).toBe(400);
+    }
+
+    const provisioned = await worker.fetch(new Request(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ org: ORG_ID, agt: AGENT_ID, budget_usd: 0 }),
+    }), env, ctx());
+    expect(provisioned.status).toBe(200);
+
+    const blocked = await worker.fetch(post(await mint(), "ses_zero"), env, ctx());
+    expect(blocked.status).toBe(402);
+  });
 });
