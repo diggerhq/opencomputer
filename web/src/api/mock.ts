@@ -488,7 +488,6 @@ const DEPLOY_PREVIEW = 'installed' as
   | 'connected'
 
 const deployAppInstalled = {
-  repository_deploys_available: true,
   installed: true,
   install_url: 'https://github.com/apps/opencomputerdev/installations/new',
   configure_url:
@@ -517,7 +516,6 @@ const deployAppInstalled = {
   ],
 }
 const deployAppNotInstalled = {
-  repository_deploys_available: true,
   installed: false,
   install_url: 'https://github.com/apps/opencomputerdev/installations/new',
   configure_url: null,

@@ -15,32 +15,12 @@ afterEach(() => {
 })
 
 describe('deploy app client', () => {
-  it('preserves an explicit repository-deploy availability grant', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() =>
-        Promise.resolve(
-          Response.json({
-            ...deployAppResponse,
-            repository_deploys_available: true,
-          }),
-        ),
-      ),
-    )
-
-    await expect(getDeployApp()).resolves.toMatchObject({
-      repository_deploys_available: true,
-    })
-  })
-
-  it('fails closed when an older response omits availability', async () => {
+  it('returns GitHub installation state without a separate capability fork', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() => Promise.resolve(Response.json(deployAppResponse))),
     )
 
-    await expect(getDeployApp()).resolves.toMatchObject({
-      repository_deploys_available: false,
-    })
+    await expect(getDeployApp()).resolves.toEqual(deployAppResponse)
   })
 })

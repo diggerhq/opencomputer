@@ -615,9 +615,6 @@ export const DeployAppRepoSchema = z.object({
   private: z.boolean().nullish(),
 })
 export const DeployAppSchema = z.object({
-  // Rollout is owner-gated server-side. Missing stays unavailable so an older
-  // API cannot accidentally expose repository deploy controls.
-  repository_deploys_available: z.boolean().default(false),
   installed: z.boolean(),
   install_url: z.string().nullish(),
   configure_url: z.string().nullish(),

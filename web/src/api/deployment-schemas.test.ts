@@ -171,7 +171,6 @@ describe('repository deployment API schemas', () => {
 
   it('filters repositories without a registered import coordinate safely', () => {
     const parsed = DeployAppSchema.parse({
-      repository_deploys_available: true,
       installed: true,
       install_url: null,
       configure_url: null,
@@ -188,20 +187,6 @@ describe('repository deployment API schemas', () => {
     })
 
     expect(parsed.repositories[0]?.id).toBeNull()
-    expect(parsed.repository_deploys_available).toBe(true)
-  })
-
-  it('keeps repository deploys unavailable for older API responses', () => {
-    const parsed = DeployAppSchema.parse({
-      installed: false,
-      install_url: null,
-      configure_url: null,
-      account: null,
-      repository_selection: null,
-      repositories: [],
-    })
-
-    expect(parsed.repository_deploys_available).toBe(false)
   })
 
   it('fails closed when deployment identity or canonical state is absent', () => {
