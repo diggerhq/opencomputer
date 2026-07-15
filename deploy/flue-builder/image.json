@@ -1,0 +1,41 @@
+{
+  "base": "base",
+  "builderMemoryMB": 4096,
+  "runtimeMemoryMB": 1024,
+  "steps": [
+    {
+      "type": "add_file",
+      "args": {
+        "path": "/tmp/opencomputer-flue-builder-install.sh",
+        "contentFrom": "install-snapshot.sh",
+        "encoding": "base64"
+      }
+    },
+    {
+      "type": "run",
+      "args": {
+        "commands": [
+          "sudo -n bash /tmp/opencomputer-flue-builder-install.sh node"
+        ]
+      }
+    },
+    {
+      "type": "run",
+      "args": {
+        "commands": [
+          "sudo -n bash /tmp/opencomputer-flue-builder-install.sh oc"
+        ]
+      }
+    },
+    {
+      "type": "run",
+      "args": {
+        "commands": [
+          "sudo -n bash /tmp/opencomputer-flue-builder-install.sh attest",
+          "bash /tmp/opencomputer-flue-builder-install.sh verify",
+          "sudo -n rm -f /tmp/opencomputer-flue-builder-install.sh"
+        ]
+      }
+    }
+  ]
+}

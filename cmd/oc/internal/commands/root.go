@@ -25,7 +25,7 @@ var rootCmd = &cobra.Command{
 	Version: Version,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		cfg := config.Load(cmd)
-		if cfg.APIKey == "" && cmd.Name() != "config" && cmd.Name() != "help" && cmd.Name() != "set" && cmd.Name() != "show" {
+		if cfg.APIKey == "" && !isOfflineCommand(cmd) && cmd.Name() != "config" && cmd.Name() != "help" && cmd.Name() != "set" && cmd.Name() != "show" {
 			fmt.Fprintln(os.Stderr, "Warning: no API key configured. Set OPENCOMPUTER_API_KEY or run 'oc config set api-key <key>'")
 		}
 		c := client.New(cfg.APIURL, cfg.APIKey)
@@ -40,6 +40,9 @@ var rootCmd = &cobra.Command{
 		return nil
 	},
 	PersistentPostRun: func(cmd *cobra.Command, args []string) {
+		if isOfflineCommand(cmd) {
+			return
+		}
 		// One-line nag to stderr when a newer release is available. Skip
 		// for `oc update` itself, help, and completion scaffolding — see
 		// maybePromptUpdate for the full skip list (dev build, non-TTY,
@@ -52,6 +55,10 @@ var rootCmd = &cobra.Command{
 	},
 	SilenceUsage:  true,
 	SilenceErrors: true,
+}
+
+func isOfflineCommand(cmd *cobra.Command) bool {
+	return cmd.Annotations != nil && cmd.Annotations[offlineCommandAnnotation] == "true"
 }
 
 func init() {

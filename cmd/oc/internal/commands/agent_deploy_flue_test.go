@@ -26,6 +26,7 @@ import (
 
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/bundle"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
+	"github.com/opensandbox/opensandbox/cmd/oc/internal/fluebuild"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -114,6 +115,10 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "agent.toml"),
 		"name  = \"e2e-flue\"\nmodel = \"anthropic/claude-sonnet-5\"\n\n[runtime]\nfamily = \"flue\"\n", 0o644)
+	writeFile(t, filepath.Join(dir, "package.json"),
+		`{"engines":{"node":">=18"},"devDependencies":{"@flue/cli":"1.0.0"}}`, 0o644)
+	writeFile(t, filepath.Join(dir, "package-lock.json"),
+		`{"lockfileVersion":3}`, 0o644)
 	writeFile(t, filepath.Join(dir, "src", "opencomputer.ts"),
 		"import { serveOC } from '@opencomputer/flue';\nexport default serveOC(agent);\n", 0o644)
 	buildScript := "#!/bin/sh\nset -e\ntest \"${WRANGLER_LOG:-}\" = error\nmkdir -p dist/e2e_flue/assets dist/e2e_flue/.vite dist/e2e_flue/.flue-vite\n" +
@@ -254,7 +259,7 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 
 func TestFlueBuildEnvPreservesExplicitWranglerLog(t *testing.T) {
 	t.Setenv("WRANGLER_LOG", "debug")
-	for _, value := range flueBuildEnv() {
+	for _, value := range fluebuild.BuildEnv() {
 		if value == "WRANGLER_LOG=debug" {
 			return
 		}
@@ -305,7 +310,7 @@ func TestExtractFlueWranglerDescriptorRejectsUnsafeInput(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := extractFlueWranglerDescriptor(raw); err == nil {
+			if _, err := fluebuild.ExtractWranglerDescriptor(raw); err == nil {
 				t.Fatalf("expected %s to be rejected", tc.name)
 			}
 		})
@@ -326,7 +331,7 @@ func TestExtractFlueWranglerDescriptorPreservesBuildProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := extractFlueWranglerDescriptor(raw)
+	descriptor, err := fluebuild.ExtractWranglerDescriptor(raw)
 	if err != nil {
 		t.Fatalf("extract descriptor: %v", err)
 	}
@@ -352,7 +357,7 @@ func TestReadBundleModulesRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(root, "leak.js")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readBundleModules(root); err == nil || !strings.Contains(err.Error(), "symlink") {
+	if _, err := fluebuild.ReadBundleModules(root); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("expected symlink rejection, got %v", err)
 	}
 }
@@ -361,7 +366,7 @@ func TestReadBundleModulesRejectsUnexpectedRegularFile(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "index.js"), "export {};", 0o644)
 	writeFile(t, filepath.Join(root, "runtime.wasm"), "not really wasm", 0o644)
-	if _, err := readBundleModules(root); err == nil || !strings.Contains(err.Error(), "unsupported file") {
+	if _, err := fluebuild.ReadBundleModules(root); err == nil || !strings.Contains(err.Error(), "unsupported file") {
 		t.Fatalf("expected unsupported-file rejection, got %v", err)
 	}
 }
@@ -389,6 +394,10 @@ func TestDeployFlueBlocksOnLeakedKey(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "agent.toml"),
 		"name = \"leaky\"\nmodel = \"anthropic/claude-sonnet-5\"\n[runtime]\nfamily = \"flue\"\n", 0o644)
+	writeFile(t, filepath.Join(dir, "package.json"),
+		`{"engines":{"node":">=18"},"devDependencies":{"@flue/cli":"1.0.0"}}`, 0o644)
+	writeFile(t, filepath.Join(dir, "package-lock.json"),
+		`{"lockfileVersion":3}`, 0o644)
 	writeFile(t, filepath.Join(dir, "src", "leak.ts"),
 		"const k = \"sk-ant-api03-AbCdEf0123456789AbCdEf0123456789_-xyzTUV\";\n", 0o644)
 

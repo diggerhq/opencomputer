@@ -32,12 +32,22 @@ import { AgentSkills } from '@/components/agent-skills'
 import { AgentDeploySource } from '@/components/agent-deploy-source'
 import { AgentSchedulesTab } from '@/components/agent-schedules'
 import { AgentRevisions } from '@/components/agent-revisions'
+import { AgentDeployments } from '@/components/agent-deployments'
 import {
   WorkingRepoField,
   type WorkingRepo,
 } from '@/components/working-repo-field'
 import { ApiHint, type ApiRef } from '@/components/api-hint'
-import { getRuntime, keyFieldFor, providerForModel, withModelGroups } from '@/lib/runtimes'
+import {
+  agentCanStartNewSession,
+  agentDeploymentDisplayStatus,
+} from '@/lib/agent-deployment-status'
+import {
+  getRuntime,
+  keyFieldFor,
+  providerForModel,
+  withModelGroups,
+} from '@/lib/runtimes'
 
 const DOCS = 'https://docs.opencomputer.dev/agent-sessions'
 
@@ -46,31 +56,65 @@ const ORG_DEFAULT = '__default__' // no pinned credential → org default resolv
 const NEW_CRED = '__new__' // create one inline
 const MANAGED = 'managed' // run via OpenComputer, no BYO key (token-billing §6.6)
 
-type Tab = 'overview' | 'revisions' | 'sessions' | 'schedules' | 'settings'
+type Tab =
+  | 'overview'
+  | 'deployments'
+  | 'revisions'
+  | 'sessions'
+  | 'schedules'
+  | 'settings'
 
 export default function AgentDetail() {
   const { agentId = '', tab } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const active: Tab =
-    tab === 'revisions'
-      ? 'revisions'
-      : tab === 'sessions'
-        ? 'sessions'
-        : tab === 'schedules'
-          ? 'schedules'
-          : tab === 'settings'
-            ? 'settings'
-            : 'overview'
+    tab === 'deployments'
+      ? 'deployments'
+      : tab === 'revisions'
+        ? 'revisions'
+        : tab === 'sessions'
+          ? 'sessions'
+          : tab === 'schedules'
+            ? 'schedules'
+            : tab === 'settings'
+              ? 'settings'
+              : 'overview'
 
   // Each tab is a thin control panel over one API resource — surface the call it drives
   // (REST + SDK), same as the other pages, so the dashboard reads as programmable.
   const tabApi: Record<Tab, ApiRef> = {
-    overview: { method: 'GET', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.get(id)', docs: `${DOCS}/agents` },
-    revisions: { method: 'GET', path: `/v3/agents/${agentId}/revisions`, sdk: 'oc.agents.revisions.list(id)', docs: `${DOCS}/revisions` },
-    sessions: { method: 'POST', path: '/v3/sessions', sdk: 'oc.sessions.create({ agent })', docs: `${DOCS}/sessions` },
-    schedules: { method: 'GET', path: `/v3/agents/${agentId}/schedules`, sdk: 'oc.agents.schedules.list(id)', docs: `${DOCS}/schedules` },
-    settings: { method: 'PATCH', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.update(id, …)', docs: `${DOCS}/agents` },
+    overview: {
+      method: 'GET',
+      path: `/v3/agents/${agentId}`,
+      sdk: 'oc.agents.get(id)',
+      docs: `${DOCS}/agents`,
+    },
+    deployments: { method: 'GET', path: `/v3/agents/${agentId}/deployments` },
+    revisions: {
+      method: 'GET',
+      path: `/v3/agents/${agentId}/revisions`,
+      sdk: 'oc.agents.revisions.list(id)',
+      docs: `${DOCS}/revisions`,
+    },
+    sessions: {
+      method: 'POST',
+      path: '/v3/sessions',
+      sdk: 'oc.sessions.create({ agent })',
+      docs: `${DOCS}/sessions`,
+    },
+    schedules: {
+      method: 'GET',
+      path: `/v3/agents/${agentId}/schedules`,
+      sdk: 'oc.agents.schedules.list(id)',
+      docs: `${DOCS}/schedules`,
+    },
+    settings: {
+      method: 'PATCH',
+      path: `/v3/agents/${agentId}`,
+      sdk: 'oc.agents.update(id, …)',
+      docs: `${DOCS}/agents`,
+    },
   }
 
   const {
@@ -129,8 +173,8 @@ export default function AgentDetail() {
   const location = useLocation()
   const [task, setTask] = useState(
     () =>
-      (location.state as { composerPrefill?: string } | null)?.composerPrefill ??
-      '',
+      (location.state as { composerPrefill?: string } | null)
+        ?.composerPrefill ?? '',
   )
   // Optional working repo — the repo the agent checks out + opens PRs from. Explicitly chosen,
   // never derived from the connected/config repo (design 010 §2).
@@ -284,8 +328,13 @@ export default function AgentDetail() {
     )
   }
 
-  const activeRev = agent.active_revision?.number ?? agent.revision ?? 1
+  const activeRev =
+    agent.active_revision?.number ??
+    (agent.revision && agent.revision > 0 ? agent.revision : null)
   const base = `/agents/${agent.id}`
+  const latestDeploymentId = agent.deployment_status?.deployment_id
+  const deploymentStatus = agentDeploymentDisplayStatus(agent)
+  const canStartNewSession = agentCanStartNewSession(agent)
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -301,19 +350,46 @@ export default function AgentDetail() {
             <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
               <span className="font-mono">{agent.id}</span>
               <span className="capitalize">{agent.runtime}</span>
-              <span className="font-mono">rev #{activeRev}</span>
+              <span className="font-mono">
+                {activeRev ? `rev #${activeRev}` : 'Not deployed'}
+              </span>
+              {latestDeploymentId ? (
+                <Link
+                  to={`${base}/deployments/${latestDeploymentId}`}
+                  aria-label={`Open latest deployment: ${deploymentStatus.replace(/_/g, ' ')}`}
+                  className="focus-visible:ring-ring/50 rounded-md outline-none focus-visible:ring-3"
+                >
+                  <StatusBadge status={deploymentStatus} />
+                </Link>
+              ) : null}
               <SourceChip source={source ?? null} />
             </div>
           </div>
-          <Button asChild size="sm">
-            <Link to={`${base}/sessions`}>
+          {canStartNewSession ? (
+            <Button asChild size="sm">
+              <Link to={`${base}/sessions`}>
+                <Send className="size-4" />
+                New session
+              </Link>
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              disabled
+              title="A verified deployment is required before starting a session"
+            >
               <Send className="size-4" />
               New session
-            </Link>
-          </Button>
+            </Button>
+          )}
         </div>
-        <nav className="-mb-px flex gap-1">
+        <nav className="-mb-px flex gap-1 overflow-x-auto" aria-label="Agent">
           <TabLink to={base} label="Overview" current={active === 'overview'} />
+          <TabLink
+            to={`${base}/deployments`}
+            label="Deployments"
+            current={active === 'deployments'}
+          />
           <TabLink
             to={`${base}/revisions`}
             label="Revisions"
@@ -353,7 +429,7 @@ export default function AgentDetail() {
                         <GitBranch className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
                         <div className="space-y-0.5">
                           <p className="text-foreground">
-                            Managed from a connected repo —{' '}
+                            Managed from a connected repo:{' '}
                             <span className="font-mono">
                               {source.full_name ?? source.path ?? 'repo'}
                               {source.full_name && source.path
@@ -363,15 +439,36 @@ export default function AgentDetail() {
                             </span>
                           </p>
                           <p className="text-muted-foreground">
-                            The repo is the source of truth. Edit there and
-                            push, or{' '}
-                            <Link
-                              className="underline underline-offset-4"
-                              to={`${base}/revisions`}
-                            >
-                              browse revisions
-                            </Link>
-                            .
+                            The repo is the source of truth.{' '}
+                            {agent.runtime === 'flue' ? (
+                              <>
+                                Edit and push there, then{' '}
+                                <Link
+                                  className="underline underline-offset-4"
+                                  to={
+                                    latestDeploymentId
+                                      ? `${base}/deployments/${latestDeploymentId}`
+                                      : `${base}/deployments`
+                                  }
+                                >
+                                  {latestDeploymentId
+                                    ? 'open the latest deployment'
+                                    : 'open Deployments'}
+                                </Link>{' '}
+                                and choose Deploy latest.
+                              </>
+                            ) : (
+                              <>
+                                Edit there and push, or{' '}
+                                <Link
+                                  className="underline underline-offset-4"
+                                  to={`${base}/revisions`}
+                                >
+                                  browse revisions
+                                </Link>
+                                .
+                              </>
+                            )}
                           </p>
                         </div>
                       </div>
@@ -448,13 +545,16 @@ export default function AgentDetail() {
             </div>
             {/* Right rail: connect-or-status for the agent's source + Slack. */}
             <div className="space-y-4">
-              <AgentDeploySource agentId={agent.id} />
+              {agent.runtime !== 'flue' ? (
+                <AgentDeploySource agentId={agent.id} />
+              ) : null}
               <SlackConnect agentId={agent.id} agentName={agent.name} />
             </div>
           </div>
         )}
 
         {active === 'revisions' && <AgentRevisions agentId={agent.id} />}
+        {active === 'deployments' && <AgentDeployments agentId={agent.id} />}
         {active === 'schedules' && <AgentSchedulesTab agentId={agent.id} />}
 
         {active === 'sessions' && (
@@ -469,40 +569,59 @@ export default function AgentDetail() {
               </Link>
             </PanelHeader>
             <PanelContent className="border-b">
-              <form
-                className="space-y-2"
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  if (task.trim()) startMutation.mutate()
-                }}
-              >
-                <ChatTextarea
-                  value={task}
-                  onChange={(e) => setTask(e.target.value)}
-                  onSend={() => {
-                    if (task.trim() && !startMutation.isPending)
-                      startMutation.mutate()
+              {canStartNewSession ? (
+                <form
+                  className="space-y-2"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    if (task.trim()) startMutation.mutate()
                   }}
-                  placeholder="Give this agent a task — it runs durably as a new session…"
-                  className="min-h-20"
-                />
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <WorkingRepoField
-                    value={workingRepo}
-                    onChange={setWorkingRepo}
+                >
+                  <ChatTextarea
+                    value={task}
+                    onChange={(e) => setTask(e.target.value)}
+                    onSend={() => {
+                      if (task.trim() && !startMutation.isPending)
+                        startMutation.mutate()
+                    }}
+                    placeholder="Give this agent a task that runs durably as a new session…"
+                    className="min-h-20"
                   />
-                  <Button
-                    type="submit"
-                    size="sm"
-                    title="Enter to start · Shift+Enter for newline"
-                    disabled={startMutation.isPending || !task.trim()}
-                    className="ml-auto"
-                  >
-                    <Send className="size-4" />
-                    {startMutation.isPending ? 'Starting…' : 'Start session'}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <WorkingRepoField
+                      value={workingRepo}
+                      onChange={setWorkingRepo}
+                    />
+                    <Button
+                      type="submit"
+                      size="sm"
+                      title="Enter to start · Shift+Enter for newline"
+                      disabled={startMutation.isPending || !task.trim()}
+                      className="ml-auto"
+                    >
+                      <Send className="size-4" />
+                      {startMutation.isPending ? 'Starting…' : 'Start session'}
+                    </Button>
+                  </div>
+                </form>
+              ) : (
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-medium">
+                      {activeRev
+                        ? 'New sessions are paused until the live deployment is verified.'
+                        : 'Deploy this agent before starting a session.'}
+                    </p>
+                    <p className="text-muted-foreground mt-1 text-xs">
+                      Open deployment history to inspect progress and build
+                      logs.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" asChild>
+                    <Link to={`${base}/deployments`}>View deployments</Link>
                   </Button>
                 </div>
-              </form>
+              )}
             </PanelContent>
             <ResourceTable
               columns={sessionColumns}
@@ -631,7 +750,7 @@ function TabLink({
       to={to}
       aria-current={current ? 'page' : undefined}
       className={
-        'border-b-2 px-3 py-2 text-sm transition-colors ' +
+        'shrink-0 border-b-2 px-3 py-2 text-sm transition-colors ' +
         (current
           ? 'border-foreground text-foreground font-medium'
           : 'text-muted-foreground hover:text-foreground border-transparent')

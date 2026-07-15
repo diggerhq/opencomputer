@@ -13,15 +13,15 @@ my-agent/
 └─ runtime/        # optional — a custom runtime image (coming soon)
 ```
 
-`agent.toml` + `prompt.md` are all a built-in agent needs; `skills/` and `runtime/` are additive. A **deployment** packages this directory into an immutable [**revision**](#revisions), and the **active revision** is what new [sessions](/agent-sessions/sessions) use.
+`agent.toml` + `prompt.md` are all a built-in agent needs; `skills/` and `runtime/` are additive. A **deployment** is one attempt to turn source or uploaded behavior into a live agent. A successful attempt creates an immutable [**revision**](#revisions); failed, canceled, superseded, and skipped attempts remain deployment history but do not create one.
 
 <Note>A [Flue](/agent-sessions/flue) deployment packages a compiled Cloudflare app instead. It records revisions in the same API, but currently has one live Worker per agent rather than independently routable revision artifacts. Its staging and rollback behavior is therefore different.</Note>
 
-Built-in runtime behavior can be deployed through the **API/SDK**, the **`oc` CLI**, or a [**repo push**](#deploy-from-a-repo). The current Flue profile uses `oc agent deploy` from a local app checkout because its build must run the app's installed Flue toolchain.
+Built-in runtime behavior can be deployed through the **API/SDK**, the **`oc` CLI**, or a [**repo push**](#deploy-from-a-repo). A Flue app can be imported and built from GitHub in the dashboard, or deployed from a local checkout with `oc agent deploy`.
 
 ## Revisions
 
-A **revision** is an immutable, numbered record of one deployment. For a built-in runtime, it freezes the `prompt`, `model`, and skills used by new sessions. For Flue, it records the app deployment and Worker version that passed verification.
+A **revision** is an immutable, numbered record of one successful deployment. For a built-in runtime, it freezes the `prompt`, `model`, and skills used by new sessions. For Flue, it records the app deployment and Worker version that passed verification. An imported Flue agent begins undeployed, with no active revision; its first successful build and verification creates revision #1.
 
 Revisions are **linear** (the number only goes up) and never rewritten. Built-in runtime sessions keep the revision they started on; only new sessions pick up a change. Flue sessions share the agent's live Worker, so a Worker deployment also changes the code used by existing sessions.
 
@@ -36,7 +36,7 @@ The agent itself holds only **identity + bindings** (`name`, `runtime`, `credent
 
 ## Deploy
 
-`POST /agents/:id/deployments` is the one command. `input.type: "inline"` sends behavior directly (API / CLI / dashboard); `input.type: "github"` deploys a linked repo — see [Deploy from a repo](#deploy-from-a-repo).
+`POST /agents/:id/deployments` is the common post-creation command. `input.type: "inline"` sends behavior directly (API / CLI / dashboard); `input.type: "github"` deploys an already-linked repo — see [Deploy from a repo](#deploy-from-a-repo). Creating a new Flue agent from GitHub uses the atomic [`POST /agents/import`](#import-a-flue-repository) command instead.
 
 An inline payload is the **complete** behavior — omitted fields aren't inherited (`prompt` is required; omitted `skills` means *no skills*).
 
@@ -81,7 +81,7 @@ The response is a **deployment**:
 { "deployment": { "id": "dep_…", "state": "ready", "revision_id": "rev_…", "active": true } }
 ```
 
-Inline deployments finish synchronously (`state: "ready"` with a `revision_id`) for the built-in runtimes. A [Flue](/agent-sessions/flue) deploy returns `state: "verifying"` while the managed deploy runner uploads the agent Worker and waits for two consecutive healthy responses from that exact live Worker. Poll it like an asynchronous deployment (`verifying` to `ready` or `failed`). GitHub deployments return `state: "accepted"`; poll `GET /agents/:id/deployments/:deployment_id` until terminal, and use the commit status on GitHub for the same result.
+Inline deployments finish synchronously (`state: "ready"` with a `revision_id`) for the built-in runtimes. A [Flue](/agent-sessions/flue) deploy returns `state: "verifying"` while the managed deploy runner uploads the agent Worker and waits for two consecutive healthy responses from that exact live Worker. Poll it like an asynchronous deployment (`verifying` to `ready` or `failed`). Repository deployments start at `accepted`; poll `GET /agents/:id/deployments/:deployment_id` and its durable log until terminal.
 
 ### Staging vs activating
 
@@ -103,13 +103,37 @@ await oc.agents.revisions.activate("agt_123", deployment.revision_id);
 
 So `revision` on [session create](/agent-sessions/sessions) is how you exercise any non-active revision (a staged one, or an old one) without touching what's live.
 
-For [repo deployments](#deploy-from-a-repo) the **branch decides** and `activate` is ignored: a push to the production branch activates, every other branch stages.
+For built-in [repo deployments](#deploy-from-a-repo), the **branch decides** and `activate` is ignored:
+a push to the production branch activates, while another branch stages. Flue repository deployment
+accepts only its linked production branch because the current runtime has one live Worker and no
+isolated preview Worker.
 
 <Tip>Editing `prompt`/`model` via [`PATCH /agents/:id`](/agent-sessions/agents) also deploys a revision — a shorthand for small edits.</Tip>
 
 ## Deploy from a repo
 
-<Note>Repo-linked push-to-deploy is not available for Flue apps yet. Deploy their compiled Cloudflare target with `oc agent deploy` from a local or CI checkout.</Note>
+### Import a Flue repository
+
+Choose **Agents → Create agent → Import from GitHub** in the dashboard. OpenComputer inspects the
+selected branch and root without executing code, then creates the agent, source link, and first
+deployment as one retry-safe command. The OpenComputer agent's editable display name is separate
+from `agent.toml.name`, which identifies the exported Flue entrypoint inside the built app.
+
+The managed path is deliberately narrow: one self-contained npm root, a committed
+`package-lock.json`, a compatible `engines.node`, and a local `@flue/cli` dependency. OpenComputer
+fetches the exact commit with a repository-scoped GitHub App token in a source sandbox, removes Git
+metadata and auth, then runs `npm ci` and the offline builder in a separate tokenless sandbox. npm
+lifecycle scripts do run in that ordinary disposable OpenComputer sandbox, but its request carries
+no source, platform, model, or deployment credential.
+
+The deployment detail page keeps one persisted chronological log and summarizes the attempt as
+**Prepare**, **Build**, and **Deploy**. An install/build failure leaves the imported agent visible
+and undeployed; it creates no revision and cannot start a session. Fix the source and push the
+production branch again.
+
+<Note>Each later push that touches the linked root on the production branch automatically creates a Flue deployment. Non-production pushes do not create preview/staged Flue Workers. **Deploy latest** manually rebuilds the current production head when needed.</Note>
+
+### Link a built-in agent directory
 
 Keep the agent directory (above) in Git and **push to deploy**. [Install the OpenComputer GitHub App](/agent-sessions/repos#connecting-github) on the repo, then connect it to an agent:
 
@@ -141,7 +165,7 @@ Linking deploys the current `main` HEAD right away (`deploy_now: false` / `--no-
 
 OpenComputer posts a **commit status** (queued → ready / failed) so a deployment's result shows in GitHub.
 
-Your **GitHub token never reaches the agent's sandbox** — OpenComputer pulls only the linked directory, at the exact commit, in an isolated worker; a deployment can only target the directory you connected; no code runs at deploy time. (Same token model as [repos](/agent-sessions/repos).)
+For built-in behavior, your **GitHub token never reaches the agent's sandbox** — OpenComputer pulls only the linked directory at the exact commit in an isolated worker, and no repository code runs. A managed Flue build uses the same short-lived source-token boundary, then runs repository code only after the tokenless handoff described above.
 
 ## Deploy from your machine
 
@@ -193,8 +217,9 @@ Instant — no rebuild. Running sessions are unaffected; new sessions use the ne
 ## Inspect
 
 ```http REST API
-GET /v3/agents/agt_123/deployments              # deployment history (state, source, actor)
-GET /v3/agents/agt_123/deployments/dep_123      # one deployment (poll async ones to ready|failed)
+GET /v3/agents/agt_123/deployments?limit=50      # deployment history + opaque next_cursor
+GET /v3/agents/agt_123/deployments/dep_123       # one attempt, timing, source, build, result
+GET /v3/agents/agt_123/deployments/dep_123/logs  # durable chunks; resume with ?after=<cursor>
 GET /v3/agents/agt_123/revisions                # revision history (newest first; active flagged)
 GET /v3/agents/agt_123/revisions/5              # one revision + its skill file manifest
 GET /v3/agents/agt_123/activations              # active-pointer audit log
@@ -217,4 +242,4 @@ These are **coming soon** — a deployment that includes them is rejected today:
 
 ## Dashboard
 
-The agent page in the [dashboard](https://app.opencomputer.dev) mirrors all of this: a **Revisions** panel (history, the active revision, one-click rollback) and a **Skills** panel (current skills, plus upload-`.zip` / remove).
+The agent page in the [dashboard](https://app.opencomputer.dev) keeps **Deployments** as the operational attempt history and **Revisions** as successful immutable results. Repository deployment detail includes its exact commit, phase, timing, build metadata, safe error summary, and persisted log.

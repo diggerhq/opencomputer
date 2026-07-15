@@ -17,6 +17,11 @@ agent edits files and calls the
 OpenComputer commits and opens the PR outside the agent sandbox with a fresh, write-scoped
 token.
 
+The same repository identity also powers [Flue repository deployment](/agent-sessions/flue#deploy-from-github),
+but the destination is different. Session sources copy code into a running agent's hands sandbox;
+a Flue deployment resolves one production commit, hands tokenless source to a separate build
+sandbox, and deploys the resulting artifact. Repository credentials reach neither destination.
+
 <Note>**Preview** — APIs may change before general availability.</Note>
 
 ## Concepts
@@ -28,6 +33,7 @@ token.
 | Repo | A stable owner/repo handle. | No tokens, private keys, or session refs. |
 | Source | `ref`, `sha`, and local name for one session. | Auth comes from your configured GitHub App (OpenComputer App by default) unless inline. |
 | Git operations sandbox | Runs authenticated clone/fetch/publish work. | Separate from the agent; token lives only for one operation. |
+| Deployment source | Repository, root, and production branch for one agent. | Resolves one exact commit; source auth is discarded before build code runs. |
 
 <Note>
 `Repo` and `Source` are provider-neutral: `provider`, `owner`, `repo`, `ref`, `sha`.
@@ -111,6 +117,30 @@ sequenceDiagram
 
 The token is minted per operation, scoped to a single repo, lives only inside a box that
 does nothing but Git, and is gone before the next turn.
+
+## Use a repo to deploy a Flue agent
+
+Choose **Agents → Create agent → Import from GitHub** when the repository is the agent
+implementation itself. The dashboard uses the OpenComputer App to:
+
+1. inspect the selected branch and root without running repository code;
+2. review the exact commit, Flue entrypoint, model, and agent name while validating the managed Node/package contract;
+3. create an undeployed agent and its first deployment attempt; and
+4. fetch that exact tracked tree in a short-lived Git box.
+
+The Git box writes a bounded, digest-checked source archive to object storage and is destroyed.
+A different sandbox receives that archive without `.git` or GitHub auth, runs the fixed install and
+build commands as an ordinary disposable OpenComputer sandbox, and emits an artifact. The Workers
+deployment credential belongs to another trusted service and is never present during source or
+build work.
+
+Flue repository deployment currently supports one self-contained npm root with `agent.toml`,
+`package.json`, and `package-lock.json`. The initial import links that root to its production branch;
+each later push touching the root automatically deploys the branch's new exact head. Other branches
+do not create Flue preview deployments. **Deploy latest** remains available for manually rebuilding
+the current production head after a transient failure. See
+[Flue deployment](/agent-sessions/flue#deploy-from-github) for the full build contract and failure
+journey.
 
 ## Connecting GitHub
 

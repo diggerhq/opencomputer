@@ -19,6 +19,7 @@ const session = await oc.sessions.get("ses_...");        // server, org key
 # the oc CLI authenticates with OPENCOMPUTER_API_KEY (or `oc login`); --json on any command
 oc whoami
 oc agent deploy        # deploy the agent directory in the cwd
+oc agent build --dir . --check-only --json  # validate a Flue app without credentials or deployment
 ```
 
 <Note>The SDK uses **camelCase** for fields and params (`last_turn` → `lastTurn`, `idempotency_key` → `idempotencyKey`); the wire shapes below are raw JSON. Opaque blobs — session `metadata`, event `refs`/`raw` — pass through **verbatim**; everything else (incl. event `body`) is camelCased. The CLI prints a table, or raw JSON with `--json`.</Note>
@@ -264,6 +265,7 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 | Method · Path | Purpose |
 | --- | --- |
 | `POST /agents` | Create a reusable agent. |
+| `POST /agents/import` | Atomically create a Flue agent from an inspected GitHub source and enqueue its first deployment. |
 | `GET /agents/:id` · `GET /agents` | Fetch / list. |
 | `PATCH /agents/:id` | Update bindings; `prompt`/`model` deploy a revision. |
 | `DELETE /agents/:id` | Delete an agent. |
@@ -287,9 +289,67 @@ Body: `name`, `prompt`, `model`, `runtime?` (`claude`|`codex`), `key?`, `credent
 
 `POST /agents` is **idempotent by `name`**: fresh → `201`, matching config → `200`, differing → `409`. Editing `prompt`/`model` (here or via [deploy](#deployments-and-revisions)) creates a **revision**; the agent keeps a pointer to its **active revision** (`GET /agents/:id` → `active_revision`) and sessions pin it. The agent row holds only identity + bindings.
 
+`POST /agents/import` is the Flue repository-import command described below. It deliberately creates
+an agent with no active revision; revision #1 appears only after the queued build and live deployment
+verify successfully.
+
 ## Deployments and revisions
 
-You **deploy** an agent's behavior (`prompt` + `model` + `skills`); each deployment produces an immutable **revision**, and the **active revision** is what new sessions use. See the [Deployments & revisions guide](/agent-sessions/revisions).
+You **deploy** an agent's behavior. A deployment is a time-aware attempt; only a successful attempt
+produces an immutable **revision**. Failed attempts and their logs remain in deployment history. See
+the [Deployments & revisions guide](/agent-sessions/revisions).
+
+### Import a Flue repository
+
+Repository inspection and import are currently REST/dashboard surfaces. Inspection resolves the
+moving production branch to one commit and validates bounded metadata without executing repository
+code:
+
+```http REST API
+POST /github/deploy-app/inspect
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+
+{
+  "repo": "repo_...",
+  "path": "",
+  "production_ref": "main"
+}
+```
+
+The response includes `repository`, normalized `root`, `production_ref`, exact `sha`, the manifest
+projection (`entrypoint`, `model`, `runtime`, non-secret `vars`), package and lockfile metadata,
+published builder Node, source counts, `variable_names`, and safe `warnings`. It never includes a
+repository token or source bytes.
+
+After review, submit the same source coordinates with a human-readable agent name. The name is
+independent of the Flue entrypoint in `agent.toml`.
+
+```http REST API
+POST /agents/import
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Idempotency-Key: <stable-key-for-this-import>
+
+{
+  "name": "Support triage",
+  "credential": "managed",
+  "source": {
+    "type": "github",
+    "repo": "repo_...",
+    "path": "",
+    "production_ref": "main"
+  }
+}
+```
+
+The server repeats authoritative inspection, then creates `{ agent, source, deployment }` atomically.
+The deployment starts at `accepted`; the agent is visible but cannot start sessions until it reaches
+`ready`. Reusing the same idempotency key and command returns the same import; reusing it with
+different fields returns `409 idempotency_conflict`. A name or repository-root conflict also returns
+`409` and identifies the existing agent when available.
+
+The source remains linked after import. A later GitHub push that touches the selected root on its
+production branch automatically creates the next deployment. Flue ignores non-production pushes;
+the current runtime has one live Worker and no preview/staged Worker.
 
 ### Deploy
 
@@ -310,7 +370,9 @@ You **deploy** an agent's behavior (`prompt` + `model` + `skills`); each deploym
 | Method · Path | Purpose |
 | --- | --- |
 | `POST /agents/:id/deployments` | Deploy → `{ deployment }`. Body: `{ input, activate?=true, idempotency_key?, client_context? }`. |
-| `GET /agents/:id/deployments` · `…/:deploymentId` | History · one deployment (poll async to `ready`\|`failed`). |
+| `GET /agents/:id/deployments?before=&limit=` | Newest-first history with an opaque `next_cursor`. |
+| `GET /agents/:id/deployments/:deploymentId` | One attempt; poll asynchronous states until terminal. |
+| `GET /agents/:id/deployments/:deploymentId/logs?after=&limit=` | Ordered durable log chunks with opaque resume cursors. |
 
 </Tab>
 
@@ -319,24 +381,41 @@ You **deploy** an agent's behavior (`prompt` + `model` + `skills`); each deploym
 | Command | Purpose |
 | --- | --- |
 | `oc agent deploy [dir] [--agent <id\|name>] [--no-activate]` | Bundle a local directory → inline deployment. |
+| `oc agent build --dir <dir> [--check-only] [--target cloudflare] [--output <dir>]` | Validate or build a Flue artifact without fetching, installing, authenticating, or deploying. |
 | `oc agent deployments [--agent <id>]` · `oc agent deployments get <id>` | History · one deployment. |
 
 </Tab>
 
 </Tabs>
 
-`input`: `{ type:"inline", prompt, model?, skills?, runtime? }` (the **complete** behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys the [linked repo](#deploy-from-a-repo); `repo`/`path` from the link). `activate:false` **stages** it — but only for `inline`; `github` deploys are **branch-driven** (the production branch activates, others stage) so `activate` is ignored. Inline = sync (`ready` + `revision_id`); GitHub = async (`accepted`, then poll to `ready`). `POST …/revisions` is inline-only sugar.
+`input`: `{ type:"inline", prompt, model?, skills?, runtime? }` (the **complete** built-in
+behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys an already-linked
+repository; `repo`/`path` come from the server-owned link). `activate:false` stages an inline built-in
+deployment. Built-in GitHub links remain branch-driven. A new Flue repository agent instead starts
+with [`POST /agents/import`](#import-a-flue-repository); import deploys the reviewed production head,
+and subsequent production-branch pushes deploy automatically. Flue has no preview/staged Worker.
+`POST …/revisions` is inline-only sugar.
 
 **`Deployment`**
 
 | Field | Notes |
 |---|---|
-| `id` `created_at` | |
-| `state` | `accepted` (async — queued for the deploy worker) → terminal `ready`; other terminals: `failed`, `superseded` (a newer deploy won), `skipped` (content unchanged) |
-| `result` | `created · skipped · superseded · failed` (`null` until terminal) |
-| `revision_id` | the revision it produced (`null` until `ready`) |
-| `active` | whether that revision is the active one |
-| `source?` `error?` | provenance · failure detail |
+| `id` `created_at` `updated_at` | Attempt identity and timestamps. |
+| `state` `phase` `terminal` | Internal state plus stable UI phase. Repository states: `accepted`, `queued`, `fetching`, `validating`, `installing`, `building`, `uploading`, `deploying`, `verifying`; terminals: `ready`, `failed`, `canceled`, `superseded`, `skipped`. |
+| `result` `error_class` `error?` | Terminal outcome and bounded, redacted failure detail. |
+| `revision_id` `revision?` `active` | Successful revision relation; absent for an unsuccessful attempt. |
+| `source_relation?` | Repository id/name, path, production ref, exact SHA, and commit URL. |
+| `build?` `configuration?` | Safe builder/artifact metadata and non-secret runtime configuration; variables are names only. |
+| `timing` | Accepted/started/finished coordinates plus queue/run/total durations. |
+| `log_bytes` `log_truncated` | Bounded log accounting. |
+| `live_touched` `agent_live?` | Whether deployment crossed the live Worker boundary and the current guarded/verified state. |
+| `allowed_actions` | Server-derived actions such as `view_commit`, `deploy_latest`, `open_agent`, or `start_session`. |
+
+List returns `{ data, next_cursor }`. Log reads return
+`{ data: [{ seq, cursor, recorded_at, phase, stream, chunk }], next_cursor, has_more }`; treat `seq`
+and both cursors as opaque strings. Continue with `after=next_cursor` until `has_more` is false, then
+poll again while the deployment is nonterminal. Source archives, bundles, credentials, raw provider
+responses, and operator telemetry are never projected through these APIs.
 
 ### Revisions, rollback & promote
 
@@ -461,7 +540,13 @@ A skill is a folder with a `SKILL.md`; PUT/DELETE are **deployments** (versioned
 
 </Tabs>
 
-Linking deploys the current production HEAD immediately (unless `deploy_now: false` / `--no-deploy`); a push to the production branch activates, other branches stage. **Scopes:** `deploy_now: false` needs `agents:link`; the default (with an initial deploy) needs `agents:link` + `agents:deploy`, plus `agents:activate` when that deploy auto-activates. Repo/path are server-anchored to the link. Deployment sources use the **OpenComputer App** (no BYO). Full flow + guarantees: [Deploy from a repo](/agent-sessions/revisions#deploy-from-a-repo).
+Linking deploys the current production HEAD immediately (unless `deploy_now: false` / `--no-deploy`).
+For built-in runtimes, a push to the production branch activates while other branches stage. For
+Flue, only the production branch deploys. **Scopes:** `deploy_now: false` needs `agents:link`; the
+default (with an initial deploy) needs `agents:link` + `agents:deploy`, plus `agents:activate` when
+that deploy auto-activates. Repo/path are server-anchored to the link. Deployment sources use the
+**OpenComputer App** (no BYO). Full flow + guarantees:
+[Deploy from a repo](/agent-sessions/revisions#deploy-from-a-repo).
 
 **`DeploymentSource`**
 

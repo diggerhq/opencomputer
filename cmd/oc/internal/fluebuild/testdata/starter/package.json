@@ -1,0 +1,10 @@
+{
+  "name": "flue-starter-fixture",
+  "private": true,
+  "engines": {
+    "node": ">=22.19.0 <23"
+  },
+  "devDependencies": {
+    "@flue/cli": "0.1.0"
+  }
+}

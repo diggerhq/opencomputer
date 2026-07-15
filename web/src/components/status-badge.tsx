@@ -29,6 +29,11 @@ const STATUS: Record<string, Meta> = {
   active: { tone: 'running', label: 'Active', icon: CircleCheck },
   success: { tone: 'running', label: 'Success', icon: CircleCheck },
   stopped: { tone: 'stopped', label: 'Stopped', icon: CircleSlash },
+  not_deployed: {
+    tone: 'stopped',
+    label: 'Not deployed',
+    icon: CircleSlash,
+  },
   canceled: { tone: 'stopped', label: 'Canceled', icon: CircleSlash },
   unknown: { tone: 'stopped', label: 'Unknown', icon: CircleSlash },
   hibernated: { tone: 'hibernated', label: 'Hibernated', icon: Moon },
@@ -38,7 +43,45 @@ const STATUS: Record<string, Meta> = {
   awaiting_input: { tone: 'pending', label: 'Awaiting input', icon: Clock },
   pending: { tone: 'pending', label: 'Pending', icon: Clock },
   queued: { tone: 'pending', label: 'Queued', icon: Clock },
+  accepted: { tone: 'pending', label: 'Queued', icon: Clock },
+  fetching: { tone: 'pending', label: 'Fetching', icon: Loader2, spin: true },
+  validating: {
+    tone: 'pending',
+    label: 'Validating',
+    icon: Loader2,
+    spin: true,
+  },
+  installing: {
+    tone: 'pending',
+    label: 'Installing',
+    icon: Loader2,
+    spin: true,
+  },
   building: { tone: 'pending', label: 'Building', icon: Loader2, spin: true },
+  uploading: {
+    tone: 'pending',
+    label: 'Publishing artifact',
+    icon: Loader2,
+    spin: true,
+  },
+  updating: {
+    tone: 'pending',
+    label: 'Updating',
+    icon: Loader2,
+    spin: true,
+  },
+  deploying: {
+    tone: 'pending',
+    label: 'Deploying',
+    icon: Loader2,
+    spin: true,
+  },
+  verifying: {
+    tone: 'pending',
+    label: 'Verifying',
+    icon: Loader2,
+    spin: true,
+  },
   processing: {
     tone: 'pending',
     label: 'Processing',
@@ -50,6 +93,10 @@ const STATUS: Record<string, Meta> = {
   deleting: { tone: 'pending', label: 'Deleting', icon: Loader2, spin: true },
   error: { tone: 'error', label: 'Error', icon: CircleAlert },
   failed: { tone: 'error', label: 'Failed', icon: CircleAlert },
+  unverified: { tone: 'error', label: 'Unverified', icon: CircleAlert },
+  verified: { tone: 'running', label: 'Verified', icon: CircleCheck },
+  superseded: { tone: 'stopped', label: 'Superseded', icon: CircleSlash },
+  skipped: { tone: 'stopped', label: 'Skipped', icon: CircleSlash },
   degraded: { tone: 'error', label: 'Degraded', icon: CircleAlert },
   // Webhook delivery statuses
   delivered: { tone: 'running', label: 'Delivered', icon: CircleCheck },
@@ -91,7 +138,10 @@ export function StatusBadge({
       )}
     >
       <Icon
-        className={cn('size-3.5', meta.spin && 'animate-spin')}
+        className={cn(
+          'size-3.5',
+          meta.spin && 'animate-spin motion-reduce:animate-none',
+        )}
         aria-hidden
       />
       {label ?? meta.label}

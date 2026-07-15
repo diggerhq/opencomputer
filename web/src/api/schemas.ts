@@ -337,6 +337,33 @@ export const AgentSchema = z.object({
     .object({ id: z.string(), number: z.number(), digest: z.string() })
     .nullish(),
   limits: record.nullish(),
+  deployment_status: z
+    .object({
+      deployment_id: z.string().nullish(),
+      state: z.string(),
+      result: z.string().nullish(),
+      error_class: z.string().nullish(),
+      live_touched: z.boolean(),
+      live_status: z.string().nullish(),
+      legacy_live_compatible: z.boolean().optional(),
+      updated_at: z.string().nullish(),
+    })
+    .optional(),
+  flue: z
+    .object({
+      agent_name: z.string().nullish(),
+      live: z
+        .object({
+          deployment_id: z.string().nullish(),
+          worker_version_id: z.string().nullish(),
+          status: z.string().nullish(),
+          guarded_at: z.string().nullish(),
+          deadline_at: z.string().nullish(),
+          updated_at: z.string().nullish(),
+        })
+        .nullish(),
+    })
+    .nullish(),
   created_at: z.string(),
 })
 // List endpoints wrap rows in { data: [...], next_cursor? }.
@@ -371,6 +398,157 @@ export const AgentDeploySchema = z.object({
 })
 export const AgentDeployListSchema = z.object({
   data: z.array(AgentDeploySchema),
+})
+
+// Managed repository deployments (work 025). The identity and canonical state
+// are required; phase detail is additive so an older dashboard can keep
+// rendering when the control plane gains new metadata.
+export const AgentDeploymentErrorSchema = z
+  .object({
+    class: z.string(),
+    phase: z.string().optional(),
+    message: z.string().optional(),
+    retryable: z.boolean().optional(),
+    exit_code: z.number().optional(),
+  })
+  .nullish()
+
+export const AgentDeploymentBuildSchema = z
+  .object({
+    schema_version: z.number().optional(),
+    attempts: z.number().optional(),
+    lockfile_version: z.number().optional(),
+    source_bytes: z.number().optional(),
+    source_files: z.number().optional(),
+    artifact_bytes: z.number().optional(),
+    root: z.string().optional(),
+    node: z.string().optional(),
+    npm: z.string().optional(),
+    builder: z.string().optional(),
+    snapshot: z.string().optional(),
+    artifact_digest: z.string().optional(),
+  })
+  .nullish()
+
+export const AgentDeploymentSourceRelationSchema = z
+  .object({
+    repo: z
+      .object({
+        id: z.string(),
+        full_name: z.string().nullish(),
+      })
+      .nullish(),
+    path: z.string().nullish(),
+    production_ref: z.string().nullish(),
+    status: z.string().nullish(),
+    ref: z.string().nullish(),
+    sha: z.string().nullish(),
+    commit_url: z.string().nullish(),
+  })
+  .nullish()
+
+export const AgentDeploymentLiveSchema = z
+  .object({
+    deployment_id: z.string().optional(),
+    worker_version_id: z.string().optional(),
+    status: z.string().optional(),
+    guarded_at: z.string().optional(),
+    deadline_at: z.string().optional(),
+    updated_at: z.string().optional(),
+  })
+  .nullish()
+
+export const AgentDeploymentSchema = z.object({
+  id: z.string(),
+  state: z.string(),
+  phase: z.string(),
+  terminal: z.boolean(),
+  result: z.string().nullish(),
+  input_type: z.string(),
+  revision_id: z.string().nullish(),
+  revision: z
+    .object({
+      id: z.string(),
+      number: z.number().nullish(),
+      digest: z.string().nullish(),
+      created_at: z.string().nullish(),
+    })
+    .nullish(),
+  source: record.nullish(),
+  source_relation: AgentDeploymentSourceRelationSchema,
+  actor: z
+    .object({
+      kind: z.string().optional(),
+      id: z.string().optional(),
+      login: z.string().optional(),
+    })
+    .nullish(),
+  ref: z.string().nullish(),
+  sha: z.string().nullish(),
+  error: AgentDeploymentErrorSchema,
+  error_class: z.string().nullish(),
+  build: AgentDeploymentBuildSchema,
+  configuration: z
+    .object({
+      entrypoint: z.string().optional(),
+      model: z.string().optional(),
+      runtime: z.object({ family: z.string(), type: z.string() }).optional(),
+      variable_names: z.array(z.string()).default([]),
+    })
+    .nullish(),
+  log_bytes: z.number(),
+  log_truncated: z.boolean(),
+  live_touched: z.boolean(),
+  agent_live: AgentDeploymentLiveSchema,
+  restore_eligibility: z.string(),
+  redeploy_of: z.unknown().nullish(),
+  allowed_actions: z.array(z.string()).default([]),
+  active: z.boolean(),
+  timing: z.object({
+    accepted_at: z.string().nullish(),
+    started_at: z.string().nullish(),
+    finished_at: z.string().nullish(),
+    cancel_requested_at: z.string().nullish(),
+    queue_ms: z.number().nullish(),
+    run_ms: z.number().nullish(),
+    total_ms: z.number().nullish(),
+  }),
+  created_at: z.string(),
+  updated_at: z.string(),
+  started_at: z.string().nullish(),
+  finished_at: z.string().nullish(),
+})
+
+export const AgentDeploymentListSchema = z.object({
+  data: z.array(AgentDeploymentSchema),
+  next_cursor: z.string().nullable(),
+})
+
+export const AgentDeploymentCommandResponseSchema = z.object({
+  deployment: z.object({
+    id: z.string(),
+    state: z.string(),
+    revision_id: z.string().nullish(),
+    active: z.boolean(),
+  }),
+})
+
+export const AgentDeploymentLogSchema = z.object({
+  // Postgres bigint serializers may return a decimal string. Treat this as an
+  // opaque cursor/identity in the dashboard rather than narrowing it to JS's
+  // potentially lossy number range.
+  seq: z.string(),
+  cursor: z.string(),
+  recorded_at: z.string(),
+  phase: z.string(),
+  stream: z.string(),
+  chunk: z.string(),
+})
+
+export const AgentDeploymentLogsSchema = z.object({
+  data: z.array(AgentDeploymentLogSchema).default([]),
+  next_cursor: z.string().nullish(),
+  has_more: z.boolean(),
 })
 // The pointer-move response from POST …/revisions/:rev/activate.
 export const ActivateRevisionSchema = z.object({
@@ -428,6 +606,10 @@ export const DeploymentSourceResponseSchema = z.object({
 
 // The OC GitHub App (deploy) install-state + pickable repos — admin/operator surface.
 export const DeployAppRepoSchema = z.object({
+  // Older installations can briefly lack their registered repo_ coordinate
+  // during rollout. The import picker filters those rows until registration
+  // reconciliation completes.
+  id: z.string().nullish(),
   full_name: z.string(),
   default_branch: z.string().nullish(),
   private: z.boolean().nullish(),
@@ -444,6 +626,45 @@ export const LinkResultSchema = z.object({
   source: DeploymentSourceSchema,
   deployment_id: z.string().nullish(),
   deploy_error: z.object({ type: z.string(), message: z.string() }).nullish(),
+})
+
+export const FlueSourceInspectionSchema = z.object({
+  repository: z.object({
+    id: z.string(),
+    full_name: z.string(),
+    default_branch: z.string().nullish(),
+  }),
+  root: z.string(),
+  production_ref: z.string(),
+  sha: z.string(),
+  manifest: z.object({
+    schema_version: z.literal(1),
+    entrypoint: z.string(),
+    model: z.string(),
+    runtime: z.object({
+      family: z.literal('flue'),
+      type: z.string(),
+    }),
+    vars: z.record(z.string(), z.string()),
+  }),
+  package: z.object({
+    name: z.string().nullish(),
+    node_engine: z.string(),
+    flue_cli: z.string(),
+  }),
+  lockfile: z.object({ version: z.number() }),
+  builder: z.object({ node: z.string() }),
+  source: z.object({ files: z.number(), bytes: z.number() }),
+  variable_names: z.array(z.string()).default([]),
+  warnings: z
+    .array(z.object({ code: z.string(), message: z.string() }))
+    .default([]),
+})
+
+export const ImportAgentResponseSchema = z.object({
+  agent: AgentSchema,
+  source: DeploymentSourceSchema,
+  deployment: AgentDeploymentSchema,
 })
 
 // Credentials — the reusable model-provider keys an agent/session resolves. The
@@ -609,6 +830,10 @@ export type AgentRevision = z.infer<typeof AgentRevisionSchema>
 export type AgentSkills = z.infer<typeof AgentSkillsSchema>
 export type SkillItem = z.infer<typeof SkillItemSchema>
 export type AgentDeploy = z.infer<typeof AgentDeploySchema>
+export type AgentDeployment = z.infer<typeof AgentDeploymentSchema>
+export type AgentDeploymentLog = z.infer<typeof AgentDeploymentLogSchema>
+export type DeployApp = z.infer<typeof DeployAppSchema>
+export type FlueSourceInspection = z.infer<typeof FlueSourceInspectionSchema>
 export type Credential = z.infer<typeof CredentialSchema>
 export type SlackConnection = z.infer<typeof SlackConnectionSchema>
 export type SlackManifestResponse = z.infer<typeof SlackManifestResponseSchema>

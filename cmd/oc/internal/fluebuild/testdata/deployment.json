@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "flue": {
+    "entrypoint": "flue-starter",
+    "wrangler": {
+      "main": "index.js",
+      "compatibility_date": "2026-07-01",
+      "compatibility_flags": [
+        "nodejs_compat"
+      ],
+      "no_bundle": true,
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "AGENT",
+            "class_name": "FlueStarterAgent"
+          },
+          {
+            "name": "FLUE_REGISTRY",
+            "class_name": "FlueRegistry"
+          }
+        ]
+      }
+    }
+  },
+  "model": "anthropic/claude-sonnet-5",
+  "vars": {
+    "MAX_ITEMS": "12",
+    "PUBLIC_MODE": "careful"
+  },
+  "runtime": {
+    "family": "flue",
+    "type": "default"
+  },
+  "bundle": {
+    "digest": "sha256:169890136b7f3080bdb27dfc7f053e9bb1c31a977febbfbdd1d69c86b00dd5fd",
+    "size_bytes": 202
+  },
+  "builder": {
+    "version": "oc@0.6.0.9-test"
+  }
+}
