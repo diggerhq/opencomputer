@@ -347,6 +347,10 @@ The deployment starts at `accepted`; the agent is visible but cannot start sessi
 different fields returns `409 idempotency_conflict`. A name or repository-root conflict also returns
 `409` and identifies the existing agent when available.
 
+The source remains linked after import. A later GitHub push that touches the selected root on its
+production branch automatically creates the next deployment. Flue ignores non-production pushes;
+the current runtime has one live Worker and no preview/staged Worker.
+
 ### Deploy
 
 <Tabs>
@@ -388,9 +392,9 @@ different fields returns `409 idempotency_conflict`. A name or repository-root c
 behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys an already-linked
 repository; `repo`/`path` come from the server-owned link). `activate:false` stages an inline built-in
 deployment. Built-in GitHub links remain branch-driven. A new Flue repository agent instead starts
-with [`POST /agents/import`](#import-a-flue-repository); it deploys only an explicitly requested
-production-branch head and has no preview/staged Worker. `POST …/revisions` is inline-only
-sugar.
+with [`POST /agents/import`](#import-a-flue-repository); import deploys the reviewed production head,
+and subsequent production-branch pushes deploy automatically. Flue has no preview/staged Worker.
+`POST …/revisions` is inline-only sugar.
 
 **`Deployment`**
 
@@ -536,7 +540,13 @@ A skill is a folder with a `SKILL.md`; PUT/DELETE are **deployments** (versioned
 
 </Tabs>
 
-Linking deploys the current production HEAD immediately (unless `deploy_now: false` / `--no-deploy`); a push to the production branch activates, other branches stage. **Scopes:** `deploy_now: false` needs `agents:link`; the default (with an initial deploy) needs `agents:link` + `agents:deploy`, plus `agents:activate` when that deploy auto-activates. Repo/path are server-anchored to the link. Deployment sources use the **OpenComputer App** (no BYO). Full flow + guarantees: [Deploy from a repo](/agent-sessions/revisions#deploy-from-a-repo).
+Linking deploys the current production HEAD immediately (unless `deploy_now: false` / `--no-deploy`).
+For built-in runtimes, a push to the production branch activates while other branches stage. For
+Flue, only the production branch deploys. **Scopes:** `deploy_now: false` needs `agents:link`; the
+default (with an initial deploy) needs `agents:link` + `agents:deploy`, plus `agents:activate` when
+that deploy auto-activates. Repo/path are server-anchored to the link. Deployment sources use the
+**OpenComputer App** (no BYO). Full flow + guarantees:
+[Deploy from a repo](/agent-sessions/revisions#deploy-from-a-repo).
 
 **`DeploymentSource`**
 

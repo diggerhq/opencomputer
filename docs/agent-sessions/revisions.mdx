@@ -103,7 +103,10 @@ await oc.agents.revisions.activate("agt_123", deployment.revision_id);
 
 So `revision` on [session create](/agent-sessions/sessions) is how you exercise any non-active revision (a staged one, or an old one) without touching what's live.
 
-For [repo deployments](#deploy-from-a-repo) the **branch decides** and `activate` is ignored: a push to the production branch activates, every other branch stages.
+For built-in [repo deployments](#deploy-from-a-repo), the **branch decides** and `activate` is ignored:
+a push to the production branch activates, while another branch stages. Flue repository deployment
+accepts only its linked production branch because the current runtime has one live Worker and no
+isolated preview Worker.
 
 <Tip>Editing `prompt`/`model` via [`PATCH /agents/:id`](/agent-sessions/agents) also deploys a revision — a shorthand for small edits.</Tip>
 
@@ -123,12 +126,12 @@ metadata and auth, then runs `npm ci` and the offline builder in a separate toke
 lifecycle scripts do run in that ordinary disposable OpenComputer sandbox, but its request carries
 no source, platform, model, or deployment credential.
 
-The deployment detail page groups the attempt into **Queued**, **Source**, **Install**, **Build**,
-**Artifact**, **Deploy**, and **Verify**, with one persisted chronological log. An install/build
-failure leaves the imported agent visible and undeployed; it creates no revision and cannot start a
-session. Fix the source and deploy the production branch again.
+The deployment detail page keeps one persisted chronological log and summarizes the attempt as
+**Prepare**, **Build**, and **Deploy**. An install/build failure leaves the imported agent visible
+and undeployed; it creates no revision and cannot start a session. Fix the source and push the
+production branch again.
 
-<Note>Automatic deployment on later Git pushes is not enabled for Flue. Only an explicitly requested production-branch deployment changes its one live Worker; preview-branch Flue builds and staged Workers are not available.</Note>
+<Note>Each later push that touches the linked root on the production branch automatically creates a Flue deployment. Non-production pushes do not create preview/staged Flue Workers. **Deploy latest** manually rebuilds the current production head when needed.</Note>
 
 ### Link a built-in agent directory
 

@@ -79,12 +79,12 @@ The shortest path for an existing Flue app is the dashboard:
 1. Fork the [Flue starter](https://github.com/diggerhq/oc-flue-starter/fork), or push your own app to GitHub.
 2. Open **Agents → Create agent → Import from GitHub**.
 3. Install the OpenComputer GitHub App on the repository, then select the repository, production branch, and root directory.
-4. Inspect the exact commit OpenComputer detected. Give the OpenComputer agent a human-readable name; it may differ from the `agent.toml` Flue entrypoint.
-5. Choose **Deploy agent**. The deployment page follows source, install, build, artifact, deploy, and verify work and keeps the log if a phase fails.
+4. Review the detected Flue entrypoint, model, and exact commit. Give the OpenComputer agent a human-readable name; it may differ from the `agent.toml` Flue entrypoint.
+5. Choose **Deploy agent**. The deployment page keeps one chronological log and summarizes progress as **Prepare**, **Build**, and **Deploy**.
 
 The selected root is its own build context and must contain `agent.toml`, `package.json`, and a
 committed `package-lock.json`. The package must declare a Node engine compatible with the exact
-builder version shown during inspection and a semver dependency on the Flue CLI. npm workspaces,
+managed builder version and a semver dependency on the Flue CLI. npm workspaces,
 files above the selected root, private registries, submodules, Git LFS, custom install/build
 commands, and build-time secrets are not supported.
 
@@ -95,14 +95,17 @@ OpenComputer sandbox. The build request carries no GitHub token, OpenComputer ke
 credential, Workers credential, or secret store.
 
 <Note>
-Repository import currently creates the initial deployment from the selected production branch.
-Automatic deployment of later pushes is not enabled; return to the agent and
-deploy the latest branch head, or use the CLI path below, after changing the repository.
+Repository import creates the initial deployment from the selected production branch. Each later
+push to that branch that touches the selected root automatically creates another deployment for the
+new exact commit. Flue ignores pushes to other branches because it has one live Worker and no
+preview/staged Worker in the current profile.
 </Note>
 
 If install or build fails, the agent remains visible but undeployed: it has no usable revision and
 cannot start a session. Open the failed deployment for its persisted error summary and bounded log,
-fix the repository, and deploy again. The first successful deployment creates revision **#1**.
+fix the repository, and push the linked production branch. The first successful deployment creates
+revision **#1**. **Deploy latest** can manually rebuild its current head after a transient platform
+failure.
 
 ## Deploy from your machine
 
@@ -339,6 +342,12 @@ existing sessions before revision verification finishes. There is no isolated st
 route, or automatic Worker rollback. `--no-activate`, an old revision pin, and a pointer-only
 `oc agent rollback` do not restore older Worker code.
 
+From the live-upload guard until verification finishes, new session creation and new input return the
+retryable `503 flue_deployment_updating`; retry after the deployment becomes terminal. If an upload
+cannot be verified, the live state becomes `unverified` and those paths remain blocked until a later
+deployment restores verified code (`503 flue_deployment_unverified`). Work already running inside a
+Durable Object is not version-pinned and can also be affected by the Worker change.
+
 To restore a known-good build, check out that source and run `oc agent deploy` again. Flue and Durable
 Object schema changes are forward-only, so do not downgrade across an incompatible Flue storage
 version.
@@ -367,8 +376,12 @@ and dashboard as the other runtimes. The important differences are:
   connected to OpenComputer yet.
 - Repository sources, checkout, pull-request publishing, watches, and repo-backed workspaces are not
   supported for Flue sessions.
-- Repository deployment accepts one self-contained npm root with a committed npm lockfile. Initial
-  dashboard import is supported; automatic deployment on later Git pushes is not enabled yet.
+- Repository deployment accepts one self-contained npm root with a committed npm lockfile. Pushes
+  to its linked production branch deploy automatically; preview branches and staged Flue Workers are
+  not supported.
+- The reviewed entrypoint, model, and variables are guarded. Changing those behavior-bearing
+  manifest fields is rejected until existing-agent re-review is available; keep them stable after
+  import for now.
 - File and image attachments are not supported.
 - The managed gateway currently supports Anthropic models and requires Managed model access for the
   organization. Per-session model selection is not supported.
@@ -383,7 +396,7 @@ and dashboard as the other runtimes. The important differences are:
 - **Repository inspection fails**: confirm the GitHub App can read the repository, the selected
   branch and root exist, and the root contains `agent.toml`, `package.json`, and `package-lock.json`.
 - **Managed install or build fails**: open the deployment detail page. The safe error summary remains
-  available even if log output was truncated; fix the source and deploy the production branch again.
+  available even if log output was truncated; fix the source and push the production branch again.
 
 - **`flue build` is unavailable**: run `npm install` with Node 22.19 or newer. `oc agent deploy` never
   downloads a missing build tool for you.
