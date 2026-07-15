@@ -48,7 +48,7 @@ type ImportCommand = { fingerprint: string; key: string }
 
 function existingAgentFromError(
   error: unknown,
-): { id: string; name: string } | null {
+): { id: string; name: string; conflict: 'name' | 'source' } | null {
   if (
     !(error instanceof ApiError) ||
     (error.type !== 'name_conflict' && error.type !== 'source_already_linked')
@@ -60,7 +60,11 @@ function existingAgentFromError(
     return null
   const row = existing as Record<string, unknown>
   return typeof row.id === 'string' && typeof row.name === 'string'
-    ? { id: row.id, name: row.name }
+    ? {
+        id: row.id,
+        name: row.name,
+        conflict: error.type === 'source_already_linked' ? 'source' : 'name',
+      }
     : null
 }
 
@@ -566,19 +570,27 @@ function GithubImport({ app }: { app: DeployApp }) {
               </div>
             </div>
             {importMutation.isError ? (
-              <Alert variant="destructive">
-                <AlertTitle>Agent could not be created</AlertTitle>
+              <Alert variant={existingAgent ? 'default' : 'destructive'}>
+                <AlertTitle>
+                  {existingAgent?.conflict === 'source'
+                    ? 'Repository already linked'
+                    : existingAgent
+                      ? 'Agent name already in use'
+                      : 'Agent could not be created'}
+                </AlertTitle>
                 <AlertDescription>
-                  {importMutation.error instanceof Error
-                    ? importMutation.error.message
-                    : 'The import request failed. You can retry without creating a duplicate.'}
+                  {existingAgent?.conflict === 'source'
+                    ? `This repository path is already linked to ${existingAgent.name}. Open the existing agent to deploy its latest commit.`
+                    : existingAgent
+                      ? `Another agent is already named ${existingAgent.name}. Choose a different name or open the existing agent.`
+                      : importMutation.error instanceof Error
+                        ? importMutation.error.message
+                        : 'The import request failed. You can retry without creating a duplicate.'}
                 </AlertDescription>
                 {existingAgent ? (
                   <div className="mt-3">
-                    <Button size="sm" variant="outline" asChild>
-                      <Link to={`/agents/${existingAgent.id}`}>
-                        Open {existingAgent.name}
-                      </Link>
+                    <Button size="sm" asChild>
+                      <Link to={`/agents/${existingAgent.id}`}>Open agent</Link>
                     </Button>
                   </div>
                 ) : null}
