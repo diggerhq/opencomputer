@@ -200,6 +200,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		{50, "migrations/050_checkpoint_kind.up.sql"},
 		{51, "migrations/051_image_cache_is_public.up.sql"},
 		{52, "migrations/052_paused_hibernation_mode.up.sql"},
+		{53, "migrations/053_default_org_concurrency_50.up.sql"},
 	}
 
 	for _, m := range migrations {

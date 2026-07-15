@@ -42,12 +42,12 @@ const SVIX_TOLERANCE_SEC = 300;
 
 // Mirror of internal/billing/autumn.ConcurrencyByPlan — keep in sync.
 const CONCURRENCY_BY_PLAN: Record<string, number> = {
-  base: 5,
+  base: 50,
   concurrency_pro: 100,
   concurrency_pro_plus: 600,
   concurrency_pro_plus_plus: 1000,
 };
-const DEFAULT_CONCURRENCY = 5;
+const DEFAULT_CONCURRENCY = 50;
 
 const HANDLED_EVENTS = new Set([
   "billing.updated",
