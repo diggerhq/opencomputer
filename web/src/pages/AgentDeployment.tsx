@@ -124,14 +124,30 @@ function DeploymentPhases({ deployment }: { deployment: AgentDeployment }) {
   const failed = deployment.state === 'failed'
   const terminalWithoutPhase = failed && current < 0
   const allDone = deployment.state === 'ready'
+  const activeLabel = PHASES[current]?.label
+  const liveAnnouncement = allDone
+    ? 'All deployment phases complete.'
+    : terminalWithoutPhase
+      ? 'The deployment failed before a phase was recorded.'
+      : activeLabel
+        ? `${activeLabel} ${failed ? 'failed' : deployment.terminal ? 'ended' : 'in progress'}.`
+        : 'Waiting for deployment to start.'
 
   return (
-    <div>
-      <ol className="grid grid-cols-3" aria-label="Deployment phases">
+    <div className="shrink-0">
+      <span className="sr-only" aria-live="polite" aria-atomic="true">
+        {liveAnnouncement}
+      </span>
+      <ol
+        className="flex flex-wrap items-center gap-y-1.5 sm:justify-end"
+        aria-label="Deployment phases"
+      >
         {PHASES.map((phase, index) => {
           const done = allDone || (current >= 0 && index < current)
-          const active = !allDone && index === current
-          const phaseFailed = active && failed
+          const active = !allDone && !deployment.terminal && index === current
+          const terminalPhase =
+            !allDone && deployment.terminal && index === current
+          const phaseFailed = terminalPhase && failed
           const Icon = phaseFailed
             ? CircleAlert
             : done
@@ -142,57 +158,55 @@ function DeploymentPhases({ deployment }: { deployment: AgentDeployment }) {
           return (
             <li
               key={phase.label}
-              className={cn(
-                'relative flex flex-col items-center gap-2 text-center',
-                index > 0 &&
-                  "before:bg-border before:absolute before:top-3.5 before:right-1/2 before:h-px before:w-full before:-translate-x-3.5 before:content-['']",
-              )}
+              className="flex items-center"
+              aria-current={active ? 'step' : undefined}
             >
               <span
                 className={cn(
-                  'bg-panel relative z-10 flex size-7 items-center justify-center rounded-full border',
+                  'flex items-center gap-1 text-[11px] font-medium',
                   phaseFailed
-                    ? 'border-status-error text-status-error'
+                    ? 'text-status-error'
                     : done || active
-                      ? 'border-status-running text-status-running'
-                      : 'text-muted-foreground border-border',
+                      ? 'text-foreground'
+                      : 'text-muted-foreground',
                 )}
               >
                 <Icon
                   className={cn(
-                    'size-3.5',
+                    'size-3',
+                    phaseFailed && 'text-status-error',
+                    done && 'text-status-running',
+                    active && 'text-status-pending',
                     active &&
                       !failed &&
                       'animate-spin motion-reduce:animate-none',
                   )}
                   aria-hidden
                 />
-              </span>
-              <span
-                className={cn(
-                  'text-xs',
-                  active || done ? 'text-foreground' : 'text-muted-foreground',
-                )}
-              >
                 {phase.label}
-                {active ? (
-                  <span className="sr-only">
-                    {phaseFailed ? ', failed' : ', in progress'}
-                  </span>
+                {phaseFailed ? (
+                  <span className="sr-only">, failed</span>
+                ) : active ? (
+                  <span className="sr-only">, in progress</span>
                 ) : done ? (
                   <span className="sr-only">, complete</span>
+                ) : terminalPhase ? (
+                  <span className="sr-only">, ended here</span>
                 ) : (
                   <span className="sr-only">, pending</span>
                 )}
               </span>
+              {index < PHASES.length - 1 ? (
+                <span className="bg-border mx-2 h-px w-3" aria-hidden="true" />
+              ) : null}
             </li>
           )
         })}
       </ol>
       {terminalWithoutPhase ? (
-        <p className="text-status-error mt-4 flex items-center gap-1.5 text-xs">
+        <p className="text-status-error mt-1.5 flex items-center gap-1 text-[11px] sm:justify-end">
           <CircleAlert className="size-3.5" aria-hidden />
-          The deployment failed before a phase was recorded.
+          Phase unavailable
         </p>
       ) : null}
     </div>
@@ -223,20 +237,10 @@ function formatMilliseconds(milliseconds: number): string {
   return `${minutes}m ${seconds % 60}s`
 }
 
-function Outcome({ deployment }: { deployment: AgentDeployment }) {
+function OutcomeDetail({ deployment }: { deployment: AgentDeployment }) {
   const outcome = agentDeploymentOutcome(deployment)
 
-  if (outcome.kind === 'success') {
-    return (
-      <Alert className="bg-status-running-bg text-status-running border-status-running/25">
-        <Check className="size-4" />
-        <AlertTitle>{outcome.title}</AlertTitle>
-        <AlertDescription className="text-status-running">
-          {outcome.description}
-        </AlertDescription>
-      </Alert>
-    )
-  }
+  if (outcome.kind === 'success' || outcome.kind === 'progress') return null
 
   if (outcome.kind === 'error') {
     return (
@@ -248,18 +252,8 @@ function Outcome({ deployment }: { deployment: AgentDeployment }) {
     )
   }
 
-  if (outcome.kind === 'info') {
-    return (
-      <Alert>
-        <AlertTitle>{outcome.title}</AlertTitle>
-        <AlertDescription>{outcome.description}</AlertDescription>
-      </Alert>
-    )
-  }
-
   return (
     <Alert>
-      <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
       <AlertTitle>{outcome.title}</AlertTitle>
       <AlertDescription>{outcome.description}</AlertDescription>
     </Alert>
@@ -433,6 +427,7 @@ export default function AgentDeployment() {
   }
 
   const deployment = deploymentQuery.data
+  const outcome = agentDeploymentOutcome(deployment)
   const commitUrl = deployment.source_relation?.commit_url ?? undefined
   const canViewCommit =
     deployment.allowed_actions.includes('view_commit') && !!commitUrl
@@ -537,43 +532,30 @@ export default function AgentDeployment() {
         </Alert>
       ) : null}
 
-      <Outcome deployment={deployment} />
-
-      {!terminal ? (
-        <Panel>
-          <PanelHeader>
-            <div>
-              <PanelTitle>Progress</PanelTitle>
-              <PanelDescription className="mt-1" aria-live="polite">
-                {PHASES[phaseIndex(deployment)]?.label ?? 'Waiting to start'}
-              </PanelDescription>
-            </div>
-            <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
-              <Clock className="size-3.5" />
-              {formatDuration(deployment)}
-            </span>
-          </PanelHeader>
-          <PanelContent>
-            <DeploymentPhases deployment={deployment} />
-          </PanelContent>
-        </Panel>
-      ) : null}
-
       <Panel>
-        <PanelHeader>
-          <div>
-            <PanelTitle>Build and deploy log</PanelTitle>
-            <PanelDescription className="mt-1">
-              Persisted output from source, install, build, and deployment.
+        <PanelHeader className="flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="min-w-0">
+            <PanelTitle>Deployment log</PanelTitle>
+            <PanelDescription className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+              <span
+                className={cn(outcome.kind === 'error' && 'text-status-error')}
+              >
+                {outcome.title}
+              </span>
+              <span className="flex items-center gap-1">
+                <Clock className="size-3" aria-hidden />
+                {formatDuration(deployment)}
+                {!deployment.terminal ? ' elapsed' : ''}
+              </span>
+              {deployment.log_truncated ? (
+                <span className="text-status-pending">Output truncated</span>
+              ) : null}
             </PanelDescription>
           </div>
-          {deployment.log_truncated ? (
-            <span className="text-status-pending text-xs">
-              Output truncated
-            </span>
-          ) : null}
+          <DeploymentPhases deployment={deployment} />
         </PanelHeader>
-        <PanelContent>
+        <PanelContent className="space-y-3">
+          <OutcomeDetail deployment={deployment} />
           {logsQuery.isError ? (
             <Alert variant="destructive">
               <AlertTitle>Log could not be loaded</AlertTitle>
