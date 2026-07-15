@@ -42,7 +42,12 @@ import {
   agentCanStartNewSession,
   agentDeploymentDisplayStatus,
 } from '@/lib/agent-deployment-status'
-import { getRuntime, keyFieldFor, providerForModel, withModelGroups } from '@/lib/runtimes'
+import {
+  getRuntime,
+  keyFieldFor,
+  providerForModel,
+  withModelGroups,
+} from '@/lib/runtimes'
 
 const DOCS = 'https://docs.opencomputer.dev/agent-sessions'
 
@@ -79,12 +84,37 @@ export default function AgentDetail() {
   // Each tab is a thin control panel over one API resource — surface the call it drives
   // (REST + SDK), same as the other pages, so the dashboard reads as programmable.
   const tabApi: Record<Tab, ApiRef> = {
-    overview: { method: 'GET', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.get(id)', docs: `${DOCS}/agents` },
+    overview: {
+      method: 'GET',
+      path: `/v3/agents/${agentId}`,
+      sdk: 'oc.agents.get(id)',
+      docs: `${DOCS}/agents`,
+    },
     deployments: { method: 'GET', path: `/v3/agents/${agentId}/deployments` },
-    revisions: { method: 'GET', path: `/v3/agents/${agentId}/revisions`, sdk: 'oc.agents.revisions.list(id)', docs: `${DOCS}/revisions` },
-    sessions: { method: 'POST', path: '/v3/sessions', sdk: 'oc.sessions.create({ agent })', docs: `${DOCS}/sessions` },
-    schedules: { method: 'GET', path: `/v3/agents/${agentId}/schedules`, sdk: 'oc.agents.schedules.list(id)', docs: `${DOCS}/schedules` },
-    settings: { method: 'PATCH', path: `/v3/agents/${agentId}`, sdk: 'oc.agents.update(id, …)', docs: `${DOCS}/agents` },
+    revisions: {
+      method: 'GET',
+      path: `/v3/agents/${agentId}/revisions`,
+      sdk: 'oc.agents.revisions.list(id)',
+      docs: `${DOCS}/revisions`,
+    },
+    sessions: {
+      method: 'POST',
+      path: '/v3/sessions',
+      sdk: 'oc.sessions.create({ agent })',
+      docs: `${DOCS}/sessions`,
+    },
+    schedules: {
+      method: 'GET',
+      path: `/v3/agents/${agentId}/schedules`,
+      sdk: 'oc.agents.schedules.list(id)',
+      docs: `${DOCS}/schedules`,
+    },
+    settings: {
+      method: 'PATCH',
+      path: `/v3/agents/${agentId}`,
+      sdk: 'oc.agents.update(id, …)',
+      docs: `${DOCS}/agents`,
+    },
   }
 
   const {
@@ -143,8 +173,8 @@ export default function AgentDetail() {
   const location = useLocation()
   const [task, setTask] = useState(
     () =>
-      (location.state as { composerPrefill?: string } | null)?.composerPrefill ??
-      '',
+      (location.state as { composerPrefill?: string } | null)
+        ?.composerPrefill ?? '',
   )
   // Optional working repo — the repo the agent checks out + opens PRs from. Explicitly chosen,
   // never derived from the connected/config repo (design 010 §2).
@@ -353,10 +383,7 @@ export default function AgentDetail() {
             </Button>
           )}
         </div>
-        <nav
-          className="-mb-px flex gap-1 overflow-x-auto"
-          aria-label="Agent"
-        >
+        <nav className="-mb-px flex gap-1 overflow-x-auto" aria-label="Agent">
           <TabLink to={base} label="Overview" current={active === 'overview'} />
           <TabLink
             to={`${base}/deployments`}
@@ -527,9 +554,7 @@ export default function AgentDetail() {
         )}
 
         {active === 'revisions' && <AgentRevisions agentId={agent.id} />}
-        {active === 'deployments' && (
-          <AgentDeployments agentId={agent.id} />
-        )}
+        {active === 'deployments' && <AgentDeployments agentId={agent.id} />}
         {active === 'schedules' && <AgentSchedulesTab agentId={agent.id} />}
 
         {active === 'sessions' && (
@@ -575,9 +600,7 @@ export default function AgentDetail() {
                       className="ml-auto"
                     >
                       <Send className="size-4" />
-                      {startMutation.isPending
-                        ? 'Starting…'
-                        : 'Start session'}
+                      {startMutation.isPending ? 'Starting…' : 'Start session'}
                     </Button>
                   </div>
                 </form>

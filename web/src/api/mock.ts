@@ -1009,7 +1009,10 @@ const sessionTurns = [
     completed_at: at(0, 2),
     active_seconds: 2.1,
     usage: {},
-    error: { code: 'provision_infra', message: 'brain sandbox failed to start' },
+    error: {
+      code: 'provision_infra',
+      message: 'brain sandbox failed to start',
+    },
   },
 ]
 

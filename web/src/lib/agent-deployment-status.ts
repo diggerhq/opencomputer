@@ -34,9 +34,7 @@ export function agentDeploymentDisplayStatus(
  * intentionally unknown; that proof enables admission only and must never be
  * projected as a live/verified label.
  */
-export function agentCanStartNewSession(
-  agent: AgentDeploymentHealth,
-): boolean {
+export function agentCanStartNewSession(agent: AgentDeploymentHealth): boolean {
   const hasActiveRevision =
     !!agent.active_revision_id || (agent.revision ?? 0) > 0
   if (!hasActiveRevision) return false
