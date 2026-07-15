@@ -71,6 +71,8 @@ export interface Env extends DashboardEnv {
   OC_MANAGED_CRED_HMAC_SECRET: string;
 }
 
+const DEFAULT_MAX_CONCURRENT_SANDBOXES = 50;
+
 // ── small helpers ────────────────────────────────────────────────────────
 
 function json(body: unknown, status = 200): Response {
@@ -489,7 +491,7 @@ async function enforceCreatePolicy(
   // sandboxes live in S3 and don't consume worker capacity. The count spans
   // every cell via the global sandboxes_index, which is the whole reason it
   // must live at the edge and not on any single cell.
-  const limit = org.max_concurrent_sandboxes ?? 5;
+  const limit = org.max_concurrent_sandboxes ?? DEFAULT_MAX_CONCURRENT_SANDBOXES;
   const countRow = await env.OPENCOMPUTER_DB.prepare(
     "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'",
   )
@@ -1287,10 +1289,19 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
       }
     }
     await env.OPENCOMPUTER_DB.prepare(
-      `INSERT INTO orgs (id, name, slug, plan, home_cell, is_personal, owner_user_id, billing_provider, created_at, updated_at)
-       VALUES (?1, ?2, ?3, 'free', ?4, 1, ?5, ?7, ?6, ?6)`,
+      `INSERT INTO orgs (id, name, slug, plan, home_cell, is_personal, owner_user_id, billing_provider, max_concurrent_sandboxes, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 'free', ?4, 1, ?5, ?7, ?8, ?6, ?6)`,
     )
-      .bind(orgID, `${profile.email}'s workspace`, slugify(profile.email + "-" + orgID.slice(0, 6)), homeCell, userID, nowSec, provider)
+      .bind(
+        orgID,
+        `${profile.email}'s workspace`,
+        slugify(profile.email + "-" + orgID.slice(0, 6)),
+        homeCell,
+        userID,
+        nowSec,
+        provider,
+        DEFAULT_MAX_CONCURRENT_SANDBOXES,
+      )
       .run();
     await env.OPENCOMPUTER_DB.prepare(
       `INSERT INTO org_memberships (org_id, user_id, role, created_at) VALUES (?1, ?2, 'owner', ?3)`,

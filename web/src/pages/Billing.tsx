@@ -119,7 +119,7 @@ function PlanTab() {
           {isPro ? 'Pro' : 'Free'}
         </div>
         <p className="text-muted-foreground mt-1 text-sm">
-          {billing?.maxConcurrentSandboxes ?? 5} concurrent sandboxes ·{' '}
+          {billing?.maxConcurrentSandboxes ?? 50} concurrent sandboxes ·{' '}
           {isPro ? 'all tiers' : 'up to 4 GB / 1 vCPU'}
         </p>
 
@@ -389,7 +389,7 @@ function PrepaidPlan() {
         <p className="text-muted-foreground mb-4 text-sm">
           You can run{' '}
           <strong className="text-foreground">
-            {autumn?.maxConcurrentSandboxes ?? 5}
+            {autumn?.maxConcurrentSandboxes ?? 50}
           </strong>{' '}
           sandboxes at once on the{' '}
           <strong className="text-foreground">
