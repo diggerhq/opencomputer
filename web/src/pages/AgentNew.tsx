@@ -17,7 +17,6 @@ import {
   importAgentFromGithub,
   inspectFlueRepository,
   type DeployApp,
-  type FlueSourceInspection,
 } from '@/api/client'
 import { Field, FieldError, Input } from '@/components/form'
 import { GithubMark } from '@/components/github-mark'
@@ -26,12 +25,12 @@ import {
   Panel,
   PanelContent,
   PanelDescription,
+  PanelFooter,
   PanelHeader,
   PanelTitle,
 } from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   resolveAgentCreationMode,
@@ -120,12 +119,6 @@ function shortSha(sha: string): string {
   return sha.slice(0, 7)
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
-}
-
 function agentReviewError(error: unknown): string {
   if (error instanceof ApiError && error.type === 'builds_unavailable') {
     return 'Repository import is temporarily unavailable. Try reviewing the agent again.'
@@ -169,79 +162,11 @@ function ModeButton({
   )
 }
 
-function DetectedAgent({ inspection }: { inspection: FlueSourceInspection }) {
-  const rows = [
-    ['Flue entrypoint', inspection.manifest.entrypoint],
-    [
-      'Runtime',
-      `${inspection.manifest.runtime.family}/${inspection.manifest.runtime.type}`,
-    ],
-    ['Model', inspection.manifest.model],
-    ['Commit', shortSha(inspection.sha)],
-    [
-      'Node',
-      `${inspection.package.node_engine} (builder ${inspection.builder.node})`,
-    ],
-    ['npm lockfile', `lockfileVersion ${inspection.lockfile.version}`],
-  ]
-
-  return (
-    <Panel>
-      <PanelHeader>
-        <div>
-          <PanelTitle>Detected Flue agent</PanelTitle>
-          <PanelDescription className="mt-1">
-            Read from the exact commit without running repository code.
-          </PanelDescription>
-        </div>
-        <Badge variant="outline">{shortSha(inspection.sha)}</Badge>
-      </PanelHeader>
-      <PanelContent className="space-y-4">
-        <dl className="grid gap-x-8 gap-y-3 sm:grid-cols-2">
-          {rows.map(([label, value]) => (
-            <div key={label} className="min-w-0">
-              <dt className="text-muted-foreground text-xs">{label}</dt>
-              <dd className="mt-0.5 truncate font-mono text-sm" title={value}>
-                {value}
-              </dd>
-            </div>
-          ))}
-        </dl>
-        <div className="border-t pt-4">
-          <p className="text-muted-foreground text-xs">Source</p>
-          <p className="mt-1 text-sm">
-            {inspection.source.files.toLocaleString()} tracked files,{' '}
-            {formatBytes(inspection.source.bytes)}
-          </p>
-        </div>
-        <div className="border-t pt-4">
-          <p className="text-muted-foreground text-xs">
-            Variables from agent.toml
-          </p>
-          {inspection.variable_names.length ? (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {inspection.variable_names.map((name) => (
-                <Badge key={name} variant="secondary" className="font-mono">
-                  {name}
-                </Badge>
-              ))}
-            </div>
-          ) : (
-            <p className="mt-1 text-sm">No variables declared.</p>
-          )}
-          <p className="text-muted-foreground mt-2 text-xs">
-            Values stay in source and are not shown here.
-          </p>
-        </div>
-      </PanelContent>
-    </Panel>
-  )
-}
-
 function GithubImport({ app }: { app: DeployApp }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const importCommand = useRef<ImportCommand | null>(null)
+  const nameInput = useRef<HTMLInputElement>(null)
   const [repoSearch, setRepoSearch] = useState('')
   const [repoId, setRepoId] = useState('')
   const [productionRef, setProductionRef] = useState('')
@@ -270,7 +195,10 @@ function GithubImport({ app }: { app: DeployApp }) {
         path: root.trim(),
         production_ref: productionRef.trim(),
       }),
-    onSuccess: (inspection) => setName(inspection.manifest.entrypoint),
+    onSuccess: (inspection) => {
+      setName(inspection.manifest.entrypoint)
+      globalThis.requestAnimationFrame?.(() => nameInput.current?.focus())
+    },
   })
 
   const importMutation = useMutation({
@@ -372,15 +300,34 @@ function GithubImport({ app }: { app: DeployApp }) {
     <div className="space-y-5">
       <Panel>
         <PanelHeader>
-          <div>
-            <PanelTitle>Choose repository</PanelTitle>
-            <PanelDescription className="mt-1">
-              {app.account
-                ? `Repositories available to the OpenComputer App for ${app.account}.`
-                : 'Repositories available to the OpenComputer App.'}
-            </PanelDescription>
-          </div>
-          {app.configure_url ? (
+          {inspection ? (
+            <div className="min-w-0">
+              <PanelTitle className="truncate">
+                {inspection.repository.full_name}
+              </PanelTitle>
+              <PanelDescription className="mt-1 truncate">
+                {inspection.production_ref}
+                {' · '}
+                {inspection.root || 'Repository root'}
+                {' · '}
+                <span className="font-mono">{shortSha(inspection.sha)}</span>
+              </PanelDescription>
+            </div>
+          ) : (
+            <div>
+              <PanelTitle>Choose repository</PanelTitle>
+              <PanelDescription className="mt-1">
+                {app.account
+                  ? `Repositories available to the OpenComputer App for ${app.account}.`
+                  : 'Repositories available to the OpenComputer App.'}
+              </PanelDescription>
+            </div>
+          )}
+          {inspection ? (
+            <Button variant="ghost" size="sm" onClick={clearInspection}>
+              Change source
+            </Button>
+          ) : app.configure_url ? (
             <Button variant="ghost" size="sm" asChild>
               <a href={app.configure_url} target="_blank" rel="noreferrer">
                 Add repositories
@@ -389,163 +336,157 @@ function GithubImport({ app }: { app: DeployApp }) {
             </Button>
           ) : null}
         </PanelHeader>
-        <PanelContent className="space-y-4">
-          <div className="relative">
-            <Search
-              className="text-muted-foreground pointer-events-none absolute top-2 left-2.5 size-4"
-              aria-hidden
-            />
-            <Input
-              value={repoSearch}
-              onChange={(event) => setRepoSearch(event.target.value)}
-              placeholder="Search repositories"
-              aria-label="Search repositories"
-              className="pl-8"
-            />
-          </div>
-          <div
-            role="group"
-            aria-label="Repository"
-            className="max-h-60 overflow-y-auto rounded-md border"
-          >
-            {repositories.length ? (
-              repositories.map((repo, index) => (
-                <button
-                  key={repo.id}
-                  type="button"
-                  aria-pressed={repo.id === repoId}
-                  onClick={() => selectRepo(repo.id)}
-                  className={cn(
-                    'focus-visible:ring-ring/50 flex w-full items-center gap-3 px-3 py-2.5 text-left outline-none focus-visible:ring-3 focus-visible:ring-inset',
-                    index > 0 && 'border-t',
-                    repo.id === repoId
-                      ? 'bg-row-selected'
-                      : 'hover:bg-row-hover',
-                  )}
-                >
-                  <GithubMark className="size-4 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                    {repo.full_name}
-                  </span>
-                  <span className="text-muted-foreground flex shrink-0 items-center gap-2 text-xs">
-                    {repo.private == null
-                      ? null
-                      : repo.private
-                        ? 'Private'
-                        : 'Public'}
-                    {repo.default_branch ? (
-                      <span className="hidden items-center gap-1 sm:flex">
-                        <GitBranch className="size-3" />
-                        {repo.default_branch}
-                      </span>
-                    ) : null}
-                  </span>
-                </button>
-              ))
-            ) : (
-              <p className="text-muted-foreground px-4 py-8 text-center text-sm">
-                {app.repositories.length === 0
-                  ? 'No repositories are available to this installation.'
-                  : app.repositories.some((repo) => repo.id)
-                    ? 'No repositories match this search.'
-                    : 'Repository registration is still syncing. Return to this page in a moment.'}
-              </p>
-            )}
-          </div>
-
-          {selectedRepo ? (
-            <div className="grid gap-4 border-t pt-4 sm:grid-cols-2">
-              <Field
-                label="Production branch"
-                htmlFor="import-branch"
-                description="The branch to resolve for this deployment."
-              >
-                <Input
-                  id="import-branch"
-                  value={productionRef}
-                  onChange={(event) => {
-                    setProductionRef(event.target.value)
-                    clearInspection()
-                  }}
-                  placeholder="main"
-                />
-              </Field>
-              <Field
-                label="Root directory"
-                htmlFor="import-root"
-                error={
-                  rootValid
-                    ? undefined
-                    : 'Use a repository-relative path without . or .. segments.'
-                }
-                description="Leave empty when agent.toml is at repository root."
-              >
-                <Input
-                  id="import-root"
-                  value={root}
-                  onChange={(event) => {
-                    setRoot(event.target.value)
-                    clearInspection()
-                  }}
-                  placeholder="agents/support"
-                  aria-invalid={!rootValid}
-                />
-              </Field>
+        {!inspection ? (
+          <PanelContent className="space-y-4">
+            <div className="relative">
+              <Search
+                className="text-muted-foreground pointer-events-none absolute top-2 left-2.5 size-4"
+                aria-hidden
+              />
+              <Input
+                value={repoSearch}
+                onChange={(event) => setRepoSearch(event.target.value)}
+                placeholder="Search repositories"
+                aria-label="Search repositories"
+                className="pl-8"
+              />
             </div>
-          ) : null}
-
-          {inspectMutation.isError ? (
-            <FieldError>{agentReviewError(inspectMutation.error)}</FieldError>
-          ) : null}
-
-          <div className="flex justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={!canInspect}
-              onClick={() => inspectMutation.mutate()}
+            <div
+              role="group"
+              aria-label="Repository"
+              className="max-h-60 overflow-y-auto rounded-md border"
             >
-              {inspectMutation.isPending ? (
-                <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
-              ) : null}
-              {inspectMutation.isPending
-                ? 'Reviewing agent…'
-                : inspectMutation.isError
-                  ? 'Review agent again'
-                  : inspection
-                    ? 'Review again'
+              {repositories.length ? (
+                repositories.map((repo, index) => (
+                  <button
+                    key={repo.id}
+                    type="button"
+                    aria-pressed={repo.id === repoId}
+                    onClick={() => selectRepo(repo.id)}
+                    className={cn(
+                      'focus-visible:ring-ring/50 flex w-full items-center gap-3 px-3 py-2.5 text-left outline-none focus-visible:ring-3 focus-visible:ring-inset',
+                      index > 0 && 'border-t',
+                      repo.id === repoId
+                        ? 'bg-row-selected'
+                        : 'hover:bg-row-hover',
+                    )}
+                  >
+                    <GithubMark className="size-4 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                      {repo.full_name}
+                    </span>
+                    <span className="text-muted-foreground flex shrink-0 items-center gap-2 text-xs">
+                      {repo.private == null
+                        ? null
+                        : repo.private
+                          ? 'Private'
+                          : 'Public'}
+                      {repo.default_branch ? (
+                        <span className="hidden items-center gap-1 sm:flex">
+                          <GitBranch className="size-3" />
+                          {repo.default_branch}
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <p className="text-muted-foreground px-4 py-8 text-center text-sm">
+                  {app.repositories.length === 0
+                    ? 'No repositories are available to this installation.'
+                    : app.repositories.some((repo) => repo.id)
+                      ? 'No repositories match this search.'
+                      : 'Repository registration is still syncing. Return to this page in a moment.'}
+                </p>
+              )}
+            </div>
+
+            {selectedRepo ? (
+              <div className="grid gap-4 border-t pt-4 sm:grid-cols-2">
+                <Field
+                  label="Production branch"
+                  htmlFor="import-branch"
+                  description="The branch to resolve for this deployment."
+                >
+                  <Input
+                    id="import-branch"
+                    value={productionRef}
+                    onChange={(event) => {
+                      setProductionRef(event.target.value)
+                      clearInspection()
+                    }}
+                    placeholder="main"
+                  />
+                </Field>
+                <Field
+                  label="Root directory"
+                  htmlFor="import-root"
+                  error={
+                    rootValid
+                      ? undefined
+                      : 'Use a repository-relative path without . or .. segments.'
+                  }
+                  description="Leave empty when agent.toml is at repository root."
+                >
+                  <Input
+                    id="import-root"
+                    value={root}
+                    onChange={(event) => {
+                      setRoot(event.target.value)
+                      clearInspection()
+                    }}
+                    placeholder="agents/support"
+                    aria-invalid={!rootValid}
+                  />
+                </Field>
+              </div>
+            ) : null}
+
+            {inspectMutation.isError ? (
+              <FieldError>{agentReviewError(inspectMutation.error)}</FieldError>
+            ) : null}
+
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!canInspect}
+                onClick={() => inspectMutation.mutate()}
+              >
+                {inspectMutation.isPending ? (
+                  <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                ) : null}
+                {inspectMutation.isPending
+                  ? 'Reviewing agent…'
+                  : inspectMutation.isError
+                    ? 'Review agent again'
                     : 'Review agent'}
-            </Button>
-          </div>
-        </PanelContent>
+              </Button>
+            </div>
+          </PanelContent>
+        ) : null}
       </Panel>
-
-      {inspection ? <DetectedAgent inspection={inspection} /> : null}
-
-      {inspection?.warnings.map((warning) => (
-        <Alert key={`${warning.code}:${warning.message}`}>
-          <AlertTitle>Compatibility warning</AlertTitle>
-          <AlertDescription>{warning.message}</AlertDescription>
-        </Alert>
-      ))}
 
       {inspection ? (
         <Panel>
           <PanelHeader>
             <div>
-              <PanelTitle>Name and deploy</PanelTitle>
+              <PanelTitle>Review agent</PanelTitle>
               <PanelDescription className="mt-1">
-                The OpenComputer name can differ from the Flue entrypoint.
+                {inspection.manifest.entrypoint}
+                {' · '}
+                <span className="font-mono">{inspection.manifest.model}</span>
               </PanelDescription>
             </div>
           </PanelHeader>
-          <PanelContent className="space-y-5">
+          <PanelContent className="space-y-4">
             <Field
               label="Agent name"
               htmlFor="import-agent-name"
-              description={`Flue entrypoint: ${inspection.manifest.entrypoint}`}
+              description="Used in the dashboard and API."
             >
               <Input
+                ref={nameInput}
                 id="import-agent-name"
                 value={name}
                 onChange={(event) => {
@@ -555,20 +496,16 @@ function GithubImport({ app }: { app: DeployApp }) {
                 placeholder="Support triage"
               />
             </Field>
-            <div className="bg-panel-2 flex items-start gap-3 rounded-md p-3">
-              <KeyRound
-                className="text-muted-foreground mt-0.5 size-4 shrink-0"
-                aria-hidden
-              />
-              <div>
-                <p className="text-sm font-medium">Managed credential</p>
-                <p className="text-muted-foreground mt-0.5 text-xs">
-                  OpenComputer provides model access for{' '}
-                  <code className="font-mono">{inspection.manifest.model}</code>
-                  . No provider key is added to the build environment.
-                </p>
-              </div>
-            </div>
+            <p className="text-muted-foreground flex items-center gap-2 text-xs">
+              <KeyRound className="size-3.5 shrink-0" aria-hidden />
+              Model access is managed by OpenComputer.
+            </p>
+            {inspection.warnings.map((warning) => (
+              <Alert key={`${warning.code}:${warning.message}`}>
+                <AlertTitle>Compatibility warning</AlertTitle>
+                <AlertDescription>{warning.message}</AlertDescription>
+              </Alert>
+            ))}
             {importMutation.isError ? (
               <Alert variant={existingAgent ? 'default' : 'destructive'}>
                 <AlertTitle>
@@ -596,19 +533,19 @@ function GithubImport({ app }: { app: DeployApp }) {
                 ) : null}
               </Alert>
             ) : null}
-            <div className="flex justify-end">
-              <Button disabled={!canImport} onClick={deployAgent}>
-                {importMutation.isPending ? (
-                  <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
-                ) : (
-                  <ArrowRight className="size-4" />
-                )}
-                {importMutation.isPending
-                  ? 'Creating deployment…'
-                  : 'Deploy agent'}
-              </Button>
-            </div>
           </PanelContent>
+          <PanelFooter className="justify-end">
+            <Button disabled={!canImport} onClick={deployAgent}>
+              {importMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+              ) : (
+                <ArrowRight className="size-4" />
+              )}
+              {importMutation.isPending
+                ? 'Creating deployment…'
+                : 'Deploy agent'}
+            </Button>
+          </PanelFooter>
         </Panel>
       ) : null}
     </div>

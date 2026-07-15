@@ -37,12 +37,20 @@ import { agentDeploymentOutcome } from '@/lib/agent-deployment-outcome'
 import { cn } from '@/lib/utils'
 
 const PHASES = [
-  { label: 'Source', states: ['fetching', 'validating'] },
-  { label: 'Install', states: ['installing'] },
-  { label: 'Build', states: ['building'] },
-  { label: 'Artifact', states: ['uploading'] },
-  { label: 'Deploy', states: ['deploying'] },
-  { label: 'Verify', states: ['verifying'] },
+  {
+    label: 'Prepare',
+    states: [
+      'accepted',
+      'queued',
+      'fetching',
+      'validating',
+      'installing',
+      'source',
+      'install',
+    ],
+  },
+  { label: 'Build', states: ['building', 'uploading', 'build', 'artifact'] },
+  { label: 'Deploy', states: ['deploying', 'verifying', 'deploy', 'verify'] },
 ] as const
 const DEPLOY_COMMAND_STORAGE = 'oc.flue-deploy-latest-command.v1'
 
@@ -114,26 +122,12 @@ function phaseIndex(deployment: AgentDeployment): number {
 function DeploymentPhases({ deployment }: { deployment: AgentDeployment }) {
   const current = phaseIndex(deployment)
   const failed = deployment.state === 'failed'
-  const queued =
-    deployment.state === 'accepted' || deployment.state === 'queued'
   const terminalWithoutPhase = failed && current < 0
   const allDone = deployment.state === 'ready'
 
   return (
     <div>
-      {queued ? (
-        <p className="text-status-pending mb-4 flex items-center gap-1.5 text-sm font-medium">
-          <Clock className="size-4" aria-hidden />
-          Queued
-          <span className="text-muted-foreground font-normal">
-            Waiting for the build worker.
-          </span>
-        </p>
-      ) : null}
-      <ol
-        className="grid grid-cols-3 gap-y-4 sm:grid-cols-6"
-        aria-label="Deployment phases"
-      >
+      <ol className="grid grid-cols-3" aria-label="Deployment phases">
         {PHASES.map((phase, index) => {
           const done = allDone || (current >= 0 && index < current)
           const active = !allDone && index === current
@@ -152,7 +146,6 @@ function DeploymentPhases({ deployment }: { deployment: AgentDeployment }) {
                 'relative flex flex-col items-center gap-2 text-center',
                 index > 0 &&
                   "before:bg-border before:absolute before:top-3.5 before:right-1/2 before:h-px before:w-full before:-translate-x-3.5 before:content-['']",
-                index === 3 && 'before:hidden sm:before:block',
               )}
             >
               <span
@@ -206,12 +199,6 @@ function DeploymentPhases({ deployment }: { deployment: AgentDeployment }) {
   )
 }
 
-function formatDate(value: string | null | undefined): string {
-  if (!value) return 'Not recorded'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
-}
-
 function formatDuration(deployment: AgentDeployment): string {
   if (deployment.timing.total_ms != null) {
     return formatMilliseconds(deployment.timing.total_ms)
@@ -234,13 +221,6 @@ function formatMilliseconds(milliseconds: number): string {
   if (seconds < 60) return `${seconds}s`
   const minutes = Math.floor(seconds / 60)
   return `${minutes}m ${seconds % 60}s`
-}
-
-function formatBytes(value: number | undefined): string {
-  if (value === undefined) return 'Not available'
-  if (value < 1024) return `${value} B`
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`
-  return `${(value / 1024 / 1024).toFixed(1)} MiB`
 }
 
 function Outcome({ deployment }: { deployment: AgentDeployment }) {
@@ -340,49 +320,6 @@ function DeploymentLog({
         )
       })}
     </div>
-  )
-}
-
-function Metadata({ deployment }: { deployment: AgentDeployment }) {
-  const build = deployment.build
-  const items = [
-    [
-      'Root',
-      build?.root ?? deployment.source_relation?.path ?? 'Repository root',
-    ],
-    ['Node', build?.node ?? 'Not recorded'],
-    ['npm', build?.npm ?? 'Not recorded'],
-    [
-      'Lockfile',
-      build?.lockfile_version !== undefined
-        ? `version ${build.lockfile_version}`
-        : 'Not recorded',
-    ],
-    ['Builder', build?.builder ?? 'Not recorded'],
-    ['Snapshot', build?.snapshot ?? 'Not recorded'],
-    ['Artifact', build?.artifact_digest ?? 'Not available'],
-    ['Artifact size', formatBytes(build?.artifact_bytes)],
-    [
-      'Source',
-      build?.source_files !== undefined && build.source_bytes !== undefined
-        ? `${build.source_files.toLocaleString()} files · ${formatBytes(build.source_bytes)}`
-        : 'Not recorded',
-    ],
-    ['Infrastructure attempts', String(build?.attempts ?? 1)],
-    ['Flue entrypoint', deployment.configuration?.entrypoint ?? 'Not recorded'],
-    ['Model', deployment.configuration?.model ?? 'Not recorded'],
-  ]
-  return (
-    <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-      {items.map(([label, value]) => (
-        <div key={label} className="min-w-0">
-          <dt className="text-muted-foreground text-xs">{label}</dt>
-          <dd className="mt-1 truncate font-mono text-sm" title={value}>
-            {value}
-          </dd>
-        </div>
-      ))}
-    </dl>
   )
 }
 
@@ -496,23 +433,7 @@ export default function AgentDeployment() {
   }
 
   const deployment = deploymentQuery.data
-  const repo = deployment.source_relation?.repo?.full_name ?? undefined
-  const root = deployment.source_relation?.path ?? undefined
-  const ref =
-    deployment.source_relation?.ref ??
-    deployment.source_relation?.production_ref ??
-    deployment.ref ??
-    undefined
-  const sha = deployment.source_relation?.sha ?? deployment.sha ?? undefined
   const commitUrl = deployment.source_relation?.commit_url ?? undefined
-  const trigger =
-    deployment.actor?.kind === 'ci'
-      ? 'GitHub push'
-      : deployment.actor?.kind === 'agent'
-        ? 'Agent'
-        : deployment.input_type === 'github'
-          ? 'Dashboard import'
-          : 'Dashboard'
   const canViewCommit =
     deployment.allowed_actions.includes('view_commit') && !!commitUrl
   const canOpenAgent = deployment.allowed_actions.includes('open_agent')
@@ -618,25 +539,25 @@ export default function AgentDeployment() {
 
       <Outcome deployment={deployment} />
 
-      <Panel>
-        <PanelHeader>
-          <div>
-            <PanelTitle>Progress</PanelTitle>
-            <PanelDescription className="mt-1" aria-live="polite">
-              Current state: {deployment.state.replace(/_/g, ' ')}
-            </PanelDescription>
-          </div>
-          {!terminal ? (
+      {!terminal ? (
+        <Panel>
+          <PanelHeader>
+            <div>
+              <PanelTitle>Progress</PanelTitle>
+              <PanelDescription className="mt-1" aria-live="polite">
+                {PHASES[phaseIndex(deployment)]?.label ?? 'Waiting to start'}
+              </PanelDescription>
+            </div>
             <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
               <Clock className="size-3.5" />
               {formatDuration(deployment)}
             </span>
-          ) : null}
-        </PanelHeader>
-        <PanelContent>
-          <DeploymentPhases deployment={deployment} />
-        </PanelContent>
-      </Panel>
+          </PanelHeader>
+          <PanelContent>
+            <DeploymentPhases deployment={deployment} />
+          </PanelContent>
+        </Panel>
+      ) : null}
 
       <Panel>
         <PanelHeader>
@@ -680,57 +601,6 @@ export default function AgentDeployment() {
           )}
         </PanelContent>
       </Panel>
-
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Panel>
-          <PanelHeader>
-            <PanelTitle>Build metadata</PanelTitle>
-          </PanelHeader>
-          <PanelContent>
-            <Metadata deployment={deployment} />
-          </PanelContent>
-        </Panel>
-
-        <Panel>
-          <PanelHeader>
-            <PanelTitle>Source and result</PanelTitle>
-          </PanelHeader>
-          <PanelContent>
-            <dl className="grid gap-y-4">
-              {[
-                ['Repository', repo ?? 'Not recorded'],
-                ['Root', root || 'Repository root'],
-                ['Branch', ref ?? 'Not recorded'],
-                ['Commit', sha ?? 'Not recorded'],
-                ['Trigger', trigger],
-                ['Accepted', formatDate(deployment.created_at)],
-                ['Started', formatDate(deployment.started_at)],
-                ['Finished', formatDate(deployment.finished_at)],
-                ['Duration', formatDuration(deployment)],
-                [
-                  'Revision',
-                  deployment.revision?.number
-                    ? `#${deployment.revision.number}${deployment.active ? ' · Active' : ''}`
-                    : 'None',
-                ],
-              ].map(([label, value]) => (
-                <div
-                  key={label}
-                  className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-3"
-                >
-                  <dt className="text-muted-foreground text-xs">{label}</dt>
-                  <dd
-                    className="truncate font-mono text-xs sm:text-right"
-                    title={value}
-                  >
-                    {value}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          </PanelContent>
-        </Panel>
-      </div>
     </div>
   )
 }
