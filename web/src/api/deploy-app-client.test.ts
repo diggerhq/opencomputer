@@ -58,7 +58,7 @@ describe('deploy app client', () => {
           review: {
             sha: 'a'.repeat(40),
             source_profile: 'flue-app-v1',
-            fingerprint: 'sha256:reviewed',
+            fingerprint: `sha256:${'b'.repeat(64)}`,
           },
         },
         'import-command-1',
@@ -81,7 +81,7 @@ describe('deploy app client', () => {
       review: {
         sha: 'a'.repeat(40),
         source_profile: 'flue-app-v1',
-        fingerprint: 'sha256:reviewed',
+        fingerprint: `sha256:${'b'.repeat(64)}`,
       },
     })
   })

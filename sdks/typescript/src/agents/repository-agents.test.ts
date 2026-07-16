@@ -1,5 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenComputer } from "./client.js";
+import type { RepositorySourceInterpretation } from "./repository-agents.js";
+
+// @ts-expect-error invalid profile identity must be flue-app-v1@1 or null/null
+const crossedInvalidProfile: RepositorySourceInterpretation = {
+  disposition: "invalid",
+  sourceProfile: "flue-app-v1",
+  sourceProfileVersion: null,
+  summary: "Invalid source",
+  reasonCode: "manifest_invalid",
+  issues: [],
+};
+void crossedInvalidProfile;
 
 const reviewResponse = {
   repository: {
@@ -40,7 +52,7 @@ const reviewResponse = {
     variable_names: [],
     warnings: [],
   },
-  review_fingerprint: "sha256:reviewed",
+  review_fingerprint: `sha256:${"b".repeat(64)}` as const,
   candidate_roots: [],
   candidate_roots_truncated: false,
 };
@@ -142,7 +154,7 @@ describe("agent repository review/import", () => {
       review: {
         sha: reviewResponse.sha,
         source_profile: "flue-app-v1",
-        fingerprint: "sha256:reviewed",
+        fingerprint: `sha256:${"b".repeat(64)}`,
       },
     });
   });

@@ -125,6 +125,9 @@ export function deploymentSlackPresentation(input: {
     label: 'Connect Slack',
     disclosure: true,
     status: null,
-    announcement: 'Connect Slack while the deployment continues.',
+    announcement:
+      stage === 'ready'
+        ? 'Connect Slack to use this ready agent.'
+        : 'Connect Slack while the deployment continues.',
   }
 }

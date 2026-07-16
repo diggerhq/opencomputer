@@ -64,7 +64,11 @@ describe('deployment and managed Slack composition', () => {
         deploymentState: 'ready',
         deploymentTerminal: true,
       }),
-    ).toMatchObject({ action: 'connect', label: 'Connect Slack' })
+    ).toMatchObject({
+      action: 'connect',
+      label: 'Connect Slack',
+      announcement: 'Connect Slack to use this ready agent.',
+    })
   })
 
   it('makes deployment recovery primary after failure', () => {

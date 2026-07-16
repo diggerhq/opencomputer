@@ -16,7 +16,7 @@ const common = {
   production_ref: 'main',
   sha: 'a'.repeat(40),
   profile: null,
-  review_fingerprint: 'sha256:review',
+  review_fingerprint: `sha256:${'b'.repeat(64)}`,
   candidate_roots: [],
   candidate_roots_truncated: false,
 } satisfies Omit<RepositorySourceInspection, 'interpretation' | 'profile'> & {

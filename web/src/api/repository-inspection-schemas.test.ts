@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { RepositorySourceInspectionSchema } from './schemas'
 
+const reviewFingerprint = `sha256:${'b'.repeat(64)}`
+
 const common = {
   repository: {
     id: 'repo_0123456789abcdef01234567',
@@ -10,7 +12,7 @@ const common = {
   root: '',
   production_ref: 'main',
   sha: 'a'.repeat(40),
-  review_fingerprint: 'sha256:review',
+  review_fingerprint: reviewFingerprint,
   candidate_roots: [],
   candidate_roots_truncated: false,
 }
@@ -52,7 +54,7 @@ describe('repository source inspection schema', () => {
     })
 
     expect(parsed.profile?.manifest.entrypoint).toBe('support-triage')
-    expect(parsed.review_fingerprint).toBe('sha256:review')
+    expect(parsed.review_fingerprint).toBe(reviewFingerprint)
   })
 
   it('treats broken Flue and unrecognized source as review results', () => {
@@ -132,6 +134,53 @@ describe('repository source inspection schema', () => {
           reason_code: 'fallback',
         },
         profile: null,
+      }),
+    ).toThrow()
+  })
+
+  it('rejects crossed invalid profile identities and malformed receipts', () => {
+    const invalid = {
+      ...common,
+      profile: null,
+      interpretation: {
+        disposition: 'invalid',
+        summary: 'Invalid source',
+        reason_code: 'manifest_invalid',
+        issues: [],
+      },
+    }
+    expect(() =>
+      RepositorySourceInspectionSchema.parse({
+        ...invalid,
+        interpretation: {
+          ...invalid.interpretation,
+          source_profile: 'flue-app-v1',
+          source_profile_version: null,
+        },
+      }),
+    ).toThrow()
+    expect(() =>
+      RepositorySourceInspectionSchema.parse({
+        ...invalid,
+        interpretation: {
+          ...invalid.interpretation,
+          source_profile: null,
+          source_profile_version: 1,
+        },
+      }),
+    ).toThrow()
+    expect(() =>
+      RepositorySourceInspectionSchema.parse({
+        ...common,
+        review_fingerprint: 'sha256:not-a-digest',
+        profile: null,
+        interpretation: {
+          disposition: 'unrecognized',
+          source_profile: null,
+          source_profile_version: null,
+          summary: 'No agent found',
+          reason_code: 'unrecognized_source',
+        },
       }),
     ).toThrow()
   })

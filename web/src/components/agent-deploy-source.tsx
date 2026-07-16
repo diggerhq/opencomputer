@@ -64,9 +64,12 @@ async function pollDeployUntilActive(
 export function AgentDeploySource({
   agentId,
   autoFocusPicker = false,
+  recoveryOnly = false,
 }: {
   agentId: string
   autoFocusPicker?: boolean
+  /** Flue sources are immutable-profile imports; show only durable recovery. */
+  recoveryOnly?: boolean
 }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -86,6 +89,7 @@ export function AgentDeploySource({
   const { data: app, isLoading: appLoading } = useQuery({
     queryKey: ['deploy-app'],
     queryFn: getDeployApp,
+    enabled: !recoveryOnly,
     // The App is installed in another tab; refetch whenever the user returns so the
     // card flips to the repo picker immediately (staleTime would otherwise hide it).
     refetchOnWindowFocus: 'always',
@@ -223,6 +227,15 @@ export function AgentDeploySource({
     !repoOptions.some((o) => o.value === source.full_name)
   ) {
     repoOptions.unshift({ value: source.full_name, label: source.full_name })
+  }
+
+  if (
+    recoveryOnly &&
+    !unlinkedImport &&
+    !srcError &&
+    source?.status !== 'source_profile_changed'
+  ) {
+    return null
   }
 
   return (

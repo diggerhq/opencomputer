@@ -75,14 +75,15 @@ export type RepositorySourceInterpretation =
       assumptions: string[];
       agent: { runtime: "flue"; model: string };
     }
-  | {
+  | ({
       disposition: "invalid";
-      sourceProfile: SourceProfileId | null;
-      sourceProfileVersion: 1 | null;
       summary: string;
       reasonCode: string;
       issues: RepositoryReviewIssue[];
-    }
+    } & (
+      | { sourceProfile: SourceProfileId; sourceProfileVersion: 1 }
+      | { sourceProfile: null; sourceProfileVersion: null }
+    ))
   | {
       disposition: "unrecognized";
       sourceProfile: null;
@@ -100,7 +101,7 @@ interface RepositoryAgentReviewBase {
   root: string;
   productionRef: string;
   sha: string;
-  reviewFingerprint: string;
+  reviewFingerprint: `sha256:${string}`;
   candidateRoots: RepositoryCandidateRoot[];
   candidateRootsTruncated: boolean;
 }
@@ -131,7 +132,7 @@ export type RepositoryAgentReview =
 export interface RepositoryReviewReceipt {
   sha: string;
   sourceProfile: SourceProfileId;
-  fingerprint: string;
+  fingerprint: `sha256:${string}`;
 }
 
 export interface ImportRepositoryAgentParams {

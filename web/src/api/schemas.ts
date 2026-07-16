@@ -675,38 +675,50 @@ export const FlueSourceProfileSchema = z.object({
   warnings: z.array(RepositoryReviewIssueSchema).default([]),
 })
 
-export const RepositorySourceInterpretationSchema = z.discriminatedUnion(
-  'disposition',
-  [
-    z.object({
-      disposition: z.literal('exact'),
-      source_profile: z.literal('flue-app-v1'),
-      source_profile_version: z.literal(1),
-      summary: z.string(),
-      reason_code: z.string(),
-      assumptions: z.array(z.string()).default([]),
-      agent: z.object({
-        runtime: z.literal('flue'),
-        model: z.string(),
-      }),
-    }),
-    z.object({
-      disposition: z.literal('invalid'),
-      source_profile: z.literal('flue-app-v1').nullable(),
-      source_profile_version: z.literal(1).nullable(),
-      summary: z.string(),
-      reason_code: z.string(),
-      issues: z.array(RepositoryReviewIssueSchema).default([]),
-    }),
-    z.object({
-      disposition: z.literal('unrecognized'),
-      source_profile: z.null(),
-      source_profile_version: z.null(),
-      summary: z.string(),
-      reason_code: z.literal('unrecognized_source'),
-    }),
-  ],
-)
+const ExactRepositorySourceInterpretationSchema = z.object({
+  disposition: z.literal('exact'),
+  source_profile: z.literal('flue-app-v1'),
+  source_profile_version: z.literal(1),
+  summary: z.string(),
+  reason_code: z.string(),
+  assumptions: z.array(z.string()).default([]),
+  agent: z.object({
+    runtime: z.literal('flue'),
+    model: z.string(),
+  }),
+})
+
+const InvalidRepositorySourceInterpretationBase = z.object({
+  disposition: z.literal('invalid'),
+  summary: z.string(),
+  reason_code: z.string(),
+  issues: z.array(RepositoryReviewIssueSchema).default([]),
+})
+
+const InvalidRepositorySourceInterpretationSchema = z.union([
+  InvalidRepositorySourceInterpretationBase.extend({
+    source_profile: z.literal('flue-app-v1'),
+    source_profile_version: z.literal(1),
+  }),
+  InvalidRepositorySourceInterpretationBase.extend({
+    source_profile: z.null(),
+    source_profile_version: z.null(),
+  }),
+])
+
+const UnrecognizedRepositorySourceInterpretationSchema = z.object({
+  disposition: z.literal('unrecognized'),
+  source_profile: z.null(),
+  source_profile_version: z.null(),
+  summary: z.string(),
+  reason_code: z.literal('unrecognized_source'),
+})
+
+export const RepositorySourceInterpretationSchema = z.union([
+  ExactRepositorySourceInterpretationSchema,
+  InvalidRepositorySourceInterpretationSchema,
+  UnrecognizedRepositorySourceInterpretationSchema,
+])
 
 export const RepositorySourceInspectionSchema = z
   .object({
@@ -717,10 +729,10 @@ export const RepositorySourceInspectionSchema = z
     }),
     root: z.string(),
     production_ref: z.string(),
-    sha: z.string(),
+    sha: z.string().regex(/^[0-9a-f]{40}$/i),
     interpretation: RepositorySourceInterpretationSchema,
     profile: FlueSourceProfileSchema.nullable(),
-    review_fingerprint: z.string(),
+    review_fingerprint: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     candidate_roots: z.array(RepositoryCandidateRootSchema).max(20).default([]),
     candidate_roots_truncated: z.boolean(),
   })

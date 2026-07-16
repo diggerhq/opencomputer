@@ -48,6 +48,7 @@ import {
   providerForModel,
   withModelGroups,
 } from '@/lib/runtimes'
+import { cn } from '@/lib/utils'
 
 const DOCS = 'https://docs.opencomputer.dev/agent-sessions'
 
@@ -545,9 +546,10 @@ export default function AgentDetail() {
             </div>
             {/* Right rail: connect-or-status for the agent's source + Slack. */}
             <div className="space-y-4">
-              {agent.runtime !== 'flue' ? (
-                <AgentDeploySource agentId={agent.id} />
-              ) : null}
+              <AgentDeploySource
+                agentId={agent.id}
+                recoveryOnly={agent.runtime === 'flue'}
+              />
               <SlackConnect
                 agentId={agent.id}
                 agentName={agent.name}
@@ -765,25 +767,35 @@ function TabLink({
   )
 }
 
-function SourceChip({
+export function SourceChip({
   source,
 }: {
   source: {
     full_name?: string | null
     path: string
     production_ref: string
+    status?: string
   } | null
 }) {
   if (!source) {
     return null
   }
   const label = source.full_name ?? (source.path || 'repo')
+  const needsAttention = source.status === 'source_profile_changed'
   return (
-    <span className="inline-flex items-center gap-1">
+    <span
+      className={cn(
+        'inline-flex items-center gap-1',
+        needsAttention && 'text-status-error',
+      )}
+    >
       <GitBranch className="size-3" />
       <span className="font-mono">
         {label}@{source.production_ref}
       </span>
+      {needsAttention ? (
+        <span className="font-medium">· Source needs attention</span>
+      ) : null}
     </span>
   )
 }
