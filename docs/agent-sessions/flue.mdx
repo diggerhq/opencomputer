@@ -79,14 +79,24 @@ The shortest path for an existing Flue app is the dashboard:
 1. Fork the [Flue starter](https://github.com/diggerhq/oc-flue-starter/fork), or push your own app to GitHub.
 2. Open **Agents → Create agent → Import from GitHub**.
 3. Install the OpenComputer GitHub App on the repository, then select the repository, production branch, and root directory.
-4. Review the detected Flue entrypoint, model, and exact commit. Give the OpenComputer agent a human-readable name; it may differ from the `agent.toml` Flue entrypoint.
-5. Choose **Deploy agent**. The deployment page keeps one chronological log and summarizes progress as **Prepare**, **Build**, and **Deploy**.
+4. Choose **Review agent**. OpenComputer resolves one exact commit and checks the root without running repository code.
+5. Review the detected Flue entrypoint and model. Give the OpenComputer agent a human-readable name; it may differ from the `agent.toml` Flue entrypoint.
+6. Choose **Deploy agent**. The deployment page opens immediately, keeps one chronological log, and summarizes progress as **Prepare**, **Build**, and **Deploy**.
 
 The selected root is its own build context and must contain `agent.toml`, `package.json`, and a
 committed `package-lock.json`. The package must declare a Node engine compatible with the exact
 managed builder version and a semver dependency on the Flue CLI. npm workspaces,
 files above the selected root, private registries, submodules, Git LFS, custom install/build
 commands, and build-time secrets are not supported.
+
+`agent.toml` is authoritative. If it is malformed, declares an unsupported runtime, or is missing
+from a root that otherwise has strong Flue markers, review returns **This Flue agent needs a fix**.
+OpenComputer does not fall back to generated behavior or another runtime. A prompt- or skills-only
+folder is unrecognized; use a complete Flue root, choose another folder, fork the starter, or create
+a built-in agent manually.
+
+For a monorepo, reviewing an unrecognized parent can suggest bounded candidate roots. Selecting a
+candidate changes the root and performs a fresh review—it never deploys the suggestion automatically.
 
 OpenComputer resolves the selected branch to one commit, fetches only that tracked tree in a
 short-lived Git sandbox, and transfers tokenless source to a separate build sandbox. The build runs
@@ -101,11 +111,20 @@ new exact commit. Flue ignores pushes to other branches because it has one live 
 preview/staged Worker in the current profile.
 </Note>
 
+The review step returns a receipt for the exact source plan. Import re-resolves GitHub authority and
+checks that receipt before creating anything. If the branch or a relevant file changed, the dashboard
+shows **Repository changed since review** and asks you to review again.
+
 If install or build fails, the agent remains visible but undeployed: it has no usable revision and
 cannot start a session. Open the failed deployment for its persisted error summary and bounded log,
 fix the repository, and push the linked production branch. The first successful deployment creates
 revision **#1**. **Deploy latest** can manually rebuild its current head after a transient platform
 failure.
+
+If a later production push removes or replaces the Flue definition, the deployment stops before
+build with `source_profile_changed`; the active revision stays live. Restore the Flue app in the
+linked root, or unlink the source and import the repository as a new agent. Unlinking does not delete
+the existing agent, its active revision, or its sessions.
 
 ## Deploy from your machine
 

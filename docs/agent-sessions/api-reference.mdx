@@ -254,6 +254,8 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 | Call | Purpose |
 | --- | --- |
 | `oc.agents.create(params)` | Create a reusable agent. |
+| `oc.agents.repository.review(params)` | Resolve and interpret an exact repository source without running it. |
+| `oc.agents.repository.import(params)` | Import an exact reviewed source and enqueue its first deployment. |
 | `oc.agents.get(id)` · `oc.agents.list()` | Fetch / list. |
 | `oc.agents.update(id, params)` | Update bindings (credential / limits) — `prompt`/`model` deploy a revision. |
 | `oc.agents.delete(id)` | Delete an agent. |
@@ -265,7 +267,7 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 | Method · Path | Purpose |
 | --- | --- |
 | `POST /agents` | Create a reusable agent. |
-| `POST /agents/import` | Atomically create a Flue agent from an inspected GitHub source and enqueue its first deployment. |
+| `POST /agents/import` | Atomically create an agent from an exact reviewed GitHub source and enqueue its first deployment. |
 | `GET /agents/:id` · `GET /agents` | Fetch / list. |
 | `PATCH /agents/:id` | Update bindings; `prompt`/`model` deploy a revision. |
 | `DELETE /agents/:id` | Delete an agent. |
@@ -289,7 +291,7 @@ Body: `name`, `prompt`, `model`, `runtime?` (`claude`|`codex`), `key?`, `credent
 
 `POST /agents` is **idempotent by `name`**: fresh → `201`, matching config → `200`, differing → `409`. Editing `prompt`/`model` (here or via [deploy](#deployments-and-revisions)) creates a **revision**; the agent keeps a pointer to its **active revision** (`GET /agents/:id` → `active_revision`) and sessions pin it. The agent row holds only identity + bindings.
 
-`POST /agents/import` is the Flue repository-import command described below. It deliberately creates
+`POST /agents/import` is the reviewed repository-import command described below. It deliberately creates
 an agent with no active revision; revision #1 appears only after the queued build and live deployment
 verify successfully.
 
@@ -299,11 +301,20 @@ You **deploy** an agent's behavior. A deployment is a time-aware attempt; only a
 produces an immutable **revision**. Failed attempts and their logs remain in deployment history. See
 the [Deployments & revisions guide](/agent-sessions/revisions).
 
-### Import a Flue repository
+### Review and import a repository agent
 
-Repository inspection and import are currently REST/dashboard surfaces. Inspection resolves the
-moving production branch to one commit and validates bounded metadata without executing repository
-code:
+Review resolves the moving production branch to one exact commit and interprets bounded metadata
+without executing repository code. Repository-first import currently accepts the exact Flue result.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const review = await oc.agents.repository.review({
+  repo: "repo_...",
+  path: "agents/support",
+  productionRef: "main",
+});
+```
 
 ```http REST API
 POST /github/deploy-app/inspect
@@ -311,18 +322,81 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 
 {
   "repo": "repo_...",
-  "path": "",
+  "path": "agents/support",
   "production_ref": "main"
 }
 ```
 
-The response includes `repository`, normalized `root`, `production_ref`, exact `sha`, the manifest
-projection (`entrypoint`, `model`, `runtime`, non-secret `vars`), package and lockfile metadata,
-published builder Node, source counts, `variable_names`, and safe `warnings`. It never includes a
-repository token or source bytes.
+</CodeGroup>
 
-After review, submit the same source coordinates with a human-readable agent name. The name is
-independent of the Flue entrypoint in `agent.toml`.
+The response always includes repository identity, normalized `root`, `production_ref`, exact `sha`,
+`review_fingerprint`, and one `interpretation`:
+
+```json Exact Flue review
+{
+  "repository": { "id": "repo_...", "full_name": "acme/agents", "default_branch": "main" },
+  "root": "agents/support",
+  "production_ref": "main",
+  "sha": "0123456789abcdef0123456789abcdef01234567",
+  "interpretation": {
+    "disposition": "exact",
+    "source_profile": "flue-app-v1",
+    "source_profile_version": 1,
+    "summary": "Flue agent detected",
+    "reason_code": "flue_detected",
+    "assumptions": [],
+    "agent": { "runtime": "flue", "model": "anthropic/claude-haiku-4-5" }
+  },
+  "profile": {
+    "source_profile": "flue-app-v1",
+    "source_profile_version": 1,
+    "manifest": { "schema_version": 1, "entrypoint": "support-triage", "model": "anthropic/claude-haiku-4-5", "runtime": { "family": "flue", "type": "default" }, "vars": {} },
+    "package": { "name": "support-agent", "node_engine": ">=22.19 <23", "flue_cli": "^1.0.0" },
+    "lockfile": { "version": 3 },
+    "builder": { "node": "22.19.0" },
+    "source": { "files": 12, "bytes": 4096 },
+    "variable_names": [],
+    "warnings": []
+  },
+  "review_fingerprint": "sha256:...",
+  "candidate_roots": [],
+  "candidate_roots_truncated": false
+}
+```
+
+`interpretation.disposition` is `exact`, `invalid`, or `unrecognized`. Invalid and unrecognized are
+successful review responses, not service failures: `invalid` includes bounded `issues`; an
+unrecognized root can include up to 20 `candidate_roots` and explicitly reports truncation. Only
+`exact` includes a deployable `profile` and may proceed to import. No response contains a repository
+token or source bytes.
+
+Import sends the same source coordinates, a human-readable agent name, and the exact review receipt.
+The name is independent of the Flue entrypoint in `agent.toml`.
+
+<CodeGroup>
+
+```ts TypeScript SDK
+if (review.interpretation.disposition !== "exact") {
+  throw new Error(review.interpretation.summary);
+}
+
+const result = await oc.agents.repository.import({
+  name: "Support triage",
+  credential: "managed",
+  idempotencyKey: "stable-key-for-this-import",
+  source: {
+    type: "github",
+    repo: review.repository.id,
+    path: review.root,
+    productionRef: review.productionRef,
+  },
+  review: {
+    sha: review.sha,
+    sourceProfile: review.interpretation.sourceProfile,
+    fingerprint: review.reviewFingerprint,
+  },
+});
+```
 
 ```http REST API
 POST /agents/import
@@ -335,21 +409,30 @@ Idempotency-Key: <stable-key-for-this-import>
   "source": {
     "type": "github",
     "repo": "repo_...",
-    "path": "",
+    "path": "agents/support",
     "production_ref": "main"
+  },
+  "review": {
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "source_profile": "flue-app-v1",
+    "fingerprint": "sha256:..."
   }
 }
 ```
 
-The server repeats authoritative inspection, then creates `{ agent, source, deployment }` atomically.
-The deployment starts at `accepted`; the agent is visible but cannot start sessions until it reaches
-`ready`. Reusing the same idempotency key and command returns the same import; reusing it with
-different fields returns `409 idempotency_conflict`. A name or repository-root conflict also returns
-`409` and identifies the existing agent when available.
+</CodeGroup>
 
-The source remains linked after import. A later GitHub push that touches the selected root on its
-production branch automatically creates the next deployment. Flue ignores non-production pushes;
-the current runtime has one live Worker and no preview/staged Worker.
+The server reauthorizes the repository and re-derives the reviewed plan, then creates
+`{ agent, source, deployment }` atomically. If the branch head or relevant source changed, it returns
+`409 source_changed_re_review` and creates nothing. Reusing the same idempotency key and command
+returns the same import; reusing it with different fields returns `409 idempotency_conflict`. A name
+or repository-root conflict also returns `409` and identifies the existing agent when available.
+
+The source remains linked after import. Its `source_profile`, `source_profile_version`, and
+`review_fingerprint` describe the reviewed source identity. A later GitHub push that touches the
+selected production root automatically creates the next deployment. If that root no longer matches
+the imported source profile, the link status becomes `source_profile_changed`; no build starts and
+the current active revision remains unchanged.
 
 ### Deploy
 
@@ -392,7 +475,7 @@ the current runtime has one live Worker and no preview/staged Worker.
 behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys an already-linked
 repository; `repo`/`path` come from the server-owned link). `activate:false` stages an inline built-in
 deployment. Built-in GitHub links remain branch-driven. A new Flue repository agent instead starts
-with [`POST /agents/import`](#import-a-flue-repository); import deploys the reviewed production head,
+with [`POST /agents/import`](#review-and-import-a-repository-agent); import deploys the reviewed production head,
 and subsequent production-branch pushes deploy automatically. Flue has no preview/staged Worker.
 `POST …/revisions` is inline-only sugar.
 

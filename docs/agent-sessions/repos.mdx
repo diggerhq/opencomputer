@@ -121,12 +121,22 @@ does nothing but Git, and is gone before the next turn.
 ## Use a repo to deploy a Flue agent
 
 Choose **Agents → Create agent → Import from GitHub** when the repository is the agent
-implementation itself. The dashboard uses the OpenComputer App to:
+implementation itself. Repository-first creation currently recognizes a complete Flue application.
+The dashboard uses the OpenComputer App to:
 
-1. inspect the selected branch and root without running repository code;
-2. review the exact commit, Flue entrypoint, model, and agent name while validating the managed Node/package contract;
-3. create an undeployed agent and its first deployment attempt; and
-4. fetch that exact tracked tree in a short-lived Git box.
+1. resolve the selected branch and root at one exact commit without running repository code;
+2. explain whether it found a valid Flue app, a Flue app that needs a fix, or no supported agent definition;
+3. let you review the Flue entrypoint, model, and independent agent name; and
+4. revalidate that reviewed source before creating an undeployed agent and its first deployment.
+
+Recognition is deterministic. A root-level `agent.toml` is authoritative: if it is malformed or
+unsupported, the result is a fixable error rather than a guess. Without a manifest, a root-level
+`flue.config.*` file or a Flue package dependency is treated as Flue intent and reports the missing
+manifest. A prompt, `skills/` folder, README, or unrelated package is not converted automatically.
+
+If the selected root is unrecognized, the review can return up to 20 candidate roots from a bounded
+search no more than six folders deep. Candidates are suggestions, never an automatic selection;
+choose one and review it separately. When the result is truncated, select a narrower root.
 
 The Git box writes a bounded, digest-checked source archive to object storage and is destroyed.
 A different sandbox receives that archive without `.git` or GitHub auth, runs the fixed install and
@@ -134,13 +144,26 @@ build commands as an ordinary disposable OpenComputer sandbox, and emits an arti
 deployment credential belongs to another trusted service and is never present during source or
 build work.
 
-Flue repository deployment currently supports one self-contained npm root with `agent.toml`,
+Flue repository deployment supports one self-contained npm root with `agent.toml`,
 `package.json`, and `package-lock.json`. The initial import links that root to its production branch;
 each later push touching the root automatically deploys the branch's new exact head. Other branches
 do not create Flue preview deployments. **Deploy latest** remains available for manually rebuilding
 the current production head after a transient failure. See
 [Flue deployment](/agent-sessions/flue#deploy-from-github) for the full build contract and failure
 journey.
+
+The review receipt binds the repository, root, branch, exact commit, detected agent profile, and
+relevant files. If any of those change before import, OpenComputer returns a source-changed conflict
+and creates nothing. Review the current commit again rather than assuming the old confirmation still
+applies.
+
+The source link also remembers that the agent was imported as Flue. Normal Flue changes keep
+deploying on push. If the linked root stops being a Flue app, the deployment fails before build and
+the active revision stays live. Restore the Flue definition, or unlink the source and import it as a
+new agent. Unlinking stops push-to-deploy; it does not delete or convert the existing agent, revision,
+or sessions.
+
+<Note>The deployment repository is not a session working repository. Importing it does not mount its files into later sessions or grant the running agent GitHub access. Choose session [sources](#how-it-works) separately when an agent needs code to work on.</Note>
 
 ## Connecting GitHub
 
