@@ -54,7 +54,7 @@ import { cn } from '@/lib/utils'
 
 const STARTER_URL = 'https://github.com/diggerhq/oc-flue-starter'
 const STARTER_FORK_URL = `${STARTER_URL}/fork`
-const IMPORT_COMMAND_STORAGE = 'oc.flue-import-command.v1'
+const IMPORT_COMMAND_STORAGE = 'oc.repository-import-command.v1'
 
 type ImportBody = Parameters<typeof importAgentFromGithub>[0]
 type ImportCommand = { fingerprint: string; key: string }
@@ -519,7 +519,6 @@ function GithubImport({
             <div className="flex justify-end">
               <Button
                 type="button"
-                variant="outline"
                 disabled={!canInspect}
                 onClick={() => inspectMutation.mutate(undefined)}
               >
@@ -738,7 +737,9 @@ function GithubImport({
               </Alert>
             ) : null}
             <div className="flex flex-wrap gap-2">
-              <Button onClick={changeSource}>Choose another folder</Button>
+              {inspection.candidate_roots.length === 0 ? (
+                <Button onClick={changeSource}>Choose another folder</Button>
+              ) : null}
               <Button variant="outline" asChild>
                 <a href={STARTER_FORK_URL} target="_blank" rel="noreferrer">
                   Fork the Flue starter
