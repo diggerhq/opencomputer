@@ -11,7 +11,7 @@ Each section toggles between the **TypeScript SDK** (`@opencomputer/sdk`), **RES
 import { OpenComputer, connectSession } from "@opencomputer/sdk";
 
 const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
-const session = await oc.sessions.get("ses_..."); // server, org key
+const session = await oc.sessions.get("ses_...");        // server, org key
 // or, in a browser:  await connectSession({ sessionId, clientToken })
 ```
 
@@ -22,13 +22,7 @@ oc agent deploy        # deploy the agent directory in the cwd
 oc agent build --dir . --check-only --json  # validate a Flue app without credentials or deployment
 ```
 
-<Note>
-  The SDK uses **camelCase** for fields and params (`last_turn` → `lastTurn`,
-  `idempotency_key` → `idempotencyKey`); the wire shapes below are raw JSON.
-  Opaque blobs — session `metadata`, event `refs`/`raw` — pass through
-  **verbatim**; everything else (incl. event `body`) is camelCased. The CLI
-  prints a table, or raw JSON with `--json`.
-</Note>
+<Note>The SDK uses **camelCase** for fields and params (`last_turn` → `lastTurn`, `idempotency_key` → `idempotencyKey`); the wire shapes below are raw JSON. Opaque blobs — session `metadata`, event `refs`/`raw` — pass through **verbatim**; everything else (incl. event `body`) is camelCased. The CLI prints a table, or raw JSON with `--json`.</Note>
 
 ## Sessions
 
@@ -36,47 +30,47 @@ oc agent build --dir . --check-only --json  # validate a Flue app without creden
 
 <Tab title="TypeScript SDK">
 
-| Call                                        | Purpose                                                        |
-| ------------------------------------------- | -------------------------------------------------------------- |
-| `oc.sessions.create(params)`                | Start a session → a `Session` handle (carries `.clientToken`). |
-| `oc.sessions.get(id)`                       | Fetch a session.                                               |
-| `oc.sessions.list(params)`                  | List sessions (filtered, paginated).                           |
-| `session.archive()`                         | Cancel any active turn, then close (read-only).                |
-| `session.cancel()`                          | Cooperatively stop the active turn (no-op if not running).     |
-| `session.result()`                          | `{ lastTurn, result? }` — the resolved final event.            |
-| `session.turns()` · `session.turn(id)`      | Per-turn history: timing, error.                               |
-| `session.sources` · `session.listSources()` | Source checkout status — create snapshot · live poll.          |
-| `session.mintClientToken(opts)`             | Mint a client token.                                           |
+| Call | Purpose |
+| --- | --- |
+| `oc.sessions.create(params)` | Start a session → a `Session` handle (carries `.clientToken`). |
+| `oc.sessions.get(id)` | Fetch a session. |
+| `oc.sessions.list(params)` | List sessions (filtered, paginated). |
+| `session.archive()` | Cancel any active turn, then close (read-only). |
+| `session.cancel()` | Cooperatively stop the active turn (no-op if not running). |
+| `session.result()` | `{ lastTurn, result? }` — the resolved final event. |
+| `session.turns()` · `session.turn(id)` | Per-turn history: timing, error. |
+| `session.sources` · `session.listSources()` | Source checkout status — create snapshot · live poll. |
+| `session.mintClientToken(opts)` | Mint a client token. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                                                     | Purpose                                                       |
-| ----------------------------------------------------------------- | ------------------------------------------------------------- |
-| `POST /sessions`                                                  | Start a session → `{ session, client_token }`.                |
-| `GET /sessions/:id`                                               | Fetch a session.                                              |
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /sessions` | Start a session → `{ session, client_token }`. |
+| `GET /sessions/:id` | Fetch a session. |
 | `GET /sessions?status=&agent=&key=&after=&before=&limit=&cursor=` | List sessions (filtered, paginated; `cursor` = `nextCursor`). |
-| `POST /sessions/:id/archive`                                      | Cancel any active turn, then close (read-only).               |
-| `POST /sessions/:id/cancel`                                       | Cooperatively stop the active turn (no-op if not running).    |
-| `GET /sessions/:id/result`                                        | The result helper — `{ last_turn, result? }`.                 |
-| `GET /sessions/:id/turns` · `…/turns/:turnId`                     | Per-turn history: timing, error.                              |
-| `GET /sessions/:id/sources`                                       | Source checkout status (`SourceSummary[]`).                   |
-| `POST /sessions/:id/client-tokens`                                | Mint a client token.                                          |
+| `POST /sessions/:id/archive` | Cancel any active turn, then close (read-only). |
+| `POST /sessions/:id/cancel` | Cooperatively stop the active turn (no-op if not running). |
+| `GET /sessions/:id/result` | The result helper — `{ last_turn, result? }`. |
+| `GET /sessions/:id/turns` · `…/turns/:turnId` | Per-turn history: timing, error. |
+| `GET /sessions/:id/sources` | Source checkout status (`SourceSummary[]`). |
+| `POST /sessions/:id/client-tokens` | Mint a client token. |
 
 </Tab>
 
 <Tab title="oc CLI">
 
-| Command                                                                  | Purpose                                                                    |
-| ------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| Command | Purpose |
+| --- | --- |
 | `oc session create --agent <id\|name> [--revision <n>] [--input <text>]` | Start a session (`--revision` pins a specific revision; default = active). |
-| `oc session get <id>`                                                    | Fetch a session.                                                           |
-| `oc session list [--agent <id>] [--status <s>]`                          | List sessions.                                                             |
-| `oc session cancel <id>`                                                 | Cooperatively stop the active turn.                                        |
-| `oc session result <id>`                                                 | The resolved final result.                                                 |
-| `oc session steer <id> <text>`                                           | Send input to a running or waiting session.                                |
-| _(archive · turns · sources · client tokens — REST/SDK only)_            |                                                                            |
+| `oc session get <id>` | Fetch a session. |
+| `oc session list [--agent <id>] [--status <s>]` | List sessions. |
+| `oc session cancel <id>` | Cooperatively stop the active turn. |
+| `oc session result <id>` | The resolved final result. |
+| `oc session steer <id> <text>` | Send input to a running or waiting session. |
+| *(archive · turns · sources · client tokens — REST/SDK only)* | |
 
 </Tab>
 
@@ -97,49 +91,49 @@ A built-in runtime session pins the agent's active revision for its whole life. 
 
 **`Session`**
 
-| Field                               | Type       | Notes                                                                                      |
-| ----------------------------------- | ---------- | ------------------------------------------------------------------------------------------ |
-| `id` `status` `head` `input_cursor` |            | id, [lifecycle](/agent-sessions/sessions#lifecycle) status, latest event seq, input cursor |
-| `agent_id` `credential_id`          | string     | resolved + pinned at create                                                                |
-| `agent_snapshot`                    | object     | `{ prompt_hash, model, runtime, revision }` — `revision` = the pinned revision number      |
-| `last_turn`                         | `Turn`-ish | `{ id, state, yield_reason?, result_event_id? }`                                           |
-| `limits?`                           | object     | `{ tokens?, turn_seconds?, turns? }`                                                       |
-| `metadata?`                         | object     | opaque app routing state                                                                   |
-| `key?` `created_at`                 |            | get-or-create key, timestamp                                                               |
+| Field | Type | Notes |
+|---|---|---|
+| `id` `status` `head` `input_cursor` | | id, [lifecycle](/agent-sessions/sessions#lifecycle) status, latest event seq, input cursor |
+| `agent_id` `credential_id` | string | resolved + pinned at create |
+| `agent_snapshot` | object | `{ prompt_hash, model, runtime, revision }` — `revision` = the pinned revision number |
+| `last_turn` | `Turn`-ish | `{ id, state, yield_reason?, result_event_id? }` |
+| `limits?` | object | `{ tokens?, turn_seconds?, turns? }` |
+| `metadata?` | object | opaque app routing state |
+| `key?` `created_at` | | get-or-create key, timestamp |
 
 **`Turn`**
 
-| Field                         | Notes                         |
-| ----------------------------- | ----------------------------- |
-| `id` `state`                  | turn id, current state        |
-| `yield_reason?`               | why it ended (below)          |
-| `result_event_id?`            | the event carrying the result |
-| `error?`                      | failure detail, if any        |
-| `started_at?` `completed_at?` | timing                        |
+| Field | Notes |
+|---|---|
+| `id` `state` | turn id, current state |
+| `yield_reason?` | why it ended (below) |
+| `result_event_id?` | the event carrying the result |
+| `error?` | failure detail, if any |
+| `started_at?` `completed_at?` | timing |
 
 A turn's **`yield_reason`** tells you why it stopped:
 
-| Value                                                 | Meaning                                                        |
-| ----------------------------------------------------- | -------------------------------------------------------------- |
-| `completed`                                           | finished normally                                              |
-| `needs_input`                                         | the agent asked a question — answer it by [steering](#steer)   |
-| `error`                                               | the turn failed (see `error`)                                  |
+| Value | Meaning |
+|---|---|
+| `completed` | finished normally |
+| `needs_input` | the agent asked a question — answer it by [steering](#steer) |
+| `error` | the turn failed (see `error`) |
 | `budget_exceeded` / `deadline_exceeded` / `max_turns` | a [limit](#sessions) tripped — tokens / wall-clock / auto-runs |
-| `canceled`                                            | you cancelled it                                               |
+| `canceled` | you cancelled it |
 
 **`SessionSource`** — one of two variants:
 
-| Variant    | Shape                                                                                                                                                                             |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Variant | Shape |
+|---|---|
 | registered | `{ repo, ref, sha?, name? }` — `repo` is a `repo_…` id or `"owner/repo"`; App-backed auth. `sha` is **optional** (omit → control plane resolves `ref`→HEAD and pins it at create) |
-| inline     | `{ url, ref, sha, name?, auth }` — `sha` **required**; `auth = { type:"risky_short_lived_token", token, expires_at }` (can't refresh)                                             |
+| inline | `{ url, ref, sha, name?, auth }` — `sha` **required**; `auth = { type:"risky_short_lived_token", token, expires_at }` (can't refresh) |
 
 **`SourceSummary`** (sanitized; on create + `GET …/sources`)
 
-| Field                                       | Notes                                                                                                                                                                                                                                                                               |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name` `path` `sha` `resolved_sha?`         | checkout identity + resolved commit                                                                                                                                                                                                                                                 |
-| `status`                                    | `pending · materializing · resolved · failed · unavailable · auth_required`                                                                                                                                                                                                         |
+| Field | Notes |
+|---|---|
+| `name` `path` `sha` `resolved_sha?` | checkout identity + resolved commit |
+| `status` | `pending · materializing · resolved · failed · unavailable · auth_required` |
 | `error_code?` `error_message?` `retryable?` | on failure — `source.`-prefixed, e.g. `source.auth_required` (App not installed), `source.repo_not_selected` (install doesn't cover the repo), `source.permission_missing`, `source.mint_failed`, `source.ref_not_found`, `source.sha_mismatch`. [Full list](/agent-sessions/repos) |
 
 ## Events
@@ -148,34 +142,34 @@ A turn's **`yield_reason`** tells you why it stopped:
 
 <Tab title="TypeScript SDK">
 
-| Call                       | Purpose                                                     |
-| -------------------------- | ----------------------------------------------------------- |
-| `session.listEvents(opts)` | Read events since a cursor.                                 |
-| `session.events(opts)`     | Live stream from a cursor — a self-resuming async iterator. |
-| `session.event(id)`        | Fetch one event (resolve `resultEventId`).                  |
-| `session.eventContent(id)` | Fetch a blob-backed body (large outputs).                   |
-| `session.messages(opts)`   | User-message history.                                       |
+| Call | Purpose |
+| --- | --- |
+| `session.listEvents(opts)` | Read events since a cursor. |
+| `session.events(opts)` | Live stream from a cursor — a self-resuming async iterator. |
+| `session.event(id)` | Fetch one event (resolve `resultEventId`). |
+| `session.eventContent(id)` | Fetch a blob-backed body (large outputs). |
+| `session.messages(opts)` | User-message history. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                                      | Purpose                        |
-| -------------------------------------------------- | ------------------------------ |
-| `GET /sessions/:id/events?after=<seq>&level=<lvl>` | Read events since a cursor.    |
-| `GET /sessions/:id/events?…&stream=sse`            | Live SSE stream from a cursor. |
-| `GET /sessions/:id/events/:eventId`                | Fetch one event.               |
-| `GET /sessions/:id/events/:eventId/content`        | Fetch a blob-backed body.      |
-| `GET /sessions/:id/messages`                       | User-message history.          |
+| Method · Path | Purpose |
+| --- | --- |
+| `GET /sessions/:id/events?after=<seq>&level=<lvl>` | Read events since a cursor. |
+| `GET /sessions/:id/events?…&stream=sse` | Live SSE stream from a cursor. |
+| `GET /sessions/:id/events/:eventId` | Fetch one event. |
+| `GET /sessions/:id/events/:eventId/content` | Fetch a blob-backed body. |
+| `GET /sessions/:id/messages` | User-message history. |
 
 </Tab>
 
 <Tab title="oc CLI">
 
-| Command                                                        | Purpose                     |
-| -------------------------------------------------------------- | --------------------------- |
+| Command | Purpose |
+| --- | --- |
 | `oc session logs <id> [--follow] [--level <lvl>] [--type <t>]` | Read or live-stream events. |
-| _(single event · event content · messages — REST/SDK only)_    |                             |
+| *(single event · event content · messages — REST/SDK only)* | |
 
 </Tab>
 
@@ -185,13 +179,13 @@ Filter by `type` (exact or `prefix.*`), `turn_id`, `limit`. `after` resumes from
 
 **`Event`**
 
-| Field                                          | Notes                                                                      |
-| ---------------------------------------------- | -------------------------------------------------------------------------- |
-| `id` `seq` `ts` `session`                      | id, monotonic seq, timestamp, session id                                   |
-| `actor` `type` `level`                         | source, event [type](/agent-sessions/events#event-shape), visibility level |
-| `body`                                         | the payload (camelCased; switch on `type`, don't parse prose)              |
-| `turn_id?`                                     | the turn it belongs to                                                     |
-| `content_ref?` `body_truncated?` `body_bytes?` | large bodies are offloaded — fetch via `…/events/:id/content`              |
+| Field | Notes |
+|---|---|
+| `id` `seq` `ts` `session` | id, monotonic seq, timestamp, session id |
+| `actor` `type` `level` | source, event [type](/agent-sessions/events#event-shape), visibility level |
+| `body` | the payload (camelCased; switch on `type`, don't parse prose) |
+| `turn_id?` | the turn it belongs to |
+| `content_ref?` `body_truncated?` `body_bytes?` | large bodies are offloaded — fetch via `…/events/:id/content` |
 
 ## Steer
 
@@ -199,24 +193,24 @@ Filter by `type` (exact or `prefix.*`), `turn_id`, `limit`. `after` resumes from
 
 <Tab title="TypeScript SDK">
 
-| Call                                      | Purpose                                     |
-| ----------------------------------------- | ------------------------------------------- |
+| Call | Purpose |
+| --- | --- |
 | `session.steer(text, { idempotencyKey })` | Append an input message; wakes the session. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                 | Purpose                                     |
-| ----------------------------- | ------------------------------------------- |
+| Method · Path | Purpose |
+| --- | --- |
 | `POST /sessions/:id/messages` | Append an input message; wakes the session. |
 
 </Tab>
 
 <Tab title="oc CLI">
 
-| Command                        | Purpose                                     |
-| ------------------------------ | ------------------------------------------- |
+| Command | Purpose |
+| --- | --- |
 | `oc session steer <id> <text>` | Append an input message; wakes the session. |
 
 </Tab>
@@ -227,27 +221,27 @@ Body: `{ text, idempotency_key? }` or `{ envelope }`. Returns `202` (or `200` on
 
 ## Watches
 
-_Managed with the SDK (`session.watches.create/list/delete`), the CLI (`oc session watch/watches/unwatch`), or REST — authenticate with your **org API key** (server-side). The agent-facing path is the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool. Full guide: [Watches](/agent-sessions/watches)._
+*Managed with the SDK (`session.watches.create/list/delete`), the CLI (`oc session watch/watches/unwatch`), or REST — authenticate with your **org API key** (server-side). The agent-facing path is the [`watch_pull_request`](/agent-sessions/runtime-tools#github-tools) runtime tool. Full guide: [Watches](/agent-sessions/watches).*
 
-| Method · Path                           | Purpose                                                                                        |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `POST /sessions/:id/watches`            | Declare a watch → `201 { watch }`. Body: `{ type:"github_pr", repo?, pr?, wake_on, intent? }`. |
-| `GET /sessions/:id/watches`             | List watches → `{ data: [watch] }`.                                                            |
-| `DELETE /sessions/:id/watches/:watchId` | Remove a watch → `{ ok: true }`.                                                               |
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /sessions/:id/watches` | Declare a watch → `201 { watch }`. Body: `{ type:"github_pr", repo?, pr?, wake_on, intent? }`. |
+| `GET /sessions/:id/watches` | List watches → `{ data: [watch] }`. |
+| `DELETE /sessions/:id/watches/:watchId` | Remove a watch → `{ ok: true }`. |
 
 `wake_on` is the wake condition (`checks` default · `review` · `comment` · `merge`); `intent` is the freeform "why," replayed on wake. `repo`/`pr` are optional — omitted, they resolve to the PR this session opened. A watch fires only on PRs the **same session** opened, on Connected-App (`oc_app`) repos. Limits: **10** active watches per session, **30-day** TTL (and never outlives the PR).
 
 **`Watch`**
 
-| Field                                         | Notes                                                                                                   |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `id` `type`                                   | `wch_…`; `type` = `github_pr`                                                                           |
-| `repo` `pr`                                   | watched repo · PR number                                                                                |
-| `wake_on`                                     | wake condition: `checks` (default) · `review` (a review decision) · `comment` · `merge` (merged/closed) |
-| `intent?`                                     | freeform note ("why"), replayed on wake                                                                 |
-| `status`                                      | `active · closed · revoked · auth_required`                                                             |
-| `origin`                                      | how it was declared (runtime tool / management API)                                                     |
-| `last_snapshot_at?` `expires_at` `created_at` | last authoritative PR re-read · 30-day TTL lapse · timestamp                                            |
+| Field | Notes |
+|---|---|
+| `id` `type` | `wch_…`; `type` = `github_pr` |
+| `repo` `pr` | watched repo · PR number |
+| `wake_on` | wake condition: `checks` (default) · `review` (a review decision) · `comment` · `merge` (merged/closed) |
+| `intent?` | freeform note ("why"), replayed on wake |
+| `status` | `active · closed · revoked · auth_required` |
+| `origin` | how it was declared (runtime tool / management API) |
+| `last_snapshot_at?` `expires_at` `created_at` | last authoritative PR re-read · 30-day TTL lapse · timestamp |
 
 **Delivered events** — appended into the session log at level `user` with `source: "github"`, carrying a normalized summary (not the raw webhook): `github.pr.checks_completed` · `github.pr.review_submitted` · `github.pr.comment` · `github.pr.merged` · `github.pr.closed`.
 
@@ -257,37 +251,37 @@ _Managed with the SDK (`session.watches.create/list/delete`), the CLI (`oc sessi
 
 <Tab title="TypeScript SDK">
 
-| Call                                     | Purpose                                                                     |
-| ---------------------------------------- | --------------------------------------------------------------------------- |
-| `oc.agents.create(params)`               | Create a reusable agent.                                                    |
-| `oc.agents.repository.review(params)`    | Resolve and interpret an exact repository source without running it.        |
-| `oc.agents.repository.import(params)`    | Import an exact reviewed source and enqueue its first deployment.           |
-| `oc.agents.get(id)` · `oc.agents.list()` | Fetch / list.                                                               |
-| `oc.agents.update(id, params)`           | Update bindings (credential / limits) — `prompt`/`model` deploy a revision. |
-| `oc.agents.delete(id)`                   | Delete an agent.                                                            |
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.create(params)` | Create a reusable agent. |
+| `oc.agents.repository.review(params)` | Resolve and interpret an exact repository source without running it. |
+| `oc.agents.repository.import(params)` | Import an exact reviewed source and enqueue its first deployment. |
+| `oc.agents.get(id)` · `oc.agents.list()` | Fetch / list. |
+| `oc.agents.update(id, params)` | Update bindings (credential / limits) — `prompt`/`model` deploy a revision. |
+| `oc.agents.delete(id)` | Delete an agent. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                     | Purpose                                                                                           |
-| --------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `POST /agents`                    | Create a reusable agent.                                                                          |
-| `POST /agents/import`             | Atomically create an agent from an exact reviewed GitHub source and enqueue its first deployment. |
-| `GET /agents/:id` · `GET /agents` | Fetch / list.                                                                                     |
-| `PATCH /agents/:id`               | Update bindings; `prompt`/`model` deploy a revision.                                              |
-| `DELETE /agents/:id`              | Delete an agent.                                                                                  |
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /agents` | Create a reusable agent. |
+| `POST /agents/import` | Atomically create an agent from an exact reviewed GitHub source and enqueue its first deployment. |
+| `GET /agents/:id` · `GET /agents` | Fetch / list. |
+| `PATCH /agents/:id` | Update bindings; `prompt`/`model` deploy a revision. |
+| `DELETE /agents/:id` | Delete an agent. |
 
 </Tab>
 
 <Tab title="oc CLI">
 
-| Command                                                        | Purpose                  |
-| -------------------------------------------------------------- | ------------------------ |
+| Command | Purpose |
+| --- | --- |
 | `oc agent create <name> --model <m> [--runtime claude\|codex]` | Create a reusable agent. |
-| `oc agent get <id\|name>` · `oc agent list`                    | Fetch / list.            |
-| `oc agent update <id> [--credential <c>] [--limits …]`         | Update bindings.         |
-| `oc agent delete <id>`                                         | Delete an agent.         |
+| `oc agent get <id\|name>` · `oc agent list` | Fetch / list. |
+| `oc agent update <id> [--credential <c>] [--limits …]` | Update bindings. |
+| `oc agent delete <id>` | Delete an agent. |
 
 </Tab>
 
@@ -340,11 +334,7 @@ The response always includes repository identity, normalized `root`, `production
 
 ```json Exact Flue review
 {
-  "repository": {
-    "id": "repo_...",
-    "full_name": "acme/agents",
-    "default_branch": "main"
-  },
+  "repository": { "id": "repo_...", "full_name": "acme/agents", "default_branch": "main" },
   "root": "agents/support",
   "production_ref": "main",
   "sha": "0123456789abcdef0123456789abcdef01234567",
@@ -360,18 +350,8 @@ The response always includes repository identity, normalized `root`, `production
   "profile": {
     "source_profile": "flue-app-v1",
     "source_profile_version": 1,
-    "manifest": {
-      "schema_version": 1,
-      "entrypoint": "support-triage",
-      "model": "anthropic/claude-haiku-4-5",
-      "runtime": { "family": "flue", "type": "default" },
-      "vars": {}
-    },
-    "package": {
-      "name": "support-agent",
-      "node_engine": ">=22.19 <23",
-      "flue_cli": "^1.0.0"
-    },
+    "manifest": { "schema_version": 1, "entrypoint": "support-triage", "model": "anthropic/claude-haiku-4-5", "runtime": { "family": "flue", "type": "default" }, "vars": {} },
+    "package": { "name": "support-agent", "node_engine": ">=22.19 <23", "flue_cli": "^1.0.0" },
     "lockfile": { "version": 3 },
     "builder": { "node": "22.19.0" },
     "source": { "files": 12, "bytes": 4096 },
@@ -487,32 +467,32 @@ the current active revision remains unchanged.
 
 <Tab title="TypeScript SDK">
 
-| Call                                                                      | Purpose                                       |
-| ------------------------------------------------------------------------- | --------------------------------------------- |
-| `oc.agents.deployments.create(id, { input, activate?, idempotencyKey? })` | Deploy (`input.type: "inline" \| "github"`).  |
-| `oc.agents.deployments.list(id)` · `.get(id, depId)`                      | Deployment history · one deployment.          |
-| `oc.agents.deploy(dir)` _(Node)_                                          | Bundle a local directory → inline deployment. |
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.deployments.create(id, { input, activate?, idempotencyKey? })` | Deploy (`input.type: "inline" \| "github"`). |
+| `oc.agents.deployments.list(id)` · `.get(id, depId)` | Deployment history · one deployment. |
+| `oc.agents.deploy(dir)` *(Node)* | Bundle a local directory → inline deployment. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                                                  | Purpose                                                                                          |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `POST /agents/:id/deployments`                                 | Deploy → `{ deployment }`. Body: `{ input, activate?=true, idempotency_key?, client_context? }`. |
-| `GET /agents/:id/deployments?before=&limit=`                   | Newest-first history with an opaque `next_cursor`.                                               |
-| `GET /agents/:id/deployments/:deploymentId`                    | One attempt; poll asynchronous states until terminal.                                            |
-| `GET /agents/:id/deployments/:deploymentId/logs?after=&limit=` | Ordered durable log chunks with opaque resume cursors.                                           |
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /agents/:id/deployments` | Deploy → `{ deployment }`. Body: `{ input, activate?=true, idempotency_key?, client_context? }`. |
+| `GET /agents/:id/deployments?before=&limit=` | Newest-first history with an opaque `next_cursor`. |
+| `GET /agents/:id/deployments/:deploymentId` | One attempt; poll asynchronous states until terminal. |
+| `GET /agents/:id/deployments/:deploymentId/logs?after=&limit=` | Ordered durable log chunks with opaque resume cursors. |
 
 </Tab>
 
 <Tab title="oc CLI">
 
-| Command                                                                            | Purpose                                                                                       |
-| ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `oc agent deploy [dir] [--agent <id\|name>] [--no-activate]`                       | Bundle a local directory → inline deployment.                                                 |
+| Command | Purpose |
+| --- | --- |
+| `oc agent deploy [dir] [--agent <id\|name>] [--no-activate]` | Bundle a local directory → inline deployment. |
 | `oc agent build --dir <dir> [--check-only] [--target cloudflare] [--output <dir>]` | Validate or build a Flue artifact without fetching, installing, authenticating, or deploying. |
-| `oc agent deployments [--agent <id>]` · `oc agent deployments get <id>`            | History · one deployment.                                                                     |
+| `oc agent deployments [--agent <id>]` · `oc agent deployments get <id>` | History · one deployment. |
 
 </Tab>
 
@@ -528,18 +508,18 @@ and subsequent production-branch pushes deploy automatically. Flue has no previe
 
 **`Deployment`**
 
-| Field                              | Notes                                                                                                                                                                                                                                       |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id` `created_at` `updated_at`     | Attempt identity and timestamps.                                                                                                                                                                                                            |
-| `state` `phase` `terminal`         | Internal state plus stable UI phase. Repository states: `accepted`, `queued`, `fetching`, `validating`, `installing`, `building`, `uploading`, `deploying`, `verifying`; terminals: `ready`, `failed`, `canceled`, `superseded`, `skipped`. |
-| `result` `error_class` `error?`    | Terminal outcome and bounded, redacted failure detail.                                                                                                                                                                                      |
-| `revision_id` `revision?` `active` | Successful revision relation; absent for an unsuccessful attempt.                                                                                                                                                                           |
-| `source_relation?`                 | Repository id/name, path, production ref, exact SHA, and commit URL.                                                                                                                                                                        |
-| `build?` `configuration?`          | Safe builder/artifact metadata and non-secret runtime configuration; variables are names only.                                                                                                                                              |
-| `timing`                           | Accepted/started/finished coordinates plus queue/run/total durations.                                                                                                                                                                       |
-| `log_bytes` `log_truncated`        | Bounded log accounting.                                                                                                                                                                                                                     |
-| `live_touched` `agent_live?`       | Whether deployment crossed the live Worker boundary and the current guarded/verified state.                                                                                                                                                 |
-| `allowed_actions`                  | Server-derived actions such as `view_commit`, `deploy_latest`, `open_agent`, or `start_session`.                                                                                                                                            |
+| Field | Notes |
+|---|---|
+| `id` `created_at` `updated_at` | Attempt identity and timestamps. |
+| `state` `phase` `terminal` | Internal state plus stable UI phase. Repository states: `accepted`, `queued`, `fetching`, `validating`, `installing`, `building`, `uploading`, `deploying`, `verifying`; terminals: `ready`, `failed`, `canceled`, `superseded`, `skipped`. |
+| `result` `error_class` `error?` | Terminal outcome and bounded, redacted failure detail. |
+| `revision_id` `revision?` `active` | Successful revision relation; absent for an unsuccessful attempt. |
+| `source_relation?` | Repository id/name, path, production ref, exact SHA, and commit URL. |
+| `build?` `configuration?` | Safe builder/artifact metadata and non-secret runtime configuration; variables are names only. |
+| `timing` | Accepted/started/finished coordinates plus queue/run/total durations. |
+| `log_bytes` `log_truncated` | Bounded log accounting. |
+| `live_touched` `agent_live?` | Whether deployment crossed the live Worker boundary and the current guarded/verified state. |
+| `allowed_actions` | Server-derived actions such as `view_commit`, `deploy_latest`, `open_agent`, or `start_session`. |
 
 List returns `{ data, next_cursor }`. Log reads return
 `{ data: [{ seq, cursor, recorded_at, phase, stream, chunk }], next_cursor, has_more }`; treat `seq`
@@ -553,31 +533,31 @@ responses, and operator telemetry are never projected through these APIs.
 
 <Tab title="TypeScript SDK">
 
-| Call                                           | Purpose                                            |
-| ---------------------------------------------- | -------------------------------------------------- |
-| `oc.agents.revisions.list(id)` · `.get(id, n)` | History · one revision (+ skill manifest).         |
-| `oc.agents.revisions.activate(id, n)`          | Set the active revision (rollback **or** promote). |
-| `oc.agents.activations.list(id)`               | Active-pointer audit log.                          |
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.revisions.list(id)` · `.get(id, n)` | History · one revision (+ skill manifest). |
+| `oc.agents.revisions.activate(id, n)` | Set the active revision (rollback **or** promote). |
+| `oc.agents.activations.list(id)` | Active-pointer audit log. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                              | Purpose                                       |
-| ------------------------------------------ | --------------------------------------------- |
-| `GET /agents/:id/revisions` · `…/:rev`     | History · one revision (+ skill manifest).    |
+| Method · Path | Purpose |
+| --- | --- |
+| `GET /agents/:id/revisions` · `…/:rev` | History · one revision (+ skill manifest). |
 | `POST /agents/:id/revisions/:rev/activate` | Set the active revision (rollback / promote). |
-| `GET /agents/:id/activations`              | Active-pointer audit log.                     |
+| `GET /agents/:id/activations` | Active-pointer audit log. |
 
 </Tab>
 
 <Tab title="oc CLI">
 
-| Command                                                            | Purpose                                       |
-| ------------------------------------------------------------------ | --------------------------------------------- |
-| `oc agent revisions [--agent <id>]` · `oc agent revisions get <n>` | History · one revision.                       |
-| `oc agent rollback <n\|rev_…>`                                     | Set the active revision (rollback / promote). |
-| `oc agent activations`                                             | Active-pointer audit log.                     |
+| Command | Purpose |
+| --- | --- |
+| `oc agent revisions [--agent <id>]` · `oc agent revisions get <n>` | History · one revision. |
+| `oc agent rollback <n\|rev_…>` | Set the active revision (rollback / promote). |
+| `oc agent activations` | Active-pointer audit log. |
 
 </Tab>
 
@@ -587,14 +567,14 @@ Revisions are **linear** (numbered, immutable). `:rev` is a `number` or `rev_…
 
 **`Revision`**
 
-| Field                               | Notes                                                                |
-| ----------------------------------- | -------------------------------------------------------------------- |
-| `id` `number` `created_at` `active` | id, monotonic number, timestamp, is-active flag                      |
-| `prompt` `model`                    | the behavior                                                         |
-| `skill_bundle_digest?`              | content-addressed skills bundle (`null` = no skills)                 |
-| `digest`                            | behavior content hash (change detection)                             |
-| `runtime_ref`                       | `floating` (latest shared runtime) — `pinned` later (custom runtime) |
-| `files?`                            | `[{ path, mode, size }]` — only on `GET …/revisions/:rev`            |
+| Field | Notes |
+|---|---|
+| `id` `number` `created_at` `active` | id, monotonic number, timestamp, is-active flag |
+| `prompt` `model` | the behavior |
+| `skill_bundle_digest?` | content-addressed skills bundle (`null` = no skills) |
+| `digest` | behavior content hash (change detection) |
+| `runtime_ref` | `floating` (latest shared runtime) — `pinned` later (custom runtime) |
+| `files?` | `[{ path, mode, size }]` — only on `GET …/revisions/:rev` |
 
 ### Skills
 
@@ -602,28 +582,28 @@ Revisions are **linear** (numbered, immutable). `:rev` is a `number` or `rev_…
 
 <Tab title="TypeScript SDK">
 
-| Call                            | Purpose                                                       |
-| ------------------------------- | ------------------------------------------------------------- |
-| `oc.agents.skills.get(id)`      | List the active revision's skills (name, description, files). |
-| `oc.agents.skills.put(id, zip)` | Replace skills from a `.zip` → new revision.                  |
-| `oc.agents.skills.delete(id)`   | Remove all skills → new revision.                             |
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.skills.get(id)` | List the active revision's skills (name, description, files). |
+| `oc.agents.skills.put(id, zip)` | Replace skills from a `.zip` → new revision. |
+| `oc.agents.skills.delete(id)` | Remove all skills → new revision. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path               | Purpose                                                                        |
-| --------------------------- | ------------------------------------------------------------------------------ |
-| `GET /agents/:id/skills`    | List the active revision's skills.                                             |
-| `PUT /agents/:id/skills`    | Replace skills from a `.zip` (`Content-Type: application/zip`) → new revision. |
-| `DELETE /agents/:id/skills` | Remove all skills → new revision.                                              |
+| Method · Path | Purpose |
+| --- | --- |
+| `GET /agents/:id/skills` | List the active revision's skills. |
+| `PUT /agents/:id/skills` | Replace skills from a `.zip` (`Content-Type: application/zip`) → new revision. |
+| `DELETE /agents/:id/skills` | Remove all skills → new revision. |
 
 </Tab>
 
 <Tab title="oc CLI">
 
-| Command                 | Purpose                                                                          |
-| ----------------------- | -------------------------------------------------------------------------------- |
+| Command | Purpose |
+| --- | --- |
 | `oc agent deploy <dir>` | Deploy a directory; a `skills/` folder inside it ships as skills → new revision. |
 
 Skills have no dedicated CLI verb yet — deploy a directory that contains a `skills/` folder, or use the REST endpoints / dashboard.
@@ -640,31 +620,31 @@ A skill is a folder with a `SKILL.md`; PUT/DELETE are **deployments** (versioned
 
 <Tab title="TypeScript SDK">
 
-| Call                                          | Purpose                                         |
-| --------------------------------------------- | ----------------------------------------------- |
-| `oc.agents.deploymentSource.link(id, params)` | Link a repo directory → push-to-deploy.         |
-| `oc.agents.deploymentSource.get(id)`          | The link + status.                              |
-| `oc.agents.deploymentSource.unlink(id)`       | Remove the link (shared App webhook untouched). |
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.deploymentSource.link(id, params)` | Link a repo directory → push-to-deploy. |
+| `oc.agents.deploymentSource.get(id)` | The link + status. |
+| `oc.agents.deploymentSource.unlink(id)` | Remove the link (shared App webhook untouched). |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                          | Purpose                                                                           |
-| -------------------------------------- | --------------------------------------------------------------------------------- |
-| `POST /agents/:id/deployment-source`   | Link a repo directory. Body: `{ repo, path, production_ref?, deploy_now?=true }`. |
-| `GET /agents/:id/deployment-source`    | The link + status.                                                                |
-| `DELETE /agents/:id/deployment-source` | Remove the link.                                                                  |
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /agents/:id/deployment-source` | Link a repo directory. Body: `{ repo, path, production_ref?, deploy_now?=true }`. |
+| `GET /agents/:id/deployment-source` | The link + status. |
+| `DELETE /agents/:id/deployment-source` | Remove the link. |
 
 </Tab>
 
 <Tab title="oc CLI">
 
-| Command                                                                | Purpose                                    |
-| ---------------------------------------------------------------------- | ------------------------------------------ |
-| `oc agent link <owner/repo> --path <p> [--branch <ref>] [--no-deploy]` | Link a repo directory.                     |
-| `oc agent status [id\|name]`                                           | The agent's active revision + link status. |
-| `oc agent unlink`                                                      | Remove the link.                           |
+| Command | Purpose |
+| --- | --- |
+| `oc agent link <owner/repo> --path <p> [--branch <ref>] [--no-deploy]` | Link a repo directory. |
+| `oc agent status [id\|name]` | The agent's active revision + link status. |
+| `oc agent unlink` | Remove the link. |
 
 </Tab>
 
@@ -680,57 +660,57 @@ that deploy auto-activates. Repo/path are server-anchored to the link. Deploymen
 
 **`DeploymentSource`**
 
-| Field                                       | Notes                                                                                                                                                                       |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent_id` `repo_id` `path`                 | the linked agent · repo · directory within it                                                                                                                               |
-| `production_ref`                            | branch that auto-activates on push                                                                                                                                          |
-| `status`                                    | `active`, or a problem: `source_profile_changed`, `path_missing`, `ref_missing` (production branch deleted), `auth_required`, `repo_not_selected`, `app_suspended`, `error` |
-| `latest_seen_sha?` `active_deployed_sha?`   | newest sha observed · sha behind the active revision                                                                                                                        |
-| `source_profile?` `source_profile_version?` | server-selected repository interpretation pinned for this link (`flue-app-v1`, version `1`)                                                                                 |
-| `review_fingerprint?`                       | digest of the latest accepted, exact-SHA reviewed plan; never source bytes or a credential                                                                                  |
+| Field | Notes |
+|---|---|
+| `agent_id` `repo_id` `path` | the linked agent · repo · directory within it |
+| `production_ref` | branch that auto-activates on push |
+| `status` | `active`, or a problem: `source_profile_changed`, `path_missing`, `ref_missing` (production branch deleted), `auth_required`, `repo_not_selected`, `app_suspended`, `error` |
+| `latest_seen_sha?` `active_deployed_sha?` | newest sha observed · sha behind the active revision |
+| `source_profile?` `source_profile_version?` | server-selected repository interpretation pinned for this link (`flue-app-v1`, version `1`) |
+| `review_fingerprint?` | digest of the latest accepted, exact-SHA reviewed plan; never source bytes or a credential |
 
 ## Schedules
 
-_Run an agent on a cron — each firing starts a session. Managed with the SDK, the `oc` CLI, or REST (org key). Full guide: [Schedules](/agent-sessions/schedules)._
+*Run an agent on a cron — each firing starts a session. Managed with the SDK, the `oc` CLI, or REST (org key). Full guide: [Schedules](/agent-sessions/schedules).*
 
 <Tabs>
 
 <Tab title="TypeScript SDK">
 
-| Call                                                     | Purpose                                                     |
-| -------------------------------------------------------- | ----------------------------------------------------------- |
-| `oc.agents.schedules.create(id, params)`                 | Create a schedule (`{ name, cron, tz?, input, overlap? }`). |
-| `oc.agents.schedules.list(id)` · `.get(id, sid)`         | List / fetch.                                               |
-| `oc.agents.schedules.update(id, sid, params)`            | Edit `cron`/`tz`/`input`/`overlap`, or `{ paused }`.        |
-| `oc.agents.schedules.delete(id, sid)`                    | Delete (run history kept).                                  |
-| `oc.agents.schedules.fire(id, sid)`                      | Fire now → a run; doesn't advance the cron.                 |
-| `oc.agents.schedules.runs(id, sid, { cursor?, limit? })` | Run history (each carries `sessionId`).                     |
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.schedules.create(id, params)` | Create a schedule (`{ name, cron, tz?, input, overlap? }`). |
+| `oc.agents.schedules.list(id)` · `.get(id, sid)` | List / fetch. |
+| `oc.agents.schedules.update(id, sid, params)` | Edit `cron`/`tz`/`input`/`overlap`, or `{ paused }`. |
+| `oc.agents.schedules.delete(id, sid)` | Delete (run history kept). |
+| `oc.agents.schedules.fire(id, sid)` | Fire now → a run; doesn't advance the cron. |
+| `oc.agents.schedules.runs(id, sid, { cursor?, limit? })` | Run history (each carries `sessionId`). |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                                        | Purpose                                                                   |
-| ---------------------------------------------------- | ------------------------------------------------------------------------- |
-| `POST /agents/:id/schedules`                         | Create → `201 { schedule }`. Body `{ name, cron, tz?, input, overlap? }`. |
-| `GET /agents/:id/schedules` · `…/:sid`               | List / fetch.                                                             |
-| `PATCH /agents/:id/schedules/:sid`                   | Edit `cron`/`tz`/`input`/`overlap`, or `{ paused }`.                      |
-| `DELETE /agents/:id/schedules/:sid`                  | Delete → `204` (runs kept).                                               |
-| `POST /agents/:id/schedules/:sid/fire`               | Fire now → `201 { run }`; doesn't advance the cron.                       |
-| `GET /agents/:id/schedules/:sid/runs?cursor=&limit=` | Run history → `{ runs, next_cursor }`.                                    |
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /agents/:id/schedules` | Create → `201 { schedule }`. Body `{ name, cron, tz?, input, overlap? }`. |
+| `GET /agents/:id/schedules` · `…/:sid` | List / fetch. |
+| `PATCH /agents/:id/schedules/:sid` | Edit `cron`/`tz`/`input`/`overlap`, or `{ paused }`. |
+| `DELETE /agents/:id/schedules/:sid` | Delete → `204` (runs kept). |
+| `POST /agents/:id/schedules/:sid/fire` | Fire now → `201 { run }`; doesn't advance the cron. |
+| `GET /agents/:id/schedules/:sid/runs?cursor=&limit=` | Run history → `{ runs, next_cursor }`. |
 
 </Tab>
 
 <Tab title="oc CLI">
 
-| Command                                                                          | Purpose                        |
-| -------------------------------------------------------------------------------- | ------------------------------ |
-| `oc agent schedule create <name> --agent <id> --cron <c> [--tz <z>] --input <s>` | Create a schedule.             |
-| `oc agent schedules [--agent <id>]` · `oc agent schedule get <name>`             | List / fetch.                  |
-| `oc agent schedule pause\|resume <name>`                                         | Pause / resume.                |
-| `oc agent schedule delete <name>`                                                | Delete.                        |
-| `oc agent schedule fire <name>`                                                  | Fire now (prints the `ses_…`). |
-| `oc agent schedule runs <name>`                                                  | Run history.                   |
+| Command | Purpose |
+| --- | --- |
+| `oc agent schedule create <name> --agent <id> --cron <c> [--tz <z>] --input <s>` | Create a schedule. |
+| `oc agent schedules [--agent <id>]` · `oc agent schedule get <name>` | List / fetch. |
+| `oc agent schedule pause\|resume <name>` | Pause / resume. |
+| `oc agent schedule delete <name>` | Delete. |
+| `oc agent schedule fire <name>` | Fire now (prints the `ses_…`). |
+| `oc agent schedule runs <name>` | Run history. |
 
 </Tab>
 
@@ -740,14 +720,14 @@ _Run an agent on a cron — each firing starts a session. Managed with the SDK, 
 
 **`Schedule`**
 
-| Field                                | Notes                                                                                |
-| ------------------------------------ | ------------------------------------------------------------------------------------ |
-| `id` `agent_id`                      | `sch_…` · the owning agent                                                           |
-| `name` `cron` `tz?` `input`          | handle (unique per agent) · 5-field cron · IANA tz · first message                   |
-| `overlap`                            | `skip` (default) · `allow`                                                           |
-| `state`                              | `active · paused · auto_paused` (five straight scheduled-firing failures auto-pause) |
-| `next_fire_at` `last_fired_at?`      | next occurrence · last fire                                                          |
-| `consecutive_failures` `last_error?` | in-a-row enactment failures · last error (cleared on success)                        |
+| Field | Notes |
+|---|---|
+| `id` `agent_id` | `sch_…` · the owning agent |
+| `name` `cron` `tz?` `input` | handle (unique per agent) · 5-field cron · IANA tz · first message |
+| `overlap` | `skip` (default) · `allow` |
+| `state` | `active · paused · auto_paused` (five straight scheduled-firing failures auto-pause) |
+| `next_fire_at` `last_fired_at?` | next occurrence · last fire |
+| `consecutive_failures` `last_error?` | in-a-row enactment failures · last error (cleared on success) |
 
 **`Run`** — one per firing decision, newest-first: `srn_…` with `outcome` (`enacted` · `skipped` · `failed`), `scheduled_for?` (`null` for a manual fire), `fired_at`, `session_id?` (when enacted), `error?`. Chain `session_id` into `GET /sessions/:id`.
 
@@ -762,21 +742,21 @@ context, not a redirect URL. Status responses never contain credentials.
 
 <Tab title="TypeScript SDK">
 
-| Call                                                           | Purpose                                                         |
-| -------------------------------------------------------------- | --------------------------------------------------------------- |
-| `oc.agents.authorizeManagedSlack(id, { returnDeploymentId? })` | Start managed-app OAuth.                                        |
-| `oc.agents.getManagedSlack(id)`                                | Read workspace, app identity, state, and `openUrl`.             |
-| `oc.agents.disconnectManagedSlack(id)`                         | Stop routing this agent without uninstalling the workspace app. |
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.authorizeManagedSlack(id, { returnDeploymentId? })` | Start managed-app OAuth. |
+| `oc.agents.getManagedSlack(id)` | Read workspace, app identity, state, and `openUrl`. |
+| `oc.agents.disconnectManagedSlack(id)` | Stop routing this agent without uninstalling the workspace app. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                              | Purpose                                                   |
-| ------------------------------------------ | --------------------------------------------------------- |
+| Method · Path | Purpose |
+| --- | --- |
 | `POST /agents/:id/slack/managed/authorize` | Start managed-app OAuth; accepts `return_deployment_id?`. |
-| `GET /agents/:id/slack/managed`            | Read the managed connection.                              |
-| `DELETE /agents/:id/slack/managed`         | Disconnect the agent from the shared app.                 |
+| `GET /agents/:id/slack/managed` | Read the managed connection. |
+| `DELETE /agents/:id/slack/managed` | Disconnect the agent from the shared app. |
 
 </Tab>
 
@@ -789,41 +769,41 @@ states expose only a stable `error_code`.
 Builder-owned Slack apps remain a separate resource and can overlap during an
 explicit handoff:
 
-| TypeScript SDK                       | REST API                          |
-| ------------------------------------ | --------------------------------- |
-| `oc.agents.slackManifest(id)`        | `POST /agents/:id/slack/manifest` |
-| `oc.agents.connectSlack(id, values)` | `POST /agents/:id/slack`          |
-| `oc.agents.getSlack(id)`             | `GET /agents/:id/slack`           |
-| `oc.agents.disconnectSlack(id)`      | `DELETE /agents/:id/slack`        |
+| TypeScript SDK | REST API |
+| --- | --- |
+| `oc.agents.slackManifest(id)` | `POST /agents/:id/slack/manifest` |
+| `oc.agents.connectSlack(id, values)` | `POST /agents/:id/slack` |
+| `oc.agents.getSlack(id)` | `GET /agents/:id/slack` |
+| `oc.agents.disconnectSlack(id)` | `DELETE /agents/:id/slack` |
 
 See [Slack](/agent-sessions/slack) for installation, trust boundaries, and
 conversation behavior.
 
 ## Destinations
 
-_Webhooks are configured via SDK/REST (no `oc` command)._
+*Webhooks are configured via SDK/REST (no `oc` command).*
 
 <Tabs>
 
 <Tab title="TypeScript SDK">
 
-| Call                                        | Purpose                                                            |
-| ------------------------------------------- | ------------------------------------------------------------------ |
-| `session.destinations.create(params)`       | Register a webhook destination.                                    |
-| `session.destinations.list()` · `.get(did)` | List / fetch.                                                      |
-| `session.destinations.update(did, params)`  | Pause/resume (`enabled`), retune `level`/`types`, rotate `secret`. |
-| `session.destinations.delete(did)`          | Remove.                                                            |
+| Call | Purpose |
+| --- | --- |
+| `session.destinations.create(params)` | Register a webhook destination. |
+| `session.destinations.list()` · `.get(did)` | List / fetch. |
+| `session.destinations.update(did, params)` | Pause/resume (`enabled`), retune `level`/`types`, rotate `secret`. |
+| `session.destinations.delete(did)` | Remove. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                               | Purpose                         |
-| ------------------------------------------- | ------------------------------- |
-| `POST /sessions/:id/destinations`           | Register a webhook destination. |
-| `GET /sessions/:id/destinations` · `…/:did` | List / fetch.                   |
-| `PATCH /sessions/:id/destinations/:did`     | Pause/resume, retune, rotate.   |
-| `DELETE /sessions/:id/destinations/:did`    | Remove.                         |
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /sessions/:id/destinations` | Register a webhook destination. |
+| `GET /sessions/:id/destinations` · `…/:did` | List / fetch. |
+| `PATCH /sessions/:id/destinations/:did` | Pause/resume, retune, rotate. |
+| `DELETE /sessions/:id/destinations/:did` | Remove. |
 
 </Tab>
 
@@ -833,27 +813,27 @@ Destination body: `url`, `secret?`, `level?` (`user`), `types?[]`, `include_raw?
 
 ## Deliveries
 
-_Delivery records are read via SDK/REST (no `oc` command)._
+*Delivery records are read via SDK/REST (no `oc` command).*
 
 <Tabs>
 
 <Tab title="TypeScript SDK">
 
-| Call                               | Purpose                                                  |
-| ---------------------------------- | -------------------------------------------------------- |
-| `session.deliveries.list(opts)`    | List deliveries — status, attempts, last response/error. |
-| `session.deliveries.get(id)`       | One delivery, in detail.                                 |
-| `session.deliveries.redeliver(id)` | Re-send any delivery.                                    |
+| Call | Purpose |
+| --- | --- |
+| `session.deliveries.list(opts)` | List deliveries — status, attempts, last response/error. |
+| `session.deliveries.get(id)` | One delivery, in detail. |
+| `session.deliveries.redeliver(id)` | Re-send any delivery. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                                                     | Purpose               |
-| ----------------------------------------------------------------- | --------------------- |
-| `GET /sessions/:id/deliveries?destination=&status=&after=&limit=` | List deliveries.      |
-| `GET /sessions/:id/deliveries/:id`                                | One delivery.         |
-| `POST /sessions/:id/deliveries/:id/redeliver`                     | Re-send any delivery. |
+| Method · Path | Purpose |
+| --- | --- |
+| `GET /sessions/:id/deliveries?destination=&status=&after=&limit=` | List deliveries. |
+| `GET /sessions/:id/deliveries/:id` | One delivery. |
+| `POST /sessions/:id/deliveries/:id/redeliver` | Re-send any delivery. |
 
 </Tab>
 
@@ -863,22 +843,22 @@ See [Webhooks](/agent-sessions/webhooks#signing-retries-and-dedupe) for signing,
 
 **`Destination`**
 
-| Field                                           | Notes                                                                |
-| ----------------------------------------------- | -------------------------------------------------------------------- |
-| `id` `session` `kind` `created_at` `updated_at` |                                                                      |
-| `url`                                           | webhook target                                                       |
-| `level` `types`                                 | visibility threshold · event-type filter                             |
-| `include_raw` `enabled` `has_secret`            | include raw bodies · paused/active · whether a signing secret is set |
-| `created_after_seq`                             | only events after this seq are delivered                             |
+| Field | Notes |
+|---|---|
+| `id` `session` `kind` `created_at` `updated_at` | |
+| `url` | webhook target |
+| `level` `types` | visibility threshold · event-type filter |
+| `include_raw` `enabled` `has_secret` | include raw bodies · paused/active · whether a signing secret is set |
+| `created_after_seq` | only events after this seq are delivered |
 
 **`Delivery`**
 
-| Field                                                  | Notes                                 |
-| ------------------------------------------------------ | ------------------------------------- |
-| `id` `session` `destination` `created_at` `updated_at` |                                       |
-| `event_id` `event_seq`                                 | the event delivered                   |
-| `status` `attempts` `last_attempt_at`                  | delivery state, retry count, last try |
-| `response_code?` `error?`                              | last response · failure detail        |
+| Field | Notes |
+|---|---|
+| `id` `session` `destination` `created_at` `updated_at` | |
+| `event_id` `event_seq` | the event delivered |
+| `status` `attempts` `last_attempt_at` | delivery state, retry count, last try |
+| `response_code?` `error?` | last response · failure detail |
 
 ## GitHub Apps and Repos
 
@@ -888,36 +868,36 @@ A GitHub App lets OpenComputer mint short-lived, repo-scoped tokens; a **Repo** 
 
 <Tab title="TypeScript SDK">
 
-| Call                                                                       | Purpose                                                               |
-| -------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `oc.repos.create(params)` · `.get(id)` · `.list()` · `.update(id, params)` | Register / fetch / list / rename a repo.                              |
-| `oc.github.apps.list()`                                                    | List GitHub Apps available to your org.                               |
-| `oc.github.apps.register(params)`                                          | Register your own App (`byo_stored_key` / `byo_broker`).              |
-| `oc.github.apps.createManifestUrl(params)`                                 | One-click: a link to open; OpenComputer hosts the flow + key capture. |
-| `oc.github.apps.createManifest/completeManifest(params)`                   | Developer-driven manifest flow.                                       |
-| `oc.github.apps.update(id, params)` · `delete(id)`                         | Update / rotate / remove an App.                                      |
-| `oc.github.installations.list()`                                           | List installations visible to OpenComputer.                           |
+| Call | Purpose |
+| --- | --- |
+| `oc.repos.create(params)` · `.get(id)` · `.list()` · `.update(id, params)` | Register / fetch / list / rename a repo. |
+| `oc.github.apps.list()` | List GitHub Apps available to your org. |
+| `oc.github.apps.register(params)` | Register your own App (`byo_stored_key` / `byo_broker`). |
+| `oc.github.apps.createManifestUrl(params)` | One-click: a link to open; OpenComputer hosts the flow + key capture. |
+| `oc.github.apps.createManifest/completeManifest(params)` | Developer-driven manifest flow. |
+| `oc.github.apps.update(id, params)` · `delete(id)` | Update / rotate / remove an App. |
+| `oc.github.installations.list()` | List installations visible to OpenComputer. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                                                                      | Purpose                                     |
-| ---------------------------------------------------------------------------------- | ------------------------------------------- |
-| `POST /repos` · `GET /repos/:id` · `GET /repos` · `PATCH /repos/:id`               | Register / fetch / list / rename a repo.    |
-| `GET /github/apps` · `POST /github/apps`                                           | List · register your own App.               |
-| `PATCH /github/apps/:id` · `DELETE /github/apps/:id`                               | Update / rotate / remove.                   |
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /repos` · `GET /repos/:id` · `GET /repos` · `PATCH /repos/:id` | Register / fetch / list / rename a repo. |
+| `GET /github/apps` · `POST /github/apps` | List · register your own App. |
+| `PATCH /github/apps/:id` · `DELETE /github/apps/:id` | Update / rotate / remove. |
 | `POST /github/apps/manifest` · `…/manifest/start` · `…/callback` · `…/conversions` | Manifest flow (hosted or developer-driven). |
-| `GET /github/installations`                                                        | List installations visible to OpenComputer. |
+| `GET /github/installations` | List installations visible to OpenComputer. |
 
 </Tab>
 
 <Tab title="oc CLI">
 
-| Command                                                                            | Purpose                         |
-| ---------------------------------------------------------------------------------- | ------------------------------- |
-| `oc repo add <owner/repo>` · `oc repo list` · `oc repo get <id>`                   | Register / list / fetch a repo. |
-| _(App install + manifest — browser flow; manage in the dashboard or via SDK/REST)_ |                                 |
+| Command | Purpose |
+| --- | --- |
+| `oc repo add <owner/repo>` · `oc repo list` · `oc repo get <id>` | Register / list / fetch a repo. |
+| *(App install + manifest — browser flow; manage in the dashboard or via SDK/REST)* | |
 
 </Tab>
 
@@ -935,31 +915,31 @@ Repo = { id, provider, owner, repo, name?, created_at, updated_at }
 
 <Tab title="TypeScript SDK">
 
-| Call                                                  | Purpose              |
-| ----------------------------------------------------- | -------------------- |
-| `oc.credentials.create(params)`                       | Add a provider key.  |
-| `oc.credentials.list()` · `oc.credentials.delete(id)` | List / remove.       |
-| `oc.credentials.setDefault(params)`                   | Set the org default. |
+| Call | Purpose |
+| --- | --- |
+| `oc.credentials.create(params)` | Add a provider key. |
+| `oc.credentials.list()` · `oc.credentials.delete(id)` | List / remove. |
+| `oc.credentials.setDefault(params)` | Set the org default. |
 
 </Tab>
 
 <Tab title="REST API">
 
-| Method · Path                                  | Purpose                                 |
-| ---------------------------------------------- | --------------------------------------- |
-| `POST /credentials`                            | Add a provider key.                     |
-| `GET /credentials` · `DELETE /credentials/:id` | List / remove.                          |
-| `PUT /credentials/default`                     | Set the org default (provider derived). |
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /credentials` | Add a provider key. |
+| `GET /credentials` · `DELETE /credentials/:id` | List / remove. |
+| `PUT /credentials/default` | Set the org default (provider derived). |
 
 </Tab>
 
 <Tab title="oc CLI">
 
-| Command                                                  | Purpose              |
-| -------------------------------------------------------- | -------------------- |
-| `oc credential add --provider <p> --key <k> [--default]` | Add a provider key.  |
-| `oc credential list` · `oc credential remove <id>`       | List / remove.       |
-| `oc credential set-default <id>`                         | Set the org default. |
+| Command | Purpose |
+| --- | --- |
+| `oc credential add --provider <p> --key <k> [--default]` | Add a provider key. |
+| `oc credential list` · `oc credential remove <id>` | List / remove. |
+| `oc credential set-default <id>` | Set the org default. |
 
 </Tab>
 

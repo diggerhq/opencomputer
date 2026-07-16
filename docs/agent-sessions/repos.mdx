@@ -26,27 +26,26 @@ sandbox, and deploys the resulting artifact. Repository credentials reach neithe
 
 ## Concepts
 
-| Concept                | Role                                                   | Boundary                                                                                |
-| ---------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| GitHub App             | Mints operation-scoped GitHub tokens.                  | Not session refs.                                                                       |
-| Installation           | GitHub account and repo selection.                     | The repos the App may work in.                                                          |
-| Repo                   | A stable owner/repo handle.                            | No tokens, private keys, or session refs.                                               |
-| Source                 | `ref`, `sha`, and local name for one session.          | Auth comes from your configured GitHub App (OpenComputer App by default) unless inline. |
-| Git operations sandbox | Runs authenticated clone/fetch/publish work.           | Separate from the agent; token lives only for one operation.                            |
-| Deployment source      | Repository, root, and production branch for one agent. | Resolves one exact commit; source auth is discarded before build code runs.             |
+| Concept | Role | Boundary |
+| --- | --- | --- |
+| GitHub App | Mints operation-scoped GitHub tokens. | Not session refs. |
+| Installation | GitHub account and repo selection. | The repos the App may work in. |
+| Repo | A stable owner/repo handle. | No tokens, private keys, or session refs. |
+| Source | `ref`, `sha`, and local name for one session. | Auth comes from your configured GitHub App (OpenComputer App by default) unless inline. |
+| Git operations sandbox | Runs authenticated clone/fetch/publish work. | Separate from the agent; token lives only for one operation. |
+| Deployment source | Repository, root, and production branch for one agent. | Resolves one exact commit; source auth is discarded before build code runs. |
 
 <Note>
-  `Repo` and `Source` are provider-neutral: `provider`, `owner`, `repo`, `ref`,
-  `sha`. GitHub uses GitHub Apps as its auth surface. Other providers can add
-  their own auth surface while sessions continue to reference repos and sources
-  the same way.
+`Repo` and `Source` are provider-neutral: `provider`, `owner`, `repo`, `ref`, `sha`.
+GitHub uses GitHub Apps as its auth surface. Other providers can add their own auth
+surface while sessions continue to reference repos and sources the same way.
 </Note>
 
 ## How it works
 
 Every authenticated Git operation runs in its own **Git operations sandbox** — a minimal
 box with `git` and nothing else, provisioned for that one operation and destroyed when it
-finishes. Checkout and publish get _different_ boxes. Your agent's own sandboxes — the
+finishes. Checkout and publish get *different* boxes. Your agent's own sandboxes — the
 **brain** that runs the loop and the **hands** sandbox that holds the files — are never one
 of these: they hold no token and never run authenticated `git` or `gh`. Files and patches
 move between them through object storage, never next to a credential.
@@ -166,12 +165,7 @@ the active revision stays live. Restore the Flue definition, or unlink the sourc
 new agent. Unlinking stops push-to-deploy; it does not delete or convert the existing agent, revision,
 or sessions.
 
-<Note>
-  The deployment repository is not a session working repository. Importing it
-  does not mount its files into later sessions or grant the running agent GitHub
-  access. Choose session [sources](#how-it-works) separately when an agent needs
-  code to work on.
-</Note>
+<Note>The deployment repository is not a session working repository. Importing it does not mount its files into later sessions or grant the running agent GitHub access. Choose session [sources](#how-it-works) separately when an agent needs code to work on.</Note>
 
 ## Connecting GitHub
 
@@ -179,21 +173,11 @@ Pick one. Either way, OpenComputer mints a fresh, repo-scoped token **per operat
 for checkout, write only to publish) — the agent never holds one.
 
 <CardGroup cols={2}>
-  <Card
-    title="Install the OpenComputer App"
-    icon="github"
-    href="https://github.com/apps/opencomputerdev/installations/new"
-  >
-    Zero setup. Choose the repos and go — OpenComputer owns the key and mints
-    per operation.
+  <Card title="Install the OpenComputer App" icon="github" href="https://github.com/apps/opencomputerdev/installations/new">
+    Zero setup. Choose the repos and go — OpenComputer owns the key and mints per operation.
   </Card>
-  <Card
-    title="Create your own App"
-    icon="wand-magic-sparkles"
-    href="#bring-your-own-app"
-  >
-    GitHub creates it in a few clicks; OpenComputer federates it, so PRs come
-    from your identity.
+  <Card title="Create your own App" icon="wand-magic-sparkles" href="#bring-your-own-app">
+    GitHub creates it in a few clicks; OpenComputer federates it, so PRs come from your identity.
   </Card>
 </CardGroup>
 
@@ -202,11 +186,7 @@ for checkout, write only to publish) — the agent never holds one.
 Use your own GitHub App so PRs, comments, and statuses come from **your** identity. OpenComputer
 stores the key encrypted and signs the same per-operation tokens with it.
 
-<Note>
-  [Watches](/agent-sessions/watches) currently require PRs opened through the
-  **OpenComputer** App — a PR published with a bring-your-own App isn't
-  watchable yet.
-</Note>
+<Note>[Watches](/agent-sessions/watches) currently require PRs opened through the **OpenComputer** App — a PR published with a bring-your-own App isn't watchable yet.</Note>
 
 **Create one** — `createManifestUrl` returns a link; open it and GitHub walks you through
 creating the App, then OpenComputer captures the key and registers it. (Creating an App is a
@@ -215,9 +195,7 @@ GitHub-UI flow, so it's a link to open, not a pure API call.)
 <CodeGroup>
 
 ```ts TypeScript SDK
-const { startUrl } = await oc.github.apps.createManifestUrl({
-  name: "Your Agents",
-});
+const { startUrl } = await oc.github.apps.createManifestUrl({ name: "Your Agents" });
 // open startUrl → click "Create" on GitHub → done
 ```
 
@@ -236,11 +214,7 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 <CodeGroup>
 
 ```ts TypeScript SDK
-await oc.github.apps.register({
-  mode: "byo_stored_key",
-  githubAppId: "123456",
-  privateKey: pem,
-});
+await oc.github.apps.register({ mode: "byo_stored_key", githubAppId: "123456", privateKey: pem });
 ```
 
 ```http REST API
@@ -267,18 +241,16 @@ PRs**. Publishing requires a configured GitHub App — [install the OpenComputer
 <CodeGroup>
 
 ```ts TypeScript SDK
-sources: [
-  {
-    url: "https://github.com/acme/web.git",
-    ref: "refs/pull/42/head",
-    sha: "abc123…",
-    auth: {
-      type: "risky_short_lived_token",
-      token: "ghs_…",
-      expiresAt: "…",
-    },
+sources: [{
+  url: "https://github.com/acme/web.git",
+  ref: "refs/pull/42/head",
+  sha: "abc123…",
+  auth: {
+    type: "risky_short_lived_token",
+    token: "ghs_…",
+    expiresAt: "…",
   },
-];
+}]
 ```
 
 ```json REST API
@@ -297,12 +269,11 @@ sources: [
 </CodeGroup>
 
 <Warning>
-  The inline token is **checkout-only** — it checks the repo out once and is
-  then purged, so it **cannot publish or open PRs** (publishing requires a
-  configured GitHub App). It also **can't refresh**, so use it only for sessions
-  that finish within the token's life. OpenComputer rejects a far-future or
-  missing expiry and holds the token encrypted only until the first checkout,
-  then purges it. Use this only when a GitHub App is not configured.
+The inline token is **checkout-only** — it checks the repo out once and is then purged, so
+it **cannot publish or open PRs** (publishing requires a configured GitHub App). It also
+**can't refresh**, so use it only for sessions that finish within the token's life.
+OpenComputer rejects a far-future or missing expiry and holds the token encrypted only
+until the first checkout, then purges it. Use this only when a GitHub App is not configured.
 </Warning>
 
 ## Register a repo
@@ -341,14 +312,12 @@ passed** — auth resolves through your configured GitHub App (the OpenComputer 
 const session = await oc.sessions.create({
   agent: agent.id,
   input: "Review this pull request.",
-  sources: [
-    {
-      repo: repo.id,
-      ref: "refs/pull/42/head",
-      sha: "abc123…",
-      name: "head",
-    },
-  ],
+  sources: [{
+    repo: repo.id,
+    ref: "refs/pull/42/head",
+    sha: "abc123…",
+    name: "head",
+  }],
 });
 // checked out at /workspace/sources/head before the first turn
 ```
