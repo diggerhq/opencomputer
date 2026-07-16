@@ -42,6 +42,10 @@ import {
   type AgentSetupStage,
 } from '@/lib/agent-setup-presentation'
 import { agentDeploymentOutcome } from '@/lib/agent-deployment-outcome'
+import {
+  agentCanStartNewSession,
+  agentDeploymentDisplayStatus,
+} from '@/lib/agent-deployment-status'
 import { deploymentStage } from '@/lib/deployment-slack-cta'
 import { notifyError } from '@/lib/errors'
 import { managedSlackNotice } from '@/lib/managed-slack-notice'
@@ -52,8 +56,25 @@ function setupStage(input: {
   state?: string
   terminal?: boolean
   loadFailed: boolean
+  agentReady: boolean
+  agentDeploymentState?: string
 }): AgentSetupStage {
-  if (!input.hasDeployment) return 'ready'
+  if (!input.hasDeployment) {
+    if (input.agentReady) return 'ready'
+    if (
+      [
+        'failed',
+        'canceled',
+        'superseded',
+        'skipped',
+        'unverified',
+        'not_deployed',
+      ].includes(input.agentDeploymentState ?? '')
+    ) {
+      return 'failed'
+    }
+    return 'preparing'
+  }
   if (input.loadFailed) return 'failed'
   if (!input.state) return 'preparing'
   const stage = deploymentStage(input.state, input.terminal ?? false)
@@ -79,6 +100,12 @@ export default function AgentSetup() {
     queryKey: ['agent', agentId],
     queryFn: () => getAgent(agentId),
     enabled: !!agentId,
+    refetchInterval: (query) =>
+      !deploymentId &&
+      query.state.data &&
+      !agentCanStartNewSession(query.state.data)
+        ? 1500
+        : false,
   })
   const deploymentQuery = useQuery({
     queryKey: ['agent-deployment', agentId, deploymentId],
@@ -155,6 +182,8 @@ export default function AgentSetup() {
     state: deployment?.state,
     terminal: deployment?.terminal,
     loadFailed: deploymentQuery.isError,
+    agentReady: agentCanStartNewSession(agent),
+    agentDeploymentState: agentDeploymentDisplayStatus(agent),
   })
   const managedSlack = managedSlackQuery.data
   const managedSlackStatus = managedSlackQuery.isSuccess
@@ -470,7 +499,7 @@ export default function AgentSetup() {
             </div>
           ) : null}
         </Alert>
-      ) : (
+      ) : stage === 'ready' ? (
         <div className="bg-panel flex items-center gap-3 rounded-lg border px-4 py-3">
           <CheckCircle2
             className="text-status-running size-5 shrink-0"
@@ -479,10 +508,38 @@ export default function AgentSetup() {
           <div className="min-w-0">
             <p className="text-sm font-medium">Agent ready</p>
             <p className="text-muted-foreground text-xs">
-              Your manually configured agent is ready to use.
+              Your agent is ready to use.
             </p>
           </div>
         </div>
+      ) : stage === 'preparing' ? (
+        <div className="bg-panel flex items-center gap-3 rounded-lg border px-4 py-3">
+          <Loader2
+            className="text-status-pending size-5 shrink-0 animate-spin motion-reduce:animate-none"
+            aria-hidden
+          />
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Preparing your agent</p>
+            <p className="text-muted-foreground text-xs">
+              Setup is following the latest deployment in the background.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <Alert variant="destructive">
+          <AlertTitle>The latest deployment needs attention</AlertTitle>
+          <AlertDescription>
+            Open the agent to review its deployment history and recovery
+            actions.
+          </AlertDescription>
+          <div className="mt-2">
+            <Button variant="outline" size="sm" asChild>
+              <Link to={`/agents/${agentId}/deployments`}>
+                Open deployments
+              </Link>
+            </Button>
+          </div>
+        </Alert>
       )}
     </div>
   )

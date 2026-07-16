@@ -73,14 +73,21 @@ function renderSetup(input: {
   deployment?: AgentDeployment
   managed?: Record<string, unknown> | null
   search?: string
+  agent?: Record<string, unknown>
 }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   })
-  queryClient.setQueryData(['agent', agentId], {
-    id: agentId,
-    name: 'Support triage',
-  })
+  queryClient.setQueryData(
+    ['agent', agentId],
+    input.agent ?? {
+      id: agentId,
+      name: 'Support triage',
+      runtime: 'claude',
+      revision: 1,
+      active_revision_id: 'rev_aaaaaaaaaaaaaaaaaaaaaaaa',
+    },
+  )
   if (input.deployment) {
     queryClient.setQueryData(
       ['agent-deployment', agentId, deploymentId],
@@ -152,8 +159,36 @@ describe('agent setup', () => {
     const markup = renderSetup({ managed: null })
 
     expect(markup).toContain('Support triage is ready')
-    expect(markup).toContain('Your manually configured agent is ready to use.')
+    expect(markup).toContain('Your agent is ready to use.')
     expect(markup).toContain('>Connect Slack</button>')
+  })
+
+  it('does not invent readiness when setup has no deployment query', () => {
+    const markup = renderSetup({
+      managed: null,
+      agent: {
+        id: agentId,
+        name: 'Support triage',
+        runtime: 'flue',
+        revision: 0,
+        active_revision_id: null,
+        deployment_status: {
+          deployment_id: deploymentId,
+          state: 'building',
+          result: null,
+          error_class: null,
+          live_touched: false,
+          live_status: null,
+          updated_at: '2026-07-16T18:00:02Z',
+        },
+      },
+    })
+
+    expect(markup).toContain('Connect Slack while we prepare Support triage')
+    expect(markup).toContain(
+      'Setup is following the latest deployment in the background.',
+    )
+    expect(markup).not.toContain('Support triage is ready')
   })
 
   it('does not trust an OAuth success query without active Slack state', () => {
