@@ -1,7 +1,13 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, MessagesSquare, Send, GitBranch } from 'lucide-react'
+import {
+  ArrowLeft,
+  MessageSquare,
+  MessagesSquare,
+  Send,
+  GitBranch,
+} from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   getAgent,
@@ -11,6 +17,7 @@ import {
   getCredentials,
   createCredential,
   getDeploymentSource,
+  getManagedSlackConnection,
   type Agent,
 } from '@/api/client'
 import type { Session } from '@/api/schemas'
@@ -49,6 +56,7 @@ import {
   withModelGroups,
 } from '@/lib/runtimes'
 import { cn } from '@/lib/utils'
+import { latestManagedSlackSession } from '@/lib/managed-slack-session'
 
 const DOCS = 'https://docs.opencomputer.dev/agent-sessions'
 
@@ -128,10 +136,28 @@ export default function AgentDetail() {
     enabled: !!agentId,
   })
 
-  // This agent's sessions — filtered server-side.
+  const managedSlackQuery = useQuery({
+    queryKey: ['slack', 'managed', agentId],
+    queryFn: () => getManagedSlackConnection(agentId),
+    enabled: !!agentId,
+    refetchOnWindowFocus: 'always',
+  })
+
+  // This agent's sessions — filtered server-side. While first-run Slack setup
+  // is incomplete, refresh just long enough for the real managed session to
+  // turn the persistent setup affordance from primary into secondary.
   const { data: sessions = [], isLoading: loadingSessions } = useQuery({
     queryKey: ['sessions', { agent: agentId }],
     queryFn: () => getSessions({ agent: agentId }),
+    refetchInterval: (query) =>
+      managedSlackQuery.data?.status === 'active' &&
+      !latestManagedSlackSession(
+        query.state.data ?? [],
+        managedSlackQuery.data.connected_at,
+      )
+        ? 2000
+        : false,
+    refetchOnWindowFocus: 'always',
   })
 
   // The deployment-source link (shared cache key with the GitHub card). null = not linked.
@@ -336,6 +362,21 @@ export default function AgentDetail() {
   const latestDeploymentId = agent.deployment_status?.deployment_id
   const deploymentStatus = agentDeploymentDisplayStatus(agent)
   const canStartNewSession = agentCanStartNewSession(agent)
+  const setupHref = `${base}/setup${
+    latestDeploymentId
+      ? `?deployment=${encodeURIComponent(latestDeploymentId)}`
+      : ''
+  }`
+  const managedSlackSession = latestManagedSlackSession(
+    sessions,
+    managedSlackQuery.data?.connected_at,
+  )
+  const setupComplete =
+    canStartNewSession &&
+    managedSlackQuery.isSuccess &&
+    managedSlackQuery.data?.status === 'active' &&
+    !loadingSessions &&
+    !!managedSlackSession
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -366,23 +407,35 @@ export default function AgentDetail() {
               <SourceChip source={source ?? null} />
             </div>
           </div>
-          {canStartNewSession ? (
-            <Button asChild size="sm">
-              <Link to={`${base}/sessions`}>
-                <Send className="size-4" />
-                New session
-              </Link>
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              disabled
-              title="A verified deployment is required before starting a session"
-            >
-              <Send className="size-4" />
-              New session
-            </Button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {setupComplete ? (
+              <Button asChild size="sm" variant="ghost">
+                <Link to={setupHref}>Setup</Link>
+              </Button>
+            ) : canStartNewSession ? (
+              <Button asChild size="sm" variant="outline">
+                <Link to={`${base}/sessions`}>
+                  <Send className="size-4" />
+                  New session
+                </Link>
+              </Button>
+            ) : null}
+            {setupComplete ? (
+              <Button asChild size="sm">
+                <Link to={`${base}/sessions`}>
+                  <Send className="size-4" />
+                  New session
+                </Link>
+              </Button>
+            ) : (
+              <Button asChild size="sm">
+                <Link to={setupHref}>
+                  <MessageSquare className="size-4" />
+                  Continue setup
+                </Link>
+              </Button>
+            )}
+          </div>
         </div>
         <nav className="-mb-px flex gap-1 overflow-x-auto" aria-label="Agent">
           <TabLink to={base} label="Overview" current={active === 'overview'} />

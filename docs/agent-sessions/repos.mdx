@@ -133,7 +133,16 @@ The dashboard uses the OpenComputer App to:
 After import, the dashboard opens guided setup rather than making the deployment log the next task.
 Choose **Connect Slack** while the deployment runs in the background. Compact phases remain visible,
 the build log expands on demand, and setup promotes **Open Slack** plus the first-message prompt when
-both resources are ready.
+both resources are ready. It then watches ordinary session history: before the first message it says
+that it is waiting, and after managed Slack creates the session it previews the user message and
+agent response with links to the full session and all sessions for that agent. Until then, the agent
+page keeps **Continue setup** available.
+
+The picker also shows existing deployment-source claims before it inspects repository content. The
+uniqueness boundary is one OpenComputer agent per repository root, not one per whole repository, so a
+linked `agents/support` does not block `agents/sales`. Selecting the exact linked root disables review,
+names and links the owning agent, and offers an inline confirmed unlink. Unlinking stops deploy-on-push
+for the old agent but preserves that agent, its active revision, deployment history, and sessions.
 
 Recognition is deterministic. A root-level `agent.toml` is authoritative: if it is malformed or
 unsupported, the result is a fixable error rather than a guess. Without a manifest, a root-level
@@ -144,7 +153,8 @@ If the selected root is unrecognized, the review can scan the same bounded tree 
 entries and return up to 20 candidate roots no more than six folders deep. Results follow fixed
 marker precedence, then shallower depth, then repository-relative byte order. Candidates are
 suggestions, never an automatic selection; choose one and review it separately. When the result is
-truncated, select a narrower root.
+truncated, select a narrower root. Candidate roots that are already linked are marked and cannot be
+selected until opened or unlinked.
 
 The Git box writes a bounded, digest-checked source archive to object storage and is destroyed.
 A different sandbox receives that archive without `.git` or GitHub auth, runs the fixed install and

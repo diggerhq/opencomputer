@@ -21,7 +21,11 @@ connection remains in place if that deployment fails, but the app cannot run a
 message until the agent has a ready deployment. A message sent too early gets a
 short deploying response and is not queued. Setup follows deployment progress
 without a manual refresh. Wait for it to show **Send your first message** and
-**Open Slack**, then send the message again.
+**Open Slack**, then send the message again. While setup is unfinished, the
+agent page keeps **Continue setup** visible. After Slack creates the first real
+session, setup changes automatically from “waiting for a message” to a compact
+conversation preview with links to the full session and the agent's session
+history.
 
 <Warning>
   Anyone in the connected Slack workspace who can message the app can use this

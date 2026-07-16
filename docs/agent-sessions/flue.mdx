@@ -84,6 +84,13 @@ The shortest path for an existing Flue app is the dashboard:
 5. Review the detected Flue entrypoint and model. Give the OpenComputer agent a human-readable name; it may differ from the `agent.toml` Flue entrypoint.
 6. Choose **Deploy agent**. A guided setup page opens immediately and keeps the deployment running in the background. It shows compact **Prepare**, **Build**, and **Deploy** progress; expand the build log only when you need it.
 7. Choose **Connect Slack** as the next step. Slack authorization returns to setup, which changes to **Open Slack** as soon as both the agent and connection are ready and prompts you to send your first message.
+8. Send the message in Slack. Setup detects the real managed-Slack session, previews the first exchange, and links to the full session in OpenComputer. If you leave early, use **Continue setup** from the agent page.
+
+If the chosen repository root is already a deployment source for another agent,
+the picker marks it before review and disables the review action. Open the
+owning agent, choose another monorepo root, or confirm an inline unlink. The
+unlink stops future push deployments for the old agent; it does not delete the
+agent, active revision, deployment history, or sessions.
 
 The selected root is its own build context and must contain `agent.toml`, `package.json`, and a
 committed `package-lock.json`. The package must declare a Node engine compatible with the exact

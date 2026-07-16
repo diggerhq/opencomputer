@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
-import type { AgentDeployment } from '@/api/client'
+import type { AgentDeployment, Session, SessionEvent } from '@/api/client'
 import AgentSetup from './AgentSetup'
 
 const agentId = 'agt_aaaaaaaaaaaaaaaaaaaaaaaa'
@@ -74,6 +74,8 @@ function renderSetup(input: {
   managed?: Record<string, unknown> | null
   search?: string
   agent?: Record<string, unknown>
+  sessions?: Session[]
+  events?: { sessionId: string; data: SessionEvent[] }
 }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
@@ -96,6 +98,23 @@ function renderSetup(input: {
   }
   if ('managed' in input) {
     queryClient.setQueryData(['slack', 'managed', agentId], input.managed)
+  }
+  if (input.sessions) {
+    queryClient.setQueryData(
+      [
+        'agent-setup',
+        'managed-slack-sessions',
+        agentId,
+        input.managed?.connected_at ?? null,
+      ],
+      input.sessions,
+    )
+  }
+  if (input.events) {
+    queryClient.setQueryData(
+      ['session-events', input.events.sessionId],
+      input.events.data,
+    )
   }
 
   return renderToStaticMarkup(
@@ -150,9 +169,62 @@ describe('agent setup', () => {
     })
     expect(ready).toContain('Send your first message')
     expect(ready).toContain('>Open Slack<')
+    expect(ready).toContain('Waiting for your first Slack message')
     expect(ready).toContain(
       'href="https://slack.com/app_redirect?app=A1&amp;team=T1"',
     )
+  })
+
+  it('turns a real managed Slack session into a conversation preview', () => {
+    const sessionId = 'ses_aaaaaaaaaaaaaaaaaaaaaaaa'
+    const readyDeployment: AgentDeployment = {
+      ...buildingDeployment,
+      state: 'ready',
+      phase: 'verify',
+      terminal: true,
+      active: true,
+      allowed_actions: ['open_agent', 'start_session'],
+    }
+    const session: Session = {
+      id: sessionId,
+      status: 'running',
+      agent_id: agentId,
+      metadata: { slack: { mode: 'managed', team_id: 'T1' } },
+      created_at: '2026-07-16T18:00:01Z',
+    }
+    const events: SessionEvent[] = [
+      {
+        id: 'evt_input',
+        seq: 1,
+        type: 'user.message',
+        level: 'user',
+        body: { text: 'Hello from Slack' },
+        source: 'client',
+      },
+      {
+        id: 'evt_reply',
+        seq: 2,
+        type: 'agent.message',
+        level: 'user',
+        body: { text: 'Hello! Your agent is ready.' },
+        source: 'runtime',
+      },
+    ]
+
+    const markup = renderSetup({
+      deployment: readyDeployment,
+      managed: activeSlack,
+      sessions: [session],
+      events: { sessionId, data: events },
+      search: `?deployment=${deploymentId}`,
+    })
+
+    expect(markup).toContain('Support triage is live in Slack')
+    expect(markup).toContain('Continue in Slack')
+    expect(markup).toContain('Hello from Slack')
+    expect(markup).toContain('Hello! Your agent is ready.')
+    expect(markup).toContain(`href="/sessions/${sessionId}"`)
+    expect(markup).toContain(`href="/agents/${agentId}/sessions"`)
   })
 
   it('uses the same activation flow for a manually created agent', () => {

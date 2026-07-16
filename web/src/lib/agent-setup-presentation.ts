@@ -17,6 +17,7 @@ export function agentSetupPresentation(input: {
   managedStatus: ManagedSlackStatus
   openUrl?: string | null
   connecting: boolean
+  activated?: boolean
 }): AgentSetupPresentation {
   const slack = deploymentSlackPresentation({
     deploymentState: input.stage === 'ready' ? 'ready' : input.stage,
@@ -39,6 +40,17 @@ export function agentSetupPresentation(input: {
 
   if (input.managedStatus === 'active') {
     if (input.stage === 'ready' && input.openUrl) {
+      if (input.activated) {
+        return {
+          ...slack,
+          label: 'Continue in Slack',
+          announcement:
+            'Your first Slack message created an OpenComputer session.',
+          title: `${input.agentName} is live in Slack`,
+          description:
+            'Your first message created a durable session. Keep chatting in Slack or open the full conversation in OpenComputer.',
+        }
+      }
       return {
         ...slack,
         title: 'Send your first message',

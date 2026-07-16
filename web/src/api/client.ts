@@ -901,6 +901,7 @@ export const getSessions = (
   params: {
     agent?: string
     status?: string
+    after?: string
     limit?: number
     cursor?: string
   } = {},
@@ -908,6 +909,7 @@ export const getSessions = (
   const q = new URLSearchParams()
   if (params.agent) q.set('agent', params.agent)
   if (params.status) q.set('status', params.status)
+  if (params.after) q.set('after', params.after)
   if (params.limit) q.set('limit', String(params.limit))
   if (params.cursor) q.set('cursor', params.cursor)
   const qs = q.toString()

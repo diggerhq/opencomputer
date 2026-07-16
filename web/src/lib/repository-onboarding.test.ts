@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError, type RepositorySourceInspection } from '@/api/client'
 import {
+  normalizeRepositoryRoot,
   repositoryReviewPresentation,
   repositorySeedFromState,
   sourceChangedRequiresReview,
@@ -24,6 +25,13 @@ const common = {
 }
 
 describe('repository onboarding presentation', () => {
+  it('matches linked roots after harmless path formatting differences', () => {
+    expect(normalizeRepositoryRoot('  agents//support/ ')).toBe(
+      'agents/support',
+    )
+    expect(normalizeRepositoryRoot('')).toBe('')
+  })
+
   it('keeps invalid Flue authoritative and recoverable by re-review', () => {
     const presentation = repositoryReviewPresentation({
       ...common,

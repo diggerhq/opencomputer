@@ -26,6 +26,12 @@ export function isValidRepositoryRoot(root: string): boolean {
     .some((part) => part === '.' || part === '..')
 }
 
+/** Mirrors the server's repository-root canonicalization for local conflict
+ * presentation only. Review/import still re-normalize and enforce it. */
+export function normalizeRepositoryRoot(root: string): string {
+  return root.trim().split('/').filter(Boolean).join('/')
+}
+
 /** Read the bounded same-origin handoff used after a confirmed source unlink. */
 export function repositorySeedFromState(
   value: unknown,

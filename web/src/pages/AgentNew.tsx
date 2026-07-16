@@ -16,15 +16,18 @@ import {
   KeyRound,
   Loader2,
   Search,
+  Unplug,
 } from 'lucide-react'
 import {
   ApiError,
   getDeployApp,
   importAgentFromGithub,
   reviewRepositoryAgent,
+  unlinkDeploymentSource,
   type DeployApp,
   type RepositorySourceInspection,
 } from '@/api/client'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Field, FieldError, Input } from '@/components/form'
 import { GithubMark } from '@/components/github-mark'
 import { ManualAgentForm } from '@/components/manual-agent-form'
@@ -45,11 +48,13 @@ import {
 } from '@/lib/agent-creation-mode'
 import {
   isValidRepositoryRoot,
+  normalizeRepositoryRoot,
   repositoryReviewPresentation,
   repositorySeedFromState,
   sourceChangedRequiresReview,
   type RepositorySeed,
 } from '@/lib/repository-onboarding'
+import { notifyError, notifySuccess } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 
 const STARTER_URL = 'https://github.com/diggerhq/oc-flue-starter'
@@ -58,6 +63,7 @@ const IMPORT_COMMAND_STORAGE = 'oc.repository-import-command.v1'
 
 type ImportBody = Parameters<typeof importAgentFromGithub>[0]
 type ImportCommand = { fingerprint: string; key: string }
+type LinkedSource = DeployApp['repositories'][number]['linked_sources'][number]
 function existingAgentFromError(
   error: unknown,
 ): { id: string; name: string; conflict: 'name' | 'source' } | null {
@@ -190,6 +196,9 @@ function GithubImport({
   )
   const [root, setRoot] = useState(initialRepo ? initialSource?.path || '' : '')
   const [name, setName] = useState('')
+  const [unlinkingSource, setUnlinkingSource] = useState<LinkedSource | null>(
+    null,
+  )
 
   const repositories = useMemo(() => {
     const needle = repoSearch.trim().toLowerCase()
@@ -242,6 +251,41 @@ function GithubImport({
         `/agents/${agent.id}/setup?deployment=${encodeURIComponent(deployment.id)}`,
       )
     },
+    onError: (error) => {
+      if (existingAgentFromError(error)?.conflict === 'source') {
+        void queryClient.invalidateQueries({ queryKey: ['deploy-app'] })
+      }
+    },
+  })
+  const unlinkMutation = useMutation({
+    mutationFn: (source: LinkedSource) =>
+      unlinkDeploymentSource(source.agent.id),
+    onSuccess: (_result, source) => {
+      queryClient.setQueryData<DeployApp>(['deploy-app'], (current) =>
+        current
+          ? {
+              ...current,
+              repositories: current.repositories.map((repo) => ({
+                ...repo,
+                linked_sources: repo.linked_sources.filter(
+                  (claim) => claim.agent.id !== source.agent.id,
+                ),
+              })),
+            }
+          : current,
+      )
+      void queryClient.invalidateQueries({ queryKey: ['deploy-app'] })
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      void queryClient.invalidateQueries({
+        queryKey: ['agent-deploy-source', source.agent.id],
+      })
+      setUnlinkingSource(null)
+      notifySuccess(
+        `Repository unlinked from ${source.agent.name}.`,
+        'The agent, active revision, deployments, and sessions are unchanged.',
+      )
+    },
+    onError: (error) => notifyError("Couldn't unlink the repository.", error),
   })
 
   const clearInspection = () => {
@@ -274,15 +318,22 @@ function GithubImport({
     inspection?.interpretation.disposition === 'exact' && inspection.profile
       ? inspection
       : null
+  const linkedSourceFor = (path: string) =>
+    selectedRepo?.linked_sources.find(
+      (source) => source.path === normalizeRepositoryRoot(path),
+    )
+  const selectedLinkedSource = linkedSourceFor(root)
   const canInspect =
     !!selectedRepo &&
     !!productionRef.trim() &&
     rootValid &&
+    !selectedLinkedSource &&
     !inspectMutation.isPending
   const canImport =
     !!exactInspection &&
     !!name.trim() &&
     !sourceChanged &&
+    !selectedLinkedSource &&
     !importMutation.isPending &&
     !inspectMutation.isPending
 
@@ -427,39 +478,51 @@ function GithubImport({
               className="max-h-60 overflow-y-auto rounded-md border"
             >
               {repositories.length ? (
-                repositories.map((repo, index) => (
-                  <button
-                    key={repo.id}
-                    type="button"
-                    aria-pressed={repo.id === repoId}
-                    onClick={() => selectRepo(repo.id)}
-                    className={cn(
-                      'focus-visible:ring-ring/50 flex w-full items-center gap-3 px-3 py-2.5 text-left outline-none focus-visible:ring-3 focus-visible:ring-inset',
-                      index > 0 && 'border-t',
-                      repo.id === repoId
-                        ? 'bg-row-selected'
-                        : 'hover:bg-row-hover',
-                    )}
-                  >
-                    <GithubMark className="size-4 shrink-0" />
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                      {repo.full_name}
-                    </span>
-                    <span className="text-muted-foreground flex shrink-0 items-center gap-2 text-xs">
-                      {repo.private == null
-                        ? null
-                        : repo.private
-                          ? 'Private'
-                          : 'Public'}
-                      {repo.default_branch ? (
-                        <span className="hidden items-center gap-1 sm:flex">
-                          <GitBranch className="size-3" />
-                          {repo.default_branch}
+                repositories.map((repo, index) => {
+                  const rootClaim = repo.linked_sources.find(
+                    (source) => source.path === '',
+                  )
+                  return (
+                    <button
+                      key={repo.id}
+                      type="button"
+                      aria-pressed={repo.id === repoId}
+                      onClick={() => selectRepo(repo.id)}
+                      className={cn(
+                        'focus-visible:ring-ring/50 flex w-full items-center gap-3 px-3 py-2.5 text-left outline-none focus-visible:ring-3 focus-visible:ring-inset',
+                        index > 0 && 'border-t',
+                        repo.id === repoId
+                          ? 'bg-row-selected'
+                          : 'hover:bg-row-hover',
+                      )}
+                    >
+                      <GithubMark className="size-4 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                        {repo.full_name}
+                      </span>
+                      {repo.linked_sources.length ? (
+                        <span className="bg-muted text-foreground max-w-44 shrink-0 truncate rounded-sm px-1.5 py-0.5 text-xs">
+                          {rootClaim
+                            ? `Linked to ${rootClaim.agent.name}`
+                            : `${repo.linked_sources.length} linked ${repo.linked_sources.length === 1 ? 'root' : 'roots'}`}
                         </span>
                       ) : null}
-                    </span>
-                  </button>
-                ))
+                      <span className="text-muted-foreground hidden shrink-0 items-center gap-2 text-xs md:flex">
+                        {repo.private == null
+                          ? null
+                          : repo.private
+                            ? 'Private'
+                            : 'Public'}
+                        {repo.default_branch ? (
+                          <span className="flex items-center gap-1">
+                            <GitBranch className="size-3" />
+                            {repo.default_branch}
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  )
+                })
               ) : (
                 <p className="text-muted-foreground px-4 py-8 text-center text-sm">
                   {app.repositories.length === 0
@@ -512,6 +575,41 @@ function GithubImport({
                   />
                 </Field>
               </div>
+            ) : null}
+
+            {selectedRepo && selectedLinkedSource ? (
+              <Alert>
+                <AlertTitle>Repository root already linked</AlertTitle>
+                <AlertDescription>
+                  {normalizeRepositoryRoot(root)
+                    ? `${selectedRepo.full_name}/${normalizeRepositoryRoot(root)}`
+                    : selectedRepo.full_name}{' '}
+                  is linked to{' '}
+                  <Link
+                    className="font-medium underline underline-offset-4"
+                    to={`/agents/${selectedLinkedSource.agent.id}`}
+                  >
+                    {selectedLinkedSource.agent.name}
+                  </Link>
+                  . One agent can own this repository root for deploy-on-push.
+                </AlertDescription>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" asChild>
+                    <Link to={`/agents/${selectedLinkedSource.agent.id}`}>
+                      Open agent
+                    </Link>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={unlinkMutation.isPending}
+                    onClick={() => setUnlinkingSource(selectedLinkedSource)}
+                  >
+                    <Unplug className="size-4" />
+                    Unlink repository
+                  </Button>
+                </div>
+              </Alert>
             ) : null}
 
             {inspectMutation.isError ? (
@@ -580,6 +678,37 @@ function GithubImport({
                 <AlertDescription>{warning.message}</AlertDescription>
               </Alert>
             ))}
+            {selectedLinkedSource ? (
+              <Alert>
+                <AlertTitle>Repository root already linked</AlertTitle>
+                <AlertDescription>
+                  This reviewed root is now linked to{' '}
+                  <Link
+                    className="font-medium underline underline-offset-4"
+                    to={`/agents/${selectedLinkedSource.agent.id}`}
+                  >
+                    {selectedLinkedSource.agent.name}
+                  </Link>
+                  . Unlink it before creating another agent from this root.
+                </AlertDescription>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" asChild>
+                    <Link to={`/agents/${selectedLinkedSource.agent.id}`}>
+                      Open agent
+                    </Link>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={unlinkMutation.isPending}
+                    onClick={() => setUnlinkingSource(selectedLinkedSource)}
+                  >
+                    <Unplug className="size-4" />
+                    Unlink repository
+                  </Button>
+                </div>
+              </Alert>
+            ) : null}
             {importMutation.isError ? (
               <Alert
                 variant={
@@ -699,34 +828,57 @@ function GithubImport({
                 className="divide-y overflow-hidden rounded-md border"
                 aria-label="Candidate agent folders"
               >
-                {inspection.candidate_roots.map((candidate) => (
-                  <div
-                    key={`${candidate.path}:${candidate.marker ?? ''}`}
-                    className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate font-mono text-sm">
-                        {candidate.path || 'Repository root'}
-                      </p>
-                      <p className="text-muted-foreground mt-0.5 text-xs">
-                        {candidate.summary}
-                      </p>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={inspectMutation.isPending}
-                      onClick={() => chooseCandidate(candidate)}
+                {inspection.candidate_roots.map((candidate) => {
+                  const linkedSource = linkedSourceFor(candidate.path)
+                  return (
+                    <div
+                      key={`${candidate.path}:${candidate.marker ?? ''}`}
+                      className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
                     >
-                      {inspectMutation.isPending ? (
-                        <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                      <div className="min-w-0">
+                        <p className="truncate font-mono text-sm">
+                          {candidate.path || 'Repository root'}
+                        </p>
+                        <p className="text-muted-foreground mt-0.5 text-xs">
+                          {linkedSource
+                            ? `Already linked to ${linkedSource.agent.name}`
+                            : candidate.summary}
+                        </p>
+                      </div>
+                      {linkedSource ? (
+                        <div className="flex shrink-0 flex-wrap gap-1">
+                          <Button size="sm" variant="outline" asChild>
+                            <Link to={`/agents/${linkedSource.agent.id}`}>
+                              Open agent
+                            </Link>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={unlinkMutation.isPending}
+                            onClick={() => setUnlinkingSource(linkedSource)}
+                          >
+                            Unlink
+                          </Button>
+                        </div>
                       ) : (
-                        <FolderSearch className="size-4" />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={inspectMutation.isPending}
+                          onClick={() => chooseCandidate(candidate)}
+                        >
+                          {inspectMutation.isPending ? (
+                            <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                          ) : (
+                            <FolderSearch className="size-4" />
+                          )}
+                          Choose folder
+                        </Button>
                       )}
-                      Choose folder
-                    </Button>
-                  </div>
-                ))}
+                    </div>
+                  )
+                })}
               </div>
             ) : null}
             {inspection.candidate_roots_truncated ? (
@@ -755,6 +907,20 @@ function GithubImport({
           </PanelContent>
         </Panel>
       ) : null}
+      <ConfirmDialog
+        open={unlinkingSource != null}
+        onOpenChange={(open) => {
+          if (!open) setUnlinkingSource(null)
+        }}
+        title={`Unlink repository from ${unlinkingSource?.agent.name ?? 'this agent'}?`}
+        description="Deploy-on-push from this repository root will stop. The existing agent, active revision, deployment history, and sessions will remain available. You can then import this root into the new agent."
+        confirmLabel="Unlink repository"
+        destructive
+        pending={unlinkMutation.isPending}
+        onConfirm={() => {
+          if (unlinkingSource) unlinkMutation.mutate(unlinkingSource)
+        }}
+      />
     </div>
   )
 }

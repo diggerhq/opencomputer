@@ -306,6 +306,11 @@ the [Deployments & revisions guide](/agent-sessions/revisions).
 Review resolves the moving production branch to one exact commit and interprets bounded metadata
 without executing repository code. Repository-first import currently accepts the exact Flue result.
 
+`GET /github/deploy-app` returns the installed OpenComputer GitHub App and its pickable repositories.
+Each repository includes `linked_sources[]` with the owner-scoped `path`, `production_ref`, `status`,
+and owning agent `{ id, name }`. Clients should block review when the selected normalized root has a
+claim. This is an early user-facing check; import repeats the uniqueness check transactionally.
+
 <CodeGroup>
 
 ```ts TypeScript SDK
@@ -651,6 +656,8 @@ A skill is a folder with a `SKILL.md`; PUT/DELETE are **deployments** (versioned
 </Tabs>
 
 Linking deploys the current production HEAD immediately (unless `deploy_now: false` / `--no-deploy`).
+The link is unique by owner, repository, and normalized root. Unlinking stops deploy-on-push but does
+not delete the agent, revisions, deployment history, or sessions.
 For built-in runtimes, a push to the production branch activates while other branches stage. For
 Flue, only the production branch deploys. **Scopes:** `deploy_now: false` needs `agents:link`; the
 default (with an initial deploy) needs `agents:link` + `agents:deploy`, plus `agents:activate` when

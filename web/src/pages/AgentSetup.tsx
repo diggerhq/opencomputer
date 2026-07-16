@@ -15,6 +15,10 @@ import {
   getAgent,
   getAgentDeployment,
   getManagedSlackConnection,
+  getSession,
+  getSessionEvents,
+  getSessions,
+  type SessionEvent,
 } from '@/api/client'
 import {
   DeploymentLog,
@@ -28,6 +32,7 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
+import { MessageBubble } from '@/components/session-conversation'
 import {
   Alert,
   AlertAction,
@@ -49,6 +54,12 @@ import {
 import { deploymentStage } from '@/lib/deployment-slack-cta'
 import { notifyError } from '@/lib/errors'
 import { managedSlackNotice } from '@/lib/managed-slack-notice'
+import { latestManagedSlackSession } from '@/lib/managed-slack-session'
+import {
+  bodyText,
+  isTerminalSessionStatus,
+  isTurnInput,
+} from '@/lib/session-turns'
 import { cn } from '@/lib/utils'
 
 function setupStage(input: {
@@ -79,6 +90,19 @@ function setupStage(input: {
   if (!input.state) return 'preparing'
   const stage = deploymentStage(input.state, input.terminal ?? false)
   return stage === 'running' ? 'preparing' : stage
+}
+
+function previewText(text: string | null, max = 360): string | null {
+  if (!text || text.length <= max) return text
+  return `${text.slice(0, max).trimEnd()}…`
+}
+
+function conversationSettled(events: SessionEvent[] | undefined): boolean {
+  return !!events?.some(
+    (event) =>
+      event.type === 'agent.message' ||
+      event.type.toLowerCase().includes('error'),
+  )
 }
 
 export default function AgentSetup() {
@@ -127,6 +151,72 @@ export default function AgentSetup() {
     queryKey: ['agent', sameOwnerConnectedAgentId],
     queryFn: () => getAgent(sameOwnerConnectedAgentId!),
     enabled: !!sameOwnerConnectedAgentId,
+  })
+  const stage = setupStage({
+    hasDeployment: !!deploymentId,
+    state: deploymentQuery.data?.state,
+    terminal: deploymentQuery.data?.terminal,
+    loadFailed: deploymentQuery.isError,
+    agentReady: agentQuery.data
+      ? agentCanStartNewSession(agentQuery.data)
+      : false,
+    agentDeploymentState: agentQuery.data
+      ? agentDeploymentDisplayStatus(agentQuery.data)
+      : undefined,
+  })
+  const activationReady =
+    stage === 'ready' && managedSlackQuery.data?.status === 'active'
+  const activationConnectedAt = managedSlackQuery.data?.connected_at ?? null
+  const activationSessionsQuery = useQuery({
+    queryKey: [
+      'agent-setup',
+      'managed-slack-sessions',
+      agentId,
+      activationConnectedAt,
+    ],
+    queryFn: () =>
+      getSessions({
+        agent: agentId,
+        after: activationConnectedAt ?? undefined,
+        limit: 100,
+      }),
+    enabled: !!agentId && activationReady,
+    refetchInterval: (query) =>
+      latestManagedSlackSession(query.state.data ?? [], activationConnectedAt)
+        ? false
+        : 1500,
+    refetchOnWindowFocus: 'always',
+  })
+  const activationSession = latestManagedSlackSession(
+    activationSessionsQuery.data ?? [],
+    activationConnectedAt,
+  )
+  const activationEventsQuery = useQuery({
+    queryKey: ['session-events', activationSession?.id],
+    queryFn: () => getSessionEvents(activationSession!.id),
+    enabled: !!activationSession,
+    refetchInterval: (query) =>
+      conversationSettled(query.state.data) ? false : 1000,
+    refetchOnWindowFocus: 'always',
+  })
+  const activationEvents = activationEventsQuery.data ?? []
+  const activationInput = activationEvents.find(isTurnInput)
+  const activationReply = activationEvents.find(
+    (event) => event.type === 'agent.message',
+  )
+  const activationError = activationEvents.find((event) =>
+    event.type.toLowerCase().includes('error'),
+  )
+  const activationSessionQuery = useQuery({
+    queryKey: ['session', activationSession?.id],
+    queryFn: () => getSession(activationSession!.id),
+    enabled: !!activationSession,
+    refetchInterval: (query) =>
+      conversationSettled(activationEvents) ||
+      isTerminalSessionStatus(query.state.data?.status)
+        ? false
+        : 1500,
+    refetchOnWindowFocus: 'always',
   })
   const logsQuery = useAgentDeploymentLogs({
     agentId,
@@ -177,14 +267,6 @@ export default function AgentSetup() {
 
   const agent = agentQuery.data
   const deployment = deploymentQuery.data
-  const stage = setupStage({
-    hasDeployment: !!deploymentId,
-    state: deployment?.state,
-    terminal: deployment?.terminal,
-    loadFailed: deploymentQuery.isError,
-    agentReady: agentCanStartNewSession(agent),
-    agentDeploymentState: agentDeploymentDisplayStatus(agent),
-  })
   const managedSlack = managedSlackQuery.data
   const managedSlackStatus = managedSlackQuery.isSuccess
     ? (managedSlack?.status ?? null)
@@ -195,6 +277,7 @@ export default function AgentSetup() {
     managedStatus: managedSlackStatus,
     openUrl: managedSlack?.open_url,
     connecting: authorizeManagedSlackMutation.isPending,
+    activated: !!activationSession,
   })
   const managedWorkspace =
     managedSlack?.workspace?.name ?? managedSlack?.workspace?.id
@@ -229,16 +312,16 @@ export default function AgentSetup() {
     : null
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5">
+    <div className="mx-auto max-w-3xl space-y-4">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-            Agent setup
-          </p>
-          <h1 className="mt-1 text-xl font-semibold tracking-tight">
+        <div className="space-y-1">
+          <h1 className="text-lg font-semibold tracking-tight">
             Set up {agent.name}
           </h1>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+          <p className="text-muted-foreground text-sm">
+            Deploy the agent, connect Slack, and start the first conversation.
+          </p>
+          <div className="flex flex-wrap items-center gap-2 pt-1.5">
             <StatusBadge
               status={
                 stage === 'preparing' ? (deployment?.state ?? 'pending') : stage
@@ -291,11 +374,11 @@ export default function AgentSetup() {
       ) : null}
 
       <Panel>
-        <PanelContent className="px-6 py-7 sm:px-8 sm:py-9">
-          <div className="max-w-2xl">
+        <PanelContent className="px-5 py-5 sm:px-6 sm:py-6">
+          <div className="flex max-w-2xl items-start gap-3">
             <div
               className={cn(
-                'mb-5 flex size-10 items-center justify-center rounded-md',
+                'flex size-9 shrink-0 items-center justify-center rounded-md',
                 stage === 'failed'
                   ? 'bg-status-error-bg text-status-error'
                   : presentation.action === 'open'
@@ -314,94 +397,226 @@ export default function AgentSetup() {
             <span className="sr-only" aria-live="polite" aria-atomic="true">
               {presentation.announcement}
             </span>
-            <h2 className="text-2xl font-semibold tracking-tight">
-              {presentation.title}
-            </h2>
-            <p className="text-muted-foreground mt-2 max-w-xl text-sm leading-relaxed">
-              {presentation.description}
-            </p>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-lg font-semibold tracking-tight">
+                {presentation.title}
+              </h2>
+              <p className="text-muted-foreground mt-1.5 max-w-xl text-sm leading-relaxed">
+                {presentation.description}
+              </p>
 
-            <div className="mt-6 flex flex-wrap items-center gap-3">
-              {presentation.action === 'open' && managedSlack?.open_url ? (
-                <Button size="lg" className="h-10 px-5" asChild>
-                  <a
-                    href={managedSlack.open_url}
-                    target="_blank"
-                    rel="noreferrer"
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                {presentation.action === 'open' && managedSlack?.open_url ? (
+                  <Button asChild>
+                    <a
+                      href={managedSlack.open_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {presentation.label}
+                      <ExternalLink className="size-4" />
+                    </a>
+                  </Button>
+                ) : presentation.action === 'connect' ||
+                  presentation.action === 'reconnect' ||
+                  presentation.action === 'connecting' ? (
+                  <Button
+                    disabled={authorizeManagedSlackMutation.isPending}
+                    onClick={() => authorizeManagedSlackMutation.mutate()}
                   >
-                    Open Slack
-                    <ExternalLink className="size-4" />
-                  </a>
-                </Button>
-              ) : presentation.action === 'connect' ||
-                presentation.action === 'reconnect' ||
-                presentation.action === 'connecting' ? (
-                <Button
-                  size="lg"
-                  className="h-10 px-5"
-                  disabled={authorizeManagedSlackMutation.isPending}
-                  onClick={() => authorizeManagedSlackMutation.mutate()}
-                >
-                  {authorizeManagedSlackMutation.isPending ? (
+                    {authorizeManagedSlackMutation.isPending ? (
+                      <Loader2
+                        className="size-4 animate-spin motion-reduce:animate-none"
+                        aria-hidden
+                      />
+                    ) : null}
+                    {presentation.label}
+                  </Button>
+                ) : stage === 'failed' && deploymentHref ? (
+                  <Button asChild>
+                    <Link to={deploymentHref}>
+                      Review deployment
+                      <ChevronRight className="size-4" />
+                    </Link>
+                  </Button>
+                ) : managedSlackStatus === 'active' && stage === 'preparing' ? (
+                  <span className="text-muted-foreground inline-flex items-center gap-2 text-sm">
                     <Loader2
                       className="size-4 animate-spin motion-reduce:animate-none"
                       aria-hidden
                     />
-                  ) : null}
-                  {presentation.label}
-                </Button>
-              ) : stage === 'failed' && deploymentHref ? (
-                <Button size="lg" className="h-10 px-5" asChild>
-                  <Link to={deploymentHref}>
-                    Review deployment
-                    <ChevronRight className="size-4" />
-                  </Link>
-                </Button>
-              ) : managedSlackStatus === 'active' && stage === 'preparing' ? (
-                <span className="text-muted-foreground inline-flex items-center gap-2 text-sm">
-                  <Loader2
-                    className="size-4 animate-spin motion-reduce:animate-none"
-                    aria-hidden
-                  />
-                  Finishing deployment…
-                </span>
-              ) : null}
-              {presentation.action === 'connect' && presentation.disclosure ? (
-                <div className="max-w-sm text-xs leading-relaxed">
-                  <span className="text-muted-foreground">
-                    Anyone in this workspace who can message the app can use
-                    this agent.{' '}
+                    Finishing deployment…
                   </span>
-                  <Link
-                    to={`/agents/${agentId}?connect=slack`}
-                    className="text-foreground underline underline-offset-4"
+                ) : null}
+                {presentation.action === 'connect' &&
+                presentation.disclosure ? (
+                  <div className="max-w-sm text-xs leading-relaxed">
+                    <span className="text-muted-foreground">
+                      Anyone in this workspace who can message the app can use
+                      this agent.{' '}
+                    </span>
+                    <Link
+                      to={`/agents/${agentId}?connect=slack`}
+                      className="text-foreground underline underline-offset-4"
+                    >
+                      Use your own Slack app
+                    </Link>
+                  </div>
+                ) : null}
+              </div>
+
+              {managedSlackQuery.isError && stage !== 'failed' ? (
+                <div className="mt-3 flex items-center gap-2 text-xs">
+                  <span className="text-status-error">
+                    Slack status is unavailable.
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void managedSlackQuery.refetch()}
                   >
-                    Use your own Slack app
-                  </Link>
+                    Retry
+                  </Button>
                 </div>
+              ) : presentation.status ? (
+                <p className="text-muted-foreground mt-3 text-xs">
+                  {presentation.status}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </PanelContent>
+        {activationReady ? (
+          <div
+            className="border-t px-5 py-4 sm:px-6"
+            aria-live="polite"
+            aria-atomic="false"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold">
+                  First Slack conversation
+                </p>
+                <p className="text-muted-foreground mt-0.5 text-xs">
+                  This page follows the same durable session shown elsewhere in
+                  OpenComputer.
+                </p>
+              </div>
+              {activationSession ? (
+                <StatusBadge
+                  status={
+                    activationSessionQuery.data?.status ??
+                    activationSession.status
+                  }
+                />
               ) : null}
             </div>
 
-            {managedSlackQuery.isError && stage !== 'failed' ? (
-              <div className="mt-4 flex items-center gap-2 text-xs">
+            {activationSessionsQuery.isError ? (
+              <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
                 <span className="text-status-error">
-                  Slack status is unavailable.
+                  We couldn&apos;t check for your Slack message.
                 </span>
                 <Button
-                  variant="ghost"
                   size="sm"
-                  onClick={() => void managedSlackQuery.refetch()}
+                  variant="outline"
+                  onClick={() => void activationSessionsQuery.refetch()}
                 >
                   Retry
                 </Button>
               </div>
-            ) : presentation.status ? (
-              <p className="text-muted-foreground mt-4 text-xs">
-                {presentation.status}
-              </p>
-            ) : null}
+            ) : !activationSession ? (
+              <div className="mt-4 flex items-start gap-3" role="status">
+                <Loader2
+                  className="text-muted-foreground mt-0.5 size-4 shrink-0 animate-spin motion-reduce:animate-none"
+                  aria-hidden
+                />
+                <div>
+                  <p className="text-sm font-medium">
+                    Waiting for your first Slack message
+                  </p>
+                  <p className="text-muted-foreground mt-0.5 text-xs">
+                    Send a message to OpenComputer in Slack. The session and
+                    reply will appear here automatically.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4">
+                {activationEventsQuery.isError ? (
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="text-status-error">
+                      The session was created, but its messages could not be
+                      loaded.
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void activationEventsQuery.refetch()}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                ) : activationEventsQuery.isLoading ? (
+                  <div className="space-y-3">
+                    <Skeleton className="h-12 w-full" />
+                    <Skeleton className="h-12 w-4/5" />
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {activationInput ? (
+                      <MessageBubble
+                        label="You"
+                        text={
+                          previewText(bodyText(activationInput)) ??
+                          'Message received'
+                        }
+                      />
+                    ) : null}
+                    {activationReply ? (
+                      <MessageBubble
+                        label="Agent"
+                        text={
+                          previewText(bodyText(activationReply)) ??
+                          'Reply available in the full session'
+                        }
+                      />
+                    ) : activationError ? (
+                      <div className="bg-status-error-bg/40 text-status-error rounded-md px-3 py-2 text-xs">
+                        {bodyText(activationError) ??
+                          'The first turn needs attention. Open the session for details.'}
+                      </div>
+                    ) : (
+                      <div
+                        className="text-muted-foreground flex items-center gap-2 text-xs"
+                        role="status"
+                      >
+                        <Loader2
+                          className="size-3.5 animate-spin motion-reduce:animate-none"
+                          aria-hidden
+                        />
+                        Agent is replying…
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="outline" asChild>
+                    <Link to={`/sessions/${activationSession.id}`}>
+                      Open session
+                      <ChevronRight className="size-4" />
+                    </Link>
+                  </Button>
+                  <Button size="sm" variant="ghost" asChild>
+                    <Link to={`/agents/${agentId}/sessions`}>
+                      All agent sessions
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
-        </PanelContent>
+        ) : null}
       </Panel>
 
       {deployment ? (

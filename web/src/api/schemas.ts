@@ -616,6 +616,16 @@ export const DeployAppRepoSchema = z.object({
   full_name: z.string(),
   default_branch: z.string().nullish(),
   private: z.boolean().nullish(),
+  linked_sources: z
+    .array(
+      z.object({
+        path: z.string(),
+        production_ref: z.string(),
+        status: z.string(),
+        agent: z.object({ id: z.string(), name: z.string() }),
+      }),
+    )
+    .default([]),
 })
 export const DeployAppSchema = z.object({
   installed: z.boolean(),

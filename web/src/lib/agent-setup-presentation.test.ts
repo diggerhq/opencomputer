@@ -43,6 +43,21 @@ describe('agentSetupPresentation', () => {
     expect(view.label).toBe('Open Slack')
   })
 
+  it('hands a real first Slack session into continued conversation', () => {
+    const view = agentSetupPresentation({
+      agentName: 'Support triage',
+      stage: 'ready',
+      managedStatus: 'active',
+      openUrl: 'https://slack.com/app_redirect?app=A1&team=T1',
+      connecting: false,
+      activated: true,
+    })
+
+    expect(view.title).toBe('Support triage is live in Slack')
+    expect(view.action).toBe('open')
+    expect(view.label).toBe('Continue in Slack')
+  })
+
   it('makes deployment recovery primary after a failure', () => {
     const view = agentSetupPresentation({
       agentName: 'Support triage',

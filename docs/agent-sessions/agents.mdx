@@ -78,6 +78,14 @@ Choose **Agents → Create agent → Import from GitHub**, install the OpenCompu
 
 Review and import are intentionally separate. Import rechecks the exact source plan; if the repository changed in between, nothing is created and the dashboard asks you to review again. A successful import returns the new agent and its first deployment immediately, then opens guided setup instead of making you wait on a log screen. Connect Slack while the deployment continues in the background; its compact phases and expandable log remain available. When both are ready, setup changes to **Open Slack** without a refresh and invites you to send the first message. Manually configured agents use the same setup journey.
 
+The repository picker marks roots already used by another agent before review.
+An exact linked root cannot be reviewed again: open its owning agent, choose a
+different monorepo root, or unlink it in place after confirming that
+deploy-on-push will stop. Unlinking preserves the existing agent, active
+revision, deployment history, and sessions. Guided setup remains available from
+the agent page; after the first Slack message creates a session, it shows the
+first conversation and links to the complete session view.
+
 ## Session-pinned config
 
 For a built-in runtime, creating a session **freezes** the agent's active [revision](/agent-sessions/revisions), including its `prompt`, `model`, `runtime`, and `skills`. It also pins the resolved credential. A one-off [`model`](/agent-sessions/sessions#model) override is pinned in the same way. Editing the named agent does not change a running or resumed session: existing sessions keep what they started with, while new sessions pick up the change. Rotating a credential's **key value** is the exception, so a compromised key can be replaced; see [credentials](/agent-sessions/credentials).
