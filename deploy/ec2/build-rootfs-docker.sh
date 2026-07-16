@@ -339,6 +339,25 @@ make_ext4() {
     log "Done: $IMAGES_DIR/${outname}.ext4 ($(du -h "$IMAGES_DIR/${outname}.ext4" | cut -f1))"
 }
 
+# assert_merged_base FILE MIN_MB — fail the build unless FILE is a valid ext4
+# whose FILESYSTEM (not just the file) is at least ~MIN_MB. Catches a resize2fs
+# that silently left the merged base at the 4GB split size. Since merged-create
+# is the default, a bad merged base bricks every worker's golden build — so this
+# is fatal on purpose.
+assert_merged_base() {
+    local f="$1" min_mb="$2" blocks bsize fs_mb
+    [ -f "$f" ] || { err "merged base $f missing after derivation"; exit 1; }
+    dumpe2fs -h "$f" >/dev/null 2>&1 || { err "merged base $f is not a valid ext4"; exit 1; }
+    blocks=$(dumpe2fs -h "$f" 2>/dev/null | awk -F: '/Block count/{gsub(/ /,"",$2);print $2}')
+    bsize=$(dumpe2fs -h "$f" 2>/dev/null | awk -F: '/Block size/{gsub(/ /,"",$2);print $2}')
+    fs_mb=$(( blocks * bsize / 1024 / 1024 ))
+    if [ "$fs_mb" -lt $(( min_mb * 95 / 100 )) ]; then
+        err "merged base $f filesystem is ${fs_mb}MB, expected ~${min_mb}MB — resize2fs failed"
+        exit 1
+    fi
+    log "merged base verified: ${fs_mb}MB ext4"
+}
+
 ROOTFS_MIN_MB="${ROOTFS_MIN_MB:-4096}"
 
 # Primary base for this build's configured layout.
@@ -348,18 +367,24 @@ make_ext4 "$IMAGE_NAME" "$EXT4_SIZE_MB" "$ROOTFS_MIN_MB"
 # default-merged.ext4 so one worker image carries both bases (enabling merged-
 # create is then a pure OPENSANDBOX_GOLDEN_DISK_LAYOUT=merged flip). The two are
 # byte-identical content; the merged one is just grown to 20GB. Derive it from
-# the split base (cp + resize2fs) rather than a fresh mkfs so it can be
-# reproduced from a CACHED default.ext4 with no rootfs tar — the Packer worker-
-# image build applies the exact same derivation on a rootfs-cache hit. Skipped
-# for the merged build itself, non-default templates, or EMIT_MERGED_VARIANT=0.
+# the split base (cp, grow the file, resize2fs the ext4) rather than a fresh
+# mkfs so it can be reproduced from a CACHED default.ext4 with no rootfs tar —
+# the Packer worker-image build applies the exact same derivation on a rootfs-
+# cache hit. Merged-create is the DEFAULT, so a missing/wrong-sized merged base
+# would brick every worker's golden build — assert_merged_base fails the build
+# loudly rather than shipping a bad image. Skipped for the merged build itself,
+# non-default templates, or EMIT_MERGED_VARIANT=0.
 if [ "$IMAGE_NAME" = "default" ] && [ "$DISK_LAYOUT" != "merged" ] && [ "${EMIT_MERGED_VARIANT:-1}" = "1" ]; then
     MERGED_SIZE_MB="${MERGED_SIZE_MB:-20480}"
+    MERGED_PATH="$IMAGES_DIR/default-merged.ext4"
     log "Deriving companion merged base default-merged.ext4 (${MERGED_SIZE_MB}MB) from ${IMAGE_NAME}.ext4..."
-    cp --reflink=auto "$IMAGES_DIR/${IMAGE_NAME}.ext4" "$IMAGES_DIR/default-merged.ext4" 2>/dev/null \
-        || cp "$IMAGES_DIR/${IMAGE_NAME}.ext4" "$IMAGES_DIR/default-merged.ext4"
-    e2fsck -fy "$IMAGES_DIR/default-merged.ext4" >/dev/null 2>&1 || true
-    resize2fs "$IMAGES_DIR/default-merged.ext4" "${MERGED_SIZE_MB}M" 2>/dev/null || log "resize2fs merged failed (non-fatal)"
-    log "Done: $IMAGES_DIR/default-merged.ext4 ($(du -h "$IMAGES_DIR/default-merged.ext4" | cut -f1))"
+    cp --reflink=auto "$IMAGES_DIR/${IMAGE_NAME}.ext4" "$MERGED_PATH" 2>/dev/null \
+        || cp "$IMAGES_DIR/${IMAGE_NAME}.ext4" "$MERGED_PATH"
+    truncate -s "${MERGED_SIZE_MB}M" "$MERGED_PATH"           # grow the file before growing the fs
+    e2fsck -fy "$MERGED_PATH" >/dev/null 2>&1 || true          # resize2fs needs a clean fs
+    resize2fs "$MERGED_PATH" "${MERGED_SIZE_MB}M"              # grow the ext4 to fill (fatal via set -e)
+    assert_merged_base "$MERGED_PATH" "$MERGED_SIZE_MB"
+    log "Done: $MERGED_PATH ($(du -h "$MERGED_PATH" | cut -f1))"
 fi
 
 # Clean up Docker image

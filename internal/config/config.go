@@ -105,15 +105,16 @@ type Config struct {
 	QEMUBin    string // Path to qemu-system binary (default: "qemu-system-x86_64")
 
 	// GoldenDiskLayout selects the block topology this worker builds its golden
-	// with — "" / "split" (default) = legacy two-disk (rootfs + workspace),
-	// "merged" = single 20GB disk (OS + /home/sandbox). Controls the layout of
-	// freshly CREATED sandboxes only; forks/wakes follow each snapshot's recorded
-	// layout, and a dual-mode worker still HOSTS the other layout via migrate-in.
-	// Defaults to split so deploying the merged-capable binary is behaviour-
-	// neutral (no merged boxes appear at deploy). Flip to merged only AFTER the
-	// whole fleet runs this binary AND ships the ~20GB base image (see
-	// build-rootfs-docker.sh DISK_LAYOUT=merged) — set
-	// OPENSANDBOX_GOLDEN_DISK_LAYOUT=merged to enable merged-create.
+	// with — "merged" (default) = single 20GB disk (OS + /home/sandbox), "split"
+	// = legacy two-disk (rootfs + workspace). Controls the layout of freshly
+	// CREATED sandboxes only; forks/wakes follow each snapshot's recorded layout,
+	// and a dual-mode worker still HOSTS the other layout via migrate-in.
+	// Defaults to merged so a single rolling replace onto this build produces
+	// merged boxes with no extra config. Safe because the worker image build
+	// guarantees a valid ~20GB default-merged.ext4 (build-rootfs-docker.sh /
+	// worker-ami.pkr.hcl assert it, fatal), and a worker missing it locally
+	// falls back to the global-blob copy. Set OPENSANDBOX_GOLDEN_DISK_LAYOUT=split
+	// to keep a worker (or the whole fleet) on the legacy two-disk layout.
 	GoldenDiskLayout string
 
 	// AWS EC2 compute pool (server mode only — for auto-scaling worker machines)
@@ -364,7 +365,7 @@ func Load() (*Config, error) {
 		ImagesDir:      os.Getenv("OPENSANDBOX_IMAGES_DIR"),      // default derived from DataDir
 		QEMUBin:        envOrDefault("OPENSANDBOX_QEMU_BIN", "qemu-system-x86_64"),
 
-		GoldenDiskLayout: os.Getenv("OPENSANDBOX_GOLDEN_DISK_LAYOUT"), // "" ⇒ split; set "merged" to enable merged-create (see field doc)
+		GoldenDiskLayout: envOrDefault("OPENSANDBOX_GOLDEN_DISK_LAYOUT", "merged"), // default merged; set "split" to override (see field doc)
 
 		EC2AMI:             os.Getenv("OPENSANDBOX_EC2_AMI"),
 		EC2InstanceType:    envOrDefault("OPENSANDBOX_EC2_INSTANCE_TYPE", "c7gd.metal"),
