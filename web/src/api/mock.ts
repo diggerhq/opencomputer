@@ -483,7 +483,9 @@ const agents = [
 //   'installed'     → the repo picker (App installed, this agent not yet linked)
 //   'connected'     → a linked agent showing live status + Disconnect
 const DEPLOY_PREVIEW = 'installed' as
-  'not_installed' | 'installed' | 'connected'
+  | 'not_installed'
+  | 'installed'
+  | 'connected'
 
 const deployAppInstalled = {
   installed: true,
@@ -580,7 +582,7 @@ const flueInspection = {
     variable_names: ['SUPPORT_QUEUE'],
     warnings: [],
   },
-  review_fingerprint: 'sha256:mock-flue-review',
+  review_fingerprint: `sha256:${'b'.repeat(64)}`,
   candidate_roots: [],
   candidate_roots_truncated: false,
 }

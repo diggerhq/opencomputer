@@ -358,6 +358,19 @@ export default function AgentDeployment() {
     enabled: !!agentId,
     refetchOnWindowFocus: 'always',
   })
+  const oauthResult = searchParams.get('slack')
+  const connectedAgentId = searchParams.get('connected_agent')
+  const sameOwnerConnectedAgentId =
+    oauthResult === 'workspace_already_connected' &&
+    connectedAgentId &&
+    /^agt_[0-9a-f]{24}$/.test(connectedAgentId)
+      ? connectedAgentId
+      : null
+  const connectedAgentQuery = useQuery({
+    queryKey: ['agent', sameOwnerConnectedAgentId],
+    queryFn: () => getAgent(sameOwnerConnectedAgentId!),
+    enabled: !!sameOwnerConnectedAgentId,
+  })
   const deploymentReportedSourceProfileChange =
     deploymentQuery.data?.error_class === 'source_profile_changed' ||
     deploymentQuery.data?.error?.class === 'source_profile_changed'
@@ -517,19 +530,24 @@ export default function AgentDeployment() {
     connecting: authorizeManagedSlackMutation.isPending,
   })
   const stage = deploymentStage(deployment.state, deployment.terminal)
-  const oauthResult = searchParams.get('slack')
-  const connectedAgentId = searchParams.get('connected_agent')
   const managedWorkspace =
     managedSlack?.workspace?.name ?? managedSlack?.workspace?.id
-  const slackNotice = managedSlackNotice(
-    oauthResult,
-    managedWorkspace,
-    agent?.name ?? 'this agent',
-  )
+  const waitingForConnectedState =
+    oauthResult === 'connected' && managedSlack?.status !== 'active'
+  const waitingForConnectedAgent =
+    !!sameOwnerConnectedAgentId && connectedAgentQuery.isLoading
+  const slackNotice =
+    waitingForConnectedState || waitingForConnectedAgent
+      ? null
+      : managedSlackNotice(
+          oauthResult,
+          managedWorkspace,
+          agent?.name ?? 'this agent',
+          connectedAgentQuery.data?.name,
+        )
   const connectedAgentHref =
-    oauthResult === 'workspace_already_connected' &&
-    connectedAgentId?.startsWith('agt_')
-      ? `/agents/${encodeURIComponent(connectedAgentId)}`
+    connectedAgentQuery.data && sameOwnerConnectedAgentId
+      ? `/agents/${encodeURIComponent(sameOwnerConnectedAgentId)}`
       : null
   const dismissSlackNotice = () => {
     const next = new URLSearchParams(searchParams)
