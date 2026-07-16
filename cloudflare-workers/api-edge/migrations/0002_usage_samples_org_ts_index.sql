@@ -1,0 +1,20 @@
+-- Fix runaway D1 "Rows Read" billing on the autumn meter cron.
+--
+-- The autumn meter (autumn_meter.ts, runs every 5 min per org) aggregates
+-- usage_samples by (org_id, ts window):
+--   SELECT MIN(ts) ... WHERE org_id = ? AND ts >= ? AND ts < ?
+--   SELECT memory_mb, SUM(interval_s) ... WHERE org_id = ? AND ts >= ? AND ts < ? GROUP BY memory_mb
+-- but the ONLY index on usage_samples is PARTIAL:
+--   idx_usage_samples_unrolled ON usage_samples(org_id, ts) WHERE rolled_up = 0
+-- The autumn queries never filter on rolled_up, so the planner cannot use the
+-- partial index and full-scans the whole table on every bucket. usage_samples
+-- is append-only and never pruned (billing-rollup only flips rolled_up = 1), so
+-- the scan — and the rows-read bill — grows linearly forever.
+--
+-- A non-partial (org_id, ts) index lets the autumn queries do a bounded indexed
+-- range scan (org_id equality prefix + ts range) instead of a full table scan.
+-- Not adding "AND rolled_up = 0" to the autumn queries on purpose: billing-rollup
+-- and the autumn meter are independent consumers with independent progress
+-- tracking (autumn uses orgs.autumn_usage_watermark), so filtering rolled_up
+-- would make autumn silently miss samples that billing-rollup already flipped.
+CREATE INDEX IF NOT EXISTS idx_usage_samples_org_ts ON usage_samples(org_id, ts);
