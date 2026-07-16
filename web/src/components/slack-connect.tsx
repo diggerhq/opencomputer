@@ -253,8 +253,10 @@ export function SlackConnect({
     enabled: !!sameOwnerConnectedAgentId,
   })
   const connectedAgentName = connectedAgentQuery.data?.name ?? null
+  const waitingForConnectedState = oauthResult === 'connected' && !managedActive
   const notice =
-    sameOwnerConnectedAgentId && connectedAgentQuery.isLoading
+    (sameOwnerConnectedAgentId && connectedAgentQuery.isLoading) ||
+    waitingForConnectedState
       ? null
       : managedSlackNotice(
           oauthResult,

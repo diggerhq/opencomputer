@@ -23,14 +23,14 @@ short deploying response and is not queued. Wait for the dashboard to show
 
 <Warning>
   Anyone in the connected Slack workspace who can message the app can use this
-  agent, including guests with access to it. Use the shared app for evaluation
-  with an agent whose tools and spend are appropriately bounded.
+  agent. Use the shared app for evaluation with an agent whose tools and spend
+  are appropriately bounded.
 </Warning>
 
 <Note>
   A workspace can connect the managed app to one agent at a time. Managed Slack
   accepts text direct messages and mentions in ordinary workspace channels.
-  Files and mentions in Slack Connect channels are not supported yet.
+  Files and Slack Connect DMs or mentions are not supported yet.
 </Note>
 
 The same flow is available over the API:
@@ -79,9 +79,9 @@ the same session; another root message creates a new one. In a channel, invite
 read unmentioned channel messages.
 
 Slack deliveries are signature-verified and deduplicated before they enter the
-session. A transient **Working…** status may appear for a direct message. The
-final assistant response is posted to the same thread, while diagnostics and
-the full event history remain in OpenComputer.
+session. A transient **Working…** status may appear for a direct message or
+mention. The final assistant response is posted to the same thread, while
+diagnostics and the full event history remain in OpenComputer.
 
 ## Use your own Slack app
 
@@ -127,6 +127,8 @@ the OpenComputer app explicitly.
 - A duplicate Slack event creates at most one agent turn.
 - Direct-message thread replies continue their existing session.
 - Channel replies require another mention.
+- The OpenComputer app replies to a message containing a file with a text-only
+  notice; resend the content as a text message.
 - Responses longer than Slack's message limit include a link to the full
   authenticated session in OpenComputer.
 - Slack delivery can retry independently of agent execution, so a provider
