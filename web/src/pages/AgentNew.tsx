@@ -238,7 +238,9 @@ function GithubImport({
         // Storage can be unavailable in privacy-restricted browser contexts.
       }
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
-      void navigate(`/agents/${agent.id}/deployments/${deployment.id}`)
+      void navigate(
+        `/agents/${agent.id}/setup?deployment=${encodeURIComponent(deployment.id)}`,
+      )
     },
   })
 

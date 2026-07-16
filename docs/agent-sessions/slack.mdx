@@ -11,14 +11,16 @@ dashboard.
 
 ## Connect the OpenComputer app
 
-The quickest path uses the OpenComputer-operated Slack app. Open the agent in
-the [dashboard](https://app.opencomputer.dev), choose **Connect OpenComputer
-Slack**, approve the workspace installation, and return to the agent.
+The quickest path uses the OpenComputer-operated Slack app. Creating an agent
+opens guided setup; choose **Connect Slack**, approve the workspace
+installation, and return to the same setup page. You can also connect or manage
+Slack later from the agent overview.
 
 You can connect Slack while a repository deployment is still running. The
 connection remains in place if that deployment fails, but the app cannot run a
 message until the agent has a ready deployment. A message sent too early gets a
-short deploying response and is not queued. Wait for the dashboard to show
+short deploying response and is not queued. Setup follows deployment progress
+without a manual refresh. Wait for it to show **Send your first message** and
 **Open Slack**, then send the message again.
 
 <Warning>

@@ -554,6 +554,10 @@ export default function AgentDetail() {
                 agentId={agent.id}
                 agentName={agent.name}
                 canOpenSlack={canStartNewSession}
+                autoOpen={
+                  new URLSearchParams(location.search).get('connect') ===
+                  'slack'
+                }
               />
             </div>
           </div>

@@ -161,7 +161,7 @@ export function ManualAgentForm({ onCancel }: { onCancel: () => void }) {
       void queryClient.invalidateQueries({ queryKey: ['agents'] })
       void queryClient.invalidateQueries({ queryKey: ['credentials'] })
       setNewCredKey('')
-      void navigate(`/agents/${agent.id}`)
+      void navigate(`/agents/${agent.id}/setup`)
     },
     onError: (error) => notifyError("Couldn't create the agent.", error),
   })

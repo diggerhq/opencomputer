@@ -1,16 +1,13 @@
-import { Fragment, useEffect, useRef } from 'react'
+import { useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft,
   ArrowRight,
-  Check,
-  Circle,
   CircleAlert,
   Clock,
   ExternalLink,
   GitCommitHorizontal,
-  Loader2,
   RotateCw,
   X,
 } from 'lucide-react'
@@ -20,12 +17,10 @@ import {
   deployFromGithub,
   getAgent,
   getAgentDeployment,
-  getAgentDeploymentLogs,
   getDeploymentSource,
   getManagedSlackConnection,
   unlinkDeploymentSource,
   type AgentDeployment,
-  type AgentDeploymentLog,
 } from '@/api/client'
 import {
   Alert,
@@ -35,6 +30,10 @@ import {
 } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  DeploymentLog,
+  DeploymentPhases,
+} from '@/components/deployment-progress'
 import { SourceProfileChangedRecovery } from '@/components/source-profile-changed-recovery'
 import {
   Panel,
@@ -52,23 +51,8 @@ import {
 import { notifyError, notifySuccess } from '@/lib/errors'
 import { managedSlackNotice } from '@/lib/managed-slack-notice'
 import { cn } from '@/lib/utils'
+import { useAgentDeploymentLogs } from '@/hooks/use-agent-deployment-logs'
 
-const PHASES = [
-  {
-    label: 'Prepare',
-    states: [
-      'accepted',
-      'queued',
-      'fetching',
-      'validating',
-      'installing',
-      'source',
-      'install',
-    ],
-  },
-  { label: 'Build', states: ['building', 'uploading', 'build', 'artifact'] },
-  { label: 'Deploy', states: ['deploying', 'verifying', 'deploy', 'verify'] },
-] as const
 const DEPLOY_COMMAND_STORAGE = 'oc.flue-deploy-latest-command.v1'
 
 type DeployCommand = { fingerprint: string; key: string }
@@ -111,123 +95,6 @@ function stableCommandKey(
     // The in-memory key still makes repeated submits stable for this page load.
   }
   return key
-}
-
-function failedPhase(deployment: AgentDeployment): string | undefined {
-  const phase = deployment.error?.phase?.toLowerCase()
-  if (phase) return phase
-  const errorClass = deployment.error_class?.toLowerCase() ?? ''
-  return PHASES.find(({ states, label }) =>
-    [...states, label.toLowerCase()].some((state) =>
-      errorClass.includes(state),
-    ),
-  )?.label.toLowerCase()
-}
-
-function phaseIndex(deployment: AgentDeployment): number {
-  if (deployment.state === 'ready') return PHASES.length
-  const state =
-    deployment.state === 'failed'
-      ? failedPhase(deployment)
-      : deployment.phase.toLowerCase()
-  return PHASES.findIndex(
-    ({ label, states }) =>
-      label.toLowerCase() === state || states.some((item) => item === state),
-  )
-}
-
-function DeploymentPhases({ deployment }: { deployment: AgentDeployment }) {
-  const current = phaseIndex(deployment)
-  const failed = deployment.state === 'failed'
-  const terminalWithoutPhase = failed && current < 0
-  const allDone = deployment.state === 'ready'
-  const activeLabel = PHASES[current]?.label
-  const liveAnnouncement = allDone
-    ? 'All deployment phases complete.'
-    : terminalWithoutPhase
-      ? 'The deployment failed before a phase was recorded.'
-      : activeLabel
-        ? `${activeLabel} ${failed ? 'failed' : deployment.terminal ? 'ended' : 'in progress'}.`
-        : 'Waiting for deployment to start.'
-
-  return (
-    <div className="shrink-0">
-      <span className="sr-only" aria-live="polite" aria-atomic="true">
-        {liveAnnouncement}
-      </span>
-      <ol
-        className="flex flex-wrap items-center gap-y-1.5 sm:justify-end"
-        aria-label="Deployment phases"
-      >
-        {PHASES.map((phase, index) => {
-          const done = allDone || (current >= 0 && index < current)
-          const active = !allDone && !deployment.terminal && index === current
-          const terminalPhase =
-            !allDone && deployment.terminal && index === current
-          const phaseFailed = terminalPhase && failed
-          const Icon = phaseFailed
-            ? CircleAlert
-            : done
-              ? Check
-              : active
-                ? Loader2
-                : Circle
-          return (
-            <li
-              key={phase.label}
-              className="flex items-center"
-              aria-current={active ? 'step' : undefined}
-            >
-              <span
-                className={cn(
-                  'flex items-center gap-1 text-[11px] font-medium',
-                  phaseFailed
-                    ? 'text-status-error'
-                    : done || active
-                      ? 'text-foreground'
-                      : 'text-muted-foreground',
-                )}
-              >
-                <Icon
-                  className={cn(
-                    'size-3',
-                    phaseFailed && 'text-status-error',
-                    done && 'text-status-running',
-                    active && 'text-status-pending',
-                    active &&
-                      !failed &&
-                      'animate-spin motion-reduce:animate-none',
-                  )}
-                  aria-hidden
-                />
-                {phase.label}
-                {phaseFailed ? (
-                  <span className="sr-only">, failed</span>
-                ) : active ? (
-                  <span className="sr-only">, in progress</span>
-                ) : done ? (
-                  <span className="sr-only">, complete</span>
-                ) : terminalPhase ? (
-                  <span className="sr-only">, ended here</span>
-                ) : (
-                  <span className="sr-only">, pending</span>
-                )}
-              </span>
-              {index < PHASES.length - 1 ? (
-                <span className="bg-border mx-2 h-px w-3" aria-hidden="true" />
-              ) : null}
-            </li>
-          )
-        })}
-      </ol>
-      {terminalWithoutPhase ? (
-        <p className="text-status-error mt-1.5 flex items-center gap-1 text-[11px] sm:justify-end">
-          <CircleAlert className="size-3.5" aria-hidden />
-          Phase unavailable
-        </p>
-      ) : null}
-    </div>
-  )
 }
 
 function formatDuration(deployment: AgentDeployment): string {
@@ -274,63 +141,6 @@ function OutcomeDetail({ deployment }: { deployment: AgentDeployment }) {
       <AlertTitle>{outcome.title}</AlertTitle>
       <AlertDescription>{outcome.description}</AlertDescription>
     </Alert>
-  )
-}
-
-function DeploymentLog({
-  logs,
-  terminal,
-}: {
-  logs: AgentDeploymentLog[]
-  terminal: boolean
-}) {
-  if (!logs.length) {
-    return (
-      <div className="text-code-muted bg-code flex min-h-52 items-center justify-center rounded-md px-4 py-8 font-mono text-xs">
-        {terminal
-          ? 'No build output was recorded.'
-          : 'Waiting for build output…'}
-      </div>
-    )
-  }
-
-  return (
-    <div
-      className="bg-code text-code-foreground max-h-[32rem] overflow-auto rounded-md py-3 font-mono text-xs"
-      aria-label="Build and deploy log"
-    >
-      {logs.map((entry, index) => {
-        const phaseChanged =
-          index === 0 || entry.phase !== logs[index - 1]?.phase
-        return (
-          <Fragment key={entry.seq}>
-            {phaseChanged ? (
-              <div className="text-code-muted border-code-border mt-2 border-y px-4 py-1.5 first:mt-0">
-                {entry.phase}
-              </div>
-            ) : null}
-            <div className="grid grid-cols-[3rem_4.5rem_minmax(0,1fr)] gap-2 px-4 py-0.5">
-              <span className="text-code-muted text-right select-none">
-                {entry.seq}
-              </span>
-              <span
-                className={cn(
-                  'select-none',
-                  entry.stream === 'stderr'
-                    ? 'text-red-300'
-                    : 'text-code-muted',
-                )}
-              >
-                {entry.stream}
-              </span>
-              <span className="min-w-0 break-words whitespace-pre-wrap">
-                {entry.chunk}
-              </span>
-            </div>
-          </Fragment>
-        )
-      })}
-    </div>
   )
 }
 
@@ -387,37 +197,11 @@ export default function AgentDeployment() {
     enabled: !!agentId && deploymentReportedSourceProfileChange,
     refetchOnWindowFocus: 'always',
   })
-  const logQueryKey = ['agent-deployment-logs', agentId, deploymentId] as const
-  const logsQuery = useQuery({
-    queryKey: logQueryKey,
-    queryFn: async () => {
-      const previous = queryClient.getQueryData<{
-        data: AgentDeploymentLog[]
-        cursor: string | null
-      }>(logQueryKey)
-      const data = previous?.data ? [...previous.data] : []
-      const seen = new Set(data.map((entry) => entry.cursor))
-      let cursor = previous?.cursor ?? null
-      let hasMore = false
-      do {
-        const page = await getAgentDeploymentLogs(agentId, deploymentId, {
-          after: cursor ?? undefined,
-          limit: 500,
-        })
-        for (const entry of page.data) {
-          if (!seen.has(entry.cursor)) {
-            seen.add(entry.cursor)
-            data.push(entry)
-          }
-        }
-        const nextCursor = page.next_cursor
-        hasMore = page.has_more && !!nextCursor && nextCursor !== cursor
-        if (nextCursor) cursor = nextCursor
-      } while (hasMore)
-      return { data, cursor }
-    },
-    enabled: !!agentId && !!deploymentId,
-    refetchInterval: deploymentQuery.data?.terminal ? false : 1500,
+  const logsQuery = useAgentDeploymentLogs({
+    agentId,
+    deploymentId,
+    enabled: true,
+    terminal: deploymentQuery.data?.terminal ?? false,
   })
   const deployLatestMutation = useMutation({
     mutationFn: (fingerprint: string) =>
@@ -477,13 +261,6 @@ export default function AgentDeployment() {
     },
     onError: (error) => notifyError("Couldn't unlink the repository.", error),
   })
-
-  const terminal = deploymentQuery.data?.terminal ?? false
-  const refetchLogs = logsQuery.refetch
-  useEffect(() => {
-    if (terminal) void refetchLogs()
-    // One final durable read when the deployment terminalizes.
-  }, [terminal, refetchLogs])
 
   if (deploymentQuery.isLoading) {
     return (

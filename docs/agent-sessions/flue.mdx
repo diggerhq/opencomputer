@@ -5,9 +5,10 @@ description: "Deploy a Flue app as an OpenComputer agent"
 ---
 
 <Note>
-**Experimental.** The supported profile is intentionally narrow. It currently covers direct text
-sessions on managed Anthropic models, with an optional OpenComputer sandbox. Flue is pre-1.0, and
-each deployment includes the exact Flue version installed in your app.
+  **Experimental.** The supported profile is intentionally narrow. It currently
+  covers direct text sessions on managed Anthropic models, with an optional
+  OpenComputer sandbox. Flue is pre-1.0, and each deployment includes the exact
+  Flue version installed in your app.
 </Note>
 
 [Flue](https://flueframework.com) is a TypeScript framework for durable agents. OpenComputer runs the
@@ -21,14 +22,14 @@ Starter: [`diggerhq/oc-flue-starter`](https://github.com/diggerhq/oc-flue-starte
 The built-in runtimes run Claude Code, Codex, or pi as a managed coding agent. A Flue agent is
 different: **your application is the runtime**. OpenComputer deploys and operates that app.
 
-| Concern | Built-in runtimes | Flue |
-| --- | --- | --- |
-| Agent loop | OpenComputer runs Claude Code, Codex, or pi | Your compiled Flue app contains the loop |
-| Session compute | Managed per-session brain and workspace sandboxes | One deployed app, with one Durable Object instance per session |
+| Concern            | Built-in runtimes                                          | Flue                                                                                                              |
+| ------------------ | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Agent loop         | OpenComputer runs Claude Code, Codex, or pi                | Your compiled Flue app contains the loop                                                                          |
+| Session compute    | Managed per-session brain and workspace sandboxes          | One deployed app, with one Durable Object instance per session                                                    |
 | Conversation state | Checkpointed runtime files plus the OpenComputer event log | Flue stores its conversation in Durable Object SQLite; OpenComputer projects public milestones into its event log |
-| Tools and skills | Platform tools plus uploaded `prompt.md` and `skills/` | `defineTool` code and packaged skill imports compiled into the Worker |
-| Linux workspace | Part of the normal runtime | Absent by default; `ocSandbox` creates one only when an operation needs it |
-| Deployment | Upload prompt, model, and skill configuration | Build and deploy the compiled app |
+| Tools and skills   | Platform tools plus uploaded `prompt.md` and `skills/`     | `defineTool` code and packaged skill imports compiled into the Worker                                             |
+| Linux workspace    | Part of the normal runtime                                 | Absent by default; `ocSandbox` creates one only when an operation needs it                                        |
+| Deployment         | Upload prompt, model, and skill configuration              | Build and deploy the compiled app                                                                                 |
 
 Under the hood, OpenComputer runs Flue's Cloudflare target as an agent Worker and gives each session
 its own Durable Object. This architecture lets a Flue session start without provisioning a virtual
@@ -81,8 +82,8 @@ The shortest path for an existing Flue app is the dashboard:
 3. Install the OpenComputer GitHub App on the repository, then select the repository, production branch, and root directory.
 4. Choose **Review agent**. OpenComputer resolves one exact commit and checks the root without running repository code.
 5. Review the detected Flue entrypoint and model. Give the OpenComputer agent a human-readable name; it may differ from the `agent.toml` Flue entrypoint.
-6. Choose **Deploy agent**. The deployment page opens immediately, keeps one chronological log, and summarizes progress as **Prepare**, **Build**, and **Deploy**.
-7. Choose **Connect Slack** while the build continues. When both are ready, the same page changes that action to **Open Slack**.
+6. Choose **Deploy agent**. A guided setup page opens immediately and keeps the deployment running in the background. It shows compact **Prepare**, **Build**, and **Deploy** progress; expand the build log only when you need it.
+7. Choose **Connect Slack** as the next step. Slack authorization returns to setup, which changes to **Open Slack** as soon as both the agent and connection are ready and prompts you to send your first message.
 
 The selected root is its own build context and must contain `agent.toml`, `package.json`, and a
 committed `package-lock.json`. The package must declare a Node engine compatible with the exact
@@ -106,10 +107,11 @@ OpenComputer sandbox. The build request carries no GitHub token, OpenComputer ke
 credential, Workers credential, or secret store.
 
 <Note>
-Repository import creates the initial deployment from the selected production branch. Each later
-push to that branch that touches the selected root automatically creates another deployment for the
-new exact commit. Flue ignores pushes to other branches because it has one live Worker and no
-preview/staged Worker in the current profile.
+  Repository import creates the initial deployment from the selected production
+  branch. Each later push to that branch that touches the selected root
+  automatically creates another deployment for the new exact commit. Flue
+  ignores pushes to other branches because it has one live Worker and no
+  preview/staged Worker in the current profile.
 </Note>
 
 The review step returns a receipt for the exact source plan. Import re-resolves GitHub authority and
@@ -180,8 +182,8 @@ npm install @opencomputer/flue
 Export the OpenComputer route and register the managed model gateway inside your agent initializer:
 
 ```ts src/agents/support-triage.ts
-import { defineAgent, defineAgentProfile } from '@flue/runtime';
-import { DEFAULT_MODEL, route, useOcGateway } from '@opencomputer/flue';
+import { defineAgent, defineAgentProfile } from "@flue/runtime";
+import { DEFAULT_MODEL, route, useOcGateway } from "@opencomputer/flue";
 
 export { route };
 
@@ -190,7 +192,8 @@ export default defineAgent((ctx) => {
 
   return {
     profile: defineAgentProfile({
-      instructions: 'Triage customer requests and give the next concrete action.',
+      instructions:
+        "Triage customer requests and give the next concrete action.",
     }),
     model: DEFAULT_MODEL,
   };
@@ -201,7 +204,7 @@ Use the default hosting app, which mounts Flue's routes, the deployment health e
 OpenComputer telemetry:
 
 ```ts src/app.ts
-export { default } from '@opencomputer/flue/app';
+export { default } from "@opencomputer/flue/app";
 ```
 
 Declare the deployment target:
@@ -223,14 +226,14 @@ choice when you do not need additional routes.
 
 ## What `@opencomputer/flue` supplies
 
-| Export | Purpose |
-| --- | --- |
-| `useOcGateway(ctx)` | Registers the managed Anthropic endpoint inside the Flue initializer |
-| `route` | Opts an agent into the HTTP transport used by managed dispatch |
-| `DEFAULT_MODEL` | Selects the supported prompt-caching-safe default model |
-| `@opencomputer/flue/app` | Provides Flue routes, `GET /health`, and telemetry wiring |
-| `@opencomputer/flue/wire` | Adds telemetry when your project owns its hosting app |
-| `ocSandbox(ctx.env)` | Adds an optional, demand-driven Linux shell and filesystem |
+| Export                    | Purpose                                                              |
+| ------------------------- | -------------------------------------------------------------------- |
+| `useOcGateway(ctx)`       | Registers the managed Anthropic endpoint inside the Flue initializer |
+| `route`                   | Opts an agent into the HTTP transport used by managed dispatch       |
+| `DEFAULT_MODEL`           | Selects the supported prompt-caching-safe default model              |
+| `@opencomputer/flue/app`  | Provides Flue routes, `GET /health`, and telemetry wiring            |
+| `@opencomputer/flue/wire` | Adds telemetry when your project owns its hosting app                |
+| `ocSandbox(ctx.env)`      | Adds an optional, demand-driven Linux shell and filesystem           |
 
 OpenComputer binds a platform-managed credential for its gateway during deployment. Your provider
 key is not compiled into the app or exposed to the Worker.
@@ -241,16 +244,18 @@ Custom `defineTool` handlers run inside the Worker. Import any data or templates
 Cloudflare build includes those files:
 
 ```ts src/tools/lookup-order.ts
-import { defineTool } from '@flue/runtime';
-import * as v from 'valibot';
-import orders from '../data/orders.json' with { type: 'json' };
+import { defineTool } from "@flue/runtime";
+import * as v from "valibot";
+import orders from "../data/orders.json" with { type: "json" };
 
 export const lookupOrder = defineTool({
-  name: 'lookup_order',
-  description: 'Look up an order by id.',
+  name: "lookup_order",
+  description: "Look up an order by id.",
   input: v.object({ order_id: v.string() }),
   run({ input }) {
-    return (orders as Record<string, unknown>)[input.order_id] ?? { found: false };
+    return (
+      (orders as Record<string, unknown>)[input.order_id] ?? { found: false }
+    );
   },
 });
 ```
@@ -280,13 +285,13 @@ optional OpenComputer sandbox follow the sandbox's separate network policy.
 Add `ocSandbox` only when the agent needs a Linux shell or durable files:
 
 ```ts
-import { defineAgent, defineAgentProfile } from '@flue/runtime';
+import { defineAgent, defineAgentProfile } from "@flue/runtime";
 import {
   DEFAULT_MODEL,
   ocSandbox,
   route,
   useOcGateway,
-} from '@opencomputer/flue';
+} from "@opencomputer/flue";
 
 export { route };
 
@@ -295,7 +300,8 @@ export default defineAgent((ctx) => {
 
   return {
     profile: defineAgentProfile({
-      instructions: 'Work in the sandbox only when a shell or file operation is needed.',
+      instructions:
+        "Work in the sandbox only when a shell or file operation is needed.",
     }),
     model: DEFAULT_MODEL,
     sandbox: ocSandbox(ctx.env),
@@ -371,6 +377,7 @@ Durable Object is not version-pinned and can also be affected by the Worker chan
 To restore a known-good build, check out that source and run `oc agent deploy` again. Flue and Durable
 Object schema changes are forward-only, so do not downgrade across an incompatible Flue storage
 version.
+
 </Warning>
 
 ## Session behavior

@@ -11,6 +11,7 @@ const Agents = lazy(() => import('./pages/Agents'))
 const AgentNew = lazy(() => import('./pages/AgentNew'))
 const AgentDetail = lazy(() => import('./pages/AgentDetail'))
 const AgentDeployment = lazy(() => import('./pages/AgentDeployment'))
+const AgentSetup = lazy(() => import('./pages/AgentSetup'))
 const Credentials = lazy(() => import('./pages/Credentials'))
 const Sessions = lazy(() => import('./pages/Sessions'))
 const SessionDetail = lazy(() => import('./pages/SessionDetail'))
@@ -39,6 +40,7 @@ export default function App() {
             {/* Agent plane */}
             <Route path="agents" element={<Agents />} />
             <Route path="agents/new" element={<AgentNew />} />
+            <Route path="agents/:agentId/setup" element={<AgentSetup />} />
             <Route
               path="agents/:agentId/deployments/:deploymentId"
               element={<AgentDeployment />}
