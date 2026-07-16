@@ -35,7 +35,7 @@ export type {
   AgentDeployment,
   AgentDeploymentLog,
   DeployApp,
-  FlueSourceInspection,
+  RepositorySourceInspection,
   Session,
   AgentSnapshot,
   SessionEvent,
@@ -659,7 +659,7 @@ export const deleteAgentSkills = (agentId: string) =>
 export const getDeployApp = () =>
   apiFetch('/v3/github/deploy-app', {}, S.DeployAppSchema)
 
-export const inspectFlueRepository = (body: {
+export const reviewRepositoryAgent = (body: {
   repo: string
   path: string
   production_ref: string
@@ -667,7 +667,7 @@ export const inspectFlueRepository = (body: {
   apiFetch(
     '/v3/github/deploy-app/inspect',
     { method: 'POST', body: JSON.stringify(body) },
-    S.FlueSourceInspectionSchema,
+    S.RepositorySourceInspectionSchema,
   )
 
 export const importAgentFromGithub = (
@@ -678,6 +678,11 @@ export const importAgentFromGithub = (
       repo: string
       path: string
       production_ref: string
+    }
+    review: {
+      sha: string
+      source_profile: 'flue-app-v1'
+      fingerprint: string
     }
     credential: 'managed'
   },

@@ -1,11 +1,17 @@
 import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from 'react-router-dom'
 import {
   ArrowLeft,
   ArrowRight,
   Bot,
   ExternalLink,
+  FolderSearch,
   GitBranch,
   KeyRound,
   Loader2,
@@ -15,8 +21,9 @@ import {
   ApiError,
   getDeployApp,
   importAgentFromGithub,
-  inspectFlueRepository,
+  reviewRepositoryAgent,
   type DeployApp,
+  type RepositorySourceInspection,
 } from '@/api/client'
 import { Field, FieldError, Input } from '@/components/form'
 import { GithubMark } from '@/components/github-mark'
@@ -36,6 +43,13 @@ import {
   resolveAgentCreationMode,
   type AgentCreationMode,
 } from '@/lib/agent-creation-mode'
+import {
+  isValidRepositoryRoot,
+  repositoryReviewPresentation,
+  repositorySeedFromState,
+  sourceChangedRequiresReview,
+  type RepositorySeed,
+} from '@/lib/repository-onboarding'
 import { cn } from '@/lib/utils'
 
 const STARTER_URL = 'https://github.com/diggerhq/oc-flue-starter'
@@ -44,7 +58,6 @@ const IMPORT_COMMAND_STORAGE = 'oc.flue-import-command.v1'
 
 type ImportBody = Parameters<typeof importAgentFromGithub>[0]
 type ImportCommand = { fingerprint: string; key: string }
-
 function existingAgentFromError(
   error: unknown,
 ): { id: string; name: string; conflict: 'name' | 'source' } | null {
@@ -65,15 +78,6 @@ function existingAgentFromError(
         conflict: error.type === 'source_already_linked' ? 'source' : 'name',
       }
     : null
-}
-
-function isValidRoot(root: string): boolean {
-  if (root.includes('\0') || root.includes('\\') || root.startsWith('/'))
-    return false
-  return !root
-    .split('/')
-    .filter(Boolean)
-    .some((part) => part === '.' || part === '..')
 }
 
 function newCommandKey(): string {
@@ -162,15 +166,29 @@ function ModeButton({
   )
 }
 
-function GithubImport({ app }: { app: DeployApp }) {
+function GithubImport({
+  app,
+  initialSource,
+}: {
+  app: DeployApp
+  initialSource?: RepositorySeed
+}) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const importCommand = useRef<ImportCommand | null>(null)
   const nameInput = useRef<HTMLInputElement>(null)
+  const rootInput = useRef<HTMLInputElement>(null)
   const [repoSearch, setRepoSearch] = useState('')
-  const [repoId, setRepoId] = useState('')
-  const [productionRef, setProductionRef] = useState('')
-  const [root, setRoot] = useState('')
+  const initialRepo = app.repositories.find(
+    (repo) => repo.id === initialSource?.repo,
+  )
+  const [repoId, setRepoId] = useState(initialRepo?.id ?? '')
+  const [productionRef, setProductionRef] = useState(
+    initialRepo
+      ? initialSource?.productionRef || initialRepo.default_branch || 'main'
+      : '',
+  )
+  const [root, setRoot] = useState(initialRepo ? initialSource?.path || '' : '')
   const [name, setName] = useState('')
 
   const repositories = useMemo(() => {
@@ -186,18 +204,24 @@ function GithubImport({ app }: { app: DeployApp }) {
   }, [app.repositories, repoSearch])
 
   const selectedRepo = app.repositories.find((repo) => repo.id === repoId)
-  const rootValid = isValidRoot(root.trim())
+  const rootValid = isValidRepositoryRoot(root.trim())
 
   const inspectMutation = useMutation({
-    mutationFn: () =>
-      inspectFlueRepository({
-        repo: repoId,
-        path: root.trim(),
-        production_ref: productionRef.trim(),
+    mutationFn: (source?: RepositorySeed) =>
+      reviewRepositoryAgent({
+        repo: source?.repo ?? repoId,
+        path: (source?.path ?? root).trim(),
+        production_ref: (source?.productionRef ?? productionRef).trim(),
       }),
     onSuccess: (inspection) => {
-      setName(inspection.manifest.entrypoint)
-      globalThis.requestAnimationFrame?.(() => nameInput.current?.focus())
+      setRoot(inspection.root)
+      if (
+        inspection.interpretation.disposition === 'exact' &&
+        inspection.profile
+      ) {
+        setName((current) => current || inspection.profile!.manifest.entrypoint)
+        globalThis.requestAnimationFrame?.(() => nameInput.current?.focus())
+      }
     },
   })
 
@@ -223,6 +247,12 @@ function GithubImport({ app }: { app: DeployApp }) {
     importMutation.reset()
   }
 
+  const changeSource = () => {
+    setName('')
+    clearInspection()
+    globalThis.requestAnimationFrame?.(() => rootInput.current?.focus())
+  }
+
   const selectRepo = (id: string) => {
     const repo = app.repositories.find((candidate) => candidate.id === id)
     setRepoId(id)
@@ -234,29 +264,67 @@ function GithubImport({ app }: { app: DeployApp }) {
 
   const inspection = inspectMutation.data
   const existingAgent = existingAgentFromError(importMutation.error)
+  const sourceChanged = sourceChangedRequiresReview(importMutation.error)
+  const reviewPresentation = inspection
+    ? repositoryReviewPresentation(inspection)
+    : null
+  const exactInspection =
+    inspection?.interpretation.disposition === 'exact' && inspection.profile
+      ? inspection
+      : null
   const canInspect =
     !!selectedRepo &&
     !!productionRef.trim() &&
     rootValid &&
     !inspectMutation.isPending
   const canImport =
-    !!inspection &&
+    !!exactInspection &&
     !!name.trim() &&
+    !sourceChanged &&
     !importMutation.isPending &&
     !inspectMutation.isPending
 
   const deployAgent = () => {
-    if (!inspection || !canImport) return
+    if (
+      !exactInspection ||
+      exactInspection.interpretation.disposition !== 'exact' ||
+      !canImport
+    )
+      return
     importMutation.mutate({
       name: name.trim(),
       source: {
         type: 'github',
-        repo: inspection.repository.id,
-        path: inspection.root,
-        production_ref: inspection.production_ref,
+        repo: exactInspection.repository.id,
+        path: exactInspection.root,
+        production_ref: exactInspection.production_ref,
+      },
+      review: {
+        sha: exactInspection.sha,
+        source_profile: exactInspection.interpretation.source_profile,
+        fingerprint: exactInspection.review_fingerprint,
       },
       credential: 'managed',
     })
+  }
+
+  const reviewAgain = () => {
+    importMutation.reset()
+    inspectMutation.mutate(undefined)
+  }
+
+  const chooseCandidate = (
+    candidate: RepositorySourceInspection['candidate_roots'][number],
+  ) => {
+    const next = {
+      repo: repoId,
+      path: candidate.path,
+      productionRef,
+    }
+    setRoot(candidate.path)
+    setName('')
+    clearInspection()
+    inspectMutation.mutate(next)
   }
 
   if (!app.installed) {
@@ -324,7 +392,7 @@ function GithubImport({ app }: { app: DeployApp }) {
             </div>
           )}
           {inspection ? (
-            <Button variant="ghost" size="sm" onClick={clearInspection}>
+            <Button variant="ghost" size="sm" onClick={changeSource}>
               Change source
             </Button>
           ) : app.configure_url ? (
@@ -424,15 +492,17 @@ function GithubImport({ app }: { app: DeployApp }) {
                   error={
                     rootValid
                       ? undefined
-                      : 'Use a repository-relative path without . or .. segments.'
+                      : 'Use a repository-relative path of at most 1,024 characters without . or .. segments.'
                   }
-                  description="Leave empty when agent.toml is at repository root."
+                  description="Leave empty to review the repository root."
                 >
                   <Input
+                    ref={rootInput}
                     id="import-root"
                     value={root}
                     onChange={(event) => {
                       setRoot(event.target.value)
+                      setName('')
                       clearInspection()
                     }}
                     placeholder="agents/support"
@@ -451,7 +521,7 @@ function GithubImport({ app }: { app: DeployApp }) {
                 type="button"
                 variant="outline"
                 disabled={!canInspect}
-                onClick={() => inspectMutation.mutate()}
+                onClick={() => inspectMutation.mutate(undefined)}
               >
                 {inspectMutation.isPending ? (
                   <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
@@ -467,15 +537,18 @@ function GithubImport({ app }: { app: DeployApp }) {
         ) : null}
       </Panel>
 
-      {inspection ? (
+      {inspection?.interpretation.disposition === 'exact' &&
+      inspection.profile ? (
         <Panel>
           <PanelHeader>
             <div>
-              <PanelTitle>Review agent</PanelTitle>
+              <PanelTitle>{reviewPresentation?.heading}</PanelTitle>
               <PanelDescription className="mt-1">
-                {inspection.manifest.entrypoint}
+                {inspection.profile.manifest.entrypoint}
                 {' · '}
-                <span className="font-mono">{inspection.manifest.model}</span>
+                <span className="font-mono">
+                  {inspection.profile.manifest.model}
+                </span>
               </PanelDescription>
             </div>
           </PanelHeader>
@@ -500,31 +573,52 @@ function GithubImport({ app }: { app: DeployApp }) {
               <KeyRound className="size-3.5 shrink-0" aria-hidden />
               Model access is managed by OpenComputer.
             </p>
-            {inspection.warnings.map((warning) => (
+            {inspection.profile.warnings.map((warning) => (
               <Alert key={`${warning.code}:${warning.message}`}>
                 <AlertTitle>Compatibility warning</AlertTitle>
                 <AlertDescription>{warning.message}</AlertDescription>
               </Alert>
             ))}
             {importMutation.isError ? (
-              <Alert variant={existingAgent ? 'default' : 'destructive'}>
+              <Alert
+                variant={
+                  existingAgent || sourceChanged ? 'default' : 'destructive'
+                }
+              >
                 <AlertTitle>
-                  {existingAgent?.conflict === 'source'
-                    ? 'Repository already linked'
-                    : existingAgent
-                      ? 'Agent name already in use'
-                      : 'Agent could not be created'}
+                  {sourceChanged
+                    ? 'Repository changed since review'
+                    : existingAgent?.conflict === 'source'
+                      ? 'Repository already linked'
+                      : existingAgent
+                        ? 'Agent name already in use'
+                        : 'Agent could not be created'}
                 </AlertTitle>
                 <AlertDescription>
-                  {existingAgent?.conflict === 'source'
-                    ? `This repository path is already linked to ${existingAgent.name}. Open the existing agent to deploy its latest commit.`
-                    : existingAgent
-                      ? `Another agent is already named ${existingAgent.name}. Choose a different name or open the existing agent.`
-                      : importMutation.error instanceof Error
-                        ? importMutation.error.message
-                        : 'The import request failed. You can retry without creating a duplicate.'}
+                  {sourceChanged
+                    ? 'Nothing was created. Review the current commit before deploying it.'
+                    : existingAgent?.conflict === 'source'
+                      ? `This repository path is already linked to ${existingAgent.name}. Open the existing agent to deploy its latest commit.`
+                      : existingAgent
+                        ? `Another agent is already named ${existingAgent.name}. Choose a different name or open the existing agent.`
+                        : importMutation.error instanceof Error
+                          ? importMutation.error.message
+                          : 'The import request failed. You can retry without creating a duplicate.'}
                 </AlertDescription>
-                {existingAgent ? (
+                {sourceChanged ? (
+                  <div className="mt-3">
+                    <Button
+                      size="sm"
+                      onClick={reviewAgain}
+                      disabled={inspectMutation.isPending}
+                    >
+                      {inspectMutation.isPending ? (
+                        <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                      ) : null}
+                      Review agent again
+                    </Button>
+                  </div>
+                ) : existingAgent ? (
                   <div className="mt-3">
                     <Button size="sm" asChild>
                       <Link to={`/agents/${existingAgent.id}`}>Open agent</Link>
@@ -547,6 +641,116 @@ function GithubImport({ app }: { app: DeployApp }) {
             </Button>
           </PanelFooter>
         </Panel>
+      ) : inspection?.interpretation.disposition === 'invalid' ? (
+        <Panel>
+          <PanelHeader>
+            <div>
+              <PanelTitle>{reviewPresentation?.heading}</PanelTitle>
+              <PanelDescription className="mt-1">
+                {reviewPresentation?.explanation}
+              </PanelDescription>
+            </div>
+          </PanelHeader>
+          <PanelContent className="space-y-3">
+            {inspection.interpretation.issues.map((issue) => (
+              <Alert
+                key={`${issue.code}:${issue.path ?? ''}:${issue.message}`}
+                variant="destructive"
+              >
+                <AlertTitle>{issue.path || issue.code}</AlertTitle>
+                <AlertDescription>{issue.message}</AlertDescription>
+              </Alert>
+            ))}
+            {inspection.interpretation.issues.length === 0 ? (
+              <Alert variant="destructive">
+                <AlertTitle>{inspection.interpretation.reason_code}</AlertTitle>
+                <AlertDescription>
+                  {inspection.interpretation.summary}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+          </PanelContent>
+          <PanelFooter className="justify-between gap-2">
+            <Button variant="ghost" onClick={changeSource}>
+              Choose another folder
+            </Button>
+            <Button onClick={reviewAgain} disabled={inspectMutation.isPending}>
+              {inspectMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+              ) : null}
+              Review agent again
+            </Button>
+          </PanelFooter>
+        </Panel>
+      ) : inspection?.interpretation.disposition === 'unrecognized' ? (
+        <Panel>
+          <PanelHeader>
+            <div>
+              <PanelTitle>{reviewPresentation?.heading}</PanelTitle>
+              <PanelDescription className="mt-1">
+                {reviewPresentation?.explanation}
+              </PanelDescription>
+            </div>
+          </PanelHeader>
+          <PanelContent className="space-y-4">
+            {inspection.candidate_roots.length ? (
+              <div
+                className="divide-y overflow-hidden rounded-md border"
+                aria-label="Candidate agent folders"
+              >
+                {inspection.candidate_roots.map((candidate) => (
+                  <div
+                    key={`${candidate.path}:${candidate.marker ?? ''}`}
+                    className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-mono text-sm">
+                        {candidate.path || 'Repository root'}
+                      </p>
+                      <p className="text-muted-foreground mt-0.5 text-xs">
+                        {candidate.summary}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={inspectMutation.isPending}
+                      onClick={() => chooseCandidate(candidate)}
+                    >
+                      {inspectMutation.isPending ? (
+                        <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                      ) : (
+                        <FolderSearch className="size-4" />
+                      )}
+                      Choose folder
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {inspection.candidate_roots_truncated ? (
+              <Alert>
+                <AlertTitle>More folders may match</AlertTitle>
+                <AlertDescription>
+                  The bounded search was truncated. Choose a narrower root and
+                  review again.
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={changeSource}>Choose another folder</Button>
+              <Button variant="outline" asChild>
+                <a href={STARTER_FORK_URL} target="_blank" rel="noreferrer">
+                  Fork the Flue starter
+                  <ExternalLink className="size-3.5" />
+                </a>
+              </Button>
+              <Button variant="ghost" asChild>
+                <Link to="/agents/new?mode=manual">Configure manually</Link>
+              </Button>
+            </div>
+          </PanelContent>
+        </Panel>
       ) : null}
     </div>
   )
@@ -554,6 +758,7 @@ function GithubImport({ app }: { app: DeployApp }) {
 
 export default function AgentNew() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const location = useLocation()
   const deployAppQuery = useQuery({
     queryKey: ['deploy-app'],
     queryFn: getDeployApp,
@@ -578,7 +783,7 @@ export default function AgentNew() {
       <div className="mb-6">
         <h1 className="text-xl font-semibold tracking-tight">Create agent</h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          Deploy an existing Flue repository or configure an agent manually.
+          Deploy an agent from an existing repository or configure one manually.
         </p>
       </div>
 
@@ -588,7 +793,7 @@ export default function AgentNew() {
           onClick={() => setMode('github')}
           icon={GithubMark}
           title="Import from GitHub"
-          description="Build and deploy an existing Flue agent."
+          description="Review and deploy an agent from code."
         />
         <ModeButton
           active={mode === 'manual'}
@@ -637,7 +842,10 @@ export default function AgentNew() {
             </div>
           </Alert>
         ) : deployAppQuery.data ? (
-          <GithubImport app={deployAppQuery.data} />
+          <GithubImport
+            app={deployAppQuery.data}
+            initialSource={repositorySeedFromState(location.state)}
+          />
         ) : null
       ) : (
         <Panel>

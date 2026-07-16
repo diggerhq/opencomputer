@@ -595,10 +595,13 @@ export const DeploymentSourceSchema = z.object({
   repo_id: z.string(),
   path: z.string(),
   production_ref: z.string(),
-  status: z.string(), // active | path_missing | ref_missing | auth_required | repo_not_selected | app_suspended | error
+  status: z.string(), // active | source_profile_changed | path_missing | ref_missing | auth_required | repo_not_selected | app_suspended | error
   latest_seen_sha: z.string().nullish(),
   active_deployed_sha: z.string().nullish(),
   full_name: z.string().nullish(), // "owner/repo" (joined from the repo row)
+  source_profile: z.literal('flue-app-v1').nullish(),
+  source_profile_version: z.literal(1).nullish(),
+  review_fingerprint: z.string().nullish(),
 })
 export const DeploymentSourceResponseSchema = z.object({
   source: DeploymentSourceSchema,
@@ -628,15 +631,28 @@ export const LinkResultSchema = z.object({
   deploy_error: z.object({ type: z.string(), message: z.string() }).nullish(),
 })
 
-export const FlueSourceInspectionSchema = z.object({
-  repository: z.object({
-    id: z.string(),
-    full_name: z.string(),
-    default_branch: z.string().nullish(),
-  }),
-  root: z.string(),
-  production_ref: z.string(),
-  sha: z.string(),
+export const RepositoryReviewIssueSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  path: z.string().optional(),
+})
+
+export const RepositoryCandidateRootSchema = z.object({
+  path: z.string(),
+  source_profile: z.literal('flue-app-v1').nullable(),
+  summary: z.string(),
+  marker: z.enum([
+    'agent.toml',
+    'flue.config.ts',
+    'flue.config.js',
+    'flue.config.mjs',
+    'flue.config.cjs',
+  ]),
+})
+
+export const FlueSourceProfileSchema = z.object({
+  source_profile: z.literal('flue-app-v1'),
+  source_profile_version: z.literal(1),
   manifest: z.object({
     schema_version: z.literal(1),
     entrypoint: z.string(),
@@ -656,10 +672,70 @@ export const FlueSourceInspectionSchema = z.object({
   builder: z.object({ node: z.string() }),
   source: z.object({ files: z.number(), bytes: z.number() }),
   variable_names: z.array(z.string()).default([]),
-  warnings: z
-    .array(z.object({ code: z.string(), message: z.string() }))
-    .default([]),
+  warnings: z.array(RepositoryReviewIssueSchema).default([]),
 })
+
+export const RepositorySourceInterpretationSchema = z.discriminatedUnion(
+  'disposition',
+  [
+    z.object({
+      disposition: z.literal('exact'),
+      source_profile: z.literal('flue-app-v1'),
+      source_profile_version: z.literal(1),
+      summary: z.string(),
+      reason_code: z.string(),
+      assumptions: z.array(z.string()).default([]),
+      agent: z.object({
+        runtime: z.literal('flue'),
+        model: z.string(),
+      }),
+    }),
+    z.object({
+      disposition: z.literal('invalid'),
+      source_profile: z.literal('flue-app-v1').nullable(),
+      source_profile_version: z.literal(1).nullable(),
+      summary: z.string(),
+      reason_code: z.string(),
+      issues: z.array(RepositoryReviewIssueSchema).default([]),
+    }),
+    z.object({
+      disposition: z.literal('unrecognized'),
+      source_profile: z.null(),
+      source_profile_version: z.null(),
+      summary: z.string(),
+      reason_code: z.literal('unrecognized_source'),
+    }),
+  ],
+)
+
+export const RepositorySourceInspectionSchema = z
+  .object({
+    repository: z.object({
+      id: z.string(),
+      full_name: z.string(),
+      default_branch: z.string().nullish(),
+    }),
+    root: z.string(),
+    production_ref: z.string(),
+    sha: z.string(),
+    interpretation: RepositorySourceInterpretationSchema,
+    profile: FlueSourceProfileSchema.nullable(),
+    review_fingerprint: z.string(),
+    candidate_roots: z.array(RepositoryCandidateRootSchema).max(20).default([]),
+    candidate_roots_truncated: z.boolean(),
+  })
+  .superRefine((review, context) => {
+    const exact = review.interpretation.disposition === 'exact'
+    if (exact !== (review.profile !== null)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['profile'],
+        message: exact
+          ? 'an exact source interpretation requires its profile projection'
+          : 'a non-exact source interpretation cannot include a deployable profile',
+      })
+    }
+  })
 
 export const ImportAgentResponseSchema = z.object({
   agent: AgentSchema,
@@ -832,8 +908,11 @@ export type SkillItem = z.infer<typeof SkillItemSchema>
 export type AgentDeploy = z.infer<typeof AgentDeploySchema>
 export type AgentDeployment = z.infer<typeof AgentDeploymentSchema>
 export type AgentDeploymentLog = z.infer<typeof AgentDeploymentLogSchema>
+export type DeploymentSource = z.infer<typeof DeploymentSourceSchema>
 export type DeployApp = z.infer<typeof DeployAppSchema>
-export type FlueSourceInspection = z.infer<typeof FlueSourceInspectionSchema>
+export type RepositorySourceInspection = z.infer<
+  typeof RepositorySourceInspectionSchema
+>
 export type Credential = z.infer<typeof CredentialSchema>
 export type SlackConnection = z.infer<typeof SlackConnectionSchema>
 export type SlackManifestResponse = z.infer<typeof SlackManifestResponseSchema>
