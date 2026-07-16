@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft,
   ArrowRight,
@@ -12,17 +12,25 @@ import {
   GitCommitHorizontal,
   Loader2,
   RotateCw,
+  X,
 } from 'lucide-react'
 import {
   ApiError,
+  authorizeManagedSlack,
   deployFromGithub,
   getAgent,
   getAgentDeployment,
   getAgentDeploymentLogs,
+  getManagedSlackConnection,
   type AgentDeployment,
   type AgentDeploymentLog,
 } from '@/api/client'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -34,6 +42,12 @@ import {
 } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
 import { agentDeploymentOutcome } from '@/lib/agent-deployment-outcome'
+import {
+  deploymentSlackPresentation,
+  deploymentStage,
+} from '@/lib/deployment-slack-cta'
+import { notifyError } from '@/lib/errors'
+import { managedSlackNotice } from '@/lib/managed-slack-notice'
 import { cn } from '@/lib/utils'
 
 const PHASES = [
@@ -320,6 +334,7 @@ function DeploymentLog({
 export default function AgentDeployment() {
   const { agentId = '', deploymentId = '' } = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const deployCommand = useRef<DeployCommand | null>(null)
   const deployCommandStorage = `${DEPLOY_COMMAND_STORAGE}:${agentId}`
@@ -333,6 +348,12 @@ export default function AgentDeployment() {
     queryKey: ['agent', agentId],
     queryFn: () => getAgent(agentId),
     enabled: !!agentId,
+  })
+  const managedSlackQuery = useQuery({
+    queryKey: ['slack', 'managed', agentId],
+    queryFn: () => getManagedSlackConnection(agentId),
+    enabled: !!agentId,
+    refetchOnWindowFocus: 'always',
   })
   const logQueryKey = ['agent-deployment-logs', agentId, deploymentId] as const
   const logsQuery = useQuery({
@@ -387,6 +408,14 @@ export default function AgentDeployment() {
       void navigate(`/agents/${agentId}/deployments/${deployment.id}`)
     },
   })
+  const authorizeManagedSlackMutation = useMutation({
+    mutationFn: () => authorizeManagedSlack(agentId, deploymentId),
+    onSuccess: ({ authorize_url }) => {
+      window.location.assign(authorize_url)
+    },
+    onError: (error) =>
+      notifyError("Couldn't start the Slack connection.", error),
+  })
 
   const terminal = deploymentQuery.data?.terminal ?? false
   const refetchLogs = logsQuery.refetch
@@ -428,12 +457,48 @@ export default function AgentDeployment() {
 
   const deployment = deploymentQuery.data
   const outcome = agentDeploymentOutcome(deployment)
+  const managedSlack = managedSlackQuery.data
+  const managedSlackStatus = managedSlackQuery.isSuccess
+    ? (managedSlack?.status ?? null)
+    : undefined
+  const slackPresentation = deploymentSlackPresentation({
+    deploymentState: deployment.state,
+    deploymentTerminal: deployment.terminal,
+    managedStatus: managedSlackStatus,
+    openUrl: managedSlack?.open_url,
+    connecting: authorizeManagedSlackMutation.isPending,
+  })
+  const stage = deploymentStage(deployment.state, deployment.terminal)
+  const oauthResult = searchParams.get('slack')
+  const connectedAgentId = searchParams.get('connected_agent')
+  const managedWorkspace =
+    managedSlack?.workspace?.name ?? managedSlack?.workspace?.id
+  const slackNotice = managedSlackNotice(
+    oauthResult,
+    managedWorkspace,
+    agent?.name ?? 'this agent',
+  )
+  const connectedAgentHref =
+    oauthResult === 'workspace_already_connected' &&
+    connectedAgentId?.startsWith('agt_')
+      ? `/agents/${encodeURIComponent(connectedAgentId)}`
+      : null
+  const dismissSlackNotice = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('slack')
+    next.delete('connected_agent')
+    setSearchParams(next, { replace: true })
+  }
   const commitUrl = deployment.source_relation?.commit_url ?? undefined
   const canViewCommit =
     deployment.allowed_actions.includes('view_commit') && !!commitUrl
   const canOpenAgent = deployment.allowed_actions.includes('open_agent')
-  const canStartSession = deployment.allowed_actions.includes('start_session')
-  const canDeployLatest = deployment.allowed_actions.includes('deploy_latest')
+  const canStartSession =
+    stage === 'ready' && deployment.allowed_actions.includes('start_session')
+  // Keep routine ready/running pages focused on first use. Redeploy is the
+  // recovery action here; ordinary source management remains on the agent.
+  const canDeployLatest =
+    stage === 'failed' && deployment.allowed_actions.includes('deploy_latest')
   const deployLatestFingerprint = JSON.stringify({
     agent_id: agentId,
     repo_id: deployment.source_relation?.repo?.id ?? null,
@@ -468,53 +533,123 @@ export default function AgentDeployment() {
               {deployment.id}
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {canViewCommit ? (
-              <Button variant="outline" size="sm" asChild>
-                <a href={commitUrl} target="_blank" rel="noreferrer">
-                  <GitCommitHorizontal className="size-4" />
-                  View commit
-                  <ExternalLink className="size-3.5" />
-                </a>
-              </Button>
-            ) : null}
-            {canOpenAgent ? (
-              <Button variant="outline" size="sm" asChild>
-                <Link to={`/agents/${agentId}`}>Open agent</Link>
-              </Button>
-            ) : null}
-            {canDeployLatest ? (
-              <Button
-                size="sm"
-                variant={canStartSession ? 'outline' : 'default'}
-                disabled={deployLatestMutation.isPending}
-                onClick={() =>
-                  deployLatestMutation.mutate(deployLatestFingerprint)
-                }
-              >
-                <RotateCw
-                  className={cn(
-                    'size-4',
-                    deployLatestMutation.isPending &&
-                      'animate-spin motion-reduce:animate-none',
-                  )}
-                />
-                {deployLatestMutation.isPending
-                  ? 'Starting deployment…'
-                  : 'Deploy latest'}
-              </Button>
-            ) : null}
-            {canStartSession ? (
-              <Button size="sm" asChild>
-                <Link to={`/agents/${agentId}/sessions`}>
-                  Start session
-                  <ArrowRight className="size-4" />
-                </Link>
-              </Button>
+          <div className="flex max-w-xl flex-col gap-1.5 sm:items-end">
+            <span className="sr-only" aria-live="polite" aria-atomic="true">
+              {slackPresentation.announcement}
+            </span>
+            <div className="flex flex-wrap gap-2 sm:justify-end">
+              {canViewCommit ? (
+                <Button variant="outline" size="sm" asChild>
+                  <a href={commitUrl} target="_blank" rel="noreferrer">
+                    <GitCommitHorizontal className="size-4" />
+                    View commit
+                    <ExternalLink className="size-3.5" />
+                  </a>
+                </Button>
+              ) : null}
+              {canOpenAgent ? (
+                <Button variant="outline" size="sm" asChild>
+                  <Link to={`/agents/${agentId}`}>Open agent</Link>
+                </Button>
+              ) : null}
+              {canStartSession ? (
+                <Button variant="outline" size="sm" asChild>
+                  <Link to={`/agents/${agentId}/sessions`}>
+                    Start session
+                    <ArrowRight className="size-4" />
+                  </Link>
+                </Button>
+              ) : null}
+              {canDeployLatest ? (
+                <Button
+                  size="sm"
+                  variant={stage === 'failed' ? 'default' : 'outline'}
+                  disabled={deployLatestMutation.isPending}
+                  onClick={() =>
+                    deployLatestMutation.mutate(deployLatestFingerprint)
+                  }
+                >
+                  <RotateCw
+                    className={cn(
+                      'size-4',
+                      deployLatestMutation.isPending &&
+                        'animate-spin motion-reduce:animate-none',
+                    )}
+                  />
+                  {deployLatestMutation.isPending
+                    ? 'Starting deployment…'
+                    : 'Deploy latest'}
+                </Button>
+              ) : null}
+              {slackPresentation.action === 'open' && managedSlack?.open_url ? (
+                <Button size="sm" asChild>
+                  <a
+                    href={managedSlack.open_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open Slack
+                    <ExternalLink className="size-3.5" />
+                  </a>
+                </Button>
+              ) : slackPresentation.action === 'connect' ||
+                slackPresentation.action === 'reconnect' ||
+                slackPresentation.action === 'connecting' ? (
+                <Button
+                  size="sm"
+                  disabled={authorizeManagedSlackMutation.isPending}
+                  onClick={() => authorizeManagedSlackMutation.mutate()}
+                >
+                  {slackPresentation.label}
+                </Button>
+              ) : null}
+            </div>
+            {slackPresentation.disclosure ? (
+              <p className="text-muted-foreground max-w-sm text-xs leading-relaxed sm:text-right">
+                Anyone in this Slack workspace who can message the app can use
+                this agent.
+              </p>
+            ) : managedSlackQuery.isError && stage !== 'failed' ? (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-status-error">
+                  Slack status is unavailable.
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void managedSlackQuery.refetch()}
+                >
+                  Retry
+                </Button>
+              </div>
             ) : null}
           </div>
         </div>
       </div>
+
+      {slackNotice ? (
+        <Alert variant={slackNotice.destructive ? 'destructive' : 'default'}>
+          <AlertTitle>{slackNotice.title}</AlertTitle>
+          {slackNotice.description || connectedAgentHref ? (
+            <AlertDescription>
+              {slackNotice.description}{' '}
+              {connectedAgentHref ? (
+                <Link to={connectedAgentHref}>Open connected agent</Link>
+              ) : null}
+            </AlertDescription>
+          ) : null}
+          <AlertAction>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Dismiss Slack notice"
+              onClick={dismissSlackNotice}
+            >
+              <X aria-hidden />
+            </Button>
+          </AlertAction>
+        </Alert>
+      ) : null}
 
       {deployLatestMutation.isError ? (
         <Alert variant="destructive">
@@ -552,7 +687,14 @@ export default function AgentDeployment() {
               ) : null}
             </PanelDescription>
           </div>
-          <DeploymentPhases deployment={deployment} />
+          <div className="space-y-1.5 sm:text-right">
+            <DeploymentPhases deployment={deployment} />
+            {slackPresentation.status ? (
+              <p className="text-muted-foreground text-xs">
+                {slackPresentation.status}
+              </p>
+            ) : null}
+          </div>
         </PanelHeader>
         <PanelContent className="space-y-3">
           <OutcomeDetail deployment={deployment} />
