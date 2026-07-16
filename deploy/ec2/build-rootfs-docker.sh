@@ -20,7 +20,21 @@ set -euo pipefail
 AGENT_BIN="${1:?Usage: $0 AGENT_BIN IMAGES_DIR [IMAGE_NAME]}"
 IMAGES_DIR="${2:?Usage: $0 AGENT_BIN IMAGES_DIR [IMAGE_NAME]}"
 IMAGE_NAME="${3:-default}"
-EXT4_SIZE_MB="${EXT4_SIZE_MB:-4096}"
+
+# DISK_LAYOUT selects the block topology this base image is built for:
+#   split  (default) — legacy two-disk: a 4GB rootfs (OS) + a separate workspace
+#                      disk (vdb) mounted at /home/sandbox.
+#   merged           — single-disk: OS and /home/sandbox on ONE ~20GB rootfs, no
+#                      vdb. The rootfs image content is identical (same init,
+#                      which already no-ops the vdb mount when no vdb is present);
+#                      only the size floor differs so /home/sandbox has room.
+DISK_LAYOUT="${DISK_LAYOUT:-split}"
+if [ "$DISK_LAYOUT" = "merged" ]; then
+    EXT4_SIZE_MB="${EXT4_SIZE_MB:-20480}"
+    ROOTFS_MIN_MB="${ROOTFS_MIN_MB:-20480}"
+else
+    EXT4_SIZE_MB="${EXT4_SIZE_MB:-4096}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -101,7 +115,11 @@ if mount /dev/vdb /home/sandbox 2>/dev/null || mount /dev/vdb1 /home/sandbox 2>/
     chown sandbox:sandbox /home/sandbox 2>/dev/null
     echo "init: workspace mounted (/dev/vdb -> /home/sandbox)"
 else
-    echo "init: warning: no data disk found, /home/sandbox is ephemeral"
+    # No vdb attached — merged single-disk layout. /home/sandbox is a directory
+    # on the rootfs (persistent, captured in checkpoints/snapshots), not ephemeral.
+    mkdir -p /home/sandbox
+    chown sandbox:sandbox /home/sandbox 2>/dev/null
+    echo "init: single-disk (merged) layout — /home/sandbox on rootfs"
 fi
 
 # ── Mount virtual filesystems (in the final root) ──
@@ -252,11 +270,19 @@ docker rm -f osb-rootfs-tmp
 log "Converting to ext4 (${EXT4_SIZE_MB}MB sparse)..."
 EXT4_PATH="$TMPDIR/rootfs.ext4"
 truncate -s "${EXT4_SIZE_MB}M" "$EXT4_PATH"
+# Eagerly initialize the inode tables + journal at mkfs time for the merged
+# layout. Default (lazy) init leaves most inode-table groups uninitialized, so
+# ext4lazyinit zeroes them in the BACKGROUND on first mount of every sandbox —
+# and a 20GB fs has ~5x the inode tables of the 4GB split rootfs. Under a
+# create-burst that background I/O contends and starves the in-guest agent,
+# producing multi-second (sometimes ~30s) agent-ready times. Eager init pays
+# that cost once, at build, so every merged box resumes clean.
+MKFS_E="lazy_itable_init=0,lazy_journal_init=0"
 if [ -n "${ROOTFS_UUID:-}" ]; then
     log "Using deterministic UUID: $ROOTFS_UUID"
-    mkfs.ext4 -q -F -L rootfs -U "$ROOTFS_UUID" -E hash_seed="$ROOTFS_UUID" "$EXT4_PATH"
+    mkfs.ext4 -q -F -L rootfs -U "$ROOTFS_UUID" -E "hash_seed=$ROOTFS_UUID,$MKFS_E" "$EXT4_PATH"
 else
-    mkfs.ext4 -q -F -L rootfs "$EXT4_PATH"
+    mkfs.ext4 -q -F -L rootfs -E "$MKFS_E" "$EXT4_PATH"
 fi
 
 MNT_DIR="$TMPDIR/mnt"

@@ -86,8 +86,8 @@ func (mc *MigrationCoordinator) MigrateToS3(ctx context.Context, sandboxID strin
 	}
 
 	sandboxDir := vm.sandboxDir
+	merged := IsMerged(vm.diskLayout)
 	rootfsPath := detectDrivePath(sandboxDir, "rootfs")
-	workspacePath := detectDrivePath(sandboxDir, "workspace")
 
 	stagingDir, stageErr := os.MkdirTemp(mc.manager.cfg.DataDir, "migration-staging-")
 	if stageErr != nil {
@@ -96,24 +96,44 @@ func (mc *MigrationCoordinator) MigrateToS3(ctx context.Context, sandboxID strin
 	}
 
 	stagedRootfs := filepath.Join(stagingDir, filepath.Base(rootfsPath))
-	stagedWorkspace := filepath.Join(stagingDir, filepath.Base(workspacePath))
 	if cpErr := copyFileReflink(rootfsPath, stagedRootfs); cpErr != nil {
 		vm.opMu.Unlock()
 		os.RemoveAll(stagingDir)
 		return "", "", fmt.Errorf("stage rootfs: %w", cpErr)
 	}
-	if cpErr := copyFileReflink(workspacePath, stagedWorkspace); cpErr != nil {
-		vm.opMu.Unlock()
-		os.RemoveAll(stagingDir)
-		return "", "", fmt.Errorf("stage workspace: %w", cpErr)
+	// Merged sandboxes have no workspace disk — an empty workspaceKey is the
+	// signal the target uses to reconstruct a single-disk incoming migration.
+	var stagedWorkspace string
+	if !merged {
+		workspacePath := detectDrivePath(sandboxDir, "workspace")
+		stagedWorkspace = filepath.Join(stagingDir, filepath.Base(workspacePath))
+		if cpErr := copyFileReflink(workspacePath, stagedWorkspace); cpErr != nil {
+			vm.opMu.Unlock()
+			os.RemoveAll(stagingDir)
+			return "", "", fmt.Errorf("stage workspace: %w", cpErr)
+		}
 	}
 	vm.opMu.Unlock() // release — uploads read from staging copies, not originals
 	defer os.RemoveAll(stagingDir)
 
 	rootfsKey = fmt.Sprintf("migrations/%s/rootfs.qcow2", sandboxID)
-	workspaceKey = fmt.Sprintf("migrations/%s/workspace.qcow2.zst", sandboxID)
 
 	t0 := time.Now()
+
+	// Merged migrations move a single disk — upload the rootfs and return with
+	// an empty workspaceKey.
+	if merged {
+		state.Phase = "upload"
+		sz, uerr := mc.uploadFile(ctx, stagedRootfs, rootfsKey)
+		if uerr != nil {
+			return "", "", fmt.Errorf("upload rootfs: %w", uerr)
+		}
+		log.Printf("qemu: migration pre-copy %s: rootfs=%.1fMB (merged, single disk) (%dms)",
+			sandboxID, float64(sz)/(1024*1024), time.Since(t0).Milliseconds())
+		return rootfsKey, "", nil
+	}
+
+	workspaceKey = fmt.Sprintf("migrations/%s/workspace.qcow2.zst", sandboxID)
 
 	// Compress workspace with zstd before upload — typically 2-4x smaller,
 	// proportionally faster to upload/download over S3.
@@ -361,8 +381,15 @@ func (mc *MigrationCoordinator) LiveMigrate(ctx context.Context, sandboxID, inco
 }
 
 // PrepareIncomingMigration sets up QEMU on the target worker to receive a live migration.
-// Returns the TCP address for the source to connect to.
+// Returns the TCP address for the source to connect to. This exported entry
+// point (the direct, non-S3 migration path via the Migrator interface) is
+// always split; the merged path comes in through PrepareIncomingMigrationWithS3,
+// which calls prepareIncomingMigration directly with merged=true.
 func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string) (incomingAddr string, hostPort int, err error) {
+	return m.prepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template, false)
+}
+
+func (m *Manager) prepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string, merged bool) (incomingAddr string, hostPort int, err error) {
 	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
 	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
 		return "", 0, fmt.Errorf("mkdir: %w", err)
@@ -383,8 +410,11 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 		}
 		log.Printf("qemu: migration %s: prepared rootfs from template %q: %s", sandboxID, template, rootfsPath)
 	}
-	// Create workspace if not provided
-	if workspacePath == "" {
+	// Create workspace if not provided (split only). A merged sandbox has no
+	// workspace disk, so an empty workspacePath there is intentional — do NOT
+	// synthesize one, or the incoming QEMU would carry an extra drive the
+	// migrated RAM's device model doesn't expect.
+	if workspacePath == "" && !merged {
 		workspacePath = filepath.Join(sandboxDir, "workspace.ext4")
 		if err := CreateWorkspace(workspacePath, 4096); err != nil {
 			return "", 0, fmt.Errorf("create workspace: %w", err)
@@ -528,6 +558,7 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
 		goldenVersion: m.GoldenVersion(),
+		diskLayout:    boolToLayout(merged),
 		// Marks this as an in-flight migration receiver until CompleteIncoming-
 		// Migration clears it. The reaper uses this to tear down receivers whose
 		// migration is abandoned (never completed), which otherwise stay alive
@@ -718,11 +749,15 @@ func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID,
 		return "", 0, fmt.Errorf("mkdir: %w", err)
 	}
 
+	// An empty workspaceS3Key means the source was a merged (single-disk)
+	// sandbox; workspacePath stays "" so PrepareIncomingMigration builds a
+	// single drive, matching the migrated RAM's device model.
+	merged := workspaceS3Key == ""
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
+	var workspacePath string
 
-	// Download rootfs + workspace in parallel. Workspace may be zstd-compressed.
-	// Rebase runs as soon as rootfs is ready (overlaps with workspace download).
+	// Download rootfs (and, for split, workspace) in parallel. Workspace may be
+	// zstd-compressed. Rebase runs as soon as rootfs is ready.
 	type dlResult struct {
 		err error
 	}
@@ -732,25 +767,28 @@ func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID,
 	go func() {
 		rootfsCh <- dlResult{downloadS3ToFile(ctx, checkpointStore, rootfsS3Key, rootfsPath)}
 	}()
-	go func() {
-		isCompressed := strings.HasSuffix(workspaceS3Key, ".zst")
-		dlPath := workspacePath
-		if isCompressed {
-			dlPath = workspacePath + ".zst"
-		}
-		if err := downloadS3ToFile(ctx, checkpointStore, workspaceS3Key, dlPath); err != nil {
-			workspaceCh <- dlResult{fmt.Errorf("download workspace: %w", err)}
-			return
-		}
-		if isCompressed {
-			decompressCmd := exec.CommandContext(ctx, "zstd", "-d", "--rm", "-q", dlPath, "-o", workspacePath)
-			if out, err := decompressCmd.CombinedOutput(); err != nil {
-				workspaceCh <- dlResult{fmt.Errorf("decompress workspace: %w (%s)", err, strings.TrimSpace(string(out)))}
+	if !merged {
+		workspacePath = filepath.Join(sandboxDir, "workspace.qcow2")
+		go func() {
+			isCompressed := strings.HasSuffix(workspaceS3Key, ".zst")
+			dlPath := workspacePath
+			if isCompressed {
+				dlPath = workspacePath + ".zst"
+			}
+			if err := downloadS3ToFile(ctx, checkpointStore, workspaceS3Key, dlPath); err != nil {
+				workspaceCh <- dlResult{fmt.Errorf("download workspace: %w", err)}
 				return
 			}
-		}
-		workspaceCh <- dlResult{nil}
-	}()
+			if isCompressed {
+				decompressCmd := exec.CommandContext(ctx, "zstd", "-d", "--rm", "-q", dlPath, "-o", workspacePath)
+				if out, err := decompressCmd.CombinedOutput(); err != nil {
+					workspaceCh <- dlResult{fmt.Errorf("decompress workspace: %w (%s)", err, strings.TrimSpace(string(out)))}
+					return
+				}
+			}
+			workspaceCh <- dlResult{nil}
+		}()
+	}
 
 	// Wait for rootfs download, then rebase (workspace downloads in parallel)
 	if r := <-rootfsCh; r.err != nil {
@@ -779,12 +817,14 @@ func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID,
 		log.Printf("qemu: migration %s: rootfs pinned to base %s", sandboxID, resolveVer)
 	}
 
-	// Wait for workspace download + decompress to finish
-	if r := <-workspaceCh; r.err != nil {
-		return "", 0, r.err
+	// Wait for workspace download + decompress to finish (split only)
+	if !merged {
+		if r := <-workspaceCh; r.err != nil {
+			return "", 0, r.err
+		}
 	}
 
-	incomingAddr, hostPort, err = m.PrepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template)
+	incomingAddr, hostPort, err = m.prepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template, merged)
 	if err != nil {
 		return "", 0, err
 	}

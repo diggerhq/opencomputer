@@ -268,6 +268,7 @@ type VMInstance struct {
 	baseMemoryMB         int           // initial memory passed to -m (before virtio-mem)
 	virtioMemRequestedMB int           // additional memory via virtio-mem (beyond base)
 	goldenVersion        string        // golden version this sandbox was created from (empty if cold-booted)
+	diskLayout           string        // block topology (see disk_layout.go); empty ⇒ split (legacy two-disk)
 	// Set when this VM is started as a migration receiver (paused, -incoming) and
 	// cleared once CompleteIncomingMigration resumes it. While set, the VM is a
 	// not-yet-completed receiver: it's alive (so it passes vmAlive and would be
@@ -344,6 +345,14 @@ type Config struct {
 	DefaultDiskMB   int
 	DefaultPort     int
 
+	// GoldenLayout selects the block topology this worker builds its golden
+	// with, and therefore the layout of every sandbox freshly created here
+	// (see disk_layout.go). Empty ⇒ split (the legacy two-disk golden). Set to
+	// LayoutMerged only after the whole fleet runs dual-mode code — this is the
+	// Phase-3 merged-create flip. Forks/wakes of existing snapshots follow the
+	// snapshot's own recorded layout regardless of this setting.
+	GoldenLayout DiskLayout
+
 	// GlobalBlob is the abstract S3-compat backend (Tigris, R2, etc.) the
 	// worker pulls canonical golden rootfs blobs from on cache miss.
 	// Nil disables — worker falls back to local-only behavior (whatever
@@ -373,6 +382,12 @@ type Manager struct {
 	// same sandbox dir — racing on rootfs.qcow2 and contending for the host.
 	wakeSF singleflight.Group
 
+	// convertSF collapses concurrent convert-on-fork requests for the same
+	// split checkpoint into a single conversion (see convert_merge.go), so
+	// parallel forks of an un-migrated split template don't each rebuild the
+	// merged variant.
+	convertSF singleflight.Group
+
 	// Checkpoint cache mutex: write-locked during cache creation, read-locked during fork
 	checkpointCacheMu sync.RWMutex
 
@@ -382,6 +397,7 @@ type Manager struct {
 	goldenGuestIP string // guest IP baked into the golden snapshot
 	goldenHostIP  string // host IP of the golden subnet (for temp addr on TAP)
 	goldenVersion string // hash of base image — used for overlay-based migration
+	goldenLayout  string // block topology the golden was built with (see disk_layout.go); empty ⇒ split
 
 	// Metadata service callbacks (set via SetMetadataCallbacks)
 	onSandboxReady      func(sandboxID, guestIP, template string, startedAt time.Time)
@@ -826,6 +842,13 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 			storedVersion = string(vBytes)
 		}
 
+		// Load stored golden layout (empty file / absent ⇒ split, for goldens
+		// built before the DiskLayout field existed).
+		var storedLayout string
+		if lBytes, err := os.ReadFile(filepath.Join(goldenDir, "layout")); err == nil {
+			storedLayout = string(lBytes)
+		}
+
 		// Check if the base image on disk matches the golden snapshot
 		stale := false
 		baseImage, _ := ResolveBaseImage(m.cfg.ImagesDir, "default")
@@ -836,9 +859,19 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 			}
 		}
 
+		// A flag-flip of GoldenLayout must rebuild: the on-disk golden's topology
+		// (and its RAM snapshot's device model) can't be reinterpreted as the
+		// other layout.
+		if EffectiveDiskLayout(storedLayout) != EffectiveDiskLayout(m.cfg.GoldenLayout) {
+			log.Printf("qemu: golden layout changed (golden=%s, configured=%s), rebuilding golden snapshot",
+				EffectiveDiskLayout(storedLayout), EffectiveDiskLayout(m.cfg.GoldenLayout))
+			stale = true
+		}
+
 		if !stale {
 			m.goldenDir = goldenDir
 			m.goldenVersion = storedVersion
+			m.goldenLayout = EffectiveDiskLayout(storedLayout)
 			if cidBytes, err := os.ReadFile(filepath.Join(goldenDir, "cid")); err == nil {
 				fmt.Sscanf(string(cidBytes), "%d", &m.goldenCID)
 			}
@@ -884,20 +917,29 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		return fmt.Errorf("prepare golden rootfs: %w", err)
 	}
 
-	// Create workspace as qcow2 — must match DefaultDiskMB so the virtio-blk
-	// device geometry in the golden migration state matches sandbox workspaces.
-	workspaceFile := filepath.Join(goldenDir, "workspace.qcow2")
-	if err := CreateWorkspace(workspaceFile, m.cfg.DefaultDiskMB); err != nil {
-		return fmt.Errorf("create golden workspace: %w", err)
-	}
+	goldenLayout := EffectiveDiskLayout(m.cfg.GoldenLayout)
 
-	// Save the workspace ext4 UUID so createFromGolden can stamp new workspaces
-	// with the same UUID. The golden kernel caches ext4 metadata (superblock,
-	// journal) by UUID — a new workspace with a different UUID triggers checksum
-	// errors ("Bad message" / EBADMSG) because the cached metadata doesn't match.
-	if wsUUID, uuidErr := getWorkspaceUUID(workspaceFile); uuidErr == nil {
-		os.WriteFile(filepath.Join(goldenDir, "workspace_uuid"), []byte(wsUUID), 0644)
-		log.Printf("qemu: golden: workspace UUID=%s", wsUUID)
+	// Split layout: create a separate workspace disk (vdb) for the golden boot,
+	// sized to DefaultDiskMB so the virtio-blk device geometry in the golden
+	// migration state matches sandbox workspaces. Merged layout: no workspace
+	// disk — /home/sandbox is a directory on the rootfs, so the golden boots
+	// with a single drive and workspaceFile stays "".
+	var workspaceFile string
+	if goldenLayout == LayoutSplit {
+		workspaceFile = filepath.Join(goldenDir, "workspace.qcow2")
+		if err := CreateWorkspace(workspaceFile, m.cfg.DefaultDiskMB); err != nil {
+			return fmt.Errorf("create golden workspace: %w", err)
+		}
+
+		// Save the workspace ext4 UUID so createFromGolden can stamp new
+		// workspaces with the same UUID. The golden kernel caches ext4 metadata
+		// (superblock, journal) by UUID — a new workspace with a different UUID
+		// triggers checksum errors ("Bad message" / EBADMSG) because the cached
+		// metadata doesn't match.
+		if wsUUID, uuidErr := getWorkspaceUUID(workspaceFile); uuidErr == nil {
+			os.WriteFile(filepath.Join(goldenDir, "workspace_uuid"), []byte(wsUUID), 0644)
+			log.Printf("qemu: golden: workspace UUID=%s", wsUUID)
+		}
 	}
 
 	// Allocate a temporary network for golden boot
@@ -989,21 +1031,25 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	}
 	log.Printf("qemu: golden: virtio_mem module loaded")
 
-	// Unmount /home/sandbox and sync before snapshot — the golden migration state
-	// includes virtio-blk device state (ring buffers, pending I/O). If the data disk
-	// is mounted when we snapshot, those stale I/O ops will corrupt any fresh
-	// workspace.qcow2 that createFromGolden boots with.
-	umountCtx, umountCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	_, umountErr := agentClient.Exec(umountCtx, &pb.ExecRequest{
-		Command:   "/bin/sh",
-		Args:      []string{"-c", "umount -f /home/sandbox 2>/dev/null; sync; echo 3 > /proc/sys/vm/drop_caches; echo 3 > /proc/sys/vm/drop_caches; blockdev --flushbufs /dev/vdb 2>/dev/null; true"},
-		RunAsRoot: true,
-	})
-	umountCancel()
-	if umountErr != nil {
-		log.Printf("qemu: golden: umount /home/sandbox failed (non-fatal): %v", umountErr)
-	} else {
-		log.Printf("qemu: golden: /home/sandbox unmounted and synced")
+	// Split layout only: unmount /home/sandbox and sync before snapshot — the
+	// golden migration state includes virtio-blk device state (ring buffers,
+	// pending I/O). If the data disk is mounted when we snapshot, those stale
+	// I/O ops will corrupt any fresh workspace.qcow2 that createFromGolden boots
+	// with. In the merged layout /home/sandbox is a directory on the rootfs
+	// (no vdb), so there is nothing to unmount — the fsfreeze / below covers it.
+	if goldenLayout == LayoutSplit {
+		umountCtx, umountCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, umountErr := agentClient.Exec(umountCtx, &pb.ExecRequest{
+			Command:   "/bin/sh",
+			Args:      []string{"-c", "umount -f /home/sandbox 2>/dev/null; sync; echo 3 > /proc/sys/vm/drop_caches; echo 3 > /proc/sys/vm/drop_caches; blockdev --flushbufs /dev/vdb 2>/dev/null; true"},
+			RunAsRoot: true,
+		})
+		umountCancel()
+		if umountErr != nil {
+			log.Printf("qemu: golden: umount /home/sandbox failed (non-fatal): %v", umountErr)
+		} else {
+			log.Printf("qemu: golden: /home/sandbox unmounted and synced")
+		}
 	}
 
 	// Freeze the rootfs before the snapshot so the golden RAM's ext4 metadata is
@@ -1028,6 +1074,32 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 	} else {
 		log.Printf("qemu: golden: rootfs frozen for consistent snapshot")
 	}
+
+	// Reset the agent's virtio-serial listener before the snapshot (exactly as
+	// the hibernate/checkpoint path does via prepareAgentForHibernate). This
+	// captures the listener with active=false, so createFromGolden's fresh host
+	// connection gets a clean Accept on restore.
+	//
+	// Without this the golden build only closes the host side of the connection
+	// and sleeps 500ms — but virtio-serial doesn't reliably signal disconnect to
+	// the guest, so the listener's `active` flag is captured nondeterministically.
+	// When a golden happens to capture active=true, EVERY box restored from it
+	// spins in the agent's Accept() loop (100ms poll) until the stale connection
+	// is detected — the guest agent doesn't answer pings for several seconds even
+	// though VM-resume finished in ~270ms. This surfaced as per-worker "agent
+	// ready in 4-8s vs 0.3s" variance that had nothing to do with the box; it was
+	// purely which listener state that worker's golden captured. SIGUSR1 fallback
+	// for older agents. See cmd/agent/listen_linux.go Accept().
+	phCtx, phCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if _, phErr := agentClient.PrepareHibernate(phCtx, &pb.PrepareHibernateRequest{}); phErr != nil {
+		log.Printf("qemu: golden: PrepareHibernate listener reset failed (%v) — SIGUSR1 fallback", phErr)
+		fbCtx, fbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, _ = agentClient.Exec(fbCtx, &pb.ExecRequest{Command: "/bin/sh", Args: []string{"-c", "kill -USR1 1"}, RunAsRoot: true})
+		fbCancel()
+	} else {
+		log.Printf("qemu: golden: agent virtio-serial listener reset for clean restore")
+	}
+	phCancel()
 
 	// Close agent connection before migration. Use a timeout because gRPC's
 	// graceful close over vsock can hang if vhost-vsock doesn't drain cleanly.
@@ -1078,8 +1150,10 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		<-done
 	}
 
-	// Clean up temp files
-	os.Remove(workspaceFile)
+	// Clean up temp files (workspaceFile is "" in the merged layout)
+	if workspaceFile != "" {
+		os.Remove(workspaceFile)
+	}
 	os.Remove(qmpSockPath)
 
 	// Compress golden mem with zstd — on EBS volumes, reading less data from disk
@@ -1096,6 +1170,12 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		m.goldenVersion = v
 		_ = os.WriteFile(filepath.Join(goldenDir, "version"), []byte(v), 0644)
 	}
+
+	// Persist the golden's disk layout so createFromGolden and the restart-reuse
+	// path stamp new sandboxes with the right topology (and so a later flag-flip
+	// is detected as stale).
+	m.goldenLayout = goldenLayout
+	_ = os.WriteFile(filepath.Join(goldenDir, "layout"), []byte(goldenLayout), 0644)
 
 	// Remove preparing marker — golden snapshot is complete
 	os.Remove(preparingMarker)
@@ -1181,33 +1261,63 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		return nil, fmt.Errorf("copy golden rootfs: %w", err)
 	}
 
-	// Create fresh workspace as qcow2 with the golden's ext4 UUID.
-	// The golden kernel caches ext4 metadata by UUID — mismatched UUIDs cause
-	// "Bad message" (EBADMSG) checksum errors on the restored workspace.
-	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
-	diskMB := m.cfg.DefaultDiskMB
-	var goldenWSUUID string
-	if data, readErr := os.ReadFile(filepath.Join(m.goldenDir, "workspace_uuid")); readErr == nil {
-		goldenWSUUID = strings.TrimSpace(string(data))
-	}
-	if err := CreateWorkspace(workspacePath, diskMB, goldenWSUUID); err != nil {
-		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("create workspace: %w", err)
-	}
-
-	// Resize workspace if requested size exceeds default (golden geometry)
-	requestedDiskMB := cfg.DiskMB
-	if requestedDiskMB <= 0 {
-		requestedDiskMB = m.cfg.DefaultDiskMB
-	}
-	if requestedDiskMB > diskMB {
-		if err := ResizeWorkspace(workspacePath, requestedDiskMB); err != nil {
-			os.RemoveAll(sandboxDir)
-			return nil, fmt.Errorf("resize workspace: %w", err)
+	// Workspace disk (vdb) exists only in the split layout. In the merged layout
+	// /home/sandbox is a directory on the rootfs, so workspacePath stays "" and
+	// buildQEMUArgs emits a single drive.
+	var workspacePath string
+	// >0 when the workspace qcow2 was grown past the golden geometry before
+	// launch — drives the post-launch QMP block_resize below (split only).
+	var workspaceResizedToMB int
+	// >0 when the merged rootfs overlay was grown past the golden base size —
+	// drives the post-restore rootfs block_resize + online resize2fs / below.
+	var rootfsResizedToMB int
+	if m.goldenLayout == LayoutSplit {
+		// Create fresh workspace as qcow2 with the golden's ext4 UUID.
+		// The golden kernel caches ext4 metadata by UUID — mismatched UUIDs cause
+		// "Bad message" (EBADMSG) checksum errors on the restored workspace.
+		workspacePath = filepath.Join(sandboxDir, "workspace.qcow2")
+		diskMB := m.cfg.DefaultDiskMB
+		var goldenWSUUID string
+		if data, readErr := os.ReadFile(filepath.Join(m.goldenDir, "workspace_uuid")); readErr == nil {
+			goldenWSUUID = strings.TrimSpace(string(data))
 		}
-	}
+		if err := CreateWorkspace(workspacePath, diskMB, goldenWSUUID); err != nil {
+			os.RemoveAll(sandboxDir)
+			return nil, fmt.Errorf("create workspace: %w", err)
+		}
 
-	log.Printf("qemu: golden-create %s: rootfs+workspace ready (%dms)", id, time.Since(t0).Milliseconds())
+		// Resize workspace if requested size exceeds default (golden geometry)
+		requestedDiskMB := cfg.DiskMB
+		if requestedDiskMB <= 0 {
+			requestedDiskMB = m.cfg.DefaultDiskMB
+		}
+		if requestedDiskMB > diskMB {
+			if err := ResizeWorkspace(workspacePath, requestedDiskMB); err != nil {
+				os.RemoveAll(sandboxDir)
+				return nil, fmt.Errorf("resize workspace: %w", err)
+			}
+			workspaceResizedToMB = requestedDiskMB
+		}
+
+		log.Printf("qemu: golden-create %s: rootfs+workspace ready (%dms)", id, time.Since(t0).Milliseconds())
+	} else {
+		// Merged layout: single disk, no workspace. To exceed the golden base
+		// size (DefaultDiskMB), grow the rootfs overlay now — the virtual region
+		// past the backing reads as zeros — then online-resize2fs / after the
+		// guest resumes (block_resize section below).
+		requestedDiskMB := cfg.DiskMB
+		if requestedDiskMB <= 0 {
+			requestedDiskMB = m.cfg.DefaultDiskMB
+		}
+		if requestedDiskMB > m.cfg.DefaultDiskMB {
+			if err := ResizeWorkspace(rootfsPath, requestedDiskMB); err != nil {
+				os.RemoveAll(sandboxDir)
+				return nil, fmt.Errorf("resize merged rootfs: %w", err)
+			}
+			rootfsResizedToMB = requestedDiskMB
+		}
+		log.Printf("qemu: golden-create %s: rootfs ready (merged, %dms)", id, time.Since(t0).Milliseconds())
+	}
 
 	// Allocate network
 	netCfg, err := m.subnets.Allocate()
@@ -1366,6 +1476,7 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
 		goldenVersion: m.goldenVersion,
+		diskLayout:    m.goldenLayout,
 	}
 
 	// Connect to agent via Unix socket
@@ -1392,9 +1503,10 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	// If we resized the workspace qcow2 before launch, notify QEMU via QMP
 	// block_resize so virtio-blk fires a capacity-change event to the guest.
 	// Without this, the guest kernel still sees the golden-snapshot-captured
-	// 20GB geometry even though the backing file is larger.
-	if requestedDiskMB > diskMB {
-		newSizeBytes := int64(requestedDiskMB) * 1024 * 1024
+	// 20GB geometry even though the backing file is larger. (Split only —
+	// workspaceResizedToMB stays 0 in the merged layout.)
+	if workspaceResizedToMB > 0 {
+		newSizeBytes := int64(workspaceResizedToMB) * 1024 * 1024
 		devs, qbErr := qmpClient.QueryBlock()
 		if qbErr != nil {
 			log.Printf("qemu: golden-create %s: query-block failed: %v", id, qbErr)
@@ -1411,7 +1523,44 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 			} else if err := qmpClient.BlockResize(devID, newSizeBytes); err != nil {
 				log.Printf("qemu: golden-create %s: block_resize failed: %v", id, err)
 			} else {
-				log.Printf("qemu: golden-create %s: block_resize %s → %dMB", id, devID, requestedDiskMB)
+				log.Printf("qemu: golden-create %s: block_resize %s → %dMB", id, devID, workspaceResizedToMB)
+			}
+		}
+	}
+
+	// Merged layout: the rootfs overlay was grown past the base before launch.
+	// Notify QEMU (block_resize on the rootfs device) so the guest sees the
+	// larger vda, then online-grow the root ext4 to fill it.
+	if rootfsResizedToMB > 0 {
+		newSizeBytes := int64(rootfsResizedToMB) * 1024 * 1024
+		devs, qbErr := qmpClient.QueryBlock()
+		if qbErr != nil {
+			log.Printf("qemu: golden-create %s: query-block failed (merged resize): %v", id, qbErr)
+		} else {
+			var devID string
+			for _, d := range devs {
+				if d.Inserted.File == rootfsPath {
+					devID = d.Device
+					break
+				}
+			}
+			if devID == "" {
+				log.Printf("qemu: golden-create %s: rootfs device not found in query-block (merged resize)", id)
+			} else if err := qmpClient.BlockResize(devID, newSizeBytes); err != nil {
+				log.Printf("qemu: golden-create %s: block_resize rootfs failed: %v", id, err)
+			} else {
+				rCtx, rCancel := context.WithTimeout(context.Background(), 20*time.Second)
+				_, rErr := agentClient.Exec(rCtx, &pb.ExecRequest{
+					Command:   "/bin/sh",
+					Args:      []string{"-c", "resize2fs /dev/vda 2>/dev/null || resize2fs /dev/vda1 2>/dev/null || true"},
+					RunAsRoot: true,
+				})
+				rCancel()
+				if rErr != nil {
+					log.Printf("qemu: golden-create %s: resize2fs / failed: %v", id, rErr)
+				} else {
+					log.Printf("qemu: golden-create %s: merged rootfs grown to %dMB", id, rootfsResizedToMB)
+				}
 			}
 		}
 	}
@@ -1426,12 +1575,13 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		log.Printf("qemu: golden-create %s: clock sync failed: %v", id, err)
 	}
 
-	// Mount /home/sandbox — the data disk is mounted directly as the user's home.
-	// The golden snapshot was taken with it unmounted to keep vdb device state clean.
-	// Drop caches first: the golden VM's kernel has cached ext4 metadata from the
-	// golden workspace. The new sandbox has a DIFFERENT workspace qcow2 on the same
-	// virtio-blk device. Without dropping caches, the kernel uses stale superblock/
-	// journal data → ext4 checksum errors ("Bad message").
+	// Split layout only: mount /home/sandbox — the data disk (vdb) is mounted
+	// directly as the user's home. The golden snapshot was taken with it
+	// unmounted to keep vdb device state clean. Drop caches first: the golden
+	// VM's kernel has cached ext4 metadata from the golden workspace. The new
+	// sandbox has a DIFFERENT workspace qcow2 on the same virtio-blk device.
+	// Without dropping caches, the kernel uses stale superblock/journal data →
+	// ext4 checksum errors ("Bad message").
 	//
 	// After /home/sandbox is mounted, redirect /var/cache/apt/archives onto
 	// workspace via bind-mount. apt downloads packages there before installing
@@ -1440,23 +1590,30 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 	// (mountpoint -q short-circuits) and survives only in the running kernel —
 	// re-applied on every wake/spawn through this same hook. Failure to bind-
 	// mount is non-fatal (apt-cache stays on rootfs, status quo).
-	mountCtx, mountCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	_, mountErr := agentClient.Exec(mountCtx, &pb.ExecRequest{
-		Command: "/bin/sh",
-		Args: []string{"-c", strings.Join([]string{
-			"echo 3 > /proc/sys/vm/drop_caches",
-			"echo 3 > /proc/sys/vm/drop_caches",
-			"mount /dev/vdb /home/sandbox 2>/dev/null || true",
-			"resize2fs /dev/vdb 2>/dev/null || true",
-			"chown 1000:1000 /home/sandbox",
-			"mkdir -p /home/sandbox/.osb-apt-cache /var/cache/apt/archives",
-			"mountpoint -q /var/cache/apt/archives || mount --bind /home/sandbox/.osb-apt-cache /var/cache/apt/archives 2>/dev/null || true",
-		}, " && ")},
-		RunAsRoot: true,
-	})
-	mountCancel()
-	if mountErr != nil {
-		log.Printf("qemu: golden-create %s: mount /home/sandbox failed: %v", id, mountErr)
+	//
+	// Merged layout skips all of this: /home/sandbox is a directory on the 20GB
+	// rootfs (already owned by the sandbox user in the base), there is no second
+	// disk to swap/drop-caches for, and apt can write straight to the roomy
+	// rootfs so no bind-mount is needed.
+	if m.goldenLayout == LayoutSplit {
+		mountCtx, mountCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, mountErr := agentClient.Exec(mountCtx, &pb.ExecRequest{
+			Command: "/bin/sh",
+			Args: []string{"-c", strings.Join([]string{
+				"echo 3 > /proc/sys/vm/drop_caches",
+				"echo 3 > /proc/sys/vm/drop_caches",
+				"mount /dev/vdb /home/sandbox 2>/dev/null || true",
+				"resize2fs /dev/vdb 2>/dev/null || true",
+				"chown 1000:1000 /home/sandbox",
+				"mkdir -p /home/sandbox/.osb-apt-cache /var/cache/apt/archives",
+				"mountpoint -q /var/cache/apt/archives || mount --bind /home/sandbox/.osb-apt-cache /var/cache/apt/archives 2>/dev/null || true",
+			}, " && ")},
+			RunAsRoot: true,
+		})
+		mountCancel()
+		if mountErr != nil {
+			log.Printf("qemu: golden-create %s: mount /home/sandbox failed: %v", id, mountErr)
+		}
 	}
 	log.Printf("qemu: golden-create %s: network patched (%dms)", id, time.Since(t0).Milliseconds())
 
@@ -1661,6 +1818,13 @@ func (m *Manager) allocateCID() uint32 {
 
 // buildQEMUArgs constructs the QEMU command-line arguments.
 // agentSock is the Unix socket path for the virtio-serial agent channel.
+// buildQEMUArgs assembles the QEMU command line. The disk topology is driven by
+// workspacePath: a non-empty path yields the legacy two-disk layout (rootfs
+// vda + workspace vdb); an EMPTY workspacePath yields the merged single-disk
+// layout (rootfs vda only, with /home/sandbox as a directory on it). The device
+// order and IDs are otherwise identical, so a snapshot's -drive set must be
+// reconstructed with the same workspacePath-empty-ness it was captured with, or
+// an incoming RAM migration will fail on device-model mismatch.
 func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapName, mac, agentSock, qmpSock, bootArgs string) []string {
 	// Detect drive format from file extension
 	rootfsFmt := "qcow2"
@@ -1681,7 +1845,7 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 	}
 	maxMemMB := memMB + virtioMemPoolMB
 
-	return []string{
+	args := []string{
 		"-machine", "q35,accel=kvm",
 		"-cpu", "host",
 		"-m", fmt.Sprintf("%dM,slots=1,maxmem=%dM", memMB, maxMemMB),
@@ -1692,7 +1856,14 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 		"-kernel", m.cfg.KernelPath,
 		"-append", bootArgs,
 		"-drive", fmt.Sprintf("file=%s,format=%s,if=virtio,cache=writethrough", rootfsPath, rootfsFmt),
-		"-drive", fmt.Sprintf("file=%s,format=%s,if=virtio,cache=writethrough", workspacePath, wsFmt),
+	}
+	// Workspace (vdb) drive only in the split layout. An empty workspacePath is
+	// the merged single-disk layout — /home/sandbox lives on the rootfs disk.
+	if workspacePath != "" {
+		args = append(args,
+			"-drive", fmt.Sprintf("file=%s,format=%s,if=virtio,cache=writethrough", workspacePath, wsFmt))
+	}
+	args = append(args,
 		"-netdev", fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName),
 		"-device", fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", mac),
 		// Agent communication via virtio-serial (survives QEMU migration,
@@ -1704,7 +1875,8 @@ func (m *Manager) buildQEMUArgs(cpus, memMB int, rootfsPath, workspacePath, tapN
 		"-nographic",
 		"-nodefaults",
 		"-serial", "stdio",
-	}
+	)
+	return args
 }
 
 // Create launches a new QEMU VM.
@@ -1749,21 +1921,32 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 	}
 
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
+	// workspacePath stays "" in the merged single-disk layout (see disk_layout.go),
+	// which makes buildQEMUArgs emit a single drive.
+	var workspacePath string
+	var coldMerged bool
 
 	if cfg.TemplateRootfsKey != "" {
+		// Template cold-boot: layout follows the template. An empty
+		// TemplateWorkspaceKey marks a merged (single-disk) template.
+		coldMerged = cfg.TemplateWorkspaceKey == ""
 		srcRootfs := strings.TrimPrefix(cfg.TemplateRootfsKey, "local://")
-		srcWorkspace := strings.TrimPrefix(cfg.TemplateWorkspaceKey, "local://")
-		log.Printf("qemu: create %s from snapshot template (rootfs=%s, workspace=%s)", id, srcRootfs, srcWorkspace)
+		log.Printf("qemu: create %s from snapshot template (rootfs=%s, workspace=%q, merged=%v)", id, srcRootfs, cfg.TemplateWorkspaceKey, coldMerged)
 		if err := copyFileReflink(srcRootfs, rootfsPath); err != nil {
 			os.RemoveAll(sandboxDir)
 			return nil, fmt.Errorf("copy template rootfs: %w", err)
 		}
-		if err := copyFileReflink(srcWorkspace, workspacePath); err != nil {
-			os.RemoveAll(sandboxDir)
-			return nil, fmt.Errorf("copy template workspace: %w", err)
+		if !coldMerged {
+			workspacePath = filepath.Join(sandboxDir, "workspace.qcow2")
+			srcWorkspace := strings.TrimPrefix(cfg.TemplateWorkspaceKey, "local://")
+			if err := copyFileReflink(srcWorkspace, workspacePath); err != nil {
+				os.RemoveAll(sandboxDir)
+				return nil, fmt.Errorf("copy template workspace: %w", err)
+			}
 		}
 	} else {
+		// Base cold-boot fallback: layout follows the worker's configured golden.
+		coldMerged = IsMerged(m.cfg.GoldenLayout)
 		baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, template)
 		if err != nil {
 			os.RemoveAll(sandboxDir)
@@ -1774,13 +1957,16 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 			return nil, fmt.Errorf("prepare rootfs: %w", err)
 		}
 
-		diskMB := cfg.DiskMB
-		if diskMB <= 0 {
-			diskMB = m.cfg.DefaultDiskMB
-		}
-		if err := CreateWorkspace(workspacePath, diskMB); err != nil {
-			os.RemoveAll(sandboxDir)
-			return nil, fmt.Errorf("create workspace: %w", err)
+		if !coldMerged {
+			workspacePath = filepath.Join(sandboxDir, "workspace.qcow2")
+			diskMB := cfg.DiskMB
+			if diskMB <= 0 {
+				diskMB = m.cfg.DefaultDiskMB
+			}
+			if err := CreateWorkspace(workspacePath, diskMB); err != nil {
+				os.RemoveAll(sandboxDir)
+				return nil, fmt.Errorf("create workspace: %w", err)
+			}
 		}
 	}
 
@@ -1907,6 +2093,7 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
 		goldenVersion: m.goldenVersion, // set even on cold boot — VM uses the same base image
+		diskLayout:    boolToLayout(coldMerged),
 	}
 
 	// Wait for agent via Unix socket. Default 30s; callers can extend it (the
@@ -3011,10 +3198,17 @@ func (m *Manager) CreateCheckpointFinalized(ctx context.Context, buildSandboxID,
 		log.Printf("qemu: finalize %s: SyncFS warning: %v (continuing)", buildSandboxID, syncErr)
 	}
 
+	// The build sandbox's layout drives whether there's a workspace disk to
+	// finalize from. Merged builds have a single rootfs disk.
+	buildMerged := false
+	if bvm, gerr := m.getVM(buildSandboxID); gerr == nil {
+		buildMerged = IsMerged(bvm.diskLayout)
+	}
+
 	buildDir := filepath.Join(m.cfg.DataDir, "sandboxes", buildSandboxID)
 	buildRootfs := filepath.Join(buildDir, "rootfs.qcow2")
 	buildWorkspace := filepath.Join(buildDir, "workspace.qcow2")
-	if !fileExists(buildRootfs) || !fileExists(buildWorkspace) {
+	if !fileExists(buildRootfs) || (!buildMerged && !fileExists(buildWorkspace)) {
 		return "", "", 0, fmt.Errorf("finalize: build disks not found for %s", buildSandboxID)
 	}
 
@@ -3036,16 +3230,20 @@ func (m *Manager) CreateCheckpointFinalized(ctx context.Context, buildSandboxID,
 	finalizeID := buildSandboxID + "-fin"
 	netEnabled := true
 	finCfg := types.SandboxConfig{
-		SandboxID:            finalizeID,
-		MemoryMB:             finalizeMemMB,
-		NetworkEnabled:       &netEnabled,
-		TemplateRootfsKey:    "local://" + buildRootfs,
-		TemplateWorkspaceKey: "local://" + buildWorkspace,
+		SandboxID:         finalizeID,
+		MemoryMB:          finalizeMemMB,
+		NetworkEnabled:    &netEnabled,
+		TemplateRootfsKey: "local://" + buildRootfs,
 		// A heavy user-built rootfs (many apt/npm layers) can legitimately take
 		// longer than a stock base to reach agent-ready on cold boot. Give the
 		// finalize bring-up generous headroom so we don't fail a correct image
 		// on the default 30s wait.
 		AgentReadyTimeout: finalizeAgentReadyTimeout,
+	}
+	// Merged builds have no workspace disk — an empty TemplateWorkspaceKey tells
+	// Create() to cold-boot the finalize VM as a single-disk (merged) sandbox.
+	if !buildMerged {
+		finCfg.TemplateWorkspaceKey = "local://" + buildWorkspace
 	}
 	log.Printf("qemu: finalize: cold-booting %s from %s disks at %dMB", finalizeID, buildSandboxID, finalizeMemMB)
 	if _, err := m.Create(ctx, finCfg); err != nil {
@@ -3236,17 +3434,21 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 	// checkpoint cache staging dir. The VM has already been resumed by savevm,
 	// but qcow2 internal snapshots are immutable once written, so the reflink
 	// copy captures exactly the snapshot bytes regardless of any new writes.
+	merged := IsMerged(vm.diskLayout)
 	srcRootfs := filepath.Join(vm.sandboxDir, "rootfs.qcow2")
-	srcWorkspace := filepath.Join(vm.sandboxDir, "workspace.qcow2")
 	if err := copyFileReflink(srcRootfs, filepath.Join(stagingDir, "rootfs.qcow2")); err != nil {
 		os.RemoveAll(stagingDir)
 		failureReason = "qcow2_copy"
 		return "", "", 0, fmt.Errorf("copy rootfs: %w", err)
 	}
-	if err := copyFileReflink(srcWorkspace, filepath.Join(stagingDir, "workspace.qcow2")); err != nil {
-		os.RemoveAll(stagingDir)
-		failureReason = "qcow2_copy"
-		return "", "", 0, fmt.Errorf("copy workspace: %w", err)
+	// Merged layout has no workspace disk — /home/sandbox lives on the rootfs.
+	if !merged {
+		srcWorkspace := filepath.Join(vm.sandboxDir, "workspace.qcow2")
+		if err := copyFileReflink(srcWorkspace, filepath.Join(stagingDir, "workspace.qcow2")); err != nil {
+			os.RemoveAll(stagingDir)
+			failureReason = "qcow2_copy"
+			return "", "", 0, fmt.Errorf("copy workspace: %w", err)
+		}
 	}
 	// Record the savevm snapshot name so ForkFromCheckpoint / RestoreFromCheckpoint
 	// know which internal snapshot to loadvm.
@@ -3287,7 +3489,9 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 
 	// Write metadata and finalize cache.
 	rootfsKey = fmt.Sprintf("checkpoints/%s/%s/rootfs.tar.zst", sandboxID, checkpointID)
-	workspaceKey = fmt.Sprintf("checkpoints/%s/%s/workspace.tar.zst", sandboxID, checkpointID)
+	if !merged {
+		workspaceKey = fmt.Sprintf("checkpoints/%s/%s/workspace.tar.zst", sandboxID, checkpointID)
+	}
 
 	meta := &SnapshotMeta{
 		SandboxID:     vm.ID,
@@ -3301,6 +3505,7 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 		Template:      vm.Template,
 		GuestPort:     vm.GuestPort,
 		GoldenVersion: vm.goldenVersion,
+		DiskLayout:    vm.diskLayout,
 		SnapshotedAt:  time.Now(),
 	}
 	// Persist secrets proxy state so RestoreFromCheckpoint can re-register the session.
@@ -3341,7 +3546,10 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 		// state inside the qcow2 drives and record the snapshot name; migrate-
 		// based legacy checkpoints (from older builds) also include a mem file.
 		var archiveFiles []string
-		archiveFiles = append(archiveFiles, "rootfs.qcow2", "workspace.qcow2")
+		archiveFiles = append(archiveFiles, "rootfs.qcow2")
+		if !merged {
+			archiveFiles = append(archiveFiles, "workspace.qcow2")
+		}
 		if fileExists(filepath.Join(cacheDir, "snapshot-name")) {
 			archiveFiles = append(archiveFiles, "snapshot-name")
 		}
@@ -3470,15 +3678,19 @@ func (m *Manager) CreateDiskOnlyCheckpoint(ctx context.Context, sandboxID, check
 	}
 	stopped = true
 
+	merged := IsMerged(vm.diskLayout)
 	srcRootfs := filepath.Join(vm.sandboxDir, "rootfs.qcow2")
-	srcWorkspace := filepath.Join(vm.sandboxDir, "workspace.qcow2")
 	if err := copyFileReflink(srcRootfs, filepath.Join(stagingDir, "rootfs.qcow2")); err != nil {
 		failureReason = "qcow2_copy"
 		return "", "", 0, fmt.Errorf("copy rootfs: %w", err)
 	}
-	if err := copyFileReflink(srcWorkspace, filepath.Join(stagingDir, "workspace.qcow2")); err != nil {
-		failureReason = "qcow2_copy"
-		return "", "", 0, fmt.Errorf("copy workspace: %w", err)
+	// Merged layout has no workspace disk — /home/sandbox lives on the rootfs.
+	if !merged {
+		srcWorkspace := filepath.Join(vm.sandboxDir, "workspace.qcow2")
+		if err := copyFileReflink(srcWorkspace, filepath.Join(stagingDir, "workspace.qcow2")); err != nil {
+			failureReason = "qcow2_copy"
+			return "", "", 0, fmt.Errorf("copy workspace: %w", err)
+		}
 	}
 	if contErr := vm.qmp.Cont(); contErr != nil {
 		log.Printf("qemu: DiskOnlyCheckpoint %s/%s: failed to resume VM after copy: %v", sandboxID, checkpointID, contErr)
@@ -3489,7 +3701,9 @@ func (m *Manager) CreateDiskOnlyCheckpoint(ctx context.Context, sandboxID, check
 	frozen = false
 
 	rootfsKey = fmt.Sprintf("checkpoints/%s/%s/rootfs.tar.zst", sandboxID, checkpointID)
-	workspaceKey = fmt.Sprintf("checkpoints/%s/%s/workspace.tar.zst", sandboxID, checkpointID)
+	if !merged {
+		workspaceKey = fmt.Sprintf("checkpoints/%s/%s/workspace.tar.zst", sandboxID, checkpointID)
+	}
 	meta := &SnapshotMeta{
 		SandboxID:     vm.ID,
 		Network:       vm.network,
@@ -3502,6 +3716,7 @@ func (m *Manager) CreateDiskOnlyCheckpoint(ctx context.Context, sandboxID, check
 		Template:      vm.Template,
 		GuestPort:     vm.GuestPort,
 		GoldenVersion: vm.goldenVersion,
+		DiskLayout:    vm.diskLayout,
 		SnapshotedAt:  time.Now(),
 	}
 	if m.secretsProxy != nil && vm.network != nil {
@@ -3523,7 +3738,11 @@ func (m *Manager) CreateDiskOnlyCheckpoint(ctx context.Context, sandboxID, check
 	log.Printf("qemu: disk-only checkpoint %s: cache saved (%dms)", checkpointID, time.Since(t0).Milliseconds())
 
 	if checkpointStore != nil {
-		archiveFiles := []string{"rootfs.qcow2", "workspace.qcow2", filepath.Join("snapshot", "snapshot-meta.json")}
+		archiveFiles := []string{"rootfs.qcow2"}
+		if !merged {
+			archiveFiles = append(archiveFiles, "workspace.qcow2")
+		}
+		archiveFiles = append(archiveFiles, filepath.Join("snapshot", "snapshot-meta.json"))
 		archivePath := filepath.Join(cacheDir, "checkpoint.tar.zst")
 		if archErr := createArchive(archivePath, cacheDir, archiveFiles); archErr != nil {
 			failureReason = "archive"
@@ -3604,17 +3823,20 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 	// Step 3: Copy fresh qcow2 drives from checkpoint cache
 	m.checkpointCacheMu.RLock()
 	cacheDir := m.checkpointCacheDir(checkpointID)
-	cachedRootfs := filepath.Join(cacheDir, "rootfs.qcow2")
-	cachedWorkspace := filepath.Join(cacheDir, "workspace.qcow2")
-	if !fileExists(cachedRootfs) || !fileExists(cachedWorkspace) {
-		m.checkpointCacheMu.RUnlock()
-		return fmt.Errorf("checkpoint %s: qcow2 files not found in cache", checkpointID)
-	}
 
-	// Read checkpoint metadata for base topology.
+	// Read checkpoint metadata for base topology + disk layout.
 	var cpMeta SnapshotMeta
 	if metaData, err := os.ReadFile(filepath.Join(cacheDir, "snapshot", "snapshot-meta.json")); err == nil {
 		json.Unmarshal(metaData, &cpMeta)
+	}
+	merged := IsMerged(cpMeta.DiskLayout)
+
+	cachedRootfs := filepath.Join(cacheDir, "rootfs.qcow2")
+	cachedWorkspace := filepath.Join(cacheDir, "workspace.qcow2")
+	// Merged checkpoints have only a rootfs qcow2; split checkpoints have both.
+	if !fileExists(cachedRootfs) || (!merged && !fileExists(cachedWorkspace)) {
+		m.checkpointCacheMu.RUnlock()
+		return fmt.Errorf("checkpoint %s: qcow2 files not found in cache", checkpointID)
 	}
 
 	// Determine restore mode: prefer migration-based (-incoming) over savevm (loadvm).
@@ -3639,18 +3861,23 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 
 	sandboxDir := vm.sandboxDir
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
+	// workspacePath stays "" for merged so buildQEMUArgs reconstructs the
+	// single-disk device model the checkpoint's savevm state was captured with.
+	var workspacePath string
 
 	// Remove old drives and copy fresh ones
 	os.Remove(rootfsPath)
-	os.Remove(workspacePath)
+	os.Remove(filepath.Join(sandboxDir, "workspace.qcow2"))
 	if err := copyFileReflink(cachedRootfs, rootfsPath); err != nil {
 		m.checkpointCacheMu.RUnlock()
 		return fmt.Errorf("copy rootfs from cache: %w", err)
 	}
-	if err := copyFileReflink(cachedWorkspace, workspacePath); err != nil {
-		m.checkpointCacheMu.RUnlock()
-		return fmt.Errorf("copy workspace from cache: %w", err)
+	if !merged {
+		workspacePath = filepath.Join(sandboxDir, "workspace.qcow2")
+		if err := copyFileReflink(cachedWorkspace, workspacePath); err != nil {
+			m.checkpointCacheMu.RUnlock()
+			return fmt.Errorf("copy workspace from cache: %w", err)
+		}
 	}
 	m.checkpointCacheMu.RUnlock()
 
@@ -3871,6 +4098,17 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error) {
 	t0 := time.Now()
 
+	// Convert-on-fork: on a merged worker, a fork of a legacy split disk_only
+	// checkpoint is transparently served from a memoized MERGED variant, so
+	// forks of pre-merge templates come out as single-disk boxes too. Returns
+	// "" (fork the original as-is) for already-merged, RAM-bearing, or split-
+	// worker cases. See convert_merge.go.
+	if mergedID, err := m.maybeConvertToMergedVariant(ctx, checkpointID); err != nil {
+		return nil, err
+	} else if mergedID != "" {
+		checkpointID = mergedID
+	}
+
 	// Ensure checkpoint is compatible with current base image — rebases inline if needed.
 	// Return the error so we don't silently fork a stale checkpoint against the wrong base.
 	if err := m.ensureCheckpointRebased(ctx, checkpointID); err != nil {
@@ -3882,16 +4120,18 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	cacheDir := m.checkpointCacheDir(checkpointID)
 	metaPath := filepath.Join(cacheDir, "snapshot", "snapshot-meta.json")
 
-	cachedRootfs := filepath.Join(cacheDir, "rootfs.qcow2")
-	cachedWorkspace := filepath.Join(cacheDir, "workspace.qcow2")
-	if !fileExists(cachedRootfs) || !fileExists(cachedWorkspace) {
-		m.checkpointCacheMu.RUnlock()
-		return nil, fmt.Errorf("checkpoint %s: qcow2 files not found in cache", checkpointID)
-	}
-
 	var meta SnapshotMeta
 	if data, err := os.ReadFile(metaPath); err == nil {
 		json.Unmarshal(data, &meta)
+	}
+	merged := IsMerged(meta.DiskLayout)
+
+	cachedRootfs := filepath.Join(cacheDir, "rootfs.qcow2")
+	cachedWorkspace := filepath.Join(cacheDir, "workspace.qcow2")
+	// Merged checkpoints have only a rootfs qcow2; split checkpoints have both.
+	if !fileExists(cachedRootfs) || (!merged && !fileExists(cachedWorkspace)) {
+		m.checkpointCacheMu.RUnlock()
+		return nil, fmt.Errorf("checkpoint %s: qcow2 files not found in cache", checkpointID)
 	}
 
 	id := cfg.SandboxID
@@ -3904,18 +4144,23 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		return nil, fmt.Errorf("mkdir sandbox dir: %w", err)
 	}
 
-	// Copy qcow2 drives (contain snapshot data)
+	// Copy qcow2 drives (contain snapshot data). Merged forks have only a rootfs;
+	// workspacePath stays "" so the reconstructed QEMU matches the single-disk
+	// device model the checkpoint's savevm state was captured with.
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
+	var workspacePath string
 	if err := copyFileReflink(cachedRootfs, rootfsPath); err != nil {
 		m.checkpointCacheMu.RUnlock()
 		os.RemoveAll(sandboxDir)
 		return nil, fmt.Errorf("copy rootfs: %w", err)
 	}
-	if err := copyFileReflink(cachedWorkspace, workspacePath); err != nil {
-		m.checkpointCacheMu.RUnlock()
-		os.RemoveAll(sandboxDir)
-		return nil, fmt.Errorf("copy workspace: %w", err)
+	if !merged {
+		workspacePath = filepath.Join(sandboxDir, "workspace.qcow2")
+		if err := copyFileReflink(cachedWorkspace, workspacePath); err != nil {
+			m.checkpointCacheMu.RUnlock()
+			os.RemoveAll(sandboxDir)
+			return nil, fmt.Errorf("copy workspace: %w", err)
+		}
 	}
 	m.checkpointCacheMu.RUnlock()
 
@@ -4313,6 +4558,7 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 		bootArgs:             bootArgs,
 		agent:                agent,
 		goldenVersion:        forkGolden,
+		diskLayout:           EffectiveDiskLayout(meta.DiskLayout),
 	}
 
 	m.mu.Lock()
@@ -4476,6 +4722,11 @@ func (m *Manager) GetWorkspacePath(sandboxID string) (string, error) {
 	vm, err := m.getVM(sandboxID)
 	if err != nil {
 		return "", err
+	}
+	// Merged boxes have no workspace disk — data lives on the rootfs, so gate
+	// the autosave mtime check on rootfs.qcow2 instead.
+	if IsMerged(vm.diskLayout) {
+		return filepath.Join(vm.sandboxDir, "rootfs.qcow2"), nil
 	}
 	return filepath.Join(vm.sandboxDir, "workspace.qcow2"), nil
 }

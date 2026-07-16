@@ -50,6 +50,14 @@ func (m *Manager) ensureCheckpointRebased(ctx context.Context, checkpointID stri
 		return nil
 	}
 
+	// A converted merged variant (see convert_merge.go) is a self-contained,
+	// flattened rootfs with no backing and no GoldenVersion — there is nothing
+	// to rebase, and the size-guard can't catch a same-size/different-content
+	// base, so skip rebase entirely for merged-without-golden checkpoints.
+	if IsMerged(meta.DiskLayout) && meta.GoldenVersion == "" {
+		return nil
+	}
+
 	if meta.GoldenVersion == "" {
 		return m.checkLegacyCheckpoint(checkpointID, meta)
 	}

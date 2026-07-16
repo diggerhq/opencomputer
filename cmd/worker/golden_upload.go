@@ -29,7 +29,7 @@ import (
 //
 // Reads OPENSANDBOX_GLOBAL_BLOB_* env vars for endpoint + creds. Fails loud
 // if blobstore isn't configured.
-func uploadGolden(path string) error {
+func uploadGolden(path string, versionedOnly bool) error {
 	// Bootstrap from the appropriate cloud vault — same pattern as main(). One
 	// of these picks up worker-global-blob-* secrets so the upload knows where
 	// to push; the other is a no-op when its trigger env var isn't set.
@@ -91,6 +91,16 @@ func uploadGolden(path string) error {
 		return fmt.Errorf("upload %s: %w", versionedKey, err)
 	}
 	log.Printf("uploaded %s (%dms)", versionedKey, time.Since(t0).Milliseconds())
+
+	// The unversioned "current" pointer is what workers fetch on cache miss.
+	// Skip it for --versioned-only (seeding a merged base) so split workers'
+	// fallback isn't repointed at a merged image; cross-golden ops still find
+	// this base by its hashed key above.
+	if versionedOnly {
+		log.Printf("skipping default.ext4 current-pointer (--versioned-only)")
+		log.Printf("done in %s", time.Since(t0).Round(time.Millisecond))
+		return nil
+	}
 
 	t1 := time.Now()
 	if err := blobstore.Upload(ctx, store, bucket, "default.ext4", path); err != nil {

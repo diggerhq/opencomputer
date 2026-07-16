@@ -35,6 +35,10 @@ type SnapshotMeta struct {
 	Template      string         `json:"template"`
 	GuestPort        int                 `json:"guestPort"`
 	GoldenVersion    string              `json:"goldenVersion,omitempty"`
+	// DiskLayout records the block topology this snapshot was captured with
+	// (see disk_layout.go). Empty ⇒ split (legacy two-disk), so pre-merge
+	// snapshots restore as split. Route through EffectiveDiskLayout on read.
+	DiskLayout       string              `json:"diskLayout,omitempty"`
 	SnapshotedAt     time.Time           `json:"snapshotedAt,omitempty"`
 	SealedTokens     map[string]string   `json:"sealedTokens,omitempty"`
 	// SealedNames is the env-var-name → sealed-token index. Persisted alongside
@@ -156,6 +160,11 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 	time.Sleep(200 * time.Millisecond)
 
 	// Step 4: Write snapshot metadata
+	merged := IsMerged(vm.diskLayout)
+	workspaceMetaPath := ""
+	if !merged {
+		workspaceMetaPath = detectDrivePath(vm.sandboxDir, "workspace")
+	}
 	meta := &SnapshotMeta{
 		SandboxID:     vm.ID,
 		Network:       vm.network,
@@ -163,13 +172,14 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		GuestMAC:      vm.guestMAC,
 		BootArgs:      vm.bootArgs,
 		RootfsPath:    detectDrivePath(vm.sandboxDir, "rootfs"),
-		WorkspacePath: detectDrivePath(vm.sandboxDir, "workspace"),
+		WorkspacePath: workspaceMetaPath,
 		CpuCount:      vm.CpuCount,
 		MemoryMB:      vm.MemoryMB,
 		BaseMemoryMB:  vm.baseMemoryMB,
 		Template:      vm.Template,
 		GuestPort:     vm.GuestPort,
 		GoldenVersion: vm.goldenVersion,
+		DiskLayout:    vm.diskLayout,
 		SnapshotedAt:  time.Now(),
 	}
 
@@ -227,8 +237,12 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 	// "file changed as we read it" → corrupted archive → data loss on next wake.
 	sandboxDir := vm.sandboxDir
 	sandboxID := vm.ID
-	workspaceFile := filepath.Base(detectDrivePath(sandboxDir, "workspace"))
 	rootfsFile := filepath.Base(detectDrivePath(sandboxDir, "rootfs"))
+	// Merged hibernations archive only the rootfs; split archive both drives.
+	driveFiles := []string{rootfsFile}
+	if !merged {
+		driveFiles = append(driveFiles, filepath.Base(detectDrivePath(sandboxDir, "workspace")))
+	}
 
 	archiveDir := filepath.Join(sandboxDir, fmt.Sprintf("archive-staging-%d", time.Now().UnixNano()))
 	if err := os.MkdirAll(archiveDir, 0755); err != nil {
@@ -241,7 +255,7 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 
 	// Reflink-copy drives (COW — fast, no extra disk until divergence).
 	// cp --reflink=auto falls back to regular copy if reflink not supported.
-	for _, driveFile := range []string{rootfsFile, workspaceFile} {
+	for _, driveFile := range driveFiles {
 		src := filepath.Join(sandboxDir, driveFile)
 		dst := filepath.Join(archiveDir, driveFile)
 		if err := copyFileReflink(src, dst); err != nil {
@@ -286,11 +300,9 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 		archivePath := filepath.Join(archiveDir, "checkpoint.tar.zst")
 
 		// Archive from the staging copies — originals are free for wake/QEMU.
-		if err := createArchive(archivePath, archiveDir, []string{
+		if err := createArchive(archivePath, archiveDir, append([]string{
 			"snapshot/snapshot-meta.json",
-			rootfsFile,
-			workspaceFile,
-		}); err != nil {
+		}, driveFiles...)); err != nil {
 			goroutineErr = fmt.Errorf("archive: %w", err)
 			log.Printf("qemu: async archive failed for %s: %v", sandboxID, err)
 			return
@@ -408,9 +420,15 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		return nil, fmt.Errorf("parse snapshot meta: %w", err)
 	}
 
-	workspacePath := detectDrivePath(sandboxDir, "workspace")
-	if !fileExists(workspacePath) {
-		return nil, fmt.Errorf("workspace not found at %s", workspacePath)
+	// Merged snapshots have no workspace disk; workspacePath stays "" so the
+	// woken QEMU reconstructs the single-disk device model captured in the
+	// savevm state. Split snapshots must still have their workspace present.
+	var workspacePath string
+	if !IsMerged(meta.DiskLayout) {
+		workspacePath = detectDrivePath(sandboxDir, "workspace")
+		if !fileExists(workspacePath) {
+			return nil, fmt.Errorf("workspace not found at %s", workspacePath)
+		}
 	}
 
 	// Step 3: Set up network. Prefer the original TAP/subnet so the gateway
@@ -656,6 +674,7 @@ func (m *Manager) doWake(ctx context.Context, sandboxID, checkpointKey string, c
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
 		goldenVersion: m.goldenVersion, // set on wake — VM runs on the current worker's base
+		diskLayout:    EffectiveDiskLayout(meta.DiskLayout),
 	}
 	// Recompute virtio-mem amount from the meta. Without this the field
 	// stays at zero on wake, which would (a) make grow deltas under-charge
@@ -841,11 +860,24 @@ func lastLines(s string, n int) string {
 
 func (m *Manager) coldBootLocalInner(ctx context.Context, sandboxID string, timeout int) (*types.Sandbox, error) {
 	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
-	workspacePath := detectDrivePath(sandboxDir, "workspace")
 	rootfsPath := detectDrivePath(sandboxDir, "rootfs")
 
-	if !fileExists(workspacePath) {
-		return nil, fmt.Errorf("workspace not found at %s", workspacePath)
+	// Determine the disk layout from the snapshot meta (authoritative). A merged
+	// sandbox has no workspace disk to require or attach; workspacePath stays "".
+	merged := false
+	if snapJSON, err := os.ReadFile(filepath.Join(sandboxDir, "snapshot", "snapshot-meta.json")); err == nil {
+		var sm SnapshotMeta
+		if json.Unmarshal(snapJSON, &sm) == nil {
+			merged = IsMerged(sm.DiskLayout)
+		}
+	}
+
+	var workspacePath string
+	if !merged {
+		workspacePath = detectDrivePath(sandboxDir, "workspace")
+		if !fileExists(workspacePath) {
+			return nil, fmt.Errorf("workspace not found at %s", workspacePath)
+		}
 	}
 
 	// Resolve the sandbox config. The create-time sandbox-meta.json lives only
@@ -1017,6 +1049,7 @@ func (m *Manager) coldBootLocalInner(ctx context.Context, sandboxID string, time
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
 		goldenVersion: m.goldenVersion, // cold boot: VM runs on the current worker's base
+		diskLayout:    boolToLayout(merged),
 	}
 
 	// Generous agent wait: coldBootLocalInner is only reached on the
