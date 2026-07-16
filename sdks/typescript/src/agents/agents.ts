@@ -48,6 +48,7 @@ export interface SlackConnection {
   slackAppId?: string | null;
   teamId?: string | null;
   accountLogin?: string | null;
+  openUrl?: string | null;
 }
 
 /** The three values pasted back from Slack to finalize a connection. */

@@ -6,6 +6,7 @@ import { notifyError } from '@/lib/errors'
 import {
   authorizeManagedSlack,
   disconnectManagedSlack,
+  getAgent,
   getManagedSlackConnection,
   getSlackConnection,
   startSlackConnect,
@@ -54,7 +55,11 @@ function WizardSteps({ current }: { current: number }) {
         const done = i < current
         const active = i === current
         return (
-          <li key={label} className="flex min-w-0 items-center gap-2">
+          <li
+            key={label}
+            className="flex min-w-0 items-center gap-2"
+            aria-current={active ? 'step' : undefined}
+          >
             <span
               className={cn(
                 'flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold',
@@ -63,7 +68,7 @@ function WizardSteps({ current }: { current: number }) {
                   : 'bg-secondary text-muted-foreground',
               )}
             >
-              {done ? <Check className="size-3" /> : i + 1}
+              {done ? <Check className="size-3" aria-hidden /> : i + 1}
             </span>
             <span
               className={cn(
@@ -73,6 +78,7 @@ function WizardSteps({ current }: { current: number }) {
                   : 'text-muted-foreground',
               )}
             >
+              {done ? <span className="sr-only">Completed: </span> : null}
               {label}
             </span>
             {i < WIZARD_STEPS.length - 1 ? (
@@ -231,14 +237,34 @@ export function SlackConnect({
   const managedActive = managed?.status === 'active'
   const managedNeedsReconnect =
     managed?.status === 'error' || managed?.status === 'revoked'
+  const managedDisconnected = managed?.status === 'disconnected'
   const managedWorkspace = managed?.workspace?.name || managed?.workspace?.id
   const oauthResult = searchParams.get('slack')
   const connectedAgentId = searchParams.get('connected_agent')
-  const notice = managedSlackNotice(oauthResult, managedWorkspace, agentName)
-  const connectedAgentHref =
+  const sameOwnerConnectedAgentId =
     oauthResult === 'workspace_already_connected' &&
-    connectedAgentId?.startsWith('agt_')
-      ? `/agents/${encodeURIComponent(connectedAgentId)}`
+    connectedAgentId &&
+    /^agt_[0-9a-f]{24}$/.test(connectedAgentId)
+      ? connectedAgentId
+      : null
+  const connectedAgentQuery = useQuery({
+    queryKey: ['agent', sameOwnerConnectedAgentId],
+    queryFn: () => getAgent(sameOwnerConnectedAgentId!),
+    enabled: !!sameOwnerConnectedAgentId,
+  })
+  const connectedAgentName = connectedAgentQuery.data?.name ?? null
+  const notice =
+    sameOwnerConnectedAgentId && connectedAgentQuery.isLoading
+      ? null
+      : managedSlackNotice(
+          oauthResult,
+          managedWorkspace,
+          agentName,
+          connectedAgentName,
+        )
+  const connectedAgentHref =
+    connectedAgentQuery.data && sameOwnerConnectedAgentId
+      ? `/agents/${encodeURIComponent(sameOwnerConnectedAgentId)}`
       : null
   const dismissNotice = () => {
     const next = new URLSearchParams(searchParams)
@@ -295,7 +321,7 @@ export function SlackConnect({
             <h3 id="managed-slack-title" className="text-sm font-medium">
               OpenComputer app
             </h3>
-            {!managedActive ? (
+            {!managedActive && !managedDisconnected ? (
               <p className="text-muted-foreground text-xs leading-relaxed">
                 Connect the shared app to try this agent in Slack.
               </p>
@@ -375,6 +401,26 @@ export function SlackConnect({
                 {authorizeManagedMutation.isPending
                   ? 'Connecting…'
                   : 'Reconnect Slack'}
+              </Button>
+            </div>
+          ) : managedDisconnected ? (
+            <div className="space-y-3">
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                Disconnected. This agent no longer receives messages from the
+                OpenComputer app.
+              </p>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                Anyone in this Slack workspace who can message the app can use
+                this agent after you reconnect it.
+              </p>
+              <Button
+                size="sm"
+                onClick={() => authorizeManagedMutation.mutate()}
+                disabled={authorizeManagedMutation.isPending}
+              >
+                {authorizeManagedMutation.isPending
+                  ? 'Connecting…'
+                  : 'Connect Slack again'}
               </Button>
             </div>
           ) : (
