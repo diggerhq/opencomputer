@@ -21,7 +21,9 @@ import {
   getAgent,
   getAgentDeployment,
   getAgentDeploymentLogs,
+  getDeploymentSource,
   getManagedSlackConnection,
+  unlinkDeploymentSource,
   type AgentDeployment,
   type AgentDeploymentLog,
 } from '@/api/client'
@@ -33,6 +35,7 @@ import {
 } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { SourceProfileChangedRecovery } from '@/components/source-profile-changed-recovery'
 import {
   Panel,
   PanelContent,
@@ -46,7 +49,7 @@ import {
   deploymentSlackPresentation,
   deploymentStage,
 } from '@/lib/deployment-slack-cta'
-import { notifyError } from '@/lib/errors'
+import { notifyError, notifySuccess } from '@/lib/errors'
 import { managedSlackNotice } from '@/lib/managed-slack-notice'
 import { cn } from '@/lib/utils'
 
@@ -355,6 +358,22 @@ export default function AgentDeployment() {
     enabled: !!agentId,
     refetchOnWindowFocus: 'always',
   })
+  const deploymentReportedSourceProfileChange =
+    deploymentQuery.data?.error_class === 'source_profile_changed' ||
+    deploymentQuery.data?.error?.class === 'source_profile_changed'
+  const changedSourceQuery = useQuery({
+    queryKey: ['agent-deploy-source', agentId],
+    queryFn: async () => {
+      try {
+        return (await getDeploymentSource(agentId)).source
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null
+        throw error
+      }
+    },
+    enabled: !!agentId && deploymentReportedSourceProfileChange,
+    refetchOnWindowFocus: 'always',
+  })
   const logQueryKey = ['agent-deployment-logs', agentId, deploymentId] as const
   const logsQuery = useQuery({
     queryKey: logQueryKey,
@@ -415,6 +434,31 @@ export default function AgentDeployment() {
     },
     onError: (error) =>
       notifyError("Couldn't start the Slack connection.", error),
+  })
+  const unlinkChangedSourceMutation = useMutation({
+    mutationFn: () => unlinkDeploymentSource(agentId),
+    onSuccess: () => {
+      const source = changedSourceQuery.data
+      void queryClient.invalidateQueries({
+        queryKey: ['agent-deploy-source', agentId],
+      })
+      void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
+      notifySuccess(
+        'Repository source unlinked. Existing revisions are unchanged.',
+      )
+      if (source) {
+        void navigate('/agents/new', {
+          state: {
+            repositoryImport: {
+              repo: source.repo_id,
+              path: source.path,
+              productionRef: source.production_ref,
+            },
+          },
+        })
+      }
+    },
+    onError: (error) => notifyError("Couldn't unlink the repository.", error),
   })
 
   const terminal = deploymentQuery.data?.terminal ?? false
@@ -495,10 +539,15 @@ export default function AgentDeployment() {
   const canOpenAgent = deployment.allowed_actions.includes('open_agent')
   const canStartSession =
     stage === 'ready' && deployment.allowed_actions.includes('start_session')
+  const currentSourceProfileChanged =
+    deploymentReportedSourceProfileChange &&
+    changedSourceQuery.data?.status === 'source_profile_changed'
   // Keep routine ready/running pages focused on first use. Redeploy is the
   // recovery action here; ordinary source management remains on the agent.
   const canDeployLatest =
-    stage === 'failed' && deployment.allowed_actions.includes('deploy_latest')
+    stage === 'failed' &&
+    !deploymentReportedSourceProfileChange &&
+    deployment.allowed_actions.includes('deploy_latest')
   const deployLatestFingerprint = JSON.stringify({
     agent_id: agentId,
     repo_id: deployment.source_relation?.repo?.id ?? null,
@@ -697,7 +746,18 @@ export default function AgentDeployment() {
           </div>
         </PanelHeader>
         <PanelContent className="space-y-3">
-          <OutcomeDetail deployment={deployment} />
+          {currentSourceProfileChanged && changedSourceQuery.data ? (
+            <SourceProfileChangedRecovery
+              source={changedSourceQuery.data}
+              pending={unlinkChangedSourceMutation.isPending}
+              onUnlink={() => unlinkChangedSourceMutation.mutate()}
+            />
+          ) : deploymentReportedSourceProfileChange &&
+            changedSourceQuery.isLoading ? (
+            <Skeleton className="h-24 w-full" />
+          ) : (
+            <OutcomeDetail deployment={deployment} />
+          )}
           {logsQuery.isError ? (
             <Alert variant="destructive">
               <AlertTitle>Log could not be loaded</AlertTitle>
