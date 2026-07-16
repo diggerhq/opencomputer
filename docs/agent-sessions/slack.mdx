@@ -36,8 +36,13 @@ const authorization = await oc.agents.authorizeManagedSlack(agentId, {
   returnDeploymentId: deploymentId, // optional validated return context
 });
 
-// Return authorizeUrl from your authenticated server route, then navigate the
-// user's browser to it. Never expose the OpenComputer org key to the browser.
+if ("authorizeUrl" in authorization) {
+  // Return this from your authenticated server route, then navigate the user's
+  // browser to it. Never expose the OpenComputer org key to the browser.
+  return authorization.authorizeUrl;
+}
+// Otherwise the agent was already connected; `authorization` is its current
+// public connection state.
 
 const connection = await oc.agents.getManagedSlack(agentId);
 // { mode: "managed", status: "active", workspace, app, openUrl, ... }

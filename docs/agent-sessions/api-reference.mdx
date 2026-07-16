@@ -622,8 +622,9 @@ that deploy auto-activates. Repo/path are server-anchored to the link. Deploymen
 ## Slack
 
 Managed Slack uses the OpenComputer-operated app. Starting authorization
-returns a browser-safe Slack OAuth URL; the optional deployment id is validated
-return context, not a redirect URL. Status responses never contain credentials.
+returns a browser-safe Slack OAuth URL, or the current active connection when
+the agent is already connected. The optional deployment id is validated return
+context, not a redirect URL. Status responses never contain credentials.
 
 <Tabs>
 
