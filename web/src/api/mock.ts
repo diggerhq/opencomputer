@@ -483,9 +483,7 @@ const agents = [
 //   'installed'     → the repo picker (App installed, this agent not yet linked)
 //   'connected'     → a linked agent showing live status + Disconnect
 const DEPLOY_PREVIEW = 'installed' as
-  | 'not_installed'
-  | 'installed'
-  | 'connected'
+  'not_installed' | 'installed' | 'connected'
 
 const deployAppInstalled = {
   installed: true,

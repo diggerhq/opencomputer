@@ -1,28 +1,108 @@
 ---
 mode: "wide"
 title: "Slack"
-description: "Give an agent its own Slack handle"
+description: "Message an agent from Slack"
 ---
 
-Connect an [agent](/agent-sessions/agents) to its own Slack app so members `@mention` it in a channel to start and steer [sessions](/agent-sessions/sessions). One app per agent, per workspace.
+Connect an [agent](/agent-sessions/agents) to Slack, then start and continue
+[sessions](/agent-sessions/sessions) from direct messages or channel mentions.
+OpenComputer records the same session and event history you see in the
+dashboard.
 
-Connect from the agent's page in the [dashboard](https://app.opencomputer.dev) (a guided wizard), or over the API: get a manifest, create the Slack app from it, then finalize with the three values Slack shows you.
+## Connect the OpenComputer app
+
+The quickest path uses the OpenComputer-operated Slack app. Open the agent in
+the [dashboard](https://app.opencomputer.dev), choose **Connect OpenComputer
+Slack**, approve the workspace installation, and return to the agent.
+
+You can connect Slack while a repository deployment is still running. The
+connection remains in place if that deployment fails, but the app cannot run a
+message until the agent has a ready deployment. A message sent too early gets a
+short deploying response and is not queued. Wait for the dashboard to show
+**Open Slack**, then send the message again.
+
+<Warning>
+  Anyone in the connected Slack workspace who can message the app can use this
+  agent. Use the shared app for evaluation with an agent whose tools and spend
+  are appropriately bounded.
+</Warning>
+
+<Note>
+  A workspace can connect the managed app to one agent at a time. Managed Slack
+  accepts text direct messages and mentions in ordinary workspace channels.
+  Files and Slack Connect DMs or mentions are not supported yet.
+</Note>
+
+The same flow is available over the API:
 
 <CodeGroup>
 
 ```ts TypeScript SDK
-// 1. Manifest to create the Slack app from (Create app → From a manifest).
+const authorization = await oc.agents.authorizeManagedSlack(agentId, {
+  returnDeploymentId: deploymentId, // optional validated return context
+});
+
+if ("authorizeUrl" in authorization) {
+  // Return this from your authenticated server route, then navigate the user's
+  // browser to it. Never expose the OpenComputer org key to the browser.
+  return authorization.authorizeUrl;
+}
+// Otherwise the agent was already connected; `authorization` is its current
+// public connection state.
+
+const connection = await oc.agents.getManagedSlack(agentId);
+// { mode: "managed", status: "active", workspace, app, openUrl, ... }
+
+await oc.agents.disconnectManagedSlack(agentId);
+```
+
+```http REST API
+POST   https://api.opencomputer.dev/v3/agents/{agent_id}/slack/managed/authorize
+GET    https://api.opencomputer.dev/v3/agents/{agent_id}/slack/managed
+DELETE https://api.opencomputer.dev/v3/agents/{agent_id}/slack/managed
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+
+// optional authorize body
+{ "return_deployment_id": "dep_..." }
+```
+
+</CodeGroup>
+
+Disconnecting an agent stops its managed Slack routing. It does not uninstall
+the shared app from the workspace or remove existing OpenComputer sessions.
+
+## Conversations and sessions
+
+A new root direct message creates a session. Replies in its Slack thread steer
+the same session; another root message creates a new one. In a channel, invite
+`@OpenComputer` and mention it to start or continue a thread. The app does not
+read unmentioned channel messages.
+
+Slack deliveries are signature-verified and deduplicated before they enter the
+session. A transient **Working…** status may appear for a direct message or
+mention. The final assistant response is posted to the same thread, while
+diagnostics and the full event history remain in OpenComputer.
+
+## Use your own Slack app
+
+For a permanent bot identity, connect an app you operate. On the agent page,
+choose **Use your own Slack app**, copy the generated manifest into Slack, then
+enter the App ID, Signing Secret, and Bot User OAuth Token. Credentials are
+write-only and are never returned by the API.
+
+<CodeGroup>
+
+```ts TypeScript SDK
 const { manifest, createUrl } = await oc.agents.slackManifest(agentId);
 
-// 2. Finalize with the App ID, Signing Secret, and Bot User OAuth Token.
 const slack = await oc.agents.connectSlack(agentId, {
   appId: "A0…",
   signingSecret: "…",
   botToken: "xoxb-…",
 });
 
-await oc.agents.getSlack(agentId); // { status: "active", … } — no secrets
-await oc.agents.disconnectSlack(agentId); // purge + stop routing
+await oc.agents.getSlack(agentId); // public status only
+await oc.agents.disconnectSlack(agentId); // purge credentials and stop routing
 ```
 
 ```http REST API
@@ -38,36 +118,19 @@ Authorization: Bearer $OPENCOMPUTER_API_KEY
 
 </CodeGroup>
 
-Then invite the bot (`/invite @handle`) and `@mention` it.
+The managed and builder-owned apps may overlap while you test the handoff. They
+keep separate conversations and sessions. Once your app is working, disconnect
+the OpenComputer app explicitly.
 
-## Routing
+## Delivery behavior
 
-An `@mention` is signature-verified, de-duplicated, and appended to a session as a [steer](/agent-sessions/messaging). The first mention in a thread starts a session; later mentions in that thread steer the same one. The session's `user`-level [events](/agent-sessions/events#visibility-levels) post back to the thread — the agent never calls Slack itself.
-
-## Reconnect
-
-Replacing the app requires explicit intent, so a stray request can't tear down a live connection:
-
-<CodeGroup>
-
-```ts TypeScript SDK
-await oc.agents.slackManifest(agentId, { reconnect: true });
-```
-
-```http REST API
-POST https://api.opencomputer.dev/v3/agents/{agent_id}/slack/manifest
-
-{ "reconnect": true }
-```
-
-</CodeGroup>
-
-Calling it on an active connection without `reconnect` returns `409`. A reconnect resets the connection to `pending` and retires the prior threads' bindings, so future mentions start fresh.
-
-## Limits
-
-<Warning>
-- Anyone who can `@mention` the bot in a channel it has joined can start and steer the agent — there is no per-user or per-channel allow-list yet. Invite it only where you trust the members.
-- Mention-only: it doesn't passively follow thread replies.
-- Outbound posts `user`-level events; live progress isn't streamed into the thread yet.
-</Warning>
+- A duplicate Slack event creates at most one agent turn.
+- Direct-message thread replies continue their existing session.
+- Channel replies require another mention.
+- The OpenComputer app replies to a message containing a file with a text-only
+  notice; resend the content as a text message.
+- Responses longer than Slack's message limit include a link to the full
+  authenticated session in OpenComputer.
+- Slack delivery can retry independently of agent execution, so a provider
+  timeout may rarely produce a duplicate Slack post rather than lose the only
+  answer.

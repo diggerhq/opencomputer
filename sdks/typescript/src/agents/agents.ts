@@ -48,6 +48,7 @@ export interface SlackConnection {
   slackAppId?: string | null;
   teamId?: string | null;
   accountLogin?: string | null;
+  openUrl?: string | null;
 }
 
 /** The three values pasted back from Slack to finalize a connection. */
@@ -55,6 +56,25 @@ export interface ConnectSlackParams {
   appId: string;
   botToken: string;
   signingSecret: string;
+}
+
+/** One browser-safe OAuth start for the OpenComputer-operated Slack app. */
+export interface ManagedSlackAuthorization {
+  mode: "managed";
+  status: "pending";
+  authorizeUrl: string;
+  expiresAt: string;
+}
+
+/** Public state for the OpenComputer-operated Slack app. Never includes credentials. */
+export interface ManagedSlackConnection {
+  mode: "managed";
+  status: "active" | "disconnected" | "error" | "revoked";
+  workspace?: { id: string; name?: string | null } | null;
+  app?: { id: string; handle?: string | null } | null;
+  openUrl?: string | null;
+  connectedAt?: string | null;
+  errorCode?: string | null;
 }
 
 /** Reusable agents — the "what" a session runs. */
@@ -114,6 +134,27 @@ export class Agents {
   /** Disconnect — purges the stored secrets and stops routing. */
   disconnectSlack(id: string): Promise<{ ok: boolean }> {
     return this.http.request("DELETE", `/agents/${id}/slack`);
+  }
+
+  // ── Managed Slack (OpenComputer-operated onboarding app) ──
+
+  /** Start managed Slack OAuth. The optional deployment id is validated return
+   *  context, never a caller-controlled redirect. */
+  authorizeManagedSlack(
+    id: string,
+    opts: { returnDeploymentId?: string } = {},
+  ): Promise<ManagedSlackAuthorization | ManagedSlackConnection> {
+    return this.http.request("POST", `/agents/${id}/slack/managed/authorize`, {
+      body: opts,
+    });
+  }
+  /** Current managed installation/connection state. */
+  getManagedSlack(id: string): Promise<ManagedSlackConnection> {
+    return this.http.request("GET", `/agents/${id}/slack/managed`);
+  }
+  /** Disconnect this agent without uninstalling the shared app from Slack. */
+  disconnectManagedSlack(id: string): Promise<{ ok: true; status: "disconnected" }> {
+    return this.http.request("DELETE", `/agents/${id}/slack/managed`);
   }
 
   /**

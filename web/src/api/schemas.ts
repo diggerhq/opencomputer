@@ -693,6 +693,7 @@ export const SlackConnectionSchema = z.object({
   slack_app_id: z.string().nullable().optional(),
   team_id: z.string().nullable().optional(),
   account_login: z.string().nullable().optional(),
+  open_url: z.string().nullable().optional(),
   status: z.string(),
   bot_token_verified: z.boolean().optional(),
   signing_verified: z.boolean().optional(),
@@ -706,6 +707,34 @@ export const SlackManifestResponseSchema = z.object({
   create_url: z.string(),
   steps: z.array(z.string()),
   status: z.string(),
+})
+
+export const ManagedSlackConnectionSchema = z.object({
+  mode: z.literal('managed'),
+  status: z.enum(['active', 'disconnected', 'error', 'revoked']),
+  workspace: z.object({ id: z.string(), name: z.string().nullish() }).nullish(),
+  app: z.object({ id: z.string(), handle: z.string().nullish() }).nullish(),
+  open_url: z.string().nullish(),
+  connected_at: z.string().nullish(),
+  error_code: z.string().nullish(),
+})
+
+// A race-safe authorize is idempotent: if the connection became active after
+// the dashboard status read, the API returns that active connection instead of
+// minting another OAuth intent.
+export const ManagedSlackAuthorizeResponseSchema = z.union([
+  z.object({
+    mode: z.literal('managed'),
+    status: z.literal('pending'),
+    authorize_url: z.string(),
+    expires_at: z.string(),
+  }),
+  ManagedSlackConnectionSchema.refine((value) => value.status === 'active'),
+])
+
+export const ManagedSlackDisconnectResponseSchema = z.object({
+  ok: z.literal(true),
+  status: z.literal('disconnected'),
 })
 
 // The pinned effective agent tuple (design 009 §3.5) the session ran with. `runtime`
@@ -837,6 +866,15 @@ export type FlueSourceInspection = z.infer<typeof FlueSourceInspectionSchema>
 export type Credential = z.infer<typeof CredentialSchema>
 export type SlackConnection = z.infer<typeof SlackConnectionSchema>
 export type SlackManifestResponse = z.infer<typeof SlackManifestResponseSchema>
+export type ManagedSlackAuthorizeResponse = z.infer<
+  typeof ManagedSlackAuthorizeResponseSchema
+>
+export type ManagedSlackConnection = z.infer<
+  typeof ManagedSlackConnectionSchema
+>
+export type ManagedSlackDisconnectResponse = z.infer<
+  typeof ManagedSlackDisconnectResponseSchema
+>
 export type Session = z.infer<typeof SessionSchema>
 export type AgentSnapshot = z.infer<typeof AgentSnapshotSchema>
 export type SessionEvent = z.infer<typeof SessionEventSchema>
