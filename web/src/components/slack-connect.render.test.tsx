@@ -8,14 +8,16 @@ const agentId = 'agt_aaaaaaaaaaaaaaaaaaaaaaaa'
 const connectedAgentId = 'agt_bbbbbbbbbbbbbbbbbbbbbbbb'
 
 function renderSlackConnect(
-  managed: Record<string, unknown> | null,
+  managed: Record<string, unknown> | null | undefined,
   url = `/agents/${agentId}`,
   connectedAgentName?: string,
 ) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   })
-  queryClient.setQueryData(['slack', 'managed', agentId], managed)
+  if (managed !== undefined) {
+    queryClient.setQueryData(['slack', 'managed', agentId], managed)
+  }
   queryClient.setQueryData(['slack', 'byo', agentId], null)
   if (connectedAgentName) {
     queryClient.setQueryData(['agent', connectedAgentId], {
@@ -34,6 +36,29 @@ function renderSlackConnect(
 }
 
 describe('SlackConnect managed states', () => {
+  it('waits for authoritative connection state before showing OAuth success', () => {
+    const loadingMarkup = renderSlackConnect(
+      undefined,
+      `/agents/${agentId}?slack=connected`,
+    )
+    expect(loadingMarkup).not.toContain('Slack connected')
+
+    const connectedMarkup = renderSlackConnect(
+      {
+        mode: 'managed',
+        status: 'active',
+        workspace: { id: 'T1', name: 'Acme' },
+        app: { id: 'A1', handle: 'OpenComputer' },
+        connected_at: '2026-07-16T18:00:00Z',
+      },
+      `/agents/${agentId}?slack=connected`,
+    )
+    expect(connectedMarkup).toContain('Slack connected')
+    expect(connectedMarkup).toContain(
+      'OpenComputer will send messages in Acme to Support triage.',
+    )
+  })
+
   it('preserves disconnected lifecycle truth and offers reconnection', () => {
     const markup = renderSlackConnect({
       mode: 'managed',
