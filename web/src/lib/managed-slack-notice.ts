@@ -57,8 +57,8 @@ export function managedSlackNotice(
       return {
         title: 'This Slack workspace is already connected',
         description: connectedAgentName
-          ? `This workspace sends messages to ${connectedAgentName}.`
-          : 'Use your own Slack app for this agent.',
+          ? `This workspace sends messages to ${connectedAgentName}. Disconnect it below before connecting it to ${agentName}.`
+          : 'Connect a different workspace or use your own Slack app for this agent.',
         destructive: true,
       }
     case 'oauth_exchange_failed':

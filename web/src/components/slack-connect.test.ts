@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { managedSlackNotice } from '@/lib/managed-slack-notice'
+import { managedSlackDisconnectCopy } from '@/lib/managed-slack-connections'
 
 describe('managed Slack OAuth notices', () => {
   it('uses the active connection data for a successful return', () => {
@@ -34,13 +35,40 @@ describe('managed Slack OAuth notices', () => {
         'Docs writer',
       ),
     ).toMatchObject({
-      description: 'This workspace sends messages to Docs writer.',
+      description:
+        'This workspace sends messages to Docs writer. Disconnect it below before connecting it to Support triage.',
     })
   })
 
   it('does not suggest an inaccessible agent for a cross-owner conflict', () => {
     expect(
       managedSlackNotice('workspace_already_connected', null, 'Support triage'),
-    ).toMatchObject({ description: 'Use your own Slack app for this agent.' })
+    ).toMatchObject({
+      description:
+        'Connect a different workspace or use your own Slack app for this agent.',
+    })
+  })
+
+  it('states the impact before moving a workspace between agents', () => {
+    expect(
+      managedSlackDisconnectCopy(
+        {
+          mode: 'managed',
+          status: 'active',
+          workspace: { id: 'T1', name: 'Acme' },
+          app: { id: 'A1', handle: 'OpenComputer' },
+          connected_at: '2026-07-16T18:00:00Z',
+          agent: {
+            id: 'agt_bbbbbbbbbbbbbbbbbbbbbbbb',
+            name: 'Docs writer',
+          },
+        },
+        'Support triage',
+      ),
+    ).toEqual({
+      title: 'Disconnect Acme from Docs writer?',
+      description:
+        'New Slack messages from Acme will stop going to Docs writer. The agent and its existing sessions stay available, and the OpenComputer app stays installed. After disconnecting, connect Slack again and select this workspace for Support triage.',
+    })
   })
 })

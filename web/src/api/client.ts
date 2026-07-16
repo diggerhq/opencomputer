@@ -38,6 +38,7 @@ export type {
   RepositorySourceInspection,
   ManagedSlackAuthorizeResponse,
   ManagedSlackConnection,
+  ManagedSlackWorkspaceConnection,
   ManagedSlackDisconnectResponse,
   Session,
   AgentSnapshot,
@@ -850,6 +851,13 @@ export async function getManagedSlackConnection(agentId: string) {
     throw error
   }
 }
+
+export const getManagedSlackConnections = () =>
+  apiFetch(
+    '/v3/slack/managed/connections',
+    {},
+    S.ManagedSlackWorkspaceConnectionListSchema,
+  ).then((result) => result.data)
 
 export const disconnectManagedSlack = (agentId: string) =>
   apiFetch(

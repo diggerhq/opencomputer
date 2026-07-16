@@ -33,9 +33,11 @@ import {
 } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/form'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { ManagedSlackWorkspaceClaims } from '@/components/managed-slack-workspace-claims'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import { cn } from '@/lib/utils'
 import { managedSlackNotice } from '@/lib/managed-slack-notice'
+import { useManagedSlackConnections } from '@/lib/managed-slack-connections'
 
 // An agent connects its OWN Slack app (BYO, 1:1:1). Connect is a two-step,
 // manifest-route wizard (oc-bg-agents/.agents/design/008-slack-presence.md §2):
@@ -131,6 +133,7 @@ export function SlackConnect({
     queryKey: ['slack', 'managed', agentId],
     queryFn: () => getManagedSlackConnection(agentId),
   })
+  const managedConnectionsQuery = useManagedSlackConnections(!!agentId)
 
   // Wizard state.
   const [open, setOpen] = useState(false)
@@ -239,6 +242,15 @@ export function SlackConnect({
     managed?.status === 'error' || managed?.status === 'revoked'
   const managedDisconnected = managed?.status === 'disconnected'
   const managedWorkspace = managed?.workspace?.name || managed?.workspace?.id
+  const hasOtherManagedConnections =
+    managedConnectionsQuery.data?.some(
+      (connection) => connection.agent.id !== agentId,
+    ) ?? false
+  const checkingManagedConnections =
+    !managedActive &&
+    !managedNeedsReconnect &&
+    !managedDisconnected &&
+    managedConnectionsQuery.isLoading
   const oauthResult = searchParams.get('slack')
   const connectedAgentId = searchParams.get('connected_agent')
   const sameOwnerConnectedAgentId =
@@ -431,14 +443,26 @@ export function SlackConnect({
                 Anyone in this Slack workspace who can message the app can use
                 this agent.
               </p>
+              <ManagedSlackWorkspaceClaims
+                currentAgentId={agentId}
+                currentAgentName={agentName}
+                query={managedConnectionsQuery}
+              />
               <Button
                 size="sm"
                 onClick={() => authorizeManagedMutation.mutate()}
-                disabled={authorizeManagedMutation.isPending}
+                disabled={
+                  authorizeManagedMutation.isPending ||
+                  checkingManagedConnections
+                }
               >
-                {authorizeManagedMutation.isPending
-                  ? 'Connecting…'
-                  : 'Connect OpenComputer Slack'}
+                {checkingManagedConnections
+                  ? 'Checking Slack…'
+                  : authorizeManagedMutation.isPending
+                    ? 'Connecting…'
+                    : hasOtherManagedConnections
+                      ? 'Connect another workspace'
+                      : 'Connect OpenComputer Slack'}
               </Button>
             </div>
           )}

@@ -2,7 +2,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
-import type { AgentDeployment, Session, SessionEvent } from '@/api/client'
+import type {
+  AgentDeployment,
+  ManagedSlackWorkspaceConnection,
+  Session,
+  SessionEvent,
+} from '@/api/client'
+import { managedSlackConnectionsQueryKey } from '@/lib/managed-slack-connections'
 import AgentSetup from './AgentSetup'
 
 const agentId = 'agt_aaaaaaaaaaaaaaaaaaaaaaaa'
@@ -61,8 +67,8 @@ const buildingDeployment: AgentDeployment = {
 }
 
 const activeSlack = {
-  mode: 'managed',
-  status: 'active',
+  mode: 'managed' as const,
+  status: 'active' as const,
   workspace: { id: 'T1', name: 'Acme' },
   app: { id: 'A1', handle: 'OpenComputer' },
   open_url: 'https://slack.com/app_redirect?app=A1&team=T1',
@@ -76,6 +82,7 @@ function renderSetup(input: {
   agent?: Record<string, unknown>
   sessions?: Session[]
   events?: { sessionId: string; data: SessionEvent[] }
+  managedConnections?: ManagedSlackWorkspaceConnection[]
 }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
@@ -99,6 +106,10 @@ function renderSetup(input: {
   if ('managed' in input) {
     queryClient.setQueryData(['slack', 'managed', agentId], input.managed)
   }
+  queryClient.setQueryData(
+    managedSlackConnectionsQueryKey,
+    input.managedConnections ?? [],
+  )
   if (input.sessions) {
     queryClient.setQueryData(
       [
@@ -225,6 +236,29 @@ describe('agent setup', () => {
     expect(markup).toContain('Hello! Your agent is ready.')
     expect(markup).toContain(`href="/sessions/${sessionId}"`)
     expect(markup).toContain(`href="/agents/${agentId}/sessions"`)
+    expect(markup).toContain(`href="/agents/${agentId}"`)
+    expect(markup).toContain('>View agent<')
+  })
+
+  it('shows an existing workspace claim before OAuth', () => {
+    const connectedAgentId = 'agt_bbbbbbbbbbbbbbbbbbbbbbbb'
+    const markup = renderSetup({
+      deployment: buildingDeployment,
+      managed: null,
+      managedConnections: [
+        {
+          ...activeSlack,
+          agent: { id: connectedAgentId, name: 'Docs writer' },
+        },
+      ],
+      search: `?deployment=${deploymentId}`,
+    })
+
+    expect(markup).toContain('Slack workspaces already in use')
+    expect(markup).toContain('Sends messages to Docs writer')
+    expect(markup).toContain(`href="/agents/${connectedAgentId}"`)
+    expect(markup).toContain('>Disconnect</button>')
+    expect(markup).toContain('>Connect another workspace</button>')
   })
 
   it('uses the same activation flow for a manually created agent', () => {

@@ -78,6 +78,12 @@ Choose **Agents → Create agent → Import from GitHub**, install the OpenCompu
 
 Review and import are intentionally separate. Import rechecks the exact source plan; if the repository changed in between, nothing is created and the dashboard asks you to review again. A successful import returns the new agent and its first deployment immediately, then opens guided setup instead of making you wait on a log screen. Connect Slack while the deployment continues in the background; its compact phases and expandable log remain available. When both are ready, setup changes to **Open Slack** without a refresh and invites you to send the first message. Manually configured agents use the same setup journey.
 
+If one of your Slack workspaces already sends messages to another agent, setup
+shows that claim before OAuth. Open the connected agent, choose another
+workspace, or disconnect it in place after reviewing the routing impact. A
+completed first conversation adds direct exits to the agent home, full session,
+session history, and Slack.
+
 The repository picker marks roots already used by another agent before review.
 An exact linked root cannot be reviewed again: open its owning agent, choose a
 different monorepo root, or unlink it in place after confirming that

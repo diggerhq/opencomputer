@@ -3,6 +3,7 @@ import { authorizeManagedSlack } from './client'
 import {
   ManagedSlackAuthorizeResponseSchema,
   ManagedSlackConnectionSchema,
+  ManagedSlackWorkspaceConnectionListSchema,
 } from './schemas'
 
 afterEach(() => {
@@ -21,6 +22,25 @@ describe('managed Slack response schemas', () => {
     })
 
     expect(result.status).toBe('active')
+    expect(JSON.stringify(result)).not.toContain('xoxb-')
+  })
+
+  it('accepts owner-scoped workspace claims without credentials', () => {
+    const result = ManagedSlackWorkspaceConnectionListSchema.parse({
+      data: [
+        {
+          mode: 'managed',
+          status: 'active',
+          workspace: { id: 'T1', name: 'Acme' },
+          app: { id: 'A1', handle: 'OpenComputer' },
+          open_url: 'https://slack.com/app_redirect?app=A1&team=T1',
+          connected_at: '2026-07-16T18:00:00Z',
+          agent: { id: 'agt_1', name: 'Support triage' },
+        },
+      ],
+    })
+
+    expect(result.data[0]?.agent.name).toBe('Support triage')
     expect(JSON.stringify(result)).not.toContain('xoxb-')
   })
 

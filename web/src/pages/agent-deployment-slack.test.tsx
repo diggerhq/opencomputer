@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 import type { AgentDeployment as AgentDeploymentRecord } from '@/api/client'
 import AgentDeployment from './AgentDeployment'
+import { managedSlackConnectionsQueryKey } from '@/lib/managed-slack-connections'
 
 const agentId = 'agt_aaaaaaaaaaaaaaaaaaaaaaaa'
 const deploymentId = 'dep_aaaaaaaaaaaaaaaaaaaaaaaa'
@@ -65,6 +66,7 @@ function renderDeployment(
   managed: Record<string, unknown> | null | undefined,
   search = '',
   connectedAgentName?: string,
+  managedConnections: Array<Record<string, unknown>> = [],
 ) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
@@ -84,6 +86,7 @@ function renderDeployment(
   if (managed !== undefined) {
     queryClient.setQueryData(['slack', 'managed', agentId], managed)
   }
+  queryClient.setQueryData(managedSlackConnectionsQueryKey, managedConnections)
   if (connectedAgentName) {
     queryClient.setQueryData(['agent', connectedAgentId], {
       id: connectedAgentId,
@@ -148,7 +151,26 @@ describe('deployment managed Slack composition', () => {
       null,
       '?slack=workspace_already_connected&connected_agent=agt_not-an-id',
     )
-    expect(malformed).toContain('Use your own Slack app for this agent.')
+    expect(malformed).toContain(
+      'Connect a different workspace or use your own Slack app for this agent.',
+    )
     expect(malformed).not.toContain('Open connected agent')
+  })
+
+  it('surfaces a known workspace claim before starting OAuth', () => {
+    const markup = renderDeployment(null, '', undefined, [
+      {
+        mode: 'managed',
+        status: 'active',
+        workspace: { id: 'T1', name: 'Acme' },
+        app: { id: 'A1', handle: 'OpenComputer' },
+        connected_at: '2026-07-16T18:00:00Z',
+        agent: { id: connectedAgentId, name: 'Docs writer' },
+      },
+    ])
+
+    expect(markup).toContain('Slack workspaces already in use')
+    expect(markup).toContain('Sends messages to Docs writer')
+    expect(markup).toContain('Connect another workspace')
   })
 })

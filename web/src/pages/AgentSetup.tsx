@@ -33,6 +33,7 @@ import {
 } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
 import { MessageBubble } from '@/components/session-conversation'
+import { ManagedSlackWorkspaceClaims } from '@/components/managed-slack-workspace-claims'
 import {
   Alert,
   AlertAction,
@@ -54,6 +55,7 @@ import {
 import { deploymentStage } from '@/lib/deployment-slack-cta'
 import { notifyError } from '@/lib/errors'
 import { managedSlackNotice } from '@/lib/managed-slack-notice'
+import { useManagedSlackConnections } from '@/lib/managed-slack-connections'
 import { latestManagedSlackSession } from '@/lib/managed-slack-session'
 import {
   bodyText,
@@ -147,6 +149,7 @@ export default function AgentSetup() {
         : false,
     refetchOnWindowFocus: 'always',
   })
+  const managedSlackConnectionsQuery = useManagedSlackConnections(!!agentId)
   const connectedAgentQuery = useQuery({
     queryKey: ['agent', sameOwnerConnectedAgentId],
     queryFn: () => getAgent(sameOwnerConnectedAgentId!),
@@ -279,6 +282,12 @@ export default function AgentSetup() {
     connecting: authorizeManagedSlackMutation.isPending,
     activated: !!activationSession,
   })
+  const hasOtherManagedSlackConnections =
+    managedSlackConnectionsQuery.data?.some(
+      (connection) => connection.agent.id !== agentId,
+    ) ?? false
+  const checkingManagedSlackConnections =
+    presentation.action === 'connect' && managedSlackConnectionsQuery.isLoading
   const managedWorkspace =
     managedSlack?.workspace?.name ?? managedSlack?.workspace?.id
   const waitingForConnectedState =
@@ -405,32 +414,57 @@ export default function AgentSetup() {
                 {presentation.description}
               </p>
 
+              {presentation.action === 'connect' ? (
+                <ManagedSlackWorkspaceClaims
+                  currentAgentId={agentId}
+                  currentAgentName={agent.name}
+                  query={managedSlackConnectionsQuery}
+                  className="mt-4"
+                />
+              ) : null}
+
               <div className="mt-4 flex flex-wrap items-center gap-3">
                 {presentation.action === 'open' && managedSlack?.open_url ? (
-                  <Button asChild>
-                    <a
-                      href={managedSlack.open_url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {presentation.label}
-                      <ExternalLink className="size-4" />
-                    </a>
-                  </Button>
+                  <>
+                    <Button asChild>
+                      <a
+                        href={managedSlack.open_url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {presentation.label}
+                        <ExternalLink className="size-4" />
+                      </a>
+                    </Button>
+                    {activationSession ? (
+                      <Button variant="outline" asChild>
+                        <Link to={`/agents/${agentId}`}>View agent</Link>
+                      </Button>
+                    ) : null}
+                  </>
                 ) : presentation.action === 'connect' ||
                   presentation.action === 'reconnect' ||
                   presentation.action === 'connecting' ? (
                   <Button
-                    disabled={authorizeManagedSlackMutation.isPending}
+                    disabled={
+                      authorizeManagedSlackMutation.isPending ||
+                      checkingManagedSlackConnections
+                    }
                     onClick={() => authorizeManagedSlackMutation.mutate()}
                   >
-                    {authorizeManagedSlackMutation.isPending ? (
+                    {authorizeManagedSlackMutation.isPending ||
+                    checkingManagedSlackConnections ? (
                       <Loader2
                         className="size-4 animate-spin motion-reduce:animate-none"
                         aria-hidden
                       />
                     ) : null}
-                    {presentation.label}
+                    {checkingManagedSlackConnections
+                      ? 'Checking Slack…'
+                      : presentation.action === 'connect' &&
+                          hasOtherManagedSlackConnections
+                        ? 'Connect another workspace'
+                        : presentation.label}
                   </Button>
                 ) : stage === 'failed' && deploymentHref ? (
                   <Button asChild>

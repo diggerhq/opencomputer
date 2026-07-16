@@ -16,6 +16,14 @@ opens guided setup; choose **Connect Slack**, approve the workspace
 installation, and return to the same setup page. You can also connect or manage
 Slack later from the agent overview.
 
+Before sending you to Slack, the dashboard lists any workspace in your account
+that already sends messages to another agent. You can open that agent, connect a
+different workspace, or disconnect the workspace in place. The confirmation
+names the affected agent and explains that new Slack messages stop routing to
+it; the agent, existing sessions, and installed OpenComputer app remain. OAuth
+still checks the claim again in case another tab connects the workspace after
+this preflight.
+
 You can connect Slack while a repository deployment is still running. The
 connection remains in place if that deployment fails, but the app cannot run a
 message until the agent has a ready deployment. A message sent too early gets a
@@ -59,6 +67,9 @@ if ("authorizeUrl" in authorization) {
 const connection = await oc.agents.getManagedSlack(agentId);
 // { mode: "managed", status: "active", workspace, app, openUrl, ... }
 
+const { data: workspaceClaims } = await oc.agents.listManagedSlackConnections();
+// [{ workspace, app, agent: { id, name }, status, ... }]
+
 await oc.agents.disconnectManagedSlack(agentId);
 ```
 
@@ -66,6 +77,7 @@ await oc.agents.disconnectManagedSlack(agentId);
 POST   https://api.opencomputer.dev/v3/agents/{agent_id}/slack/managed/authorize
 GET    https://api.opencomputer.dev/v3/agents/{agent_id}/slack/managed
 DELETE https://api.opencomputer.dev/v3/agents/{agent_id}/slack/managed
+GET    https://api.opencomputer.dev/v3/slack/managed/connections
 Authorization: Bearer $OPENCOMPUTER_API_KEY
 
 // optional authorize body

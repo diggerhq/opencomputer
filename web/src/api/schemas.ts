@@ -817,6 +817,15 @@ export const ManagedSlackConnectionSchema = z.object({
   error_code: z.string().nullish(),
 })
 
+export const ManagedSlackWorkspaceConnectionSchema =
+  ManagedSlackConnectionSchema.extend({
+    agent: z.object({ id: z.string(), name: z.string() }),
+  })
+
+export const ManagedSlackWorkspaceConnectionListSchema = z.object({
+  data: z.array(ManagedSlackWorkspaceConnectionSchema),
+})
+
 // A race-safe authorize is idempotent: if the connection became active after
 // the dashboard status read, the API returns that active connection instead of
 // minting another OAuth intent.
@@ -972,6 +981,9 @@ export type ManagedSlackAuthorizeResponse = z.infer<
 >
 export type ManagedSlackConnection = z.infer<
   typeof ManagedSlackConnectionSchema
+>
+export type ManagedSlackWorkspaceConnection = z.infer<
+  typeof ManagedSlackWorkspaceConnectionSchema
 >
 export type ManagedSlackDisconnectResponse = z.infer<
   typeof ManagedSlackDisconnectResponseSchema

@@ -78,6 +78,11 @@ export interface ManagedSlackConnection {
   errorCode?: string | null;
 }
 
+/** One current owner-scoped workspace claim for pre-OAuth conflict discovery. */
+export interface ManagedSlackWorkspaceConnection extends ManagedSlackConnection {
+  agent: { id: string; name: string };
+}
+
 /** Reusable agents — the "what" a session runs. */
 export class Agents {
   /** Deploy behavior (inline or from a linked repo) — each deployment produces a revision. */
@@ -155,6 +160,10 @@ export class Agents {
   /** Current managed installation/connection state. */
   getManagedSlack(id: string): Promise<ManagedSlackConnection> {
     return this.http.request("GET", `/agents/${id}/slack/managed`);
+  }
+  /** Current workspaces already routed to this owner's agents. */
+  listManagedSlackConnections(): Promise<Page<ManagedSlackWorkspaceConnection>> {
+    return this.http.request("GET", "/slack/managed/connections");
   }
   /** Disconnect this agent without uninstalling the shared app from Slack. */
   disconnectManagedSlack(id: string): Promise<{ ok: true; status: "disconnected" }> {

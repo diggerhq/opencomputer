@@ -35,6 +35,7 @@ import {
   DeploymentPhases,
 } from '@/components/deployment-progress'
 import { SourceProfileChangedRecovery } from '@/components/source-profile-changed-recovery'
+import { ManagedSlackWorkspaceClaims } from '@/components/managed-slack-workspace-claims'
 import {
   Panel,
   PanelContent,
@@ -50,6 +51,7 @@ import {
 } from '@/lib/deployment-slack-cta'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import { managedSlackNotice } from '@/lib/managed-slack-notice'
+import { useManagedSlackConnections } from '@/lib/managed-slack-connections'
 import { cn } from '@/lib/utils'
 import { useAgentDeploymentLogs } from '@/hooks/use-agent-deployment-logs'
 
@@ -168,6 +170,7 @@ export default function AgentDeployment() {
     enabled: !!agentId,
     refetchOnWindowFocus: 'always',
   })
+  const managedSlackConnectionsQuery = useManagedSlackConnections(!!agentId)
   const oauthResult = searchParams.get('slack')
   const connectedAgentId = searchParams.get('connected_agent')
   const sameOwnerConnectedAgentId =
@@ -326,6 +329,13 @@ export default function AgentDeployment() {
     connectedAgentQuery.data && sameOwnerConnectedAgentId
       ? `/agents/${encodeURIComponent(sameOwnerConnectedAgentId)}`
       : null
+  const hasOtherManagedSlackConnections =
+    managedSlackConnectionsQuery.data?.some(
+      (connection) => connection.agent.id !== agentId,
+    ) ?? false
+  const checkingManagedSlackConnections =
+    slackPresentation.action === 'connect' &&
+    managedSlackConnectionsQuery.isLoading
   const dismissSlackNotice = () => {
     const next = new URLSearchParams(searchParams)
     next.delete('slack')
@@ -445,10 +455,18 @@ export default function AgentDeployment() {
                 slackPresentation.action === 'connecting' ? (
                 <Button
                   size="sm"
-                  disabled={authorizeManagedSlackMutation.isPending}
+                  disabled={
+                    authorizeManagedSlackMutation.isPending ||
+                    checkingManagedSlackConnections
+                  }
                   onClick={() => authorizeManagedSlackMutation.mutate()}
                 >
-                  {slackPresentation.label}
+                  {checkingManagedSlackConnections
+                    ? 'Checking Slack…'
+                    : slackPresentation.action === 'connect' &&
+                        hasOtherManagedSlackConnections
+                      ? 'Connect another workspace'
+                      : slackPresentation.label}
                 </Button>
               ) : null}
             </div>
@@ -497,6 +515,19 @@ export default function AgentDeployment() {
             </Button>
           </AlertAction>
         </Alert>
+      ) : null}
+
+      {slackPresentation.action === 'connect' && agent ? (
+        <Panel>
+          <PanelContent>
+            <ManagedSlackWorkspaceClaims
+              currentAgentId={agentId}
+              currentAgentName={agent.name}
+              query={managedSlackConnectionsQuery}
+              className="border-t-0 pt-0"
+            />
+          </PanelContent>
+        </Panel>
       ) : null}
 
       {deployLatestMutation.isError ? (

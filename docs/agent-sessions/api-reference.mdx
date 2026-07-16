@@ -753,6 +753,7 @@ context, not a redirect URL. Status responses never contain credentials.
 | --- | --- |
 | `oc.agents.authorizeManagedSlack(id, { returnDeploymentId? })` | Start managed-app OAuth. |
 | `oc.agents.getManagedSlack(id)` | Read workspace, app identity, state, and `openUrl`. |
+| `oc.agents.listManagedSlackConnections()` | List this owner's current workspace claims and owning agents before OAuth. |
 | `oc.agents.disconnectManagedSlack(id)` | Stop routing this agent without uninstalling the workspace app. |
 
 </Tab>
@@ -764,6 +765,7 @@ context, not a redirect URL. Status responses never contain credentials.
 | `POST /agents/:id/slack/managed/authorize` | Start managed-app OAuth; accepts `return_deployment_id?`. |
 | `GET /agents/:id/slack/managed` | Read the managed connection. |
 | `DELETE /agents/:id/slack/managed` | Disconnect the agent from the shared app. |
+| `GET /slack/managed/connections` | List current owner-scoped workspace claims with safe agent id/name projections. |
 
 </Tab>
 
@@ -772,6 +774,10 @@ context, not a redirect URL. Status responses never contain credentials.
 The managed status is `active`, `disconnected`, `error`, or `revoked`. An active
 response includes `workspace`, `app`, `open_url`, and `connected_at`; error
 states expose only a stable `error_code`.
+The connection list returns `{ data }`; each item has the same public status
+shape plus `agent: { id, name }`. It contains no Slack token, signing secret, or
+credential reference. Treat it as a preflight convenience: authorization still
+enforces the one-workspace-to-one-agent claim transactionally.
 
 Builder-owned Slack apps remain a separate resource and can overlap during an
 explicit handoff:
