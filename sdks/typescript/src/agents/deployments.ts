@@ -90,9 +90,12 @@ export interface DeploymentSource {
   repoId: string;
   path: string;
   productionRef: string;
-  status: string; // active|path_missing|ref_missing|auth_required|repo_not_selected|app_suspended|error
+  status: string; // active|source_profile_changed|path_missing|ref_missing|auth_required|repo_not_selected|app_suspended|error
   latestSeenSha?: string | null;
   activeDeployedSha?: string | null;
+  sourceProfile?: "flue-app-v1" | null;
+  sourceProfileVersion?: 1 | null;
+  reviewFingerprint?: string | null;
 }
 
 export interface LinkParams {

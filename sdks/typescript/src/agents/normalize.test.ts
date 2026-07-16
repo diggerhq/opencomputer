@@ -31,6 +31,13 @@ describe("normalize (API response → idiomatic TS)", () => {
     });
     expect(out.refs).toEqual({ pull_number: 42, owner_repo: "acme/widgets", nested: { keep_me: true } });
   });
+
+  it("passes manifest vars through verbatim", () => {
+    const out = normalize<{ vars?: Record<string, unknown> }>({
+      vars: { api_url: "https://example.test", nested_value: { keep_me: true } },
+    });
+    expect(out.vars).toEqual({ api_url: "https://example.test", nested_value: { keep_me: true } });
+  });
 });
 
 describe("serialize (request body → snake_case)", () => {
@@ -43,5 +50,10 @@ describe("serialize (request body → snake_case)", () => {
   it("leaves refs opaque on request bodies", () => {
     const out = serialize({ refs: { pullNumber: 42, owner_repo: "acme/widgets" } }) as Record<string, unknown>;
     expect(out.refs).toEqual({ pullNumber: 42, owner_repo: "acme/widgets" });
+  });
+
+  it("leaves vars opaque on request bodies", () => {
+    const out = serialize({ vars: { apiUrl: "https://example.test", keep_me: true } }) as Record<string, unknown>;
+    expect(out.vars).toEqual({ apiUrl: "https://example.test", keep_me: true });
   });
 });

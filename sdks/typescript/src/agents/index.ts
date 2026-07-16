@@ -12,6 +12,13 @@ export type {
   CreateAgentParams, UpdateAgentParams, Page,
   SlackManifest, SlackConnection, ConnectSlackParams,
 } from "./agents.js";
+export { AgentRepository } from "./repository-agents.js";
+export type {
+  SourceProfileId, RepositoryAgentSource, ReviewRepositoryAgentParams,
+  RepositoryReviewIssue, RepositoryCandidateRoot, FlueSourceProfile,
+  RepositorySourceInterpretation, RepositoryAgentReview, RepositoryReviewReceipt,
+  ImportRepositoryAgentParams, ImportRepositoryAgentResult,
+} from "./repository-agents.js";
 export {
   Deployments, Revisions, Activations, Skills, DeploymentSourceResource,
 } from "./deployments.js";
