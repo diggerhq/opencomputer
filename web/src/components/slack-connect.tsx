@@ -185,8 +185,12 @@ export function SlackConnect({
 
   const authorizeManagedMutation = useMutation({
     mutationFn: () => authorizeManagedSlack(agentId),
-    onSuccess: ({ authorize_url }) => {
-      window.location.assign(authorize_url)
+    onSuccess: (result) => {
+      if ('authorize_url' in result) {
+        window.location.assign(result.authorize_url)
+        return
+      }
+      void invalidateManaged()
     },
     onError: (error) =>
       notifyError("Couldn't start the Slack connection.", error),

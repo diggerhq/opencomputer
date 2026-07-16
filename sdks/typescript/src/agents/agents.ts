@@ -142,7 +142,7 @@ export class Agents {
   authorizeManagedSlack(
     id: string,
     opts: { returnDeploymentId?: string } = {},
-  ): Promise<ManagedSlackAuthorization> {
+  ): Promise<ManagedSlackAuthorization | ManagedSlackConnection> {
     return this.http.request("POST", `/agents/${id}/slack/managed/authorize`, {
       body: opts,
     });
