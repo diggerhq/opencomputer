@@ -619,6 +619,53 @@ that deploy auto-activates. Repo/path are server-anchored to the link. Deploymen
 
 **`Run`** — one per firing decision, newest-first: `srn_…` with `outcome` (`enacted` · `skipped` · `failed`), `scheduled_for?` (`null` for a manual fire), `fired_at`, `session_id?` (when enacted), `error?`. Chain `session_id` into `GET /sessions/:id`.
 
+## Slack
+
+Managed Slack uses the OpenComputer-operated app. Starting authorization
+returns a browser-safe Slack OAuth URL; the optional deployment id is validated
+return context, not a redirect URL. Status responses never contain credentials.
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `oc.agents.authorizeManagedSlack(id, { returnDeploymentId? })` | Start managed-app OAuth. |
+| `oc.agents.getManagedSlack(id)` | Read workspace, app identity, state, and `openUrl`. |
+| `oc.agents.disconnectManagedSlack(id)` | Stop routing this agent without uninstalling the workspace app. |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST /agents/:id/slack/managed/authorize` | Start managed-app OAuth; accepts `return_deployment_id?`. |
+| `GET /agents/:id/slack/managed` | Read the managed connection. |
+| `DELETE /agents/:id/slack/managed` | Disconnect the agent from the shared app. |
+
+</Tab>
+
+</Tabs>
+
+The managed status is `active`, `disconnected`, `error`, or `revoked`. An active
+response includes `workspace`, `app`, `open_url`, and `connected_at`; error
+states expose only a stable `error_code`.
+
+Builder-owned Slack apps remain a separate resource and can overlap during an
+explicit handoff:
+
+| TypeScript SDK | REST API |
+| --- | --- |
+| `oc.agents.slackManifest(id)` | `POST /agents/:id/slack/manifest` |
+| `oc.agents.connectSlack(id, values)` | `POST /agents/:id/slack` |
+| `oc.agents.getSlack(id)` | `GET /agents/:id/slack` |
+| `oc.agents.disconnectSlack(id)` | `DELETE /agents/:id/slack` |
+
+See [Slack](/agent-sessions/slack) for installation, trust boundaries, and
+conversation behavior.
+
 ## Destinations
 
 *Webhooks are configured via SDK/REST (no `oc` command).*

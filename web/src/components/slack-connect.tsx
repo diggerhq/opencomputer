@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Copy, ExternalLink } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { Check, Copy, ExternalLink, X } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
+  authorizeManagedSlack,
+  disconnectManagedSlack,
+  getManagedSlackConnection,
   getSlackConnection,
   startSlackConnect,
   completeSlackConnect,
@@ -11,6 +15,13 @@ import {
 import type { SlackManifestResponse } from '@/api/schemas'
 import { Panel, PanelContent } from '@/components/panel'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from '@/components/ui/alert'
 import {
   Dialog,
   DialogContent,
@@ -23,6 +34,7 @@ import { Field, Input } from '@/components/form'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import { cn } from '@/lib/utils'
+import { managedSlackNotice } from '@/lib/managed-slack-notice'
 
 // An agent connects its OWN Slack app (BYO, 1:1:1). Connect is a two-step,
 // manifest-route wizard (oc-bg-agents/.agents/design/008-slack-presence.md §2):
@@ -87,22 +99,31 @@ export function SlackConnect({
   agentId,
   agentName,
   autoOpen = false,
+  canOpenSlack = true,
 }: {
   agentId: string
   agentName: string
   autoOpen?: boolean
+  canOpenSlack?: boolean
 }) {
   const queryClient = useQueryClient()
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: ['slack', agentId] })
+  const [searchParams, setSearchParams] = useSearchParams()
+  const invalidateByo = () =>
+    queryClient.invalidateQueries({ queryKey: ['slack', 'byo', agentId] })
+  const invalidateManaged = () =>
+    queryClient.invalidateQueries({ queryKey: ['slack', 'managed', agentId] })
 
   const {
     data: conn,
     isLoading,
     isError,
   } = useQuery({
-    queryKey: ['slack', agentId],
+    queryKey: ['slack', 'byo', agentId],
     queryFn: () => getSlackConnection(agentId),
+  })
+  const managedQuery = useQuery({
+    queryKey: ['slack', 'managed', agentId],
+    queryFn: () => getManagedSlackConnection(agentId),
   })
 
   // Wizard state.
@@ -113,6 +134,8 @@ export function SlackConnect({
   const [botToken, setBotToken] = useState('')
   const [signingSecret, setSigningSecret] = useState('')
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
+  const [confirmManagedDisconnect, setConfirmManagedDisconnect] =
+    useState(false)
   const [copied, markCopied] = useTransientFlag(1500)
 
   const resetWizard = () => {
@@ -128,7 +151,7 @@ export function SlackConnect({
     onSuccess: (m) => {
       setManifest(m)
       setStep('create')
-      void invalidate() // the row is now pending
+      void invalidateByo() // the row is now pending
     },
     onError: (e) => notifyError("Couldn't start the Slack connection.", e),
   })
@@ -141,7 +164,7 @@ export function SlackConnect({
         signing_secret: signingSecret.trim(),
       }),
     onSuccess: () => {
-      void invalidate()
+      void invalidateByo()
       setStep('done')
       setAppId('')
       setBotToken('')
@@ -154,10 +177,29 @@ export function SlackConnect({
   const disconnectMutation = useMutation({
     mutationFn: () => disconnectSlack(agentId),
     onSuccess: () => {
-      void invalidate()
+      void invalidateByo()
       setConfirmDisconnect(false)
     },
     onError: (e) => notifyError("Couldn't disconnect Slack.", e),
+  })
+
+  const authorizeManagedMutation = useMutation({
+    mutationFn: () => authorizeManagedSlack(agentId),
+    onSuccess: ({ authorize_url }) => {
+      window.location.assign(authorize_url)
+    },
+    onError: (error) =>
+      notifyError("Couldn't start the Slack connection.", error),
+  })
+
+  const disconnectManagedMutation = useMutation({
+    mutationFn: () => disconnectManagedSlack(agentId),
+    onSuccess: () => {
+      void invalidateManaged()
+      setConfirmManagedDisconnect(false)
+    },
+    onError: (error) =>
+      notifyError("Couldn't disconnect OpenComputer Slack.", error),
   })
 
   const beginConnect = (reconnect = false) => {
@@ -181,6 +223,25 @@ export function SlackConnect({
   const isPending = status === 'pending'
   const isErrorStatus = status === 'error'
   const workspace = conn?.account_login || conn?.team_id || null
+  const managed = managedQuery.data
+  const managedActive = managed?.status === 'active'
+  const managedNeedsReconnect =
+    managed?.status === 'error' || managed?.status === 'revoked'
+  const managedWorkspace = managed?.workspace?.name || managed?.workspace?.id
+  const oauthResult = searchParams.get('slack')
+  const connectedAgentId = searchParams.get('connected_agent')
+  const notice = managedSlackNotice(oauthResult, managedWorkspace, agentName)
+  const connectedAgentHref =
+    oauthResult === 'workspace_already_connected' &&
+    connectedAgentId?.startsWith('agt_')
+      ? `/agents/${encodeURIComponent(connectedAgentId)}`
+      : null
+  const dismissNotice = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('slack')
+    next.delete('connected_agent')
+    setSearchParams(next, { replace: true })
+  }
   const stepIndex =
     step === 'create' ? 0 : step === 'details' ? 1 : step === 'install' ? 2 : 3
 
@@ -198,53 +259,229 @@ export function SlackConnect({
 
   return (
     <Panel className="overflow-hidden">
-      <PanelContent className="space-y-3">
+      <PanelContent className="space-y-4">
         <div className="text-muted-foreground text-xs font-medium">Slack</div>
-        {isLoading ? (
-          <p className="text-muted-foreground text-xs">Checking…</p>
-        ) : isError ? (
-          <p className="text-muted-foreground text-xs">
-            Slack status unavailable.
-          </p>
-        ) : isActive ? (
-          <div className="flex items-center justify-between gap-2">
-            <span className="truncate text-sm">
-              <span className="text-green-600 dark:text-green-500">●</span>{' '}
-              <span className="text-foreground font-medium">
-                @{conn?.handle}
-              </span>
-              {workspace ? (
-                <span className="text-muted-foreground"> · {workspace}</span>
+
+        {notice ? (
+          <Alert variant={notice.destructive ? 'destructive' : 'default'}>
+            <AlertTitle>{notice.title}</AlertTitle>
+            {notice.description || connectedAgentHref ? (
+              <AlertDescription>
+                {notice.description}{' '}
+                {connectedAgentHref ? (
+                  <Link to={connectedAgentHref}>Open connected agent</Link>
+                ) : null}
+              </AlertDescription>
+            ) : null}
+            <AlertAction>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Dismiss Slack notice"
+                onClick={dismissNotice}
+              >
+                <X aria-hidden />
+              </Button>
+            </AlertAction>
+          </Alert>
+        ) : null}
+
+        <section className="space-y-3" aria-labelledby="managed-slack-title">
+          <div className="space-y-1">
+            <h3 id="managed-slack-title" className="text-sm font-medium">
+              OpenComputer app
+            </h3>
+            {!managedActive ? (
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                Connect the shared app to try this agent in Slack.
+              </p>
+            ) : null}
+          </div>
+
+          {managedQuery.isLoading ? (
+            <div className="space-y-2" aria-label="Checking Slack connection">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-7 w-32" />
+            </div>
+          ) : managedQuery.isError ? (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-muted-foreground text-xs">
+                Managed Slack status is unavailable.
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void managedQuery.refetch()}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : managedActive ? (
+            <div className="space-y-2">
+              <div className="flex min-w-0 items-center gap-2 text-sm">
+                <span
+                  className="bg-status-running size-2 shrink-0 rounded-full"
+                  aria-hidden
+                />
+                <span className="sr-only">Connected.</span>
+                <span className="truncate">
+                  OpenComputer
+                  {managedWorkspace ? (
+                    <span className="text-muted-foreground">
+                      {' '}
+                      · {managedWorkspace}
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+              {!canOpenSlack ? (
+                <p className="text-muted-foreground text-xs">
+                  Connected. Deploy this agent before opening Slack.
+                </p>
               ) : null}
-            </span>
+              <div className="flex flex-wrap items-center gap-2">
+                {canOpenSlack && managed?.open_url ? (
+                  <Button asChild size="sm">
+                    <a href={managed.open_url} target="_blank" rel="noreferrer">
+                      Open Slack
+                      <ExternalLink aria-hidden />
+                    </a>
+                  </Button>
+                ) : null}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={() => setConfirmManagedDisconnect(true)}
+                >
+                  Disconnect
+                </Button>
+              </div>
+            </div>
+          ) : managedNeedsReconnect ? (
+            <div className="space-y-2">
+              <p className="text-status-error text-sm">
+                The OpenComputer app needs authorization.
+              </p>
+              <Button
+                size="sm"
+                onClick={() => authorizeManagedMutation.mutate()}
+                disabled={authorizeManagedMutation.isPending}
+              >
+                {authorizeManagedMutation.isPending
+                  ? 'Connecting…'
+                  : 'Reconnect Slack'}
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                Anyone in this Slack workspace who can message the app can use
+                this agent.
+              </p>
+              <Button
+                size="sm"
+                onClick={() => authorizeManagedMutation.mutate()}
+                disabled={authorizeManagedMutation.isPending}
+              >
+                {authorizeManagedMutation.isPending
+                  ? 'Connecting…'
+                  : 'Connect OpenComputer Slack'}
+              </Button>
+            </div>
+          )}
+        </section>
+
+        <section
+          className="space-y-2 border-t pt-3"
+          aria-labelledby="byo-slack-title"
+        >
+          <h3 id="byo-slack-title" className="text-sm font-medium">
+            Your app
+          </h3>
+          {managedActive && isActive ? (
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              Your app is active. Disconnect the OpenComputer app when the
+              handoff is complete.
+            </p>
+          ) : null}
+          {isLoading ? (
+            <Skeleton
+              className="h-7 w-28"
+              aria-label="Checking your Slack app"
+            />
+          ) : isError ? (
+            <p className="text-muted-foreground text-xs">
+              Your Slack app status is unavailable.
+            </p>
+          ) : isActive ? (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="min-w-0 truncate text-sm">
+                <span className="text-status-running" aria-hidden>
+                  ●
+                </span>{' '}
+                <span className="sr-only">Connected.</span>
+                <span className="text-foreground font-medium">
+                  @{conn?.handle}
+                </span>
+                {workspace ? (
+                  <span className="text-muted-foreground"> · {workspace}</span>
+                ) : null}
+              </span>
+              <div className="flex items-center gap-1">
+                {canOpenSlack && conn?.open_url ? (
+                  <Button asChild variant="outline" size="sm">
+                    <a href={conn.open_url} target="_blank" rel="noreferrer">
+                      Open Slack
+                      <ExternalLink aria-hidden />
+                    </a>
+                  </Button>
+                ) : null}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={() => setConfirmDisconnect(true)}
+                >
+                  Disconnect
+                </Button>
+              </div>
+            </div>
+          ) : isErrorStatus ? (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-status-error text-sm">
+                Connection error
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => beginConnect()}
+              >
+                Reconnect your app
+              </Button>
+            </div>
+          ) : isPending ? (
+            <div className="space-y-2">
+              <CompactSteps current={stepIndex} />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => beginConnect()}
+              >
+                Continue app setup
+              </Button>
+            </div>
+          ) : (
             <Button
-              variant="ghost"
+              variant="link"
               size="sm"
-              className="text-muted-foreground hover:text-foreground shrink-0"
-              onClick={() => setConfirmDisconnect(true)}
+              className="h-auto px-0"
+              onClick={() => beginConnect()}
             >
-              Disconnect
+              Use your own Slack app
             </Button>
-          </div>
-        ) : isErrorStatus ? (
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-status-error text-sm">● Connection error</span>
-            <Button variant="outline" size="sm" onClick={() => beginConnect()}>
-              Reconnect
-            </Button>
-          </div>
-        ) : isPending ? (
-          <div className="space-y-2">
-            <CompactSteps current={stepIndex} />
-            <Button variant="outline" size="sm" onClick={() => beginConnect()}>
-              Continue setup
-            </Button>
-          </div>
-        ) : (
-          <Button variant="outline" size="sm" onClick={() => beginConnect()}>
-            Connect Slack
-          </Button>
-        )}
+          )}
+        </section>
       </PanelContent>
 
       {/* Connect wizard */}
@@ -258,10 +495,12 @@ export function SlackConnect({
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              {step === 'done' ? 'Slack connected' : 'Connect Slack'}
+              {step === 'done'
+                ? 'Your Slack app is connected'
+                : 'Connect your own Slack app'}
             </DialogTitle>
             <DialogDescription className="sr-only">
-              Connect this agent’s own Slack app so members can @-mention it.
+              Connect a Slack app you operate so members can message this agent.
             </DialogDescription>
             <WizardSteps current={stepIndex} />
           </DialogHeader>
@@ -470,6 +709,16 @@ export function SlackConnect({
         onConfirm={() => disconnectMutation.mutate()}
       />
 
+      <ConfirmDialog
+        open={confirmManagedDisconnect}
+        onOpenChange={setConfirmManagedDisconnect}
+        title="Disconnect OpenComputer Slack?"
+        description="This agent will stop receiving messages from the OpenComputer app. The app stays installed in the workspace."
+        confirmLabel="Disconnect"
+        destructive
+        pending={disconnectManagedMutation.isPending}
+        onConfirm={() => disconnectManagedMutation.mutate()}
+      />
     </Panel>
   )
 }

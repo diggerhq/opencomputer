@@ -483,9 +483,7 @@ const agents = [
 //   'installed'     → the repo picker (App installed, this agent not yet linked)
 //   'connected'     → a linked agent showing live status + Disconnect
 const DEPLOY_PREVIEW = 'installed' as
-  | 'not_installed'
-  | 'installed'
-  | 'connected'
+  'not_installed' | 'installed' | 'connected'
 
 const deployAppInstalled = {
   installed: true,
@@ -812,6 +810,24 @@ const slackConnection = {
   updated_at: at(0, 2),
 }
 
+const managedSlackConnection = {
+  mode: 'managed',
+  status: 'active',
+  workspace: { id: 'T0123ABCDEF', name: 'Acme' },
+  app: { id: 'A0OPENCOMPUTER', handle: 'OpenComputer' },
+  open_url:
+    'https://slack.com/app_redirect?app=A0OPENCOMPUTER&team=T0123ABCDEF',
+  connected_at: at(0, 2),
+}
+
+const managedSlackAuthorization = {
+  mode: 'managed',
+  status: 'pending',
+  authorize_url:
+    'https://slack.com/oauth/v2/authorize?client_id=mock&state=opaque',
+  expires_at: at(0, 10),
+}
+
 // START-intent response for the Slack connect wizard (POST …/slack/manifest).
 const slackManifest = {
   manifest: {
@@ -1126,6 +1142,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/org$/, () => org],
   [/^\/agents$/, () => []],
   // Durable Agent Sessions — lists return the { data: [...] } envelope.
+  [/^\/v3\/agents\/[^/]+\/slack\/managed$/, () => managedSlackConnection],
   [/^\/v3\/agents\/[^/]+\/slack$/, () => slackConnection],
   [/^\/v3\/github\/deploy-app$/, () => deployApp],
   [
@@ -1214,6 +1231,14 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
   ],
   [/^\/v3\/agents$/, () => agents[0]],
   [/^\/v3\/agents\/[^/]+\/slack\/manifest$/, () => slackManifest],
+  [
+    /^\/v3\/agents\/[^/]+\/slack\/managed\/authorize$/,
+    () => managedSlackAuthorization,
+  ],
+  [
+    /^\/v3\/agents\/[^/]+\/slack\/managed$/,
+    () => ({ ok: true, status: 'disconnected' }),
+  ],
   [
     /^\/v3\/agents\/[^/]+\/slack$/,
     () => ({ ...slackConnection, status: 'active' }),
