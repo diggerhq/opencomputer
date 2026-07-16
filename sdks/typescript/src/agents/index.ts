@@ -11,6 +11,7 @@ export { Agents } from "./agents.js";
 export type {
   CreateAgentParams, UpdateAgentParams, Page,
   SlackManifest, SlackConnection, ConnectSlackParams,
+  ManagedSlackAuthorization, ManagedSlackConnection,
 } from "./agents.js";
 export { AgentRepository } from "./repository-agents.js";
 export type {

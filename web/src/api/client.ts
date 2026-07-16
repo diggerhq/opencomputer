@@ -36,6 +36,9 @@ export type {
   AgentDeploymentLog,
   DeployApp,
   RepositorySourceInspection,
+  ManagedSlackAuthorizeResponse,
+  ManagedSlackConnection,
+  ManagedSlackDisconnectResponse,
   Session,
   AgentSnapshot,
   SessionEvent,
@@ -816,6 +819,44 @@ export const completeSlackConnect = (
 
 export const disconnectSlack = (agentId: string) =>
   apiFetch<void>(`/v3/agents/${agentId}/slack`, { method: 'DELETE' })
+
+// Managed Slack is the OpenComputer-operated onboarding app. It is a separate
+// resource from the builder-owned app above so both may coexist during an
+// explicit handoff.
+export const authorizeManagedSlack = (
+  agentId: string,
+  returnDeploymentId?: string,
+) =>
+  apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/slack/managed/authorize`,
+    {
+      method: 'POST',
+      body: JSON.stringify(
+        returnDeploymentId ? { return_deployment_id: returnDeploymentId } : {},
+      ),
+    },
+    S.ManagedSlackAuthorizeResponseSchema,
+  )
+
+export async function getManagedSlackConnection(agentId: string) {
+  try {
+    return await apiFetch(
+      `/v3/agents/${encodeURIComponent(agentId)}/slack/managed`,
+      {},
+      S.ManagedSlackConnectionSchema,
+    )
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null
+    throw error
+  }
+}
+
+export const disconnectManagedSlack = (agentId: string) =>
+  apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/slack/managed`,
+    { method: 'DELETE' },
+    S.ManagedSlackDisconnectResponseSchema,
+  )
 
 // Credentials — reusable model-provider keys (the raw key is write-only). An
 // agent pins one (credential_id); sessions resolve the agent's, else the org

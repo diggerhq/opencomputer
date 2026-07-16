@@ -548,7 +548,11 @@ export default function AgentDetail() {
               {agent.runtime !== 'flue' ? (
                 <AgentDeploySource agentId={agent.id} />
               ) : null}
-              <SlackConnect agentId={agent.id} agentName={agent.name} />
+              <SlackConnect
+                agentId={agent.id}
+                agentName={agent.name}
+                canOpenSlack={canStartNewSession}
+              />
             </div>
           </div>
         )}
