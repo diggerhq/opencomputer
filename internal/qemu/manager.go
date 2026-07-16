@@ -382,12 +382,6 @@ type Manager struct {
 	// same sandbox dir — racing on rootfs.qcow2 and contending for the host.
 	wakeSF singleflight.Group
 
-	// convertSF collapses concurrent convert-on-fork requests for the same
-	// split checkpoint into a single conversion (see convert_merge.go), so
-	// parallel forks of an un-migrated split template don't each rebuild the
-	// merged variant.
-	convertSF singleflight.Group
-
 	// Checkpoint cache mutex: write-locked during cache creation, read-locked during fork
 	checkpointCacheMu sync.RWMutex
 
@@ -810,6 +804,26 @@ func (m *Manager) agentFsThawAfterWake(ctx context.Context, sandboxID string, ag
 	}
 }
 
+// goldenBaseName is the base-image template this worker builds its golden from:
+// "default-merged" for a merged-create worker, "default" for split. The two are
+// distinct files (default.ext4 = 4GB split, default-merged.ext4 = 20GB merged)
+// shipped together in the worker image, so enabling merged-create is a pure
+// OPENSANDBOX_GOLDEN_DISK_LAYOUT=merged flip rather than an image rebuild. The
+// versioned S3 base cache (bases/{version}/default.ext4) stays layout-agnostic —
+// the version hash already distinguishes a 20GB merged base from a 4GB split one.
+func (m *Manager) goldenBaseName() string {
+	if IsMerged(m.cfg.GoldenLayout) {
+		return "default-merged"
+	}
+	return "default"
+}
+
+// goldenBaseFile is the absolute path to this worker's golden base ext4
+// (default-merged.ext4 for merged-create, default.ext4 for split).
+func (m *Manager) goldenBaseFile() string {
+	return filepath.Join(m.cfg.ImagesDir, m.goldenBaseName()+".ext4")
+}
+
 // PrepareGoldenSnapshot boots a temporary VM, waits for the agent, then
 // hibernates it to create a reusable snapshot. Subsequent Create() calls
 // restore from this snapshot instead of cold-booting, cutting start time
@@ -851,7 +865,7 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 
 		// Check if the base image on disk matches the golden snapshot
 		stale := false
-		baseImage, _ := ResolveBaseImage(m.cfg.ImagesDir, "default")
+		baseImage, _ := ResolveBaseImage(m.cfg.ImagesDir, m.goldenBaseName())
 		if baseImage != "" && storedVersion != "" {
 			if currentHash, err := computeGoldenVersion(baseImage); err == nil && currentHash != storedVersion {
 				log.Printf("qemu: base image changed (golden=%s, disk=%s), rebuilding golden snapshot", storedVersion, currentHash)
@@ -908,8 +922,9 @@ func (m *Manager) PrepareGoldenSnapshot() error {
 		return fmt.Errorf("write preparing marker: %w", err)
 	}
 
-	// Prepare rootfs from default template
-	baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, "default")
+	// Prepare rootfs from the layout-appropriate base (default-merged.ext4 for
+	// merged-create, default.ext4 for split).
+	baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, m.goldenBaseName())
 	if err != nil {
 		return fmt.Errorf("resolve base image for golden: %w", err)
 	}
@@ -1946,8 +1961,14 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 		}
 	} else {
 		// Base cold-boot fallback: layout follows the worker's configured golden.
+		// For the default template on a merged worker, use the 20GB merged base
+		// (default-merged.ext4); custom templates resolve as-is.
 		coldMerged = IsMerged(m.cfg.GoldenLayout)
-		baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, template)
+		baseTemplate := template
+		if coldMerged && (baseTemplate == "" || baseTemplate == "default") {
+			baseTemplate = "default-merged"
+		}
+		baseImage, err := ResolveBaseImage(m.cfg.ImagesDir, baseTemplate)
 		if err != nil {
 			os.RemoveAll(sandboxDir)
 			return nil, fmt.Errorf("resolve base image: %w", err)
@@ -4098,16 +4119,11 @@ func (m *Manager) RestoreFromCheckpoint(ctx context.Context, sandboxID, checkpoi
 func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, cfg types.SandboxConfig) (*types.Sandbox, error) {
 	t0 := time.Now()
 
-	// Convert-on-fork: on a merged worker, a fork of a legacy split disk_only
-	// checkpoint is transparently served from a memoized MERGED variant, so
-	// forks of pre-merge templates come out as single-disk boxes too. Returns
-	// "" (fork the original as-is) for already-merged, RAM-bearing, or split-
-	// worker cases. See convert_merge.go.
-	if mergedID, err := m.maybeConvertToMergedVariant(ctx, checkpointID); err != nil {
-		return nil, err
-	} else if mergedID != "" {
-		checkpointID = mergedID
-	}
+	// Forks keep the checkpoint's recorded layout: a split checkpoint forks as a
+	// split box (booted on the split base, which every dual-mode worker has via
+	// the image or an on-demand versioned fetch), a merged checkpoint as merged.
+	// (There is no convert-on-fork; split resources age out rather than being
+	// rewritten to merged.)
 
 	// Ensure checkpoint is compatible with current base image — rebases inline if needed.
 	// Return the error so we don't silently fork a stale checkpoint against the wrong base.

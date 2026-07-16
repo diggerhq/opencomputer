@@ -386,10 +386,19 @@ func (mc *MigrationCoordinator) LiveMigrate(ctx context.Context, sandboxID, inco
 // always split; the merged path comes in through PrepareIncomingMigrationWithS3,
 // which calls prepareIncomingMigration directly with merged=true.
 func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string) (incomingAddr string, hostPort int, err error) {
-	return m.prepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template, false)
+	return m.prepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template, false, "")
 }
 
-func (m *Manager) prepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string, merged bool) (incomingAddr string, hostPort int, err error) {
+// pinnedGolden is the golden version the rootfs overlay is actually rebased
+// onto (the SOURCE's pinned golden, resolved+downloaded by the S3 caller). It
+// may differ from this worker's current golden — and crucially may be a
+// different base SIZE (split 4G vs merged 20G) in a dual-mode fleet. Stamping
+// the VM with it (rather than m.GoldenVersion()) keeps the recorded golden
+// consistent with the overlay's real base, so a later rebase (re-migration or
+// fork) resolves the correct-size base instead of tripping the size guard and
+// stranding the box. Empty ⇒ fall back to this worker's golden (non-S3 path,
+// where the rootfs is prepared from the local base).
+func (m *Manager) prepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string, merged bool, pinnedGolden string) (incomingAddr string, hostPort int, err error) {
 	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
 	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
 		return "", 0, fmt.Errorf("mkdir: %w", err)
@@ -529,12 +538,19 @@ func (m *Manager) prepareIncomingMigration(ctx context.Context, sandboxID, rootf
 	}
 
 	// Store the VM (will be completed after migration arrives).
-	// goldenVersion is set to this worker's current golden — after migration,
-	// PrepareIncomingMigrationWithS3 rebased the overlay to point at this
-	// worker's base, so the VM is effectively running against that golden.
-	// Without this, any checkpoint taken after migration would record an
-	// empty goldenVersion and subsequent cross-golden forks of that
-	// checkpoint can't locate the correct old base to rebase from.
+	// goldenVersion must match the base the overlay is ACTUALLY rebased onto.
+	// The S3 path pins the overlay to the source's golden (pinnedGolden), which
+	// in a dual-mode fleet can be a different base size than this worker's
+	// golden — so stamping m.GoldenVersion() would misrecord the base and make
+	// the next rebase (re-migration or fork) trip the size guard and strand the
+	// box. Fall back to this worker's golden only when pinnedGolden is empty
+	// (the non-S3 path, where the rootfs is prepared from the local base).
+	// Without a value here, a checkpoint taken after migration would record an
+	// empty goldenVersion and cross-golden forks couldn't locate the old base.
+	stampGolden := pinnedGolden
+	if stampGolden == "" {
+		stampGolden = m.GoldenVersion()
+	}
 	now := time.Now()
 	vm := &VMInstance{
 		ID:            sandboxID,
@@ -557,7 +573,7 @@ func (m *Manager) prepareIncomingMigration(ctx context.Context, sandboxID, rootf
 		guestMAC:      guestMAC,
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
-		goldenVersion: m.GoldenVersion(),
+		goldenVersion: stampGolden,
 		diskLayout:    boolToLayout(merged),
 		// Marks this as an in-flight migration receiver until CompleteIncoming-
 		// Migration clears it. The reaper uses this to tear down receivers whose
@@ -795,6 +811,10 @@ func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID,
 		return "", 0, fmt.Errorf("download rootfs from S3: %w", r.err)
 	}
 
+	// pinnedGolden records which golden the overlay ends up rebased onto, so the
+	// VM is stamped with a version whose base matches the overlay (see the note
+	// on prepareIncomingMigration). Empty for the flatten/local-base path.
+	pinnedGolden := ""
 	if overlayMode {
 		if m.checkpointStore == nil && checkpointStore != nil {
 			m.SetCheckpointStore(checkpointStore)
@@ -814,6 +834,7 @@ func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID,
 		if err := rebaseMetadataOnly(ctx, rootfsPath, absBase); err != nil {
 			return "", 0, fmt.Errorf("rebase rootfs to local base %s: %w", resolveVer, err)
 		}
+		pinnedGolden = resolveVer
 		log.Printf("qemu: migration %s: rootfs pinned to base %s", sandboxID, resolveVer)
 	}
 
@@ -824,7 +845,7 @@ func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID,
 		}
 	}
 
-	incomingAddr, hostPort, err = m.prepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template, merged)
+	incomingAddr, hostPort, err = m.prepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template, merged, pinnedGolden)
 	if err != nil {
 		return "", 0, err
 	}

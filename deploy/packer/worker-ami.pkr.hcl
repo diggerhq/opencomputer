@@ -356,6 +356,17 @@ build {
       "PYEOF",
       "fi",
 
+      # Ensure the 20GB merged base exists before staging. build-rootfs-docker.sh
+      # emits it on a cache MISS, but on a cache HIT the Docker build is skipped,
+      # so derive it here from the (cached) default.ext4 — identical content grown
+      # to 20GB, the exact same cp+resize2fs derivation the build script uses.
+      "if [ ! -f /data/firecracker/images/default-merged.ext4 ]; then",
+      "  echo 'Deriving default-merged.ext4 from default.ext4 (rootfs-cache hit)'",
+      "  cp --reflink=auto /data/firecracker/images/default.ext4 /data/firecracker/images/default-merged.ext4 2>/dev/null || cp /data/firecracker/images/default.ext4 /data/firecracker/images/default-merged.ext4",
+      "  e2fsck -fy /data/firecracker/images/default-merged.ext4 >/dev/null 2>&1 || true",
+      "  resize2fs /data/firecracker/images/default-merged.ext4 20480M || echo 'resize2fs merged failed (non-fatal)'",
+      "fi",
+
       # Save rootfs to /opt (survives NVMe mount overlay on /data)
       "mkdir -p /opt/opensandbox/images",
       "cp /data/firecracker/images/*.ext4 /opt/opensandbox/images/",
@@ -503,6 +514,15 @@ build {
       "fi",
       "echo 'Tigris dual-write: uploading /opt/opensandbox/images/default.ext4 via golden-upload subcommand'",
       "/usr/local/bin/opensandbox-worker golden-upload /opt/opensandbox/images/default.ext4",
+      "# Also seed the 20GB merged base so a fresh merged-create worker can fetch",
+      "# it on cache miss (golden-upload names the current pointer by basename:",
+      "# 'default-merged.ext4'; the versioned bases/{hash}/ key is separate).",
+      "if [ -f /opt/opensandbox/images/default-merged.ext4 ]; then",
+      "  echo 'Tigris dual-write: uploading /opt/opensandbox/images/default-merged.ext4'",
+      "  /usr/local/bin/opensandbox-worker golden-upload /opt/opensandbox/images/default-merged.ext4",
+      "else",
+      "  echo 'Tigris dual-write: default-merged.ext4 not present, skipping (older rootfs build)'",
+      "fi",
     ]
   }
 

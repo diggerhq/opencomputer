@@ -50,14 +50,6 @@ func (m *Manager) ensureCheckpointRebased(ctx context.Context, checkpointID stri
 		return nil
 	}
 
-	// A converted merged variant (see convert_merge.go) is a self-contained,
-	// flattened rootfs with no backing and no GoldenVersion — there is nothing
-	// to rebase, and the size-guard can't catch a same-size/different-content
-	// base, so skip rebase entirely for merged-without-golden checkpoints.
-	if IsMerged(meta.DiskLayout) && meta.GoldenVersion == "" {
-		return nil
-	}
-
 	if meta.GoldenVersion == "" {
 		return m.checkLegacyCheckpoint(checkpointID, meta)
 	}
@@ -162,7 +154,7 @@ func (m *Manager) resolveBaseForVersion(ctx context.Context, goldenVersion strin
 		return "", fmt.Errorf("empty goldenVersion")
 	}
 	if goldenVersion == m.GoldenVersion() {
-		return filepath.Join(m.cfg.ImagesDir, "default.ext4"), nil
+		return m.goldenBaseFile(), nil // this worker's own base (default.ext4 or default-merged.ext4)
 	}
 
 	retained := filepath.Join(m.cfg.ImagesDir, "bases", goldenVersion, "default.ext4")
@@ -307,7 +299,7 @@ func (m *Manager) uploadBaseImageIfNew(goldenVersion string) {
 	if m.checkpointStore == nil || goldenVersion == "" {
 		return
 	}
-	baseImage := filepath.Join(m.cfg.ImagesDir, "default.ext4")
+	baseImage := m.goldenBaseFile() // upload this worker's actual base (merged=20GB) under its version key
 	if !fileExists(baseImage) {
 		log.Printf("qemu: base image archival skipped: %s not found", baseImage)
 		return
