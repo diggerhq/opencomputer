@@ -548,7 +548,7 @@ export default function AgentDetail() {
             <div className="space-y-4">
               <AgentDeploySource
                 agentId={agent.id}
-                recoveryOnly={agent.runtime === 'flue'}
+                profilePinned={agent.runtime === 'flue'}
               />
               <SlackConnect
                 agentId={agent.id}

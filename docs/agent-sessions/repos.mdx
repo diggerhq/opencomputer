@@ -165,6 +165,11 @@ the active revision stays live. Restore the Flue definition, or unlink the sourc
 new agent. Unlinking stops push-to-deploy; it does not delete or convert the existing agent, revision,
 or sessions.
 
+Manage this link from the agent's **Overview → Repository** panel. **Configure GitHub** changes
+which repositories the OpenComputer App can access. **Unlink repository** releases this root for a
+different agent while preserving the current agent and its history, then offers to review and import
+the repository again.
+
 <Note>The deployment repository is not a session working repository. Importing it does not mount its files into later sessions or grant the running agent GitHub access. Choose session [sources](#how-it-works) separately when an agent needs code to work on.</Note>
 
 ## Connecting GitHub
