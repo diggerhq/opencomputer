@@ -27,6 +27,12 @@ short deploying response and is not queued. Wait for the dashboard to show
   with an agent whose tools and spend are appropriately bounded.
 </Warning>
 
+<Note>
+  A workspace can connect the managed app to one agent at a time. Managed Slack
+  accepts text direct messages and mentions in ordinary workspace channels.
+  Files and mentions in Slack Connect channels are not supported yet.
+</Note>
+
 The same flow is available over the API:
 
 <CodeGroup>
@@ -36,8 +42,13 @@ const authorization = await oc.agents.authorizeManagedSlack(agentId, {
   returnDeploymentId: deploymentId, // optional validated return context
 });
 
-// Return authorizeUrl from your authenticated server route, then navigate the
-// user's browser to it. Never expose the OpenComputer org key to the browser.
+if ("authorizeUrl" in authorization) {
+  // Return this from your authenticated server route, then navigate the user's
+  // browser to it. Never expose the OpenComputer org key to the browser.
+  return authorization.authorizeUrl;
+}
+// Otherwise the agent was already connected; `authorization` is its current
+// public connection state.
 
 const connection = await oc.agents.getManagedSlack(agentId);
 // { mode: "managed", status: "active", workspace, app, openUrl, ... }

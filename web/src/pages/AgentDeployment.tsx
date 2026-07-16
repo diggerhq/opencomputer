@@ -429,8 +429,12 @@ export default function AgentDeployment() {
   })
   const authorizeManagedSlackMutation = useMutation({
     mutationFn: () => authorizeManagedSlack(agentId, deploymentId),
-    onSuccess: ({ authorize_url }) => {
-      window.location.assign(authorize_url)
+    onSuccess: (result) => {
+      if ('authorize_url' in result) {
+        window.location.assign(result.authorize_url)
+        return
+      }
+      queryClient.setQueryData(['slack', 'managed', agentId], result)
     },
     onError: (error) =>
       notifyError("Couldn't start the Slack connection.", error),

@@ -69,4 +69,17 @@ describe('managed Slack response schemas', () => {
       return_deployment_id: 'dep_first',
     })
   })
+
+  it('accepts an idempotent active response from authorize', () => {
+    expect(
+      ManagedSlackAuthorizeResponseSchema.parse({
+        mode: 'managed',
+        status: 'active',
+        workspace: { id: 'T1', name: 'Acme' },
+        app: { id: 'A1', handle: 'OpenComputer' },
+        open_url: 'https://slack.com/app_redirect?app=A1&team=T1',
+        connected_at: '2026-07-16T18:10:00Z',
+      }),
+    ).toMatchObject({ mode: 'managed', status: 'active' })
+  })
 })

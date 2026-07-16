@@ -24,4 +24,23 @@ describe('managed Slack OAuth notices', () => {
       managedSlackNotice('provider_message_here', null, 'Agent'),
     ).toBeNull()
   })
+
+  it('names a same-owner agent in a workspace conflict', () => {
+    expect(
+      managedSlackNotice(
+        'workspace_already_connected',
+        null,
+        'Support triage',
+        'Docs writer',
+      ),
+    ).toMatchObject({
+      description: 'This workspace sends messages to Docs writer.',
+    })
+  })
+
+  it('does not suggest an inaccessible agent for a cross-owner conflict', () => {
+    expect(
+      managedSlackNotice('workspace_already_connected', null, 'Support triage'),
+    ).toMatchObject({ description: 'Use your own Slack app for this agent.' })
+  })
 })

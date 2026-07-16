@@ -15,6 +15,7 @@ export function managedSlackNotice(
   result: string | null,
   workspace: string | null | undefined,
   agentName: string,
+  connectedAgentName?: string | null,
 ): { title: string; description?: string; destructive?: boolean } | null {
   if (!result || !MANAGED_SLACK_RESULTS.has(result)) return null
   switch (result) {
@@ -55,8 +56,9 @@ export function managedSlackNotice(
     case 'workspace_already_connected':
       return {
         title: 'This Slack workspace is already connected',
-        description:
-          'Open its connected agent, or use your own Slack app for this one.',
+        description: connectedAgentName
+          ? `This workspace sends messages to ${connectedAgentName}.`
+          : 'Use your own Slack app for this agent.',
         destructive: true,
       }
     case 'oauth_exchange_failed':

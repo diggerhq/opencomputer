@@ -797,13 +797,6 @@ export const SlackManifestResponseSchema = z.object({
   status: z.string(),
 })
 
-export const ManagedSlackAuthorizeResponseSchema = z.object({
-  mode: z.literal('managed'),
-  status: z.literal('pending'),
-  authorize_url: z.string(),
-  expires_at: z.string(),
-})
-
 export const ManagedSlackConnectionSchema = z.object({
   mode: z.literal('managed'),
   status: z.enum(['active', 'disconnected', 'error', 'revoked']),
@@ -813,6 +806,19 @@ export const ManagedSlackConnectionSchema = z.object({
   connected_at: z.string().nullish(),
   error_code: z.string().nullish(),
 })
+
+// A race-safe authorize is idempotent: if the connection became active after
+// the dashboard status read, the API returns that active connection instead of
+// minting another OAuth intent.
+export const ManagedSlackAuthorizeResponseSchema = z.union([
+  z.object({
+    mode: z.literal('managed'),
+    status: z.literal('pending'),
+    authorize_url: z.string(),
+    expires_at: z.string(),
+  }),
+  ManagedSlackConnectionSchema.refine((value) => value.status === 'active'),
+])
 
 export const ManagedSlackDisconnectResponseSchema = z.object({
   ok: z.literal(true),

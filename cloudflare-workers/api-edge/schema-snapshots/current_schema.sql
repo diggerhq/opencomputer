@@ -331,6 +331,7 @@ CREATE INDEX idx_templates_public ON templates(is_public) WHERE is_public = 1;
 CREATE UNIQUE INDEX idx_templates_unique ON templates(org_id, name, tag);
 
 CREATE INDEX idx_usage_samples_unrolled ON usage_samples(org_id, ts) WHERE rolled_up = 0;
+CREATE INDEX idx_usage_samples_org_ts ON usage_samples(org_id, ts);
 
 CREATE INDEX idx_usage_unreported ON usage_snapshots(reported_to_stripe, org_id) WHERE reported_to_stripe = 0;
 

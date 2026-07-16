@@ -49,6 +49,7 @@ export interface SlackConnection {
   slackAppId?: string | null;
   teamId?: string | null;
   accountLogin?: string | null;
+  openUrl?: string | null;
 }
 
 /** The three values pasted back from Slack to finalize a connection. */
@@ -146,7 +147,7 @@ export class Agents {
   authorizeManagedSlack(
     id: string,
     opts: { returnDeploymentId?: string } = {},
-  ): Promise<ManagedSlackAuthorization> {
+  ): Promise<ManagedSlackAuthorization | ManagedSlackConnection> {
     return this.http.request("POST", `/agents/${id}/slack/managed/authorize`, {
       body: opts,
     });
