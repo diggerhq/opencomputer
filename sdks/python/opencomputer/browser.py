@@ -58,7 +58,7 @@ class Browser:
         kiosk_mode: bool | None = None,
         start_url: str | None = None,
         chrome_policy: dict[str, Any] | None = None,
-        telemetry: dict[str, Any] | None = None,
+        telemetry: bool | dict[str, Any] | None = None,
         recording: bool | None = None,
     ) -> Browser:
         """Create a browser session and return direct connection URLs."""

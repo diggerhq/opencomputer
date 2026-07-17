@@ -61,9 +61,12 @@ await browser.delete()
 </CodeGroup>
 
 Headful browsers return a live-view URL. Headless browsers are lighter, but do
-not provide a live view. Replay recording is disabled by default. Set
-`recording: true` / `recording=True` to enable replay recording for a headful
-browser session.
+not provide a live view. Telemetry is enabled by default for all browser
+sessions. Set `telemetry: false` / `telemetry=False` to disable it, or pass a
+Kernel telemetry configuration object directly.
+
+Replay recording is disabled by default. Set `recording: true` /
+`recording=True` to enable replay recording for a headful browser session.
 
 ## Playwright
 
