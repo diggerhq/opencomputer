@@ -20,7 +20,7 @@ export interface BrowserCreateOpts {
   kioskMode?: boolean;
   startUrl?: string;
   chromePolicy?: Record<string, unknown>;
-  telemetry?: Record<string, unknown> | null;
+  telemetry?: boolean | Record<string, unknown> | null;
   recording?: boolean;
 }
 
