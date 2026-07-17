@@ -53,7 +53,9 @@ describe('getting started', () => {
     const markup = renderGettingStarted()
 
     expect(markup).toContain('Agent from GitHub')
+    expect(markup).toContain('Deploy a Flue repository.')
     expect(markup).toContain('Agent from a prompt')
+    expect(markup).toContain('Claude Code, Codex, or Pi.')
     expect(markup).toContain('Build with the API')
     expect(markup).toContain('Durable sessions &amp; sandboxes.')
     expect(markup).toMatch(/id="start-tab-github"[^>]*aria-selected="true"/)

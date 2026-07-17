@@ -61,13 +61,13 @@ const START_DIRECTIONS = [
   {
     id: 'github',
     title: 'Agent from GitHub',
-    description: 'Deploy a repository.',
+    description: 'Deploy a Flue repository.',
     icon: GithubMark,
   },
   {
     id: 'prompt',
     title: 'Agent from a prompt',
-    description: 'Define its behavior.',
+    description: 'Claude Code, Codex, or Pi.',
     icon: Bot,
   },
   {
