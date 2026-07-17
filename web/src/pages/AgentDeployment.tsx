@@ -1,30 +1,41 @@
-import { Fragment, useEffect, useRef } from 'react'
+import { useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft,
   ArrowRight,
-  Check,
-  Circle,
   CircleAlert,
   Clock,
   ExternalLink,
   GitCommitHorizontal,
-  Loader2,
   RotateCw,
+  X,
 } from 'lucide-react'
 import {
   ApiError,
+  authorizeManagedSlack,
   deployFromGithub,
   getAgent,
   getAgentDeployment,
-  getAgentDeploymentLogs,
+  getDeploymentSource,
+  getManagedSlackConnection,
+  unlinkDeploymentSource,
   type AgentDeployment,
-  type AgentDeploymentLog,
 } from '@/api/client'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  DeploymentLog,
+  DeploymentPhases,
+} from '@/components/deployment-progress'
+import { SourceProfileChangedRecovery } from '@/components/source-profile-changed-recovery'
+import { ManagedSlackWorkspaceClaims } from '@/components/managed-slack-workspace-claims'
 import {
   Panel,
   PanelContent,
@@ -34,24 +45,19 @@ import {
 } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
 import { agentDeploymentOutcome } from '@/lib/agent-deployment-outcome'
+import {
+  deploymentSlackPresentation,
+  deploymentStage,
+} from '@/lib/deployment-slack-cta'
+import { notifyError, notifySuccess } from '@/lib/errors'
+import {
+  managedSlackNotice,
+  managedSlackOAuthPending,
+} from '@/lib/managed-slack-notice'
+import { useManagedSlackConnections } from '@/lib/managed-slack-connections'
 import { cn } from '@/lib/utils'
+import { useAgentDeploymentLogs } from '@/hooks/use-agent-deployment-logs'
 
-const PHASES = [
-  {
-    label: 'Prepare',
-    states: [
-      'accepted',
-      'queued',
-      'fetching',
-      'validating',
-      'installing',
-      'source',
-      'install',
-    ],
-  },
-  { label: 'Build', states: ['building', 'uploading', 'build', 'artifact'] },
-  { label: 'Deploy', states: ['deploying', 'verifying', 'deploy', 'verify'] },
-] as const
 const DEPLOY_COMMAND_STORAGE = 'oc.flue-deploy-latest-command.v1'
 
 type DeployCommand = { fingerprint: string; key: string }
@@ -94,123 +100,6 @@ function stableCommandKey(
     // The in-memory key still makes repeated submits stable for this page load.
   }
   return key
-}
-
-function failedPhase(deployment: AgentDeployment): string | undefined {
-  const phase = deployment.error?.phase?.toLowerCase()
-  if (phase) return phase
-  const errorClass = deployment.error_class?.toLowerCase() ?? ''
-  return PHASES.find(({ states, label }) =>
-    [...states, label.toLowerCase()].some((state) =>
-      errorClass.includes(state),
-    ),
-  )?.label.toLowerCase()
-}
-
-function phaseIndex(deployment: AgentDeployment): number {
-  if (deployment.state === 'ready') return PHASES.length
-  const state =
-    deployment.state === 'failed'
-      ? failedPhase(deployment)
-      : deployment.phase.toLowerCase()
-  return PHASES.findIndex(
-    ({ label, states }) =>
-      label.toLowerCase() === state || states.some((item) => item === state),
-  )
-}
-
-function DeploymentPhases({ deployment }: { deployment: AgentDeployment }) {
-  const current = phaseIndex(deployment)
-  const failed = deployment.state === 'failed'
-  const terminalWithoutPhase = failed && current < 0
-  const allDone = deployment.state === 'ready'
-  const activeLabel = PHASES[current]?.label
-  const liveAnnouncement = allDone
-    ? 'All deployment phases complete.'
-    : terminalWithoutPhase
-      ? 'The deployment failed before a phase was recorded.'
-      : activeLabel
-        ? `${activeLabel} ${failed ? 'failed' : deployment.terminal ? 'ended' : 'in progress'}.`
-        : 'Waiting for deployment to start.'
-
-  return (
-    <div className="shrink-0">
-      <span className="sr-only" aria-live="polite" aria-atomic="true">
-        {liveAnnouncement}
-      </span>
-      <ol
-        className="flex flex-wrap items-center gap-y-1.5 sm:justify-end"
-        aria-label="Deployment phases"
-      >
-        {PHASES.map((phase, index) => {
-          const done = allDone || (current >= 0 && index < current)
-          const active = !allDone && !deployment.terminal && index === current
-          const terminalPhase =
-            !allDone && deployment.terminal && index === current
-          const phaseFailed = terminalPhase && failed
-          const Icon = phaseFailed
-            ? CircleAlert
-            : done
-              ? Check
-              : active
-                ? Loader2
-                : Circle
-          return (
-            <li
-              key={phase.label}
-              className="flex items-center"
-              aria-current={active ? 'step' : undefined}
-            >
-              <span
-                className={cn(
-                  'flex items-center gap-1 text-[11px] font-medium',
-                  phaseFailed
-                    ? 'text-status-error'
-                    : done || active
-                      ? 'text-foreground'
-                      : 'text-muted-foreground',
-                )}
-              >
-                <Icon
-                  className={cn(
-                    'size-3',
-                    phaseFailed && 'text-status-error',
-                    done && 'text-status-running',
-                    active && 'text-status-pending',
-                    active &&
-                      !failed &&
-                      'animate-spin motion-reduce:animate-none',
-                  )}
-                  aria-hidden
-                />
-                {phase.label}
-                {phaseFailed ? (
-                  <span className="sr-only">, failed</span>
-                ) : active ? (
-                  <span className="sr-only">, in progress</span>
-                ) : done ? (
-                  <span className="sr-only">, complete</span>
-                ) : terminalPhase ? (
-                  <span className="sr-only">, ended here</span>
-                ) : (
-                  <span className="sr-only">, pending</span>
-                )}
-              </span>
-              {index < PHASES.length - 1 ? (
-                <span className="bg-border mx-2 h-px w-3" aria-hidden="true" />
-              ) : null}
-            </li>
-          )
-        })}
-      </ol>
-      {terminalWithoutPhase ? (
-        <p className="text-status-error mt-1.5 flex items-center gap-1 text-[11px] sm:justify-end">
-          <CircleAlert className="size-3.5" aria-hidden />
-          Phase unavailable
-        </p>
-      ) : null}
-    </div>
-  )
 }
 
 function formatDuration(deployment: AgentDeployment): string {
@@ -260,66 +149,10 @@ function OutcomeDetail({ deployment }: { deployment: AgentDeployment }) {
   )
 }
 
-function DeploymentLog({
-  logs,
-  terminal,
-}: {
-  logs: AgentDeploymentLog[]
-  terminal: boolean
-}) {
-  if (!logs.length) {
-    return (
-      <div className="text-code-muted bg-code flex min-h-52 items-center justify-center rounded-md px-4 py-8 font-mono text-xs">
-        {terminal
-          ? 'No build output was recorded.'
-          : 'Waiting for build output…'}
-      </div>
-    )
-  }
-
-  return (
-    <div
-      className="bg-code text-code-foreground max-h-[32rem] overflow-auto rounded-md py-3 font-mono text-xs"
-      aria-label="Build and deploy log"
-    >
-      {logs.map((entry, index) => {
-        const phaseChanged =
-          index === 0 || entry.phase !== logs[index - 1]?.phase
-        return (
-          <Fragment key={entry.seq}>
-            {phaseChanged ? (
-              <div className="text-code-muted border-code-border mt-2 border-y px-4 py-1.5 first:mt-0">
-                {entry.phase}
-              </div>
-            ) : null}
-            <div className="grid grid-cols-[3rem_4.5rem_minmax(0,1fr)] gap-2 px-4 py-0.5">
-              <span className="text-code-muted text-right select-none">
-                {entry.seq}
-              </span>
-              <span
-                className={cn(
-                  'select-none',
-                  entry.stream === 'stderr'
-                    ? 'text-red-300'
-                    : 'text-code-muted',
-                )}
-              >
-                {entry.stream}
-              </span>
-              <span className="min-w-0 break-words whitespace-pre-wrap">
-                {entry.chunk}
-              </span>
-            </div>
-          </Fragment>
-        )
-      })}
-    </div>
-  )
-}
-
 export default function AgentDeployment() {
   const { agentId = '', deploymentId = '' } = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const deployCommand = useRef<DeployCommand | null>(null)
   const deployCommandStorage = `${DEPLOY_COMMAND_STORAGE}:${agentId}`
@@ -327,44 +160,64 @@ export default function AgentDeployment() {
     queryKey: ['agent-deployment', agentId, deploymentId],
     queryFn: () => getAgentDeployment(agentId, deploymentId),
     enabled: !!agentId && !!deploymentId,
-    refetchInterval: (query) => (query.state.data?.terminal ? false : 1500),
+    refetchInterval: (query) => {
+      const deployment = query.state.data
+      if (!deployment) return false
+      if (
+        deployment.state === 'ready' &&
+        !deployment.allowed_actions.includes('start_session')
+      ) {
+        return 1500
+      }
+      return deployment.terminal ? false : 1500
+    },
   })
   const { data: agent } = useQuery({
     queryKey: ['agent', agentId],
     queryFn: () => getAgent(agentId),
     enabled: !!agentId,
   })
-  const logQueryKey = ['agent-deployment-logs', agentId, deploymentId] as const
-  const logsQuery = useQuery({
-    queryKey: logQueryKey,
+  const managedSlackQuery = useQuery({
+    queryKey: ['slack', 'managed', agentId],
+    queryFn: () => getManagedSlackConnection(agentId),
+    enabled: !!agentId,
+    refetchOnWindowFocus: 'always',
+  })
+  const managedSlackConnectionsQuery = useManagedSlackConnections(!!agentId)
+  const oauthResult = searchParams.get('slack')
+  const connectedAgentId = searchParams.get('connected_agent')
+  const sameOwnerConnectedAgentId =
+    oauthResult === 'workspace_already_connected' &&
+    connectedAgentId &&
+    /^agt_[0-9a-f]{24}$/.test(connectedAgentId)
+      ? connectedAgentId
+      : null
+  const connectedAgentQuery = useQuery({
+    queryKey: ['agent', sameOwnerConnectedAgentId],
+    queryFn: () => getAgent(sameOwnerConnectedAgentId!),
+    enabled: !!sameOwnerConnectedAgentId,
+  })
+  const deploymentReportedSourceProfileChange =
+    deploymentQuery.data?.error_class === 'source_profile_changed' ||
+    deploymentQuery.data?.error?.class === 'source_profile_changed'
+  const changedSourceQuery = useQuery({
+    queryKey: ['agent-deploy-source', agentId],
     queryFn: async () => {
-      const previous = queryClient.getQueryData<{
-        data: AgentDeploymentLog[]
-        cursor: string | null
-      }>(logQueryKey)
-      const data = previous?.data ? [...previous.data] : []
-      const seen = new Set(data.map((entry) => entry.cursor))
-      let cursor = previous?.cursor ?? null
-      let hasMore = false
-      do {
-        const page = await getAgentDeploymentLogs(agentId, deploymentId, {
-          after: cursor ?? undefined,
-          limit: 500,
-        })
-        for (const entry of page.data) {
-          if (!seen.has(entry.cursor)) {
-            seen.add(entry.cursor)
-            data.push(entry)
-          }
-        }
-        const nextCursor = page.next_cursor
-        hasMore = page.has_more && !!nextCursor && nextCursor !== cursor
-        if (nextCursor) cursor = nextCursor
-      } while (hasMore)
-      return { data, cursor }
+      try {
+        return (await getDeploymentSource(agentId)).source
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null
+        throw error
+      }
     },
-    enabled: !!agentId && !!deploymentId,
-    refetchInterval: deploymentQuery.data?.terminal ? false : 1500,
+    enabled: !!agentId && deploymentReportedSourceProfileChange,
+    refetchOnWindowFocus: 'always',
+  })
+  const logsQuery = useAgentDeploymentLogs({
+    agentId,
+    deploymentId,
+    enabled: true,
+    terminal: deploymentQuery.data?.terminal ?? false,
   })
   const deployLatestMutation = useMutation({
     mutationFn: (fingerprint: string) =>
@@ -387,13 +240,43 @@ export default function AgentDeployment() {
       void navigate(`/agents/${agentId}/deployments/${deployment.id}`)
     },
   })
-
-  const terminal = deploymentQuery.data?.terminal ?? false
-  const refetchLogs = logsQuery.refetch
-  useEffect(() => {
-    if (terminal) void refetchLogs()
-    // One final durable read when the deployment terminalizes.
-  }, [terminal, refetchLogs])
+  const authorizeManagedSlackMutation = useMutation({
+    mutationFn: () => authorizeManagedSlack(agentId, deploymentId),
+    onSuccess: (result) => {
+      if ('authorize_url' in result) {
+        window.location.assign(result.authorize_url)
+        return
+      }
+      queryClient.setQueryData(['slack', 'managed', agentId], result)
+    },
+    onError: (error) =>
+      notifyError("Couldn't start the Slack connection.", error),
+  })
+  const unlinkChangedSourceMutation = useMutation({
+    mutationFn: () => unlinkDeploymentSource(agentId),
+    onSuccess: () => {
+      const source = changedSourceQuery.data
+      void queryClient.invalidateQueries({
+        queryKey: ['agent-deploy-source', agentId],
+      })
+      void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
+      notifySuccess(
+        'Repository source unlinked. Existing revisions are unchanged.',
+      )
+      if (source) {
+        void navigate('/agents/new', {
+          state: {
+            repositoryImport: {
+              repo: source.repo_id,
+              path: source.path,
+              productionRef: source.production_ref,
+            },
+          },
+        })
+      }
+    },
+    onError: (error) => notifyError("Couldn't unlink the repository.", error),
+  })
 
   if (deploymentQuery.isLoading) {
     return (
@@ -428,12 +311,70 @@ export default function AgentDeployment() {
 
   const deployment = deploymentQuery.data
   const outcome = agentDeploymentOutcome(deployment)
+  const managedSlack = managedSlackQuery.data
+  const managedSlackStatus = managedSlackQuery.isSuccess
+    ? (managedSlack?.status ?? null)
+    : undefined
+  const stage = deploymentStage(deployment.state, deployment.terminal)
+  const canStartSession =
+    stage === 'ready' && deployment.allowed_actions.includes('start_session')
+  const slackPresentation = deploymentSlackPresentation({
+    deploymentState: deployment.state,
+    deploymentTerminal: deployment.terminal,
+    canStartSession,
+    managedStatus: managedSlackStatus,
+    openUrl: managedSlack?.open_url,
+    connecting: authorizeManagedSlackMutation.isPending,
+  })
+  const managedWorkspace =
+    managedSlack?.workspace?.name ?? managedSlack?.workspace?.id
+  const waitingForConnectedState = managedSlackOAuthPending(
+    oauthResult,
+    managedSlack?.status,
+    managedSlack?.connected_at,
+  )
+  const waitingForConnectedAgent =
+    !!sameOwnerConnectedAgentId && connectedAgentQuery.isLoading
+  const slackNotice =
+    waitingForConnectedState || waitingForConnectedAgent
+      ? null
+      : managedSlackNotice(
+          oauthResult,
+          managedWorkspace,
+          agent?.name ?? 'this agent',
+          connectedAgentQuery.data?.name,
+          managedSlack?.status,
+        )
+  const connectedAgentHref =
+    connectedAgentQuery.data && sameOwnerConnectedAgentId
+      ? `/agents/${encodeURIComponent(sameOwnerConnectedAgentId)}`
+      : null
+  const hasOtherManagedSlackConnections =
+    managedSlackConnectionsQuery.data?.some(
+      (connection) => connection.agent.id !== agentId,
+    ) ?? false
+  const checkingManagedSlackConnections =
+    slackPresentation.action === 'connect' &&
+    managedSlackConnectionsQuery.isLoading
+  const dismissSlackNotice = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('slack')
+    next.delete('connected_agent')
+    setSearchParams(next, { replace: true })
+  }
   const commitUrl = deployment.source_relation?.commit_url ?? undefined
   const canViewCommit =
     deployment.allowed_actions.includes('view_commit') && !!commitUrl
   const canOpenAgent = deployment.allowed_actions.includes('open_agent')
-  const canStartSession = deployment.allowed_actions.includes('start_session')
-  const canDeployLatest = deployment.allowed_actions.includes('deploy_latest')
+  const currentSourceProfileChanged =
+    deploymentReportedSourceProfileChange &&
+    changedSourceQuery.data?.status === 'source_profile_changed'
+  // Keep routine ready/running pages focused on first use. Redeploy is the
+  // recovery action here; ordinary source management remains on the agent.
+  const canDeployLatest =
+    stage === 'failed' &&
+    !deploymentReportedSourceProfileChange &&
+    deployment.allowed_actions.includes('deploy_latest')
   const deployLatestFingerprint = JSON.stringify({
     agent_id: agentId,
     repo_id: deployment.source_relation?.repo?.id ?? null,
@@ -468,53 +409,144 @@ export default function AgentDeployment() {
               {deployment.id}
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {canViewCommit ? (
-              <Button variant="outline" size="sm" asChild>
-                <a href={commitUrl} target="_blank" rel="noreferrer">
-                  <GitCommitHorizontal className="size-4" />
-                  View commit
-                  <ExternalLink className="size-3.5" />
-                </a>
-              </Button>
-            ) : null}
-            {canOpenAgent ? (
-              <Button variant="outline" size="sm" asChild>
-                <Link to={`/agents/${agentId}`}>Open agent</Link>
-              </Button>
-            ) : null}
-            {canDeployLatest ? (
-              <Button
-                size="sm"
-                variant={canStartSession ? 'outline' : 'default'}
-                disabled={deployLatestMutation.isPending}
-                onClick={() =>
-                  deployLatestMutation.mutate(deployLatestFingerprint)
-                }
-              >
-                <RotateCw
-                  className={cn(
-                    'size-4',
-                    deployLatestMutation.isPending &&
-                      'animate-spin motion-reduce:animate-none',
-                  )}
-                />
-                {deployLatestMutation.isPending
-                  ? 'Starting deployment…'
-                  : 'Deploy latest'}
-              </Button>
-            ) : null}
-            {canStartSession ? (
-              <Button size="sm" asChild>
-                <Link to={`/agents/${agentId}/sessions`}>
-                  Start session
-                  <ArrowRight className="size-4" />
-                </Link>
-              </Button>
+          <div className="flex max-w-xl flex-col gap-1.5 sm:items-end">
+            <span className="sr-only" aria-live="polite" aria-atomic="true">
+              {slackPresentation.announcement}
+            </span>
+            <div className="flex flex-wrap gap-2 sm:justify-end">
+              {canViewCommit ? (
+                <Button variant="outline" size="sm" asChild>
+                  <a href={commitUrl} target="_blank" rel="noreferrer">
+                    <GitCommitHorizontal className="size-4" />
+                    View commit
+                    <ExternalLink className="size-3.5" />
+                  </a>
+                </Button>
+              ) : null}
+              {canOpenAgent ? (
+                <Button variant="outline" size="sm" asChild>
+                  <Link to={`/agents/${agentId}`}>Open agent</Link>
+                </Button>
+              ) : null}
+              {canStartSession ? (
+                <Button variant="outline" size="sm" asChild>
+                  <Link to={`/agents/${agentId}/sessions`}>
+                    Start session
+                    <ArrowRight className="size-4" />
+                  </Link>
+                </Button>
+              ) : null}
+              {canDeployLatest ? (
+                <Button
+                  size="sm"
+                  variant={stage === 'failed' ? 'default' : 'outline'}
+                  disabled={deployLatestMutation.isPending}
+                  onClick={() =>
+                    deployLatestMutation.mutate(deployLatestFingerprint)
+                  }
+                >
+                  <RotateCw
+                    className={cn(
+                      'size-4',
+                      deployLatestMutation.isPending &&
+                        'animate-spin motion-reduce:animate-none',
+                    )}
+                  />
+                  {deployLatestMutation.isPending
+                    ? 'Starting deployment…'
+                    : 'Deploy latest'}
+                </Button>
+              ) : null}
+              {slackPresentation.action === 'open' && managedSlack?.open_url ? (
+                <Button size="sm" asChild>
+                  <a
+                    href={managedSlack.open_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open Slack
+                    <ExternalLink className="size-3.5" />
+                  </a>
+                </Button>
+              ) : slackPresentation.action === 'connect' ||
+                slackPresentation.action === 'reconnect' ||
+                slackPresentation.action === 'connecting' ? (
+                <Button
+                  size="sm"
+                  disabled={
+                    authorizeManagedSlackMutation.isPending ||
+                    checkingManagedSlackConnections
+                  }
+                  onClick={() => authorizeManagedSlackMutation.mutate()}
+                >
+                  {checkingManagedSlackConnections
+                    ? 'Checking Slack…'
+                    : slackPresentation.action === 'connect' &&
+                        hasOtherManagedSlackConnections
+                      ? 'Connect another workspace'
+                      : slackPresentation.label}
+                </Button>
+              ) : null}
+            </div>
+            {slackPresentation.disclosure ? (
+              <p className="text-muted-foreground max-w-sm text-xs leading-relaxed sm:text-right">
+                Anyone in this Slack workspace who can message the app can use
+                this agent.
+              </p>
+            ) : managedSlackQuery.isError && stage !== 'failed' ? (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-status-error">
+                  Slack status is unavailable.
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void managedSlackQuery.refetch()}
+                >
+                  Retry
+                </Button>
+              </div>
             ) : null}
           </div>
         </div>
       </div>
+
+      {slackNotice ? (
+        <Alert variant={slackNotice.destructive ? 'destructive' : 'default'}>
+          <AlertTitle>{slackNotice.title}</AlertTitle>
+          {slackNotice.description || connectedAgentHref ? (
+            <AlertDescription>
+              {slackNotice.description}{' '}
+              {connectedAgentHref ? (
+                <Link to={connectedAgentHref}>Open connected agent</Link>
+              ) : null}
+            </AlertDescription>
+          ) : null}
+          <AlertAction>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Dismiss Slack notice"
+              onClick={dismissSlackNotice}
+            >
+              <X aria-hidden />
+            </Button>
+          </AlertAction>
+        </Alert>
+      ) : null}
+
+      {slackPresentation.action === 'connect' && agent ? (
+        <Panel>
+          <PanelContent>
+            <ManagedSlackWorkspaceClaims
+              currentAgentId={agentId}
+              currentAgentName={agent.name}
+              query={managedSlackConnectionsQuery}
+              className="border-t-0 pt-0"
+            />
+          </PanelContent>
+        </Panel>
+      ) : null}
 
       {deployLatestMutation.isError ? (
         <Alert variant="destructive">
@@ -552,10 +584,28 @@ export default function AgentDeployment() {
               ) : null}
             </PanelDescription>
           </div>
-          <DeploymentPhases deployment={deployment} />
+          <div className="space-y-1.5 sm:text-right">
+            <DeploymentPhases deployment={deployment} />
+            {slackPresentation.status ? (
+              <p className="text-muted-foreground text-xs">
+                {slackPresentation.status}
+              </p>
+            ) : null}
+          </div>
         </PanelHeader>
         <PanelContent className="space-y-3">
-          <OutcomeDetail deployment={deployment} />
+          {currentSourceProfileChanged && changedSourceQuery.data ? (
+            <SourceProfileChangedRecovery
+              source={changedSourceQuery.data}
+              pending={unlinkChangedSourceMutation.isPending}
+              onUnlink={() => unlinkChangedSourceMutation.mutate()}
+            />
+          ) : deploymentReportedSourceProfileChange &&
+            changedSourceQuery.isLoading ? (
+            <Skeleton className="h-24 w-full" />
+          ) : (
+            <OutcomeDetail deployment={deployment} />
+          )}
           {logsQuery.isError ? (
             <Alert variant="destructive">
               <AlertTitle>Log could not be loaded</AlertTitle>

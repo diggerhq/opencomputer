@@ -139,7 +139,7 @@ export default function Agents() {
             <EmptyState
               icon={Bot}
               title="No agents yet"
-              description="Define an agent once, then start durable sessions from it."
+              description="Import an agent from a repository, or configure one manually."
               action={
                 <Button size="sm" onClick={openCreate} {...createIntentProps}>
                   <Plus className="size-4" />

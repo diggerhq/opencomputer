@@ -5,6 +5,7 @@ import {
   useQueryClient,
   type QueryClient,
 } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { Unplug, ExternalLink, RotateCw } from 'lucide-react'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import {
@@ -14,25 +15,159 @@ import {
   linkDeploymentSource,
   unlinkDeploymentSource,
 } from '@/api/client'
-import { Panel, PanelContent } from '@/components/panel'
+import type { DeploymentSource } from '@/api/schemas'
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import {
+  Panel,
+  PanelContent,
+  PanelDescription,
+  PanelHeader,
+  PanelTitle,
+} from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { Input, Select } from '@/components/form'
 import { GithubMark } from '@/components/github-mark'
+import { SourceProfileChangedRecovery } from '@/components/source-profile-changed-recovery'
+import type { RepositorySeed } from '@/lib/repository-onboarding'
+
+function repositoryStatus(source: DeploymentSource): string {
+  switch (source.status) {
+    case 'active':
+      return `Pushes to ${source.production_ref} create deployments automatically.`
+    case 'auth_required':
+      return 'Reconnect GitHub to resume automatic deployments.'
+    case 'repo_not_selected':
+      return 'Grant this repository to the GitHub App to resume deployments.'
+    case 'app_suspended':
+      return 'The GitHub App installation is suspended.'
+    case 'path_missing':
+      return 'The configured root directory is missing.'
+    case 'ref_missing':
+      return 'The configured production branch is missing.'
+    default:
+      return 'This repository connection needs attention.'
+  }
+}
+
+/**
+ * A reviewed repository import is profile-pinned. It can be inspected,
+ * authorized, or unlinked here, but never switched in place through the
+ * legacy free-form picker because a new source must pass repository review.
+ */
+export function PinnedRepositorySource({
+  source,
+  configureUrl,
+  installUrl,
+  pending,
+  onUnlink,
+}: {
+  source: DeploymentSource
+  configureUrl?: string | null
+  installUrl?: string | null
+  pending: boolean
+  onUnlink: () => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+  const githubUrl = configureUrl ?? installUrl
+  const githubLabel = configureUrl ? 'Configure GitHub' : 'Reconnect GitHub'
+
+  return (
+    <>
+      <Panel id="repository-source" className="overflow-hidden">
+        <PanelHeader>
+          <div className="min-w-0">
+            <PanelTitle>Repository</PanelTitle>
+            <PanelDescription className="mt-1 text-xs">
+              {repositoryStatus(source)}
+            </PanelDescription>
+          </div>
+          <GithubMark className="text-muted-foreground size-4 shrink-0" />
+        </PanelHeader>
+        <PanelContent className="space-y-4">
+          <dl className="space-y-3 text-xs">
+            <div className="space-y-1">
+              <dt className="text-muted-foreground">Repository</dt>
+              <dd className="font-mono text-sm break-all">
+                {source.full_name ?? source.repo_id}
+              </dd>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="min-w-0 space-y-1">
+                <dt className="text-muted-foreground">Production branch</dt>
+                <dd className="truncate font-mono">{source.production_ref}</dd>
+              </div>
+              <div className="min-w-0 space-y-1">
+                <dt className="text-muted-foreground">Root directory</dt>
+                <dd className="truncate font-mono">
+                  {source.path || 'Repository root'}
+                </dd>
+              </div>
+            </div>
+          </dl>
+
+          <div className="flex flex-wrap gap-2">
+            {githubUrl ? (
+              <Button size="sm" variant="outline" asChild>
+                <a href={githubUrl} target="_blank" rel="noreferrer">
+                  {githubLabel}
+                  <ExternalLink className="size-3.5" />
+                </a>
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={pending}
+              onClick={() => setConfirming(true)}
+            >
+              <Unplug className="size-4" />
+              Unlink repository
+            </Button>
+          </div>
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            Unlinking stops deploy-on-push. It does not delete this agent, its
+            active revision, or its sessions.
+          </p>
+        </PanelContent>
+      </Panel>
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        title="Unlink this repository?"
+        description={`Push-to-deploy from ${source.full_name ?? 'this repository'} will stop. The existing agent, active revision, and sessions will remain available. You can then import this repository into another agent.`}
+        confirmLabel="Unlink repository"
+        destructive
+        pending={pending}
+        onConfirm={onUnlink}
+      />
+    </>
+  )
+}
 
 // A connect / redeploy kicks off a GitHub deploy that runs ASYNC — the new revision (prompt +
 // skills) isn't live until it activates. Poll the source until the deploy lands
 // (active_deployed_sha caught up to latest_seen_sha), keeping the card in step, then refresh the
 // dependent views so the Overview + Skills update without a manual page reload. Bounded (~60s).
-async function pollDeployUntilActive(agentId: string, queryClient: QueryClient) {
+async function pollDeployUntilActive(
+  agentId: string,
+  queryClient: QueryClient,
+) {
   for (let i = 0; i < 24; i++) {
     await new Promise((r) => setTimeout(r, 2500))
     try {
       const src = (await getDeploymentSource(agentId)).source
       queryClient.setQueryData(['agent-deploy-source', agentId], src)
-      if (src?.active_deployed_sha && src.active_deployed_sha === src.latest_seen_sha) {
+      if (
+        src?.active_deployed_sha &&
+        src.active_deployed_sha === src.latest_seen_sha
+      ) {
         void queryClient.invalidateQueries({ queryKey: ['agent', agentId] })
-        void queryClient.invalidateQueries({ queryKey: ['agent-skills', agentId] })
-        void queryClient.invalidateQueries({ queryKey: ['agent-revisions', agentId] })
+        void queryClient.invalidateQueries({
+          queryKey: ['agent-skills', agentId],
+        })
+        void queryClient.invalidateQueries({
+          queryKey: ['agent-revisions', agentId],
+        })
         return
       }
     } catch {
@@ -51,10 +186,14 @@ async function pollDeployUntilActive(agentId: string, queryClient: QueryClient) 
 export function AgentDeploySource({
   agentId,
   autoFocusPicker = false,
+  profilePinned = false,
 }: {
   agentId: string
   autoFocusPicker?: boolean
+  /** Reviewed imports can be managed or unlinked, but not switched in place. */
+  profilePinned?: boolean
 }) {
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const pickerRef = useRef<HTMLDivElement>(null)
   const [repo, setRepo] = useState('')
@@ -65,6 +204,9 @@ export function AgentDeploySource({
   // fresh load of an already-installed agent, and cleared on Disconnect — so the "pick a repo"
   // nudge never lingers on unlinked/inline-only agents or reappears after an explicit disconnect.
   const [justConnected, setJustConnected] = useState(false)
+  const [unlinkedImport, setUnlinkedImport] = useState<RepositorySeed | null>(
+    null,
+  )
 
   const { data: app, isLoading: appLoading } = useQuery({
     queryKey: ['deploy-app'],
@@ -104,13 +246,13 @@ export function AgentDeploySource({
   // Pre-fill the picker from the current link once, so "connected" is an editable picker.
   const hydratedRef = useRef(false)
   useEffect(() => {
-    if (source && !hydratedRef.current) {
+    if (source && !profilePinned && !hydratedRef.current) {
       hydratedRef.current = true
       setRepo(source.full_name ?? '')
       setPath(source.path ?? '')
       setBranch(source.production_ref || 'main')
     }
-  }, [source])
+  }, [profilePinned, source])
 
   const invalidate = () => {
     void queryClient.invalidateQueries({
@@ -150,17 +292,27 @@ export function AgentDeploySource({
     onError: (e) => notifyError("Couldn't connect the repo.", e),
   })
   const unlink = useMutation({
-    mutationFn: () => unlinkDeploymentSource(agentId),
-    onSuccess: () => {
+    mutationFn: (options?: { prepareReimport?: boolean }) => {
+      void options
+      return unlinkDeploymentSource(agentId)
+    },
+    onSuccess: (_result, options) => {
+      if (options?.prepareReimport && source) {
+        setUnlinkedImport({
+          repo: source.repo_id,
+          path: source.path,
+          productionRef: source.production_ref,
+        })
+      }
       invalidate()
       hydratedRef.current = false
       setJustConnected(false) // an explicit disconnect is not an onboarding moment
       setRepo('')
       setPath('')
       setBranch('main')
-      notifySuccess('Disconnected. Existing revisions are unchanged.')
+      notifySuccess('Repository unlinked. Existing revisions are unchanged.')
     },
-    onError: (e) => notifyError("Couldn't disconnect.", e),
+    onError: (e) => notifyError("Couldn't unlink the repository.", e),
   })
 
   const pickRepo = (fullName: string) => {
@@ -198,24 +350,84 @@ export function AgentDeploySource({
     repoOptions.unshift({ value: source.full_name, label: source.full_name })
   }
 
+  if (profilePinned && !unlinkedImport && !srcLoading && !srcError && !source) {
+    return null
+  }
+
+  if (
+    profilePinned &&
+    !unlinkedImport &&
+    !srcLoading &&
+    !srcError &&
+    source &&
+    source.status !== 'source_profile_changed'
+  ) {
+    return (
+      <PinnedRepositorySource
+        source={source}
+        configureUrl={app?.configure_url}
+        installUrl={app?.install_url}
+        pending={unlink.isPending}
+        onUnlink={() => unlink.mutate({ prepareReimport: true })}
+      />
+    )
+  }
+
   return (
     <Panel className="overflow-hidden">
       <PanelContent className="space-y-3">
-        {srcLoading || appLoading ? (
+        {unlinkedImport ? (
+          <div className="space-y-3">
+            <p className="text-sm font-medium">Repository unlinked</p>
+            <p className="text-muted-foreground text-xs">
+              Push-to-deploy stopped. The existing agent, active revision, and
+              sessions are unchanged.
+            </p>
+            <Button
+              size="sm"
+              onClick={() =>
+                void navigate('/agents/new', {
+                  state: { repositoryImport: unlinkedImport },
+                })
+              }
+            >
+              Import repository as new agent
+            </Button>
+          </div>
+        ) : srcLoading || (!profilePinned && appLoading) ? (
           <p className="text-muted-foreground text-xs">Loading…</p>
         ) : srcError ? (
           <div className="space-y-2">
             <p className="text-xs text-red-600 dark:text-red-500">
               Couldn’t load the repo connection.
             </p>
-            <Button size="sm" variant="outline" onClick={() => void refetchSource()}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void refetchSource()}
+            >
               Retry
             </Button>
           </div>
+        ) : source?.status === 'source_profile_changed' ? (
+          <SourceProfileChangedRecovery
+            source={source}
+            pending={unlink.isPending}
+            onUnlink={() => unlink.mutate({ prepareReimport: true })}
+          />
         ) : !app?.installed ? (
           <div className="space-y-3">
-            <Button size="sm" variant="outline" disabled={!app?.install_url} asChild>
-              <a href={app?.install_url ?? '#'} target="_blank" rel="noreferrer">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!app?.install_url}
+              asChild
+            >
+              <a
+                href={app?.install_url ?? '#'}
+                target="_blank"
+                rel="noreferrer"
+              >
                 <GithubMark className="size-4" />
                 Connect repository
               </a>
@@ -287,7 +499,7 @@ export function AgentDeploySource({
                   size="sm"
                   className="text-muted-foreground hover:text-foreground"
                   disabled={unlink.isPending}
-                  onClick={() => unlink.mutate()}
+                  onClick={() => unlink.mutate({ prepareReimport: false })}
                 >
                   <Unplug className="size-4" />
                   Disconnect
@@ -306,8 +518,7 @@ export function AgentDeploySource({
               </a>
             ) : null}
             <p className="text-muted-foreground text-xs">
-              Or use the CLI:{' '}
-              <code className="font-mono">oc agent deploy</code>
+              Or use the CLI: <code className="font-mono">oc agent deploy</code>
             </p>
           </div>
         )}

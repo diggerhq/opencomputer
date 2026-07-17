@@ -182,11 +182,41 @@ describe('repository deployment API schemas', () => {
           full_name: 'example/pending-registration',
           default_branch: 'main',
           private: true,
+          linked_sources: [],
         },
       ],
     })
 
     expect(parsed.repositories[0]?.id).toBeNull()
+  })
+
+  it('parses owner-scoped linked repository roots for early conflict UX', () => {
+    const parsed = DeployAppSchema.parse({
+      installed: true,
+      repositories: [
+        {
+          id: 'repo_0123456789abcdef01234567',
+          full_name: 'example/flue-agent',
+          default_branch: 'main',
+          private: false,
+          linked_sources: [
+            {
+              path: '',
+              production_ref: 'main',
+              status: 'active',
+              agent: {
+                id: 'agt_0123456789abcdef01234567',
+                name: 'Support triage',
+              },
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(parsed.repositories[0]?.linked_sources[0]?.agent.name).toBe(
+      'Support triage',
+    )
   })
 
   it('fails closed when deployment identity or canonical state is absent', () => {

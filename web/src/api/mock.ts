@@ -492,7 +492,9 @@ const agents = [
 //   'installed'     → the repo picker (App installed, this agent not yet linked)
 //   'connected'     → a linked agent showing live status + Disconnect
 const DEPLOY_PREVIEW = 'installed' as
-  'not_installed' | 'installed' | 'connected'
+  | 'not_installed'
+  | 'installed'
+  | 'connected'
 
 const deployAppInstalled = {
   installed: true,
@@ -556,23 +558,42 @@ const flueInspection = {
   root: '',
   production_ref: 'main',
   sha: 'cbb8766d972199b01d03389d2680970dc29d1d34',
-  manifest: {
-    schema_version: 1 as const,
-    entrypoint: 'support-triage',
-    model: 'anthropic/claude-haiku-4-5',
-    runtime: { family: 'flue' as const, type: 'default' },
-    vars: { SUPPORT_QUEUE: 'priority' },
+  interpretation: {
+    disposition: 'exact' as const,
+    source_profile: 'flue-app-v1' as const,
+    source_profile_version: 1 as const,
+    summary: 'Flue agent detected',
+    reason_code: 'flue_detected',
+    assumptions: [],
+    agent: {
+      runtime: 'flue' as const,
+      model: 'anthropic/claude-haiku-4-5',
+    },
   },
-  package: {
-    name: 'oc-flue-starter',
-    node_engine: '>=22.19 <23',
-    flue_cli: '0.1.0',
+  profile: {
+    source_profile: 'flue-app-v1' as const,
+    source_profile_version: 1 as const,
+    manifest: {
+      schema_version: 1 as const,
+      entrypoint: 'support-triage',
+      model: 'anthropic/claude-haiku-4-5',
+      runtime: { family: 'flue' as const, type: 'default' },
+      vars: { SUPPORT_QUEUE: 'priority' },
+    },
+    package: {
+      name: 'oc-flue-starter',
+      node_engine: '>=22.19 <23',
+      flue_cli: '0.1.0',
+    },
+    lockfile: { version: 3 },
+    builder: { node: '22.19.0' },
+    source: { files: 28, bytes: 164_208 },
+    variable_names: ['SUPPORT_QUEUE'],
+    warnings: [],
   },
-  lockfile: { version: 3 },
-  builder: { node: '22.19.0' },
-  source: { files: 28, bytes: 164_208 },
-  variable_names: ['SUPPORT_QUEUE'],
-  warnings: [],
+  review_fingerprint: `sha256:${'b'.repeat(64)}`,
+  candidate_roots: [],
+  candidate_roots_truncated: false,
 }
 
 const importedAgent = {
@@ -608,6 +629,9 @@ const importedSource = {
   latest_seen_sha: flueInspection.sha,
   active_deployed_sha: null,
   full_name: flueInspection.repository.full_name,
+  source_profile: 'flue-app-v1',
+  source_profile_version: 1,
+  review_fingerprint: flueInspection.review_fingerprint,
 }
 
 const flueDeployment = {

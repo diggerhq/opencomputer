@@ -5,6 +5,7 @@ import {
   type Deployment, type InlineSkillFile,
 } from "./deployments.js";
 import { Schedules } from "./schedules.js";
+import { AgentRepository } from "./repository-agents.js";
 
 export interface CreateAgentParams {
   name: string;
@@ -77,6 +78,11 @@ export interface ManagedSlackConnection {
   errorCode?: string | null;
 }
 
+/** One current owner-scoped workspace claim for pre-OAuth conflict discovery. */
+export interface ManagedSlackWorkspaceConnection extends ManagedSlackConnection {
+  agent: { id: string; name: string };
+}
+
 /** Reusable agents — the "what" a session runs. */
 export class Agents {
   /** Deploy behavior (inline or from a linked repo) — each deployment produces a revision. */
@@ -91,6 +97,8 @@ export class Agents {
   readonly deploymentSource: DeploymentSourceResource;
   /** Cron for agents — schedules that fire a session per slot (015). */
   readonly schedules: Schedules;
+  /** Review and import an agent from an existing repository. */
+  readonly repository: AgentRepository;
 
   constructor(private readonly http: Http) {
     this.deployments = new Deployments(http);
@@ -99,6 +107,7 @@ export class Agents {
     this.skills = new Skills(http);
     this.deploymentSource = new DeploymentSourceResource(http);
     this.schedules = new Schedules(http);
+    this.repository = new AgentRepository(http);
   }
 
   create(params: CreateAgentParams): Promise<Agent> {
@@ -151,6 +160,10 @@ export class Agents {
   /** Current managed installation/connection state. */
   getManagedSlack(id: string): Promise<ManagedSlackConnection> {
     return this.http.request("GET", `/agents/${id}/slack/managed`);
+  }
+  /** Current workspaces already routed to this owner's agents. */
+  listManagedSlackConnections(): Promise<Page<ManagedSlackWorkspaceConnection>> {
+    return this.http.request("GET", "/slack/managed/connections");
   }
   /** Disconnect this agent without uninstalling the shared app from Slack. */
   disconnectManagedSlack(id: string): Promise<{ ok: true; status: "disconnected" }> {

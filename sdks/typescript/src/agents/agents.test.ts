@@ -114,6 +114,41 @@ describe("Agents Slack", () => {
     );
   });
 
+  it("lists current owner workspace claims before OAuth", async () => {
+    const fetcher = vi.fn(async () =>
+      Response.json({
+        data: [
+          {
+            mode: "managed",
+            status: "active",
+            workspace: { id: "T1", name: "Acme" },
+            app: { id: "A1", handle: "OpenComputer" },
+            open_url: "https://slack.com/app_redirect?app=A1&team=T1",
+            connected_at: "2026-07-16T17:00:00Z",
+            agent: { id: "agt_1", name: "Support triage" },
+          },
+        ],
+      }),
+    );
+    const oc = new OpenComputer({
+      apiKey: "test-key",
+      baseUrl: "https://api.example.test/v3",
+      fetch: fetcher as typeof fetch,
+      maxRetries: 0,
+    });
+
+    const result = await oc.agents.listManagedSlackConnections();
+
+    expect(result.data[0]).toMatchObject({
+      workspace: { id: "T1", name: "Acme" },
+      agent: { id: "agt_1", name: "Support triage" },
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://api.example.test/v3/slack/managed/connections",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
   it("disconnects the managed connection without uninstalling the app", async () => {
     const fetcher = vi.fn(async () =>
       Response.json({ ok: true, status: "disconnected" }),

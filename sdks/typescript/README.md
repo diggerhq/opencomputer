@@ -66,6 +66,41 @@ if (delivery.type === "turn.completed") {
 }
 ```
 
+### Create an agent from a repository
+
+Repository creation is a two-phase review/import so a moving branch cannot change underneath the
+confirmation. Only an exact review is importable; invalid or unrecognized source should be fixed or
+reviewed at another root.
+
+```typescript
+const review = await oc.agents.repository.review({
+  repo: "repo_...",
+  path: "agents/support",
+  productionRef: "main",
+});
+
+if (review.interpretation.disposition !== "exact") {
+  throw new Error(review.interpretation.summary);
+}
+
+const { agent, deployment } = await oc.agents.repository.import({
+  name: "Support triage",
+  credential: "managed",
+  idempotencyKey: crypto.randomUUID(),
+  source: {
+    type: "github",
+    repo: review.repository.id,
+    path: review.root,
+    productionRef: review.productionRef,
+  },
+  review: {
+    sha: review.sha,
+    sourceProfile: review.interpretation.sourceProfile,
+    fingerprint: review.reviewFingerprint,
+  },
+});
+```
+
 ### Credentials
 
 Sessions run **Managed** (via OpenComputer, billed to your credits — `credential: "managed"`, no key, the default for new orgs) or on **your own** model-provider key (Anthropic for `claude`, OpenAI for `codex`). An inline `key` stores one and attaches it to the agent; manage keys directly to reuse one across agents, set an org default, or rotate/remove:

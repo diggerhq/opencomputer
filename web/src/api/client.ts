@@ -35,9 +35,10 @@ export type {
   AgentDeployment,
   AgentDeploymentLog,
   DeployApp,
-  FlueSourceInspection,
+  RepositorySourceInspection,
   ManagedSlackAuthorizeResponse,
   ManagedSlackConnection,
+  ManagedSlackWorkspaceConnection,
   ManagedSlackDisconnectResponse,
   Session,
   AgentSnapshot,
@@ -665,7 +666,7 @@ export const deleteAgentSkills = (agentId: string) =>
 export const getDeployApp = () =>
   apiFetch('/v3/github/deploy-app', {}, S.DeployAppSchema)
 
-export const inspectFlueRepository = (body: {
+export const reviewRepositoryAgent = (body: {
   repo: string
   path: string
   production_ref: string
@@ -673,7 +674,7 @@ export const inspectFlueRepository = (body: {
   apiFetch(
     '/v3/github/deploy-app/inspect',
     { method: 'POST', body: JSON.stringify(body) },
-    S.FlueSourceInspectionSchema,
+    S.RepositorySourceInspectionSchema,
   )
 
 export const importAgentFromGithub = (
@@ -684,6 +685,11 @@ export const importAgentFromGithub = (
       repo: string
       path: string
       production_ref: string
+    }
+    review: {
+      sha: string
+      source_profile: 'flue-app-v1'
+      fingerprint: string
     }
     credential: 'managed'
   },
@@ -849,6 +855,13 @@ export async function getManagedSlackConnection(agentId: string) {
   }
 }
 
+export const getManagedSlackConnections = () =>
+  apiFetch(
+    '/v3/slack/managed/connections',
+    {},
+    S.ManagedSlackWorkspaceConnectionListSchema,
+  ).then((result) => result.data)
+
 export const disconnectManagedSlack = (agentId: string) =>
   apiFetch(
     `/v3/agents/${encodeURIComponent(agentId)}/slack/managed`,
@@ -899,6 +912,7 @@ export const getSessions = (
   params: {
     agent?: string
     status?: string
+    after?: string
     limit?: number
     cursor?: string
   } = {},
@@ -906,6 +920,7 @@ export const getSessions = (
   const q = new URLSearchParams()
   if (params.agent) q.set('agent', params.agent)
   if (params.status) q.set('status', params.status)
+  if (params.after) q.set('after', params.after)
   if (params.limit) q.set('limit', String(params.limit))
   if (params.cursor) q.set('cursor', params.cursor)
   const qs = q.toString()
