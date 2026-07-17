@@ -122,6 +122,8 @@ const browserSessions = [
     created_at: at(0, 1),
     updated_at: at(0, 1),
     deleted_at: null,
+    billable_seconds: 3600,
+    estimated_cost_usd: 0.48,
   },
   {
     id: 'br_inbox_headless',
@@ -140,6 +142,8 @@ const browserSessions = [
     created_at: at(0, 4),
     updated_at: at(0, 4),
     deleted_at: null,
+    billable_seconds: 14400,
+    estimated_cost_usd: 1.92,
   },
   {
     id: 'br_old_replay',
@@ -160,6 +164,11 @@ const browserSessions = [
     created_at: at(2, 2),
     updated_at: at(2, 1),
     deleted_at: at(2, 1),
+    metered_at: at(2, 1),
+    metered_seconds: 3600,
+    metered_usage_micro: 480000,
+    billable_seconds: 3600,
+    estimated_cost_usd: 0.48,
   },
 ]
 
