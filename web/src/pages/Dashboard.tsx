@@ -42,20 +42,17 @@ import { useTransientFlag } from '@/lib/use-transient-flag'
 import { cn } from '@/lib/utils'
 import { RepositoryImportPanel, RepositoryStarterGuide } from './AgentNew'
 
-const SANDBOX_API_CODE = `import { Sandbox } from "@opencomputer/sdk";
-
-const sandbox = await Sandbox.create();
-const result = await sandbox.commands.run("python3 --version");
+const SANDBOX_API_CODE = `const sandbox = await Sandbox.create();
+const result =
+  await sandbox.commands.run("uname -a");
 
 console.log(result.stdout);
 await sandbox.kill();`
 
-const SESSION_API_CODE = `import { OpenComputer } from "@opencomputer/sdk";
-
-const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const SESSION_API_CODE = `const oc = new OpenComputer({ apiKey });
 const session = await oc.sessions.create({
   agent: "agt_...",
-  input: "Triage the latest support requests.",
+  input: "Triage support requests.",
 });`
 
 type StartDirection = 'github' | 'prompt' | 'api'
@@ -64,19 +61,19 @@ const START_DIRECTIONS = [
   {
     id: 'github',
     title: 'Agent from GitHub',
-    description: 'Import Flue code and deploy automatically when you push.',
+    description: 'Deploy a repository.',
     icon: GithubMark,
   },
   {
     id: 'prompt',
     title: 'Agent from a prompt',
-    description: 'Define the agent directly in the dashboard.',
+    description: 'Define its behavior.',
     icon: Bot,
   },
   {
     id: 'api',
     title: 'Build with the API',
-    description: 'Create sandboxes and durable sessions with the SDK.',
+    description: 'Durable sessions & sandboxes.',
     icon: Code2,
   },
 ] as const
@@ -459,8 +456,8 @@ export function GettingStarted() {
           aria-labelledby="start-tab-github"
           className="mt-8"
         >
-          <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,42rem)_17rem] xl:gap-8">
-            <div className="min-w-0">
+          <div className="grid items-start gap-6 xl:grid-cols-3">
+            <div className="min-w-0 xl:col-span-2">
               <RepositoryImportPanel />
             </div>
             <RepositoryStarterGuide />
@@ -473,20 +470,23 @@ export function GettingStarted() {
           id="start-panel-prompt"
           role="tabpanel"
           aria-labelledby="start-tab-prompt"
-          className="mt-8 max-w-2xl"
+          className="mt-8"
         >
           <Panel>
             <PanelHeader>
               <div>
                 <PanelTitle>Define the agent</PanelTitle>
                 <PanelDescription className="mt-1">
-                  Set its instructions, runtime, model, and credential. Connect
+                  Create a durable agent from its system prompt. You can connect
                   Slack after creation.
                 </PanelDescription>
               </div>
             </PanelHeader>
             <PanelContent>
-              <ManualAgentForm onCancel={() => selectDirection('github')} />
+              <ManualAgentForm
+                layout="wide"
+                onCancel={() => selectDirection('github')}
+              />
             </PanelContent>
           </Panel>
         </section>
@@ -578,7 +578,7 @@ export function GettingStarted() {
             <ApiExample
               icon={MessagesSquare}
               title="Durable agent sessions"
-              description="Start a durable run for an agent, then stream and steer its event log."
+              description="Start and steer a durable agent run."
               code={SESSION_API_CODE}
               docs="https://docs.opencomputer.dev/agent-sessions/quickstart"
               docsLabel="Open sessions quickstart"
@@ -587,7 +587,7 @@ export function GettingStarted() {
             <ApiExample
               icon={Boxes}
               title="Sandboxes"
-              description="Create isolated computers and control their files, commands, processes, and network."
+              description="Run commands in an isolated computer."
               code={SANDBOX_API_CODE}
               docs="https://docs.opencomputer.dev/quickstart"
               docsLabel="Open sandbox quickstart"
@@ -627,7 +627,7 @@ function ApiExample({
   }
 
   return (
-    <article className={className}>
+    <article className={cn('min-w-0', className)}>
       <div className="flex items-start gap-3">
         <span className="bg-secondary mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md">
           <Icon className="text-muted-foreground size-4" aria-hidden />

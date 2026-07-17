@@ -55,11 +55,14 @@ describe('getting started', () => {
     expect(markup).toContain('Agent from GitHub')
     expect(markup).toContain('Agent from a prompt')
     expect(markup).toContain('Build with the API')
+    expect(markup).toContain('Durable sessions &amp; sandboxes.')
     expect(markup).toMatch(/id="start-tab-github"[^>]*aria-selected="true"/)
     expect(markup).toContain('example/flue-starter')
     expect(markup).toContain('Choose repository')
     expect(markup).not.toContain('API key ready')
-    expect(markup).not.toContain('Set its instructions, runtime, model')
+    expect(markup).not.toContain(
+      'Create a durable agent from its system prompt',
+    )
     expect(markup).not.toContain('Get started')
     expect(markup).not.toContain('free credits')
     expect(markup).not.toContain('Claude Opus')
@@ -77,6 +80,8 @@ describe('getting started', () => {
     expect(markup).not.toContain('oc.agents.create')
     expect(markup).toContain('Open sessions quickstart')
     expect(markup).toContain('Open sandbox quickstart')
+    expect(markup).toContain('Start and steer a durable agent run.')
+    expect(markup).toContain('Run commands in an isolated computer.')
     expect(markup.indexOf('oc.sessions.create')).toBeLessThan(
       markup.indexOf('Sandbox.create()'),
     )
@@ -86,9 +91,9 @@ describe('getting started', () => {
     const markup = renderGettingStarted('/?start=prompt')
 
     expect(markup).toContain('Define the agent')
-    expect(markup).toContain(
-      'Set its instructions, runtime, model, and credential',
-    )
+    expect(markup).toContain('Create a durable agent from its system prompt')
+    expect(markup).toContain('Instructions')
+    expect(markup).toContain('Runtime')
     expect(markup).toContain('Create agent')
     expect(markup).not.toContain('Choose repository')
   })

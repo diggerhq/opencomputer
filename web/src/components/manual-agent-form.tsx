@@ -14,6 +14,7 @@ import {
   runtimeOptions,
   withModelGroups,
 } from '@/lib/runtimes'
+import { cn } from '@/lib/utils'
 
 const NEW_CRED = '__new__'
 const MANAGED = 'managed'
@@ -64,7 +65,28 @@ function randomAgentName(): string {
 const DEFAULT_PROMPT =
   'You are a helpful AI assistant working in a sandboxed computer. Complete tasks end to end, use the tools available to you, and keep your answers clear and concise. When something is ambiguous, make a sensible assumption and say so.'
 
-export function ManualAgentForm({ onCancel }: { onCancel: () => void }) {
+function FormSectionHeading({
+  title,
+  description,
+}: {
+  title: string
+  description: string
+}) {
+  return (
+    <div className="space-y-1">
+      <h3 className="text-sm font-semibold">{title}</h3>
+      <p className="text-muted-foreground text-sm leading-5">{description}</p>
+    </div>
+  )
+}
+
+export function ManualAgentForm({
+  onCancel,
+  layout = 'stacked',
+}: {
+  onCancel: () => void
+  layout?: 'stacked' | 'wide'
+}) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { data: credentials } = useQuery({
@@ -170,107 +192,140 @@ export function ManualAgentForm({ onCancel }: { onCancel: () => void }) {
     name.trim().length > 0 &&
     prompt.trim().length > 0 &&
     (selectedCredChoice !== NEW_CRED || newCredKey.trim().length > 0)
+  const wide = layout === 'wide'
 
   return (
     <form
-      className="space-y-4"
+      className="space-y-6"
       onSubmit={(event) => {
         event.preventDefault()
         if (canCreate) createMutation.mutate()
       }}
     >
-      <Field label="Name" htmlFor="agent-name">
-        <Input
-          id="agent-name"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="e.g. PR Reviewer"
-        />
-      </Field>
-      <Field
-        label="Prompt"
-        htmlFor="agent-prompt"
-        description="The system prompt that defines how the agent behaves."
+      <div
+        className={cn(
+          'grid gap-6',
+          wide && 'lg:grid-cols-[minmax(0,1.2fr)_minmax(20rem,0.8fr)] lg:gap-0',
+        )}
       >
-        <Textarea
-          id="agent-prompt"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder="You are a meticulous code reviewer…"
-          className="min-h-28"
-        />
-      </Field>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field
-          label="Runtime"
-          htmlFor="agent-runtime"
-          description="The engine, fixed once created."
-        >
-          <Select
-            id="agent-runtime"
-            value={runtime}
-            onValueChange={onRuntimeChange}
-            options={runtimeOptions}
+        <div className={cn('space-y-5', wide && 'lg:pr-8')}>
+          <FormSectionHeading
+            title="Instructions"
+            description="Name the agent and describe how it should behave."
           />
-        </Field>
-        <Field
-          label="Model"
-          htmlFor="agent-model"
-          description={`Models for the ${rt.label} runtime.`}
-        >
-          <Select
-            key={runtime}
-            id="agent-model"
-            value={model}
-            onValueChange={onModelChange}
-            options={withModelGroups(rt.models)}
-          />
-        </Field>
-      </div>
-      <Field
-        label="Credential"
-        htmlFor="agent-cred"
-        description={
-          selectedCredChoice === MANAGED
-            ? 'Run via OpenComputer, billed to your credits. No key needed.'
-            : `The ${provider} key this agent runs on (matches the model). Reuse one from Credentials, or add a new one here.`
-        }
-      >
-        <Select
-          key={provider}
-          id="agent-cred"
-          value={selectedCredChoice}
-          onValueChange={setCredChoice}
-          options={credOptions}
-          placeholder="Choose a credential"
-        />
-      </Field>
-      {selectedCredChoice === NEW_CRED ? (
-        <div className="border-border bg-panel-2 grid grid-cols-1 gap-4 rounded-md border p-3 sm:grid-cols-2">
-          <Field label="Credential name" htmlFor="new-cred-name">
+          <Field label="Name" htmlFor="agent-name">
             <Input
-              id="new-cred-name"
-              value={newCredName}
-              onChange={(event) => setNewCredName(event.target.value)}
-              placeholder="e.g. Production"
+              id="agent-name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="e.g. PR Reviewer"
             />
           </Field>
           <Field
-            label={keyField.keyLabel}
-            htmlFor="new-cred-key"
-            description="Encrypted in a dedicated secret store."
+            label="System prompt"
+            htmlFor="agent-prompt"
+            description="The instructions applied to every session."
           >
-            <Input
-              id="new-cred-key"
-              type="password"
-              value={newCredKey}
-              onChange={(event) => setNewCredKey(event.target.value)}
-              placeholder={keyField.keyPlaceholder}
+            <Textarea
+              id="agent-prompt"
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="You are a meticulous code reviewer…"
+              className={cn(wide ? 'min-h-44' : 'min-h-28')}
             />
           </Field>
         </div>
-      ) : null}
-      <div className="flex flex-col-reverse justify-end gap-2 pt-2 sm:flex-row">
+
+        <div
+          className={cn(
+            'space-y-5 border-t pt-6',
+            wide && 'lg:border-t-0 lg:border-l lg:pt-0 lg:pl-8',
+          )}
+        >
+          <FormSectionHeading
+            title="Runtime"
+            description="Choose how the agent runs and which model it uses."
+          />
+          <div
+            className={cn('grid grid-cols-1 gap-4', !wide && 'sm:grid-cols-2')}
+          >
+            <Field
+              label="Runtime"
+              htmlFor="agent-runtime"
+              description="The engine, fixed once created."
+            >
+              <Select
+                id="agent-runtime"
+                value={runtime}
+                onValueChange={onRuntimeChange}
+                options={runtimeOptions}
+              />
+            </Field>
+            <Field
+              label="Model"
+              htmlFor="agent-model"
+              description={`Models for the ${rt.label} runtime.`}
+            >
+              <Select
+                key={runtime}
+                id="agent-model"
+                value={model}
+                onValueChange={onModelChange}
+                options={withModelGroups(rt.models)}
+              />
+            </Field>
+          </div>
+          <Field
+            label="Credential"
+            htmlFor="agent-cred"
+            description={
+              selectedCredChoice === MANAGED
+                ? 'Run via OpenComputer, billed to your credits. No key needed.'
+                : `The ${provider} key this agent runs on (matches the model). Reuse one from Credentials, or add a new one here.`
+            }
+          >
+            <Select
+              key={provider}
+              id="agent-cred"
+              value={selectedCredChoice}
+              onValueChange={setCredChoice}
+              options={credOptions}
+              placeholder="Choose a credential"
+            />
+          </Field>
+          {selectedCredChoice === NEW_CRED ? (
+            <div
+              className={cn(
+                'border-border bg-panel-2 grid grid-cols-1 gap-4 rounded-md border p-3',
+                !wide && 'sm:grid-cols-2',
+              )}
+            >
+              <Field label="Credential name" htmlFor="new-cred-name">
+                <Input
+                  id="new-cred-name"
+                  value={newCredName}
+                  onChange={(event) => setNewCredName(event.target.value)}
+                  placeholder="e.g. Production"
+                />
+              </Field>
+              <Field
+                label={keyField.keyLabel}
+                htmlFor="new-cred-key"
+                description="Encrypted in a dedicated secret store."
+              >
+                <Input
+                  id="new-cred-key"
+                  type="password"
+                  value={newCredKey}
+                  onChange={(event) => setNewCredKey(event.target.value)}
+                  placeholder={keyField.keyPlaceholder}
+                />
+              </Field>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div className="flex flex-col-reverse justify-end gap-2 border-t pt-4 sm:flex-row">
         <Button
           type="button"
           variant="ghost"
