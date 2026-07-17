@@ -86,8 +86,8 @@ func (mc *MigrationCoordinator) MigrateToS3(ctx context.Context, sandboxID strin
 	}
 
 	sandboxDir := vm.sandboxDir
+	merged := IsMerged(vm.diskLayout)
 	rootfsPath := detectDrivePath(sandboxDir, "rootfs")
-	workspacePath := detectDrivePath(sandboxDir, "workspace")
 
 	stagingDir, stageErr := os.MkdirTemp(mc.manager.cfg.DataDir, "migration-staging-")
 	if stageErr != nil {
@@ -96,24 +96,44 @@ func (mc *MigrationCoordinator) MigrateToS3(ctx context.Context, sandboxID strin
 	}
 
 	stagedRootfs := filepath.Join(stagingDir, filepath.Base(rootfsPath))
-	stagedWorkspace := filepath.Join(stagingDir, filepath.Base(workspacePath))
 	if cpErr := copyFileReflink(rootfsPath, stagedRootfs); cpErr != nil {
 		vm.opMu.Unlock()
 		os.RemoveAll(stagingDir)
 		return "", "", fmt.Errorf("stage rootfs: %w", cpErr)
 	}
-	if cpErr := copyFileReflink(workspacePath, stagedWorkspace); cpErr != nil {
-		vm.opMu.Unlock()
-		os.RemoveAll(stagingDir)
-		return "", "", fmt.Errorf("stage workspace: %w", cpErr)
+	// Merged sandboxes have no workspace disk — an empty workspaceKey is the
+	// signal the target uses to reconstruct a single-disk incoming migration.
+	var stagedWorkspace string
+	if !merged {
+		workspacePath := detectDrivePath(sandboxDir, "workspace")
+		stagedWorkspace = filepath.Join(stagingDir, filepath.Base(workspacePath))
+		if cpErr := copyFileReflink(workspacePath, stagedWorkspace); cpErr != nil {
+			vm.opMu.Unlock()
+			os.RemoveAll(stagingDir)
+			return "", "", fmt.Errorf("stage workspace: %w", cpErr)
+		}
 	}
 	vm.opMu.Unlock() // release — uploads read from staging copies, not originals
 	defer os.RemoveAll(stagingDir)
 
 	rootfsKey = fmt.Sprintf("migrations/%s/rootfs.qcow2", sandboxID)
-	workspaceKey = fmt.Sprintf("migrations/%s/workspace.qcow2.zst", sandboxID)
 
 	t0 := time.Now()
+
+	// Merged migrations move a single disk — upload the rootfs and return with
+	// an empty workspaceKey.
+	if merged {
+		state.Phase = "upload"
+		sz, uerr := mc.uploadFile(ctx, stagedRootfs, rootfsKey)
+		if uerr != nil {
+			return "", "", fmt.Errorf("upload rootfs: %w", uerr)
+		}
+		log.Printf("qemu: migration pre-copy %s: rootfs=%.1fMB (merged, single disk) (%dms)",
+			sandboxID, float64(sz)/(1024*1024), time.Since(t0).Milliseconds())
+		return rootfsKey, "", nil
+	}
+
+	workspaceKey = fmt.Sprintf("migrations/%s/workspace.qcow2.zst", sandboxID)
 
 	// Compress workspace with zstd before upload — typically 2-4x smaller,
 	// proportionally faster to upload/download over S3.
@@ -361,8 +381,24 @@ func (mc *MigrationCoordinator) LiveMigrate(ctx context.Context, sandboxID, inco
 }
 
 // PrepareIncomingMigration sets up QEMU on the target worker to receive a live migration.
-// Returns the TCP address for the source to connect to.
+// Returns the TCP address for the source to connect to. This exported entry
+// point (the direct, non-S3 migration path via the Migrator interface) is
+// always split; the merged path comes in through PrepareIncomingMigrationWithS3,
+// which calls prepareIncomingMigration directly with merged=true.
 func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string) (incomingAddr string, hostPort int, err error) {
+	return m.prepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template, false, "")
+}
+
+// pinnedGolden is the golden version the rootfs overlay is actually rebased
+// onto (the SOURCE's pinned golden, resolved+downloaded by the S3 caller). It
+// may differ from this worker's current golden — and crucially may be a
+// different base SIZE (split 4G vs merged 20G) in a dual-mode fleet. Stamping
+// the VM with it (rather than m.GoldenVersion()) keeps the recorded golden
+// consistent with the overlay's real base, so a later rebase (re-migration or
+// fork) resolves the correct-size base instead of tripping the size guard and
+// stranding the box. Empty ⇒ fall back to this worker's golden (non-S3 path,
+// where the rootfs is prepared from the local base).
+func (m *Manager) prepareIncomingMigration(ctx context.Context, sandboxID, rootfsPath, workspacePath string, cpus, memMB, guestPort int, template string, merged bool, pinnedGolden string) (incomingAddr string, hostPort int, err error) {
 	sandboxDir := filepath.Join(m.cfg.DataDir, "sandboxes", sandboxID)
 	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
 		return "", 0, fmt.Errorf("mkdir: %w", err)
@@ -383,8 +419,11 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 		}
 		log.Printf("qemu: migration %s: prepared rootfs from template %q: %s", sandboxID, template, rootfsPath)
 	}
-	// Create workspace if not provided
-	if workspacePath == "" {
+	// Create workspace if not provided (split only). A merged sandbox has no
+	// workspace disk, so an empty workspacePath there is intentional — do NOT
+	// synthesize one, or the incoming QEMU would carry an extra drive the
+	// migrated RAM's device model doesn't expect.
+	if workspacePath == "" && !merged {
 		workspacePath = filepath.Join(sandboxDir, "workspace.ext4")
 		if err := CreateWorkspace(workspacePath, 4096); err != nil {
 			return "", 0, fmt.Errorf("create workspace: %w", err)
@@ -499,12 +538,19 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 	}
 
 	// Store the VM (will be completed after migration arrives).
-	// goldenVersion is set to this worker's current golden — after migration,
-	// PrepareIncomingMigrationWithS3 rebased the overlay to point at this
-	// worker's base, so the VM is effectively running against that golden.
-	// Without this, any checkpoint taken after migration would record an
-	// empty goldenVersion and subsequent cross-golden forks of that
-	// checkpoint can't locate the correct old base to rebase from.
+	// goldenVersion must match the base the overlay is ACTUALLY rebased onto.
+	// The S3 path pins the overlay to the source's golden (pinnedGolden), which
+	// in a dual-mode fleet can be a different base size than this worker's
+	// golden — so stamping m.GoldenVersion() would misrecord the base and make
+	// the next rebase (re-migration or fork) trip the size guard and strand the
+	// box. Fall back to this worker's golden only when pinnedGolden is empty
+	// (the non-S3 path, where the rootfs is prepared from the local base).
+	// Without a value here, a checkpoint taken after migration would record an
+	// empty goldenVersion and cross-golden forks couldn't locate the old base.
+	stampGolden := pinnedGolden
+	if stampGolden == "" {
+		stampGolden = m.GoldenVersion()
+	}
 	now := time.Now()
 	vm := &VMInstance{
 		ID:            sandboxID,
@@ -527,7 +573,8 @@ func (m *Manager) PrepareIncomingMigration(ctx context.Context, sandboxID, rootf
 		guestMAC:      guestMAC,
 		guestCID:      guestCID,
 		bootArgs:      bootArgs,
-		goldenVersion: m.GoldenVersion(),
+		goldenVersion: stampGolden,
+		diskLayout:    boolToLayout(merged),
 		// Marks this as an in-flight migration receiver until CompleteIncoming-
 		// Migration clears it. The reaper uses this to tear down receivers whose
 		// migration is abandoned (never completed), which otherwise stay alive
@@ -718,11 +765,15 @@ func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID,
 		return "", 0, fmt.Errorf("mkdir: %w", err)
 	}
 
+	// An empty workspaceS3Key means the source was a merged (single-disk)
+	// sandbox; workspacePath stays "" so PrepareIncomingMigration builds a
+	// single drive, matching the migrated RAM's device model.
+	merged := workspaceS3Key == ""
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
+	var workspacePath string
 
-	// Download rootfs + workspace in parallel. Workspace may be zstd-compressed.
-	// Rebase runs as soon as rootfs is ready (overlaps with workspace download).
+	// Download rootfs (and, for split, workspace) in parallel. Workspace may be
+	// zstd-compressed. Rebase runs as soon as rootfs is ready.
 	type dlResult struct {
 		err error
 	}
@@ -732,31 +783,38 @@ func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID,
 	go func() {
 		rootfsCh <- dlResult{downloadS3ToFile(ctx, checkpointStore, rootfsS3Key, rootfsPath)}
 	}()
-	go func() {
-		isCompressed := strings.HasSuffix(workspaceS3Key, ".zst")
-		dlPath := workspacePath
-		if isCompressed {
-			dlPath = workspacePath + ".zst"
-		}
-		if err := downloadS3ToFile(ctx, checkpointStore, workspaceS3Key, dlPath); err != nil {
-			workspaceCh <- dlResult{fmt.Errorf("download workspace: %w", err)}
-			return
-		}
-		if isCompressed {
-			decompressCmd := exec.CommandContext(ctx, "zstd", "-d", "--rm", "-q", dlPath, "-o", workspacePath)
-			if out, err := decompressCmd.CombinedOutput(); err != nil {
-				workspaceCh <- dlResult{fmt.Errorf("decompress workspace: %w (%s)", err, strings.TrimSpace(string(out)))}
+	if !merged {
+		workspacePath = filepath.Join(sandboxDir, "workspace.qcow2")
+		go func() {
+			isCompressed := strings.HasSuffix(workspaceS3Key, ".zst")
+			dlPath := workspacePath
+			if isCompressed {
+				dlPath = workspacePath + ".zst"
+			}
+			if err := downloadS3ToFile(ctx, checkpointStore, workspaceS3Key, dlPath); err != nil {
+				workspaceCh <- dlResult{fmt.Errorf("download workspace: %w", err)}
 				return
 			}
-		}
-		workspaceCh <- dlResult{nil}
-	}()
+			if isCompressed {
+				decompressCmd := exec.CommandContext(ctx, "zstd", "-d", "--rm", "-q", dlPath, "-o", workspacePath)
+				if out, err := decompressCmd.CombinedOutput(); err != nil {
+					workspaceCh <- dlResult{fmt.Errorf("decompress workspace: %w (%s)", err, strings.TrimSpace(string(out)))}
+					return
+				}
+			}
+			workspaceCh <- dlResult{nil}
+		}()
+	}
 
 	// Wait for rootfs download, then rebase (workspace downloads in parallel)
 	if r := <-rootfsCh; r.err != nil {
 		return "", 0, fmt.Errorf("download rootfs from S3: %w", r.err)
 	}
 
+	// pinnedGolden records which golden the overlay ends up rebased onto, so the
+	// VM is stamped with a version whose base matches the overlay (see the note
+	// on prepareIncomingMigration). Empty for the flatten/local-base path.
+	pinnedGolden := ""
 	if overlayMode {
 		if m.checkpointStore == nil && checkpointStore != nil {
 			m.SetCheckpointStore(checkpointStore)
@@ -776,15 +834,18 @@ func (m *Manager) PrepareIncomingMigrationWithS3(ctx context.Context, sandboxID,
 		if err := rebaseMetadataOnly(ctx, rootfsPath, absBase); err != nil {
 			return "", 0, fmt.Errorf("rebase rootfs to local base %s: %w", resolveVer, err)
 		}
+		pinnedGolden = resolveVer
 		log.Printf("qemu: migration %s: rootfs pinned to base %s", sandboxID, resolveVer)
 	}
 
-	// Wait for workspace download + decompress to finish
-	if r := <-workspaceCh; r.err != nil {
-		return "", 0, r.err
+	// Wait for workspace download + decompress to finish (split only)
+	if !merged {
+		if r := <-workspaceCh; r.err != nil {
+			return "", 0, r.err
+		}
 	}
 
-	incomingAddr, hostPort, err = m.PrepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template)
+	incomingAddr, hostPort, err = m.prepareIncomingMigration(ctx, sandboxID, rootfsPath, workspacePath, cpus, memMB, guestPort, template, merged, pinnedGolden)
 	if err != nil {
 		return "", 0, err
 	}

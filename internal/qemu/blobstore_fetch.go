@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/opensandbox/opensandbox/internal/blobstore"
@@ -29,7 +28,10 @@ import (
 // Returns nil with a log warning if blobstore is unconfigured — callers
 // proceed with whatever's local (or fail downstream with a clear error).
 func (m *Manager) ensureBaseImageFromBlob(ctx context.Context) error {
-	target := filepath.Join(m.cfg.ImagesDir, "default.ext4")
+	// Fetch the base for THIS worker's layout (default-merged.ext4 for a merged-
+	// create worker). The split base for hosting other-layout resources arrives
+	// separately, on-demand and version-keyed, via resolveBaseForVersion.
+	target := m.goldenBaseFile()
 	if fileExists(target) {
 		return nil // already cached locally
 	}
@@ -42,7 +44,7 @@ func (m *Manager) ensureBaseImageFromBlob(ctx context.Context) error {
 	bucket := m.cfg.GlobalBlobGoldensBucket
 	key := m.cfg.GlobalBlobGoldenKey
 	if key == "" {
-		key = "default.ext4"
+		key = m.goldenBaseName() + ".ext4" // merged workers pull default-merged.ext4 by default
 	}
 	if bucket == "" {
 		return errors.New("qemu: GlobalBlobGoldensBucket required to fetch from blob store")

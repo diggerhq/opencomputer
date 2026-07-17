@@ -104,6 +104,19 @@ type Config struct {
 	ImagesDir  string // Path to base rootfs images
 	QEMUBin    string // Path to qemu-system binary (default: "qemu-system-x86_64")
 
+	// GoldenDiskLayout selects the block topology this worker builds its golden
+	// with — "merged" (default) = single 20GB disk (OS + /home/sandbox), "split"
+	// = legacy two-disk (rootfs + workspace). Controls the layout of freshly
+	// CREATED sandboxes only; forks/wakes follow each snapshot's recorded layout,
+	// and a dual-mode worker still HOSTS the other layout via migrate-in.
+	// Defaults to merged so a single rolling replace onto this build produces
+	// merged boxes with no extra config. Safe because the worker image build
+	// guarantees a valid ~20GB default-merged.ext4 (build-rootfs-docker.sh /
+	// worker-ami.pkr.hcl assert it, fatal), and a worker missing it locally
+	// falls back to the global-blob copy. Set OPENSANDBOX_GOLDEN_DISK_LAYOUT=split
+	// to keep a worker (or the whole fleet) on the legacy two-disk layout.
+	GoldenDiskLayout string
+
 	// AWS EC2 compute pool (server mode only — for auto-scaling worker machines)
 	EC2AMI             string // Custom AMI for worker instances
 	EC2InstanceType    string // single fallback type; used only when EC2InstanceTypes is empty
@@ -351,6 +364,8 @@ func Load() (*Config, error) {
 		KernelPath:     os.Getenv("OPENSANDBOX_KERNEL_PATH"),     // default derived from DataDir
 		ImagesDir:      os.Getenv("OPENSANDBOX_IMAGES_DIR"),      // default derived from DataDir
 		QEMUBin:        envOrDefault("OPENSANDBOX_QEMU_BIN", "qemu-system-x86_64"),
+
+		GoldenDiskLayout: envOrDefault("OPENSANDBOX_GOLDEN_DISK_LAYOUT", "merged"), // default merged; set "split" to override (see field doc)
 
 		EC2AMI:             os.Getenv("OPENSANDBOX_EC2_AMI"),
 		EC2InstanceType:    envOrDefault("OPENSANDBOX_EC2_INSTANCE_TYPE", "c7gd.metal"),

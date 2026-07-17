@@ -177,11 +177,17 @@ func (m *Manager) PowerCycleSandbox(ctx context.Context, sandboxID string) (host
 	// and resource shape. The on-disk rootfs.qcow2 / workspace.qcow2 are
 	// unchanged — this is "same box, freshly powered."
 	sandboxDir := vm.sandboxDir
+	merged := IsMerged(vm.diskLayout)
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.qcow2")
-	workspacePath := filepath.Join(sandboxDir, "workspace.qcow2")
-	if !fileExists(rootfsPath) || !fileExists(workspacePath) {
-		return 0, fmt.Errorf("sandbox %s: drives missing (rootfs=%v, workspace=%v)",
-			sandboxID, fileExists(rootfsPath), fileExists(workspacePath))
+	// Merged boxes have no workspace disk; workspacePath stays "" so buildQEMUArgs
+	// rebuilds the same single-drive topology the box was running with.
+	var workspacePath string
+	if !merged {
+		workspacePath = filepath.Join(sandboxDir, "workspace.qcow2")
+	}
+	if !fileExists(rootfsPath) || (!merged && !fileExists(workspacePath)) {
+		return 0, fmt.Errorf("sandbox %s: drives missing (rootfs=%v, merged=%v, workspace=%v)",
+			sandboxID, fileExists(rootfsPath), merged, !merged && fileExists(workspacePath))
 	}
 
 	var meta SandboxMeta

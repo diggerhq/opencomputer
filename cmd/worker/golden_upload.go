@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/opensandbox/opensandbox/internal/blobstore"
@@ -29,7 +30,7 @@ import (
 //
 // Reads OPENSANDBOX_GLOBAL_BLOB_* env vars for endpoint + creds. Fails loud
 // if blobstore isn't configured.
-func uploadGolden(path string) error {
+func uploadGolden(path string, versionedOnly bool) error {
 	// Bootstrap from the appropriate cloud vault — same pattern as main(). One
 	// of these picks up worker-global-blob-* secrets so the upload knows where
 	// to push; the other is a no-op when its trigger env var isn't set.
@@ -74,11 +75,17 @@ func uploadGolden(path string) error {
 		return fmt.Errorf("blobstore returned nil — check endpoint/access-key env vars")
 	}
 
+	// The current-pointer key follows the file's basename so a merged base seeds
+	// its own pointer ("default-merged.ext4") instead of overwriting the split
+	// "default.ext4" — matching what ensureBaseImageFromBlob fetches per layout.
+	// The versioned key keeps the "default.ext4" filename; its hash dir already
+	// distinguishes a merged base from a split one.
+	currentKey := filepath.Base(path)
 	versionedKey := fmt.Sprintf("bases/%s/default.ext4", hash)
 	bucket := cfg.GlobalBlobGoldensBucket
 
-	log.Printf("uploading %s (%.1fMB, hash=%s) to %s://%s/{default.ext4, %s}",
-		path, float64(st.Size())/(1024*1024), hash, store.Name(), bucket, versionedKey)
+	log.Printf("uploading %s (%.1fMB, hash=%s) to %s://%s/{%s, %s}",
+		path, float64(st.Size())/(1024*1024), hash, store.Name(), bucket, currentKey, versionedKey)
 	t0 := time.Now()
 
 	// Long timeout — multi-GB upload over residential or cross-region network.
@@ -92,11 +99,21 @@ func uploadGolden(path string) error {
 	}
 	log.Printf("uploaded %s (%dms)", versionedKey, time.Since(t0).Milliseconds())
 
-	t1 := time.Now()
-	if err := blobstore.Upload(ctx, store, bucket, "default.ext4", path); err != nil {
-		return fmt.Errorf("upload default.ext4: %w", err)
+	// The unversioned "current" pointer is what workers fetch on cache miss.
+	// Skip it for --versioned-only (seeding a merged base) so split workers'
+	// fallback isn't repointed at a merged image; cross-golden ops still find
+	// this base by its hashed key above.
+	if versionedOnly {
+		log.Printf("skipping default.ext4 current-pointer (--versioned-only)")
+		log.Printf("done in %s", time.Since(t0).Round(time.Millisecond))
+		return nil
 	}
-	log.Printf("uploaded default.ext4 (%dms)", time.Since(t1).Milliseconds())
+
+	t1 := time.Now()
+	if err := blobstore.Upload(ctx, store, bucket, currentKey, path); err != nil {
+		return fmt.Errorf("upload %s: %w", currentKey, err)
+	}
+	log.Printf("uploaded %s (%dms)", currentKey, time.Since(t1).Milliseconds())
 
 	log.Printf("done in %s", time.Since(t0).Round(time.Millisecond))
 	return nil

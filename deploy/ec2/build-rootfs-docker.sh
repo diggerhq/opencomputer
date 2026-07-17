@@ -20,7 +20,21 @@ set -euo pipefail
 AGENT_BIN="${1:?Usage: $0 AGENT_BIN IMAGES_DIR [IMAGE_NAME]}"
 IMAGES_DIR="${2:?Usage: $0 AGENT_BIN IMAGES_DIR [IMAGE_NAME]}"
 IMAGE_NAME="${3:-default}"
-EXT4_SIZE_MB="${EXT4_SIZE_MB:-4096}"
+
+# DISK_LAYOUT selects the block topology this base image is built for:
+#   split  (default) — legacy two-disk: a 4GB rootfs (OS) + a separate workspace
+#                      disk (vdb) mounted at /home/sandbox.
+#   merged           — single-disk: OS and /home/sandbox on ONE ~20GB rootfs, no
+#                      vdb. The rootfs image content is identical (same init,
+#                      which already no-ops the vdb mount when no vdb is present);
+#                      only the size floor differs so /home/sandbox has room.
+DISK_LAYOUT="${DISK_LAYOUT:-split}"
+if [ "$DISK_LAYOUT" = "merged" ]; then
+    EXT4_SIZE_MB="${EXT4_SIZE_MB:-20480}"
+    ROOTFS_MIN_MB="${ROOTFS_MIN_MB:-20480}"
+else
+    EXT4_SIZE_MB="${EXT4_SIZE_MB:-4096}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -101,7 +115,11 @@ if mount /dev/vdb /home/sandbox 2>/dev/null || mount /dev/vdb1 /home/sandbox 2>/
     chown sandbox:sandbox /home/sandbox 2>/dev/null
     echo "init: workspace mounted (/dev/vdb -> /home/sandbox)"
 else
-    echo "init: warning: no data disk found, /home/sandbox is ephemeral"
+    # No vdb attached — merged single-disk layout. /home/sandbox is a directory
+    # on the rootfs (persistent, captured in checkpoints/snapshots), not ephemeral.
+    mkdir -p /home/sandbox
+    chown sandbox:sandbox /home/sandbox 2>/dev/null
+    echo "init: single-disk (merged) layout — /home/sandbox on rootfs"
 fi
 
 # ── Mount virtual filesystems (in the final root) ──
@@ -249,30 +267,15 @@ docker rm -f osb-rootfs-tmp
 # didn't actually change the rootfs content. When unset, mkfs generates a
 # random UUID (previous behaviour), which makes every build produce a new
 # goldenVersion even for identical inputs.
-log "Converting to ext4 (${EXT4_SIZE_MB}MB sparse)..."
-EXT4_PATH="$TMPDIR/rootfs.ext4"
-truncate -s "${EXT4_SIZE_MB}M" "$EXT4_PATH"
-if [ -n "${ROOTFS_UUID:-}" ]; then
-    log "Using deterministic UUID: $ROOTFS_UUID"
-    mkfs.ext4 -q -F -L rootfs -U "$ROOTFS_UUID" -E hash_seed="$ROOTFS_UUID" "$EXT4_PATH"
-else
-    mkfs.ext4 -q -F -L rootfs "$EXT4_PATH"
-fi
+# Eagerly initialize the inode tables + journal at mkfs time. Default (lazy)
+# init leaves most inode-table groups uninitialized, so ext4lazyinit zeroes them
+# in the BACKGROUND on first mount of every sandbox — and a 20GB fs has ~5x the
+# inode tables of the 4GB split rootfs. Under a create-burst that background I/O
+# contends and starves the in-guest agent, producing multi-second (sometimes
+# ~30s) agent-ready times. Eager init pays that cost once, at build.
+MKFS_E="lazy_itable_init=0,lazy_journal_init=0"
 
-MNT_DIR="$TMPDIR/mnt"
-mkdir -p "$MNT_DIR"
-mount -o loop "$EXT4_PATH" "$MNT_DIR"
-
-tar xf "$TMPDIR/rootfs.tar" -C "$MNT_DIR"
-
-# Ensure key directories exist (workspace is created by Dockerfile)
-for dir in proc sys dev dev/pts dev/shm tmp run; do
-    mkdir -p "$MNT_DIR/$dir"
-done
-
-# Inject guest kernel modules into rootfs.
-# Copy the full /lib/modules/<kver> tree so all modules (Docker networking,
-# vsock, overlay, virtio_mem, etc.) are available with correct dependencies.
+# Resolve guest kernel version once (shared across every ext4 we emit).
 GUEST_KVER_FILE="/opt/opensandbox/guest-kernel-version"
 if [ -f "$GUEST_KVER_FILE" ]; then
     GUEST_KVER=$(cat "$GUEST_KVER_FILE")
@@ -280,33 +283,109 @@ elif ls -d /lib/modules/*-generic >/dev/null 2>&1; then
     GUEST_KVER=$(ls -d /lib/modules/*-generic | sort -V | tail -1 | xargs basename)
 fi
 
-if [ -n "${GUEST_KVER:-}" ] && [ -d "/lib/modules/$GUEST_KVER" ]; then
-    log "Injecting kernel modules for $GUEST_KVER..."
-    rm -rf "$MNT_DIR/lib/modules"/*
-    mkdir -p "$MNT_DIR/lib/modules"
-    cp -a "/lib/modules/$GUEST_KVER" "$MNT_DIR/lib/modules/"
-    depmod -b "$MNT_DIR" "$GUEST_KVER" 2>/dev/null || log "depmod failed (non-fatal)"
-    MOD_COUNT=$(find "$MNT_DIR/lib/modules/$GUEST_KVER" -name "*.ko*" | wc -l)
-    log "Injected $MOD_COUNT modules for kernel $GUEST_KVER"
-else
-    log "WARNING: No guest kernel modules found — Docker networking and virtio_mem will not work"
-fi
+# make_ext4 OUTNAME SIZE_MB FLOOR_MB — build a populated ext4 from rootfs.tar.
+# Merged and split bases have IDENTICAL content (the init already no-ops the vdb
+# mount when no vdb is present); only the size/floor differ. So one rootfs build
+# emits both default.ext4 (4GB split) and default-merged.ext4 (20GB merged),
+# letting one worker image carry both so enabling merged-create is a pure env
+# flip (OPENSANDBOX_GOLDEN_DISK_LAYOUT=merged) rather than an image rebuild.
+make_ext4() {
+    local outname="$1" size_mb="$2" floor_mb="$3"
+    local ext4_path="$TMPDIR/${outname}.ext4"
+    log "Converting to ext4 (${outname}: ${size_mb}MB, floor ${floor_mb}MB)..."
+    rm -f "$ext4_path"
+    truncate -s "${size_mb}M" "$ext4_path"
+    if [ -n "${ROOTFS_UUID:-}" ]; then
+        mkfs.ext4 -q -F -L rootfs -U "$ROOTFS_UUID" -E "hash_seed=$ROOTFS_UUID,$MKFS_E" "$ext4_path"
+    else
+        mkfs.ext4 -q -F -L rootfs -E "$MKFS_E" "$ext4_path"
+    fi
 
-sync
-umount "$MNT_DIR"
+    local mnt_dir="$TMPDIR/mnt"
+    mkdir -p "$mnt_dir"
+    mount -o loop "$ext4_path" "$mnt_dir"
 
-# Shrink to a usable floor — leave room for apt install, Docker, kernel modules etc.
-# The ext4 is inside a qcow2 COW overlay, so unused space costs nothing on disk.
+    tar xf "$TMPDIR/rootfs.tar" -C "$mnt_dir"
+
+    # Ensure key directories exist (workspace is created by Dockerfile)
+    for dir in proc sys dev dev/pts dev/shm tmp run; do
+        mkdir -p "$mnt_dir/$dir"
+    done
+
+    # Inject guest kernel modules (full /lib/modules/<kver> tree — Docker
+    # networking, vsock, overlay, virtio_mem, etc. with correct dependencies).
+    if [ -n "${GUEST_KVER:-}" ] && [ -d "/lib/modules/$GUEST_KVER" ]; then
+        rm -rf "$mnt_dir/lib/modules"/*
+        mkdir -p "$mnt_dir/lib/modules"
+        cp -a "/lib/modules/$GUEST_KVER" "$mnt_dir/lib/modules/"
+        depmod -b "$mnt_dir" "$GUEST_KVER" 2>/dev/null || log "depmod failed (non-fatal)"
+        local mod_count
+        mod_count=$(find "$mnt_dir/lib/modules/$GUEST_KVER" -name "*.ko*" | wc -l)
+        log "Injected $mod_count modules for kernel $GUEST_KVER"
+    else
+        log "WARNING: No guest kernel modules found — Docker networking and virtio_mem will not work"
+    fi
+
+    sync
+    umount "$mnt_dir"
+
+    # Shrink to a usable floor — the ext4 is inside a qcow2 COW overlay, so unused
+    # space costs nothing on disk.
+    log "Resizing ${outname} to ${floor_mb}MB floor (sparse)..."
+    resize2fs "$ext4_path" "${floor_mb}M" 2>/dev/null || log "resize2fs failed (non-fatal)"
+
+    mkdir -p "$IMAGES_DIR"
+    cp "$ext4_path" "$IMAGES_DIR/${outname}.ext4"
+    log "Done: $IMAGES_DIR/${outname}.ext4 ($(du -h "$IMAGES_DIR/${outname}.ext4" | cut -f1))"
+}
+
+# assert_merged_base FILE MIN_MB — fail the build unless FILE is a valid ext4
+# whose FILESYSTEM (not just the file) is at least ~MIN_MB. Catches a resize2fs
+# that silently left the merged base at the 4GB split size. Since merged-create
+# is the default, a bad merged base bricks every worker's golden build — so this
+# is fatal on purpose.
+assert_merged_base() {
+    local f="$1" min_mb="$2" blocks bsize fs_mb
+    [ -f "$f" ] || { err "merged base $f missing after derivation"; exit 1; }
+    dumpe2fs -h "$f" >/dev/null 2>&1 || { err "merged base $f is not a valid ext4"; exit 1; }
+    blocks=$(dumpe2fs -h "$f" 2>/dev/null | awk -F: '/Block count/{gsub(/ /,"",$2);print $2}')
+    bsize=$(dumpe2fs -h "$f" 2>/dev/null | awk -F: '/Block size/{gsub(/ /,"",$2);print $2}')
+    fs_mb=$(( blocks * bsize / 1024 / 1024 ))
+    if [ "$fs_mb" -lt $(( min_mb * 95 / 100 )) ]; then
+        err "merged base $f filesystem is ${fs_mb}MB, expected ~${min_mb}MB — resize2fs failed"
+        exit 1
+    fi
+    log "merged base verified: ${fs_mb}MB ext4"
+}
+
 ROOTFS_MIN_MB="${ROOTFS_MIN_MB:-4096}"
-log "Resizing ext4 to ${ROOTFS_MIN_MB}MB floor (sparse — actual disk usage stays low)..."
-resize2fs "$EXT4_PATH" "${ROOTFS_MIN_MB}M" 2>/dev/null || log "resize2fs failed (non-fatal)"
 
-# Place in output directory
-mkdir -p "$IMAGES_DIR"
-cp "$EXT4_PATH" "$IMAGES_DIR/${IMAGE_NAME}.ext4"
+# Primary base for this build's configured layout.
+make_ext4 "$IMAGE_NAME" "$EXT4_SIZE_MB" "$ROOTFS_MIN_MB"
+
+# Companion merged base: alongside the split "default" build, ship
+# default-merged.ext4 so one worker image carries both bases (enabling merged-
+# create is then a pure OPENSANDBOX_GOLDEN_DISK_LAYOUT=merged flip). The two are
+# byte-identical content; the merged one is just grown to 20GB. Derive it from
+# the split base (cp, grow the file, resize2fs the ext4) rather than a fresh
+# mkfs so it can be reproduced from a CACHED default.ext4 with no rootfs tar —
+# the Packer worker-image build applies the exact same derivation on a rootfs-
+# cache hit. Merged-create is the DEFAULT, so a missing/wrong-sized merged base
+# would brick every worker's golden build — assert_merged_base fails the build
+# loudly rather than shipping a bad image. Skipped for the merged build itself,
+# non-default templates, or EMIT_MERGED_VARIANT=0.
+if [ "$IMAGE_NAME" = "default" ] && [ "$DISK_LAYOUT" != "merged" ] && [ "${EMIT_MERGED_VARIANT:-1}" = "1" ]; then
+    MERGED_SIZE_MB="${MERGED_SIZE_MB:-20480}"
+    MERGED_PATH="$IMAGES_DIR/default-merged.ext4"
+    log "Deriving companion merged base default-merged.ext4 (${MERGED_SIZE_MB}MB) from ${IMAGE_NAME}.ext4..."
+    cp --reflink=auto "$IMAGES_DIR/${IMAGE_NAME}.ext4" "$MERGED_PATH" 2>/dev/null \
+        || cp "$IMAGES_DIR/${IMAGE_NAME}.ext4" "$MERGED_PATH"
+    truncate -s "${MERGED_SIZE_MB}M" "$MERGED_PATH"           # grow the file before growing the fs
+    e2fsck -fy "$MERGED_PATH" >/dev/null 2>&1 || true          # resize2fs needs a clean fs
+    resize2fs "$MERGED_PATH" "${MERGED_SIZE_MB}M"              # grow the ext4 to fill (fatal via set -e)
+    assert_merged_base "$MERGED_PATH" "$MERGED_SIZE_MB"
+    log "Done: $MERGED_PATH ($(du -h "$MERGED_PATH" | cut -f1))"
+fi
 
 # Clean up Docker image
 docker rmi -f "osb-rootfs-${IMAGE_NAME}:build" &>/dev/null || true
-
-FINAL_SIZE=$(du -h "$IMAGES_DIR/${IMAGE_NAME}.ext4" | cut -f1)
-log "Done: $IMAGES_DIR/${IMAGE_NAME}.ext4 ($FINAL_SIZE)"

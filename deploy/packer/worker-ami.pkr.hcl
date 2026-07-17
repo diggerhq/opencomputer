@@ -356,6 +356,27 @@ build {
       "PYEOF",
       "fi",
 
+      # Ensure the 20GB merged base exists before staging. build-rootfs-docker.sh
+      # emits it on a cache MISS, but on a cache HIT the Docker build is skipped,
+      # so derive it here from the (cached) default.ext4 — identical content, the
+      # file grown to 20GB then the ext4 grown to fill it (same derivation the
+      # build script uses).
+      "if [ ! -f /data/firecracker/images/default-merged.ext4 ]; then",
+      "  echo 'Deriving default-merged.ext4 from default.ext4 (rootfs-cache hit)'",
+      "  cp --reflink=auto /data/firecracker/images/default.ext4 /data/firecracker/images/default-merged.ext4 2>/dev/null || cp /data/firecracker/images/default.ext4 /data/firecracker/images/default-merged.ext4",
+      "  truncate -s 20480M /data/firecracker/images/default-merged.ext4",
+      "  e2fsck -fy /data/firecracker/images/default-merged.ext4 >/dev/null 2>&1 || true",
+      "  resize2fs /data/firecracker/images/default-merged.ext4 20480M || { echo 'FATAL: resize2fs merged failed'; exit 1; }",
+      "fi",
+      # Fatal check (covers both the cache-miss build output and the cache-hit
+      # derivation): merged-create is the default, so a missing/undersized merged
+      # base bricks every worker's golden build. Verify the FILESYSTEM is ~20GB.
+      "MB=/data/firecracker/images/default-merged.ext4",
+      "[ -f \"$MB\" ] || { echo 'FATAL: default-merged.ext4 missing'; exit 1; }",
+      "FS_MB=$(( $(dumpe2fs -h \"$MB\" 2>/dev/null | awk -F: '/Block count/{gsub(/ /,\"\",$2);print $2}') * $(dumpe2fs -h \"$MB\" 2>/dev/null | awk -F: '/Block size/{gsub(/ /,\"\",$2);print $2}') / 1048576 ))",
+      "[ \"$FS_MB\" -ge 19000 ] || { echo \"FATAL: default-merged.ext4 fs is $${FS_MB}MB, expected ~20480MB\"; exit 1; }",
+      "echo \"default-merged.ext4 verified: $${FS_MB}MB\"",
+
       # Save rootfs to /opt (survives NVMe mount overlay on /data)
       "mkdir -p /opt/opensandbox/images",
       "cp /data/firecracker/images/*.ext4 /opt/opensandbox/images/",
@@ -503,6 +524,15 @@ build {
       "fi",
       "echo 'Tigris dual-write: uploading /opt/opensandbox/images/default.ext4 via golden-upload subcommand'",
       "/usr/local/bin/opensandbox-worker golden-upload /opt/opensandbox/images/default.ext4",
+      "# Also seed the 20GB merged base so a fresh merged-create worker can fetch",
+      "# it on cache miss (golden-upload names the current pointer by basename:",
+      "# 'default-merged.ext4'; the versioned bases/{hash}/ key is separate).",
+      "if [ -f /opt/opensandbox/images/default-merged.ext4 ]; then",
+      "  echo 'Tigris dual-write: uploading /opt/opensandbox/images/default-merged.ext4'",
+      "  /usr/local/bin/opensandbox-worker golden-upload /opt/opensandbox/images/default-merged.ext4",
+      "else",
+      "  echo 'Tigris dual-write: default-merged.ext4 not present, skipping (older rootfs build)'",
+      "fi",
     ]
   }
 

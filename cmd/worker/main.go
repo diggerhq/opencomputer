@@ -72,11 +72,22 @@ func main() {
 	// run this at AMI-build time. Reads OPENSANDBOX_GLOBAL_BLOB_* env vars
 	// for the destination.
 	if len(os.Args) >= 2 && os.Args[1] == "golden-upload" {
-		if len(os.Args) != 3 {
-			fmt.Fprintln(os.Stderr, "usage: opensandbox-worker golden-upload <path-to-default.ext4>")
+		// Usage: golden-upload <path> [--versioned-only]
+		// --versioned-only pushes ONLY bases/{hash}/default.ext4 and NOT the
+		// default.ext4 "current" pointer. Required when seeding a MERGED base so
+		// split workers' cache-miss fallback isn't repointed at a 20GB merged
+		// image; cross-golden fork/migrate still resolves it by content hash.
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: opensandbox-worker golden-upload <path-to-default.ext4> [--versioned-only]")
 			os.Exit(2)
 		}
-		if err := uploadGolden(os.Args[2]); err != nil {
+		versionedOnly := false
+		for _, a := range os.Args[3:] {
+			if a == "--versioned-only" {
+				versionedOnly = true
+			}
+		}
+		if err := uploadGolden(os.Args[2], versionedOnly); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -253,6 +264,7 @@ func main() {
 			DefaultMemoryMB:         cfg.DefaultSandboxMemoryMB,
 			DefaultCPUs:             cfg.DefaultSandboxCPUs,
 			DefaultDiskMB:           cfg.DefaultSandboxDiskMB,
+			GoldenLayout:            cfg.GoldenDiskLayout,
 			GlobalBlob:              globalBlob,
 			GlobalBlobGoldensBucket: cfg.GlobalBlobGoldensBucket,
 			GlobalBlobGoldenKey:     "default.ext4",

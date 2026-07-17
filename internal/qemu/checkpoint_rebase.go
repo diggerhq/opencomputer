@@ -154,7 +154,7 @@ func (m *Manager) resolveBaseForVersion(ctx context.Context, goldenVersion strin
 		return "", fmt.Errorf("empty goldenVersion")
 	}
 	if goldenVersion == m.GoldenVersion() {
-		return filepath.Join(m.cfg.ImagesDir, "default.ext4"), nil
+		return m.goldenBaseFile(), nil // this worker's own base (default.ext4 or default-merged.ext4)
 	}
 
 	retained := filepath.Join(m.cfg.ImagesDir, "bases", goldenVersion, "default.ext4")
@@ -299,7 +299,7 @@ func (m *Manager) uploadBaseImageIfNew(goldenVersion string) {
 	if m.checkpointStore == nil || goldenVersion == "" {
 		return
 	}
-	baseImage := filepath.Join(m.cfg.ImagesDir, "default.ext4")
+	baseImage := m.goldenBaseFile() // upload this worker's actual base (merged=20GB) under its version key
 	if !fileExists(baseImage) {
 		log.Printf("qemu: base image archival skipped: %s not found", baseImage)
 		return
