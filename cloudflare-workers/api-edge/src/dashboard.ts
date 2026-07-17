@@ -920,6 +920,7 @@ export async function handleDashboard(
 
   // ── Browser Sessions — proxy to the dedicated browser Worker ───────────
   if (sub === "/browsers" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/browsers");
+  if (sub === "/browser-usage" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/browser-usage");
   {
     const m = sub.match(/^\/browsers\/([^/]+)\/replays\/([^/]+)$/);
     if (m && method === "GET") {

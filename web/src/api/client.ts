@@ -462,6 +462,9 @@ export const getBrowsers = (
 export const getBrowser = (id: string) =>
   apiFetch(`/browsers/${encodeURIComponent(id)}`, {}, S.BrowserSessionSchema)
 
+export const getBrowserUsage = () =>
+  apiFetch('/browser-usage', {}, S.BrowserUsageSchema)
+
 export const deleteBrowser = (id: string) =>
   apiFetch<void>(`/browsers/${encodeURIComponent(id)}`, { method: 'DELETE' })
 

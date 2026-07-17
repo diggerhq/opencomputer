@@ -267,9 +267,24 @@ export const BrowserSessionSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   deleted_at: z.string().nullable().optional(),
+  provider_deleted_at: z.string().nullable().optional(),
+  metered_at: z.string().nullable().optional(),
+  metered_seconds: z.number().nullable().optional(),
+  metered_usage_micro: z.number().nullable().optional(),
+  metering_error: z.string().nullable().optional(),
+  billable_seconds: z.number().optional(),
+  estimated_cost_usd: z.number().optional(),
 })
 export const BrowserSessionListSchema = z.object({
   browsers: z.array(BrowserSessionSchema),
+})
+
+export const BrowserUsageSchema = z.object({
+  total_sessions: z.number(),
+  active_sessions: z.number(),
+  total_billable_seconds: z.number(),
+  total_usage_micro: z.number(),
+  total_cost_usd: z.number(),
 })
 
 export const BrowserProfileSchema = z.object({
