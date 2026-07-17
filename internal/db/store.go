@@ -1855,6 +1855,44 @@ func (s *Store) CountPendingHibernationUploads(ctx context.Context, workerID str
 	return n, err
 }
 
+// StuckHibernationUpload identifies an active hibernation whose async S3 upload
+// has NO terminal state (neither uploaded_at nor upload_error) — the worker's
+// completion callback was lost (transient DB error, or the worker was torn down
+// during a drain before the write landed). The upload usually SUCCEEDED; only
+// the bookkeeping is missing, and the stale row wedges worker teardown forever.
+type StuckHibernationUpload struct {
+	SandboxID      string
+	HibernationKey string
+	HibernatedAt   time.Time
+}
+
+// ListStuckHibernationUploads returns active hibernations with no terminal upload
+// state, older than olderThan (a grace window past the normal upload timeout so
+// the reconciler never races an in-flight upload). Bounded by limit. Uses the
+// idx_hibernations_pending_upload partial index.
+func (s *Store) ListStuckHibernationUploads(ctx context.Context, olderThan time.Time, limit int) ([]StuckHibernationUpload, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT sandbox_id, hibernation_key, hibernated_at
+		   FROM sandbox_hibernations
+		  WHERE uploaded_at IS NULL AND upload_error IS NULL AND expired_at IS NULL
+		    AND hibernated_at < $1
+		  ORDER BY hibernated_at ASC
+		  LIMIT $2`, olderThan, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StuckHibernationUpload
+	for rows.Next() {
+		var r StuckHibernationUpload
+		if err := rows.Scan(&r.SandboxID, &r.HibernationKey, &r.HibernatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // UpdateSandboxSessionForWake changes a hibernated session back to running on a new worker.
 func (s *Store) UpdateSandboxSessionForWake(ctx context.Context, sandboxID, newWorkerID string) error {
 	tx, err := s.pool.Begin(ctx)

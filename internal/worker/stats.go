@@ -14,12 +14,12 @@ import (
 // SystemStats returns current CPU, memory, and disk usage percentages.
 // On Linux, reads from /proc. On other platforms, returns 0.0 gracefully.
 // Disk usage uses syscall.Statfs which works on both Linux and macOS.
-func SystemStats() (cpuPct, memPct, diskPct float64) {
+func SystemStats(dataDir string) (cpuPct, memPct, diskPct float64) {
 	if runtime.GOOS == "linux" {
 		memPct = linuxMemoryPercent()
 		cpuPct = linuxCPUPercent()
 	}
-	diskPct = diskPercent()
+	diskPct = diskPercent(dataDir)
 	return cpuPct, memPct, diskPct
 }
 
@@ -133,19 +133,21 @@ func readProcStat() (total, idle uint64) {
 	return total, idle
 }
 
-// diskPercent returns the disk usage percentage for the root filesystem.
-// Uses syscall.Statfs which works on both Linux and macOS.
-func diskPercent() float64 {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs("/", &stat); err != nil {
+// diskPercent returns the disk usage percentage for the filesystem containing
+// dataDir — the worker DATA mount (e.g. /data), where sandbox overlays,
+// checkpoints, and swap actually live. It deliberately does NOT measure the OS
+// root (/): the root's ~70% install footprint (guest kernels, base images,
+// containerd layers) is static and identical on every worker, so keying
+// scale-up / eviction / routing off it makes the scaler forever try to add
+// workers (quota-blocked) and can drop healthy workers from routing while
+// /data sits nearly empty. Reuses DiskBytes so this matches the per-worker
+// disk metric exactly.
+func diskPercent(dataDir string) float64 {
+	total, used, _, err := DiskBytes(dataDir)
+	if err != nil || total == 0 {
 		return 0.0
 	}
-	total := stat.Blocks * uint64(stat.Bsize)
-	free := stat.Bfree * uint64(stat.Bsize)
-	if total == 0 {
-		return 0.0
-	}
-	return float64(total-free) / float64(total) * 100.0
+	return float64(used) / float64(total) * 100.0
 }
 
 // DiskBytes returns total / used / available bytes for the filesystem
