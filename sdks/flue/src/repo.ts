@@ -22,6 +22,7 @@ const ERROR_CODES = [
   "repository_not_found",
   "repository_rate_limited",
   "source_name_taken",
+  "source_limit_reached",
   "source_unresolved",
   "source_materialization_failed",
   "source_not_ready",
@@ -236,6 +237,7 @@ const HTTP_BY_ERROR: Readonly<
   repository_not_found: [404],
   repository_rate_limited: [429],
   source_name_taken: [409],
+  source_limit_reached: [409],
   source_unresolved: [422],
   source_materialization_failed: [502, 503],
   source_not_ready: [409],
@@ -258,6 +260,7 @@ const RETRYABLE_BY_ERROR: Readonly<
   repository_not_found: false,
   repository_rate_limited: true,
   source_name_taken: false,
+  source_limit_reached: false,
   source_not_ready: true,
   publish_in_progress: true,
   stale_deployment_token: false,
@@ -438,7 +441,7 @@ export function ocRepoTools(
   const addSource = defineTool({
     name: "add_source",
     description:
-      "Pin and materialize one exact repository source after list_working_repos resolved it. Tell the user the exact owner/repository first, await this tool before filesystem work, then use only the returned /workspace/sources/... path. On a product error, explain its stated recovery instead of guessing another target.",
+      "Pin and materialize one exact repository source after list_working_repos resolved it. Tell the user the exact owner/repository first, await this tool before filesystem work, then use only the returned /workspace/sources/... path. If the session has reached its source limit, reuse an existing source or start a new session. On any product error, explain its stated recovery instead of guessing another target.",
     input: AddSourceInputSchema,
     output: AddSourceResultSchema,
     async run({ input, signal }) {

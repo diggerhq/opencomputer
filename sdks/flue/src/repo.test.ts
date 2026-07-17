@@ -58,6 +58,9 @@ describe("ocRepoTools contract", () => {
     expect(list?.description).toMatch(/otherwise ask/);
     expect(add?.description).toMatch(/await this tool before filesystem work/);
     expect(add?.description).toMatch(/returned \/workspace\/sources/);
+    expect(add?.description).toMatch(
+      /reuse an existing source or start a new session/,
+    );
     expect(publish?.description).toMatch(/inspect and test the diff/);
     expect(publish?.description).toMatch(
       /exact repository, base branch, and intended diff/,
@@ -162,6 +165,7 @@ describe("list_working_repos HTTP fixtures", () => {
     ["repository_not_found", 404, false],
     ["repository_rate_limited", 429, true],
     ["source_name_taken", 409, false],
+    ["source_limit_reached", 409, false],
     ["source_unresolved", 422, true],
     ["source_materialization_failed", 503, true],
     ["source_not_ready", 409, true],

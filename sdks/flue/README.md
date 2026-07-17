@@ -77,7 +77,9 @@ OpenComputer policy and GitHub App grant. `add_source` pins the selected ref to
 an exact commit and returns its `/workspace/sources/...` path.
 `github_publish_pull_request` publishes that source's inspected changes on an
 `oc/...` branch. The tools do not default to the deployment repository, expose
-credentials, or perform fuzzy repository selection.
+credentials, or perform fuzzy repository selection. A session supports up to
+eight sources; reuse an existing source or start a new session after reaching
+that limit.
 
 Direct text sessions, managed Slack, workflows, and optional demand-driven
 sandboxes continue to use ordinary Flue behavior.
