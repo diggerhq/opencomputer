@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Browser } from "./browser.js";
 import { BrowserProfile } from "./browser.js";
+import { BrowserProfileAuthCheck } from "./browser.js";
 
 const browserResponse = {
   id: "br_1",
@@ -130,5 +131,104 @@ describe("Browser", () => {
       "https://browser.example.test/v1/profiles/prof_1",
       expect.objectContaining({ method: "DELETE" }),
     );
+  });
+
+  it("creates and polls browser profile auth checks", async () => {
+    const profileResponse = {
+      id: "prof_1",
+      provider: "kernel",
+      provider_profile_id: "kernel_profile_1",
+      name: "linkedin",
+    };
+    const runningResponse = {
+      id: "authchk_1",
+      status: "running",
+      profile_id: "prof_1",
+      provider_profile_id: "kernel_profile_1",
+      homepage: "https://www.linkedin.com/feed/",
+      user: "motatoes",
+      mode: "vision",
+      compare_fresh: true,
+      trigger_run_id: "run_1",
+    };
+    const completedResponse = {
+      ...runningResponse,
+      status: "completed",
+      result: { outcome: "authenticated", confidence: 0.99 },
+      completed_at: "2026-07-17T00:00:00.000Z",
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json(profileResponse))
+      .mockResolvedValueOnce(Response.json(runningResponse, { status: 202 }))
+      .mockResolvedValueOnce(Response.json(completedResponse));
+
+    const profile = await BrowserProfile.connect("linkedin", {
+      apiKey: "osb_test",
+      apiUrl: "https://browser.example.test",
+    });
+    const run = await profile.checkAuth({
+      homepage: "https://www.linkedin.com/feed/",
+      user: "motatoes",
+      mode: "vision",
+      compareFresh: true,
+    });
+    const refreshed = await run.refresh();
+
+    expect(run.id).toBe("authchk_1");
+    expect(run.done).toBe(false);
+    expect(refreshed.done).toBe(true);
+    expect(refreshed.result).toEqual({ outcome: "authenticated", confidence: 0.99 });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://browser.example.test/v1/profiles/prof_1/auth-checks",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          homepage: "https://www.linkedin.com/feed/",
+          user: "motatoes",
+          mode: "vision",
+          compare_fresh: true,
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "https://browser.example.test/v1/profile-auth-checks/authchk_1",
+      expect.objectContaining({ headers: expect.objectContaining({ "X-API-Key": "osb_test" }) }),
+    );
+  });
+
+  it("waits for browser profile auth checks by polling", async () => {
+    vi.useFakeTimers();
+    const runningResponse = {
+      id: "authchk_1",
+      status: "running",
+      profile_id: "prof_1",
+      homepage: "https://mail.google.com/",
+    };
+    const completedResponse = {
+      ...runningResponse,
+      status: "completed",
+      result: { outcome: "authenticated" },
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json(runningResponse))
+      .mockResolvedValueOnce(Response.json(completedResponse));
+
+    try {
+      const run = await BrowserProfileAuthCheck.connect("authchk_1", {
+        apiKey: "osb_test",
+        apiUrl: "https://browser.example.test",
+      });
+      const waitPromise = run.wait({ intervalMs: 10, timeoutMs: 1000 });
+      await vi.advanceTimersByTimeAsync(10);
+      const done = await waitPromise;
+
+      expect(done.status).toBe("completed");
+      expect(done.result).toEqual({ outcome: "authenticated" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

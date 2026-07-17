@@ -61,6 +61,35 @@ export interface BrowserProfileData {
   provider_last_used_at?: string;
 }
 
+export interface BrowserProfileAuthCheckCreateOpts {
+  homepage: string;
+  user?: string;
+  mode?: "vision" | "playwright" | "hybrid";
+  compareFresh?: boolean;
+}
+
+export interface BrowserProfileAuthCheckData {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed" | string;
+  profile_id: string;
+  provider_profile_id?: string;
+  homepage: string;
+  user?: string | null;
+  mode?: "vision" | "playwright" | "hybrid" | string;
+  compare_fresh?: boolean;
+  trigger_run_id?: string | null;
+  result?: unknown;
+  error?: unknown;
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string | null;
+}
+
+export interface BrowserProfileAuthCheckWaitOpts {
+  intervalMs?: number;
+  timeoutMs?: number;
+}
+
 export class Browser {
   readonly id: string;
   readonly provider: "kernel";
@@ -218,6 +247,92 @@ export class BrowserProfile {
       throw await browserError(resp, "delete browser profile");
     }
   }
+
+  async checkAuth(opts: BrowserProfileAuthCheckCreateOpts): Promise<BrowserProfileAuthCheck> {
+    const resp = await fetch(`${this.apiUrl}/v1/profiles/${encodeURIComponent(this.id)}/auth-checks`, {
+      method: "POST",
+      headers: headers(this.apiKey),
+      body: JSON.stringify(toAuthCheckBody(opts)),
+    });
+    if (!resp.ok) {
+      throw await browserError(resp, "create browser profile auth check");
+    }
+    return new BrowserProfileAuthCheck(await resp.json() as BrowserProfileAuthCheckData, this.apiUrl, this.apiKey);
+  }
+}
+
+export class BrowserProfileAuthCheck {
+  readonly id: string;
+  readonly status: string;
+  readonly profileId: string;
+  readonly providerProfileId?: string;
+  readonly homepage: string;
+  readonly user: string | null;
+  readonly mode?: string;
+  readonly compareFresh?: boolean;
+  readonly triggerRunId: string | null;
+  readonly result: unknown;
+  readonly error: unknown;
+  readonly createdAt?: string;
+  readonly updatedAt?: string;
+  readonly completedAt?: string | null;
+
+  private readonly apiUrl: string;
+  private readonly apiKey: string;
+
+  constructor(data: BrowserProfileAuthCheckData, apiUrl: string, apiKey: string) {
+    this.id = data.id;
+    this.status = data.status;
+    this.profileId = data.profile_id;
+    this.providerProfileId = data.provider_profile_id;
+    this.homepage = data.homepage;
+    this.user = data.user ?? null;
+    this.mode = data.mode;
+    this.compareFresh = data.compare_fresh;
+    this.triggerRunId = data.trigger_run_id ?? null;
+    this.result = data.result ?? null;
+    this.error = data.error ?? null;
+    this.createdAt = data.created_at;
+    this.updatedAt = data.updated_at;
+    this.completedAt = data.completed_at;
+    this.apiUrl = apiUrl;
+    this.apiKey = apiKey;
+  }
+
+  get done(): boolean {
+    return this.status === "completed" || this.status === "failed";
+  }
+
+  static async connect(id: string, opts: { apiKey?: string; apiUrl?: string } = {}): Promise<BrowserProfileAuthCheck> {
+    const apiUrl = resolveBrowserApiUrl(opts.apiUrl);
+    const apiKey = opts.apiKey || process.env.OPENCOMPUTER_API_KEY || "";
+    const resp = await fetch(`${apiUrl}/v1/profile-auth-checks/${encodeURIComponent(id)}`, {
+      headers: headers(apiKey),
+    });
+    if (!resp.ok) {
+      throw await browserError(resp, "connect browser profile auth check");
+    }
+    return new BrowserProfileAuthCheck(await resp.json() as BrowserProfileAuthCheckData, apiUrl, apiKey);
+  }
+
+  async refresh(): Promise<BrowserProfileAuthCheck> {
+    return BrowserProfileAuthCheck.connect(this.id, { apiUrl: this.apiUrl, apiKey: this.apiKey });
+  }
+
+  async wait(opts: BrowserProfileAuthCheckWaitOpts = {}): Promise<BrowserProfileAuthCheck> {
+    const intervalMs = opts.intervalMs ?? 2000;
+    const timeoutMs = opts.timeoutMs ?? 120000;
+    const startedAt = Date.now();
+    let current: BrowserProfileAuthCheck = this;
+    while (!current.done) {
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new Error(`Timed out waiting for browser profile auth check ${this.id}`);
+      }
+      await sleep(intervalMs);
+      current = await current.refresh();
+    }
+    return current;
+  }
 }
 
 function headers(apiKey: string): HeadersInit {
@@ -256,6 +371,18 @@ function toCreateBody(opts: BrowserCreateOpts): Record<string, unknown> {
   if (opts.telemetry !== undefined) body.telemetry = opts.telemetry;
   if (opts.recording !== undefined) body.recording = opts.recording;
   return body;
+}
+
+function toAuthCheckBody(opts: BrowserProfileAuthCheckCreateOpts): Record<string, unknown> {
+  const body: Record<string, unknown> = { homepage: opts.homepage };
+  if (opts.user !== undefined) body.user = opts.user;
+  if (opts.mode !== undefined) body.mode = opts.mode;
+  if (opts.compareFresh !== undefined) body.compare_fresh = opts.compareFresh;
+  return body;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function browserError(resp: Response, action: string): Promise<Error> {
