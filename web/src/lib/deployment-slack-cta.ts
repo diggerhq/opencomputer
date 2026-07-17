@@ -38,11 +38,13 @@ export function deploymentStage(
 export function deploymentSlackPresentation(input: {
   deploymentState: string
   deploymentTerminal: boolean
+  canStartSession: boolean
   managedStatus: ManagedSlackStatus
   openUrl?: string | null
   connecting: boolean
 }): DeploymentSlackPresentation {
   const stage = deploymentStage(input.deploymentState, input.deploymentTerminal)
+  const ready = stage === 'ready' && input.canStartSession
 
   if (stage === 'failed') {
     return {
@@ -71,7 +73,7 @@ export function deploymentSlackPresentation(input: {
   }
 
   if (input.managedStatus === 'active') {
-    if (stage === 'ready' && input.openUrl) {
+    if (ready && input.openUrl) {
       return {
         action: 'open',
         label: 'Open Slack',
@@ -84,14 +86,12 @@ export function deploymentSlackPresentation(input: {
       action: null,
       label: null,
       disclosure: false,
-      status:
-        stage === 'running'
-          ? 'Slack connected. Open Slack when this deployment is ready.'
-          : 'Slack is connected.',
-      announcement:
-        stage === 'running'
-          ? 'Slack connected. Open Slack will be available when the deployment is ready.'
-          : 'Slack connected.',
+      status: !ready
+        ? 'Slack connected. Open Slack when this deployment is ready.'
+        : 'Slack is connected.',
+      announcement: !ready
+        ? 'Slack connected. Open Slack will be available when the deployment is ready.'
+        : 'Slack connected.',
     }
   }
 
@@ -125,9 +125,8 @@ export function deploymentSlackPresentation(input: {
     label: 'Connect Slack',
     disclosure: true,
     status: null,
-    announcement:
-      stage === 'ready'
-        ? 'Connect Slack to use this ready agent.'
-        : 'Connect Slack while the deployment continues.',
+    announcement: ready
+      ? 'Connect Slack to use this ready agent.'
+      : 'Connect Slack while the deployment continues.',
   }
 }

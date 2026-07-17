@@ -186,6 +186,25 @@ describe('agent setup', () => {
     )
   })
 
+  it('does not promote chat until the deployment admits sessions', () => {
+    const markup = renderSetup({
+      deployment: {
+        ...buildingDeployment,
+        state: 'ready',
+        phase: 'verify',
+        terminal: true,
+        active: true,
+        allowed_actions: ['open_agent'],
+      },
+      managed: activeSlack,
+      search: `?deployment=${deploymentId}`,
+    })
+
+    expect(markup).toContain('Finishing deployment…')
+    expect(markup).not.toContain('>Open Slack<')
+    expect(markup).not.toContain('Waiting for your first Slack message')
+  })
+
   it('turns a real managed Slack session into a conversation preview', () => {
     const sessionId = 'ses_aaaaaaaaaaaaaaaaaaaaaaaa'
     const readyDeployment: AgentDeployment = {
@@ -307,5 +326,21 @@ describe('agent setup', () => {
     expect(unconfirmed).not.toContain(
       'OpenComputer will send messages in Acme to Support triage.',
     )
+  })
+
+  it('stops waiting and explains a terminal OAuth result', () => {
+    const markup = renderSetup({
+      deployment: buildingDeployment,
+      managed: {
+        ...activeSlack,
+        status: 'error',
+        connected_at: null,
+      },
+      search: `?deployment=${deploymentId}&slack=connected`,
+    })
+
+    expect(markup).toContain('Slack couldn&#x27;t finish connecting')
+    expect(markup).toContain('Reconnect Slack and try again.')
+    expect(markup).toContain('>Reconnect Slack</button>')
   })
 })

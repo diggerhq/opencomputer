@@ -18,7 +18,10 @@ export function isManagedSlackSession(
   const slack = record(record(session.metadata).slack)
   if (slack.mode !== 'managed') return false
 
-  if (!connectedAt) return true
+  // The connection timestamp is the generation boundary. Without it, an
+  // active reconnect must not claim an older managed session as this setup's
+  // first conversation.
+  if (!connectedAt) return false
   const connectedTime = Date.parse(connectedAt)
   const sessionTime = Date.parse(session.created_at)
   return (

@@ -1,10 +1,47 @@
 import {
   deploymentSlackPresentation,
+  deploymentStage,
   type DeploymentSlackPresentation,
   type ManagedSlackStatus,
 } from '@/lib/deployment-slack-cta'
 
 export type AgentSetupStage = 'preparing' | 'ready' | 'failed'
+
+export function agentSetupStage(input: {
+  hasDeployment: boolean
+  state?: string
+  terminal?: boolean
+  loadFailed: boolean
+  canStartSession: boolean
+  agentReady: boolean
+  agentDeploymentState?: string
+}): AgentSetupStage {
+  if (!input.hasDeployment) {
+    if (input.agentReady) return 'ready'
+    if (
+      [
+        'failed',
+        'canceled',
+        'superseded',
+        'skipped',
+        'unverified',
+        'not_deployed',
+      ].includes(input.agentDeploymentState ?? '')
+    ) {
+      return 'failed'
+    }
+    return 'preparing'
+  }
+
+  // A status-read failure is not a deployment failure, but it also cannot
+  // prove the deployment's authoritative start_session action. Preserve
+  // independent Slack setup without promoting chat until the read recovers.
+  if (input.loadFailed) return 'preparing'
+  if (!input.state) return 'preparing'
+  const stage = deploymentStage(input.state, input.terminal ?? false)
+  if (stage === 'ready' && !input.canStartSession) return 'preparing'
+  return stage === 'running' ? 'preparing' : stage
+}
 
 export interface AgentSetupPresentation extends DeploymentSlackPresentation {
   title: string
@@ -22,6 +59,7 @@ export function agentSetupPresentation(input: {
   const slack = deploymentSlackPresentation({
     deploymentState: input.stage === 'ready' ? 'ready' : input.stage,
     deploymentTerminal: input.stage !== 'preparing',
+    canStartSession: input.stage === 'ready',
     managedStatus: input.managedStatus,
     openUrl: input.openUrl,
     connecting: input.connecting,

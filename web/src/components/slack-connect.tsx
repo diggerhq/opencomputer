@@ -36,7 +36,10 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ManagedSlackWorkspaceClaims } from '@/components/managed-slack-workspace-claims'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import { cn } from '@/lib/utils'
-import { managedSlackNotice } from '@/lib/managed-slack-notice'
+import {
+  managedSlackNotice,
+  managedSlackOAuthPending,
+} from '@/lib/managed-slack-notice'
 import { useManagedSlackConnections } from '@/lib/managed-slack-connections'
 
 // An agent connects its OWN Slack app (BYO, 1:1:1). Connect is a two-step,
@@ -116,6 +119,7 @@ export function SlackConnect({
 }) {
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
+  const oauthResult = searchParams.get('slack')
   const invalidateByo = () =>
     queryClient.invalidateQueries({ queryKey: ['slack', 'byo', agentId] })
   const invalidateManaged = () =>
@@ -132,6 +136,14 @@ export function SlackConnect({
   const managedQuery = useQuery({
     queryKey: ['slack', 'managed', agentId],
     queryFn: () => getManagedSlackConnection(agentId),
+    refetchInterval: (query) =>
+      managedSlackOAuthPending(
+        oauthResult,
+        query.state.data?.status,
+        query.state.data?.connected_at,
+      )
+        ? 1000
+        : false,
   })
   const managedConnectionsQuery = useManagedSlackConnections(!!agentId)
 
@@ -251,7 +263,6 @@ export function SlackConnect({
     !managedNeedsReconnect &&
     !managedDisconnected &&
     managedConnectionsQuery.isLoading
-  const oauthResult = searchParams.get('slack')
   const connectedAgentId = searchParams.get('connected_agent')
   const sameOwnerConnectedAgentId =
     oauthResult === 'workspace_already_connected' &&
@@ -265,7 +276,11 @@ export function SlackConnect({
     enabled: !!sameOwnerConnectedAgentId,
   })
   const connectedAgentName = connectedAgentQuery.data?.name ?? null
-  const waitingForConnectedState = oauthResult === 'connected' && !managedActive
+  const waitingForConnectedState = managedSlackOAuthPending(
+    oauthResult,
+    managed?.status,
+    managed?.connected_at,
+  )
   const notice =
     (sameOwnerConnectedAgentId && connectedAgentQuery.isLoading) ||
     waitingForConnectedState
@@ -275,6 +290,7 @@ export function SlackConnect({
           managedWorkspace,
           agentName,
           connectedAgentName,
+          managed?.status,
         )
   const connectedAgentHref =
     connectedAgentQuery.data && sameOwnerConnectedAgentId

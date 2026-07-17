@@ -50,7 +50,10 @@ import {
   deploymentStage,
 } from '@/lib/deployment-slack-cta'
 import { notifyError, notifySuccess } from '@/lib/errors'
-import { managedSlackNotice } from '@/lib/managed-slack-notice'
+import {
+  managedSlackNotice,
+  managedSlackOAuthPending,
+} from '@/lib/managed-slack-notice'
 import { useManagedSlackConnections } from '@/lib/managed-slack-connections'
 import { cn } from '@/lib/utils'
 import { useAgentDeploymentLogs } from '@/hooks/use-agent-deployment-logs'
@@ -157,7 +160,17 @@ export default function AgentDeployment() {
     queryKey: ['agent-deployment', agentId, deploymentId],
     queryFn: () => getAgentDeployment(agentId, deploymentId),
     enabled: !!agentId && !!deploymentId,
-    refetchInterval: (query) => (query.state.data?.terminal ? false : 1500),
+    refetchInterval: (query) => {
+      const deployment = query.state.data
+      if (!deployment) return false
+      if (
+        deployment.state === 'ready' &&
+        !deployment.allowed_actions.includes('start_session')
+      ) {
+        return 1500
+      }
+      return deployment.terminal ? false : 1500
+    },
   })
   const { data: agent } = useQuery({
     queryKey: ['agent', agentId],
@@ -302,18 +315,24 @@ export default function AgentDeployment() {
   const managedSlackStatus = managedSlackQuery.isSuccess
     ? (managedSlack?.status ?? null)
     : undefined
+  const stage = deploymentStage(deployment.state, deployment.terminal)
+  const canStartSession =
+    stage === 'ready' && deployment.allowed_actions.includes('start_session')
   const slackPresentation = deploymentSlackPresentation({
     deploymentState: deployment.state,
     deploymentTerminal: deployment.terminal,
+    canStartSession,
     managedStatus: managedSlackStatus,
     openUrl: managedSlack?.open_url,
     connecting: authorizeManagedSlackMutation.isPending,
   })
-  const stage = deploymentStage(deployment.state, deployment.terminal)
   const managedWorkspace =
     managedSlack?.workspace?.name ?? managedSlack?.workspace?.id
-  const waitingForConnectedState =
-    oauthResult === 'connected' && managedSlack?.status !== 'active'
+  const waitingForConnectedState = managedSlackOAuthPending(
+    oauthResult,
+    managedSlack?.status,
+    managedSlack?.connected_at,
+  )
   const waitingForConnectedAgent =
     !!sameOwnerConnectedAgentId && connectedAgentQuery.isLoading
   const slackNotice =
@@ -324,6 +343,7 @@ export default function AgentDeployment() {
           managedWorkspace,
           agent?.name ?? 'this agent',
           connectedAgentQuery.data?.name,
+          managedSlack?.status,
         )
   const connectedAgentHref =
     connectedAgentQuery.data && sameOwnerConnectedAgentId
@@ -346,8 +366,6 @@ export default function AgentDeployment() {
   const canViewCommit =
     deployment.allowed_actions.includes('view_commit') && !!commitUrl
   const canOpenAgent = deployment.allowed_actions.includes('open_agent')
-  const canStartSession =
-    stage === 'ready' && deployment.allowed_actions.includes('start_session')
   const currentSourceProfileChanged =
     deploymentReportedSourceProfileChange &&
     changedSourceQuery.data?.status === 'source_profile_changed'

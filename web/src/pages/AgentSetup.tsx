@@ -44,17 +44,19 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAgentDeploymentLogs } from '@/hooks/use-agent-deployment-logs'
 import {
+  agentSetupStage,
   agentSetupPresentation,
-  type AgentSetupStage,
 } from '@/lib/agent-setup-presentation'
 import { agentDeploymentOutcome } from '@/lib/agent-deployment-outcome'
 import {
   agentCanStartNewSession,
   agentDeploymentDisplayStatus,
 } from '@/lib/agent-deployment-status'
-import { deploymentStage } from '@/lib/deployment-slack-cta'
 import { notifyError } from '@/lib/errors'
-import { managedSlackNotice } from '@/lib/managed-slack-notice'
+import {
+  managedSlackNotice,
+  managedSlackOAuthPending,
+} from '@/lib/managed-slack-notice'
 import { useManagedSlackConnections } from '@/lib/managed-slack-connections'
 import { latestManagedSlackSession } from '@/lib/managed-slack-session'
 import {
@@ -63,36 +65,6 @@ import {
   isTurnInput,
 } from '@/lib/session-turns'
 import { cn } from '@/lib/utils'
-
-function setupStage(input: {
-  hasDeployment: boolean
-  state?: string
-  terminal?: boolean
-  loadFailed: boolean
-  agentReady: boolean
-  agentDeploymentState?: string
-}): AgentSetupStage {
-  if (!input.hasDeployment) {
-    if (input.agentReady) return 'ready'
-    if (
-      [
-        'failed',
-        'canceled',
-        'superseded',
-        'skipped',
-        'unverified',
-        'not_deployed',
-      ].includes(input.agentDeploymentState ?? '')
-    ) {
-      return 'failed'
-    }
-    return 'preparing'
-  }
-  if (input.loadFailed) return 'failed'
-  if (!input.state) return 'preparing'
-  const stage = deploymentStage(input.state, input.terminal ?? false)
-  return stage === 'running' ? 'preparing' : stage
-}
 
 function previewText(text: string | null, max = 360): string | null {
   if (!text || text.length <= max) return text
@@ -137,14 +109,28 @@ export default function AgentSetup() {
     queryKey: ['agent-deployment', agentId, deploymentId],
     queryFn: () => getAgentDeployment(agentId, deploymentId),
     enabled: !!agentId && !!deploymentId,
-    refetchInterval: (query) => (query.state.data?.terminal ? false : 1500),
+    refetchInterval: (query) => {
+      const deployment = query.state.data
+      if (!deployment) return false
+      if (
+        deployment.state === 'ready' &&
+        !deployment.allowed_actions.includes('start_session')
+      ) {
+        return 1500
+      }
+      return deployment.terminal ? false : 1500
+    },
   })
   const managedSlackQuery = useQuery({
     queryKey: ['slack', 'managed', agentId],
     queryFn: () => getManagedSlackConnection(agentId),
     enabled: !!agentId,
     refetchInterval: (query) =>
-      oauthResult === 'connected' && query.state.data?.status !== 'active'
+      managedSlackOAuthPending(
+        oauthResult,
+        query.state.data?.status,
+        query.state.data?.connected_at,
+      )
         ? 1000
         : false,
     refetchOnWindowFocus: 'always',
@@ -155,11 +141,14 @@ export default function AgentSetup() {
     queryFn: () => getAgent(sameOwnerConnectedAgentId!),
     enabled: !!sameOwnerConnectedAgentId,
   })
-  const stage = setupStage({
+  const deploymentCanStartSession =
+    deploymentQuery.data?.allowed_actions.includes('start_session') ?? false
+  const stage = agentSetupStage({
     hasDeployment: !!deploymentId,
     state: deploymentQuery.data?.state,
     terminal: deploymentQuery.data?.terminal,
     loadFailed: deploymentQuery.isError,
+    canStartSession: deploymentCanStartSession,
     agentReady: agentQuery.data
       ? agentCanStartNewSession(agentQuery.data)
       : false,
@@ -167,9 +156,11 @@ export default function AgentSetup() {
       ? agentDeploymentDisplayStatus(agentQuery.data)
       : undefined,
   })
-  const activationReady =
-    stage === 'ready' && managedSlackQuery.data?.status === 'active'
   const activationConnectedAt = managedSlackQuery.data?.connected_at ?? null
+  const activationReady =
+    stage === 'ready' &&
+    managedSlackQuery.data?.status === 'active' &&
+    !!activationConnectedAt
   const activationSessionsQuery = useQuery({
     queryKey: [
       'agent-setup',
@@ -290,8 +281,11 @@ export default function AgentSetup() {
     presentation.action === 'connect' && managedSlackConnectionsQuery.isLoading
   const managedWorkspace =
     managedSlack?.workspace?.name ?? managedSlack?.workspace?.id
-  const waitingForConnectedState =
-    oauthResult === 'connected' && managedSlack?.status !== 'active'
+  const waitingForConnectedState = managedSlackOAuthPending(
+    oauthResult,
+    managedSlack?.status,
+    managedSlack?.connected_at,
+  )
   const waitingForConnectedAgent =
     !!sameOwnerConnectedAgentId && connectedAgentQuery.isLoading
   const slackNotice =
@@ -302,6 +296,7 @@ export default function AgentSetup() {
           managedWorkspace,
           agent.name,
           connectedAgentQuery.data?.name,
+          managedSlack?.status,
         )
   const connectedAgentHref =
     connectedAgentQuery.data && sameOwnerConnectedAgentId
@@ -740,13 +735,20 @@ export default function AgentSetup() {
               ? deploymentQuery.error.message
               : 'Open the agent to review its current deployment.'}
           </AlertDescription>
-          {deploymentHref ? (
-            <div className="mt-2">
-              <Button variant="outline" size="sm" asChild>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void deploymentQuery.refetch()}
+            >
+              Retry status
+            </Button>
+            {deploymentHref ? (
+              <Button variant="ghost" size="sm" asChild>
                 <Link to={deploymentHref}>Open deployment</Link>
               </Button>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </Alert>
       ) : stage === 'ready' ? (
         <div className="bg-panel flex items-center gap-3 rounded-lg border px-4 py-3">

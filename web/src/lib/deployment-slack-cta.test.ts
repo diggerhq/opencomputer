@@ -10,6 +10,7 @@ function presentation(
   return deploymentSlackPresentation({
     deploymentState: 'building',
     deploymentTerminal: false,
+    canStartSession: false,
     managedStatus: null,
     openUrl: null,
     connecting: false,
@@ -48,6 +49,7 @@ describe('deployment and managed Slack composition', () => {
       presentation({
         deploymentState: 'ready',
         deploymentTerminal: true,
+        canStartSession: true,
         managedStatus: 'active',
         openUrl: 'https://slack.com/app_redirect?app=A123',
       }),
@@ -63,11 +65,27 @@ describe('deployment and managed Slack composition', () => {
       presentation({
         deploymentState: 'ready',
         deploymentTerminal: true,
+        canStartSession: true,
       }),
     ).toMatchObject({
       action: 'connect',
       label: 'Connect Slack',
       announcement: 'Connect Slack to use this ready agent.',
+    })
+  })
+
+  it('does not promote Slack from a ready-but-unadmitted deployment', () => {
+    expect(
+      presentation({
+        deploymentState: 'ready',
+        deploymentTerminal: true,
+        canStartSession: false,
+        managedStatus: 'active',
+        openUrl: 'https://slack.com/app_redirect?app=A123',
+      }),
+    ).toMatchObject({
+      action: null,
+      status: 'Slack connected. Open Slack when this deployment is ready.',
     })
   })
 

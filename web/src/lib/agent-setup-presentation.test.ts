@@ -1,7 +1,36 @@
 import { describe, expect, it } from 'vitest'
-import { agentSetupPresentation } from './agent-setup-presentation'
+import {
+  agentSetupPresentation,
+  agentSetupStage,
+} from './agent-setup-presentation'
 
 describe('agentSetupPresentation', () => {
+  it('keeps a fetch error distinct from a failed deployment', () => {
+    expect(
+      agentSetupStage({
+        hasDeployment: true,
+        loadFailed: true,
+        canStartSession: false,
+        agentReady: true,
+      }),
+    ).toBe('preparing')
+  })
+
+  it('requires session admission before treating ready as usable', () => {
+    const base = {
+      hasDeployment: true,
+      state: 'ready',
+      terminal: true,
+      loadFailed: false,
+      agentReady: true,
+    }
+
+    expect(agentSetupStage({ ...base, canStartSession: false })).toBe(
+      'preparing',
+    )
+    expect(agentSetupStage({ ...base, canStartSession: true })).toBe('ready')
+  })
+
   it('makes Slack the next action while deployment continues', () => {
     const view = agentSetupPresentation({
       agentName: 'Support triage',

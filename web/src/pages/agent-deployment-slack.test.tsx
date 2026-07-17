@@ -67,13 +67,14 @@ function renderDeployment(
   search = '',
   connectedAgentName?: string,
   managedConnections: Array<Record<string, unknown>> = [],
+  deploymentRecord: AgentDeploymentRecord = deployment,
 ) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   })
   queryClient.setQueryData(
     ['agent-deployment', agentId, deploymentId],
-    deployment,
+    deploymentRecord,
   )
   queryClient.setQueryData(['agent', agentId], {
     id: agentId,
@@ -136,6 +137,52 @@ describe('deployment managed Slack composition', () => {
     expect(connected).toContain(
       'OpenComputer will send messages in Acme to Support triage.',
     )
+  })
+
+  it('does not open Slack for a ready deployment that cannot start sessions', () => {
+    const markup = renderDeployment(
+      {
+        mode: 'managed',
+        status: 'active',
+        workspace: { id: 'T1', name: 'Acme' },
+        app: { id: 'A1', handle: 'OpenComputer' },
+        open_url: 'https://slack.com/app_redirect?app=A1&team=T1',
+        connected_at: '2026-07-16T18:00:00Z',
+      },
+      '',
+      undefined,
+      [],
+      {
+        ...deployment,
+        state: 'ready',
+        phase: 'verify',
+        terminal: true,
+        active: true,
+        allowed_actions: ['open_agent'],
+      },
+    )
+
+    expect(markup).not.toContain('>Open Slack<')
+    expect(markup).toContain(
+      'Slack connected. Open Slack when this deployment is ready.',
+    )
+  })
+
+  it('explains a terminal non-active OAuth return', () => {
+    const markup = renderDeployment(
+      {
+        mode: 'managed',
+        status: 'revoked',
+        workspace: { id: 'T1', name: 'Acme' },
+        app: { id: 'A1', handle: 'OpenComputer' },
+        open_url: null,
+        connected_at: null,
+      },
+      '?slack=connected',
+    )
+
+    expect(markup).toContain('Slack authorization was revoked')
+    expect(markup).toContain('Reconnect Slack to authorize OpenComputer again.')
   })
 
   it('names and links only an authoritative same-owner conflict', () => {

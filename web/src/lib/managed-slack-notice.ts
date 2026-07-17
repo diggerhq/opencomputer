@@ -1,3 +1,5 @@
+import type { ManagedSlackStatus } from '@/lib/deployment-slack-cta'
+
 const MANAGED_SLACK_RESULTS = new Set([
   'connected',
   'oauth_denied',
@@ -11,13 +13,55 @@ const MANAGED_SLACK_RESULTS = new Set([
   'workspace_already_connected',
 ])
 
+const TERMINAL_MANAGED_SLACK_STATUSES = new Set<ManagedSlackStatus>([
+  'disconnected',
+  'error',
+  'revoked',
+])
+
+export function managedSlackOAuthPending(
+  result: string | null,
+  status: ManagedSlackStatus,
+  connectedAt?: string | null,
+): boolean {
+  if (result !== 'connected') return false
+  if (TERMINAL_MANAGED_SLACK_STATUSES.has(status)) return false
+  return status !== 'active' || !connectedAt
+}
+
 export function managedSlackNotice(
   result: string | null,
   workspace: string | null | undefined,
   agentName: string,
   connectedAgentName?: string | null,
+  managedStatus?: ManagedSlackStatus,
 ): { title: string; description?: string; destructive?: boolean } | null {
   if (!result || !MANAGED_SLACK_RESULTS.has(result)) return null
+  if (
+    result === 'connected' &&
+    TERMINAL_MANAGED_SLACK_STATUSES.has(managedStatus)
+  ) {
+    switch (managedStatus) {
+      case 'revoked':
+        return {
+          title: 'Slack authorization was revoked',
+          description: 'Reconnect Slack to authorize OpenComputer again.',
+          destructive: true,
+        }
+      case 'disconnected':
+        return {
+          title: 'Slack did not stay connected',
+          description: 'Reconnect Slack to finish setup.',
+          destructive: true,
+        }
+      default:
+        return {
+          title: "Slack couldn't finish connecting",
+          description: 'Reconnect Slack and try again.',
+          destructive: true,
+        }
+    }
+  }
   switch (result) {
     case 'connected':
       return {

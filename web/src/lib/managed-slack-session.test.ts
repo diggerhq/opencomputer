@@ -51,4 +51,15 @@ describe('managed Slack activation sessions', () => {
       latestManagedSlackSession(sessions, '2026-07-17T10:00:00Z')?.id,
     ).toBe('ses_latest')
   })
+
+  it('does not claim an older conversation without a connection boundary', () => {
+    const prior = session(
+      'ses_prior_connection',
+      '2026-07-17T10:00:00Z',
+      'managed',
+    )
+
+    expect(isManagedSlackSession(prior, null)).toBe(false)
+    expect(latestManagedSlackSession([prior], null)).toBeUndefined()
+  })
 })
