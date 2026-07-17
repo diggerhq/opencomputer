@@ -10,6 +10,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
+  Check,
   ExternalLink,
   FolderSearch,
   GitBranch,
@@ -141,13 +142,11 @@ function ModeButton({
   onClick,
   icon: Icon,
   title,
-  description,
 }: {
   active: boolean
   onClick: () => void
   icon: typeof GithubMark | typeof Bot
   title: string
-  description: string
 }) {
   return (
     <button
@@ -155,20 +154,48 @@ function ModeButton({
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        'focus-visible:ring-ring/50 flex min-w-0 flex-1 items-start gap-3 rounded-md px-3 py-2.5 text-left transition-colors outline-none focus-visible:ring-3',
+        'focus-visible:ring-ring/50 -mb-px flex h-11 items-center gap-2 border-b-2 px-1 text-sm transition-colors outline-none focus-visible:rounded-sm focus-visible:ring-3',
         active
-          ? 'bg-background text-foreground ring-border shadow-sm ring-1'
-          : 'hover:bg-background/60',
+          ? 'border-foreground text-foreground'
+          : 'text-muted-foreground hover:text-foreground border-transparent',
       )}
     >
-      <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
-      <span className="min-w-0">
-        <span className="block text-sm font-medium">{title}</span>
-        <span className="text-muted-foreground mt-0.5 block text-xs">
-          {description}
-        </span>
-      </span>
+      <Icon className="size-4 shrink-0" aria-hidden />
+      <span className="font-medium">{title}</span>
     </button>
+  )
+}
+
+function StarterGuide() {
+  return (
+    <aside
+      className="bg-panel rounded-lg border p-4 xl:sticky xl:top-24"
+      aria-labelledby="starter-heading"
+    >
+      <div className="flex items-center gap-2">
+        <GithubMark className="size-4" aria-hidden />
+        <h2 id="starter-heading" className="text-sm font-semibold">
+          Start with an example
+        </h2>
+      </div>
+      <p className="text-muted-foreground mt-2 text-sm leading-6">
+        Fork the Flue starter, add your agent logic, then deploy it here.
+      </p>
+      <div className="mt-4 flex flex-wrap gap-2 xl:flex-col">
+        <Button variant="outline" className="justify-between" asChild>
+          <a href={STARTER_FORK_URL} target="_blank" rel="noreferrer">
+            Fork on GitHub
+            <ExternalLink className="size-3.5" />
+          </a>
+        </Button>
+        <Button variant="ghost" className="justify-between" asChild>
+          <a href={STARTER_URL} target="_blank" rel="noreferrer">
+            View repository
+            <ExternalLink className="size-3.5" />
+          </a>
+        </Button>
+      </div>
+    </aside>
   )
 }
 
@@ -188,6 +215,7 @@ function GithubImport({
   const initialRepo = app.repositories.find(
     (repo) => repo.id === initialSource?.repo,
   )
+  const [repoPickerOpen, setRepoPickerOpen] = useState(!initialRepo)
   const [repoId, setRepoId] = useState(initialRepo?.id ?? '')
   const [productionRef, setProductionRef] = useState(
     initialRepo
@@ -213,6 +241,7 @@ function GithubImport({
   }, [app.repositories, repoSearch])
 
   const selectedRepo = app.repositories.find((repo) => repo.id === repoId)
+  const showRepoPicker = repoPickerOpen || !selectedRepo
   const rootValid = isValidRepositoryRoot(root.trim())
 
   const inspectMutation = useMutation({
@@ -302,6 +331,8 @@ function GithubImport({
   const selectRepo = (id: string) => {
     const repo = app.repositories.find((candidate) => candidate.id === id)
     setRepoId(id)
+    setRepoPickerOpen(false)
+    setRepoSearch('')
     setProductionRef(repo?.default_branch || 'main')
     setRoot('')
     setName('')
@@ -435,18 +466,43 @@ function GithubImport({
               </PanelDescription>
             </div>
           ) : (
-            <div>
-              <PanelTitle>Choose repository</PanelTitle>
+            <div className="min-w-0">
+              <PanelTitle className="truncate">
+                {selectedRepo && !showRepoPicker
+                  ? selectedRepo.full_name
+                  : 'Choose repository'}
+              </PanelTitle>
               <PanelDescription className="mt-1">
-                {app.account
-                  ? `Repositories available to the OpenComputer App for ${app.account}.`
-                  : 'Repositories available to the OpenComputer App.'}
+                {selectedRepo && !showRepoPicker
+                  ? 'Choose the production branch and agent folder to deploy.'
+                  : app.account
+                    ? `Repositories available to the OpenComputer App for ${app.account}.`
+                    : 'Repositories available to the OpenComputer App.'}
               </PanelDescription>
             </div>
           )}
           {inspection ? (
             <Button variant="ghost" size="sm" onClick={changeSource}>
               Change source
+            </Button>
+          ) : selectedRepo && !showRepoPicker ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setRepoPickerOpen(true)}
+            >
+              Change repository
+            </Button>
+          ) : selectedRepo && showRepoPicker ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setRepoPickerOpen(false)
+                setRepoSearch('')
+              }}
+            >
+              Cancel
             </Button>
           ) : app.configure_url ? (
             <Button variant="ghost" size="sm" asChild>
@@ -458,181 +514,204 @@ function GithubImport({
           ) : null}
         </PanelHeader>
         {!inspection ? (
-          <PanelContent className="space-y-4">
-            <div className="relative">
-              <Search
-                className="text-muted-foreground pointer-events-none absolute top-2 left-2.5 size-4"
-                aria-hidden
-              />
-              <Input
-                value={repoSearch}
-                onChange={(event) => setRepoSearch(event.target.value)}
-                placeholder="Search repositories"
-                aria-label="Search repositories"
-                className="pl-8"
-              />
-            </div>
-            <div
-              role="group"
-              aria-label="Repository"
-              className="max-h-60 overflow-y-auto rounded-md border"
-            >
-              {repositories.length ? (
-                repositories.map((repo, index) => {
-                  const rootClaim = repo.linked_sources.find(
-                    (source) => source.path === '',
-                  )
-                  return (
-                    <button
-                      key={repo.id}
-                      type="button"
-                      aria-pressed={repo.id === repoId}
-                      onClick={() => selectRepo(repo.id)}
-                      className={cn(
-                        'focus-visible:ring-ring/50 flex w-full items-center gap-3 px-3 py-2.5 text-left outline-none focus-visible:ring-3 focus-visible:ring-inset',
-                        index > 0 && 'border-t',
-                        repo.id === repoId
-                          ? 'bg-row-selected'
-                          : 'hover:bg-row-hover',
-                      )}
-                    >
-                      <GithubMark className="size-4 shrink-0" />
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                        {repo.full_name}
-                      </span>
-                      {repo.linked_sources.length ? (
-                        <span className="bg-muted text-foreground max-w-44 shrink-0 truncate rounded-sm px-1.5 py-0.5 text-xs">
-                          {rootClaim
-                            ? `Linked to ${rootClaim.agent.name}`
-                            : `${repo.linked_sources.length} linked ${repo.linked_sources.length === 1 ? 'root' : 'roots'}`}
-                        </span>
-                      ) : null}
-                      <span className="text-muted-foreground hidden shrink-0 items-center gap-2 text-xs md:flex">
-                        {repo.private == null
-                          ? null
-                          : repo.private
-                            ? 'Private'
-                            : 'Public'}
-                        {repo.default_branch ? (
-                          <span className="flex items-center gap-1">
-                            <GitBranch className="size-3" />
-                            {repo.default_branch}
-                          </span>
-                        ) : null}
-                      </span>
-                    </button>
-                  )
-                })
-              ) : (
-                <p className="text-muted-foreground px-4 py-8 text-center text-sm">
-                  {app.repositories.length === 0
-                    ? 'No repositories are available to this installation.'
-                    : app.repositories.some((repo) => repo.id)
-                      ? 'No repositories match this search.'
-                      : 'Repository registration is still syncing. Return to this page in a moment.'}
-                </p>
-              )}
-            </div>
-
-            {selectedRepo ? (
-              <div className="grid gap-4 border-t pt-4 sm:grid-cols-2">
-                <Field
-                  label="Production branch"
-                  htmlFor="import-branch"
-                  description="The branch to resolve for this deployment."
-                >
-                  <Input
-                    id="import-branch"
-                    value={productionRef}
-                    onChange={(event) => {
-                      setProductionRef(event.target.value)
-                      clearInspection()
-                    }}
-                    placeholder="main"
-                  />
-                </Field>
-                <Field
-                  label="Root directory"
-                  htmlFor="import-root"
-                  error={
-                    rootValid
-                      ? undefined
-                      : 'Use a repository-relative path of at most 1,024 characters without . or .. segments.'
-                  }
-                  description="Leave empty to review the repository root."
-                >
-                  <Input
-                    ref={rootInput}
-                    id="import-root"
-                    value={root}
-                    onChange={(event) => {
-                      setRoot(event.target.value)
-                      setName('')
-                      clearInspection()
-                    }}
-                    placeholder="agents/support"
-                    aria-invalid={!rootValid}
-                  />
-                </Field>
-              </div>
-            ) : null}
-
-            {selectedRepo && selectedLinkedSource ? (
-              <Alert>
-                <AlertTitle>Repository root already linked</AlertTitle>
-                <AlertDescription>
-                  {normalizeRepositoryRoot(root)
-                    ? `${selectedRepo.full_name}/${normalizeRepositoryRoot(root)}`
-                    : selectedRepo.full_name}{' '}
-                  is linked to{' '}
-                  <Link
-                    className="font-medium underline underline-offset-4"
-                    to={`/agents/${selectedLinkedSource.agent.id}`}
+          <>
+            <PanelContent className="space-y-5 py-5">
+              {showRepoPicker ? (
+                <div className="space-y-2.5">
+                  <div className="relative">
+                    <Search
+                      className="text-muted-foreground pointer-events-none absolute top-2.5 left-3 size-4"
+                      aria-hidden
+                    />
+                    <Input
+                      value={repoSearch}
+                      onChange={(event) => setRepoSearch(event.target.value)}
+                      placeholder="Search repositories"
+                      aria-label="Search repositories"
+                      className="h-9 pl-9"
+                    />
+                  </div>
+                  <div
+                    role="group"
+                    aria-label="Repository"
+                    className="max-h-52 divide-y overflow-y-auto rounded-md border"
                   >
-                    {selectedLinkedSource.agent.name}
-                  </Link>
-                  . One agent can own this repository root for deploy-on-push.
-                </AlertDescription>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" asChild>
-                    <Link to={`/agents/${selectedLinkedSource.agent.id}`}>
-                      Open agent
-                    </Link>
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={unlinkMutation.isPending}
-                    onClick={() => setUnlinkingSource(selectedLinkedSource)}
-                  >
-                    <Unplug className="size-4" />
-                    Unlink repository
-                  </Button>
+                    {repositories.length ? (
+                      repositories.map((repo) => {
+                        const rootClaim = repo.linked_sources.find(
+                          (source) => source.path === '',
+                        )
+                        const linkedLabel = rootClaim
+                          ? `Linked to ${rootClaim.agent.name}`
+                          : repo.linked_sources.length
+                            ? `${repo.linked_sources.length} linked ${repo.linked_sources.length === 1 ? 'root' : 'roots'}`
+                            : null
+                        return (
+                          <button
+                            key={repo.id}
+                            type="button"
+                            aria-pressed={repo.id === repoId}
+                            onClick={() => selectRepo(repo.id)}
+                            className={cn(
+                              'focus-visible:ring-ring/50 flex w-full items-center gap-3.5 px-4 py-3 text-left outline-none focus-visible:ring-3 focus-visible:ring-inset',
+                              repo.id === repoId
+                                ? 'bg-row-selected'
+                                : 'hover:bg-row-hover',
+                            )}
+                          >
+                            <GithubMark className="size-4 shrink-0" />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm font-medium">
+                                {repo.full_name}
+                              </span>
+                              <span className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                                {repo.private == null
+                                  ? null
+                                  : repo.private
+                                    ? 'Private'
+                                    : 'Public'}
+                                {repo.default_branch ? (
+                                  <span className="flex items-center gap-1">
+                                    <GitBranch className="size-3" />
+                                    {repo.default_branch}
+                                  </span>
+                                ) : null}
+                                {linkedLabel ? (
+                                  <span className="text-foreground font-medium">
+                                    {linkedLabel}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </span>
+                            <Check
+                              className={cn(
+                                'size-4 shrink-0',
+                                repo.id === repoId
+                                  ? 'opacity-100'
+                                  : 'opacity-0',
+                              )}
+                              aria-hidden
+                            />
+                          </button>
+                        )
+                      })
+                    ) : (
+                      <p className="text-muted-foreground px-4 py-8 text-center text-sm">
+                        {app.repositories.length === 0
+                          ? 'No repositories are available to this installation.'
+                          : app.repositories.some((repo) => repo.id)
+                            ? 'No repositories match this search.'
+                            : 'Repository registration is still syncing. Return to this page in a moment.'}
+                      </p>
+                    )}
+                  </div>
                 </div>
-              </Alert>
-            ) : null}
+              ) : null}
 
-            {inspectMutation.isError ? (
-              <FieldError>{agentReviewError(inspectMutation.error)}</FieldError>
-            ) : null}
+              {selectedRepo && !showRepoPicker ? (
+                <div className="grid gap-5 border-t pt-5 sm:grid-cols-2">
+                  <Field
+                    label="Production branch"
+                    htmlFor="import-branch"
+                    description="The branch to resolve for this deployment."
+                  >
+                    <Input
+                      id="import-branch"
+                      value={productionRef}
+                      onChange={(event) => {
+                        setProductionRef(event.target.value)
+                        clearInspection()
+                      }}
+                      placeholder="main"
+                    />
+                  </Field>
+                  <Field
+                    label="Root directory"
+                    htmlFor="import-root"
+                    error={
+                      rootValid
+                        ? undefined
+                        : 'Use a repository-relative path of at most 1,024 characters without . or .. segments.'
+                    }
+                    description="Leave empty to review the repository root."
+                  >
+                    <Input
+                      ref={rootInput}
+                      id="import-root"
+                      value={root}
+                      onChange={(event) => {
+                        setRoot(event.target.value)
+                        setName('')
+                        clearInspection()
+                      }}
+                      placeholder="agents/support"
+                      aria-invalid={!rootValid}
+                    />
+                  </Field>
+                </div>
+              ) : null}
 
-            <div className="flex justify-end">
-              <Button
-                type="button"
-                disabled={!canInspect}
-                onClick={() => inspectMutation.mutate(undefined)}
-              >
-                {inspectMutation.isPending ? (
-                  <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
-                ) : null}
-                {inspectMutation.isPending
-                  ? 'Reviewing agent…'
-                  : inspectMutation.isError
-                    ? 'Review agent again'
-                    : 'Review agent'}
-              </Button>
-            </div>
-          </PanelContent>
+              {selectedRepo && !showRepoPicker && selectedLinkedSource ? (
+                <Alert>
+                  <AlertTitle>Repository root already linked</AlertTitle>
+                  <AlertDescription>
+                    {normalizeRepositoryRoot(root)
+                      ? `${selectedRepo.full_name}/${normalizeRepositoryRoot(root)}`
+                      : selectedRepo.full_name}{' '}
+                    is linked to{' '}
+                    <Link
+                      className="font-medium underline underline-offset-4"
+                      to={`/agents/${selectedLinkedSource.agent.id}`}
+                    >
+                      {selectedLinkedSource.agent.name}
+                    </Link>
+                    . One agent can own this repository root for deploy-on-push.
+                  </AlertDescription>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" asChild>
+                      <Link to={`/agents/${selectedLinkedSource.agent.id}`}>
+                        Open agent
+                      </Link>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={unlinkMutation.isPending}
+                      onClick={() => setUnlinkingSource(selectedLinkedSource)}
+                    >
+                      <Unplug className="size-4" />
+                      Unlink repository
+                    </Button>
+                  </div>
+                </Alert>
+              ) : null}
+
+              {inspectMutation.isError ? (
+                <FieldError>
+                  {agentReviewError(inspectMutation.error)}
+                </FieldError>
+              ) : null}
+            </PanelContent>
+
+            {selectedRepo && !showRepoPicker ? (
+              <PanelFooter className="justify-end">
+                <Button
+                  type="button"
+                  disabled={!canInspect}
+                  onClick={() => inspectMutation.mutate(undefined)}
+                >
+                  {inspectMutation.isPending ? (
+                    <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                  ) : null}
+                  {inspectMutation.isPending
+                    ? 'Reviewing agent…'
+                    : inspectMutation.isError
+                      ? 'Review agent again'
+                      : 'Review agent'}
+                </Button>
+              </PanelFooter>
+            ) : null}
+          </>
         ) : null}
       </Panel>
 
@@ -940,7 +1019,7 @@ export default function AgentNew() {
     })
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div className="mx-auto max-w-5xl">
       <Link
         to="/agents"
         className="text-muted-foreground hover:text-foreground mb-4 inline-flex items-center gap-1.5 text-sm"
@@ -949,117 +1028,98 @@ export default function AgentNew() {
         Back to agents
       </Link>
 
-      <div className="mb-6">
+      <div className="mb-7 max-w-2xl">
         <h1 className="text-xl font-semibold tracking-tight">Create agent</h1>
         <p className="text-muted-foreground mt-1 text-sm">
           Deploy an agent from an existing repository or configure one manually.
         </p>
       </div>
 
-      <div className="bg-muted mb-6 flex flex-col gap-1 rounded-lg p-1 sm:flex-row">
+      <div
+        className="mb-6 flex max-w-2xl gap-6 border-b"
+        role="group"
+        aria-label="Agent creation method"
+      >
         <ModeButton
           active={mode === 'github'}
           onClick={() => setMode('github')}
           icon={GithubMark}
           title="Import from GitHub"
-          description="Review and deploy an agent from code."
         />
         <ModeButton
           active={mode === 'manual'}
           onClick={() => setMode('manual')}
           icon={Bot}
           title="Configure manually"
-          description="Create a built-in runtime agent from a prompt."
         />
       </div>
 
-      {mode === 'github' ? (
-        deployAppQuery.isLoading ? (
-          <Panel aria-busy="true">
-            <PanelHeader>
-              <div>
-                <PanelTitle>Connect GitHub</PanelTitle>
-                <PanelDescription className="mt-1">
-                  Loading your GitHub installation and repositories.
-                </PanelDescription>
-              </div>
-            </PanelHeader>
-            <PanelContent>
-              <Skeleton className="h-10 w-full max-w-sm" />
-            </PanelContent>
-          </Panel>
-        ) : deployAppQuery.isError ? (
-          <Alert variant="destructive">
-            <AlertTitle>GitHub import could not be loaded</AlertTitle>
-            <AlertDescription>
-              {deployAppQuery.error instanceof Error
-                ? deployAppQuery.error.message
-                : 'The GitHub installation request failed.'}
-            </AlertDescription>
-            <div className="mt-3">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void deployAppQuery.refetch()}
-                disabled={deployAppQuery.isFetching}
-              >
-                {deployAppQuery.isFetching ? (
-                  <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
-                ) : null}
-                Retry
-              </Button>
-            </div>
-          </Alert>
-        ) : deployAppQuery.data ? (
-          <GithubImport
-            app={deployAppQuery.data}
-            initialSource={repositorySeedFromState(location.state)}
-          />
-        ) : null
-      ) : (
-        <Panel>
-          <PanelHeader>
-            <div>
-              <PanelTitle>Configure manually</PanelTitle>
-              <PanelDescription className="mt-1">
-                Sessions pin a snapshot of this definition when they are
-                created.
-              </PanelDescription>
-            </div>
-          </PanelHeader>
-          <PanelContent>
-            <ManualAgentForm onCancel={() => setMode('github')} />
-          </PanelContent>
-        </Panel>
-      )}
-
-      <section className="mt-8 border-t pt-6" aria-labelledby="starter-heading">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="max-w-xl">
-            <h2 id="starter-heading" className="text-sm font-semibold">
-              Need a starting point?
-            </h2>
-            <p className="text-muted-foreground mt-1 text-sm">
-              Fork the Flue starter, add your agent logic, then return here to
-              deploy it.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" asChild>
-              <a href={STARTER_URL} target="_blank" rel="noreferrer">
-                View repository
-                <ExternalLink className="size-3.5" />
-              </a>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <a href={STARTER_FORK_URL} target="_blank" rel="noreferrer">
-                Fork on GitHub
-                <ExternalLink className="size-3.5" />
-              </a>
-            </Button>
-          </div>
+      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,42rem)_17rem] xl:gap-8">
+        <div className="order-2 min-w-0 xl:order-1">
+          {mode === 'github' ? (
+            deployAppQuery.isLoading ? (
+              <Panel aria-busy="true">
+                <PanelHeader>
+                  <div>
+                    <PanelTitle>Connect GitHub</PanelTitle>
+                    <PanelDescription className="mt-1">
+                      Loading your GitHub installation and repositories.
+                    </PanelDescription>
+                  </div>
+                </PanelHeader>
+                <PanelContent>
+                  <Skeleton className="h-10 w-full max-w-sm" />
+                </PanelContent>
+              </Panel>
+            ) : deployAppQuery.isError ? (
+              <Alert variant="destructive">
+                <AlertTitle>GitHub import could not be loaded</AlertTitle>
+                <AlertDescription>
+                  {deployAppQuery.error instanceof Error
+                    ? deployAppQuery.error.message
+                    : 'The GitHub installation request failed.'}
+                </AlertDescription>
+                <div className="mt-3">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void deployAppQuery.refetch()}
+                    disabled={deployAppQuery.isFetching}
+                  >
+                    {deployAppQuery.isFetching ? (
+                      <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                    ) : null}
+                    Retry
+                  </Button>
+                </div>
+              </Alert>
+            ) : deployAppQuery.data ? (
+              <GithubImport
+                app={deployAppQuery.data}
+                initialSource={repositorySeedFromState(location.state)}
+              />
+            ) : null
+          ) : (
+            <Panel>
+              <PanelHeader>
+                <div>
+                  <PanelTitle>Configure manually</PanelTitle>
+                  <PanelDescription className="mt-1">
+                    Sessions pin a snapshot of this definition when they are
+                    created.
+                  </PanelDescription>
+                </div>
+              </PanelHeader>
+              <PanelContent>
+                <ManualAgentForm onCancel={() => setMode('github')} />
+              </PanelContent>
+            </Panel>
+          )}
         </div>
-      </section>
+        <div className="order-1 xl:order-2">
+          <StarterGuide />
+        </div>
+      </div>
     </div>
   )
 }

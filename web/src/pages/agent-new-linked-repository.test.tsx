@@ -65,7 +65,9 @@ describe('repository import conflict discovery', () => {
   it('marks a linked root before review and offers open or confirmed unlink', () => {
     const markup = renderLinkedRepository()
 
-    expect(markup).toContain('Linked to Support triage')
+    expect(markup).toMatch(/is linked to.*Support triage/s)
+    expect(markup).toContain('Change repository')
+    expect(markup).not.toContain('Search repositories')
     expect(markup).toContain('Repository root already linked')
     expect(markup).toContain(`href="/agents/${agentId}"`)
     expect(markup).toContain('Unlink repository')
