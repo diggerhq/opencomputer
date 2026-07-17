@@ -68,6 +68,29 @@ Kernel telemetry configuration object directly.
 Replay recording is disabled by default. Set `recording: true` /
 `recording=True` to enable replay recording for a headful browser session.
 
+## Profile Auth Checks
+
+Saved profiles can start an asynchronous auth check for a site. The SDK returns
+a run immediately; `wait()` polls with short requests until the run completes.
+
+```typescript TypeScript
+const profile = await BrowserProfile.connect("linkedin-profile");
+
+const run = await profile.checkAuth({
+  homepage: "https://www.linkedin.com/feed/",
+  user: "motatoes",
+  mode: "vision",
+  compareFresh: true,
+});
+
+const result = await run.wait();
+console.log(result.status, result.result);
+```
+
+Auth checks are read-only. They create temporary browser sessions with profile
+saving disabled and compare the saved profile against a fresh browser when
+`compareFresh` is enabled.
+
 ## Playwright
 
 The browser response includes a CDP WebSocket URL. Pass it directly to
