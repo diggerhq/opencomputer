@@ -166,7 +166,7 @@ function ModeButton({
   )
 }
 
-function StarterGuide() {
+export function RepositoryStarterGuide() {
   return (
     <aside
       className="bg-panel rounded-lg border p-4 xl:sticky xl:top-24"
@@ -197,6 +197,66 @@ function StarterGuide() {
       </div>
     </aside>
   )
+}
+
+export function RepositoryImportPanel({
+  initialSource,
+}: {
+  initialSource?: RepositorySeed
+}) {
+  const deployAppQuery = useQuery({
+    queryKey: ['deploy-app'],
+    queryFn: getDeployApp,
+    refetchOnWindowFocus: 'always',
+  })
+
+  if (deployAppQuery.isLoading) {
+    return (
+      <Panel aria-busy="true">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Connect GitHub</PanelTitle>
+            <PanelDescription className="mt-1">
+              Loading your GitHub installation and repositories.
+            </PanelDescription>
+          </div>
+        </PanelHeader>
+        <PanelContent>
+          <Skeleton className="h-10 w-full max-w-sm" />
+        </PanelContent>
+      </Panel>
+    )
+  }
+
+  if (deployAppQuery.isError) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>GitHub import could not be loaded</AlertTitle>
+        <AlertDescription>
+          {deployAppQuery.error instanceof Error
+            ? deployAppQuery.error.message
+            : 'The GitHub installation request failed.'}
+        </AlertDescription>
+        <div className="mt-3">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void deployAppQuery.refetch()}
+            disabled={deployAppQuery.isFetching}
+          >
+            {deployAppQuery.isFetching ? (
+              <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+            ) : null}
+            Retry
+          </Button>
+        </div>
+      </Alert>
+    )
+  }
+
+  return deployAppQuery.data ? (
+    <GithubImport app={deployAppQuery.data} initialSource={initialSource} />
+  ) : null
 }
 
 function GithubImport({
@@ -1007,11 +1067,6 @@ function GithubImport({
 export default function AgentNew() {
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
-  const deployAppQuery = useQuery({
-    queryKey: ['deploy-app'],
-    queryFn: getDeployApp,
-    refetchOnWindowFocus: 'always',
-  })
   const mode = resolveAgentCreationMode(searchParams.get('mode'))
   const setMode = (next: AgentCreationMode) =>
     setSearchParams(next === 'github' ? {} : { mode: 'manual' }, {
@@ -1057,48 +1112,9 @@ export default function AgentNew() {
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,42rem)_17rem] xl:gap-8">
         <div className="order-2 min-w-0 xl:order-1">
           {mode === 'github' ? (
-            deployAppQuery.isLoading ? (
-              <Panel aria-busy="true">
-                <PanelHeader>
-                  <div>
-                    <PanelTitle>Connect GitHub</PanelTitle>
-                    <PanelDescription className="mt-1">
-                      Loading your GitHub installation and repositories.
-                    </PanelDescription>
-                  </div>
-                </PanelHeader>
-                <PanelContent>
-                  <Skeleton className="h-10 w-full max-w-sm" />
-                </PanelContent>
-              </Panel>
-            ) : deployAppQuery.isError ? (
-              <Alert variant="destructive">
-                <AlertTitle>GitHub import could not be loaded</AlertTitle>
-                <AlertDescription>
-                  {deployAppQuery.error instanceof Error
-                    ? deployAppQuery.error.message
-                    : 'The GitHub installation request failed.'}
-                </AlertDescription>
-                <div className="mt-3">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void deployAppQuery.refetch()}
-                    disabled={deployAppQuery.isFetching}
-                  >
-                    {deployAppQuery.isFetching ? (
-                      <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
-                    ) : null}
-                    Retry
-                  </Button>
-                </div>
-              </Alert>
-            ) : deployAppQuery.data ? (
-              <GithubImport
-                app={deployAppQuery.data}
-                initialSource={repositorySeedFromState(location.state)}
-              />
-            ) : null
+            <RepositoryImportPanel
+              initialSource={repositorySeedFromState(location.state)}
+            />
           ) : (
             <Panel>
               <PanelHeader>
@@ -1117,7 +1133,7 @@ export default function AgentNew() {
           )}
         </div>
         <div className="order-1 xl:order-2">
-          <StarterGuide />
+          <RepositoryStarterGuide />
         </div>
       </div>
     </div>
