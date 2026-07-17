@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import type { APIKey, DeployApp } from '@/api/client'
 import { GettingStarted } from './Dashboard'
 
-function renderGettingStarted() {
+function renderGettingStarted(path = '/') {
   const app: DeployApp = {
     installed: true,
     install_url: null,
@@ -37,10 +37,11 @@ function renderGettingStarted() {
   })
   queryClient.setQueryData(['deploy-app'], app)
   queryClient.setQueryData(['api-keys'], keys)
+  queryClient.setQueryData(['credentials'], [])
 
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[path]}>
         <GettingStarted />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -48,23 +49,47 @@ function renderGettingStarted() {
 }
 
 describe('getting started', () => {
-  it('leads with the shared repository flow and keeps both API paths visible', () => {
+  it('shows three self-explanatory directions and defaults to GitHub', () => {
     const markup = renderGettingStarted()
 
-    expect(markup).toContain('Deploy an agent from GitHub')
+    expect(markup).toContain('Agent from GitHub')
+    expect(markup).toContain('Agent from a prompt')
+    expect(markup).toContain('Build with the API')
+    expect(markup).toMatch(/id="start-tab-github"[^>]*aria-selected="true"/)
     expect(markup).toContain('example/flue-starter')
     expect(markup).toContain('Choose repository')
+    expect(markup).not.toContain('API key ready')
+    expect(markup).not.toContain('Set its instructions, runtime, model')
+    expect(markup).not.toContain('Get started')
+    expect(markup).not.toContain('free credits')
+    expect(markup).not.toContain('Claude Opus')
+    expect(markup).not.toContain('Analyze a CSV')
+  })
 
-    expect(markup).toContain('Build with the API')
+  it('keeps both API paths concise and puts durable sessions first', () => {
+    const markup = renderGettingStarted('/?start=api')
+
     expect(markup).toContain('API key ready')
     expect(markup).toContain('Sandboxes')
     expect(markup).toContain('Durable agent sessions')
     expect(markup).toContain('Sandbox.create()')
     expect(markup).toContain('oc.sessions.create')
+    expect(markup).not.toContain('oc.agents.create')
+    expect(markup).toContain('Open sessions quickstart')
+    expect(markup).toContain('Open sandbox quickstart')
+    expect(markup.indexOf('oc.sessions.create')).toBeLessThan(
+      markup.indexOf('Sandbox.create()'),
+    )
+  })
 
-    expect(markup).not.toContain('free credits')
-    expect(markup).not.toContain('Claude Opus')
-    expect(markup).not.toContain('Analyze a CSV')
-    expect(markup).not.toContain('Build a web app')
+  it('offers direct prompt-based agent creation as a peer direction', () => {
+    const markup = renderGettingStarted('/?start=prompt')
+
+    expect(markup).toContain('Define the agent')
+    expect(markup).toContain(
+      'Set its instructions, runtime, model, and credential',
+    )
+    expect(markup).toContain('Create agent')
+    expect(markup).not.toContain('Choose repository')
   })
 })

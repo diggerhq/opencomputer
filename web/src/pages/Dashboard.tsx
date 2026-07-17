@@ -1,9 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type KeyboardEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import {
+  Bot,
   Boxes,
   Check,
+  Code2,
   Copy,
   ExternalLink,
   KeyRound,
@@ -20,15 +22,24 @@ import {
 import type { Session } from '@/api/schemas'
 import { usePrefetchSandbox } from '@/hooks/use-prefetch'
 import { PageHeader } from '@/components/page-header'
-import { Panel, PanelHeader, PanelTitle } from '@/components/panel'
+import {
+  Panel,
+  PanelContent,
+  PanelDescription,
+  PanelHeader,
+  PanelTitle,
+} from '@/components/panel'
 import { MetricCard } from '@/components/metric-card'
 import { CopyRow } from '@/components/copy-row'
+import { GithubMark } from '@/components/github-mark'
+import { ManualAgentForm } from '@/components/manual-agent-form'
 import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { Button } from '@/components/ui/button'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
+import { cn } from '@/lib/utils'
 import { RepositoryImportPanel, RepositoryStarterGuide } from './AgentNew'
 
 const SANDBOX_API_CODE = `import { Sandbox } from "@opencomputer/sdk";
@@ -41,21 +52,38 @@ await sandbox.kill();`
 
 const SESSION_API_CODE = `import { OpenComputer } from "@opencomputer/sdk";
 
-const oc = new OpenComputer({
-  apiKey: process.env.OPENCOMPUTER_API_KEY,
-});
-
-const agent = await oc.agents.create({
-  name: "my-agent",
-  runtime: "claude",
-  model: "anthropic/claude-opus-4-8",
-  credential: "managed",
-});
-
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
 const session = await oc.sessions.create({
-  agent: agent.id,
+  agent: "agt_...",
   input: "Triage the latest support requests.",
 });`
+
+type StartDirection = 'github' | 'prompt' | 'api'
+
+const START_DIRECTIONS = [
+  {
+    id: 'github',
+    title: 'Agent from GitHub',
+    description: 'Import Flue code and deploy automatically when you push.',
+    icon: GithubMark,
+  },
+  {
+    id: 'prompt',
+    title: 'Agent from a prompt',
+    description: 'Define the agent directly in the dashboard.',
+    icon: Bot,
+  },
+  {
+    id: 'api',
+    title: 'Build with the API',
+    description: 'Create sandboxes and durable sessions with the SDK.',
+    icon: Code2,
+  },
+] as const
+
+function startDirection(value: string | null): StartDirection {
+  return value === 'prompt' || value === 'api' ? value : 'github'
+}
 
 function formatDuration(sandbox: Sandbox): string {
   const start = new Date(sandbox.startedAt).getTime()
@@ -318,6 +346,9 @@ export default function Dashboard() {
 /* ── First-run onboarding ─────────────────────────────────────────────────── */
 export function GettingStarted() {
   const queryClient = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedDirection = startDirection(searchParams.get('start'))
+  const directionRefs = useRef<Array<HTMLButtonElement | null>>([])
   const keysQuery = useQuery({
     queryKey: ['api-keys'],
     queryFn: getAPIKeys,
@@ -343,158 +374,228 @@ export function GettingStarted() {
     }
   }, [keysQuery.isSuccess, hasKeys, createdKey, createMutation])
 
+  const selectDirection = (direction: StartDirection) => {
+    setSearchParams(direction === 'github' ? {} : { start: direction }, {
+      replace: true,
+    })
+  }
+
+  const onDirectionKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ) => {
+    let nextIndex: number | null = null
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = (index + 1) % START_DIRECTIONS.length
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex =
+        (index - 1 + START_DIRECTIONS.length) % START_DIRECTIONS.length
+    } else if (event.key === 'Home') {
+      nextIndex = 0
+    } else if (event.key === 'End') {
+      nextIndex = START_DIRECTIONS.length - 1
+    }
+    if (nextIndex == null) return
+
+    event.preventDefault()
+    selectDirection(START_DIRECTIONS[nextIndex].id)
+    requestAnimationFrame(() => directionRefs.current[nextIndex]?.focus())
+  }
+
   return (
     <div className="mx-auto max-w-5xl pb-12">
-      <header className="max-w-2xl">
-        <h1 className="text-foreground text-2xl font-semibold tracking-tight">
-          Get started
-        </h1>
-        <p className="text-muted-foreground mt-2 text-sm leading-6">
-          Deploy an agent from GitHub, or build directly with sandboxes and
-          durable agent sessions.
-        </p>
-      </header>
-
-      <section className="mt-10" aria-labelledby="repository-start-heading">
-        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div className="max-w-2xl">
-            <h2
-              id="repository-start-heading"
-              className="text-foreground text-lg font-semibold tracking-tight"
+      <div
+        className="bg-border grid gap-px overflow-hidden rounded-lg border sm:grid-cols-3"
+        role="tablist"
+        aria-label="Choose how to start"
+      >
+        {START_DIRECTIONS.map((direction, index) => {
+          const active = selectedDirection === direction.id
+          const Icon = direction.icon
+          return (
+            <button
+              key={direction.id}
+              ref={(node) => {
+                directionRefs.current[index] = node
+              }}
+              id={`start-tab-${direction.id}`}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-controls={`start-panel-${direction.id}`}
+              tabIndex={active ? 0 : -1}
+              onClick={() => selectDirection(direction.id)}
+              onKeyDown={(event) => onDirectionKeyDown(event, index)}
+              className={cn(
+                'focus-visible:ring-ring/50 bg-background flex min-h-24 items-start gap-3 p-4 text-left transition-colors outline-none focus-visible:z-10 focus-visible:ring-3 focus-visible:ring-inset',
+                active ? 'bg-row-selected' : 'hover:bg-row-hover',
+              )}
             >
-              Deploy an agent from GitHub
-            </h2>
-            <p className="text-muted-foreground mt-1 text-sm leading-6">
-              Choose a repository. OpenComputer reviews it, starts the first
-              deployment, and keeps it in sync when you push.
-            </p>
-          </div>
-          <a
-            href="#api"
-            className="text-muted-foreground hover:text-foreground shrink-0 text-sm underline-offset-4 hover:underline"
-          >
-            Prefer the API?
-          </a>
-        </div>
+              <div aria-hidden>
+                <Icon
+                  className={cn(
+                    'mt-0.5 size-4 shrink-0',
+                    active ? 'text-foreground' : 'text-muted-foreground',
+                  )}
+                />
+              </div>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold">
+                  {direction.title}
+                </span>
+                <span className="text-muted-foreground mt-1 block text-xs leading-5">
+                  {direction.description}
+                </span>
+              </span>
+            </button>
+          )
+        })}
+      </div>
 
-        <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,42rem)_17rem] xl:gap-8">
-          <div className="order-2 min-w-0 xl:order-1">
-            <RepositoryImportPanel />
-          </div>
-          <div className="order-1 xl:order-2">
+      {selectedDirection === 'github' ? (
+        <section
+          id="start-panel-github"
+          role="tabpanel"
+          aria-labelledby="start-tab-github"
+          className="mt-8"
+        >
+          <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,42rem)_17rem] xl:gap-8">
+            <div className="min-w-0">
+              <RepositoryImportPanel />
+            </div>
             <RepositoryStarterGuide />
           </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
 
-      <section
-        id="api"
-        className="border-border/70 mt-16 scroll-mt-8 border-t pt-10"
-        aria-labelledby="api-start-heading"
-      >
-        <div className="max-w-2xl">
-          <h2
-            id="api-start-heading"
-            className="text-foreground text-lg font-semibold tracking-tight"
-          >
-            Build with the API
-          </h2>
-          <p className="text-muted-foreground mt-1 text-sm leading-6">
-            Use the SDK when you want to own the product flow. The same API key
-            works across compute and agent sessions.
-          </p>
-        </div>
-
-        <Panel className="mt-5 p-5">
-          <div className="grid gap-4 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-start">
-            <div className="flex items-center gap-2">
-              <KeyRound className="text-muted-foreground size-4" aria-hidden />
+      {selectedDirection === 'prompt' ? (
+        <section
+          id="start-panel-prompt"
+          role="tabpanel"
+          aria-labelledby="start-tab-prompt"
+          className="mt-8 max-w-2xl"
+        >
+          <Panel>
+            <PanelHeader>
               <div>
-                <h3 className="text-sm font-semibold">Your API key</h3>
-                <p className="text-muted-foreground mt-0.5 text-xs">
-                  OPENCOMPUTER_API_KEY
-                </p>
+                <PanelTitle>Define the agent</PanelTitle>
+                <PanelDescription className="mt-1">
+                  Set its instructions, runtime, model, and credential. Connect
+                  Slack after creation.
+                </PanelDescription>
+              </div>
+            </PanelHeader>
+            <PanelContent>
+              <ManualAgentForm onCancel={() => selectDirection('github')} />
+            </PanelContent>
+          </Panel>
+        </section>
+      ) : null}
+
+      {selectedDirection === 'api' ? (
+        <section
+          id="start-panel-api"
+          role="tabpanel"
+          aria-labelledby="start-tab-api"
+          className="mt-8"
+        >
+          <Panel className="p-5">
+            <div className="grid gap-4 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-start">
+              <div className="flex items-center gap-2">
+                <KeyRound
+                  className="text-muted-foreground size-4"
+                  aria-hidden
+                />
+                <div>
+                  <h2 className="text-sm font-semibold">Your API key</h2>
+                  <p className="text-muted-foreground mt-0.5 text-xs">
+                    OPENCOMPUTER_API_KEY
+                  </p>
+                </div>
+              </div>
+
+              <div className="min-w-0">
+                {keysQuery.isLoading || createMutation.isPending ? (
+                  <p className="text-muted-foreground py-2 text-sm">
+                    Preparing your API key…
+                  </p>
+                ) : null}
+
+                {createdKey ? (
+                  <div className="space-y-2">
+                    <CopyRow value={createdKey} maskable />
+                    <p className="text-muted-foreground text-xs">
+                      Copy it now. For security, it cannot be shown again.
+                    </p>
+                  </div>
+                ) : null}
+
+                {!createdKey && !createMutation.isPending && hasKeys ? (
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-muted-foreground text-sm">
+                      API key ready. Existing secret values cannot be displayed.
+                    </p>
+                    <Button size="sm" variant="outline" asChild>
+                      <Link to="/api-keys">Manage keys</Link>
+                    </Button>
+                  </div>
+                ) : null}
+
+                {keysQuery.isError ? (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-status-error text-sm">
+                      Couldn&apos;t load your API keys.
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void keysQuery.refetch()}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                ) : null}
+
+                {createMutation.isError ? (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-status-error text-sm">
+                      Couldn&apos;t create your API key.
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => createMutation.mutate()}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </div>
+          </Panel>
 
-            <div className="min-w-0">
-              {keysQuery.isLoading || createMutation.isPending ? (
-                <p className="text-muted-foreground py-2 text-sm">
-                  Preparing your API key…
-                </p>
-              ) : null}
-
-              {createdKey ? (
-                <div className="space-y-2">
-                  <CopyRow value={createdKey} maskable />
-                  <p className="text-muted-foreground text-xs">
-                    Copy it now. For security, it cannot be shown again.
-                  </p>
-                </div>
-              ) : null}
-
-              {!createdKey && !createMutation.isPending && hasKeys ? (
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-muted-foreground text-sm">
-                    API key ready. Existing secret values cannot be displayed.
-                  </p>
-                  <Button size="sm" variant="outline" asChild>
-                    <Link to="/api-keys">Manage keys</Link>
-                  </Button>
-                </div>
-              ) : null}
-
-              {keysQuery.isError ? (
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="text-status-error text-sm">
-                    Couldn&apos;t load your API keys.
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void keysQuery.refetch()}
-                  >
-                    Retry
-                  </Button>
-                </div>
-              ) : null}
-
-              {createMutation.isError ? (
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="text-status-error text-sm">
-                    Couldn&apos;t create your API key.
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => createMutation.mutate()}
-                  >
-                    Retry
-                  </Button>
-                </div>
-              ) : null}
-            </div>
+          <div className="mt-8 grid gap-10 md:grid-cols-2 md:gap-0 md:divide-x">
+            <ApiExample
+              icon={MessagesSquare}
+              title="Durable agent sessions"
+              description="Start a durable run for an agent, then stream and steer its event log."
+              code={SESSION_API_CODE}
+              docs="https://docs.opencomputer.dev/agent-sessions/quickstart"
+              docsLabel="Open sessions quickstart"
+              className="md:pr-8"
+            />
+            <ApiExample
+              icon={Boxes}
+              title="Sandboxes"
+              description="Create isolated computers and control their files, commands, processes, and network."
+              code={SANDBOX_API_CODE}
+              docs="https://docs.opencomputer.dev/quickstart"
+              docsLabel="Open sandbox quickstart"
+              className="md:pl-8"
+            />
           </div>
-        </Panel>
-
-        <div className="mt-8 grid gap-10 md:grid-cols-2 md:gap-0 md:divide-x">
-          <ApiExample
-            icon={Boxes}
-            title="Sandboxes"
-            description="Create isolated computers and control their files, commands, processes, and network."
-            code={SANDBOX_API_CODE}
-            docs="https://docs.opencomputer.dev/quickstart"
-          />
-          <ApiExample
-            icon={MessagesSquare}
-            title="Durable agent sessions"
-            description="Create an agent, start a durable run, then stream and steer its event log."
-            code={SESSION_API_CODE}
-            docs="https://docs.opencomputer.dev/agent-sessions/quickstart"
-            className="md:pl-8"
-          />
-        </div>
-      </section>
+        </section>
+      ) : null}
     </div>
   )
 }
@@ -505,6 +606,7 @@ function ApiExample({
   description,
   code,
   docs,
+  docsLabel,
   className,
 }: {
   icon: typeof Boxes
@@ -512,6 +614,7 @@ function ApiExample({
   description: string
   code: string
   docs: string
+  docsLabel: string
   className?: string
 }) {
   const [copied, markCopied] = useTransientFlag(1500)
@@ -557,15 +660,12 @@ function ApiExample({
         </Button>
       </div>
 
-      <a
-        href={docs}
-        target="_blank"
-        rel="noreferrer"
-        className="text-muted-foreground hover:text-foreground mt-3 inline-flex items-center gap-1.5 text-xs font-medium underline-offset-4 hover:underline"
-      >
-        Read the guide
-        <ExternalLink className="size-3" aria-hidden />
-      </a>
+      <Button variant="outline" size="sm" className="mt-4" asChild>
+        <a href={docs} target="_blank" rel="noreferrer">
+          {docsLabel}
+          <ExternalLink className="size-3.5" aria-hidden />
+        </a>
+      </Button>
     </article>
   )
 }
