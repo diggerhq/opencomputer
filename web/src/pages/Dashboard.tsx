@@ -53,7 +53,8 @@ const SESSION_API_CODE = `const oc = new OpenComputer({ apiKey });
 const session = await oc.sessions.create({
   agent: "agt_...",
   input: "Triage support requests.",
-});`
+});
+console.log(session.id);`
 
 type StartDirection = 'github' | 'prompt' | 'api'
 

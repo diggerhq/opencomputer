@@ -80,6 +80,7 @@ describe('getting started', () => {
     expect(markup).toContain('Sandbox.create()')
     expect(markup).toContain('oc.sessions.create')
     expect(markup).not.toContain('oc.agents.create')
+    expect(markup).toContain('console.log(session.id)')
     expect(markup).toContain('Open sessions quickstart')
     expect(markup).toContain('Open sandbox quickstart')
     expect(markup).toContain('Start and steer a durable agent run.')
