@@ -98,6 +98,17 @@ func (m *Manager) Resume(_ context.Context, sandboxID string) error {
 	// migration (billingSuppressed), the touch flips it to a normal billed box.
 	vm.billingSuppressed = false
 
+	// The vCPUs were frozen for the entire pause, so the guest clock is now
+	// behind wall-clock by the pause duration. Re-sync it to host time — the
+	// same step every wake/restore/migration path runs — otherwise the box
+	// resumes with a skewed clock. Best-effort: a failed sync must not block the
+	// resume (the VM is already running).
+	if vm.agent != nil {
+		if err := syncGuestClock(context.Background(), vm.agent); err != nil {
+			log.Printf("qemu: resume %s: clock sync failed: %v", sandboxID, err)
+		}
+	}
+
 	// Resume billing (the VM is a live running sandbox again).
 	if m.lifecycleObs != nil {
 		m.lifecycleObs.OnSandboxWake(sandboxID)
@@ -131,6 +142,14 @@ func (m *Manager) ResumeUnbilled(_ context.Context, sandboxID string) error {
 			return fmt.Errorf("qmp cont: %w", err)
 		}
 		vm.pausedAt = time.Time{}
+		// Same clock resync as Resume — the box's vCPUs were frozen while paused.
+		// The migration target also re-syncs on arrival, but correct the source
+		// now so a stalled/aborted migration can't leave it skewed. Best-effort.
+		if vm.agent != nil {
+			if err := syncGuestClock(context.Background(), vm.agent); err != nil {
+				log.Printf("qemu: resume-unbilled %s: clock sync failed: %v", sandboxID, err)
+			}
+		}
 	}
 	vm.Status = types.SandboxStatusRunning
 	vm.billingSuppressed = true

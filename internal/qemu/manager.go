@@ -3269,6 +3269,12 @@ func (m *Manager) CreateCheckpoint(ctx context.Context, sandboxID, checkpointID 
 		// any more customer work. Without this, writes can block indefinitely on
 		// the guest fsfreeze semaphore even though QEMU has resumed.
 		m.agentFsThawAfterWake(context.Background(), sandboxID, agentClient)
+		// vCPUs were stopped for the whole savevm write (seconds for a large-RAM
+		// box), so the guest clock is now behind wall-clock. Re-sync to host time
+		// — same as wake/resume — so a checkpoint doesn't leave the source skewed.
+		if err := syncGuestClock(context.Background(), agentClient); err != nil {
+			log.Printf("qemu: CreateCheckpoint %s/%s: clock sync failed: %v", sandboxID, checkpointID, err)
+		}
 	} else {
 		// Agent didn't come back after savevm — the VM is unmanageable. Full
 		// teardown via destroyVM, not the partial QMP-quit-only cleanup that
@@ -3487,6 +3493,14 @@ func (m *Manager) CreateDiskOnlyCheckpoint(ctx context.Context, sandboxID, check
 	}
 	m.agentFsThawAfterWake(context.Background(), sandboxID, vm.agent)
 	frozen = false
+	// vCPUs were stopped for the disk copy (usually sub-second reflink, but a
+	// non-reflink fallback copy can run longer) — re-sync the guest clock to
+	// host time, matching the full-checkpoint path.
+	if vm.agent != nil {
+		if err := syncGuestClock(context.Background(), vm.agent); err != nil {
+			log.Printf("qemu: DiskOnlyCheckpoint %s/%s: clock sync failed: %v", sandboxID, checkpointID, err)
+		}
+	}
 
 	rootfsKey = fmt.Sprintf("checkpoints/%s/%s/rootfs.tar.zst", sandboxID, checkpointID)
 	workspaceKey = fmt.Sprintf("checkpoints/%s/%s/workspace.tar.zst", sandboxID, checkpointID)
