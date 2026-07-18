@@ -87,6 +87,25 @@ const SourceNameSchema = v.pipe(
   v.regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),
 );
 
+const RepositoryTargetSchema = v.pipe(
+  v.string(),
+  v.regex(
+    /^(?:repo_[a-z0-9]{24}|[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100})$/,
+  ),
+);
+
+const RefSchema = v.pipe(
+  v.string(),
+  v.minLength(1),
+  v.maxLength(255),
+);
+
+const PullRequestBaseSchema = v.pipe(
+  v.string(),
+  v.regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/),
+  v.check((ref) => !ref.includes(".."), "base cannot contain '..'"),
+);
+
 const AddSourceSuccessSchema = v.pipe(
   v.strictObject({
     ok: v.literal(true),
@@ -181,15 +200,13 @@ const ListWorkingReposInputSchema = v.strictObject({
 
 const AddSourceInputSchema = v.strictObject({
   repository: v.pipe(
-    v.string(),
-    v.minLength(1),
+    RepositoryTargetSchema,
     v.description(
       "An exact repo_… id returned by list_working_repos, or exact owner/repository coordinates from that list.",
     ),
   ),
   ref: v.pipe(
-    v.string(),
-    v.minLength(1),
+    RefSchema,
     v.description("The branch, tag, or commit to pin."),
   ),
   name: v.optional(
@@ -204,17 +221,19 @@ const AddSourceInputSchema = v.strictObject({
 
 const PublishPullRequestInputSchema = v.strictObject({
   source: v.pipe(
-    v.string(),
-    v.minLength(1),
+    SourceNameSchema,
     v.description(
       "The source name returned by add_source, not a path or repository guess.",
     ),
   ),
-  title: v.pipe(v.string(), v.minLength(1)),
-  body: v.optional(v.string()),
-  base: v.pipe(
+  title: v.pipe(
     v.string(),
-    v.minLength(1),
+    v.maxLength(256),
+    v.check((title) => title.trim().length > 0, "title cannot be blank"),
+  ),
+  body: v.optional(v.pipe(v.string(), v.maxLength(65_536))),
+  base: v.pipe(
+    PullRequestBaseSchema,
     v.description("Exact target branch for the pull request."),
   ),
   draft: v.optional(v.boolean()),

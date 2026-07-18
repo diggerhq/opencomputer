@@ -79,13 +79,19 @@ describe("ocRepoTools contract", () => {
     const add = tool("add_source");
     expect(
       v.safeParse(add.input, {
-        repository: "repo_1",
+        repository: "repo_0123456789abcdef01234567",
         ref: "main",
         name: "app",
       }).success,
     ).toBe(true);
     expect(
       v.safeParse(add.input, { repository: "", ref: "main" }).success,
+    ).toBe(false);
+    expect(
+      v.safeParse(add.input, {
+        repository: "owner/repo",
+        ref: "x".repeat(256),
+      }).success,
     ).toBe(false);
 
     const publish = tool("github_publish_pull_request");
@@ -104,6 +110,21 @@ describe("ocRepoTools contract", () => {
         idempotency_key: "model-controlled",
       }).success,
     ).toBe(false);
+    for (const invalid of [
+      { source: "Bad Source", title: "Document setup", base: "main" },
+      { source: "app", title: " ", base: "main" },
+      { source: "app", title: "x".repeat(257), base: "main" },
+      {
+        source: "app",
+        title: "Document setup",
+        body: "x".repeat(65_537),
+        base: "main",
+      },
+      { source: "app", title: "Document setup", base: "../main" },
+      { source: "app", title: "Document setup", base: "bad ref" },
+    ]) {
+      expect(v.safeParse(publish.input, invalid).success).toBe(false);
+    }
   });
 });
 
@@ -308,7 +329,11 @@ describe("add_source HTTP fixture", () => {
     vi.stubGlobal("fetch", fetchSpy);
 
     const result = await tool("add_source").run({
-      input: { repository: "repo_1", ref: "main", name: "app" },
+      input: {
+        repository: "repo_0123456789abcdef01234567",
+        ref: "main",
+        name: "app",
+      },
     });
 
     expect(result).toEqual({
@@ -332,7 +357,7 @@ describe("add_source HTTP fixture", () => {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        repository: "repo_1",
+        repository: "repo_0123456789abcdef01234567",
         ref: "main",
         name: "app",
       }),
@@ -357,7 +382,11 @@ describe("add_source HTTP fixture", () => {
 
     await expect(
       tool("add_source").run({
-        input: { repository: "repo_1", ref: "main", name: "app" },
+        input: {
+          repository: "repo_0123456789abcdef01234567",
+          ref: "main",
+          name: "app",
+        },
       }),
     ).rejects.toThrow("repository API returned an invalid response");
   });
