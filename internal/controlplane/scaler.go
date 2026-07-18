@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/opensandbox/opensandbox/internal/alert"
 	"github.com/opensandbox/opensandbox/internal/compute"
 	"github.com/opensandbox/opensandbox/internal/db"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
@@ -107,6 +108,13 @@ type ScalerConfig struct {
 	// Empty → use the pool's configured default. Non-quota errors fail the
 	// launch immediately without burning the rest of the list.
 	MachineSizes []string
+
+	// Alerter receives roll-stuck alerts (version skew past a deadline, or
+	// creation backoff blocking scale-up). nil → alerts are dropped.
+	Alerter alert.Alerter
+	// RollStuckDeadline is how long a roll may be non-converging before it
+	// alerts. 0 → default 45m.
+	RollStuckDeadline time.Duration
 }
 
 // pendingLaunch tracks an EC2 instance that was launched but hasn't registered yet.
@@ -149,6 +157,10 @@ type Scaler struct {
 	// Rolling replacement: version-aware AMI updates
 	targetWorkerVersion string // desired worker version (from SSM); workers not matching this get replaced
 	refreshCount        int    // tick counter for AMI refresh interval
+
+	// rollHealth alerts when a rolling replace stalls (version skew past a
+	// deadline) or can't proceed (creation backoff). Always non-nil.
+	rollHealth *rollHealthMonitor
 }
 
 // NewScaler creates a new autoscaling controller.
@@ -192,6 +204,7 @@ func NewScaler(cfg ScalerConfig) *Scaler {
 		machineSizes: cfg.MachineSizes,
 		rdb:          cfg.RedisClient,
 		cellID:       cfg.CellID,
+		rollHealth:   newRollHealthMonitor(cfg.Alerter, rollHealthConfig{Deadline: cfg.RollStuckDeadline}),
 	}
 }
 
@@ -295,6 +308,30 @@ func (s *Scaler) evaluate() {
 	}
 	for _, region := range regions {
 		s.evaluateRegion(ctx, region)
+	}
+
+	// Roll-stuck alerting runs after the per-region eval, outside
+	// evaluateRegion's lock, so a slow alert delivery can never stall a scaling
+	// decision.
+	s.checkRollHealth(ctx, regions)
+}
+
+// checkRollHealth evaluates rolling-replace convergence per region and alerts on
+// stalls (version skew past the deadline, or creation backoff blocking
+// scale-up). Reads only concurrency-safe registry/state.
+func (s *Scaler) checkRollHealth(ctx context.Context, regions []string) {
+	if s.rollHealth == nil {
+		return
+	}
+	for _, region := range regions {
+		backoffUntil, backoffActive := s.state.GetCreationBackoffUntil(region)
+		s.rollHealth.observe(ctx, rollFleetSnapshot{
+			region:        region,
+			targetVersion: s.targetWorkerVersion,
+			workers:       s.registry.GetWorkersByRegion(region),
+			backoffActive: backoffActive,
+			backoffUntil:  backoffUntil,
+		})
 	}
 }
 

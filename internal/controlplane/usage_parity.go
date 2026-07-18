@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/opensandbox/opensandbox/internal/alert"
 	"github.com/opensandbox/opensandbox/internal/db"
 )
 
@@ -47,6 +48,17 @@ type UsageParityChecker struct {
 	grace     time.Duration // wait this long past a bucket's end before checking
 	tolerance float64       // fractional drift to tolerate before flagging (e.g. 0.02)
 
+	// Alerting fires only on SYSTEMIC, SUSTAINED, MATERIAL drift — far above the
+	// per-org log tolerance — so small-org rounding, the known managed-agent
+	// edge>cell skew, and one-off settlement blips don't page anyone.
+	alerter             alert.Alerter
+	cellID              string
+	alertPct            float64 // drift fraction that counts as a material breach (>> tolerance)
+	alertMinGBs         float64 // per-org usage floor to be "material" (ignores tiny-org rounding)
+	alertMinOrgs        int     // material breaching orgs before it's "systemic"
+	alertConsecutive    int     // consecutive over-threshold buckets before alerting
+	consecutiveBreaches int     // run-length of over-threshold buckets (state)
+
 	client *http.Client
 	stopCh chan struct{}
 	doneCh chan struct{}
@@ -72,6 +84,14 @@ type UsageParityConfig struct {
 	Period    time.Duration // default 1h (one closed bucket per run)
 	Grace     time.Duration // default 10m, must match the rollup cron's GRACE_SECONDS
 	Tolerance float64       // default 0.02 (2%)
+
+	// Alerting (all optional; sensible defaults). Alerter nil => no alerts.
+	Alerter          alert.Alerter
+	CellID           string
+	AlertPct         float64 // default 0.10 (10%) — material breach threshold
+	AlertMinGBs      float64 // default 100 GB·s — per-org materiality floor
+	AlertMinOrgs     int     // default 3 — breaching orgs for "systemic"
+	AlertConsecutive int     // default 2 — consecutive buckets before alerting
 }
 
 // NewUsageParityChecker returns nil if ParityURL/Secret/Store are unset.
@@ -93,17 +113,39 @@ func NewUsageParityChecker(cfg UsageParityConfig) *UsageParityChecker {
 	if cfg.Tolerance <= 0 {
 		cfg.Tolerance = 0.02
 	}
+	if cfg.AlertPct <= 0 {
+		cfg.AlertPct = 0.10
+	}
+	if cfg.AlertMinGBs <= 0 {
+		cfg.AlertMinGBs = 100
+	}
+	if cfg.AlertMinOrgs <= 0 {
+		cfg.AlertMinOrgs = 3
+	}
+	if cfg.AlertConsecutive <= 0 {
+		cfg.AlertConsecutive = 2
+	}
+	alerter := cfg.Alerter
+	if alerter == nil {
+		alerter = alert.Nop{}
+	}
 	return &UsageParityChecker{
-		store:     cfg.Store,
-		parityURL: cfg.ParityURL,
-		path:      u.Path,
-		secret:    cfg.Secret,
-		period:    cfg.Period,
-		grace:     cfg.Grace,
-		tolerance: cfg.Tolerance,
-		client:    &http.Client{Timeout: 20 * time.Second},
-		stopCh:    make(chan struct{}),
-		doneCh:    make(chan struct{}),
+		store:            cfg.Store,
+		parityURL:        cfg.ParityURL,
+		path:             u.Path,
+		secret:           cfg.Secret,
+		period:           cfg.Period,
+		grace:            cfg.Grace,
+		tolerance:        cfg.Tolerance,
+		alerter:          alerter,
+		cellID:           cfg.CellID,
+		alertPct:         cfg.AlertPct,
+		alertMinGBs:      cfg.AlertMinGBs,
+		alertMinOrgs:     cfg.AlertMinOrgs,
+		alertConsecutive: cfg.AlertConsecutive,
+		client:           &http.Client{Timeout: 20 * time.Second},
+		stopCh:           make(chan struct{}),
+		doneCh:           make(chan struct{}),
 	}
 }
 
@@ -180,6 +222,11 @@ func (c *UsageParityChecker) tick(ctx context.Context) error {
 	checked, flagged, skippedFree := 0, 0, 0
 	var worstPct float64
 	var worstOrg string
+	// Materiality accounting for alerting — separate from the per-org log flag.
+	var totalCell, totalEdge float64
+	materialBreaches := 0
+	var worstMatPct float64
+	var worstMatOrg string
 	for org := range union {
 		// Free orgs are accounted for at the edge by the CreditAccount DO
 		// (events-ingest fans out /debit per usage_tick), not by writes to
@@ -202,6 +249,17 @@ func (c *UsageParityChecker) tick(ctx context.Context) error {
 		checked++
 		drift := edgeGB - cellGB
 		pct := driftPct(cellGB, edgeGB)
+		totalCell += cellGB
+		totalEdge += edgeGB
+		// A material breach: meaningful usage AND well past the alert threshold,
+		// so tiny-org rounding can't count toward a page.
+		if math.Max(cellGB, edgeGB) >= c.alertMinGBs && math.Abs(pct) > c.alertPct {
+			materialBreaches++
+			if math.Abs(pct) > math.Abs(worstMatPct) {
+				worstMatPct = pct
+				worstMatOrg = org
+			}
+		}
 		if math.Abs(pct) > c.tolerance {
 			flagged++
 			log.Printf("usage_parity: DRIFT org=%s bucket=%s cell=%.3f edge=%.3f gb·s drift=%+.3f (%+.1f%%)",
@@ -215,7 +273,40 @@ func (c *UsageParityChecker) tick(ctx context.Context) error {
 
 	log.Printf("usage_parity: bucket=%s checked=%d flagged=%d skipped_free=%d (tolerance=%.1f%%) worst=%s (%+.1f%%)",
 		from.Format(time.RFC3339), checked, flagged, skippedFree, c.tolerance*100, worstOrg, worstPct*100)
+
+	c.evaluateBillingAlert(ctx, materialBreaches, worstMatOrg, worstMatPct, totalCell, totalEdge)
 	return nil
+}
+
+// evaluateBillingAlert fires a Slack alert only when drift is SYSTEMIC (≥N
+// material orgs off, or a material cell-wide aggregate past the threshold) AND
+// SUSTAINED across consecutive buckets. This deliberately ignores the per-org
+// log flag: tiny-org rounding, the known managed-agent edge>cell skew, and
+// one-off settlement blips must never page. It never bills — shadow evidence
+// only — so a Warning (not a page) is the right severity.
+func (c *UsageParityChecker) evaluateBillingAlert(ctx context.Context, materialBreaches int, worstOrg string, worstPct, totalCell, totalEdge float64) {
+	aggPct := driftPct(totalCell, totalEdge)
+	aggMaterial := totalCell >= c.alertMinGBs*float64(c.alertMinOrgs)
+	systemic := materialBreaches >= c.alertMinOrgs || (aggMaterial && math.Abs(aggPct) > c.alertPct)
+	if !systemic {
+		c.consecutiveBreaches = 0
+		return
+	}
+	c.consecutiveBreaches++
+	if c.consecutiveBreaches < c.alertConsecutive {
+		return // one bad bucket isn't enough — wait for it to persist
+	}
+	worst := worstOrg
+	if worst == "" {
+		worst = "n/a"
+	}
+	c.alerter.Send(ctx, alert.Alert{
+		Severity: alert.Warning,
+		Title:    fmt.Sprintf("edge/cell billing drift in %s", c.cellID),
+		Detail: fmt.Sprintf("%d orgs >%.0f%% off (worst %s %+.1f%%), cell-aggregate %+.1f%% — sustained %d buckets. Edge-metered GB·s disagrees with cell scale_events; investigate before flipping billing live.",
+			materialBreaches, c.alertPct*100, worst, worstPct*100, aggPct*100, c.consecutiveBreaches),
+		DedupKey: "billing_drift:" + c.cellID,
+	})
 }
 
 // cellGBSeconds sums the cell's authoritative GB-seconds for an org over the
