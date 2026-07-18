@@ -98,6 +98,7 @@ const RefSchema = v.pipe(
   v.string(),
   v.minLength(1),
   v.maxLength(255),
+  v.check((ref) => ref.trim().length > 0, "ref cannot be blank"),
 );
 
 const PullRequestBaseSchema = v.pipe(

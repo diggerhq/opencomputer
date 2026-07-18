@@ -93,6 +93,12 @@ describe("ocRepoTools contract", () => {
         ref: "x".repeat(256),
       }).success,
     ).toBe(false);
+    expect(
+      v.safeParse(add.input, {
+        repository: "owner/repo",
+        ref: " \t ",
+      }).success,
+    ).toBe(false);
 
     const publish = tool("github_publish_pull_request");
     expect(
