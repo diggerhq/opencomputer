@@ -523,17 +523,27 @@ func main() {
 			if qemuMgr != nil {
 				st := store // capture for closure
 				qemuMgr.SetHibernationUploadCallback(func(sandboxID, hibernationKey string, sizeBytes int64, uploadErr error) {
-					ctx2, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					if uploadErr != nil {
-						if err := st.MarkHibernationUploadFailed(ctx2, hibernationKey, uploadErr.Error()); err != nil {
-							log.Printf("opensandbox-worker: failed to record hibernation upload error for %s: %v", sandboxID, err)
+					// Retry the terminal-state write: losing it strands the box
+					// (un-wakeable) AND wedges worker teardown, so it's worth a few
+					// attempts. The CP-side hibernation-upload reconciler is the
+					// durable backstop if the worker dies before this lands.
+					write := func() error {
+						ctx2, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cancel()
+						if uploadErr != nil {
+							return st.MarkHibernationUploadFailed(ctx2, hibernationKey, uploadErr.Error())
 						}
-						return
+						return st.MarkHibernationUploaded(ctx2, hibernationKey, sizeBytes)
 					}
-					if err := st.MarkHibernationUploaded(ctx2, hibernationKey, sizeBytes); err != nil {
-						log.Printf("opensandbox-worker: failed to mark hibernation uploaded for %s: %v", sandboxID, err)
+					var werr error
+					for attempt := 1; attempt <= 4; attempt++ {
+						if werr = write(); werr == nil {
+							return
+						}
+						log.Printf("opensandbox-worker: hibernation upload-status write for %s failed (attempt %d/4): %v", sandboxID, attempt, werr)
+						time.Sleep(time.Duration(attempt) * time.Second)
 					}
+					log.Printf("opensandbox-worker: CRITICAL: hibernation upload-status write for %s abandoned after retries: %v (CP reconciler will resolve)", sandboxID, werr)
 				})
 			}
 		}
@@ -726,7 +736,11 @@ func main() {
 				} else {
 					count, _ = mgr.Count(context.Background())
 				}
-				cpuPct, memPct, diskPct := worker.SystemStats()
+				// Disk pressure keys off the DATA mount (cfg.DataDir → /data),
+				// NOT the OS root: the root's static ~70% install footprint would
+				// otherwise trip perpetual scale-up / eviction / routing exclusion
+				// while /data sits nearly empty.
+				cpuPct, memPct, diskPct := worker.SystemStats(cfg.DataDir)
 				return cfg.MaxCapacity, count, cpuPct, memPct, diskPct
 			})
 			if qemuMgr != nil {

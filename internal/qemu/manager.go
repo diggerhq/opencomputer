@@ -75,32 +75,82 @@ func prepareAgentForHibernate(ctx context.Context, agent *AgentClient) error {
 		return nil
 	}
 
-	// fsfreeze guest filesystems BEFORE we let the host-side prepare path
-	// run sync/savevm. Reason: prepareHibernate (or the legacy sync) only
-	// flushes whatever's already dirty at the moment it runs — customer
-	// processes are still scheduled and can keep dirtying ext4 metadata
-	// up until qmp.Stop() (which is ~210ms later: 200ms post-close sleep +
-	// QMP round-trip). fsfreeze blocks new write syscalls at the VFS
-	// layer, leaving ext4's in-memory state in a fully quiesced shape with
-	// no in-flight metadata transactions. Empirically the savevm/loadvm
-	// ext4 metadata_csum corruption (incident sb-33f8a5b3 2026-05-19)
-	// surfaces only after high-frequency hibernates of sandboxes with
-	// heavy concurrent dx_tree churn, so reducing the in-flight metadata
-	// state before snapshot is the most direct mitigation we can do
-	// without touching QEMU. Counterpart: agentFsThawAfterWake runs on
-	// the wake side once the agent reconnects.
+	// fsfreeze guest filesystems BEFORE savevm. fsfreeze blocks new write
+	// syscalls at the VFS layer, leaving ext4's in-memory state fully quiesced
+	// with no in-flight metadata transactions — it's the ONLY thing that closes
+	// the ~210ms window between the last sync and qmp.Stop() during which
+	// running processes keep dirtying ext4 metadata. Without it, savevm captures
+	// a torn ext4 that fails metadata_csum on loadvm (EBADMSG on first read →
+	// unrecoverable box). Counterpart: agentFsThawAfterWake on the wake side.
 	//
-	// Best-effort: tolerates fsfreeze missing (older util-linux), already
-	// frozen, or any transient error. Never blocks the hibernate.
-	freezeCtx, freezeCancel := context.WithTimeout(ctx, 5*time.Second)
-	if _, freezeErr := agent.Exec(freezeCtx, &pb.ExecRequest{
-		Command:   "/bin/sh",
-		Args:      []string{"-c", "fsfreeze --freeze /home/sandbox 2>/dev/null; fsfreeze --freeze / 2>/dev/null; true"},
-		RunAsRoot: true,
-	}); freezeErr != nil {
-		log.Printf("qemu: prepareHibernate: fsfreeze best-effort failed: %v (continuing)", freezeErr)
+	// The agent's virtio-serial gRPC channel is frequently STALE here: a box
+	// promoted from the paused tier had its vCPUs stopped, which drops the
+	// channel ("use of closed network connection"). The previous code's fsfreeze
+	// was a single best-effort exec with NO redial, so on a stale channel it
+	// failed silently and the hibernate proceeded un-frozen — the dominant cause
+	// of prod wake corruption. So: redial to a fresh channel, VERIFY the rootfs
+	// actually froze (a sentinel — the shell can't otherwise tell "froze" from
+	// "fsfreeze missing"), and treat an unconfirmed freeze as FATAL so the caller
+	// refuses savevm. A still-running box (costs RAM) beats a corrupt, lost one.
+	// Retry the whole verified freeze a few times before giving up. Attempt 1
+	// uses the existing channel; on failure we REDIAL and retry, then back off.
+	// This is the exact recovery for the two prod failure modes: a STALE channel
+	// (a box promoted from the paused tier had its vCPUs stopped, dropping the
+	// virtio-serial gRPC channel — "use of closed network connection"; the redial
+	// heals it) and a transient `fsfreeze --freeze /` EBUSY (the backoff+retry
+	// heals it). Only after every attempt fails do we refuse — so a transient
+	// hiccup never costs the box its hibernation.
+	const freezeAttempts = 3
+	frozen := false
+	var freezeErr error
+	for attempt := 1; attempt <= freezeAttempts && !frozen; attempt++ {
+		if attempt > 1 {
+			// Prior attempt failed — heal a stale channel and let a busy rootfs
+			// settle before retrying.
+			log.Printf("qemu: prepareHibernate: freeze attempt %d/%d failed (%v) — redialing + retrying", attempt-1, freezeAttempts, freezeErr)
+			if rdErr := agent.Redial(); rdErr != nil {
+				log.Printf("qemu: prepareHibernate: redial failed: %v", rdErr)
+			}
+			time.Sleep(time.Duration(attempt-1) * 400 * time.Millisecond) // 0.4s, 0.8s backoff
+		}
+		fctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		resp, e := agent.Exec(fctx, &pb.ExecRequest{
+			Command: "/bin/sh",
+			Args: []string{"-c", strings.Join([]string{
+				// Ancient util-linux without fsfreeze: tolerate (legacy behavior).
+				"command -v fsfreeze >/dev/null 2>&1 || { echo __NO_FSFREEZE__; exit 0; }",
+				"sync",
+				// Workspace is a separate mount only in the split layout; in the
+				// merged layout it lives on / and freezing / already covers it.
+				"if mountpoint -q /home/sandbox 2>/dev/null; then fsfreeze --freeze /home/sandbox 2>/dev/null || true; fi",
+				"fsfreeze --freeze / 2>/dev/null && echo __FROZEN_OK__ || echo __FREEZE_FAILED__",
+			}, "\n")},
+			RunAsRoot: true,
+		})
+		cancel()
+		if e != nil {
+			freezeErr = e
+			continue
+		}
+		frozen = strings.Contains(resp.Stdout, "__FROZEN_OK__") || strings.Contains(resp.Stdout, "__NO_FSFREEZE__")
+		if !frozen {
+			freezeErr = fmt.Errorf("fsfreeze not confirmed (out=%q)", strings.TrimSpace(resp.Stdout))
+		}
 	}
-	freezeCancel()
+	if frozen {
+		log.Printf("qemu: prepareHibernate: rootfs frozen for consistent savevm (confirmed)")
+	} else {
+		// Undo any partial freeze (e.g. /home/sandbox froze but / did not) so the
+		// still-running box isn't left with a wedged filesystem, then refuse.
+		uctx, ucancel := context.WithTimeout(ctx, 5*time.Second)
+		_, _ = agent.Exec(uctx, &pb.ExecRequest{
+			Command:   "/bin/sh",
+			Args:      []string{"-c", "fsfreeze --unfreeze / 2>/dev/null; fsfreeze --unfreeze /home/sandbox 2>/dev/null; true"},
+			RunAsRoot: true,
+		})
+		ucancel()
+		return fmt.Errorf("%w: rootfs fsfreeze not confirmed before savevm (frozen=%v err=%v)", ErrAgentUnresponsive, frozen, freezeErr)
+	}
 
 	prepareOnce := func() error {
 		rpcCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -108,6 +158,14 @@ func prepareAgentForHibernate(ctx context.Context, agent *AgentClient) error {
 		_, err := agent.PrepareHibernate(rpcCtx, &pb.PrepareHibernateRequest{})
 		return err
 	}
+	// PrepareHibernate resets the guest agent's virtio-serial listener so the
+	// restored VM does a clean Accept (avoids the post-loadvm slow-agent-ready
+	// race). It is now BEST-EFFORT: the rootfs is already confirmed frozen above,
+	// so the snapshot is consistent regardless — a failed reset only risks a
+	// slower agent-ready on wake, NOT corruption, so it must not block a hibernate
+	// that is already safe. (Previously a failed prepare here refused the
+	// hibernate, which was the wrong lever — it's the freeze that guards fs
+	// consistency, not the listener reset.)
 	err := prepareOnce()
 	if err != nil && IsTransportError(err) {
 		log.Printf("qemu: PrepareHibernate transport error (%v), redialing", err)
@@ -122,32 +180,20 @@ func prepareAgentForHibernate(ctx context.Context, agent *AgentClient) error {
 	}
 
 	if st, ok := status.FromError(err); !ok || st.Code() != codes.Unimplemented {
-		log.Printf("qemu: PrepareHibernate RPC failed: %v (falling back to legacy path)", err)
+		log.Printf("qemu: PrepareHibernate RPC failed: %v (falling back to legacy SIGUSR1)", err)
 	}
 
-	execOnce := func() error {
-		execCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		_, e := agent.Exec(execCtx, &pb.ExecRequest{
-			Command:   "/bin/sh",
-			Args:      []string{"-c", "sync; blockdev --flushbufs /dev/vda 2>/dev/null; blockdev --flushbufs /dev/vdb 2>/dev/null; sync; kill -USR1 1"},
-			RunAsRoot: true,
-		})
-		return e
+	// Legacy listener-reset fallback (also handles agents too old for the RPC).
+	// SIGUSR1 to PID 1 is a pure signal — safe even with / frozen.
+	execCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	if _, e := agent.Exec(execCtx, &pb.ExecRequest{
+		Command:   "/bin/sh",
+		Args:      []string{"-c", "kill -USR1 1 2>/dev/null; true"},
+		RunAsRoot: true,
+	}); e != nil {
+		log.Printf("qemu: prepareHibernate: listener-reset fallback failed: %v (proceeding — fs is frozen, snapshot is safe)", e)
 	}
-	fallbackErr := execOnce()
-	if fallbackErr != nil && IsTransportError(fallbackErr) {
-		log.Printf("qemu: prepareHibernate fallback Exec transport error (%v), redialing", fallbackErr)
-		if rdErr := agent.Redial(); rdErr == nil {
-			fallbackErr = execOnce()
-		} else {
-			log.Printf("qemu: prepareHibernate fallback redial failed: %v", rdErr)
-		}
-	}
-	if fallbackErr != nil {
-		return fmt.Errorf("%w: PrepareHibernate=%v, fallback Exec=%v", ErrAgentUnresponsive, err, fallbackErr)
-	}
-	time.Sleep(1 * time.Second)
+	cancel()
 	return nil
 }
 

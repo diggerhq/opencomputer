@@ -815,6 +815,28 @@ func main() {
 		}
 	}
 
+	// Hibernation-upload reconciler — safety net for lost upload-completion
+	// bookkeeping. The worker records uploaded_at / upload_error from an async
+	// goroutine after the S3 upload finishes; if that write is lost (transient DB
+	// error, or the worker torn down mid-drain before it lands) the row is stuck
+	// with NEITHER set, which both strands the box (un-wakeable despite the blob
+	// being in S3) and wedges worker teardown (the scaler gates drain on
+	// CountPendingHibernationUploads == 0). Every 2m this resolves stuck rows
+	// against the checkpoint store: present -> uploaded_at, absent -> upload_error.
+	if opts.Store != nil && opts.CheckpointStore != nil {
+		hibRec := controlplane.NewHibernationUploadReconciler(controlplane.HibernationUploadReconcilerConfig{
+			Store: opts.Store,
+			Blobs: opts.CheckpointStore,
+		})
+		hibRec.Start(ctx)
+		defer func() {
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stopCancel()
+			_ = hibRec.Stop(stopCtx)
+		}()
+		log.Printf("opensandbox: hibernation-upload reconciler started (period=2m, grace=15m)")
+	}
+
 	// Usage-parity checker — shadow-parity gate for the Pro-billing edge
 	// cutover. Hourly, compares edge-measured GB-seconds (tick samples) against
 	// cell sandbox_scale_events and logs per-org drift. Read-only; never bills.
