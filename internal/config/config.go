@@ -65,7 +65,7 @@ type Config struct {
 	AlertSlackWebhook string
 
 	// RollStuckDeadline overrides how long a rolling replace may be
-	// non-converging before it alerts (Go duration). 0 → scaler default 45m.
+	// non-converging before it alerts (Go duration). 0 → scaler default 90m.
 	// Set short (e.g. 2m) on dev to validate the alert path.
 	RollStuckDeadline time.Duration
 

@@ -113,7 +113,7 @@ type ScalerConfig struct {
 	// creation backoff blocking scale-up). nil → alerts are dropped.
 	Alerter alert.Alerter
 	// RollStuckDeadline is how long a roll may be non-converging before it
-	// alerts. 0 → default 45m.
+	// alerts. 0 → default 90m.
 	RollStuckDeadline time.Duration
 }
 

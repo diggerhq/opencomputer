@@ -15,7 +15,7 @@ import (
 type rollHealthConfig struct {
 	// Deadline is how long a condition (version skew or creation backoff) may
 	// persist before it's treated as a stuck roll worth alerting. A healthy
-	// rolling replace converges well under this. Default 45m.
+	// rolling replace converges well under this. Default 90m.
 	Deadline time.Duration
 	// clearGrace tolerates brief gaps — e.g. the creation-backoff window
 	// expiring for a single tick between retries — without resetting the
@@ -61,7 +61,7 @@ func newRollHealthMonitor(alerter alert.Alerter, cfg rollHealthConfig) *rollHeal
 	}
 	deadline := cfg.Deadline
 	if deadline <= 0 {
-		deadline = 45 * time.Minute
+		deadline = 90 * time.Minute
 	}
 	grace := cfg.clearGrace
 	if grace <= 0 {
