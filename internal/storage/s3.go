@@ -149,6 +149,20 @@ func (s *CheckpointStore) Exists(ctx context.Context, key string) (bool, error) 
 	return false, err
 }
 
+// Stat returns the object's size and whether it exists. Used by the hibernation-
+// upload reconciler to resolve rows whose async completion callback was lost
+// (upload succeeded to S3 but uploaded_at was never written).
+func (s *CheckpointStore) Stat(ctx context.Context, key string) (size int64, exists bool, err error) {
+	sz, err := s.blob.Head(ctx, s.bucket, key)
+	if err == nil {
+		return sz, true, nil
+	}
+	if errors.Is(err, ErrNotFound) {
+		return 0, false, nil
+	}
+	return 0, false, err
+}
+
 func (s *CheckpointStore) Upload(ctx context.Context, key, localPath string) (int64, error) {
 	f, err := os.Open(localPath)
 	if err != nil {
