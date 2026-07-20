@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -1522,9 +1523,29 @@ func (s *GRPCServer) CompleteMigrationIncoming(ctx context.Context, req *pb.Comp
 	// unreachable ("agent not available" / keepalive timeout on the wake exec).
 	// CreateSandbox and WakeSandbox register here for exactly the same reason;
 	// live-migration-incoming was the one running-state entry point that didn't.
-	// timeout 0 → the router's default idle timeout (same as a fresh box).
+	//
+	// Preserve the box's configured idle timeout across the migration. The
+	// incoming VM struct carries no config, and passing 0 falls through to the
+	// router's default timeout — which is 0 ("never idle-hibernate"), NOT "same
+	// as a fresh box" (a fresh box registers with its own cfg.Timeout). Passing 0
+	// here meant every live-migrated box lost its idle timeout and billed
+	// continuously until it was killed. Look the timeout up from the session,
+	// exactly like CreateSandbox derives it from cfg.Timeout.
 	if s.router != nil {
-		s.router.Register(req.SandboxId, 0)
+		timeout := 300 * time.Second // safe fallback if the session lookup fails
+		if s.store != nil {
+			if sess, err := s.store.GetSandboxSession(ctx, req.SandboxId); err == nil && sess != nil {
+				var cfg types.SandboxConfig
+				if json.Unmarshal(sess.Config, &cfg) == nil {
+					t := cfg.Timeout
+					if t < 0 {
+						t = 0 // negative == persistent (no auto-hibernate), same as CreateSandbox
+					}
+					timeout = time.Duration(t) * time.Second
+				}
+			}
+		}
+		s.router.Register(req.SandboxId, timeout)
 	}
 
 	return &pb.CompleteMigrationIncomingResponse{}, nil
