@@ -155,6 +155,9 @@ var kvMapping = map[string]string{
 	// encrypt secret-store entries and any cell can decrypt them.
 	"shared-cf-edge-base-url":      "OPENSANDBOX_CF_EDGE_BASE_URL",
 	"shared-secret-encryption-key": "OPENSANDBOX_SECRET_ENCRYPTION_KEY",
+	// Operational alert sink (Slack webhook); shared — any service that alerts
+	// reads the same OPENSANDBOX_ALERT_SLACK_WEBHOOK.
+	"shared-alert-slack-webhook": "OPENSANDBOX_ALERT_SLACK_WEBHOOK",
 }
 
 // LoadSecretsFromKeyVault fetches secrets from Azure Key Vault and sets them

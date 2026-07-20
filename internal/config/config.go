@@ -60,6 +60,15 @@ type Config struct {
 	// Redis (Upstash) for worker discovery
 	RedisURL string
 
+	// AlertSlackWebhook, when set, routes operational alerts (roll-stuck, etc.)
+	// to a Slack incoming webhook. Empty → alerts are dropped (dev/local).
+	AlertSlackWebhook string
+
+	// RollStuckDeadline overrides how long a rolling replace may be
+	// non-converging before it alerts (Go duration). 0 → scaler default 90m.
+	// Set short (e.g. 2m) on dev to validate the alert path.
+	RollStuckDeadline time.Duration
+
 	// Worker capacity
 	MaxCapacity int
 
@@ -337,6 +346,9 @@ func Load() (*Config, error) {
 
 		RedisURL:    os.Getenv("OPENSANDBOX_REDIS_URL"),
 
+		AlertSlackWebhook: os.Getenv("OPENSANDBOX_ALERT_SLACK_WEBHOOK"),
+		RollStuckDeadline: envDuration("OPENSANDBOX_ROLL_STUCK_DEADLINE"),
+
 		MaxCapacity: envOrDefaultInt("OPENSANDBOX_MAX_CAPACITY", 50),
 
 		SandboxDomain: envOrDefault("OPENSANDBOX_SANDBOX_DOMAIN", "localhost"),
@@ -510,6 +522,16 @@ func envOrDefaultInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// envDuration parses a Go duration from key; returns 0 when unset or invalid.
+func envDuration(key string) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 0
 }
 
 func envOrDefaultFloat(key string, fallback float64) float64 {
