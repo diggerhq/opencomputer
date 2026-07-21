@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
@@ -88,6 +90,11 @@ type GRPCServer struct {
 	// region is the worker's region label, used to tag operation metrics.
 	// Set via SetRegion at startup. Empty = "unknown".
 	region string
+
+	// checkpointFetchSF collapses concurrent forks of the same checkpoint that
+	// all miss the local cache into a single S3 download+extract; the rest wait
+	// and reuse it. Keyed by checkpoint id. See ensureFullCheckpointCached.
+	checkpointFetchSF singleflight.Group
 }
 
 // SetRegion stamps the worker's region onto operation metrics emitted from
@@ -289,7 +296,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 			return nil, e
 		}
 		log.Printf("grpc: warm fork %s: not in local cache, downloading from S3", req.CheckpointId)
-		if dlErr := s.downloadFullCheckpoint(ctx, req.CheckpointId, req.TemplateRootfsKey); dlErr != nil {
+		if dlErr := s.ensureFullCheckpointCached(ctx, req.CheckpointId, req.TemplateRootfsKey); dlErr != nil {
 			e := fmt.Errorf("fork from checkpoint %s: cache miss + S3 download failed: %w", req.CheckpointId, dlErr)
 			failWake("s3", e)
 			return nil, e
@@ -1261,9 +1268,38 @@ func (s *GRPCServer) downloadAndCacheCheckpointDrives(ctx context.Context, check
 // extractFunc defines how to extract a downloaded archive to a destination path.
 type extractFunc func(archivePath, destPath string) error
 
+// ensureFullCheckpointCached downloads + extracts a full checkpoint into the
+// checkpoint-snapshots cache, collapsing forks of the same checkpoint that all
+// miss the cache at the same instant onto a single download+extract.
+//
+// Without this, concurrent forks each called downloadFullCheckpoint directly,
+// which wrote and extracted a SHARED archive path
+// (checkpoint-snapshots/<id>/checkpoint-download.tar.zst) and then removed it.
+// Two forks racing there corrupted each other: os.Create truncated the other's
+// half-written archive (tar reports "Unexpected EOF"), or os.Remove deleted it
+// mid-extract (tar reports "Cannot open: No such file or directory"). It only
+// bit disk_only checkpoints promoted to a full artifact — the sibling cache
+// paths (downloadAndCacheCheckpointDrives, templates) stage through
+// downloadAndExtract, which uses a unique os.CreateTemp file per call.
+//
+// singleflight is the whole fix: the leader downloads+extracts once, the rest
+// wait on it and reuse the populated cache (also avoiding N redundant multi-GB
+// pulls, which is why the failure surfaced on large machines). No cache marker
+// is needed — this is only ever reached on a genuine miss (ForkFromCheckpoint
+// already reported "not found in cache"), so a later, non-overlapping fork that
+// finds the cache warm short-circuits before it gets here.
+func (s *GRPCServer) ensureFullCheckpointCached(ctx context.Context, checkpointID, s3Key string) error {
+	_, err, _ := s.checkpointFetchSF.Do(checkpointID, func() (interface{}, error) {
+		return nil, s.downloadFullCheckpoint(ctx, checkpointID, s3Key)
+	})
+	return err
+}
+
 // extractArchiveCmd extracts a tar.zst archive to a directory.
 // downloadFullCheckpoint downloads a full checkpoint archive (drives + memory + metadata)
 // from S3 and extracts it into the checkpoint cache directory for ForkFromCheckpoint.
+// Callers must go through ensureFullCheckpointCached so concurrent forks of the
+// same checkpoint don't race on the shared archive/extract paths.
 func (s *GRPCServer) downloadFullCheckpoint(ctx context.Context, checkpointID, s3Key string) error {
 	if s.checkpointStore == nil {
 		return fmt.Errorf("checkpoint store not configured")
@@ -1468,7 +1504,16 @@ func (s *GRPCServer) PrepareMigrationIncoming(ctx context.Context, req *pb.Prepa
 		hostPort int
 		err      error
 	)
-	if req.RootfsS3Key != "" && req.WorkspaceS3Key != "" {
+	// Route to the S3 path whenever the source pre-copied a rootfs. A MERGED
+	// (single-disk) sandbox has no workspace, so WorkspaceS3Key is legitimately
+	// empty — gating on it too (the old `&& WorkspaceS3Key != ""`) sent every
+	// merged box to the direct path below, which has no S3 keys/local paths for
+	// a cross-worker move and so rebuilt a BLANK rootfs from the template base
+	// (and then failed ResolveBaseImage). PrepareIncomingMigrationWithS3 already
+	// handles the merged case (merged := workspaceS3Key == ""), pulling the real
+	// rootfs from S3, so merged boxes migrate correctly here. The direct path
+	// remains only for a genuine no-S3 migration (RootfsS3Key == "").
+	if req.RootfsS3Key != "" {
 		addr, hostPort, err = s.migrator.PrepareIncomingMigrationWithS3(ctx,
 			req.SandboxId, req.RootfsS3Key, req.WorkspaceS3Key,
 			int(req.CpuCount), int(req.MemoryMb), int(req.GuestPort), req.Template, s.checkpointStore, req.OverlayMode, req.SourceGoldenVersion, secrets)
@@ -1522,9 +1567,29 @@ func (s *GRPCServer) CompleteMigrationIncoming(ctx context.Context, req *pb.Comp
 	// unreachable ("agent not available" / keepalive timeout on the wake exec).
 	// CreateSandbox and WakeSandbox register here for exactly the same reason;
 	// live-migration-incoming was the one running-state entry point that didn't.
-	// timeout 0 → the router's default idle timeout (same as a fresh box).
+	//
+	// Preserve the box's configured idle timeout across the migration. The
+	// incoming VM struct carries no config, and passing 0 falls through to the
+	// router's default timeout — which is 0 ("never idle-hibernate"), NOT "same
+	// as a fresh box" (a fresh box registers with its own cfg.Timeout). Passing 0
+	// here meant every live-migrated box lost its idle timeout and billed
+	// continuously until it was killed. Look the timeout up from the session,
+	// exactly like CreateSandbox derives it from cfg.Timeout.
 	if s.router != nil {
-		s.router.Register(req.SandboxId, 0)
+		timeout := 300 * time.Second // safe fallback if the session lookup fails
+		if s.store != nil {
+			if sess, err := s.store.GetSandboxSession(ctx, req.SandboxId); err == nil && sess != nil {
+				var cfg types.SandboxConfig
+				if json.Unmarshal(sess.Config, &cfg) == nil {
+					t := cfg.Timeout
+					if t < 0 {
+						t = 0 // negative == persistent (no auto-hibernate), same as CreateSandbox
+					}
+					timeout = time.Duration(t) * time.Second
+				}
+			}
+		}
+		s.router.Register(req.SandboxId, timeout)
 	}
 
 	return &pb.CompleteMigrationIncomingResponse{}, nil

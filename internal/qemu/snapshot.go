@@ -913,7 +913,11 @@ func (m *Manager) coldBootLocalInner(ctx context.Context, sandboxID string, time
 		log.Printf("qemu: cold-boot-local %s: sandbox-meta.json absent — recovered config from snapshot-meta.json (template=%q, mem=%dMB, cpu=%d)",
 			sandboxID, meta.Template, meta.MemoryMB, meta.CpuCount)
 	}
-	if meta.Template == "" {
+	// Normalize "base" (the default template alias) to "default" so cold-boot
+	// recovery resolves the on-disk base (default.ext4) — matching
+	// createFromGolden. Without the "base" case, ResolveBaseImage looked for a
+	// nonexistent base.ext4 and this recovery hard-failed the wake.
+	if meta.Template == "" || meta.Template == "base" {
 		meta.Template = "default"
 	}
 

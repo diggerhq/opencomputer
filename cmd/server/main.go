@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/opensandbox/opensandbox/internal/alert"
 	"github.com/opensandbox/opensandbox/internal/api"
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/billing"
@@ -558,6 +559,10 @@ func main() {
 				// every time the autoscaler shuffles things around.
 				RedisClient: redisRegistry.RedisClient(),
 				CellID:      cfg.CellID,
+				// Roll-stuck alerts (version skew past deadline / creation
+				// backoff) to Slack. No-op when the webhook is unset.
+				Alerter:           alert.New(cfg.AlertSlackWebhook, cfg.CellID),
+				RollStuckDeadline: cfg.RollStuckDeadline,
 			})
 			defer scaler.Stop()
 			scalerOrchestrator = scaler
@@ -846,6 +851,10 @@ func main() {
 			Store:     opts.Store,
 			ParityURL: cfg.UsageParityURL,
 			Secret:    cfg.CFEventSecret,
+			// Same Slack sink as the roll monitor; alerts only on systemic,
+			// sustained, material drift (defaults inside the checker).
+			Alerter: alert.New(cfg.AlertSlackWebhook, cfg.CellID),
+			CellID:  cfg.CellID,
 		})
 		if parity != nil {
 			parity.Start(ctx)
