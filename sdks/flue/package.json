@@ -1,6 +1,6 @@
 {
   "name": "@opencomputer/flue",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Run a Flue app as an OpenComputer agent with managed models, repository tools, and demand-driven sandboxes.",
   "keywords": [
     "agents",
