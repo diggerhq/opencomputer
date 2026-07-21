@@ -7,8 +7,8 @@ Use Repos when a session needs private code. Giving an agent a GitHub token,
 authenticated remote, or `gh` session gives it whatever that token can do; hiding the
 token behind a proxy does not narrow that authority.
 
-Repos make GitHub access operation-scoped. A **Repo** is a stable repository handle
-(owner/repo) that resolves to your configured GitHub App (the OpenComputer App by default);
+Repos make GitHub access operation-scoped. A **Repo** is a stable `repo_…` handle
+with a current `owner/repo` display name that resolves to your configured GitHub App;
 a **Source** pins `ref` and `sha`.
 OpenComputer checks out the exact commit in a short-lived **Git operations sandbox**,
 copies only files into `/workspace/sources/<name>`, and destroys the token. For writes, the
@@ -41,6 +41,38 @@ sandbox, and deploys the resulting artifact. Repository credentials reach neithe
   their own auth surface while sessions continue to reference repos and sources
   the same way.
 </Note>
+
+## Choose working repositories for a Flue agent
+
+A Flue agent's **repository access policy** limits which repositories it may
+check out and publish to. It is independent of the [deployment source](#use-a-repo-to-deploy-a-flue-agent):
+the deployment source supplies the app, while working repositories supply code
+for a session task.
+
+In guided setup or **Agent → Settings → Repository access**, choose:
+
+- **All granted repositories** — every repository currently granted to the
+  owner-bound OpenComputer GitHub App, including repositories added later.
+- **Only selected repositories** — an explicit set stored by stable `repo_…`
+  id. An empty set disables repository work without disabling chat.
+
+The effective set is the intersection of that policy and the App installation's
+current grant. Removing a repository from GitHub takes effect on the next
+checkout or publish. OpenComputer preserves selected ids that are hidden by a
+truncated GitHub listing and shows unavailable selections separately instead of
+calling them revoked.
+
+Choose a working repository when starting a dashboard session, pass it in
+`sources`, or let the Flue app call `add_source`. A ref is pinned to one commit;
+reusing the source name in that session returns the same pin. OpenComputer
+checks files out lazily into the session sandbox and keeps the GitHub token in a
+separate, short-lived Git operations sandbox.
+
+To publish, the agent calls `github_publish_pull_request`. OpenComputer pushes a
+new `oc/…` branch and opens a PR; it never writes directly to the default branch.
+The managed Flue capability uses the OpenComputer App selected for the agent's
+owner. A bring-your-own App is not used as an alternative authority for this
+policy.
 
 ## How it works
 

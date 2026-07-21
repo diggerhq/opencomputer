@@ -6,7 +6,11 @@ description: "Durable, resumable agent execution"
 
 A **session** is an [agent](/agent-sessions/agents) run with an append-only [event log](/agent-sessions/events), a pinned configuration snapshot, and a lifecycle status. The execution substrate depends on the [runtime](/agent-sessions/runtimes): built-in runtimes use managed sandboxes, while [Flue](/agent-sessions/flue) uses a deployed Worker and one Durable Object per session.
 
-<Note>The [dashboard](https://app.opencomputer.dev) lists your sessions and opens each with a live event stream you can watch and steer — handy for following or debugging a run without building UI.</Note>
+<Note>
+  The [dashboard](https://app.opencomputer.dev) lists your sessions and opens
+  each with a live event stream you can watch and steer — handy for following or
+  debugging a run without building UI.
+</Note>
 
 ## Session flow
 
@@ -15,20 +19,25 @@ A **session** is an [agent](/agent-sessions/agents) run with an append-only [eve
 3. The runtime appends [events](/agent-sessions/events) as it works. Built-in runtimes execute in managed sandboxes. Flue executes in its Worker and Durable Object, with no sandbox unless the app explicitly uses `ocSandbox`.
 4. With nothing left to do, the session becomes **idle**. A [steer](/agent-sessions/messaging) message starts the next ordered turn with the same conversation context.
 
-Pass [`sources`](/agent-sessions/repos) to prepare `/workspace/sources/` for a built-in runtime. Flue does not yet support repository sources and rejects that parameter.
+Pass [`sources`](/agent-sessions/repos) to give a session working repositories. Built-in runtimes prepare them before turn one. Flue keeps the same pinned source contract but materializes a repository lazily, when its app first uses the repository tools.
 
-<Note>The built-in runtimes restart from checkpointed state, enforce a turn deadline, and survive sandbox reclaim. Flue relies on Durable Object recovery and event projection instead; its current limit and recovery differences are listed on the [Flue page](/agent-sessions/flue#session-behavior).</Note>
+<Note>
+  The built-in runtimes restart from checkpointed state, enforce a turn
+  deadline, and survive sandbox reclaim. Flue relies on Durable Object recovery
+  and event projection instead; its current limit and recovery differences are
+  listed on the [Flue page](/agent-sessions/flue#session-behavior).
+</Note>
 
 ## Lifecycle
 
-| Status | Meaning |
-| --- | --- |
-| `queued` | Scheduled; no turn is running. |
-| `running` | A turn is executing. |
+| Status           | Meaning                                                            |
+| ---------------- | ------------------------------------------------------------------ |
+| `queued`         | Scheduled; no turn is running.                                     |
+| `running`        | A turn is executing.                                               |
 | `awaiting_input` | A turn ended asking you a question — steerable; reply to continue. |
-| `idle` | No turn running; steerable; runtime state is retained. |
-| `failed` | The session errored out. |
-| `archived` | Closed; read-only. |
+| `idle`           | No turn running; steerable; runtime state is retained.             |
+| `failed`         | The session errored out.                                           |
+| `archived`       | Closed; read-only.                                                 |
 
 A session also carries `last_turn = { id, state, yield_reason?, result_event_id? }`; the fuller turn record (`started_at`, `completed_at`, `error`) comes from [`GET …/result`](/agent-sessions/api-reference) and `…/turns`. The **`yield_reason`** tells you why the last turn ended: `completed`, `needs_input` (the agent asked a question and the session is now `awaiting_input`), `budget_exceeded`, `deadline_exceeded`, `max_turns`, or `canceled`. Limit outcomes require runtime enforcement; the current Flue path does not enforce the generic session limits below.
 
@@ -71,21 +80,31 @@ Response:
 }
 ```
 
-<Tip>**For background jobs, register a [destination](/agent-sessions/webhooks).** Polling `GET /…/result` ties up a request and doesn't survive your process restarting. Create the session with `metadata` and a `destination`; handle `turn.completed` in your webhook, then fetch the result. Reserve `result()` polling for synchronous or interactive flows.</Tip>
+<Tip>
+  **For background jobs, register a [destination](/agent-sessions/webhooks).**
+  Polling `GET /…/result` ties up a request and doesn't survive your process
+  restarting. Create the session with `metadata` and a `destination`; handle
+  `turn.completed` in your webhook, then fetch the result. Reserve `result()`
+  polling for synchronous or interactive flows.
+</Tip>
 
 ## Idempotency & routing
 
 Three independent knobs — don't overload one for another:
 
-- **`key`** — *get-or-create*. One session per natural key (e.g. one per PR). A second create with the same `key` returns the same session; reusing a `key` with a **different** request body is rejected (`create key already used with a different request`).
-- **`Idempotency-Key`** (header) — *retry-safe create*. Makes a keyless create safe to retry (e.g. on a webhook redelivery) without spawning duplicates.
-- **`metadata`** — *routing / app state*. Opaque JSON (≤ 16 KB) echoed back on get/list and **verbatim in webhooks**, so your callback can route to the right record. Never use `key` for routing — that's what `metadata` is for.
+- **`key`** — _get-or-create_. One session per natural key (e.g. one per PR). A second create with the same `key` returns the same session; reusing a `key` with a **different** request body is rejected (`create key already used with a different request`).
+- **`Idempotency-Key`** (header) — _retry-safe create_. Makes a keyless create safe to retry (e.g. on a webhook redelivery) without spawning duplicates.
+- **`metadata`** — _routing / app state_. Opaque JSON (≤ 16 KB) echoed back on get/list and **verbatim in webhooks**, so your callback can route to the right record. Never use `key` for routing — that's what `metadata` is for.
 
 ## Limits
 
 Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are runtime limits, not spend controls; model usage is billed to your provider key (BYO) or to your OpenComputer credits (Managed). Hitting one ends the turn with the matching `yield_reason`.
 
-<Warning>These limits are not yet enforced for [Flue](/agent-sessions/flue) sessions. Do not use them as a deadline, turn-count, or token safety boundary for that runtime.</Warning>
+<Warning>
+  These limits are not yet enforced for [Flue](/agent-sessions/flue) sessions.
+  Do not use them as a deadline, turn-count, or token safety boundary for that
+  runtime.
+</Warning>
 
 ## Model
 
@@ -126,6 +145,14 @@ Content-Type: application/json
 For Flue, archive also retains the conversation in the session's Durable Object storage. See
 [Flue session behavior](/agent-sessions/flue#session-behavior).
 
-<Note>When the agent needs input, the turn ends with `yield_reason: "needs_input"` and the session status becomes `awaiting_input`; reply by [steering](/agent-sessions/messaging).</Note>
+<Note>
+  When the agent needs input, the turn ends with `yield_reason: "needs_input"`
+  and the session status becomes `awaiting_input`; reply by
+  [steering](/agent-sessions/messaging).
+</Note>
 
-<Note>**No cross-session memory.** Each session starts from the agent's prompt + that session's `input` — a durable log is *session history*, not memory the agent carries between sessions.</Note>
+<Note>
+  **No cross-session memory.** Each session starts from the agent's prompt +
+  that session's `input` — a durable log is *session history*, not memory the
+  agent carries between sessions.
+</Note>
