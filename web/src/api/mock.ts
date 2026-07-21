@@ -10,6 +10,8 @@
 // Returns are cast to the caller's T — mock objects only need the fields a
 // screen actually reads, not the full interface.
 
+import { ApiError } from './errors'
+
 // Fixed clock so screenshots are deterministic.
 const BASE = new Date('2026-06-26T17:00:00Z').getTime()
 const at = (daysAgo: number, hoursAgo = 0) =>
@@ -1309,9 +1311,7 @@ export function mockFetch<T>(path: string, options: RequestInit = {}): T {
     if (re.test(path)) {
       const out = handler()
       if (out === NOT_FOUND) {
-        const error = new Error('Not found') as Error & { status: number }
-        error.status = 404
-        throw error
+        throw new ApiError('Not found', 404)
       }
       return out as T
     }
