@@ -287,7 +287,7 @@ Custom tools in the Worker can currently reach only platform-managed outbound ho
 external `fetch` destinations are not part of the supported profile. Commands run through an
 optional OpenComputer sandbox follow the sandbox's separate network policy.
 
-## Optional sandbox
+## Optional sandbox and working repositories
 
 Add `ocSandbox` only when the agent needs a Linux shell or durable files:
 
@@ -295,6 +295,7 @@ Add `ocSandbox` only when the agent needs a Linux shell or durable files:
 import { defineAgent, defineAgentProfile } from "@flue/runtime";
 import {
   DEFAULT_MODEL,
+  ocRepoTools,
   ocSandbox,
   route,
   useOcGateway,
@@ -312,6 +313,7 @@ export default defineAgent((ctx) => {
     }),
     model: DEFAULT_MODEL,
     sandbox: ocSandbox(ctx.env),
+    tools: [...ocRepoTools(ctx)],
   };
 });
 ```
@@ -320,8 +322,16 @@ Declaring `ocSandbox` performs no provisioning during Worker startup or Flue run
 The first real shell or file operation resolves one sandbox for the session; later operations and
 turns reuse it.
 
-The workspace starts empty. Repository sources and workspace skill discovery are not implemented for
-Flue sessions, so passing `sources` at session creation is rejected.
+The workspace starts empty. Add a [working repository](/agent-sessions/repos#choose-working-repositories-for-a-flue-agent)
+at session creation or with `add_source`. Flue pins the requested ref immediately but creates the
+session sandbox and materializes files only when the app first uses a repository tool. The agent may
+edit those files and call `github_publish_pull_request`; OpenComputer performs authenticated Git
+operations outside the tenant Worker and session sandbox.
+
+`ocRepoTools` adds `list_working_repos`, `add_source`, and
+`github_publish_pull_request`. Tell the agent to list first, state the exact
+`owner/repo` it resolved, and ask when the user's target is ambiguous. Repository
+names do not need to be embedded in the prompt.
 
 ## Variables and secrets
 
@@ -408,8 +418,8 @@ and dashboard as the other runtimes. The important differences are:
 
 - Dashboard sessions and the OpenComputer-managed Slack app deliver direct text through the hosted
   session wire. Native Flue channel bindings and workflows are not exposed by this hosting path.
-- Repository sources, checkout, pull-request publishing, watches, and repo-backed workspaces are not
-  supported for Flue sessions.
+- Working-repository checkout and pull-request publishing are available through the owner-bound
+  OpenComputer GitHub App. Pull-request watches are not part of the current Flue profile.
 - Repository deployment accepts one self-contained npm root with a committed npm lockfile. Pushes
   to its linked production branch deploy automatically; preview branches and staged Flue Workers are
   not supported.

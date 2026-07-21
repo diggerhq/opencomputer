@@ -512,7 +512,7 @@ const deployAppInstalled = {
     },
     {
       id: 'repo_01k0supportbot00000000',
-      full_name: 'acme/support-bot',
+      full_name: 'acme/customer-support-automation-and-triage',
       default_branch: 'main',
       private: false,
     },
@@ -536,6 +536,34 @@ const deployApp =
   DEPLOY_PREVIEW === 'not_installed'
     ? deployAppNotInstalled
     : deployAppInstalled
+
+const repositoryAccess = {
+  policy: {
+    mode: 'selected' as const,
+    repository_ids: [
+      'repo_01k0acmeagents000000000',
+      'repo_01k0supportbot00000000',
+    ],
+  },
+  grant: {
+    status: 'active' as const,
+    account: 'acme',
+    repository_selection: 'selected' as const,
+    install_url: 'https://github.com/apps/opencomputerdev/installations/new',
+    configure_url:
+      'https://github.com/apps/opencomputerdev/installations/select_target',
+    truncated: false,
+  },
+  effective_repositories: deployAppInstalled.repositories
+    .slice(0, 2)
+    .map((repo) => ({
+      id: repo.id,
+      full_name: repo.full_name,
+      default_branch: repo.default_branch,
+      private: repo.private,
+    })),
+  unavailable_selected_repositories: [],
+}
 
 // The linked source for the 'connected' preview (echoed for any agent id).
 const deploymentSource = {
@@ -944,6 +972,19 @@ const sessions = [
   },
 ]
 
+const sessionSources = [
+  {
+    name: 'app',
+    repo_id: 'repo_01k0acmeagents000000000',
+    full_name: 'acme/agents',
+    requested_ref: 'main',
+    status: 'resolved',
+    path: '/workspace/sources/app',
+    sha: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
+    resolved_sha: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
+  },
+]
+
 const sessionEvents = [
   {
     id: 'evt_1',
@@ -1157,8 +1198,11 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/org$/, () => org],
   [/^\/agents$/, () => []],
   // Durable Agent Sessions — lists return the { data: [...] } envelope.
+  [/^\/v3\/slack\/managed\/connections$/, () => ({ data: [] })],
+  [/^\/v3\/agents\/[^/]+\/slack\/managed$/, () => NOT_FOUND],
   [/^\/v3\/agents\/[^/]+\/slack$/, () => slackConnection],
   [/^\/v3\/github\/deploy-app$/, () => deployApp],
+  [/^\/v3\/agents\/[^/]+\/repository-access$/, () => repositoryAccess],
   [
     /^\/v3\/agents\/[^/]+\/deployments\/[^/]+\/logs(?:\?.*)?$/,
     () => ({
@@ -1199,6 +1243,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/v3\/agents\/[^/]+$/, () => agents[0]],
   [/^\/v3\/agents$/, () => ({ data: [...agents, importedAgent] })],
   [/^\/v3\/credentials$/, () => ({ data: credentials })],
+  [/^\/v3\/sessions\/[^/]+\/sources$/, () => sessionSources],
   [/^\/v3\/sessions\/[^/]+\/events/, () => ({ data: sessionEvents })],
   [/^\/v3\/sessions\/[^/]+\/turns$/, () => ({ data: sessionTurns })],
   [
@@ -1223,6 +1268,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
 // Mutations the preview needs to echo something parseable (e.g. the Slack
 // wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
 const POST_ROUTES: [RegExp, () => unknown][] = [
+  [/^\/v3\/agents\/[^/]+\/repository-access$/, () => repositoryAccess],
   [/^\/v3\/github\/deploy-app\/inspect$/, () => flueInspection],
   [
     /^\/v3\/agents\/import$/,
@@ -1262,7 +1308,11 @@ export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   for (const [re, handler] of ROUTES) {
     if (re.test(path)) {
       const out = handler()
-      if (out === NOT_FOUND) throw new Error('Not found') // mimic a 404
+      if (out === NOT_FOUND) {
+        const error = new Error('Not found') as Error & { status: number }
+        error.status = 404
+        throw error
+      }
       return out as T
     }
   }

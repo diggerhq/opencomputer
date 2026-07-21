@@ -35,12 +35,16 @@ export type {
   AgentDeployment,
   AgentDeploymentLog,
   DeployApp,
+  RepositoryAccess,
+  RepositoryAccessPolicy,
+  RepositoryAccessRepository,
   RepositorySourceInspection,
   ManagedSlackAuthorizeResponse,
   ManagedSlackConnection,
   ManagedSlackWorkspaceConnection,
   ManagedSlackDisconnectResponse,
   Session,
+  SessionSource,
   AgentSnapshot,
   SessionEvent,
   Turn,
@@ -666,6 +670,23 @@ export const deleteAgentSkills = (agentId: string) =>
 export const getDeployApp = () =>
   apiFetch('/v3/github/deploy-app', {}, S.DeployAppSchema)
 
+export const getRepositoryAccess = (agentId: string) =>
+  apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/repository-access`,
+    {},
+    S.RepositoryAccessSchema,
+  )
+
+export const updateRepositoryAccess = (
+  agentId: string,
+  policy: S.RepositoryAccessPolicy,
+) =>
+  apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/repository-access`,
+    { method: 'PUT', body: JSON.stringify(policy) },
+    S.RepositoryAccessSchema,
+  )
+
 export const reviewRepositoryAgent = (body: {
   repo: string
   path: string
@@ -850,7 +871,12 @@ export async function getManagedSlackConnection(agentId: string) {
       S.ManagedSlackConnectionSchema,
     )
   } catch (error) {
-    if (error instanceof ApiError && error.status === 404) return null
+    if (
+      (error instanceof ApiError ||
+        (error instanceof Error && 'status' in error)) &&
+      (error as { status: unknown }).status === 404
+    )
+      return null
     throw error
   }
 }
@@ -933,6 +959,13 @@ export const getSessions = (
 
 export const getSession = (id: string) =>
   apiFetch(`/v3/sessions/${id}`, {}, S.SessionSchema)
+
+export const getSessionSources = (id: string) =>
+  apiFetch(
+    `/v3/sessions/${encodeURIComponent(id)}/sources`,
+    {},
+    S.SessionSourceListSchema,
+  )
 
 // The API wants { agent: <id>, input } (input required). An optional `sources[]` attaches
 // a WORKING repo the agent checks out + opens PRs from — the control plane pins the ref's

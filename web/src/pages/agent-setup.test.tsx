@@ -9,6 +9,7 @@ import type {
   SessionEvent,
 } from '@/api/client'
 import { managedSlackConnectionsQueryKey } from '@/lib/managed-slack-connections'
+import { repositoryAccessQueryKey } from '@/lib/repository-access'
 import AgentSetup from './AgentSetup'
 
 const agentId = 'agt_aaaaaaaaaaaaaaaaaaaaaaaa'
@@ -97,6 +98,44 @@ function renderSetup(input: {
       active_revision_id: 'rev_aaaaaaaaaaaaaaaaaaaaaaaa',
     },
   )
+  if (input.agent?.runtime === 'flue') {
+    queryClient.setQueryData(repositoryAccessQueryKey(agentId), {
+      policy: { mode: 'selected', repository_ids: ['repo_1'] },
+      grant: {
+        status: 'active',
+        account: 'acme',
+        repository_selection: 'selected',
+        install_url: 'https://github.test/install',
+        configure_url: 'https://github.test/configure',
+        truncated: false,
+      },
+      effective_repositories: [
+        {
+          id: 'repo_1',
+          full_name: 'acme/support-agent',
+          default_branch: 'main',
+          private: true,
+        },
+      ],
+      unavailable_selected_repositories: [],
+    })
+    queryClient.setQueryData(['deploy-app'], {
+      installed: true,
+      install_url: 'https://github.test/install',
+      configure_url: 'https://github.test/configure',
+      account: 'acme',
+      repository_selection: 'selected',
+      repositories: [
+        {
+          id: 'repo_1',
+          full_name: 'acme/support-agent',
+          default_branch: 'main',
+          private: true,
+          linked_sources: [],
+        },
+      ],
+    })
+  }
   if (input.deployment) {
     queryClient.setQueryData(
       ['agent-deployment', agentId, deploymentId],
@@ -154,6 +193,53 @@ describe('agent setup', () => {
     expect(markup).toContain('Preparing your agent')
     expect(markup).toContain('<details')
     expect(markup).not.toContain('<details open=""')
+  })
+
+  it('does not let optional Flue repository setup compete with Connect Slack', () => {
+    const html = renderSetup({
+      agent: {
+        id: agentId,
+        name: 'Support triage',
+        runtime: 'flue',
+        revision: 1,
+        active_revision_id: 'rev_aaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+      deployment: buildingDeployment,
+      managed: null,
+      search: `?deployment=${deploymentId}`,
+    })
+
+    expect(html).toContain('Connect Slack while we prepare Support triage')
+    expect(html).not.toContain('Choose working repositories')
+  })
+
+  it('keeps Slack first and offers an exact Flue repository task when ready', () => {
+    const html = renderSetup({
+      agent: {
+        id: agentId,
+        name: 'Support triage',
+        runtime: 'flue',
+        revision: 1,
+        active_revision_id: 'rev_aaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+      deployment: {
+        ...buildingDeployment,
+        state: 'ready',
+        phase: 'verify',
+        terminal: true,
+        active: true,
+        allowed_actions: ['open_agent', 'start_session'],
+      },
+      managed: activeSlack,
+      search: `?deployment=${deploymentId}`,
+    })
+
+    expect(html.indexOf('Send your first message')).toBeLessThan(
+      html.indexOf('Choose working repositories'),
+    )
+    expect(html).toContain(
+      'In <span class="text-foreground font-mono">acme/support-agent,</span> add a setup note and open a pull request.',
+    )
   })
 
   it('waits visibly after Slack connects and promotes chat when ready', () => {

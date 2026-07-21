@@ -41,6 +41,10 @@ import { AgentSchedulesTab } from '@/components/agent-schedules'
 import { AgentRevisions } from '@/components/agent-revisions'
 import { AgentDeployments } from '@/components/agent-deployments'
 import {
+  RepositoryAccessPanel,
+  RepositoryAccessSummary,
+} from '@/components/repository-access'
+import {
   WorkingRepoField,
   type WorkingRepo,
 } from '@/components/working-repo-field'
@@ -597,12 +601,20 @@ export default function AgentDetail() {
               </Panel>
               <AgentSkills agentId={agent.id} />
             </div>
-            {/* Right rail: connect-or-status for the agent's source + Slack. */}
+            {/* Right rail: deployment source, working-repo scope, and Slack. */}
             <div className="space-y-4">
               <AgentDeploySource
                 agentId={agent.id}
                 profilePinned={agent.runtime === 'flue'}
               />
+              {agent.runtime === 'flue' ? (
+                <RepositoryAccessSummary
+                  agentId={agent.id}
+                  onOpenSettings={() => {
+                    void navigate(`${base}/settings`)
+                  }}
+                />
+              ) : null}
               <SlackConnect
                 agentId={agent.id}
                 agentName={agent.name}
@@ -652,6 +664,8 @@ export default function AgentDetail() {
                   />
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <WorkingRepoField
+                      agentId={agent.id}
+                      runtime={agent.runtime}
                       value={workingRepo}
                       onChange={setWorkingRepo}
                     />
@@ -704,6 +718,9 @@ export default function AgentDetail() {
 
         {active === 'settings' && (
           <div className="space-y-6">
+            {agent.runtime === 'flue' ? (
+              <RepositoryAccessPanel agentId={agent.id} />
+            ) : null}
             {/* Credential — which key the agent runs on. */}
             <Panel>
               <PanelHeader>

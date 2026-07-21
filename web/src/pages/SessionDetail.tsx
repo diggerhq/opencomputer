@@ -16,12 +16,14 @@ import { notifyError } from '@/lib/errors'
 import { useHalted } from '@/hooks/useHalted'
 import {
   getSession,
+  getSessionSources,
   getSessionEvents,
   sendMessage,
   cancelSession,
   archiveSession,
   ApiError,
   type SessionEvent,
+  type SessionSource,
 } from '@/api/client'
 import { SessionEventSchema } from '@/api/schemas'
 import { Panel } from '@/components/panel'
@@ -38,6 +40,7 @@ import { SessionWebhooks } from '@/components/session-webhooks'
 import { ApiHint } from '@/components/api-hint'
 import { MessagesSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { GithubMark } from '@/components/github-mark'
 import { formatSpend, usageTokens } from '@/lib/usage'
 import {
   MessageBubble,
@@ -49,6 +52,7 @@ import {
   isOutOfCredits,
   isTurnInput,
 } from '@/lib/session-turns'
+import { sessionSourcesRefetchInterval } from '@/lib/session-source-polling'
 
 function toolSummary(ev: SessionEvent): string {
   const b = (ev.body ?? {}) as Record<string, unknown>
@@ -243,6 +247,14 @@ for await (const event of session.events()) {
     queryKey: ['session-events', sessionId],
     queryFn: () => getSessionEvents(sessionId),
     refetchInterval: streamOk ? false : 5000,
+  })
+  const sourcesQuery = useQuery({
+    queryKey: ['session-sources', sessionId],
+    queryFn: () => getSessionSources(sessionId),
+    staleTime: 15_000,
+    refetchInterval: (query) => sessionSourcesRefetchInterval(query.state.data),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: 'always',
   })
 
   // Live events over SSE through the dashboard proxy (the proxy injects auth;
@@ -502,6 +514,13 @@ for await (const event of session.events()) {
         </div>
       </Panel>
 
+      <SessionSourcesPanel
+        sources={sourcesQuery.data}
+        loading={sourcesQuery.isLoading}
+        error={sourcesQuery.isError}
+        onRetry={() => void sourcesQuery.refetch()}
+      />
+
       {/* Spend / usage — derived from the session's opaque usage object (no dedicated
           spend endpoint). Tokens shown only when the runtime reports them (flue meters
           at the gateway and reports none here). */}
@@ -667,6 +686,96 @@ for await (const event of session.events()) {
         }
       />
     </div>
+  )
+}
+
+export function SessionSourcesPanel({
+  sources,
+  loading,
+  error,
+  onRetry,
+}: {
+  sources?: SessionSource[]
+  loading: boolean
+  error: boolean
+  onRetry: () => void
+}) {
+  if (!loading && !error && !sources?.length) return null
+  return (
+    <Panel className="mb-4 min-w-0 overflow-hidden">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5">
+        <h2 className="flex items-center gap-2 text-sm font-semibold">
+          <GithubMark className="size-3.5" /> Working sources
+        </h2>
+        <span className="text-muted-foreground text-xs">
+          {sources?.length ?? 0}{' '}
+          {sources?.length === 1 ? 'repository' : 'repositories'}
+        </span>
+      </div>
+      {loading ? (
+        <div className="space-y-2 p-4">
+          <Skeleton className="h-10 w-full" />
+        </div>
+      ) : error ? (
+        <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+          <span className="text-muted-foreground">
+            Couldn’t load working sources.
+          </span>
+          <Button size="sm" variant="outline" onClick={onRetry}>
+            Retry
+          </Button>
+        </div>
+      ) : (
+        <ul className="divide-y">
+          {sources?.map((source) => {
+            const observedDiffers =
+              source.resolved_sha && source.resolved_sha !== source.sha
+            return (
+              <li
+                key={source.name}
+                className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-4 py-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,auto)]"
+              >
+                <div className="min-w-48 flex-1">
+                  <p
+                    className="truncate text-sm font-medium"
+                    title={source.full_name ?? source.repo_id ?? source.name}
+                  >
+                    {source.full_name ?? source.repo_id ?? source.name}
+                  </p>
+                  <p
+                    className="text-muted-foreground mt-0.5 truncate font-mono"
+                    title={`Pinned commit ${source.sha}`}
+                  >
+                    {source.requested_ref ? `${source.requested_ref} · ` : ''}
+                    {source.sha.slice(0, 8)}
+                  </p>
+                  {observedDiffers ? (
+                    <p
+                      className="text-status-error mt-0.5 font-mono text-[11px]"
+                      title={`Observed commit ${source.resolved_sha}`}
+                    >
+                      observed {source.resolved_sha?.slice(0, 8)}
+                    </p>
+                  ) : null}
+                </div>
+                <StatusBadge status={source.status} />
+                <code
+                  className="text-muted-foreground col-span-2 min-w-0 truncate sm:col-span-1 sm:max-w-52"
+                  title={source.path}
+                >
+                  {source.path}
+                </code>
+                {source.error_message ? (
+                  <p className="text-status-error col-span-2 w-full sm:col-span-3">
+                    {source.error_message}
+                  </p>
+                ) : null}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </Panel>
   )
 }
 
