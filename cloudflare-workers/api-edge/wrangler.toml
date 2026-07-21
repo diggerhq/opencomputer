@@ -15,6 +15,8 @@ compatibility_date = "2026-04-28"
 compatibility_flags = ["nodejs_compat"]
 account_id = "1241f114453e32d292197e3fb36210b2"
 
+alias = { e2b = "./src/vendor/e2b-unavailable.ts" }
+
 # Preview URL routing. Sandboxes expose ports via stable hostnames of the form
 #   sb-{sandboxID}-p{port}.sb.opensandbox.ai
 # regardless of which cell the sandbox is on; the Worker resolves

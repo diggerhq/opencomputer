@@ -1,0 +1,19 @@
+{
+  "format": "vendo/policy@1",
+  "directions": [],
+  "rules": [
+    {
+      "match": {
+        "risk": "destructive"
+      },
+      "action": "ask",
+      "note": "Review irreversible actions"
+    },
+    {
+      "match": {
+        "risk": "read"
+      },
+      "action": "run"
+    }
+  ]
+}

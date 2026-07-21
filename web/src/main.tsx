@@ -4,6 +4,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
 import posthog from 'posthog-js'
 import { PostHogProvider } from '@posthog/react'
+import { createVendoClient, VendoProvider } from '@vendoai/ui'
+import { VendoOverlay } from '@vendoai/ui/chrome'
 import App from './App'
 import { Toaster } from './components/ui/sonner'
 import {
@@ -11,6 +13,8 @@ import {
   DefaultErrorFallback,
 } from './components/error-boundary'
 import { reloadForStaleChunk } from './lib/chunk-reload'
+import { registry } from './vendo/registry'
+import { theme } from './vendo/theme'
 import './index.css'
 
 const queryClient = new QueryClient({
@@ -21,6 +25,7 @@ const queryClient = new QueryClient({
     },
   },
 })
+const vendoClient = createVendoClient({ baseUrl: '/api/vendo' })
 
 const PH_TOKEN = import.meta.env.VITE_PUBLIC_POSTHOG_PROJECT_TOKEN
 const PH_HOST = import.meta.env.VITE_PUBLIC_POSTHOG_HOST
@@ -46,15 +51,22 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <PostHogProvider client={posthog}>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
-          <ErrorBoundary
-            fallback={(reset) => (
-              <div className="bg-background flex min-h-screen items-center justify-center">
-                <DefaultErrorFallback onRetry={reset} />
-              </div>
-            )}
+          <VendoProvider
+            client={vendoClient}
+            components={registry}
+            theme={theme}
           >
-            <App />
-          </ErrorBoundary>
+            <ErrorBoundary
+              fallback={(reset) => (
+                <div className="bg-background flex min-h-screen items-center justify-center">
+                  <DefaultErrorFallback onRetry={reset} />
+                </div>
+              )}
+            >
+              <App />
+              <VendoOverlay />
+            </ErrorBoundary>
+          </VendoProvider>
           <Toaster theme="light" richColors closeButton />
         </BrowserRouter>
       </QueryClientProvider>

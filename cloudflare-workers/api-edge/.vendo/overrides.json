@@ -1,0 +1,7 @@
+{
+  "format": "vendo/overrides@1",
+  "tools": {},
+  "remix": {
+    "ignoreSlots": []
+  }
+}

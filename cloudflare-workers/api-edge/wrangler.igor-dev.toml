@@ -29,6 +29,8 @@ compatibility_date = "2026-04-28"
 compatibility_flags = ["nodejs_compat"]
 account_id = "b8f23cb87a7a6c64040d3134643da448"
 
+alias = { e2b = "./src/vendor/e2b-unavailable.ts" }
+
 # Dashboard SPA assets (built from web/, staged into ./assets — gitignored).
 # Worker runs first on every request, handles /api,/auth,/webhooks, then falls
 # through to the SPA (index.html) for client-side routes.

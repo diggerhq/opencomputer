@@ -6,12 +6,18 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "vitest"
+    "test": "vitest",
+    "predev": "vendo sync",
+    "prebuild": "vendo sync --strict"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240924.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0",
     "wrangler": "^4.92.0"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.99",
+    "vendoai": "^0.4.1"
   }
 }

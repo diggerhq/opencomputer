@@ -12,6 +12,8 @@ compatibility_date = "2026-04-28"
 compatibility_flags = ["nodejs_compat"]
 account_id = "b8f23cb87a7a6c64040d3134643da448"
 
+alias = { e2b = "./src/vendor/e2b-unavailable.ts" }
+
 # Preview URL routing — same scheme as dev (`*.sb.<zone>/*`).
 # Requires an Advanced Certificate Manager cert for *.sb.opencomputer.dev
 # + sb.opencomputer.dev (two-level wildcard isn't covered by Universal SSL).

@@ -33,6 +33,7 @@ import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
 import * as templates from "./templates";
 import * as webhooks from "./webhooks";
+import { handleVendoRequest } from "../vendo/server";
 
 export interface Env extends DashboardEnv {
   CF_ADMIN_SECRET: string;
@@ -73,6 +74,11 @@ export interface Env extends DashboardEnv {
   // DEDICATED HMAC secret for handing a freshly-minted OR key to sessions-api
   // (NOT the generic internal-auth — this route carries a live model key). §6.7.5.
   OC_MANAGED_CRED_HMAC_SECRET: string;
+  // Vendo Cloud key and optional cloud base URL for the embedded agent surface.
+  VENDO_API_KEY?: string;
+  VENDO_CLOUD_URL?: string;
+  VENDO_BASE_URL?: string;
+  VENDO_CLOUD_MODEL?: string;
 }
 
 const DEFAULT_MAX_CONCURRENT_SANDBOXES = 50;
@@ -1832,6 +1838,10 @@ export default {
 
     if (path === "/health") {
       return json({ ok: true, env: env.WORKER_ENV });
+    }
+
+    if (path === "/api/vendo" || path.startsWith("/api/vendo/")) {
+      return handleVendoRequest(req, env);
     }
 
     if (path === "/internal/halt-list") {
