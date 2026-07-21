@@ -135,7 +135,7 @@ describe("ocRepoTools contract", () => {
 });
 
 describe("list_working_repos HTTP fixtures", () => {
-  it("resolves request-time env and encodes the session and query", async () => {
+  it("reads the captured env lazily at tool run and encodes the request", async () => {
     const env: OcRepoEnv = {};
     const list = tool("list_working_repos", env, "ses_/customer space");
     const fetchSpy = vi.fn(async () =>
@@ -146,9 +146,11 @@ describe("list_working_repos HTTP fixtures", () => {
             id: "repo_1",
             full_name: "diggerhq/example app",
             default_branch: "main",
+            visibility: "private",
           },
         ],
         truncated: true,
+        server_revision: 2,
       }),
     );
     vi.stubGlobal("fetch", fetchSpy);
@@ -215,13 +217,80 @@ describe("list_working_repos HTTP fixtures", () => {
             : {}),
         },
       };
-      vi.stubGlobal("fetch", vi.fn(async () => json(body, status)));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          json(
+            {
+              ...body,
+              server_trace_id: "trace_1",
+              error: { ...body.error, provider_detail: "ignored" },
+            },
+            status,
+          ),
+        ),
+      );
 
       await expect(
         tool("list_working_repos").run({ input: {} }),
       ).resolves.toEqual(body);
     },
   );
+
+  it("accepts additive response growth without freezing list or message size", async () => {
+    const repositories = Array.from({ length: 51 }, (_, index) => ({
+      id: `repo_${index}`,
+      full_name: `owner/repository-${index}`,
+      default_branch: "main",
+      future_field: index,
+    }));
+    const list = tool("list_working_repos");
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          json({
+            ok: true,
+            repositories,
+            truncated: false,
+            next_cursor: null,
+          }),
+        )
+        .mockResolvedValueOnce(
+          json(
+            {
+              ok: false,
+              error: {
+                code: "github_unavailable",
+                message: "x".repeat(501),
+                retryable: true,
+                future_recovery: "retry",
+              },
+            },
+            503,
+          ),
+        ),
+    );
+
+    await expect(list.run({ input: {} })).resolves.toEqual({
+      ok: true,
+      repositories: repositories.map(({ id, full_name, default_branch }) => ({
+        id,
+        full_name,
+        default_branch,
+      })),
+      truncated: false,
+    });
+    await expect(list.run({ input: {} })).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "github_unavailable",
+        message: "x".repeat(501),
+        retryable: true,
+      },
+    });
+  });
 
   it("rejects status, retryability, and retry-after contract drift", async () => {
     const list = tool("list_working_repos");
@@ -330,6 +399,7 @@ describe("add_source HTTP fixture", () => {
         ref: "main",
         sha: "a".repeat(40),
         path: "/workspace/sources/app",
+        materialized_at: "2026-07-21T00:00:00Z",
       }),
     );
     vi.stubGlobal("fetch", fetchSpy);
@@ -418,7 +488,9 @@ describe("github_publish_pull_request HTTP fixtures", () => {
           pull_request: {
             number: 42,
             url: "https://github.com/diggerhq/example-app/pull/42",
+            state: "open",
           },
+          provider_request_id: "request_1",
         });
       }),
     );
@@ -435,9 +507,11 @@ describe("github_publish_pull_request HTTP fixtures", () => {
       signal: controller.signal,
     });
 
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       ok: true,
       no_changes: false,
+      branch: "oc/ses_1/document-setup",
+      commit: "d".repeat(40),
       pull_request: {
         number: 42,
         url: "https://github.com/diggerhq/example-app/pull/42",
@@ -462,7 +536,13 @@ describe("github_publish_pull_request HTTP fixtures", () => {
   it("returns no_changes as a successful terminal result", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => json({ ok: true, no_changes: true })),
+      vi.fn(async () =>
+        json({
+          ok: true,
+          no_changes: true,
+          compared_commit: "a".repeat(40),
+        }),
+      ),
     );
     await expect(
       tool("github_publish_pull_request").run({
