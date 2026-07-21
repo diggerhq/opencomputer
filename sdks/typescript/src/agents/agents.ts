@@ -83,6 +83,45 @@ export interface ManagedSlackWorkspaceConnection extends ManagedSlackConnection 
   agent: { id: string; name: string };
 }
 
+/** Which repositories a Flue agent may use as working sources. */
+export type RepositoryAccessPolicy =
+  | { mode: "all" }
+  | { mode: "selected"; repositoryIds: string[] };
+
+/** Current state of the owner-bound OpenComputer GitHub App grant. */
+export interface RepositoryAccessGrant {
+  status: "active" | "not_installed" | "unavailable";
+  account: string | null;
+  repositorySelection: "all" | "selected" | null;
+  installUrl: string;
+  configureUrl: string | null;
+  truncated: boolean;
+}
+
+/** One repository currently usable under both the GitHub grant and agent policy. */
+export interface RepositoryAccessRepository {
+  id: string;
+  fullName: string;
+  defaultBranch: string;
+  private: boolean;
+}
+
+/** A selected repository absent from the current complete GitHub grant view. */
+export interface UnavailableSelectedRepository {
+  id: string;
+  fullName: string;
+}
+
+/** Agent policy composed with the owner's current GitHub App grant. */
+export interface RepositoryAccess {
+  policy: RepositoryAccessPolicy;
+  grant: RepositoryAccessGrant;
+  /** `null` means the grant could not be read; an empty array is a known-empty view. */
+  effectiveRepositories: RepositoryAccessRepository[] | null;
+  /** Authoritative only when `grant.truncated` is false. */
+  unavailableSelectedRepositories: UnavailableSelectedRepository[];
+}
+
 /** Reusable agents — the "what" a session runs. */
 export class Agents {
   /** Deploy behavior (inline or from a linked repo) — each deployment produces a revision. */
@@ -122,6 +161,24 @@ export class Agents {
   }
   list(params: { limit?: number; cursor?: string } = {}): Promise<Page<Agent>> {
     return this.http.request("GET", "/agents", { query: params as Query });
+  }
+
+  // ── Working repositories (agent policy ∩ owner GitHub App grant) ──
+
+  /** Read the agent's working-repository policy and current effective grant view. */
+  getRepositoryAccess(agentId: string): Promise<RepositoryAccess> {
+    return this.http.request("GET", `/agents/${agentId}/repository-access`);
+  }
+
+  /** Atomically replace the agent's working-repository policy. */
+  updateRepositoryAccess(
+    agentId: string,
+    policy: RepositoryAccessPolicy,
+  ): Promise<RepositoryAccess> {
+    return this.http.request("PUT", `/agents/${agentId}/repository-access`, {
+      body: policy,
+      idempotent: true,
+    });
   }
 
   // ── Slack (give the agent its own @handle; BYO app, 1 app ⟷ 1 agent ⟷ 1 workspace) ──
