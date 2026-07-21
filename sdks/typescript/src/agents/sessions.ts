@@ -119,6 +119,12 @@ export interface SourceSummary {
   name: string;
   status: SourceStatus;
   path: string;
+  /** Stable registered repository id when the source came from a managed repository. */
+  repoId?: string;
+  /** Current provider coordinates for a managed repository. */
+  fullName?: string;
+  /** Branch, tag, or commit expression requested before it was pinned. */
+  requestedRef?: string;
   /** Requested commit from create; kept for correlation while materialization is pending. */
   sha: string;
   /** Actual checked-out commit after materialization succeeds. Usually equals `sha`. */
