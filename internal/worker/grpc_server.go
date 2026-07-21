@@ -1504,7 +1504,16 @@ func (s *GRPCServer) PrepareMigrationIncoming(ctx context.Context, req *pb.Prepa
 		hostPort int
 		err      error
 	)
-	if req.RootfsS3Key != "" && req.WorkspaceS3Key != "" {
+	// Route to the S3 path whenever the source pre-copied a rootfs. A MERGED
+	// (single-disk) sandbox has no workspace, so WorkspaceS3Key is legitimately
+	// empty — gating on it too (the old `&& WorkspaceS3Key != ""`) sent every
+	// merged box to the direct path below, which has no S3 keys/local paths for
+	// a cross-worker move and so rebuilt a BLANK rootfs from the template base
+	// (and then failed ResolveBaseImage). PrepareIncomingMigrationWithS3 already
+	// handles the merged case (merged := workspaceS3Key == ""), pulling the real
+	// rootfs from S3, so merged boxes migrate correctly here. The direct path
+	// remains only for a genuine no-S3 migration (RootfsS3Key == "").
+	if req.RootfsS3Key != "" {
 		addr, hostPort, err = s.migrator.PrepareIncomingMigrationWithS3(ctx,
 			req.SandboxId, req.RootfsS3Key, req.WorkspaceS3Key,
 			int(req.CpuCount), int(req.MemoryMb), int(req.GuestPort), req.Template, s.checkpointStore, req.OverlayMode, req.SourceGoldenVersion, secrets)
