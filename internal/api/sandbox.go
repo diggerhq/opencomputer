@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/labstack/echo/v4"
 	"github.com/opensandbox/opensandbox/internal/auth"
 	"github.com/opensandbox/opensandbox/internal/controlplane"
@@ -422,6 +423,15 @@ func (s *Server) createSandboxWithSSE(c echo.Context, ctx context.Context, orgID
 // The UUID is plumbed back to CreateSandboxSession so sandbox_sessions.
 // secret_store_id gets populated — required for the secret-refresh fanout
 // (ListRunningSandboxesByStore filters on this column).
+// ErrSecretStoreNotFound is returned by resolveSecretStoreInto when the named
+// secret store genuinely does not exist — as opposed to a transient lookup or
+// decrypt failure. The fork path matches it with errors.Is to skip a
+// checkpoint-inherited store that has since been deleted, rather than failing
+// the whole fork (see layerSecretStores). Its message is kept as the bare
+// "secret store not found" so the "%w: <name>" wrap reproduces the existing
+// public API error string for a genuinely-missing store.
+var ErrSecretStoreNotFound = errors.New("secret store not found")
+
 func (s *Server) resolveSecretStoreInto(ctx context.Context, orgID [16]byte, cfg *types.SandboxConfig) (*uuid.UUID, error) {
 	if cfg.SecretStore == "" {
 		return nil, nil
@@ -435,7 +445,7 @@ func (s *Server) resolveSecretStoreInto(ctx context.Context, orgID [16]byte, cfg
 		bundle, err := s.edge.LookupSecretStore(ctx, uuid.UUID(orgID), cfg.SecretStore, s.store.Encryptor())
 		if err != nil {
 			if errors.Is(err, edgeclient.ErrNotFound) {
-				return nil, fmt.Errorf("secret store not found: %s", cfg.SecretStore)
+				return nil, fmt.Errorf("%w: %s", ErrSecretStoreNotFound, cfg.SecretStore)
 			}
 			return nil, fmt.Errorf("edge lookup secret store %q: %w", cfg.SecretStore, err)
 		}
@@ -451,7 +461,13 @@ func (s *Server) resolveSecretStoreInto(ctx context.Context, orgID [16]byte, cfg
 	}
 	store, err := s.store.GetSecretStoreByName(ctx, orgID, cfg.SecretStore)
 	if err != nil {
-		return nil, fmt.Errorf("secret store not found: %s", cfg.SecretStore)
+		// Only a genuine no-rows result is "not found" — a transient DB error
+		// must stay loud, not be misread as a deleted store (which the fork
+		// path would then silently skip, dropping the store's secrets).
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: %s", ErrSecretStoreNotFound, cfg.SecretStore)
+		}
+		return nil, fmt.Errorf("resolve secret store %q: %w", cfg.SecretStore, err)
 	}
 
 	cfg.EgressAllowlist = store.EgressAllowlist
@@ -476,6 +492,94 @@ func (s *Server) resolveSecretStoreInto(ctx context.Context, orgID [16]byte, cfg
 		}
 	}
 	return &store.ID, nil
+}
+
+// layerForkSecretStores resolves the secret stores a fork should apply, in
+// layering order: the checkpoint-inherited base store, the checkpoint-inherited
+// child store, then the caller-supplied store. Later layers win on env
+// collisions and egress allowlists aggregate. It decrypts each store into cfg
+// (SecretEnvs/EgressAllowlist/SecretAllowedHosts) and returns the UUID of the
+// winning (last surviving) store for sandbox_sessions.secret_store_id.
+//
+// A checkpoint-inherited store that no longer exists is skipped rather than
+// failing the fork: a checkpoint is an immutable image and must not be bricked
+// by the deletion of an ephemeral build-time secret store. A store the CALLER
+// named in this request must still exist — a missing user-supplied store is a
+// hard error, honoring explicit intent. cfg.SecretStore/BaseSecretStore are
+// rewritten to the surviving stores so the forked child's persisted config no
+// longer references a deleted store (the binding self-heals forward).
+func (s *Server) layerForkSecretStores(ctx context.Context, orgID [16]byte, cfg *types.SandboxConfig, userStore string) (*uuid.UUID, error) {
+	// Capture the inherited layers before the resolver mutates cfg.SecretStore.
+	return layerSecretStores(cfg, cfg.BaseSecretStore, cfg.SecretStore, userStore,
+		func(name string) (*uuid.UUID, error) {
+			cfg.SecretStore = name
+			return s.resolveSecretStoreInto(ctx, orgID, cfg)
+		})
+}
+
+// layerSecretStores holds the ordering/dedup/skip/re-persist logic, decoupled
+// from how a single store is resolved (via resolve) so it is unit-testable
+// without an edge or DB. resolve must decrypt the named store into cfg and
+// return its UUID (or nil), or an error — an ErrSecretStoreNotFound error marks
+// a genuinely-missing store, which is skipped only for inherited layers.
+func layerSecretStores(cfg *types.SandboxConfig, inheritedBase, inheritedChild, userStore string, resolve func(name string) (*uuid.UUID, error)) (*uuid.UUID, error) {
+	// Ordered layers with empties dropped, deduped preserving first position.
+	seen := make(map[string]bool)
+	var layers []string
+	for _, n := range []string{inheritedBase, inheritedChild, userStore} {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			layers = append(layers, n)
+		}
+	}
+	if len(layers) == 0 {
+		return nil, nil // no stores anywhere — leave cfg untouched (as before)
+	}
+
+	var secretStoreID *uuid.UUID
+	var resolved []string
+	var allEgress []string
+	for _, name := range layers {
+		// A name the caller explicitly passed must exist even if it also happens
+		// to match an inherited layer; only purely-inherited layers are skippable.
+		userNamed := userStore != "" && name == userStore
+		id, err := resolve(name)
+		if err != nil {
+			if errors.Is(err, ErrSecretStoreNotFound) && !userNamed {
+				log.Printf("api: fork: inherited secret store %q no longer exists — skipping (fork continues without it)", name)
+				continue
+			}
+			return nil, err
+		}
+		resolved = append(resolved, name)
+		if id != nil {
+			secretStoreID = id
+		}
+		allEgress = append(allEgress, cfg.EgressAllowlist...)
+	}
+
+	// Aggregate egress across the surviving stores, deduped.
+	egressSeen := make(map[string]bool)
+	var merged []string
+	for _, h := range allEgress {
+		if !egressSeen[h] {
+			egressSeen[h] = true
+			merged = append(merged, h)
+		}
+	}
+	cfg.EgressAllowlist = merged
+
+	// Persist only the surviving stores: last = winning child, prior = base.
+	// Empty when every layer was skipped (fork boots with no store bound).
+	cfg.SecretStore = ""
+	cfg.BaseSecretStore = ""
+	if n := len(resolved); n > 0 {
+		cfg.SecretStore = resolved[n-1]
+		if n > 1 {
+			cfg.BaseSecretStore = resolved[n-2]
+		}
+	}
+	return secretStoreID, nil
 }
 
 // resolveTemplate is the edge-first equivalent of the inline
@@ -3007,60 +3111,13 @@ func (s *Server) createFromCheckpointCore(c echo.Context, userEnvs map[string]st
 	// Egress allowlists aggregate (union of all layers).
 	// We collect all unique store names, resolve them in order, then persist
 	// the last two as SecretStore (child) and BaseSecretStore (parent).
-	var stores []string
-	if originalCfg.BaseSecretStore != "" {
-		stores = append(stores, originalCfg.BaseSecretStore)
-	}
-	if originalCfg.SecretStore != "" {
-		stores = append(stores, originalCfg.SecretStore)
-	}
-	if userSecretStore != "" {
-		stores = append(stores, userSecretStore)
-	}
-	// Deduplicate preserving order
-	seen := make(map[string]bool)
-	var uniqueStores []string
-	for _, name := range stores {
-		if !seen[name] {
-			seen[name] = true
-			uniqueStores = append(uniqueStores, name)
-		}
-	}
-	// secretStoreID tracks the resolved store of the LAST (winning) layer in
-	// uniqueStores — that's the one we want recorded on the sandbox row, since
-	// later layers shadow earlier ones for env collisions. Plumbed back to
-	// CreateSandboxSessionWithStatus below so secret_store_id is populated for
-	// the refresh fanout.
-	var secretStoreID *uuid.UUID
-	if len(uniqueStores) > 0 {
-		var allEgress []string
-		for _, storeName := range uniqueStores {
-			originalCfg.SecretStore = storeName
-			storeID, err := s.resolveSecretStoreInto(ctx, orgID, &originalCfg)
-			if err != nil {
-				return nil, http.StatusBadRequest, err
-			}
-			if storeID != nil {
-				secretStoreID = storeID
-			}
-			allEgress = append(allEgress, originalCfg.EgressAllowlist...)
-		}
-		// Deduplicate egress
-		egressSeen := make(map[string]bool)
-		var merged []string
-		for _, h := range allEgress {
-			if !egressSeen[h] {
-				egressSeen[h] = true
-				merged = append(merged, h)
-			}
-		}
-		originalCfg.EgressAllowlist = merged
-		// Persist: last store = SecretStore, second-to-last = BaseSecretStore
-		originalCfg.SecretStore = uniqueStores[len(uniqueStores)-1]
-		originalCfg.BaseSecretStore = ""
-		if len(uniqueStores) > 1 {
-			originalCfg.BaseSecretStore = uniqueStores[len(uniqueStores)-2]
-		}
+	// secretStoreID tracks the resolved store of the winning (last surviving)
+	// layer — recorded on the sandbox row so the secret-refresh fanout can find
+	// it. A checkpoint-inherited store that has since been deleted is skipped so
+	// the fork still boots; a store the caller named in THIS request must exist.
+	secretStoreID, err := s.layerForkSecretStores(ctx, orgID, &originalCfg, userSecretStore)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
 	}
 
 	// Merge user-supplied envs over the checkpoint's envs. User keys win.
