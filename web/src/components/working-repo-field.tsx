@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Select as SelectPrimitive } from 'radix-ui'
 import { Check, ChevronDown, GitBranch, X } from 'lucide-react'
@@ -53,6 +53,7 @@ export function WorkingRepoField({
     data: app,
     isLoading: appLoading,
     isError: appError,
+    isSuccess: appSuccess,
     refetch: refetchApp,
   } = useQuery({
     queryKey: ['deploy-app'],
@@ -64,6 +65,7 @@ export function WorkingRepoField({
     data: access,
     isLoading: accessLoading,
     isError: accessError,
+    isSuccess: accessSuccess,
     refetch: refetchAccess,
   } = useQuery({
     queryKey: repositoryAccessQueryKey(agentId ?? ''),
@@ -93,6 +95,27 @@ export function WorkingRepoField({
     access?.policy.mode === 'selected' &&
     access.policy.repository_ids.length === 0
   const disabled = !installed || repoOptions.length === 0
+  const scope = `${runtime ?? ''}:${agentId ?? ''}`
+  const previousScope = useRef(scope)
+
+  useEffect(() => {
+    if (previousScope.current === scope) return
+    previousScope.current = scope
+    if (value) onChange(null)
+  }, [onChange, scope, value])
+
+  const optionsAreAuthoritative = useFluePolicy
+    ? accessSuccess &&
+      access?.effective_repositories !== null &&
+      !access?.grant.truncated
+    : appSuccess
+  useEffect(() => {
+    if (!value || !optionsAreAuthoritative) return
+    const stillAvailable = repoOptions.some(
+      (repo) => workingRepoValue(repo, useFluePolicy) === value.repo,
+    )
+    if (!stillAvailable) onChange(null)
+  }, [onChange, optionsAreAuthoritative, repoOptions, useFluePolicy, value])
 
   const pickRepo = (repoValue: string) => {
     const r = repoOptions.find((x) =>

@@ -28,6 +28,7 @@ const STATUS: Record<string, Meta> = {
   ready: { tone: 'running', label: 'Ready', icon: CircleCheck },
   active: { tone: 'running', label: 'Active', icon: CircleCheck },
   success: { tone: 'running', label: 'Success', icon: CircleCheck },
+  resolved: { tone: 'running', label: 'Resolved', icon: CircleCheck },
   stopped: { tone: 'stopped', label: 'Stopped', icon: CircleSlash },
   not_deployed: {
     tone: 'stopped',
@@ -45,6 +46,12 @@ const STATUS: Record<string, Meta> = {
   queued: { tone: 'pending', label: 'Queued', icon: Clock },
   accepted: { tone: 'pending', label: 'Queued', icon: Clock },
   fetching: { tone: 'pending', label: 'Fetching', icon: Loader2, spin: true },
+  materializing: {
+    tone: 'pending',
+    label: 'Materializing',
+    icon: Loader2,
+    spin: true,
+  },
   validating: {
     tone: 'pending',
     label: 'Validating',
@@ -93,6 +100,8 @@ const STATUS: Record<string, Meta> = {
   deleting: { tone: 'pending', label: 'Deleting', icon: Loader2, spin: true },
   error: { tone: 'error', label: 'Error', icon: CircleAlert },
   failed: { tone: 'error', label: 'Failed', icon: CircleAlert },
+  unavailable: { tone: 'error', label: 'Unavailable', icon: CircleAlert },
+  auth_required: { tone: 'error', label: 'Auth required', icon: CircleAlert },
   unverified: { tone: 'error', label: 'Unverified', icon: CircleAlert },
   verified: { tone: 'running', label: 'Verified', icon: CircleCheck },
   superseded: { tone: 'stopped', label: 'Superseded', icon: CircleSlash },

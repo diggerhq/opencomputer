@@ -103,13 +103,28 @@ function AccessUnavailable({ access }: { access: RepositoryAccess }) {
   )
 }
 
+interface RepositoryAccessPanelProps {
+  agentId: string
+  context?: 'setup' | 'settings'
+}
+
 export function RepositoryAccessPanel({
   agentId,
   context = 'settings',
-}: {
-  agentId: string
-  context?: 'setup' | 'settings'
-}) {
+}: RepositoryAccessPanelProps) {
+  return (
+    <RepositoryAccessPanelForAgent
+      key={agentId}
+      agentId={agentId}
+      context={context}
+    />
+  )
+}
+
+function RepositoryAccessPanelForAgent({
+  agentId,
+  context = 'settings',
+}: RepositoryAccessPanelProps) {
   const queryClient = useQueryClient()
   const accessQuery = useRepositoryAccess(agentId)
   const deployAppQuery = useQuery({
@@ -248,22 +263,24 @@ export function RepositoryAccessPanel({
           <AccessUnavailable access={access} />
         ) : access && draft ? (
           <div className="space-y-4">
-            <div
-              className="grid gap-2 sm:grid-cols-2"
-              role="radiogroup"
-              aria-label="Repository policy"
-            >
-              <button
-                type="button"
-                role="radio"
-                aria-checked={draft.mode === 'all'}
-                onClick={() => setDraft({ mode: 'all' })}
+            <fieldset className="grid gap-2 sm:grid-cols-2">
+              <legend className="sr-only">Repository policy</legend>
+              <label
                 className={cn(
-                  'hover:border-foreground/20 flex min-h-16 min-w-0 items-start gap-3 rounded-lg border p-3 text-left transition-colors',
+                  'hover:border-foreground/20 focus-within:ring-foreground/20 flex min-h-16 min-w-0 cursor-pointer items-start gap-3 rounded-lg border p-3 text-left transition-colors focus-within:ring-2 focus-within:ring-offset-2',
                   draft.mode === 'all' && 'border-foreground/30 bg-muted/50',
                 )}
               >
+                <input
+                  type="radio"
+                  name={`repository-policy-${agentId}`}
+                  value="all"
+                  checked={draft.mode === 'all'}
+                  onChange={() => setDraft({ mode: 'all' })}
+                  className="sr-only"
+                />
                 <span
+                  aria-hidden
                   className={cn(
                     'mt-0.5 grid size-4 place-items-center rounded-full border',
                     draft.mode === 'all' &&
@@ -280,29 +297,34 @@ export function RepositoryAccessPanel({
                     Includes repositories added to the installation later.
                   </span>
                 </span>
-              </button>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={draft.mode === 'selected'}
-                onClick={() =>
-                  setDraft({
-                    mode: 'selected',
-                    repository_ids:
-                      access.policy.mode === 'selected'
-                        ? selectedRepositoryIds(access.policy)
-                        : (access.effective_repositories ?? []).map(
-                            (repo) => repo.id,
-                          ),
-                  })
-                }
+              </label>
+              <label
                 className={cn(
-                  'hover:border-foreground/20 flex min-h-16 min-w-0 items-start gap-3 rounded-lg border p-3 text-left transition-colors',
+                  'hover:border-foreground/20 focus-within:ring-foreground/20 flex min-h-16 min-w-0 cursor-pointer items-start gap-3 rounded-lg border p-3 text-left transition-colors focus-within:ring-2 focus-within:ring-offset-2',
                   draft.mode === 'selected' &&
                     'border-foreground/30 bg-muted/50',
                 )}
               >
+                <input
+                  type="radio"
+                  name={`repository-policy-${agentId}`}
+                  value="selected"
+                  checked={draft.mode === 'selected'}
+                  onChange={() =>
+                    setDraft({
+                      mode: 'selected',
+                      repository_ids:
+                        access.policy.mode === 'selected'
+                          ? selectedRepositoryIds(access.policy)
+                          : (access.effective_repositories ?? []).map(
+                              (repo) => repo.id,
+                            ),
+                    })
+                  }
+                  className="sr-only"
+                />
                 <span
+                  aria-hidden
                   className={cn(
                     'mt-0.5 grid size-4 place-items-center rounded-full border',
                     draft.mode === 'selected' &&
@@ -321,8 +343,8 @@ export function RepositoryAccessPanel({
                     An empty selection disables repository work.
                   </span>
                 </span>
-              </button>
-            </div>
+              </label>
+            </fieldset>
 
             {access.grant.truncated ? (
               <div className="border-border bg-muted/40 rounded-md border px-3 py-2 text-xs">
@@ -330,8 +352,10 @@ export function RepositoryAccessPanel({
                   GitHub returned a partial repository list
                 </p>
                 <p className="text-muted-foreground mt-0.5">
-                  Hidden selections are preserved when you save. Configure the
-                  GitHub app to see the full grant.
+                  {access.policy.mode === 'selected'
+                    ? 'Hidden existing selections are preserved when you save.'
+                    : 'Switching to selected access limits the agent to repositories you choose from this partial list.'}{' '}
+                  Configure the GitHub app to see the full grant.
                 </p>
               </div>
             ) : null}

@@ -931,7 +931,14 @@ export const SessionListSchema = z.object({
 
 export const SessionSourceSchema = z.object({
   name: z.string(),
-  status: z.string(),
+  status: z.enum([
+    'pending',
+    'materializing',
+    'resolved',
+    'failed',
+    'unavailable',
+    'auth_required',
+  ]),
   path: z.string(),
   sha: z.string(),
   resolved_sha: z.string().optional(),

@@ -69,7 +69,7 @@ describe('repository access client', () => {
         repo_id: 'repo_1',
         full_name: 'acme/app',
         requested_ref: 'main',
-        status: 'ready',
+        status: 'resolved',
         path: '/workspace/sources/app',
         sha: 'a'.repeat(40),
         resolved_sha: 'b'.repeat(40),

@@ -52,6 +52,7 @@ import {
   isOutOfCredits,
   isTurnInput,
 } from '@/lib/session-turns'
+import { sessionSourcesRefetchInterval } from '@/lib/session-source-polling'
 
 function toolSummary(ev: SessionEvent): string {
   const b = (ev.body ?? {}) as Record<string, unknown>
@@ -251,6 +252,8 @@ for await (const event of session.events()) {
     queryKey: ['session-sources', sessionId],
     queryFn: () => getSessionSources(sessionId),
     staleTime: 15_000,
+    refetchInterval: (query) => sessionSourcesRefetchInterval(query.state.data),
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: 'always',
   })
 

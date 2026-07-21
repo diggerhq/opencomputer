@@ -44,7 +44,7 @@ describe('repository access schemas', () => {
       SessionSourceListSchema.parse([
         {
           name: 'app',
-          status: 'ready',
+          status: 'pending',
           path: '/workspace/sources/app',
           sha: 'a'.repeat(40),
         },

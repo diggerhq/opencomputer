@@ -978,7 +978,7 @@ const sessionSources = [
     repo_id: 'repo_01k0acmeagents000000000',
     full_name: 'acme/agents',
     requested_ref: 'main',
-    status: 'ready',
+    status: 'resolved',
     path: '/workspace/sources/app',
     sha: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
     resolved_sha: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',

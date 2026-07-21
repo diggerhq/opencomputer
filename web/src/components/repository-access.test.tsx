@@ -95,9 +95,21 @@ describe('repository access UI', () => {
       ],
     })
     expect(html).toContain('partial repository list')
-    expect(html).toContain('Hidden selections are preserved')
+    expect(html).toContain('Hidden existing selections are preserved')
     expect(html).toContain('acme/removed')
     expect(html).toContain('Unavailable')
+  })
+
+  it('explains that switching from a truncated all grant is intentionally narrowing', () => {
+    const html = renderAccess({
+      ...selected,
+      grant: { ...selected.grant, truncated: true },
+      policy: { mode: 'all' },
+    })
+    expect(html).toContain(
+      'Switching to selected access limits the agent to repositories you choose from this partial list.',
+    )
+    expect(html).not.toContain('Hidden existing selections are preserved')
   })
 
   it('distinguishes an unavailable grant from a valid empty grant', () => {

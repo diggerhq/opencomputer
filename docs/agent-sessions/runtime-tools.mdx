@@ -55,13 +55,17 @@ commits as usual; calling the tool hands the requested outcome to the platform, 
 commits the agent's edits to an `oc/<session>/<source>-<id>` branch and opens the PR with a
 just-in-time, write-scoped token — outside the agent sandbox. It returns the PR URL.
 
-| Argument | Required | What it is                                                                      |
-| -------- | -------- | ------------------------------------------------------------------------------- |
-| `source` | yes      | The checked-out source's local name (its directory under `/workspace/sources`). |
-| `title`  | yes      | PR title.                                                                       |
-| `body`   | no       | PR description.                                                                 |
-| `base`   | no       | PR base branch. Defaults to the source's checked-out ref.                       |
-| `draft`  | no       | Open the PR as a draft.                                                         |
+| Argument | Required                 | What it is                                                                                                      |
+| -------- | ------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `source` | yes                      | The checked-out source's local name (its directory under `/workspace/sources`).                                 |
+| `title`  | yes                      | PR title.                                                                                                       |
+| `body`   | no                       | PR description.                                                                                                 |
+| `base`   | built-in: no · Flue: yes | PR base branch. Built-in runtimes default to the checked-out ref; hosted Flue requires the exact target branch. |
+| `draft`  | no                       | Open the PR as a draft.                                                                                         |
+
+Hosted Flue uses an object input:
+`github_publish_pull_request({ source, title, body?, base, draft? })`. `base` is
+required. Built-in runtimes keep their existing tool input and may omit `base`.
 
 <Note>
   `github_publish_pull_request` requires a **configured GitHub App** (the
@@ -74,13 +78,16 @@ just-in-time, write-scoped token — outside the agent sandbox. It returns the P
   App; they never fall back to a bring-your-own App.
 </Note>
 
-`add_source(repo, ref, name?)` checks out an **additional** repo into
-`/workspace/sources/<name>` mid-session. `repo` is `"owner/repo"` (or a `repo_…` id), `ref` a
-branch or `refs/pull/N/head`, `name` defaults to the repo name. Same zero-credential model as
-the initial checkout — a Git operations sandbox mints a just-in-time, read-only token; the
-agent never sees it. **Connected-App (`oc_app`) repos only.**
+`add_source` checks out an **additional** repo into
+`/workspace/sources/<name>` mid-session. Built-in runtimes use
+`add_source(repo, ref, name?)`. Hosted Flue uses the object input
+`add_source({ repository, ref, name? })`. `repo`/`repository` is exact
+`"owner/repo"` coordinates (or a `repo_…` id), `ref` is a branch, tag, commit,
+or `refs/pull/N/head`, and `name` defaults to the repo name. The Git operations
+sandbox mints a just-in-time read token; the agent never sees it.
+**Connected-App (`oc_app`) repos only.**
 
-For Flue, `repo` must be within the agent's current
+For Flue, `repository` must be within the agent's current
 [repository access policy](/agent-sessions/repos#choose-working-repositories-for-a-flue-agent).
 Checkout is lazy and uses the session's shared hands sandbox. Publishing always
 creates an `oc/…` branch and pull request; it never pushes directly to the
