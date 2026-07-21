@@ -33,6 +33,9 @@ const ERROR_CODES = [
   "deployment_unverified",
 ] as const;
 
+const RESPONSE_ERROR_MESSAGE_MAX = 500;
+const RESPONSE_REPOSITORY_MAX = 50;
+
 export type OcRepoErrorCode = (typeof ERROR_CODES)[number];
 
 export interface OcRepoError {
@@ -47,21 +50,31 @@ export type OcRepoFailure = {
   error: OcRepoError;
 };
 
-const RepoErrorSchema = v.strictObject({
-  code: v.picklist(ERROR_CODES),
-  message: v.pipe(v.string(), v.minLength(1), v.maxLength(500)),
-  retryable: v.boolean(),
-  retry_after_seconds: v.optional(
-    v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(600)),
-  ),
-});
+// Platform responses are forward-extensible: validate and return the known
+// semantic fields while ignoring additive fields from a newer server. Tool
+// inputs below remain strict and bounded so the model cannot smuggle extra
+// authority or unbounded work.
+const RepoErrorSchema = v.pipe(
+  v.object({
+    code: v.picklist(ERROR_CODES),
+    message: v.pipe(v.string(), v.minLength(1)),
+    retryable: v.boolean(),
+    retry_after_seconds: v.optional(
+      v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(600)),
+    ),
+  }),
+  v.transform((error) => ({
+    ...error,
+    message: error.message.slice(0, RESPONSE_ERROR_MESSAGE_MAX),
+  })),
+);
 
-const RepoFailureSchema = v.strictObject({
+const RepoFailureSchema = v.object({
   ok: v.literal(false),
   error: RepoErrorSchema,
 });
 
-const WorkingRepositorySchema = v.strictObject({
+const WorkingRepositorySchema = v.object({
   id: v.pipe(v.string(), v.minLength(1)),
   full_name: v.pipe(v.string(), v.minLength(3)),
   default_branch: v.pipe(v.string(), v.minLength(1)),
@@ -73,14 +86,19 @@ export interface WorkingRepository {
   default_branch: string;
 }
 
-const ListWorkingReposSuccessSchema = v.strictObject({
-  ok: v.literal(true),
-  repositories: v.pipe(
-    v.array(WorkingRepositorySchema),
-    v.maxLength(50),
-  ),
-  truncated: v.boolean(),
-});
+const ListWorkingReposSuccessSchema = v.pipe(
+  v.object({
+    ok: v.literal(true),
+    repositories: v.array(WorkingRepositorySchema),
+    truncated: v.boolean(),
+  }),
+  v.transform((result) => ({
+    ...result,
+    repositories: result.repositories.slice(0, RESPONSE_REPOSITORY_MAX),
+    truncated:
+      result.truncated || result.repositories.length > RESPONSE_REPOSITORY_MAX,
+  })),
+);
 
 const SourceNameSchema = v.pipe(
   v.string(),
@@ -108,7 +126,7 @@ const PullRequestBaseSchema = v.pipe(
 );
 
 const AddSourceSuccessSchema = v.pipe(
-  v.strictObject({
+  v.object({
     ok: v.literal(true),
     name: SourceNameSchema,
     repository_id: v.pipe(v.string(), v.startsWith("repo_")),
@@ -123,12 +141,12 @@ const AddSourceSuccessSchema = v.pipe(
   ),
 );
 
-const PublishNoChangesSchema = v.strictObject({
+const PublishNoChangesSchema = v.object({
   ok: v.literal(true),
   no_changes: v.literal(true),
 });
 
-const PublishPullRequestSuccessSchema = v.strictObject({
+const PublishPullRequestSuccessSchema = v.object({
   ok: v.literal(true),
   no_changes: v.literal(false),
   branch: v.pipe(v.string(), v.minLength(1)),
@@ -136,7 +154,7 @@ const PublishPullRequestSuccessSchema = v.strictObject({
     v.string(),
     v.regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i),
   ),
-  pull_request: v.strictObject({
+  pull_request: v.object({
     number: v.pipe(v.number(), v.integer(), v.minValue(1)),
     url: v.pipe(v.string(), v.url()),
   }),
@@ -429,9 +447,10 @@ function randomIdempotencyKey(): string {
 /**
  * Standard hosted-repository tools for an OpenComputer Flue session.
  *
- * The initializer captures only the session id and environment reference.
- * Managed bindings are resolved inside each tool run because Cloudflare
- * secrets are request-scoped.
+ * The initializer captures only the session id and the runtime-owned
+ * environment reference, not a spread/snapshot. Managed bindings are resolved
+ * inside each tool run so request-time secrets on that reference are visible
+ * through direct property reads; `ocResolveEnv` never enumerates that proxy.
  */
 export function ocRepoTools(
   ctx: AgentInitializerContext<OcRepoEnv>,

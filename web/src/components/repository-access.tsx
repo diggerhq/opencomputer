@@ -67,7 +67,13 @@ function ExternalAction({
   )
 }
 
-function AccessUnavailable({ access }: { access: RepositoryAccess }) {
+function AccessUnavailable({
+  access,
+  onRetry,
+}: {
+  access: RepositoryAccess
+  onRetry: () => void
+}) {
   if (access.grant.status === 'not_installed') {
     return (
       <div className="flex flex-col items-start gap-3 py-1">
@@ -90,15 +96,16 @@ function AccessUnavailable({ access }: { access: RepositoryAccess }) {
   return (
     <div className="flex flex-col items-start gap-3 py-1">
       <div>
-        <p className="text-sm font-medium">GitHub access needs attention</p>
+        <p className="text-sm font-medium">
+          GitHub access is temporarily unavailable
+        </p>
         <p className="text-muted-foreground mt-1 text-sm">
-          The installation is unavailable. Reconnect it before this agent works
-          in a repository.
+          Nothing changed. Try loading the installation again.
         </p>
       </div>
-      <ExternalAction href={access.grant.install_url}>
-        Reconnect GitHub
-      </ExternalAction>
+      <Button size="sm" variant="outline" onClick={onRetry}>
+        Retry
+      </Button>
     </div>
   )
 }
@@ -260,7 +267,10 @@ function RepositoryAccessPanelForAgent({
             </Button>
           </div>
         ) : access && access.grant.status !== 'active' ? (
-          <AccessUnavailable access={access} />
+          <AccessUnavailable
+            access={access}
+            onRetry={() => void accessQuery.refetch()}
+          />
         ) : access && draft ? (
           <div className="space-y-4">
             <fieldset className="grid gap-2 sm:grid-cols-2">

@@ -1,6 +1,9 @@
 import posthog from 'posthog-js'
 import { z } from 'zod'
 import * as S from './schemas'
+import { ApiError } from './errors'
+
+export { ApiError } from './errors'
 
 // Re-export the inferred response types (schemas are the single source of
 // truth) so existing `import { type Sandbox } from '@/api/client'` keeps working.
@@ -117,20 +120,6 @@ function errorDetails(body: unknown): Record<string, unknown> | undefined {
   return error && typeof error === 'object' && !Array.isArray(error)
     ? (error as Record<string, unknown>)
     : undefined
-}
-
-/** An error carrying the HTTP status + the API's typed reason, so callers can branch
- *  (e.g. 404 = not-found; 402 `insufficient_credits` = out of credits → top-up CTA). */
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly type?: string,
-    readonly details?: Record<string, unknown>,
-  ) {
-    super(message)
-    this.name = 'ApiError'
-  }
 }
 
 export async function apiFetch<T>(
@@ -871,12 +860,7 @@ export async function getManagedSlackConnection(agentId: string) {
       S.ManagedSlackConnectionSchema,
     )
   } catch (error) {
-    if (
-      (error instanceof ApiError ||
-        (error instanceof Error && 'status' in error)) &&
-      (error as { status: unknown }).status === 404
-    )
-      return null
+    if (error instanceof ApiError && error.status === 404) return null
     throw error
   }
 }

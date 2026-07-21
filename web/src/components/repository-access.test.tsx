@@ -118,8 +118,10 @@ describe('repository access UI', () => {
       grant: { ...selected.grant, status: 'unavailable' },
       effective_repositories: null,
     })
-    expect(html).toContain('GitHub access needs attention')
-    expect(html).toContain('Reconnect GitHub')
+    expect(html).toContain('GitHub access is temporarily unavailable')
+    expect(html).toContain('Nothing changed')
+    expect(html).toContain('>Retry<')
+    expect(html).not.toContain('Reconnect GitHub')
     expect(html).not.toContain('No repositories are available')
   })
 

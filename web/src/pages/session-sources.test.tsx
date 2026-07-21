@@ -1,6 +1,10 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { sessionSourcesRefetchInterval } from '@/lib/session-source-polling'
+import {
+  canSessionChangeFlueSources,
+  isFlueSession,
+  sessionSourcesRefetchInterval,
+} from '@/lib/session-source-polling'
 import { SessionSourcesPanel } from './SessionDetail'
 
 describe('session working sources', () => {
@@ -116,5 +120,32 @@ describe('session working sources', () => {
         },
       ]),
     ).toBe(5_000)
+  })
+
+  it('loads only Flue sources and polls only while the session can change', () => {
+    for (const status of ['queued', 'running', 'awaiting_input', 'idle']) {
+      const session = {
+        status,
+        agent_snapshot: { runtime: 'flue' },
+      }
+      expect(isFlueSession(session)).toBe(true)
+      expect(canSessionChangeFlueSources(session)).toBe(true)
+    }
+    expect(isFlueSession(undefined)).toBe(false)
+    expect(canSessionChangeFlueSources(undefined)).toBe(false)
+    const builtIn = {
+      status: 'running',
+      agent_snapshot: { runtime: 'claude' },
+    }
+    expect(isFlueSession(builtIn)).toBe(false)
+    expect(canSessionChangeFlueSources(builtIn)).toBe(false)
+    for (const status of ['failed', 'archived']) {
+      const terminalFlue = {
+        status,
+        agent_snapshot: { runtime: 'flue' },
+      }
+      expect(isFlueSession(terminalFlue)).toBe(true)
+      expect(canSessionChangeFlueSources(terminalFlue)).toBe(false)
+    }
   })
 })

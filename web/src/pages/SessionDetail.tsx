@@ -52,7 +52,11 @@ import {
   isOutOfCredits,
   isTurnInput,
 } from '@/lib/session-turns'
-import { sessionSourcesRefetchInterval } from '@/lib/session-source-polling'
+import {
+  canSessionChangeFlueSources,
+  isFlueSession,
+  sessionSourcesRefetchInterval,
+} from '@/lib/session-source-polling'
 
 function toolSummary(ev: SessionEvent): string {
   const b = (ev.body ?? {}) as Record<string, unknown>
@@ -248,13 +252,18 @@ for await (const event of session.events()) {
     queryFn: () => getSessionEvents(sessionId),
     refetchInterval: streamOk ? false : 5000,
   })
+  const sourcesEnabled = isFlueSession(session)
+  const sourcesCanChange = canSessionChangeFlueSources(session)
   const sourcesQuery = useQuery({
     queryKey: ['session-sources', sessionId],
     queryFn: () => getSessionSources(sessionId),
+    enabled: sourcesEnabled,
     staleTime: 15_000,
-    refetchInterval: (query) => sessionSourcesRefetchInterval(query.state.data),
+    refetchInterval: sourcesCanChange
+      ? (query) => sessionSourcesRefetchInterval(query.state.data)
+      : false,
     refetchIntervalInBackground: false,
-    refetchOnWindowFocus: 'always',
+    refetchOnWindowFocus: sourcesCanChange ? 'always' : false,
   })
 
   // Live events over SSE through the dashboard proxy (the proxy injects auth;

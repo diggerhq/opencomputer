@@ -266,9 +266,9 @@ async function resolveSandboxId(
  * The optional OC-fleet sandbox factory. Add `sandbox: ocSandbox(env)` only when an agent needs a
  * Linux shell or durable files. The default starter intentionally omits it.
  *
- * Reads the CF ambient env (`cloudflare:workers`), not the passed `ctx.env`: on the `--target
- * cloudflare` build the real `OC_SANDBOX_*`/`OC_SESSION_TOKEN` bindings live on the ambient env and
- * `ctx.env` is empty for them (same reason as `useOcGateway`). `createSessionEnv` validates local
+ * Resolves the captured runtime env lazily and layers in plain bindings from the CF ambient env
+ * (`cloudflare:workers`). The request-time `OC_SESSION_TOKEN` remains on the captured env proxy and is
+ * read directly; that proxy is never spread or enumerated. `createSessionEnv` validates local
  * configuration and returns a lazy environment without fetching or provisioning anything.
  */
 export function ocSandbox(

@@ -5,7 +5,8 @@
 // SECRET. Secrets are NOT on the CF ambient env (`cloudflare:workers`) at all — only plain vars like
 // OC_GATEWAY are — and `ctx.env` at defineAgent-init is empty for the OC bindings too. So an init-time
 // registerProvider reads the token falsy and every model call throws "No API key for provider: anthropic".
-// The secret DOES live on the per-REQUEST env (`c.env`) — the same source ocSandbox reads at run time.
+// The secret DOES live on the per-REQUEST env (`c.env`); repository and sandbox helpers likewise read
+// their runtime-owned request env references directly rather than enumerating or spreading them.
 // Fix: bind the apiKey at RUN scope from the exported `route` middleware, reading OC_SESSION_TOKEN from
 // `c.env` by DIRECT property access (NEVER spread c.env — the CF env is a proxy and spreading it throws)
 // and OC_GATEWAY from the ambient snapshot, once per isolate. The token is per-DEPLOY (identical for
@@ -52,9 +53,9 @@ function bindOcProvider(env: OcEnv): boolean {
  * initializer** — top-level module code is stripped by the CF build (proven in 1a). This runs at INIT
  * scope, where the per-deploy OC_SESSION_TOKEN (a secret) is typically not yet readable, so it registers
  * the baseUrl (model specifier resolves) and defers the apiKey to `route` (run scope) — see the token-seam
- * note above. Binds the apiKey here too if the token happens to already be present. Reads the CF ambient
- * env (`cloudflare:workers`), not `ctx.env`: on the `--target cloudflare` build the real Worker bindings
- * live on the ambient env and `ctx.env` is empty for them.
+ * note above. Binds the apiKey here too if the token happens to already be present. Plain Worker
+ * bindings come from the CF ambient env; the runtime-owned `ctx.env` is read directly only for values
+ * absent there and may still be tokenless during initialization.
  */
 export function useOcGateway(ctx: AgentInitializerContext<OcEnv>): void {
   bindOcProvider(ocResolveEnv<OcEnv>(ctx.env));
