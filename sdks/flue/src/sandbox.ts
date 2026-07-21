@@ -267,9 +267,9 @@ async function resolveSandboxId(
  * Linux shell or durable files. The default starter intentionally omits it.
  *
  * Resolves the captured runtime env lazily and layers in plain bindings from the CF ambient env
- * (`cloudflare:workers`). The request-time `OC_SESSION_TOKEN` remains on the captured env reference;
- * it is not assumed to exist in the ambient snapshot. `createSessionEnv` validates local configuration
- * and returns a lazy environment without fetching or provisioning anything.
+ * (`cloudflare:workers`). The request-time `OC_SESSION_TOKEN` remains on the captured env proxy and is
+ * read directly; that proxy is never spread or enumerated. `createSessionEnv` validates local
+ * configuration and returns a lazy environment without fetching or provisioning anything.
  */
 export function ocSandbox(
   env: OcSandboxEnv,

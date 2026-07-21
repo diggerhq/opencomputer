@@ -237,7 +237,7 @@ describe("list_working_repos HTTP fixtures", () => {
     },
   );
 
-  it("accepts additive response growth without freezing list or message size", async () => {
+  it("accepts additive response growth while bounding model-visible list and message size", async () => {
     const repositories = Array.from({ length: 51 }, (_, index) => ({
       id: `repo_${index}`,
       full_name: `owner/repository-${index}`,
@@ -275,18 +275,20 @@ describe("list_working_repos HTTP fixtures", () => {
 
     await expect(list.run({ input: {} })).resolves.toEqual({
       ok: true,
-      repositories: repositories.map(({ id, full_name, default_branch }) => ({
-        id,
-        full_name,
-        default_branch,
-      })),
-      truncated: false,
+      repositories: repositories
+        .slice(0, 50)
+        .map(({ id, full_name, default_branch }) => ({
+          id,
+          full_name,
+          default_branch,
+        })),
+      truncated: true,
     });
     await expect(list.run({ input: {} })).resolves.toEqual({
       ok: false,
       error: {
         code: "github_unavailable",
-        message: "x".repeat(501),
+        message: "x".repeat(500),
         retryable: true,
       },
     });

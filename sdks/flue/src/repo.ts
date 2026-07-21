@@ -33,6 +33,9 @@ const ERROR_CODES = [
   "deployment_unverified",
 ] as const;
 
+const RESPONSE_ERROR_MESSAGE_MAX = 500;
+const RESPONSE_REPOSITORY_MAX = 50;
+
 export type OcRepoErrorCode = (typeof ERROR_CODES)[number];
 
 export interface OcRepoError {
@@ -51,14 +54,20 @@ export type OcRepoFailure = {
 // semantic fields while ignoring additive fields from a newer server. Tool
 // inputs below remain strict and bounded so the model cannot smuggle extra
 // authority or unbounded work.
-const RepoErrorSchema = v.object({
-  code: v.picklist(ERROR_CODES),
-  message: v.pipe(v.string(), v.minLength(1)),
-  retryable: v.boolean(),
-  retry_after_seconds: v.optional(
-    v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(600)),
-  ),
-});
+const RepoErrorSchema = v.pipe(
+  v.object({
+    code: v.picklist(ERROR_CODES),
+    message: v.pipe(v.string(), v.minLength(1)),
+    retryable: v.boolean(),
+    retry_after_seconds: v.optional(
+      v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(600)),
+    ),
+  }),
+  v.transform((error) => ({
+    ...error,
+    message: error.message.slice(0, RESPONSE_ERROR_MESSAGE_MAX),
+  })),
+);
 
 const RepoFailureSchema = v.object({
   ok: v.literal(false),
@@ -77,11 +86,19 @@ export interface WorkingRepository {
   default_branch: string;
 }
 
-const ListWorkingReposSuccessSchema = v.object({
-  ok: v.literal(true),
-  repositories: v.array(WorkingRepositorySchema),
-  truncated: v.boolean(),
-});
+const ListWorkingReposSuccessSchema = v.pipe(
+  v.object({
+    ok: v.literal(true),
+    repositories: v.array(WorkingRepositorySchema),
+    truncated: v.boolean(),
+  }),
+  v.transform((result) => ({
+    ...result,
+    repositories: result.repositories.slice(0, RESPONSE_REPOSITORY_MAX),
+    truncated:
+      result.truncated || result.repositories.length > RESPONSE_REPOSITORY_MAX,
+  })),
+);
 
 const SourceNameSchema = v.pipe(
   v.string(),
@@ -432,8 +449,8 @@ function randomIdempotencyKey(): string {
  *
  * The initializer captures only the session id and the runtime-owned
  * environment reference, not a spread/snapshot. Managed bindings are resolved
- * inside each tool run so request-time secrets on that reference are visible;
- * ambient plain bindings are layered in by `ocResolveEnv`.
+ * inside each tool run so request-time secrets on that reference are visible
+ * through direct property reads; `ocResolveEnv` never enumerates that proxy.
  */
 export function ocRepoTools(
   ctx: AgentInitializerContext<OcRepoEnv>,
