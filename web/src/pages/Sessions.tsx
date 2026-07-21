@@ -198,7 +198,9 @@ export default function Sessions() {
                   size="sm"
                   onClick={openStart}
                   disabled={halted}
-                  title={halted ? 'Out of credits — top up to resume' : undefined}
+                  title={
+                    halted ? 'Out of credits — top up to resume' : undefined
+                  }
                 >
                   <Plus className="size-4" />
                   Start session
@@ -294,6 +296,8 @@ export default function Sessions() {
               ) : null}
               {agentId ? (
                 <WorkingRepoField
+                  agentId={agentId}
+                  runtime={selectedAgent?.runtime}
                   value={workingRepo}
                   onChange={setWorkingRepo}
                 />

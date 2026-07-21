@@ -4,40 +4,50 @@ title: "Runtime tools"
 description: "The tools a runtime can use — what to rely on when you write prompts"
 ---
 
-When you write a prompt for a [runtime](/agent-sessions/runtimes) (`claude` or `codex`), it's useful to know exactly what the agent can do. Both runtimes act through the same fixed set of tools against the session's **sandbox** — the agent has no direct filesystem, shell, or network of its own. The runtime's built-in local tools are disabled; only these remote tools are available.
+When you write a prompt for a built-in [runtime](/agent-sessions/runtimes) (`claude` or `codex`), it's useful to know exactly what the agent can do. Both runtimes act through the same fixed set of tools against the session's **sandbox** — the agent has no direct filesystem, shell, or network of its own. A hosted [Flue](/agent-sessions/flue) app defines its own tool surface; OpenComputer adds exactly `list_working_repos`, `add_source`, and `github_publish_pull_request` for repository work.
 
 ## Sandbox tools
 
-| Tool | What it does |
-| --- | --- |
-| `bash` | Run a shell command in the sandbox. |
-| `read` | Read a file from the sandbox. |
-| `write` | Write a file to the sandbox. |
-| `ls` | List a directory in the sandbox. |
+| Tool    | What it does                        |
+| ------- | ----------------------------------- |
+| `bash`  | Run a shell command in the sandbox. |
+| `read`  | Read a file from the sandbox.       |
+| `write` | Write a file to the sandbox.        |
+| `ls`    | List a directory in the sandbox.    |
 
 `bash` is the only place commands run. Each call is a fresh shell, so use absolute paths or `cd /workspace && ...`. A run surfaces as an [`exec.completed`](/agent-sessions/events#event-shape) event (`{ command, exit_code, summary }`), with large output available via `content_ref`.
 
 To work on a **public** repo, the agent `git clone`s it via `bash` — the sandbox has open outbound internet (below). For **private** repos, register a [Repo](/agent-sessions/repos) and reference it in the session's `sources`: it's checked out before the first turn and the GitHub credential never enters the sandbox.
 
-<Note>**Network:** the sandbox has **open outbound internet** by default (so `git clone`, package installs, and API calls just work), with private, loopback, link-local, and cloud-metadata addresses blocked.</Note>
+<Note>
+  **Network:** the sandbox has **open outbound internet** by default (so `git
+  clone`, package installs, and API calls just work), with private, loopback,
+  link-local, and cloud-metadata addresses blocked.
+</Note>
 
 ## User-facing tools
 
-| Tool | What it does |
-| --- | --- |
-| `say` | Emit a `user`-level message. |
+| Tool  | What it does                       |
+| ----- | ---------------------------------- |
+| `say` | Emit a `user`-level message.       |
 | `ask` | Ask a question and pause the turn. |
 
 The agent's final `say` is the session result. `ask` ends the turn with `yield_reason: "needs_input"`; answer by [steering](/agent-sessions/messaging) a reply, which wakes the session.
 
 ## GitHub tools
 
-| Tool | What it does |
-| --- | --- |
-| `github_publish_pull_request` | Open a pull request from a checked-out [Repo](/agent-sessions/repos) source. |
-| `add_source` | Check out an additional repo into `/workspace/sources/<name>` mid-session. |
-| `watch_pull_request` | Subscribe to events on a PR the session opened — the session is woken when checks finish, a review or comment lands, or it merges. |
-| `unwatch_pull_request` | Stop watching a PR. |
+| Tool                          | Availability           | What it does                                                                                                                       |
+| ----------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `list_working_repos`          | Hosted Flue            | List the repositories currently effective under the agent's policy and GitHub grant.                                               |
+| `github_publish_pull_request` | Built-in + hosted Flue | Open a pull request from a checked-out [Repo](/agent-sessions/repos) source.                                                       |
+| `add_source`                  | Built-in + hosted Flue | Check out an additional repo into `/workspace/sources/<name>` mid-session.                                                         |
+| `watch_pull_request`          | Built-in               | Subscribe to events on a PR the session opened — the session is woken when checks finish, a review or comment lands, or it merges. |
+| `unwatch_pull_request`        | Built-in               | Stop watching a PR.                                                                                                                |
+
+`list_working_repos()` is the hosted Flue discovery surface. It returns exact
+stable ids, current `owner/repo` names, and default branches; the model chooses
+from that structured result instead of relying on repository names embedded in
+a prompt.
 
 `github_publish_pull_request` lets the agent open a PR **without ever holding a GitHub
 credential**. The agent edits files in `/workspace/sources/<source>` and makes local
@@ -45,37 +55,54 @@ commits as usual; calling the tool hands the requested outcome to the platform, 
 commits the agent's edits to an `oc/<session>/<source>-<id>` branch and opens the PR with a
 just-in-time, write-scoped token — outside the agent sandbox. It returns the PR URL.
 
-| Argument | Required | What it is |
-| --- | --- | --- |
-| `source` | yes | The checked-out source's local name (its directory under `/workspace/sources`). |
-| `title` | yes | PR title. |
-| `body` | no | PR description. |
-| `base` | no | PR base branch. Defaults to the source's checked-out ref. |
-| `draft` | no | Open the PR as a draft. |
+| Argument | Required                 | What it is                                                                                                      |
+| -------- | ------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `source` | yes                      | The checked-out source's local name (its directory under `/workspace/sources`).                                 |
+| `title`  | yes                      | PR title.                                                                                                       |
+| `body`   | no                       | PR description.                                                                                                 |
+| `base`   | built-in: no · Flue: yes | PR base branch. Built-in runtimes default to the checked-out ref; hosted Flue requires the exact target branch. |
+| `draft`  | no                       | Open the PR as a draft.                                                                                         |
+
+Hosted Flue uses an object input:
+`github_publish_pull_request({ source, title, body?, base, draft? })`. `base` is
+required. Built-in runtimes keep their existing tool input and may omit `base`.
 
 <Note>
-`github_publish_pull_request` requires a **configured GitHub App** (the OpenComputer App or
-a [bring-your-own App](/agent-sessions/repos#bring-your-own-app)). It does **not** work with
-inline (`risky_short_lived_token`) auth, which is **checkout-only** — see
-[Repos & GitHub](/agent-sessions/repos#inline-short-lived-token).
+  `github_publish_pull_request` requires a **configured GitHub App** (the
+  OpenComputer App or a [bring-your-own
+  App](/agent-sessions/repos#bring-your-own-app)). It does **not** work with
+  inline (`risky_short_lived_token`) auth, which is **checkout-only** — see
+  [Repos & GitHub](/agent-sessions/repos#inline-short-lived-token). Built-in
+  sessions may resolve through the configured OpenComputer or bring-your-own
+  App. Hosted Flue repository tools always use the agent owner's OpenComputer
+  App; they never fall back to a bring-your-own App.
 </Note>
 
-`add_source(repo, ref, name?)` checks out an **additional** repo into
-`/workspace/sources/<name>` mid-session. `repo` is `"owner/repo"` (or a `repo_…` id), `ref` a
-branch or `refs/pull/N/head`, `name` defaults to the repo name. Same zero-credential model as
-the initial checkout — a Git operations sandbox mints a just-in-time, read-only token; the
-agent never sees it. **Connected-App (`oc_app`) repos only.**
+`add_source` checks out an **additional** repo into
+`/workspace/sources/<name>` mid-session. Built-in runtimes use
+`add_source(repo, ref, name?)`. Hosted Flue uses the object input
+`add_source({ repository, ref, name? })`. `repo`/`repository` is exact
+`"owner/repo"` coordinates (or a `repo_…` id), `ref` is a branch, tag, commit,
+or `refs/pull/N/head`, and `name` defaults to the repo name. The Git operations
+sandbox mints a just-in-time read token; the agent never sees it.
+**Connected-App (`oc_app`) repos only.**
+
+For Flue, `repository` must be within the agent's current
+[repository access policy](/agent-sessions/repos#choose-working-repositories-for-a-flue-agent).
+Checkout is lazy and uses the session's shared hands sandbox. Publishing always
+creates an `oc/…` branch and pull request; it never pushes directly to the
+default branch.
 
 `watch_pull_request(wake_on?, repo?, pr?, intent?)` subscribes the session to a PR it opened;
 OpenComputer wakes the session when the wake condition is met. It does **not** block — call it,
 then finish the turn.
 
-| Argument | Required | What it is |
-| --- | --- | --- |
-| `wake_on` | no | The wake condition: `checks` (default), `review` (a review decision), `comment` (a new comment), `merge` (merged/closed). |
-| `repo` | no | The watched repo. Defaults to the most recent PR the session opened. |
-| `pr` | no | The PR number. Defaults with `repo`. |
-| `intent` | no | Freeform note (the *why*), replayed on wake. |
+| Argument  | Required | What it is                                                                                                                |
+| --------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `wake_on` | no       | The wake condition: `checks` (default), `review` (a review decision), `comment` (a new comment), `merge` (merged/closed). |
+| `repo`    | no       | The watched repo. Defaults to the most recent PR the session opened.                                                      |
+| `pr`      | no       | The PR number. Defaults with `repo`.                                                                                      |
+| `intent`  | no       | Freeform note (the _why_), replayed on wake.                                                                              |
 
 Watches cover PRs the **same session** opened, on **Connected-App (`oc_app`) repos only**.
 `unwatch_pull_request(repo?, pr?)` stops watching; both args default to the session's only

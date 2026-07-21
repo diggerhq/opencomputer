@@ -1,7 +1,7 @@
 {
   "name": "@opencomputer/flue",
-  "version": "0.2.0",
-  "description": "Run a Flue app as an OpenComputer agent with managed models and optional demand-driven sandboxes.",
+  "version": "0.3.1",
+  "description": "Run a Flue app as an OpenComputer agent with managed models, repository tools, and demand-driven sandboxes.",
   "keywords": [
     "agents",
     "flue",
@@ -48,7 +48,8 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "prepublishOnly": "npm test && npm run build"
+    "check:workerd": "node scripts/check-workerd.mjs",
+    "prepublishOnly": "npm test && npm run build && npm run check:workerd"
   },
   "sideEffects": [
     "./dist/wire.js"
@@ -59,9 +60,13 @@
   "publishConfig": {
     "access": "public"
   },
+  "dependencies": {
+    "valibot": "^1.4.2"
+  },
   "devDependencies": {
     "@flue/runtime": "1.0.0-beta.9",
     "@types/node": "^22.10.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.9.3",
     "vitest": "^3.0.0"
   }

@@ -1,19 +1,26 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Select as SelectPrimitive } from 'radix-ui'
 import { Check, ChevronDown, GitBranch, X } from 'lucide-react'
-import { getDeployApp } from '@/api/client'
+import { getDeployApp, getRepositoryAccess } from '@/api/client'
 import { GithubMark } from '@/components/github-mark'
 import { markFloatingLayerPointerDismiss } from '@/components/ui/floating-layer'
 import { cn } from '@/lib/utils'
+import { repositoryAccessQueryKey } from '@/lib/repository-access'
+import {
+  selectedWorkingRepo,
+  workingRepoValue,
+  type WorkingRepoValue,
+} from '@/lib/working-repo'
 
 // The WORKING repo a session checks out and opens PRs from (design 010 §2). Deliberately SEPARATE
 // from the agent's config/"connected" repo (prompt + skills) — an agent is typically configured
 // from one repo and works across others, so this never defaults to the connected repo. Optional:
-// a session starts fine with none; when set, the agent can publish (and later watch) PRs.
+// a session starts fine with none; when set, the agent can publish PRs.
 
-export interface WorkingRepo {
-  repo: string // "owner/repo"
+export interface WorkingRepo extends WorkingRepoValue {
+  repo: string // stable repo_ id for Flue; "owner/repo" for legacy runtimes
+  fullName?: string // display coordinate when repo is a stable id
   ref: string // branch
 }
 
@@ -26,35 +33,97 @@ function splitRepo(full: string): [owner: string, name: string] {
  * Inline, secondary working-repo control for the session composer. A compact, GitHub-marked
  * dropdown — unselected by default (short "Working repo" placeholder); starting a session works
  * empty. Selecting a repo reveals a branch pill (prefilled with the repo's default branch) and a
- * clear (✕). Repos come from what the OpenComputer App can reach (getDeployApp). Custom-styled
- * on the Radix primitive (no new dependency) so it reads as a deliberate control, not stock.
+ * clear (✕). Flue reads the agent's effective repository policy; legacy runtimes retain the
+ * installation-wide getDeployApp list. Custom-styled on the Radix primitive (no new dependency)
+ * so it reads as a deliberate control, not stock.
  */
 export function WorkingRepoField({
+  agentId,
+  runtime,
   value,
   onChange,
 }: {
+  agentId?: string
+  runtime?: string | null
   value: WorkingRepo | null
   onChange: (v: WorkingRepo | null) => void
 }) {
+  const useFluePolicy = runtime === 'flue' && Boolean(agentId)
   const {
     data: app,
-    isLoading,
-    isError,
-    refetch,
+    isLoading: appLoading,
+    isError: appError,
+    isSuccess: appSuccess,
+    refetch: refetchApp,
   } = useQuery({
     queryKey: ['deploy-app'],
     queryFn: getDeployApp,
+    enabled: !useFluePolicy,
     staleTime: 30_000,
   })
-  const repoOptions = useMemo(() => app?.repositories ?? [], [app])
-  const installed = app?.installed !== false // treat "still loading" as installed
+  const {
+    data: access,
+    isLoading: accessLoading,
+    isError: accessError,
+    isSuccess: accessSuccess,
+    refetch: refetchAccess,
+  } = useQuery({
+    queryKey: repositoryAccessQueryKey(agentId ?? ''),
+    queryFn: () => getRepositoryAccess(agentId!),
+    enabled: useFluePolicy,
+    staleTime: 15_000,
+    refetchOnWindowFocus: 'always',
+  })
+  const repoOptions = useMemo(
+    () =>
+      useFluePolicy
+        ? (access?.effective_repositories ?? [])
+        : (app?.repositories ?? []),
+    [access, app, useFluePolicy],
+  )
+  const isLoading = useFluePolicy ? accessLoading : appLoading
+  const isError = useFluePolicy ? accessError : appError
+  const refetch = useFluePolicy ? refetchAccess : refetchApp
+  const installed = useFluePolicy
+    ? access?.grant.status === 'active'
+    : app?.installed !== false // treat "still loading" as installed
+  const installUrl = useFluePolicy
+    ? access?.grant.install_url
+    : app?.install_url
+  const policyDisabled =
+    useFluePolicy &&
+    access?.policy.mode === 'selected' &&
+    access.policy.repository_ids.length === 0
   const disabled = !installed || repoOptions.length === 0
+  const scope = `${runtime ?? ''}:${agentId ?? ''}`
+  const previousScope = useRef(scope)
 
-  const pickRepo = (fullName: string) => {
-    const r = repoOptions.find((x) => x.full_name === fullName)
+  useEffect(() => {
+    if (previousScope.current === scope) return
+    previousScope.current = scope
+    if (value) onChange(null)
+  }, [onChange, scope, value])
+
+  const optionsAreAuthoritative = useFluePolicy
+    ? accessSuccess &&
+      access?.effective_repositories !== null &&
+      !access?.grant.truncated
+    : appSuccess
+  useEffect(() => {
+    if (!value || !optionsAreAuthoritative) return
+    const stillAvailable = repoOptions.some(
+      (repo) => workingRepoValue(repo, useFluePolicy) === value.repo,
+    )
+    if (!stillAvailable) onChange(null)
+  }, [onChange, optionsAreAuthoritative, repoOptions, useFluePolicy, value])
+
+  const pickRepo = (repoValue: string) => {
+    const r = repoOptions.find((x) =>
+      useFluePolicy ? x.id === repoValue : x.full_name === repoValue,
+    )
+    if (!r) return
     // Keep the current branch when re-picking the same repo; else the repo's default.
-    const ref = value?.repo === fullName ? value.ref : r?.default_branch || 'main'
-    onChange({ repo: fullName, ref })
+    onChange(selectedWorkingRepo(r, useFluePolicy, value))
   }
 
   // Load failed → an explicit retry, not a silent "No repos available" dead-end.
@@ -73,31 +142,41 @@ export function WorkingRepoField({
   }
 
   // Not installed → a quiet connect affordance instead of a dead control.
-  if (installed === false && app?.install_url) {
+  if (installed === false && installUrl) {
+    const unavailable = useFluePolicy && access?.grant.status === 'unavailable'
     return (
       <a
-        href={app.install_url}
+        href={installUrl}
         target="_blank"
         rel="noreferrer"
         className="border-border text-muted-foreground hover:text-foreground hover:border-foreground/25 inline-flex h-8 items-center gap-2 rounded-md border border-dashed px-2.5 text-sm transition-colors"
-        title="Connect the OpenComputer GitHub App to work in a repo"
+        title={
+          unavailable
+            ? 'The GitHub installation is unavailable — reconnect it to work in a repo'
+            : 'Connect the OpenComputer GitHub App to work in a repo'
+        }
       >
         <GithubMark className="size-3.5" />
-        Connect GitHub
+        {unavailable ? 'GitHub unavailable' : 'Connect GitHub'}
       </a>
     )
   }
 
-  const [owner, name] = value ? splitRepo(value.repo) : ['', '']
+  const displayRepo = value?.fullName ?? value?.repo ?? ''
+  const [owner, name] = value ? splitRepo(displayRepo) : ['', '']
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <SelectPrimitive.Root value={value?.repo ?? ''} onValueChange={pickRepo} disabled={disabled}>
+      <SelectPrimitive.Root
+        value={value?.repo ?? ''}
+        onValueChange={pickRepo}
+        disabled={disabled}
+      >
         <SelectPrimitive.Trigger
           aria-label="Working repo"
           title="Optional — the repo the agent works in and opens PRs from"
           className={cn(
-            'border-border bg-panel-2 hover:border-foreground/25 focus-visible:border-foreground/40 data-[state=open]:border-foreground/35 group inline-flex h-8 max-w-64 min-w-40 items-center gap-2 rounded-md border px-2.5 text-sm outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+            'border-border bg-panel-2 hover:border-foreground/25 focus-visible:border-foreground/40 data-[state=open]:border-foreground/35 group inline-flex h-8 max-w-64 min-w-40 items-center gap-2 rounded-md border px-2.5 text-sm transition-colors outline-none disabled:cursor-not-allowed disabled:opacity-60',
           )}
         >
           <GithubMark className="text-muted-foreground group-hover:text-foreground/70 size-3.5 shrink-0 transition-colors" />
@@ -109,7 +188,13 @@ export function WorkingRepoField({
               </span>
             ) : (
               <span className="text-muted-foreground">
-                {disabled ? (isLoading ? 'Loading repos…' : 'No repos available') : 'Working repo'}
+                {disabled
+                  ? isLoading
+                    ? 'Loading repos…'
+                    : policyDisabled
+                      ? 'Repository access disabled'
+                      : 'No repos available'
+                  : 'Working repo'}
               </span>
             )}
           </span>
@@ -125,10 +210,11 @@ export function WorkingRepoField({
             <SelectPrimitive.Viewport>
               {repoOptions.map((r) => {
                 const [o, n] = splitRepo(r.full_name)
+                const repoValue = workingRepoValue(r, useFluePolicy)
                 return (
                   <SelectPrimitive.Item
-                    key={r.full_name}
-                    value={r.full_name}
+                    key={repoValue}
+                    value={repoValue}
                     className="focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-md py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
                   >
                     <GithubMark className="text-muted-foreground size-3.5 shrink-0" />

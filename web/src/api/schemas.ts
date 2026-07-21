@@ -650,6 +650,39 @@ export const DeployAppSchema = z.object({
   repository_selection: z.enum(['all', 'selected']).nullish(),
   repositories: z.array(DeployAppRepoSchema).default([]),
 })
+
+// GitHub repositories a Flue agent may use as working sources. This is
+// intentionally separate from DeploymentSourceSchema: a deployment source
+// provides the agent's code, while this policy bounds repositories the running
+// agent may check out and publish to.
+export const RepositoryAccessPolicySchema = z.union([
+  z.object({ mode: z.literal('all') }),
+  z.object({
+    mode: z.literal('selected'),
+    repository_ids: z.array(z.string()),
+  }),
+])
+export const RepositoryAccessRepositorySchema = z.object({
+  id: z.string(),
+  full_name: z.string(),
+  default_branch: z.string(),
+  private: z.boolean(),
+})
+export const RepositoryAccessSchema = z.object({
+  policy: RepositoryAccessPolicySchema,
+  grant: z.object({
+    status: z.enum(['active', 'not_installed', 'unavailable']),
+    account: z.string().nullable(),
+    repository_selection: z.enum(['all', 'selected']).nullable(),
+    install_url: z.string(),
+    configure_url: z.string().nullable(),
+    truncated: z.boolean(),
+  }),
+  effective_repositories: z.array(RepositoryAccessRepositorySchema).nullable(),
+  unavailable_selected_repositories: z
+    .array(z.object({ id: z.string(), full_name: z.string() }))
+    .default([]),
+})
 export const LinkResultSchema = z.object({
   source: DeploymentSourceSchema,
   deployment_id: z.string().nullish(),
@@ -896,6 +929,28 @@ export const SessionListSchema = z.object({
   next_cursor: z.string().nullish(),
 })
 
+export const SessionSourceSchema = z.object({
+  name: z.string(),
+  status: z.enum([
+    'pending',
+    'materializing',
+    'resolved',
+    'failed',
+    'unavailable',
+    'auth_required',
+  ]),
+  path: z.string(),
+  sha: z.string(),
+  resolved_sha: z.string().optional(),
+  repo_id: z.string().optional(),
+  full_name: z.string().optional(),
+  requested_ref: z.string().optional(),
+  error_code: z.string().optional(),
+  error_message: z.string().optional(),
+  retryable: z.boolean().optional(),
+})
+export const SessionSourceListSchema = z.array(SessionSourceSchema)
+
 export const ActorSchema = z.object({
   id: z.string().optional(),
   display: z.string().optional(),
@@ -985,6 +1040,13 @@ export type AgentDeployment = z.infer<typeof AgentDeploymentSchema>
 export type AgentDeploymentLog = z.infer<typeof AgentDeploymentLogSchema>
 export type DeploymentSource = z.infer<typeof DeploymentSourceSchema>
 export type DeployApp = z.infer<typeof DeployAppSchema>
+export type RepositoryAccessPolicy = z.infer<
+  typeof RepositoryAccessPolicySchema
+>
+export type RepositoryAccessRepository = z.infer<
+  typeof RepositoryAccessRepositorySchema
+>
+export type RepositoryAccess = z.infer<typeof RepositoryAccessSchema>
 export type RepositorySourceInspection = z.infer<
   typeof RepositorySourceInspectionSchema
 >
@@ -1004,6 +1066,7 @@ export type ManagedSlackDisconnectResponse = z.infer<
   typeof ManagedSlackDisconnectResponseSchema
 >
 export type Session = z.infer<typeof SessionSchema>
+export type SessionSource = z.infer<typeof SessionSourceSchema>
 export type AgentSnapshot = z.infer<typeof AgentSnapshotSchema>
 export type SessionEvent = z.infer<typeof SessionEventSchema>
 export type Turn = z.infer<typeof TurnSchema>

@@ -101,6 +101,28 @@ const { agent, deployment } = await oc.agents.repository.import({
 });
 ```
 
+### Configure repository access
+
+Flue agents can use repositories granted to your OpenComputer GitHub App as working sources. Read
+the current grant and policy, or narrow the agent to explicit repository ids from that view:
+
+```typescript
+const access = await oc.agents.getRepositoryAccess(agent.id);
+const target = access.effectiveRepositories?.find(
+  (repo) => repo.fullName === "your-org/your-repo",
+);
+if (!target) throw new Error("Repository is not currently available to this agent");
+
+await oc.agents.updateRepositoryAccess(agent.id, {
+  mode: "selected",
+  repositoryIds: [target.id],
+});
+```
+
+Use `{ mode: "all" }` for every currently and subsequently granted repository, or
+`{ mode: "selected", repositoryIds: [] }` to disable repository work. An `unavailable` grant has
+`effectiveRepositories: null`; an empty array is a successfully read, known-empty view.
+
 ### Credentials
 
 Sessions run **Managed** (via OpenComputer, billed to your credits — `credential: "managed"`, no key, the default for new orgs) or on **your own** model-provider key (Anthropic for `claude`, OpenAI for `codex`). An inline `key` stores one and attaches it to the agent; manage keys directly to reuse one across agents, set an org default, or rotate/remove:

@@ -44,6 +44,10 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAgentDeploymentLogs } from '@/hooks/use-agent-deployment-logs'
 import {
+  RepositoryAccessPanel,
+  RepositoryTaskSuggestion,
+} from '@/components/repository-access'
+import {
   agentSetupStage,
   agentSetupPresentation,
 } from '@/lib/agent-setup-presentation'
@@ -647,6 +651,15 @@ export default function AgentSetup() {
           </div>
         ) : null}
       </Panel>
+
+      {agent.runtime === 'flue' && managedSlackStatus === 'active' ? (
+        <div className="space-y-3">
+          <RepositoryAccessPanel agentId={agentId} context="setup" />
+          {stage === 'ready' ? (
+            <RepositoryTaskSuggestion agentId={agentId} />
+          ) : null}
+        </div>
+      ) : null}
 
       {deployment ? (
         <Panel>

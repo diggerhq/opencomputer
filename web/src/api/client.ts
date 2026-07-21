@@ -1,6 +1,9 @@
 import posthog from 'posthog-js'
 import { z } from 'zod'
 import * as S from './schemas'
+import { ApiError } from './errors'
+
+export { ApiError } from './errors'
 
 // Re-export the inferred response types (schemas are the single source of
 // truth) so existing `import { type Sandbox } from '@/api/client'` keeps working.
@@ -35,12 +38,16 @@ export type {
   AgentDeployment,
   AgentDeploymentLog,
   DeployApp,
+  RepositoryAccess,
+  RepositoryAccessPolicy,
+  RepositoryAccessRepository,
   RepositorySourceInspection,
   ManagedSlackAuthorizeResponse,
   ManagedSlackConnection,
   ManagedSlackWorkspaceConnection,
   ManagedSlackDisconnectResponse,
   Session,
+  SessionSource,
   AgentSnapshot,
   SessionEvent,
   Turn,
@@ -113,20 +120,6 @@ function errorDetails(body: unknown): Record<string, unknown> | undefined {
   return error && typeof error === 'object' && !Array.isArray(error)
     ? (error as Record<string, unknown>)
     : undefined
-}
-
-/** An error carrying the HTTP status + the API's typed reason, so callers can branch
- *  (e.g. 404 = not-found; 402 `insufficient_credits` = out of credits → top-up CTA). */
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly type?: string,
-    readonly details?: Record<string, unknown>,
-  ) {
-    super(message)
-    this.name = 'ApiError'
-  }
 }
 
 export async function apiFetch<T>(
@@ -666,6 +659,23 @@ export const deleteAgentSkills = (agentId: string) =>
 export const getDeployApp = () =>
   apiFetch('/v3/github/deploy-app', {}, S.DeployAppSchema)
 
+export const getRepositoryAccess = (agentId: string) =>
+  apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/repository-access`,
+    {},
+    S.RepositoryAccessSchema,
+  )
+
+export const updateRepositoryAccess = (
+  agentId: string,
+  policy: S.RepositoryAccessPolicy,
+) =>
+  apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/repository-access`,
+    { method: 'PUT', body: JSON.stringify(policy) },
+    S.RepositoryAccessSchema,
+  )
+
 export const reviewRepositoryAgent = (body: {
   repo: string
   path: string
@@ -933,6 +943,13 @@ export const getSessions = (
 
 export const getSession = (id: string) =>
   apiFetch(`/v3/sessions/${id}`, {}, S.SessionSchema)
+
+export const getSessionSources = (id: string) =>
+  apiFetch(
+    `/v3/sessions/${encodeURIComponent(id)}/sources`,
+    {},
+    S.SessionSourceListSchema,
+  )
 
 // The API wants { agent: <id>, input } (input required). An optional `sources[]` attaches
 // a WORKING repo the agent checks out + opens PRs from — the control plane pins the ref's
