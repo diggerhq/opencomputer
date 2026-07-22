@@ -2,49 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createAgentHook,
   getAgentHooks,
-  invokeAgent,
   revokeAgentHook,
 } from './client'
 
 const agentId = 'agt_0123456789abcdef01234567'
 
 afterEach(() => vi.unstubAllGlobals())
-
-describe('Agent URL dashboard client', () => {
-  it('invokes through the signed dashboard proxy with a stable key', async () => {
-    const fetchMock = vi.fn(
-      (input: string | URL | Request, init?: RequestInit) => {
-        void input
-        void init
-        return Promise.resolve(
-          Response.json({
-            request_id: 'req_1',
-            session: { id: 'ses_1', status: 'queued', head: 1 },
-            client_token: 'client-secret',
-            links: {
-              events: 'https://example.test/events',
-              messages: 'https://example.test/messages',
-            },
-            replayed: false,
-          }),
-        )
-      },
-    )
-    vi.stubGlobal('fetch', fetchMock)
-
-    await expect(
-      invokeAgent(agentId, { task: 'review' }, 'invoke-1'),
-    ).resolves.toMatchObject({ session: { id: 'ses_1' } })
-    const [input, init] = fetchMock.mock.calls[0]
-    expect(input).toBe(`/api/dashboard/v3/agents/${agentId}/sessions`)
-    expect(init).toMatchObject({
-      method: 'POST',
-      credentials: 'include',
-      body: JSON.stringify({ task: 'review' }),
-    })
-    expect(new Headers(init?.headers).get('Idempotency-Key')).toBe('invoke-1')
-  })
-})
 
 describe('Hook management dashboard client', () => {
   it('parses copy-once creation and secret-free list responses', async () => {

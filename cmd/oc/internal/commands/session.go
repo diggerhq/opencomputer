@@ -5,6 +5,7 @@ package commands
 // (which manages the behavior); sessions are addressed by id.
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -136,11 +137,17 @@ var sessionGetCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		var raw json.RawMessage
 		var s Session
-		if err := sc.Get(cmd.Context(), "/v3/sessions/"+args[0], &s); err != nil {
+		if err := sc.Get(cmd.Context(), "/v3/sessions/"+args[0], &raw); err != nil {
 			return err
 		}
-		printer.Print(s, func() {
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return fmt.Errorf("decode session: %w", err)
+		}
+		// Keep the human view compact, but preserve the complete server response
+		// for automation: usage, cursors, limits, and future additive fields.
+		printer.Print(raw, func() {
 			fmt.Printf("ID:      %s\n", s.ID)
 			fmt.Printf("Status:  %s\n", s.Status)
 			fmt.Printf("Agent:   %s\n", s.AgentID)

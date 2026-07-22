@@ -23,6 +23,10 @@ follow/steer commands. It generates one idempotency key and keeps it stable
 across automatic retries; supply your own key when separate command runs must
 converge.
 
+With `--json`, the output is the complete acceptance receipt, including the
+one-hour session client token and canonical event/message links. Treat that
+output as a session-scoped credential.
+
 Use `oc session create` instead when you need model, source, destination, or
 per-session limit overrides.
 

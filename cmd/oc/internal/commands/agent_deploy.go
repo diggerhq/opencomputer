@@ -326,7 +326,7 @@ func printDeployProgress(state string) {
 
 var agentDeployCmd = &cobra.Command{
 	Use:   "deploy [dir]",
-	Short: "Deploy an agent from a directory (agent.toml + prompt.md + skills/)",
+	Short: "Deploy an agent from a local directory",
 	Example: "  oc agent deploy                 # deploy the agent.toml in the current directory\n" +
 		"  oc agent deploy ./agents/triage # deploy a specific directory\n" +
 		"  oc agent deploy --no-activate   # stage a revision without making it active\n" +
@@ -746,7 +746,7 @@ func registerAgentDeploy() {
 	agentDeployCmd.Flags().String("agent", "", "Target agent id or name (else the manifest's [agent].id / name)")
 	agentDeployCmd.Flags().Bool("no-activate", false, "Create the revision without activating it (stage)")
 	agentDeployCmd.Flags().String("idempotency-key", "", "CI-safe key: a retry with the same key returns the same deployment")
-	agentDeployCmd.Flags().Int("timeout", 180, "Seconds to wait for a flue deploy to boot-verify (poll to terminal state)")
+	agentDeployCmd.Flags().Int("timeout", 180, "Seconds to wait for a Flue deploy to boot-verify (poll to terminal state)")
 	agentDeployCmd.Flags().Bool("verbose", false, "Show full framework build output")
 
 	for _, c := range []*cobra.Command{agentRevisionsCmd, agentRollbackCmd, agentStatusCmd, agentLinkCmd, agentUnlinkCmd, agentDeploymentsCmd, agentDeploymentCmd} {

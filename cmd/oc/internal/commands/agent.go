@@ -2,8 +2,9 @@ package commands
 
 // The `oc agent` command family, rebuilt on the v3 Durable Agent Sessions API
 // (/v3/agents/*). The legacy v1 managed-agents verbs (channels/packages/chat)
-// were removed wholesale — agents are prompt+model+skills behaviors deployed
-// as immutable revisions, a different model entirely.
+// were removed wholesale — agents are reusable behaviors deployed as numbered
+// revisions, a different model entirely. Built-in runtimes use prompt + model
+// + skills; framework runtimes such as Flue carry behavior in their app.
 //
 // Verbs (each in its own file):
 //   agent.go         — parent command, shared response types, helpers, registration
@@ -165,8 +166,9 @@ var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Create, deploy, and manage agents",
 	Long: "Manage Durable Agent Sessions agents on OpenComputer.\n\n" +
-		"An agent is a prompt + model + skills behavior. Deploying it produces an\n" +
-		"immutable, numbered revision; the active revision is what new sessions run.\n" +
+		"An agent is reusable behavior for durable sessions. Built-in agents combine\n" +
+		"a prompt, model, and skills; Flue agents deploy a compiled app. Deploying\n" +
+		"produces a numbered revision; the active revision is what new sessions run.\n" +
 		"Deploy from a local directory (`oc agent deploy`) or link a GitHub repo for\n" +
 		"push-to-deploy (`oc agent link`).",
 }

@@ -123,6 +123,10 @@ The Agent URL has two application routes:
 | `POST /`              | OpenComputer org API key | `202` receipt with a session client token |
 | `POST /hooks/<token>` | Hook URL itself          | `200` receipt without session access      |
 
+Opening the root URL in a browser shows a static usage guide. The page is
+derived from the hostname only: it does not look up the agent or prove that the
+agent exists.
+
 Queries, redirects, trailing path variants, and every other route are rejected.
 Root invocation is server-to-server and does not advertise browser CORS.
 

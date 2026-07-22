@@ -27,7 +27,7 @@ oc agent build --dir . --check-only --json  # validate a Flue app without creden
   `idempotency_key` → `idempotencyKey`); the wire shapes below are raw JSON.
   Opaque blobs — session `metadata`, event `refs`/`raw` — pass through
   **verbatim**; everything else (incl. event `body`) is camelCased. The CLI
-  prints a table, or raw JSON with `--json`.
+  prints a table, or machine-readable JSON with `--json`.
 </Note>
 
 ## Agent URLs and Hooks
@@ -655,7 +655,7 @@ the current active revision remains unchanged.
 
 | Command                                                                            | Purpose                                                                                       |
 | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `oc agent deploy [dir] [--agent <id\|name>] [--no-activate]`                       | Bundle a local directory → inline deployment.                                                 |
+| `oc agent deploy [dir] [--agent <id\|name>] [--no-activate] [--verbose]`           | Bundle a local directory → inline deployment; stream framework build output with `--verbose`. |
 | `oc agent build --dir <dir> [--check-only] [--target cloudflare] [--output <dir>]` | Validate or build a Flue artifact without fetching, installing, authenticating, or deploying. |
 | `oc agent deployments [--agent <id>]` · `oc agent deployments get <id>`            | History · one deployment.                                                                     |
 

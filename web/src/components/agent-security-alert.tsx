@@ -38,7 +38,7 @@ export function AgentSecurityAlert({
           <p className="text-destructive/80 mt-0.5">
             Review the affected Hook before reconnecting its sender.{' '}
             <Link
-              to={`/agents/${encodeURIComponent(alert.agentId)}#hooks`}
+              to={`/agents/${encodeURIComponent(alert.agentId)}/settings?section=hooks`}
               className="font-medium underline underline-offset-2"
             >
               Review agent

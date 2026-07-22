@@ -1064,18 +1064,6 @@ export const AgentHookCreateSchema = z.object({
   hook_url: z.string(),
 })
 
-export const AgentInvokeReceiptSchema = z.object({
-  request_id: z.string(),
-  session: z.object({
-    id: z.string(),
-    status: z.string(),
-    head: z.coerce.number(),
-  }),
-  client_token: z.string(),
-  links: z.object({ events: z.string(), messages: z.string() }),
-  replayed: z.boolean(),
-})
-
 export const AgentSecurityNotificationSchema = z.object({
   id: z.string(),
   agentId: z.string(),
@@ -1160,7 +1148,6 @@ export type TurnUsage = z.infer<typeof TurnUsageSchema>
 export type SessionUsage = z.infer<typeof SessionUsageSchema>
 export type AgentHook = z.infer<typeof AgentHookSchema>
 export type AgentHookCreate = z.infer<typeof AgentHookCreateSchema>
-export type AgentInvokeReceipt = z.infer<typeof AgentInvokeReceiptSchema>
 export type AgentSecurityNotification = z.infer<
   typeof AgentSecurityNotificationSchema
 >

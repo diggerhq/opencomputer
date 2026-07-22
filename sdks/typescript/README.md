@@ -1,6 +1,6 @@
 # @opencomputer/sdk
 
-The official TypeScript SDK for [OpenComputer](https://github.com/diggerhq/opensandbox): **cloud sandboxes** and **Durable Agent Sessions** (managed background agents).
+The official TypeScript SDK for [OpenComputer](https://github.com/diggerhq/opencomputer): **cloud sandboxes** and **Durable Agent Sessions** (managed background agents).
 
 > This one package covers both surfaces — install **`@opencomputer/sdk`**. (The older `@opencomputer/agents-sdk` is superseded; use this instead.)
 
@@ -65,6 +65,40 @@ if (delivery.type === "turn.completed") {
   const { result } = await session.result();
 }
 ```
+
+### Invoke through an Agent URL
+
+Every agent has a permanent HTTP address. Use it from a trusted backend with
+your org API key; the accepted response includes a session-scoped token for
+streaming or steering that session.
+
+```typescript
+const agent = await oc.agents.get("agt_...");
+const response = await fetch(`${agent.invokeUrl}/`, {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.OPENCOMPUTER_API_KEY}`,
+    "Content-Type": "application/json",
+    "Idempotency-Key": "incoming-event-id",
+  },
+  body: JSON.stringify({ task: "Review PR #42" }),
+});
+const receipt = await response.json();
+console.log(receipt.session.id);
+```
+
+For an external system that cannot hold an org key, create an independently
+revocable Hook URL. The complete URL is returned only once.
+
+```typescript
+const created = await oc.agents.hooks.create(agent.id, {
+  name: "grafana-prod",
+});
+console.log(created.hookUrl);
+```
+
+[Agent URL guide](https://docs.opencomputer.dev/agent-sessions/agent-urls) ·
+[Hook URL guide](https://docs.opencomputer.dev/agent-sessions/hooks)
 
 ### Create an agent from a repository
 

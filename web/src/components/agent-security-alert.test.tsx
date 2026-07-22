@@ -35,7 +35,9 @@ describe('AgentSecurityAlert', () => {
 
     expect(markup).toContain('role="alert"')
     expect(markup).toContain('An Agent Hook URL was exposed and revoked.')
-    expect(markup).toContain(`href="/agents/${alert.agentId}#hooks"`)
+    expect(markup).toContain(
+      `href="/agents/${alert.agentId}/settings?section=hooks"`,
+    )
     expect(markup).toContain('>Acknowledge</button>')
     expect(markup).toContain('sm:flex-row')
     expect(markup).not.toContain(alert.hookId)

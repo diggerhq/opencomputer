@@ -60,7 +60,6 @@ export type {
   AgentSecurityNotification,
   AgentHook,
   AgentHookCreate,
-  AgentInvokeReceipt,
   SessionUsage,
   TurnUsage,
 } from './schemas'
@@ -533,21 +532,6 @@ export const updateAgent = (
     `/v3/agents/${id}`,
     { method: 'PATCH', body: JSON.stringify(body) },
     S.AgentSchema,
-  )
-
-export const invokeAgent = (
-  agentId: string,
-  payload: unknown,
-  idempotencyKey: string,
-) =>
-  apiFetch(
-    `/v3/agents/${encodeURIComponent(agentId)}/sessions`,
-    {
-      method: 'POST',
-      headers: { 'Idempotency-Key': idempotencyKey },
-      body: JSON.stringify(payload),
-    },
-    S.AgentInvokeReceiptSchema,
   )
 
 export const getAgentHooks = (agentId: string, cursor?: string) => {
