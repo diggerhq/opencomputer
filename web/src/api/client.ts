@@ -57,6 +57,7 @@ export type {
   SandboxWebhook,
   SandboxWebhookDelivery,
   Credential,
+  AgentSecurityNotification,
 } from './schemas'
 
 const API_BASE = '/api/dashboard'
@@ -378,6 +379,19 @@ export const switchOrg = (orgId: string) =>
     '/org/switch',
     { method: 'POST', body: JSON.stringify({ orgId }) },
     S.OrgSchema,
+  )
+
+export const listAgentSecurityNotifications = () =>
+  apiFetch(
+    '/agent-security-notifications?include_acknowledged=false&limit=100',
+    {},
+    S.AgentSecurityNotificationListSchema,
+  )
+
+export const acknowledgeAgentSecurityNotification = (id: string) =>
+  apiFetch<void>(
+    `/agent-security-notifications/${encodeURIComponent(id)}/acknowledge`,
+    { method: 'POST' },
   )
 
 // Credits

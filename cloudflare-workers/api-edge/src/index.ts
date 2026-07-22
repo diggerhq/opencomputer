@@ -19,6 +19,10 @@
 export { CreditAccount } from "../../shared/credit_account";
 import { handleDashboard, type DashboardEnv } from "./dashboard";
 import {
+  AGENT_SECURITY_NOTIFICATION_PATH,
+  receiveAgentSecurityNotification,
+} from "./agent_security_notifications";
+import {
   autumnWebhook,
   autumnProjectInternal,
   autumnSetProviderInternal,
@@ -38,6 +42,9 @@ export interface Env extends DashboardEnv {
   CF_ADMIN_SECRET: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
+  // Dedicated HMAC secret for the Sessions API's minimal Agent Hook exposure
+  // alert. It is intentionally not shared with other internal routes.
+  OC_SECURITY_NOTIFICATION_SECRET?: string;
   // Per-org cross-cell paused-sandbox cap (default 100). Set lower on dev to
   // exercise the promotion path without paused hundreds of boxes.
   PAUSED_CAP?: string;
@@ -1848,6 +1855,9 @@ export default {
     if (path === "/internal/browser-usage") {
       if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
       return browserUsageInternal(req, env);
+    }
+    if (path === AGENT_SECURITY_NOTIFICATION_PATH) {
+      return receiveAgentSecurityNotification(req, env);
     }
 
     // Migrate tool: flip D1 billing_provider for one org (EVENT_SECRET HMAC).

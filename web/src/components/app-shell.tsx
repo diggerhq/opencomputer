@@ -24,7 +24,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
-import { logout, getAutumnBilling } from '@/api/client'
+import { getAutumnBilling, logout } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -41,6 +41,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
 
 type NavItem = {
@@ -261,14 +262,16 @@ function HaltBanner() {
   })
   const halted = data?.isHalted ?? false
   if (!halted || location.pathname.startsWith('/billing')) return null
-  // Sticky + error-toned so the halt stays in view while scrolling and reads as a hard
-  // block, not a muted notice (out-of-credits doc, Part A1). Sits just below the top bar.
   return (
-    <div className="border-destructive/40 bg-status-error-bg text-destructive sticky top-14 z-20 flex items-center justify-center gap-2 border-b px-4 py-2.5 text-center text-sm font-medium md:top-16 sm:px-8">
+    <div className="border-destructive/40 bg-status-error-bg text-destructive flex items-center justify-center gap-2 border-b px-4 py-2.5 text-center text-sm font-medium sm:px-8">
       <CircleAlert className="size-4 shrink-0" />
       <span>
-        Your agent sessions and sandboxes are paused — you&apos;re out of prepaid credits.{' '}
-        <Link to="/billing" className="font-semibold underline underline-offset-2">
+        Your agent sessions and sandboxes are paused — you&apos;re out of
+        prepaid credits.{' '}
+        <Link
+          to="/billing"
+          className="font-semibold underline underline-offset-2"
+        >
           Top up &amp; turn on auto-recharge
         </Link>{' '}
         to resume.
@@ -321,7 +324,10 @@ export default function AppShell() {
 
       {/* Main content */}
       <div className="md:pt-16 md:pl-60">
-        <HaltBanner />
+        <div className="sticky top-14 z-20 md:top-16">
+          <HaltBanner />
+          <AgentSecurityAlertBanner />
+        </div>
         <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8">
           {/* Keyed by org + route: clears a page error on navigation AND
               remounts org-scoped pages on org switch so local draft/filter

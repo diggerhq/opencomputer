@@ -27,6 +27,10 @@ import {
   autumnOpenCustomerPortal,
 } from "./autumn_webhook";
 import { handleWebhooksAPI, type WebhookEnv } from "./webhooks";
+import {
+  acknowledgeAgentSecurityNotification,
+  listAgentSecurityNotifications,
+} from "./agent_security_notifications";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -972,6 +976,17 @@ export async function handleDashboard(
   if (sub === "/org/custom-domain" && method === "PUT") return handleSetCustomDomain(req, env, caller);
   if (sub === "/org/custom-domain" && method === "DELETE") return handleDeleteCustomDomain(req, env, caller);
   if (sub === "/org/custom-domain/refresh" && method === "POST") return handleRefreshCustomDomain(req, env, caller);
+
+  // ── Agent Hook exposure alerts ──────────────────────────────────────────
+  if (sub === "/agent-security-notifications" && method === "GET") {
+    return listAgentSecurityNotifications(req, env, caller);
+  }
+  {
+    const m = sub.match(/^\/agent-security-notifications\/(hse_[0-9a-f]{24})\/acknowledge$/);
+    if (m && method === "POST") {
+      return acknowledgeAgentSecurityNotification(env, caller, m[1]);
+    }
+  }
 
   // ── api keys ───────────────────────────────────────────────────────────
   if (sub === "/api-keys" && method === "GET") return handleListAPIKeys(req, env, caller);

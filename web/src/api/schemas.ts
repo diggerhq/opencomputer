@@ -1005,6 +1005,20 @@ export const SessionResultSchema = z.object({
   result: SessionEventSchema.nullable(),
 })
 
+export const AgentSecurityNotificationSchema = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  hookId: z.string(),
+  kind: z.literal('secret_exposure'),
+  occurredAt: z.string(),
+  acknowledgedAt: z.string().nullable(),
+  acknowledgedBy: z.string().nullable(),
+})
+export const AgentSecurityNotificationListSchema = z.object({
+  data: z.array(AgentSecurityNotificationSchema),
+  next_cursor: z.string().nullable(),
+})
+
 export const DestinationSchema = z.object({
   id: z.string(),
   url: z.string(),
@@ -1071,6 +1085,9 @@ export type AgentSnapshot = z.infer<typeof AgentSnapshotSchema>
 export type SessionEvent = z.infer<typeof SessionEventSchema>
 export type Turn = z.infer<typeof TurnSchema>
 export type SessionResult = z.infer<typeof SessionResultSchema>
+export type AgentSecurityNotification = z.infer<
+  typeof AgentSecurityNotificationSchema
+>
 export type Destination = z.infer<typeof DestinationSchema>
 export type Delivery = z.infer<typeof DeliverySchema>
 
