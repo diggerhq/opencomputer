@@ -15,6 +15,7 @@ var Version = "dev"
 
 var (
 	jsonOutput bool
+	noColor    bool
 	printer    *output.Printer
 )
 
@@ -63,6 +64,7 @@ func isOfflineCommand(cmd *cobra.Command) bool {
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
+	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().String("api-key", "", "API key (overrides OPENCOMPUTER_API_KEY)")
 	rootCmd.PersistentFlags().String("api-url", "", "API URL (overrides OPENCOMPUTER_API_URL)")
 	rootCmd.PersistentFlags().String("sessions-api-url", "", "Sessions API URL (overrides SESSIONS_API_URL)")

@@ -260,6 +260,8 @@ export class Session extends ClientSession {
 
   get status(): SessionStatus { return this.data.status; }
   get lastTurn(): LastTurn | undefined { return this.data.lastTurn; }
+  /** Durable rollup of terminal-turn usage; absent cost is unknown, not zero. */
+  get usage(): SessionData["usage"] { return this.data.usage; }
   /** Source checkout status from the create response — `{ name, status, path, sha, ... }[]`
    *  (empty when none). For **live** status, call {@link Session.listSources}. */
   get sources(): SourceSummary[] { return this._sources; }

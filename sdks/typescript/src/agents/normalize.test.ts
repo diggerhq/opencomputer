@@ -17,6 +17,34 @@ describe("normalize (API response → idiomatic TS)", () => {
     expect(out.head).toBe(3);
   });
 
+  it("normalizes the canonical nested usage shape", () => {
+    const out = normalize<{
+      usage?: {
+        activeSeconds?: number;
+        reportedTurns?: number;
+        complete?: boolean;
+        totalCostUsd?: number;
+        cacheReadInputTokens?: number;
+      };
+    }>({
+      usage: {
+        active_seconds: 12,
+        reported_turns: 2,
+        complete: false,
+        total_cost_usd: 0.42,
+        cache_read_input_tokens: 17,
+      },
+    });
+
+    expect(out.usage).toEqual({
+      activeSeconds: 12,
+      reportedTurns: 2,
+      complete: false,
+      totalCostUsd: 0.42,
+      cacheReadInputTokens: 17,
+    });
+  });
+
   it("passes `metadata` through verbatim — opaque, inner keys untouched", () => {
     const out = normalize<{ metadata?: Record<string, unknown> }>({
       metadata: { pull_number: 42, owner_repo: "acme/widgets", nested: { keep_me: true } },

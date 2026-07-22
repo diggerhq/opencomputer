@@ -1,54 +1,99 @@
-// A session's / turn's `usage` is an opaque, runtime-authored object — its shape
-// varies by runtime (brain-box runtimes report token counts + sometimes a cost;
-// flue currently emits `{}`, with spend metered authoritatively at the gateway).
-// Extract the human-meaningful bits defensively — never assume a field is present.
+import type { SessionUsage, TurnUsage } from '@/api/schemas'
 
-export type UsageLike = Record<string, unknown> | null | undefined
+export type UsageLike = SessionUsage | TurnUsage | null | undefined
 
-function num(v: unknown): number | null {
-  return typeof v === 'number' && Number.isFinite(v) ? v : null
+function asRecord(value: UsageLike): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' ? value : null
 }
 
 export function hasUsage(usage: UsageLike): boolean {
-  return !!usage && Object.keys(usage).length > 0
+  const record = asRecord(usage)
+  return record !== null && Object.keys(record).length > 0
 }
 
-// Cost in USD if the runtime reported one — several field spellings appear across runtimes.
 export function usageCostUsd(usage: UsageLike): number | null {
-  if (!usage) return null
-  const u = usage
-  for (const k of ['cost_usd', 'total_cost_usd', 'cost', 'total_cost', 'usd']) {
-    const n = num(u[k])
-    if (n !== null) return n
-  }
-  return null
+  const record = asRecord(usage)
+  if (!record) return null
+  const value = record.total_cost_usd
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-// Total tokens, summing input/output when a direct total isn't given.
 export function usageTokens(usage: UsageLike): number | null {
-  if (!usage) return null
-  const u = usage
-  const total = num(u.total_tokens) ?? num(u.tokens)
-  if (total !== null) return total
-  const inp = num(u.input_tokens) ?? num(u.prompt_tokens)
-  const out = num(u.output_tokens) ?? num(u.completion_tokens)
-  if (inp !== null || out !== null) return (inp ?? 0) + (out ?? 0)
-  return null
+  const record = asRecord(usage)
+  if (!record) return null
+  const value = record.tokens
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : null
 }
 
-// Sub-cent per-session spend is common; show enough precision to stay non-zero.
-export function formatUsd(n: number): string {
-  if (n === 0) return '$0'
-  if (n < 0.01) return `$${n.toFixed(4)}`
-  if (n < 1) return `$${n.toFixed(3)}`
-  return `$${n.toFixed(2)}`
+export function usageActiveSeconds(usage: UsageLike): number | null {
+  const record = asRecord(usage)
+  if (!record) return null
+  const value = record.active_seconds
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : null
 }
 
-// A compact one-line spend label for a table cell / metric: "$0.0230", "1,240 tok", or "—".
-export function formatSpend(usage: UsageLike): string {
-  const cost = usageCostUsd(usage)
-  if (cost !== null) return formatUsd(cost)
-  const tok = usageTokens(usage)
-  if (tok !== null) return `${tok.toLocaleString()} tok`
-  return '—'
+export function usageIsIncomplete(usage: UsageLike): boolean {
+  return asRecord(usage)?.complete === false
+}
+
+export function usageAttribution(
+  usage: UsageLike,
+): 'exact' | 'best_effort' | null {
+  const record = asRecord(usage)
+  if (!record) return null
+  return record.attribution === 'exact' || record.attribution === 'best_effort'
+    ? record.attribution
+    : null
+}
+
+export function formatUsd(value: number): string {
+  if (value === 0) return '$0'
+  if (value < 0.01) return `$${value.toFixed(4)}`
+  if (value < 1) return `$${value.toFixed(3)}`
+  return `$${value.toFixed(2)}`
+}
+
+export function formatUsageTokens(usage: UsageLike): string {
+  const value = usageTokens(usage)
+  if (value === null) return 'Unknown'
+  return `${usageIsIncomplete(usage) ? '≥' : ''}${value.toLocaleString()}`
+}
+
+export function formatUsageCost(usage: UsageLike): string {
+  const value = usageCostUsd(usage)
+  if (value === null) return 'Unknown'
+  return `${usageIsIncomplete(usage) ? '≥' : ''}${formatUsd(value)}`
+}
+
+export function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  if (minutes < 60) return `${minutes}m ${String(remainder).padStart(2, '0')}s`
+  const hours = Math.floor(minutes / 60)
+  const minuteRemainder = minutes % 60
+  return `${hours}h ${String(minuteRemainder).padStart(2, '0')}m`
+}
+
+export function formatUsageDuration(usage: UsageLike): string {
+  const seconds = usageActiveSeconds(usage)
+  return seconds === null ? 'Unknown' : formatDuration(seconds)
+}
+
+export function usageDisclosure(usage: UsageLike): string | null {
+  const record = asRecord(usage)
+  if (!record) return null
+  const notes: string[] = []
+  if (record.complete === false) {
+    const missing = record.unreported_turns
+    notes.push(
+      typeof missing === 'number' && missing > 0
+        ? `Lower bound · ${missing} turn${missing === 1 ? '' : 's'} did not report usage`
+        : 'Lower-bound usage',
+    )
+  }
+  if (record.attribution === 'best_effort') {
+    notes.push('Best-effort session attribution')
+  }
+  return notes.length > 0 ? notes.join(' · ') : null
 }

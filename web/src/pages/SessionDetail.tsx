@@ -41,14 +41,21 @@ import { ApiHint } from '@/components/api-hint'
 import { MessagesSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { GithubMark } from '@/components/github-mark'
-import { formatSpend, usageTokens } from '@/lib/usage'
 import {
+  formatUsageCost,
+  formatUsageDuration,
+  formatUsageTokens,
+  usageDisclosure,
+} from '@/lib/usage'
+import {
+  HttpRequestCard,
   MessageBubble,
   TurnConversation,
 } from '@/components/session-conversation'
 import {
   bodyText,
   groupIntoTurns,
+  httpRequestPayloadText,
   isOutOfCredits,
   isTurnInput,
 } from '@/lib/session-turns'
@@ -397,9 +404,12 @@ for await (const event of session.events()) {
     const m = new Map<string, TurnStartInfo>()
     for (const g of grouped.groups) {
       const firstInput = g.events.find(isTurnInput)
-      const raw = firstInput ? bodyText(firstInput) : null
+      const raw = firstInput
+        ? (bodyText(firstInput) ?? httpRequestPayloadText(firstInput))
+        : null
+      const compact = raw?.replace(/\s+/g, ' ') ?? null
       const preview =
-        raw && raw.length > 40 ? `${raw.slice(0, 40)}…` : (raw ?? null)
+        compact && compact.length > 40 ? `${compact.slice(0, 40)}…` : compact
       m.set(g.turnId, { from: g.fromSeq, to: g.toSeq, preview })
     }
     return m
@@ -530,14 +540,22 @@ for await (const event of session.events()) {
         onRetry={() => void sourcesQuery.refetch()}
       />
 
-      {/* Spend / usage — derived from the session's opaque usage object (no dedicated
-          spend endpoint). Tokens shown only when the runtime reports them (flue meters
-          at the gateway and reports none here). */}
-      <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-3">
-        <MetricCard label="Spend" value={formatSpend(session?.usage)} />
+      {/* Usage is the durable rollup of terminal turns. Missing turn observations stay
+          unknown, and incomplete totals are visibly lower bounds. */}
+      <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <MetricCard
           label="Tokens"
-          value={usageTokens(session?.usage)?.toLocaleString() ?? '—'}
+          value={formatUsageTokens(session?.usage)}
+          hint={usageDisclosure(session?.usage)}
+        />
+        <MetricCard
+          label="Active time"
+          value={formatUsageDuration(session?.usage)}
+        />
+        <MetricCard
+          label="Cost"
+          value={formatUsageCost(session?.usage)}
+          hint="Runtime-reported"
         />
         <MetricCard
           label="Events"
@@ -808,6 +826,24 @@ function EventRow({
       <li className="text-muted-foreground flex gap-2 px-4 py-2 text-xs italic">
         <Brain className="mt-0.5 size-3.5 shrink-0 opacity-60" />
         <span className="whitespace-pre-wrap">{text ?? trunc}</span>
+      </li>
+    )
+  }
+
+  if (ev.type === 'http.request') {
+    return (
+      <li className="px-4 py-3">
+        <HttpRequestCard
+          event={ev}
+          seq={ev.seq}
+          meta={
+            pending.has(ev.seq) ? (
+              <span className="text-muted-foreground text-[10px]">
+                · queued
+              </span>
+            ) : undefined
+          }
+        />
       </li>
     )
   }

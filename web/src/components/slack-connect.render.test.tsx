@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
-import { SlackConnect } from './slack-connect'
+import { SlackConnect, SlackConnectionSummary } from './slack-connect'
 import { managedSlackConnectionsQueryKey } from '@/lib/managed-slack-connections'
 
 const agentId = 'agt_aaaaaaaaaaaaaaaaaaaaaaaa'
@@ -114,6 +114,45 @@ describe('SlackConnect managed states', () => {
     expect(markup).toContain('Slack workspaces already in use')
     expect(markup).toContain('Sends messages to Docs writer')
     expect(markup).toContain(`href="/agents/${connectedAgentId}"`)
+    expect(markup).toContain('Move here')
     expect(markup).toContain('Connect another workspace')
+  })
+})
+
+describe('SlackConnectionSummary', () => {
+  it('keeps Overview compact for connected and disconnected agents', () => {
+    const renderSummary = (managed: Record<string, unknown> | null) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+      })
+      queryClient.setQueryData(['slack', 'managed', agentId], managed)
+      queryClient.setQueryData(['slack', 'byo', agentId], null)
+      return renderToStaticMarkup(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <SlackConnectionSummary
+              agentId={agentId}
+              onOpenSettings={() => undefined}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      )
+    }
+
+    const disconnected = renderSummary(null)
+    expect(disconnected).toContain('Not connected')
+    expect(disconnected).toContain('Connect Slack')
+    expect(disconnected).not.toContain('Use your own Slack app')
+
+    const connected = renderSummary({
+      mode: 'managed',
+      status: 'active',
+      workspace: { id: 'T1', name: 'Acme' },
+      app: { id: 'A1', handle: 'OpenComputer' },
+      connected_at: '2026-07-16T18:00:00Z',
+    })
+    expect(connected).toContain('OpenComputer app')
+    expect(connected).toContain('Acme')
+    expect(connected).toContain('Manage Slack')
   })
 })

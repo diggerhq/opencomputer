@@ -2,7 +2,9 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +12,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
+	"github.com/opensandbox/opensandbox/cmd/oc/internal/config"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // ── agent.toml manifest + deploy bundle ──
@@ -150,6 +154,124 @@ func revisionNumber(cmd *cobra.Command, sc *client.Client, id, revisionID string
 	return 0
 }
 
+// loadDeployHandoff fetches the public URL only for human-readable output. A
+// successful deployment stays successful if this convenience read fails; the
+// user can still retrieve the URL with `oc agent get`.
+func loadDeployHandoff(cmd *cobra.Command, sc *client.Client, id string) Agent {
+	agent := Agent{ID: id}
+	if err := sc.Get(cmd.Context(), "/v3/agents/"+id, &agent); err != nil {
+		return Agent{ID: id}
+	}
+	if agent.ID == "" {
+		agent.ID = id
+	}
+	return agent
+}
+
+type deploySuccess struct {
+	Agent    Agent
+	Revision int
+	Status   string
+	Digest   string
+}
+
+type deployOutputStyle struct {
+	color      bool
+	hyperlinks bool
+}
+
+func deployStyleFor(w io.Writer) deployOutputStyle {
+	file, ok := w.(*os.File)
+	if !ok || !term.IsTerminal(int(file.Fd())) || os.Getenv("TERM") == "dumb" {
+		return deployOutputStyle{}
+	}
+	return deployOutputStyle{
+		color:      !noColor && os.Getenv("NO_COLOR") == "",
+		hyperlinks: true,
+	}
+}
+
+func ansiText(value, code string, enabled bool) string {
+	if !enabled {
+		return value
+	}
+	return "\x1b[" + code + "m" + value + "\x1b[0m"
+}
+
+func oneLine(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\x1b' || r == '\a' || r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
+}
+
+func terminalLink(rawURL string, style deployOutputStyle) string {
+	visible := oneLine(rawURL)
+	if visible != rawURL {
+		return visible
+	}
+	parsed, err := url.ParseRequestURI(rawURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return visible
+	}
+	visible = ansiText(visible, "4;36", style.color)
+	if !style.hyperlinks {
+		return visible
+	}
+	return "\x1b]8;;" + rawURL + "\x1b\\" + visible + "\x1b]8;;\x1b\\"
+}
+
+func renderDeploySuccess(w io.Writer, success deploySuccess, style deployOutputStyle) {
+	agentID := oneLine(success.Agent.ID)
+	name := oneLine(success.Agent.Name)
+	if name == "" {
+		name = agentID
+	}
+	if name == "" {
+		name = "agent"
+	}
+
+	mark := ansiText("✓", "32", style.color)
+	title := "Deployed " + ansiText(name, "1", style.color)
+	fmt.Fprintf(w, "%s %s\n", mark, title)
+
+	status := oneLine(success.Status)
+	statusCode := "32"
+	if status == "staged" {
+		statusCode = "33"
+	}
+	status = ansiText(status, statusCode, style.color)
+	var revisionParts []string
+	if success.Revision > 0 {
+		revisionParts = append(revisionParts, fmt.Sprintf("%d", success.Revision))
+	}
+	if status != "" {
+		revisionParts = append(revisionParts, status)
+	}
+	if digest := oneLine(success.Digest); digest != "" {
+		revisionParts = append(revisionParts, digest)
+	}
+	if success.Agent.InvokeURL != "" {
+		fmt.Fprintf(w, "\n  %s\n", ansiText("Agent URL", "1", style.color))
+		fmt.Fprintf(w, "  %s\n", terminalLink(success.Agent.InvokeURL, style))
+	}
+	if len(revisionParts) > 0 {
+		fmt.Fprintf(w, "\n  %-11s %s\n", "Revision", strings.Join(revisionParts, " · "))
+	}
+	if agentID != "" {
+		manageURL := strings.TrimRight(config.DefaultAPIURL, "/") + "/agents/" + url.PathEscape(agentID)
+		fmt.Fprintf(w, "  %-11s %s\n", "Dashboard", terminalLink(manageURL, style))
+		fmt.Fprintf(w, "\n  %s\n", ansiText("Try it", "1", style.color))
+		fmt.Fprintf(w, "  %s oc agent invoke %s --data '{\"message\":\"Hello\"}'\n", ansiText("$", "2", style.color), agentID)
+	}
+}
+
+func printDeploySuccess(w io.Writer, success deploySuccess) {
+	renderDeploySuccess(w, success, deployStyleFor(w))
+}
+
 // ── async deployment polling ──
 
 func terminalState(s string) bool {
@@ -180,8 +302,8 @@ func pollDeployment(cmd *cobra.Command, sc *client.Client, agentID, depID string
 		if err := sc.Get(cmd.Context(), "/v3/agents/"+agentID+"/deployments/"+depID, &d); err != nil {
 			return d, err
 		}
-		if d.State != last && stdinIsTTY() && !jsonOutput {
-			fmt.Fprintf(os.Stderr, "  … %s\n", d.State)
+		if d.State != last {
+			printDeployProgress(d.State)
 		}
 		last = d.State
 		if terminalState(d.State) {
@@ -194,11 +316,17 @@ func pollDeployment(cmd *cobra.Command, sc *client.Client, agentID, depID string
 	}
 }
 
+func printDeployProgress(state string) {
+	if stdinIsTTY() && !jsonOutput {
+		fmt.Fprintf(os.Stderr, "  … %s\n", state)
+	}
+}
+
 // ── deploy ──
 
 var agentDeployCmd = &cobra.Command{
 	Use:   "deploy [dir]",
-	Short: "Deploy an agent from a directory (agent.toml + prompt.md + skills/)",
+	Short: "Deploy an agent from a local directory",
 	Example: "  oc agent deploy                 # deploy the agent.toml in the current directory\n" +
 		"  oc agent deploy ./agents/triage # deploy a specific directory\n" +
 		"  oc agent deploy --no-activate   # stage a revision without making it active\n" +
@@ -261,14 +389,14 @@ var agentDeployCmd = &cobra.Command{
 		// A fresh agent with no skills: `create` already produced the first
 		// revision (the deploy) — don't append a redundant identical one.
 		if created && len(skills) == 0 {
-			var a Agent
+			a := Agent{ID: id}
 			_ = sc.Get(cmd.Context(), "/v3/agents/"+id, &a)
 			n := 0
 			if a.ActiveRevision != nil {
 				n = a.ActiveRevision.Number
 			}
 			printer.Print(map[string]interface{}{"agent_id": id, "revision": n, "state": "ready", "active": true}, func() {
-				fmt.Printf("Deployed %s — revision %d (active)\n", a.Name, n)
+				printDeploySuccess(printer.W, deploySuccess{Agent: a, Revision: n, Status: "active"})
 			})
 			return nil
 		}
@@ -299,6 +427,10 @@ var agentDeployCmd = &cobra.Command{
 			printer.Print(d, func() { fmt.Printf("Deploy failed: %s\n", deployFailMsg(d)) })
 			return &ExitError{Code: 1}
 		}
+		handoff := Agent{}
+		if !jsonOutput && d.State == "ready" {
+			handoff = loadDeployHandoff(cmd, sc, id)
+		}
 		printer.Print(d, func() {
 			if d.State == "ready" {
 				n := revisionNumber(cmd, sc, id, d.RevisionID)
@@ -306,7 +438,7 @@ var agentDeployCmd = &cobra.Command{
 				if d.Active {
 					status = "active"
 				}
-				fmt.Printf("Deployed revision %d — %s\n", n, status)
+				printDeploySuccess(printer.W, deploySuccess{Agent: handoff, Revision: n, Status: status})
 			} else {
 				fmt.Printf("Deployment %s: %s\n", d.ID, d.State)
 			}
@@ -614,7 +746,8 @@ func registerAgentDeploy() {
 	agentDeployCmd.Flags().String("agent", "", "Target agent id or name (else the manifest's [agent].id / name)")
 	agentDeployCmd.Flags().Bool("no-activate", false, "Create the revision without activating it (stage)")
 	agentDeployCmd.Flags().String("idempotency-key", "", "CI-safe key: a retry with the same key returns the same deployment")
-	agentDeployCmd.Flags().Int("timeout", 180, "Seconds to wait for a flue deploy to boot-verify (poll to terminal state)")
+	agentDeployCmd.Flags().Int("timeout", 180, "Seconds to wait for a Flue deploy to boot-verify (poll to terminal state)")
+	agentDeployCmd.Flags().Bool("verbose", false, "Show full framework build output")
 
 	for _, c := range []*cobra.Command{agentRevisionsCmd, agentRollbackCmd, agentStatusCmd, agentLinkCmd, agentUnlinkCmd, agentDeploymentsCmd, agentDeploymentCmd} {
 		c.Flags().String("agent", "", "Target agent id or name (else the cwd agent.toml)")

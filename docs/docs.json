@@ -76,6 +76,8 @@
           "agent-sessions/revisions",
           "agent-sessions/skills",
           "agent-sessions/sessions",
+          "agent-sessions/agent-urls",
+          "agent-sessions/hooks",
           "agent-sessions/credentials",
           "agent-sessions/repos",
           "agent-sessions/events",
@@ -188,6 +190,7 @@
           "reference/cli/checkpoint",
           "reference/cli/patch",
           "reference/cli/preview",
+          "reference/cli/agent",
           "reference/cli/config"
         ]
       },

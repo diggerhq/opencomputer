@@ -39,7 +39,7 @@ Pass [`sources`](/agent-sessions/repos) to give a session working repositories. 
 | `failed`         | The session errored out.                                           |
 | `archived`       | Closed; read-only.                                                 |
 
-A session also carries `last_turn = { id, state, yield_reason?, result_event_id? }`; the fuller turn record (`started_at`, `completed_at`, `error`) comes from [`GET …/result`](/agent-sessions/api-reference) and `…/turns`. The **`yield_reason`** tells you why the last turn ended: `completed`, `needs_input` (the agent asked a question and the session is now `awaiting_input`), `budget_exceeded`, `deadline_exceeded`, `max_turns`, or `canceled`. Limit outcomes require runtime enforcement; the current Flue path does not enforce the generic session limits below.
+A session also carries `last_turn = { id, state, yield_reason?, result_event_id? }`; the fuller turn record (`started_at`, `completed_at`, `active_seconds`, `usage`, `error`) comes from [`GET …/result`](/agent-sessions/api-reference) and `…/turns`. The **`yield_reason`** tells you why the last turn ended: `completed`, `needs_input` (the agent asked a question and the session is now `awaiting_input`), `budget_exceeded`, `deadline_exceeded`, `max_turns`, or `canceled`. Limit outcomes require runtime enforcement; the current Flue path does not enforce the generic session limits below.
 
 ## Fetch the result
 
@@ -96,14 +96,55 @@ Three independent knobs — don't overload one for another:
 - **`Idempotency-Key`** (header) — _retry-safe create_. Makes a keyless create safe to retry (e.g. on a webhook redelivery) without spawning duplicates.
 - **`metadata`** — _routing / app state_. Opaque JSON (≤ 16 KB) echoed back on get/list and **verbatim in webhooks**, so your callback can route to the right record. Never use `key` for routing — that's what `metadata` is for.
 
-## Limits
+## Usage and limits
 
-Cap a session at create (or default it on the [agent](/agent-sessions/agents)) with `limits: { tokens, turn_seconds, turns }` — a token budget, per-turn wall-clock, and auto-run count. These are runtime limits, not spend controls; model usage is billed to your provider key (BYO) or to your OpenComputer credits (Managed). Hitting one ends the turn with the matching `yield_reason`.
+Terminal turns expose `active_seconds` and normalized `usage`. A reported turn
+contains four disjoint token components, their `tokens` sum, and optional
+`total_cost_usd`. Missing cost means unknown, not zero. If only some runtime
+observations were trustworthy, the turn keeps that lower bound and adds
+`complete: false`; a turn with no trustworthy observation returns
+`reported: false` instead of inventing a zero.
+
+The session `usage` rollup contains:
+
+```json
+{
+  "active_seconds": 42,
+  "reported_turns": 2,
+  "unreported_turns": 0,
+  "complete": true,
+  "input_tokens": 8200,
+  "output_tokens": 640,
+  "cache_creation_input_tokens": 0,
+  "cache_read_input_tokens": 1200,
+  "tokens": 10040,
+  "total_cost_usd": 0.0231,
+  "attribution": "exact"
+}
+```
+
+If `complete` is false, any token or cost total present is a **lower bound**.
+Historical sessions created before usage reporting may return an empty object;
+clients should show that as unknown. `total_cost_usd` is runtime/provider-
+reported visibility, not the billing ledger.
+
+Cap a session at create (or default it on the [agent](/agent-sessions/agents))
+with `limits: { tokens, turn_seconds, turns }`: an observed token threshold,
+per-turn wall-clock limit, and auto-run count. These are runtime limits, not
+currency or aggregate spend controls.
+
+On built-in runtimes, `limits.tokens` is evaluated from committed usage before
+the next model turn. It does not interrupt an in-flight request and can
+overshoot by one turn. `turn_seconds` and the organization's credit halt are
+separate controls. A [Hook](/agent-sessions/hooks) starts a fresh session, so
+all three limits reset on every accepted Hook POST.
 
 <Warning>
-  These limits are not yet enforced for [Flue](/agent-sessions/flue) sessions.
-  Do not use them as a deadline, turn-count, or token safety boundary for that
-  runtime.
+  [Flue](/agent-sessions/flue) exposes best-effort per-session usage
+  attribution; its agent/org gateway remains the spend-enforcement authority.
+  The generic session limits are not enforced on the current Flue execution
+  path, so do not use them as its deadline, turn-count, or token safety
+  boundary.
 </Warning>
 
 ## Model

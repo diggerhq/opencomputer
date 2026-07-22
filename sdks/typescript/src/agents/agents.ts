@@ -6,6 +6,7 @@ import {
 } from "./deployments.js";
 import { Schedules } from "./schedules.js";
 import { AgentRepository } from "./repository-agents.js";
+import { AgentHooks } from "./hooks.js";
 
 export interface CreateAgentParams {
   name: string;
@@ -138,6 +139,8 @@ export class Agents {
   readonly schedules: Schedules;
   /** Review and import an agent from an existing repository. */
   readonly repository: AgentRepository;
+  /** Named, revocable URLs for external systems that should only start this agent. */
+  readonly hooks: AgentHooks;
 
   constructor(private readonly http: Http) {
     this.deployments = new Deployments(http);
@@ -147,6 +150,7 @@ export class Agents {
     this.deploymentSource = new DeploymentSourceResource(http);
     this.schedules = new Schedules(http);
     this.repository = new AgentRepository(http);
+    this.hooks = new AgentHooks(http);
   }
 
   create(params: CreateAgentParams): Promise<Agent> {

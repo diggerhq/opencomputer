@@ -27,8 +27,76 @@ oc agent build --dir . --check-only --json  # validate a Flue app without creden
   `idempotency_key` → `idempotencyKey`); the wire shapes below are raw JSON.
   Opaque blobs — session `metadata`, event `refs`/`raw` — pass through
   **verbatim**; everything else (incl. event `body`) is camelCased. The CLI
-  prints a table, or raw JSON with `--json`.
+  prints a table, or machine-readable JSON with `--json`.
 </Note>
+
+## Agent URLs and Hooks
+
+Every `Agent` includes `invoke_url` (SDK: `invokeUrl`), its permanent
+application address. The hostname exposes exactly two invocation routes; all
+session reads and steering remain on the canonical Sessions API.
+
+| Agent-host route | Authentication | Response |
+| --- | --- | --- |
+| `POST /` | `Authorization: Bearer <org-key>` | `202` receipt, canonical links, read+steer client token |
+| `POST /hooks/<token>` | Hook URL bearer secret; no auth header | `200` receipt without client token or links |
+
+Both use the same durable session-start path. Root requires one JSON value;
+Hooks allow either an empty body or one JSON value. Neither returns agent
+output synchronously. Queries, redirects, arbitrary paths, session routes, and
+browser CORS are absent. See [Agent URLs](/agent-sessions/agent-urls) and
+[Hooks](/agent-sessions/hooks) for the complete request contracts.
+
+<Tabs>
+
+<Tab title="TypeScript SDK">
+
+| Call | Purpose |
+| --- | --- |
+| `agent.invokeUrl` | Ordinary HTTP URL for trusted-backend `POST /`. |
+| `oc.agents.hooks.create(agentId, params)` | Create a named Hook; only this call returns `hookUrl`. |
+| `oc.agents.hooks.list(agentId, params)` | List Hook metadata, optionally including revoked rows. |
+| `oc.agents.hooks.get(agentId, hookId)` | Fetch Hook metadata without a usable URL. |
+| `oc.agents.hooks.delete(agentId, hookId)` | Irreversibly revoke a Hook. |
+
+</Tab>
+
+<Tab title="REST API">
+
+| Method · Path | Purpose |
+| --- | --- |
+| `POST https://<agent-host>/` | Start a session with an org key. |
+| `POST https://<agent-host>/hooks/<token>` | Start a session with one invoke-only Hook. |
+| `POST /agents/:id/hooks` | Create a Hook (`{ name, expires_at? }`). |
+| `GET /agents/:id/hooks` · `GET …/hooks/:hookId` | List / fetch secret-free Hook metadata. |
+| `DELETE /agents/:id/hooks/:hookId` | Revoke a Hook. |
+
+</Tab>
+
+<Tab title="oc CLI">
+
+| Command | Purpose |
+| --- | --- |
+| `oc agent invoke <id\|name> [--data JSON\|--file PATH\|--stdin]` | Invoke exact root with the configured org key. |
+| `oc agent hook create <name> --agent <id\|name>` | Create and print a Hook URL once. |
+| `oc agent hooks --agent <id\|name> [--include-revoked]` | List Hook metadata. |
+| `oc agent hook get <id\|name> --agent <agent>` | Fetch Hook metadata. |
+| `oc agent hook revoke <id\|name> --agent <agent>` | Irreversibly revoke a Hook. |
+
+</Tab>
+
+</Tabs>
+
+Root accepts an optional `Idempotency-Key`. A successful receipt contains
+`request_id`, `session { id, status, head }`, `client_token`, canonical
+`links { events, messages }`, and `replayed`. Hooks use `Idempotency-Key`, then
+`webhook-id` when the first is absent, and return only `request_id`,
+`session { id, status }`, and `replayed`.
+
+Hook creation returns `{ hook, hook_url }` once. `Hook` contains `id`,
+`agent_id`, `name`, `status` (`active|expired|revoked`), `secret_last4`, nullable
+`revoked_reason` (`manual|secret_exposure`), nullable `expires_at`, and
+`created_at`.
 
 ## Sessions
 
@@ -44,7 +112,7 @@ oc agent build --dir . --check-only --json  # validate a Flue app without creden
 | `session.archive()`                         | Cancel any active turn, then close (read-only).                |
 | `session.cancel()`                          | Cooperatively stop the active turn (no-op if not running).     |
 | `session.result()`                          | `{ lastTurn, result? }` — the resolved final event.            |
-| `session.turns()` · `session.turn(id)`      | Per-turn history: timing, error.                               |
+| `session.turns()` · `session.turn(id)`      | Per-turn history: timing, normalized usage, error.             |
 | `session.sources` · `session.listSources()` | Source checkout status — create snapshot · live poll.          |
 | `session.mintClientToken(opts)`             | Mint a client token.                                           |
 
@@ -60,7 +128,7 @@ oc agent build --dir . --check-only --json  # validate a Flue app without creden
 | `POST /sessions/:id/archive`                                      | Cancel any active turn, then close (read-only).               |
 | `POST /sessions/:id/cancel`                                       | Cooperatively stop the active turn (no-op if not running).    |
 | `GET /sessions/:id/result`                                        | The result helper — `{ last_turn, result? }`.                 |
-| `GET /sessions/:id/turns` · `…/turns/:turnId`                     | Per-turn history: timing, error.                              |
+| `GET /sessions/:id/turns` · `…/turns/:turnId`                     | Per-turn history: timing, normalized usage, error.            |
 | `GET /sessions/:id/sources`                                       | Source checkout status (`SourceSummary[]`).                   |
 | `POST /sessions/:id/client-tokens`                                | Mint a client token.                                          |
 
@@ -88,7 +156,7 @@ oc agent build --dir . --check-only --json  # validate a Flue app without creden
 - `model?` — run this session on a different model than the agent's (same `provider/model` form; its provider must match the agent's [runtime](/agent-sessions/runtimes), e.g. `anthropic/…` for `claude`). Default = the agent's model. Pinned for the session's life like the rest of the snapshot. Rejected (`400 invalid`) for [flue](/agent-sessions/flue) agents — their model is fixed in the deployed artifact.
 - `key?` — get-or-create (one session per key). Keyless: an `Idempotency-Key` header makes create retry-safe.
 - `metadata?` — opaque routing state (≤ 16 KB); on get/list + **verbatim in webhooks**; never sent to the model, not indexed.
-- `limits?` `{ tokens, turn_seconds, turns }`: non-monetary; tripping one ends a built-in runtime turn with the matching `yield_reason`. These limits are stored but not yet enforced for Flue sessions.
+- `limits?` `{ tokens, turn_seconds, turns }`: non-monetary. On built-in runtimes, `tokens` is checked from committed usage before the next turn and can overshoot by one in-flight turn; `turn_seconds` and `turns` remain separate. These limits are stored but not enforced for Flue sessions.
 - `sources?`: working repositories (the token never enters the agent sandbox; see [GitHub](#github-apps-and-repos)). Built-in runtimes prepare them before turn one; Flue materializes them lazily. Each registered `{ repo, ref, sha?, name? }` or inline `{ url, ref, sha, name?, auth }`. `ref` is required; `sha` is required for inline sources but **optional for a registered repo**. Flue accepts only repositories allowed by the agent's repository-access policy.
 - Client tokens: `scopes?` (`read`/`steer`), `ttl?` 60–86400 s (SDK `ttlSeconds`).
 
@@ -102,19 +170,28 @@ A built-in runtime session pins the agent's active revision for its whole life. 
 | `agent_id` `credential_id`          | string     | resolved + pinned at create                                                                |
 | `agent_snapshot`                    | object     | `{ prompt_hash, model, runtime, revision }` — `revision` = the pinned revision number      |
 | `last_turn`                         | `Turn`-ish | `{ id, state, yield_reason?, result_event_id? }`                                           |
+| `usage`                             | object     | terminal-turn rollup: active time, reported/unreported counts, completeness, tokens, optional runtime-reported cost/attribution |
 | `limits?`                           | object     | `{ tokens?, turn_seconds?, turns? }`                                                       |
 | `metadata?`                         | object     | opaque app routing state                                                                   |
 | `key?` `created_at`                 |            | get-or-create key, timestamp                                                               |
 
 **`Turn`**
 
-| Field                         | Notes                         |
-| ----------------------------- | ----------------------------- |
-| `id` `state`                  | turn id, current state        |
-| `yield_reason?`               | why it ended (below)          |
-| `result_event_id?`            | the event carrying the result |
-| `error?`                      | failure detail, if any        |
-| `started_at?` `completed_at?` | timing                        |
+| Field                         | Notes                                                                 |
+| ----------------------------- | --------------------------------------------------------------------- |
+| `id` `state`                  | turn id, current state                                                |
+| `yield_reason?`               | why it ended (below)                                                  |
+| `result_event_id?`            | the event carrying the result                                         |
+| `error?`                      | failure detail, if any                                                |
+| `started_at?` `completed_at?` | timing                                                                |
+| `active_seconds`              | database-derived active runtime seconds                               |
+| `usage`                       | `{ reported:true, complete?:false, …tokens, total_cost_usd? }` or `{ reported:false }`; `complete:false` marks a lower bound |
+
+Session usage includes `reported_turns`, `unreported_turns`, and `complete`.
+When `complete:false`, any token/cost total present is a lower bound. Missing
+`total_cost_usd` means unknown, not zero; historical rows may contain `{}`.
+Flue session attribution may be `best_effort`, while its agent/org gateway
+remains the spend-enforcement authority. See [usage and limits](/agent-sessions/sessions#usage-and-limits).
 
 A turn's **`yield_reason`** tells you why it stopped:
 
@@ -298,6 +375,10 @@ _Managed with the SDK (`session.watches.create/list/delete`), the CLI (`oc sessi
 </Tabs>
 
 Body: `name`, `prompt`, `model`, `runtime?` (`claude`|`codex`), `key?`, `credential?`, `limits?`. PATCH takes the same **minus `runtime`** (fixed at create). `runtime`/`model` provider must agree (`claude`↔`anthropic/…`, `codex`↔`openai/…`). `credential`: a `cred_…` id (BYO, provider-matched) **or** `"managed"` (via OpenComputer, billed to credits) — mutually exclusive with `key`.
+
+Create, get, and list responses include the permanent computed `invoke_url`
+(SDK `invokeUrl`). It has no trailing slash; join `/` or `/hooks/<token>` with
+URL semantics. See [Agent URLs and Hooks](#agent-urls-and-hooks).
 
 `POST /agents` is **idempotent by `name`**: fresh → `201`, matching config → `200`, differing → `409`. Editing `prompt`/`model` (here or via [deploy](#deployments-and-revisions)) creates a **revision**; the agent keeps a pointer to its **active revision** (`GET /agents/:id` → `active_revision`) and sessions pin it. The agent row holds only identity + bindings.
 
@@ -574,7 +655,7 @@ the current active revision remains unchanged.
 
 | Command                                                                            | Purpose                                                                                       |
 | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `oc agent deploy [dir] [--agent <id\|name>] [--no-activate]`                       | Bundle a local directory → inline deployment.                                                 |
+| `oc agent deploy [dir] [--agent <id\|name>] [--no-activate] [--verbose]`           | Bundle a local directory → inline deployment; stream framework build output with `--verbose`. |
 | `oc agent build --dir <dir> [--check-only] [--target cloudflare] [--output <dir>]` | Validate or build a Flue artifact without fetching, installing, authenticating, or deploying. |
 | `oc agent deployments [--agent <id>]` · `oc agent deployments get <id>`            | History · one deployment.                                                                     |
 

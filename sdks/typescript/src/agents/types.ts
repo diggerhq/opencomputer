@@ -9,6 +9,51 @@ export type YieldReason =
 
 export interface Limits { tokens?: number; turnSeconds?: number; turns?: number; }
 
+export type UsageAttribution = "exact" | "best_effort";
+
+/** A terminal turn with at least one trustworthy normalized usage observation. */
+export interface ReportedTurnUsage {
+  reported: true;
+  /** False means the token/cost values present are lower bounds. */
+  complete?: false;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  tokens: number;
+  /** Runtime/provider-reported visibility; absent means unknown, not zero. */
+  totalCostUsd?: number;
+  attribution?: UsageAttribution;
+}
+
+/** A terminal turn for which no trustworthy usage observation was available. */
+export interface UnreportedTurnUsage {
+  reported: false;
+  attribution?: UsageAttribution;
+}
+
+/** Historical rows created before usage rollups were populated remain empty. */
+export type HistoricalUsage = { [key: string]: never };
+export type TurnUsage = ReportedTurnUsage | UnreportedTurnUsage | HistoricalUsage;
+
+export interface SessionUsageSummary {
+  activeSeconds: number;
+  reportedTurns: number;
+  unreportedTurns: number;
+  /** False means any token/cost totals present are lower bounds. */
+  complete: boolean;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+  tokens?: number;
+  /** Runtime/provider-reported visibility; absent means unknown, not zero. */
+  totalCostUsd?: number;
+  attribution?: UsageAttribution;
+}
+
+export type SessionUsage = SessionUsageSummary | HistoricalUsage;
+
 // The runtime an agent runs on. `claude` and `pi` run `anthropic/…` models today and
 // `codex` runs `openai/…`. `pi` is built provider-agnostic (the provider comes from the
 // model's `provider/` prefix, not the runtime) — more providers land next. The union
@@ -32,6 +77,8 @@ export interface Actor {
 export interface Agent {
   id: string;
   name: string;
+  /** Canonical application URL for trusted-backend JSON invocation. */
+  invokeUrl: string;
   promptHash?: string;
   model: string;
   runtime: Runtime;
@@ -63,6 +110,8 @@ export interface Turn {
   error?: unknown;
   startedAt?: string;
   completedAt?: string;
+  activeSeconds?: number;
+  usage?: TurnUsage | null;
 }
 
 export interface SessionData {
@@ -74,6 +123,7 @@ export interface SessionData {
   agentId?: string;
   credentialId?: string;
   lastTurn?: LastTurn;
+  usage?: SessionUsage | null;
   limits?: Limits;
   /** Opaque app routing state set at create (`null` when unset). See {@link CreateSessionParams.metadata}. */
   metadata?: Record<string, unknown> | null;

@@ -1,15 +1,49 @@
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Hourglass } from 'lucide-react'
+import type { SessionEvent } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import {
   bodyText,
+  httpRequestPayloadText,
   isOutOfCredits,
   isTerminalSessionStatus,
   isTurnInput,
   type GroupedTimeline,
   type TurnState,
 } from '@/lib/session-turns'
+
+export function HttpRequestCard({
+  event,
+  seq,
+  meta,
+}: {
+  event: SessionEvent
+  seq?: number
+  meta?: ReactNode
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2">
+        <span className="text-foreground text-xs font-semibold">
+          {event.actor?.display ?? 'HTTP'}
+        </span>
+        {seq != null ? (
+          <span className="text-muted-foreground/70 font-mono text-[10px]">
+            #{seq}
+          </span>
+        ) : null}
+        <span className="text-muted-foreground bg-muted rounded-sm px-1.5 py-0.5 text-[10px] font-medium">
+          HTTP input
+        </span>
+        {meta}
+      </div>
+      <pre className="bg-panel-2 text-foreground/90 overflow-x-auto rounded-md border p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+        {httpRequestPayloadText(event) ?? 'Payload unavailable'}
+      </pre>
+    </div>
+  )
+}
 
 // A single chat bubble (You / Agent). Shared between the grouped Conversation
 // view and the flat All log so both render identical message markup.
@@ -112,6 +146,21 @@ export function TurnConversation({
         return (
           <li key={group.turnId} className="space-y-3 px-4 py-3">
             {group.events.map((ev) => {
+              if (ev.type === 'http.request') {
+                return (
+                  <HttpRequestCard
+                    key={ev.id}
+                    event={ev}
+                    meta={
+                      showActiveState &&
+                      ev.id === activeInputId &&
+                      group.state === 'queued' ? (
+                        <TurnStateChip state="queued" />
+                      ) : undefined
+                    }
+                  />
+                )
+              }
               if (ev.type === 'user.message') {
                 return (
                   <MessageBubble
@@ -153,15 +202,26 @@ export function TurnConversation({
       })}
       {grouped.pending.map((ev) => (
         <li key={ev.id} className="px-4 py-3">
-          <MessageBubble
-            label={ev.actor?.display ?? 'You'}
-            text={bodyText(ev)}
-            meta={
-              !halted && !sessionTerminal ? (
-                <TurnStateChip state="queued" />
-              ) : undefined
-            }
-          />
+          {ev.type === 'http.request' ? (
+            <HttpRequestCard
+              event={ev}
+              meta={
+                !halted && !sessionTerminal ? (
+                  <TurnStateChip state="queued" />
+                ) : undefined
+              }
+            />
+          ) : (
+            <MessageBubble
+              label={ev.actor?.display ?? 'You'}
+              text={bodyText(ev)}
+              meta={
+                !halted && !sessionTerminal ? (
+                  <TurnStateChip state="queued" />
+                ) : undefined
+              }
+            />
+          )}
         </li>
       ))}
     </ul>

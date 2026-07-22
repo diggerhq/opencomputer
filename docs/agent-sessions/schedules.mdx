@@ -244,7 +244,7 @@ Fields: `id` (`srn_…`), `scheduled_for?` (the slot; `null` for a manual fire),
 - Cron floor **1 minute**.
 
 <Warning>
-Scheduled sessions run unattended — cap them. Set agent [`limits`](/agent-sessions/sessions#limits) `turns` and `turn_seconds` (every run inherits them). `limits.tokens` is not enforced yet, so don't rely on it to bound spend.
+Scheduled sessions run unattended—set agent [`limits`](/agent-sessions/sessions#usage-and-limits), which every run inherits. On built-in runtimes, `limits.tokens` is an observed inter-turn threshold and may overshoot by one turn; it is not a currency or cross-session spend cap. The current Flue execution path does not enforce the generic session limits.
 </Warning>
 
 ## Dashboard

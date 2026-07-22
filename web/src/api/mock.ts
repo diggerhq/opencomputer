@@ -460,7 +460,8 @@ const orgInvitations = [
 // ── Durable Agent Sessions ─────────────────────────────────────────────
 const agents = [
   {
-    id: 'agt_3kf9xz',
+    id: 'agt_0123456789abcdef01234567',
+    invoke_url: 'https://agt-0123456789abcdef01234567.agents.opencomputer.dev',
     name: 'PR Reviewer',
     prompt:
       'You are a meticulous code reviewer. Flag correctness, security, and clarity issues; be concise and cite line numbers.',
@@ -472,7 +473,8 @@ const agents = [
     created_at: at(20),
   },
   {
-    id: 'agt_7mq2aa',
+    id: 'agt_89abcdef0123456789abcdef',
+    invoke_url: 'https://agt-89abcdef0123456789abcdef.agents.opencomputer.dev',
     name: 'Docs Writer',
     prompt:
       'You write clear, friendly developer documentation. Prefer short sentences and runnable examples.',
@@ -569,7 +571,7 @@ const repositoryAccess = {
 
 // The linked source for the 'connected' preview (echoed for any agent id).
 const deploymentSource = {
-  agent_id: 'agt_3kf9xz',
+  agent_id: 'agt_0123456789abcdef01234567',
   repo_id: 'repo_acme_agents',
   path: 'agents/pr-reviewer',
   production_ref: 'main',
@@ -627,7 +629,8 @@ const flueInspection = {
 }
 
 const importedAgent = {
-  id: 'agt_flue_import',
+  id: 'agt_fedcba9876543210fedcba98',
+  invoke_url: 'https://agt-fedcba9876543210fedcba98.agents.opencomputer.dev',
   name: 'Support triage',
   prompt: null,
   prompt_hash: null,
@@ -861,7 +864,7 @@ const agentSkills = {
 // A connected Slack app for the first agent (the AgentDetail Slack panel).
 const slackConnection = {
   id: 'sla_5p6q7r',
-  agent_id: 'agt_3kf9xz',
+  agent_id: 'agt_0123456789abcdef01234567',
   handle: 'PR Reviewer',
   slack_app_id: 'A0123ABCDEF',
   team_id: 'T0123ABCDEF',
@@ -919,14 +922,25 @@ const credentials = [
 
 const sessions = [
   {
-    // A flue (CF-native) session — meters at the gateway, so its `usage` is empty here
-    // (spend renders "—"); the runtime badge is accented to set it apart from brain-box.
+    // Flue reports best-effort per-session attribution; its gateway remains the
+    // monetary authority.
     id: 'ses_a1b2c3',
     status: 'running',
-    agent_id: 'agt_3kf9xz',
+    agent_id: 'agt_0123456789abcdef01234567',
     agent_snapshot: { runtime: 'flue', model: 'anthropic/claude-haiku-4-5' },
     head: 24,
-    usage: {},
+    usage: {
+      active_seconds: 18,
+      reported_turns: 1,
+      unreported_turns: 0,
+      complete: true,
+      input_tokens: 1240,
+      output_tokens: 185,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 620,
+      tokens: 2045,
+      attribution: 'best_effort',
+    },
     created_at: at(0, 1),
     last_turn: { state: 'running' },
     sandboxes: { brain: 'sbx_a1b2c3d4e5', hands: 'sbx_f6g7h8i9j0' },
@@ -934,41 +948,52 @@ const sessions = [
   {
     id: 'ses_d4e5f6',
     status: 'awaiting_input',
-    agent_id: 'agt_3kf9xz',
+    agent_id: 'agt_0123456789abcdef01234567',
     agent_snapshot: { runtime: 'claude', model: 'anthropic/claude-sonnet-5' },
     head: 12,
-    usage: { cost_usd: 0.0231, input_tokens: 8200, output_tokens: 640 },
+    usage: {
+      active_seconds: 42,
+      reported_turns: 2,
+      unreported_turns: 0,
+      complete: true,
+      input_tokens: 8200,
+      output_tokens: 640,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      tokens: 8840,
+      total_cost_usd: 0.0231,
+      attribution: 'exact',
+    },
     created_at: at(0, 3),
     last_turn: { state: 'ok', yield_reason: 'needs_input' },
   },
   {
     id: 'ses_g7h8i9',
     status: 'idle',
-    agent_id: 'agt_7mq2aa',
+    agent_id: 'agt_89abcdef0123456789abcdef',
     agent_snapshot: { runtime: 'pi', model: 'anthropic/claude-sonnet-5' },
     head: 41,
-    // No cost reported → the spend column falls back to a token total.
-    usage: { input_tokens: 15000, output_tokens: 2200 },
+    usage: {},
     created_at: at(1, 2),
     last_turn: { state: 'ok', yield_reason: 'completed' },
   },
   {
     id: 'ses_j1k2l3',
     status: 'failed',
-    agent_id: 'agt_3kf9xz',
+    agent_id: 'agt_0123456789abcdef01234567',
     agent_snapshot: { runtime: 'codex', model: 'openai/gpt-5.3-codex' },
     head: 8,
-    usage: { cost_usd: 0.11 },
+    usage: {},
     created_at: at(2, 5),
     last_turn: { state: 'error', yield_reason: 'error' },
   },
   {
     id: 'ses_m4n5o6',
     status: 'archived',
-    agent_id: 'agt_7mq2aa',
+    agent_id: 'agt_89abcdef0123456789abcdef',
     agent_snapshot: { runtime: 'claude', model: 'anthropic/claude-opus-4-8' },
     head: 60,
-    usage: { cost_usd: 1.42, input_tokens: 320000, output_tokens: 18400 },
+    usage: {},
     created_at: at(4, 1),
     last_turn: { state: 'ok', yield_reason: 'completed' },
   },
@@ -1070,8 +1095,16 @@ const sessionTurns = [
     yield_reason: 'needs_input',
     started_at: at(0, 1),
     completed_at: at(0, 1),
-    active_seconds: 6.4,
-    usage: { cost_usd: 0.0121, input_tokens: 4200, output_tokens: 310 },
+    active_seconds: 7,
+    usage: {
+      reported: true,
+      input_tokens: 4200,
+      output_tokens: 310,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      tokens: 4510,
+      total_cost_usd: 0.0121,
+    },
   },
   {
     id: 'trn_1',
@@ -1079,8 +1112,8 @@ const sessionTurns = [
     yield_reason: 'error',
     started_at: at(0, 2),
     completed_at: at(0, 2),
-    active_seconds: 2.1,
-    usage: {},
+    active_seconds: 3,
+    usage: { reported: false },
     error: {
       code: 'provision_infra',
       message: 'brain sandbox failed to start',
@@ -1218,7 +1251,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
     () => failedFlueDeployment,
   ],
   [
-    /^\/v3\/agents\/agt_flue_import\/deployments(?:\?.*)?$/,
+    /^\/v3\/agents\/agt_fedcba9876543210fedcba98\/deployments(?:\?.*)?$/,
     () => ({
       data: [flueDeployment, failedFlueDeployment],
       next_cursor: null,
@@ -1230,7 +1263,7 @@ const ROUTES: Array<[RegExp, Handler]> = [
   ],
   [/^\/v3\/agents\/[^/]+\/deployments\/[^/]+$/, () => flueDeployment],
   [
-    /^\/v3\/agents\/agt_flue_import\/deployment-source$/,
+    /^\/v3\/agents\/agt_fedcba9876543210fedcba98\/deployment-source$/,
     () => ({ source: importedSource }),
   ],
   [
@@ -1241,7 +1274,11 @@ const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/v3\/agents\/[^/]+\/deploys$/, () => ({ data: agentDeploys })],
   [/^\/v3\/agents\/[^/]+\/revisions$/, () => ({ data: agentRevisions })],
   [/^\/v3\/agents\/[^/]+\/skills$/, () => agentSkills],
-  [/^\/v3\/agents\/agt_flue_import$/, () => importedAgent],
+  [
+    /^\/v3\/agents\/[^/]+\/hooks(?:\?.*)?$/,
+    () => ({ data: [], next_cursor: null }),
+  ],
+  [/^\/v3\/agents\/agt_fedcba9876543210fedcba98$/, () => importedAgent],
   [/^\/v3\/agents\/[^/]+$/, () => agents[0]],
   [/^\/v3\/agents$/, () => ({ data: [...agents, importedAgent] })],
   [/^\/v3\/credentials$/, () => ({ data: credentials })],

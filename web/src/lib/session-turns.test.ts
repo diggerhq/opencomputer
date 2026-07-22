@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionEvent } from '@/api/client'
-import { groupIntoTurns } from './session-turns'
+import { groupIntoTurns, httpRequestPayloadText } from './session-turns'
 
 function event(
   seq: number,
@@ -185,6 +185,26 @@ describe('groupIntoTurns', () => {
       turnId: 'trn_accepted',
       state: 'queued',
     })
+  })
+
+  it('groups and preserves structured HTTP input', () => {
+    const input = event(1, 'http.request', {
+      source: 'http',
+      turn_id: 'trn_http',
+      actor: { id: 'hk_test', type: 'trigger', display: 'grafana-prod' },
+      body: { payload: { severity: 'critical', count: 2 } },
+    })
+    const timeline = groupIntoTurns([input])
+
+    expect(timeline.pending).toEqual([])
+    expect(timeline.groups[0]).toMatchObject({
+      turnId: 'trn_http',
+      state: 'queued',
+      events: [input],
+    })
+    expect(httpRequestPayloadText(input)).toBe(
+      '{\n  "severity": "critical",\n  "count": 2\n}',
+    )
   })
 
   it('deduplicates history and SSE copies and cannot regress on arrival order', () => {

@@ -36,7 +36,7 @@ describe('managed Slack OAuth notices', () => {
       ),
     ).toMatchObject({
       description:
-        'This workspace sends messages to Docs writer. Disconnect it below before connecting it to Support triage.',
+        'This workspace sends messages to Docs writer. Move it below to connect it to Support triage.',
     })
   })
 
@@ -69,6 +69,30 @@ describe('managed Slack OAuth notices', () => {
       title: 'Disconnect Acme from Docs writer?',
       description:
         'New Slack messages from Acme will stop going to Docs writer. The agent and its existing sessions stay available, and the OpenComputer app stays installed. After disconnecting, connect Slack again and select this workspace for Support triage.',
+    })
+  })
+
+  it('states the temporary unassigned state for a guided move', () => {
+    expect(
+      managedSlackDisconnectCopy(
+        {
+          mode: 'managed',
+          status: 'active',
+          workspace: { id: 'T1', name: 'Acme' },
+          app: { id: 'A1', handle: 'OpenComputer' },
+          connected_at: '2026-07-16T18:00:00Z',
+          agent: {
+            id: 'agt_bbbbbbbbbbbbbbbbbbbbbbbb',
+            name: 'Docs writer',
+          },
+        },
+        'Support triage',
+        true,
+      ),
+    ).toEqual({
+      title: 'Move Acme to Support triage?',
+      description:
+        'OpenComputer will disconnect Acme from Docs writer, then open Slack so you can authorize it for Support triage. If you stop before authorization completes, the app stays installed but does not send messages to an agent.',
     })
   })
 })

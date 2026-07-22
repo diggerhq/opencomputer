@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
@@ -7,6 +7,7 @@ import {
   MessagesSquare,
   Send,
   GitBranch,
+  ExternalLink,
 } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
@@ -34,12 +35,19 @@ import { StatusBadge } from '@/components/status-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
 import { Skeleton } from '@/components/ui/skeleton'
-import { SlackConnect } from '@/components/slack-connect'
+import {
+  SlackConnect,
+  SlackConnectionSummary,
+} from '@/components/slack-connect'
 import { AgentSkills } from '@/components/agent-skills'
-import { AgentDeploySource } from '@/components/agent-deploy-source'
+import {
+  AgentDeploySource,
+  DeploymentSourceSummary,
+} from '@/components/agent-deploy-source'
 import { AgentSchedulesTab } from '@/components/agent-schedules'
 import { AgentRevisions } from '@/components/agent-revisions'
 import { AgentDeployments } from '@/components/agent-deployments'
+import { AgentHooksPanel } from '@/components/agent-hooks-panel'
 import {
   RepositoryAccessPanel,
   RepositoryAccessSummary,
@@ -198,10 +206,36 @@ export default function AgentDetail() {
     }`
   }
 
-  // ── Start a session (used by the Sessions tab composer) ────────────────────
+  // ── Start a session (used by the Overview playground) ─────────────────────
   // Seed from a deferred action's prefill (agent_prefill lands here via router
   // state). Doesn't survive refresh — fine; the agent already exists.
   const location = useLocation()
+
+  // Public endpoint-guide and Overview summary links land on one exact
+  // Settings owner. Keep the query through authentication, then scroll and
+  // focus the rendered section without triggering a connector mutation.
+  useEffect(() => {
+    if (active === 'overview' && location.hash === '#playground') {
+      const frame = window.requestAnimationFrame(() => {
+        const target = document.getElementById('playground')
+        target?.scrollIntoView({ block: 'start' })
+        target?.focus({ preventScroll: true })
+      })
+      return () => window.cancelAnimationFrame(frame)
+    }
+    if (active !== 'settings') return
+    const section = new URLSearchParams(location.search).get('section')
+    if (section !== 'github' && section !== 'slack' && section !== 'hooks') {
+      return
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const target = document.getElementById(section)
+      target?.scrollIntoView({ block: 'start' })
+      target?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [active, location.hash, location.search])
+
   const [task, setTask] = useState(
     () =>
       (location.state as { composerPrefill?: string } | null)
@@ -394,7 +428,21 @@ export default function AgentDetail() {
               {agent.name}
             </h1>
             <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-              <span className="font-mono">{agent.id}</span>
+              {agent.invoke_url ? (
+                <a
+                  href={agent.invoke_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={agent.invoke_url}
+                  aria-label={`Open Agent URL for ${agent.id}`}
+                  className="hover:text-foreground focus-visible:ring-ring/50 inline-flex items-center gap-1 whitespace-nowrap rounded-sm font-mono underline-offset-4 outline-none hover:underline focus-visible:ring-2"
+                >
+                  <span>{agent.invoke_url.replace(/^https:\/\//, '')}</span>
+                  <ExternalLink className="size-3 shrink-0" aria-hidden />
+                </a>
+              ) : (
+                <span className="font-mono">{agent.id}</span>
+              )}
               <span className="capitalize">{agent.runtime}</span>
               <span className="font-mono">
                 {activeRev ? `rev #${activeRev}` : 'Not deployed'}
@@ -418,7 +466,7 @@ export default function AgentDetail() {
               </Button>
             ) : canStartNewSession ? (
               <Button asChild size="sm" variant="outline">
-                <Link to={`${base}/sessions`}>
+                <Link to={`${base}#playground`}>
                   <Send className="size-4" />
                   New session
                 </Link>
@@ -426,7 +474,7 @@ export default function AgentDetail() {
             ) : null}
             {setupComplete ? (
               <Button asChild size="sm">
-                <Link to={`${base}/sessions`}>
+                <Link to={`${base}#playground`}>
                   <Send className="size-4" />
                   New session
                 </Link>
@@ -476,154 +524,237 @@ export default function AgentDetail() {
           <ApiHint {...tabApi[active]} />
         </div>
         {active === 'overview' && (
-          <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-            {/* Left: behavior (model/prompt) + skills — read-only when a repo drives the agent. */}
-            <div className="space-y-6">
-              <Panel>
-                <PanelContent className="space-y-5">
-                  {source ? (
-                    <div className="space-y-4">
-                      <div className="border-border bg-panel-2 flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs">
-                        <GitBranch className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
-                        <div className="space-y-0.5">
-                          <p className="text-foreground">
-                            Managed from a connected repo:{' '}
-                            <span className="font-mono">
-                              {source.full_name ?? source.path ?? 'repo'}
-                              {source.full_name && source.path
-                                ? `/${source.path}`
-                                : ''}
-                              @{source.production_ref}
-                            </span>
-                          </p>
-                          <p className="text-muted-foreground">
-                            The repo is the source of truth.{' '}
-                            {agent.runtime === 'flue' ? (
-                              <>
-                                Edit and push there, then{' '}
-                                <Link
-                                  className="underline underline-offset-4"
-                                  to={
-                                    latestDeploymentId
-                                      ? `${base}/deployments/${latestDeploymentId}`
-                                      : `${base}/deployments`
-                                  }
-                                >
-                                  {latestDeploymentId
-                                    ? 'open the latest deployment'
-                                    : 'open Deployments'}
-                                </Link>{' '}
-                                and choose Deploy latest.
-                              </>
-                            ) : (
-                              <>
-                                Edit there and push, or{' '}
-                                <Link
-                                  className="underline underline-offset-4"
-                                  to={`${base}/revisions`}
-                                >
-                                  browse revisions
-                                </Link>
-                                .
-                              </>
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      <ReadOnlyField label="Model" value={agent.model} mono />
-                      <ReadOnlyField
-                        label="System prompt"
-                        value={savedPrompt || '—'}
-                        pre
+          <div className="space-y-6">
+            <Panel
+              id="playground"
+              tabIndex={-1}
+              className="scroll-mt-36 overflow-hidden outline-none"
+            >
+              <PanelHeader>
+                <div>
+                  <PanelTitle>Playground</PanelTitle>
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    Every run starts a new durable session.
+                  </p>
+                </div>
+                <Link
+                  to={`${base}/sessions`}
+                  className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
+                >
+                  View sessions
+                </Link>
+              </PanelHeader>
+              <PanelContent>
+                {canStartNewSession ? (
+                  <form
+                    className="space-y-2"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      if (task.trim()) startMutation.mutate()
+                    }}
+                  >
+                    <ChatTextarea
+                      value={task}
+                      onChange={(event) => setTask(event.target.value)}
+                      onSend={() => {
+                        if (task.trim() && !startMutation.isPending) {
+                          startMutation.mutate()
+                        }
+                      }}
+                      placeholder="Give this agent a task…"
+                      className="min-h-20"
+                    />
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <WorkingRepoField
+                        agentId={agent.id}
+                        runtime={agent.runtime}
+                        value={workingRepo}
+                        onChange={setWorkingRepo}
                       />
+                      <Button
+                        type="submit"
+                        size="sm"
+                        title="Enter to start · Shift+Enter for newline"
+                        disabled={startMutation.isPending || !task.trim()}
+                        className="ml-auto"
+                      >
+                        <Send className="size-4" />
+                        {startMutation.isPending
+                          ? 'Starting…'
+                          : 'Start session'}
+                      </Button>
                     </div>
-                  ) : (
-                    <>
-                      <Field label="Model" htmlFor="agent-model">
-                        <div className="flex items-center gap-3">
-                          <Select
-                            id="agent-model"
-                            value={agent.model}
-                            onValueChange={(m) => modelMutation.mutate(m)}
-                            options={withModelGroups(modelOptions)}
-                            className="max-w-xs"
-                          />
-                          <Saving show={modelMutation.isPending} />
-                        </div>
-                      </Field>
-                      <Field label="System prompt" htmlFor="agent-prompt">
-                        <Textarea
-                          id="agent-prompt"
-                          value={promptValue}
-                          onChange={(e) => setPromptDraft(e.target.value)}
-                          placeholder="You are a meticulous code reviewer…"
-                          className="min-h-32"
-                        />
-                        <div className="mt-2 flex items-center gap-3">
-                          <p className="text-muted-foreground text-xs">
-                            How the agent behaves. Saving bumps the agent's
-                            revision.
-                          </p>
-                          <div className="ml-auto flex items-center gap-2">
-                            <Saving show={promptMutation.isPending} />
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              disabled={
-                                !promptDirty || promptMutation.isPending
-                              }
-                              onClick={() => setPromptDraft(undefined)}
-                            >
-                              Discard
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              disabled={
-                                !promptDirty ||
-                                promptMutation.isPending ||
-                                !promptValue.trim()
-                              }
-                              onClick={() =>
-                                promptMutation.mutate(promptValue.trim())
-                              }
-                            >
-                              Save prompt
-                            </Button>
+                  </form>
+                ) : (
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-medium">
+                        {activeRev
+                          ? 'New sessions are paused until the live deployment is verified.'
+                          : 'Deploy this agent before starting a session.'}
+                      </p>
+                      <p className="text-muted-foreground mt-1 text-xs">
+                        Open deployment history to inspect progress and build
+                        logs.
+                      </p>
+                    </div>
+                    <Button variant="outline" size="sm" asChild>
+                      <Link to={`${base}/deployments`}>View deployments</Link>
+                    </Button>
+                  </div>
+                )}
+              </PanelContent>
+            </Panel>
+
+            <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
+              {/* Left: behavior (model/prompt) + skills — read-only when a repo drives the agent. */}
+              <div className="space-y-6">
+                <Panel>
+                  <PanelContent className="space-y-5">
+                    {source ? (
+                      <div className="space-y-4">
+                        <div className="border-border bg-panel-2 flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs">
+                          <GitBranch className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
+                          <div className="space-y-0.5">
+                            <p className="text-foreground">
+                              Managed from a connected repo:{' '}
+                              <span className="font-mono">
+                                {source.full_name ?? source.path ?? 'repo'}
+                                {source.full_name && source.path
+                                  ? `/${source.path}`
+                                  : ''}
+                                @{source.production_ref}
+                              </span>
+                            </p>
+                            <p className="text-muted-foreground">
+                              The repo is the source of truth.{' '}
+                              {agent.runtime === 'flue' ? (
+                                <>
+                                  Edit and push there, then{' '}
+                                  <Link
+                                    className="underline underline-offset-4"
+                                    to={
+                                      latestDeploymentId
+                                        ? `${base}/deployments/${latestDeploymentId}`
+                                        : `${base}/deployments`
+                                    }
+                                  >
+                                    {latestDeploymentId
+                                      ? 'open the latest deployment'
+                                      : 'open Deployments'}
+                                  </Link>{' '}
+                                  and choose Deploy latest.
+                                </>
+                              ) : (
+                                <>
+                                  Edit there and push, or{' '}
+                                  <Link
+                                    className="underline underline-offset-4"
+                                    to={`${base}/revisions`}
+                                  >
+                                    browse revisions
+                                  </Link>
+                                  .
+                                </>
+                              )}
+                            </p>
                           </div>
                         </div>
-                      </Field>
-                    </>
-                  )}
-                </PanelContent>
-              </Panel>
-              <AgentSkills agentId={agent.id} />
-            </div>
-            {/* Right rail: deployment source, working-repo scope, and Slack. */}
-            <div className="space-y-4">
-              <AgentDeploySource
-                agentId={agent.id}
-                profilePinned={agent.runtime === 'flue'}
-              />
-              {agent.runtime === 'flue' ? (
-                <RepositoryAccessSummary
+                        <ReadOnlyField label="Model" value={agent.model} mono />
+                        <ReadOnlyField
+                          label="System prompt"
+                          value={savedPrompt || '—'}
+                          pre
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <Field label="Model" htmlFor="agent-model">
+                          <div className="flex items-center gap-3">
+                            <Select
+                              id="agent-model"
+                              value={agent.model}
+                              onValueChange={(m) => modelMutation.mutate(m)}
+                              options={withModelGroups(modelOptions)}
+                              className="max-w-xs"
+                            />
+                            <Saving show={modelMutation.isPending} />
+                          </div>
+                        </Field>
+                        <Field label="System prompt" htmlFor="agent-prompt">
+                          <Textarea
+                            id="agent-prompt"
+                            value={promptValue}
+                            onChange={(e) => setPromptDraft(e.target.value)}
+                            placeholder="You are a meticulous code reviewer…"
+                            className="min-h-32"
+                          />
+                          <div className="mt-2 flex items-center gap-3">
+                            <p className="text-muted-foreground text-xs">
+                              How the agent behaves. Saving bumps the agent's
+                              revision.
+                            </p>
+                            <div className="ml-auto flex items-center gap-2">
+                              <Saving show={promptMutation.isPending} />
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                disabled={
+                                  !promptDirty || promptMutation.isPending
+                                }
+                                onClick={() => setPromptDraft(undefined)}
+                              >
+                                Discard
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={
+                                  !promptDirty ||
+                                  promptMutation.isPending ||
+                                  !promptValue.trim()
+                                }
+                                onClick={() =>
+                                  promptMutation.mutate(promptValue.trim())
+                                }
+                              >
+                                Save prompt
+                              </Button>
+                            </div>
+                          </div>
+                        </Field>
+                      </>
+                    )}
+                  </PanelContent>
+                </Panel>
+                <AgentSkills agentId={agent.id} />
+              </div>
+              {/* Overview keeps integrations compact; Settings owns mutations. */}
+              <div className="space-y-4">
+                {agent.runtime === 'flue' ? (
+                  <RepositoryAccessSummary
+                    agentId={agent.id}
+                    onOpenSettings={() => {
+                      void navigate(`${base}/settings?section=github`)
+                    }}
+                  />
+                ) : (
+                  <DeploymentSourceSummary
+                    agentId={agent.id}
+                    onOpenSettings={() => {
+                      void navigate(`${base}/settings?section=github`)
+                    }}
+                  />
+                )}
+                <SlackConnectionSummary
                   agentId={agent.id}
                   onOpenSettings={() => {
-                    void navigate(`${base}/settings`)
+                    void navigate(`${base}/settings?section=slack`)
                   }}
                 />
-              ) : null}
-              <SlackConnect
-                agentId={agent.id}
-                agentName={agent.name}
-                canOpenSlack={canStartNewSession}
-                autoOpen={
-                  new URLSearchParams(location.search).get('connect') ===
-                  'slack'
-                }
-              />
+              </div>
             </div>
           </div>
         )}
@@ -636,70 +767,18 @@ export default function AgentDetail() {
           <Panel className="overflow-hidden">
             <PanelHeader>
               <PanelTitle>Sessions</PanelTitle>
-              <Link
-                to="/sessions"
-                className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
-              >
-                All sessions
-              </Link>
-            </PanelHeader>
-            <PanelContent className="border-b">
-              {canStartNewSession ? (
-                <form
-                  className="space-y-2"
-                  onSubmit={(e) => {
-                    e.preventDefault()
-                    if (task.trim()) startMutation.mutate()
-                  }}
+              <div className="flex items-center gap-3">
+                <Link
+                  to="/sessions"
+                  className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
                 >
-                  <ChatTextarea
-                    value={task}
-                    onChange={(e) => setTask(e.target.value)}
-                    onSend={() => {
-                      if (task.trim() && !startMutation.isPending)
-                        startMutation.mutate()
-                    }}
-                    placeholder="Give this agent a task that runs durably as a new session…"
-                    className="min-h-20"
-                  />
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <WorkingRepoField
-                      agentId={agent.id}
-                      runtime={agent.runtime}
-                      value={workingRepo}
-                      onChange={setWorkingRepo}
-                    />
-                    <Button
-                      type="submit"
-                      size="sm"
-                      title="Enter to start · Shift+Enter for newline"
-                      disabled={startMutation.isPending || !task.trim()}
-                      className="ml-auto"
-                    >
-                      <Send className="size-4" />
-                      {startMutation.isPending ? 'Starting…' : 'Start session'}
-                    </Button>
-                  </div>
-                </form>
-              ) : (
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="text-sm font-medium">
-                      {activeRev
-                        ? 'New sessions are paused until the live deployment is verified.'
-                        : 'Deploy this agent before starting a session.'}
-                    </p>
-                    <p className="text-muted-foreground mt-1 text-xs">
-                      Open deployment history to inspect progress and build
-                      logs.
-                    </p>
-                  </div>
-                  <Button variant="outline" size="sm" asChild>
-                    <Link to={`${base}/deployments`}>View deployments</Link>
-                  </Button>
-                </div>
-              )}
-            </PanelContent>
+                  All sessions
+                </Link>
+                <Button asChild size="sm" variant="outline">
+                  <Link to={`${base}#playground`}>Start a session</Link>
+                </Button>
+              </div>
+            </PanelHeader>
             <ResourceTable
               columns={sessionColumns}
               rows={sessions}
@@ -709,7 +788,7 @@ export default function AgentDetail() {
                 <EmptyState
                   icon={MessagesSquare}
                   title="No sessions yet"
-                  description="Start a session above to give this agent a durable task."
+                  description="Start one from the Overview playground to give this agent a durable task."
                 />
               }
             />
@@ -718,9 +797,31 @@ export default function AgentDetail() {
 
         {active === 'settings' && (
           <div className="space-y-6">
-            {agent.runtime === 'flue' ? (
-              <RepositoryAccessPanel agentId={agent.id} />
-            ) : null}
+            <section
+              id="github"
+              tabIndex={-1}
+              className="scroll-mt-36 space-y-6 outline-none"
+            >
+              <AgentDeploySource
+                agentId={agent.id}
+                profilePinned={agent.runtime === 'flue'}
+              />
+              {agent.runtime === 'flue' ? (
+                <RepositoryAccessPanel agentId={agent.id} />
+              ) : null}
+            </section>
+            <section
+              id="slack"
+              tabIndex={-1}
+              className="scroll-mt-36 outline-none"
+            >
+              <SlackConnect
+                agentId={agent.id}
+                agentName={agent.name}
+                canOpenSlack={canStartNewSession}
+              />
+            </section>
+            <AgentHooksPanel key={`hooks-${agent.id}`} agentId={agent.id} />
             {/* Credential — which key the agent runs on. */}
             <Panel>
               <PanelHeader>

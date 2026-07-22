@@ -150,9 +150,9 @@ npm install
 # The agent is created from agent.toml when it does not exist yet.
 oc agent deploy
 
-oc session create \
-  --agent support-triage \
-  --input "Order 2203 arrived with a torn shoulder strap. What happens next?"
+# The deploy result prints the permanent Agent URL and this next command.
+oc agent invoke support-triage \
+  --data '{"message":"Order 2203 arrived with a torn shoulder strap. What happens next?"}'
 ```
 
 Continue the session with `oc session steer <session-id> "..."`, inspect it with
@@ -379,6 +379,10 @@ the `queued`, `fetching`, `validating`, `installing`, `building`, `uploading`, `
 5. Keeps the deployment in `verifying` until the exact live Worker returns two consecutive healthy
    responses. Only then does the CLI report the revision as ready.
 
+Successful framework build output stays quiet so the deployment result remains
+scannable. Pass `--verbose` to stream it; if the build fails, the CLI replays
+the captured output automatically.
+
 <Warning>
 Flue currently has one live Worker per agent. Uploading a deployment changes the code used by new and
 existing sessions before revision verification finishes. There is no isolated staged Worker, canary
@@ -408,6 +412,9 @@ and dashboard as the other runtimes. The important differences are:
   not part of the public API.
 - Follow-up messages queue behind the working turn and run in order.
 - The model is compiled into the deployed app. Per-session model overrides are rejected.
+- Durable model-call usage is folded into turn and session usage with
+  `attribution: "best_effort"`. Use it for visibility; the agent/org gateway is
+  the hard spend-enforcement authority.
 - Generic `tokens`, `turn_seconds`, and `turns` limits are not yet enforced on the Flue execution
   path. Do not use them as a safety boundary for this runtime.
 - Archiving makes the OpenComputer session read-only but retains the Flue conversation in Durable

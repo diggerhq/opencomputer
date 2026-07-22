@@ -25,6 +25,7 @@ import {
   PanelTitle,
 } from '@/components/panel'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Input, Select } from '@/components/form'
 import { GithubMark } from '@/components/github-mark'
 import { SourceProfileChangedRecovery } from '@/components/source-profile-changed-recovery'
@@ -177,7 +178,7 @@ async function pollDeployUntilActive(
 }
 
 /**
- * Source card (Overview right rail) — minimal. Connect a GitHub repo as the agent's source:
+ * Source settings — minimal. Connect a GitHub repo as the agent's source:
  * not installed → a single Connect (install) button; installed → an editable repo / directory /
  * branch picker (pre-filled when already linked) + a quiet Disconnect + an "Add more repos" link.
  * Pushes to the branch create new revisions; re-applying the picker (Update) pulls HEAD into one.
@@ -185,17 +186,14 @@ async function pollDeployUntilActive(
  */
 export function AgentDeploySource({
   agentId,
-  autoFocusPicker = false,
   profilePinned = false,
 }: {
   agentId: string
-  autoFocusPicker?: boolean
   /** Reviewed imports can be managed or unlinked, but not switched in place. */
   profilePinned?: boolean
 }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const pickerRef = useRef<HTMLDivElement>(null)
   const [repo, setRepo] = useState('')
   const [path, setPath] = useState('')
   const [branch, setBranch] = useState('main')
@@ -321,23 +319,6 @@ export function AgentDeploySource({
     if (r?.default_branch) setBranch(r.default_branch)
   }
 
-  // Arrived via a setup CTA (?connect=github) → scroll the picker in + focus it (once).
-  const focusedRef = useRef(false)
-  useEffect(() => {
-    if (
-      autoFocusPicker &&
-      !focusedRef.current &&
-      app?.installed &&
-      pickerRef.current
-    ) {
-      focusedRef.current = true
-      pickerRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      pickerRef.current
-        .querySelector<HTMLElement>('button, [role="combobox"], input, select')
-        ?.focus()
-    }
-  }, [autoFocusPicker, app?.installed])
-
   // Repo options — include the linked repo even if it's not in the installable list.
   const repoOptions = (app?.repositories ?? []).map((r) => ({
     value: r.full_name,
@@ -437,7 +418,7 @@ export function AgentDeploySource({
             </p>
           </div>
         ) : (
-          <div className="space-y-3" ref={pickerRef}>
+          <div className="space-y-3">
             {justConnected && !source ? (
               <p className="text-xs">
                 <span className="font-medium text-green-600 dark:text-green-500">
@@ -522,6 +503,84 @@ export function AgentDeploySource({
             </p>
           </div>
         )}
+      </PanelContent>
+    </Panel>
+  )
+}
+
+export function DeploymentSourceSummary({
+  agentId,
+  onOpenSettings,
+}: {
+  agentId: string
+  onOpenSettings: () => void
+}) {
+  const appQuery = useQuery({
+    queryKey: ['deploy-app'],
+    queryFn: getDeployApp,
+  })
+  const sourceQuery = useQuery({
+    queryKey: ['agent-deploy-source', agentId],
+    queryFn: async () => {
+      try {
+        return (await getDeploymentSource(agentId)).source
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null
+        throw error
+      }
+    },
+  })
+  const source = sourceQuery.data
+  const loading = appQuery.isLoading || sourceQuery.isLoading
+  const unavailable = appQuery.isError || sourceQuery.isError
+
+  let title = 'Not connected'
+  let detail = 'Connect the GitHub app to deploy this agent from a repository.'
+  if (source) {
+    title = source.full_name || 'Repository connected'
+    detail = [source.path || null, source.production_ref]
+      .filter(Boolean)
+      .join(' · ')
+  } else if (appQuery.data?.installed) {
+    title = 'GitHub app connected'
+    detail = appQuery.data.account
+      ? `${appQuery.data.account} · No source repository`
+      : 'No source repository'
+  }
+
+  return (
+    <Panel>
+      <PanelHeader className="border-b-0 pb-2">
+        <PanelTitle className="flex items-center gap-2">
+          <GithubMark className="size-4" /> GitHub
+        </PanelTitle>
+      </PanelHeader>
+      <PanelContent className="pt-1">
+        {loading ? (
+          <Skeleton className="h-10 w-full" />
+        ) : unavailable ? (
+          <p className="text-muted-foreground text-sm">
+            GitHub status is unavailable.
+          </p>
+        ) : (
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium">{title}</p>
+            <p className="text-muted-foreground mt-0.5 truncate text-xs">
+              {detail}
+            </p>
+          </div>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground hover:text-foreground mt-2 -ml-3"
+          onClick={onOpenSettings}
+        >
+          {source || appQuery.data?.installed
+            ? 'Manage GitHub'
+            : 'Connect GitHub'}
+        </Button>
       </PanelContent>
     </Panel>
   )

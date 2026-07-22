@@ -6,6 +6,11 @@ description: "Deliver session events to your backend"
 
 Register a **destination** to receive a session's [events](/agent-sessions/events) as a **delivery envelope**. Deliveries are at-least-once, signed when a secret is set, and retried. The envelope carries routing fields, session [`metadata`](/agent-sessions/api-reference#sessions), and the full event under `event`:
 
+<Note>
+  Webhooks send your agent's events **to your application**. To send external
+  events **to an agent**, use an inbound [Hook URL](/agent-sessions/hooks).
+</Note>
+
 ```json
 {
   "type": "turn.completed",          // the event type (route on this)

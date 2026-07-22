@@ -62,6 +62,19 @@ export function bodyText(ev: SessionEvent): string | null {
   return typeof text === 'string' ? text : null
 }
 
+// HTTP invocation bodies stay structured in the durable event log. Render the
+// authoritative payload rather than the adapter's derived model-input string.
+export function httpRequestPayloadText(ev: SessionEvent): string | null {
+  if (ev.type !== 'http.request') return null
+  const body = record(ev.body)
+  if (!Object.prototype.hasOwnProperty.call(body, 'payload')) return null
+  try {
+    return JSON.stringify(body.payload, null, 2) ?? null
+  } catch {
+    return null
+  }
+}
+
 // The runtime's failPreExec emits an agent.message tagged with an
 // insufficient_credits code so the UI can offer a "top up" affordance.
 export function isOutOfCredits(ev: SessionEvent): boolean {
@@ -73,6 +86,7 @@ export function isOutOfCredits(ev: SessionEvent): boolean {
 
 export function isTurnInput(ev: SessionEvent): boolean {
   return (
+    ev.type === 'http.request' ||
     ev.type === 'user.message' ||
     ev.source === 'client' ||
     ev.source === 'github'
