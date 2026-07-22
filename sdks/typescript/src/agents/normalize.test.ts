@@ -22,6 +22,7 @@ describe("normalize (API response → idiomatic TS)", () => {
       usage?: {
         activeSeconds?: number;
         reportedTurns?: number;
+        complete?: boolean;
         totalCostUsd?: number;
         cacheReadInputTokens?: number;
       };
@@ -29,6 +30,7 @@ describe("normalize (API response → idiomatic TS)", () => {
       usage: {
         active_seconds: 12,
         reported_turns: 2,
+        complete: false,
         total_cost_usd: 0.42,
         cache_read_input_tokens: 17,
       },
@@ -37,6 +39,7 @@ describe("normalize (API response → idiomatic TS)", () => {
     expect(out.usage).toEqual({
       activeSeconds: 12,
       reportedTurns: 2,
+      complete: false,
       totalCostUsd: 0.42,
       cacheReadInputTokens: 17,
     });

@@ -47,6 +47,21 @@ describe('canonical usage presentation', () => {
     )
   })
 
+  it('marks a partially reported turn as a lower bound', () => {
+    const usage = {
+      reported: true as const,
+      complete: false as const,
+      input_tokens: 100,
+      output_tokens: 20,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      tokens: 120,
+    }
+
+    expect(formatUsageTokens(usage)).toBe('≥120')
+    expect(usageDisclosure(usage)).toBe('Lower-bound usage')
+  })
+
   it('keeps missing and historical usage unknown', () => {
     expect(formatUsageTokens({})).toBe('Unknown')
     expect(formatUsageCost({ reported: false })).toBe('Unknown')

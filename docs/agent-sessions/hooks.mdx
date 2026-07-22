@@ -95,6 +95,27 @@ token and grants no session read or steer access. Watch the session in the
 dashboard or configure an outbound [webhook](/agent-sessions/webhooks) for
 results.
 
+## Common senders
+
+Create a separate named Hook for each sender so it can be rotated or revoked
+without interrupting the others.
+
+- **Grafana:** Add a [Webhook contact point](https://grafana.com/docs/grafana/latest/alerting/configure-notifications/manage-contact-points/integrations/webhook-notifier/), use the Hook URL, and keep the method as `POST`. Grafana sends its alert JSON directly. Its standard webhook does not provide a supported delivery-id header; see [Retries and duplicates](#retries-and-duplicates).
+- **Zapier:** Add a [Webhooks by Zapier](https://help.zapier.com/hc/en-us/articles/8496326446989-Send-webhooks-in-Zap-workflows) `POST` action, paste the Hook URL, select a JSON payload, and map fields from earlier steps. No separate authentication field is needed because the secret is already in the URL.
+- **Supabase:** Create a [Database Webhook](https://supabase.com/docs/guides/database/webhooks), select the table and `INSERT`, `UPDATE`, or `DELETE` events, choose `POST`, and paste the Hook URL. Supabase sends the row-change JSON as the payload.
+- **CI:** Store the complete Hook URL as a secret and send one JSON request. Use a stable delivery id for retries of the same run:
+
+```yaml GitHub Actions
+- name: Notify agent
+  env:
+    HOOK_URL: ${{ secrets.OC_AGENT_HOOK_URL }}
+  run: |
+    curl --fail-with-body "$HOOK_URL" \
+      -H "Content-Type: application/json" \
+      -H "Idempotency-Key: ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+      -d "{\"repository\":\"$GITHUB_REPOSITORY\",\"sha\":\"$GITHUB_SHA\"}"
+```
+
 ## Retries and duplicates
 
 For retry-safe delivery, send `Idempotency-Key`; when absent, OpenComputer uses

@@ -100,9 +100,10 @@ Three independent knobs — don't overload one for another:
 
 Terminal turns expose `active_seconds` and normalized `usage`. A reported turn
 contains four disjoint token components, their `tokens` sum, and optional
-`total_cost_usd`. Missing cost means unknown, not zero. A turn without a
-trustworthy runtime result returns `reported: false` instead of inventing a
-zero.
+`total_cost_usd`. Missing cost means unknown, not zero. If only some runtime
+observations were trustworthy, the turn keeps that lower bound and adds
+`complete: false`; a turn with no trustworthy observation returns
+`reported: false` instead of inventing a zero.
 
 The session `usage` rollup contains:
 

@@ -908,6 +908,7 @@ export const AgentSnapshotSchema = z.object({
 const UsageAttributionSchema = z.enum(['exact', 'best_effort'])
 const ReportedTurnUsageSchema = z.object({
   reported: z.literal(true),
+  complete: z.literal(false).optional(),
   input_tokens: z.number().int().nonnegative(),
   output_tokens: z.number().int().nonnegative(),
   cache_creation_input_tokens: z.number().int().nonnegative(),

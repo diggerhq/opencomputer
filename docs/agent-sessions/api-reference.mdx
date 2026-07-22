@@ -185,7 +185,7 @@ A built-in runtime session pins the agent's active revision for its whole life. 
 | `error?`                      | failure detail, if any                                                |
 | `started_at?` `completed_at?` | timing                                                                |
 | `active_seconds`              | database-derived active runtime seconds                               |
-| `usage`                       | `{ reported:true, …tokens, total_cost_usd? }` or `{ reported:false }` |
+| `usage`                       | `{ reported:true, complete?:false, …tokens, total_cost_usd? }` or `{ reported:false }`; `complete:false` marks a lower bound |
 
 Session usage includes `reported_turns`, `unreported_turns`, and `complete`.
 When `complete:false`, any token/cost total present is a lower bound. Missing

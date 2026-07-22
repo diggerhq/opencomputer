@@ -11,9 +11,11 @@ export interface Limits { tokens?: number; turnSeconds?: number; turns?: number;
 
 export type UsageAttribution = "exact" | "best_effort";
 
-/** A terminal turn whose runtime reported a complete normalized token total. */
+/** A terminal turn with at least one trustworthy normalized usage observation. */
 export interface ReportedTurnUsage {
   reported: true;
+  /** False means the token/cost values present are lower bounds. */
+  complete?: false;
   inputTokens: number;
   outputTokens: number;
   cacheCreationInputTokens: number;

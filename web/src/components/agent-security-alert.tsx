@@ -70,8 +70,8 @@ export function AgentSecurityAlertBanner() {
   const { data } = useQuery({
     queryKey: ['agent-security-notifications'],
     queryFn: listAgentSecurityNotifications,
-    retry: false,
-    refetchInterval: (query) => (query.state.error ? false : 30_000),
+    retry: 2,
+    refetchInterval: 30_000,
   })
   const acknowledge = useMutation({
     mutationFn: acknowledgeAgentSecurityNotification,
