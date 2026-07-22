@@ -5,7 +5,7 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { Unplug } from 'lucide-react'
+import { ArrowRightLeft, Unplug } from 'lucide-react'
 import {
   disconnectManagedSlack,
   type ManagedSlackWorkspaceConnection,
@@ -30,11 +30,13 @@ export function ManagedSlackWorkspaceClaims({
   currentAgentName,
   query,
   className,
+  onMoveHere,
 }: {
   currentAgentId: string
   currentAgentName: string
   query: ClaimsQuery
   className?: string
+  onMoveHere?: () => void
 }) {
   const queryClient = useQueryClient()
   const [disconnecting, setDisconnecting] =
@@ -65,9 +67,14 @@ export function ManagedSlackWorkspaceClaims({
         connection.workspace?.id ||
         'Slack workspace'
       notifySuccess(
-        `${workspace} disconnected from ${connection.agent.name}.`,
-        `Connect Slack again to select it for ${currentAgentName}.`,
+        onMoveHere
+          ? `${workspace} is ready to move from ${connection.agent.name}.`
+          : `${workspace} disconnected from ${connection.agent.name}.`,
+        onMoveHere
+          ? `Finish authorizing it for ${currentAgentName} in Slack.`
+          : `Connect Slack again to select it for ${currentAgentName}.`,
       )
+      onMoveHere?.()
     },
     onError: (error) =>
       notifyError("Couldn't disconnect the Slack workspace.", error),
@@ -78,7 +85,7 @@ export function ManagedSlackWorkspaceClaims({
   }
 
   const copy = disconnecting
-    ? managedSlackDisconnectCopy(disconnecting, currentAgentName)
+    ? managedSlackDisconnectCopy(disconnecting, currentAgentName, !!onMoveHere)
     : null
   const heading = query.isLoading
     ? 'Checking existing Slack workspaces'
@@ -89,7 +96,9 @@ export function ManagedSlackWorkspaceClaims({
     ? `Checking whether a workspace already sends messages to another agent before connecting ${currentAgentName}.`
     : query.isError
       ? 'You can retry this check or continue. Slack will verify the workspace claim again before connecting.'
-      : `Disconnect a workspace before selecting it for ${currentAgentName}. You can connect a different workspace without changing these.`
+      : onMoveHere
+        ? `Move a workspace here, or connect a different workspace without changing these.`
+        : `Disconnect a workspace before selecting it for ${currentAgentName}. You can connect a different workspace without changing these.`
 
   return (
     <>
@@ -144,13 +153,17 @@ export function ManagedSlackWorkspaceClaims({
                       </Link>
                     </Button>
                     <Button
-                      variant="ghost"
+                      variant={onMoveHere ? 'outline' : 'ghost'}
                       size="sm"
                       disabled={disconnectMutation.isPending}
                       onClick={() => setDisconnecting(connection)}
                     >
-                      <Unplug className="size-4" aria-hidden />
-                      Disconnect
+                      {onMoveHere ? (
+                        <ArrowRightLeft className="size-4" aria-hidden />
+                      ) : (
+                        <Unplug className="size-4" aria-hidden />
+                      )}
+                      {onMoveHere ? 'Move here' : 'Disconnect'}
                     </Button>
                   </div>
                 </div>
@@ -167,8 +180,8 @@ export function ManagedSlackWorkspaceClaims({
         }}
         title={copy?.title ?? 'Disconnect Slack workspace?'}
         description={copy?.description}
-        confirmLabel="Disconnect workspace"
-        destructive
+        confirmLabel={onMoveHere ? 'Continue in Slack' : 'Disconnect workspace'}
+        destructive={!onMoveHere}
         pending={disconnectMutation.isPending}
         onConfirm={() => {
           if (disconnecting) disconnectMutation.mutate(disconnecting)

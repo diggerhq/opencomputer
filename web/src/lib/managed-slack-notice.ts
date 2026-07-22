@@ -101,7 +101,7 @@ export function managedSlackNotice(
       return {
         title: 'This Slack workspace is already connected',
         description: connectedAgentName
-          ? `This workspace sends messages to ${connectedAgentName}. Disconnect it below before connecting it to ${agentName}.`
+          ? `This workspace sends messages to ${connectedAgentName}. Move it below to connect it to ${agentName}.`
           : 'Connect a different workspace or use your own Slack app for this agent.',
         destructive: true,
       }

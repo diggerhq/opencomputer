@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Check, Copy, ExternalLink, X } from 'lucide-react'
+import { Check, Copy, ExternalLink, MessageSquare, X } from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import {
   authorizeManagedSlack,
@@ -14,7 +14,12 @@ import {
   disconnectSlack,
 } from '@/api/client'
 import type { SlackManifestResponse } from '@/api/schemas'
-import { Panel, PanelContent } from '@/components/panel'
+import {
+  Panel,
+  PanelContent,
+  PanelHeader,
+  PanelTitle,
+} from '@/components/panel'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -106,15 +111,91 @@ function CompactSteps({ current }: { current: number }) {
   )
 }
 
+export function SlackConnectionSummary({
+  agentId,
+  onOpenSettings,
+}: {
+  agentId: string
+  onOpenSettings: () => void
+}) {
+  const managedQuery = useQuery({
+    queryKey: ['slack', 'managed', agentId],
+    queryFn: () => getManagedSlackConnection(agentId),
+  })
+  const byoQuery = useQuery({
+    queryKey: ['slack', 'byo', agentId],
+    queryFn: () => getSlackConnection(agentId),
+  })
+  const managed = managedQuery.data
+  const byo = byoQuery.data
+  const managedActive = managed?.status === 'active'
+  const byoActive = byo?.status === 'active'
+  const loading = managedQuery.isLoading || byoQuery.isLoading
+  const unavailable = managedQuery.isError && byoQuery.isError
+  const managedWorkspace = managed?.workspace?.name || managed?.workspace?.id
+  const byoWorkspace = byo?.account_login || byo?.team_id
+
+  let title = 'Not connected'
+  let detail = 'Connect the OpenComputer app or use your own Slack app.'
+  if (managedActive && byoActive) {
+    title = 'Two Slack apps connected'
+    detail = [managedWorkspace, byo?.handle ? `@${byo.handle}` : byoWorkspace]
+      .filter(Boolean)
+      .join(' · ')
+  } else if (managedActive) {
+    title = 'OpenComputer app'
+    detail = managedWorkspace || 'Connected workspace'
+  } else if (byoActive) {
+    title = byo?.handle ? `@${byo.handle}` : 'Your Slack app'
+    detail = byoWorkspace || 'Connected workspace'
+  } else if (managed?.status === 'error' || managed?.status === 'revoked') {
+    title = 'Authorization required'
+    detail = 'Reconnect the OpenComputer app in Settings.'
+  }
+
+  return (
+    <Panel>
+      <PanelHeader className="border-b-0 pb-2">
+        <PanelTitle className="flex items-center gap-2">
+          <MessageSquare className="size-4" /> Slack
+        </PanelTitle>
+      </PanelHeader>
+      <PanelContent className="pt-1">
+        {loading ? (
+          <Skeleton className="h-10 w-full" />
+        ) : unavailable ? (
+          <p className="text-muted-foreground text-sm">
+            Slack status is unavailable.
+          </p>
+        ) : (
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium">{title}</p>
+            <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">
+              {detail}
+            </p>
+          </div>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground hover:text-foreground mt-2 -ml-3"
+          onClick={onOpenSettings}
+        >
+          {managedActive || byoActive ? 'Manage Slack' : 'Connect Slack'}
+        </Button>
+      </PanelContent>
+    </Panel>
+  )
+}
+
 export function SlackConnect({
   agentId,
   agentName,
-  autoOpen = false,
   canOpenSlack = true,
 }: {
   agentId: string
   agentName: string
-  autoOpen?: boolean
   canOpenSlack?: boolean
 }) {
   const queryClient = useQueryClient()
@@ -305,18 +386,6 @@ export function SlackConnect({
   const stepIndex =
     step === 'create' ? 0 : step === 'details' ? 1 : step === 'install' ? 2 : 3
 
-  // Arrived via a setup CTA (?connect=slack) → open the wizard once, unless
-  // already connected. Latched so a re-render / param-clear doesn't re-trigger.
-  const autoOpenedRef = useRef(false)
-  useEffect(() => {
-    if (autoOpen && !autoOpenedRef.current && !isLoading && !isActive) {
-      autoOpenedRef.current = true
-      beginConnect()
-    }
-    // beginConnect is a stable-enough closure; the ref guards single-fire.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoOpen, isLoading, isActive])
-
   return (
     <Panel className="overflow-hidden">
       <PanelContent className="space-y-4">
@@ -463,6 +532,7 @@ export function SlackConnect({
                 currentAgentId={agentId}
                 currentAgentName={agentName}
                 query={managedConnectionsQuery}
+                onMoveHere={() => authorizeManagedMutation.mutate()}
               />
               <Button
                 size="sm"

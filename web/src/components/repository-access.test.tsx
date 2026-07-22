@@ -145,7 +145,7 @@ describe('repository access UI', () => {
   it('summarizes access without duplicating the full editor', () => {
     const html = renderAccess(selected, true)
     expect(html).toContain('1 selected repository')
-    expect(html).toContain('Manage access')
+    expect(html).toContain('Manage GitHub')
     expect(html).not.toContain('Find a repository')
   })
 

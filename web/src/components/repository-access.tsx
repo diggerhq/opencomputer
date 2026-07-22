@@ -548,7 +548,7 @@ export function RepositoryAccessSummary({
     <Panel>
       <PanelHeader className="border-b-0 pb-2">
         <PanelTitle className="flex items-center gap-2">
-          <GithubMark className="size-4" /> Repository access
+          <GithubMark className="size-4" /> GitHub
         </PanelTitle>
       </PanelHeader>
       <PanelContent className="pt-1">
@@ -592,7 +592,7 @@ export function RepositoryAccessSummary({
           onClick={onOpenSettings}
           className="text-muted-foreground hover:text-foreground mt-3 inline-flex items-center gap-1 text-xs font-medium"
         >
-          Manage access <ChevronRight className="size-3" />
+          Manage GitHub <ChevronRight className="size-3" />
         </button>
       </PanelContent>
     </Panel>

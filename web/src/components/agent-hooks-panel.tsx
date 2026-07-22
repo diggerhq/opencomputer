@@ -83,7 +83,7 @@ export function AgentHooksPanel({ agentId }: { agentId: string }) {
   })
 
   return (
-    <Panel id="hooks" className="scroll-mt-36">
+    <Panel id="hooks" tabIndex={-1} className="scroll-mt-36 outline-none">
       <PanelHeader>
         <div>
           <PanelTitle>Hook URLs</PanelTitle>

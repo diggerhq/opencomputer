@@ -489,7 +489,7 @@ export default function AgentSetup() {
                       this agent.{' '}
                     </span>
                     <Link
-                      to={`/agents/${agentId}?connect=slack`}
+                      to={`/agents/${agentId}/settings?section=slack`}
                       className="text-foreground underline underline-offset-4"
                     >
                       Use your own Slack app
