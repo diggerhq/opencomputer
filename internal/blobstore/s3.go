@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
@@ -61,6 +62,10 @@ func NewS3(cfg S3Config) (Store, error) {
 			o.BaseEndpoint = &endpoint
 		}
 		o.UsePathStyle = cfg.UsePathStyle
+		// SDK default of 3 attempts is too thin for the Tigris path — a single
+		// TCP reset during a multi-GB rootfs upload or a fork chunk download
+		// exhausts retries and surfaces a 500 to the user.
+		o.RetryMaxAttempts = 10
 	})
 	return &s3Store{name: cfg.Name, bucket: cfg.Bucket, s3: client}, nil
 }
@@ -107,13 +112,20 @@ func (s *s3Store) GetRange(ctx context.Context, bucket, key string, offset, leng
 	return out.Body, nil
 }
 
+// Put uploads via the SDK's multipart Uploader so a mid-stream connection reset
+// re-sends a single 8 MB part instead of restarting the whole (multi-GB rootfs)
+// stream from byte 0. contentLength is ignored — the Uploader reads until EOF.
 func (s *s3Store) Put(ctx context.Context, bucket, key string, body io.Reader, contentLength int64) error {
+	_ = contentLength
 	b := s.resolveBucket(bucket)
-	_, err := s.s3.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:        &b,
-		Key:           &key,
-		Body:          body,
-		ContentLength: &contentLength,
+	uploader := manager.NewUploader(s.s3, func(u *manager.Uploader) {
+		u.PartSize = 8 * 1024 * 1024
+		u.Concurrency = 4
+	})
+	_, err := uploader.Upload(ctx, &s3.PutObjectInput{
+		Bucket: &b,
+		Key:    &key,
+		Body:   body,
 	})
 	if err != nil {
 		return fmt.Errorf("%s PutObject %s/%s: %w", s.name, b, key, err)
