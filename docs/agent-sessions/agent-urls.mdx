@@ -1,0 +1,136 @@
+---
+mode: "wide"
+title: "Agent URLs"
+description: "Start a durable session from an agent's permanent HTTP address"
+---
+
+Every agent has an `invoke_url`. A trusted backend can `POST` JSON to its exact
+root path to start one ordinary durable [session](/agent-sessions/sessions) on
+the agent's active revision.
+
+<Warning>
+  Root invocation requires your OpenComputer org API key. Keep that key on your
+  backend; do not put it in browser code or an external webhook configuration.
+  For a pasteable, independently revocable URL, create an [Agent
+  Hook](/agent-sessions/hooks).
+</Warning>
+
+## Invoke an agent
+
+<CodeGroup>
+
+```ts TypeScript
+import { OpenComputer, connectSession } from "@opencomputer/sdk";
+
+const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
+const agent = await oc.agents.get("agt_...");
+
+const response = await fetch(`${agent.invokeUrl}/`, {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.OPENCOMPUTER_API_KEY}`,
+    "Content-Type": "application/json",
+    "Idempotency-Key": "alert-018f",
+  },
+  body: JSON.stringify({
+    source: "sentry",
+    title: "Checkout errors increased",
+  }),
+});
+const receipt = await response.json();
+
+const session = await connectSession({
+  sessionId: receipt.session.id,
+  clientToken: receipt.client_token,
+});
+```
+
+```bash oc CLI
+oc agent invoke reviewer \
+  --data '{"source":"sentry","title":"Checkout errors increased"}' \
+  --idempotency-key alert-018f
+```
+
+```bash curl
+curl "$AGENT_URL/" \
+  -H "Authorization: Bearer $OPENCOMPUTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: alert-018f" \
+  -d '{"source":"sentry","title":"Checkout errors increased"}'
+```
+
+</CodeGroup>
+
+`POST /` accepts any JSON value. The body is capped at 24 KiB and cannot select
+a model, revision, sources, destinations, or limits; those values come from the
+agent. The request becomes a structured `http.request` event:
+
+```json
+{
+  "type": "http.request",
+  "level": "user",
+  "body": {
+    "payload": {
+      "source": "sentry",
+      "title": "Checkout errors increased"
+    }
+  }
+}
+```
+
+Transport headers and credentials are not included in the event or sent to the
+agent.
+
+## Receipt and continuation
+
+Success returns `202 Accepted` after the session, input, and retryable runtime
+dispatch are durable. It does not wait for the agent's answer.
+
+```json
+{
+  "request_id": "req_...",
+  "session": { "id": "ses_...", "status": "queued", "head": 1 },
+  "client_token": "eyJ...",
+  "links": {
+    "events": "https://api.opencomputer.dev/v3/sessions/ses_.../events",
+    "messages": "https://api.opencomputer.dev/v3/sessions/ses_.../messages"
+  },
+  "replayed": false
+}
+```
+
+The one-hour `client_token` can read, stream, and steer only the returned
+session. Use it with `connectSession` or the canonical Sessions API. The agent
+hostname does not expose session reads, streams, steering, or arbitrary paths.
+
+## Idempotency and retries
+
+Send an `Idempotency-Key` when a timeout or network failure may leave the
+outcome unknown. Reusing the same key and JSON against the same agent returns
+the original session, even if the active revision changed after the first
+acceptance. Reusing the key with different JSON returns `409`. Without a key,
+every accepted request creates a new session.
+
+The CLI generates one key and keeps it stable across its automatic transport
+retries. Supply `--idempotency-key` when separate CLI runs must converge.
+
+## Routes and errors
+
+The Agent URL has two application routes:
+
+| Route                 | Credential               | Result                                    |
+| --------------------- | ------------------------ | ----------------------------------------- |
+| `POST /`              | OpenComputer org API key | `202` receipt with a session client token |
+| `POST /hooks/<token>` | Hook URL itself          | `200` receipt without session access      |
+
+Queries, redirects, trailing path variants, and every other route are rejected.
+Root invocation is server-to-server and does not advertise browser CORS.
+
+Common errors are `400` invalid JSON/query/idempotency key, `401` invalid org
+key, `402` insufficient credits, `404` missing or inaccessible agent, `409`
+idempotency conflict, `413` oversized input, `415` unsupported media/encoding,
+`422` agent/runtime configuration failure, and `429` rate limited. Retry an
+ambiguous `5xx` with the same idempotency key.
+
+For richer session creation—model overrides, working repositories,
+destinations, or per-session limits—use [`oc.sessions.create()`](/agent-sessions/sessions).

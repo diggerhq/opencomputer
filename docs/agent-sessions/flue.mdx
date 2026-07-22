@@ -408,6 +408,9 @@ and dashboard as the other runtimes. The important differences are:
   not part of the public API.
 - Follow-up messages queue behind the working turn and run in order.
 - The model is compiled into the deployed app. Per-session model overrides are rejected.
+- Durable model-call usage is folded into turn and session usage with
+  `attribution: "best_effort"`. Use it for visibility; the agent/org gateway is
+  the hard spend-enforcement authority.
 - Generic `tokens`, `turn_seconds`, and `turns` limits are not yet enforced on the Flue execution
   path. Do not use them as a safety boundary for this runtime.
 - Archiving makes the OpenComputer session read-only but retains the Flue conversation in Durable

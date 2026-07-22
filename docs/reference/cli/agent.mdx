@@ -1,0 +1,65 @@
+---
+title: "Agent URLs and Hooks"
+description: "Invoke agents and manage scoped Hook URLs"
+---
+
+These commands use the Durable Agent Sessions API and the API key configured by
+`oc login`, `OPENCOMPUTER_API_KEY`, or `--api-key`.
+
+## oc agent invoke
+
+Start a durable session through an agent's canonical URL:
+
+```bash
+oc agent invoke <id|name> \
+  [--data '<json>' | --file <path> | --stdin] \
+  [--idempotency-key <key>] \
+  [--json]
+```
+
+`--data` defaults to `{}`. The CLI rejects non-JSON input locally, calls exact
+`POST /` with the configured org key, and prints the accepted session id plus
+follow/steer commands. It generates one idempotency key and keeps it stable
+across automatic retries; supply your own key when separate command runs must
+converge.
+
+Use `oc session create` instead when you need model, source, destination, or
+per-session limit overrides.
+
+## oc agent hook create
+
+```bash
+oc agent hook create <name> --agent <id|name> \
+  [--expires-at <rfc3339>] [--json]
+```
+
+Creates a named Hook and prints its complete secret URL once. If `--agent` is
+omitted, the CLI resolves the agent from `agent.toml` in the current directory.
+
+## oc agent hooks
+
+```bash
+oc agent hooks --agent <id|name> \
+  [--include-revoked] [--cursor <cursor>] [--limit <n>] [--json]
+```
+
+Lists secret-free Hook metadata. Pagination is newest-first and the server caps
+`--limit` at 100.
+
+## oc agent hook get
+
+```bash
+oc agent hook get <hook-id|name> --agent <id|name> [--json]
+```
+
+Shows status, expiry, secret last four, and revoke reason. It cannot recover the
+complete URL.
+
+## oc agent hook revoke
+
+```bash
+oc agent hook revoke <hook-id|name> --agent <id|name> [--yes] [--json]
+```
+
+Irreversibly revokes the Hook after confirmation. Create and install a
+replacement first if the external integration must stay available.

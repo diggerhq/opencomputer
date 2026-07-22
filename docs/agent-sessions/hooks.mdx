@@ -1,0 +1,160 @@
+---
+mode: "wide"
+title: "Hooks (inbound)"
+description: "Pasteable, scoped URLs that send external events to an agent"
+---
+
+Hooks send external events **to your agent**. Create a named Hook URL for each
+external system, then paste it into that system's HTTP or webhook destination.
+Each accepted `POST` starts one ordinary durable session on the agent's active
+revision.
+
+<Warning>
+  The complete URL is a secret. Anyone with it can run this agent. It cannot
+  read sessions, manage your account, or invoke another agent. Copy it when it
+  is created—the complete URL cannot be retrieved again.
+</Warning>
+
+## Create a Hook URL
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const created = await oc.agents.hooks.create("agt_...", {
+  name: "grafana-prod",
+  expiresAt: null,
+});
+
+console.log(created.hookUrl); // shown once
+```
+
+```bash oc CLI
+oc agent hook create grafana-prod --agent reviewer
+```
+
+```http REST API
+POST https://api.opencomputer.dev/v3/agents/agt_.../hooks
+Authorization: Bearer $OPENCOMPUTER_API_KEY
+Content-Type: application/json
+
+{ "name": "grafana-prod", "expires_at": null }
+```
+
+</CodeGroup>
+
+Names match `^[a-z0-9][a-z0-9-]{0,63}$`. Expiry is optional and must be a
+future RFC 3339 timestamp. An agent may have up to 20 non-revoked Hooks; expired
+Hooks keep a slot until revoked. Hook lifecycle is operational credential state,
+not agent revision state, so deploys and rollbacks do not copy or replace Hooks.
+
+Hook creation is deliberately not idempotent because the secret is stored only
+as a hash. If the creation response is lost, list by name, revoke the
+inaccessible Hook, and create a replacement.
+
+## Send an event
+
+```bash
+curl "$HOOK_URL" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: alert-018f" \
+  -d '{"status":"firing","service":"checkout","summary":"error rate above 5%"}'
+```
+
+The URL authenticates the request; do not add an OpenComputer API key. The
+contract is exact `POST`, no query string, and either an empty body or one JSON
+value. Non-empty bodies require a JSON content type and are capped at 24 KiB.
+The Hook name and parsed payload become a structured `http.request` event; the
+secret URL and transport headers never do.
+
+```json
+{
+  "type": "http.request",
+  "actor": { "type": "trigger", "display": "grafana-prod" },
+  "body": {
+    "payload": {
+      "status": "firing",
+      "service": "checkout",
+      "summary": "error rate above 5%"
+    }
+  }
+}
+```
+
+Success returns `200 OK` only after session admission is durable:
+
+```json
+{
+  "request_id": "req_...",
+  "session": { "id": "ses_...", "status": "queued" },
+  "replayed": false
+}
+```
+
+This is an asynchronous receipt, not the agent's output. It contains no client
+token and grants no session read or steer access. Watch the session in the
+dashboard or configure an outbound [webhook](/agent-sessions/webhooks) for
+results.
+
+## Retries and duplicates
+
+For retry-safe delivery, send `Idempotency-Key`; when absent, OpenComputer uses
+the Standard Webhooks `webhook-id` header if present. A repeated identifier and
+payload returns the same session. Reusing it with different JSON returns `409`.
+Without either header, identical requests are separate events and create
+separate sessions—OpenComputer does not guess duplicates from the body.
+
+Grafana's standard webhook does not provide either supported delivery-id
+header. Do not configure one constant idempotency key for all Grafana alerts;
+later alerts would conflict or replay. Accept possible redelivery duplicates,
+deduplicate their side effects, or use a provider-verified connector when that
+is unacceptable.
+
+## List, replace, and revoke
+
+<CodeGroup>
+
+```ts TypeScript SDK
+const page = await oc.agents.hooks.list("agt_...", {
+  includeRevoked: true,
+});
+
+await oc.agents.hooks.delete("agt_...", "hk_...");
+```
+
+```bash oc CLI
+oc agent hooks --agent reviewer --include-revoked
+oc agent hook get grafana-prod --agent reviewer
+oc agent hook revoke grafana-prod --agent reviewer
+```
+
+```http REST API
+GET /v3/agents/agt_.../hooks?include_revoked=true
+GET /v3/agents/agt_.../hooks/hk_...
+DELETE /v3/agents/agt_.../hooks/hk_...
+```
+
+</CodeGroup>
+
+Lists contain the name, public Hook id, status, expiry, creation time, secret
+last four, and revoke reason—never the usable URL. To rotate, create a new Hook,
+update the external system, then revoke the old one. Revocation is irreversible
+and does not affect sessions the Hook already created.
+
+## Security, usage, and limits
+
+Hook names record intended custody; they do not prove that a named provider sent
+the request. A Hook does not validate provider signatures, challenge requests,
+or raw-body semantics. Use a provider connector for those guarantees, and do
+not send payloads the agent is not allowed to receive.
+
+Rate limits reduce bursts; they are not a spend cap. Every accepted POST creates
+a fresh session, so all per-session limits reset on every call. On built-in
+runtimes, `limits.tokens` is checked between turns from reported usage and can
+overshoot by one in-flight turn; it does not interrupt a model request. It is
+not a currency limit or an aggregate Hook quota. Set agent turn/time/token
+limits, monitor session usage, and revoke unexpected activity. Your
+organization's credit halt is the aggregate fuse.
+
+Flue sessions expose best-effort per-session token attribution; the agent/org
+gateway remains their spend-enforcement authority. See [session usage and
+limits](/agent-sessions/sessions#usage-and-limits).

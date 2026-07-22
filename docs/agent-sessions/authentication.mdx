@@ -4,7 +4,7 @@ title: "Authentication"
 description: "Org keys, browser-safe client tokens, and bring-your-own model keys"
 ---
 
-Durable Agent Sessions use three credential types.
+Durable Agent Sessions use four credential types.
 
 ## Org API key
 
@@ -64,7 +64,7 @@ Content-Type: application/json
 
 Browser pattern: your backend creates the session with the org key, then hands the `client_token` to the browser, which uses it directly for the SSE stream and steer calls.
 
-<Warning>A client token isn't free to hand out: each `steer` starts a turn, which **consumes tokens on your model key** for the session it's scoped to. Mint short-lived tokens, and rely on the session's [limits](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) to cap exposure.</Warning>
+<Warning>A client token isn't free to hand out: each `steer` starts a turn, which consumes model usage for the session it's scoped to. Mint short-lived tokens and set [session limits](/agent-sessions/sessions#usage-and-limits). The token threshold is checked between turns on built-in runtimes and may overshoot by one in-flight turn; it is not a currency or aggregate spend cap.</Warning>
 
 ```
 browser  -> your backend: create task
@@ -74,6 +74,25 @@ browser  -> OpenComputer: stream + steer (client_token)
 ```
 
 For the SSE stream the browser passes the client token as `?token=` (native `EventSource` can't set an `Authorization` header); other calls use the `Authorization` header normally.
+
+## Hook URLs
+
+A [Hook URL](/agent-sessions/hooks) is a bearer credential embedded in one
+agent's `/hooks/<token>` path. It grants only the ability to start a fresh
+session on that agent. It cannot read or steer the created session, invoke
+another agent, or call management routes. The sender supplies no Authorization
+header.
+
+The complete URL is returned once on creation and stored only as a hash. Create
+one per external system so you can revoke it independently. Do not put Hook
+URLs in source control, logs, analytics, browser URLs, or public documentation.
+
+| Surface | Credential | Capability |
+| --- | --- | --- |
+| Agent URL `POST /` | org API key | create a session; receive a scoped client token |
+| Agent URL `POST /hooks/<token>` | Hook URL | create a session only |
+| Sessions API read/stream/steer | client token or org API key | one scoped session, or full org authority |
+| Management API | org API key | agents, sessions, Hooks, credentials, and other account resources |
 
 ## Model credentials
 

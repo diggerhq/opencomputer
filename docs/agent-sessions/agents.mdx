@@ -4,7 +4,7 @@ title: "Agents"
 description: "Reusable agent configuration"
 ---
 
-An **agent** is a reusable identity, runtime, model, and deployed behavior. Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like. For the built-in runtimes, behavior is `prompt` plus optional skills and is frozen into independently routable [revisions](/agent-sessions/revisions). A [Flue](/agent-sessions/flue) agent instead carries its instructions, tools, and packaged skills in a compiled Flue app.
+An **agent** is a reusable identity, runtime, model, and deployed behavior. Every [session](/agent-sessions/sessions) runs on an agent, so create one first, then start as many sessions on it as you like. Every agent also has one permanent [Agent URL](/agent-sessions/agent-urls): a trusted backend can invoke its root with an OpenComputer key, and external systems can use named, revocable [Hook URLs](/agent-sessions/hooks). For the built-in runtimes, behavior is `prompt` plus optional skills and is frozen into independently routable [revisions](/agent-sessions/revisions). A [Flue](/agent-sessions/flue) agent instead carries its instructions, tools, and packaged skills in a compiled Flue app.
 
 <Note>
   The [dashboard](https://app.opencomputer.dev) starts with **Import from
@@ -47,7 +47,7 @@ Content-Type: application/json
 
 </CodeGroup>
 
-Pass your model `key` inline and it's stored as a [credential](/agent-sessions/credentials) and attached to the agent — sessions run the model on it. The provider is taken from `model` (Anthropic for `anthropic/…`, OpenAI for `openai/…`), so the key has to be for that provider. Already have a credential? Reference it with `credential: "cred_…"` instead. Or skip keys entirely with `credential: "managed"` to run the model **via OpenComputer, billed to your credits** (the default for new orgs). Omit both `key` and `credential` to use your org default. Optionally set default [`limits`](/agent-sessions/sessions#limits) (`tokens`/`turn_seconds`/`turns`) too; sessions inherit them.
+Pass your model `key` inline and it's stored as a [credential](/agent-sessions/credentials) and attached to the agent — sessions run the model on it. The provider is taken from `model` (Anthropic for `anthropic/…`, OpenAI for `openai/…`), so the key has to be for that provider. Already have a credential? Reference it with `credential: "cred_…"` instead. Or skip keys entirely with `credential: "managed"` to run the model **via OpenComputer, billed to your credits** (the default for new orgs). Omit both `key` and `credential` to use your org default. Optionally set default [`limits`](/agent-sessions/sessions#usage-and-limits) (`tokens`/`turn_seconds`/`turns`) too; sessions inherit them.
 
 <Tip>
   Keep the org key and model key on your backend. Only return session-scoped
