@@ -437,7 +437,7 @@ export default function AgentDetail() {
                   aria-label={`Open Agent URL for ${agent.id}`}
                   className="hover:text-foreground focus-visible:ring-ring/50 inline-flex items-center gap-1 whitespace-nowrap rounded-sm font-mono underline-offset-4 outline-none hover:underline focus-visible:ring-2"
                 >
-                  <span>{agent.id}</span>
+                  <span>{agent.invoke_url.replace(/^https:\/\//, '')}</span>
                   <ExternalLink className="size-3 shrink-0" aria-hidden />
                 </a>
               ) : (
