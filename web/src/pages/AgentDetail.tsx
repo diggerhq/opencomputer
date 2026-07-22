@@ -428,21 +428,21 @@ export default function AgentDetail() {
               {agent.name}
             </h1>
             <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-              <span className="font-mono">{agent.id}</span>
               {agent.invoke_url ? (
                 <a
                   href={agent.invoke_url}
                   target="_blank"
                   rel="noreferrer"
                   title={agent.invoke_url}
-                  className="hover:text-foreground inline-flex max-w-64 items-center gap-1 truncate underline-offset-4 hover:underline"
+                  aria-label={`Open Agent URL for ${agent.id}`}
+                  className="hover:text-foreground focus-visible:ring-ring/50 inline-flex items-center gap-1 whitespace-nowrap rounded-sm font-mono underline-offset-4 outline-none hover:underline focus-visible:ring-2"
                 >
-                  <span className="truncate">
-                    {agent.invoke_url.replace(/^https:\/\//, '')}
-                  </span>
+                  <span>{agent.id}</span>
                   <ExternalLink className="size-3 shrink-0" aria-hidden />
                 </a>
-              ) : null}
+              ) : (
+                <span className="font-mono">{agent.id}</span>
+              )}
               <span className="capitalize">{agent.runtime}</span>
               <span className="font-mono">
                 {activeRev ? `rev #${activeRev}` : 'Not deployed'}
