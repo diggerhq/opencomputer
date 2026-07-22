@@ -15,6 +15,11 @@ export type {
   RepositoryAccessPolicy, RepositoryAccessGrant, RepositoryAccessRepository,
   UnavailableSelectedRepository, RepositoryAccess,
 } from "./agents.js";
+export { AgentHooks } from "./hooks.js";
+export type {
+  AgentHook, HookStatus, HookRevokedReason, CreateAgentHookParams,
+  ListAgentHooksParams, CreatedAgentHook,
+} from "./hooks.js";
 export { AgentRepository } from "./repository-agents.js";
 export type {
   SourceProfileId, RepositoryAgentSource, ReviewRepositoryAgentParams,

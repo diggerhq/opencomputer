@@ -32,6 +32,8 @@ export interface Actor {
 export interface Agent {
   id: string;
   name: string;
+  /** Canonical application URL for trusted-backend JSON invocation. */
+  invokeUrl: string;
   promptHash?: string;
   model: string;
   runtime: Runtime;

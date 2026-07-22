@@ -33,6 +33,7 @@ type RevisionRef struct {
 type Agent struct {
 	ID               string       `json:"id"`
 	Name             string       `json:"name"`
+	InvokeURL        string       `json:"invoke_url"`
 	Prompt           string       `json:"prompt,omitempty"`
 	Model            string       `json:"model"`
 	Runtime          string       `json:"runtime"`
@@ -175,5 +176,7 @@ func init() {
 	registerAgentDeploy()
 	registerAgentConfig()
 	registerAgentSchedules()
+	registerAgentInvoke()
+	registerAgentHooks()
 	rootCmd.AddCommand(sessionCmd)
 }
