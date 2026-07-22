@@ -2,6 +2,12 @@ package commands
 
 import "testing"
 
+func TestSessionCreateDoesNotExposeRevisionFlag(t *testing.T) {
+	if flag := sessionCreateCmd.Flags().Lookup("revision"); flag != nil {
+		t.Fatal("session create must not expose unsupported revision selection")
+	}
+}
+
 func TestParseSources(t *testing.T) {
 	ok := []struct {
 		in       []string

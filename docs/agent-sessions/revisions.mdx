@@ -85,23 +85,19 @@ Inline deployments finish synchronously (`state: "ready"` with a `revision_id`) 
 
 ### Staging vs activating
 
-<Warning>Isolated staging is not available for Flue. A Flue upload changes the one live Worker even when deployment metadata requests `activate: false`. Do not use `--no-activate` or a pinned revision as a Flue canary. See [Flue deployment behavior](/agent-sessions/flue#deployment-and-revision-behavior).</Warning>
+<Warning>Isolated staging is not available for Flue. A Flue upload changes the one live Worker even when deployment metadata requests `activate: false`. Do not use `--no-activate` as a Flue canary. See [Flue deployment behavior](/agent-sessions/flue#deployment-and-revision-behavior).</Warning>
 
-By default a ready deployment is **activated** — its revision becomes what new sessions use. Pass **`activate: false`** to **stage** instead: the revision is created but not made active, so you can test it before it goes live.
+By default a ready deployment is **activated** — its revision becomes what new sessions use. Pass **`activate: false`** to **stage** instead: the revision is created but not made active.
 
 ```ts
-// 1. stage a revision (not activated)
+// Stage a revision (not activated).
 const { deployment } = await oc.agents.deployments.create("agt_123", { input: { type: "inline", prompt: "…" }, activate: false });
 
-// 2. test it — a session pins the agent's ACTIVE revision by default; pass `revision`
-//    to run the staged one instead
-const session = await oc.sessions.create({ agent: "agt_123", revision: deployment.revision_id, input: "…" });
-
-// 3. happy? promote it
+// After reviewing it, promote it to make it active.
 await oc.agents.revisions.activate("agt_123", deployment.revision_id);
 ```
 
-So `revision` on [session create](/agent-sessions/sessions) is how you exercise any non-active revision (a staged one, or an old one) without touching what's live.
+A session always starts on the agent's active revision. A staged built-in revision cannot be invoked directly today; activate it when you are ready for new sessions to use it.
 
 For built-in [repo deployments](#deploy-from-a-repo), the **branch decides** and `activate` is ignored:
 a push to the production branch activates, while another branch stages. Flue repository deployment
@@ -160,7 +156,7 @@ oc agent link acme/agents --path issue-fixer --branch main
 Linking deploys the current `main` HEAD right away (`deploy_now: false` / `--no-deploy` to skip). Then every push that touches the directory deploys:
 
 - push to **`main`** (production) → a new revision, **activated**.
-- push to **another branch** → a revision **staged** (test, then [promote](#roll-back-and-promote)).
+- push to **another branch** → a revision **staged** (review, then [promote](#roll-back-and-promote)).
 - a push not touching the directory → **no-op**; identical directory content → **skipped** (no churn).
 
 OpenComputer posts a **commit status** (queued → ready / failed) so a deployment's result shows in GitHub.

@@ -68,15 +68,15 @@ oc agent build --dir . --check-only --json  # validate a Flue app without creden
 
 <Tab title="oc CLI">
 
-| Command                                                                  | Purpose                                                                    |
-| ------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
-| `oc session create --agent <id\|name> [--revision <n>] [--input <text>]` | Start a session (`--revision` pins a specific revision; default = active). |
-| `oc session get <id>`                                                    | Fetch a session.                                                           |
-| `oc session list [--agent <id>] [--status <s>]`                          | List sessions.                                                             |
-| `oc session cancel <id>`                                                 | Cooperatively stop the active turn.                                        |
-| `oc session result <id>`                                                 | The resolved final result.                                                 |
-| `oc session steer <id> <text>`                                           | Send input to a running or waiting session.                                |
-| _(archive · turns · sources · client tokens — REST/SDK only)_            |                                                                            |
+| Command                                                   | Purpose                                          |
+| --------------------------------------------------------- | ------------------------------------------------ |
+| `oc session create --agent <id\|name> [--input <text>]`   | Start a session on the agent's active revision. |
+| `oc session get <id>`                                     | Fetch a session.                                 |
+| `oc session list [--agent <id>] [--status <s>]`           | List sessions.                                   |
+| `oc session cancel <id>`                                  | Cooperatively stop the active turn.              |
+| `oc session result <id>`                                  | The resolved final result.                       |
+| `oc session steer <id> <text>`                            | Send input to a running or waiting session.      |
+| _(archive · turns · sources · client tokens — REST/SDK only)_ |                                                  |
 
 </Tab>
 
@@ -85,7 +85,6 @@ oc agent build --dir . --check-only --json  # validate a Flue app without creden
 **Create params** — `agent` is **required**; the model resolves to **Managed** (default) or a [credential](#credentials), else `422 no_credential` / `422 managed_unavailable`.
 
 - `input` — the task (string or [envelope](/agent-sessions/messaging#message-input)). Truncate large inputs; let the agent fetch the rest via [sandbox tools](/agent-sessions/runtime-tools).
-- `revision?`: pin a specific revision (number / `rev_…`); default = the agent's active one. Use to test a [staged](/agent-sessions/revisions#staging-vs-activating) built-in runtime revision. A Flue agent has one live Worker, so an old revision does not isolate older Worker code.
 - `model?` — run this session on a different model than the agent's (same `provider/model` form; its provider must match the agent's [runtime](/agent-sessions/runtimes), e.g. `anthropic/…` for `claude`). Default = the agent's model. Pinned for the session's life like the rest of the snapshot. Rejected (`400 invalid`) for [flue](/agent-sessions/flue) agents — their model is fixed in the deployed artifact.
 - `key?` — get-or-create (one session per key). Keyless: an `Idempotency-Key` header makes create retry-safe.
 - `metadata?` — opaque routing state (≤ 16 KB); on get/list + **verbatim in webhooks**; never sent to the model, not indexed.

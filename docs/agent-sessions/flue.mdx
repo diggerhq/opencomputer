@@ -382,7 +382,7 @@ the `queued`, `fetching`, `validating`, `installing`, `building`, `uploading`, `
 <Warning>
 Flue currently has one live Worker per agent. Uploading a deployment changes the code used by new and
 existing sessions before revision verification finishes. There is no isolated staged Worker, canary
-route, or automatic Worker rollback. `--no-activate`, an old revision pin, and a pointer-only
+route, or automatic Worker rollback. `--no-activate` and a pointer-only
 `oc agent rollback` do not restore older Worker code.
 
 From the live-upload guard until verification finishes, new session creation and new input return the

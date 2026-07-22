@@ -1,7 +1,7 @@
 package commands
 
 // `oc session` — Durable Agent Sessions runtime verbs (/v3/sessions/*). A session
-// is one run of an agent's active (or pinned) revision. Distinct from `oc agent`
+// is one run of an agent's active revision. Distinct from `oc agent`
 // (which manages the behavior); sessions are addressed by id.
 
 import (
@@ -44,10 +44,9 @@ var sessionCmd = &cobra.Command{
 }
 
 var sessionCreateCmd = &cobra.Command{
-	Use:   "create",
-	Short: "Start a session on an agent",
-	Example: "  oc session create --agent issue-fixer --input \"triage issue #42\"\n" +
-		"  oc session create --agent issue-fixer --input \"...\" --revision 3   # pin a staged revision",
+	Use:     "create",
+	Short:   "Start a session on an agent",
+	Example: "  oc session create --agent issue-fixer --input \"triage issue #42\"",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sc, err := sessionsClient(cmd)
 		if err != nil {
@@ -55,7 +54,6 @@ var sessionCreateCmd = &cobra.Command{
 		}
 		ref, _ := cmd.Flags().GetString("agent")
 		input, _ := cmd.Flags().GetString("input")
-		revision, _ := cmd.Flags().GetString("revision")
 		if ref == "" {
 			id, rerr := targetAgentID(cmd, sc, nil) // fall back to cwd agent.toml
 			if rerr != nil {
@@ -72,9 +70,6 @@ var sessionCreateCmd = &cobra.Command{
 			return fmt.Errorf("--input is required (the first message to the agent)")
 		}
 		body := map[string]interface{}{"agent": ref, "input": input}
-		if revision != "" {
-			body["revision"] = revision
-		}
 		specs, _ := cmd.Flags().GetStringArray("source")
 		sources, err := parseSources(specs)
 		if err != nil {
@@ -285,7 +280,6 @@ func bodyText(body interface{}) (string, bool) {
 func init() {
 	sessionCreateCmd.Flags().String("agent", "", "Agent id or name to run (else the cwd agent.toml)")
 	sessionCreateCmd.Flags().String("input", "", "First message to the agent (required)")
-	sessionCreateCmd.Flags().String("revision", "", "Pin a specific revision (number or rev_ id; default = active)")
 	sessionCreateCmd.Flags().StringArray("source", nil, "Attach a GitHub repo as a working source: owner/repo[@ref] (default ref: HEAD). Repeatable.")
 	sessionListCmd.Flags().String("agent", "", "Filter by agent id or name")
 
