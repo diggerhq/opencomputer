@@ -67,6 +67,11 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && r.URL.Path == "/v3/agents":
 		_ = json.NewDecoder(r.Body).Decode(&f.createBody)
 		writeJSON(map[string]any{"id": fakeAgentID, "name": "e2e-flue", "model": "anthropic/claude-sonnet-5", "runtime": "flue"})
+	case r.Method == "GET" && r.URL.Path == "/v3/agents/"+fakeAgentID:
+		writeJSON(map[string]any{
+			"id": fakeAgentID, "name": "e2e-flue", "model": "anthropic/claude-sonnet-5", "runtime": "flue",
+			"invoke_url": "https://agt-0123456789abcdef01234567.agents.opencomputer.dev",
+		})
 	case r.Method == "PUT" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/config":
 		_ = json.NewDecoder(r.Body).Decode(&f.configPutBody)
 		writeJSON(map[string]any{
@@ -161,10 +166,21 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 
 	prev := printer
 	printer = output.New(false)
+	var humanOutput bytes.Buffer
+	printer.W = &humanOutput
 	defer func() { printer = prev }()
 
 	if err := deployFlue(cmd, sc, dir, m, false); err != nil {
 		t.Fatalf("deployFlue: %v", err)
+	}
+	for _, want := range []string{
+		"Agent URL: https://agt-0123456789abcdef01234567.agents.opencomputer.dev\n",
+		"Invoke:    oc agent invoke " + fakeAgentID + " --data '{\"message\":\"Hello\"}'\n",
+		"Manage:    https://app.opencomputer.dev/agents/" + fakeAgentID + "\n",
+	} {
+		if !strings.Contains(humanOutput.String(), want) {
+			t.Errorf("human deploy output missing %q:\n%s", want, humanOutput.String())
+		}
 	}
 
 	// Agent created as flue, no prompt.

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
+	"github.com/opensandbox/opensandbox/cmd/oc/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -150,6 +152,30 @@ func revisionNumber(cmd *cobra.Command, sc *client.Client, id, revisionID string
 	return 0
 }
 
+// loadDeployHandoff fetches the public URL only for human-readable output. A
+// successful deployment stays successful if this convenience read fails; the
+// user can still retrieve the URL with `oc agent get`.
+func loadDeployHandoff(cmd *cobra.Command, sc *client.Client, id string) Agent {
+	agent := Agent{ID: id}
+	if err := sc.Get(cmd.Context(), "/v3/agents/"+id, &agent); err != nil {
+		return Agent{ID: id}
+	}
+	if agent.ID == "" {
+		agent.ID = id
+	}
+	return agent
+}
+
+func printDeployHandoff(w io.Writer, agent Agent) {
+	if agent.ID == "" || agent.InvokeURL == "" {
+		return
+	}
+	manageURL := strings.TrimRight(config.DefaultAPIURL, "/") + "/agents/" + agent.ID
+	fmt.Fprintf(w, "Agent URL: %s\n", agent.InvokeURL)
+	fmt.Fprintf(w, "Invoke:    oc agent invoke %s --data '{\"message\":\"Hello\"}'\n", agent.ID)
+	fmt.Fprintf(w, "Manage:    %s\n", manageURL)
+}
+
 // ── async deployment polling ──
 
 func terminalState(s string) bool {
@@ -261,7 +287,7 @@ var agentDeployCmd = &cobra.Command{
 		// A fresh agent with no skills: `create` already produced the first
 		// revision (the deploy) — don't append a redundant identical one.
 		if created && len(skills) == 0 {
-			var a Agent
+			a := Agent{ID: id}
 			_ = sc.Get(cmd.Context(), "/v3/agents/"+id, &a)
 			n := 0
 			if a.ActiveRevision != nil {
@@ -269,6 +295,7 @@ var agentDeployCmd = &cobra.Command{
 			}
 			printer.Print(map[string]interface{}{"agent_id": id, "revision": n, "state": "ready", "active": true}, func() {
 				fmt.Printf("Deployed %s — revision %d (active)\n", a.Name, n)
+				printDeployHandoff(printer.W, a)
 			})
 			return nil
 		}
@@ -299,6 +326,10 @@ var agentDeployCmd = &cobra.Command{
 			printer.Print(d, func() { fmt.Printf("Deploy failed: %s\n", deployFailMsg(d)) })
 			return &ExitError{Code: 1}
 		}
+		handoff := Agent{}
+		if !jsonOutput && d.State == "ready" {
+			handoff = loadDeployHandoff(cmd, sc, id)
+		}
 		printer.Print(d, func() {
 			if d.State == "ready" {
 				n := revisionNumber(cmd, sc, id, d.RevisionID)
@@ -307,6 +338,7 @@ var agentDeployCmd = &cobra.Command{
 					status = "active"
 				}
 				fmt.Printf("Deployed revision %d — %s\n", n, status)
+				printDeployHandoff(printer.W, handoff)
 			} else {
 				fmt.Printf("Deployment %s: %s\n", d.ID, d.State)
 			}

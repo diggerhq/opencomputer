@@ -118,6 +118,10 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 		printer.Print(d, func() { fmt.Printf("Deploy failed: %s\n", deployFailMsg(d)) })
 		return &ExitError{Code: 1}
 	}
+	handoff := Agent{}
+	if !jsonOutput && d.State == "ready" {
+		handoff = loadDeployHandoff(cmd, sc, id)
+	}
 	printer.Print(d, func() {
 		n := revisionNumber(cmd, sc, id, d.RevisionID)
 		status := "staged"
@@ -125,6 +129,7 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 			status = "active"
 		}
 		fmt.Printf("Deployed revision %d — %s (%s)\n", n, status, shortDigest(digest))
+		printDeployHandoff(printer.W, handoff)
 	})
 	return nil
 }
