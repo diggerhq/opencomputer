@@ -67,18 +67,39 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 
 	// 3–4. Build through the shared credential-free package. It extracts only
 	// strict WfP metadata + regular modules and credential-scans the final bytes.
+	verbose, _ := cmd.Flags().GetBool("verbose")
+	var buildLog bytes.Buffer
+	buildStdout, buildStderr := io.Writer(&buildLog), io.Writer(&buildLog)
+	if verbose {
+		buildStdout, buildStderr = os.Stderr, os.Stderr
+	} else {
+		printDeployProgress("building")
+	}
 	artifact, err := fluebuild.Build(cmd.Context(), fluebuild.Options{
 		Dir:            dir,
 		Target:         fluebuild.TargetCloudflare,
 		BuilderVersion: Version,
+		BuildStdout:    buildStdout,
+		BuildStderr:    buildStderr,
 	})
 	if err != nil {
+		if !verbose && buildLog.Len() > 0 {
+			endsWithNewline := buildLog.Bytes()[buildLog.Len()-1] == '\n'
+			fmt.Fprintln(os.Stderr, "Framework build output:")
+			_, _ = io.Copy(os.Stderr, &buildLog)
+			if !endsWithNewline {
+				fmt.Fprintln(os.Stderr)
+			}
+		}
 		return presentFlueBuildError(err)
 	}
 	digest := artifact.Deployment.Bundle.Digest
 	wrangler := artifact.Deployment.Flue.Wrangler
 
 	// 5. Upload: presigned PUT to R2 (the API host never sees the bytes).
+	if !verbose {
+		printDeployProgress("uploading")
+	}
 	if err := uploadArtifact(cmd.Context(), sc, id, digest, artifact.Bundle); err != nil {
 		return err
 	}

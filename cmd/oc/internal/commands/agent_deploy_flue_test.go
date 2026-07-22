@@ -126,7 +126,7 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 		`{"lockfileVersion":3}`, 0o644)
 	writeFile(t, filepath.Join(dir, "src", "opencomputer.ts"),
 		"import { serveOC } from '@opencomputer/flue';\nexport default serveOC(agent);\n", 0o644)
-	buildScript := "#!/bin/sh\nset -e\ntest \"${WRANGLER_LOG:-}\" = error\nmkdir -p dist/e2e_flue/assets dist/e2e_flue/.vite dist/e2e_flue/.flue-vite\n" +
+	buildScript := "#!/bin/sh\nset -e\ntest \"${WRANGLER_LOG:-}\" = error\necho 'FLUE BUILD BANNER'\necho 'FLUE BUILD DETAIL' >&2\nmkdir -p dist/e2e_flue/assets dist/e2e_flue/.vite dist/e2e_flue/.flue-vite\n" +
 		"cat > dist/e2e_flue/index.js <<'JS'\n" + e2eModuleBody + "\nJS\n" +
 		"cat > dist/e2e_flue/assets/chunk.js <<'JS'\n" + e2eAssetBody + "\nJS\n" +
 		"cat > dist/e2e_flue/.flue-vite/runtime.mjs <<'JS'\n" + e2eRuntimeBody + "\nJS\n" +
@@ -175,14 +175,17 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 	}
 	for _, want := range []string{
 		"✓ Deployed e2e-flue\n",
-		"Revision   active · " + shortDigest(expectedDigest) + "\n",
-		"Agent URL  https://agt-0123456789abcdef01234567.agents.opencomputer.dev\n",
-		"Manage     https://app.opencomputer.dev/agents/" + fakeAgentID + "\n",
-		"oc agent invoke " + fakeAgentID + " --data '{\"message\":\"Hello\"}'\n",
+		"Agent URL\n  https://agt-0123456789abcdef01234567.agents.opencomputer.dev\n",
+		"Revision    active · " + shortDigest(expectedDigest) + "\n",
+		"Dashboard   https://app.opencomputer.dev/agents/" + fakeAgentID + "\n",
+		"$ oc agent invoke " + fakeAgentID + " --data '{\"message\":\"Hello\"}'\n",
 	} {
 		if !strings.Contains(humanOutput.String(), want) {
 			t.Errorf("human deploy output missing %q:\n%s", want, humanOutput.String())
 		}
+	}
+	if strings.Contains(humanOutput.String(), "FLUE BUILD") {
+		t.Fatalf("framework build chatter leaked into the deploy result:\n%s", humanOutput.String())
 	}
 
 	// Agent created as flue, no prompt.

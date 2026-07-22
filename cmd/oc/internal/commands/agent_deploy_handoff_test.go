@@ -69,11 +69,12 @@ func TestAgentDeployFreshAgentPrintsPublicHandoff(t *testing.T) {
 
 	got := humanOutput.String()
 	want := "✓ Deployed triage\n\n" +
-		"  Revision   1 · active\n" +
-		"  Agent URL  https://agt-abcdef0123456789abcdef01.agents.opencomputer.dev\n" +
-		"  Manage     https://app.opencomputer.dev/agents/" + agentID + "\n\n" +
-		"  Run\n" +
-		"    oc agent invoke " + agentID + " --data '{\"message\":\"Hello\"}'\n"
+		"  Agent URL\n" +
+		"  https://agt-abcdef0123456789abcdef01.agents.opencomputer.dev\n\n" +
+		"  Revision    1 · active\n" +
+		"  Dashboard   https://app.opencomputer.dev/agents/" + agentID + "\n\n" +
+		"  Try it\n" +
+		"  $ oc agent invoke " + agentID + " --data '{\"message\":\"Hello\"}'\n"
 	if got != want {
 		t.Fatalf("human deploy output mismatch:\n--- got ---\n%s--- want ---\n%s", got, want)
 	}
@@ -108,9 +109,9 @@ func TestDeploySuccessWithoutConvenienceReadStaysUseful(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"✓ Deployed agt_abcdef0123456789abcdef01",
-		"Revision   2 · active",
-		"Manage     https://app.opencomputer.dev/agents/agt_abcdef0123456789abcdef01",
-		"oc agent invoke agt_abcdef0123456789abcdef01",
+		"Revision    2 · active",
+		"Dashboard   https://app.opencomputer.dev/agents/agt_abcdef0123456789abcdef01",
+		"$ oc agent invoke agt_abcdef0123456789abcdef01",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("fallback output missing %q:\n%s", want, got)
@@ -133,9 +134,10 @@ func TestDeploySuccessTTYStyleIsRestrainedAndLinked(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"\x1b[32m✓\x1b[0m",
-		"\x1b[1mDeployed triage\x1b[0m",
+		"Deployed \x1b[1mtriage\x1b[0m",
+		"\x1b[1mAgent URL\x1b[0m",
 		"3 · \x1b[33mstaged\x1b[0m · f42ea75bad3e",
-		"\x1b]8;;" + invokeURL + "\x1b\\" + invokeURL + "\x1b]8;;\x1b\\",
+		"\x1b]8;;" + invokeURL + "\x1b\\\x1b[4;36m" + invokeURL + "\x1b[0m\x1b]8;;\x1b\\",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("styled output missing %q:\n%q", want, got)
@@ -144,7 +146,7 @@ func TestDeploySuccessTTYStyleIsRestrainedAndLinked(t *testing.T) {
 }
 
 func TestTerminalLinkRejectsControlSequenceInjection(t *testing.T) {
-	got := terminalLink("https://example.com/ok\x1b]8;;https://evil.example", true)
+	got := terminalLink("https://example.com/ok\x1b]8;;https://evil.example", deployOutputStyle{color: true, hyperlinks: true})
 	if strings.Contains(got, "\x1b") || !strings.Contains(got, "https://example.com/ok") {
 		t.Fatalf("unsafe terminal link projection: %q", got)
 	}
