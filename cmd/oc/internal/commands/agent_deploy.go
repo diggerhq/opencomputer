@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/config"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // ── agent.toml manifest + deploy bundle ──
@@ -166,14 +168,103 @@ func loadDeployHandoff(cmd *cobra.Command, sc *client.Client, id string) Agent {
 	return agent
 }
 
-func printDeployHandoff(w io.Writer, agent Agent) {
-	if agent.ID == "" || agent.InvokeURL == "" {
-		return
+type deploySuccess struct {
+	Agent    Agent
+	Revision int
+	Status   string
+	Digest   string
+}
+
+type deployOutputStyle struct {
+	color      bool
+	hyperlinks bool
+}
+
+func deployStyleFor(w io.Writer) deployOutputStyle {
+	file, ok := w.(*os.File)
+	if !ok || !term.IsTerminal(int(file.Fd())) || os.Getenv("TERM") == "dumb" {
+		return deployOutputStyle{}
 	}
-	manageURL := strings.TrimRight(config.DefaultAPIURL, "/") + "/agents/" + agent.ID
-	fmt.Fprintf(w, "Agent URL: %s\n", agent.InvokeURL)
-	fmt.Fprintf(w, "Invoke:    oc agent invoke %s --data '{\"message\":\"Hello\"}'\n", agent.ID)
-	fmt.Fprintf(w, "Manage:    %s\n", manageURL)
+	return deployOutputStyle{
+		color:      !noColor && os.Getenv("NO_COLOR") == "",
+		hyperlinks: true,
+	}
+}
+
+func ansiText(value, code string, enabled bool) string {
+	if !enabled {
+		return value
+	}
+	return "\x1b[" + code + "m" + value + "\x1b[0m"
+}
+
+func oneLine(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\x1b' || r == '\a' || r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
+}
+
+func terminalLink(rawURL string, enabled bool) string {
+	visible := oneLine(rawURL)
+	if !enabled || visible != rawURL {
+		return visible
+	}
+	parsed, err := url.ParseRequestURI(rawURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return visible
+	}
+	return "\x1b]8;;" + rawURL + "\x1b\\" + visible + "\x1b]8;;\x1b\\"
+}
+
+func renderDeploySuccess(w io.Writer, success deploySuccess, style deployOutputStyle) {
+	agentID := oneLine(success.Agent.ID)
+	name := oneLine(success.Agent.Name)
+	if name == "" {
+		name = agentID
+	}
+	if name == "" {
+		name = "agent"
+	}
+
+	mark := ansiText("✓", "32", style.color)
+	title := ansiText("Deployed "+name, "1", style.color)
+	fmt.Fprintf(w, "%s %s\n\n", mark, title)
+
+	status := oneLine(success.Status)
+	statusCode := "32"
+	if status == "staged" {
+		statusCode = "33"
+	}
+	status = ansiText(status, statusCode, style.color)
+	var revisionParts []string
+	if success.Revision > 0 {
+		revisionParts = append(revisionParts, fmt.Sprintf("%d", success.Revision))
+	}
+	if status != "" {
+		revisionParts = append(revisionParts, status)
+	}
+	if digest := oneLine(success.Digest); digest != "" {
+		revisionParts = append(revisionParts, digest)
+	}
+	if len(revisionParts) > 0 {
+		fmt.Fprintf(w, "  %-10s %s\n", "Revision", strings.Join(revisionParts, " · "))
+	}
+	if success.Agent.InvokeURL != "" {
+		fmt.Fprintf(w, "  %-10s %s\n", "Agent URL", terminalLink(success.Agent.InvokeURL, style.hyperlinks))
+	}
+	if agentID != "" {
+		manageURL := strings.TrimRight(config.DefaultAPIURL, "/") + "/agents/" + url.PathEscape(agentID)
+		fmt.Fprintf(w, "  %-10s %s\n", "Manage", terminalLink(manageURL, style.hyperlinks))
+		fmt.Fprintf(w, "\n  %s\n", ansiText("Run", "2", style.color))
+		fmt.Fprintf(w, "    oc agent invoke %s --data '{\"message\":\"Hello\"}'\n", agentID)
+	}
+}
+
+func printDeploySuccess(w io.Writer, success deploySuccess) {
+	renderDeploySuccess(w, success, deployStyleFor(w))
 }
 
 // ── async deployment polling ──
@@ -294,8 +385,7 @@ var agentDeployCmd = &cobra.Command{
 				n = a.ActiveRevision.Number
 			}
 			printer.Print(map[string]interface{}{"agent_id": id, "revision": n, "state": "ready", "active": true}, func() {
-				fmt.Printf("Deployed %s — revision %d (active)\n", a.Name, n)
-				printDeployHandoff(printer.W, a)
+				printDeploySuccess(printer.W, deploySuccess{Agent: a, Revision: n, Status: "active"})
 			})
 			return nil
 		}
@@ -337,8 +427,7 @@ var agentDeployCmd = &cobra.Command{
 				if d.Active {
 					status = "active"
 				}
-				fmt.Printf("Deployed revision %d — %s\n", n, status)
-				printDeployHandoff(printer.W, handoff)
+				printDeploySuccess(printer.W, deploySuccess{Agent: handoff, Revision: n, Status: status})
 			} else {
 				fmt.Printf("Deployment %s: %s\n", d.ID, d.State)
 			}

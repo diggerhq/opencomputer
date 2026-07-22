@@ -174,9 +174,11 @@ func TestDeployFlueDoEndToEnd(t *testing.T) {
 		t.Fatalf("deployFlue: %v", err)
 	}
 	for _, want := range []string{
-		"Agent URL: https://agt-0123456789abcdef01234567.agents.opencomputer.dev\n",
-		"Invoke:    oc agent invoke " + fakeAgentID + " --data '{\"message\":\"Hello\"}'\n",
-		"Manage:    https://app.opencomputer.dev/agents/" + fakeAgentID + "\n",
+		"✓ Deployed e2e-flue\n",
+		"Revision   active · " + shortDigest(expectedDigest) + "\n",
+		"Agent URL  https://agt-0123456789abcdef01234567.agents.opencomputer.dev\n",
+		"Manage     https://app.opencomputer.dev/agents/" + fakeAgentID + "\n",
+		"oc agent invoke " + fakeAgentID + " --data '{\"message\":\"Hello\"}'\n",
 	} {
 		if !strings.Contains(humanOutput.String(), want) {
 			t.Errorf("human deploy output missing %q:\n%s", want, humanOutput.String())

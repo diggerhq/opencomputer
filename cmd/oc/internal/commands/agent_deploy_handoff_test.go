@@ -68,21 +68,84 @@ func TestAgentDeployFreshAgentPrintsPublicHandoff(t *testing.T) {
 	}
 
 	got := humanOutput.String()
+	want := "✓ Deployed triage\n\n" +
+		"  Revision   1 · active\n" +
+		"  Agent URL  https://agt-abcdef0123456789abcdef01.agents.opencomputer.dev\n" +
+		"  Manage     https://app.opencomputer.dev/agents/" + agentID + "\n\n" +
+		"  Run\n" +
+		"    oc agent invoke " + agentID + " --data '{\"message\":\"Hello\"}'\n"
+	if got != want {
+		t.Fatalf("human deploy output mismatch:\n--- got ---\n%s--- want ---\n%s", got, want)
+	}
+	if strings.Contains(got, "\x1b") {
+		t.Fatalf("redirected output contained a terminal control sequence: %q", got)
+	}
+
+	var machineOutput bytes.Buffer
+	printer = output.New(true)
+	printer.W = &machineOutput
+	jsonOutput = true
+	if err := agentDeployCmd.RunE(cmd, []string{dir}); err != nil {
+		t.Fatalf("agent deploy --json: %v", err)
+	}
+	var machine map[string]any
+	if err := json.Unmarshal(machineOutput.Bytes(), &machine); err != nil {
+		t.Fatalf("machine output is not one JSON object: %v\n%s", err, machineOutput.String())
+	}
+	if machine["agent_id"] != agentID || machine["state"] != "ready" || machine["active"] != true || machine["revision"] != float64(1) {
+		t.Fatalf("machine deploy schema changed: %#v", machine)
+	}
+	if strings.Contains(machineOutput.String(), "Deployed") || strings.Contains(machineOutput.String(), "\x1b") {
+		t.Fatalf("machine output contained presentation text: %q", machineOutput.String())
+	}
+}
+
+func TestDeploySuccessWithoutConvenienceReadStaysUseful(t *testing.T) {
+	var out bytes.Buffer
+	renderDeploySuccess(&out, deploySuccess{
+		Agent: Agent{ID: "agt_abcdef0123456789abcdef01"}, Revision: 2, Status: "active",
+	}, deployOutputStyle{})
+	got := out.String()
 	for _, want := range []string{
-		"Agent URL: https://agt-abcdef0123456789abcdef01.agents.opencomputer.dev",
-		"Invoke:    oc agent invoke " + agentID + " --data '{\"message\":\"Hello\"}'",
-		"Manage:    https://app.opencomputer.dev/agents/" + agentID,
+		"✓ Deployed agt_abcdef0123456789abcdef01",
+		"Revision   2 · active",
+		"Manage     https://app.opencomputer.dev/agents/agt_abcdef0123456789abcdef01",
+		"oc agent invoke agt_abcdef0123456789abcdef01",
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("human deploy output missing %q:\n%s", want, got)
+			t.Errorf("fallback output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Agent URL") {
+		t.Fatalf("fallback invented an Agent URL: %s", got)
+	}
+}
+
+func TestDeploySuccessTTYStyleIsRestrainedAndLinked(t *testing.T) {
+	const invokeURL = "https://agt-abcdef0123456789abcdef01.agents.opencomputer.dev"
+	var out bytes.Buffer
+	renderDeploySuccess(&out, deploySuccess{
+		Agent: Agent{
+			ID: "agt_abcdef0123456789abcdef01", Name: "triage", InvokeURL: invokeURL,
+		},
+		Revision: 3, Status: "staged", Digest: "f42ea75bad3e",
+	}, deployOutputStyle{color: true, hyperlinks: true})
+	got := out.String()
+	for _, want := range []string{
+		"\x1b[32m✓\x1b[0m",
+		"\x1b[1mDeployed triage\x1b[0m",
+		"3 · \x1b[33mstaged\x1b[0m · f42ea75bad3e",
+		"\x1b]8;;" + invokeURL + "\x1b\\" + invokeURL + "\x1b]8;;\x1b\\",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("styled output missing %q:\n%q", want, got)
 		}
 	}
 }
 
-func TestPrintDeployHandoffOmitsIncompleteAgent(t *testing.T) {
-	var output bytes.Buffer
-	printDeployHandoff(&output, Agent{ID: "agt_abcdef0123456789abcdef01"})
-	if output.Len() != 0 {
-		t.Fatalf("unexpected output without invoke URL: %q", output.String())
+func TestTerminalLinkRejectsControlSequenceInjection(t *testing.T) {
+	got := terminalLink("https://example.com/ok\x1b]8;;https://evil.example", true)
+	if strings.Contains(got, "\x1b") || !strings.Contains(got, "https://example.com/ok") {
+		t.Fatalf("unsafe terminal link projection: %q", got)
 	}
 }

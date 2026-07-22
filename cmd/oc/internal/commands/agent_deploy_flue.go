@@ -128,8 +128,9 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 		if d.Active {
 			status = "active"
 		}
-		fmt.Printf("Deployed revision %d — %s (%s)\n", n, status, shortDigest(digest))
-		printDeployHandoff(printer.W, handoff)
+		printDeploySuccess(printer.W, deploySuccess{
+			Agent: handoff, Revision: n, Status: status, Digest: shortDigest(digest),
+		})
 	})
 	return nil
 }
