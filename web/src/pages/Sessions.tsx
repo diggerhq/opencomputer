@@ -28,7 +28,12 @@ import { StatusBadge } from '@/components/status-badge'
 import { RuntimeBadge } from '@/components/runtime-badge'
 import { EmptyState } from '@/components/empty-state'
 import { ResourceTable, type Column } from '@/components/resource-table'
-import { formatSpend } from '@/lib/usage'
+import {
+  formatUsageCost,
+  formatUsageDuration,
+  formatUsageTokens,
+  usageDisclosure,
+} from '@/lib/usage'
 
 export default function Sessions() {
   const navigate = useNavigate()
@@ -139,12 +144,38 @@ export default function Sessions() {
       ),
     },
     {
-      key: 'spend',
-      header: 'Spend',
+      key: 'tokens',
+      header: 'Tokens',
+      align: 'right',
+      cell: (s) => (
+        <span
+          className="text-muted-foreground font-mono text-xs tabular-nums"
+          title={usageDisclosure(s.usage) ?? undefined}
+        >
+          {formatUsageTokens(s.usage)}
+        </span>
+      ),
+    },
+    {
+      key: 'active',
+      header: 'Active',
       align: 'right',
       cell: (s) => (
         <span className="text-muted-foreground font-mono text-xs tabular-nums">
-          {formatSpend(s.usage)}
+          {formatUsageDuration(s.usage)}
+        </span>
+      ),
+    },
+    {
+      key: 'cost',
+      header: 'Cost',
+      align: 'right',
+      cell: (s) => (
+        <span
+          className="text-muted-foreground font-mono text-xs tabular-nums"
+          title={usageDisclosure(s.usage) ?? 'Runtime-reported when available'}
+        >
+          {formatUsageCost(s.usage)}
         </span>
       ),
     },

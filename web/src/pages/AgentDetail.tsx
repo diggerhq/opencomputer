@@ -40,6 +40,8 @@ import { AgentDeploySource } from '@/components/agent-deploy-source'
 import { AgentSchedulesTab } from '@/components/agent-schedules'
 import { AgentRevisions } from '@/components/agent-revisions'
 import { AgentDeployments } from '@/components/agent-deployments'
+import { AgentUrlPanel } from '@/components/agent-url-panel'
+import { AgentHooksPanel } from '@/components/agent-hooks-panel'
 import {
   RepositoryAccessPanel,
   RepositoryAccessSummary,
@@ -601,8 +603,10 @@ export default function AgentDetail() {
               </Panel>
               <AgentSkills agentId={agent.id} />
             </div>
-            {/* Right rail: deployment source, working-repo scope, and Slack. */}
+            {/* Right rail: invocation surfaces, deployment source, working-repo scope, and Slack. */}
             <div className="space-y-4">
+              <AgentUrlPanel key={`url-${agent.id}`} agent={agent} />
+              <AgentHooksPanel key={`hooks-${agent.id}`} agentId={agent.id} />
               <AgentDeploySource
                 agentId={agent.id}
                 profilePinned={agent.runtime === 'flue'}

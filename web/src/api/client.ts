@@ -58,6 +58,11 @@ export type {
   SandboxWebhookDelivery,
   Credential,
   AgentSecurityNotification,
+  AgentHook,
+  AgentHookCreate,
+  AgentInvokeReceipt,
+  SessionUsage,
+  TurnUsage,
 } from './schemas'
 
 const API_BASE = '/api/dashboard'
@@ -528,6 +533,47 @@ export const updateAgent = (
     `/v3/agents/${id}`,
     { method: 'PATCH', body: JSON.stringify(body) },
     S.AgentSchema,
+  )
+
+export const invokeAgent = (
+  agentId: string,
+  payload: unknown,
+  idempotencyKey: string,
+) =>
+  apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/sessions`,
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(payload),
+    },
+    S.AgentInvokeReceiptSchema,
+  )
+
+export const getAgentHooks = (agentId: string, cursor?: string) => {
+  const query = new URLSearchParams({ include_revoked: 'true', limit: '100' })
+  if (cursor) query.set('cursor', cursor)
+  return apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/hooks?${query.toString()}`,
+    {},
+    S.AgentHookListSchema,
+  )
+}
+
+export const createAgentHook = (
+  agentId: string,
+  body: { name: string; expires_at?: string | null },
+) =>
+  apiFetch(
+    `/v3/agents/${encodeURIComponent(agentId)}/hooks`,
+    { method: 'POST', body: JSON.stringify(body) },
+    S.AgentHookCreateSchema,
+  )
+
+export const revokeAgentHook = (agentId: string, hookId: string) =>
+  apiFetch<void>(
+    `/v3/agents/${encodeURIComponent(agentId)}/hooks/${encodeURIComponent(hookId)}`,
+    { method: 'DELETE' },
   )
 
 // Agent Revisions (design 009) — the deploy history of an agent's behavior. List

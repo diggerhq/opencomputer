@@ -340,6 +340,7 @@ export const SandboxWebhookDeliveryListSchema = z.object({
 export const AgentSchema = z.object({
   id: z.string(),
   name: z.string(),
+  invoke_url: z.string(),
   prompt: z.string().nullish(),
   prompt_hash: z.string().nullish(),
   model: z.string(),
@@ -904,6 +905,44 @@ export const AgentSnapshotSchema = z.object({
   skill_bundle_digest: z.string().nullish(),
 })
 
+const UsageAttributionSchema = z.enum(['exact', 'best_effort'])
+const ReportedTurnUsageSchema = z.object({
+  reported: z.literal(true),
+  input_tokens: z.number().int().nonnegative(),
+  output_tokens: z.number().int().nonnegative(),
+  cache_creation_input_tokens: z.number().int().nonnegative(),
+  cache_read_input_tokens: z.number().int().nonnegative(),
+  tokens: z.number().int().nonnegative(),
+  total_cost_usd: z.number().nonnegative().optional(),
+  attribution: UsageAttributionSchema.optional(),
+})
+const UnreportedTurnUsageSchema = z.object({
+  reported: z.literal(false),
+  attribution: UsageAttributionSchema.optional(),
+})
+const HistoricalEmptyUsageSchema = z.object({}).strict()
+export const TurnUsageSchema = z.union([
+  ReportedTurnUsageSchema,
+  UnreportedTurnUsageSchema,
+  HistoricalEmptyUsageSchema,
+])
+export const SessionUsageSchema = z.union([
+  z.object({
+    active_seconds: z.number().int().nonnegative(),
+    reported_turns: z.number().int().nonnegative(),
+    unreported_turns: z.number().int().nonnegative(),
+    complete: z.boolean(),
+    input_tokens: z.number().int().nonnegative().optional(),
+    output_tokens: z.number().int().nonnegative().optional(),
+    cache_creation_input_tokens: z.number().int().nonnegative().optional(),
+    cache_read_input_tokens: z.number().int().nonnegative().optional(),
+    tokens: z.number().int().nonnegative().optional(),
+    total_cost_usd: z.number().nonnegative().optional(),
+    attribution: UsageAttributionSchema.optional(),
+  }),
+  HistoricalEmptyUsageSchema,
+])
+
 export const SessionSchema = z.object({
   id: z.string(),
   status: z.string(),
@@ -912,7 +951,7 @@ export const SessionSchema = z.object({
   credential_id: z.string().nullable().optional(),
   head: z.coerce.number().optional(), // current event seq; API returns it as a string ("0")
   last_turn: record.nullish(),
-  usage: record.nullish(),
+  usage: SessionUsageSchema.nullish(),
   limits: record.nullish(),
   metadata: record.nullish(),
   // The OC sandboxes this session runs on (agent-sandbox-ownership Phase 1).
@@ -992,7 +1031,7 @@ export const TurnSchema = z.object({
   completed_at: z.string().nullable().optional(),
   active_seconds: z.number().nullish(),
   result_event_id: z.string().nullish(),
-  usage: record.nullish(),
+  usage: TurnUsageSchema.nullish(),
   error: z.unknown().nullish(), // server serializes the error as an opaque object, not a string
 })
 export const SessionTurnListSchema = z.object({
@@ -1003,6 +1042,37 @@ export const SessionTurnListSchema = z.object({
 export const SessionResultSchema = z.object({
   last_turn: TurnSchema.nullable(),
   result: SessionEventSchema.nullable(),
+})
+
+export const AgentHookSchema = z.object({
+  id: z.string(),
+  agent_id: z.string(),
+  name: z.string(),
+  status: z.enum(['active', 'expired', 'revoked']),
+  secret_last4: z.string(),
+  revoked_reason: z.enum(['manual', 'secret_exposure']).nullable(),
+  expires_at: z.string().nullable(),
+  created_at: z.string(),
+})
+export const AgentHookListSchema = z.object({
+  data: z.array(AgentHookSchema),
+  next_cursor: z.string().nullable(),
+})
+export const AgentHookCreateSchema = z.object({
+  hook: AgentHookSchema,
+  hook_url: z.string(),
+})
+
+export const AgentInvokeReceiptSchema = z.object({
+  request_id: z.string(),
+  session: z.object({
+    id: z.string(),
+    status: z.string(),
+    head: z.coerce.number(),
+  }),
+  client_token: z.string(),
+  links: z.object({ events: z.string(), messages: z.string() }),
+  replayed: z.boolean(),
 })
 
 export const AgentSecurityNotificationSchema = z.object({
@@ -1085,6 +1155,11 @@ export type AgentSnapshot = z.infer<typeof AgentSnapshotSchema>
 export type SessionEvent = z.infer<typeof SessionEventSchema>
 export type Turn = z.infer<typeof TurnSchema>
 export type SessionResult = z.infer<typeof SessionResultSchema>
+export type TurnUsage = z.infer<typeof TurnUsageSchema>
+export type SessionUsage = z.infer<typeof SessionUsageSchema>
+export type AgentHook = z.infer<typeof AgentHookSchema>
+export type AgentHookCreate = z.infer<typeof AgentHookCreateSchema>
+export type AgentInvokeReceipt = z.infer<typeof AgentInvokeReceiptSchema>
 export type AgentSecurityNotification = z.infer<
   typeof AgentSecurityNotificationSchema
 >

@@ -92,6 +92,7 @@ describe('repository deployment API schemas', () => {
   it('preserves the legacy Flue admission proof without inventing live status', () => {
     const parsed = AgentSchema.parse({
       id: 'agt_legacy',
+      invoke_url: 'https://agt-legacy.agents.opencomputer.dev',
       name: 'Legacy Flue agent',
       prompt: null,
       model: 'anthropic/claude-haiku-4-5',

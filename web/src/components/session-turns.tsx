@@ -3,7 +3,11 @@ import { getSessionTurns, type Turn } from '@/api/client'
 import { Panel } from '@/components/panel'
 import { StatusBadge } from '@/components/status-badge'
 import { ApiHint } from '@/components/api-hint'
-import { formatSpend } from '@/lib/usage'
+import {
+  formatUsageCost,
+  formatUsageTokens,
+  usageAttribution,
+} from '@/lib/usage'
 
 // A turn's `error` is an opaque object (or a string); pull a one-line message defensively.
 function errorMessage(error: unknown): string | null {
@@ -78,7 +82,16 @@ export function SessionTurns({
           {(turns ?? []).map((t) => {
             const err = t.state === 'error' ? errorMessage(t.error) : null
             const dur = duration(t)
-            const spend = formatSpend(t.usage)
+            const tokens = formatUsageTokens(t.usage)
+            const cost = formatUsageCost(t.usage)
+            const usage =
+              tokens === 'Unknown'
+                ? 'Usage unknown'
+                : `${tokens} tok · ${cost === 'Unknown' ? 'cost unknown' : cost}${
+                    usageAttribution(t.usage) === 'best_effort'
+                      ? ' · best-effort'
+                      : ''
+                  }`
             return (
               <li key={t.id} className="px-4 py-2.5">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -96,7 +109,7 @@ export function SessionTurns({
                   ) : null}
                   <span className="text-muted-foreground/70 ml-auto flex items-center gap-3 font-mono text-[11px] tabular-nums">
                     {dur ? <span title="active compute">{dur}</span> : null}
-                    {spend !== '—' ? <span title="turn usage">{spend}</span> : null}
+                    <span title="turn usage">{usage}</span>
                   </span>
                 </div>
                 {err ? (
