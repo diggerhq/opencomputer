@@ -181,11 +181,17 @@ func (s *GRPCServer) configureLogshipForSandbox(ctx context.Context, sandboxID s
 		log.Printf("grpc: ConfigureLogship skipped for %s: manager %T does not implement LogshipConfigurator", sandboxID, s.manager)
 		return
 	}
+	// Log shipping is best-effort and must never inherit the entire public
+	// sandbox-create deadline. A guest that becomes unresponsive after boot
+	// otherwise holds create open until the edge times out, even though this
+	// function explicitly treats log setup as non-fatal.
+	logshipCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	var orgID string
 	if s.store != nil {
-		orgID, _ = s.store.GetSandboxOrgID(ctx, sandboxID)
+		orgID, _ = s.store.GetSandboxOrgID(logshipCtx, sandboxID)
 	}
-	if err := cfger.ConfigureLogship(ctx, sandboxID, s.axiomIngestToken, s.axiomDataset, orgID); err != nil {
+	if err := cfger.ConfigureLogship(logshipCtx, sandboxID, s.axiomIngestToken, s.axiomDataset, orgID); err != nil {
 		log.Printf("grpc: ConfigureLogship for %s failed: %v (logs disabled for this sandbox)", sandboxID, err)
 		return
 	}
