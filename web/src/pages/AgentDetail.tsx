@@ -733,21 +733,20 @@ export default function AgentDetail() {
               </div>
               {/* Overview keeps integrations compact; Settings owns mutations. */}
               <div className="space-y-4">
-                {agent.runtime === 'flue' ? (
-                  <RepositoryAccessSummary
-                    agentId={agent.id}
-                    onOpenSettings={() => {
-                      void navigate(`${base}/settings?section=github`)
-                    }}
-                  />
-                ) : (
+                {agent.runtime !== 'flue' ? (
                   <DeploymentSourceSummary
                     agentId={agent.id}
                     onOpenSettings={() => {
                       void navigate(`${base}/settings?section=github`)
                     }}
                   />
-                )}
+                ) : null}
+                <RepositoryAccessSummary
+                  agentId={agent.id}
+                  onOpenSettings={() => {
+                    void navigate(`${base}/settings?section=github`)
+                  }}
+                />
                 <SlackConnectionSummary
                   agentId={agent.id}
                   onOpenSettings={() => {
@@ -806,9 +805,7 @@ export default function AgentDetail() {
                 agentId={agent.id}
                 profilePinned={agent.runtime === 'flue'}
               />
-              {agent.runtime === 'flue' ? (
-                <RepositoryAccessPanel agentId={agent.id} />
-              ) : null}
+              <RepositoryAccessPanel agentId={agent.id} />
             </section>
             <section
               id="slack"
