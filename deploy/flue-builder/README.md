@@ -13,7 +13,7 @@ changes to lower sandbox-platform layers.
 
 `coordinate.json` is the reviewed logical coordinate. It pins:
 
-- snapshot name `flue-build-node22-19-0-oc-c39b315-r3` (never reuse it for a
+- snapshot name `flue-build-node22-19-0-oc-505b49b-r4` (never reuse it for a
   different recipe or checkpoint);
 - Ubuntu 22.04 / x86-64 platform assertion;
 - Node 22.19.0 and its upstream archive digest;
@@ -80,8 +80,8 @@ export FLUE_BUILD_SNAPSHOT_ALLOW_CREATE=1
 export FLUE_BUILD_SNAPSHOT_ALLOW_PRODUCTION=1
 
 python3 deploy/flue-builder/snapshot.py create \
-  --confirm-name flue-build-node22-19-0-oc-c39b315-r3 \
-  --receipt /secure/operator-state/flue-build-node22-19-0-oc-c39b315-r3.json
+  --confirm-name flue-build-node22-19-0-oc-505b49b-r4 \
+  --receipt /secure/operator-state/flue-build-node22-19-0-oc-505b49b-r4.json
 ```
 
 The command is idempotent only when an existing snapshot has the exact pinned
@@ -93,12 +93,12 @@ Store the receipt in non-secret release metadata. Do not commit environment
 files or API keys. Configure the build worker from the coordinate and receipt:
 
 ```text
-FLUE_BUILD_SANDBOX_SNAPSHOT=flue-build-node22-19-0-oc-c39b315-r3
+FLUE_BUILD_SANDBOX_SNAPSHOT=flue-build-node22-19-0-oc-505b49b-r4
 FLUE_BUILD_SANDBOX_CHECKPOINT_ID=<receipt checkpointId>
 FLUE_BUILD_NODE_VERSION=22.19.0
 FLUE_BUILD_NPM_VERSION=10.9.3
-FLUE_BUILD_OC_VERSION=oc@c39b31560cb78e0d5708a9eda4cfb30ec372eed9
-FLUE_BUILD_OC_BINARY_SHA256=7f7286095aefe78c3027efb79465442070370c6dcf3cda67c9b1315949a42bc1
+FLUE_BUILD_OC_VERSION=oc@505b49b384a24de023726884512686a1448d4ead
+FLUE_BUILD_OC_BINARY_SHA256=aa7fc47efc90ba8048cdca694e51a38de55d78c32c9da8a7e5e54ab4fa46c4f9
 ```
 
 Worker readiness must compare the live snapshot manifest and checkpoint ID to
@@ -126,12 +126,12 @@ and prints only the sandbox ID for operator cleanup.
 ```bash
 export OPENCOMPUTER_API_URL='https://app.opencomputer.dev'
 export OPENCOMPUTER_API_KEY='...'
-export FLUE_BUILD_SANDBOX_SNAPSHOT='flue-build-node22-19-0-oc-c39b315-r3'
+export FLUE_BUILD_SANDBOX_SNAPSHOT='flue-build-node22-19-0-oc-505b49b-r4'
 export FLUE_BUILD_SANDBOX_CHECKPOINT_ID='<receipt checkpointId>'
 export FLUE_BUILD_NODE_VERSION='22.19.0'
 export FLUE_BUILD_NPM_VERSION='10.9.3'
-export FLUE_BUILD_OC_VERSION='oc@c39b31560cb78e0d5708a9eda4cfb30ec372eed9'
-export FLUE_BUILD_OC_BINARY_SHA256='7f7286095aefe78c3027efb79465442070370c6dcf3cda67c9b1315949a42bc1'
+export FLUE_BUILD_OC_VERSION='oc@505b49b384a24de023726884512686a1448d4ead'
+export FLUE_BUILD_OC_BINARY_SHA256='aa7fc47efc90ba8048cdca694e51a38de55d78c32c9da8a7e5e54ab4fa46c4f9'
 export FLUE_BUILD_PROBE_ALLOW_PRODUCTION=1
 
 python3 ci/flue-builder-substrate-probe.py --run

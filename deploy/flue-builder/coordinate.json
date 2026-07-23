@@ -1,20 +1,20 @@
 {
   "schemaVersion": 1,
   "snapshot": {
-    "name": "flue-build-node22-19-0-oc-c39b315-r3",
+    "name": "flue-build-node22-19-0-oc-505b49b-r4",
     "builderMemoryMB": 4096,
     "runtimeMemoryMB": 1024
   },
   "recipe": {
     "installer": "install-snapshot.sh",
-    "installerSha256": "9295fa5c9ac50f090c37652eceebe47f966e46c11993a3c97311329e39537e45",
+    "installerSha256": "6cd532408c79e4d13cf8bea6090106a3fe9ce651d9f1908122fe9544d5c7c911",
     "imageTemplate": "image.json",
     "imageTemplateSha256": "d1fc4f3cd27fd1248327f52d9d768a99c9a922d4f0fabf8bf0d6913e2d1e7cd2",
-    "materializedManifestSha256": "364643db99925025513d26674a1ee75e12f621686ff2d15d56aa5dc34020b773"
+    "materializedManifestSha256": "b6b430e26b9f8e240d99b3e17f053392eec2978c2b9b4ad5d504a2388ab0dda5"
   },
   "attestation": {
     "schemaVersion": 1,
-    "snapshotName": "flue-build-node22-19-0-oc-c39b315-r3",
+    "snapshotName": "flue-build-node22-19-0-oc-505b49b-r4",
     "baseImage": "base",
     "platform": {
       "osId": "ubuntu",
@@ -29,10 +29,10 @@
       "version": "10.9.3"
     },
     "oc": {
-      "version": "oc@c39b31560cb78e0d5708a9eda4cfb30ec372eed9",
-      "sourceCommit": "c39b31560cb78e0d5708a9eda4cfb30ec372eed9",
-      "sourceArchiveSha256": "5aaa929e33c54474bfca774c78d6f422168cb0bf24f4ea445b3b0c1bd2a2840e",
-      "binarySha256": "7f7286095aefe78c3027efb79465442070370c6dcf3cda67c9b1315949a42bc1"
+      "version": "oc@505b49b384a24de023726884512686a1448d4ead",
+      "sourceCommit": "505b49b384a24de023726884512686a1448d4ead",
+      "sourceArchiveSha256": "525b70f931ab2a71138350431bfcf23a820831be94f14efbd3e5a186942f6356",
+      "binarySha256": "aa7fc47efc90ba8048cdca694e51a38de55d78c32c9da8a7e5e54ab4fa46c4f9"
     },
     "buildToolchain": {
       "goVersion": "1.25.0",
