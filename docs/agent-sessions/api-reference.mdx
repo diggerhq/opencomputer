@@ -157,7 +157,7 @@ Hook creation returns `{ hook, hook_url }` once. `Hook` contains `id`,
 - `key?` — get-or-create (one session per key). Keyless: an `Idempotency-Key` header makes create retry-safe.
 - `metadata?` — opaque routing state (≤ 16 KB); on get/list + **verbatim in webhooks**; never sent to the model, not indexed.
 - `limits?` `{ tokens, turn_seconds, turns }`: non-monetary. On built-in runtimes, `tokens` is checked from committed usage before the next turn and can overshoot by one in-flight turn; `turn_seconds` and `turns` remain separate. These limits are stored but not enforced for Flue sessions.
-- `sources?`: working repositories (the token never enters the agent sandbox; see [GitHub](#github-apps-and-repos)). Built-in runtimes prepare them before turn one; Flue materializes them lazily. Each registered `{ repo, ref, sha?, name? }` or inline `{ url, ref, sha, name?, auth }`. `ref` is required; `sha` is required for inline sources but **optional for a registered repo**. Flue accepts only repositories allowed by the agent's repository-access policy.
+- `sources?`: working repositories (the token never enters the agent sandbox; see [GitHub](#github-apps-and-repos)). Built-in runtimes prepare them before turn one; Flue materializes them lazily. Each registered `{ repo, ref, sha?, name? }` or inline `{ url, ref, sha, name?, auth }`. `ref` is required; `sha` is required for inline sources but **optional for a registered repo**. For every runtime, `selected` repository access admits only registered repositories allowed by the agent policy and reauthorizes checkout and publishing at use time.
 - Client tokens: `scopes?` (`read`/`steer`), `ttl?` 60–86400 s (SDK `ttlSeconds`).
 
 A built-in runtime session pins the agent's active revision for its whole life. A Flue session records its selected deployment but executes on the agent's one live Worker; deploying that Worker can therefore affect an existing session.
@@ -341,7 +341,7 @@ _Managed with the SDK (`session.watches.create/list/delete`), the CLI (`oc sessi
 | `oc.agents.repository.import(params)`          | Import an exact reviewed source and enqueue its first deployment.             |
 | `oc.agents.get(id)` · `oc.agents.list()`       | Fetch / list.                                                                 |
 | `oc.agents.update(id, params)`                 | Update bindings (credential / limits) — `prompt`/`model` deploy a revision.   |
-| `oc.agents.getRepositoryAccess(id)`            | Read a Flue agent's GitHub grant, policy, and effective working repositories. |
+| `oc.agents.getRepositoryAccess(id)`            | Read an agent's GitHub grant, policy, and effective working repositories.     |
 | `oc.agents.updateRepositoryAccess(id, policy)` | Atomically replace that policy.                                               |
 | `oc.agents.delete(id)`                         | Delete an agent.                                                              |
 
@@ -355,7 +355,7 @@ _Managed with the SDK (`session.watches.create/list/delete`), the CLI (`oc sessi
 | `POST /agents/import`               | Atomically create an agent from an exact reviewed GitHub source and enqueue its first deployment. |
 | `GET /agents/:id` · `GET /agents`   | Fetch / list.                                                                                     |
 | `PATCH /agents/:id`                 | Update bindings; `prompt`/`model` deploy a revision.                                              |
-| `GET /agents/:id/repository-access` | Read working-repository access for a Flue agent.                                                  |
+| `GET /agents/:id/repository-access` | Read working-repository access for an agent.                                                       |
 | `PUT /agents/:id/repository-access` | Atomically replace its policy.                                                                    |
 | `DELETE /agents/:id`                | Delete an agent.                                                                                  |
 
@@ -386,10 +386,11 @@ URL semantics. See [Agent URLs and Hooks](#agent-urls-and-hooks).
 an agent with no active revision; revision #1 appears only after the queued build and live deployment
 verify successfully.
 
-### Flue repository access
+### Repository access
 
-Repository access is separate from the repository used to deploy the Flue app.
-It bounds which repositories the running agent may check out and publish to:
+Repository access is available for every runtime and is separate from the
+repository used to deploy an agent. `selected` bounds session sources, checkout,
+and pull-request publishing for all runtimes; `all` preserves the open behavior.
 
 ```ts TypeScript SDK
 const access = await oc.agents.getRepositoryAccess(agent.id);
@@ -438,8 +439,8 @@ Use `{ "mode": "all" }` for every repository in the current and future App
 grant. An empty selected list disables repository work but not chat. When the
 grant is `not_installed`, `effective_repositories` is the known-empty `[]`.
 Only a transient `unavailable` grant uses `null`, because no complete set was
-read. The owner-bound
-OpenComputer App is the only authority for this Flue capability.
+read. In `selected` mode, the owner-bound OpenComputer App is the only
+repository authority.
 
 ## Deployments and revisions
 
@@ -1035,7 +1036,7 @@ See [Webhooks](/agent-sessions/webhooks#signing-retries-and-dedupe) for signing,
 
 ## GitHub Apps and Repos
 
-A GitHub App lets OpenComputer mint short-lived, repo-scoped tokens; a **Repo** is a stable handle resolving to your configured App (the OpenComputer App by default). Used for session [sources](#sessions) (work repos) and [deploy-from-a-repo](#deploy-from-a-repo) (the agent's definition repo). Install the [OpenComputer App](https://github.com/apps/opencomputerdev/installations/new). **Bring-your-own** Apps may back built-in-runtime session sources and PR publishing. Hosted Flue repository tools and deployment sources always use the owner-bound OpenComputer App.
+A GitHub App lets OpenComputer mint short-lived, repo-scoped tokens; a **Repo** is a stable handle resolving to your configured App (the OpenComputer App by default). Used for session [sources](#sessions) (work repos) and [deploy-from-a-repo](#deploy-from-a-repo) (the agent's definition repo). Install the [OpenComputer App](https://github.com/apps/opencomputerdev/installations/new). In `selected` repository-access mode, every runtime uses the owner-bound OpenComputer App. In `all` mode, configured **bring-your-own** Apps may continue to back built-in-runtime session sources and PR publishing. Hosted Flue repository tools and deployment sources always use the owner-bound OpenComputer App.
 
 <Tabs>
 
