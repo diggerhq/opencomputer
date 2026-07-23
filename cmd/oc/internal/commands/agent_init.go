@@ -82,8 +82,8 @@ var agentInitCmd = &cobra.Command{
 		}
 		if runtime == "flue" {
 			fmt.Printf(
-				"\nScaffolded %d file(s). Edit prompt.md, push this directory to GitHub, then import it from Agents → Create agent.\n",
-				created,
+				"\nScaffolded %d file(s). Edit prompt.md, then:  oc agent deploy %s\n",
+				created, dir,
 			)
 		} else {
 			fmt.Printf("\nScaffolded %d file(s). Edit prompt.md, then:  oc agent deploy %s\n", created, dir)

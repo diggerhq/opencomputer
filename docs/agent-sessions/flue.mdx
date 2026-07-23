@@ -97,11 +97,12 @@ model = "anthropic/claude-haiku-4-5"
 family = "flue"
 ```
 
-Import the repository from GitHub. OpenComputer compiles `prompt.md` and up to
-32 packaged skills into a pinned Flue application inside the isolated managed
-builder. The prompt may be at most 256 KiB; each `SKILL.md` may be at most 256
-KiB, with a 2 MiB combined limit. Skill directory names use lowercase letters,
-numbers, and hyphens. `mcp.json` is not supported by this profile.
+Run `oc agent deploy` from the directory, or import it from GitHub.
+OpenComputer compiles `prompt.md` and up to 32 packaged skills into a pinned
+Flue application inside the isolated managed builder. The prompt may be at most
+256 KiB; each `SKILL.md` may be at most 256 KiB, with a 2 MiB combined limit.
+Skill directory names use lowercase letters, numbers, and hyphens. `mcp.json`
+is not supported by this profile.
 
 Add `package.json` and a `flue.config.*` file when you need custom tools or
 application code. Those full-app markers take precedence over `prompt.md`, and
@@ -178,19 +179,29 @@ the existing agent, its active revision, or its sessions.
 
 ## Deploy from your machine
 
-Requirements: Node 22.19 or newer, the `oc` CLI, and an OpenComputer organization with Managed model
-access.
+Requirements: the `oc` CLI and an OpenComputer organization with Managed model
+access. A prompt-defined root needs no local Node installation: the CLI uploads
+its bounded behavior files and the isolated managed builder performs synthesis,
+dependency installation, and the Flue build.
 
-Local deployment currently builds a complete Flue app. Import a prompt-defined
-root from GitHub; `oc agent deploy` points to that path instead of reporting a
-missing npm package.
+```sh
+oc agent init ./support --runtime flue
+cd support
+$EDITOR prompt.md
+
+# Upload source, build in isolation, verify the live Worker, and print its URL.
+oc agent deploy
+```
+
+A complete Flue app builds on your machine and therefore also requires Node
+22.19 or newer and installed dependencies:
 
 ```sh
 git clone https://github.com/diggerhq/oc-flue-starter
 cd oc-flue-starter
 npm install
 
-# Builds the Cloudflare target, deploys it, verifies the live Worker, and activates a revision.
+# Builds the Cloudflare target locally, deploys it, verifies the live Worker, and activates a revision.
 # The agent is created from agent.toml when it does not exist yet.
 oc agent deploy
 

@@ -11,8 +11,10 @@ An **agent** is a reusable identity, runtime, model, and deployed behavior. Ever
   GitHub** and keeps **Configure manually** available. Repository import
   recognizes both a complete [Flue](/agent-sessions/flue) app and a
   prompt-defined Flue root containing `agent.toml`, `prompt.md`, and optional
-  `skills/`. You can also deploy a local full-app checkout with `oc agent
-  deploy`. Both paths produce the same deployment and revision history.
+  `skills/`. You can also deploy either local shape with `oc agent deploy`;
+  prompt-defined roots build in the isolated managed builder, while complete
+  apps build locally. Both paths produce the same deployment and revision
+  history.
 </Note>
 
 <CodeGroup>

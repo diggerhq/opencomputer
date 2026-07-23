@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -50,6 +51,8 @@ type fakeCP struct {
 	artifactDigest string
 	artifactSize   float64
 	uploaded       []byte
+	sourceBody     map[string]any
+	sourceUploaded []byte
 	deployBody     map[string]any
 	getCount       int
 }
@@ -83,6 +86,10 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.artifactDigest, _ = body["digest"].(string)
 		f.artifactSize, _ = body["size_bytes"].(float64)
 		writeJSON(map[string]any{"url": f.self + "/upload/" + f.artifactDigest, "expires_at": "2099-01-01T00:00:00Z"})
+	case r.Method == "POST" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/source-artifacts":
+		_ = json.NewDecoder(r.Body).Decode(&f.sourceBody)
+		uploadID, _ := f.sourceBody["upload_id"].(string)
+		writeJSON(map[string]any{"url": f.self + "/source-upload/" + uploadID, "expires_at": "2099-01-01T00:00:00Z"})
 	case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/upload/"):
 		if ct := r.Header.Get("Content-Type"); ct != "application/gzip" {
 			http.Error(w, "bad content-type: "+ct, http.StatusBadRequest)
@@ -91,6 +98,15 @@ func (f *fakeCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		buf := new(bytes.Buffer)
 		_, _ = buf.ReadFrom(r.Body)
 		f.uploaded = buf.Bytes()
+		w.WriteHeader(http.StatusOK)
+	case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/source-upload/"):
+		if ct := r.Header.Get("Content-Type"); ct != "application/gzip" {
+			http.Error(w, "bad content-type: "+ct, http.StatusBadRequest)
+			return
+		}
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(r.Body)
+		f.sourceUploaded = buf.Bytes()
 		w.WriteHeader(http.StatusOK)
 	case r.Method == "POST" && r.URL.Path == "/v3/agents/"+fakeAgentID+"/deployments":
 		_ = json.NewDecoder(r.Body).Decode(&f.deployBody)
@@ -441,28 +457,153 @@ func TestDeployFlueBlocksOnLeakedKey(t *testing.T) {
 	}
 }
 
-func TestPromptDefinedFlueRootGetsGithubRecoveryInsteadOfNpmError(t *testing.T) {
+func TestDeployPromptDefinedFlueEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "prompt.md"), "Help the user.\n", 0o644)
+	manifestBytes := []byte(
+		"name = \"e2e-flue\"\nmodel = \"anthropic/claude-sonnet-5\"\n" +
+			"[runtime]\nfamily = \"flue\"\ntype = \"default\"\n",
+	)
+	promptBytes := []byte("Help the user with `quotes`, ${expressions}, and care.\n")
+	skillBytes := []byte("# Review\n\nInspect the diff before publishing.\n")
+	writeFile(t, filepath.Join(dir, "agent.toml"), string(manifestBytes), 0o644)
+	writeFile(t, filepath.Join(dir, "prompt.md"), string(promptBytes), 0o644)
+	writeFile(t, filepath.Join(dir, "skills", "review", "SKILL.md"), string(skillBytes), 0o644)
+	writeFile(t, filepath.Join(dir, "README.md"), "not part of the build source\n", 0o644)
 	if !isPromptDefinedFlueRoot(dir) {
 		t.Fatal("expected prompt-defined root")
 	}
+
+	expected, err := bundle.Pack([]bundle.File{
+		{Path: "agent.toml", Mode: 0o644, Content: manifestBytes},
+		{Path: "prompt.md", Mode: 0o644, Content: promptBytes},
+		{Path: "skills/review/SKILL.md", Mode: 0o644, Content: skillBytes},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedDigest := bundle.Digest(expected)
+
+	f := &fakeCP{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	f.self = srv.URL
+
 	cmd := &cobra.Command{}
+	cmd.Flags().String("agent", "", "")
+	cmd.Flags().String("idempotency-key", "local-e2e", "")
+	cmd.Flags().Int("timeout", 30, "")
 	cmd.SetContext(context.Background())
-	err := deployFlue(
+	m := &manifest{Name: "e2e-flue", Model: "anthropic/claude-sonnet-5"}
+	m.Runtime.Family = "flue"
+	m.Runtime.Type = "default"
+
+	prev := printer
+	printer = output.New(false)
+	var humanOutput bytes.Buffer
+	printer.W = &humanOutput
+	defer func() { printer = prev }()
+
+	err = deployFlue(
 		cmd,
-		client.NewSessionsAPI("http://127.0.0.1:0", "must-not-be-used"),
+		client.NewSessionsAPI(srv.URL, "test-key"),
 		dir,
-		&manifest{},
+		m,
 		false,
 	)
-	if err == nil || !strings.Contains(err.Error(), "deploy from GitHub") {
-		t.Fatalf("expected GitHub recovery, got %v", err)
+	if err != nil {
+		t.Fatalf("deployFlue: %v", err)
 	}
+	if !bytes.Equal(f.sourceUploaded, expected) {
+		t.Fatalf("uploaded source differs from bounded canonical source (got %d bytes, want %d)", len(f.sourceUploaded), len(expected))
+	}
+	if f.sourceBody["digest"] != expectedDigest {
+		t.Errorf("source digest = %v, want %s", f.sourceBody["digest"], expectedDigest)
+	}
+	if f.sourceBody["size_bytes"] != float64(len(expected)) {
+		t.Errorf("source size = %v, want %d", f.sourceBody["size_bytes"], len(expected))
+	}
+	uploadID, _ := f.sourceBody["upload_id"].(string)
+	if !regexp.MustCompile(`^src_[0-9a-f]{32}$`).MatchString(uploadID) {
+		t.Errorf("upload id = %q", uploadID)
+	}
+
+	input, _ := f.deployBody["input"].(map[string]any)
+	if input["type"] != "source" || input["entrypoint"] != "e2e-flue" ||
+		input["model"] != "anthropic/claude-sonnet-5" {
+		t.Errorf("source deployment input = %#v", input)
+	}
+	source, _ := input["source"].(map[string]any)
+	if source["upload_id"] != uploadID || source["digest"] != expectedDigest ||
+		source["size_bytes"] != float64(len(expected)) {
+		t.Errorf("deployment source ref = %#v", source)
+	}
+	if runtimeInput, _ := input["runtime"].(map[string]any); runtimeInput["type"] != "default" {
+		t.Errorf("runtime input = %#v", input["runtime"])
+	}
+	if f.deployBody["activate"] != true || f.deployBody["idempotency_key"] != "local-e2e" {
+		t.Errorf("deployment envelope = %#v", f.deployBody)
+	}
+	encoded, _ := json.Marshal(f.deployBody)
+	for _, forbidden := range []string{
+		string(promptBytes),
+		string(skillBytes),
+		"README.md",
+		"source.tgz",
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Errorf("byte-free deployment request leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if !strings.Contains(humanOutput.String(), "✓ Deployed e2e-flue") ||
+		!strings.Contains(humanOutput.String(), "Agent URL") {
+		t.Errorf("deploy handoff missing:\n%s", humanOutput.String())
+	}
+
 	writeFile(t, filepath.Join(dir, "package.json"), "{}\n", 0o644)
 	if isPromptDefinedFlueRoot(dir) {
 		t.Fatal("a package marker must select the complete-app path")
 	}
+}
+
+func TestReadPromptDefinedFlueSourceRejectsUnsafeShapes(t *testing.T) {
+	base := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "agent.toml"), "name='a'\n", 0o644)
+		writeFile(t, filepath.Join(dir, "prompt.md"), "Help.\n", 0o644)
+		return dir
+	}
+	t.Run("mcp", func(t *testing.T) {
+		dir := base(t)
+		writeFile(t, filepath.Join(dir, "mcp.json"), "{}\n", 0o644)
+		if _, err := readPromptDefinedFlueSource(dir); err == nil || !strings.Contains(err.Error(), "mcp.json") {
+			t.Fatalf("expected mcp rejection, got %v", err)
+		}
+	})
+	t.Run("invalid skill name", func(t *testing.T) {
+		dir := base(t)
+		writeFile(t, filepath.Join(dir, "skills", "Review_Skill", "SKILL.md"), "# Review\n", 0o644)
+		if _, err := readPromptDefinedFlueSource(dir); err == nil || !strings.Contains(err.Error(), "invalid name") {
+			t.Fatalf("expected skill-name rejection, got %v", err)
+		}
+	})
+	t.Run("prompt symlink", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink semantics differ on Windows")
+		}
+		dir := base(t)
+		if err := os.Remove(filepath.Join(dir, "prompt.md")); err != nil {
+			t.Fatal(err)
+		}
+		outside := filepath.Join(t.TempDir(), "prompt.md")
+		writeFile(t, outside, "secret\n", 0o644)
+		if err := os.Symlink(outside, filepath.Join(dir, "prompt.md")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readPromptDefinedFlueSource(dir); err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("expected symlink rejection, got %v", err)
+		}
+	})
 }
 
 func writeFile(t *testing.T, path, content string, mode os.FileMode) {
