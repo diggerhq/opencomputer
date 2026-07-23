@@ -26,7 +26,7 @@ Why not containers? Containers share a kernel. A kernel exploit in one container
 
 `hibernate()` snapshots the VM's memory and disk state, then stops it. No compute costs while hibernated. `wake()` restores the sandbox — the platform attempts a fast snapshot-based resume and falls back to a cold boot from the saved disk state if needed.
 
-The sandbox keeps the same ID across hibernate/wake cycles. A rolling idle timeout (default 300s) auto-hibernates sandboxes that go unused.
+The sandbox keeps the same ID across hibernate/wake cycles. By default sandboxes are persistent and never auto-hibernate; set a positive `timeout` and a rolling idle timer auto-hibernates the sandbox once it goes unused for that long.
 
 ## Checkpoints & Forking
 

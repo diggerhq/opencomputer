@@ -25,7 +25,7 @@ Create a new sandbox. **Alias:** `oc create`
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--timeout` | int | `300` | Idle timeout in seconds |
+| `--timeout` | int | `0` | Idle timeout in seconds |
 | `--cpu` | int | `0` | CPU cores (0 = platform default) |
 | `--memory` | int | `0` | Memory in MB (0 = platform default) |
 | `--env` | string | — | Environment variable `KEY=VALUE` (repeatable) |
@@ -66,7 +66,7 @@ Resume a hibernated sandbox.
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--timeout` | int | `300` | Idle timeout in seconds after wake |
+| `--timeout` | int | `0` | Idle timeout in seconds after wake |
 
 ### `oc sandbox set-timeout <id> <seconds>`
 
@@ -175,7 +175,7 @@ Create a new sandbox from a checkpoint (fork).
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--timeout` | int | `300` | Idle timeout for the new sandbox |
+| `--timeout` | int | `0` | Idle timeout for the new sandbox |
 
 ```bash
 ID=$(oc cp spawn cp-xyz --json | jq -r '.sandboxID')
