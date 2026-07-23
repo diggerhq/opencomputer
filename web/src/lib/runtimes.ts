@@ -96,6 +96,7 @@ export const RUNTIME_LABELS: Record<string, string> = {
   codex: 'Codex',
   pi: 'Pi',
   flue: 'Flue',
+  langgraph: 'LangGraph',
   hands: 'Hands',
 }
 

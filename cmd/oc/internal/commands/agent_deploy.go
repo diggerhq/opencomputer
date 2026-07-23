@@ -228,6 +228,11 @@ var agentDeployCmd = &cobra.Command{
 			noActivate, _ := cmd.Flags().GetBool("no-activate")
 			return deployFlue(cmd, sc, dir, m, noActivate)
 		}
+		// LangGraph agents likewise deploy a built Worker artifact (its own runtime).
+		if m.Runtime.Family == "langgraph" {
+			noActivate, _ := cmd.Flags().GetBool("no-activate")
+			return deployLangGraph(cmd, sc, dir, m, noActivate)
+		}
 		prompt, err := readPrompt(dir)
 		if err != nil {
 			return fmt.Errorf("read prompt.md: %w", err)
