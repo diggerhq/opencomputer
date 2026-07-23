@@ -1,0 +1,56 @@
+{
+  "name": "@opencomputer/langgraph",
+  "version": "0.0.1",
+  "description": "Run a LangGraph.js graph as an OpenComputer agent — managed model gateway + durable checkpointing.",
+  "keywords": [
+    "agents",
+    "langgraph",
+    "langchain",
+    "opencomputer",
+    "cloudflare-workers",
+    "durable-objects"
+  ],
+  "author": "OpenComputer",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/diggerhq/opencomputer.git",
+    "directory": "sdks/langgraph"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@langchain/anthropic": ">=1.5.0",
+    "@langchain/core": ">=1.2.0",
+    "@langchain/langgraph": ">=1.4.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@langchain/anthropic": "^1.5.1",
+    "@langchain/core": "^1.2.3",
+    "@langchain/langgraph": "^1.4.8",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  }
+}
