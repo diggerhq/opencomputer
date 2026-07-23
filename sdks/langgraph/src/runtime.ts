@@ -225,15 +225,18 @@ export function createLangGraphRuntime(opts: LangGraphRuntimeOptions): LangGraph
       const aborter = new AbortController();
       this.aborter = aborter;
       const emitted = new Set<string>();   // message ids already turned into chunks (dedupe)
-      try {
+      let timedOut = false;
+
+      // Drain the graph's per-node output. streamMode "updates" yields
+      // { <nodeName>: <the node's returned state delta> }; for a MessagesAnnotation graph
+      // the delta is { messages: [...new messages] } → one or more OC chunks each.
+      const consume = async (): Promise<void> => {
         const stream = await this.graph.stream(
           { messages: [{ role: "user", content: message }] },
           { streamMode: "updates", signal: aborter.signal, configurable: { thread_id: this.session, env: this.env } },
         );
         for await (const update of stream) {
           if (aborter.signal.aborted) throw new Error("aborted");
-          // streamMode "updates" yields { <nodeName>: <the node's returned state delta> }.
-          // For a MessagesAnnotation graph the delta is { messages: [...new messages] }.
           for (const nodeOut of Object.values(update ?? {})) {
             const msgs = (nodeOut as { messages?: unknown } | null)?.messages;
             if (!Array.isArray(msgs)) continue;
@@ -242,15 +245,35 @@ export function createLangGraphRuntime(opts: LangGraphRuntimeOptions): LangGraph
             }
           }
         }
+      };
+
+      // Backstop: a wedged node (a provider call that never settles, or a stream that neither
+      // rejects nor ends — observed with some Workers-runtime error paths) must not hang the
+      // session forever. Bound the turn, abort the graph, and settle it failed.
+      const budgetMs = Number(this.env.OC_TURN_BUDGET_MS) || 300_000;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const watchdog = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          aborter.abort(new Error("turn timed out"));
+          reject(new Error(`turn exceeded ${budgetMs}ms`));
+        }, budgetMs);
+      });
+
+      const consumeP = consume();
+      void consumeP.catch(() => {}); // swallow a late rejection if the watchdog wins the race
+      try {
+        await Promise.race([consumeP, watchdog]);
         await this.append({ type: "submission-settled", submissionId, outcome: "completed" });
       } catch (err) {
-        const aborted = aborter.signal.aborted;
+        const aborted = aborter.signal.aborted && !timedOut;  // control-plane /abort, not the watchdog
         await this.append({
           type: "submission-settled", submissionId,
           outcome: aborted ? "aborted" : "failed",
           ...(aborted ? {} : { error: { message: err instanceof Error ? err.message : String(err) } }),
         });
       } finally {
+        if (timer) clearTimeout(timer);
         if (this.aborter === aborter) this.aborter = null;
         await this.state.storage.delete("meta:activeSubmission");
       }
