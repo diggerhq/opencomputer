@@ -451,7 +451,8 @@ the [Deployments & revisions guide](/agent-sessions/revisions).
 ### Review and import a repository agent
 
 Review resolves the moving production branch to one exact commit and interprets bounded metadata
-without executing repository code. Repository-first import currently accepts the exact Flue result.
+without executing repository code. Repository-first import accepts exact `flue-app-v1` and
+`flue-prompt-v1` results.
 
 `GET /github/deploy-app` returns the installed OpenComputer GitHub App and its pickable repositories.
 Each repository includes `linked_sources[]` with the owner-scoped `path`, `production_ref`, `status`,
@@ -536,6 +537,13 @@ unrecognized root can include up to 20 `candidate_roots` and explicitly reports 
 `exact` includes a deployable `profile` and may proceed to import. No response contains a repository
 token or source bytes.
 
+For `flue-prompt-v1`, `profile` keeps the same manifest, source, and builder
+projection and additionally returns `prompt: { bytes }`,
+`skills: { count, bytes, names }`, and
+`builder.synthesis_template`. The profile accepts `agent.toml`, `prompt.md`,
+and optional `skills/*/SKILL.md`; the server synthesizes the complete Flue app
+during the managed build.
+
 The non-exact variants keep the common repository/root/SHA/fingerprint fields shown above and use
 these shapes:
 
@@ -559,7 +567,7 @@ these shapes:
 
 An unrecognized interpretation has `source_profile: null`, `source_profile_version: null`, and
 `reason_code: "unrecognized_source"`. Its optional candidate entries are
-`{ path, source_profile: "flue-app-v1" | null, summary, marker }`; selecting one always performs a
+`{ path, source_profile: "flue-app-v1" | "flue-prompt-v1" | null, summary, marker }`; selecting one always performs a
 new review. `candidate_roots_truncated` means more matches existed than the bounded response could
 return, so ask the user to choose a narrower root rather than selecting one automatically.
 
@@ -623,9 +631,9 @@ or repository-root conflict also returns `409` and identifies the existing agent
 
 The source remains linked after import. Its `source_profile`, `source_profile_version`, and
 `review_fingerprint` describe the reviewed source identity. A later GitHub push that touches the
-selected production root automatically creates the next deployment. If that root no longer matches
-the imported source profile, the link status becomes `source_profile_changed`; no build starts and
-the current active revision remains unchanged.
+selected production root automatically creates the next deployment. A `flue-prompt-v1` source may
+graduate to `flue-app-v1`. Any other profile change sets the link status to
+`source_profile_changed`; no build starts and the current active revision remains unchanged.
 
 ### Deploy
 
@@ -656,7 +664,7 @@ the current active revision remains unchanged.
 
 | Command                                                                            | Purpose                                                                                       |
 | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `oc agent deploy [dir] [--agent <id\|name>] [--no-activate] [--verbose]`           | Bundle a local directory → inline deployment; stream framework build output with `--verbose`. |
+| `oc agent deploy [dir] [--agent <id\|name>] [--no-activate] [--verbose]`           | Deploy a local built-in, prompt-defined Flue, or complete Flue directory; `--verbose` streams a local complete-app build. |
 | `oc agent build --dir <dir> [--check-only] [--target cloudflare] [--output <dir>]` | Validate or build a Flue artifact without fetching, installing, authenticating, or deploying. |
 | `oc agent deployments [--agent <id>]` · `oc agent deployments get <id>`            | History · one deployment.                                                                     |
 
@@ -666,7 +674,9 @@ the current active revision remains unchanged.
 
 `input`: `{ type:"inline", prompt, model?, skills?, runtime? }` (the **complete** built-in
 behavior — omitted `skills` = none) **or** `{ type:"github", ref?, sha? }` (deploys an already-linked
-repository; `repo`/`path` come from the server-owned link). `activate:false` stages an inline built-in
+repository; `repo`/`path` come from the server-owned link). The CLI's local prompt-defined Flue path
+uses a separately uploaded, digest-bound `source` reference; use `oc agent deploy` rather than constructing
+that transport manually. `activate:false` stages an inline built-in
 deployment. Built-in GitHub links remain branch-driven. A new Flue repository agent instead starts
 with [`POST /agents/import`](#review-and-import-a-repository-agent); import deploys the reviewed production head,
 and subsequent production-branch pushes deploy automatically. Flue has no preview/staged Worker.
@@ -834,7 +844,7 @@ that deploy auto-activates. Repo/path are server-anchored to the link. Deploymen
 | `production_ref`                            | branch that auto-activates on push                                                                                                                                          |
 | `status`                                    | `active`, or a problem: `source_profile_changed`, `path_missing`, `ref_missing` (production branch deleted), `auth_required`, `repo_not_selected`, `app_suspended`, `error` |
 | `latest_seen_sha?` `active_deployed_sha?`   | newest sha observed · sha behind the active revision                                                                                                                        |
-| `source_profile?` `source_profile_version?` | server-selected repository interpretation pinned for this link (`flue-app-v1`, version `1`)                                                                                 |
+| `source_profile?` `source_profile_version?` | server-selected repository interpretation pinned for this link (`flue-app-v1` or `flue-prompt-v1`, version `1`)                                                            |
 | `review_fingerprint?`                       | digest of the latest accepted, exact-SHA reviewed plan; never source bytes or a credential                                                                                  |
 
 ## Schedules

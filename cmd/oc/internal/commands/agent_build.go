@@ -32,11 +32,12 @@ var agentBuildCmd = &cobra.Command{
 		}
 
 		result, err := fluebuild.Build(cmd.Context(), fluebuild.Options{
-			Dir:            dir,
-			Target:         target,
-			OutputDir:      output,
-			BuilderVersion: Version,
-			CheckOnly:      checkOnly,
+			Dir:                      dir,
+			Target:                   target,
+			OutputDir:                output,
+			BuilderVersion:           Version,
+			SynthesisTemplateVersion: os.Getenv("OC_FLUE_SYNTH_TEMPLATE_VERSION"),
+			CheckOnly:                checkOnly,
 		})
 		if err != nil {
 			return err
