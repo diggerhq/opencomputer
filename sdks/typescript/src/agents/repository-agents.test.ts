@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenComputer } from "./client.js";
 import type { RepositorySourceInterpretation } from "./repository-agents.js";
 
-// @ts-expect-error invalid profile identity must be flue-app-v1@1 or null/null
+// @ts-expect-error invalid profile identity must be a known profile at v1 or null/null
 const crossedInvalidProfile: RepositorySourceInterpretation = {
   disposition: "invalid",
   sourceProfile: "flue-app-v1",
@@ -62,6 +62,47 @@ afterEach(() => {
 });
 
 describe("agent repository review/import", () => {
+  it("normalizes prompt-profile synthesis metadata", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({
+      ...reviewResponse,
+      interpretation: {
+        ...reviewResponse.interpretation,
+        source_profile: "flue-prompt-v1",
+        summary: "Prompt-defined Flue agent detected",
+        reason_code: "flue_prompt_detected",
+      },
+      profile: {
+        ...reviewResponse.profile,
+        source_profile: "flue-prompt-v1",
+        builder: {
+          node: "22.19.0",
+          synthesis_template: "flue-prompt-template-v1",
+        },
+        prompt: { bytes: 256 },
+        skills: { count: 2, bytes: 1024, names: ["review", "triage"] },
+      },
+    }));
+    const oc = new OpenComputer({
+      apiKey: "oc_test",
+      baseUrl: "https://api.example.test/v3",
+      maxRetries: 0,
+    });
+
+    const review = await oc.agents.repository.review({
+      repo: reviewResponse.repository.id,
+      path: reviewResponse.root,
+      productionRef: reviewResponse.production_ref,
+    });
+    expect(review.interpretation.sourceProfile).toBe("flue-prompt-v1");
+    expect(review.profile?.sourceProfile).toBe("flue-prompt-v1");
+    if (review.profile?.sourceProfile === "flue-prompt-v1") {
+      expect(review.profile.builder.synthesisTemplate).toBe(
+        "flue-prompt-template-v1",
+      );
+      expect(review.profile.skills.names).toEqual(["review", "triage"]);
+    }
+  });
+
   it("normalizes a source-profile review and replays its receipt on import", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")

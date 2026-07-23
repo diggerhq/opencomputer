@@ -742,7 +742,7 @@ export const importAgentFromGithub = (
     }
     review: {
       sha: string
-      source_profile: 'flue-app-v1'
+      source_profile: 'flue-app-v1' | 'flue-prompt-v1'
       fingerprint: string
     }
     credential: 'managed'

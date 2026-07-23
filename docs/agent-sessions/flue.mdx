@@ -73,11 +73,47 @@ consumer view used by the dashboard, API, and webhooks. OpenComputer resumes pro
 cursor after an interruption, so clients do not need to understand Flue submission ids or stream
 offsets.
 
+## Start with a prompt
+
+You do not need to write a Flue application to use its edge runtime. A
+prompt-defined Flue repository has this shape:
+
+```text
+agent.toml
+prompt.md
+skills/
+  triage/
+    SKILL.md
+```
+
+Scaffold it with `oc agent init ./support --runtime flue`, or create the files
+directly:
+
+```toml agent.toml
+name = "support-triage"
+model = "anthropic/claude-haiku-4-5"
+
+[runtime]
+family = "flue"
+```
+
+Import the repository from GitHub. OpenComputer compiles `prompt.md` and up to
+32 packaged skills into a pinned Flue application inside the isolated managed
+builder. The prompt may be at most 256 KiB; each `SKILL.md` may be at most 256
+KiB, with a 2 MiB combined limit. Skill directory names use lowercase letters,
+numbers, and hyphens. `mcp.json` is not supported by this profile.
+
+Add `package.json` and a `flue.config.*` file when you need custom tools or
+application code. Those full-app markers take precedence over `prompt.md`, and
+the next production push graduates the existing agent to the complete Flue app
+without replacing its identity or history. Changing the `name` in `agent.toml`
+still requires a new agent because it changes the Durable Object lineage.
+
 ## Deploy from GitHub
 
-The shortest path for an existing Flue app is the dashboard:
+The shortest path for a prompt-defined or complete Flue app is the dashboard:
 
-1. Fork the [Flue starter](https://github.com/diggerhq/oc-flue-starter/fork), or push your own app to GitHub.
+1. Push a prompt-defined root to GitHub, fork the [Flue starter](https://github.com/diggerhq/oc-flue-starter/fork), or push your own app.
 2. Open **Agents → Create agent → Import from GitHub**.
 3. Install the OpenComputer GitHub App on the repository, then select the repository, production branch, and root directory.
 4. Choose **Review agent**. OpenComputer resolves one exact commit and checks the root without running repository code.
@@ -92,17 +128,20 @@ owning agent, choose another monorepo root, or confirm an inline unlink. The
 unlink stops future push deployments for the old agent; it does not delete the
 agent, active revision, deployment history, or sessions.
 
-The selected root is its own build context and must contain `agent.toml`, `package.json`, and a
-committed `package-lock.json`. The package must declare a Node engine compatible with the exact
-managed builder version and a semver dependency on the Flue CLI. npm workspaces,
-files above the selected root, private registries, submodules, Git LFS, custom install/build
-commands, and build-time secrets are not supported.
+The selected root is its own build context. A prompt-defined root needs
+`agent.toml`, `prompt.md`, and optional `skills/`. A complete app also needs
+`package.json` and a committed `package-lock.json`; its package must declare a
+Node engine compatible with the exact managed builder version and a semver
+dependency on the Flue CLI. npm workspaces, files above the selected root,
+private registries, submodules, Git LFS, custom install/build commands, and
+build-time secrets are not supported.
 
 `agent.toml` is authoritative. If it is malformed, declares an unsupported runtime, or is missing
 from a root that otherwise has strong Flue markers, review returns **This Flue agent needs a fix**.
-OpenComputer does not fall back to generated behavior or another runtime. A prompt- or skills-only
-folder is unrecognized; use a complete Flue root, choose another folder, fork the starter, or create
-a built-in agent manually.
+OpenComputer does not fall back to another runtime. A folder containing
+`prompt.md` or skills but no `agent.toml` is unrecognized; add the explicit
+Flue manifest, choose another folder, fork the starter, or create a built-in
+agent manually.
 
 For a monorepo, reviewing an unrecognized parent can suggest bounded candidate roots. Selecting a
 candidate changes the root and performs a fresh review—it never deploys the suggestion automatically.
@@ -132,14 +171,19 @@ revision **#1**. **Deploy latest** can manually rebuild its current head after a
 failure.
 
 If a later production push removes or replaces the Flue definition, the deployment stops before
-build with `source_profile_changed`; the active revision stays live. Restore the Flue app in the
-linked root, or unlink the source and import the repository as a new agent. Unlinking does not delete
+build with `source_profile_changed`; the active revision stays live. A prompt-defined root may
+graduate to a complete Flue app, but not in the opposite direction. Otherwise restore the previous
+profile, or unlink the source and import the repository as a new agent. Unlinking does not delete
 the existing agent, its active revision, or its sessions.
 
 ## Deploy from your machine
 
 Requirements: Node 22.19 or newer, the `oc` CLI, and an OpenComputer organization with Managed model
 access.
+
+Local deployment currently builds a complete Flue app. Import a prompt-defined
+root from GitHub; `oc agent deploy` points to that path instead of reporting a
+missing npm package.
 
 ```sh
 git clone https://github.com/diggerhq/oc-flue-starter

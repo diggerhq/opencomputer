@@ -451,7 +451,8 @@ the [Deployments & revisions guide](/agent-sessions/revisions).
 ### Review and import a repository agent
 
 Review resolves the moving production branch to one exact commit and interprets bounded metadata
-without executing repository code. Repository-first import currently accepts the exact Flue result.
+without executing repository code. Repository-first import accepts exact `flue-app-v1` and
+`flue-prompt-v1` results.
 
 `GET /github/deploy-app` returns the installed OpenComputer GitHub App and its pickable repositories.
 Each repository includes `linked_sources[]` with the owner-scoped `path`, `production_ref`, `status`,
@@ -536,6 +537,13 @@ unrecognized root can include up to 20 `candidate_roots` and explicitly reports 
 `exact` includes a deployable `profile` and may proceed to import. No response contains a repository
 token or source bytes.
 
+For `flue-prompt-v1`, `profile` keeps the same manifest, source, and builder
+projection and additionally returns `prompt: { bytes }`,
+`skills: { count, bytes, names }`, and
+`builder.synthesis_template`. The profile accepts `agent.toml`, `prompt.md`,
+and optional `skills/*/SKILL.md`; the server synthesizes the complete Flue app
+during the managed build.
+
 The non-exact variants keep the common repository/root/SHA/fingerprint fields shown above and use
 these shapes:
 
@@ -559,7 +567,7 @@ these shapes:
 
 An unrecognized interpretation has `source_profile: null`, `source_profile_version: null`, and
 `reason_code: "unrecognized_source"`. Its optional candidate entries are
-`{ path, source_profile: "flue-app-v1" | null, summary, marker }`; selecting one always performs a
+`{ path, source_profile: "flue-app-v1" | "flue-prompt-v1" | null, summary, marker }`; selecting one always performs a
 new review. `candidate_roots_truncated` means more matches existed than the bounded response could
 return, so ask the user to choose a narrower root rather than selecting one automatically.
 
@@ -623,9 +631,9 @@ or repository-root conflict also returns `409` and identifies the existing agent
 
 The source remains linked after import. Its `source_profile`, `source_profile_version`, and
 `review_fingerprint` describe the reviewed source identity. A later GitHub push that touches the
-selected production root automatically creates the next deployment. If that root no longer matches
-the imported source profile, the link status becomes `source_profile_changed`; no build starts and
-the current active revision remains unchanged.
+selected production root automatically creates the next deployment. A `flue-prompt-v1` source may
+graduate to `flue-app-v1`. Any other profile change sets the link status to
+`source_profile_changed`; no build starts and the current active revision remains unchanged.
 
 ### Deploy
 
@@ -834,7 +842,7 @@ that deploy auto-activates. Repo/path are server-anchored to the link. Deploymen
 | `production_ref`                            | branch that auto-activates on push                                                                                                                                          |
 | `status`                                    | `active`, or a problem: `source_profile_changed`, `path_missing`, `ref_missing` (production branch deleted), `auth_required`, `repo_not_selected`, `app_suspended`, `error` |
 | `latest_seen_sha?` `active_deployed_sha?`   | newest sha observed · sha behind the active revision                                                                                                                        |
-| `source_profile?` `source_profile_version?` | server-selected repository interpretation pinned for this link (`flue-app-v1`, version `1`)                                                                                 |
+| `source_profile?` `source_profile_version?` | server-selected repository interpretation pinned for this link (`flue-app-v1` or `flue-prompt-v1`, version `1`)                                                            |
 | `review_fingerprint?`                       | digest of the latest accepted, exact-SHA reviewed plan; never source bytes or a credential                                                                                  |
 
 ## Schedules

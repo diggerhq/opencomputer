@@ -18,7 +18,7 @@ const common = {
 }
 
 describe('repository source inspection schema', () => {
-  it('accepts the sole launch profile without losing its Flue review projection', () => {
+  it('accepts a full Flue app without losing its review projection', () => {
     const parsed = RepositorySourceInspectionSchema.parse({
       ...common,
       interpretation: {
@@ -55,6 +55,55 @@ describe('repository source inspection schema', () => {
 
     expect(parsed.profile?.manifest.entrypoint).toBe('support-triage')
     expect(parsed.review_fingerprint).toBe(reviewFingerprint)
+  })
+
+  it('accepts the bounded prompt-defined Flue profile', () => {
+    const parsed = RepositorySourceInspectionSchema.parse({
+      ...common,
+      interpretation: {
+        disposition: 'exact',
+        source_profile: 'flue-prompt-v1',
+        source_profile_version: 1,
+        summary: 'Prompt-defined Flue agent detected',
+        reason_code: 'flue_prompt_detected',
+        assumptions: [],
+        agent: { runtime: 'flue', model: 'anthropic/claude-haiku-4-5' },
+      },
+      profile: {
+        source_profile: 'flue-prompt-v1',
+        source_profile_version: 1,
+        manifest: {
+          schema_version: 1,
+          entrypoint: 'support-triage',
+          model: 'anthropic/claude-haiku-4-5',
+          runtime: { family: 'flue', type: 'default' },
+          vars: {},
+        },
+        package: {
+          name: 'opencomputer-flue-prompt-agent',
+          node_engine: '>=22.19 <23',
+          flue_cli: '1.0.0-beta.9',
+        },
+        lockfile: { version: 3 },
+        builder: {
+          node: '22.19.0',
+          synthesis_template: 'flue-prompt-template-v1',
+        },
+        source: { files: 4, bytes: 2048 },
+        prompt: { bytes: 256 },
+        skills: { count: 2, bytes: 1024, names: ['review', 'triage'] },
+        variable_names: [],
+        warnings: [],
+      },
+    })
+
+    expect(parsed.profile?.source_profile).toBe('flue-prompt-v1')
+    if (parsed.profile?.source_profile === 'flue-prompt-v1') {
+      expect(parsed.profile.skills.names).toEqual(['review', 'triage'])
+      expect(parsed.profile.builder.synthesis_template).toBe(
+        'flue-prompt-template-v1',
+      )
+    }
   })
 
   it('treats broken Flue and unrecognized source as review results', () => {

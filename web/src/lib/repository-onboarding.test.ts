@@ -84,7 +84,7 @@ describe('repository onboarding presentation', () => {
     })
   })
 
-  it('is honest when prompt/skills-only source is unrecognized', () => {
+  it('explains how to make an unrecognized folder deployable', () => {
     const presentation = repositoryReviewPresentation({
       ...common,
       interpretation: {
@@ -96,9 +96,55 @@ describe('repository onboarding presentation', () => {
       },
     })
 
-    expect(presentation.explanation).toContain(
-      'Prompts or skills alone are not converted automatically',
-    )
+    expect(presentation.explanation).toContain('agent.toml')
+  })
+
+  it('presents an exact prompt-defined Flue agent without implying source code', () => {
+    const presentation = repositoryReviewPresentation({
+      ...common,
+      interpretation: {
+        disposition: 'exact',
+        source_profile: 'flue-prompt-v1',
+        source_profile_version: 1,
+        summary: 'Prompt-defined Flue agent detected',
+        reason_code: 'flue_prompt_detected',
+        assumptions: [],
+        agent: { runtime: 'flue', model: 'anthropic/claude-haiku-4-5' },
+      },
+      profile: {
+        source_profile: 'flue-prompt-v1',
+        source_profile_version: 1,
+        manifest: {
+          schema_version: 1,
+          entrypoint: 'support',
+          model: 'anthropic/claude-haiku-4-5',
+          runtime: { family: 'flue', type: 'default' },
+          vars: {},
+        },
+        package: {
+          name: 'opencomputer-flue-prompt-agent',
+          node_engine: '>=22.19 <23',
+          flue_cli: '1.0.0-beta.9',
+        },
+        lockfile: { version: 3 },
+        builder: {
+          node: '22.19.0',
+          synthesis_template: 'flue-prompt-template-v1',
+        },
+        source: { files: 3, bytes: 1024 },
+        prompt: { bytes: 128 },
+        skills: { count: 1, bytes: 512, names: ['triage'] },
+        variable_names: [],
+        warnings: [],
+      },
+    })
+
+    expect(presentation).toEqual({
+      heading: 'Prompt-defined Flue agent',
+      explanation:
+        'OpenComputer will turn this prompt and its skills into a Flue app at build time.',
+      primaryAction: 'deploy',
+    })
   })
 
   it('requires a fresh review for the typed source-change conflict', () => {

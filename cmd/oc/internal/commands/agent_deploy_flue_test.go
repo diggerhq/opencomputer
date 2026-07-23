@@ -441,6 +441,30 @@ func TestDeployFlueBlocksOnLeakedKey(t *testing.T) {
 	}
 }
 
+func TestPromptDefinedFlueRootGetsGithubRecoveryInsteadOfNpmError(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "prompt.md"), "Help the user.\n", 0o644)
+	if !isPromptDefinedFlueRoot(dir) {
+		t.Fatal("expected prompt-defined root")
+	}
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	err := deployFlue(
+		cmd,
+		client.NewSessionsAPI("http://127.0.0.1:0", "must-not-be-used"),
+		dir,
+		&manifest{},
+		false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "deploy from GitHub") {
+		t.Fatalf("expected GitHub recovery, got %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "package.json"), "{}\n", 0o644)
+	if isPromptDefinedFlueRoot(dir) {
+		t.Fatal("a package marker must select the complete-app path")
+	}
+}
+
 func writeFile(t *testing.T, path, content string, mode os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

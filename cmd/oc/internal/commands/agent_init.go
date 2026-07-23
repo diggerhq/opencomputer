@@ -12,7 +12,7 @@ const agentTomlTmpl = `name  = %q
 model = %q
 
 [runtime]
-family = %q   # claude | codex | pi
+family = %q   # claude | codex | pi | flue
 type   = "default"
 
 [limits]
@@ -40,6 +40,7 @@ var agentInitCmd = &cobra.Command{
 	Short: "Scaffold a deployable agent directory (agent.toml + prompt.md + skills/)",
 	Example: "  oc agent init\n" +
 		"  oc agent init ./agents/triage --name triage --model anthropic/claude-sonnet-5\n" +
+		"  oc agent init ./agents/edge --runtime flue\n" +
 		"  oc agent init && $EDITOR prompt.md && oc agent deploy",
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -79,7 +80,14 @@ var agentInitCmd = &cobra.Command{
 			fmt.Printf("  create %s\n", f.path)
 			created++
 		}
-		fmt.Printf("\nScaffolded %d file(s). Edit prompt.md, then:  oc agent deploy %s\n", created, dir)
+		if runtime == "flue" {
+			fmt.Printf(
+				"\nScaffolded %d file(s). Edit prompt.md, push this directory to GitHub, then import it from Agents → Create agent.\n",
+				created,
+			)
+		} else {
+			fmt.Printf("\nScaffolded %d file(s). Edit prompt.md, then:  oc agent deploy %s\n", created, dir)
+		}
 		return nil
 	},
 }
@@ -87,5 +95,5 @@ var agentInitCmd = &cobra.Command{
 func init() {
 	agentInitCmd.Flags().String("name", "", "Agent name (default: the directory name)")
 	agentInitCmd.Flags().String("model", "anthropic/claude-sonnet-5", "Model")
-	agentInitCmd.Flags().String("runtime", "claude", "Runtime family (claude|codex|pi)")
+	agentInitCmd.Flags().String("runtime", "claude", "Runtime family (claude|codex|pi|flue)")
 }

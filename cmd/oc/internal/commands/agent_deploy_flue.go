@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
@@ -38,6 +39,11 @@ type artifactUploadResponse struct {
 }
 
 func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, noActivate bool) error {
+	if isPromptDefinedFlueRoot(dir) {
+		return fmt.Errorf(
+			"prompt-defined Flue agents currently deploy from GitHub: push this directory, then choose Agents → Create agent → Import from GitHub",
+		)
+	}
 	// 1. Run the same credential, manifest, engine, and lockfile projection as
 	//    the managed builder before any authenticated API call. --check-only
 	//    never executes repository code and never needs installed dependencies.
@@ -154,6 +160,28 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 		})
 	})
 	return nil
+}
+
+func isPromptDefinedFlueRoot(dir string) bool {
+	regular := func(name string) bool {
+		info, err := os.Lstat(name)
+		return err == nil && info.Mode().IsRegular()
+	}
+	if !regular(filepath.Join(dir, "prompt.md")) {
+		return false
+	}
+	for _, marker := range []string{
+		"package.json",
+		"flue.config.ts",
+		"flue.config.js",
+		"flue.config.mjs",
+		"flue.config.cjs",
+	} {
+		if _, err := os.Lstat(filepath.Join(dir, marker)); err == nil {
+			return false
+		}
+	}
+	return true
 }
 
 func presentFlueBuildError(err error) error {
