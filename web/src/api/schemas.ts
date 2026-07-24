@@ -615,7 +615,7 @@ export const DeploymentSourceSchema = z.object({
   latest_seen_sha: z.string().nullish(),
   active_deployed_sha: z.string().nullish(),
   full_name: z.string().nullish(), // "owner/repo" (joined from the repo row)
-  source_profile: z.literal('flue-app-v1').nullish(),
+  source_profile: z.enum(['flue-app-v1', 'flue-prompt-v1']).nullish(),
   source_profile_version: z.literal(1).nullish(),
   review_fingerprint: z.string().nullish(),
 })
@@ -698,7 +698,7 @@ export const RepositoryReviewIssueSchema = z.object({
 
 export const RepositoryCandidateRootSchema = z.object({
   path: z.string(),
-  source_profile: z.literal('flue-app-v1').nullable(),
+  source_profile: z.enum(['flue-app-v1', 'flue-prompt-v1']).nullable(),
   summary: z.string(),
   marker: z.enum([
     'agent.toml',
@@ -709,8 +709,7 @@ export const RepositoryCandidateRootSchema = z.object({
   ]),
 })
 
-export const FlueSourceProfileSchema = z.object({
-  source_profile: z.literal('flue-app-v1'),
+const FlueSourceProfileBaseSchema = z.object({
   source_profile_version: z.literal(1),
   manifest: z.object({
     schema_version: z.literal(1),
@@ -728,15 +727,36 @@ export const FlueSourceProfileSchema = z.object({
     flue_cli: z.string(),
   }),
   lockfile: z.object({ version: z.number() }),
-  builder: z.object({ node: z.string() }),
+  builder: z.object({
+    node: z.string(),
+    synthesis_template: z.string().optional(),
+  }),
   source: z.object({ files: z.number(), bytes: z.number() }),
   variable_names: z.array(z.string()).default([]),
   warnings: z.array(RepositoryReviewIssueSchema).default([]),
 })
 
-const ExactRepositorySourceInterpretationSchema = z.object({
+export const FlueSourceProfileSchema = z.union([
+  FlueSourceProfileBaseSchema.extend({
+    source_profile: z.literal('flue-app-v1'),
+  }),
+  FlueSourceProfileBaseSchema.extend({
+    source_profile: z.literal('flue-prompt-v1'),
+    prompt: z.object({ bytes: z.number() }),
+    skills: z.object({
+      count: z.number(),
+      bytes: z.number(),
+      names: z.array(z.string()),
+    }),
+    builder: z.object({
+      node: z.string(),
+      synthesis_template: z.string(),
+    }),
+  }),
+])
+
+const ExactRepositorySourceInterpretationBase = z.object({
   disposition: z.literal('exact'),
-  source_profile: z.literal('flue-app-v1'),
   source_profile_version: z.literal(1),
   summary: z.string(),
   reason_code: z.string(),
@@ -746,6 +766,15 @@ const ExactRepositorySourceInterpretationSchema = z.object({
     model: z.string(),
   }),
 })
+
+const ExactRepositorySourceInterpretationSchema = z.union([
+  ExactRepositorySourceInterpretationBase.extend({
+    source_profile: z.literal('flue-app-v1'),
+  }),
+  ExactRepositorySourceInterpretationBase.extend({
+    source_profile: z.literal('flue-prompt-v1'),
+  }),
+])
 
 const InvalidRepositorySourceInterpretationBase = z.object({
   disposition: z.literal('invalid'),
@@ -757,6 +786,10 @@ const InvalidRepositorySourceInterpretationBase = z.object({
 const InvalidRepositorySourceInterpretationSchema = z.union([
   InvalidRepositorySourceInterpretationBase.extend({
     source_profile: z.literal('flue-app-v1'),
+    source_profile_version: z.literal(1),
+  }),
+  InvalidRepositorySourceInterpretationBase.extend({
+    source_profile: z.literal('flue-prompt-v1'),
     source_profile_version: z.literal(1),
   }),
   InvalidRepositorySourceInterpretationBase.extend({

@@ -1,26 +1,29 @@
 package commands
 
 // Flue deploy flow (design 013 §6 — the Worker-for-Platforms Durable-Object model).
-// When agent.toml declares `[runtime] family = "flue"`, `oc agent deploy` does NOT
-// read prompt.md/skills/; it runs the app's own `flue build --target cloudflare`, then
-// stages only regular .js/.mjs modules as one tar.gz in R2 via a presigned PUT, and
-// POSTs the deployment referencing only the R2 bundle digest + a small canonical
-// Flue descriptor + the entrypoint agent name — NO module bytes in the JSON, so the
-// API host stays byte-free. The CP records
-// a `verifying` deploy; an off-host runner fetches the bundle, composes, mints the
-// per-deploy token, WfP-uploads, and finalizes. The existing deployment poll absorbs
-// the runner latency (verifying → ready|failed).
+// A prompt-defined root stages only agent.toml, prompt.md, and exact SKILL.md files;
+// the isolated managed builder owns synthesis and the framework build. A complete app
+// runs its own local `flue build --target cloudflare` and stages only the resulting
+// regular .js/.mjs modules. Both paths keep source/module bytes out of API JSON and
+// converge on the same off-host deploy runner and verifying → ready|failed poll.
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/opensandbox/opensandbox/cmd/oc/internal/bundle"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/client"
 	"github.com/opensandbox/opensandbox/cmd/oc/internal/fluebuild"
 	"github.com/spf13/cobra"
@@ -37,7 +40,26 @@ type artifactUploadResponse struct {
 	AlreadyUploaded bool   `json:"already_uploaded"`
 }
 
+type localSourceUploadResponse struct {
+	URL             string `json:"url"`
+	ExpiresAt       string `json:"expires_at"`
+	AlreadyUploaded bool   `json:"already_uploaded"`
+}
+
+const (
+	fluePromptMaxBytes       = 256 * 1024
+	fluePromptMaxSkills      = 32
+	fluePromptMaxSkillBytes  = 256 * 1024
+	fluePromptMaxSkillsBytes = 2 * 1024 * 1024
+	fluePromptMaxArchive     = 4 * 1024 * 1024
+)
+
+var fluePromptSkillName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
 func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, noActivate bool) error {
+	if isPromptDefinedFlueRoot(dir) {
+		return deployPromptDefinedFlue(cmd, sc, dir, m, noActivate)
+	}
 	// 1. Run the same credential, manifest, engine, and lockfile projection as
 	//    the managed builder before any authenticated API call. --check-only
 	//    never executes repository code and never needs installed dependencies.
@@ -156,6 +178,272 @@ func deployFlue(cmd *cobra.Command, sc *client.Client, dir string, m *manifest, 
 	return nil
 }
 
+func isPromptDefinedFlueRoot(dir string) bool {
+	exists := func(name string) bool {
+		_, err := os.Lstat(name)
+		return err == nil
+	}
+	if !exists(filepath.Join(dir, "prompt.md")) {
+		return false
+	}
+	for _, marker := range []string{
+		"package.json",
+		"flue.config.ts",
+		"flue.config.js",
+		"flue.config.mjs",
+		"flue.config.cjs",
+	} {
+		if _, err := os.Lstat(filepath.Join(dir, marker)); err == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// deployPromptDefinedFlue stages the bounded behavior source directly into the
+// transient source bucket, then asks the existing isolated managed-build plane
+// to synthesize and build it. The API sees only the source reference.
+func deployPromptDefinedFlue(
+	cmd *cobra.Command,
+	sc *client.Client,
+	dir string,
+	m *manifest,
+	noActivate bool,
+) error {
+	if m.Name == "" {
+		return fmt.Errorf("prompt-defined Flue deployments require `name` in agent.toml")
+	}
+	if m.Runtime.Type != "" && m.Runtime.Type != "default" {
+		return fmt.Errorf("prompt-defined Flue deployments require runtime.type = \"default\"")
+	}
+	files, err := readPromptDefinedFlueSource(dir)
+	if err != nil {
+		return err
+	}
+	sourceTarGz, err := bundle.Pack(files)
+	if err != nil {
+		return fmt.Errorf("pack prompt-defined Flue source: %w", err)
+	}
+	if len(sourceTarGz) > fluePromptMaxArchive {
+		return fmt.Errorf(
+			"prompt-defined Flue source archive exceeds %d bytes",
+			fluePromptMaxArchive,
+		)
+	}
+	uploadID, err := newLocalSourceUploadID()
+	if err != nil {
+		return fmt.Errorf("create source upload id: %w", err)
+	}
+	digest := bundle.Digest(sourceTarGz)
+
+	id, err := resolveDeployAgent(cmd, sc, m)
+	if err != nil {
+		return err
+	}
+	if err := syncManifestVars(cmd, sc, id, m); err != nil {
+		return err
+	}
+	if !jsonOutput {
+		printDeployProgress("uploading source")
+	}
+	if err := uploadLocalBuildSource(
+		cmd.Context(),
+		sc,
+		id,
+		uploadID,
+		digest,
+		sourceTarGz,
+	); err != nil {
+		return err
+	}
+
+	rt := m.Runtime.Type
+	if rt == "" {
+		rt = "default"
+	}
+	input := map[string]interface{}{
+		"type":       "source",
+		"source":     map[string]interface{}{"upload_id": uploadID, "digest": digest, "size_bytes": len(sourceTarGz)},
+		"entrypoint": m.Name,
+		"model":      m.Model,
+		"runtime":    map[string]string{"type": rt},
+	}
+	body := map[string]interface{}{"input": input, "activate": !noActivate}
+	if idem, _ := cmd.Flags().GetString("idempotency-key"); idem != "" {
+		body["idempotency_key"] = idem
+	}
+	var env DeploymentEnvelope
+	if err := sc.Post(cmd.Context(), "/v3/agents/"+id+"/deployments", body, &env); err != nil {
+		return err
+	}
+	d := env.Deployment
+	if !terminalState(d.State) && d.State != "" {
+		to, _ := cmd.Flags().GetInt("timeout")
+		d, err = pollDeployment(cmd, sc, id, d.ID, time.Duration(to)*time.Second)
+		if err != nil {
+			return err
+		}
+	}
+	if d.State == "failed" {
+		printer.Print(d, func() { fmt.Printf("Deploy failed: %s\n", deployFailMsg(d)) })
+		return &ExitError{Code: 1}
+	}
+	handoff := Agent{}
+	if !jsonOutput && d.State == "ready" {
+		handoff = loadDeployHandoff(cmd, sc, id)
+	}
+	printer.Print(d, func() {
+		n := revisionNumber(cmd, sc, id, d.RevisionID)
+		status := "staged"
+		if d.Active {
+			status = "active"
+		}
+		printDeploySuccess(printer.W, deploySuccess{
+			Agent: handoff, Revision: n, Status: status,
+		})
+	})
+	return nil
+}
+
+func readPromptDefinedFlueSource(dir string) ([]bundle.File, error) {
+	readRegular := func(rel string, maxBytes int) ([]byte, error) {
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("%s is missing", rel)
+			}
+			return nil, fmt.Errorf("inspect %s: %w", rel, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%s must be a regular file", rel)
+		}
+		if info.Size() > int64(maxBytes) {
+			return nil, fmt.Errorf("%s exceeds %d bytes", rel, maxBytes)
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", rel, err)
+		}
+		if !utf8.Valid(content) {
+			return nil, fmt.Errorf("%s must be valid UTF-8", rel)
+		}
+		return content, nil
+	}
+
+	manifestBytes, err := readRegular("agent.toml", fluePromptMaxArchive)
+	if err != nil {
+		return nil, err
+	}
+	promptBytes, err := readRegular("prompt.md", fluePromptMaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(string(promptBytes)) == "" {
+		return nil, fmt.Errorf("prompt.md must not be empty")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "mcp.json")); err == nil {
+		return nil, fmt.Errorf("mcp.json is not supported by prompt-defined Flue agents")
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("inspect mcp.json: %w", err)
+	}
+
+	files := []bundle.File{
+		{Path: "agent.toml", Mode: 0o644, Content: manifestBytes},
+		{Path: "prompt.md", Mode: 0o644, Content: promptBytes},
+	}
+	skillsRoot := filepath.Join(dir, "skills")
+	entries, err := os.ReadDir(skillsRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return files, nil
+		}
+		return nil, fmt.Errorf("read skills/: %w", err)
+	}
+	rootInfo, err := os.Lstat(skillsRoot)
+	if err != nil {
+		return nil, fmt.Errorf("inspect skills/: %w", err)
+	}
+	if !rootInfo.IsDir() {
+		return nil, fmt.Errorf("skills must be a directory")
+	}
+
+	totalSkillBytes := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		rel := "skills/" + entry.Name() + "/SKILL.md"
+		if _, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("inspect %s: %w", rel, err)
+		}
+		if !fluePromptSkillName.MatchString(entry.Name()) {
+			return nil, fmt.Errorf("skill directory %q has an invalid name", entry.Name())
+		}
+		content, err := readRegular(rel, fluePromptMaxSkillBytes)
+		if err != nil {
+			return nil, err
+		}
+		totalSkillBytes += len(content)
+		if totalSkillBytes > fluePromptMaxSkillsBytes {
+			return nil, fmt.Errorf(
+				"prompt-defined Flue skill files exceed %d bytes",
+				fluePromptMaxSkillsBytes,
+			)
+		}
+		files = append(files, bundle.File{Path: rel, Mode: 0o644, Content: content})
+		if len(files)-2 > fluePromptMaxSkills {
+			return nil, fmt.Errorf(
+				"prompt-defined Flue agents support at most %d skills",
+				fluePromptMaxSkills,
+			)
+		}
+	}
+	return files, nil
+}
+
+func newLocalSourceUploadID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return "src_" + hex.EncodeToString(raw[:]), nil
+}
+
+func uploadLocalBuildSource(
+	ctx context.Context,
+	sc *client.Client,
+	agentID string,
+	uploadID string,
+	digest string,
+	tarGz []byte,
+) error {
+	body := map[string]interface{}{
+		"upload_id":  uploadID,
+		"digest":     digest,
+		"size_bytes": len(tarGz),
+	}
+	var response localSourceUploadResponse
+	if err := sc.Post(
+		ctx,
+		"/v3/agents/"+agentID+"/source-artifacts",
+		body,
+		&response,
+	); err != nil {
+		return fmt.Errorf("request source upload url: %w", err)
+	}
+	if response.AlreadyUploaded {
+		return nil
+	}
+	if response.URL == "" {
+		return fmt.Errorf("source upload url response was empty")
+	}
+	return putGzip(ctx, response.URL, tarGz, "source")
+}
+
 func presentFlueBuildError(err error) error {
 	var credentialErr *fluebuild.CredentialError
 	if !errors.As(err, &credentialErr) {
@@ -197,7 +485,11 @@ func uploadArtifact(ctx context.Context, sc *client.Client, agentID, digest stri
 	if resp.URL == "" {
 		return fmt.Errorf("bundle upload url response was empty")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, resp.URL, bytes.NewReader(tarGz))
+	return putGzip(ctx, resp.URL, tarGz, "bundle")
+}
+
+func putGzip(ctx context.Context, url string, tarGz []byte, label string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(tarGz))
 	if err != nil {
 		return err
 	}
@@ -205,12 +497,12 @@ func uploadArtifact(ctx context.Context, sc *client.Client, agentID, digest stri
 	req.ContentLength = int64(len(tarGz))
 	put, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("upload bundle: %w", err)
+		return fmt.Errorf("upload %s: %w", label, err)
 	}
 	defer put.Body.Close()
 	if put.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(put.Body, 512))
-		return fmt.Errorf("bundle upload failed (HTTP %d): %s", put.StatusCode, string(snippet))
+		return fmt.Errorf("%s upload failed (HTTP %d): %s", label, put.StatusCode, string(snippet))
 	}
 	return nil
 }

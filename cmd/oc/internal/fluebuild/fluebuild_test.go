@@ -55,6 +55,30 @@ func TestCheckOnlyMatchesFrozenProjectionWithoutExecutingRepositoryCode(t *testi
 	}
 }
 
+func TestCheckOnlyCarriesTrustedSynthesisTemplateIdentity(t *testing.T) {
+	dir := copyFixture(t)
+	result, err := Build(context.Background(), Options{
+		Dir:                      dir,
+		CheckOnly:                true,
+		BuilderVersion:           testBuilderVersion,
+		NodeVersion:              testNodeVersion,
+		SynthesisTemplateVersion: "flue-prompt-template-v1",
+	})
+	if err != nil {
+		t.Fatalf("check-only: %v", err)
+	}
+	if got := result.Deployment.Builder.SynthesisTemplate; got != "flue-prompt-template-v1" {
+		t.Fatalf("synthesis template = %q", got)
+	}
+	raw, err := json.Marshal(result.Deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"synthesis_template":"flue-prompt-template-v1"`)) {
+		t.Fatalf("deployment omitted synthesis identity: %s", raw)
+	}
+}
+
 func TestBuildWritesDeterministicArtifactContract(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake Flue binary is a POSIX shell script")

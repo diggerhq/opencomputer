@@ -72,7 +72,8 @@ type Bundle struct {
 }
 
 type Builder struct {
-	Version string `json:"version"`
+	Version           string `json:"version"`
+	SynthesisTemplate string `json:"synthesis_template,omitempty"`
 }
 
 // Vars is named so callers cannot accidentally replace the manifest-derived
@@ -133,9 +134,11 @@ type Options struct {
 	OutputDir      string
 	BuilderVersion string
 	NodeVersion    string
-	CheckOnly      bool
-	BuildStdout    io.Writer
-	BuildStderr    io.Writer
+	// SynthesisTemplateVersion is a trusted managed-builder identity; local builds leave it empty.
+	SynthesisTemplateVersion string
+	CheckOnly                bool
+	BuildStdout              io.Writer
+	BuildStderr              io.Writer
 }
 
 type Result struct {
@@ -181,7 +184,7 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 		opts.BuilderVersion = "oc@" + opts.BuilderVersion
 	}
 
-	projection, err := inspect(ctx, opts.Dir, opts.BuilderVersion, opts.NodeVersion)
+	projection, err := inspect(ctx, opts.Dir, opts.BuilderVersion, opts.NodeVersion, opts.SynthesisTemplateVersion)
 	if err != nil {
 		return Result{}, err
 	}
@@ -276,6 +279,12 @@ func ValidateDeployment(deployment Deployment, requireArtifact bool) error {
 	if !strings.HasPrefix(deployment.Builder.Version, "oc@") || strings.TrimPrefix(deployment.Builder.Version, "oc@") == "" {
 		return fmt.Errorf("deployment builder.version must use oc@<version>")
 	}
+	if deployment.Builder.SynthesisTemplate != "" {
+		valid := regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+		if !valid.MatchString(deployment.Builder.SynthesisTemplate) {
+			return fmt.Errorf("deployment builder.synthesis_template is invalid")
+		}
+	}
 	if !requireArtifact {
 		if deployment.Flue.Wrangler != nil || deployment.Bundle != nil {
 			return fmt.Errorf("check-only deployment must omit flue.wrangler and bundle")
@@ -298,7 +307,7 @@ func ValidateDeployment(deployment Deployment, requireArtifact bool) error {
 	return nil
 }
 
-func inspect(ctx context.Context, dir, builderVersion, nodeVersion string) (Deployment, error) {
+func inspect(ctx context.Context, dir, builderVersion, nodeVersion, synthesisTemplateVersion string) (Deployment, error) {
 	findings, err := credscan.ScanDir(dir)
 	if err != nil {
 		return Deployment{}, fmt.Errorf("credential scan: %w", err)
@@ -381,7 +390,10 @@ func inspect(ctx context.Context, dir, builderVersion, nodeVersion string) (Depl
 		Model:         m.Model,
 		Vars:          m.Vars,
 		Runtime:       m.Runtime,
-		Builder:       Builder{Version: builderVersion},
+		Builder: Builder{
+			Version:           builderVersion,
+			SynthesisTemplate: synthesisTemplateVersion,
+		},
 	}, nil
 }
 

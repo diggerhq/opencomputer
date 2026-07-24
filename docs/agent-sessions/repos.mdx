@@ -153,7 +153,8 @@ does nothing but Git, and is gone before the next turn.
 ## Use a repo to deploy a Flue agent
 
 Choose **Agents → Create agent → Import from GitHub** when the repository is the agent
-implementation itself. Repository-first creation currently recognizes a complete Flue application.
+implementation itself. Repository-first creation recognizes either a complete Flue application or
+an explicit prompt-defined Flue root (`agent.toml` + `prompt.md` + optional `skills/`).
 The dashboard uses the OpenComputer App to:
 
 1. resolve the selected branch and root at one exact commit without running repository code;
@@ -176,9 +177,11 @@ names and links the owning agent, and offers an inline confirmed unlink. Unlinki
 for the old agent but preserves that agent, its active revision, deployment history, and sessions.
 
 Recognition is deterministic. A root-level `agent.toml` is authoritative: if it is malformed or
-unsupported, the result is a fixable error rather than a guess. Without a manifest, a root-level
-`flue.config.*` file or a Flue package dependency is treated as Flue intent and reports the missing
-manifest. A prompt, `skills/` folder, README, or unrelated package is not converted automatically.
+unsupported, the result is a fixable error rather than a guess. With `runtime.family = "flue"`,
+`prompt.md` selects the prompt-defined profile unless a `package.json` or `flue.config.*` marker
+selects the complete-app profile. Without a manifest, Flue configuration or a Flue package
+dependency reports the missing manifest. A bare prompt, skills folder, README, or unrelated package
+is not converted automatically.
 
 If the selected root is unrecognized, the review can scan the same bounded tree of at most 25,000
 entries and return up to 20 candidate roots no more than six folders deep. Results follow fixed
@@ -193,11 +196,11 @@ build commands as an ordinary disposable OpenComputer sandbox, and emits an arti
 deployment credential belongs to another trusted service and is never present during source or
 build work.
 
-Flue repository deployment supports one self-contained npm root with `agent.toml`,
-`package.json`, and `package-lock.json`. The initial import links that root to its production branch;
-each later push touching the root automatically deploys the branch's new exact head. Other branches
-do not create Flue preview deployments. **Deploy latest** remains available for manually rebuilding
-the current production head after a transient failure. See
+Flue repository deployment supports one selected root: either the prompt-defined shape above or a
+self-contained npm root with `agent.toml`, `package.json`, and `package-lock.json`. The initial import
+links that root to its production branch; each later push touching the root automatically deploys the
+branch's new exact head. Other branches do not create Flue preview deployments. **Deploy latest**
+remains available for manually rebuilding the current production head after a transient failure. See
 [Flue deployment](/agent-sessions/flue#deploy-from-github) for the full build contract and failure
 journey.
 
@@ -206,11 +209,11 @@ relevant files. If any of those change before import, OpenComputer returns a sou
 and creates nothing. Review the current commit again rather than assuming the old confirmation still
 applies.
 
-The source link also remembers that the agent was imported as Flue. Normal Flue changes keep
-deploying on push. If the linked root stops being a Flue app, the deployment fails before build and
-the active revision stays live. Restore the Flue definition, or unlink the source and import it as a
-new agent. Unlinking stops push-to-deploy; it does not delete or convert the existing agent, revision,
-or sessions.
+The source link also remembers the selected Flue profile. Normal changes keep deploying on push, and
+a prompt-defined profile may graduate to a complete Flue app. Other profile changes fail before
+build while the active revision stays live. Restore the previous definition, or unlink the source
+and import it as a new agent. Unlinking stops push-to-deploy; it does not delete or convert the
+existing agent, revision, or sessions.
 
 Manage this link from the agent's **Overview → Repository** panel. **Configure GitHub** changes
 which repositories the OpenComputer App can access. **Unlink repository** releases this root for a

@@ -9,10 +9,12 @@ An **agent** is a reusable identity, runtime, model, and deployed behavior. Ever
 <Note>
   The [dashboard](https://app.opencomputer.dev) starts with **Import from
   GitHub** and keeps **Configure manually** available. Repository import
-  recognizes a complete [Flue](/agent-sessions/flue) app; prompt- or skills-only
-  folders are not converted into an agent. You can also deploy a local Flue
-  checkout with `oc agent deploy`. Both Flue paths produce the same deployment
-  and revision history.
+  recognizes both a complete [Flue](/agent-sessions/flue) app and a
+  prompt-defined Flue root containing `agent.toml`, `prompt.md`, and optional
+  `skills/`. You can also deploy either local shape with `oc agent deploy`;
+  prompt-defined roots build in the isolated managed builder, while complete
+  apps build locally. Both paths produce the same deployment and revision
+  history.
 </Note>
 
 <CodeGroup>
@@ -62,7 +64,7 @@ For a built-in runtime, the only behavior an agent needs is a **model** and a **
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | **Default agent**                    | `name` + `model` (+ a prompt)                                                                                                      | a working agent on the default runtime — no setup                                                              |
 | **+ Skills**                         | [`SKILL.md` folders](/agent-sessions/skills) (upload a `.zip`, or include in a repo)                                               | reusable procedures the agent loads when relevant — still the default runtime                                  |
-| **+ Source-controlled deployment**   | link a manually configured built-in agent to `prompt.md` + `skills/`, or import a complete Flue app from a self-contained npm root | versioned [deployments and revisions](/agent-sessions/revisions); Flue imports also include durable build logs |
+| **+ Source-controlled deployment**   | link a built-in agent to `prompt.md` + `skills/`, or import a prompt-defined or complete Flue app from GitHub | versioned [deployments and revisions](/agent-sessions/revisions); Flue imports also include durable build logs |
 | **+ Custom runtime** _(coming soon)_ | bring your own runtime image                                                                                                       | full control of the execution environment                                                                      |
 
 At every built-in rung the agent is a small directory, at most `agent.toml` + `prompt.md` + `skills/`. You can stop at any rung; most agents never go past skills.
@@ -71,7 +73,7 @@ At every built-in rung the agent is a small directory, at most `agent.toml` + `p
 
 Choose **Agents → Create agent → Import from GitHub**, install the OpenComputer GitHub App if needed, and select a repository, production branch, and root. **Review agent** resolves one exact commit without running repository code.
 
-- A complete Flue root shows its entrypoint, model, Managed model access, and an editable OpenComputer agent name.
+- A prompt-defined or complete Flue root shows its entrypoint, model, Managed model access, and an editable OpenComputer agent name.
 - A broken Flue root explains what must be fixed. OpenComputer does not reinterpret it as another agent type.
 - An unrecognized root creates nothing. You can choose another folder, fork the Flue starter, or configure a built-in agent manually.
 - In a monorepo, OpenComputer may suggest bounded candidate folders. You choose one explicitly and review it before deployment.
