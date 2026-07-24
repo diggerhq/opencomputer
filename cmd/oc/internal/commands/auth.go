@@ -342,17 +342,59 @@ func printLoginResult(cmd *cobra.Command, result loginResult, already bool) erro
 	if jsonOutput {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 	}
-	prefix := "✓ Logged in as "
-	if already {
-		prefix = "Already logged in as "
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "%s%s\n", prefix, oneLine(result.Email))
-	fmt.Fprintf(cmd.OutOrStdout(), "  %-11s %s\n", "Workspace", oneLine(result.OrgName))
-	fmt.Fprintf(cmd.OutOrStdout(), "  %-11s %s\n", "API", oneLine(result.APIURL))
-	if !already {
-		fmt.Fprintln(cmd.OutOrStdout(), "\nNext: oc agent init")
-	}
+	renderLoginResult(
+		cmd.OutOrStdout(),
+		result,
+		already,
+		deployStyleFor(cmd.OutOrStdout()),
+	)
 	return nil
+}
+
+func renderLoginResult(w io.Writer, result loginResult, already bool, style deployOutputStyle) {
+	action := "Logged in as"
+	if already {
+		action = "Already logged in as"
+	}
+	mark := ansiText("✓", "32", style.color)
+	email := ansiText(oneLine(result.Email), "1", style.color)
+	fmt.Fprintf(w, "%s %s %s\n", mark, action, email)
+	fmt.Fprintf(w, "\n  %-11s %s\n", "Workspace", oneLine(result.OrgName))
+	fmt.Fprintf(w, "  %-11s %s\n", "API", terminalLink(result.APIURL, style))
+	if !already {
+		fmt.Fprintf(w, "\n  %s\n", ansiText("Next", "1", style.color))
+		fmt.Fprintf(w, "  %s oc agent init\n", ansiText("$", "2", style.color))
+	}
+}
+
+func renderLoginInstructions(w io.Writer, receipt deviceAuthorization, style deployOutputStyle) {
+	fmt.Fprintln(w, "Open this page to sign in:")
+	fmt.Fprintf(w, "  %s\n", terminalLink(receipt.VerificationURIComplete, style))
+	fmt.Fprintf(
+		w,
+		"\n  %-11s %s\n",
+		"Code",
+		ansiText(oneLine(receipt.UserCode), "1", style.color),
+	)
+}
+
+type loginCanceledError struct {
+	cause error
+}
+
+func (e *loginCanceledError) Error() string {
+	return "login canceled; no credentials were changed"
+}
+
+func (e *loginCanceledError) Unwrap() error {
+	return e.cause
+}
+
+func canceledLoginError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return &loginCanceledError{cause: err}
+	}
+	return err
 }
 
 func identityAsLoginResult(identity loginIdentity, metadata *config.LoginMetadata) loginResult {
@@ -458,18 +500,20 @@ func runLogin(cmd *cobra.Command, force, noBrowser bool) error {
 
 	receipt, err := authClient.start(cmd.Context())
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return canceledLoginError(err)
+		}
 		return fmt.Errorf("starting login: %w", err)
 	}
 	style := deployStyleFor(errOut)
-	fmt.Fprintln(errOut, "Open this page to sign in:")
-	fmt.Fprintf(errOut, "  %s\n\n", terminalLink(receipt.VerificationURIComplete, style))
-	fmt.Fprintf(errOut, "Confirm code: %s\n", oneLine(receipt.UserCode))
-	fmt.Fprintln(errOut, "Waiting for confirmation…")
+	renderLoginInstructions(errOut, receipt, style)
 	if !noBrowser {
 		if err := openAuthBrowser(receipt.VerificationURIComplete); err != nil {
-			fmt.Fprintf(errOut, "Could not open a browser automatically: %s\n", oneLine(err.Error()))
+			fmt.Fprintln(errOut, "Could not open a browser automatically. Open the URL above.")
 		}
 	}
+	fmt.Fprintln(errOut, "\nWaiting for confirmation…")
+	fmt.Fprintln(errOut)
 
 	interval := time.Duration(receipt.Interval) * time.Second
 	deadline := time.Now().Add(time.Duration(receipt.ExpiresIn) * time.Second)
@@ -480,10 +524,13 @@ func runLogin(cmd *cobra.Command, force, noBrowser bool) error {
 			return authAPIError(http.StatusGone, "authorization_expired")
 		}
 		if err := authSleep(cmd.Context(), interval); err != nil {
-			return err
+			return canceledLoginError(err)
 		}
 		exchange, err = authClient.exchange(cmd.Context(), receipt.DeviceCode, credentialName())
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return canceledLoginError(err)
+			}
 			var authErr *cliAuthAPIError
 			if errors.As(err, &authErr) &&
 				authErr.Code == "auth_provider_unavailable" &&
@@ -594,6 +641,10 @@ func runLogout(cmd *cobra.Command, localOnly bool) error {
 	}
 	if jsonOutput {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]string{"status": "logged_out"})
+	}
+	if localOnly {
+		fmt.Fprintln(cmd.OutOrStdout(), "Local login cleared. The remote credential was not revoked.")
+		return nil
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "Logged out.")
 	return nil

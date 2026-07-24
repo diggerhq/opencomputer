@@ -103,6 +103,61 @@ func whoamiResponse() map[string]any {
 	}
 }
 
+func TestLoginHumanOutputMatchesDeployPresentation(t *testing.T) {
+	result := loginResult{
+		loginIdentity: loginIdentity{
+			Email:   "igor@example.com",
+			OrgName: "Igor's workspace",
+			APIURL:  "https://app.opencomputer.dev",
+		},
+	}
+	var out bytes.Buffer
+	renderLoginResult(&out, result, false, deployOutputStyle{})
+	want := "✓ Logged in as igor@example.com\n\n" +
+		"  Workspace   Igor's workspace\n" +
+		"  API         https://app.opencomputer.dev\n\n" +
+		"  Next\n" +
+		"  $ oc agent init\n"
+	if out.String() != want {
+		t.Fatalf("login output:\n%q\nwant:\n%q", out.String(), want)
+	}
+
+	out.Reset()
+	renderLoginResult(&out, result, true, deployOutputStyle{})
+	if strings.Contains(out.String(), "Next") ||
+		!strings.HasPrefix(out.String(), "✓ Already logged in as igor@example.com\n") {
+		t.Fatalf("existing-login output:\n%q", out.String())
+	}
+
+	out.Reset()
+	renderLoginResult(&out, result, false, deployOutputStyle{color: true, hyperlinks: true})
+	for _, want := range []string{
+		"\x1b[32m✓\x1b[0m",
+		"\x1b[1migor@example.com\x1b[0m",
+		"\x1b]8;;https://app.opencomputer.dev\x1b\\",
+		"\x1b[1mNext\x1b[0m",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("styled login output missing %q:\n%q", want, out.String())
+		}
+	}
+}
+
+func TestLoginInstructionsAreCompactAndCopyable(t *testing.T) {
+	receipt := deviceAuthorization{
+		UserCode:                testUserCode,
+		VerificationURIComplete: "https://auth.example.test/device?user_code=" + testUserCode,
+	}
+	var out bytes.Buffer
+	renderLoginInstructions(&out, receipt, deployOutputStyle{})
+	want := "Open this page to sign in:\n" +
+		"  https://auth.example.test/device?user_code=ABCD-EFGH\n\n" +
+		"  Code        ABCD-EFGH\n"
+	if out.String() != want {
+		t.Fatalf("login instructions:\n%q\nwant:\n%q", out.String(), want)
+	}
+}
+
 func TestLoginPollsSavesVerifiesAndNeverPrintsCredential(t *testing.T) {
 	var mu sync.Mutex
 	var exchanges int
@@ -180,7 +235,8 @@ func TestLoginPollsSavesVerifiesAndNeverPrintsCredential(t *testing.T) {
 		t.Fatalf("secret leaked to output: %q", combined)
 	}
 	if !strings.Contains(stdout.String(), "Logged in as igor@example.com") ||
-		!strings.Contains(stdout.String(), "Igor's workspace") {
+		!strings.Contains(stdout.String(), "Igor's workspace") ||
+		!strings.Contains(stdout.String(), "$ oc agent init") {
 		t.Fatalf("unexpected success output:\n%s", stdout.String())
 	}
 
@@ -196,6 +252,36 @@ func TestLoginPollsSavesVerifiesAndNeverPrintsCredential(t *testing.T) {
 		if info.Mode().Perm() != 0o600 {
 			t.Fatalf("config mode = %o", info.Mode().Perm())
 		}
+	}
+}
+
+func TestLoginBrowserFailurePointsBackToPrintedURLBeforeWaiting(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/cli/device":
+			writeJSONResponse(w, 200, deviceReceipt())
+		case "/auth/cli/device/exchange":
+			writeJSONResponse(w, 200, authorizedExchange())
+		case "/api/whoami":
+			writeJSONResponse(w, 200, whoamiResponse())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cmd, _, stderr := authTestCommand(t, server.URL)
+	openAuthBrowser = func(string) error {
+		return errors.New("no browser opener at /private/path")
+	}
+	if err := runLogin(cmd, false, false); err != nil {
+		t.Fatalf("runLogin: %v", err)
+	}
+	got := stderr.String()
+	failure := "Could not open a browser automatically. Open the URL above."
+	if !strings.Contains(got, failure) ||
+		strings.Contains(got, "/private/path") ||
+		strings.Index(got, failure) > strings.Index(got, "Waiting for confirmation…") {
+		t.Fatalf("browser-failure output:\n%s", got)
 	}
 }
 
@@ -603,7 +689,7 @@ func TestLogoutLocalDoesNotCallRemote(t *testing.T) {
 		http.Error(w, "unexpected", 500)
 	}))
 	defer server.Close()
-	cmd, _, _ := authTestCommand(t, server.URL)
+	cmd, stdout, _ := authTestCommand(t, server.URL)
 	if err := config.Save(config.Config{
 		APIURL: server.URL,
 		APIKey: testKey,
@@ -624,6 +710,9 @@ func TestLogoutLocalDoesNotCallRemote(t *testing.T) {
 	}
 	if got := config.LoadFile(); got.APIKey != "" || got.Login != nil {
 		t.Fatalf("local login remains: %#v", got)
+	}
+	if strings.TrimSpace(stdout.String()) != "Local login cleared. The remote credential was not revoked." {
+		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
 
@@ -664,6 +753,9 @@ func TestLoginCancellationDoesNotSaveCredential(t *testing.T) {
 	err := runLogin(cmd, false, true)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if err.Error() != "login canceled; no credentials were changed" {
+		t.Fatalf("cancellation error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".oc", "config.json")); !os.IsNotExist(err) {
 		t.Fatalf("config unexpectedly created: %v", err)
