@@ -62,7 +62,8 @@ should continue to receive an explicit org key through their secret manager and
 | 4 (lowest) | Defaults | `https://app.opencomputer.dev` |
 
 An active `--api-key` or `OPENCOMPUTER_API_KEY` override must be removed before
-`oc login` or `oc logout`. Manually setting an API key remains supported:
+`oc login` or remote `oc logout`; `oc logout --local` can still clear the saved
+CLI login. Manually setting an API key remains supported:
 
 ```bash
 oc config set api-key "$OPENCOMPUTER_API_KEY"

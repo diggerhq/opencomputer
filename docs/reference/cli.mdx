@@ -30,8 +30,9 @@ workspace. `oc logout` revokes a CLI-managed key before clearing it locally;
 `--local` skips remote revocation explicitly.
 
 An active `--api-key` or `OPENCOMPUTER_API_KEY` override takes precedence and
-must be unset before login or logout. CI, servers, and SDK applications should
-continue to use explicitly managed org keys.
+must be unset before login or remote logout. `oc logout --local` can still
+clear the saved CLI login. CI, servers, and SDK applications should continue
+to use explicitly managed org keys.
 
 ---
 

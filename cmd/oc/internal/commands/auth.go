@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -271,6 +272,8 @@ func authAPIError(status int, code string) error {
 		action = "Authorization completed, but the OpenComputer account could not be prepared; run `oc login` again."
 	case "credential_creation_failed":
 		action = "Authorization completed, but the CLI credential could not be created; run `oc login` again."
+	case "rate_limited":
+		action = "Too many login attempts were made from this network; wait a minute and retry."
 	}
 	if code == "" {
 		code = "authentication_failed"
@@ -362,6 +365,29 @@ func identityAsLoginResult(identity loginIdentity, metadata *config.LoginMetadat
 	return result
 }
 
+func loginAPIForSavedCredential(fileCfg config.Config, fallback string) string {
+	if fileCfg.Login != nil && fileCfg.Login.APIURL != "" {
+		return newCLIAuthHTTP(fileCfg.Login.APIURL).baseURL
+	}
+	if fileCfg.APIURL != "" {
+		return newCLIAuthHTTP(fileCfg.APIURL).baseURL
+	}
+	return newCLIAuthHTTP(fallback).baseURL
+}
+
+func insecureRemoteAPIURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "http" {
+		return false
+	}
+	host := parsed.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
+}
+
 func runLogin(cmd *cobra.Command, force, noBrowser bool) error {
 	source := config.EffectiveCredentialSource(cmd)
 	if source == config.CredentialSourceEnvironment || source == config.CredentialSourceFlag {
@@ -374,6 +400,15 @@ func runLogin(cmd *cobra.Command, force, noBrowser bool) error {
 		resolved.APIURL = config.DefaultAPIURL
 	}
 	authClient := newCLIAuthHTTP(resolved.APIURL)
+	loginAPI := authClient.baseURL
+	errOut := cmd.ErrOrStderr()
+	if insecureRemoteAPIURL(loginAPI) {
+		fmt.Fprintf(
+			errOut,
+			"Warning: %s is not HTTPS; login credentials will be sent over an unencrypted connection.\n",
+			oneLine(loginAPI),
+		)
+	}
 
 	var oldManagedKey string
 	var oldManagedAPI string
@@ -383,31 +418,48 @@ func runLogin(cmd *cobra.Command, force, noBrowser bool) error {
 				return errors.New("a manually configured API key is already saved; use `oc login --force` to replace it locally")
 			}
 		} else {
-			oldAPI := fileCfg.Login.APIURL
-			if oldAPI == "" {
-				oldAPI = resolved.APIURL
+			oldAPI := loginAPIForSavedCredential(fileCfg, loginAPI)
+			if oldAPI != loginAPI && !force {
+				return fmt.Errorf(
+					"saved login belongs to %s, but the current API is %s; unset the API URL override or use `oc login --force` to replace it",
+					oldAPI,
+					loginAPI,
+				)
 			}
-			identity, err := newCLIAuthHTTP(oldAPI).whoami(cmd.Context(), fileCfg.APIKey)
-			if err == nil {
-				if !force {
-					return printLoginResult(cmd, identityAsLoginResult(identity, fileCfg.Login), true)
-				}
+			if force {
+				// Replacement is intentionally not gated on the old host. Keep
+				// the exact old credential for best-effort revoke only after
+				// the new login is durably saved and verified.
 				oldManagedKey = fileCfg.APIKey
 				oldManagedAPI = oldAPI
 			} else {
-				var apiErr *client.APIError
-				if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized {
-					return fmt.Errorf("checking existing login before replacement: %w", err)
+				identity, err := newCLIAuthHTTP(oldAPI).whoami(cmd.Context(), fileCfg.APIKey)
+				if err == nil {
+					return printLoginResult(cmd, identityAsLoginResult(identity, fileCfg.Login), true)
+				} else {
+					var apiErr *client.APIError
+					if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized {
+						// The old key is already terminal and needs no revoke.
+					} else {
+						return fmt.Errorf("checking existing login before replacement: %w", err)
+					}
 				}
 			}
 		}
+	}
+	if fileCfg.APIURL != "" && newCLIAuthHTTP(fileCfg.APIURL).baseURL != loginAPI {
+		fmt.Fprintf(
+			errOut,
+			"Using API %s; successful login will replace the saved API URL %s.\n",
+			oneLine(loginAPI),
+			oneLine(newCLIAuthHTTP(fileCfg.APIURL).baseURL),
+		)
 	}
 
 	receipt, err := authClient.start(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("starting login: %w", err)
 	}
-	errOut := cmd.ErrOrStderr()
 	style := deployStyleFor(errOut)
 	fmt.Fprintln(errOut, "Open this page to sign in:")
 	fmt.Fprintf(errOut, "  %s\n\n", terminalLink(receipt.VerificationURIComplete, style))
@@ -454,13 +506,13 @@ func runLogin(cmd *cobra.Command, force, noBrowser bool) error {
 	}
 
 	nextCfg := fileCfg
-	nextCfg.APIURL = resolved.APIURL
+	nextCfg.APIURL = loginAPI
 	nextCfg.APIKey = exchange.Credential.Key
 	nextCfg.Login = &config.LoginMetadata{
 		CredentialID: exchange.Credential.ID,
 		KeyPrefix:    exchange.Credential.KeyPrefix,
 		Name:         exchange.Credential.Name,
-		APIURL:       resolved.APIURL,
+		APIURL:       loginAPI,
 	}
 	if err := config.Save(nextCfg); err != nil {
 		return fmt.Errorf(
@@ -480,9 +532,10 @@ func runLogin(cmd *cobra.Command, force, noBrowser bool) error {
 
 	if oldManagedKey != "" {
 		if err := newCLIAuthHTTP(oldManagedAPI).revoke(cmd.Context(), oldManagedKey); err != nil {
-			return fmt.Errorf(
-				"replacement login is active, but the previous CLI credential could not be revoked; remove it in the dashboard: %w",
-				err,
+			fmt.Fprintf(
+				errOut,
+				"Warning: replacement login is active, but the previous CLI credential at %s could not be revoked. Remove it in the dashboard if needed.\n",
+				oneLine(oldManagedAPI),
 			)
 		}
 	}
@@ -512,7 +565,8 @@ func runWhoami(cmd *cobra.Command) error {
 
 func runLogout(cmd *cobra.Command, localOnly bool) error {
 	source := config.EffectiveCredentialSource(cmd)
-	if source == config.CredentialSourceEnvironment || source == config.CredentialSourceFlag {
+	if !localOnly &&
+		(source == config.CredentialSourceEnvironment || source == config.CredentialSourceFlag) {
 		return fmt.Errorf("%s still controls authentication; unset it before logging out", source)
 	}
 	fileCfg := config.LoadFile()

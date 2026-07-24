@@ -270,6 +270,27 @@ func TestLoginRefusesEnvironmentCredentialWithoutCallingAPI(t *testing.T) {
 	}
 }
 
+func TestLoginRefusesFlagCredentialWithoutCallingAPI(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "unexpected", 500)
+	}))
+	defer server.Close()
+	cmd, _, _ := authTestCommand(t, server.URL)
+	cmd.Flags().String("api-key", "", "")
+	if err := cmd.Flags().Set("api-key", "flag-key"); err != nil {
+		t.Fatal(err)
+	}
+	err := runLogin(cmd, true, true)
+	if err == nil || !strings.Contains(err.Error(), "--api-key") {
+		t.Fatalf("error = %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("API called %d times", calls)
+	}
+}
+
 func TestLoginForceStoresAndVerifiesReplacementBeforeRevokingOld(t *testing.T) {
 	var sequence []string
 	var mu sync.Mutex
@@ -329,9 +350,120 @@ func TestLoginForceStoresAndVerifiesReplacementBeforeRevokingOld(t *testing.T) {
 		t.Fatalf("runLogin --force: %v", err)
 	}
 	got := strings.Join(sequence, ",")
-	want := "old-whoami,start,exchange,new-whoami,old-revoke"
+	want := "start,exchange,new-whoami,old-revoke"
 	if got != want {
 		t.Fatalf("sequence = %q, want %q", got, want)
+	}
+}
+
+func TestLoginForceContinuesWhenPreviousAPIIsUnreachable(t *testing.T) {
+	oldServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	oldURL := oldServer.URL
+	oldServer.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/cli/device":
+			writeJSONResponse(w, 200, deviceReceipt())
+		case "/auth/cli/device/exchange":
+			writeJSONResponse(w, 200, authorizedExchange())
+		case "/api/whoami":
+			if r.Header.Get("X-API-Key") != testKey {
+				t.Errorf("unexpected key at replacement API")
+			}
+			writeJSONResponse(w, 200, whoamiResponse())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cmd, _, stderr := authTestCommand(t, server.URL)
+	if err := config.Save(config.Config{
+		APIURL: oldURL,
+		APIKey: oldTestKey,
+		Login: &config.LoginMetadata{
+			CredentialID: "old-id",
+			KeyPrefix:    "osb_bbbb",
+			Name:         "oc CLI on old",
+			APIURL:       oldURL,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runLogin(cmd, true, true); err != nil {
+		t.Fatalf("runLogin --force: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "replacement login is active") ||
+		!strings.Contains(stderr.String(), "could not be revoked") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	got := config.LoadFile()
+	if got.APIKey != testKey || got.Login == nil || got.Login.APIURL != server.URL {
+		t.Fatalf("replacement config = %#v", got)
+	}
+}
+
+func TestLoginRefusesSavedLoginAtDifferentEffectiveAPIWithoutForce(t *testing.T) {
+	oldServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("old API should not be called")
+		http.Error(w, "unexpected", 500)
+	}))
+	defer oldServer.Close()
+	newServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("new API should not be called")
+		http.Error(w, "unexpected", 500)
+	}))
+	defer newServer.Close()
+	cmd, _, _ := authTestCommand(t, newServer.URL)
+	if err := config.Save(config.Config{
+		APIURL: oldServer.URL,
+		APIKey: oldTestKey,
+		Login: &config.LoginMetadata{
+			CredentialID: "old-id",
+			KeyPrefix:    "osb_bbbb",
+			Name:         "oc CLI on old",
+			APIURL:       oldServer.URL,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runLogin(cmd, false, true)
+	if err == nil ||
+		!strings.Contains(err.Error(), "saved login belongs to "+oldServer.URL) ||
+		!strings.Contains(err.Error(), "current API is "+newServer.URL) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLoginMakesEffectiveAPIURLPersistenceExplicit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/cli/device":
+			writeJSONResponse(w, 200, deviceReceipt())
+		case "/auth/cli/device/exchange":
+			writeJSONResponse(w, 200, authorizedExchange())
+		case "/api/whoami":
+			writeJSONResponse(w, 200, whoamiResponse())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cmd, _, stderr := authTestCommand(t, server.URL)
+	if err := config.Save(config.Config{APIURL: "https://old.example.test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runLogin(cmd, false, true); err != nil {
+		t.Fatalf("runLogin: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "successful login will replace the saved API URL https://old.example.test") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if got := config.LoadFile(); got.APIURL != server.URL || got.Login == nil || got.Login.APIURL != server.URL {
+		t.Fatalf("saved config = %#v", got)
 	}
 }
 
@@ -495,6 +627,30 @@ func TestLogoutLocalDoesNotCallRemote(t *testing.T) {
 	}
 }
 
+func TestLogoutLocalIgnoresEffectiveCredentialOverride(t *testing.T) {
+	cmd, _, _ := authTestCommand(t, "https://unused.example.test")
+	if err := config.Save(config.Config{
+		APIURL: "https://saved.example.test",
+		APIKey: testKey,
+		Login: &config.LoginMetadata{
+			CredentialID: "credential-1",
+			KeyPrefix:    "osb_aaaa",
+			Name:         "oc CLI on test",
+			APIURL:       "https://saved.example.test",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENCOMPUTER_API_KEY", "environment-key")
+
+	if err := runLogout(cmd, true); err != nil {
+		t.Fatalf("runLogout --local: %v", err)
+	}
+	if got := config.LoadFile(); got.APIKey != "" || got.Login != nil {
+		t.Fatalf("local login remains: %#v", got)
+	}
+}
+
 func TestLoginCancellationDoesNotSaveCredential(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/auth/cli/device" {
@@ -511,6 +667,42 @@ func TestLoginCancellationDoesNotSaveCredential(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".oc", "config.json")); !os.IsNotExist(err) {
 		t.Fatalf("config unexpectedly created: %v", err)
+	}
+}
+
+func TestLoginReportsDeniedAndExpiredWithoutSaving(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		code       string
+		wantAction string
+	}{
+		{name: "denied", status: http.StatusForbidden, code: "authorization_denied", wantAction: "approve the displayed code"},
+		{name: "expired", status: http.StatusGone, code: "authorization_expired", wantAction: "run `oc login` again"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/auth/cli/device":
+					writeJSONResponse(w, 200, deviceReceipt())
+				case "/auth/cli/device/exchange":
+					writeJSONResponse(w, tc.status, map[string]string{"error": tc.code})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			cmd, _, _ := authTestCommand(t, server.URL)
+			err := runLogin(cmd, false, true)
+			if err == nil ||
+				!strings.Contains(err.Error(), tc.code) ||
+				!strings.Contains(err.Error(), tc.wantAction) {
+				t.Fatalf("error = %v", err)
+			}
+			if got := config.LoadFile(); got.APIKey != "" || got.Login != nil {
+				t.Fatalf("terminal authorization mutated config: %#v", got)
+			}
+		})
 	}
 }
 
@@ -620,6 +812,23 @@ func TestAuthClientNeverFollowsRedirectsWithCredentials(t *testing.T) {
 	}
 	if destinationCalls != 0 {
 		t.Fatalf("redirect destination called %d times", destinationCalls)
+	}
+}
+
+func TestInsecureRemoteAPIURLWarningPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		url  string
+		want bool
+	}{
+		{url: "https://api.example.test", want: false},
+		{url: "http://localhost:8787", want: false},
+		{url: "http://127.0.0.1:8787", want: false},
+		{url: "http://[::1]:8787", want: false},
+		{url: "http://api.example.test", want: true},
+	} {
+		if got := insecureRemoteAPIURL(tc.url); got != tc.want {
+			t.Errorf("insecureRemoteAPIURL(%q) = %v, want %v", tc.url, got, tc.want)
+		}
 	}
 }
 

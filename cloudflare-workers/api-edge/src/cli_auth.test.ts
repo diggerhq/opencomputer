@@ -112,6 +112,12 @@ function testEnv(db = new FakeDB()): Env {
     OPENCOMPUTER_DB: db,
     SESSIONS_KV: {},
     CREDIT_ACCOUNT: {},
+    CLI_AUTH_START_RATE_LIMIT: {
+      limit: vi.fn(async () => ({ success: true })),
+    },
+    CLI_AUTH_EXCHANGE_RATE_LIMIT: {
+      limit: vi.fn(async () => ({ success: true })),
+    },
     SESSION_JWT_SECRET: "test-session-secret",
     WORKOS_API_KEY: "sk_test",
     WORKOS_CLIENT_ID: "client_test",
@@ -134,6 +140,7 @@ function request(path: string, init?: RequestInit): Request {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -232,6 +239,99 @@ describe("CLI device authorization edge contract", () => {
     expect(providerFetch).not.toHaveBeenCalled();
   });
 
+  it("rate-limits start and exchange independently before contacting WorkOS", async () => {
+    const providerFetch = vi.fn();
+    vi.stubGlobal("fetch", providerFetch);
+    const env = testEnv();
+    env.CLI_AUTH_START_RATE_LIMIT = {
+      limit: vi.fn(async ({ key }) => ({ success: key !== "203.0.113.10" })),
+    };
+
+    const start = await worker.fetch(request("/auth/cli/device", {
+      method: "POST",
+      headers: { "cf-connecting-ip": "203.0.113.10" },
+    }), env, ctx);
+    expect(start.status).toBe(429);
+    expect(start.headers.get("retry-after")).toBe("60");
+    expect(await start.json()).toEqual({ error: "rate_limited" });
+
+    env.CLI_AUTH_START_RATE_LIMIT = {
+      limit: vi.fn(async () => ({ success: true })),
+    };
+    env.CLI_AUTH_EXCHANGE_RATE_LIMIT = {
+      limit: vi.fn(async ({ key }) => ({ success: key !== "203.0.113.10" })),
+    };
+    const exchange = await worker.fetch(request("/auth/cli/device/exchange", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": "203.0.113.10",
+      },
+      body: JSON.stringify({ device_code: "opaque", credential_name: "oc CLI" }),
+    }), env, ctx);
+    expect(exchange.status).toBe(429);
+    expect(exchange.headers.get("retry-after")).toBe("60");
+    expect(await exchange.json()).toEqual({ error: "rate_limited" });
+    expect(providerFetch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the CLI auth limiter is unavailable", async () => {
+    const providerFetch = vi.fn();
+    vi.stubGlobal("fetch", providerFetch);
+    const env = testEnv();
+    env.CLI_AUTH_START_RATE_LIMIT = {
+      limit: vi.fn(async () => {
+        throw new Error("limiter unavailable");
+      }),
+    };
+    const resp = await worker.fetch(request("/auth/cli/device", {
+      method: "POST",
+    }), env, ctx);
+    expect(resp.status).toBe(503);
+    expect(await resp.json()).toEqual({ error: "cli_login_unavailable" });
+    expect(providerFetch).not.toHaveBeenCalled();
+  });
+
+  it("bounds a stalled WorkOS request and maps the timeout to 503", async () => {
+    vi.useFakeTimers();
+    const providerFetch = vi.fn(async (_url: string, init?: RequestInit) =>
+      await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      })
+    );
+    vi.stubGlobal("fetch", providerFetch);
+
+    const responsePromise = worker.fetch(request("/auth/cli/device", {
+      method: "POST",
+    }), testEnv(), ctx);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const resp = await responsePromise;
+    expect(resp.status).toBe(503);
+    expect(await resp.json()).toEqual({ error: "auth_provider_unavailable" });
+    expect(providerFetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  });
+
+  it("keeps the WorkOS deadline active while reading the provider body", async () => {
+    vi.useFakeTimers();
+    const providerFetch = vi.fn(async (_url: string, init?: RequestInit) =>
+      new Response(new ReadableStream({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () => controller.error(new Error("aborted")));
+        },
+      }))
+    );
+    vi.stubGlobal("fetch", providerFetch);
+
+    const responsePromise = worker.fetch(request("/auth/cli/device", {
+      method: "POST",
+    }), testEnv(), ctx);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const resp = await responsePromise;
+    expect(resp.status).toBe(503);
+    expect(await resp.json()).toEqual({ error: "auth_provider_unavailable" });
+    expect(providerFetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  });
+
   it.each([
     ["authorization_pending", 202, { status: "authorization_pending", retry_after: 5 }],
     ["slow_down", 202, { status: "authorization_pending", retry_after: 10 }],
@@ -307,6 +407,23 @@ describe("CLI device authorization edge contract", () => {
     expect(logs).not.toContain(body.credential.key);
     expect(logs).not.toContain(body.credential.key_prefix);
     expect(logs).not.toContain("igor@example.com");
+  });
+
+  it("owns the empty CLI credential-name fallback at the edge", async () => {
+    const db = new FakeDB();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      user: { id: "workos-user", email: "igor@example.com", first_name: "Igor" },
+    })));
+    const resp = await worker.fetch(request("/auth/cli/device/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: "opaque", credential_name: "" }),
+    }), testEnv(db), ctx);
+    expect(resp.status).toBe(200);
+    const body = await resp.json<{ credential: { name: string } }>();
+    expect(body.credential.name).toBe("oc CLI");
+    const insert = db.executed.find((entry) => entry.sql.includes("INSERT INTO api_keys"));
+    expect(insert?.args[5]).toBe("oc CLI");
   });
 
   it("selects a WorkOS-mapped membership before the personal fallback", async () => {
