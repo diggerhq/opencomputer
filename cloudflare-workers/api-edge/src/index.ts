@@ -1475,13 +1475,22 @@ function cliAuthRateLimitError(): Response {
   return response;
 }
 
+interface CLIAuthLogDetails {
+  user_id?: string;
+  org_id?: string;
+  credential_id?: string;
+  provider_status?: number;
+  provider_error_name?: string;
+  provider_error_message?: string;
+}
+
 function recordCLIAuth(
   event: "cli_auth_start" | "cli_auth_exchange" | "cli_auth_revoke",
   requestID: string,
   result: string,
   status: number,
   startedAt: number,
-  ids: { user_id?: string; org_id?: string; credential_id?: string } = {},
+  details: CLIAuthLogDetails = {},
 ): void {
   console.log(JSON.stringify({
     event,
@@ -1489,8 +1498,27 @@ function recordCLIAuth(
     result,
     http_status: status,
     duration_ms: Date.now() - startedAt,
-    ...ids,
+    ...details,
   }));
+}
+
+function cliAuthProviderExceptionDetails(
+  error: unknown,
+  redactions: string[],
+): Pick<CLIAuthLogDetails, "provider_error_name" | "provider_error_message"> {
+  const provider_error_name = error instanceof Error ? error.name : "NonError";
+  let provider_error_message =
+    error instanceof Error ? error.message : "provider request threw a non-Error value";
+  for (const secret of redactions) {
+    if (!secret) continue;
+    provider_error_message = provider_error_message
+      .replaceAll(secret, "[redacted]")
+      .replaceAll(encodeURIComponent(secret), "[redacted]");
+  }
+  provider_error_message = provider_error_message
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .slice(0, 256);
+  return { provider_error_name, provider_error_message };
 }
 
 function isHTTPSURL(value: unknown): value is string {
@@ -1643,8 +1671,12 @@ function urlContainsOpaqueCode(rawURL: string, code: string): boolean {
 async function authCLIStart(req: Request, env: Env): Promise<Response> {
   const requestID = crypto.randomUUID();
   const startedAt = Date.now();
-  const finish = (response: Response, result: string): Response => {
-    recordCLIAuth("cli_auth_start", requestID, result, response.status, startedAt);
+  const finish = (
+    response: Response,
+    result: string,
+    details: CLIAuthLogDetails = {},
+  ): Response => {
+    recordCLIAuth("cli_auth_start", requestID, result, response.status, startedAt, details);
     return response;
   };
 
@@ -1674,14 +1706,25 @@ async function authCLIStart(req: Request, env: Env): Promise<Response> {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ client_id: env.WORKOS_CLIENT_ID }).toString(),
-        redirect: "error",
+        // Workers rejects RequestRedirect "error" at runtime. "manual" keeps
+        // redirects fail-closed: the 3xx response is returned and rejected
+        // below, without forwarding the form body to another origin.
+        redirect: "manual",
       },
     ));
-  } catch {
-    return finish(cliAuthError("auth_provider_unavailable", 503), "provider_error");
+  } catch (error) {
+    return finish(
+      cliAuthError("auth_provider_unavailable", 503),
+      "provider_error",
+      cliAuthProviderExceptionDetails(error, [env.WORKOS_CLIENT_ID]),
+    );
   }
   if (!providerResp.ok) {
-    return finish(cliAuthError("auth_provider_unavailable", 503), "provider_error");
+    return finish(
+      cliAuthError("auth_provider_unavailable", 503),
+      "provider_error",
+      { provider_status: providerResp.status },
+    );
   }
 
   if (
@@ -1699,7 +1742,11 @@ async function authCLIStart(req: Request, env: Env): Promise<Response> {
     urlContainsOpaqueCode(bodyJSON.verification_uri, bodyJSON.device_code) ||
     urlContainsOpaqueCode(bodyJSON.verification_uri_complete, bodyJSON.device_code)
   ) {
-    return finish(cliAuthError("auth_provider_invalid_response", 502), "provider_error");
+    return finish(
+      cliAuthError("auth_provider_invalid_response", 502),
+      "provider_error",
+      { provider_status: providerResp.status, provider_error_name: "InvalidResponse" },
+    );
   }
 
   return finish(cliAuthJSON({
@@ -1722,9 +1769,9 @@ async function authCLIExchange(req: Request, env: Env): Promise<Response> {
   const finish = (
     response: Response,
     result: string,
-    ids: { user_id?: string; org_id?: string; credential_id?: string } = {},
+    details: CLIAuthLogDetails = {},
   ): Response => {
-    recordCLIAuth("cli_auth_exchange", requestID, result, response.status, startedAt, ids);
+    recordCLIAuth("cli_auth_exchange", requestID, result, response.status, startedAt, details);
     return response;
   };
 
@@ -1771,11 +1818,17 @@ async function authCLIExchange(req: Request, env: Env): Promise<Response> {
           device_code: body.device_code,
           client_id: env.WORKOS_CLIENT_ID,
         }).toString(),
-        redirect: "error",
+        // See the start endpoint: manual redirects prevent the device code
+        // from being forwarded and are rejected by the status handling below.
+        redirect: "manual",
       },
     ));
-  } catch {
-    return finish(cliAuthError("auth_provider_unavailable", 503), "provider_error");
+  } catch (error) {
+    return finish(
+      cliAuthError("auth_provider_unavailable", 503),
+      "provider_error",
+      cliAuthProviderExceptionDetails(error, [env.WORKOS_CLIENT_ID, body.device_code]),
+    );
   }
 
   if (!providerResp.ok) {
@@ -1799,9 +1852,17 @@ async function authCLIExchange(req: Request, env: Env): Promise<Response> {
       return finish(cliAuthError("authorization_expired", 410), "expired");
     }
     if (providerResp.status >= 500) {
-      return finish(cliAuthError("auth_provider_unavailable", 503), "provider_error");
+      return finish(
+        cliAuthError("auth_provider_unavailable", 503),
+        "provider_error",
+        { provider_status: providerResp.status },
+      );
     }
-    return finish(cliAuthError("auth_provider_invalid_response", 502), "provider_error");
+    return finish(
+      cliAuthError("auth_provider_invalid_response", 502),
+      "provider_error",
+      { provider_status: providerResp.status },
+    );
   }
 
   const profile = providerBody?.user;
@@ -1812,7 +1873,11 @@ async function authCLIExchange(req: Request, env: Env): Promise<Response> {
     typeof (profile as Record<string, unknown>).id !== "string" ||
     typeof (profile as Record<string, unknown>).email !== "string"
   ) {
-    return finish(cliAuthError("auth_provider_invalid_response", 502), "provider_error");
+    return finish(
+      cliAuthError("auth_provider_invalid_response", 502),
+      "provider_error",
+      { provider_status: providerResp.status, provider_error_name: "InvalidResponse" },
+    );
   }
   const typedProfile = profile as unknown as WorkOSProfile;
   const workosOrgID =

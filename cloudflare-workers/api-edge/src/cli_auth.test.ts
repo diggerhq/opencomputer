@@ -176,7 +176,24 @@ describe("CLI device authorization edge contract", () => {
     const [, init] = providerFetch.mock.calls[0];
     expect(init?.headers).toEqual({ "content-type": "application/x-www-form-urlencoded" });
     expect(init?.body).toBe("client_id=client_test");
-    expect(init?.redirect).toBe("error");
+    expect(init?.redirect).toBe("manual");
+  });
+
+  it("rejects provider redirects without forwarding them to the caller", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, {
+      status: 302,
+      headers: { location: "https://unexpected.example/device" },
+    })));
+
+    const resp = await worker.fetch(request("/auth/cli/device", {
+      method: "POST",
+    }), testEnv(), ctx);
+
+    expect(resp.status).toBe(503);
+    expect(resp.headers.has("location")).toBe(false);
+    expect(await resp.json()).toEqual({ error: "auth_provider_unavailable" });
+    expect(logSpy.mock.calls.flat().join(" ")).toContain('"provider_status":302');
   });
 
   it("fails closed without exposing a malformed provider response", async () => {
@@ -332,6 +349,26 @@ describe("CLI device authorization edge contract", () => {
     expect(providerFetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
   });
 
+  it("logs actionable provider exceptions without logging request credentials", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new TypeError("failed for client_test and opaque");
+    }));
+
+    const resp = await worker.fetch(request("/auth/cli/device/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: "opaque", credential_name: "oc CLI" }),
+    }), testEnv(), ctx);
+
+    expect(resp.status).toBe(503);
+    const logs = logSpy.mock.calls.flat().join(" ");
+    expect(logs).toContain('"provider_error_name":"TypeError"');
+    expect(logs).toContain('"provider_error_message":"failed for [redacted] and [redacted]"');
+    expect(logs).not.toContain("client_test");
+    expect(logs).not.toContain("opaque");
+  });
+
   it.each([
     ["authorization_pending", 202, { status: "authorization_pending", retry_after: 5 }],
     ["slow_down", 202, { status: "authorization_pending", retry_after: 10 }],
@@ -400,7 +437,7 @@ describe("CLI device authorization edge contract", () => {
     expect(providerForm.get("device_code")).toBe("opaque");
     expect(providerForm.get("client_id")).toBe("client_test");
     expect(providerForm.has("client_secret")).toBe(false);
-    expect(providerInit?.redirect).toBe("error");
+    expect(providerInit?.redirect).toBe("manual");
     const logs = logSpy.mock.calls.flat().join(" ");
     expect(logs).not.toContain("workos-access-secret");
     expect(logs).not.toContain("workos-refresh-secret");
