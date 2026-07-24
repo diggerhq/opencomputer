@@ -36,7 +36,7 @@ The agent itself holds only **identity + bindings** (`name`, `runtime`, `credent
 
 ## Deploy
 
-`POST /agents/:id/deployments` is the common post-creation command. `input.type: "inline"` sends behavior directly (API / CLI / dashboard); `input.type: "github"` deploys an already-linked repo — see [Deploy from a repo](#deploy-from-a-repo). Creating a new Flue agent from GitHub uses the atomic [`POST /agents/import`](#import-a-flue-repository) command instead.
+`POST /agents/:id/deployments` is the common post-creation command. `input.type: "inline"` sends behavior directly (API / CLI / dashboard); `input.type: "github"` deploys an already-linked repo — see [Deploy from a repo](#deploy-from-a-repo). The CLI uses a bounded `source` upload for a local prompt-defined Flue root. Creating a new Flue agent from GitHub uses the atomic [`POST /agents/import`](#import-a-flue-repository) command instead.
 
 An inline payload is the **complete** behavior — omitted fields aren't inherited (`prompt` is required; omitted `skills` means *no skills*).
 
@@ -177,13 +177,25 @@ Same as a repo push — handy for CI that isn't GitHub, or trying a change befor
 
 ### Flue framework agents
 
-A [Flue](/agent-sessions/flue) agent (`[runtime] family = "flue"` in `agent.toml`) carries its instructions, tools, and packaged skills in code, so `oc agent deploy` builds and ships the Cloudflare app instead of reading `prompt.md` and the top-level `skills/` directory:
+A prompt-defined [Flue](/agent-sessions/flue) agent contains `agent.toml`,
+`prompt.md`, and optional `skills/`. The CLI uploads those bounded files and
+waits while OpenComputer synthesizes and builds the app in the isolated managed
+builder:
+
+```bash CLI
+oc agent deploy   # upload source, managed build, verify live Worker
+```
+
+A complete Flue app instead carries its behavior in code. The CLI runs its
+locally installed framework build and uploads the generated modules:
 
 ```bash CLI
 oc agent deploy   # flue build --target cloudflare, upload, verify live Worker
 ```
 
-The CLI creates the agent from `agent.toml` when needed, runs the locally installed Flue build, uploads the generated JavaScript modules, and waits for the exact live Worker to become stable. See [Run Flue agents](/agent-sessions/flue) for the required app wiring and current deployment constraints.
+Both paths create the agent from `agent.toml` when needed and wait for the exact
+live Worker to become stable. See [Run Flue agents](/agent-sessions/flue) for
+the two source shapes and current deployment constraints.
 
 ## Roll back and promote
 

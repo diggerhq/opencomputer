@@ -65,6 +65,22 @@ migrations_dir = "migrations"
 binding = "SESSIONS_KV"
 id = "694f22abd551461da4ad99839f161b2f"
 
+[[ratelimits]]
+name = "CLI_AUTH_START_RATE_LIMIT"
+namespace_id = "2026072421"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+[[ratelimits]]
+name = "CLI_AUTH_EXCHANGE_RATE_LIMIT"
+namespace_id = "2026072422"
+
+  [ratelimits.simple]
+  limit = 180
+  period = 60
+
 [[durable_objects.bindings]]
 name = "CREDIT_ACCOUNT"
 class_name = "CreditAccount"

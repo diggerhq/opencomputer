@@ -5,7 +5,7 @@ set -euo pipefail
 # downloaded input immutable and verified: the resulting checkpoint is trusted
 # to execute arbitrary repository lifecycle code without receiving credentials.
 
-SNAPSHOT_NAME="flue-build-node22-19-0-oc-c39b315-r3"
+SNAPSHOT_NAME="flue-build-node22-19-0-oc-505b49b-r4"
 BASE_IMAGE="base"
 OS_ID="ubuntu"
 OS_VERSION_ID="22.04"
@@ -20,10 +20,10 @@ GO_VERSION="1.25.0"
 GO_ARCHIVE_SHA256="2852af0cb20a13139b3448992e69b868e50ed0f8a1e5940ee1de9e19a123b613"
 GO_URL="https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
 
-OC_SOURCE_COMMIT="c39b31560cb78e0d5708a9eda4cfb30ec372eed9"
-OC_SOURCE_ARCHIVE_SHA256="5aaa929e33c54474bfca774c78d6f422168cb0bf24f4ea445b3b0c1bd2a2840e"
+OC_SOURCE_COMMIT="505b49b384a24de023726884512686a1448d4ead"
+OC_SOURCE_ARCHIVE_SHA256="525b70f931ab2a71138350431bfcf23a820831be94f14efbd3e5a186942f6356"
 OC_SOURCE_URL="https://github.com/diggerhq/opencomputer/archive/${OC_SOURCE_COMMIT}.tar.gz"
-OC_BINARY_SHA256="7f7286095aefe78c3027efb79465442070370c6dcf3cda67c9b1315949a42bc1"
+OC_BINARY_SHA256="aa7fc47efc90ba8048cdca694e51a38de55d78c32c9da8a7e5e54ab4fa46c4f9"
 OC_VERSION="oc@${OC_SOURCE_COMMIT}"
 
 NODE_ROOT="/opt/opencomputer/node-v${NODE_VERSION}"

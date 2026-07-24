@@ -64,11 +64,19 @@ export function repositoryReviewPresentation(
 ): RepositoryReviewPresentation {
   switch (inspection.interpretation.disposition) {
     case 'exact':
-      return {
-        heading: 'Flue agent detected',
-        explanation: 'Review the detected entrypoint, model, and agent name.',
-        primaryAction: 'deploy',
-      }
+      return inspection.interpretation.source_profile === 'flue-prompt-v1'
+        ? {
+            heading: 'Prompt-defined Flue agent',
+            explanation:
+              'OpenComputer will turn this prompt and its skills into a Flue app at build time.',
+            primaryAction: 'deploy',
+          }
+        : {
+            heading: 'Flue app detected',
+            explanation:
+              'Review the detected entrypoint, model, and agent name.',
+            primaryAction: 'deploy',
+          }
     case 'invalid':
       return {
         heading: 'This Flue agent needs a fix',
@@ -87,7 +95,7 @@ export function repositoryReviewPresentation(
         : {
             heading: "We couldn't find an agent definition in this folder",
             explanation:
-              'OpenComputer looked for an agent manifest and strong Flue markers. Prompts or skills alone are not converted automatically.',
+              'Add an agent.toml next to prompt.md, choose another folder, or start from the Flue app template.',
             primaryAction: 'choose_folder',
           }
   }

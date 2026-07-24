@@ -45,6 +45,22 @@ database_name = "opencomputer-igor-dev"
 database_id = "d5bbb12a-0491-4a95-9d7d-32ed8c3ce15d"
 migrations_dir = "migrations"
 
+[[ratelimits]]
+name = "CLI_AUTH_START_RATE_LIMIT"
+namespace_id = "2026072411"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+[[ratelimits]]
+name = "CLI_AUTH_EXCHANGE_RATE_LIMIT"
+namespace_id = "2026072412"
+
+  [ratelimits.simple]
+  limit = 180
+  period = 60
+
 # CreditAccount DO is self-hosted by this worker (script_name defaults to self).
 [[durable_objects.bindings]]
 name = "CREDIT_ACCOUNT"

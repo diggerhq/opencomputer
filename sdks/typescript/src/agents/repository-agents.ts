@@ -6,7 +6,7 @@ import type { Http } from "./http.js";
 import type { Agent, CredentialRef } from "./types.js";
 import type { Deployment, DeploymentSource } from "./deployments.js";
 
-export type SourceProfileId = "flue-app-v1";
+export type SourceProfileId = "flue-app-v1" | "flue-prompt-v1";
 
 export interface RepositoryAgentSource {
   type: "github";
@@ -42,8 +42,8 @@ export interface RepositoryCandidateRoot {
     | "flue.config.cjs";
 }
 
-export interface FlueSourceProfile {
-  sourceProfile: "flue-app-v1";
+interface FlueSourceProfileBase {
+  sourceProfile: SourceProfileId;
   sourceProfileVersion: 1;
   manifest: {
     schemaVersion: 1;
@@ -59,19 +59,30 @@ export interface FlueSourceProfile {
     flueCli: string;
   };
   lockfile: { version: number };
-  builder: { node: string };
+  builder: { node: string; synthesisTemplate?: string };
   source: { files: number; bytes: number };
   variableNames: string[];
   warnings: RepositoryReviewIssue[];
 }
 
+export type FlueSourceProfile =
+  | (FlueSourceProfileBase & {
+      sourceProfile: "flue-app-v1";
+    })
+  | (FlueSourceProfileBase & {
+      sourceProfile: "flue-prompt-v1";
+      prompt: { bytes: number };
+      skills: { count: number; bytes: number; names: string[] };
+      builder: { node: string; synthesisTemplate: string };
+    });
+
 export type RepositorySourceInterpretation =
   | {
       disposition: "exact";
-      sourceProfile: "flue-app-v1";
+      sourceProfile: SourceProfileId;
       sourceProfileVersion: 1;
       summary: string;
-      reasonCode: "flue_detected";
+      reasonCode: "flue_detected" | "flue_prompt_detected";
       assumptions: string[];
       agent: { runtime: "flue"; model: string };
     }

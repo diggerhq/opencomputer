@@ -26,29 +26,28 @@ curl -fsSL https://raw.githubusercontent.com/diggerhq/opencomputer/main/scripts/
 
 This installs `oc` to `~/.local/bin/oc`. If `~/.local/bin` is not on the user's PATH, tell them to add `export PATH="$HOME/.local/bin:$PATH"` to their shell rc file, and use the full path `~/.local/bin/oc` for the rest of this session.
 
-### 2. Is the user logged in (API key configured)?
+### 2. Is the user logged in?
 
 ```bash
-oc config show
+oc whoami
 ```
 
-If `API Key` is shown (even masked) → logged in, you're done.
+If it succeeds → logged in, you're done.
 
-If no API key is set, OR a sandbox command fails with an auth error (`401`, "unauthorized", "missing API key"):
+If it fails because no credential is configured, OR a sandbox command fails
+with an auth error (`401`, "unauthorized", "missing API key"):
 
-1. Open the OpenComputer dashboard in the user's browser so they can create a key:
-   - macOS: `open https://app.opencomputer.dev`
-   - Linux: `xdg-open https://app.opencomputer.dev`
-2. Tell the user (in chat) to:
-   - Sign in / sign up at the page that just opened
-   - Create an API key
-   - Run this command in their terminal once they have the key:
-     ```bash
-     oc config set api-key YOUR_API_KEY
-     ```
-3. Wait for the user to confirm they've set the key before proceeding.
+1. Run:
+   ```bash
+   oc login
+   ```
+2. Relay the complete browser URL and short confirmation code printed by the
+   command to the user.
+3. Leave the command running while the user approves it in their browser. It
+   resumes automatically after approval.
 
-Do **not** prompt them for the key in the chat — they should paste it into their own terminal so it never leaves their machine.
+Do **not** ask for an API key in chat. For CI or service automation, the user
+may instead configure `OPENCOMPUTER_API_KEY` themselves.
 
 ## CLI Reference
 

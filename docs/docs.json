@@ -191,6 +191,7 @@
           "reference/cli/patch",
           "reference/cli/preview",
           "reference/cli/agent",
+          "reference/cli/auth",
           "reference/cli/config"
         ]
       },

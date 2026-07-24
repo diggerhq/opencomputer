@@ -788,6 +788,16 @@ function GithubImport({
                   {inspection.profile.manifest.model}
                 </span>
               </PanelDescription>
+              {inspection.profile.source_profile === 'flue-prompt-v1' ? (
+                <p className="text-muted-foreground mt-2 text-xs">
+                  prompt.md
+                  {' · '}
+                  {inspection.profile.skills.count}{' '}
+                  {inspection.profile.skills.count === 1 ? 'skill' : 'skills'}
+                  {' · '}
+                  built as a Flue app on OpenComputer
+                </p>
+              ) : null}
             </div>
           </PanelHeader>
           <PanelContent className="space-y-4">
