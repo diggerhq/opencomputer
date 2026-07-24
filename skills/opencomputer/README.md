@@ -43,13 +43,15 @@ curl -fsSL https://github.com/diggerhq/opencomputer/releases/latest/download/oc-
 chmod +x /usr/local/bin/oc
 ```
 
-Then configure your API key:
+Then sign in:
 
 ```bash
-oc config set api-key YOUR_API_KEY
+oc login
 ```
 
-Get your API key at [app.opencomputer.dev](https://app.opencomputer.dev).
+The command opens a hosted confirmation page and saves the CLI credential
+without printing it. CI and services can continue to use
+`OPENCOMPUTER_API_KEY`.
 
 ## Example usage
 

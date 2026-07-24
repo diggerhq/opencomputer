@@ -15,6 +15,26 @@ These flags apply to all commands.
 
 ---
 
+## `oc login`, `oc whoami`, and `oc logout`
+
+```bash
+oc login
+oc whoami
+oc logout
+```
+
+`oc login` uses browser-assisted device confirmation and saves a private local
+CLI credential without printing it. Use `--no-browser` over SSH, and `--force`
+to replace a saved credential. `oc whoami` prints the effective user and
+workspace. `oc logout` revokes a CLI-managed key before clearing it locally;
+`--local` skips remote revocation explicitly.
+
+An active `--api-key` or `OPENCOMPUTER_API_KEY` override takes precedence and
+must be unset before login or logout. CI, servers, and SDK applications should
+continue to use explicitly managed org keys.
+
+---
+
 ## `oc sandbox`
 
 Manage sandbox lifecycle.
@@ -238,6 +258,7 @@ Output columns: `PORT`, `HOSTNAME`, `SSL`, `CREATED`
 ## `oc config`
 
 Manage CLI configuration. Settings are persisted to a local config file.
+For a local interactive setup, prefer `oc login`.
 
 ### `oc config set <key> <value>`
 
@@ -247,6 +268,9 @@ Supported keys: `api-key`, `api-url`.
 oc config set api-key sk-1234...
 oc config set api-url https://app.opencomputer.dev
 ```
+
+Setting `api-key` clears CLI-login management metadata; `oc logout` will not
+remotely revoke a manually supplied key.
 
 ### `oc config show`
 

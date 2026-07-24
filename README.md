@@ -29,9 +29,13 @@ Download the latest `oc` binary from [GitHub Releases](https://github.com/digger
 curl -fsSL https://github.com/diggerhq/opencomputer/releases/latest/download/oc-darwin-arm64 -o /usr/local/bin/oc
 chmod +x /usr/local/bin/oc
 
-# Configure
-oc config set api-key YOUR_API_KEY
+# Sign in
+oc login
+oc whoami
 ```
+
+For CI, servers, and SDK applications, keep using an explicit org API key in
+`OPENCOMPUTER_API_KEY`; `oc login` is for the local CLI.
 
 ### SDK
 

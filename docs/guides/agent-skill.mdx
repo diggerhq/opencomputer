@@ -19,8 +19,12 @@ The `oc` CLI must be installed and configured:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/diggerhq/opencomputer/main/scripts/install.sh | bash
-oc config set api-key YOUR_API_KEY
+oc login
 ```
+
+If the command prints a browser URL or confirmation code, relay it to the user
+and wait for them to approve it. The CLI resumes without asking anyone to paste
+an API key into chat.
 
 ## Usage
 

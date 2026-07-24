@@ -31,21 +31,43 @@ chmod +x /usr/local/bin/oc
 
 </CodeGroup>
 
-## Configuration
+## Sign in
 
 ```bash
-oc config set api-key your-api-key
-oc config show
+oc login
+oc whoami
 ```
 
-### Resolution Order
+`oc login` prints a short confirmation code and opens the hosted sign-in page.
+Use `oc login --no-browser` over SSH or when a coding agent is running the
+command for you. The CLI stores the resulting credential in
+`~/.oc/config.json` with private file permissions; it never prints the key.
+
+```bash
+oc logout          # revoke the CLI-created key, then clear it locally
+oc logout --local  # clear local login state without claiming remote revocation
+```
+
+`oc login` authenticates the local CLI. CI, servers, and SDK applications
+should continue to receive an explicit org key through their secret manager and
+`OPENCOMPUTER_API_KEY`.
+
+### Credential resolution
 
 | Priority | Source | Example |
 | --- | --- | --- |
 | 1 (highest) | CLI flags | `--api-key=xxx` |
 | 2 | Environment variables | `OPENCOMPUTER_API_KEY` |
-| 3 | Config file | `~/.oc/config.json` |
+| 3 | Config file | `oc login` or `oc config set api-key …` |
 | 4 (lowest) | Defaults | `https://app.opencomputer.dev` |
+
+An active `--api-key` or `OPENCOMPUTER_API_KEY` override must be removed before
+`oc login` or `oc logout`. Manually setting an API key remains supported:
+
+```bash
+oc config set api-key "$OPENCOMPUTER_API_KEY"
+oc config show
+```
 
 ## Global Flags
 
@@ -133,6 +155,7 @@ oc exec $ID2 --wait -- ./test-b.sh
 | [`oc patch`](/cli/patch) | Checkpoint-attached scripts |
 | [`oc preview`](/cli/preview) | Expose ports to the internet |
 | [`oc agent`](/reference/cli/agent) | Invoke durable agents and manage Hook URLs |
+| [`oc login`](/reference/cli/auth) | Sign in, inspect identity, and log out |
 | [`oc config`](/reference/cli#oc-config) | Configure API key and API URL |
 
 <Tip>
