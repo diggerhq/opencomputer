@@ -1551,8 +1551,40 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		m.cleanupVM(netCfg, sandboxDir)
 		return nil, err
 	}
-	vm.agent = agentClient
 	log.Printf("qemu: golden-create %s: agent connected (%dms)", id, time.Since(t0).Milliseconds())
+
+	// A connected virtio-serial socket is not proof that the restored guest agent can
+	// serve RPCs. A stale listener can accept the connection while every RPC hangs; if
+	// we continue, network setup and log configuration can hold the public create
+	// request until the edge returns 524 and leave an unusable VM marked running.
+	// Probe once, redial once for the known post-loadvm stale-connection case, then
+	// reject this golden restore so Create can fall back to a clean cold boot.
+	pingOnce := func() error {
+		pingCtx, pingCancel := context.WithTimeout(ctx, 3*time.Second)
+		defer pingCancel()
+		_, pingErr := agentClient.Ping(pingCtx)
+		return pingErr
+	}
+	pingErr := pingOnce()
+	if pingErr != nil && IsTransportError(pingErr) && ctx.Err() == nil {
+		log.Printf("qemu: golden-create %s: readiness ping failed (%v), redialing once", id, pingErr)
+		if redialErr := agentClient.Redial(); redialErr != nil {
+			pingErr = fmt.Errorf("redial after readiness ping: %w", redialErr)
+		} else {
+			pingErr = pingOnce()
+		}
+	}
+	if pingErr != nil {
+		log.Printf("qemu: golden-create %s: ABORT agent RPC unavailable, falling back to cold boot: %v", id, pingErr)
+		_ = agentClient.Close()
+		qmpClient.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("golden agent readiness: %w", pingErr)
+	}
+	vm.agent = agentClient
+	log.Printf("qemu: golden-create %s: agent ready (%dms)", id, time.Since(t0).Milliseconds())
 
 	// The golden RAM is captured with the rootfs fsfrozen for a consistent
 	// snapshot (see PrepareGoldenSnapshot). Thaw it now — before block_resize,
@@ -1628,8 +1660,15 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 
 	// Patch network inside the guest — the snapshot had the golden VM's IP
 	if err := patchGuestNetwork(context.Background(), agentClient, netCfg); err != nil {
-		log.Printf("qemu: golden-create %s: network patch failed: %v", id, err)
+		log.Printf("qemu: golden-create %s: ABORT network patch failed, falling back to cold boot: %v", id, err)
+		_ = agentClient.Close()
+		qmpClient.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		m.cleanupVM(netCfg, sandboxDir)
+		return nil, fmt.Errorf("golden network patch: %w", err)
 	}
+	log.Printf("qemu: golden-create %s: network patched (%dms)", id, time.Since(t0).Milliseconds())
 
 	// Sync guest clock — golden snapshot has stale time
 	if err := syncGuestClock(context.Background(), agentClient); err != nil {
@@ -1676,8 +1715,6 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 			log.Printf("qemu: golden-create %s: mount /home/sandbox failed: %v", id, mountErr)
 		}
 	}
-	log.Printf("qemu: golden-create %s: network patched (%dms)", id, time.Since(t0).Milliseconds())
-
 	envsToInject := m.sealSandboxEnvs(context.Background(), id, netCfg, agentClient, cfg)
 	if len(envsToInject) > 0 {
 		envCtx, envCancel := context.WithTimeout(context.Background(), 5*time.Second)
