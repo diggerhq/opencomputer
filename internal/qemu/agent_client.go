@@ -224,6 +224,13 @@ func (c *AgentClient) PrepareHibernate(ctx context.Context, req *pb.PrepareHiber
 	return c.client.PrepareHibernate(ctx, req)
 }
 
+// Thaw unfreezes guest filesystems via the agent's native FITHAW ioctl (no exec
+// inside the guest). Empty req ⇒ the agent's default mount set. Old agents that
+// predate this RPC return codes.Unimplemented; callers fall back to the exec path.
+func (c *AgentClient) Thaw(ctx context.Context, req *pb.ThawRequest) (*pb.ThawResponse, error) {
+	return c.client.Thaw(ctx, req)
+}
+
 // ReadFile reads a file from the VM.
 func (c *AgentClient) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	resp, err := c.client.ReadFile(ctx, &pb.ReadFileRequest{Path: path})

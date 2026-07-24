@@ -219,8 +219,7 @@ type virtioSerialConn struct {
 
 // instrumentVirtioSerial controls per-Read logging on the conn. Set true via
 // OSB_AGENT_TRACE_VIRTIO=1 env var to debug post-loadvm protocol confusion.
-// HARDCODED TO TRUE FOR INVESTIGATION BUILD — revert before merging.
-var instrumentVirtioSerial = true || os.Getenv("OSB_AGENT_TRACE_VIRTIO") == "1"
+var instrumentVirtioSerial = os.Getenv("OSB_AGENT_TRACE_VIRTIO") == "1"
 
 func (c *virtioSerialConn) Read(b []byte) (int, error) {
 	n, err := c.f.Read(b)
