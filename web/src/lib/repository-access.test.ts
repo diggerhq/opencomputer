@@ -3,6 +3,7 @@ import {
   isNarrowingRepositoryAccess,
   repositoryAccessCandidates,
   repositoryAccessQueryKey,
+  showRepositoryAccessDuringSetup,
   toggleSelectedRepository,
 } from './repository-access'
 
@@ -12,6 +13,14 @@ describe('repository access helpers', () => {
       'agent-repository-access',
       'agt_1',
     ])
+  })
+
+  it('shows built-in repository access before Slack while preserving Flue setup order', () => {
+    expect(showRepositoryAccessDuringSetup('claude', 'disconnected')).toBe(true)
+    expect(showRepositoryAccessDuringSetup('codex', undefined)).toBe(true)
+    expect(showRepositoryAccessDuringSetup('pi', null)).toBe(true)
+    expect(showRepositoryAccessDuringSetup('flue', 'disconnected')).toBe(false)
+    expect(showRepositoryAccessDuringSetup('flue', 'active')).toBe(true)
   })
 
   it('detects narrowing without treating expansion as narrowing', () => {

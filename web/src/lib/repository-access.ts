@@ -8,6 +8,16 @@ import type {
 export const repositoryAccessQueryKey = (agentId: string) =>
   ['agent-repository-access', agentId] as const
 
+/** Built-in runtimes can configure repository scope before Slack. Flue keeps
+ * its established guided order, which reveals repository access after managed
+ * Slack is active. */
+export function showRepositoryAccessDuringSetup(
+  runtime: string | null | undefined,
+  managedSlackStatus: string | null | undefined,
+): boolean {
+  return runtime !== 'flue' || managedSlackStatus === 'active'
+}
+
 export function selectedRepositoryIds(
   policy: RepositoryAccessPolicy,
 ): string[] {

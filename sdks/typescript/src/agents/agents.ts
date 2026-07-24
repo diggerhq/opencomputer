@@ -84,7 +84,7 @@ export interface ManagedSlackWorkspaceConnection extends ManagedSlackConnection 
   agent: { id: string; name: string };
 }
 
-/** Which repositories a Flue agent may use as working sources. */
+/** Which repositories an agent may use as working sources. */
 export type RepositoryAccessPolicy =
   | { mode: "all" }
   | { mode: "selected"; repositoryIds: string[] };

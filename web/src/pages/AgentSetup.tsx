@@ -63,6 +63,7 @@ import {
 } from '@/lib/managed-slack-notice'
 import { useManagedSlackConnections } from '@/lib/managed-slack-connections'
 import { latestManagedSlackSession } from '@/lib/managed-slack-session'
+import { showRepositoryAccessDuringSetup } from '@/lib/repository-access'
 import {
   bodyText,
   isTerminalSessionStatus,
@@ -652,10 +653,10 @@ export default function AgentSetup() {
         ) : null}
       </Panel>
 
-      {agent.runtime === 'flue' && managedSlackStatus === 'active' ? (
+      {showRepositoryAccessDuringSetup(agent.runtime, managedSlackStatus) ? (
         <div className="space-y-3">
           <RepositoryAccessPanel agentId={agentId} context="setup" />
-          {stage === 'ready' ? (
+          {stage === 'ready' && managedSlackStatus === 'active' ? (
             <RepositoryTaskSuggestion agentId={agentId} />
           ) : null}
         </div>
