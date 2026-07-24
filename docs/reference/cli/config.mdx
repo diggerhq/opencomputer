@@ -5,6 +5,9 @@ description: "CLI configuration"
 
 Manage CLI configuration. Settings are persisted to a local config file.
 
+For an interactive local setup, prefer [`oc login`](/reference/cli/auth). Use
+`oc config set api-key` for a separately managed key.
+
 ## `oc config set <key> <value>`
 
 Supported keys: `api-key`, `api-url`.
@@ -13,6 +16,9 @@ Supported keys: `api-key`, `api-url`.
 oc config set api-key sk-1234...
 oc config set api-url https://app.opencomputer.dev
 ```
+
+Setting `api-key` explicitly clears CLI-login management metadata, so a later
+`oc logout` cannot revoke a manually supplied key.
 
 ---
 

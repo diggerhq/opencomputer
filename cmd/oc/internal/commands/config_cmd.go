@@ -21,11 +21,12 @@ var configSetCmd = &cobra.Command{
   api-url    API base URL`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg := config.Load(nil)
+		cfg := config.LoadFile()
 
 		switch args[0] {
 		case "api-key":
 			cfg.APIKey = args[1]
+			cfg.Login = nil
 		case "api-url":
 			cfg.APIURL = args[1]
 		default:

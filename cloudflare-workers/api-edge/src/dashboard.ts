@@ -31,6 +31,7 @@ import {
   acknowledgeAgentSecurityNotification,
   listAgentSecurityNotifications,
 } from "./agent_security_notifications";
+import { createAPIKey } from "./api_keys";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -184,11 +185,6 @@ function json(body: unknown, status = 200, extraHeaders: Record<string, string> 
     status,
     headers: { "content-type": "application/json", ...extraHeaders },
   });
-}
-
-async function sha256Hex(s: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // D1 stores timestamps as unix seconds (INTEGER). The cell's Go handlers
@@ -564,22 +560,11 @@ async function handleListAPIKeys(_req: Request, env: DashboardEnv, caller: Calle
 async function handleCreateAPIKey(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
   const body = await req.json<{ name?: string }>().catch(() => ({} as { name?: string }));
   const name = (body.name ?? "Untitled").trim() || "Untitled";
-  // Same format as the cell: "osb_" + 64 hex chars (32 random bytes).
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  const plainKey = "osb_" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-  const hash = await sha256Hex(plainKey);
-  const prefix = plainKey.slice(0, 8);
-  const id = crypto.randomUUID();
-  const now = Math.floor(Date.now() / 1000);
-  await env.OPENCOMPUTER_DB.prepare(
-    `INSERT INTO api_keys (id, org_id, created_by, key_hash, key_prefix, name, scopes, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'sandbox:*', ?7)`,
-  ).bind(id, caller.orgID, caller.userID, hash, prefix, name, now).run();
-  return json({
-    id, orgId: caller.orgID, name, key: plainKey, keyPrefix: prefix,
-    scopes: ["sandbox:*"], createdAt: new Date(now * 1000).toISOString(),
-  }, 201);
+  return json(await createAPIKey(env, {
+    orgID: caller.orgID,
+    userID: caller.userID,
+    name,
+  }), 201);
 }
 
 async function handleDeleteAPIKey(_req: Request, env: DashboardEnv, caller: Caller, keyID: string): Promise<Response> {

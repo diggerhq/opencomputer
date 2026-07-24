@@ -58,6 +58,28 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The same main merge can trigger the API-edge and CLI workflows in
+      # parallel. Do not publish a CLI that advertises `oc login` until the
+      # additive edge contract is observably live.
+      - name: Wait for CLI login edge contract
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          for attempt in $(seq 1 120); do
+            status=$(curl -sS \
+              --output /tmp/cli-login-edge.json \
+              --write-out '%{http_code}' \
+              https://app.opencomputer.dev/auth/cli/device || true)
+            if [ "$status" = "405" ] &&
+               jq -e '.error == "method_not_allowed"' /tmp/cli-login-edge.json >/dev/null 2>&1; then
+              echo "CLI login edge contract is live."
+              exit 0
+            fi
+            echo "Waiting for API edge (attempt $attempt/120; status ${status:-unavailable})..."
+            sleep 5
+          done
+          echo "CLI login edge contract did not become ready; refusing to publish."
+          exit 1
+
       - name: Build CLI binaries
         if: steps.check_tag.outputs.exists == 'false'
         run: |

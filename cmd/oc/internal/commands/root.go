@@ -26,8 +26,8 @@ var rootCmd = &cobra.Command{
 	Version: Version,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		cfg := config.Load(cmd)
-		if cfg.APIKey == "" && !isOfflineCommand(cmd) && cmd.Name() != "config" && cmd.Name() != "help" && cmd.Name() != "set" && cmd.Name() != "show" {
-			fmt.Fprintln(os.Stderr, "Warning: no API key configured. Set OPENCOMPUTER_API_KEY or run 'oc config set api-key <key>'")
+		if cfg.APIKey == "" && !isOfflineCommand(cmd) && cmd.Name() != "login" && cmd.Name() != "logout" && cmd.Name() != "whoami" && cmd.Name() != "config" && cmd.Name() != "help" && cmd.Name() != "set" && cmd.Name() != "show" {
+			fmt.Fprintln(os.Stderr, "Warning: no API key configured. Run 'oc login' or set OPENCOMPUTER_API_KEY")
 		}
 		c := client.New(cfg.APIURL, cfg.APIKey)
 		ctx := client.WithClient(cmd.Context(), c)
@@ -49,7 +49,7 @@ var rootCmd = &cobra.Command{
 		// maybePromptUpdate for the full skip list (dev build, non-TTY,
 		// OC_NO_UPDATE_CHECK).
 		switch cmd.Name() {
-		case "update", "help", "completion", "__complete":
+		case "login", "update", "help", "completion", "__complete":
 			return
 		}
 		maybePromptUpdate()
@@ -83,6 +83,9 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(logsCmd)
+	rootCmd.AddCommand(loginCmd)
+	rootCmd.AddCommand(whoamiCmd)
+	rootCmd.AddCommand(logoutCmd)
 
 	// Top-level shortcuts
 	rootCmd.AddCommand(createShortcut)

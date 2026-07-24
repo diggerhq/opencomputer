@@ -13,6 +13,9 @@
 //   GET  /auth/callback        — WorkOS code exchange → upsert user/org → session JWT cookie
 //   POST /auth/logout          — clear session cookie
 //   POST /auth/refresh         — rotate session JWT (extends expiry)
+//   POST /auth/cli/device      — begin WorkOS device authorization for `oc login`
+//   POST /auth/cli/device/exchange — poll device authorization → one ordinary org key
+//   DELETE /auth/cli/credential — revoke the exact CLI-presented org key
 //   POST /webhooks/stripe      — Stripe webhook → DO /mark-pro or /mark-free
 //   GET  /health
 
@@ -37,11 +40,17 @@ import * as secretStores from "./secret_stores";
 import * as snapshots from "./snapshots";
 import * as templates from "./templates";
 import * as webhooks from "./webhooks";
+import { createAPIKey, hashAPIKey } from "./api_keys";
 
 export interface Env extends DashboardEnv {
   CF_ADMIN_SECRET: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
+  // Coarse distributed abuse limits for the two unauthenticated WorkOS device
+  // endpoints. These are separate because one login normally polls exchange
+  // several times after a single start request.
+  CLI_AUTH_START_RATE_LIMIT: RateLimit;
+  CLI_AUTH_EXCHANGE_RATE_LIMIT: RateLimit;
   // Dedicated HMAC secret for the Sessions API's minimal Agent Hook exposure
   // alert. It is intentionally not shared with other internal routes.
   OC_SECURITY_NOTIFICATION_SECRET?: string;
@@ -99,11 +108,6 @@ const b64url = (buf: ArrayBuffer | Uint8Array): string => {
   for (const b of bytes) s += String.fromCharCode(b);
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
-
-async function sha256Hex(s: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 // Mint the capability token the regional CP expects on /internal/sandboxes/create:
 // HS256 JWT signed with SESSION_JWT_SECRET, iss="opensandbox-edge", carrying
@@ -203,7 +207,7 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
   ) {
     return verifyProvisionToken(env.OC_PROVISION_SECRET, apiKey);
   }
-  const hash = await sha256Hex(apiKey);
+  const hash = await hashAPIKey(apiKey);
   const row = await env.OPENCOMPUTER_DB.prepare(
     "SELECT org_id, created_by, expires_at FROM api_keys WHERE key_hash = ?1",
   )
@@ -1174,6 +1178,21 @@ interface WorkOSProfile {
   organization_id?: string;
 }
 
+interface ProvisionedIdentity {
+  user: {
+    id: string;
+    email: string;
+    name: string;
+  };
+  org: {
+    id: string;
+    name: string;
+    plan: string;
+  };
+}
+
+type IdentitySelection = "browser" | "cli";
+
 // A post-login destination is only honored if it is a same-origin PATH: it must
 // start with a single "/", carry no host (no "//" protocol-relative form) and no
 // backslash tricks. Tampering with the WorkOS `state` can then at most pick a
@@ -1212,6 +1231,156 @@ async function authLogin(req: Request, env: Env): Promise<Response> {
   return Response.redirect(authURL.toString(), 302);
 }
 
+/**
+ * Upserts the WorkOS user and guarantees at least one local membership.
+ * Browser login deliberately preserves its historical "first membership"
+ * selection; CLI login uses the deterministic policy in work 031 §3.2.
+ */
+async function provisionWorkOSIdentity(
+  req: Request,
+  env: Env,
+  profile: WorkOSProfile,
+  workosOrgID: string | undefined,
+  selection: IdentitySelection,
+): Promise<ProvisionedIdentity> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const displayName =
+    [profile.first_name, profile.last_name].filter(Boolean).join(" ") || profile.email;
+
+  let userRow = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT id, email, name FROM users WHERE workos_user_id = ?1`,
+  )
+    .bind(profile.id)
+    .first<{ id: string; email: string; name: string | null }>();
+
+  if (!userRow) {
+    const candidateID = crypto.randomUUID();
+    await env.OPENCOMPUTER_DB.prepare(
+      `INSERT INTO users (id, email, workos_user_id, name, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5)
+       ON CONFLICT(email) DO UPDATE SET workos_user_id = excluded.workos_user_id`,
+    )
+      .bind(candidateID, profile.email, profile.id, displayName, nowSec)
+      .run();
+    // Re-read after the email-conflict path: the existing row retains its id.
+    userRow = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT id, email, name FROM users WHERE workos_user_id = ?1`,
+    )
+      .bind(profile.id)
+      .first<{ id: string; email: string; name: string | null }>();
+    if (!userRow) throw new Error("workos user upsert did not resolve");
+  }
+
+  const userID = userRow.id;
+  type MembershipRow = {
+    id: string;
+    name: string;
+    plan: string;
+    is_personal: number;
+    workos_org_id: string | null;
+    membership_created_at: number;
+    org_created_at: number;
+  };
+
+  const selectBrowserMembership = () =>
+    env.OPENCOMPUTER_DB.prepare(
+      `SELECT o.id, o.name, o.plan, o.is_personal, o.workos_org_id,
+              m.created_at AS membership_created_at, o.created_at AS org_created_at
+         FROM orgs o
+         JOIN org_memberships m ON m.org_id = o.id
+        WHERE m.user_id = ?1
+        LIMIT 1`,
+    )
+      .bind(userID)
+      .first<MembershipRow>();
+
+  const selectCLIMembership = async (): Promise<MembershipRow | null> => {
+    const { results } = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT o.id, o.name, o.plan, o.is_personal, o.workos_org_id,
+              m.created_at AS membership_created_at, o.created_at AS org_created_at
+         FROM orgs o
+         JOIN org_memberships m ON m.org_id = o.id
+        WHERE m.user_id = ?1
+        ORDER BY m.created_at ASC, o.created_at ASC, o.id ASC`,
+    )
+      .bind(userID)
+      .all<MembershipRow>();
+    const memberships = results ?? [];
+    if (workosOrgID) {
+      const mapped = memberships.find((row) => row.workos_org_id === workosOrgID);
+      if (mapped) return mapped;
+    }
+    const personal = memberships.find((row) => row.is_personal === 1);
+    if (personal) return personal;
+    if (memberships.length === 1) return memberships[0];
+    return memberships[0] ?? null;
+  };
+
+  let orgRow =
+    selection === "browser"
+      ? await selectBrowserMembership()
+      : await selectCLIMembership();
+
+  if (!orgRow) {
+    const orgID = crypto.randomUUID();
+    const homeCell = await pickHomeCell(env, req);
+    const orgName = `${profile.email}'s workspace`;
+    let provider = "legacy";
+    if (env.AUTUMN_NEW_ORGS === "true" && env.AUTUMN_SECRET_KEY) {
+      try {
+        await createAutumnCustomer(env, { id: orgID, name: orgName, email: profile.email });
+        provider = "autumn";
+      } catch {
+        // The provider response can echo signup PII. Preserve the actionable
+        // org/class without logging its raw error body.
+        console.error(`signup: autumn customer create failed for ${orgID}, falling back to legacy`);
+      }
+    }
+    await env.OPENCOMPUTER_DB.prepare(
+      `INSERT INTO orgs (id, name, slug, plan, home_cell, is_personal, owner_user_id, billing_provider, max_concurrent_sandboxes, created_at, updated_at)
+       VALUES (?1, ?2, ?3, 'free', ?4, 1, ?5, ?7, ?8, ?6, ?6)`,
+    )
+      .bind(
+        orgID,
+        orgName,
+        slugify(profile.email + "-" + orgID.slice(0, 6)),
+        homeCell,
+        userID,
+        nowSec,
+        provider,
+        DEFAULT_MAX_CONCURRENT_SANDBOXES,
+      )
+      .run();
+    await env.OPENCOMPUTER_DB.prepare(
+      `INSERT INTO org_memberships (org_id, user_id, role, created_at) VALUES (?1, ?2, 'owner', ?3)`,
+    )
+      .bind(orgID, userID, nowSec)
+      .run();
+    orgRow = {
+      id: orgID,
+      name: orgName,
+      plan: "free",
+      is_personal: 1,
+      workos_org_id: null,
+      membership_created_at: nowSec,
+      org_created_at: nowSec,
+    };
+  }
+
+  return {
+    user: {
+      id: userID,
+      email: userRow.email || profile.email,
+      name: userRow.name || displayName,
+    },
+    org: {
+      id: orgRow.id,
+      name: orgRow.name,
+      plan: orgRow.plan,
+    },
+  };
+}
+
 async function authCallback(req: Request, env: Env): Promise<Response> {
   const reqURL = new URL(req.url);
   const code = reqURL.searchParams.get("code");
@@ -1238,92 +1407,23 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
   const profile = tokenBody.user;
   // WorkOS session id (sid) for the hosted logout flow — carried in our session JWT.
   const workosSessionID = workosSessionIdFromAccessToken(tokenBody.access_token);
-
-  // Upsert user + org. We share WorkOS with prod, so workos_user_id is the
-  // stable identity across both. Org auto-created on first sign-in with
-  // home_cell picked per the policy below.
-  const nowSec = Math.floor(Date.now() / 1000);
-  const userRow = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT id FROM users WHERE workos_user_id = ?1`,
-  )
-    .bind(profile.id)
-    .first<{ id: string }>();
-  let userID: string;
-  if (userRow) {
-    userID = userRow.id;
-  } else {
-    userID = crypto.randomUUID();
-    await env.OPENCOMPUTER_DB.prepare(
-      `INSERT INTO users (id, email, workos_user_id, name, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5)
-       ON CONFLICT(email) DO UPDATE SET workos_user_id = excluded.workos_user_id`,
-    )
-      .bind(
-        userID,
-        profile.email,
-        profile.id,
-        [profile.first_name, profile.last_name].filter(Boolean).join(" ") || profile.email,
-        nowSec,
-      )
-      .run();
-  }
-
-  // Find an org via membership; if none, create a personal one.
-  const orgRow = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT o.id, o.plan FROM orgs o
-       JOIN org_memberships m ON m.org_id = o.id
-      WHERE m.user_id = ?1 LIMIT 1`,
-  )
-    .bind(userID)
-    .first<{ id: string; plan: string }>();
-  let orgID: string;
-  let orgPlan: string;
-  if (orgRow) {
-    orgID = orgRow.id;
-    orgPlan = orgRow.plan;
-  } else {
-    orgID = crypto.randomUUID();
-    const homeCell = await pickHomeCell(env, req);
-    orgPlan = "free";
-    // Stage 2: new signups go to Autumn when AUTUMN_NEW_ORGS is on. Create the
-    // Autumn customer first (it grants the $5 signup credit); only flag the org
-    // 'autumn' if that succeeds, so a transient Autumn failure falls back to the
-    // legacy trial rather than breaking signup. Existing orgs are untouched —
-    // they migrate later via cmd/migrate-to-autumn after notification.
-    let provider = "legacy";
-    if (env.AUTUMN_NEW_ORGS === "true" && env.AUTUMN_SECRET_KEY) {
-      try {
-        await createAutumnCustomer(env, { id: orgID, name: `${profile.email}'s workspace`, email: profile.email });
-        provider = "autumn";
-      } catch (e) {
-        console.error(`signup: autumn customer create failed for ${orgID}, falling back to legacy`, e);
-      }
-    }
-    await env.OPENCOMPUTER_DB.prepare(
-      `INSERT INTO orgs (id, name, slug, plan, home_cell, is_personal, owner_user_id, billing_provider, max_concurrent_sandboxes, created_at, updated_at)
-       VALUES (?1, ?2, ?3, 'free', ?4, 1, ?5, ?7, ?8, ?6, ?6)`,
-    )
-      .bind(
-        orgID,
-        `${profile.email}'s workspace`,
-        slugify(profile.email + "-" + orgID.slice(0, 6)),
-        homeCell,
-        userID,
-        nowSec,
-        provider,
-        DEFAULT_MAX_CONCURRENT_SANDBOXES,
-      )
-      .run();
-    await env.OPENCOMPUTER_DB.prepare(
-      `INSERT INTO org_memberships (org_id, user_id, role, created_at) VALUES (?1, ?2, 'owner', ?3)`,
-    )
-      .bind(orgID, userID, nowSec)
-      .run();
-  }
+  const identity = await provisionWorkOSIdentity(
+    req,
+    env,
+    profile,
+    tokenBody.organization_id ?? profile.organization_id,
+    "browser",
+  );
 
   // Mint session JWT — same signing secret as cap-token but a different
   // Issuer so cell middleware can distinguish.
-  const sessionJWT = await mintSessionJWT(env.SESSION_JWT_SECRET, orgID, userID, orgPlan, workosSessionID);
+  const sessionJWT = await mintSessionJWT(
+    env.SESSION_JWT_SECRET,
+    identity.org.id,
+    identity.user.id,
+    identity.org.plan,
+    workosSessionID,
+  );
 
   // Land on the deferred deep link if `state` carried a valid one, else the
   // dashboard. Re-validate here: `state` is attacker-influenceable, so the path
@@ -1345,6 +1445,526 @@ async function authCallback(req: Request, env: Env): Promise<Response> {
       "set-cookie": `${SESSION_COOKIE}=${sessionJWT}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_SEC}`,
     },
   });
+}
+
+const CLI_AUTH_MAX_BODY_BYTES = 4096;
+const CLI_AUTH_MAX_DEVICE_CODE = 2048;
+const CLI_AUTH_MAX_CREDENTIAL_NAME = 100;
+const CLI_AUTH_DEFAULT_RETRY_SEC = 5;
+const CLI_AUTH_MAX_PROVIDER_BODY_BYTES = 64 * 1024;
+const CLI_AUTH_PROVIDER_TIMEOUT_MS = 10_000;
+const CLI_AUTH_RATE_LIMIT_RETRY_SEC = 60;
+
+function cliAuthJSON(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function cliAuthError(error: string, status: number): Response {
+  return cliAuthJSON({ error }, status);
+}
+
+function cliAuthRateLimitError(): Response {
+  const response = cliAuthError("rate_limited", 429);
+  response.headers.set("retry-after", String(CLI_AUTH_RATE_LIMIT_RETRY_SEC));
+  return response;
+}
+
+interface CLIAuthLogDetails {
+  user_id?: string;
+  org_id?: string;
+  credential_id?: string;
+  provider_status?: number;
+  provider_error_name?: string;
+  provider_error_message?: string;
+}
+
+function recordCLIAuth(
+  event: "cli_auth_start" | "cli_auth_exchange" | "cli_auth_revoke",
+  requestID: string,
+  result: string,
+  status: number,
+  startedAt: number,
+  details: CLIAuthLogDetails = {},
+): void {
+  console.log(JSON.stringify({
+    event,
+    request_id: requestID,
+    result,
+    http_status: status,
+    duration_ms: Date.now() - startedAt,
+    ...details,
+  }));
+}
+
+function cliAuthProviderExceptionDetails(
+  error: unknown,
+  redactions: string[],
+): Pick<CLIAuthLogDetails, "provider_error_name" | "provider_error_message"> {
+  const provider_error_name = error instanceof Error ? error.name : "NonError";
+  let provider_error_message =
+    error instanceof Error ? error.message : "provider request threw a non-Error value";
+  for (const secret of redactions) {
+    if (!secret) continue;
+    provider_error_message = provider_error_message
+      .replaceAll(secret, "[redacted]")
+      .replaceAll(encodeURIComponent(secret), "[redacted]");
+  }
+  provider_error_message = provider_error_message
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .slice(0, 256);
+  return { provider_error_name, provider_error_message };
+}
+
+function isHTTPSURL(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2048) return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function boundedInteger(value: unknown, min: number, max: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+}
+
+function normalizeCLICredentialName(value: unknown): string | null {
+  if (typeof value !== "string" || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (!normalized) return "oc CLI";
+  if (normalized.length > CLI_AUTH_MAX_CREDENTIAL_NAME) return null;
+  return normalized;
+}
+
+function cliAuthCallerKey(req: Request): string {
+  const value = req.headers.get("CF-Connecting-IP")?.trim();
+  return value && value.length <= 64 ? value : "unknown";
+}
+
+async function consumeCLIAuthRateLimit(
+  req: Request,
+  limiter: RateLimit | undefined,
+): Promise<"allowed" | "limited" | "unavailable"> {
+  if (!limiter) return "unavailable";
+  try {
+    const result = await limiter.limit({ key: cliAuthCallerKey(req) });
+    return result.success ? "allowed" : "limited";
+  } catch {
+    return "unavailable";
+  }
+}
+
+async function fetchCLIAuthProviderJSON(
+  input: string,
+  init: RequestInit,
+): Promise<{ response: Response; body: Record<string, unknown> | null }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CLI_AUTH_PROVIDER_TIMEOUT_MS);
+  try {
+    const response = await fetch(input, { ...init, signal: controller.signal });
+    const body = await parseProviderJSON(response);
+    if (controller.signal.aborted) {
+      throw new DOMException("WorkOS request timed out", "AbortError");
+    }
+    return { response, body };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function readSmallJSONObject(
+  req: Request,
+): Promise<Record<string, unknown> | null> {
+  const contentType = req.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") return null;
+  const contentLength = Number(req.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > CLI_AUTH_MAX_BODY_BYTES) return null;
+  if (!req.body) return null;
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > CLI_AUTH_MAX_BODY_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  if (total === 0) return null;
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(body));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+async function hasRequestBody(req: Request): Promise<boolean> {
+  const contentLength = Number(req.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > 0) return true;
+  if (!req.body) return false;
+  const reader = req.body.getReader();
+  const first = await reader.read();
+  await reader.cancel();
+  return !first.done && first.value.byteLength > 0;
+}
+
+async function parseProviderJSON(resp: Response): Promise<Record<string, unknown> | null> {
+  const contentLength = Number(resp.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > CLI_AUTH_MAX_PROVIDER_BODY_BYTES) {
+    return null;
+  }
+  if (!resp.body) return null;
+  const reader = resp.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > CLI_AUTH_MAX_PROVIDER_BODY_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+    const raw = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      raw.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const body = JSON.parse(new TextDecoder().decode(raw)) as unknown;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+    return body as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function urlContainsOpaqueCode(rawURL: string, code: string): boolean {
+  if (rawURL.includes(code)) return true;
+  try {
+    return decodeURIComponent(rawURL).includes(code);
+  } catch {
+    return true;
+  }
+}
+
+async function authCLIStart(req: Request, env: Env): Promise<Response> {
+  const requestID = crypto.randomUUID();
+  const startedAt = Date.now();
+  const finish = (
+    response: Response,
+    result: string,
+    details: CLIAuthLogDetails = {},
+  ): Response => {
+    recordCLIAuth("cli_auth_start", requestID, result, response.status, startedAt, details);
+    return response;
+  };
+
+  if (req.method !== "POST") {
+    return finish(cliAuthError("method_not_allowed", 405), "invalid_request");
+  }
+  if (!env.WORKOS_CLIENT_ID) {
+    return finish(cliAuthError("cli_login_unavailable", 503), "configuration_error");
+  }
+  const rateLimit = await consumeCLIAuthRateLimit(req, env.CLI_AUTH_START_RATE_LIMIT);
+  if (rateLimit === "limited") {
+    return finish(cliAuthRateLimitError(), "rate_limited");
+  }
+  if (rateLimit === "unavailable") {
+    return finish(cliAuthError("cli_login_unavailable", 503), "configuration_error");
+  }
+  if (await hasRequestBody(req)) {
+    return finish(cliAuthError("invalid_request", 400), "invalid_request");
+  }
+
+  let providerResp: Response;
+  let bodyJSON: Record<string, unknown> | null;
+  try {
+    ({ response: providerResp, body: bodyJSON } = await fetchCLIAuthProviderJSON(
+      "https://api.workos.com/user_management/authorize/device",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ client_id: env.WORKOS_CLIENT_ID }).toString(),
+        // Workers rejects RequestRedirect "error" at runtime. "manual" keeps
+        // redirects fail-closed: the 3xx response is returned and rejected
+        // below, without forwarding the form body to another origin.
+        redirect: "manual",
+      },
+    ));
+  } catch (error) {
+    return finish(
+      cliAuthError("auth_provider_unavailable", 503),
+      "provider_error",
+      cliAuthProviderExceptionDetails(error, [env.WORKOS_CLIENT_ID]),
+    );
+  }
+  if (!providerResp.ok) {
+    return finish(
+      cliAuthError("auth_provider_unavailable", 503),
+      "provider_error",
+      { provider_status: providerResp.status },
+    );
+  }
+
+  if (
+    !bodyJSON ||
+    typeof bodyJSON.device_code !== "string" ||
+    bodyJSON.device_code.length === 0 ||
+    bodyJSON.device_code.length > CLI_AUTH_MAX_DEVICE_CODE ||
+    typeof bodyJSON.user_code !== "string" ||
+    bodyJSON.user_code.length === 0 ||
+    bodyJSON.user_code.length > 64 ||
+    !isHTTPSURL(bodyJSON.verification_uri) ||
+    !isHTTPSURL(bodyJSON.verification_uri_complete) ||
+    !boundedInteger(bodyJSON.expires_in, 1, 3600) ||
+    !boundedInteger(bodyJSON.interval, 1, 60) ||
+    urlContainsOpaqueCode(bodyJSON.verification_uri, bodyJSON.device_code) ||
+    urlContainsOpaqueCode(bodyJSON.verification_uri_complete, bodyJSON.device_code)
+  ) {
+    return finish(
+      cliAuthError("auth_provider_invalid_response", 502),
+      "provider_error",
+      { provider_status: providerResp.status, provider_error_name: "InvalidResponse" },
+    );
+  }
+
+  return finish(cliAuthJSON({
+    device_code: bodyJSON.device_code,
+    user_code: bodyJSON.user_code,
+    verification_uri: bodyJSON.verification_uri,
+    verification_uri_complete: bodyJSON.verification_uri_complete,
+    expires_in: bodyJSON.expires_in,
+    interval: bodyJSON.interval,
+  }), "success");
+}
+
+function providerErrorCode(body: Record<string, unknown> | null): string {
+  return typeof body?.error === "string" ? body.error : "";
+}
+
+async function authCLIExchange(req: Request, env: Env): Promise<Response> {
+  const requestID = crypto.randomUUID();
+  const startedAt = Date.now();
+  const finish = (
+    response: Response,
+    result: string,
+    details: CLIAuthLogDetails = {},
+  ): Response => {
+    recordCLIAuth("cli_auth_exchange", requestID, result, response.status, startedAt, details);
+    return response;
+  };
+
+  if (req.method !== "POST") {
+    return finish(cliAuthError("method_not_allowed", 405), "invalid_request");
+  }
+  if (!env.WORKOS_CLIENT_ID) {
+    return finish(cliAuthError("cli_login_unavailable", 503), "configuration_error");
+  }
+  const rateLimit = await consumeCLIAuthRateLimit(req, env.CLI_AUTH_EXCHANGE_RATE_LIMIT);
+  if (rateLimit === "limited") {
+    return finish(cliAuthRateLimitError(), "rate_limited");
+  }
+  if (rateLimit === "unavailable") {
+    return finish(cliAuthError("cli_login_unavailable", 503), "configuration_error");
+  }
+  const body = await readSmallJSONObject(req);
+  if (
+    !body ||
+    Object.keys(body).length !== 2 ||
+    !Object.hasOwn(body, "device_code") ||
+    !Object.hasOwn(body, "credential_name") ||
+    typeof body.device_code !== "string" ||
+    body.device_code.length === 0 ||
+    body.device_code.length > CLI_AUTH_MAX_DEVICE_CODE
+  ) {
+    return finish(cliAuthError("invalid_request", 400), "invalid_request");
+  }
+  const credentialName = normalizeCLICredentialName(body.credential_name);
+  if (!credentialName) {
+    return finish(cliAuthError("invalid_request", 400), "invalid_request");
+  }
+
+  let providerResp: Response;
+  let providerBody: Record<string, unknown> | null;
+  try {
+    ({ response: providerResp, body: providerBody } = await fetchCLIAuthProviderJSON(
+      "https://api.workos.com/user_management/authenticate",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          device_code: body.device_code,
+          client_id: env.WORKOS_CLIENT_ID,
+        }).toString(),
+        // See the start endpoint: manual redirects prevent the device code
+        // from being forwarded and are rejected by the status handling below.
+        redirect: "manual",
+      },
+    ));
+  } catch (error) {
+    return finish(
+      cliAuthError("auth_provider_unavailable", 503),
+      "provider_error",
+      cliAuthProviderExceptionDetails(error, [env.WORKOS_CLIENT_ID, body.device_code]),
+    );
+  }
+
+  if (!providerResp.ok) {
+    const code = providerErrorCode(providerBody);
+    if (code === "authorization_pending") {
+      return finish(
+        cliAuthJSON({ status: "authorization_pending", retry_after: CLI_AUTH_DEFAULT_RETRY_SEC }, 202),
+        "pending",
+      );
+    }
+    if (code === "slow_down") {
+      return finish(
+        cliAuthJSON({ status: "authorization_pending", retry_after: CLI_AUTH_DEFAULT_RETRY_SEC + 5 }, 202),
+        "pending",
+      );
+    }
+    if (code === "access_denied" || code === "authorization_denied") {
+      return finish(cliAuthError("authorization_denied", 403), "denied");
+    }
+    if (code === "expired_token" || code === "invalid_grant") {
+      return finish(cliAuthError("authorization_expired", 410), "expired");
+    }
+    if (providerResp.status >= 500) {
+      return finish(
+        cliAuthError("auth_provider_unavailable", 503),
+        "provider_error",
+        { provider_status: providerResp.status },
+      );
+    }
+    return finish(
+      cliAuthError("auth_provider_invalid_response", 502),
+      "provider_error",
+      { provider_status: providerResp.status },
+    );
+  }
+
+  const profile = providerBody?.user;
+  if (
+    !profile ||
+    typeof profile !== "object" ||
+    Array.isArray(profile) ||
+    typeof (profile as Record<string, unknown>).id !== "string" ||
+    typeof (profile as Record<string, unknown>).email !== "string"
+  ) {
+    return finish(
+      cliAuthError("auth_provider_invalid_response", 502),
+      "provider_error",
+      { provider_status: providerResp.status, provider_error_name: "InvalidResponse" },
+    );
+  }
+  const typedProfile = profile as unknown as WorkOSProfile;
+  const workosOrgID =
+    typeof providerBody?.organization_id === "string"
+      ? providerBody.organization_id
+      : typedProfile.organization_id;
+
+  let identity: ProvisionedIdentity;
+  try {
+    identity = await provisionWorkOSIdentity(req, env, typedProfile, workosOrgID, "cli");
+  } catch {
+    return finish(cliAuthError("account_provisioning_unavailable", 503), "provisioning_error");
+  }
+
+  let credential;
+  try {
+    credential = await createAPIKey(env, {
+      orgID: identity.org.id,
+      userID: identity.user.id,
+      name: credentialName,
+    });
+  } catch {
+    return finish(
+      cliAuthError("credential_creation_failed", 503),
+      "credential_error",
+      { user_id: identity.user.id, org_id: identity.org.id },
+    );
+  }
+
+  return finish(cliAuthJSON({
+    status: "authorized",
+    credential: {
+      id: credential.id,
+      key: credential.key,
+      key_prefix: credential.keyPrefix,
+      name: credential.name,
+    },
+    user: identity.user,
+    org: {
+      id: identity.org.id,
+      name: identity.org.name,
+    },
+  }), "success", {
+    user_id: identity.user.id,
+    org_id: identity.org.id,
+    credential_id: credential.id,
+  });
+}
+
+async function authCLIRevoke(req: Request, env: Env): Promise<Response> {
+  const requestID = crypto.randomUUID();
+  const startedAt = Date.now();
+  const finish = (response: Response, result: string): Response => {
+    recordCLIAuth("cli_auth_revoke", requestID, result, response.status, startedAt);
+    return response;
+  };
+
+  if (req.method !== "DELETE") {
+    return finish(cliAuthError("method_not_allowed", 405), "invalid_request");
+  }
+  const plainKey = req.headers.get("X-API-Key");
+  if (!plainKey || !plainKey.startsWith("osb_")) {
+    return finish(cliAuthError("missing or invalid API key", 401), "unauthorized");
+  }
+  let caller: Caller | null;
+  try {
+    caller = await authenticate(req, env);
+  } catch {
+    return finish(cliAuthError("credential_revocation_unavailable", 503), "storage_error");
+  }
+  if (!caller || caller.scope) {
+    return finish(cliAuthError("missing or invalid API key", 401), "unauthorized");
+  }
+  try {
+    const hash = await hashAPIKey(plainKey);
+    await env.OPENCOMPUTER_DB.prepare(
+      `DELETE FROM api_keys WHERE key_hash = ?1 AND org_id = ?2`,
+    )
+      .bind(hash, caller.orgID)
+      .run();
+  } catch {
+    return finish(cliAuthError("credential_revocation_unavailable", 503), "storage_error");
+  }
+  return finish(new Response(null, {
+    status: 204,
+    headers: { "cache-control": "no-store" },
+  }), "success");
 }
 
 // Decode the WorkOS session id (`sid` claim) from a WorkOS access-token JWT
@@ -2092,7 +2712,19 @@ export default {
       return json({ error: "method not allowed" }, 405);
     }
 
-    // Auth flow (browser).
+    // Auth flows. CLI device auth is deliberately edge-brokered: WorkOS tokens
+    // never cross this boundary and the CLI receives one ordinary OC org key.
+    if (path === "/auth/cli/device") {
+      return authCLIStart(req, env);
+    }
+    if (path === "/auth/cli/device/exchange") {
+      return authCLIExchange(req, env);
+    }
+    if (path === "/auth/cli/credential") {
+      return authCLIRevoke(req, env);
+    }
+
+    // Browser auth flow.
     if (path === "/auth/login")    { if (req.method === "GET")  return authLogin(req, env); }
     if (path === "/auth/callback") { if (req.method === "GET")  return authCallback(req, env); }
     if (path === "/auth/logout")   { if (req.method === "POST") return authLogout(req, env); }
@@ -2261,7 +2893,28 @@ export default {
     if (path === "/api/whoami" && req.method === "GET") {
       const caller = await authenticate(req, env);
       if (!caller) return json({ error: "missing or invalid API key" }, 401);
-      return json({ org_id: caller.orgID, user_id: caller.userID });
+      if (caller.scope) {
+        return json({
+          org_id: caller.orgID,
+          user_id: caller.userID,
+          email: null,
+          org_name: null,
+        });
+      }
+      const identity = await env.OPENCOMPUTER_DB.prepare(
+        `SELECT o.name AS org_name, u.email AS email
+           FROM orgs o
+           LEFT JOIN users u ON u.id = ?1
+          WHERE o.id = ?2`,
+      )
+        .bind(caller.userID, caller.orgID)
+        .first<{ org_name: string; email: string | null }>();
+      return json({
+        org_id: caller.orgID,
+        user_id: caller.userID,
+        email: identity?.email ?? null,
+        org_name: identity?.org_name ?? null,
+      });
     }
 
     // /api/webhooks* — sandbox lifecycle webhook management (Svix-backed,
