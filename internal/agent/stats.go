@@ -228,6 +228,35 @@ func (s *Server) PrepareHibernate(ctx context.Context, req *pb.PrepareHibernateR
 	return &pb.PrepareHibernateResponse{}, nil
 }
 
+// defaultThawMounts are unfrozen when a Thaw request carries no explicit list.
+// Mirrors the snapshot/hibernate freeze set (rootfs + workspace). In the merged
+// layout /home/sandbox is a directory on the rootfs, so its FITHAW hits the same
+// (already-thawed) superblock and returns EINVAL → already_thawed, harmlessly.
+var defaultThawMounts = []string{"/", "/home/sandbox"}
+
+// Thaw unfreezes guest filesystems that the snapshot/hibernate path froze, using
+// a native FITHAW ioctl instead of exec'ing `fsfreeze --unfreeze`. Native is
+// load-bearing here: the golden/hibernate snapshot is captured with the rootfs
+// frozen, and exec'ing a binary from that frozen rootfs to thaw it can deadlock
+// (exec-needs-fs, fs-needs-thaw). See thawMount. Idempotent — a fs that is not
+// frozen is reported as already_thawed, not an error.
+func (s *Server) Thaw(ctx context.Context, req *pb.ThawRequest) (*pb.ThawResponse, error) {
+	mounts := req.Mountpoints
+	if len(mounts) == 0 {
+		mounts = defaultThawMounts
+	}
+	resp := &pb.ThawResponse{}
+	for _, mp := range mounts {
+		already, err := thawMount(mp)
+		res := &pb.ThawResult{Mountpoint: mp, AlreadyThawed: already, Thawed: err == nil && !already}
+		if err != nil {
+			res.Error = err.Error()
+		}
+		resp.Results = append(resp.Results, res)
+	}
+	return resp, nil
+}
+
 // flushBlockDevices issues BLKFLSBUF on each device (equivalent to `blockdev --flushbufs`).
 // Ignores errors — not all devices may be present (e.g., /dev/vdb).
 func flushBlockDevices(paths ...string) {

@@ -108,6 +108,13 @@ service SandboxAgent {
   // Upgrade replaces the agent binary and re-execs (same PID 1, no process loss).
   // The worker writes the new binary to binary_path before calling this.
   rpc Upgrade(UpgradeRequest) returns (UpgradeResponse);
+
+  // Thaw unfreezes guest filesystems via a native FITHAW ioctl (no exec). The
+  // golden/hibernate snapshot is captured with the rootfs fsfrozen; this undoes
+  // that on wake/fork/golden-restore. It is native precisely so it never depends
+  // on exec'ing a binary from the still-frozen rootfs — doing so can deadlock
+  // (exec-needs-fs, fs-needs-thaw). Idempotent: thawing an unfrozen fs succeeds.
+  rpc Thaw(ThawRequest) returns (ThawResponse);
 }
 
 // --- Exec ---
@@ -386,6 +393,25 @@ message SyncFSResponse {}
 message PrepareHibernateRequest {}
 
 message PrepareHibernateResponse {}
+
+// --- Thaw ---
+
+message ThawRequest {
+  // Mountpoints to unfreeze. Empty ⇒ the agent's default set ("/" and
+  // "/home/sandbox"), matching the snapshot-side freeze.
+  repeated string mountpoints = 1;
+}
+
+message ThawResponse {
+  repeated ThawResult results = 1;
+}
+
+message ThawResult {
+  string mountpoint = 1;
+  bool thawed = 2;          // this call issued a successful FITHAW
+  bool already_thawed = 3;  // fs was not frozen (EINVAL) — treated as success
+  string error = 4;         // set when the mountpoint could not be thawed
+}
 
 // --- Resource Limits ---
 

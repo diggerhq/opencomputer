@@ -837,6 +837,44 @@ func (m *Manager) agentFsThawAfterWake(ctx context.Context, sandboxID string, ag
 	if agent == nil {
 		return
 	}
+	// Native FITHAW ioctl inside the guest — NOT `fsfreeze --unfreeze` via Exec.
+	// The snapshot is captured with the rootfs frozen; thawing it by exec'ing a
+	// binary that lives on that frozen rootfs is a latent deadlock (exec-needs-fs,
+	// fs-needs-thaw) that intermittently stalls every post-restore Exec RPC
+	// (network patch, clock sync, logship) until the create deadline. The native
+	// Thaw RPC opens the mountpoint O_NOATIME and ioctls it — no exec, no write to
+	// the frozen fs — so it cannot deadlock. See internal/agent thawMount.
+	thawCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	resp, err := agent.Thaw(thawCtx, &pb.ThawRequest{})
+	if err == nil {
+		for _, r := range resp.GetResults() {
+			if r.GetError() != "" {
+				log.Printf("qemu: %s: native thaw %s: %s", sandboxID, r.GetMountpoint(), r.GetError())
+			}
+		}
+		return
+	}
+	if status.Code(err) == codes.Unimplemented {
+		// Agent predates the Thaw RPC (mixed fleet mid-rollout). Fall back to the
+		// legacy exec thaw — the very path with the deadlock hazard, but it's the
+		// best an old agent can do. Dead once every worker's golden is rebuilt on
+		// the new agent.
+		log.Printf("qemu: %s: agent has no native Thaw (Unimplemented), using exec fallback", sandboxID)
+		m.agentFsThawViaExec(ctx, sandboxID, agent)
+		return
+	}
+	// Other errors (e.g. transport): best-effort exec fallback + loud log, since
+	// an un-thawed fs hangs customer writes.
+	log.Printf("qemu: %s: native Thaw failed: %v — trying exec fallback", sandboxID, err)
+	m.agentFsThawViaExec(ctx, sandboxID, agent)
+}
+
+// agentFsThawViaExec is the legacy exec-based thaw, retained only as a rollout
+// fallback for agents that predate the native Thaw RPC. It carries the
+// exec-on-frozen-fs deadlock hazard that native Thaw exists to remove — do not
+// add new call sites; call agentFsThawAfterWake instead.
+func (m *Manager) agentFsThawViaExec(ctx context.Context, sandboxID string, agent *AgentClient) {
 	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if _, err := agent.Exec(execCtx, &pb.ExecRequest{
