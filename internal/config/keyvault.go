@@ -74,6 +74,10 @@ var kvMapping = map[string]string{
 	"server-cf-admin-secret":    "OPENSANDBOX_CF_ADMIN_SECRET",
 	"server-session-jwt-secret": "OPENSANDBOX_SESSION_JWT_SECRET",
 	"server-halt-list-url":      "OPENSANDBOX_HALT_LIST_URL",
+	// Pre-warmed sandbox pool (control-plane owned). Per-cell, per-worker target.
+	"server-pool-target":   "OPENSANDBOX_POOL_TARGET",   // pooled boxes per worker (default 10; 0 disables)
+	"server-pool-enabled":  "OPENSANDBOX_POOL_ENABLED",  // "0" to disable (default on)
+	"server-pool-template": "OPENSANDBOX_POOL_TEMPLATE", // golden template name (default "base")
 
 	// Worker secrets
 	"worker-jwt-secret":         "OPENSANDBOX_JWT_SECRET",
