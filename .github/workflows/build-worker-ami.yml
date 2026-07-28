@@ -155,16 +155,15 @@ jobs:
 
       - name: Build image
         env:
-          # Service-principal client-secret auth: a long-lived credential the
-          # plugin refreshes for the WHOLE build. The prior CLI-federated session
-          # cached a one-shot OIDC client assertion (~5 min) that couldn't refresh
-          # and died mid-build with AADSTS700024; ARM_USE_OIDC didn't switch the
-          # plugin over (it fell back to MSI → "Identity not found"). Providing
-          # ARM_CLIENT_SECRET completes the SP credential so the plugin uses it.
-          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # Service-principal client-secret auth, fed as packer VARIABLES
+          # (PKR_VAR_* → var.client_id/client_secret/tenant_id on the azure-arm
+          # source). packer-plugin-azure v2 ignores ARM_* env for creds (it fell
+          # back to MSI → "Identity not found"), so they must be explicit source
+          # fields. This is a long-lived credential — survives the whole build,
+          # no OIDC assertion to expire (the AADSTS700024 root cause).
+          PKR_VAR_client_id: ${{ secrets.AZURE_CLIENT_ID }}
+          PKR_VAR_client_secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          PKR_VAR_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
         run: |
           # Use run number as patch version for gallery (must be integer)
           PATCH=${{ github.run_number }}
