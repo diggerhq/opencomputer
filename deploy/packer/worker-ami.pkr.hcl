@@ -53,7 +53,24 @@ variable "resource_group" {
 variable "use_azure_cli_auth" {
   type        = bool
   default     = true
-  description = "Auth via the Azure CLI session (local/dev). CI sets false to use ARM_USE_OIDC + ARM_OIDC_REQUEST_TOKEN/URL so packer refreshes its own OIDC token on long builds."
+  description = "Auth via the Azure CLI session (local/dev). CI sets false and passes client_id/client_secret/tenant_id (service-principal) so packer holds a long-lived credential for the whole build."
+}
+
+# Service-principal credentials (CI only — fed via PKR_VAR_* env from secrets).
+# packer-plugin-azure v2 does NOT read ARM_* env for creds, so they must be
+# explicit fields on the source block. Empty in local/dev (uses CLI auth).
+variable "client_id" {
+  type    = string
+  default = ""
+}
+variable "client_secret" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "tenant_id" {
+  type    = string
+  default = ""
 }
 
 variable "location" {
@@ -172,6 +189,12 @@ variable "tigris_region" {
 source "azure-arm" "worker" {
   subscription_id = var.subscription_id
   location        = var.location
+
+  # Service-principal client-secret auth (empty ⇒ ignored, CLI auth used). Set
+  # by CI; must be explicit fields here since the plugin ignores ARM_* env.
+  client_id     = var.client_id
+  client_secret = var.client_secret
+  tenant_id     = var.tenant_id
 
   # Auth: local/dev uses the Azure CLI session (use_azure_cli_auth=true, the
   # default). CI passes -var use_azure_cli_auth=false and provides service-
