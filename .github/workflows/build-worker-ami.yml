@@ -154,11 +154,26 @@ jobs:
           echo "Previous golden version: ${PREV:-<none>}"
 
       - name: Build image
+        env:
+          # packer-plugin-azure authenticates via OIDC directly and fetches a
+          # FRESH GitHub OIDC token per Azure call (ARM_OIDC_REQUEST_*), so it
+          # survives long (>50 min) builds — unlike use_azure_cli_auth, whose
+          # one-shot federated client assertion expires ~5 min in and can't
+          # refresh, which failed the capture step with AADSTS700024.
+          ARM_USE_OIDC: "true"
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           # Use run number as patch version for gallery (must be integer)
           PATCH=${{ github.run_number }}
 
+          # GitHub's OIDC token endpoint (present because permissions: id-token: write).
+          export ARM_OIDC_REQUEST_TOKEN="$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          export ARM_OIDC_REQUEST_URL="$ACTIONS_ID_TOKEN_REQUEST_URL"
+
           packer build \
+            -var "use_azure_cli_auth=false" \
             -var "worker_version=$VERSION" \
             -var "agent_version=$VERSION" \
             -var "subscription_id=$AZURE_SUBSCRIPTION_ID" \
@@ -177,10 +192,19 @@ jobs:
             -var "tigris_goldens_bucket=${{ secrets.TIGRIS_GOLDENS_BUCKET }}" \
             deploy/packer/worker-ami.pkr.hcl | tee /tmp/packer-output.txt
 
-          # Use the gallery image ID (NVMe-compatible for v7 VMs)
-          GALLERY_IMAGE_ID="/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${AZURE_RESOURCE_GROUP}/providers/Microsoft.Compute/galleries/${AZURE_GALLERY_NAME}/images/osb-worker-v7/versions/1.0.${PATCH}"
+      # Fresh az session for the post-build az calls (verify, cleanup) — the
+      # original login's session may be near expiry after a ~55 min packer build.
+      - name: Azure Re-Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-          # Verify it exists
+      - name: Verify image + export id
+        run: |
+          PATCH=${{ github.run_number }}
+          GALLERY_IMAGE_ID="/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${AZURE_RESOURCE_GROUP}/providers/Microsoft.Compute/galleries/${AZURE_GALLERY_NAME}/images/osb-worker-v7/versions/1.0.${PATCH}"
           if ! az sig image-version show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --gallery-name ${AZURE_GALLERY_NAME} \
@@ -190,16 +214,8 @@ jobs:
             cat /tmp/packer-output.txt
             exit 1
           fi
-
           echo "IMAGE_ID=$GALLERY_IMAGE_ID" >> $GITHUB_ENV
           echo "Built gallery image: $GALLERY_IMAGE_ID (version=1.0.${PATCH})"
-
-      - name: Azure Re-Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Publish image coordinates to Infisical (/shared → all cell KVs)
         env:

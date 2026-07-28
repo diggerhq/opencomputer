@@ -50,6 +50,12 @@ variable "resource_group" {
   description = "Resource group for the managed image."
 }
 
+variable "use_azure_cli_auth" {
+  type        = bool
+  default     = true
+  description = "Auth via the Azure CLI session (local/dev). CI sets false to use ARM_USE_OIDC + ARM_OIDC_REQUEST_TOKEN/URL so packer refreshes its own OIDC token on long builds."
+}
+
 variable "location" {
   type    = string
   default = "westus2"
@@ -167,8 +173,13 @@ source "azure-arm" "worker" {
   subscription_id = var.subscription_id
   location        = var.location
 
-  # Use managed identity or Azure CLI credentials
-  use_azure_cli_auth = true
+  # Auth: local/dev uses the Azure CLI session (use_azure_cli_auth=true, the
+  # default). CI passes -var use_azure_cli_auth=false and provides ARM_USE_OIDC +
+  # ARM_CLIENT_ID/ARM_TENANT_ID + ARM_OIDC_REQUEST_TOKEN/URL so the plugin fetches
+  # a FRESH GitHub OIDC token per Azure auth. The CLI path caches the one-shot
+  # federated client assertion (valid ~5 min) and can't refresh it, so long
+  # (>50 min) image builds died with AADSTS700024 near the capture step.
+  use_azure_cli_auth = var.use_azure_cli_auth
 
   # Base image: Ubuntu 24.04 LTS
   image_publisher = "Canonical"
