@@ -231,6 +231,13 @@ func (c *AgentClient) Thaw(ctx context.Context, req *pb.ThawRequest) (*pb.ThawRe
 	return c.client.Thaw(ctx, req)
 }
 
+// PrepareResume folds the post-restore guest setup (thaw+network+clock+envs) into
+// one native round-trip. Old agents that predate this RPC return
+// codes.Unimplemented; callers fall back to the per-op legacy sequence.
+func (c *AgentClient) PrepareResume(ctx context.Context, req *pb.PrepareResumeRequest) (*pb.PrepareResumeResponse, error) {
+	return c.client.PrepareResume(ctx, req)
+}
+
 // ReadFile reads a file from the VM.
 func (c *AgentClient) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	resp, err := c.client.ReadFile(ctx, &pb.ReadFileRequest{Path: path})

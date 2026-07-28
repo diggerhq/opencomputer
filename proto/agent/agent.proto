@@ -115,6 +115,17 @@ service SandboxAgent {
   // on exec'ing a binary from the still-frozen rootfs — doing so can deadlock
   // (exec-needs-fs, fs-needs-thaw). Idempotent: thawing an unfrozen fs succeeds.
   rpc Thaw(ThawRequest) returns (ThawResponse);
+
+  // PrepareResume folds the entire post-golden-restore guest setup —
+  // thaw, network reconfig, clock sync, and env injection — into ONE native
+  // round-trip. It replaces the serial Thaw + patchGuestNetwork(exec) +
+  // syncGuestClock(exec) + SetEnvs chain on the create critical path: each of
+  // those was a separate virtio-serial RPC, and two spawned guest shells (the
+  // `ip` script alone forks ~10 processes). Doing it natively in one call is the
+  // single biggest create-latency win after the golden restore itself. Every
+  // sub-step is best-effort and reported individually; the network step tries
+  // netlink and falls back to the proven shell script only if that fails.
+  rpc PrepareResume(PrepareResumeRequest) returns (PrepareResumeResponse);
 }
 
 // --- Exec ---
@@ -411,6 +422,40 @@ message ThawResult {
   bool thawed = 2;          // this call issued a successful FITHAW
   bool already_thawed = 3;  // fs was not frozen (EINVAL) — treated as success
   string error = 4;         // set when the mountpoint could not be thawed
+}
+
+// --- PrepareResume ---
+
+message PrepareResumeRequest {
+  // Thaw: unfreeze frozen filesystems. mountpoints empty ⇒ default set.
+  bool thaw = 1;
+  repeated string thaw_mountpoints = 2;
+
+  // Network: reconfigure the guest NIC (golden booted with a different IP).
+  // guest_ip empty ⇒ skip the network step entirely.
+  string iface = 3;              // NIC name; empty ⇒ "eth0"
+  string guest_ip = 4;           // e.g. "172.16.0.2"
+  uint32 prefix_len = 5;         // e.g. 30
+  string gateway = 6;            // default route via; empty ⇒ don't set a route
+  repeated string dns = 7;       // nameservers → /etc/resolv.conf; empty ⇒ leave file
+  bool flush_neigh = 8;          // flush the ARP cache (critical on cross-worker fork)
+
+  // Clock: set the guest wall clock to this instant. 0 ⇒ skip.
+  int64 clock_unix_nanos = 9;
+
+  // Envs: sandbox-level env vars to store (as SetEnvs would). nil ⇒ skip.
+  map<string, string> envs = 10;
+}
+
+message PrepareResumeResponse {
+  bool thawed = 1;
+  bool network_ok = 2;
+  bool clock_ok = 3;
+  bool envs_set = 4;
+  // "netlink" on the native fast path, "exec-fallback" when netlink failed and
+  // the shell script was used, "" when the network step was skipped.
+  string network_method = 5;
+  repeated string warnings = 6;  // non-fatal per-step issues, for observability
 }
 
 // --- Resource Limits ---

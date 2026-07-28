@@ -51,6 +51,10 @@ type sandboxEntry struct {
 	timer   *time.Timer   // rolling timeout timer (nil if hibernated)
 	wakeCh  chan struct{}  // closed when wake completes; nil if not waking
 	wakeErr error         // set if wake failed
+	// noPromote exempts this box from the paused→deep promote timer. Set for
+	// pre-warmed pool boxes, which must stay RAM-resident (instant-claim) and
+	// must never savevm→deep on their own. Cleared when the box is claimed.
+	noPromote bool
 }
 
 // Middleware wraps a routed operation. It receives the sandbox ID, the operation
@@ -539,6 +543,29 @@ type pausableManager interface {
 	Resume(ctx context.Context, sandboxID string) error
 }
 
+// MarkPooled marks a freshly manufactured box as a parked POOL entry: paused
+// and exempt from the promote-to-deep timer (noPromote), so it stays RAM-
+// resident for an instant claim and never savevm→deep on its own. Unlike
+// MarkPaused it does NOT arm the promote timer and does NOT fire onPause (a
+// pooled box is not a customer sandbox — no lifecycle events). A later claim
+// calls Register again, which replaces this entry with a fresh running one.
+func (r *SandboxRouter) MarkPooled(sandboxID string) {
+	r.mu.RLock()
+	entry, ok := r.sandboxes[sandboxID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	entry.mu.Lock()
+	if entry.timer != nil {
+		entry.timer.Stop()
+		entry.timer = nil
+	}
+	entry.state = StatePaused
+	entry.noPromote = true
+	entry.mu.Unlock()
+}
+
 // MarkPaused records that a sandbox was paused out-of-band (e.g. an explicit
 // customer hibernate handled at the control plane via the PauseSandbox RPC), so
 // the router routes the next request through doResume instead of a checkpoint
@@ -577,6 +604,11 @@ func (r *SandboxRouter) armPromoteTimer(sandboxID string) {
 		return
 	}
 	entry.mu.Lock()
+	if entry.noPromote {
+		// Pool box: must stay RAM-resident for instant claim — never promote to deep.
+		entry.mu.Unlock()
+		return
+	}
 	if entry.state == StatePaused {
 		if entry.timer != nil {
 			entry.timer.Stop()

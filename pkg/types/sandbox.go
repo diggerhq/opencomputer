@@ -20,6 +20,14 @@ const (
 	// emergency hibernation can prefer paused victims. The control plane always
 	// projects it as "hibernated" to customers.
 	SandboxStatusPaused SandboxStatus = "paused"
+	// SandboxStatusPooled is a pre-warmed, unclaimed sandbox: golden-restored and
+	// RAM-resident-paused under the synthetic pool org, bound to no customer. It
+	// exists to be CLAIMED atomically by a new-create request (cont + rebind),
+	// bypassing the cold golden restore. Never billed (no scale_event is opened
+	// at manufacture; excluded from usage ticker + quota/concurrency counts), and
+	// exempt from the paused→deep promote timer. On worker drain, pooled boxes are
+	// wiped (disposable, no customer data) rather than migrated/hibernated.
+	SandboxStatusPooled SandboxStatus = "pooled"
 )
 
 // Sandbox represents a running sandbox instance.

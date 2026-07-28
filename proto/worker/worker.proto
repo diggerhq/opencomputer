@@ -6,6 +6,11 @@ option go_package = "github.com/opensandbox/opensandbox/proto/worker";
 
 service SandboxWorker {
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+  // ClaimSandbox binds a pre-warmed pool box (created via CreateSandbox with
+  // pooled=true, then parked paused) to a customer: QMP cont + rebind
+  // (PrepareResume network/env/clock) + secrets + billing scale_event + promote.
+  // Skips the ~260ms golden restore — that was pre-paid at manufacture.
+  rpc ClaimSandbox(ClaimSandboxRequest) returns (ClaimSandboxResponse);
   rpc DestroySandbox(DestroySandboxRequest) returns (DestroySandboxResponse);
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
@@ -110,6 +115,11 @@ message CreateSandboxRequest {
   // before injection into the VM. Disjoint from `envs` (which is plaintext).
   map<string, string> secret_envs = 15;
   int32 disk_mb = 16;  // workspace disk size in MB (0 = default 20GB)
+  // Manufacture a pre-warmed POOL box: create generic + golden-restore, then
+  // immediately pause (RAM-resident) and park under the pool org. Skips the
+  // customer bindings (no scale_event, no D1 created, exempt from promote-to-deep).
+  // The box is later bound to a customer via ClaimSandbox.
+  bool pooled = 17;
 }
 
 message CreateSandboxResponse {
@@ -120,6 +130,23 @@ message CreateSandboxResponse {
   // snapshot's base memory is the floor (downscale would OOM restored
   // processes), and the hotplug ceiling caps the upper end. Always reflects
   // the actual value the sandbox is running at.
+  int32 memory_mb = 3;
+}
+
+message ClaimSandboxRequest {
+  string sandbox_id = 1;              // the pooled box being claimed
+  int32 timeout = 2;
+  map<string, string> envs = 3;      // plaintext envs
+  map<string, string> secret_envs = 4; // sealed by the worker's secrets proxy
+  repeated string egress_allowlist = 5;
+  map<string, string> secret_allowed_hosts = 6;
+  int32 memory_mb = 7;               // grow target via virtio-mem (0 = leave as-is)
+  int32 cpu_count = 8;
+}
+
+message ClaimSandboxResponse {
+  string sandbox_id = 1;
+  string status = 2;
   int32 memory_mb = 3;
 }
 

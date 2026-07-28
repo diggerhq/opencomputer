@@ -2960,6 +2960,213 @@ func (x *ThawResult) GetError() string {
 	return ""
 }
 
+type PrepareResumeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Thaw: unfreeze frozen filesystems. mountpoints empty ⇒ default set.
+	Thaw            bool     `protobuf:"varint,1,opt,name=thaw,proto3" json:"thaw,omitempty"`
+	ThawMountpoints []string `protobuf:"bytes,2,rep,name=thaw_mountpoints,json=thawMountpoints,proto3" json:"thaw_mountpoints,omitempty"`
+	// Network: reconfigure the guest NIC (golden booted with a different IP).
+	// guest_ip empty ⇒ skip the network step entirely.
+	Iface      string   `protobuf:"bytes,3,opt,name=iface,proto3" json:"iface,omitempty"`                              // NIC name; empty ⇒ "eth0"
+	GuestIp    string   `protobuf:"bytes,4,opt,name=guest_ip,json=guestIp,proto3" json:"guest_ip,omitempty"`           // e.g. "172.16.0.2"
+	PrefixLen  uint32   `protobuf:"varint,5,opt,name=prefix_len,json=prefixLen,proto3" json:"prefix_len,omitempty"`    // e.g. 30
+	Gateway    string   `protobuf:"bytes,6,opt,name=gateway,proto3" json:"gateway,omitempty"`                          // default route via; empty ⇒ don't set a route
+	Dns        []string `protobuf:"bytes,7,rep,name=dns,proto3" json:"dns,omitempty"`                                  // nameservers → /etc/resolv.conf; empty ⇒ leave file
+	FlushNeigh bool     `protobuf:"varint,8,opt,name=flush_neigh,json=flushNeigh,proto3" json:"flush_neigh,omitempty"` // flush the ARP cache (critical on cross-worker fork)
+	// Clock: set the guest wall clock to this instant. 0 ⇒ skip.
+	ClockUnixNanos int64 `protobuf:"varint,9,opt,name=clock_unix_nanos,json=clockUnixNanos,proto3" json:"clock_unix_nanos,omitempty"`
+	// Envs: sandbox-level env vars to store (as SetEnvs would). nil ⇒ skip.
+	Envs          map[string]string `protobuf:"bytes,10,rep,name=envs,proto3" json:"envs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PrepareResumeRequest) Reset() {
+	*x = PrepareResumeRequest{}
+	mi := &file_proto_agent_agent_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PrepareResumeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PrepareResumeRequest) ProtoMessage() {}
+
+func (x *PrepareResumeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PrepareResumeRequest.ProtoReflect.Descriptor instead.
+func (*PrepareResumeRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *PrepareResumeRequest) GetThaw() bool {
+	if x != nil {
+		return x.Thaw
+	}
+	return false
+}
+
+func (x *PrepareResumeRequest) GetThawMountpoints() []string {
+	if x != nil {
+		return x.ThawMountpoints
+	}
+	return nil
+}
+
+func (x *PrepareResumeRequest) GetIface() string {
+	if x != nil {
+		return x.Iface
+	}
+	return ""
+}
+
+func (x *PrepareResumeRequest) GetGuestIp() string {
+	if x != nil {
+		return x.GuestIp
+	}
+	return ""
+}
+
+func (x *PrepareResumeRequest) GetPrefixLen() uint32 {
+	if x != nil {
+		return x.PrefixLen
+	}
+	return 0
+}
+
+func (x *PrepareResumeRequest) GetGateway() string {
+	if x != nil {
+		return x.Gateway
+	}
+	return ""
+}
+
+func (x *PrepareResumeRequest) GetDns() []string {
+	if x != nil {
+		return x.Dns
+	}
+	return nil
+}
+
+func (x *PrepareResumeRequest) GetFlushNeigh() bool {
+	if x != nil {
+		return x.FlushNeigh
+	}
+	return false
+}
+
+func (x *PrepareResumeRequest) GetClockUnixNanos() int64 {
+	if x != nil {
+		return x.ClockUnixNanos
+	}
+	return 0
+}
+
+func (x *PrepareResumeRequest) GetEnvs() map[string]string {
+	if x != nil {
+		return x.Envs
+	}
+	return nil
+}
+
+type PrepareResumeResponse struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Thawed    bool                   `protobuf:"varint,1,opt,name=thawed,proto3" json:"thawed,omitempty"`
+	NetworkOk bool                   `protobuf:"varint,2,opt,name=network_ok,json=networkOk,proto3" json:"network_ok,omitempty"`
+	ClockOk   bool                   `protobuf:"varint,3,opt,name=clock_ok,json=clockOk,proto3" json:"clock_ok,omitempty"`
+	EnvsSet   bool                   `protobuf:"varint,4,opt,name=envs_set,json=envsSet,proto3" json:"envs_set,omitempty"`
+	// "netlink" on the native fast path, "exec-fallback" when netlink failed and
+	// the shell script was used, "" when the network step was skipped.
+	NetworkMethod string   `protobuf:"bytes,5,opt,name=network_method,json=networkMethod,proto3" json:"network_method,omitempty"`
+	Warnings      []string `protobuf:"bytes,6,rep,name=warnings,proto3" json:"warnings,omitempty"` // non-fatal per-step issues, for observability
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PrepareResumeResponse) Reset() {
+	*x = PrepareResumeResponse{}
+	mi := &file_proto_agent_agent_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PrepareResumeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PrepareResumeResponse) ProtoMessage() {}
+
+func (x *PrepareResumeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PrepareResumeResponse.ProtoReflect.Descriptor instead.
+func (*PrepareResumeResponse) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *PrepareResumeResponse) GetThawed() bool {
+	if x != nil {
+		return x.Thawed
+	}
+	return false
+}
+
+func (x *PrepareResumeResponse) GetNetworkOk() bool {
+	if x != nil {
+		return x.NetworkOk
+	}
+	return false
+}
+
+func (x *PrepareResumeResponse) GetClockOk() bool {
+	if x != nil {
+		return x.ClockOk
+	}
+	return false
+}
+
+func (x *PrepareResumeResponse) GetEnvsSet() bool {
+	if x != nil {
+		return x.EnvsSet
+	}
+	return false
+}
+
+func (x *PrepareResumeResponse) GetNetworkMethod() string {
+	if x != nil {
+		return x.NetworkMethod
+	}
+	return ""
+}
+
+func (x *PrepareResumeResponse) GetWarnings() []string {
+	if x != nil {
+		return x.Warnings
+	}
+	return nil
+}
+
 type SetResourceLimitsRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	MaxPids        int32                  `protobuf:"varint,1,opt,name=max_pids,json=maxPids,proto3" json:"max_pids,omitempty"`                        // pids.max (0 = don't change)
@@ -2972,7 +3179,7 @@ type SetResourceLimitsRequest struct {
 
 func (x *SetResourceLimitsRequest) Reset() {
 	*x = SetResourceLimitsRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[56]
+	mi := &file_proto_agent_agent_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2984,7 +3191,7 @@ func (x *SetResourceLimitsRequest) String() string {
 func (*SetResourceLimitsRequest) ProtoMessage() {}
 
 func (x *SetResourceLimitsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[56]
+	mi := &file_proto_agent_agent_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2997,7 +3204,7 @@ func (x *SetResourceLimitsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetResourceLimitsRequest.ProtoReflect.Descriptor instead.
 func (*SetResourceLimitsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{56}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *SetResourceLimitsRequest) GetMaxPids() int32 {
@@ -3036,7 +3243,7 @@ type SetResourceLimitsResponse struct {
 
 func (x *SetResourceLimitsResponse) Reset() {
 	*x = SetResourceLimitsResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[57]
+	mi := &file_proto_agent_agent_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3048,7 +3255,7 @@ func (x *SetResourceLimitsResponse) String() string {
 func (*SetResourceLimitsResponse) ProtoMessage() {}
 
 func (x *SetResourceLimitsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[57]
+	mi := &file_proto_agent_agent_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3061,7 +3268,7 @@ func (x *SetResourceLimitsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetResourceLimitsResponse.ProtoReflect.Descriptor instead.
 func (*SetResourceLimitsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{57}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{59}
 }
 
 type GetVersionRequest struct {
@@ -3072,7 +3279,7 @@ type GetVersionRequest struct {
 
 func (x *GetVersionRequest) Reset() {
 	*x = GetVersionRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[58]
+	mi := &file_proto_agent_agent_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3084,7 +3291,7 @@ func (x *GetVersionRequest) String() string {
 func (*GetVersionRequest) ProtoMessage() {}
 
 func (x *GetVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[58]
+	mi := &file_proto_agent_agent_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3097,7 +3304,7 @@ func (x *GetVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVersionRequest.ProtoReflect.Descriptor instead.
 func (*GetVersionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{58}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{60}
 }
 
 type GetVersionResponse struct {
@@ -3109,7 +3316,7 @@ type GetVersionResponse struct {
 
 func (x *GetVersionResponse) Reset() {
 	*x = GetVersionResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[59]
+	mi := &file_proto_agent_agent_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3121,7 +3328,7 @@ func (x *GetVersionResponse) String() string {
 func (*GetVersionResponse) ProtoMessage() {}
 
 func (x *GetVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[59]
+	mi := &file_proto_agent_agent_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3134,7 +3341,7 @@ func (x *GetVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVersionResponse.ProtoReflect.Descriptor instead.
 func (*GetVersionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{59}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *GetVersionResponse) GetVersion() string {
@@ -3153,7 +3360,7 @@ type UpgradeRequest struct {
 
 func (x *UpgradeRequest) Reset() {
 	*x = UpgradeRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[60]
+	mi := &file_proto_agent_agent_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3165,7 +3372,7 @@ func (x *UpgradeRequest) String() string {
 func (*UpgradeRequest) ProtoMessage() {}
 
 func (x *UpgradeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[60]
+	mi := &file_proto_agent_agent_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3178,7 +3385,7 @@ func (x *UpgradeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpgradeRequest.ProtoReflect.Descriptor instead.
 func (*UpgradeRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{60}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *UpgradeRequest) GetBinaryPath() string {
@@ -3197,7 +3404,7 @@ type UpgradeResponse struct {
 
 func (x *UpgradeResponse) Reset() {
 	*x = UpgradeResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[61]
+	mi := &file_proto_agent_agent_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3209,7 +3416,7 @@ func (x *UpgradeResponse) String() string {
 func (*UpgradeResponse) ProtoMessage() {}
 
 func (x *UpgradeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[61]
+	mi := &file_proto_agent_agent_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3222,7 +3429,7 @@ func (x *UpgradeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpgradeResponse.ProtoReflect.Descriptor instead.
 func (*UpgradeResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{61}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *UpgradeResponse) GetOk() bool {
@@ -3432,7 +3639,32 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"mountpoint\x12\x16\n" +
 	"\x06thawed\x18\x02 \x01(\bR\x06thawed\x12%\n" +
 	"\x0ealready_thawed\x18\x03 \x01(\bR\ralreadyThawed\x12\x14\n" +
-	"\x05error\x18\x04 \x01(\tR\x05error\"\xa9\x01\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\"\x90\x03\n" +
+	"\x14PrepareResumeRequest\x12\x12\n" +
+	"\x04thaw\x18\x01 \x01(\bR\x04thaw\x12)\n" +
+	"\x10thaw_mountpoints\x18\x02 \x03(\tR\x0fthawMountpoints\x12\x14\n" +
+	"\x05iface\x18\x03 \x01(\tR\x05iface\x12\x19\n" +
+	"\bguest_ip\x18\x04 \x01(\tR\aguestIp\x12\x1d\n" +
+	"\n" +
+	"prefix_len\x18\x05 \x01(\rR\tprefixLen\x12\x18\n" +
+	"\agateway\x18\x06 \x01(\tR\agateway\x12\x10\n" +
+	"\x03dns\x18\a \x03(\tR\x03dns\x12\x1f\n" +
+	"\vflush_neigh\x18\b \x01(\bR\n" +
+	"flushNeigh\x12(\n" +
+	"\x10clock_unix_nanos\x18\t \x01(\x03R\x0eclockUnixNanos\x129\n" +
+	"\x04envs\x18\n" +
+	" \x03(\v2%.agent.PrepareResumeRequest.EnvsEntryR\x04envs\x1a7\n" +
+	"\tEnvsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc7\x01\n" +
+	"\x15PrepareResumeResponse\x12\x16\n" +
+	"\x06thawed\x18\x01 \x01(\bR\x06thawed\x12\x1d\n" +
+	"\n" +
+	"network_ok\x18\x02 \x01(\bR\tnetworkOk\x12\x19\n" +
+	"\bclock_ok\x18\x03 \x01(\bR\aclockOk\x12\x19\n" +
+	"\benvs_set\x18\x04 \x01(\bR\aenvsSet\x12%\n" +
+	"\x0enetwork_method\x18\x05 \x01(\tR\rnetworkMethod\x12\x1a\n" +
+	"\bwarnings\x18\x06 \x03(\tR\bwarnings\"\xa9\x01\n" +
 	"\x18SetResourceLimitsRequest\x12\x19\n" +
 	"\bmax_pids\x18\x01 \x01(\x05R\amaxPids\x12(\n" +
 	"\x10max_memory_bytes\x18\x02 \x01(\x03R\x0emaxMemoryBytes\x12 \n" +
@@ -3447,7 +3679,7 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\vbinary_path\x18\x01 \x01(\tR\n" +
 	"binaryPath\"!\n" +
 	"\x0fUpgradeResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok2\x9c\x0f\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok2\xe8\x0f\n" +
 	"\fSandboxAgent\x12/\n" +
 	"\x04Exec\x12\x12.agent.ExecRequest\x1a\x13.agent.ExecResponse\x12:\n" +
 	"\n" +
@@ -3480,7 +3712,8 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\n" +
 	"GetVersion\x12\x18.agent.GetVersionRequest\x1a\x19.agent.GetVersionResponse\x128\n" +
 	"\aUpgrade\x12\x15.agent.UpgradeRequest\x1a\x16.agent.UpgradeResponse\x12/\n" +
-	"\x04Thaw\x12\x12.agent.ThawRequest\x1a\x13.agent.ThawResponseB0Z.github.com/opensandbox/opensandbox/proto/agentb\x06proto3"
+	"\x04Thaw\x12\x12.agent.ThawRequest\x1a\x13.agent.ThawResponse\x12J\n" +
+	"\rPrepareResume\x12\x1b.agent.PrepareResumeRequest\x1a\x1c.agent.PrepareResumeResponseB0Z.github.com/opensandbox/opensandbox/proto/agentb\x06proto3"
 
 var (
 	file_proto_agent_agent_proto_rawDescOnce sync.Once
@@ -3495,7 +3728,7 @@ func file_proto_agent_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_agent_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_agent_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 65)
+var file_proto_agent_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 68)
 var file_proto_agent_agent_proto_goTypes = []any{
 	(ExecOutputChunk_Stream)(0),       // 0: agent.ExecOutputChunk.Stream
 	(ExecSessionOutput_Type)(0),       // 1: agent.ExecSessionOutput.Type
@@ -3555,90 +3788,96 @@ var file_proto_agent_agent_proto_goTypes = []any{
 	(*ThawRequest)(nil),               // 55: agent.ThawRequest
 	(*ThawResponse)(nil),              // 56: agent.ThawResponse
 	(*ThawResult)(nil),                // 57: agent.ThawResult
-	(*SetResourceLimitsRequest)(nil),  // 58: agent.SetResourceLimitsRequest
-	(*SetResourceLimitsResponse)(nil), // 59: agent.SetResourceLimitsResponse
-	(*GetVersionRequest)(nil),         // 60: agent.GetVersionRequest
-	(*GetVersionResponse)(nil),        // 61: agent.GetVersionResponse
-	(*UpgradeRequest)(nil),            // 62: agent.UpgradeRequest
-	(*UpgradeResponse)(nil),           // 63: agent.UpgradeResponse
-	nil,                               // 64: agent.ExecRequest.EnvsEntry
-	nil,                               // 65: agent.ExecSessionCreateRequest.EnvsEntry
-	nil,                               // 66: agent.SetEnvsRequest.EnvsEntry
+	(*PrepareResumeRequest)(nil),      // 58: agent.PrepareResumeRequest
+	(*PrepareResumeResponse)(nil),     // 59: agent.PrepareResumeResponse
+	(*SetResourceLimitsRequest)(nil),  // 60: agent.SetResourceLimitsRequest
+	(*SetResourceLimitsResponse)(nil), // 61: agent.SetResourceLimitsResponse
+	(*GetVersionRequest)(nil),         // 62: agent.GetVersionRequest
+	(*GetVersionResponse)(nil),        // 63: agent.GetVersionResponse
+	(*UpgradeRequest)(nil),            // 64: agent.UpgradeRequest
+	(*UpgradeResponse)(nil),           // 65: agent.UpgradeResponse
+	nil,                               // 66: agent.ExecRequest.EnvsEntry
+	nil,                               // 67: agent.ExecSessionCreateRequest.EnvsEntry
+	nil,                               // 68: agent.SetEnvsRequest.EnvsEntry
+	nil,                               // 69: agent.PrepareResumeRequest.EnvsEntry
 }
 var file_proto_agent_agent_proto_depIdxs = []int32{
-	64, // 0: agent.ExecRequest.envs:type_name -> agent.ExecRequest.EnvsEntry
+	66, // 0: agent.ExecRequest.envs:type_name -> agent.ExecRequest.EnvsEntry
 	0,  // 1: agent.ExecOutputChunk.stream:type_name -> agent.ExecOutputChunk.Stream
 	14, // 2: agent.ListDirResponse.entries:type_name -> agent.DirEntry
-	65, // 3: agent.ExecSessionCreateRequest.envs:type_name -> agent.ExecSessionCreateRequest.EnvsEntry
+	67, // 3: agent.ExecSessionCreateRequest.envs:type_name -> agent.ExecSessionCreateRequest.EnvsEntry
 	1,  // 4: agent.ExecSessionOutput.type:type_name -> agent.ExecSessionOutput.Type
 	42, // 5: agent.ExecSessionListResponse.sessions:type_name -> agent.ExecSessionInfo
-	66, // 6: agent.SetEnvsRequest.envs:type_name -> agent.SetEnvsRequest.EnvsEntry
+	68, // 6: agent.SetEnvsRequest.envs:type_name -> agent.SetEnvsRequest.EnvsEntry
 	57, // 7: agent.ThawResponse.results:type_name -> agent.ThawResult
-	2,  // 8: agent.SandboxAgent.Exec:input_type -> agent.ExecRequest
-	2,  // 9: agent.SandboxAgent.ExecStream:input_type -> agent.ExecRequest
-	5,  // 10: agent.SandboxAgent.ReadFile:input_type -> agent.ReadFileRequest
-	7,  // 11: agent.SandboxAgent.WriteFile:input_type -> agent.WriteFileRequest
-	9,  // 12: agent.SandboxAgent.ReadFileStream:input_type -> agent.ReadFileStreamRequest
-	11, // 13: agent.SandboxAgent.WriteFileStream:input_type -> agent.WriteFileStreamRequest
-	13, // 14: agent.SandboxAgent.ListDir:input_type -> agent.ListDirRequest
-	16, // 15: agent.SandboxAgent.MakeDir:input_type -> agent.MakeDirRequest
-	18, // 16: agent.SandboxAgent.Remove:input_type -> agent.RemoveRequest
-	20, // 17: agent.SandboxAgent.Exists:input_type -> agent.ExistsRequest
-	22, // 18: agent.SandboxAgent.Stat:input_type -> agent.StatRequest
-	24, // 19: agent.SandboxAgent.Stats:input_type -> agent.StatsRequest
-	26, // 20: agent.SandboxAgent.Ping:input_type -> agent.PingRequest
-	28, // 21: agent.SandboxAgent.PTYCreate:input_type -> agent.PTYCreateRequest
-	30, // 22: agent.SandboxAgent.PTYResize:input_type -> agent.PTYResizeRequest
-	32, // 23: agent.SandboxAgent.PTYKill:input_type -> agent.PTYKillRequest
-	34, // 24: agent.SandboxAgent.PTYAttach:input_type -> agent.PTYInput
-	36, // 25: agent.SandboxAgent.ExecSessionCreate:input_type -> agent.ExecSessionCreateRequest
-	38, // 26: agent.SandboxAgent.ExecSessionAttach:input_type -> agent.ExecSessionInput
-	40, // 27: agent.SandboxAgent.ExecSessionList:input_type -> agent.ExecSessionListRequest
-	43, // 28: agent.SandboxAgent.ExecSessionKill:input_type -> agent.ExecSessionKillRequest
-	45, // 29: agent.SandboxAgent.SetEnvs:input_type -> agent.SetEnvsRequest
-	47, // 30: agent.SandboxAgent.ConfigureLogship:input_type -> agent.ConfigureLogshipRequest
-	49, // 31: agent.SandboxAgent.Shutdown:input_type -> agent.ShutdownRequest
-	51, // 32: agent.SandboxAgent.SyncFS:input_type -> agent.SyncFSRequest
-	53, // 33: agent.SandboxAgent.PrepareHibernate:input_type -> agent.PrepareHibernateRequest
-	58, // 34: agent.SandboxAgent.SetResourceLimits:input_type -> agent.SetResourceLimitsRequest
-	60, // 35: agent.SandboxAgent.GetVersion:input_type -> agent.GetVersionRequest
-	62, // 36: agent.SandboxAgent.Upgrade:input_type -> agent.UpgradeRequest
-	55, // 37: agent.SandboxAgent.Thaw:input_type -> agent.ThawRequest
-	3,  // 38: agent.SandboxAgent.Exec:output_type -> agent.ExecResponse
-	4,  // 39: agent.SandboxAgent.ExecStream:output_type -> agent.ExecOutputChunk
-	6,  // 40: agent.SandboxAgent.ReadFile:output_type -> agent.ReadFileResponse
-	8,  // 41: agent.SandboxAgent.WriteFile:output_type -> agent.WriteFileResponse
-	10, // 42: agent.SandboxAgent.ReadFileStream:output_type -> agent.FileChunk
-	12, // 43: agent.SandboxAgent.WriteFileStream:output_type -> agent.WriteFileStreamResponse
-	15, // 44: agent.SandboxAgent.ListDir:output_type -> agent.ListDirResponse
-	17, // 45: agent.SandboxAgent.MakeDir:output_type -> agent.MakeDirResponse
-	19, // 46: agent.SandboxAgent.Remove:output_type -> agent.RemoveResponse
-	21, // 47: agent.SandboxAgent.Exists:output_type -> agent.ExistsResponse
-	23, // 48: agent.SandboxAgent.Stat:output_type -> agent.StatResponse
-	25, // 49: agent.SandboxAgent.Stats:output_type -> agent.StatsResponse
-	27, // 50: agent.SandboxAgent.Ping:output_type -> agent.PingResponse
-	29, // 51: agent.SandboxAgent.PTYCreate:output_type -> agent.PTYCreateResponse
-	31, // 52: agent.SandboxAgent.PTYResize:output_type -> agent.PTYResizeResponse
-	33, // 53: agent.SandboxAgent.PTYKill:output_type -> agent.PTYKillResponse
-	35, // 54: agent.SandboxAgent.PTYAttach:output_type -> agent.PTYOutput
-	37, // 55: agent.SandboxAgent.ExecSessionCreate:output_type -> agent.ExecSessionCreateResponse
-	39, // 56: agent.SandboxAgent.ExecSessionAttach:output_type -> agent.ExecSessionOutput
-	41, // 57: agent.SandboxAgent.ExecSessionList:output_type -> agent.ExecSessionListResponse
-	44, // 58: agent.SandboxAgent.ExecSessionKill:output_type -> agent.ExecSessionKillResponse
-	46, // 59: agent.SandboxAgent.SetEnvs:output_type -> agent.SetEnvsResponse
-	48, // 60: agent.SandboxAgent.ConfigureLogship:output_type -> agent.ConfigureLogshipResponse
-	50, // 61: agent.SandboxAgent.Shutdown:output_type -> agent.ShutdownResponse
-	52, // 62: agent.SandboxAgent.SyncFS:output_type -> agent.SyncFSResponse
-	54, // 63: agent.SandboxAgent.PrepareHibernate:output_type -> agent.PrepareHibernateResponse
-	59, // 64: agent.SandboxAgent.SetResourceLimits:output_type -> agent.SetResourceLimitsResponse
-	61, // 65: agent.SandboxAgent.GetVersion:output_type -> agent.GetVersionResponse
-	63, // 66: agent.SandboxAgent.Upgrade:output_type -> agent.UpgradeResponse
-	56, // 67: agent.SandboxAgent.Thaw:output_type -> agent.ThawResponse
-	38, // [38:68] is the sub-list for method output_type
-	8,  // [8:38] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	69, // 8: agent.PrepareResumeRequest.envs:type_name -> agent.PrepareResumeRequest.EnvsEntry
+	2,  // 9: agent.SandboxAgent.Exec:input_type -> agent.ExecRequest
+	2,  // 10: agent.SandboxAgent.ExecStream:input_type -> agent.ExecRequest
+	5,  // 11: agent.SandboxAgent.ReadFile:input_type -> agent.ReadFileRequest
+	7,  // 12: agent.SandboxAgent.WriteFile:input_type -> agent.WriteFileRequest
+	9,  // 13: agent.SandboxAgent.ReadFileStream:input_type -> agent.ReadFileStreamRequest
+	11, // 14: agent.SandboxAgent.WriteFileStream:input_type -> agent.WriteFileStreamRequest
+	13, // 15: agent.SandboxAgent.ListDir:input_type -> agent.ListDirRequest
+	16, // 16: agent.SandboxAgent.MakeDir:input_type -> agent.MakeDirRequest
+	18, // 17: agent.SandboxAgent.Remove:input_type -> agent.RemoveRequest
+	20, // 18: agent.SandboxAgent.Exists:input_type -> agent.ExistsRequest
+	22, // 19: agent.SandboxAgent.Stat:input_type -> agent.StatRequest
+	24, // 20: agent.SandboxAgent.Stats:input_type -> agent.StatsRequest
+	26, // 21: agent.SandboxAgent.Ping:input_type -> agent.PingRequest
+	28, // 22: agent.SandboxAgent.PTYCreate:input_type -> agent.PTYCreateRequest
+	30, // 23: agent.SandboxAgent.PTYResize:input_type -> agent.PTYResizeRequest
+	32, // 24: agent.SandboxAgent.PTYKill:input_type -> agent.PTYKillRequest
+	34, // 25: agent.SandboxAgent.PTYAttach:input_type -> agent.PTYInput
+	36, // 26: agent.SandboxAgent.ExecSessionCreate:input_type -> agent.ExecSessionCreateRequest
+	38, // 27: agent.SandboxAgent.ExecSessionAttach:input_type -> agent.ExecSessionInput
+	40, // 28: agent.SandboxAgent.ExecSessionList:input_type -> agent.ExecSessionListRequest
+	43, // 29: agent.SandboxAgent.ExecSessionKill:input_type -> agent.ExecSessionKillRequest
+	45, // 30: agent.SandboxAgent.SetEnvs:input_type -> agent.SetEnvsRequest
+	47, // 31: agent.SandboxAgent.ConfigureLogship:input_type -> agent.ConfigureLogshipRequest
+	49, // 32: agent.SandboxAgent.Shutdown:input_type -> agent.ShutdownRequest
+	51, // 33: agent.SandboxAgent.SyncFS:input_type -> agent.SyncFSRequest
+	53, // 34: agent.SandboxAgent.PrepareHibernate:input_type -> agent.PrepareHibernateRequest
+	60, // 35: agent.SandboxAgent.SetResourceLimits:input_type -> agent.SetResourceLimitsRequest
+	62, // 36: agent.SandboxAgent.GetVersion:input_type -> agent.GetVersionRequest
+	64, // 37: agent.SandboxAgent.Upgrade:input_type -> agent.UpgradeRequest
+	55, // 38: agent.SandboxAgent.Thaw:input_type -> agent.ThawRequest
+	58, // 39: agent.SandboxAgent.PrepareResume:input_type -> agent.PrepareResumeRequest
+	3,  // 40: agent.SandboxAgent.Exec:output_type -> agent.ExecResponse
+	4,  // 41: agent.SandboxAgent.ExecStream:output_type -> agent.ExecOutputChunk
+	6,  // 42: agent.SandboxAgent.ReadFile:output_type -> agent.ReadFileResponse
+	8,  // 43: agent.SandboxAgent.WriteFile:output_type -> agent.WriteFileResponse
+	10, // 44: agent.SandboxAgent.ReadFileStream:output_type -> agent.FileChunk
+	12, // 45: agent.SandboxAgent.WriteFileStream:output_type -> agent.WriteFileStreamResponse
+	15, // 46: agent.SandboxAgent.ListDir:output_type -> agent.ListDirResponse
+	17, // 47: agent.SandboxAgent.MakeDir:output_type -> agent.MakeDirResponse
+	19, // 48: agent.SandboxAgent.Remove:output_type -> agent.RemoveResponse
+	21, // 49: agent.SandboxAgent.Exists:output_type -> agent.ExistsResponse
+	23, // 50: agent.SandboxAgent.Stat:output_type -> agent.StatResponse
+	25, // 51: agent.SandboxAgent.Stats:output_type -> agent.StatsResponse
+	27, // 52: agent.SandboxAgent.Ping:output_type -> agent.PingResponse
+	29, // 53: agent.SandboxAgent.PTYCreate:output_type -> agent.PTYCreateResponse
+	31, // 54: agent.SandboxAgent.PTYResize:output_type -> agent.PTYResizeResponse
+	33, // 55: agent.SandboxAgent.PTYKill:output_type -> agent.PTYKillResponse
+	35, // 56: agent.SandboxAgent.PTYAttach:output_type -> agent.PTYOutput
+	37, // 57: agent.SandboxAgent.ExecSessionCreate:output_type -> agent.ExecSessionCreateResponse
+	39, // 58: agent.SandboxAgent.ExecSessionAttach:output_type -> agent.ExecSessionOutput
+	41, // 59: agent.SandboxAgent.ExecSessionList:output_type -> agent.ExecSessionListResponse
+	44, // 60: agent.SandboxAgent.ExecSessionKill:output_type -> agent.ExecSessionKillResponse
+	46, // 61: agent.SandboxAgent.SetEnvs:output_type -> agent.SetEnvsResponse
+	48, // 62: agent.SandboxAgent.ConfigureLogship:output_type -> agent.ConfigureLogshipResponse
+	50, // 63: agent.SandboxAgent.Shutdown:output_type -> agent.ShutdownResponse
+	52, // 64: agent.SandboxAgent.SyncFS:output_type -> agent.SyncFSResponse
+	54, // 65: agent.SandboxAgent.PrepareHibernate:output_type -> agent.PrepareHibernateResponse
+	61, // 66: agent.SandboxAgent.SetResourceLimits:output_type -> agent.SetResourceLimitsResponse
+	63, // 67: agent.SandboxAgent.GetVersion:output_type -> agent.GetVersionResponse
+	65, // 68: agent.SandboxAgent.Upgrade:output_type -> agent.UpgradeResponse
+	56, // 69: agent.SandboxAgent.Thaw:output_type -> agent.ThawResponse
+	59, // 70: agent.SandboxAgent.PrepareResume:output_type -> agent.PrepareResumeResponse
+	40, // [40:71] is the sub-list for method output_type
+	9,  // [9:40] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_proto_agent_agent_proto_init() }
@@ -3652,7 +3891,7 @@ func file_proto_agent_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_agent_agent_proto_rawDesc), len(file_proto_agent_agent_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   65,
+			NumMessages:   68,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
