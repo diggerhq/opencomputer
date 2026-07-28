@@ -264,10 +264,10 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 			s.recordInitialScaleEvent(ctx, sb.ID, cfg)
 			s.configureLogshipForSandbox(ctx, sb.ID)
 			return &pb.CreateSandboxResponse{
-				SandboxId: sb.ID,
-				Status:    string(sb.Status),
-				MemoryMb:  int32(sb.MemoryMB),
-			}, nil
+				SandboxId:     sb.ID,
+				Status:        string(sb.Status),
+				MemoryMb:      int32(sb.MemoryMB),
+				GoldenVersion: sb.GoldenVersion}, nil
 		}
 		// Cache miss path: try to recover by downloading the checkpoint from
 		// S3, then retry the fork. The archive at TemplateRootfsKey holds
@@ -319,10 +319,10 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		s.recordInitialScaleEvent(ctx, sb.ID, cfg)
 		s.configureLogshipForSandbox(ctx, sb.ID)
 		return &pb.CreateSandboxResponse{
-			SandboxId: sb.ID,
-			Status:    string(sb.Status),
-			MemoryMb:  int32(sb.MemoryMB),
-		}, nil
+			SandboxId:     sb.ID,
+			Status:        string(sb.Status),
+			MemoryMb:      int32(sb.MemoryMB),
+			GoldenVersion: sb.GoldenVersion}, nil
 	}
 
 	// Handle sandbox snapshot template: resolve S3 keys to local paths.
@@ -360,10 +360,10 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		}
 		log.Printf("grpc: manufactured pool box %s (template=%s) — parked paused", sb.ID, cfg.Template)
 		return &pb.CreateSandboxResponse{
-			SandboxId: sb.ID,
-			Status:    string(types.SandboxStatusPooled),
-			MemoryMb:  int32(sb.MemoryMB),
-		}, nil
+			SandboxId:     sb.ID,
+			Status:        string(types.SandboxStatusPooled),
+			MemoryMb:      int32(sb.MemoryMB),
+			GoldenVersion: sb.GoldenVersion}, nil
 	}
 
 	// Register with sandbox router for rolling timeout tracking.
@@ -383,10 +383,10 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 	s.configureLogshipForSandbox(ctx, sb.ID)
 
 	return &pb.CreateSandboxResponse{
-		SandboxId: sb.ID,
-		Status:    string(sb.Status),
-		MemoryMb:  int32(sb.MemoryMB),
-	}, nil
+		SandboxId:     sb.ID,
+		Status:        string(sb.Status),
+		MemoryMb:      int32(sb.MemoryMB),
+		GoldenVersion: sb.GoldenVersion}, nil
 }
 
 // initSandboxDB opens the per-sandbox SQLite (creating + schema-initing it
@@ -498,10 +498,10 @@ func (s *GRPCServer) ClaimSandbox(ctx context.Context, req *pb.ClaimSandboxReque
 
 	log.Printf("grpc: claimed pool box %s (template=%s)", sb.ID, sb.Template)
 	return &pb.ClaimSandboxResponse{
-		SandboxId: sb.ID,
-		Status:    string(sb.Status),
-		MemoryMb:  int32(sb.MemoryMB),
-	}, nil
+		SandboxId:     sb.ID,
+		Status:        string(sb.Status),
+		MemoryMb:      int32(sb.MemoryMB),
+		GoldenVersion: sb.GoldenVersion}, nil
 }
 
 func (s *GRPCServer) DestroySandbox(ctx context.Context, req *pb.DestroySandboxRequest) (*pb.DestroySandboxResponse, error) {

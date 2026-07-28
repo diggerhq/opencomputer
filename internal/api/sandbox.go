@@ -753,6 +753,9 @@ func (s *Server) tryClaimPooled(c echo.Context, ctx context.Context, cfg types.S
 
 	// Promote pending→running (emits sandbox.created + sandbox.ready).
 	_ = s.store.UpdateSandboxSessionStatus(ctx, box.SandboxID, "running", nil)
+	if g := claimResp.GetGoldenVersion(); g != "" {
+		_ = s.store.SetSandboxGoldenVersion(ctx, box.SandboxID, g)
+	}
 
 	// Grow to requested resources (virtio-mem + cgroup), mirroring the cold path.
 	if cfg.MemoryMB > 0 || cfg.CpuCount > 0 {
@@ -999,6 +1002,17 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// Creation succeeded — promote session to running.
 	if s.store != nil {
 		_ = s.store.UpdateSandboxSessionStatus(ctx, sandboxID, "running", nil)
+		// Stamp the authoritative golden the worker actually created this box on,
+		// so a later live-migrate can pick the right rebase base. Falls back to
+		// the registry heartbeat's golden for pre-golden workers. EVERY box must
+		// end up with a golden_version — a blank one is unmigratable.
+		golden := grpcResp.GetGoldenVersion()
+		if golden == "" {
+			golden = worker.GoldenVersion
+		}
+		if golden != "" {
+			_ = s.store.SetSandboxGoldenVersion(ctx, sandboxID, golden)
+		}
 	}
 
 	// Preview-URL auth: validate the payload, hash the token, persist it on

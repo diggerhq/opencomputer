@@ -1254,6 +1254,8 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 
 	migrationFailures := 0
 	const maxMigrationFailures = 3 // after 3 failed attempts, stop trying migration
+	backoffRounds := 0             // consecutive persistent-failure rounds
+	const maxBackoffRounds = 2     // ~10min of persistent migrate failure → deep-hibernate the stuck boxes
 
 	for {
 		select {
@@ -1289,6 +1291,21 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 		// handle truly session-less VMs.
 		var running []string
 		for _, sb := range listResp.Sandboxes {
+			// Pool boxes are disposable (generic, no customer data). If the drain
+			// finds one — even mislabeled "running" on a pre-pool worker that
+			// ignored the pooled flag — destroy it rather than migrate/hibernate,
+			// so a pool box can never wedge a scaler drain (the admin path already
+			// wipes; this covers the roll + smart-drain).
+			if s.store != nil {
+				if sess, serr := s.store.GetSandboxSession(ctx, sb.SandboxId); serr == nil && sess != nil && sess.Status == "pooled" {
+					dctx, dcancel := context.WithTimeout(ctx, 15*time.Second)
+					_, _ = sourceClient.DestroySandbox(dctx, &pb.DestroySandboxRequest{SandboxId: sb.SandboxId})
+					dcancel()
+					_ = s.store.WipePooled(context.Background(), sb.SandboxId)
+					log.Printf("scaler: drain: wiped pooled box %s off %s (disposable)", sb.SandboxId, workerID)
+					continue
+				}
+			}
 			// Paused boxes are RAM-resident only (no checkpoint) — a drain would
 			// otherwise be lost. MOVE them to another worker without billing:
 			// genuinely resume the box (unbilled), live-migrate it as a normal
@@ -1369,6 +1386,32 @@ func (s *Scaler) drainWorker(workerID, machineID, region string) {
 		// migration genuinely can't complete, drainTimeout terminates the loop
 		// and the next eval tick takes over.
 		if migrationFailures >= maxMigrationFailures {
+			backoffRounds++
+			// After a couple of persistent-failure rounds the cause isn't
+			// transient (no golden_version, split→merged base skew, no viable
+			// target). Rather than retry until drainTimeout and leave the worker
+			// un-drained — wedging the roll — deep-hibernate the stuck running
+			// boxes, the SAME fallback the paused path uses. They go to S3 and
+			// wake later (convert-on-fork rebases any split→merged skew). A live
+			// box gets put to sleep, but that beats stalling the whole fleet roll.
+			if backoffRounds >= maxBackoffRounds {
+				log.Printf("scaler: drain: %d persistent migrate failures on %s — deep-hibernating %d un-migratable running box(es) as fallback", migrationFailures, workerID, len(running))
+				for _, sbID := range running {
+					hibCtx, hibCancel := context.WithTimeout(ctx, 120*time.Second)
+					if _, herr := sourceClient.HibernateSandbox(hibCtx, &pb.HibernateSandboxRequest{SandboxId: sbID}); herr != nil {
+						log.Printf("scaler: drain: fallback deep-hibernate %s on %s failed: %v", sbID, workerID, herr)
+					} else {
+						if s.store != nil {
+							_ = s.store.UpdateSandboxSessionStatus(context.Background(), sbID, "hibernated", nil)
+						}
+						log.Printf("scaler: drain: deep-hibernated running %s on %s (migrate fallback)", sbID, workerID)
+					}
+					hibCancel()
+				}
+				migrationFailures = 0
+				backoffRounds = 0
+				continue
+			}
 			log.Printf("scaler: drain: %d migration failures on %s, backing off 5min before retry (%d sandboxes remaining)",
 				migrationFailures, workerID, len(running))
 			select {
