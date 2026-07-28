@@ -699,10 +699,11 @@ func isTransientWorkerErr(err error) bool {
 // secretStoreID is the resolved store UUID (or nil) from resolveSecretStoreInto;
 // passed straight to CreateSandboxSessionWithStatus so the row's secret_store_id
 // column is populated and the secret-refresh fanout can find this sandbox.
-// poolEnabled gates the pre-warmed pool claim fast-path. Off unless
-// OPENSANDBOX_POOL_ENABLED=1, so the pool has to be explicitly turned on (and
-// warmed) before creates try to claim from it.
-func (s *Server) poolEnabled() bool { return os.Getenv("OPENSANDBOX_POOL_ENABLED") == "1" }
+// poolEnabled gates the pre-warmed pool (claim fast-path + refill reconciler).
+// ON by default — set OPENSANDBOX_POOL_ENABLED=0 to disable (e.g. an environment
+// whose base image doesn't yet match the target worker version). A pool miss
+// always falls through to a cold create, so "on" is safe.
+func (s *Server) poolEnabled() bool { return os.Getenv("OPENSANDBOX_POOL_ENABLED") != "0" }
 
 // tryClaimPooled attempts the pool fast-path: atomically claim a pre-warmed
 // pooled box for (region, template), resume+rebind it on its worker, and return
@@ -730,7 +731,10 @@ func (s *Server) tryClaimPooled(c echo.Context, ctx context.Context, cfg types.S
 		return false, nil
 	}
 
-	grpcCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// Tail-latency cap: a healthy claim is ~100ms; if resume+rebind stalls (the
+	// paused-agent-rebind failure mode), abort at 3s and fall through to a cold
+	// create rather than making the customer wait ~40s. Worst case ≈ 3s + cold.
+	grpcCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	claimResp, err := client.ClaimSandbox(grpcCtx, &pb.ClaimSandboxRequest{
 		SandboxId:  box.SandboxID,
@@ -882,7 +886,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// try to claim a pre-warmed pooled box — resume + rebind, skipping the ~260ms
 	// cold restore. A miss or any ineligibility falls through to the cold create
 	// below, so it's never worse than the status quo.
-	if s.store != nil && hasOrg && s.poolEnabled() &&
+	if s.store != nil && hasOrg && s.poolEnabled() && s.poolTargetForRegion(region) > 0 &&
 		templateRootfsKey == "" && cfg.ImageRef == "" && cfg.CheckpointID == "" &&
 		len(cfg.EgressAllowlist) == 0 && len(cfg.SecretAllowedHosts) == 0 {
 		poolTemplate := cfg.Template

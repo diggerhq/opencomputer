@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,13 +23,57 @@ import (
 // customer), parked paused, never billed. On worker drain they are wiped
 // (disposable) rather than migrated/hibernated.
 
-func poolTargetN() int {
+// poolDefaultTarget is the benign per-region warm-pool size used when a region
+// has no explicit override. From OPENSANDBOX_POOL_TARGET (Infisical-injected env),
+// default 10.
+func (s *Server) poolDefaultTarget() int {
 	if v := os.Getenv("OPENSANDBOX_POOL_TARGET"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			return n
 		}
 	}
-	return 5
+	return 10
+}
+
+// poolTargetForRegion returns the warm-pool target for a region: a per-region
+// override from OPENSANDBOX_POOL_TARGETS="eastus2=100,westus2=10" (settable in
+// Infisical — it's just an env var the CP process reads), else poolDefaultTarget().
+// 0 ⇒ no pool for that region.
+func (s *Server) poolTargetForRegion(region string) int {
+	if raw := os.Getenv("OPENSANDBOX_POOL_TARGETS"); raw != "" {
+		for _, pair := range strings.Split(raw, ",") {
+			kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+			if len(kv) == 2 && strings.TrimSpace(kv[0]) == region {
+				if n, err := strconv.Atoi(strings.TrimSpace(kv[1])); err == nil && n >= 0 {
+					return n
+				}
+			}
+		}
+	}
+	return s.poolDefaultTarget()
+}
+
+// poolRegions is the set of regions the reconciler warms: the CP's own region
+// plus any explicitly listed in OPENSANDBOX_POOL_TARGETS.
+func (s *Server) poolRegions() []string {
+	set := map[string]bool{}
+	if s.region != "" {
+		set[s.region] = true
+	}
+	if raw := os.Getenv("OPENSANDBOX_POOL_TARGETS"); raw != "" {
+		for _, pair := range strings.Split(raw, ",") {
+			if kv := strings.SplitN(strings.TrimSpace(pair), "=", 2); len(kv) == 2 {
+				if r := strings.TrimSpace(kv[0]); r != "" {
+					set[r] = true
+				}
+			}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for r := range set {
+		out = append(out, r)
+	}
+	return out
 }
 
 func poolTemplateName() string {
@@ -73,16 +118,11 @@ func (s *Server) manufacturePoolBox(ctx context.Context, region, template string
 // No-op unless the pool is enabled. Intended to be run in its own goroutine.
 func (s *Server) StartPoolReconciler(ctx context.Context, isLeader func() bool) {
 	if !s.poolEnabled() {
-		log.Printf("pool: reconciler disabled (OPENSANDBOX_POOL_ENABLED != 1)")
+		log.Printf("pool: reconciler disabled (OPENSANDBOX_POOL_ENABLED=0)")
 		return
 	}
-	region := s.region
-	if region == "" {
-		region = "iad"
-	}
 	template := poolTemplateName()
-	target := poolTargetN()
-	log.Printf("pool: reconciler started (region=%s template=%s target=%d, leader-gated)", region, template, target)
+	log.Printf("pool: reconciler started (regions=%v default_target=%d template=%s, leader-gated)", s.poolRegions(), s.poolDefaultTarget(), template)
 
 	t := time.NewTicker(15 * time.Second)
 	defer t.Stop()
@@ -94,7 +134,13 @@ func (s *Server) StartPoolReconciler(ctx context.Context, isLeader func() bool) 
 			if isLeader != nil && !isLeader() {
 				continue
 			}
-			s.reconcilePool(ctx, region, template, target)
+			for _, region := range s.poolRegions() {
+				target := s.poolTargetForRegion(region)
+				if target <= 0 {
+					continue
+				}
+				s.reconcilePool(ctx, region, template, target)
+			}
 		}
 	}
 }
