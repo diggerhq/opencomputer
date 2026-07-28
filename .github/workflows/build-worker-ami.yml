@@ -155,22 +155,19 @@ jobs:
 
       - name: Build image
         env:
-          # packer-plugin-azure authenticates via OIDC directly and fetches a
-          # FRESH GitHub OIDC token per Azure call (ARM_OIDC_REQUEST_*), so it
-          # survives long (>50 min) builds — unlike use_azure_cli_auth, whose
-          # one-shot federated client assertion expires ~5 min in and can't
-          # refresh, which failed the capture step with AADSTS700024.
-          ARM_USE_OIDC: "true"
+          # Service-principal client-secret auth: a long-lived credential the
+          # plugin refreshes for the WHOLE build. The prior CLI-federated session
+          # cached a one-shot OIDC client assertion (~5 min) that couldn't refresh
+          # and died mid-build with AADSTS700024; ARM_USE_OIDC didn't switch the
+          # plugin over (it fell back to MSI → "Identity not found"). Providing
+          # ARM_CLIENT_SECRET completes the SP credential so the plugin uses it.
           ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           # Use run number as patch version for gallery (must be integer)
           PATCH=${{ github.run_number }}
-
-          # GitHub's OIDC token endpoint (present because permissions: id-token: write).
-          export ARM_OIDC_REQUEST_TOKEN="$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
-          export ARM_OIDC_REQUEST_URL="$ACTIONS_ID_TOKEN_REQUEST_URL"
 
           packer build \
             -var "use_azure_cli_auth=false" \

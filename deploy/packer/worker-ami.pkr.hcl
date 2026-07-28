@@ -174,11 +174,11 @@ source "azure-arm" "worker" {
   location        = var.location
 
   # Auth: local/dev uses the Azure CLI session (use_azure_cli_auth=true, the
-  # default). CI passes -var use_azure_cli_auth=false and provides ARM_USE_OIDC +
-  # ARM_CLIENT_ID/ARM_TENANT_ID + ARM_OIDC_REQUEST_TOKEN/URL so the plugin fetches
-  # a FRESH GitHub OIDC token per Azure auth. The CLI path caches the one-shot
-  # federated client assertion (valid ~5 min) and can't refresh it, so long
-  # (>50 min) image builds died with AADSTS700024 near the capture step.
+  # default). CI passes -var use_azure_cli_auth=false and provides service-
+  # principal creds via env (ARM_CLIENT_ID/ARM_CLIENT_SECRET/ARM_TENANT_ID/
+  # ARM_SUBSCRIPTION_ID) — a long-lived credential the plugin refreshes for the
+  # whole build. The CLI path cached a one-shot OIDC federated assertion (valid
+  # ~5 min) that couldn't refresh, so long (>50 min) builds died with AADSTS700024.
   use_azure_cli_auth = var.use_azure_cli_auth
 
   # Base image: Ubuntu 24.04 LTS
