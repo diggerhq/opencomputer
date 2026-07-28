@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/opensandbox/opensandbox/pkg/types"
 	pb "github.com/opensandbox/opensandbox/proto/worker"
 )
 
@@ -35,6 +36,16 @@ func (s *Server) poolTarget() int {
 	return 10
 }
 
+// poolMaxMemPct is the host-memory ceiling for pool refill: once a worker's
+// memory is above this, the reconciler stops manufacturing pool boxes onto it.
+// The pool always yields to real customer load — this matches the scaler's
+// memory scale-up trigger (resourceMemThreshold), so at the point new workers
+// are being added for pressure the pool stops adding to it. Paused pool boxes
+// have their RAM reclaimed, but manufacture briefly restores a full VM and a
+// burst of claims resumes them, so gating on real headroom prevents the pool
+// from tipping a hot worker over.
+const poolMaxMemPct = 70.0
+
 func poolTemplateName() string {
 	if v := os.Getenv("OPENSANDBOX_POOL_TEMPLATE"); v != "" {
 		return v
@@ -47,6 +58,12 @@ func poolTemplateName() string {
 // then CreateSandbox{pooled:true} — the worker golden-restores it and parks it
 // paused. Rolls back the PG row if the worker create fails.
 func (s *Server) manufacturePoolBoxOn(ctx context.Context, workerID, region, template, goldenVersion string) error {
+	// Golden gate: a pool box with no golden_version can't be migrated/rebased
+	// later (the drain fails "no goldenVersion"). Refuse to make one — the worker
+	// hasn't reported its golden yet, so skip it this tick.
+	if goldenVersion == "" {
+		return fmt.Errorf("pool: worker %s reports no golden version yet — skipping", workerID)
+	}
 	grpcClient, err := s.workerRegistry.GetWorkerClient(workerID)
 	if err != nil {
 		return fmt.Errorf("pool: no client for %s: %w", workerID, err)
@@ -57,18 +74,35 @@ func (s *Server) manufacturePoolBoxOn(ctx context.Context, workerID, region, tem
 	}
 	grpcCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	if _, err := grpcClient.CreateSandbox(grpcCtx, &pb.CreateSandboxRequest{
+	resp, err := grpcClient.CreateSandbox(grpcCtx, &pb.CreateSandboxRequest{
 		SandboxId: sandboxID,
 		Template:  template,
 		Pooled:    true,
-	}); err != nil {
+	})
+	if err != nil {
 		_ = s.store.WipePooled(ctx, sandboxID) // roll back the reserved row
 		return fmt.Errorf("pool: manufacture %s on %s: %w", sandboxID, workerID, err)
 	}
-	if goldenVersion != "" {
-		_ = s.store.SetSandboxGoldenVersion(ctx, sandboxID, goldenVersion)
+	// Capability gate: a pool-capable worker parks the box and returns
+	// status="pooled". An OLD worker that doesn't understand the flag ignores it,
+	// makes a normal RUNNING box, and returns "running" — a malformed pool box
+	// that can't be claimed and wedges drains. Destroy it and refuse to pool on
+	// this worker (so the pool can never pollute an un-rolled fleet).
+	if resp.GetStatus() != string(types.SandboxStatusPooled) {
+		dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, _ = grpcClient.DestroySandbox(dctx, &pb.DestroySandboxRequest{SandboxId: sandboxID})
+		dcancel()
+		_ = s.store.WipePooled(ctx, sandboxID)
+		return fmt.Errorf("pool: worker %s not pool-capable (CreateSandbox returned status=%q, want pooled) — skipping until rolled", workerID, resp.GetStatus())
 	}
-	log.Printf("pool: manufactured %s (template=%s) on %s", sandboxID, template, workerID)
+	// Stamp the authoritative golden the worker reported (fall back to the
+	// registry value) so the box is migratable/rebasable later.
+	golden := resp.GetGoldenVersion()
+	if golden == "" {
+		golden = goldenVersion
+	}
+	_ = s.store.SetSandboxGoldenVersion(ctx, sandboxID, golden)
+	log.Printf("pool: manufactured %s (template=%s, golden=%s) on %s", sandboxID, template, golden, workerID)
 	return nil
 }
 
@@ -116,6 +150,14 @@ func (s *Server) StartPoolReconciler(ctx context.Context, isLeader func() bool) 
 func (s *Server) reconcilePool(ctx context.Context, region, template string, perWorkerTarget int) {
 	for _, w := range s.workerRegistry.GetAllWorkers() {
 		if w.Region != region || w.Draining {
+			continue
+		}
+		// Memory-pressure gate: stop filling the pool on a worker whose host
+		// memory is over the ceiling. Real customer load takes priority — the
+		// pool is a latency optimization, not something that should push a hot
+		// worker into pressure. It resumes refilling once the box gets headroom.
+		if w.MemPct > poolMaxMemPct {
+			log.Printf("pool: %s at %.0f%% memory (> %.0f%%) — skipping refill", w.ID, w.MemPct, poolMaxMemPct)
 			continue
 		}
 		have, err := s.store.CountPooledOnWorker(ctx, w.ID, template)

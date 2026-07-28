@@ -43,6 +43,12 @@ type Sandbox struct {
 	CpuCount   int               `json:"cpuCount"`
 	MemoryMB   int               `json:"memoryMB"`
 	MachineID  string            `json:"machineID,omitempty"`
+	// GoldenVersion is the golden snapshot this box's rootfs is backed by, as
+	// reported authoritatively by the worker that created it. The control plane
+	// stamps it onto the PG session so a later live-migrate can pick the right
+	// rebase base. Every created box must carry this — a blank one is
+	// unmigratable ("source sandbox has no goldenVersion").
+	GoldenVersion string `json:"goldenVersion,omitempty"`
 	// ConnectURL and Token are currently unused by SDKs. All data-plane traffic
 	// flows through the control plane's SandboxAPIProxy, which proxies to workers
 	// over the internal VPC network. Direct worker access support coming in a future release.

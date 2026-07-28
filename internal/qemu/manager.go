@@ -1820,14 +1820,15 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		id, time.Since(t0).Milliseconds(), hostPort, guestPort, netCfg.TAPName, guestCID)
 
 	return &types.Sandbox{
-		ID:        id,
-		Template:  template,
-		Status:    types.SandboxStatusRunning,
-		StartedAt: now,
-		EndAt:     now.Add(timeout),
-		CpuCount:  cpus,
-		MemoryMB:  memMB,
-		HostPort:  hostPort,
+		ID:            id,
+		Template:      template,
+		Status:        types.SandboxStatusRunning,
+		StartedAt:     now,
+		EndAt:         now.Add(timeout),
+		CpuCount:      cpus,
+		MemoryMB:      memMB,
+		HostPort:      hostPort,
+		GoldenVersion: vm.goldenVersion,
 	}, nil
 }
 
@@ -2323,14 +2324,15 @@ func (m *Manager) Create(ctx context.Context, cfg types.SandboxConfig) (sb *type
 		id, template, cpus, memMB, hostPort, guestPort, netCfg.TAPName, guestMAC, guestCID)
 
 	return &types.Sandbox{
-		ID:        id,
-		Template:  template,
-		Status:    types.SandboxStatusRunning,
-		StartedAt: now,
-		EndAt:     now.Add(timeout),
-		CpuCount:  cpus,
-		MemoryMB:  memMB,
-		HostPort:  hostPort,
+		ID:            id,
+		Template:      template,
+		Status:        types.SandboxStatusRunning,
+		StartedAt:     now,
+		EndAt:         now.Add(timeout),
+		CpuCount:      cpus,
+		MemoryMB:      memMB,
+		HostPort:      hostPort,
+		GoldenVersion: vm.goldenVersion,
 	}, nil
 }
 
@@ -4764,12 +4766,13 @@ func (m *Manager) ForkFromCheckpoint(ctx context.Context, checkpointID string, c
 	return &types.Sandbox{
 		ID:        id,
 		Template:  meta.Template,
-		Status:    types.SandboxStatusRunning,
-		StartedAt: now,
-		EndAt:     now.Add(timeout),
-		CpuCount:  cpus,
-		MemoryMB:  memMB + virtioMemAddedMB,
-		HostPort:  hostPort,
+		Status:        types.SandboxStatusRunning,
+		StartedAt:     now,
+		EndAt:         now.Add(timeout),
+		CpuCount:      cpus,
+		MemoryMB:      memMB + virtioMemAddedMB,
+		HostPort:      hostPort,
+		GoldenVersion: vm.goldenVersion,
 	}, nil
 }
 
@@ -4838,14 +4841,15 @@ func (m *Manager) IsBillingSuppressed(sandboxID string) bool {
 
 func vmToSandbox(vm *VMInstance) *types.Sandbox {
 	return &types.Sandbox{
-		ID:        vm.ID,
-		Template:  vm.Template,
-		Status:    vm.Status,
-		StartedAt: vm.StartedAt,
-		EndAt:     vm.EndAt,
-		CpuCount:  vm.CpuCount,
-		MemoryMB:  vm.MemoryMB,
-		HostPort:  vm.HostPort,
+		ID:            vm.ID,
+		Template:      vm.Template,
+		Status:        vm.Status,
+		StartedAt:     vm.StartedAt,
+		EndAt:         vm.EndAt,
+		CpuCount:      vm.CpuCount,
+		MemoryMB:      vm.MemoryMB,
+		HostPort:      vm.HostPort,
+		GoldenVersion: vm.goldenVersion,
 	}
 }
 

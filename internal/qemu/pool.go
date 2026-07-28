@@ -64,12 +64,13 @@ func (m *Manager) ClaimPooled(ctx context.Context, sandboxID string, cfg types.S
 
 	log.Printf("qemu: claim %s: resumed + rebound in %dms (template=%s)", sandboxID, time.Since(t0).Milliseconds(), vm.Template)
 	return &types.Sandbox{
-		ID:        sandboxID,
-		Template:  vm.Template,
-		Status:    types.SandboxStatusRunning,
-		StartedAt: time.Now(),
-		CpuCount:  vm.CpuCount,
-		MemoryMB:  vm.MemoryMB,
-		HostPort:  vm.HostPort,
+		ID:            sandboxID,
+		Template:      vm.Template,
+		Status:        types.SandboxStatusRunning,
+		StartedAt:     time.Now(),
+		CpuCount:      vm.CpuCount,
+		MemoryMB:      vm.MemoryMB,
+		HostPort:      vm.HostPort,
+		GoldenVersion: vm.goldenVersion,
 	}, nil
 }

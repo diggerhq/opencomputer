@@ -259,7 +259,12 @@ type CreateSandboxResponse struct {
 	// snapshot's base memory is the floor (downscale would OOM restored
 	// processes), and the hotplug ceiling caps the upper end. Always reflects
 	// the actual value the sandbox is running at.
-	MemoryMb      int32 `protobuf:"varint,3,opt,name=memory_mb,json=memoryMb,proto3" json:"memory_mb,omitempty"`
+	MemoryMb int32 `protobuf:"varint,3,opt,name=memory_mb,json=memoryMb,proto3" json:"memory_mb,omitempty"`
+	// Golden snapshot this box's rootfs is backed by, reported authoritatively by
+	// the worker. The control plane stamps it on the PG session so a later
+	// live-migrate can pick the right rebase base. Empty only from pre-golden
+	// workers (CP falls back to the registry heartbeat's golden then).
+	GoldenVersion string `protobuf:"bytes,4,opt,name=golden_version,json=goldenVersion,proto3" json:"golden_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -313,6 +318,13 @@ func (x *CreateSandboxResponse) GetMemoryMb() int32 {
 		return x.MemoryMb
 	}
 	return 0
+}
+
+func (x *CreateSandboxResponse) GetGoldenVersion() string {
+	if x != nil {
+		return x.GoldenVersion
+	}
+	return ""
 }
 
 type ClaimSandboxRequest struct {
@@ -420,6 +432,7 @@ type ClaimSandboxResponse struct {
 	SandboxId     string                 `protobuf:"bytes,1,opt,name=sandbox_id,json=sandboxId,proto3" json:"sandbox_id,omitempty"`
 	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
 	MemoryMb      int32                  `protobuf:"varint,3,opt,name=memory_mb,json=memoryMb,proto3" json:"memory_mb,omitempty"`
+	GoldenVersion string                 `protobuf:"bytes,4,opt,name=golden_version,json=goldenVersion,proto3" json:"golden_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -473,6 +486,13 @@ func (x *ClaimSandboxResponse) GetMemoryMb() int32 {
 		return x.MemoryMb
 	}
 	return 0
+}
+
+func (x *ClaimSandboxResponse) GetGoldenVersion() string {
+	if x != nil {
+		return x.GoldenVersion
+	}
+	return ""
 }
 
 type DestroySandboxRequest struct {
@@ -4469,12 +4489,13 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a=\n" +
 	"\x0fSecretEnvsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"k\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x92\x01\n" +
 	"\x15CreateSandboxResponse\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1b\n" +
-	"\tmemory_mb\x18\x03 \x01(\x05R\bmemoryMb\"\xe2\x04\n" +
+	"\tmemory_mb\x18\x03 \x01(\x05R\bmemoryMb\x12%\n" +
+	"\x0egolden_version\x18\x04 \x01(\tR\rgoldenVersion\"\xe2\x04\n" +
 	"\x13ClaimSandboxRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n" +
@@ -4494,12 +4515,13 @@ const file_proto_worker_worker_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aE\n" +
 	"\x17SecretAllowedHostsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"j\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x91\x01\n" +
 	"\x14ClaimSandboxResponse\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1b\n" +
-	"\tmemory_mb\x18\x03 \x01(\x05R\bmemoryMb\"6\n" +
+	"\tmemory_mb\x18\x03 \x01(\x05R\bmemoryMb\x12%\n" +
+	"\x0egolden_version\x18\x04 \x01(\tR\rgoldenVersion\"6\n" +
 	"\x15DestroySandboxRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\"\x18\n" +

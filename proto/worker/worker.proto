@@ -131,6 +131,11 @@ message CreateSandboxResponse {
   // processes), and the hotplug ceiling caps the upper end. Always reflects
   // the actual value the sandbox is running at.
   int32 memory_mb = 3;
+  // Golden snapshot this box's rootfs is backed by, reported authoritatively by
+  // the worker. The control plane stamps it on the PG session so a later
+  // live-migrate can pick the right rebase base. Empty only from pre-golden
+  // workers (CP falls back to the registry heartbeat's golden then).
+  string golden_version = 4;
 }
 
 message ClaimSandboxRequest {
@@ -148,6 +153,7 @@ message ClaimSandboxResponse {
   string sandbox_id = 1;
   string status = 2;
   int32 memory_mb = 3;
+  string golden_version = 4;
 }
 
 message DestroySandboxRequest {
