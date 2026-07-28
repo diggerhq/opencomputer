@@ -84,13 +84,23 @@ func (s *Store) ClaimPooledSession(ctx context.Context, orgID uuid.UUID, userID 
 	return &box, nil
 }
 
-// CountPooled returns the number of parked pooled boxes for (region, template) —
-// the refill reconciler's gap signal.
+// CountPooled returns the number of parked pooled boxes for (region, template).
 func (s *Store) CountPooled(ctx context.Context, region, template string) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM sandbox_sessions WHERE status='pooled' AND region=$1 AND template=$2`,
 		region, template,
+	).Scan(&n)
+	return n, err
+}
+
+// CountPooledOnWorker returns the number of parked pooled boxes on a specific
+// worker for a template — the per-worker refill reconciler's gap signal.
+func (s *Store) CountPooledOnWorker(ctx context.Context, workerID, template string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM sandbox_sessions WHERE status='pooled' AND worker_id=$1 AND template=$2`,
+		workerID, template,
 	).Scan(&n)
 	return n, err
 }

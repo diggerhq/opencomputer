@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,57 +22,17 @@ import (
 // customer), parked paused, never billed. On worker drain they are wiped
 // (disposable) rather than migrated/hibernated.
 
-// poolDefaultTarget is the benign per-region warm-pool size used when a region
-// has no explicit override. From OPENSANDBOX_POOL_TARGET (Infisical-injected env),
-// default 10.
-func (s *Server) poolDefaultTarget() int {
+// poolTarget is the PER-WORKER warm-pool size for THIS cell. A cell == one
+// region, so it's a single per-cell integer: OPENSANDBOX_POOL_TARGET (settable
+// in Infisical per cell), default 10 (10 warm boxes on every worker in the
+// cell's region). 0 disables the pool for this cell.
+func (s *Server) poolTarget() int {
 	if v := os.Getenv("OPENSANDBOX_POOL_TARGET"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			return n
 		}
 	}
 	return 10
-}
-
-// poolTargetForRegion returns the warm-pool target for a region: a per-region
-// override from OPENSANDBOX_POOL_TARGETS="eastus2=100,westus2=10" (settable in
-// Infisical — it's just an env var the CP process reads), else poolDefaultTarget().
-// 0 ⇒ no pool for that region.
-func (s *Server) poolTargetForRegion(region string) int {
-	if raw := os.Getenv("OPENSANDBOX_POOL_TARGETS"); raw != "" {
-		for _, pair := range strings.Split(raw, ",") {
-			kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-			if len(kv) == 2 && strings.TrimSpace(kv[0]) == region {
-				if n, err := strconv.Atoi(strings.TrimSpace(kv[1])); err == nil && n >= 0 {
-					return n
-				}
-			}
-		}
-	}
-	return s.poolDefaultTarget()
-}
-
-// poolRegions is the set of regions the reconciler warms: the CP's own region
-// plus any explicitly listed in OPENSANDBOX_POOL_TARGETS.
-func (s *Server) poolRegions() []string {
-	set := map[string]bool{}
-	if s.region != "" {
-		set[s.region] = true
-	}
-	if raw := os.Getenv("OPENSANDBOX_POOL_TARGETS"); raw != "" {
-		for _, pair := range strings.Split(raw, ",") {
-			if kv := strings.SplitN(strings.TrimSpace(pair), "=", 2); len(kv) == 2 {
-				if r := strings.TrimSpace(kv[0]); r != "" {
-					set[r] = true
-				}
-			}
-		}
-	}
-	out := make([]string, 0, len(set))
-	for r := range set {
-		out = append(out, r)
-	}
-	return out
 }
 
 func poolTemplateName() string {
@@ -87,13 +46,13 @@ func poolTemplateName() string {
 // draining) worker in region: insert the 'pooled' session row (org = pool),
 // then CreateSandbox{pooled:true} — the worker golden-restores it and parks it
 // paused. Rolls back the PG row if the worker create fails.
-func (s *Server) manufacturePoolBox(ctx context.Context, region, template string) error {
-	worker, grpcClient, err := s.workerRegistry.GetLeastLoadedWorker(region)
+func (s *Server) manufacturePoolBoxOn(ctx context.Context, workerID, region, template, goldenVersion string) error {
+	grpcClient, err := s.workerRegistry.GetWorkerClient(workerID)
 	if err != nil {
-		return fmt.Errorf("pool: no worker in %s: %w", region, err)
+		return fmt.Errorf("pool: no client for %s: %w", workerID, err)
 	}
 	sandboxID := "sb-" + uuid.New().String()[:8]
-	if err := s.store.CreatePooledSession(ctx, sandboxID, template, region, worker.ID, json.RawMessage(`{}`)); err != nil {
+	if err := s.store.CreatePooledSession(ctx, sandboxID, template, region, workerID, json.RawMessage(`{}`)); err != nil {
 		return fmt.Errorf("pool: create session %s: %w", sandboxID, err)
 	}
 	grpcCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -104,12 +63,12 @@ func (s *Server) manufacturePoolBox(ctx context.Context, region, template string
 		Pooled:    true,
 	}); err != nil {
 		_ = s.store.WipePooled(ctx, sandboxID) // roll back the reserved row
-		return fmt.Errorf("pool: manufacture %s on %s: %w", sandboxID, worker.ID, err)
+		return fmt.Errorf("pool: manufacture %s on %s: %w", sandboxID, workerID, err)
 	}
-	if worker.GoldenVersion != "" {
-		_ = s.store.SetSandboxGoldenVersion(ctx, sandboxID, worker.GoldenVersion)
+	if goldenVersion != "" {
+		_ = s.store.SetSandboxGoldenVersion(ctx, sandboxID, goldenVersion)
 	}
-	log.Printf("pool: manufactured %s (template=%s) on %s", sandboxID, template, worker.ID)
+	log.Printf("pool: manufactured %s (template=%s) on %s", sandboxID, template, workerID)
 	return nil
 }
 
@@ -121,8 +80,16 @@ func (s *Server) StartPoolReconciler(ctx context.Context, isLeader func() bool) 
 		log.Printf("pool: reconciler disabled (OPENSANDBOX_POOL_ENABLED=0)")
 		return
 	}
+	if s.poolTarget() <= 0 {
+		log.Printf("pool: OPENSANDBOX_POOL_TARGET=0 for this cell — reconciler idle")
+		return
+	}
+	region := s.region
+	if region == "" {
+		region = "iad"
+	}
 	template := poolTemplateName()
-	log.Printf("pool: reconciler started (regions=%v default_target=%d template=%s, leader-gated)", s.poolRegions(), s.poolDefaultTarget(), template)
+	log.Printf("pool: reconciler started (region=%s per_worker_target=%d template=%s, leader-gated)", region, s.poolTarget(), template)
 
 	t := time.NewTicker(15 * time.Second)
 	defer t.Stop()
@@ -134,44 +101,48 @@ func (s *Server) StartPoolReconciler(ctx context.Context, isLeader func() bool) 
 			if isLeader != nil && !isLeader() {
 				continue
 			}
-			for _, region := range s.poolRegions() {
-				target := s.poolTargetForRegion(region)
-				if target <= 0 {
-					continue
-				}
+			if target := s.poolTarget(); target > 0 {
 				s.reconcilePool(ctx, region, template, target)
 			}
 		}
 	}
 }
 
-func (s *Server) reconcilePool(ctx context.Context, region, template string, target int) {
-	have, err := s.store.CountPooled(ctx, region, template)
-	if err != nil {
-		log.Printf("pool: count failed: %v", err)
-		return
-	}
-	deficit := target - have
-	if deficit <= 0 {
-		return
-	}
-	// Manufacture at most a small batch per tick so a cold start doesn't burst
-	// the whole fleet at once. Stop on the first failure (no capacity / worker
-	// error) and retry next tick.
-	batch := deficit
-	if batch > 3 {
-		batch = 3
-	}
-	made := 0
-	for i := 0; i < batch; i++ {
-		if err := s.manufacturePoolBox(ctx, region, template); err != nil {
-			log.Printf("pool: manufacture failed (%d/%d this tick): %v", made, batch, err)
-			break
+// reconcilePool tops up EACH live, non-draining worker in the region to
+// perWorkerTarget pooled boxes. Per-worker (not per-region total) so the pool
+// spreads evenly by construction and scales with the fleet: a 4-worker region at
+// target 25 warms ~100, and adding/removing a worker adjusts automatically (a
+// drained worker's pool is wiped and never refilled here since it's skipped).
+func (s *Server) reconcilePool(ctx context.Context, region, template string, perWorkerTarget int) {
+	for _, w := range s.workerRegistry.GetAllWorkers() {
+		if w.Region != region || w.Draining {
+			continue
 		}
-		made++
-	}
-	if made > 0 {
-		log.Printf("pool: refilled %d (had %d, target %d)", made, have, target)
+		have, err := s.store.CountPooledOnWorker(ctx, w.ID, template)
+		if err != nil {
+			log.Printf("pool: count on %s failed: %v", w.ID, err)
+			continue
+		}
+		deficit := perWorkerTarget - have
+		if deficit <= 0 {
+			continue
+		}
+		// Cap per worker per tick so a cold start ramps instead of bursting.
+		batch := deficit
+		if batch > 3 {
+			batch = 3
+		}
+		made := 0
+		for i := 0; i < batch; i++ {
+			if err := s.manufacturePoolBoxOn(ctx, w.ID, region, template, w.GoldenVersion); err != nil {
+				log.Printf("pool: manufacture on %s failed (%d/%d): %v", w.ID, made, batch, err)
+				break
+			}
+			made++
+		}
+		if made > 0 {
+			log.Printf("pool: %s refilled %d (had %d, per-worker target %d)", w.ID, made, have, perWorkerTarget)
+		}
 	}
 }
 

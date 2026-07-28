@@ -886,7 +886,7 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	// try to claim a pre-warmed pooled box — resume + rebind, skipping the ~260ms
 	// cold restore. A miss or any ineligibility falls through to the cold create
 	// below, so it's never worse than the status quo.
-	if s.store != nil && hasOrg && s.poolEnabled() && s.poolTargetForRegion(region) > 0 &&
+	if s.store != nil && hasOrg && s.poolEnabled() && s.poolTarget() > 0 &&
 		templateRootfsKey == "" && cfg.ImageRef == "" && cfg.CheckpointID == "" &&
 		len(cfg.EgressAllowlist) == 0 && len(cfg.SecretAllowedHosts) == 0 {
 		poolTemplate := cfg.Template
