@@ -888,6 +888,78 @@ func (m *Manager) agentFsThawViaExec(ctx context.Context, sandboxID string, agen
 	}
 }
 
+// usePrepareResume gates the folded single-RPC post-restore path (idea #1:
+// collapse network+clock+env into one native PrepareResume call). Env-flagged so
+// we can A/B it on dev against the legacy per-op sequence. Off by default.
+func (m *Manager) usePrepareResume() bool {
+	return os.Getenv("OPENSANDBOX_PREPARE_RESUME") == "1"
+}
+
+// agentPrepareResume performs the post-golden-restore guest setup — network +
+// clock + env injection — in ONE native round-trip instead of the separate
+// patchGuestNetwork(exec) + syncGuestClock(exec) + SetEnvs calls. Thaw is NOT
+// included here: on the create path it already ran standalone before block_resize
+// (which needs a thawed fs). Returns an error ONLY when the RPC is unavailable
+// (old agent → codes.Unimplemented, or an unrecoverable transport error) so the
+// caller falls back to legacyPostRestore. Network failure is reported but treated
+// as non-fatal (matching the legacy inline behavior), not returned.
+func (m *Manager) agentPrepareResume(ctx context.Context, id string, agent *AgentClient, netCfg *NetworkConfig, envs map[string]string) error {
+	req := &pb.PrepareResumeRequest{
+		Iface:          "eth0",
+		GuestIp:        netCfg.GuestIP,
+		PrefixLen:      uint32(maskToPrefixLen(netCfg.Mask)),
+		Gateway:        netCfg.HostIP,
+		Dns:            []string{"8.8.8.8", "1.1.1.1"},
+		FlushNeigh:     true,
+		ClockUnixNanos: time.Now().UnixNano(),
+		Envs:           envs,
+	}
+	rpcCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	resp, err := agent.PrepareResume(rpcCtx, req)
+	cancel()
+	// One redial-and-retry on the known post-loadvm stale-connection case, exactly
+	// as patchGuestNetwork/syncGuestClock do. Not for Unimplemented (old agent).
+	if err != nil && IsTransportError(err) {
+		log.Printf("qemu: golden-create %s: PrepareResume transport error %v, redialing once", id, err)
+		if rdErr := agent.Redial(); rdErr != nil {
+			return fmt.Errorf("PrepareResume redial: %w (orig: %v)", rdErr, err)
+		}
+		rpcCtx2, cancel2 := context.WithTimeout(ctx, 30*time.Second)
+		resp, err = agent.PrepareResume(rpcCtx2, req)
+		cancel2()
+	}
+	if err != nil {
+		return err // Unimplemented or persistent transport → caller uses legacy path
+	}
+	if !resp.GetNetworkOk() {
+		log.Printf("qemu: golden-create %s: PrepareResume network NOT ok (method=%s warnings=%v)", id, resp.GetNetworkMethod(), resp.GetWarnings())
+	} else if len(resp.GetWarnings()) > 0 {
+		log.Printf("qemu: golden-create %s: PrepareResume warnings: %v", id, resp.GetWarnings())
+	}
+	log.Printf("qemu: golden-create %s: PrepareResume ok (net=%v clock=%v envs=%v method=%s)",
+		id, resp.GetNetworkOk(), resp.GetClockOk(), resp.GetEnvsSet(), resp.GetNetworkMethod())
+	return nil
+}
+
+// legacyPostRestore is the pre-PrepareResume per-op sequence: patch network, sync
+// clock, inject envs — three separate RPCs, two of which spawn guest shells. Used
+// when the folded path is disabled or the agent doesn't support PrepareResume.
+func (m *Manager) legacyPostRestore(id string, agent *AgentClient, netCfg *NetworkConfig, envs map[string]string) {
+	if err := patchGuestNetwork(context.Background(), agent, netCfg); err != nil {
+		log.Printf("qemu: golden-create %s: network patch failed: %v", id, err)
+	}
+	if err := syncGuestClock(context.Background(), agent); err != nil {
+		log.Printf("qemu: golden-create %s: clock sync failed: %v", id, err)
+	}
+	if len(envs) > 0 {
+		envCtx, envCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := agent.SetEnvs(envCtx, envs); err != nil {
+			log.Printf("qemu: warning: SetEnvs failed for %s: %v", id, err)
+		}
+		envCancel()
+	}
+}
+
 // goldenBaseName is the base-image template this worker builds its golden from:
 // "default-merged" for a merged-create worker, "default" for split. The two are
 // distinct files (default.ext4 = 4GB split, default-merged.ext4 = 20GB merged)
@@ -1664,14 +1736,20 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		}
 	}
 
-	// Patch network inside the guest — the snapshot had the golden VM's IP
-	if err := patchGuestNetwork(context.Background(), agentClient, netCfg); err != nil {
-		log.Printf("qemu: golden-create %s: network patch failed: %v", id, err)
-	}
-
-	// Sync guest clock — golden snapshot has stale time
-	if err := syncGuestClock(context.Background(), agentClient); err != nil {
-		log.Printf("qemu: golden-create %s: clock sync failed: %v", id, err)
+	// Post-restore guest setup: network patch (golden booted with a different IP)
+	// + clock sync (golden time is stale) + env injection. Folded into ONE native
+	// PrepareResume RPC when enabled and the agent supports it; otherwise the
+	// legacy per-op sequence (patchGuestNetwork + syncGuestClock + SetEnvs). Thaw
+	// already ran standalone above — it must precede block_resize's resize2fs.
+	// envs are computed host-side first (secrets proxy) so they can ride the RPC.
+	envsToInject := m.sealSandboxEnvs(context.Background(), id, netCfg, agentClient, cfg)
+	if m.usePrepareResume() {
+		if err := m.agentPrepareResume(context.Background(), id, agentClient, netCfg, envsToInject); err != nil {
+			log.Printf("qemu: golden-create %s: PrepareResume unavailable (%v) — legacy post-restore", id, err)
+			m.legacyPostRestore(id, agentClient, netCfg, envsToInject)
+		}
+	} else {
+		m.legacyPostRestore(id, agentClient, netCfg, envsToInject)
 	}
 
 	// Split layout only: mount /home/sandbox — the data disk (vdb) is mounted
@@ -1715,16 +1793,6 @@ func (m *Manager) createFromGolden(ctx context.Context, cfg types.SandboxConfig,
 		}
 	}
 	log.Printf("qemu: golden-create %s: network patched (%dms)", id, time.Since(t0).Milliseconds())
-
-	envsToInject := m.sealSandboxEnvs(context.Background(), id, netCfg, agentClient, cfg)
-	if len(envsToInject) > 0 {
-		envCtx, envCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := agentClient.SetEnvs(envCtx, envsToInject); err != nil {
-			envCancel()
-			log.Printf("qemu: warning: SetEnvs failed for %s: %v", id, err)
-		}
-		envCancel()
-	}
 
 	m.mu.Lock()
 	m.vms[id] = vm

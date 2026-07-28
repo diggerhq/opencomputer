@@ -340,6 +340,32 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 		return nil, fmt.Errorf("failed to create sandbox: %w", err)
 	}
 
+	// Pooled manufacture: the box is golden-restored + running; park it paused
+	// (RAM-resident) as a generic, unclaimed pool entry. NO billing scale_event,
+	// NO D1 "created", NO logship — none of that binds until ClaimSandbox. The
+	// router entry is marked noPromote so it never savevm→deep on its own.
+	if req.Pooled {
+		pm, ok := s.manager.(pausableManager)
+		if !ok {
+			_ = s.manager.Kill(context.Background(), sb.ID)
+			return nil, fmt.Errorf("pool manufacture: backend does not support pause")
+		}
+		if _, perr := pm.Pause(ctx, sb.ID); perr != nil {
+			_ = s.manager.Kill(context.Background(), sb.ID) // a box that won't pause is useless as a pool entry
+			return nil, fmt.Errorf("pool manufacture: pause %s: %w", sb.ID, perr)
+		}
+		if s.router != nil {
+			s.router.Register(sb.ID, 0) // persistent — no idle timeout while parked
+			s.router.MarkPooled(sb.ID)
+		}
+		log.Printf("grpc: manufactured pool box %s (template=%s) — parked paused", sb.ID, cfg.Template)
+		return &pb.CreateSandboxResponse{
+			SandboxId: sb.ID,
+			Status:    string(types.SandboxStatusPooled),
+			MemoryMb:  int32(sb.MemoryMB),
+		}, nil
+	}
+
 	// Register with sandbox router for rolling timeout tracking.
 	// timeout == 0 means "persistent" (no auto-hibernate).
 	if s.router != nil {
@@ -426,6 +452,56 @@ func (s *GRPCServer) recordInitialScaleEvent(ctx context.Context, sandboxID stri
 	if err := s.store.RecordScaleEvent(ctx, sandboxID, orgID, memMB, cpuPct, diskMB); err != nil {
 		log.Printf("grpc: failed to record initial scale event for %s: %v", sandboxID, err)
 	}
+}
+
+// ClaimSandbox binds a pre-warmed pool box (manufactured via CreateSandbox with
+// pooled=true, then parked paused) to a customer: QMP cont + PrepareResume
+// rebind (network/env/clock) + secrets + billing scale_event + router promote,
+// skipping the ~260ms golden restore. Implemented in pool Phase 2.
+func (s *GRPCServer) ClaimSandbox(ctx context.Context, req *pb.ClaimSandboxRequest) (*pb.ClaimSandboxResponse, error) {
+	cfg := types.SandboxConfig{
+		Timeout:            int(req.Timeout),
+		Envs:               req.Envs,
+		MemoryMB:           int(req.MemoryMb),
+		CpuCount:           int(req.CpuCount),
+		SandboxID:          req.SandboxId,
+		EgressAllowlist:    req.EgressAllowlist,
+		SecretAllowedHosts: parseSecretAllowedHosts(req.SecretAllowedHosts),
+		SecretEnvs:         req.SecretEnvs,
+	}
+	pm, ok := s.manager.(pausableManager)
+	if !ok {
+		return nil, status.Errorf(codes.Unimplemented, "claim not supported by this worker backend")
+	}
+	sb, err := pm.ClaimPooled(ctx, req.SandboxId, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("claim pooled sandbox %s: %w", req.SandboxId, err)
+	}
+
+	// Promote the router entry pooled→running with the customer's idle timeout
+	// (Register replaces the parked entry with a fresh running one, clearing
+	// noPromote). timeout <= 0 means persistent.
+	if s.router != nil {
+		timeout := cfg.Timeout
+		if timeout < 0 {
+			timeout = 0
+		}
+		s.router.Register(sb.ID, time.Duration(timeout)*time.Second)
+	}
+
+	// Bind the customer-facing side now (deferred at manufacture): D1 "created",
+	// billing scale_event (reads org from the cell-PG row the CP just rebound via
+	// ClaimPooledSession), and logship. Mirrors the CreateSandbox success tail.
+	s.initSandboxDB(sb.ID, sb.Template)
+	s.recordInitialScaleEvent(ctx, sb.ID, cfg)
+	s.configureLogshipForSandbox(ctx, sb.ID)
+
+	log.Printf("grpc: claimed pool box %s (template=%s)", sb.ID, sb.Template)
+	return &pb.ClaimSandboxResponse{
+		SandboxId: sb.ID,
+		Status:    string(sb.Status),
+		MemoryMb:  int32(sb.MemoryMB),
+	}, nil
 }
 
 func (s *GRPCServer) DestroySandbox(ctx context.Context, req *pb.DestroySandboxRequest) (*pb.DestroySandboxResponse, error) {
@@ -766,6 +842,10 @@ type pausableManager interface {
 	// RepauseAfterMigration does a normal pause of the settled, just-migrated box
 	// on the target and clears the billing-suppression flag.
 	RepauseAfterMigration(ctx context.Context, sandboxID string) (reclaimedBytes uint64, err error)
+	// ClaimPooled binds a parked pool box to a customer: resume (no billing hook)
+	// + re-apply env/secrets/network. Skips the golden restore (pre-paid at
+	// manufacture). Billing/D1/logship are wired by the caller.
+	ClaimPooled(ctx context.Context, sandboxID string, cfg types.SandboxConfig) (*types.Sandbox, error)
 }
 
 // PauseSandbox freezes the VM's vCPUs and pages its guest RAM out to swap — the

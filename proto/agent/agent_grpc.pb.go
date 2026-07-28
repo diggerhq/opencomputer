@@ -49,6 +49,7 @@ const (
 	SandboxAgent_GetVersion_FullMethodName        = "/agent.SandboxAgent/GetVersion"
 	SandboxAgent_Upgrade_FullMethodName           = "/agent.SandboxAgent/Upgrade"
 	SandboxAgent_Thaw_FullMethodName              = "/agent.SandboxAgent/Thaw"
+	SandboxAgent_PrepareResume_FullMethodName     = "/agent.SandboxAgent/PrepareResume"
 )
 
 // SandboxAgentClient is the client API for SandboxAgent service.
@@ -149,6 +150,16 @@ type SandboxAgentClient interface {
 	// on exec'ing a binary from the still-frozen rootfs — doing so can deadlock
 	// (exec-needs-fs, fs-needs-thaw). Idempotent: thawing an unfrozen fs succeeds.
 	Thaw(ctx context.Context, in *ThawRequest, opts ...grpc.CallOption) (*ThawResponse, error)
+	// PrepareResume folds the entire post-golden-restore guest setup —
+	// thaw, network reconfig, clock sync, and env injection — into ONE native
+	// round-trip. It replaces the serial Thaw + patchGuestNetwork(exec) +
+	// syncGuestClock(exec) + SetEnvs chain on the create critical path: each of
+	// those was a separate virtio-serial RPC, and two spawned guest shells (the
+	// `ip` script alone forks ~10 processes). Doing it natively in one call is the
+	// single biggest create-latency win after the golden restore itself. Every
+	// sub-step is best-effort and reported individually; the network step tries
+	// netlink and falls back to the proven shell script only if that fails.
+	PrepareResume(ctx context.Context, in *PrepareResumeRequest, opts ...grpc.CallOption) (*PrepareResumeResponse, error)
 }
 
 type sandboxAgentClient struct {
@@ -486,6 +497,16 @@ func (c *sandboxAgentClient) Thaw(ctx context.Context, in *ThawRequest, opts ...
 	return out, nil
 }
 
+func (c *sandboxAgentClient) PrepareResume(ctx context.Context, in *PrepareResumeRequest, opts ...grpc.CallOption) (*PrepareResumeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareResumeResponse)
+	err := c.cc.Invoke(ctx, SandboxAgent_PrepareResume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SandboxAgentServer is the server API for SandboxAgent service.
 // All implementations must embed UnimplementedSandboxAgentServer
 // for forward compatibility.
@@ -584,6 +605,16 @@ type SandboxAgentServer interface {
 	// on exec'ing a binary from the still-frozen rootfs — doing so can deadlock
 	// (exec-needs-fs, fs-needs-thaw). Idempotent: thawing an unfrozen fs succeeds.
 	Thaw(context.Context, *ThawRequest) (*ThawResponse, error)
+	// PrepareResume folds the entire post-golden-restore guest setup —
+	// thaw, network reconfig, clock sync, and env injection — into ONE native
+	// round-trip. It replaces the serial Thaw + patchGuestNetwork(exec) +
+	// syncGuestClock(exec) + SetEnvs chain on the create critical path: each of
+	// those was a separate virtio-serial RPC, and two spawned guest shells (the
+	// `ip` script alone forks ~10 processes). Doing it natively in one call is the
+	// single biggest create-latency win after the golden restore itself. Every
+	// sub-step is best-effort and reported individually; the network step tries
+	// netlink and falls back to the proven shell script only if that fails.
+	PrepareResume(context.Context, *PrepareResumeRequest) (*PrepareResumeResponse, error)
 	mustEmbedUnimplementedSandboxAgentServer()
 }
 
@@ -683,6 +714,9 @@ func (UnimplementedSandboxAgentServer) Upgrade(context.Context, *UpgradeRequest)
 }
 func (UnimplementedSandboxAgentServer) Thaw(context.Context, *ThawRequest) (*ThawResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Thaw not implemented")
+}
+func (UnimplementedSandboxAgentServer) PrepareResume(context.Context, *PrepareResumeRequest) (*PrepareResumeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PrepareResume not implemented")
 }
 func (UnimplementedSandboxAgentServer) mustEmbedUnimplementedSandboxAgentServer() {}
 func (UnimplementedSandboxAgentServer) testEmbeddedByValue()                      {}
@@ -1198,6 +1232,24 @@ func _SandboxAgent_Thaw_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SandboxAgent_PrepareResume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareResumeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxAgentServer).PrepareResume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxAgent_PrepareResume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxAgentServer).PrepareResume(ctx, req.(*PrepareResumeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SandboxAgent_ServiceDesc is the grpc.ServiceDesc for SandboxAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1304,6 +1356,10 @@ var SandboxAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Thaw",
 			Handler:    _SandboxAgent_Thaw_Handler,
+		},
+		{
+			MethodName: "PrepareResume",
+			Handler:    _SandboxAgent_PrepareResume_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

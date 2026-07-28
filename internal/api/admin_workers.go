@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -43,6 +44,13 @@ func (s *Server) adminSetWorkerDraining(c echo.Context) error {
 	}
 
 	s.workerRegistry.SetDraining(workerID, drain)
+
+	// Wipe pooled boxes off a draining worker — they're disposable (generic, no
+	// customer data), so destroy rather than migrate/hibernate, and get them off
+	// before the roll tries to terminate the worker. Async; best-effort.
+	if drain {
+		go s.WipeWorkerPool(context.Background(), workerID)
+	}
 
 	return c.JSON(http.StatusOK, map[string]any{
 		"workerID": workerID,

@@ -763,6 +763,13 @@ func main() {
 		autoscaler.Start(ctx)
 		defer autoscaler.Stop()
 		log.Println("opensandbox: per-sandbox autoscaler started (interval=30s, leader-gated)")
+
+		// Pre-warmed sandbox pool refill loop (leader-gated). Self-disables unless
+		// OPENSANDBOX_POOL_ENABLED=1. Keeps ~OPENSANDBOX_POOL_TARGET boxes warm so
+		// creates can claim instead of paying the cold golden restore.
+		if server != nil {
+			go server.StartPoolReconciler(ctx, isLeader)
+		}
 	}
 
 	if proBillingEdge {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"fmt"
 	"log"
 	"net/http"
@@ -698,6 +699,123 @@ func isTransientWorkerErr(err error) bool {
 // secretStoreID is the resolved store UUID (or nil) from resolveSecretStoreInto;
 // passed straight to CreateSandboxSessionWithStatus so the row's secret_store_id
 // column is populated and the secret-refresh fanout can find this sandbox.
+// poolEnabled gates the pre-warmed pool claim fast-path. Off unless
+// OPENSANDBOX_POOL_ENABLED=1, so the pool has to be explicitly turned on (and
+// warmed) before creates try to claim from it.
+func (s *Server) poolEnabled() bool { return os.Getenv("OPENSANDBOX_POOL_ENABLED") == "1" }
+
+// tryClaimPooled attempts the pool fast-path: atomically claim a pre-warmed
+// pooled box for (region, template), resume+rebind it on its worker, and return
+// the 201 response — skipping the ~260ms cold golden restore. Returns
+// (true, resp) when it handled the request; (false, nil) to fall through to a
+// cold create on a pool miss or any ineligibility/failure, so a claim never
+// leaves the customer worse off than a normal create.
+func (s *Server) tryClaimPooled(c echo.Context, ctx context.Context, cfg types.SandboxConfig, orgID uuid.UUID, secretStoreID *uuid.UUID, region, template string) (bool, error) {
+	cfgJSON, _ := json.Marshal(cfgForPersistence(cfg))
+	metadataJSON, _ := json.Marshal(cfg.Metadata)
+
+	box, err := s.store.ClaimPooledSession(ctx, orgID, auth.GetUserID(c), region, template, cfgJSON, metadataJSON, secretStoreID)
+	if err != nil {
+		if !errors.Is(err, db.ErrPoolEmpty) {
+			log.Printf("sandbox: pool claim query failed (%v) — cold create", err)
+		}
+		return false, nil // miss → cold path
+	}
+
+	client, err := s.workerRegistry.GetWorkerClient(box.WorkerID)
+	if err != nil {
+		log.Printf("sandbox: claimed pool box %s but worker %s unreachable (%v) — failing it + cold create", box.SandboxID, box.WorkerID, err)
+		msg := "pool worker unreachable at claim"
+		_ = s.store.UpdateSandboxSessionStatus(ctx, box.SandboxID, "failed", &msg)
+		return false, nil
+	}
+
+	grpcCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	claimResp, err := client.ClaimSandbox(grpcCtx, &pb.ClaimSandboxRequest{
+		SandboxId:  box.SandboxID,
+		Timeout:    int32(cfg.Timeout),
+		Envs:       cfg.Envs,
+		SecretEnvs: cfg.SecretEnvs,
+		MemoryMb:   int32(cfg.MemoryMB),
+		CpuCount:   int32(cfg.CpuCount),
+	})
+	if err != nil {
+		log.Printf("sandbox: ClaimSandbox %s failed (%v) — failing it + cold create", box.SandboxID, err)
+		msg := err.Error()
+		_ = s.store.UpdateSandboxSessionStatus(ctx, box.SandboxID, "failed", &msg)
+		return false, nil
+	}
+
+	// Promote pending→running (emits sandbox.created + sandbox.ready).
+	_ = s.store.UpdateSandboxSessionStatus(ctx, box.SandboxID, "running", nil)
+
+	// Grow to requested resources (virtio-mem + cgroup), mirroring the cold path.
+	if cfg.MemoryMB > 0 || cfg.CpuCount > 0 {
+		scaleMB := cfg.MemoryMB
+		if scaleMB <= 0 {
+			scaleMB = 1024
+		}
+		cpuCount := cfg.CpuCount
+		if cpuCount <= 0 {
+			cpuCount = scaleMB / 4096
+			if cpuCount < 1 {
+				cpuCount = 1
+			}
+		}
+		scaleCtx, scaleCancel := context.WithTimeout(ctx, 10*time.Second)
+		_, scaleErr := client.SetSandboxLimits(scaleCtx, &pb.SetSandboxLimitsRequest{
+			SandboxId:      box.SandboxID,
+			MaxMemoryBytes: int64(scaleMB) * 1024 * 1024,
+			CpuMaxUsec:     int64(cpuCount) * 100000,
+			CpuPeriodUsec:  100000,
+		})
+		scaleCancel()
+		if scaleErr != nil {
+			log.Printf("sandbox: claim post-scale %s failed: %v (continuing)", box.SandboxID, scaleErr)
+		}
+	}
+
+	// Preview-URL auth (same as cold path).
+	var previewAuthPlaintext string
+	if cfg.PreviewAuth != nil {
+		pt, hash, scheme, vStatus, vErr := previewauth.ProcessRequest(cfg.PreviewAuth.Scheme, cfg.PreviewAuth.Token)
+		if vErr != nil {
+			if vStatus >= 400 && vStatus < 500 {
+				return true, c.JSON(vStatus, map[string]string{"error": vErr.Error()})
+			}
+		} else if hash != "" {
+			if pErr := s.store.SetSandboxPreviewAuth(ctx, box.SandboxID, hash, scheme); pErr == nil {
+				previewAuthPlaintext = pt
+			}
+		}
+	}
+
+	var token string
+	if s.jwtIssuer != nil {
+		if t, jErr := s.jwtIssuer.IssueSandboxToken(orgID, box.SandboxID, box.WorkerID, 24*time.Hour); jErr == nil {
+			token = t
+		}
+	}
+	s.emitEvent("create", box.SandboxID, box.WorkerID, "claimed from warm pool")
+	log.Printf("sandbox: POOL CLAIM %s (template=%s, worker=%s) — cold restore skipped", box.SandboxID, template, box.WorkerID)
+
+	resp := map[string]interface{}{
+		"sandboxID": box.SandboxID,
+		"token":     token,
+		"status":    claimResp.Status,
+		"region":    region,
+		"workerID":  box.WorkerID,
+	}
+	if s.sandboxDomain != "" {
+		resp["sandboxDomain"] = s.sandboxDomain
+	}
+	if previewAuthPlaintext != "" {
+		resp["previewAuthToken"] = previewAuthPlaintext
+	}
+	return true, c.JSON(http.StatusCreated, resp)
+}
+
 func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg types.SandboxConfig, orgID [16]byte, hasOrg bool, secretStoreID *uuid.UUID) error {
 	// Select region (explicit header, or default to server's region)
 	region := c.Request().Header.Get("Fly-Region")
@@ -757,6 +875,23 @@ func (s *Server) createSandboxRemote(c echo.Context, ctx context.Context, cfg ty
 	} else if cfg.Template != "" {
 		// Requested a template by name but it didn't resolve (not found).
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "template not found: " + cfg.Template})
+	}
+
+	// Pool fast-path: for a plain base-golden create (no snapshot template, no
+	// image build, no checkpoint fork) with no egress/secret-host restrictions,
+	// try to claim a pre-warmed pooled box — resume + rebind, skipping the ~260ms
+	// cold restore. A miss or any ineligibility falls through to the cold create
+	// below, so it's never worse than the status quo.
+	if s.store != nil && hasOrg && s.poolEnabled() &&
+		templateRootfsKey == "" && cfg.ImageRef == "" && cfg.CheckpointID == "" &&
+		len(cfg.EgressAllowlist) == 0 && len(cfg.SecretAllowedHosts) == 0 {
+		poolTemplate := cfg.Template
+		if poolTemplate == "" {
+			poolTemplate = "default"
+		}
+		if done, resp := s.tryClaimPooled(c, ctx, cfg, uuid.UUID(orgID), secretStoreID, region, poolTemplate); done {
+			return resp
+		}
 	}
 
 	// Dispatch via persistent gRPC connection.
