@@ -19,6 +19,14 @@ export const MeResponseSchema = z.object({
   email: z.string(),
   orgId: z.string(),
   orgs: z.array(OrgInfoSchema).optional(),
+  authMode: z.string().optional(),
+  capabilities: z
+    .object({
+      signOut: z.boolean(),
+      manageMembers: z.boolean(),
+      switchOrganizations: z.boolean(),
+    })
+    .optional(),
 })
 
 export const SandboxSchema = z.object({

@@ -30,13 +30,28 @@ func (s *Server) dashboardMe(c echo.Context) error {
 	orgID, _ := auth.GetOrgID(c)
 
 	resp := map[string]interface{}{
-		"id":    userID,
-		"email": email,
-		"orgId": orgID,
+		"id":       userID,
+		"email":    email,
+		"orgId":    orgID,
+		"authMode": s.dashboardAuthMode,
+		"capabilities": map[string]bool{
+			"signOut":             s.dashboardAuthMode == "workos",
+			"manageMembers":       s.dashboardAuthMode == "workos",
+			"switchOrganizations": s.dashboardAuthMode == "workos",
+		},
 	}
 
-	// Include the user's org list if WorkOS is configured
-	if s.store != nil && s.workos != nil && s.workos.OrgMgr() != nil {
+	if s.dashboardAuthMode == "single-tenant" && s.store != nil {
+		if org, err := s.store.GetOrg(c.Request().Context(), orgID); err == nil {
+			resp["orgs"] = []map[string]interface{}{{
+				"id":         org.ID,
+				"name":       org.Name,
+				"isPersonal": org.IsPersonal,
+				"isActive":   true,
+			}}
+		}
+	} else if s.store != nil && s.workos != nil && s.workos.OrgMgr() != nil {
+		// WorkOS remains the membership authority for hosted deployments.
 		if emailStr, ok := email.(string); ok {
 			user, err := s.store.GetUserByEmail(c.Request().Context(), emailStr)
 			if err == nil && user.WorkOSUserID != nil {

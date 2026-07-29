@@ -184,7 +184,8 @@ SETUP_SSD
     rsync -az --progress \
         -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $SSH_KEY" \
         --exclude '.git' --exclude 'bin/' --exclude 'node_modules/' \
-        --exclude '.claude/' --exclude '*.ext4' \
+        --exclude '.claude/' --exclude '.gocache/' --exclude '.gomodcache/' \
+        --exclude '.wrangler/' --exclude '*.ext4' \
         "$PROJECT_ROOT/" "${SSH_USER}@${public_ip}:~/opensandbox/"
 
     log "Running QEMU host setup (deploy/azure/setup-azure-host.sh)..."
@@ -222,7 +223,8 @@ cmd_deploy() {
     rsync -az --progress --delete \
         -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $SSH_KEY" \
         --exclude '.git' --exclude 'bin/' --exclude 'node_modules/' \
-        --exclude '.claude/' --exclude '*.ext4' \
+        --exclude '.claude/' --exclude '.gocache/' --exclude '.gomodcache/' \
+        --exclude '.wrangler/' --exclude '*.ext4' \
         "$PROJECT_ROOT/" "${SSH_USER}@${public_ip}:~/opensandbox/"
 
     log "Building binaries on instance..."
@@ -239,6 +241,13 @@ sudo systemctl stop opensandbox-worker 2>/dev/null || true
 sudo systemctl stop opensandbox-server 2>/dev/null || true
 sudo cp bin/opensandbox-server bin/opensandbox-worker bin/osb-agent /usr/local/bin/
 sudo chmod +x /usr/local/bin/opensandbox-server /usr/local/bin/opensandbox-worker /usr/local/bin/osb-agent
+if [ -f web/dist/index.html ]; then
+    sudo mkdir -p /usr/local/bin/web/dist
+    sudo rsync -a --delete web/dist/ /usr/local/bin/web/dist/
+    echo "Dashboard bundle installed."
+else
+    echo "WARNING: web/dist/index.html is missing; build the dashboard locally before deploy."
+fi
 echo "Binaries installed."
 BUILD
 
@@ -296,6 +305,18 @@ ROOTFS
     local workos_api_key="${WORKOS_API_KEY:-}"
     local workos_client_id="${WORKOS_CLIENT_ID:-}"
     local workos_redirect_uri="${WORKOS_REDIRECT_URI:-}"
+    local dashboard_auth_mode="${OPENSANDBOX_DASHBOARD_AUTH_MODE:-}"
+    if [[ -z "$dashboard_auth_mode" ]]; then
+        if [[ -n "$workos_api_key" && -n "$workos_client_id" ]]; then
+            dashboard_auth_mode="workos"
+        else
+            dashboard_auth_mode="single-tenant"
+        fi
+    fi
+    local dashboard_user_email="${OPENSANDBOX_DASHBOARD_USER_EMAIL:-admin@opencomputer.local}"
+    local dashboard_user_name="${OPENSANDBOX_DASHBOARD_USER_NAME:-Local Admin}"
+    local dashboard_tenant_name="${OPENSANDBOX_DASHBOARD_TENANT_NAME:-Dev Org}"
+    local dashboard_tenant_slug="${OPENSANDBOX_DASHBOARD_TENANT_SLUG:-dev}"
 
     local env_tmpdir
     env_tmpdir=$(mktemp -d)
@@ -341,6 +362,11 @@ OPENSANDBOX_S3_REGION=${s3_region}
 OPENSANDBOX_S3_ACCESS_KEY_ID=${s3_ak}
 OPENSANDBOX_S3_SECRET_ACCESS_KEY=${s3_sk}
 OPENSANDBOX_MIN_WORKERS=1
+OPENSANDBOX_DASHBOARD_AUTH_MODE=${dashboard_auth_mode}
+OPENSANDBOX_DASHBOARD_USER_EMAIL=${dashboard_user_email}
+OPENSANDBOX_DASHBOARD_USER_NAME=${dashboard_user_name}
+OPENSANDBOX_DASHBOARD_TENANT_NAME=${dashboard_tenant_name}
+OPENSANDBOX_DASHBOARD_TENANT_SLUG=${dashboard_tenant_slug}
 # Webhooks (all-Svix-at-edge): forward lifecycle events to the edge events-ingest
 # Worker and reach the edge for inline-on-create registration. Set these to the
 # igor-dev edge stack to exercise webhooks end-to-end (sandbox-webhooks-rearchitecture.md §8).
@@ -417,9 +443,11 @@ psql -h localhost -U opensandbox -d opensandbox -c "
     ON CONFLICT DO NOTHING;
 " 2>/dev/null || echo "DB seed: orgs insert failed (may already exist)"
 psql -h localhost -U opensandbox -d opensandbox -c "
-    INSERT INTO api_keys (id, org_id, key_hash, key_prefix, name)
-    VALUES ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', '\${KEY_HASH}', '$(echo -n "${API_KEY}" | cut -c1-8)', 'dev-key')
-    ON CONFLICT DO NOTHING;
+    INSERT INTO api_keys (org_id, key_hash, key_prefix, name)
+    SELECT id, '\${KEY_HASH}', '$(echo -n "${API_KEY}" | cut -c1-8)', 'dev-key'
+    FROM orgs
+    WHERE slug = 'dev'
+    ON CONFLICT (key_hash) DO NOTHING;
 " 2>/dev/null || echo "DB seed: api_keys insert failed (may already exist)"
 echo "DB seeded (org + API key)"
 SEED

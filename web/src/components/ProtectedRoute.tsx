@@ -6,10 +6,9 @@ import { useAuth } from '@/hooks/useAuth'
 export default function ProtectedRoute() {
   const { user, loading } = useAuth()
 
-  // Not authenticated → go straight to WorkOS. /auth/login is a server route
-  // (proxied by Vite) that 302s to the WorkOS hosted login, so we do a
-  // full-page navigation rather than an in-app route. No intermediate
-  // "Sign in" screen — the spinner below shows until the browser leaves.
+  // Not authenticated → use the server-owned login route. Hosted identity
+  // providers redirect from there; single-tenant development mode returns a
+  // local user from /me and never enters this branch.
   // Carry the requested URL as `returnTo` so the login round-trip lands the
   // user back where they aimed (a shared session link, a /do deferred action)
   // instead of the dashboard. The edge threads it through the WorkOS `state`.

@@ -630,6 +630,50 @@ func (s *Store) GetUserByID(ctx context.Context, userID uuid.UUID) (*User, error
 	return user, nil
 }
 
+// EnsureSingleTenantPrincipal returns a stable local organization and admin
+// user for an explicitly configured single-tenant dashboard. It is idempotent
+// so development deployments can run it on every control-plane start.
+func (s *Store) EnsureSingleTenantPrincipal(ctx context.Context, orgName, orgSlug, email, name string) (*Org, *User, error) {
+	org, err := s.GetOrgBySlug(ctx, orgSlug)
+	if err != nil {
+		org, err = s.CreateOrg(ctx, orgName, orgSlug)
+		if err != nil {
+			// Another control-plane replica may have created it concurrently.
+			org, err = s.GetOrgBySlug(ctx, orgSlug)
+			if err != nil {
+				return nil, nil, fmt.Errorf("ensure single-tenant org: %w", err)
+			}
+		}
+	}
+
+	user, err := s.GetUserByEmail(ctx, email)
+	if err != nil {
+		user, err = s.CreateUser(ctx, org.ID, email, name, "admin")
+		if err != nil {
+			// As above, tolerate a concurrent bootstrap of the same identity.
+			user, err = s.GetUserByEmail(ctx, email)
+			if err != nil {
+				return nil, nil, fmt.Errorf("ensure single-tenant user: %w", err)
+			}
+		}
+	}
+	if user.OrgID != org.ID {
+		return nil, nil, fmt.Errorf(
+			"single-tenant user %q belongs to org %s, not configured org %s",
+			email, user.OrgID, org.ID,
+		)
+	}
+
+	if org.OwnerUserID == nil {
+		if err := s.SetOrgOwner(ctx, org.ID, user.ID); err != nil {
+			return nil, nil, fmt.Errorf("set single-tenant org owner: %w", err)
+		}
+		org.OwnerUserID = &user.ID
+	}
+
+	return org, user, nil
+}
+
 // --- API Key operations ---
 
 type APIKey struct {
