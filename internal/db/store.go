@@ -1990,6 +1990,22 @@ func (s *Store) ReconcileWorkerSessions(ctx context.Context, workerID string) (h
 	}
 	stoppedRows.Close()
 
+	// Third: wipe stale "pooled" rows for this worker. On restart the worker's
+	// in-memory m.vms is cleared, so any pre-warmed pool box it was holding is
+	// gone — but the pooled PG rows survive. Left un-wiped they become ghosts:
+	// the pool claimer picks one, dispatches ClaimSandbox to this worker, and
+	// gets "sandbox not found" (it self-heals to failed + cold-create, but it's
+	// noisy in Sentry and drags pool hit-rate). Mark them stopped so the claimer
+	// stops handing them out; the CP pool reconciler refills fresh boxes. Pool
+	// boxes are internal (org = pool, unbilled, no webhooks), so no scale-event
+	// close or lifecycle event is needed.
+	if _, err := tx.Exec(ctx,
+		`UPDATE sandbox_sessions SET status = 'stopped', stopped_at = now(),
+		 error_msg = 'worker restarted (pooled)'
+		 WHERE worker_id = $1 AND status = 'pooled'`, workerID); err != nil {
+		return hibernated, stopped, fmt.Errorf("failed to reconcile pooled sessions: %w", err)
+	}
+
 	// Close any open scale_events for sessions we just transitioned off running
 	// on this worker, so billing stops at reconciliation time.
 	if _, err := tx.Exec(ctx,
