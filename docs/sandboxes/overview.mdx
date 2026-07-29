@@ -94,7 +94,8 @@ curl -X POST https://app.opencomputer.dev/api/sandboxes \
 <Info>
   **Disk sizing (closed beta).** Every sandbox ships with a 20GB workspace on
   `/home/sandbox`. You can request up to 256GB via `diskMB`; any GB above the
-  20GB baseline is metered per-second at a rate comparable to AWS EBS gp3.
+  20GB baseline is metered at **$0.0000001 per GB-second (≈ $0.26 per
+  GB-month)**, billed for the lifetime of the sandbox — running or hibernated.
   Larger disk limits are gated per-organization during the beta — [book a
   call](https://cal.com/team/digger/opencomputer-founder-chat) to have your
   org's ceiling raised.

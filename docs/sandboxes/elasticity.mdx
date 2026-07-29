@@ -152,6 +152,8 @@ A manual **memory** scale disables autoscale on the sandbox — explicit user in
 
 Disk grow completes in ~1–2 seconds — the qcow2 backing file is extended and the ext4 filesystem is resized online without pausing the guest. The new size persists through hibernate, wake, fork, and migration; nothing you need to do afterwards.
 
+**Billing.** Disk over the 20 GB included allowance is billed at **$0.0000001 per GB-second (≈ $0.26 per GB-month)** for the lifetime of the sandbox — running or hibernated. Growing a sandbox to 40 GB and then hibernating it still meters the 20 GB overage.
+
 **Shrink is guarded.** A shrink is refused if the guest filesystem's used bytes would leave less than a 500 MB safety margin below the new size. Free space inside the guest first (delete files, then wait for the fs metadata to settle) or fork to a smaller sandbox instead.
 
 ### Response codes

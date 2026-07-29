@@ -58,4 +58,6 @@ Fields present in the response reflect the dimensions that were changed. A disk-
 
 ## Billing
 
-Every accepted scale records a `sandbox_scale_events` row with the resulting `memory_mb`, `cpu_percent`, and `disk_mb`. Usage aggregation groups by all three dimensions, so a mixed sequence of memory-only and disk-only resizes over a billing period is metered against the correct envelope for each slice.
+Every accepted scale records a `sandbox_scale_events` row with the resulting `memory_mb`, `cpu_percent`, and `disk_mb`. Usage aggregation groups by all three dimensions, so a mixed sequence of resizes over a billing period is attributed against the correct envelope for each slice.
+
+Disk over the 20 GB included allowance is billed at **$0.0000001 per GB-second (≈ $0.26 per GB-month)** for the lifetime of the sandbox — running or hibernated.
