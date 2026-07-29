@@ -657,6 +657,16 @@ func main() {
 	}
 	worker.StartResourceMetricsTick(ctx, allocator, sbCounter, cfg.Region, cfg.WorkerID, cfg.DataDir, 30*time.Second)
 
+	// Reap stray qemu processes for sandboxes the control plane no longer places
+	// here (abandoned live-migration targets). Worker-side + cell-PG-aware so it
+	// kills only leftovers, without emitting a lifecycle event for a box that
+	// lives (hibernated) on another worker.
+	if qemuMgr != nil && store != nil {
+		observability.Go("foreign-vm-reaper", func() {
+			worker.StartForeignVMReaper(ctx, qemuMgr, store, cfg.WorkerID, 5*time.Minute)
+		})
+	}
+
 	// gRPC server (nil builder — template building via podman not needed for QEMU)
 	grpcServer := worker.NewGRPCServer(mgr, ptyMgr, execMgr, sandboxDBMgr, checkpointStore, sbRouter, nil, store)
 	// Wire up Axiom log-shipping. Empty token disables shipping (kill-switch).

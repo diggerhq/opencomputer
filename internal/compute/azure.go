@@ -308,31 +308,40 @@ func (p *AzurePool) DestroyMachine(ctx context.Context, machineID string) error 
 		}
 	}
 
-	// Delete VM
+	// Delete VM. A poll timeout here is common for large VMs — the async delete
+	// usually still completes ("natural expiry") — so do NOT return early on it:
+	// fall through to best-effort NIC + disk cleanup. Returning early was the
+	// primary source of orphaned OS disks (a timed-out VM delete stranded its
+	// disk forever, since the disk-cleanup loop below was never reached). The
+	// standalone orphan-disk reaper in CleanupOrphanedResources is the backstop
+	// for a disk still attached (detaching) when this runs.
+	var vmDelErr error
 	vmPoller, err := p.vmClient.BeginDelete(ctx, p.cfg.ResourceGroup, machineID, nil)
 	if err != nil {
-		return fmt.Errorf("azure: delete VM %s failed: %w", machineID, err)
-	}
-	if _, err := vmPoller.PollUntilDone(ctx, nil); err != nil {
-		return fmt.Errorf("azure: delete VM %s poll failed: %w", machineID, err)
+		vmDelErr = fmt.Errorf("azure: delete VM %s failed: %w", machineID, err)
+	} else if _, err := vmPoller.PollUntilDone(ctx, nil); err != nil {
+		vmDelErr = fmt.Errorf("azure: delete VM %s poll failed: %w", machineID, err)
+		log.Printf("%v — proceeding with best-effort NIC/disk cleanup", vmDelErr)
 	}
 
-	// Clean up NIC
+	// Clean up NIC (best-effort)
 	nicName := machineID + "-nic"
-	nicPoller, err := p.nicClient.BeginDelete(ctx, p.cfg.ResourceGroup, nicName, nil)
-	if err == nil {
+	if nicPoller, nerr := p.nicClient.BeginDelete(ctx, p.cfg.ResourceGroup, nicName, nil); nerr == nil {
 		nicPoller.PollUntilDone(ctx, nil)
 	}
 
-	// Clean up disks
+	// Clean up disks (best-effort). If the VM delete only timed out and the disk
+	// is still detaching, this fails and the disk-orphan reaper collects it later.
 	for _, diskName := range diskNames {
-		diskPoller, err := p.diskClient.BeginDelete(ctx, p.cfg.ResourceGroup, diskName, nil)
-		if err == nil {
+		if diskPoller, derr := p.diskClient.BeginDelete(ctx, p.cfg.ResourceGroup, diskName, nil); derr == nil {
 			diskPoller.PollUntilDone(ctx, nil)
 			log.Printf("azure: deleted disk %s", diskName)
 		}
 	}
 
+	if vmDelErr != nil {
+		return vmDelErr
+	}
 	log.Printf("azure: VM %s destroyed (+ %d disks + NIC)", machineID, len(diskNames))
 	return nil
 }
@@ -436,10 +445,11 @@ func (p *AzurePool) CleanupOrphanedResources(_ context.Context) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	var orphaned []string
-	pager := p.nicClient.NewListPager(p.cfg.ResourceGroup, nil)
-	for pager.More() {
-		page, err := pager.NextPage(ctx)
+	// Orphaned NICs: osb-worker-* NICs with no VM attached.
+	var orphanedNICs []string
+	nicPager := p.nicClient.NewListPager(p.cfg.ResourceGroup, nil)
+	for nicPager.More() {
+		page, err := nicPager.NextPage(ctx)
 		if err != nil {
 			return 0, fmt.Errorf("azure: list NICs: %w", err)
 		}
@@ -454,22 +464,52 @@ func (p *AzurePool) CleanupOrphanedResources(_ context.Context) (int, error) {
 			if !strings.HasPrefix(name, "osb-worker-") {
 				continue
 			}
-			orphaned = append(orphaned, name)
+			orphanedNICs = append(orphanedNICs, name)
 		}
 	}
 
-	if len(orphaned) == 0 {
-		return 0, nil
+	// Orphaned OS disks: Unattached osb-worker-* managed disks. A worker VM's OS
+	// disk is left behind whenever DestroyMachine's disk cleanup is skipped (VM-
+	// delete poll timeout) and nothing else reaps it, so these accumulate
+	// unbounded (observed: ~200 disks / ~6 TB / ~$1k/mo). This is the backstop.
+	var orphanedDisks []string
+	diskPager := p.diskClient.NewListByResourceGroupPager(p.cfg.ResourceGroup, nil)
+	for diskPager.More() {
+		page, err := diskPager.NextPage(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("azure: list disks: %w", err)
+		}
+		for _, d := range page.Value {
+			name := ""
+			if d.Name != nil {
+				name = *d.Name
+			}
+			if !strings.HasPrefix(name, "osb-worker-") {
+				continue
+			}
+			// ManagedBy set → still attached to a VM. Skip.
+			if d.ManagedBy != nil && *d.ManagedBy != "" {
+				continue
+			}
+			// Belt-and-suspenders: only reap disks Azure reports as Unattached.
+			if d.Properties != nil && d.Properties.DiskState != nil && *d.Properties.DiskState != armcompute.DiskStateUnattached {
+				continue
+			}
+			orphanedDisks = append(orphanedDisks, name)
+		}
 	}
 
-	log.Printf("azure: found %d orphaned NICs, cleaning up in parallel", len(orphaned))
+	if len(orphanedNICs) == 0 && len(orphanedDisks) == 0 {
+		return 0, nil
+	}
+	log.Printf("azure: orphan cleanup: %d NICs, %d disks — deleting in parallel", len(orphanedNICs), len(orphanedDisks))
 
 	var (
 		cleaned int64
 		wg      sync.WaitGroup
 		sem     = make(chan struct{}, 10)
 	)
-	for _, name := range orphaned {
+	for _, name := range orphanedNICs {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(nicName string) {
@@ -482,6 +522,24 @@ func (p *AzurePool) CleanupOrphanedResources(_ context.Context) (int, error) {
 			}
 			if _, err := poller.PollUntilDone(ctx, nil); err != nil {
 				log.Printf("azure: orphaned NIC %s delete poll failed: %v", nicName, err)
+				return
+			}
+			atomic.AddInt64(&cleaned, 1)
+		}(name)
+	}
+	for _, name := range orphanedDisks {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(diskName string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			poller, err := p.diskClient.BeginDelete(ctx, p.cfg.ResourceGroup, diskName, nil)
+			if err != nil {
+				log.Printf("azure: failed to delete orphaned disk %s: %v", diskName, err)
+				return
+			}
+			if _, err := poller.PollUntilDone(ctx, nil); err != nil {
+				log.Printf("azure: orphaned disk %s delete poll failed: %v", diskName, err)
 				return
 			}
 			atomic.AddInt64(&cleaned, 1)
