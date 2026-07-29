@@ -63,20 +63,37 @@ The asymmetry is deliberate: rapid response when the user notices lag, conservat
 
 ---
 
-## `oc sandbox scale <id> <memory-mb>`
+## `oc sandbox scale <id> [<memory-mb>]`
 
-Manually resize a sandbox to a specific memory tier. [HTTP API →](/api-reference/sandboxes/scale)
+Manually resize a sandbox — memory and/or workspace disk. Any subset of the dimensions may be supplied; unspecified dimensions are left alone. Combining them in one call applies both changes atomically and records a single billing event. [HTTP API →](/api-reference/sandboxes/scale)
 
 ```bash
+# Memory only (positional; backwards-compatible with old form)
 oc sandbox scale sb-abc123 8192
 # Scaled sb-abc123 to 8192MB / 400% CPU
+
+# Disk only
+oc sandbox scale sb-abc123 --disk-mb 40960
+# Scaled sb-abc123 to disk 40960MB
+
+# Both, atomically
+oc sandbox scale sb-abc123 --memory-mb 8192 --disk-mb 40960
+# Scaled sb-abc123 to 8192MB / 400% CPU, disk 40960MB
 ```
 
-A manual scale **disables autoscale** on this sandbox as a side effect — explicit intent overrides the loop. Re-enable with `oc sandbox autoscale --on` if you want size to track load again.
+**Flags**
+
+- `--memory-mb <int>` — target memory tier (1024, 4096, 8192, 16384, 32768, 65536). Positional `<memory-mb>` still accepted for backwards compat and overrides the flag when both are given.
+- `--disk-mb <int>` — target workspace disk (20480–262144). Grow completes in ~1–2s online. Shrink is refused when guest fs used bytes leave <500 MB safety margin.
+
+A manual **memory** scale disables autoscale on this sandbox as a side effect — explicit intent overrides the loop. Re-enable with `oc sandbox autoscale --on` if you want size to track load again. A disk-only scale leaves autoscale alone.
 
 **Errors**
 
 - `scaling_locked` — the sandbox has a scaling lock active. Run `oc sandbox unlock <id>` first.
+- `sandbox_hibernated` — the sandbox is hibernated. Call `oc sandbox wake <id>` first.
+- `oom_floor` — memory shrink would OOM-kill the guest.
+- `shrink_refused` — disk shrink would leave less than 500 MB above the guest's used bytes.
 - `402 Payment Required` — requested size exceeds your plan cap.
 
 ---

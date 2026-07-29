@@ -207,6 +207,7 @@
               "api-reference/sandboxes/get",
               "api-reference/sandboxes/delete",
               "api-reference/sandboxes/set-timeout",
+              "api-reference/sandboxes/scale",
               "api-reference/sandboxes/hibernate",
               "api-reference/sandboxes/wake",
               {

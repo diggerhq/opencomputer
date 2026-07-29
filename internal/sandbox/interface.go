@@ -82,6 +82,11 @@ type Manager interface {
 	// Resource limits
 	SetResourceLimits(ctx context.Context, sandboxID string, maxPids int32, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec int64) error
 
+	// ResizeSandboxDisk grows or shrinks the customer disk of a running sandbox
+	// (rootfs.qcow2 in merged layout, workspace.qcow2 in split). Shrink is
+	// refused when the guest filesystem's used bytes leave no safety margin.
+	ResizeSandboxDisk(ctx context.Context, sandboxID string, newDiskBytes int64) error
+
 	// UpdateSandboxSecret refreshes the proxy session value for one secret name
 	// (env var name) without changing the sealed token id seen by the sandbox.
 	// Used by the secret-store-update flow to push new values to running

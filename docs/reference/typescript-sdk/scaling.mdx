@@ -23,18 +23,24 @@ CPU follows memory per the platform's tier table. You don't pick CPU separately.
 
 ## `sandbox.scale(opts)`
 
-Manually resize the sandbox. [HTTP API →](/api-reference/sandboxes/scale)
+Manually resize the sandbox. Any subset of the dimensions may be supplied; unspecified dimensions are left alone. Combining them in one call applies both changes atomically and records a single billing event. [HTTP API →](/api-reference/sandboxes/scale)
 
-<ParamField body="memoryMB" type="number" required>
-  Target memory in MB.
+<ParamField body="memoryMB" type="number">
+  Target memory in MB (allowed tiers: 1024, 4096, 8192, 16384, 32768, 65536). CPU scales proportionally.
 </ParamField>
 
-**Returns:** `Promise<{ sandboxID: string; memoryMB: number; cpuPercent: number }>`
+<ParamField body="diskMB" type="number">
+  Target workspace disk size in MB (20480–262144, i.e. 20–256 GB). Grow is online; shrink is refused if the guest fs would leave <500 MB safety margin.
+</ParamField>
+
+**Returns:** `Promise<{ sandboxID: string; memoryMB?: number; cpuPercent?: number; diskMB?: number }>`
 
 **Throws:**
 
 - `ScalingLockedError` — sandbox has a scaling lock active.
-- `PlanLimitError` — `memoryMB` exceeds the org's plan cap.
+- `PlanLimitError` — requested size exceeds the org's plan cap.
+- Error with `code: "sandbox_hibernated"` — sandbox is hibernated; call `sandbox.wake()` first.
+- Error with `code: "shrink_refused"` — disk shrink would leave less than 500 MB above the guest fs used bytes.
 
 ```typescript
 import { Sandbox, ScalingLockedError, PlanLimitError } from "@opencomputer/sdk";
@@ -42,8 +48,9 @@ import { Sandbox, ScalingLockedError, PlanLimitError } from "@opencomputer/sdk";
 const sandbox = await Sandbox.connect("sb-abc123");
 
 try {
-  const result = await sandbox.scale({ memoryMB: 8192 });
-  console.log(`scaled to ${result.memoryMB}MB / ${result.cpuPercent}% CPU`);
+  // Grow memory and disk in one call
+  const result = await sandbox.scale({ memoryMB: 8192, diskMB: 40960 });
+  console.log(`scaled to ${result.memoryMB}MB / ${result.cpuPercent}% CPU, disk ${result.diskMB}MB`);
 } catch (err) {
   if (err instanceof ScalingLockedError) {
     console.warn("sandbox is locked — unlock to scale");

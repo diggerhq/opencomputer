@@ -367,28 +367,50 @@ class Sandbox:
         except httpx.HTTPStatusError:
             return False
 
-    async def scale(self, memory_mb: int) -> dict:
-        """Manually resize the sandbox to a specific memory tier.
+    async def scale(
+        self,
+        memory_mb: int | None = None,
+        disk_mb: int | None = None,
+    ) -> dict:
+        """Manually resize the sandbox.
 
-        CPU is bundled with memory per the platform's tier table (e.g. 8 GB
-        → 4 vCPU). Allowed tiers: 1024, 4096, 8192, 16384, 32768, 65536 MB.
+        Any subset of ``memory_mb`` and ``disk_mb`` may be supplied; unspecified
+        dimensions are left alone. Combining them applies both changes atomically
+        and records a single billing event.
 
-        A manual scale disables autoscale on this sandbox as a side effect.
-        Re-enable with :meth:`set_autoscale` if you want size to track load.
+        ``memory_mb`` bundles CPU per the platform's tier table (e.g. 8 GB
+        → 4 vCPU); allowed tiers: 1024, 4096, 8192, 16384, 32768, 65536 MB.
+        ``disk_mb`` grows (or, guarded, shrinks) the customer workspace disk
+        online — 20480–262144 (20 GB–256 GB). The new size persists across
+        hibernate, wake, fork, and migration.
+
+        A manual **memory** scale disables autoscale on this sandbox as a side
+        effect. Re-enable with :meth:`set_autoscale` if you want size to track
+        load. A disk-only scale leaves autoscale alone.
 
         Args:
             memory_mb: Target memory tier in MB.
+            disk_mb: Target workspace disk size in MB.
 
         Raises:
+            ValueError: Neither ``memory_mb`` nor ``disk_mb`` was provided.
             ScalingLockedError: The sandbox has a scaling lock active.
-            PlanLimitError: ``memory_mb`` exceeds the org's plan cap.
+            PlanLimitError: Requested size exceeds the org's plan cap.
 
         Returns:
-            Dict with ``sandboxID``, ``memoryMB``, ``cpuPercent``.
+            Dict with ``sandboxID``, and whichever of ``memoryMB`` /
+            ``cpuPercent`` / ``diskMB`` were applied.
         """
+        if not memory_mb and not disk_mb:
+            raise ValueError("scale: at least one of memory_mb or disk_mb must be provided")
+        body: dict = {}
+        if memory_mb:
+            body["memoryMB"] = memory_mb
+        if disk_mb:
+            body["diskMB"] = disk_mb
         resp = await self._client.post(
             f"/sandboxes/{self.sandbox_id}/scale",
-            json={"memoryMB": memory_mb},
+            json=body,
         )
         if resp.status_code >= 400:
             _raise_scaling_error(resp, "scale")

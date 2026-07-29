@@ -2934,6 +2934,105 @@ func (m *Manager) SetResourceLimits(ctx context.Context, sandboxID string, maxPi
 	return vm.agent.SetResourceLimits(ctx, maxPids, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec)
 }
 
+// ResizeSandboxDisk grows (or, guarded, shrinks) the customer disk of a running
+// sandbox via QMP block_resize — which both resizes the backing qcow2 AND fires
+// the virtio-blk capacity-change event to the guest atomically. Followed by
+// agent-side resize2fs to grow the ext4 online.
+//
+// Note: we do NOT call `qemu-img resize` externally — the qcow2 is opened by
+// the running QEMU with a write lock, and external mutation would fail or race
+// with in-flight IO. QMP block_resize is the correct online path (the offline
+// ResizeWorkspace helper is only used pre-launch during golden-create).
+//
+// Shrink is refused unless the guest filesystem's used bytes leave a 500 MB
+// safety margin below the target — fail-closed on stats errors during shrink
+// (mirrors the memory OOM-floor pattern at :2857).
+func (m *Manager) ResizeSandboxDisk(ctx context.Context, sandboxID string, newDiskBytes int64) error {
+	if newDiskBytes <= 0 {
+		return fmt.Errorf("disk size must be positive")
+	}
+	vm, err := m.getReadyVM(ctx, sandboxID)
+	if err != nil {
+		return err
+	}
+	if vm.qmp == nil {
+		return fmt.Errorf("qmp not available for %s", sandboxID)
+	}
+	if vm.agent == nil {
+		return fmt.Errorf("agent not available for %s", sandboxID)
+	}
+
+	// Pick the customer disk based on layout. In the split (legacy) topology
+	// the customer's /home/sandbox lives on vdb; in merged (current default)
+	// the whole 20 GB rootfs is customer-writable and there is no vdb.
+	var diskPath, guestDev string
+	var usedBytesFn func(*pb.StatsResponse) uint64
+	if IsMerged(vm.diskLayout) {
+		diskPath = detectDrivePath(vm.sandboxDir, "rootfs")
+		guestDev = "/dev/vda"
+		usedBytesFn = func(s *pb.StatsResponse) uint64 { return s.RootfsUsedBytes }
+	} else {
+		diskPath = detectDrivePath(vm.sandboxDir, "workspace")
+		guestDev = "/dev/vdb"
+		usedBytesFn = func(s *pb.StatsResponse) uint64 { return s.WorkspaceUsedBytes }
+	}
+
+	// Shrink guard: pull live guest fs usage and refuse if it would leave less
+	// than a 500 MB safety margin. Fail-closed on stats errors — better to
+	// bounce back to the caller (who can retry) than truncate live data.
+	// Trivially passes on any grow (used << newDiskBytes).
+	const shrinkMarginBytes = 500 * 1024 * 1024
+	statsCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	stats, statsErr := vm.agent.Stats(statsCtx)
+	cancel()
+	if statsErr != nil {
+		return fmt.Errorf("cannot verify guest fs usage: %w", statsErr)
+	}
+	usedBytes := usedBytesFn(stats)
+	floor := int64(usedBytes) + shrinkMarginBytes
+	if newDiskBytes < floor {
+		return fmt.Errorf("shrink_refused: target %dMB below guest fs floor (%dMB used, need ≥ %dMB)",
+			newDiskBytes/(1024*1024), int64(usedBytes)/(1024*1024), floor/(1024*1024))
+	}
+
+	// Find the virtio-blk device by matching the backing file, then push the
+	// new geometry into the running guest. block_resize is a no-op if the
+	// device is already at the requested size, so we don't gate on that.
+	devs, err := vm.qmp.QueryBlock()
+	if err != nil {
+		return fmt.Errorf("query-block: %w", err)
+	}
+	var devID string
+	for _, d := range devs {
+		if d.Inserted.File == diskPath {
+			devID = d.Device
+			break
+		}
+	}
+	if devID == "" {
+		return fmt.Errorf("device for %s not found in query-block", diskPath)
+	}
+	if err := vm.qmp.BlockResize(devID, newDiskBytes); err != nil {
+		return fmt.Errorf("block_resize: %w", err)
+	}
+
+	// Grow the ext4 online. Try the raw device first, fall back to partition
+	// 1 in case a future template adds partitioning.
+	resizeCtx, resizeCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer resizeCancel()
+	if _, err := vm.agent.Exec(resizeCtx, &pb.ExecRequest{
+		Command:   "/bin/sh",
+		Args:      []string{"-c", fmt.Sprintf("resize2fs %s 2>/dev/null || resize2fs %s1", guestDev, guestDev)},
+		RunAsRoot: true,
+	}); err != nil {
+		return fmt.Errorf("resize2fs %s: %w", guestDev, err)
+	}
+
+	log.Printf("qemu: %s disk resized: %s → %dMB (%s)",
+		sandboxID, guestDev, newDiskBytes/(1024*1024), diskPath)
+	return nil
+}
+
 // UpdateSandboxSecret refreshes the proxy session value for one secret name.
 // Returns (true, nil) on success, (false, nil) if there's no session for the
 // sandbox or the secret name isn't on the session — both treated as transient

@@ -465,6 +465,11 @@ message SetSandboxLimitsRequest {
   int64 max_memory_bytes = 3;
   int64 cpu_max_usec = 4;
   int64 cpu_period_usec = 5;
+  // Target customer-disk size in bytes. 0 = leave unchanged (existing callers
+  // that only adjust memory/cpu remain unaffected). Grow or shrink is applied
+  // via qemu-img resize → QMP block_resize → guest resize2fs; shrink is
+  // refused if the guest filesystem's used bytes leave no safety margin.
+  int64 disk_bytes = 6;
 }
 
 message SetSandboxLimitsResponse {}

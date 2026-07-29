@@ -31,8 +31,15 @@ type UsageSample struct {
 }
 
 // RecordScaleEvent ends the current scale event (if any) and starts a new one.
-// diskMB is the workspace disk size at this point — pass 0 to inherit from the
-// most recent scale event (disk doesn't change at runtime).
+// Any dimension passed as 0 is inherited from the most recent event for this
+// sandbox — required because a scale call may touch a strict subset of the
+// three (e.g. disk-only resize sends memoryMB=0, cpuPct=0). Without this the
+// new event would attribute zero memory/CPU going forward and break billing
+// aggregation, which GROUP BYs on (memory_mb, cpu_percent, disk_mb).
+//
+// If there's no prior event to inherit from (shouldn't happen — create always
+// records one first), fall back to platform defaults so a row is never billed
+// against 0-valued dimensions.
 func (s *Store) RecordScaleEvent(ctx context.Context, sandboxID, orgID string, memoryMB, cpuPct, diskMB int) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -40,17 +47,33 @@ func (s *Store) RecordScaleEvent(ctx context.Context, sandboxID, orgID string, m
 	}
 	defer tx.Rollback(ctx)
 
-	if diskMB <= 0 {
-		// Inherit from the most recent open or closed event for this sandbox.
-		var prev int
+	if memoryMB <= 0 || cpuPct <= 0 || diskMB <= 0 {
+		var prevMem, prevCPU, prevDisk int
 		err = tx.QueryRow(ctx,
-			`SELECT disk_mb FROM sandbox_scale_events
+			`SELECT memory_mb, cpu_percent, disk_mb FROM sandbox_scale_events
 			 WHERE sandbox_id = $1
-			 ORDER BY started_at DESC LIMIT 1`, sandboxID).Scan(&prev)
-		if err == nil && prev > 0 {
-			diskMB = prev
-		} else {
-			diskMB = 20480 // fall back to default 20GB
+			 ORDER BY started_at DESC LIMIT 1`, sandboxID).Scan(&prevMem, &prevCPU, &prevDisk)
+		hasPrior := err == nil
+		if memoryMB <= 0 {
+			if hasPrior && prevMem > 0 {
+				memoryMB = prevMem
+			} else {
+				memoryMB = 1024 // platform default
+			}
+		}
+		if cpuPct <= 0 {
+			if hasPrior && prevCPU > 0 {
+				cpuPct = prevCPU
+			} else {
+				cpuPct = 100 // platform default (1 vCPU)
+			}
+		}
+		if diskMB <= 0 {
+			if hasPrior && prevDisk > 0 {
+				diskMB = prevDisk
+			} else {
+				diskMB = 20480 // platform default (20GB)
+			}
 		}
 	}
 

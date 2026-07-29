@@ -1670,7 +1670,7 @@ func (s *Server) setLimits(c echo.Context) error {
 
 	// Server mode: dispatch to worker via gRPC
 	if s.workerRegistry != nil {
-		return s.setLimitsRemote(c, id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec)
+		return s.setLimitsRemote(c, id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec, 0)
 	}
 
 	// Combined mode: apply locally
@@ -1698,25 +1698,62 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 
 	var req struct {
 		MemoryMB int `json:"memoryMB"`
+		DiskMB   int `json:"diskMB"`
 	}
-	if err := c.Bind(&req); err != nil || req.MemoryMB <= 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "memoryMB is required and must be positive"})
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
 	}
-
-	// Validate memory against allowed tiers
-	vcpus, err := types.ValidateMemoryMB(req.MemoryMB)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	if req.MemoryMB <= 0 && req.DiskMB <= 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "memoryMB or diskMB is required and must be positive"})
 	}
 
-	// Free tier: block scaling beyond 4GB. Plan comes from the cap-token
+	// Validate memory against allowed tiers (only when memory is being changed).
+	var vcpus int
+	if req.MemoryMB > 0 {
+		v, err := types.ValidateMemoryMB(req.MemoryMB)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		vcpus = v
+	}
+
+	// Validate disk bounds when supplied. Matches the create-time envelope
+	// (internal/api/sandbox.go:153-165) so runtime resize can't reach sizes
+	// that would have been rejected at create.
+	if req.DiskMB > 0 {
+		if req.DiskMB < 20480 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "diskMB must be at least 20480 (20GB)"})
+		}
+		if req.DiskMB > 262144 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "diskMB cannot exceed 262144 (256GB)"})
+		}
+	}
+
+	// Free tier: block scaling beyond 4GB / 20GB. Plan comes from the cap-token
 	// (edge-authoritative) when present, else the cell-PG copy. Autumn orgs are
 	// metered, not tiered, so the ceiling doesn't apply to them.
 	if orgID, hasOrg := auth.GetOrgID(c); hasOrg {
-		if s.effectivePlan(c, orgID) == "free" && s.effectiveBillingProvider(c, orgID) != "autumn" && req.MemoryMB > 4096 {
+		plan := s.effectivePlan(c, orgID)
+		provider := s.effectiveBillingProvider(c, orgID)
+		if req.MemoryMB > 0 && plan == "free" && provider != "autumn" && req.MemoryMB > 4096 {
 			return c.JSON(http.StatusPaymentRequired, map[string]string{
 				"error": "upgrade to pro for larger instances",
 			})
+		}
+		if req.DiskMB > 0 && plan == "free" && provider != "autumn" && req.DiskMB > 20480 {
+			return c.JSON(http.StatusPaymentRequired, map[string]string{
+				"error": "upgrade to pro for larger disks",
+			})
+		}
+		// Org disk cap (mirrors the create-time check).
+		if req.DiskMB > 0 && s.store != nil {
+			if org, err := s.store.GetOrg(c.Request().Context(), orgID); err == nil && org != nil {
+				if org.MaxDiskMB > 0 && req.DiskMB > org.MaxDiskMB {
+					return c.JSON(http.StatusForbidden, map[string]string{
+						"error": fmt.Sprintf("disk size %dMB exceeds org limit of %dMB", req.DiskMB, org.MaxDiskMB),
+					})
+				}
+			}
 		}
 	}
 
@@ -1732,10 +1769,17 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 		}
 	}
 
-	cpuPercent := vcpus * 100
-	maxMemoryBytes := int64(req.MemoryMB) * 1024 * 1024
-	cpuMaxUsec := int64(cpuPercent) * 1000
-	cpuPeriodUsec := int64(100000)
+	var cpuPercent int
+	var maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec, diskBytes int64
+	if req.MemoryMB > 0 {
+		cpuPercent = vcpus * 100
+		maxMemoryBytes = int64(req.MemoryMB) * 1024 * 1024
+		cpuMaxUsec = int64(cpuPercent) * 1000
+		cpuPeriodUsec = int64(100000)
+	}
+	if req.DiskMB > 0 {
+		diskBytes = int64(req.DiskMB) * 1024 * 1024
+	}
 
 	// Manual scale disables autoscale. Rationale: a user explicitly setting a
 	// size has signalled they want predictability — letting the autoscaler
@@ -1743,8 +1787,9 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 	// Best-effort — failure to disable is logged but doesn't fail the scale.
 	// We capture whether it WAS enabled so the response can flag the side-
 	// effect to SDK callers (otherwise autoscale silently flips off).
+	// Only applies when memory changes — disk-only resize leaves autoscale alone.
 	var autoscaleWasEnabled bool
-	if s.store != nil {
+	if s.store != nil && req.MemoryMB > 0 {
 		if enabled, _, _, err := s.store.GetSandboxAutoscale(c.Request().Context(), id); err == nil {
 			autoscaleWasEnabled = enabled
 		}
@@ -1753,24 +1798,36 @@ func (s *Server) scaleSandbox(c echo.Context) error {
 		}
 	}
 	c.Set("autoscaleWasEnabled", autoscaleWasEnabled)
+	c.Set("scaleRequestedDiskMB", req.DiskMB)
 
 	if s.workerRegistry != nil {
-		return s.setLimitsRemote(c, id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec)
+		return s.setLimitsRemote(c, id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec, diskBytes)
 	}
 	if s.manager == nil {
 		return c.JSON(http.StatusServiceUnavailable, errSandboxNotAvailable)
 	}
-	if err := s.manager.SetResourceLimits(c.Request().Context(), id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	if maxMemoryBytes > 0 {
+		if err := s.manager.SetResourceLimits(c.Request().Context(), id, 0, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
 	}
-	return c.JSON(http.StatusOK, map[string]interface{}{
-		"sandboxID":  id,
-		"memoryMB":   req.MemoryMB,
-		"cpuPercent": cpuPercent,
-	})
+	if diskBytes > 0 {
+		if err := s.manager.ResizeSandboxDisk(c.Request().Context(), id, diskBytes); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+	resp := map[string]interface{}{"sandboxID": id}
+	if req.MemoryMB > 0 {
+		resp["memoryMB"] = req.MemoryMB
+		resp["cpuPercent"] = cpuPercent
+	}
+	if req.DiskMB > 0 {
+		resp["diskMB"] = req.DiskMB
+	}
+	return c.JSON(http.StatusOK, resp)
 }
 
-func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec int64) error {
+func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32, maxMemoryBytes, cpuMaxUsec, cpuPeriodUsec, diskBytes int64) error {
 	if s.store == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{
 			"error": "database not configured",
@@ -1783,6 +1840,18 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "sandbox not found"})
 	}
+	if session.Status == "hibernated" {
+		// v1: return a structured 409 so SDK callers can auto-wake + retry.
+		// A follow-up will fold the wake→resize→re-hibernate round-trip into
+		// this handler once wake/hibernate are refactored to expose internal
+		// helpers (currently they only exist as HTTP handlers that write to
+		// echo.Context, which we can't compose from here without a refactor
+		// bigger than the resize change itself).
+		return c.JSON(http.StatusConflict, map[string]any{
+			"error": "sandbox is hibernated — call POST /wake first, then retry",
+			"code":  "sandbox_hibernated",
+		})
+	}
 	if session.Status != "running" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "sandbox is not running"})
 	}
@@ -1792,6 +1861,7 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 	if requestedCPUs < 1 {
 		requestedCPUs = 1
 	}
+	requestedDiskMB := int(diskBytes / (1024 * 1024))
 
 	workerID := session.WorkerID
 
@@ -1808,6 +1878,7 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 		MaxMemoryBytes: maxMemoryBytes,
 		CpuMaxUsec:     cpuMaxUsec,
 		CpuPeriodUsec:  cpuPeriodUsec,
+		DiskBytes:      diskBytes,
 	})
 	cancel()
 
@@ -1884,6 +1955,7 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 			MaxMemoryBytes: maxMemoryBytes,
 			CpuMaxUsec:     cpuMaxUsec,
 			CpuPeriodUsec:  cpuPeriodUsec,
+			DiskBytes:      diskBytes,
 		})
 		retryCancel()
 
@@ -1933,6 +2005,9 @@ func (s *Server) setLimitsRemote(c echo.Context, sandboxID string, maxPids int32
 		"cpuPercent": int(cpuMaxUsec / 1000),
 		"migrated":   migrated,
 		"ok":         true,
+	}
+	if requestedDiskMB > 0 {
+		resp["diskMB"] = requestedDiskMB
 	}
 	// Surface the autoscale-was-disabled side-effect when the request came
 	// from /scale (scaleSandbox stashes this on the echo context). Quiet
