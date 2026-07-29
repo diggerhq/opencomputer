@@ -250,18 +250,21 @@ For the default unified rootfs, `lsblk` should show one approximately 20 GiB
 
 ## Use the dashboard during development
 
-The deploy command installs the API and workers, but it does not build the
-dashboard bundle. Without a bundle, the control-plane root redirects to the
-Vite development address.
+The development deployment enables the explicit `single-tenant` dashboard
+mode. On startup, the control plane creates or reuses one local organization
+and administrator in PostgreSQL. The dashboard therefore shows the live cell's
+sandboxes without requiring an external identity provider.
 
-There are two useful dashboard modes.
+<Warning>
+Single-tenant mode supplies a persistent local identity but does not
+authenticate individual browser users. Reach the development UI through SSH
+port forwarding and do not expose the Vite port publicly.
+</Warning>
 
-### UI preview without authentication
+### Start the development UI
 
-Preview mode displays the complete dashboard with representative mock data. It
-does not show the live cell's sandboxes.
-
-In one terminal, run Vite on the VM through the existing Docker installation:
+The deploy command syncs the dashboard source to the VM. In one terminal, run
+Vite there through the existing Docker installation:
 
 ```bash
 gcloud compute ssh "$INSTANCE_NAME" \
@@ -272,11 +275,18 @@ gcloud compute ssh "$INSTANCE_NAME" \
       -v "$HOME/opensandbox/web:/app" \
       -w /app \
       node:22-bookworm-slim \
-      sh -lc "npm ci && npm run dev:preview -- --host 127.0.0.1"
+      sh -lc "npm ci && npm run dev -- --host 127.0.0.1"
   '
 ```
 
-In a second terminal, create the tunnel:
+Vite's development proxy reaches the control plane at `localhost:8080` on the
+VM, so UI requests use the single-tenant identity and operate on the live
+development cell.
+
+### Forward it to your machine
+
+Keep Vite running. In a second local terminal, forward the VM's loopback-only
+UI port to port `3000` on your machine:
 
 ```bash
 gcloud compute ssh "$INSTANCE_NAME" \
@@ -290,24 +300,8 @@ gcloud compute ssh "$INSTANCE_NAME" \
 
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
 
-### Live dashboard data
-
-The development deployment enables the explicit `single-tenant` dashboard
-mode. On startup, the control plane creates or reuses one local organization
-and administrator in PostgreSQL. No external identity service is required.
-
-Run Vite without preview mode and point its proxy at the cell:
-
-```bash
-cd web
-OC_API_TARGET="$OPENCOMPUTER_URL" npm ci
-OC_API_TARGET="$OPENCOMPUTER_URL" npm run dev
-```
-
-The dashboard runs locally at `http://localhost:3000`; API requests are proxied
-to the GCP cell and are attributed to the local development administrator.
-
-You can customize that identity before deploying:
+Every dashboard action is attributed to the development administrator. You can
+customize that identity before deploying:
 
 ```bash
 export OPENSANDBOX_DASHBOARD_AUTH_MODE="single-tenant"
@@ -318,13 +312,6 @@ export OPENSANDBOX_DASHBOARD_TENANT_SLUG="development"
 
 ./deploy/gcp/deploy-qemu-dev.sh deploy
 ```
-
-<Warning>
-Single-tenant development mode does not authenticate individual browser users.
-Every dashboard request is trusted as the local administrator. Keep the
-control-plane port restricted to your administrative CIDR and do not use this
-mode as the only access control for a shared production deployment.
-</Warning>
 
 ## Operations
 
