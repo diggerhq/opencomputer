@@ -631,8 +631,10 @@ func (s *Store) GetUserByID(ctx context.Context, userID uuid.UUID) (*User, error
 }
 
 // EnsureSingleTenantPrincipal returns a stable local organization and admin
-// user for an explicitly configured single-tenant dashboard. It is idempotent
-// so development deployments can run it on every control-plane start.
+// user for an explicitly configured single-tenant dashboard. Single-tenant
+// deployments do not use the hosted free-tier billing gate, so the local org
+// is always promoted to Pro. The operation is idempotent so development
+// deployments can run it on every control-plane start.
 func (s *Store) EnsureSingleTenantPrincipal(ctx context.Context, orgName, orgSlug, email, name string) (*Org, *User, error) {
 	org, err := s.GetOrgBySlug(ctx, orgSlug)
 	if err != nil {
@@ -644,6 +646,12 @@ func (s *Store) EnsureSingleTenantPrincipal(ctx context.Context, orgName, orgSlu
 				return nil, nil, fmt.Errorf("ensure single-tenant org: %w", err)
 			}
 		}
+	}
+	if org.Plan != "pro" {
+		if err := s.UpdateOrgPlan(ctx, org.ID, "pro"); err != nil {
+			return nil, nil, fmt.Errorf("promote single-tenant org to pro: %w", err)
+		}
+		org.Plan = "pro"
 	}
 
 	user, err := s.GetUserByEmail(ctx, email)

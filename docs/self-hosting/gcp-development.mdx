@@ -252,8 +252,10 @@ For the default unified rootfs, `lsblk` should show one approximately 20 GiB
 
 The development deployment enables the explicit `single-tenant` dashboard
 mode. On startup, the control plane creates or reuses one local organization
-and administrator in PostgreSQL. The dashboard therefore shows the live cell's
-sandboxes without requiring an external identity provider.
+and administrator in PostgreSQL and keeps that development organization on the
+Pro plan so hosted free-tier size gates do not restrict local testing. The
+dashboard therefore shows the live cell's sandboxes without requiring an
+external identity provider.
 
 <Warning>
 Single-tenant mode supplies a persistent local identity but does not
