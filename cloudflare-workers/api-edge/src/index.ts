@@ -193,6 +193,38 @@ function stripApiKeyQueryParam(target: string): string {
 // WebSocket Upgrade requests, also accept ?api_key= because browser WS APIs
 // cannot set custom headers. Session-JWT auth (browser flows) is a TODO;
 // SDK/test traffic uses the API key.
+// --- Per-isolate auth + org-policy caches (burst D1 relief) ------------------
+// Every request authenticates with a D1 SELECT on api_keys, create additionally
+// reads the org policy (D1 SELECT on orgs), and auth fired a same-row last_used
+// write per request. A burst from ONE key => hundreds of concurrent D1 ops that
+// serialize on D1's single writer, stalling requests at the edge while the
+// backend sits idle. Cache the (stable) key->org auth and the org policy
+// per-isolate for a few seconds so a burst collapses to a handful of D1 reads,
+// and throttle the last_used bump. Isolates recycle so entries are naturally
+// bounded; CACHE_MAX guards pathological key cardinality.
+const AUTH_TTL_MS = 60_000;
+const ORG_POLICY_TTL_MS = 5_000; // short: bounds is_halted / cap staleness
+const LAST_USED_BUMP_MS = 60_000; // at most once/min/key/isolate
+const CACHE_MAX = 10_000;
+
+interface AuthEntry {
+  caller: Caller;
+  expiresAt: number | null;
+  cachedAtMs: number;
+  lastBumpMs: number;
+}
+const authCache = new Map<string, AuthEntry>();
+const orgPolicyCache = new Map<string, { policy: OrgPolicy | null; cachedAtMs: number }>();
+
+function bumpLastUsed(env: Env, hash: string, entry: AuthEntry, nowMs: number): void {
+  if (nowMs - entry.lastBumpMs < LAST_USED_BUMP_MS) return;
+  entry.lastBumpMs = nowMs;
+  env.OPENCOMPUTER_DB.prepare("UPDATE api_keys SET last_used = ?1 WHERE key_hash = ?2")
+    .bind(Math.floor(nowMs / 1000), hash)
+    .run()
+    .catch(() => {});
+}
+
 async function authenticate(req: Request, env: Env): Promise<Caller | null> {
   const apiKey = apiKeyFromRequest(req);
   if (!apiKey) return null;
@@ -208,19 +240,30 @@ async function authenticate(req: Request, env: Env): Promise<Caller | null> {
     return verifyProvisionToken(env.OC_PROVISION_SECRET, apiKey);
   }
   const hash = await hashAPIKey(apiKey);
+  const nowMs = Date.now();
+  const nowSec = Math.floor(nowMs / 1000);
+
+  const cached = authCache.get(hash);
+  if (cached && nowMs - cached.cachedAtMs < AUTH_TTL_MS) {
+    if (cached.expiresAt && cached.expiresAt < nowSec) return null;
+    bumpLastUsed(env, hash, cached, nowMs);
+    return cached.caller;
+  }
+
   const row = await env.OPENCOMPUTER_DB.prepare(
     "SELECT org_id, created_by, expires_at FROM api_keys WHERE key_hash = ?1",
   )
     .bind(hash)
     .first<{ org_id: string; created_by: string | null; expires_at: number | null }>();
-  if (!row) return null;
-  if (row.expires_at && row.expires_at < Math.floor(Date.now() / 1000)) return null;
-  // best-effort last_used bump
-  env.OPENCOMPUTER_DB.prepare("UPDATE api_keys SET last_used = ?1 WHERE key_hash = ?2")
-    .bind(Math.floor(Date.now() / 1000), hash)
-    .run()
-    .catch(() => {});
-  return { orgID: row.org_id, userID: row.created_by };
+  if (!row) return null; // never cache negatives — a freshly-created key must work at once
+  if (row.expires_at && row.expires_at < nowSec) return null;
+
+  const caller: Caller = { orgID: row.org_id, userID: row.created_by };
+  if (authCache.size >= CACHE_MAX) authCache.clear();
+  const entry: AuthEntry = { caller, expiresAt: row.expires_at, cachedAtMs: nowMs, lastBumpMs: 0 };
+  authCache.set(hash, entry);
+  bumpLastUsed(env, hash, entry, nowMs);
+  return caller;
 }
 
 interface CellRow {
@@ -426,11 +469,17 @@ interface OrgPolicy {
 // loadOrgPolicy reads an org's routing + policy fields from D1. Returns null
 // when the org doesn't exist (callers 401).
 async function loadOrgPolicy(env: Env, orgID: string): Promise<OrgPolicy | null> {
-  return await env.OPENCOMPUTER_DB.prepare(
+  const nowMs = Date.now();
+  const cached = orgPolicyCache.get(orgID);
+  if (cached && nowMs - cached.cachedAtMs < ORG_POLICY_TTL_MS) return cached.policy;
+  const policy = await env.OPENCOMPUTER_DB.prepare(
     "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider FROM orgs WHERE id = ?1",
   )
     .bind(orgID)
     .first<OrgPolicy>();
+  if (orgPolicyCache.size >= CACHE_MAX) orgPolicyCache.clear();
+  orgPolicyCache.set(orgID, { policy, cachedAtMs: nowMs });
+  return policy;
 }
 
 // enforceCreatePolicy applies every org-level gate for creating or forking a
