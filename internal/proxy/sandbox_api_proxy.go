@@ -311,7 +311,9 @@ func (p *SandboxAPIProxy) ProxyHandler(c echo.Context) error {
 		}
 		// File ops are synchronous (the caller wants the bytes/result now) so
 		// handle+poll doesn't apply, but a cold restore can exceed Cloudflare's
-		// 100s → 524 (or the 90s WakeSandbox cap → 502). For clients that opt in
+		// 100s → 524 (WakeSandbox itself is capped at 5 min to cover the 256GB
+		// disk ceiling — Cloudflare's 100s edge deadline is the tighter bound
+		// on synchronous requests). For clients that opt in
 		// (X-OSB-Async-Wake — the newer SDK, which retries on 503), kick the wake
 		// to the background and return 503 "waking" + Retry-After; the warm retry
 		// proxies normally. Older SDKs don't send the header and don't retry, so
@@ -673,7 +675,10 @@ func (p *SandboxAPIProxy) wakeHibernatedSandbox(ctx context.Context, sandboxID s
 
 	log.Printf("sandbox-api-proxy: waking sandbox %s on worker %s (region=%s)", sandboxID, worker.ID, region)
 
-	grpcCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	// 5 min covers the platform's 256GB per-sandbox disk cap on cross-worker
+	// wake (chunked S3 download + tar-extract). The old 90s cap silently
+	// stranded any wake landing on a worker without a warm qcow2 cache.
+	grpcCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	_, err = grpcClient.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{

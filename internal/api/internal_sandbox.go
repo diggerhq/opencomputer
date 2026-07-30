@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -136,15 +137,20 @@ func (s *Server) internalCreateSandbox(c echo.Context) error {
 
 	// Physical disk bounds. These are hardware/safety limits, not org policy:
 	// diskMB=1 boots-fail opaquely, diskMB=10_000_000 would allocate 10TB per
-	// sandbox. Per-org disk ceilings (free-tier cap, custom max_disk_mb) are
-	// enforced at the edge against D1 — see enforceCreatePolicy in
-	// cloudflare-workers/api-edge/src/index.ts. The cell trusts the cap-token
-	// and only checks these physical bounds.
+	// sandbox. The free-tier disk ceiling is enforced at the edge against D1
+	// (see enforceCreatePolicy in cloudflare-workers/api-edge/src/index.ts).
+	// Paying orgs are billed per GB-second above the 20GB free allowance via
+	// the edge autumn_meter — no per-org admission cap. The cell trusts the
+	// cap-token and only checks these physical bounds.
 	if cfg.DiskMB < 20480 {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "diskMB must be at least 20480 (20GB)"})
 	}
-	if cfg.DiskMB > 262144 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "diskMB cannot exceed 262144 (256GB)"})
+	maxDiskMB := s.maxDiskMB
+	if maxDiskMB <= 0 {
+		maxDiskMB = 262144 // default 256GB
+	}
+	if cfg.DiskMB > maxDiskMB {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("diskMB cannot exceed %d (%dGB)", maxDiskMB, maxDiskMB/1024)})
 	}
 
 	// Declarative image or named snapshot → resolve to a checkpoint and use

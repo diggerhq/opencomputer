@@ -103,6 +103,7 @@ func main() {
 		CFAdminSecret:    cfg.CFAdminSecret,
 		CFEventSecret:    cfg.CFEventSecret,
 		RequireCapToken:  proBillingEdge,
+		MaxDiskMB:        cfg.MaxDiskMB,
 	}
 
 	// Initialize PostgreSQL if configured

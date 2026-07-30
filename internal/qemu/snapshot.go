@@ -318,7 +318,16 @@ func (m *Manager) doHibernate(ctx context.Context, vm *VMInstance, checkpointSto
 			sandboxID, time.Since(t1).Milliseconds(), float64(sizeBytes)/(1024*1024))
 
 		t2 := time.Now()
-		uploadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		// 30 min ceiling covers the platform's 256GB per-sandbox disk cap
+		// (`OPENSANDBOX_MAX_DISK_MB` default 262144): archive size scales
+		// with USED bytes, and a ~200GB customer disk over Azure→Tigris at
+		// realistic same-region throughput (~150–350 MB/s) needs 10–20 min
+		// end-to-end (multipart PUT is 8MB × 4 concurrent, `blobstore/s3.go`).
+		// The previous 5-min cap tripped silently — the sync gRPC had already
+		// returned 200 so the customer saw "hibernated", but `uploaded_at`
+		// stayed NULL and any cross-worker wake refused with "hibernation
+		// upload not yet complete" (`api/sandbox.go:2470-2473`).
+		uploadCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		if _, err := checkpointStore.Upload(uploadCtx, checkpointKey, archivePath); err != nil {
 			goroutineErr = fmt.Errorf("upload: %w", err)

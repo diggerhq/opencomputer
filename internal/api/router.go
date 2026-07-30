@@ -51,6 +51,7 @@ type Server struct {
 	cfAdminSecret  string              // HMAC shared with CreditAccount DO for /admin/halt-org and /admin/resume-org; empty disables auth (dev only)
 	cfEventSecret  string              // HMAC shared with the api-edge Worker for /internal/secret-refresh and other edge-→cell push paths
 	cellID     string                  // this control plane's cell_id (for the cap-token cell check)
+	maxDiskMB  int                     // platform per-sandbox disk ceiling; 0 = default 262144 (256GB)
 	platformOrgID uuid.UUID            // owner of the shared catalog snapshots; anchors the public-snapshot fallback + gates publish (uuid.Nil = fallback disabled)
 	mode       string                  // "server", "worker", "combined"
 	workerID   string                  // this worker's ID
@@ -162,6 +163,13 @@ type ServerOpts struct {
 	SandboxAPIProxy *proxy.SandboxAPIProxy             // nil except in server mode (proxies data-plane to workers)
 	StripeClient    *billing.StripeClient              // nil if Stripe not configured
 	RedisClient     *redis.Client                     // nil if Redis not configured (for health checks)
+	// MaxDiskMB caps `diskMB` at create time (both /api/sandboxes and the
+	// edge-fanout /internal/sandboxes/create). Not a per-org policy — a
+	// platform sanity ceiling protecting worker-density + hibernate/wake
+	// latency at very large disk sizes. Zero = code default (262144 = 256GB).
+	// Bump via OPENSANDBOX_MAX_DISK_MB once timeouts + worker density have
+	// been validated for the new ceiling.
+	MaxDiskMB int
 }
 
 // NewServer creates a new API server with all routes configured.
@@ -192,6 +200,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.cfAdminSecret = opts.CFAdminSecret
 		s.cfEventSecret = opts.CFEventSecret
 		s.cellID = opts.CellID
+		s.maxDiskMB = opts.MaxDiskMB
 		if opts.PlatformOrgID != "" {
 			if pid, err := uuid.Parse(opts.PlatformOrgID); err == nil {
 				s.platformOrgID = pid

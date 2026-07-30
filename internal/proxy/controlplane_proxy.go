@@ -246,8 +246,13 @@ func (p *ControlPlaneProxy) wakeHibernatedSandbox(ctx context.Context, sandboxID
 
 	log.Printf("cp-proxy: waking sandbox %s on worker %s (region=%s)", sandboxID, worker.ID, region)
 
-	// Wake via gRPC with a generous timeout (cold boot + S3 download)
-	grpcCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	// Wake via gRPC with a generous timeout (cold boot + S3 download). 5 min
+	// covers the platform's 256GB per-sandbox disk cap — a smaller ceiling
+	// silently strands large-disk sandboxes on any cross-worker wake because
+	// the target worker's chunked download + tar-extract can't complete in
+	// time. The client-side Cloudflare 100s edge deadline is a separate
+	// concern handled by the X-OSB-Async-Wake header on new SDKs.
+	grpcCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	_, err = grpcClient.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{

@@ -74,6 +74,11 @@ var kvMapping = map[string]string{
 	"server-cf-admin-secret":    "OPENSANDBOX_CF_ADMIN_SECRET",
 	"server-session-jwt-secret": "OPENSANDBOX_SESSION_JWT_SECRET",
 	"server-halt-list-url":      "OPENSANDBOX_HALT_LIST_URL",
+	// Platform per-sandbox disk ceiling enforced by the CP admission checks.
+	// Zero = code default 262144 (256GB). Raise via KV to allow larger sandboxes
+	// on this cell after validating hibernate/wake/migration timeouts at the
+	// new ceiling.
+	"server-max-disk-mb":        "OPENSANDBOX_MAX_DISK_MB",
 	// Pre-warmed sandbox pool (control-plane owned). Per-cell, per-worker target.
 	"server-pool-target":   "OPENSANDBOX_POOL_TARGET",   // pooled boxes per worker (default 10; 0 disables)
 	"server-pool-enabled":  "OPENSANDBOX_POOL_ENABLED",  // "0" to disable (default on)

@@ -108,6 +108,13 @@ type Config struct {
 	DefaultSandboxCPUs     int // default vCPUs per sandbox, default 1
 	DefaultSandboxDiskMB   int // default disk quota per sandbox (MB), 0 = no quota
 
+	// MaxDiskMB caps `diskMB` accepted by the create APIs (/api/sandboxes and
+	// the edge-fanout /internal/sandboxes/create). Platform sanity ceiling —
+	// protects worker density + hibernate/wake latency at very large disks.
+	// 0 = code default 262144 (256GB). Bump via OPENSANDBOX_MAX_DISK_MB once
+	// timeouts + worker density have been validated for the new ceiling.
+	MaxDiskMB int
+
 	// QEMU VM configuration (worker mode)
 	KernelPath string // Path to vmlinux kernel
 	ImagesDir  string // Path to base rootfs images
@@ -372,6 +379,7 @@ func Load() (*Config, error) {
 		DefaultSandboxMemoryMB: envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_MEMORY_MB", 256),
 		DefaultSandboxCPUs:     envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_CPUS", 1),
 		DefaultSandboxDiskMB:   envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_DISK_MB", 0),
+		MaxDiskMB:              envOrDefaultInt("OPENSANDBOX_MAX_DISK_MB", 0),
 
 		KernelPath:     os.Getenv("OPENSANDBOX_KERNEL_PATH"),     // default derived from DataDir
 		ImagesDir:      os.Getenv("OPENSANDBOX_IMAGES_DIR"),      // default derived from DataDir

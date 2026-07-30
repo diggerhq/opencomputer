@@ -458,7 +458,8 @@ async function enforceCreatePolicy(
   // is_halted projection — no CreditAccount DO. On a halt, self-heal (re-check
   // Autumn) so a just-topped-up user isn't stuck behind a lagging webhook. The
   // free-tier memory/CPU/disk ceilings below are skipped for autumn orgs (they
-  // pay per GB-second); only the per-org max_disk_mb cap applies.
+  // pay per GB-second and are metered per-bucket by autumn_meter — disk overage
+  // via the `disk_overage_gb_seconds` feature).
   if (org.billing_provider === "autumn") {
     if (org.is_halted === 1 && (await selfHealHalt(env, orgID))) {
       return json({ error: "credits exhausted — top up to resume" }, 402);
@@ -484,21 +485,15 @@ async function enforceCreatePolicy(
 
   // Free-tier ceilings: 4GB / 1 vCPU, 20GB disk. Legacy only — autumn (prepaid)
   // orgs pay per GB-second and are gated by balance/halt, so they may launch any
-  // size. Disk is still bounded for everyone by the per-org max_disk_mb check below.
+  // size up to the platform ceiling (enforced upstream). The per-org
+  // `max_disk_mb` column is no longer enforced now that disk overage is metered
+  // to Autumn end-to-end; the D1 column stays as dead legacy.
   if (org.billing_provider !== "autumn" && plan === "free") {
     if (sizes.memoryMB > 4096 || sizes.cpuCount > 1) {
       return json({ error: "upgrade to pro for larger instances" }, 402);
     }
     if (sizes.diskMB > 20480) {
       return json({ error: "upgrade to pro for larger disk sizes" }, 402);
-    }
-  }
-
-  // Per-org disk ceiling (all plans). 0 in D1 means "use the 20GB default".
-  if (sizes.diskMB > 0) {
-    const maxDisk = org.max_disk_mb > 0 ? org.max_disk_mb : 20480;
-    if (sizes.diskMB > maxDisk) {
-      return json({ error: `disk size ${sizes.diskMB}MB exceeds org limit of ${maxDisk}MB` }, 403);
     }
   }
 

@@ -126,8 +126,8 @@ func (s *Server) createSandbox(c echo.Context) error {
 			// Free-tier gate (legacy only): trial-credit + machine-size limit.
 			// Autumn orgs pay per GB-second and are gated at the edge
 			// (balance/halt), so neither the credit check nor the size ceiling
-			// applies — they may launch any size (disk still bounded by the
-			// per-org MaxDiskMB knob below).
+			// applies — they may launch any size up to the platform ceiling
+			// (currently 256GB for disk; enforced above).
 			if effPlan == "free" && effProvider != "autumn" {
 				if org.FreeCreditsRemainingCents <= 0 {
 					return c.JSON(http.StatusPaymentRequired, map[string]string{
@@ -158,24 +158,31 @@ func (s *Server) createSandbox(c echo.Context) error {
 			"error": "diskMB must be at least 20480 (20GB)",
 		})
 	}
-	if cfg.DiskMB > 262144 {
+	maxDiskMB := s.maxDiskMB
+	if maxDiskMB <= 0 {
+		maxDiskMB = 262144 // default 256GB
+	}
+	if cfg.DiskMB > maxDiskMB {
 		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "diskMB cannot exceed 262144 (256GB)",
+			"error": fmt.Sprintf("diskMB cannot exceed %d (%dGB)", maxDiskMB, maxDiskMB/1024),
 		})
 	}
 	if org != nil {
+		// Free-tier ceiling: 20GB disk. Autumn orgs pay per GB-second (metered
+		// by the edge autumn_meter → billed via Autumn's `disk_overage_gb_seconds`
+		// feature) so they may launch anything up to the platform ceiling
+		// (256GB by default, tunable via OPENSANDBOX_MAX_DISK_MB — see
+		// checked above; only free users are gated here.
+		//
+		// NOTE: the per-org `max_disk_mb` column is no longer enforced. Prior to
+		// disk-billing being wired end-to-end it was a manual admission cap ("has
+		// this customer been approved for larger disks"). Now that disk overage is
+		// actually billed, any paying org may launch any allowed size and get an
+		// accurate bill. The column stays in the schema as dead legacy; a follow-up
+		// migration can drop it.
 		if effPlan == "free" && effProvider != "autumn" && cfg.DiskMB > 20480 {
 			return c.JSON(http.StatusPaymentRequired, map[string]string{
 				"error": "upgrade to pro for larger disk sizes",
-			})
-		}
-		maxDisk := org.MaxDiskMB
-		if maxDisk == 0 {
-			maxDisk = 20480
-		}
-		if cfg.DiskMB > maxDisk {
-			return c.JSON(http.StatusForbidden, map[string]string{
-				"error": fmt.Sprintf("disk size %dMB exceeds org limit of %dMB", cfg.DiskMB, maxDisk),
 			})
 		}
 	}
@@ -2474,7 +2481,12 @@ func (s *Server) wakeSandboxRemote(c echo.Context, sandboxID string, req types.W
 		}
 	}
 
-	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 60*time.Second)
+	// 5 min covers cross-worker wake at the platform's 256GB disk cap: the
+	// target worker chunk-downloads (16-way parallel, 64MB chunks — see
+	// storage/s3.go) + tar-extract. At the old 60s cap, any wake of a >30GB-used
+	// sandbox on a worker that didn't already hold the qcow2 timed out. Same-
+	// worker wake is unaffected (opens a local qcow2 in <1s).
+	grpcCtx, cancel := context.WithTimeout(c.Request().Context(), 5*time.Minute)
 	defer cancel()
 
 	grpcResp, err := grpcClient.WakeSandbox(grpcCtx, &pb.WakeSandboxRequest{
