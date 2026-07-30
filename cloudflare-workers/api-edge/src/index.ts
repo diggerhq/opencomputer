@@ -215,6 +215,14 @@ interface AuthEntry {
 }
 const authCache = new Map<string, AuthEntry>();
 const orgPolicyCache = new Map<string, { policy: OrgPolicy | null; cachedAtMs: number }>();
+// The create concurrency cap counts running sandboxes from the global
+// sandboxes_index — a per-create D1 read. That index already trails events, so
+// the cap is approximate under burst anyway; cache the count per-isolate for a
+// short window so a burst fires ~one COUNT/isolate/window instead of one per
+// create. Under burst the cached value reads low (index lag), so it stays
+// permissive — no spurious 429s.
+const CONCURRENCY_COUNT_TTL_MS = 1_500;
+const concurrencyCountCache = new Map<string, { count: number; cachedAtMs: number }>();
 
 function bumpLastUsed(env: Env, hash: string, entry: AuthEntry, nowMs: number): void {
   if (nowMs - entry.lastBumpMs < LAST_USED_BUMP_MS) return;
@@ -276,13 +284,26 @@ interface CellRow {
   capacity_updated_at: number | null;
 }
 
+// Cell rows are semi-static (base_url is fixed; capacity refreshes ~30s and
+// isHealthy already tolerates 120s staleness). Every create AND every exec/
+// sub-op resolves the cell — a burst does 100 identical reads for the same 1-2
+// cells. Cache per-isolate for a short window.
+const CELL_TTL_MS = 5_000;
+const cellCache = new Map<string, { cell: CellRow | null; cachedAtMs: number }>();
+
 async function lookupCell(env: Env, cellID: string): Promise<CellRow | null> {
-  return env.OPENCOMPUTER_DB.prepare(
+  const nowMs = Date.now();
+  const c = cellCache.get(cellID);
+  if (c && nowMs - c.cachedAtMs < CELL_TTL_MS) return c.cell;
+  const cell = await env.OPENCOMPUTER_DB.prepare(
     `SELECT cell_id, cloud, region, base_url, status, available_workers, capacity_updated_at
        FROM cells WHERE cell_id = ?1`,
   )
     .bind(cellID)
     .first<CellRow>();
+  if (cellCache.size >= CACHE_MAX) cellCache.clear();
+  cellCache.set(cellID, { cell, cachedAtMs: nowMs });
+  return cell;
 }
 
 // Freshness window — the CP emits capacity events every ~30s; 120s is a
@@ -556,12 +577,21 @@ async function enforceCreatePolicy(
   // every cell via the global sandboxes_index, which is the whole reason it
   // must live at the edge and not on any single cell.
   const limit = org.max_concurrent_sandboxes ?? DEFAULT_MAX_CONCURRENT_SANDBOXES;
-  const countRow = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'",
-  )
-    .bind(orgID)
-    .first<{ n: number }>();
-  const active = countRow?.n ?? 0;
+  const nowMs = Date.now();
+  let active: number;
+  const cc = concurrencyCountCache.get(orgID);
+  if (cc && nowMs - cc.cachedAtMs < CONCURRENCY_COUNT_TTL_MS) {
+    active = cc.count;
+  } else {
+    const countRow = await env.OPENCOMPUTER_DB.prepare(
+      "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'",
+    )
+      .bind(orgID)
+      .first<{ n: number }>();
+    active = countRow?.n ?? 0;
+    if (concurrencyCountCache.size >= CACHE_MAX) concurrencyCountCache.clear();
+    concurrencyCountCache.set(orgID, { count: active, cachedAtMs: nowMs });
+  }
   if (active >= limit) {
     return json(
       { error: `concurrent sandbox limit reached (${active}/${limit}) — hibernate or delete one before creating another`, active, limit },
@@ -891,14 +921,15 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // Look up the org's plan so the cap-token carries it (worker resolver uses
   // plan to tag usage_tick events; without it free-tier debit fan-out skips
   // the org).
-  const orgRow = await env.OPENCOMPUTER_DB.prepare("SELECT plan FROM orgs WHERE id = ?1")
-    .bind(caller.orgID).first<{ plan: string }>();
+  // Reuse the per-isolate org-policy cache instead of a separate per-request
+  // SELECT plan — under a burst these are all the same org.
+  const orgPol = await loadOrgPolicy(env, caller.orgID);
   // Mint a cap-token (iss=opensandbox-edge, signed with SESSION_JWT_SECRET).
   // The cell's PGAPIKeyMiddleware accepts cap-tokens too (alongside identity
   // tokens and API keys), so the same handler chain that runs for SDK
   // X-API-Key auth runs here. cell_id in the token guards against replay
   // against a different cell.
-  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, row.cell_id, orgRow?.plan ?? "free", "", caller.userID);
+  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, row.cell_id, orgPol?.plan ?? "free", "", caller.userID);
 
   const headers = new Headers();
   for (const [k, v] of req.headers.entries()) {
