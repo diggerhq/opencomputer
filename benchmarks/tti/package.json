@@ -1,0 +1,16 @@
+{
+  "name": "opencomputer-tti-bench",
+  "private": true,
+  "type": "module",
+  "description": "Standalone replica of the ComputeSDK sandbox TTI benchmark (create -> `node -v` -> destroy) run against OpenComputer. Defaults to prod; driven by env vars. Uses the same @computesdk/opencomputer adapter the public leaderboard runs on Fridays.",
+  "scripts": {
+    "bench": "node bench.mjs",
+    "bench:sequential": "node bench.mjs --mode sequential",
+    "bench:staggered": "node bench.mjs --mode staggered",
+    "bench:burst": "node bench.mjs --mode burst"
+  },
+  "dependencies": {
+    "@computesdk/opencomputer": "^1.0.1",
+    "computesdk": "^4.1.4"
+  }
+}
