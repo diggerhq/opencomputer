@@ -69,8 +69,16 @@ import (
 //     and small compared to the 300% drifts we were seeing pre-fix. If
 //     parity post-deploy still flags meaningfully, add hook calls in
 //     qemu.Manager.{Scale,Hibernate,Kill} next.
+// scaleEventStore is the minimum store surface usage_ticker needs to stamp
+// the current disk envelope onto usage_tick events. Kept as a narrow interface
+// so tests can stub it without pulling in the full *db.Store.
+type scaleEventStore interface {
+	GetCurrentDiskMB(ctx context.Context, sandboxID string) (int, error)
+}
+
 type UsageTicker struct {
 	manager       sandbox.Manager
+	store         scaleEventStore
 	sandboxDBs    *sandbox.SandboxDBManager
 	interval      time.Duration
 	costPerTickCs int // cents debited per FULL tick interval; scaled by actual interval below
@@ -95,8 +103,10 @@ type UsageTicker struct {
 // costPerTickCs ≤ 0 defaults to 10 cents (so a steady-state $5 = 50 ticks
 // at the default interval ≈ 17 min). Cost is scaled by actual emit interval,
 // so short sandboxes pay proportionally less.
-// nil manager or nil sandboxDBs returns nil (ticker disabled).
-func NewUsageTicker(manager sandbox.Manager, sandboxDBs *sandbox.SandboxDBManager, interval time.Duration, costPerTickCs int) *UsageTicker {
+// nil manager or nil sandboxDBs returns nil (ticker disabled). A nil store
+// disables per-tick disk_mb stamping (payloads emit disk_mb=0 → the edge
+// treats them as "no disk billing signal", falling back to the default).
+func NewUsageTicker(manager sandbox.Manager, sandboxDBs *sandbox.SandboxDBManager, store scaleEventStore, interval time.Duration, costPerTickCs int) *UsageTicker {
 	if manager == nil || sandboxDBs == nil {
 		return nil
 	}
@@ -108,6 +118,7 @@ func NewUsageTicker(manager sandbox.Manager, sandboxDBs *sandbox.SandboxDBManage
 	}
 	return &UsageTicker{
 		manager:       manager,
+		store:         store,
 		sandboxDBs:    sandboxDBs,
 		interval:      interval,
 		costPerTickCs: costPerTickCs,
@@ -116,6 +127,23 @@ func NewUsageTicker(manager sandbox.Manager, sandboxDBs *sandbox.SandboxDBManage
 		stop:          make(chan struct{}),
 		stopped:       make(chan struct{}),
 	}
+}
+
+// currentDiskMB looks up the sandbox's current disk envelope via the store.
+// Fail-open: on any error we return the platform default (20480) so a store
+// blip never breaks the memory/CPU emit path. The 20480 sentinel also lets
+// the edge treat the tick as "no overage" (since 20480 is the free allowance).
+func (t *UsageTicker) currentDiskMB(ctx context.Context, sandboxID string) int {
+	if t.store == nil {
+		return 20480
+	}
+	q, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	mb, err := t.store.GetCurrentDiskMB(q, sandboxID)
+	if err != nil {
+		return 20480
+	}
+	return mb
 }
 
 // Start begins the tick loop. Safe to call once; subsequent calls are no-ops.
@@ -232,8 +260,12 @@ func (t *UsageTicker) tick(ctx context.Context) {
 			// orgs ignore these (they debit cost_cents); pro orgs land them
 			// in D1 usage_samples. MemoryMB/CpuCount come straight off the
 			// running VM's tier — the worker owns the VM so these are exact.
+			// disk_mb comes from sandbox_scale_events (updated by scale
+			// events + inherited otherwise) so runtime resizes are naturally
+			// picked up on the next tick.
 			"memory_mb": sb.MemoryMB,
 			"cpu_count": sb.CpuCount,
+			"disk_mb":   t.currentDiskMB(ctx, sb.ID),
 		}); err != nil {
 			log.Printf("usage_ticker: %s: LogEvent failed: %v", sb.ID, err)
 			continue
@@ -461,12 +493,16 @@ func (t *UsageTicker) flushSlice(sandboxID string, memoryMB, cpuCount int, start
 		log.Printf("usage_ticker: flushSlice %s: Get failed: %v", sandboxID, err)
 		return
 	}
+	// flushSlice fires from lifecycle hooks (scale, destroy, hibernate, wake)
+	// with no request context in scope — use a fresh bounded one for the
+	// disk_mb lookup so a slow store call can't leak the caller's goroutine.
 	if err := sdb.LogEvent("usage_tick", map[string]interface{}{
 		"sandbox_id": sandboxID,
 		"cost_cents": t.scaledCost(intervalSec),
 		"interval_s": intervalSec,
 		"memory_mb":  memoryMB,
 		"cpu_count":  cpuCount,
+		"disk_mb":    t.currentDiskMB(context.Background(), sandboxID),
 	}); err != nil {
 		log.Printf("usage_ticker: flushSlice %s: LogEvent failed: %v", sandboxID, err)
 	}

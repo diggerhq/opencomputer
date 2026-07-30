@@ -74,6 +74,69 @@ func (s *Store) RecordScaleEvent(ctx context.Context, sandboxID, orgID string, m
 	return tx.Commit(ctx)
 }
 
+// HibernatedSandboxBilling is one row of the "billable while hibernated" set.
+// Emitted by the hibernation-billing sweeper as a synthetic usage_tick so the
+// edge autumn_meter attributes disk overage against the org for the whole time
+// the qcow2 sits in Tigris (not just while the VM is running).
+type HibernatedSandboxBilling struct {
+	SandboxID string
+	OrgID     string
+	DiskMB    int
+}
+
+// ListHibernatedSandboxesForBilling returns every currently-hibernated sandbox
+// in this cell's PG with its current disk envelope, filtered to those with
+// disk_mb strictly above the 20 GB free allowance (rows at or below the free
+// tier accrue nothing and would just be discarded downstream). One JOIN per
+// sweep, indexed on status + started_at.
+func (s *Store) ListHibernatedSandboxesForBilling(ctx context.Context) ([]HibernatedSandboxBilling, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT ss.sandbox_id, ss.org_id::text, se.disk_mb
+		   FROM sandbox_sessions ss
+		   JOIN LATERAL (
+		     SELECT disk_mb FROM sandbox_scale_events
+		      WHERE sandbox_id = ss.sandbox_id
+		      ORDER BY (ended_at IS NULL) DESC, started_at DESC
+		      LIMIT 1
+		   ) se ON TRUE
+		  WHERE ss.status = 'hibernated' AND se.disk_mb > 20480`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HibernatedSandboxBilling
+	for rows.Next() {
+		var r HibernatedSandboxBilling
+		if err := rows.Scan(&r.SandboxID, &r.OrgID, &r.DiskMB); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// GetCurrentDiskMB returns the disk_mb of the sandbox's most recent
+// (open-preferred) scale event, falling back to the platform default 20480 if
+// no scale event exists yet. Called per-sandbox per usage_ticker tick to stamp
+// the current disk envelope onto usage_tick events for edge-side disk billing.
+// A missing row is treated as the default (20 GB) rather than a hard error so
+// a lookup failure never blocks memory/CPU billing.
+func (s *Store) GetCurrentDiskMB(ctx context.Context, sandboxID string) (int, error) {
+	var diskMB int
+	err := s.pool.QueryRow(ctx,
+		`SELECT disk_mb FROM sandbox_scale_events
+		 WHERE sandbox_id = $1
+		 ORDER BY (ended_at IS NULL) DESC, started_at DESC
+		 LIMIT 1`, sandboxID).Scan(&diskMB)
+	if err != nil {
+		return 20480, err
+	}
+	if diskMB <= 0 {
+		return 20480, nil
+	}
+	return diskMB, nil
+}
+
 // GetSandboxOrgID looks up the org ID for a sandbox from the sessions table.
 func (s *Store) GetSandboxOrgID(ctx context.Context, sandboxID string) (string, error) {
 	var orgID uuid.UUID

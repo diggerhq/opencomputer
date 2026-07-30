@@ -38,6 +38,16 @@ const TIER_FEATURE_BY_MEMORY_MB: Record<number, string> = {
   65536: "compute_64gb",
 };
 
+// Disk-overage billing. Every GB above DISK_FREE_ALLOWANCE_MB (20 GB, the
+// baseline every sandbox ships with) is metered at $0.0000001/GB-second
+// (~$0.26/GB-month) — see pricing.md + internal/billing/pricing.go.
+// The Autumn feature is charged in whole GB-seconds; we ceil the fractional
+// remainder per bucket so sub-unit accrual across ticks isn't silently
+// dropped. The Autumn dashboard must have a `disk_overage_gb_seconds`
+// feature attached to the pro product for track() to land.
+const DISK_FREE_ALLOWANCE_MB = 20480;
+const DISK_OVERAGE_FEATURE = "disk_overage_gb_seconds";
+
 // Globally-unique, retry-stable key. Autumn dedupes on the bare key across all
 // customers, so it includes the org; keyed on bucket start (not wall-clock) so a
 // replay reuses it. Matches autumn.UsageIdempotencyKey on the (removed) cell.
@@ -122,8 +132,14 @@ async function meterOrg(env: AutumnEnv, org: AutumnOrgRow, nowSec: number): Prom
   return true;
 }
 
-// trackBucket aggregates usage_samples in [from, to) by memory tier and tracks
-// one usage event per tier to Autumn. Returns true if the balance is now <= 0.
+// trackBucket aggregates usage_samples in [from, to) by memory tier + a single
+// disk-overage GB-second total, tracks one usage event per dimension to Autumn,
+// and returns true if the resulting balance is <= 0.
+//
+// The two dimensions are independent Autumn features (compute_{tier}, and
+// disk_overage_gb_seconds) so a customer running an idle-but-large-disk
+// sandbox accrues disk cost separately from compute cost. Both use the same
+// per-org per-bucket idempotency key namespace so a retry deduplicates cleanly.
 async function trackBucket(env: AutumnEnv, orgID: string, fromSec: number, toSec: number): Promise<boolean> {
   const aggRes = await env.OPENCOMPUTER_DB.prepare(
     `SELECT memory_mb AS memory_mb, SUM(interval_s) AS secs
@@ -134,7 +150,22 @@ async function trackBucket(env: AutumnEnv, orgID: string, fromSec: number, toSec
     .bind(orgID, fromSec * 1000, toSec * 1000)
     .all<TierAgg>();
   const tiers = aggRes.results ?? [];
-  if (tiers.length === 0) return false;
+
+  // Disk overage: SUM((disk_mb - 20480) * interval_s / 1024) — bytes above the
+  // free allowance × seconds, converted to GB-seconds. Only rows with real
+  // overage contribute (the WHERE clause culls 0/default rows so idle sandboxes
+  // at baseline size don't produce empty aggregation work). Returned as a real
+  // (SQLite REAL), ceiled below for the whole-GB-second Autumn feature.
+  const diskRes = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT COALESCE(SUM((disk_mb - ?1) * interval_s), 0) / 1024.0 AS gb_seconds
+       FROM usage_samples
+      WHERE org_id = ?2 AND ts >= ?3 AND ts < ?4 AND disk_mb > ?1`,
+  )
+    .bind(DISK_FREE_ALLOWANCE_MB, orgID, fromSec * 1000, toSec * 1000)
+    .first<{ gb_seconds: number | null }>();
+  const diskGBSeconds = Math.ceil(diskRes?.gb_seconds ?? 0);
+
+  if (tiers.length === 0 && diskGBSeconds <= 0) return false;
 
   let remaining: number | null = null;
   for (const t of tiers) {
@@ -151,6 +182,16 @@ async function trackBucket(env: AutumnEnv, orgID: string, fromSec: number, toSec
       idempotencyKey: usageIdempotencyKey(orgID, fromSec, feature),
     });
   }
+
+  if (diskGBSeconds > 0) {
+    remaining = await trackAutumnUsage(env, {
+      customerID: orgID,
+      featureID: DISK_OVERAGE_FEATURE,
+      value: diskGBSeconds,
+      idempotencyKey: usageIdempotencyKey(orgID, fromSec, DISK_OVERAGE_FEATURE),
+    });
+  }
+
   return remaining !== null && remaining <= 0;
 }
 

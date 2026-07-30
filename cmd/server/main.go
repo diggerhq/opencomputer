@@ -269,6 +269,26 @@ func main() {
 				_ = fwd.Stop(stopCtx)
 			}()
 			log.Printf("opensandbox: CF event forwarder started (endpoint=%s cell=%s)", cfg.CFEventEndpoint, cfg.CellID)
+
+			// Hibernation-billing sweeper — periodically synthesizes usage_tick
+			// events for hibernated sandboxes with disk overage, so the edge
+			// autumn_meter bills them even though no worker's usage_ticker fires
+			// while the qcow2 sits in Tigris. Sends directly to events-ingest via
+			// cfClient (bypasses Redis — the payload is generated on the CP, not
+			// on a worker). Inert unless opts.Store is wired (needs the shared PG
+			// to enumerate hibernated sandboxes + their current disk envelope).
+			if opts.Store != nil {
+				sweeper := controlplane.NewHibernationBillingSweeper(opts.Store, cfClient, cfg.CellID, 5*time.Minute)
+				if sweeper != nil {
+					sweeper.Start(context.Background())
+					defer func() {
+						stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer stopCancel()
+						_ = sweeper.Stop(stopCtx)
+					}()
+					log.Printf("opensandbox: hibernation-billing sweeper started (5 min interval, cell=%s)", cfg.CellID)
+				}
+			}
 		} else if cfg.Mode == "server" {
 			log.Printf("opensandbox: CF event forwarder NOT started (CFEventEndpoint/Secret/CellID unset)")
 		}

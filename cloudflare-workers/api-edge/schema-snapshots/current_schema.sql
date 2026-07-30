@@ -243,7 +243,8 @@ CREATE TABLE usage_meter_events (
 CREATE TABLE usage_samples (
   id TEXT PRIMARY KEY, org_id TEXT NOT NULL, sandbox_id TEXT NOT NULL,
   memory_mb INTEGER NOT NULL, cpu_count INTEGER NOT NULL, interval_s INTEGER NOT NULL,
-  ts INTEGER NOT NULL, cell_id TEXT NOT NULL, rolled_up INTEGER NOT NULL DEFAULT 0);
+  ts INTEGER NOT NULL, cell_id TEXT NOT NULL, rolled_up INTEGER NOT NULL DEFAULT 0,
+  disk_mb INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE usage_snapshots (
   org_id            TEXT NOT NULL,
