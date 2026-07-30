@@ -429,8 +429,8 @@ export default {
     // cross-DO debit fan-out, it's a local D1 write, so it should share the
     // batch's retry-on-failure guarantee (503 → CP forwarder keeps the PEL).
     const usageSampleInsert = env.OPENCOMPUTER_DB.prepare(
-      `INSERT INTO usage_samples (id, org_id, sandbox_id, memory_mb, cpu_count, interval_s, ts, cell_id)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+      `INSERT INTO usage_samples (id, org_id, sandbox_id, memory_mb, cpu_count, interval_s, ts, cell_id, disk_mb)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
        ON CONFLICT(id) DO NOTHING`,
     );
     // Worker-validation guard. Edge usage is counted per-tick (one usage_sample
@@ -483,6 +483,7 @@ export default {
           memory_mb?: number;
           cpu_count?: number;
           interval_s?: number;
+          disk_mb?: number;
         };
         return usageSampleInsert.bind(
           e.id,
@@ -493,6 +494,10 @@ export default {
           p.interval_s ?? 0,
           Date.parse(e.timestamp) || Date.now(),
           e.cell_id,
+          // disk_mb is 0 on pre-billing-cutover rows (older cells that don't
+          // stamp it yet). autumn_meter reads that as "no overage this tick",
+          // matching the free 20GB allowance and keeping backfill safe.
+          p.disk_mb ?? 0,
         );
       });
 

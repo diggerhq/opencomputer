@@ -899,7 +899,7 @@ func main() {
 	// Inert unless CellID is set (combined-mode dev without Redis stream
 	// would write events to /dev/null since there's no consumer).
 	if cfg.CellID != "" && mgr != nil {
-		usageTicker := worker.NewUsageTicker(mgr, sandboxDBMgr, 20*time.Second, 10)
+		usageTicker := worker.NewUsageTicker(mgr, sandboxDBMgr, store, 20*time.Second, 10)
 		if usageTicker != nil {
 			// Wire the ticker as the manager's lifecycle observer so scale,
 			// destroy, hibernate, and wake events flush accurate final-slice

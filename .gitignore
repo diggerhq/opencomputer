@@ -21,6 +21,11 @@ Thumbs.db
 # Cloudflare Worker local secrets (wrangler dev)
 .dev.vars
 .dev.vars.*
+# Wrangler local state — miniflare D1/KV/R2 caches, dev sqlite DBs, etc.
+# Written by `wrangler dev` and `wrangler d1 migrations list` against a
+# --remote target (which still initializes a local shadow). Never commit.
+.wrangler/
+**/.wrangler/
 
 # Per-developer dev-box lifecycle state (written by deploy/*/deploy-qemu-dev.sh)
 deploy/**/.qemu-dev-state-*
@@ -47,7 +52,13 @@ cloudflare-workers/api-edge/assets/
 # Compiled binaries
 bin/
 opensandbox-worker
+opensandbox-server
+# Repo-root Go build outputs — produced when someone runs `go build ./cmd/X/`
+# from the repo root without `-o`. Path-anchored so we don't accidentally
+# ignore legitimate `server` / `worker` / `oc` DIRECTORIES elsewhere.
 /worker
+/server
+/oc
 
 # Worker env (secrets)
 worker.env
