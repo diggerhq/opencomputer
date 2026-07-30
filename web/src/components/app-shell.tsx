@@ -234,14 +234,16 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           <span className="text-foreground min-w-0 flex-1 truncate text-xs">
             {user?.email}
           </span>
-          <button
-            onClick={() => void logout()}
-            aria-label="Sign out"
-            title="Sign out"
-            className="text-muted-foreground/40 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
-          >
-            <LogOut className="size-4" strokeWidth={1.5} aria-hidden />
-          </button>
+          {user?.capabilities?.signOut !== false ? (
+            <button
+              onClick={() => void logout()}
+              aria-label="Sign out"
+              title="Sign out"
+              className="text-muted-foreground/40 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
+            >
+              <LogOut className="size-4" strokeWidth={1.5} aria-hidden />
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

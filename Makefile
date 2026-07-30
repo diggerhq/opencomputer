@@ -70,6 +70,7 @@ run-pg: build-server
 	OPENSANDBOX_MODE=combined \
 	OPENSANDBOX_API_KEY=test-key \
 	OPENSANDBOX_JWT_SECRET=dev-secret-change-me \
+	OPENSANDBOX_DASHBOARD_AUTH_MODE=single-tenant \
 	OPENSANDBOX_DATABASE_URL="postgres://opensandbox:opensandbox@localhost:5432/opensandbox?sslmode=disable" \
 	OPENSANDBOX_DATA_DIR=/tmp/opensandbox-data \
 	OPENSANDBOX_HTTP_ADDR=http://localhost:8080 \

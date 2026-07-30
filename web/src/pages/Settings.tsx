@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
+import { useAuth } from '@/hooks/useAuth'
 import {
   deleteCustomDomain,
   getInvitations,
@@ -63,6 +64,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
 
 export default function Settings() {
   const queryClient = useQueryClient()
+  const { user } = useAuth()
   const { data: org, isLoading } = useQuery({
     queryKey: ['org'],
     queryFn: getOrg,
@@ -307,12 +309,16 @@ export default function Settings() {
           )}
         </Panel>
 
-        <div className="lg:col-span-2">
-          <TeamMembers />
-        </div>
-        <div className="lg:col-span-2">
-          <PendingInvitations />
-        </div>
+        {user?.capabilities?.manageMembers !== false ? (
+          <>
+            <div className="lg:col-span-2">
+              <TeamMembers />
+            </div>
+            <div className="lg:col-span-2">
+              <PendingInvitations />
+            </div>
+          </>
+        ) : null}
       </div>
 
       <ConfirmDialog

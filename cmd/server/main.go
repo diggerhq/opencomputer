@@ -151,8 +151,43 @@ func main() {
 	opts.SandboxDBs = sandboxDBMgr
 	log.Printf("opensandbox: SQLite data directory: %s", cfg.DataDir)
 
-	// Configure WorkOS if credentials are set
-	if cfg.WorkOSAPIKey != "" && cfg.WorkOSClientID != "" {
+	// Dashboard authentication. Existing WorkOS deployments keep working when
+	// the explicit mode is unset; single-tenant mode is an opt-in trusted
+	// development identity backed by PostgreSQL.
+	dashboardAuthMode := cfg.DashboardAuthMode
+	if dashboardAuthMode == "" && cfg.WorkOSAPIKey != "" && cfg.WorkOSClientID != "" {
+		dashboardAuthMode = "workos"
+	}
+	opts.DashboardAuthMode = dashboardAuthMode
+
+	switch dashboardAuthMode {
+	case "single-tenant":
+		if opts.Store == nil {
+			log.Fatal("opensandbox: single-tenant dashboard auth requires OPENSANDBOX_DATABASE_URL")
+		}
+		org, user, err := opts.Store.EnsureSingleTenantPrincipal(
+			ctx,
+			cfg.DashboardTenantName,
+			cfg.DashboardTenantSlug,
+			cfg.DashboardUserEmail,
+			cfg.DashboardUserName,
+		)
+		if err != nil {
+			log.Fatalf("opensandbox: bootstrap single-tenant dashboard identity: %v", err)
+		}
+		opts.SingleTenantPrincipal = &auth.SingleTenantPrincipal{
+			UserID: user.ID,
+			OrgID:  org.ID,
+			Email:  user.Email,
+		}
+		log.Printf(
+			"opensandbox: WARNING: single-tenant dashboard auth enabled for %s; every dashboard request is trusted as this local admin",
+			user.Email,
+		)
+	case "workos":
+		if cfg.WorkOSAPIKey == "" || cfg.WorkOSClientID == "" {
+			log.Fatal("opensandbox: dashboard auth mode workos requires WORKOS_API_KEY and WORKOS_CLIENT_ID")
+		}
 		opts.WorkOSConfig = &auth.WorkOSConfig{
 			APIKey:       cfg.WorkOSAPIKey,
 			ClientID:     cfg.WorkOSClientID,

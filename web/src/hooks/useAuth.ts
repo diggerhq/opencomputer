@@ -6,6 +6,12 @@ export interface AuthUser {
   email: string
   orgId: string
   orgs?: OrgInfo[]
+  authMode?: string
+  capabilities?: {
+    signOut: boolean
+    manageMembers: boolean
+    switchOrganizations: boolean
+  }
 }
 
 export interface AuthContextValue {

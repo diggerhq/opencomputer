@@ -8,9 +8,10 @@ import (
 	"github.com/opensandbox/opensandbox/internal/auth"
 )
 
-// dashboardListOrgMembers returns the members of the current org via WorkOS.
+// dashboardListOrgMembers returns local members for a single-tenant org and
+// uses WorkOS as the membership authority when the org is linked to it.
 func (s *Server) dashboardListOrgMembers(c echo.Context) error {
-	if s.store == nil || s.workos == nil || s.workos.OrgMgr() == nil {
+	if s.store == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{
 			"error": "not configured",
 		})
@@ -26,8 +27,8 @@ func (s *Server) dashboardListOrgMembers(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "org not found"})
 	}
 
-	if org.WorkOSOrgID == nil {
-		// Org not linked to WorkOS yet — return local users only
+	if org.WorkOSOrgID == nil || s.workos == nil || s.workos.OrgMgr() == nil {
+		// A local single-tenant org has no external membership provider.
 		users, err := s.store.ListUsersByOrgID(c.Request().Context(), orgID)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -233,9 +234,9 @@ func (s *Server) dashboardRevokeInvitation(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "revoked"})
 }
 
-// dashboardListOrgs returns all orgs the user belongs to (via WorkOS memberships).
+// dashboardListOrgs returns the local tenant or the user's WorkOS memberships.
 func (s *Server) dashboardListOrgs(c echo.Context) error {
-	if s.store == nil || s.workos == nil || s.workos.OrgMgr() == nil {
+	if s.store == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "not configured"})
 	}
 
@@ -249,8 +250,8 @@ func (s *Server) dashboardListOrgs(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "user not found"})
 	}
 
-	if user.WorkOSUserID == nil {
-		// No WorkOS link — return only the current org
+	if user.WorkOSUserID == nil || s.workos == nil || s.workos.OrgMgr() == nil {
+		// No external identity link — return only the local tenant.
 		org, err := s.store.GetOrg(c.Request().Context(), user.OrgID)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -383,4 +384,3 @@ func (s *Server) dashboardGetCredits(c echo.Context) error {
 		"isPersonal":   org.IsPersonal,
 	})
 }
-

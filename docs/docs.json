@@ -330,6 +330,13 @@
         "pages": [
           "troubleshooting"
         ]
+      },
+      {
+        "group": "Self-hosting",
+        "pages": [
+          "self-hosting/overview",
+          "self-hosting/gcp-development"
+        ]
       }
     ]
   },

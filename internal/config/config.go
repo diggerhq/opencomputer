@@ -57,6 +57,15 @@ type Config struct {
 	WorkOSCookieDomain string
 	WorkOSFrontendURL  string // e.g. "http://localhost:3000" for Vite dev
 
+	// Dashboard authentication. Empty preserves the legacy behavior: WorkOS
+	// credentials enable WorkOS, otherwise dashboard API routes stay disabled.
+	// "single-tenant" explicitly enables the trusted development identity.
+	DashboardAuthMode   string
+	DashboardUserEmail  string
+	DashboardUserName   string
+	DashboardTenantName string
+	DashboardTenantSlug string
+
 	// Redis (Upstash) for worker discovery
 	RedisURL string
 
@@ -127,25 +136,25 @@ type Config struct {
 	GoldenDiskLayout string
 
 	// AWS EC2 compute pool (server mode only — for auto-scaling worker machines)
-	EC2AMI             string // Custom AMI for worker instances
-	EC2InstanceType    string // single fallback type; used only when EC2InstanceTypes is empty
-	EC2InstanceTypes   []string // ranked list of instance types tried in order on quota/capacity errors
-	EC2SubnetID        string // VPC subnet for worker instances
-	EC2SecurityGroupID string // Security group (allow 8080, 9090, 9091)
-	EC2KeyName             string // SSH key pair name (for debugging)
-	EC2WorkerImage         string // Docker image for containerized workers
-	EC2IAMInstanceProfile  string // IAM instance profile for worker instances (Secrets Manager + S3)
-	EC2SSMParameterName    string // SSM parameter name for dynamic AMI ID (e.g. /opensandbox/prod/worker-ami-id)
+	EC2AMI                string   // Custom AMI for worker instances
+	EC2InstanceType       string   // single fallback type; used only when EC2InstanceTypes is empty
+	EC2InstanceTypes      []string // ranked list of instance types tried in order on quota/capacity errors
+	EC2SubnetID           string   // VPC subnet for worker instances
+	EC2SecurityGroupID    string   // Security group (allow 8080, 9090, 9091)
+	EC2KeyName            string   // SSH key pair name (for debugging)
+	EC2WorkerImage        string   // Docker image for containerized workers
+	EC2IAMInstanceProfile string   // IAM instance profile for worker instances (Secrets Manager + S3)
+	EC2SSMParameterName   string   // SSM parameter name for dynamic AMI ID (e.g. /opensandbox/prod/worker-ami-id)
 
 	// Azure compute pool (server mode — for auto-scaling worker VMs)
-	AzureSubscriptionID string // Azure subscription ID
-	AzureResourceGroup  string // Resource group for worker VMs
-	AzureVMSize         string // single fallback size; used only when AzureVMSizes is empty
+	AzureSubscriptionID string   // Azure subscription ID
+	AzureResourceGroup  string   // Resource group for worker VMs
+	AzureVMSize         string   // single fallback size; used only when AzureVMSizes is empty
 	AzureVMSizes        []string // ranked list of VM sizes tried in order on quota/capacity errors
-	AzureImageID        string // Custom image ID or URN
-	AzureSubnetID       string // Full resource ID of the VNet subnet
-	AzureSSHPublicKey   string // SSH public key for worker VMs
-	AzureKeyVaultName   string // Key Vault name for dynamic image ID refresh (e.g. "opensandbox-prod")
+	AzureImageID        string   // Custom image ID or URN
+	AzureSubnetID       string   // Full resource ID of the VNet subnet
+	AzureSSHPublicKey   string   // SSH public key for worker VMs
+	AzureKeyVaultName   string   // Key Vault name for dynamic image ID refresh (e.g. "opensandbox-prod")
 	// AzureWorkerIdentityID is the full resource ID of a UserAssigned managed
 	// identity to attach to every worker VM. The identity must already have
 	// "Key Vault Secrets Officer" on the regional KV so workers can fetch
@@ -344,7 +353,13 @@ func Load() (*Config, error) {
 		WorkOSCookieDomain: os.Getenv("WORKOS_COOKIE_DOMAIN"),
 		WorkOSFrontendURL:  os.Getenv("WORKOS_FRONTEND_URL"),
 
-		RedisURL:    os.Getenv("OPENSANDBOX_REDIS_URL"),
+		DashboardAuthMode:   strings.ToLower(strings.TrimSpace(os.Getenv("OPENSANDBOX_DASHBOARD_AUTH_MODE"))),
+		DashboardUserEmail:  envOrDefault("OPENSANDBOX_DASHBOARD_USER_EMAIL", "admin@opencomputer.local"),
+		DashboardUserName:   envOrDefault("OPENSANDBOX_DASHBOARD_USER_NAME", "Local Admin"),
+		DashboardTenantName: envOrDefault("OPENSANDBOX_DASHBOARD_TENANT_NAME", "OpenComputer"),
+		DashboardTenantSlug: envOrDefault("OPENSANDBOX_DASHBOARD_TENANT_SLUG", "opencomputer"),
+
+		RedisURL: os.Getenv("OPENSANDBOX_REDIS_URL"),
 
 		AlertSlackWebhook: os.Getenv("OPENSANDBOX_ALERT_SLACK_WEBHOOK"),
 		RollStuckDeadline: envDuration("OPENSANDBOX_ROLL_STUCK_DEADLINE"),
@@ -373,30 +388,30 @@ func Load() (*Config, error) {
 		DefaultSandboxCPUs:     envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_CPUS", 1),
 		DefaultSandboxDiskMB:   envOrDefaultInt("OPENSANDBOX_DEFAULT_SANDBOX_DISK_MB", 0),
 
-		KernelPath:     os.Getenv("OPENSANDBOX_KERNEL_PATH"),     // default derived from DataDir
-		ImagesDir:      os.Getenv("OPENSANDBOX_IMAGES_DIR"),      // default derived from DataDir
-		QEMUBin:        envOrDefault("OPENSANDBOX_QEMU_BIN", "qemu-system-x86_64"),
+		KernelPath: os.Getenv("OPENSANDBOX_KERNEL_PATH"), // default derived from DataDir
+		ImagesDir:  os.Getenv("OPENSANDBOX_IMAGES_DIR"),  // default derived from DataDir
+		QEMUBin:    envOrDefault("OPENSANDBOX_QEMU_BIN", "qemu-system-x86_64"),
 
 		GoldenDiskLayout: envOrDefault("OPENSANDBOX_GOLDEN_DISK_LAYOUT", "merged"), // default merged; set "split" to override (see field doc)
 
-		EC2AMI:             os.Getenv("OPENSANDBOX_EC2_AMI"),
-		EC2InstanceType:    envOrDefault("OPENSANDBOX_EC2_INSTANCE_TYPE", "c7gd.metal"),
-		EC2InstanceTypes:   splitCSV(os.Getenv("OPENSANDBOX_EC2_INSTANCE_TYPES")),
-		EC2SubnetID:        os.Getenv("OPENSANDBOX_EC2_SUBNET_ID"),
-		EC2SecurityGroupID: os.Getenv("OPENSANDBOX_EC2_SECURITY_GROUP_ID"),
-		EC2KeyName:         os.Getenv("OPENSANDBOX_EC2_KEY_NAME"),
-		EC2WorkerImage:         envOrDefault("OPENSANDBOX_EC2_WORKER_IMAGE", "opensandbox-worker:latest"),
-		EC2IAMInstanceProfile:  os.Getenv("OPENSANDBOX_EC2_IAM_INSTANCE_PROFILE"),
-		EC2SSMParameterName:    os.Getenv("OPENSANDBOX_EC2_SSM_AMI_PARAM"),
+		EC2AMI:                os.Getenv("OPENSANDBOX_EC2_AMI"),
+		EC2InstanceType:       envOrDefault("OPENSANDBOX_EC2_INSTANCE_TYPE", "c7gd.metal"),
+		EC2InstanceTypes:      splitCSV(os.Getenv("OPENSANDBOX_EC2_INSTANCE_TYPES")),
+		EC2SubnetID:           os.Getenv("OPENSANDBOX_EC2_SUBNET_ID"),
+		EC2SecurityGroupID:    os.Getenv("OPENSANDBOX_EC2_SECURITY_GROUP_ID"),
+		EC2KeyName:            os.Getenv("OPENSANDBOX_EC2_KEY_NAME"),
+		EC2WorkerImage:        envOrDefault("OPENSANDBOX_EC2_WORKER_IMAGE", "opensandbox-worker:latest"),
+		EC2IAMInstanceProfile: os.Getenv("OPENSANDBOX_EC2_IAM_INSTANCE_PROFILE"),
+		EC2SSMParameterName:   os.Getenv("OPENSANDBOX_EC2_SSM_AMI_PARAM"),
 
-		AzureSubscriptionID: os.Getenv("OPENSANDBOX_AZURE_SUBSCRIPTION_ID"),
-		AzureResourceGroup:  os.Getenv("OPENSANDBOX_AZURE_RESOURCE_GROUP"),
-		AzureVMSize:         envOrDefault("OPENSANDBOX_AZURE_VM_SIZE", "Standard_D16s_v5"),
-		AzureVMSizes:        splitCSV(os.Getenv("OPENSANDBOX_AZURE_VM_SIZES")),
-		AzureImageID:        os.Getenv("OPENSANDBOX_AZURE_IMAGE_ID"),
-		AzureSubnetID:       os.Getenv("OPENSANDBOX_AZURE_SUBNET_ID"),
-		AzureSSHPublicKey:   os.Getenv("OPENSANDBOX_AZURE_SSH_PUBLIC_KEY"),
-		AzureKeyVaultName:   os.Getenv("OPENSANDBOX_AZURE_KEY_VAULT_NAME"),
+		AzureSubscriptionID:   os.Getenv("OPENSANDBOX_AZURE_SUBSCRIPTION_ID"),
+		AzureResourceGroup:    os.Getenv("OPENSANDBOX_AZURE_RESOURCE_GROUP"),
+		AzureVMSize:           envOrDefault("OPENSANDBOX_AZURE_VM_SIZE", "Standard_D16s_v5"),
+		AzureVMSizes:          splitCSV(os.Getenv("OPENSANDBOX_AZURE_VM_SIZES")),
+		AzureImageID:          os.Getenv("OPENSANDBOX_AZURE_IMAGE_ID"),
+		AzureSubnetID:         os.Getenv("OPENSANDBOX_AZURE_SUBNET_ID"),
+		AzureSSHPublicKey:     os.Getenv("OPENSANDBOX_AZURE_SSH_PUBLIC_KEY"),
+		AzureKeyVaultName:     os.Getenv("OPENSANDBOX_AZURE_KEY_VAULT_NAME"),
 		AzureWorkerIdentityID: os.Getenv("OPENSANDBOX_AZURE_WORKER_IDENTITY_ID"),
 
 		CFAPIToken: os.Getenv("OPENSANDBOX_CF_API_TOKEN"),
@@ -410,8 +425,8 @@ func Load() (*Config, error) {
 		StripeSecretKey:            os.Getenv("STRIPE_SECRET_KEY"),
 		StripeWebhookSecret:        os.Getenv("STRIPE_WEBHOOK_SECRET"),
 		StripeTelegramAgentPriceID: os.Getenv("STRIPE_TELEGRAM_AGENT_PRICE_ID"),
-		StripeSuccessURL:    envOrDefault("STRIPE_SUCCESS_URL", "http://localhost:3000/billing?success=true"),
-		StripeCancelURL:     envOrDefault("STRIPE_CANCEL_URL", "http://localhost:3000/billing?cancelled=true"),
+		StripeSuccessURL:           envOrDefault("STRIPE_SUCCESS_URL", "http://localhost:3000/billing?success=true"),
+		StripeCancelURL:            envOrDefault("STRIPE_CANCEL_URL", "http://localhost:3000/billing?cancelled=true"),
 
 		SegmentWriteKey: os.Getenv("SEGMENT_WRITE_KEY"),
 
@@ -428,16 +443,16 @@ func Load() (*Config, error) {
 		SentrySampleRate:       envOrDefaultFloat("OPENSANDBOX_SENTRY_SAMPLE_RATE", 1.0),
 		SentryTracesSampleRate: envOrDefaultFloat("OPENSANDBOX_SENTRY_TRACES_SAMPLE_RATE", 0.0),
 
-		CellID:           os.Getenv("OPENSANDBOX_CELL_ID"),
-		PlatformOrgID:    os.Getenv("OPENSANDBOX_PLATFORM_ORG_ID"),
-		CFEventEndpoint:  os.Getenv("OPENSANDBOX_CF_EVENT_ENDPOINT"),
-		CFEventSecret:    os.Getenv("OPENSANDBOX_CF_EVENT_SECRET"),
-		CFAdminSecret:    os.Getenv("OPENSANDBOX_CF_ADMIN_SECRET"),
-		SessionJWTSecret: os.Getenv("OPENSANDBOX_SESSION_JWT_SECRET"),
-		HaltListURL:      os.Getenv("OPENSANDBOX_HALT_LIST_URL"),
-		UsageParityURL:   os.Getenv("OPENSANDBOX_USAGE_PARITY_URL"),
+		CellID:              os.Getenv("OPENSANDBOX_CELL_ID"),
+		PlatformOrgID:       os.Getenv("OPENSANDBOX_PLATFORM_ORG_ID"),
+		CFEventEndpoint:     os.Getenv("OPENSANDBOX_CF_EVENT_ENDPOINT"),
+		CFEventSecret:       os.Getenv("OPENSANDBOX_CF_EVENT_SECRET"),
+		CFAdminSecret:       os.Getenv("OPENSANDBOX_CF_ADMIN_SECRET"),
+		SessionJWTSecret:    os.Getenv("OPENSANDBOX_SESSION_JWT_SECRET"),
+		HaltListURL:         os.Getenv("OPENSANDBOX_HALT_LIST_URL"),
+		UsageParityURL:      os.Getenv("OPENSANDBOX_USAGE_PARITY_URL"),
 		ProBillingAuthority: os.Getenv("OPENSANDBOX_PRO_BILLING_AUTHORITY"),
-		CFEdgeBaseURL:    os.Getenv("OPENSANDBOX_CF_EDGE_BASE_URL"),
+		CFEdgeBaseURL:       os.Getenv("OPENSANDBOX_CF_EDGE_BASE_URL"),
 
 		ComputeProvider: os.Getenv("OPENSANDBOX_COMPUTE_PROVIDER"),
 		SecretsProvider: envOrDefault("OPENSANDBOX_SECRETS_PROVIDER", "env"),
@@ -482,6 +497,15 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid OPENSANDBOX_PORT %q: %w", portStr, err)
 		}
 		cfg.Port = port
+	}
+
+	switch cfg.DashboardAuthMode {
+	case "", "single-tenant", "workos":
+	default:
+		return nil, fmt.Errorf(
+			"invalid OPENSANDBOX_DASHBOARD_AUTH_MODE %q (expected single-tenant or workos)",
+			cfg.DashboardAuthMode,
+		)
 	}
 
 	return cfg, nil

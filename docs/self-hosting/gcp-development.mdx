@@ -1,0 +1,420 @@
+---
+title: "GCP development cell"
+description: "Run a complete OpenComputer development environment on a nested-KVM Compute Engine VM."
+---
+
+This guide deploys a complete OpenComputer development cell to one Google
+Compute Engine VM. The VM runs the control plane, worker, PostgreSQL, Redis, and
+QEMU/KVM sandboxes together.
+
+<Warning>
+This topology is for development and performance testing. It has one host, no
+high availability, an HTTP API, and ephemeral Local SSD storage. For the
+production shape, start with the [self-hosting architecture](/self-hosting/overview).
+</Warning>
+
+## What gets created
+
+```text
+Developer machine
+   |
+   | SSH and HTTP, restricted by a GCP firewall rule
+   v
++------------------------------------------------------+
+| Compute Engine VM                                    |
+|                                                      |
+| opensandbox-server :8080                             |
+| opensandbox-worker                                   |
+| PostgreSQL + Redis                                   |
+| QEMU/KVM sandbox VMs                                 |
+|                                                      |
+| 50 GB persistent boot disk                           |
+| 375 GiB Local NVMe SSD mounted at /data              |
++------------------------------------------------------+
+```
+
+The default configuration uses:
+
+| Resource | Default |
+| --- | --- |
+| Machine type | `n2-standard-8` |
+| CPU and memory | 8 vCPU, 32 GiB |
+| Operating system | Ubuntu 24.04 LTS |
+| Boot disk | 50 GB `pd-ssd` |
+| Sandbox data disk | One 375 GiB Local SSD over NVMe |
+| Sandbox runtime | QEMU with nested KVM |
+| Sandbox default | 2 vCPU with dynamically managed memory |
+| API port | `8080` |
+
+Google documents the supported machine families and expected overhead in its
+[nested virtualization overview](https://cloud.google.com/compute/docs/instances/nested-virtualization/overview).
+Do not substitute an E2, AMD, or Arm machine for this guide.
+
+## Prerequisites
+
+You need:
+
+- A GCP project with billing enabled.
+- Permission to enable APIs and create Compute Engine instances and firewall
+  rules.
+- The current [Google Cloud CLI](https://cloud.google.com/sdk/docs/install-sdk).
+- `git`, `curl`, `jq`, `ssh`, `rsync`, and `openssl` on your development
+  machine.
+- A clone of the OpenComputer repository.
+
+Authenticate and enable Compute Engine:
+
+```bash
+export GCP_PROJECT="<your-project-id>"
+export GCP_ZONE="us-east4-c"
+
+gcloud auth login
+gcloud config set project "$GCP_PROJECT"
+gcloud services enable compute.googleapis.com
+```
+
+Run the remaining commands from the OpenComputer repository root.
+
+## Configure the deployment
+
+Choose a machine and instance name, then generate a development API key:
+
+```bash
+export MACHINE_TYPE="n2-standard-8"
+export INSTANCE_NAME="opensandbox-qemu-dev"
+export API_KEY="$(openssl rand -hex 32)"
+
+printf 'Save this development API key now: %s\n' "$API_KEY"
+```
+
+Keep the API key in a password manager or a local secret file outside the
+repository. The deploy script stores only its hash in PostgreSQL.
+
+### Restrict ingress before creating the VM
+
+The deployment script looks for a firewall rule named
+`opensandbox-dev-allow`. Create that rule first so the development API and SSH
+are not exposed to the internet.
+
+Replace the CIDR below with your current public IP:
+
+```bash
+export ADMIN_CIDR="<your-public-ip>/32"
+
+gcloud compute firewall-rules create opensandbox-dev-allow \
+  --direction=INGRESS \
+  --action=ALLOW \
+  --rules=tcp:22,tcp:8080 \
+  --source-ranges="$ADMIN_CIDR" \
+  --target-tags=opensandbox-dev \
+  --description="OpenComputer development cell: SSH and API"
+```
+
+If the rule already exists, inspect and tighten it:
+
+```bash
+gcloud compute firewall-rules update opensandbox-dev-allow \
+  --rules=tcp:22,tcp:8080 \
+  --source-ranges="$ADMIN_CIDR"
+```
+
+<Warning>
+The cell serves plain HTTP. Keep port `8080` restricted to trusted source
+addresses. Do not expose worker port `8081`, PostgreSQL, Redis, or worker RPC.
+</Warning>
+
+## Create the host
+
+Create the VM, enable nested virtualization, format the Local SSD as
+reflink-enabled XFS, and install the host dependencies:
+
+```bash
+./deploy/gcp/deploy-qemu-dev.sh create
+```
+
+The first run:
+
+1. Creates an SSH key if the configured key does not exist.
+2. Creates an Ubuntu N2 instance with nested virtualization enabled.
+3. Attaches one Local NVMe SSD.
+4. Mounts the SSD at `/data`.
+5. Installs QEMU/KVM, Docker, Go, PostgreSQL, Redis, and the systemd units.
+
+Confirm KVM before deploying:
+
+```bash
+./deploy/gcp/deploy-qemu-dev.sh ssh -- \
+  sh -lc 'test -c /dev/kvm && echo "KVM ready" || echo "KVM missing"'
+```
+
+Expected output:
+
+```text
+KVM ready
+```
+
+## Deploy OpenComputer
+
+Build the server, worker, and in-VM agent; build the rootfs images; install the
+environment files; start the services; and seed the development API key:
+
+```bash
+./deploy/gcp/deploy-qemu-dev.sh deploy
+```
+
+The first rootfs build takes several minutes. It emits:
+
+- `default.ext4`: the legacy 4 GiB split-disk base.
+- `default-merged.ext4`: the unified 20 GiB base used by new sandboxes.
+
+The unified layout keeps `/`, `/home/sandbox`, and `/workspace` on one virtual
+disk. The underlying image is sparse, so its logical 20 GiB size does not
+consume 20 GiB of Local SSD space immediately.
+
+### Wait for worker registration
+
+The HTTP health endpoint can become ready before the worker has created its
+golden snapshot and registered with the control plane. On a fresh host, allow
+approximately one minute after deployment.
+
+Inspect the server log:
+
+```bash
+./deploy/gcp/deploy-qemu-dev.sh ssh -- \
+  sudo journalctl -u opensandbox-server -n 100 --no-pager
+```
+
+Continue after you see a message similar to:
+
+```text
+new worker registered: w-qemu-dev-1
+```
+
+If sandbox creation returns `503 no workers available`, wait for registration
+and retry.
+
+## Validate the cell
+
+Get the public IP and configure your shell:
+
+```bash
+export PUBLIC_IP="$(
+  gcloud compute instances describe "$INSTANCE_NAME" \
+    --zone="$GCP_ZONE" \
+    --format='value(networkInterfaces[0].accessConfigs[0].natIP)'
+)"
+export OPENCOMPUTER_URL="http://${PUBLIC_IP}:8080"
+export OPENCOMPUTER_API_KEY="$API_KEY"
+```
+
+Check control-plane health:
+
+```bash
+curl -fsS "$OPENCOMPUTER_URL/health"
+```
+
+Create a sandbox:
+
+```bash
+export SANDBOX_ID="$(
+  curl -fsS -X POST "$OPENCOMPUTER_URL/api/sandboxes" \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
+    -d '{"templateID":"default"}' |
+  jq -r .sandboxID
+)"
+
+printf 'Sandbox: %s\n' "$SANDBOX_ID"
+```
+
+Run a command inside the VM and verify the unified disk:
+
+```bash
+curl -fsS -X POST \
+  "$OPENCOMPUTER_URL/api/sandboxes/$SANDBOX_ID/exec/run" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY" \
+  -d '{
+    "cmd": "sh",
+    "args": [
+      "-lc",
+      "uname -a; nproc; free -h; df -h / /home/sandbox /workspace; lsblk"
+    ],
+    "timeout": 30
+  }' |
+jq
+```
+
+For the default unified rootfs, `lsblk` should show one approximately 20 GiB
+`vda`, and all three paths should resolve to the same root filesystem.
+
+## Use the dashboard during development
+
+The development deployment enables the explicit `single-tenant` dashboard
+mode. On startup, the control plane creates or reuses one local organization
+and administrator in PostgreSQL and keeps that development organization on the
+Pro plan so hosted free-tier size gates do not restrict local testing. The
+dashboard therefore shows the live cell's sandboxes without requiring an
+external identity provider.
+
+<Warning>
+Single-tenant mode supplies a persistent local identity but does not
+authenticate individual browser users. Reach the development UI through SSH
+port forwarding and do not expose the Vite port publicly.
+</Warning>
+
+### Start the development UI
+
+The deploy command syncs the dashboard source to the VM. In one terminal, run
+Vite there through the existing Docker installation:
+
+```bash
+gcloud compute ssh "$INSTANCE_NAME" \
+  --project="$GCP_PROJECT" \
+  --zone="$GCP_ZONE" \
+  --command='
+    sudo docker run --rm --network host \
+      -v "$HOME/opensandbox/web:/app" \
+      -w /app \
+      node:22-bookworm-slim \
+      sh -lc "npm ci && npm run dev -- --host 127.0.0.1"
+  '
+```
+
+Vite's development proxy reaches the control plane at `localhost:8080` on the
+VM, so UI requests use the single-tenant identity and operate on the live
+development cell.
+
+### Forward it to your machine
+
+Keep Vite running. In a second local terminal, forward the VM's loopback-only
+UI port to port `3000` on your machine:
+
+```bash
+gcloud compute ssh "$INSTANCE_NAME" \
+  --project="$GCP_PROJECT" \
+  --zone="$GCP_ZONE" \
+  -- -N \
+  -L 127.0.0.1:3000:127.0.0.1:3000 \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30
+```
+
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
+
+Every dashboard action is attributed to the development administrator. You can
+customize that identity before deploying:
+
+```bash
+export OPENSANDBOX_DASHBOARD_AUTH_MODE="single-tenant"
+export OPENSANDBOX_DASHBOARD_USER_EMAIL="admin@example.internal"
+export OPENSANDBOX_DASHBOARD_USER_NAME="Development Admin"
+export OPENSANDBOX_DASHBOARD_TENANT_NAME="Development"
+export OPENSANDBOX_DASHBOARD_TENANT_SLUG="development"
+
+./deploy/gcp/deploy-qemu-dev.sh deploy
+```
+
+## Operations
+
+Check status:
+
+```bash
+./deploy/gcp/deploy-qemu-dev.sh status
+```
+
+Follow logs:
+
+```bash
+./deploy/gcp/deploy-qemu-dev.sh ssh -- \
+  sudo journalctl -u opensandbox-worker -f
+```
+
+Redeploy the current checkout:
+
+```bash
+./deploy/gcp/deploy-qemu-dev.sh deploy
+```
+
+The deploy command synchronizes the current local checkout to the VM and
+restarts the services.
+
+### Rebuild the rootfs
+
+Normal deploys reuse existing rootfs images. When you intentionally need to
+test a rootfs change, remove both cached bases and deploy again:
+
+```bash
+./deploy/gcp/deploy-qemu-dev.sh ssh -- \
+  sudo rm -f \
+    /data/firecracker/images/default.ext4 \
+    /data/firecracker/images/default-merged.ext4
+
+./deploy/gcp/deploy-qemu-dev.sh deploy
+```
+
+This affects only future sandboxes. Delete or recreate existing development
+sandboxes separately if you need them to use the new base.
+
+## Storage and shutdown
+
+The 50 GB boot disk is a persistent block disk. The 375 GiB Local SSD mounted
+at `/data` holds active sandbox disks and rootfs images.
+
+Google documents that Local SSD data is discarded by default when an instance
+is stopped and recommends durable block storage for data that must survive
+host replacement. See [About Local SSD disks](https://cloud.google.com/compute/docs/disks/local-ssd).
+
+<Warning>
+Treat `stop`, instance deletion, and host replacement as destructive for
+everything under `/data`. Configure object storage before testing durable
+checkpoints or hibernation, and never keep the only copy of important data on
+the Local SSD.
+</Warning>
+
+Delete the development VM when you are finished:
+
+```bash
+./deploy/gcp/deploy-qemu-dev.sh destroy
+```
+
+The script asks for confirmation before deleting the instance.
+
+## Troubleshooting
+
+### `no workers available`
+
+The server became healthy before worker registration completed. Wait for the
+worker registration log, then retry sandbox creation.
+
+### `/dev/kvm` is missing
+
+Confirm that the VM is using a supported Intel machine type, nested
+virtualization was enabled at instance creation, and your organization policy
+allows nested virtualization.
+
+```bash
+gcloud compute instances describe "$INSTANCE_NAME" \
+  --zone="$GCP_ZONE" \
+  --format='yaml(machineType,advancedMachineFeatures)'
+```
+
+### The control-plane root redirects to `localhost:3000`
+
+No built dashboard bundle is installed. Run Vite using one of the dashboard
+modes above, or build `web/dist` before packaging the control plane.
+
+### API requests return `401`
+
+Use the same API key that was passed to `deploy`:
+
+```bash
+curl -fsS "$OPENCOMPUTER_URL/api/sandboxes" \
+  -H "X-API-Key: $OPENCOMPUTER_API_KEY"
+```
+
+### The public IP changed
+
+Run `status` to refresh the deployment state, update
+`OPENCOMPUTER_URL`, and confirm that the firewall still allows your current
+source address.

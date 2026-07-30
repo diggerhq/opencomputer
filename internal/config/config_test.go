@@ -109,3 +109,32 @@ func TestLoadInvalidPort(t *testing.T) {
 		t.Fatal("expected error for invalid port, got nil")
 	}
 }
+
+func TestLoadSingleTenantDashboardAuth(t *testing.T) {
+	t.Setenv("OPENSANDBOX_DASHBOARD_AUTH_MODE", " Single-Tenant ")
+	t.Setenv("OPENSANDBOX_DASHBOARD_USER_EMAIL", "dev@example.test")
+	t.Setenv("OPENSANDBOX_DASHBOARD_TENANT_NAME", "Dev Tenant")
+	t.Setenv("OPENSANDBOX_DASHBOARD_TENANT_SLUG", "dev-tenant")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.DashboardAuthMode != "single-tenant" {
+		t.Fatalf("DashboardAuthMode = %q, want single-tenant", cfg.DashboardAuthMode)
+	}
+	if cfg.DashboardUserEmail != "dev@example.test" {
+		t.Fatalf("DashboardUserEmail = %q", cfg.DashboardUserEmail)
+	}
+	if cfg.DashboardTenantName != "Dev Tenant" || cfg.DashboardTenantSlug != "dev-tenant" {
+		t.Fatalf("tenant = %q/%q", cfg.DashboardTenantName, cfg.DashboardTenantSlug)
+	}
+}
+
+func TestLoadRejectsUnknownDashboardAuthMode(t *testing.T) {
+	t.Setenv("OPENSANDBOX_DASHBOARD_AUTH_MODE", "anonymous")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() succeeded with an unknown dashboard auth mode")
+	}
+}

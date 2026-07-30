@@ -29,9 +29,9 @@ import (
 	"github.com/opensandbox/opensandbox/internal/observability"
 	"github.com/opensandbox/opensandbox/internal/obslog"
 	"github.com/opensandbox/opensandbox/internal/proxy"
-	"github.com/opensandbox/opensandbox/internal/wsgateway"
 	"github.com/opensandbox/opensandbox/internal/sandbox"
 	"github.com/opensandbox/opensandbox/internal/storage"
+	"github.com/opensandbox/opensandbox/internal/wsgateway"
 )
 
 var errSandboxNotAvailable = map[string]string{
@@ -40,37 +40,38 @@ var errSandboxNotAvailable = map[string]string{
 
 // Server holds the API server dependencies.
 type Server struct {
-	echo       *echo.Echo
-	manager    sandbox.Manager
-	router     *sandbox.SandboxRouter  // routes all sandbox interactions (state machine, auto-wake, rolling timeout)
-	ptyManager *sandbox.PTYManager
-	store      *db.Store               // nil in combined/dev mode without PG
-	jwtIssuer  *auth.JWTIssuer         // nil if JWT not configured
-	capTokenIssuer *auth.JWTIssuer     // verifies edge→CP capability tokens; nil if SESSION_JWT_SECRET unset
-	requireCapToken bool // derived from PRO_BILLING_AUTHORITY=edge: reject direct API-key creates that bypass edge billing (split mode only)
-	cfAdminSecret  string              // HMAC shared with CreditAccount DO for /admin/halt-org and /admin/resume-org; empty disables auth (dev only)
-	cfEventSecret  string              // HMAC shared with the api-edge Worker for /internal/secret-refresh and other edge-→cell push paths
-	cellID     string                  // this control plane's cell_id (for the cap-token cell check)
-	platformOrgID uuid.UUID            // owner of the shared catalog snapshots; anchors the public-snapshot fallback + gates publish (uuid.Nil = fallback disabled)
-	mode       string                  // "server", "worker", "combined"
-	workerID   string                  // this worker's ID
-	region     string                  // this worker's region
-	httpAddr   string                  // public HTTP address for direct access
-	execSessionManager *sandbox.ExecSessionManager     // nil if not configured
-	sandboxDBs      *sandbox.SandboxDBManager         // per-sandbox SQLite manager
-	workos          *auth.WorkOSMiddleware            // nil if WorkOS not configured
-	workerRegistry  *controlplane.RedisWorkerRegistry // nil in combined/worker mode
-	checkpointStore *storage.CheckpointStore          // nil if hibernation not configured
-	sandboxDomain   string                            // base domain for sandbox subdomains
-	cfClient        *cloudflare.Client                // nil if Cloudflare not configured
-	pendingCreates  sync.Map                          // map[sandboxID]*pendingCreate — async sandbox creation tracking
-	mountSvc        *mounts.Service                   // shared with worker.HTTPServer; nil disables the mounts API
-	sandboxAPIProxy *proxy.SandboxAPIProxy            // nil except in server mode (proxies data-plane to workers)
-	wsGateway       *wsgateway.Gateway                // nil disables the broker; WS data-plane routes fall back to sandboxAPIProxy
-	stripeClient    *billing.StripeClient              // nil if Stripe not configured
-	redisClient     *redis.Client                     // nil if Redis not configured (for health checks)
-	adminEvents     *AdminEventBus                    // real-time event bus for admin dashboard
-	ready           int32                             // atomic: 1 = ready, 0 = not ready
+	echo               *echo.Echo
+	manager            sandbox.Manager
+	router             *sandbox.SandboxRouter // routes all sandbox interactions (state machine, auto-wake, rolling timeout)
+	ptyManager         *sandbox.PTYManager
+	store              *db.Store                         // nil in combined/dev mode without PG
+	jwtIssuer          *auth.JWTIssuer                   // nil if JWT not configured
+	capTokenIssuer     *auth.JWTIssuer                   // verifies edge→CP capability tokens; nil if SESSION_JWT_SECRET unset
+	requireCapToken    bool                              // derived from PRO_BILLING_AUTHORITY=edge: reject direct API-key creates that bypass edge billing (split mode only)
+	cfAdminSecret      string                            // HMAC shared with CreditAccount DO for /admin/halt-org and /admin/resume-org; empty disables auth (dev only)
+	cfEventSecret      string                            // HMAC shared with the api-edge Worker for /internal/secret-refresh and other edge-→cell push paths
+	cellID             string                            // this control plane's cell_id (for the cap-token cell check)
+	platformOrgID      uuid.UUID                         // owner of the shared catalog snapshots; anchors the public-snapshot fallback + gates publish (uuid.Nil = fallback disabled)
+	mode               string                            // "server", "worker", "combined"
+	workerID           string                            // this worker's ID
+	region             string                            // this worker's region
+	httpAddr           string                            // public HTTP address for direct access
+	execSessionManager *sandbox.ExecSessionManager       // nil if not configured
+	sandboxDBs         *sandbox.SandboxDBManager         // per-sandbox SQLite manager
+	workos             *auth.WorkOSMiddleware            // nil if WorkOS not configured
+	dashboardAuthMode  string                            // "workos" or "single-tenant"; empty disables dashboard APIs
+	workerRegistry     *controlplane.RedisWorkerRegistry // nil in combined/worker mode
+	checkpointStore    *storage.CheckpointStore          // nil if hibernation not configured
+	sandboxDomain      string                            // base domain for sandbox subdomains
+	cfClient           *cloudflare.Client                // nil if Cloudflare not configured
+	pendingCreates     sync.Map                          // map[sandboxID]*pendingCreate — async sandbox creation tracking
+	mountSvc           *mounts.Service                   // shared with worker.HTTPServer; nil disables the mounts API
+	sandboxAPIProxy    *proxy.SandboxAPIProxy            // nil except in server mode (proxies data-plane to workers)
+	wsGateway          *wsgateway.Gateway                // nil disables the broker; WS data-plane routes fall back to sandboxAPIProxy
+	stripeClient       *billing.StripeClient             // nil if Stripe not configured
+	redisClient        *redis.Client                     // nil if Redis not configured (for health checks)
+	adminEvents        *AdminEventBus                    // real-time event bus for admin dashboard
+	ready              int32                             // atomic: 1 = ready, 0 = not ready
 
 	// Axiom log query (sandbox session logs read API).
 	// Empty token = endpoint returns 503.
@@ -132,36 +133,38 @@ func (s *Server) SetAxiomQueryConfig(queryToken, dataset string) {
 // pendingCreate tracks an async sandbox creation.
 type pendingCreate struct {
 	ready chan struct{} // closed when creation completes
-	err   error        // set before closing ready
+	err   error         // set before closing ready
 }
 
 // ServerOpts holds optional dependencies for the API server.
 type ServerOpts struct {
-	Store       *db.Store
-	JWTIssuer   *auth.JWTIssuer
-	SessionJWTSecret string // shared edge↔CP HMAC secret; enables /internal/sandboxes/create
-	RequireCapToken  bool   // set from PRO_BILLING_AUTHORITY=edge; rejects edge-bypassing direct API-key creates
-	CFAdminSecret    string // HMAC shared with CF CreditAccount DO; enables /admin/halt-org and /admin/resume-org
-	CFEventSecret    string // HMAC shared with the api-edge Worker; enables /internal/secret-refresh and other edge-→cell push paths
-	CellID      string // this control plane's cell_id
-	PlatformOrgID string // owner of the shared catalog snapshots (UUID string); empty disables the public-snapshot fallback
-	Mode        string // "server", "worker", "combined"
-	WorkerID    string
-	Region      string
-	HTTPAddr    string
-	ExecSessionManager *sandbox.ExecSessionManager
-	SandboxDBs     *sandbox.SandboxDBManager
-	Router         *sandbox.SandboxRouter             // nil in server-only mode
-	SandboxProxy   *proxy.SandboxProxy               // nil if subdomain routing not configured
-	ControlPlaneProxy *proxy.ControlPlaneProxy        // nil except in server mode (routes subdomains to workers)
-	SandboxDomain  string                             // base domain for sandbox subdomains
-	WorkOSConfig    *auth.WorkOSConfig                // nil if WorkOS not configured
-	WorkerRegistry  *controlplane.RedisWorkerRegistry  // nil in combined/worker mode
-	CheckpointStore *storage.CheckpointStore           // nil if hibernation not configured
-	CFClient        *cloudflare.Client                 // nil if Cloudflare not configured
-	SandboxAPIProxy *proxy.SandboxAPIProxy             // nil except in server mode (proxies data-plane to workers)
-	StripeClient    *billing.StripeClient              // nil if Stripe not configured
-	RedisClient     *redis.Client                     // nil if Redis not configured (for health checks)
+	Store                 *db.Store
+	JWTIssuer             *auth.JWTIssuer
+	SessionJWTSecret      string // shared edge↔CP HMAC secret; enables /internal/sandboxes/create
+	RequireCapToken       bool   // set from PRO_BILLING_AUTHORITY=edge; rejects edge-bypassing direct API-key creates
+	CFAdminSecret         string // HMAC shared with CF CreditAccount DO; enables /admin/halt-org and /admin/resume-org
+	CFEventSecret         string // HMAC shared with the api-edge Worker; enables /internal/secret-refresh and other edge-→cell push paths
+	CellID                string // this control plane's cell_id
+	PlatformOrgID         string // owner of the shared catalog snapshots (UUID string); empty disables the public-snapshot fallback
+	Mode                  string // "server", "worker", "combined"
+	WorkerID              string
+	Region                string
+	HTTPAddr              string
+	ExecSessionManager    *sandbox.ExecSessionManager
+	SandboxDBs            *sandbox.SandboxDBManager
+	Router                *sandbox.SandboxRouter            // nil in server-only mode
+	SandboxProxy          *proxy.SandboxProxy               // nil if subdomain routing not configured
+	ControlPlaneProxy     *proxy.ControlPlaneProxy          // nil except in server mode (routes subdomains to workers)
+	SandboxDomain         string                            // base domain for sandbox subdomains
+	WorkOSConfig          *auth.WorkOSConfig                // nil if WorkOS not configured
+	DashboardAuthMode     string                            // "workos" or "single-tenant"
+	SingleTenantPrincipal *auth.SingleTenantPrincipal       // required for single-tenant dashboard auth
+	WorkerRegistry        *controlplane.RedisWorkerRegistry // nil in combined/worker mode
+	CheckpointStore       *storage.CheckpointStore          // nil if hibernation not configured
+	CFClient              *cloudflare.Client                // nil if Cloudflare not configured
+	SandboxAPIProxy       *proxy.SandboxAPIProxy            // nil except in server mode (proxies data-plane to workers)
+	StripeClient          *billing.StripeClient             // nil if Stripe not configured
+	RedisClient           *redis.Client                     // nil if Redis not configured (for health checks)
 }
 
 // NewServer creates a new API server with all routes configured.
@@ -206,6 +209,7 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 		s.execSessionManager = opts.ExecSessionManager
 		s.sandboxDBs = opts.SandboxDBs
 		s.router = opts.Router
+		s.dashboardAuthMode = opts.DashboardAuthMode
 		s.workerRegistry = opts.WorkerRegistry
 		s.checkpointStore = opts.CheckpointStore
 		s.sandboxDomain = opts.SandboxDomain
@@ -633,24 +637,50 @@ func NewServer(mgr sandbox.Manager, ptyMgr *sandbox.PTYManager, apiKey string, o
 	// Session history (requires PG)
 	api.GET("/sessions", s.listSessions)
 
-	// WorkOS OAuth + Dashboard API routes (only if WorkOS is configured)
+	// Dashboard authentication. WorkOS owns its OAuth routes; single-tenant
+	// mode supplies one persistent local principal for trusted development
+	// deployments. The dashboard routes themselves are provider-independent.
 	var frontendURL string
-	if opts != nil && opts.WorkOSConfig != nil && opts.WorkOSConfig.APIKey != "" {
-		frontendURL = opts.WorkOSConfig.FrontendURL
+	var dashboardAuth echo.MiddlewareFunc
+	if opts != nil {
+		workosConfigured := opts.WorkOSConfig != nil && opts.WorkOSConfig.APIKey != ""
+		authMode := opts.DashboardAuthMode
+		// Preserve existing deployments that configure WorkOS without the new
+		// explicit mode.
+		if authMode == "" && workosConfigured {
+			authMode = "workos"
+			s.dashboardAuthMode = authMode
+		}
 
-		s.workos = auth.NewWorkOSMiddleware(*opts.WorkOSConfig, s.store)
-		oauthHandlers := auth.NewOAuthHandlers(s.workos)
+		switch authMode {
+		case "workos":
+			if workosConfigured {
+				frontendURL = opts.WorkOSConfig.FrontendURL
+				s.workos = auth.NewWorkOSMiddleware(*opts.WorkOSConfig, s.store)
+				oauthHandlers := auth.NewOAuthHandlers(s.workos)
+				e.GET("/auth/login", oauthHandlers.HandleLogin)
+				e.GET("/auth/callback", oauthHandlers.HandleCallback)
+				e.POST("/auth/logout", oauthHandlers.HandleLogout)
+				dashboardAuth = s.workos.Middleware()
+			}
+		case "single-tenant":
+			if opts.SingleTenantPrincipal != nil {
+				dashboardAuth = auth.SingleTenantMiddleware(*opts.SingleTenantPrincipal)
+			}
+		}
+	}
 
-		// Public OAuth routes
-		e.GET("/auth/login", oauthHandlers.HandleLogin)
-		e.GET("/auth/callback", oauthHandlers.HandleCallback)
-		e.POST("/auth/logout", oauthHandlers.HandleLogout)
-
-		// Dashboard API routes (protected by WorkOS session middleware)
+	if dashboardAuth != nil {
 		dash := e.Group("/api/dashboard")
-		dash.Use(s.workos.Middleware())
+		dash.Use(dashboardAuth)
 
 		dash.GET("/me", s.dashboardMe)
+		// Direct dashboard creates are a self-hosted single-tenant convenience.
+		// Hosted WorkOS deployments create through the Cloudflare edge, which
+		// enforces global policy before calling /internal/sandboxes/create.
+		if s.dashboardAuthMode == "single-tenant" {
+			dash.POST("/sandboxes", s.createSandbox)
+		}
 		dash.GET("/sessions", s.dashboardSessions)
 		dash.GET("/api-keys", s.dashboardListAPIKeys)
 		dash.POST("/api-keys", s.dashboardCreateAPIKey)
