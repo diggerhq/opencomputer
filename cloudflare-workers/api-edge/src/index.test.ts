@@ -78,12 +78,25 @@ class FakeStatement {
     }
     return {};
   }
+
+  // Mirrors D1's batch() per-statement result shape ({ results: [...] }):
+  // list queries use all(); single-row queries wrap first() in an array.
+  async batchResult<T>(): Promise<{ results: T[] }> {
+    if (this.sql.includes("WHERE status = 'active'")) {
+      return (await this.all<T>()) as { results: T[] };
+    }
+    const row = await this.first<T>();
+    return { results: row ? [row] : [] };
+  }
 }
 
 const env = {
   OPENCOMPUTER_DB: {
     prepare(sql: string) {
       return new FakeStatement(sql);
+    },
+    async batch(stmts: FakeStatement[]) {
+      return Promise.all(stmts.map((s) => s.batchResult()));
     },
   },
   SESSIONS_KV: {},
