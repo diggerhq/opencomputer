@@ -1,0 +1,157 @@
+---
+title: "Agents"
+description: "Build, test, connect, and deploy agents as code"
+---
+
+An OpenComputer agent is a source-controlled project that contains its
+identity, instructions, tools, connections, and runtime configuration. You
+develop it locally with the `opencomputer` CLI, test it with the same
+connections it will use when deployed, and publish new immutable versions
+without changing the agent's identity.
+
+<CardGroup cols={2}>
+  <Card title="Agents as code" icon="code">
+    Prompts, tools, skills, connections, and runtime settings live together in
+    a normal directory you can review and commit.
+  </Card>
+  <Card title="Local development" icon="terminal">
+    Run the agent locally with OpenCode, your project files, and managed
+    connections before deploying it.
+  </Card>
+  <Card title="Versioned deployment" icon="code-branch">
+    A stable agent ID points to immutable deployments. Deploying again updates
+    an alias such as `production`.
+  </Card>
+  <Card title="Managed execution" icon="cloud">
+    Deployed agents run in isolated OpenComputer sandboxes while the platform
+    manages lifecycle, persistence, and connected services.
+  </Card>
+</CardGroup>
+
+## Project structure
+
+Initialize an agent from a template:
+
+```bash
+opencomputer init email-triage gmail-summarizer
+```
+
+The CLI creates a flat, editable project:
+
+```text
+gmail-summarizer/
+├── opencomputer.toml
+├── opencomputer.config.ts
+├── agent.ts
+├── instructions.md
+├── package.json
+├── tools/
+│   └── gmail.ts
+├── connections/
+│   └── google.json
+├── skills/
+├── channels/
+├── workspace/
+└── evals/
+```
+
+The important files are:
+
+| File | Purpose |
+|---|---|
+| `opencomputer.toml` | Committed identity for the agent. Keep its `id` stable across deployments. |
+| `instructions.md` | The agent's role, operating rules, and approval boundaries. |
+| `agent.ts` | Model and runtime permissions used by OpenCode. |
+| `opencomputer.config.ts` | OpenComputer runtime configuration. |
+| `tools/` | Code-native tools available to the agent. |
+| `connections/` | Declarations for managed services such as Gmail. |
+| `skills/` | Reusable domain knowledge and workflows. |
+| `channels/` | Interfaces such as Slack through which people can reach the agent. |
+| `workspace/` | Durable working files packaged with the agent. |
+| `evals/` | Repeatable checks for agent behavior. |
+
+## Identity and versions
+
+`opencomputer.toml` is the source of truth for identity:
+
+```toml
+schema = 1
+id = "gmail-summarizer"
+name = "Email triage"
+template = "email-triage"
+```
+
+Commit this file to Git. The first deployment creates `gmail-summarizer`.
+Later deployments with the same ID create new versions of that agent rather
+than separate agents.
+
+An alias gives callers a stable name for a version:
+
+```bash
+opencomputer deploy --alias production
+```
+
+## Development workflow
+
+<Steps>
+  <Step title="Start from a template">
+    Browse use cases with `opencomputer templates`, then initialize the one
+    closest to your job.
+  </Step>
+  <Step title="Develop locally">
+    Edit the instructions, tools, and skills in your editor. Use
+    `opencomputer session` for a single task or `opencomputer dev` for an
+    interactive OpenCode session.
+  </Step>
+  <Step title="Connect services">
+    Authorize account-level connections through the CLI. OAuth credentials
+    remain managed by OpenComputer rather than being written into the project.
+  </Step>
+  <Step title="Deploy a version">
+    Run `opencomputer deploy`. The CLI packages the project, publishes an
+    immutable version, and moves the selected alias to that version.
+  </Step>
+</Steps>
+
+## Sessions
+
+`opencomputer session` runs the current source locally. For a deployed agent,
+the CLI also exposes the complete managed session lifecycle:
+
+```bash
+opencomputer session create --remote \
+  --agent gmail-summarizer@production
+opencomputer session list
+opencomputer session send <session-id> "Summarize today's inbox."
+opencomputer session inspect <session-id>
+opencomputer session attach <session-id>
+opencomputer session end <session-id>
+```
+
+By default, a completed remote turn suspends its runtime. A later
+`session send` resumes it, preserving the session and its workspace. Pass
+`--keep` to leave the runtime running after a turn.
+
+## Channels
+
+Channels let people invoke a deployed agent from another interface. To add
+Slack to an agent:
+
+```bash
+opencomputer channels add slack
+opencomputer deploy
+opencomputer channels connect slack --remote
+opencomputer channels list
+```
+
+The channel declaration and Slack project configuration live with the source.
+The installation credentials remain managed outside the repository.
+
+<CardGroup cols={2}>
+  <Card title="Build a Gmail summarizer" icon="envelope" href="/agents/quickstart">
+    Create, connect, test, and deploy an agent from a template.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/agents/architecture">
+    See how local projects, deployments, sandboxes, and connections fit together.
+  </Card>
+</CardGroup>

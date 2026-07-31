@@ -1,0 +1,184 @@
+---
+title: "Quickstart"
+description: "Deploy a Gmail summarizer agent with the OpenComputer CLI"
+---
+
+This quickstart creates a source-controlled Gmail summarizer, connects your
+Google account, tests the agent locally, and deploys it to OpenComputer.
+
+## Prerequisites
+
+- Node.js 22 or newer
+- An OpenComputer account
+- A Google account you can authorize for Gmail
+
+## 1. Install and log in
+
+Install the agents-focused OpenComputer CLI:
+
+```bash
+npm install --global @opencomputer/cli
+```
+
+Log in and confirm the account the CLI will use:
+
+```bash
+opencomputer login
+opencomputer whoami
+```
+
+`opencomputer whoami` prints your user, organization, and OpenComputer API.
+
+## 2. Choose a template
+
+List the available agent use cases:
+
+```bash
+opencomputer templates
+```
+
+Create a Gmail summarizer from the `email-triage` template:
+
+```bash
+opencomputer init email-triage gmail-summarizer
+cd gmail-summarizer
+npm install
+```
+
+The directory name becomes the default agent ID. Confirm it before the first
+deployment:
+
+```bash
+cat opencomputer.toml
+```
+
+You should see:
+
+```toml
+schema = 1
+id = "gmail-summarizer"
+name = "Email triage"
+template = "email-triage"
+```
+
+<Warning>
+Keep the `id` stable after the first deployment. Changing it creates a
+different agent instead of a new version.
+</Warning>
+
+## 3. Customize the agent
+
+Open `instructions.md` and describe the job and its approval boundaries. For
+example:
+
+```md
+Summarize unread and recent Gmail threads.
+
+- Group messages into urgent, needs action, and informational.
+- Identify deadlines and messages that need a reply.
+- Never send, archive, label, mark read, or otherwise modify mail without
+  explicit approval.
+```
+
+The generated project already includes the Gmail tool and its Google
+connection declaration.
+
+## 4. Commit the agent
+
+Treat the project like any other codebase:
+
+```bash
+git init
+git add .
+git commit -m "Initialize Gmail summarizer agent"
+```
+
+This commits `opencomputer.toml`, so future deployments use the same identity.
+Files containing local runtime state and environment secrets are ignored.
+
+## 5. Connect Gmail
+
+Start the Google authorization flow:
+
+```bash
+opencomputer connect google
+```
+
+Open the authorization link, select the Google account, and approve the
+requested access. The CLI waits until the connection becomes active.
+
+<Note>
+Connections belong to your OpenComputer account, not to one local directory.
+If Gmail is already connected, the CLI reuses that connection.
+</Note>
+
+## 6. Test locally
+
+Run one task with the local agent:
+
+```bash
+opencomputer session "Summarize up to 10 unread Gmail messages. Group them into urgent, needs action, and informational. Include sender, subject, a one-sentence summary, and any deadline. Do not modify any email."
+```
+
+The CLI starts OpenCode with the project files and a scoped connection to
+Gmail. You can edit `instructions.md` or the tools and run the command again
+until the behavior is right.
+
+For an interactive development session, run:
+
+```bash
+opencomputer dev
+```
+
+## 7. Deploy
+
+Publish the current source as the `production` version:
+
+```bash
+opencomputer deploy --alias production
+```
+
+The result includes the stable agent ID and an immutable deployment ID:
+
+```text
+Deployed gmail-summarizer@production
+Deployment: gmail-summarizer:<source-digest>
+Source ID:  opencomputer.toml
+```
+
+Verify that the agent is registered:
+
+```bash
+opencomputer agents
+```
+
+Run the deployed agent:
+
+```bash
+opencomputer run gmail-summarizer \
+  "Summarize my unread inbox and call out anything urgent."
+```
+
+## Ship an update
+
+Edit any source file, commit the change, and deploy again:
+
+```bash
+git add .
+git commit -m "Refine inbox urgency rules"
+opencomputer deploy --alias production
+```
+
+The agent remains `gmail-summarizer`; the `production` alias moves to the new
+immutable version.
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Agents overview" icon="robot" href="/agents/overview">
+    Learn the project structure and versioning model.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/agents/architecture">
+    Follow source from local development to managed execution.
+  </Card>
+</CardGroup>

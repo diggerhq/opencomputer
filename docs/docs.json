@@ -32,6 +32,14 @@
         ]
       },
       {
+        "group": "Agents",
+        "pages": [
+          "agents/overview",
+          "agents/quickstart",
+          "agents/architecture"
+        ]
+      },
+      {
         "group": "Sandboxes",
         "pages": [
           "sandboxes/overview",
