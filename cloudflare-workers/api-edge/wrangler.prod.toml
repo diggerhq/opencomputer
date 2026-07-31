@@ -83,6 +83,8 @@ new_sqlite_classes = ["CreditAccount"]
 #                            exposure alerts from sessions-api
 #   BROWSER_API_SECRET     — shared with browser.opencomputer.dev for dashboard
 #                            browser-session proxy requests
+#   OC_MANAGED_AGENTS_SECRET — dedicated HS256 secret shared only with the
+#                            managed-agents backend
 # Optional vars: OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1),
 #   OPENROUTER_MARKUP_BPS (env-default markup; per-org orgs.model_markup_bps wins).
 
@@ -99,6 +101,7 @@ WORKER_ENV = "prod"
 # no deploy. See pickHomeCell in src/index.ts.
 # Optional alpha route for Burst Sandboxes. Leave empty to disable.
 BURST_CELL_ID = "aws-us-east-2-burst-prod"
+MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev"
 
 # Ship Worker logs to opencomputer-log-tail-prod → Axiom dataset cf-prod.
 [[tail_consumers]]

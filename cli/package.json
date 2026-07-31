@@ -1,0 +1,38 @@
+{
+  "name": "@opencomputer/cli",
+  "version": "0.3.0",
+  "description": "Build, test, connect, deploy, and share OpenComputer agents as code.",
+  "type": "module",
+  "bin": {
+    "opencomputer": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/*.test.js",
+    "prepack": "npm test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/diggerhq/opencomputer.git",
+    "directory": "cli"
+  },
+  "keywords": [
+    "agents",
+    "ai",
+    "opencomputer"
+  ],
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

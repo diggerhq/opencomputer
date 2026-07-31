@@ -1208,9 +1208,76 @@ type Handler = () => unknown
 // missing resource) — used for an agent with no deployment-source link.
 const NOT_FOUND = Symbol('not_found')
 
+const managedAgentTemplates = [
+  {
+    id: 'email-triage',
+    name: 'Email triage',
+    description:
+      'Summarize your inbox, surface messages that need replies, and leave every action under your control.',
+    category: 'Comms',
+    integrations: ['Gmail', 'OpenComputer'],
+    suggestedPrompts: [
+      "Triage today's inbox and show me the messages that need a reply.",
+    ],
+  },
+  {
+    id: 'github-changelog',
+    name: 'GitHub changelog',
+    description:
+      'Turn merged work into a clear changelog and keep product documentation current.',
+    category: 'Operations',
+    integrations: ['GitHub', 'Confluence'],
+    suggestedPrompts: [
+      "Draft this week's changelog from merged pull requests.",
+    ],
+  },
+  {
+    id: 'collect-receipts',
+    name: 'Collect receipts',
+    description:
+      'Find purchase receipts, name them consistently, and file them in the correct expense folder.',
+    category: 'Admin',
+    integrations: ['Gmail', 'Google Drive'],
+    suggestedPrompts: ["Find this month's receipts and prepare a filing plan."],
+  },
+]
+
+let managedAgentItems: Array<{
+  id: string
+  activeAlias: string
+  deploymentCount: number
+  createdAt: string
+  updatedAt: string
+}> = []
+
 // Ordered most-specific first. Matched against the path (without /api/dashboard).
 const ROUTES: Array<[RegExp, Handler]> = [
   [/^\/me$/, () => me],
+  [
+    /^\/agent-security-notifications(?:\?.*)?$/,
+    () => ({ data: [], next_cursor: null }),
+  ],
+  [
+    /^\/managed-agents\/templates$/,
+    () => ({ templates: managedAgentTemplates }),
+  ],
+  [/^\/managed-agents\/agents$/, () => ({ agents: managedAgentItems })],
+  [
+    /^\/managed-agents\/sessions\/[^/]+\/events(?:\?.*)?$/,
+    () => ({
+      events: [
+        { seq: 1, type: 'runtime.connected', data: {} },
+        {
+          seq: 2,
+          type: 'message.completed',
+          data: {
+            text: 'Here is a concise response from your deployed agent.',
+          },
+        },
+        { seq: 3, type: 'turn.completed', data: {} },
+      ],
+    }),
+  ],
   [/^\/sessions\/[^/]+\/stats$/, () => sandboxStats],
   [/^\/sessions\/[^/]+$/, () => sessionDetail],
   [/^\/sessions(\?.*)?$/, () => sandboxes],
@@ -1307,6 +1374,55 @@ const ROUTES: Array<[RegExp, Handler]> = [
 // Mutations the preview needs to echo something parseable (e.g. the Slack
 // wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
 const POST_ROUTES: [RegExp, () => unknown][] = [
+  [
+    /^\/managed-agents\/templates\/[^/]+\/deploy$/,
+    () => {
+      const template = managedAgentTemplates[0]
+      const timestamp = new Date(BASE).toISOString()
+      managedAgentItems = [
+        {
+          id: template.id,
+          activeAlias: 'production',
+          deploymentCount: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      ]
+      return {
+        template,
+        deployment: {
+          id: `${template.id}:preview`,
+          agentId: template.id,
+          alias: 'production',
+          channels: [],
+          connections: [],
+          createdAt: timestamp,
+        },
+      }
+    },
+  ],
+  [
+    /^\/managed-agents\/sessions$/,
+    () => ({
+      session: { id: 'session_preview', status: 'connecting' },
+      deployment: {
+        id: 'research-assistant:preview',
+        agentId: 'research-assistant',
+        alias: 'production',
+        channels: [],
+        connections: [],
+        createdAt: new Date(BASE).toISOString(),
+      },
+    }),
+  ],
+  [
+    /^\/managed-agents\/sessions\/[^/]+\/turns$/,
+    () => ({ turnId: 'turn_preview', duplicate: false }),
+  ],
+  [
+    /^\/managed-agents\/sessions\/[^/]+\/suspend$/,
+    () => ({ id: 'session_preview', status: 'suspended' }),
+  ],
   [/^\/v3\/agents\/[^/]+\/repository-access$/, () => repositoryAccess],
   [/^\/v3\/github\/deploy-app\/inspect$/, () => flueInspection],
   [
