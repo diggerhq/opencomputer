@@ -100,53 +100,21 @@ func (s *Server) createSandbox(c echo.Context) error {
 		}
 	}
 
-	// Check org quota and plan enforcement
+	// Org policy — billing/credits, plan size ceilings, the concurrent-sandbox
+	// limit, and the per-org disk cap — is enforced authoritatively at the EDGE
+	// via the cap-token before the request ever reaches the cell. Cells trust the
+	// cap-token and no longer re-read the org row or re-count sandboxes here:
+	// those were two uncached cell-PG reads (GetOrg + CountActiveSandboxes) on
+	// every create that serialized the hot path and dominated the create
+	// round-trip under burst — and the cell-local count was wrong for the global
+	// limit anyway (only the edge sees every cell). See enforceCreatePolicy in
+	// api-edge.
 	orgID, hasOrg := auth.GetOrgID(c)
-	var org *db.Org
-	var effPlan string
-	var effProvider string
-	if hasOrg && s.store != nil {
-		var err error
-		org, err = s.store.GetOrg(ctx, orgID)
-		if err == nil {
-			// Plan is a global signal — resolve it authoritatively (cap-token
-			// → D1 org-policy → cell-PG last resort), never trusting the stale
-			// cell-PG org row outright. See effectivePlan.
-			effPlan = s.effectivePlan(c, orgID)
-			effProvider = s.effectiveBillingProvider(c, orgID)
 
-			// Concurrent sandbox limit applies to all plans.
-			count, err := s.store.CountActiveSandboxes(ctx, orgID)
-			if err == nil && count >= org.MaxConcurrentSandboxes {
-				return c.JSON(http.StatusTooManyRequests, map[string]string{
-					"error": "concurrent sandbox limit reached",
-				})
-			}
-
-			// Free-tier gate (legacy only): trial-credit + machine-size limit.
-			// Autumn orgs pay per GB-second and are gated at the edge
-			// (balance/halt), so neither the credit check nor the size ceiling
-			// applies — they may launch any size (disk still bounded by the
-			// per-org MaxDiskMB knob below).
-			if effPlan == "free" && effProvider != "autumn" {
-				if org.FreeCreditsRemainingCents <= 0 {
-					return c.JSON(http.StatusPaymentRequired, map[string]string{
-						"error": "free trial credits exhausted — upgrade to pro to create new sandboxes",
-					})
-				}
-				if cfg.MemoryMB > 4096 || cfg.CpuCount > 1 {
-					return c.JSON(http.StatusPaymentRequired, map[string]string{
-						"error": "upgrade to pro for larger instances",
-					})
-				}
-			}
-
-			// Default to 4GB/1vCPU if not specified (all plans)
-			if cfg.MemoryMB == 0 {
-				cfg.MemoryMB = 4096
-				cfg.CpuCount = 1
-			}
-		}
+	// Default to 4GB/1vCPU if not specified (all plans).
+	if cfg.MemoryMB == 0 {
+		cfg.MemoryMB = 4096
+		cfg.CpuCount = 1
 	}
 
 	// Disk size validation
@@ -163,22 +131,8 @@ func (s *Server) createSandbox(c echo.Context) error {
 			"error": "diskMB cannot exceed 262144 (256GB)",
 		})
 	}
-	if org != nil {
-		if effPlan == "free" && effProvider != "autumn" && cfg.DiskMB > 20480 {
-			return c.JSON(http.StatusPaymentRequired, map[string]string{
-				"error": "upgrade to pro for larger disk sizes",
-			})
-		}
-		maxDisk := org.MaxDiskMB
-		if maxDisk == 0 {
-			maxDisk = 20480
-		}
-		if cfg.DiskMB > maxDisk {
-			return c.JSON(http.StatusForbidden, map[string]string{
-				"error": fmt.Sprintf("disk size %dMB exceeds org limit of %dMB", cfg.DiskMB, maxDisk),
-			})
-		}
-	}
+	// Per-org disk cap + free-tier disk ceiling are enforced at the edge (see
+	// enforceCreatePolicy); only the global 20-256GB bounds above apply here.
 
 	// Declarative image or named snapshot → resolve to checkpoint and use createFromCheckpoint flow
 	if len(cfg.ImageManifest) > 0 || cfg.Snapshot != "" {

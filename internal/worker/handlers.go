@@ -9,6 +9,8 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -370,6 +372,19 @@ func (s *HTTPServer) execRun(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
+// execHoldMs reads a hold duration override (milliseconds) from env, falling
+// back to def. "0" disables the hold. Default-on so the fast-exec path needs
+// no config; the env exists as an escape hatch. Mirrors the identical helper
+// in internal/api for the combined-mode server.
+func execHoldMs(env string, def time.Duration) time.Duration {
+	if v := os.Getenv(env); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms >= 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return def
+}
+
 // execRunAsync is the async exec endpoint (POST /exec/run-async). It registers a
 // handle synchronously and returns immediately, then does the wake +
 // session-create + command run in a background goroutine. Because the connection
@@ -402,6 +417,18 @@ func (s *HTTPServer) execRunAsync(c echo.Context) error {
 			Timeout: req.Timeout,
 		}
 
+		// wasHibernated read up front (not in the goroutine): it feeds both the
+		// 524-attribution log and the inline-hold decision below — a waking box
+		// must get its handle immediately (holding would re-create the slow-wake
+		// connection hold this async design exists to avoid).
+		wasHibernated := false
+		if s.router != nil {
+			if st, ok := s.router.GetState(id); ok {
+				wasHibernated = st != sandbox.StateRunning
+			}
+		}
+		dispatched := make(chan struct{})
+
 		go func() {
 			// 524-attribution timing. wake_ms = checkpoint restore latency (the
 			// dominant cause of the old synchronous exec/run 524s); create_ms =
@@ -409,12 +436,6 @@ func (s *HTTPServer) execRunAsync(c echo.Context) error {
 			// logged separately on session exit (exec_session_exit). routeOp
 			// stamps when the session create begins, so the time inside Route
 			// before it is the wake (+ any queue wait).
-			wasHibernated := false
-			if s.router != nil {
-				if st, ok := s.router.GetState(id); ok {
-					wasHibernated = st != sandbox.StateRunning
-				}
-			}
 			var session *sandbox.ExecSessionHandle
 			var createMs int64
 			routeOp := func(_ context.Context) error {
@@ -454,10 +475,49 @@ func (s *HTTPServer) execRunAsync(c echo.Context) error {
 				ae.sessionID = session.ID
 			}
 			ae.mu.Unlock()
+			close(dispatched)
 			// Reap the handle after the underlying session's own retention
 			// window has comfortably passed.
 			time.AfterFunc(10*time.Minute, func() { s.asyncExecs.Delete(execID) })
 		}()
+
+		// Fast-exec fold: for a box that's already running, hold the response
+		// briefly and, if the command exits inside the window, return the legacy
+		// inline result shape (no execId). The SDK's run() short-circuits on that
+		// shape, so short commands cost one round trip instead of run-async + a
+		// result poll (and the poll's 200/400ms retry ladder — the dominant
+		// benchmark tail). Failures and slow commands fall through to the handle
+		// unchanged; waking boxes never hold (see wasHibernated above).
+		if hold := execHoldMs("OPENSANDBOX_EXEC_INLINE_HOLD_MS", 400*time.Millisecond); hold > 0 && !wasHibernated {
+			deadline := time.NewTimer(hold)
+			defer deadline.Stop()
+			select {
+			case <-dispatched:
+				ae.mu.Lock()
+				state, sessionID := ae.state, ae.sessionID
+				ae.mu.Unlock()
+				if state == asyncExecRunning {
+					if sess, serr := s.execSessionManager.GetSession(sessionID); serr == nil && sess.Done != nil {
+						select {
+						case <-sess.Done:
+							// Done closes only after the attach stream captured
+							// ExitCode, so this read is final.
+							if res, rerr := s.execSessionManager.GetResult(id, sessionID); rerr == nil && !res.Running && res.ExitCode != nil && !res.Truncated {
+								return c.JSON(http.StatusOK, types.ProcessResult{
+									ExitCode: *res.ExitCode,
+									Stdout:   string(res.Stdout),
+									Stderr:   string(res.Stderr),
+								})
+							}
+						case <-deadline.C:
+						case <-c.Request().Context().Done():
+						}
+					}
+				}
+			case <-deadline.C:
+			case <-c.Request().Context().Done():
+			}
+		}
 
 		return c.JSON(http.StatusAccepted, types.ExecRunResponse{
 			ExecID:    execID,
@@ -529,6 +589,25 @@ func (s *HTTPServer) execResult(c echo.Context) error {
 	res, err := s.execSessionManager.GetResult(id, sessionID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+	}
+	// Long-poll: a still-running command holds the response until it exits (or
+	// the hold elapses) and re-reads, so the SDK's first poll catches commands
+	// that outran the run-async inline hold instead of falling onto its
+	// 200/400ms retry ladder. Done closes only after the attach stream captured
+	// ExitCode, so the re-read is final.
+	if res.Running {
+		if hold := execHoldMs("OPENSANDBOX_EXEC_RESULT_HOLD_MS", 500*time.Millisecond); hold > 0 {
+			if sess, serr := s.execSessionManager.GetSession(sessionID); serr == nil && sess.Done != nil {
+				select {
+				case <-sess.Done:
+				case <-time.After(hold):
+				case <-c.Request().Context().Done():
+				}
+				if res2, rerr := s.execSessionManager.GetResult(id, sessionID); rerr == nil {
+					res = res2
+				}
+			}
+		}
 	}
 	return c.JSON(http.StatusOK, types.ExecRunResult{
 		Running:   res.Running,
