@@ -751,11 +751,19 @@ func (s *Server) tryClaimPooled(c echo.Context, ctx context.Context, cfg types.S
 		return false, nil
 	}
 
-	// Promote pending→running (emits sandbox.created + sandbox.ready).
-	_ = s.store.UpdateSandboxSessionStatus(ctx, box.SandboxID, "running", nil)
-	if g := claimResp.GetGoldenVersion(); g != "" {
-		_ = s.store.SetSandboxGoldenVersion(ctx, box.SandboxID, g)
-	}
+	// Promote pending→running (emits sandbox.created + sandbox.ready) + record the
+	// golden version — off the claim's critical path. Exec/GET route via the
+	// worker-side sandbox router (registered by ClaimSandbox), not PG status, so
+	// the box is usable the instant we return; the PG promote can land a beat
+	// later. Detached ctx — the request ctx is cancelled once we respond.
+	go func(id, golden string) {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = s.store.UpdateSandboxSessionStatus(bgCtx, id, "running", nil)
+		if golden != "" {
+			_ = s.store.SetSandboxGoldenVersion(bgCtx, id, golden)
+		}
+	}(box.SandboxID, claimResp.GetGoldenVersion())
 
 	// Grow to requested resources (virtio-mem + cgroup), mirroring the cold path.
 	if cfg.MemoryMB > 0 || cfg.CpuCount > 0 {
