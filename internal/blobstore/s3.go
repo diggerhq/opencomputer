@@ -119,7 +119,12 @@ func (s *s3Store) Put(ctx context.Context, bucket, key string, body io.Reader, c
 	_ = contentLength
 	b := s.resolveBucket(bucket)
 	uploader := manager.NewUploader(s.s3, func(u *manager.Uploader) {
-		u.PartSize = 8 * 1024 * 1024
+		// 32MB parts: a 20GB merged base is ~640 parts instead of ~2560 at 8MB —
+		// finishes faster and shrinks the window for a mid-upload part reset or a
+		// CompleteMultipartUpload against an expired upload id (NoSuchUpload).
+		// Small files still go single-part (below this threshold). blobstore.Upload
+		// retries the whole thing if a part still fails.
+		u.PartSize = 32 * 1024 * 1024
 		u.Concurrency = 4
 	})
 	_, err := uploader.Upload(ctx, &s3.PutObjectInput{

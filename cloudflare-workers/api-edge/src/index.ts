@@ -216,6 +216,14 @@ interface AuthEntry {
 }
 const authCache = new Map<string, AuthEntry>();
 const orgPolicyCache = new Map<string, { policy: OrgPolicy | null; cachedAtMs: number }>();
+// The create concurrency cap counts running sandboxes from the global
+// sandboxes_index — a per-create D1 read. That index already trails events, so
+// the cap is approximate under burst anyway; cache the count per-isolate for a
+// short window so a burst fires ~one COUNT/isolate/window instead of one per
+// create. Under burst the cached value reads low (index lag), so it stays
+// permissive — no spurious 429s.
+const CONCURRENCY_COUNT_TTL_MS = 1_500;
+const concurrencyCountCache = new Map<string, { count: number; cachedAtMs: number }>();
 
 function bumpLastUsed(env: Env, hash: string, entry: AuthEntry, nowMs: number): void {
   if (nowMs - entry.lastBumpMs < LAST_USED_BUMP_MS) return;
@@ -277,13 +285,108 @@ interface CellRow {
   capacity_updated_at: number | null;
 }
 
+// Cell rows are semi-static (base_url is fixed; capacity refreshes ~30s and
+// isHealthy already tolerates 120s staleness). Every create AND every exec/
+// sub-op resolves the cell — a burst does 100 identical reads for the same 1-2
+// cells. Cache per-isolate for a short window.
+const CELL_TTL_MS = 5_000;
+const cellCache = new Map<string, { cell: CellRow | null; cachedAtMs: number }>();
+// Per-isolate cache of the active-cells list. pickCell ran this SELECT uncached
+// on every no-cellId create — ~65ms of the burst prework. Cells change rarely,
+// so a short TTL is safe and the routing decision recomputes from cached rows.
+let activeCellsCache: { cells: CellRow[]; cachedAtMs: number } | null = null;
+
+async function listActiveCells(env: Env): Promise<CellRow[]> {
+  const nowMs = Date.now();
+  if (activeCellsCache && nowMs - activeCellsCache.cachedAtMs < CELL_TTL_MS) return activeCellsCache.cells;
+  const { results } = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT cell_id, cloud, region, base_url, status, available_workers, capacity_updated_at
+       FROM cells WHERE status = 'active'`,
+  ).all<CellRow>();
+  const cells = results ?? [];
+  activeCellsCache = { cells, cachedAtMs: nowMs };
+  return cells;
+}
+
+// loadCreateContext fetches the three org-keyed reads the create hot path needs
+// — org policy, running-sandbox count, active-cells list — in a SINGLE D1 round
+// trip via db.batch(), instead of three sequential awaits. Under a cold burst
+// (fresh isolates, caches empty) that collapses ~3×D1-latency into one. Each
+// piece still honours + populates its existing per-isolate cache, so warm/
+// sustained traffic skips D1 entirely and only the cold misses are batched.
+async function loadCreateContext(
+  env: Env,
+  orgID: string,
+): Promise<{ org: OrgPolicy | null; activeCount: number; cells: CellRow[] }> {
+  const nowMs = Date.now();
+  const oc = orgPolicyCache.get(orgID);
+  const cc = concurrencyCountCache.get(orgID);
+  const orgWarm = oc !== undefined && nowMs - oc.cachedAtMs < ORG_POLICY_TTL_MS;
+  const cntWarm = cc !== undefined && nowMs - cc.cachedAtMs < CONCURRENCY_COUNT_TTL_MS;
+  const cellsWarm = activeCellsCache !== null && nowMs - activeCellsCache.cachedAtMs < CELL_TTL_MS;
+
+  let org = orgWarm ? oc!.policy : null;
+  let activeCount = cntWarm ? cc!.count : 0;
+  let cells = cellsWarm ? activeCellsCache!.cells : [];
+
+  const stmts: D1PreparedStatement[] = [];
+  const kinds: Array<"org" | "count" | "cells"> = [];
+  if (!orgWarm) {
+    stmts.push(
+      env.OPENCOMPUTER_DB.prepare(
+        "SELECT home_cell, plan, is_halted, max_concurrent_sandboxes, max_disk_mb, billing_provider FROM orgs WHERE id = ?1",
+      ).bind(orgID),
+    );
+    kinds.push("org");
+  }
+  if (!cntWarm) {
+    stmts.push(
+      env.OPENCOMPUTER_DB.prepare("SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'").bind(orgID),
+    );
+    kinds.push("count");
+  }
+  if (!cellsWarm) {
+    stmts.push(
+      env.OPENCOMPUTER_DB.prepare(
+        "SELECT cell_id, cloud, region, base_url, status, available_workers, capacity_updated_at FROM cells WHERE status = 'active'",
+      ),
+    );
+    kinds.push("cells");
+  }
+
+  if (stmts.length > 0) {
+    const res = await env.OPENCOMPUTER_DB.batch(stmts);
+    for (let i = 0; i < kinds.length; i++) {
+      if (kinds[i] === "org") {
+        org = ((res[i].results?.[0] as OrgPolicy) ?? null);
+        if (orgPolicyCache.size >= CACHE_MAX) orgPolicyCache.clear();
+        orgPolicyCache.set(orgID, { policy: org, cachedAtMs: nowMs });
+      } else if (kinds[i] === "count") {
+        activeCount = (res[i].results?.[0] as { n: number } | undefined)?.n ?? 0;
+        if (concurrencyCountCache.size >= CACHE_MAX) concurrencyCountCache.clear();
+        concurrencyCountCache.set(orgID, { count: activeCount, cachedAtMs: nowMs });
+      } else {
+        cells = (res[i].results as CellRow[]) ?? [];
+        activeCellsCache = { cells, cachedAtMs: nowMs };
+      }
+    }
+  }
+  return { org, activeCount, cells };
+}
+
 async function lookupCell(env: Env, cellID: string): Promise<CellRow | null> {
-  return env.OPENCOMPUTER_DB.prepare(
+  const nowMs = Date.now();
+  const c = cellCache.get(cellID);
+  if (c && nowMs - c.cachedAtMs < CELL_TTL_MS) return c.cell;
+  const cell = await env.OPENCOMPUTER_DB.prepare(
     `SELECT cell_id, cloud, region, base_url, status, available_workers, capacity_updated_at
        FROM cells WHERE cell_id = ?1`,
   )
     .bind(cellID)
     .first<CellRow>();
+  if (cellCache.size >= CACHE_MAX) cellCache.clear();
+  cellCache.set(cellID, { cell, cachedAtMs: nowMs });
+  return cell;
 }
 
 // Freshness window — the CP emits capacity events every ~30s; 120s is a
@@ -347,6 +450,7 @@ async function pickCell(
   env: Env,
   homeCell: string,
   requestedCellID: string | null,
+  prefetchedCells?: CellRow[],
 ): Promise<CellRow | null> {
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -356,15 +460,17 @@ async function pickCell(
     return c && isHealthy(c, nowSec) ? c : null;
   }
 
-  // Look up home regardless of health — we still want its {cloud, region}
-  // as the distance anchor even if home itself is currently loaded.
-  const home = await lookupCell(env, homeCell);
+  // Active-cells list: use the batch-prefetched rows on the create hot path
+  // (loadCreateContext), else fetch (cached).
+  const results = prefetchedCells ?? (await listActiveCells(env));
 
-  const { results } = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT cell_id, cloud, region, base_url, status, available_workers, capacity_updated_at
-       FROM cells WHERE status = 'active'`,
-  ).all<CellRow>();
-  const healthy = (results ?? []).filter((c) => isHealthy(c, nowSec));
+  // Home anchor for distance ranking. Derive it from the active list when
+  // present (no extra read); only fall back to a direct lookup if home isn't
+  // active — we still want its {cloud, region} as the anchor in that case.
+  let home = results.find((c) => c.cell_id === homeCell) ?? null;
+  if (!home) home = await lookupCell(env, homeCell);
+
+  const healthy = results.filter((c) => isHealthy(c, nowSec));
   if (healthy.length === 0) return null;
 
   if (home) {
@@ -501,6 +607,7 @@ async function enforceCreatePolicy(
   orgID: string,
   org: OrgPolicy,
   sizes: { cpuCount: number; memoryMB: number; diskMB: number },
+  activeCount: number,
 ): Promise<Response | null> {
   const plan = org.plan === "pro" ? "pro" : "free";
 
@@ -557,12 +664,9 @@ async function enforceCreatePolicy(
   // every cell via the global sandboxes_index, which is the whole reason it
   // must live at the edge and not on any single cell.
   const limit = org.max_concurrent_sandboxes ?? DEFAULT_MAX_CONCURRENT_SANDBOXES;
-  const countRow = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT COUNT(*) AS n FROM sandboxes_index WHERE org_id = ?1 AND status = 'running'",
-  )
-    .bind(orgID)
-    .first<{ n: number }>();
-  const active = countRow?.n ?? 0;
+  // active count is pre-fetched by loadCreateContext (batched with org+cells)
+  // and cached there; enforceCreatePolicy no longer reads it itself.
+  const active = activeCount;
   if (active >= limit) {
     return json(
       { error: `concurrent sandbox limit reached (${active}/${limit}) — hibernate or delete one before creating another`, active, limit },
@@ -604,6 +708,7 @@ async function insertSandboxIndex(
 function indexSandboxFromSSE(
   resp: Response,
   env: Env,
+  ctx: ExecutionContext,
   caller: Caller,
   cellID: string,
   fallbackCpuCount: number,
@@ -631,9 +736,17 @@ function indexSandboxFromSSE(
 
     try {
       const parsed = JSON.parse(data) as SandboxCreateResult;
-      await insertSandboxIndex(env, caller, cellID, parsed, fallbackCpuCount, fallbackMemoryMB);
+      // Fire the D1 index write off the response path (waitUntil keeps it alive
+      // after we return). Under a burst these serialize on D1's single writer,
+      // so awaiting them here stretches the create tail; the index is also
+      // reconciled by events-ingest, so a slightly-late row is harmless.
+      ctx.waitUntil(
+        insertSandboxIndex(env, caller, cellID, parsed, fallbackCpuCount, fallbackMemoryMB).catch((e) =>
+          console.error("sandboxes_index SSE create insert failed:", e),
+        ),
+      );
     } catch (e) {
-      console.error("sandboxes_index SSE create insert failed:", e);
+      console.error("sandboxes_index SSE create parse failed:", e);
     }
   };
 
@@ -674,11 +787,13 @@ function indexSandboxFromSSE(
   return new Response(resp.body.pipeThrough(stream), resp);
 }
 
-async function createSandbox(req: Request, env: Env): Promise<Response> {
+async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const caller = await authenticate(req, env);
   if (!caller) return json({ error: "missing or invalid API key" }, 401);
 
-  const org = await loadOrgPolicy(env, caller.orgID);
+  // One batched D1 round-trip for org + running-count + active-cells (was three
+  // serial reads on the create hot path). Cache-aware: warm isolates skip D1.
+  const { org, activeCount, cells } = await loadCreateContext(env, caller.orgID);
   if (!org) return json({ error: "org not found" }, 401);
   const plan = org.plan === "pro" ? "pro" : "free";
 
@@ -730,14 +845,18 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
   // enforced here against D1. Cells trust the cap-token and no longer
   // re-check — see enforceCreatePolicy for why the concurrent limit in
   // particular can only be correct at the edge.
-  const gate = await enforceCreatePolicy(env, caller.orgID, org, {
-    cpuCount: bodyCpuCount,
-    memoryMB: bodyMemoryMB,
-    diskMB: bodyDiskMB,
-  });
+  // The org-policy gate and cell selection both depend only on `org`, so run
+  // them concurrently — under a burst these were two serial D1 round-trips
+  // (~90ms) sitting on the create hot path.
+  const [gate, cell] = await Promise.all([
+    enforceCreatePolicy(env, caller.orgID, org, {
+      cpuCount: bodyCpuCount,
+      memoryMB: bodyMemoryMB,
+      diskMB: bodyDiskMB,
+    }, activeCount),
+    pickCell(env, org.home_cell, requestedCellID, cells),
+  ]);
   if (gate) return gate;
-
-  const cell = await pickCell(env, org.home_cell, requestedCellID);
   if (!cell) {
     return json(
       requestedCellID
@@ -761,7 +880,7 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
         headers: { authorization: "Bearer " + capToken, "content-type": "application/json", accept: "text/event-stream" },
         body: bodyText || "{}",
       });
-      return indexSandboxFromSSE(cpResp, env, caller, cell.cell_id, bodyCpuCount, bodyMemoryMB);
+      return indexSandboxFromSSE(cpResp, env, ctx, caller, cell.cell_id, bodyCpuCount, bodyMemoryMB);
     } catch (e) {
       return json({ error: `cell ${cell.cell_id} unreachable: ${(e as Error).message}` }, 502);
     }
@@ -786,7 +905,13 @@ async function createSandbox(req: Request, env: Env): Promise<Response> {
     } catch {
       /* leave parsed empty — still record what we can */
     }
-    await insertSandboxIndex(env, caller, cell.cell_id, parsed, bodyCpuCount, bodyMemoryMB);
+    // Off the response path (see indexSandboxFromSSE) — waitUntil keeps the D1
+    // write alive after we return; events-ingest reconciles the row anyway.
+    ctx.waitUntil(
+      insertSandboxIndex(env, caller, cell.cell_id, parsed, bodyCpuCount, bodyMemoryMB).catch((e) =>
+        console.error("sandboxes_index create insert failed:", e),
+      ),
+    );
   }
   // Pass the CP's response through verbatim (status + body).
   return new Response(cpText, {
@@ -892,14 +1017,15 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // Look up the org's plan so the cap-token carries it (worker resolver uses
   // plan to tag usage_tick events; without it free-tier debit fan-out skips
   // the org).
-  const orgRow = await env.OPENCOMPUTER_DB.prepare("SELECT plan FROM orgs WHERE id = ?1")
-    .bind(caller.orgID).first<{ plan: string }>();
+  // Reuse the per-isolate org-policy cache instead of a separate per-request
+  // SELECT plan — under a burst these are all the same org.
+  const orgPol = await loadOrgPolicy(env, caller.orgID);
   // Mint a cap-token (iss=opensandbox-edge, signed with SESSION_JWT_SECRET).
   // The cell's PGAPIKeyMiddleware accepts cap-tokens too (alongside identity
   // tokens and API keys), so the same handler chain that runs for SDK
   // X-API-Key auth runs here. cell_id in the token guards against replay
   // against a different cell.
-  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, row.cell_id, orgRow?.plan ?? "free", "", caller.userID);
+  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, row.cell_id, orgPol?.plan ?? "free", "", caller.userID);
 
   const headers = new Headers();
   for (const [k, v] of req.headers.entries()) {
@@ -2817,7 +2943,7 @@ export default {
 
     // /api/sandboxes and /api/sandboxes/:id[/...]
     if (path === "/api/sandboxes") {
-      if (req.method === "POST") return createSandbox(req, env);
+      if (req.method === "POST") return createSandbox(req, env, ctx);
       if (req.method === "GET") return listSandboxes(req, env);
       return json({ error: "method not allowed" }, 405);
     }
@@ -2843,7 +2969,7 @@ export default {
         if (cpRow.org_id !== caller.orgID) return json({ error: "checkpoint not in your org" }, 403);
         const cell = await lookupCell(env, cpRow.owner_cell_id);
         if (!cell) return json({ error: `cell ${cpRow.owner_cell_id} not registered` }, 503);
-        const org = await loadOrgPolicy(env, caller.orgID);
+        const { org, activeCount: fcActive } = await loadCreateContext(env, caller.orgID);
         if (!org) return json({ error: "org not found" }, 401);
         // Read the body so we can size-gate, forward it, and record cpu/mem to
         // register the forked sandbox in sandboxes_index — same as createSandbox.
@@ -2865,7 +2991,7 @@ export default {
         // previously ungated at the edge and leaned on a cell-side concurrent
         // check that read stale cell PG and could only ever count one cell's
         // sandboxes — wrong once an org spans cells. Enforce from D1 here.
-        const fcGate = await enforceCreatePolicy(env, caller.orgID, org, { cpuCount: fcCpu, memoryMB: fcMem, diskMB: fcDisk });
+        const fcGate = await enforceCreatePolicy(env, caller.orgID, org, { cpuCount: fcCpu, memoryMB: fcMem, diskMB: fcDisk }, fcActive);
         if (fcGate) return fcGate;
         const plan = org.plan === "pro" ? "pro" : "free";
         const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cpRow.owner_cell_id, plan, org.billing_provider, caller.userID);
