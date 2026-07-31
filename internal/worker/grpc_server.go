@@ -492,9 +492,19 @@ func (s *GRPCServer) ClaimSandbox(ctx context.Context, req *pb.ClaimSandboxReque
 	// Bind the customer-facing side now (deferred at manufacture): D1 "created",
 	// billing scale_event (reads org from the cell-PG row the CP just rebound via
 	// ClaimPooledSession), and logship. Mirrors the CreateSandbox success tail.
+	//
+	// initSandboxDB is local SQLite and load-bearing (the customer's first exec
+	// logs into it), so it stays synchronous. The other two are provider-side
+	// accounting with no bearing on when the box is usable — under a 100-claim
+	// burst their synchronous cell-PG round-trips (scale-event: org lookup +
+	// insert; logship: org lookup + guest config RPC) pile onto the CP conn pool
+	// and stretch the claim tail. Detach both (context.Background — the RPC ctx
+	// dies once we return). The scale event still lands within a few ms, well
+	// before any realistic destroy; the terminal-status EndScaleEvent close
+	// backstops the pathological immediate-destroy race.
 	s.initSandboxDB(sb.ID, sb.Template)
-	s.recordInitialScaleEvent(ctx, sb.ID, cfg)
-	s.configureLogshipForSandbox(ctx, sb.ID)
+	go s.recordInitialScaleEvent(context.Background(), sb.ID, cfg)
+	go s.configureLogshipForSandbox(context.Background(), sb.ID)
 
 	log.Printf("grpc: claimed pool box %s (template=%s)", sb.ID, sb.Template)
 	return &pb.ClaimSandboxResponse{

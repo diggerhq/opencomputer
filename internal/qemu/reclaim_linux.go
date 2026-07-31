@@ -35,6 +35,24 @@ type iovec struct {
 // re-faults the pages) and the caller has CAP_SYS_NICE + ptrace access to pid
 // (the worker runs as root). Best-effort — returns the bytes advised.
 func reclaimGuestRAM(pid int, minRegionBytes uint64) (uint64, error) {
+	return madviseGuestRAM(pid, minRegionBytes, unix.MADV_PAGEOUT)
+}
+
+// prefetchGuestRAM is the inverse of reclaimGuestRAM: it MADV_WILLNEEDs the
+// paged-out guest-RAM regions so the kernel eagerly swaps them back in (batched
+// readahead) instead of the guest lazy-faulting them page-by-page after Cont.
+// Called on the claim/wake path to cut the swap-in stall that dominates a
+// warm-pool resume — most importantly under a burst, where a per-worker gate
+// (see ClaimPooled) keeps these prefetches from thrashing the swap tier all at
+// once. Best-effort — returns bytes advised.
+func prefetchGuestRAM(pid int, minRegionBytes uint64) (uint64, error) {
+	return madviseGuestRAM(pid, minRegionBytes, unix.MADV_WILLNEED)
+}
+
+// madviseGuestRAM applies advice (MADV_PAGEOUT to reclaim, MADV_WILLNEED to
+// prefetch) to pid's large anonymous rw-p guest-RAM mappings via
+// process_madvise. Best-effort — returns the bytes advised.
+func madviseGuestRAM(pid int, minRegionBytes uint64, advice int) (uint64, error) {
 	iovs, total, err := guestRAMRegions(pid, minRegionBytes)
 	if err != nil {
 		return 0, err
@@ -57,7 +75,7 @@ func reclaimGuestRAM(pid int, minRegionBytes uint64) (uint64, error) {
 			pidfd,
 			uintptr(unsafe.Pointer(&iovs[off])),
 			uintptr(len(iovs)-off),
-			uintptr(unix.MADV_PAGEOUT),
+			uintptr(advice),
 			0, 0)
 		if errno != 0 {
 			return total, fmt.Errorf("process_madvise: %w", errno)
