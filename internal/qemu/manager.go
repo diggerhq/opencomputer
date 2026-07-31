@@ -888,11 +888,11 @@ func (m *Manager) agentFsThawViaExec(ctx context.Context, sandboxID string, agen
 	}
 }
 
-// usePrepareResume gates the folded single-RPC post-restore path (idea #1:
-// collapse network+clock+env into one native PrepareResume call). Env-flagged so
-// we can A/B it on dev against the legacy per-op sequence. Off by default.
+// usePrepareResume gates the folded single-RPC post-restore path: collapse
+// network+clock+env into one native PrepareResume call instead of the legacy
+// per-op sequence. Default ON; set OPENSANDBOX_PREPARE_RESUME=0 to fall back.
 func (m *Manager) usePrepareResume() bool {
-	return os.Getenv("OPENSANDBOX_PREPARE_RESUME") == "1"
+	return os.Getenv("OPENSANDBOX_PREPARE_RESUME") != "0"
 }
 
 // agentPrepareResume performs the post-golden-restore guest setup — network +
@@ -914,7 +914,13 @@ func (m *Manager) agentPrepareResume(ctx context.Context, id string, agent *Agen
 		ClockUnixNanos: time.Now().UnixNano(),
 		Envs:           envs,
 	}
-	rpcCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Short timeout (not 30s): the folded rebind is ~15ms on a live channel, so a
+	// multi-second wait means the channel is stale. Failing fast here — well
+	// inside the CP's claim deadline — lets the redial-and-retry below actually
+	// run (a 30s wait would blow the CP deadline first, turning a recoverable
+	// stale channel into a hard cold-create). ensureAgentLive already refreshed
+	// the channel before this; this is the second line of defense.
+	rpcCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	resp, err := agent.PrepareResume(rpcCtx, req)
 	cancel()
 	// One redial-and-retry on the known post-loadvm stale-connection case, exactly
@@ -924,7 +930,7 @@ func (m *Manager) agentPrepareResume(ctx context.Context, id string, agent *Agen
 		if rdErr := agent.Redial(); rdErr != nil {
 			return fmt.Errorf("PrepareResume redial: %w (orig: %v)", rdErr, err)
 		}
-		rpcCtx2, cancel2 := context.WithTimeout(ctx, 30*time.Second)
+		rpcCtx2, cancel2 := context.WithTimeout(ctx, 5*time.Second)
 		resp, err = agent.PrepareResume(rpcCtx2, req)
 		cancel2()
 	}
@@ -2854,24 +2860,30 @@ func (m *Manager) SetResourceLimits(ctx context.Context, sandboxID string, maxPi
 	//
 	// Fail-closed on stats errors during a shrink — better to bounce back
 	// to the caller (who can retry) than apply a limit we can't validate.
+	// The OOM-floor guard only matters when SHRINKING — a grow (or same-size)
+	// can never land below the guest's working set. Fetching guest Stats() is a
+	// ~50-100ms in-VM round-trip; skipping it on grows is 0-impact (the guard
+	// can't fire) and removes that round-trip from the create hot path, where
+	// every pool claim scales the box up from its base to the default size.
 	if maxMemoryBytes > 0 && vm.agent != nil {
 		newTotalMB := int(maxMemoryBytes / (1024 * 1024))
-		shrinking := newTotalMB < vm.MemoryMB
-		statsCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		stats, statsErr := vm.agent.Stats(statsCtx)
-		cancel()
-		switch {
-		case statsErr != nil && shrinking:
-			log.Printf("qemu: %s shrink to %dMB refused: stats fetch failed: %v", sandboxID, newTotalMB, statsErr)
-			return fmt.Errorf("oom_floor: cannot verify guest working set: %w", statsErr)
-		case stats != nil && stats.MemUsage > 0:
-			usedMB := int(stats.MemUsage / (1024 * 1024))
-			floorMB := usedMB * 105 / 100
-			if newTotalMB < floorMB {
-				log.Printf("qemu: %s: refusing memory limit %dMB — working set %dMB requires ≥%dMB",
-					sandboxID, newTotalMB, usedMB, floorMB)
-				return fmt.Errorf("oom_floor: target %dMB below guest working set (%dMB used, %dMB floor)",
-					newTotalMB, usedMB, floorMB)
+		if newTotalMB < vm.MemoryMB { // shrinking
+			statsCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			stats, statsErr := vm.agent.Stats(statsCtx)
+			cancel()
+			if statsErr != nil {
+				log.Printf("qemu: %s shrink to %dMB refused: stats fetch failed: %v", sandboxID, newTotalMB, statsErr)
+				return fmt.Errorf("oom_floor: cannot verify guest working set: %w", statsErr)
+			}
+			if stats != nil && stats.MemUsage > 0 {
+				usedMB := int(stats.MemUsage / (1024 * 1024))
+				floorMB := usedMB * 105 / 100
+				if newTotalMB < floorMB {
+					log.Printf("qemu: %s: refusing memory limit %dMB — working set %dMB requires ≥%dMB",
+						sandboxID, newTotalMB, usedMB, floorMB)
+					return fmt.Errorf("oom_floor: target %dMB below guest working set (%dMB used, %dMB floor)",
+						newTotalMB, usedMB, floorMB)
+				}
 			}
 		}
 	}

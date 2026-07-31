@@ -4,10 +4,31 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/opensandbox/opensandbox/pkg/types"
 )
+
+// wakeSem bounds how many pool boxes may resume (Cont + guest-RAM swap-in) at
+// once on this worker. A warm-pool burst can land dozens of simultaneous claims
+// on a single worker; without a cap they all fault paged-out guest RAM back from
+// the zram/swap tier at the same instant and thrash, inflating every box's wake
+// and blowing the burst tail. Serializing to a small width — paired with
+// prefetchGuestRAM's eager, batched swap-in — keeps each resume fast so the tail
+// stays tight. There is exactly one Manager per worker process, so a package
+// singleton is per-worker. Sized from OPENSANDBOX_WAKE_CONCURRENCY (default 8).
+var wakeSem = make(chan struct{}, wakeConcurrency())
+
+func wakeConcurrency() int {
+	if v := os.Getenv("OPENSANDBOX_WAKE_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 8
+}
 
 // ClaimPooled binds a parked pool box (manufactured via Create + Pause +
 // MarkPooled) to a customer: QMP cont to resume the vCPUs, then re-apply the
@@ -39,9 +60,25 @@ func (m *Manager) ClaimPooled(ctx context.Context, sandboxID string, cfg types.S
 		return nil, fmt.Errorf("no agent client for pooled sandbox %s", sandboxID)
 	}
 
+	// Bound concurrent wakes on this worker so a burst of claims doesn't thrash
+	// the swap tier all at once (see wakeSem). Wait here counts toward the claim,
+	// but a bounded queue beats every box swapping in simultaneously.
+	select {
+	case wakeSem <- struct{}{}:
+		defer func() { <-wakeSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
 	t0 := time.Now()
 	// Resume vCPUs. No billing hook — see doc comment.
 	if !vm.pausedAt.IsZero() {
+		// Eagerly swap the paged-out guest RAM back in (batched readahead) so the
+		// guest doesn't lazy-fault it page-by-page on first touch after Cont —
+		// the swap-in stall that otherwise dominates a warm-pool wake.
+		if _, err := prefetchGuestRAM(vm.pid, pauseReclaimMinRegionBytes); err != nil {
+			log.Printf("qemu: claim %s: guest-RAM prefetch best-effort failed: %v", sandboxID, err)
+		}
 		if err := vm.qmp.Cont(); err != nil {
 			return nil, fmt.Errorf("claim %s: qmp cont: %w", sandboxID, err)
 		}
@@ -49,6 +86,15 @@ func (m *Manager) ClaimPooled(ctx context.Context, sandboxID string, cfg types.S
 	}
 	vm.Status = types.SandboxStatusRunning
 	vm.billingSuppressed = false
+
+	// A pooled box sits paused until claimed; a long pause dwell can let gRPC
+	// keepalive tear down the agent control channel (or leave it wedged), so the
+	// first real RPC after Cont would otherwise hang until its deadline. Refresh
+	// the channel up front — cheap Ping, redial only if it's actually stale, both
+	// on short timeouts — so every customer-facing agent op below (secret cert
+	// write, PrepareResume) runs on a known-live conn instead of eating a
+	// multi-second stall + hard claim failure on the create critical path.
+	m.ensureAgentLive(ctx, sandboxID, vm.agent)
 
 	// Re-bind customer state onto the resumed box: envs + secrets + network +
 	// clock, folded through PrepareResume (falls back to the legacy per-op path).
@@ -73,4 +119,36 @@ func (m *Manager) ClaimPooled(ctx context.Context, sandboxID string, cfg types.S
 		HostPort:      vm.HostPort,
 		GoldenVersion: vm.goldenVersion,
 	}, nil
+}
+
+// ensureAgentLive verifies the agent control channel is responsive after a pool
+// box is un-paused, and redials once if it isn't. Both the probe and the
+// post-redial re-probe use short timeouts so a stale/wedged channel is turned
+// into a fast redial (~single-digit ms on a healthy conn, ~1-2s worst case on a
+// stale one) rather than a multi-second hang on the first customer-facing RPC
+// that trips the CP's claim deadline into a hard failure + cold create.
+//
+// Best-effort: on a box whose agent is genuinely wedged this can't help, but it
+// costs one cheap Ping on the healthy path and recovers the common
+// "paused-dwell keepalive dropped the conn" case transparently.
+func (m *Manager) ensureAgentLive(ctx context.Context, sandboxID string, agent *AgentClient) {
+	if agent == nil {
+		return
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	_, err := agent.Ping(pingCtx)
+	cancel()
+	if err == nil {
+		return // channel healthy — no redial
+	}
+	log.Printf("qemu: claim %s: agent ping failed (%v) — redialing stale channel", sandboxID, err)
+	if rdErr := agent.Redial(); rdErr != nil {
+		log.Printf("qemu: claim %s: agent redial failed: %v", sandboxID, rdErr)
+		return
+	}
+	pingCtx2, cancel2 := context.WithTimeout(ctx, 1500*time.Millisecond)
+	if _, perr := agent.Ping(pingCtx2); perr != nil {
+		log.Printf("qemu: claim %s: agent still unresponsive after redial: %v", sandboxID, perr)
+	}
+	cancel2()
 }
