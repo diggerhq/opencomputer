@@ -17,7 +17,10 @@ package blobstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log"
+	"time"
 )
 
 // ErrNotFound is returned by Get/Exists/Download when the object doesn't
@@ -73,12 +76,38 @@ func Download(ctx context.Context, s Store, bucket, key, destPath string) error 
 	return writeAtomic(destPath, r)
 }
 
-// Upload is a convenience wrapper that streams a local file to bucket/key.
+// Upload streams a local file to bucket/key, retrying the whole upload on
+// transient failure. Multi-GB uploads to S3-compatible stores (Tigris) fail
+// intermittently mid-stream (a part reset surfaces as RequestCanceled) or on the
+// final CompleteMultipartUpload (the upload id expires / a retried Complete 404s
+// as NoSuchUpload) — the per-request SDK retryer can't recover either. Reopening
+// the file and starting a fresh multipart upload does. Safe to retry: each write
+// is a full-object PUT to a fixed key, so it's idempotent.
 func Upload(ctx context.Context, s Store, bucket, key, srcPath string) error {
-	f, length, err := openSized(srcPath)
-	if err != nil {
-		return err
+	const attempts = 4
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(i) * 5 * time.Second):
+			}
+			log.Printf("blobstore: retry %d/%d uploading %s/%s (prev: %v)", i+1, attempts, bucket, key, lastErr)
+		}
+		f, length, err := openSized(srcPath)
+		if err != nil {
+			return err // local file problem — not worth retrying
+		}
+		err = s.Put(ctx, bucket, key, f, length)
+		f.Close()
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return err // caller/deadline canceled — stop spinning
+		}
+		lastErr = err
 	}
-	defer f.Close()
-	return s.Put(ctx, bucket, key, f, length)
+	return fmt.Errorf("upload %s/%s failed after %d attempts: %w", bucket, key, attempts, lastErr)
 }
