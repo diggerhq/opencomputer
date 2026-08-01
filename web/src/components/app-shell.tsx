@@ -448,7 +448,14 @@ export default function AppShell() {
           <HaltBanner />
           <AgentSecurityAlertBanner />
         </div>
-        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8">
+        <main
+          className={cn(
+            'mx-auto px-4 py-6 sm:px-8',
+            location.pathname.startsWith('/managed-agents/')
+              ? 'max-w-[1600px]'
+              : 'max-w-7xl',
+          )}
+        >
           {/* Keyed by org + route: clears a page error on navigation AND
               remounts org-scoped pages on org switch so local draft/filter
               state can't bleed across orgs. */}

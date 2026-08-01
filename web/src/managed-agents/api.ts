@@ -29,6 +29,10 @@ const deploymentSchema = z.object({
   createdAt: z.string(),
 })
 
+const deploymentsResponseSchema = z.object({
+  deployments: z.array(deploymentSchema),
+})
+
 const templatesResponseSchema = z.object({
   templates: z.array(templateSchema),
 })
@@ -98,6 +102,8 @@ const sessionSchema = z.object({
   agentId: z.string(),
   deploymentId: z.string(),
   status: z.string(),
+  source: z.enum(['api', 'channel', 'playground']).optional().default('api'),
+  microvmState: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   turns: z
@@ -177,6 +183,16 @@ export async function getManagedAgentDeployment(deploymentId: string) {
   )
 }
 
+export async function getManagedAgentDeployments(agentId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/deployments?agentId=${encodeURIComponent(agentId)}`,
+      undefined,
+      deploymentsResponseSchema,
+    )
+  ).deployments
+}
+
 export async function getManagedAgentSessions(agentId?: string) {
   const { sessions } = await apiFetch(
     '/managed-agents/sessions',
@@ -198,6 +214,14 @@ export async function getManagedAgentSessionEvents(sessionId: string) {
   ).events
 }
 
+export async function getManagedAgentSession(sessionId: string) {
+  return apiFetch(
+    `/managed-agents/sessions/${encodeURIComponent(sessionId)}`,
+    undefined,
+    sessionSchema,
+  )
+}
+
 async function sleep(milliseconds: number) {
   await new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
@@ -208,13 +232,15 @@ async function waitForAgentEvent(
   terminal: (event: z.infer<typeof eventSchema>) => boolean,
   onEvent: (event: z.infer<typeof eventSchema>) => void,
   timeoutMs: number,
+  signal?: AbortSignal,
 ) {
   const deadline = Date.now() + timeoutMs
   let cursor = after
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const { events } = await apiFetch(
       `/managed-agents/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`,
-      undefined,
+      { signal },
       eventsResponseSchema,
     )
     for (const event of events) {
@@ -243,16 +269,22 @@ export async function runManagedAgent(
   agentId: string,
   input: string,
   onEvent: (event: ManagedAgentEvent) => void,
+  options: {
+    onSession?: (sessionId: string) => void
+    signal?: AbortSignal
+  } = {},
 ) {
   const created = await apiFetch(
     '/managed-agents/sessions',
     {
       method: 'POST',
-      body: JSON.stringify({ agentId }),
+      body: JSON.stringify({ agentId, source: 'playground' }),
+      signal: options.signal,
     },
     sessionCreateSchema,
   )
   const sessionId = created.session.id
+  options.onSession?.(sessionId)
   try {
     const connected = await waitForAgentEvent(
       sessionId,
@@ -260,6 +292,7 @@ export async function runManagedAgent(
       (event) => event.type === 'runtime.connected',
       onEvent,
       90_000,
+      options.signal,
     )
     const turn = await apiFetch(
       `/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
@@ -269,6 +302,7 @@ export async function runManagedAgent(
           input,
           idempotencyKey: crypto.randomUUID(),
         }),
+        signal: options.signal,
       },
       turnSchema,
     )
@@ -279,6 +313,73 @@ export async function runManagedAgent(
         event.type === 'turn.completed' || event.type === 'turn.failed',
       onEvent,
       180_000,
+      options.signal,
+    )
+    if (completed.event.type === 'turn.failed') {
+      throw new Error(
+        typeof completed.event.data.message === 'string'
+          ? completed.event.data.message
+          : 'The agent could not complete this request.',
+      )
+    }
+    return { sessionId, turnId: turn.turnId }
+  } finally {
+    await apiFetch(
+      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/suspend`,
+      { method: 'POST' },
+    ).catch(() => undefined)
+  }
+}
+
+export async function continueManagedAgentSession(
+  sessionId: string,
+  input: string,
+  onEvent: (event: ManagedAgentEvent) => void,
+  signal?: AbortSignal,
+) {
+  const existing = await getManagedAgentSessionEvents(sessionId)
+  let cursor = existing[existing.length - 1]?.seq ?? 0
+  const session = await getManagedAgentSession(sessionId)
+  if (session.microvmState === 'terminated' || session.status === 'ended') {
+    throw new Error('This playground session has ended. Start a new session.')
+  }
+  if (session.microvmState === 'suspended') {
+    await apiFetch(
+      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/resume`,
+      { method: 'POST', signal },
+      sessionSchema,
+    )
+    const connected = await waitForAgentEvent(
+      sessionId,
+      cursor,
+      (event) => event.type === 'runtime.connected',
+      onEvent,
+      90_000,
+      signal,
+    )
+    cursor = connected.cursor
+  }
+  try {
+    const turn = await apiFetch(
+      `/managed-agents/sessions/${encodeURIComponent(sessionId)}/turns`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          input,
+          idempotencyKey: crypto.randomUUID(),
+        }),
+        signal,
+      },
+      turnSchema,
+    )
+    const completed = await waitForAgentEvent(
+      sessionId,
+      cursor,
+      (event) =>
+        event.type === 'turn.completed' || event.type === 'turn.failed',
+      onEvent,
+      180_000,
+      signal,
     )
     if (completed.event.type === 'turn.failed') {
       throw new Error(

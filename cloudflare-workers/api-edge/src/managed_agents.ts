@@ -259,6 +259,16 @@ function publicSuccessBody(
   if (method === "POST" && suffix === "/deployments") {
     return publicDeployment(body);
   }
+  if (method === "POST" && suffix === "/benchmarks/warm-pool") {
+    return stripPrivateValues(body);
+  }
+  if (method === "GET" && suffix === "/deployments") {
+    return {
+      deployments: Array.isArray(body.deployments)
+        ? body.deployments.map(publicDeployment)
+        : [],
+    };
+  }
   if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) {
     return publicDeployment(body);
   }
@@ -476,6 +486,8 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (method === "GET" && suffix === "/me") return true;
   if (method === "POST" && suffix === "/deployments") return true;
+  if (method === "POST" && suffix === "/benchmarks/warm-pool") return true;
+  if (method === "GET" && suffix === "/deployments") return true;
   if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) return true;
   if (
     (method === "GET" &&

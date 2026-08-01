@@ -6,7 +6,14 @@ import {
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -40,7 +47,9 @@ async function api(path: string, init: RequestInit = {}): Promise<Response> {
   if (init.body) headers.set("content-type", "application/json");
   const response = await fetch(path, { ...init, headers });
   if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as { message?: string };
+    const body = (await response.json().catch(() => ({}))) as {
+      message?: string;
+    };
     throw new Error(body.message ?? `Request failed (${response.status})`);
   }
   return response;
@@ -48,11 +57,18 @@ async function api(path: string, init: RequestInit = {}): Promise<Response> {
 
 function messageText(message: UIMessage): string {
   return message.parts
-    .filter((part): part is Extract<typeof part, { type: "text" }> =>
-      part.type === "text",
+    .filter(
+      (part): part is Extract<typeof part, { type: "text" }> =>
+        part.type === "text",
     )
     .map((part) => part.text)
     .join("");
+}
+
+function isNearScrollEnd(element: HTMLElement, threshold = 96): boolean {
+  return (
+    element.scrollHeight - element.scrollTop - element.clientHeight <= threshold
+  );
 }
 
 function toMessages(session: SessionDetail): UIMessage[] {
@@ -66,13 +82,18 @@ function toMessages(session: SessionDetail): UIMessage[] {
 class OpenComputerTransport implements ChatTransport<UIMessage> {
   constructor(private readonly sessionId: string) {}
 
-  async sendMessages(options: Parameters<ChatTransport<UIMessage>["sendMessages"]>[0]) {
+  async sendMessages(
+    options: Parameters<ChatTransport<UIMessage>["sendMessages"]>[0],
+  ) {
     const prompt = messageText(options.messages.at(-1)!);
-    const response = await api(`/sessions/${encodeURIComponent(this.sessionId)}`, {
-      method: "POST",
-      body: JSON.stringify({ prompt }),
-      signal: options.abortSignal,
-    });
+    const response = await api(
+      `/sessions/${encodeURIComponent(this.sessionId)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ prompt }),
+        signal: options.abortSignal,
+      },
+    );
     if (!response.body) throw new Error("The local session returned no stream");
 
     const source = response.body;
@@ -114,11 +135,18 @@ class OpenComputerTransport implements ChatTransport<UIMessage> {
                   textStarted = true;
                 }
                 if (!streamedText && complete) {
-                  controller.enqueue({ type: "text-delta", id: textId, delta: complete });
+                  controller.enqueue({
+                    type: "text-delta",
+                    id: textId,
+                    delta: complete,
+                  });
                 }
               } else if (event.type === "reasoning.delta") {
                 if (!reasoningStarted) {
-                  controller.enqueue({ type: "reasoning-start", id: reasoningId });
+                  controller.enqueue({
+                    type: "reasoning-start",
+                    id: reasoningId,
+                  });
                   reasoningStarted = true;
                 }
                 controller.enqueue({
@@ -133,7 +161,10 @@ class OpenComputerTransport implements ChatTransport<UIMessage> {
                   type: "tool-input-available",
                   toolCallId: callId,
                   toolName: String(event.data.tool ?? "tool"),
-                  title: typeof event.data.title === "string" ? event.data.title : undefined,
+                  title:
+                    typeof event.data.title === "string"
+                      ? event.data.title
+                      : undefined,
                   input: event.data.input ?? {},
                   dynamic: true,
                 });
@@ -162,7 +193,8 @@ class OpenComputerTransport implements ChatTransport<UIMessage> {
               }
             }
           }
-          if (reasoningStarted) controller.enqueue({ type: "reasoning-end", id: reasoningId });
+          if (reasoningStarted)
+            controller.enqueue({ type: "reasoning-end", id: reasoningId });
           if (textStarted) controller.enqueue({ type: "text-end", id: textId });
           controller.enqueue({ type: "finish", finishReason: "stop" });
           controller.close();
@@ -193,8 +225,9 @@ function ToolActivity({
   active: boolean;
 }) {
   const reasoning = parts
-    .filter((part): part is Extract<typeof part, { type: "reasoning" }> =>
-      part.type === "reasoning",
+    .filter(
+      (part): part is Extract<typeof part, { type: "reasoning" }> =>
+        part.type === "reasoning",
     )
     .map((part) => part.text)
     .join("");
@@ -204,20 +237,32 @@ function ToolActivity({
   if (!reasoning && !tools.length) return null;
 
   return (
-    <details className="activity" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <details
+      className="activity"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary>
         <span className={active ? "pulse" : "check"}>{active ? "·" : "✓"}</span>
         {active
-          ? tools.length ? `Working · ${tools.length} tool ${tools.length === 1 ? "call" : "calls"}` : "Thinking"
-          : tools.length ? `${tools.length} tool ${tools.length === 1 ? "call" : "calls"}` : "Thought process"}
+          ? tools.length
+            ? `Working · ${tools.length} tool ${tools.length === 1 ? "call" : "calls"}`
+            : "Thinking"
+          : tools.length
+            ? `${tools.length} tool ${tools.length === 1 ? "call" : "calls"}`
+            : "Thought process"}
       </summary>
       <div className="activity-body">
         {reasoning && <p className="reasoning">{reasoning}</p>}
         {tools.map((tool) => {
-          const failed = tool.state === "output-error" || tool.state === "output-denied";
+          const failed =
+            tool.state === "output-error" || tool.state === "output-denied";
           const done = tool.state === "output-available";
           return (
-            <div className={`tool ${failed ? "failed" : done ? "done" : "running"}`} key={tool.toolCallId}>
+            <div
+              className={`tool ${failed ? "failed" : done ? "done" : "running"}`}
+              key={tool.toolCallId}
+            >
               <span>{failed ? "×" : done ? "✓" : "○"}</span>
               <span>{tool.title || tool.toolName}</span>
             </div>
@@ -228,8 +273,17 @@ function ToolActivity({
   );
 }
 
-function ChatPane({ session, onFinished }: { session: SessionDetail; onFinished: () => void }) {
-  const transport = useMemo(() => new OpenComputerTransport(session.id), [session.id]);
+function ChatPane({
+  session,
+  onFinished,
+}: {
+  session: SessionDetail;
+  onFinished: () => void;
+}) {
+  const transport = useMemo(
+    () => new OpenComputerTransport(session.id),
+    [session.id],
+  );
   const { messages, sendMessage, status, error } = useChat({
     id: session.id,
     messages: toMessages(session),
@@ -239,33 +293,66 @@ function ChatPane({ session, onFinished }: { session: SessionDetail; onFinished:
   });
   const [input, setInput] = useState("");
   const timeline = useRef<HTMLDivElement>(null);
+  const followOutput = useRef(true);
+  const initializedScroll = useRef(false);
   const busy = status === "submitted" || status === "streaming";
-  useEffect(() => {
-    timeline.current?.scrollTo({ top: timeline.current.scrollHeight, behavior: "smooth" });
-  }, [messages]);
+  useLayoutEffect(() => {
+    const element = timeline.current;
+    if (!element) return;
+    if (!initializedScroll.current || followOutput.current) {
+      element.scrollTop = element.scrollHeight;
+      followOutput.current = true;
+    }
+    initializedScroll.current = true;
+  }, [messages, status]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const prompt = input.trim();
     if (!prompt || busy) return;
+    followOutput.current = true;
     setInput("");
     void sendMessage({ text: prompt });
   };
 
   return (
     <main>
-      <div className="timeline" ref={timeline}>
+      <div
+        className="timeline"
+        ref={timeline}
+        onScroll={(event) => {
+          followOutput.current = isNearScrollEnd(event.currentTarget);
+        }}
+      >
         {!messages.length && (
-          <div className="empty"><div className="empty-mark">✦</div><h2>Start a conversation</h2><p>Ask your agent to use its skills and connected tools.</p></div>
+          <div className="empty">
+            <div className="empty-mark">✦</div>
+            <h2>Start a conversation</h2>
+            <p>Ask your agent to use its skills and connected tools.</p>
+          </div>
         )}
         {messages.map((message, index) => {
-          const isActive = busy && index === messages.length - 1 && message.role === "assistant";
+          const isActive =
+            busy &&
+            index === messages.length - 1 &&
+            message.role === "assistant";
           const text = messageText(message);
           return (
             <article className={`message ${message.role}`} key={message.id}>
-              <div className="who">{message.role === "user" ? "You" : agentName}</div>
-              {message.role === "assistant" && <ToolActivity parts={message.parts} active={isActive && !text} />}
-              {text && <div className="message-body"><Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown></div>}
+              <div className="who">
+                {message.role === "user" ? "You" : agentName}
+              </div>
+              {message.role === "assistant" && (
+                <ToolActivity
+                  parts={message.parts}
+                  active={isActive && !text}
+                />
+              )}
+              {text && (
+                <div className="message-body">
+                  <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
+                </div>
+              )}
             </article>
           );
         })}
@@ -287,7 +374,13 @@ function ChatPane({ session, onFinished }: { session: SessionDetail; onFinished:
             rows={2}
             autoFocus
           />
-          <button type="submit" disabled={!input.trim() || busy} aria-label="Send message">↑</button>
+          <button
+            type="submit"
+            disabled={!input.trim() || busy}
+            aria-label="Send message"
+          >
+            ↑
+          </button>
         </div>
         <div className="hint">Enter to send · Shift+Enter for a new line</div>
       </form>
@@ -301,48 +394,85 @@ function App() {
   const [error, setError] = useState("");
 
   const refresh = async () => {
-    const result = (await (await api("/sessions")).json()) as { sessions: SessionSummary[] };
+    const result = (await (await api("/sessions")).json()) as {
+      sessions: SessionSummary[];
+    };
     setSessions(result.sessions);
     return result.sessions;
   };
   const select = async (id: string) => {
-    setActive((await (await api(`/sessions/${encodeURIComponent(id)}`)).json()) as SessionDetail);
+    setActive(
+      (await (
+        await api(`/sessions/${encodeURIComponent(id)}`)
+      ).json()) as SessionDetail,
+    );
   };
   const create = async () => {
-    const session = (await (await api("/sessions", { method: "POST", body: "{}" })).json()) as SessionDetail;
+    const session = (await (
+      await api("/sessions", { method: "POST", body: "{}" })
+    ).json()) as SessionDetail;
     await refresh();
     setActive(session);
   };
   useEffect(() => {
     if (!token) {
-      setError("Missing dev token. Open the complete URL printed by opencomputer dev.");
+      setError(
+        "Missing dev token. Open the complete URL printed by opencomputer dev.",
+      );
       return;
     }
-    void refresh().then((items) => items[0] ? select(items[0].id) : create()).catch((cause: unknown) => {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    });
+    void refresh()
+      .then((items) => (items[0] ? select(items[0].id) : create()))
+      .catch((cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      });
   }, []);
 
   return (
     <div className="app-shell">
       <header>
-        <div className="brand"><span className="logo">oc</span><span>{agentName}</span><span className="dev-badge">DEV</span></div>
-        <div className="status"><i /> Local agent</div>
+        <div className="brand">
+          <span className="logo">oc</span>
+          <span>{agentName}</span>
+          <span className="dev-badge">DEV</span>
+        </div>
+        <div className="status">
+          <i /> Local agent
+        </div>
       </header>
       <div className="workspace">
         <aside>
-          <button className="new-session" onClick={() => void create()}><span>＋</span> New session</button>
+          <button className="new-session" onClick={() => void create()}>
+            <span>＋</span> New session
+          </button>
           <div className="section-label">Sessions</div>
           <nav>
             {sessions.map((session) => (
-              <button className={active?.id === session.id ? "active" : ""} key={session.id} onClick={() => void select(session.id)}>
+              <button
+                className={active?.id === session.id ? "active" : ""}
+                key={session.id}
+                onClick={() => void select(session.id)}
+              >
                 <strong>{session.title || "New session"}</strong>
                 <span>{session.messageCount} messages</span>
               </button>
             ))}
           </nav>
         </aside>
-        {error ? <div className="fatal"><strong>Could not start local app</strong><p>{error}</p></div> : active ? <ChatPane key={active.id} session={active} onFinished={() => void refresh()} /> : <div className="loading">Starting local agent…</div>}
+        {error ? (
+          <div className="fatal">
+            <strong>Could not start local app</strong>
+            <p>{error}</p>
+          </div>
+        ) : active ? (
+          <ChatPane
+            key={active.id}
+            session={active}
+            onFinished={() => void refresh()}
+          />
+        ) : (
+          <div className="loading">Starting local agent…</div>
+        )}
       </div>
     </div>
   );

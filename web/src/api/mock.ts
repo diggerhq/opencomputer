@@ -1301,6 +1301,21 @@ const ROUTES: Array<[RegExp, Handler]> = [
     }),
   ],
   [
+    /^\/managed-agents\/deployments\?agentId=[^&]+$/,
+    () => ({
+      deployments: [
+        {
+          id: 'research-assistant:preview',
+          agentId: 'research-assistant',
+          alias: 'production',
+          channels: ['slack'],
+          connections: ['gmail'],
+          createdAt: new Date(BASE).toISOString(),
+        },
+      ],
+    }),
+  ],
+  [
     /^\/managed-agents\/deployments\/[^/]+$/,
     () => ({
       id: 'research-assistant:preview',
@@ -1320,6 +1335,8 @@ const ROUTES: Array<[RegExp, Handler]> = [
           agentId: 'research-assistant',
           deploymentId: 'research-assistant:preview',
           status: 'suspended',
+          source: 'channel',
+          microvmState: 'suspended',
           createdAt: new Date(BASE).toISOString(),
           updatedAt: new Date(BASE).toISOString(),
           turns: [],
@@ -1341,6 +1358,20 @@ const ROUTES: Array<[RegExp, Handler]> = [
         },
         { seq: 3, type: 'turn.completed', data: {} },
       ],
+    }),
+  ],
+  [
+    /^\/managed-agents\/sessions\/[^/]+$/,
+    () => ({
+      id: 'session_preview',
+      agentId: 'research-assistant',
+      deploymentId: 'research-assistant:preview',
+      status: 'suspended',
+      source: 'playground',
+      microvmState: 'suspended',
+      createdAt: new Date(BASE).toISOString(),
+      updatedAt: new Date(BASE).toISOString(),
+      turns: [],
     }),
   ],
   [/^\/sessions\/[^/]+\/stats$/, () => sandboxStats],

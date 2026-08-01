@@ -490,4 +490,44 @@ describe("managed agents proxy", () => {
       /runtimeToken|microvm|artifact|bucket|imageArn|arn:aws/i,
     );
   });
+
+  it("lists sanitized deployment history", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          deployments: [
+            {
+              id: "research-assistant:digest",
+              agentId: "research-assistant",
+              alias: "production",
+              channels: ["slack"],
+              connections: ["google"],
+              createdAt: "2026-07-30T00:00:00.000Z",
+              artifact: { bucket: "private-bucket", key: "private-key" },
+              imageArn: "arn:aws:private",
+              imageVersion: "7",
+            },
+          ],
+        }),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/deployments?agentId=research-assistant",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    const serialized = JSON.stringify(await response.json());
+
+    expect(response.status).toBe(200);
+    expect(serialized).toContain("research-assistant:digest");
+    expect(serialized).not.toMatch(/artifact|bucket|imageArn|imageVersion/i);
+  });
 });
