@@ -22,20 +22,25 @@ Think of it as the compute equivalent of a laptop that sleeps when you close the
 
 ### CLI
 
-Download the latest `oc` binary from [GitHub Releases](https://github.com/diggerhq/opencomputer/releases):
+Install the agent-first OpenComputer CLI:
 
 ```bash
-# macOS (Apple Silicon)
-curl -fsSL https://github.com/diggerhq/opencomputer/releases/latest/download/oc-darwin-arm64 -o /usr/local/bin/oc
-chmod +x /usr/local/bin/oc
+npm install --global @opencomputer/cli
 
-# Sign in
-oc login
-oc whoami
+opencomputer login
+opencomputer templates
+opencomputer init email-triage
+cd email-triage
+npm install
+opencomputer connection add gmail --alias personal
+opencomputer session "Triage today's inbox."
+opencomputer deploy
 ```
 
-For CI, servers, and SDK applications, keep using an explicit org API key in
-`OPENCOMPUTER_API_KEY`; `oc login` is for the local CLI.
+For CI, set an explicit organization key in `OPENCOMPUTER_API_KEY`. The new CLI
+is intentionally agent-only; the legacy `oc` infrastructure CLI remains
+available from [GitHub Releases](https://github.com/diggerhq/opencomputer/releases)
+during the experiment.
 
 ### SDK
 

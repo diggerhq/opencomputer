@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mockFetch } from './mock'
 import {
   AgentListSchema,
+  AgentSecurityNotificationListSchema,
   RepositoryAccessSchema,
   RepositorySourceInspectionSchema,
   SessionListSchema,
@@ -39,6 +40,16 @@ describe('preview API contracts', () => {
     ).not.toThrow()
     expect(() =>
       SessionTurnListSchema.parse(mockFetch('/v3/sessions/ses_a1b2c3/turns')),
+    ).not.toThrow()
+  })
+
+  it('keeps the global agent-security fixture valid', () => {
+    expect(() =>
+      AgentSecurityNotificationListSchema.parse(
+        mockFetch(
+          '/agent-security-notifications?include_acknowledged=false&limit=100',
+        ),
+      ),
     ).not.toThrow()
   })
 

@@ -32,6 +32,16 @@
         ]
       },
       {
+        "group": "Serverless Agents",
+        "pages": [
+          "agents/overview",
+          "agents/quickstart",
+          "agents/connections",
+          "agents/channels",
+          "agents/architecture"
+        ]
+      },
+      {
         "group": "Sandboxes",
         "pages": [
           "sandboxes/overview",

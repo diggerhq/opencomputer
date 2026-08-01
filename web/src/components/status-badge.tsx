@@ -27,9 +27,16 @@ const STATUS: Record<string, Meta> = {
   running: { tone: 'running', label: 'Running', icon: CircleCheck },
   ready: { tone: 'running', label: 'Ready', icon: CircleCheck },
   active: { tone: 'running', label: 'Active', icon: CircleCheck },
+  connected: { tone: 'running', label: 'Connected', icon: CircleCheck },
   success: { tone: 'running', label: 'Success', icon: CircleCheck },
   resolved: { tone: 'running', label: 'Resolved', icon: CircleCheck },
   stopped: { tone: 'stopped', label: 'Stopped', icon: CircleSlash },
+  disconnected: {
+    tone: 'stopped',
+    label: 'Disconnected',
+    icon: CircleSlash,
+  },
+  expired: { tone: 'stopped', label: 'Expired', icon: CircleSlash },
   not_deployed: {
     tone: 'stopped',
     label: 'Not deployed',

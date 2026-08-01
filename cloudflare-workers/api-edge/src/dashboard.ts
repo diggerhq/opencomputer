@@ -32,6 +32,7 @@ import {
   listAgentSecurityNotifications,
 } from "./agent_security_notifications";
 import { createAPIKey } from "./api_keys";
+import { proxyManagedAgents } from "./managed_agents";
 
 export interface DashboardEnv {
   OPENCOMPUTER_DB: D1Database;
@@ -65,6 +66,10 @@ export interface DashboardEnv {
   // internal service token plus org/user headers.
   BROWSER_API_URL?: string;
   BROWSER_API_SECRET?: string;
+  // Private managed-agent backend. The browser only calls this Worker; it
+  // never receives the backend URL or assertion secret.
+  MANAGED_AGENTS_API_URL?: string;
+  OC_MANAGED_AGENTS_SECRET?: string;
 }
 
 const SESSION_COOKIE = "oc_session";
@@ -898,6 +903,16 @@ export async function handleDashboard(
   // /api/dashboard/* — strip the prefix for routing.
   const sub = path.replace(/^\/api\/dashboard/, "");
   const method = req.method.toUpperCase();
+
+  // ── Managed Agents experiment ───────────────────────────────────────────
+  if (sub === "/managed-agents" || sub.startsWith("/managed-agents/")) {
+    return proxyManagedAgents(
+      req,
+      env,
+      caller,
+      "/api/dashboard/managed-agents",
+    );
+  }
 
   // ── Durable Agent Sessions (/v3) — proxy to sessions-api ────────────────
   // Cookie-gated above. We inject OC_V3_KEY downstream so the osb_ key never

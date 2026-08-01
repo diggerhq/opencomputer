@@ -110,6 +110,8 @@ new_sqlite_classes = ["CreditAccount"]
 #                            sessions-api (shared only with sessions-api).
 #   OC_SECURITY_NOTIFICATION_SECRET — dedicated HMAC for minimal Agent Hook
 #                            exposure alerts from sessions-api.
+#   OC_MANAGED_AGENTS_SECRET — dedicated HS256 secret shared only with the
+#                            managed-agents backend.
 # Optional vars: OPENROUTER_BASE_URL (default https://openrouter.ai/api/v1),
 #   OPENROUTER_MARKUP_BPS (env-default markup; per-org orgs.model_markup_bps wins).
 
@@ -129,6 +131,7 @@ PAUSED_CAP = "10"
 # truth, toggled per-row without a deploy). See pickHomeCell in src/index.ts.
 # Optional alpha route for Burst Sandboxes. Leave empty to disable.
 BURST_CELL_ID = ""
+MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev"
 
 # Ship console output + exceptions to opensandbox-log-tail, which forwards
 # to Axiom dataset cf-dev. Keeps CF Worker logs durable in the same store

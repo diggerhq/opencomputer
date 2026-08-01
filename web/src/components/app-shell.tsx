@@ -1,5 +1,11 @@
-import { Suspense, useState } from 'react'
-import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
+import { Suspense, useEffect, useState } from 'react'
+import {
+  Link,
+  NavLink,
+  Outlet,
+  useLocation,
+  useNavigate,
+} from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   LayoutGrid,
@@ -21,6 +27,9 @@ import {
   Menu,
   Loader2,
   CircleAlert,
+  ChevronRight,
+  Plug,
+  Radio,
   type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
@@ -43,6 +52,7 @@ import {
 import { ErrorBoundary } from '@/components/error-boundary'
 import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
+import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
 
 type NavItem = {
   to: string
@@ -51,12 +61,17 @@ type NavItem = {
   end?: boolean
   preview?: boolean
 }
-type NavGroup = { label?: string; items: NavItem[] }
+type NavGroup = {
+  label?: string
+  items: NavItem[]
+  collapsible?: boolean
+  landingTo?: string
+}
 
 // Two planes, subtly separated: the durable-agent plane and the raw-compute
 // (sandbox) plane, plus account/org. Groups render with spacing + a small muted
 // label rather than hard dividers.
-const NAV: NavGroup[] = [
+const LEGACY_NAV: NavGroup[] = [
   {
     items: [
       { to: '/', label: 'Dashboard', icon: LayoutGrid, end: true },
@@ -99,6 +114,67 @@ const NAV: NavGroup[] = [
       { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
       { to: '/templates', label: 'Templates', icon: Package },
       { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
+    ],
+  },
+  {
+    label: 'Account',
+    items: [
+      { to: '/api-keys', label: 'API Keys', icon: KeyRound },
+      { to: '/billing', label: 'Billing', icon: CreditCard },
+      { to: '/settings', label: 'Settings', icon: Settings },
+    ],
+  },
+]
+
+const MANAGED_AGENTS_NAV: NavGroup[] = [
+  {
+    label: 'Serverless agents',
+    collapsible: true,
+    landingTo: '/',
+    items: [
+      { to: '/', label: 'Agents', icon: Bot, end: true },
+      {
+        to: '/managed-agents/connections',
+        label: 'Connections',
+        icon: Plug,
+      },
+      {
+        to: '/managed-agents/channels',
+        label: 'Channels',
+        icon: Radio,
+      },
+    ],
+  },
+  {
+    label: 'Durable sessions',
+    collapsible: true,
+    landingTo: '/agents',
+    items: [
+      { to: '/agents', label: 'Agents', icon: Bot, preview: true },
+      {
+        to: '/sessions',
+        label: 'Sessions',
+        icon: MessagesSquare,
+        preview: true,
+      },
+      {
+        to: '/credentials',
+        label: 'Credentials',
+        icon: KeySquare,
+        preview: true,
+      },
+    ],
+  },
+  {
+    label: 'Infrastructure',
+    collapsible: true,
+    landingTo: '/sandboxes',
+    items: [
+      { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
+      { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
+      { to: '/templates', label: 'Sandbox templates', icon: Package },
+      { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
+      { to: '/browsers', label: 'Browsers', icon: Monitor },
     ],
   },
   {
@@ -178,6 +254,35 @@ function OrgSwitcher() {
 
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const nav = managedAgentsExperimentEnabled ? MANAGED_AGENTS_NAV : LEGACY_NAV
+  const activeCollapsibleGroup = nav.find(
+    (group) =>
+      group.collapsible &&
+      group.label &&
+      ((managedAgentsExperimentEnabled &&
+        group.label === 'Serverless agents' &&
+        location.pathname.startsWith('/managed-agents/')) ||
+        group.items.some(
+          (item) =>
+            location.pathname === item.to ||
+            (item.to !== '/' && location.pathname.startsWith(`${item.to}/`)),
+        )),
+  )?.label
+  const [openGroups, setOpenGroups] = useState<Set<string>>(
+    () => new Set(activeCollapsibleGroup ? [activeCollapsibleGroup] : []),
+  )
+
+  useEffect(() => {
+    if (!activeCollapsibleGroup) return
+    setOpenGroups((current) => {
+      if (current.has(activeCollapsibleGroup)) return current
+      const next = new Set(current)
+      next.add(activeCollapsibleGroup)
+      return next
+    })
+  }, [activeCollapsibleGroup])
   return (
     <div className="flex h-full min-h-0 flex-col">
       {(user?.orgs?.length ?? 0) > 1 ? (
@@ -187,41 +292,65 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       ) : null}
 
       <nav className="flex-1 space-y-5 overflow-y-auto p-3">
-        {NAV.map((group, gi) => (
+        {nav.map((group, gi) => (
           <div key={group.label ?? gi} className="space-y-0.5">
-            {group.label ? (
+            {group.label && group.collapsible ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenGroups((current) => {
+                    const next = new Set(current)
+                    if (next.has(group.label!)) next.delete(group.label!)
+                    else next.add(group.label!)
+                    return next
+                  })
+                  if (group.landingTo) void navigate(group.landingTo)
+                }}
+                className="text-muted-foreground/70 hover:text-foreground flex w-full items-center gap-1 px-3 pb-1 text-left text-[10px] font-medium tracking-wider uppercase transition-colors"
+                aria-expanded={openGroups.has(group.label)}
+              >
+                <ChevronRight
+                  className={cn(
+                    'size-3 transition-transform',
+                    openGroups.has(group.label) && 'rotate-90',
+                  )}
+                />
+                {group.label}
+              </button>
+            ) : group.label ? (
               <div className="text-muted-foreground/55 px-3 pb-1 text-[10px] font-medium tracking-wider uppercase">
                 {group.label}
               </div>
             ) : null}
-            {group.items.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                onClick={onNavigate}
-                className={({ isActive }) =>
-                  cn(
-                    'flex min-h-9 items-center gap-2.5 rounded-md px-3 font-mono text-sm tracking-tight transition-colors',
-                    isActive
-                      ? 'bg-sidebar-accent text-foreground font-medium'
-                      : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
-                  )
-                }
-              >
-                <item.icon
-                  className="size-4 shrink-0 opacity-50"
-                  strokeWidth={1.25}
-                  aria-hidden
-                />
-                {item.label}
-                {item.preview ? (
-                  <span className="border-border/70 text-muted-foreground ml-auto rounded border px-1 py-px font-sans text-[9px] font-medium tracking-wide uppercase">
-                    Preview
-                  </span>
-                ) : null}
-              </NavLink>
-            ))}
+            {(!group.collapsible || openGroups.has(group.label ?? '')) &&
+              group.items.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.end}
+                  onClick={onNavigate}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex min-h-9 items-center gap-2.5 rounded-md px-3 font-mono text-sm tracking-tight transition-colors',
+                      isActive
+                        ? 'bg-sidebar-accent text-foreground font-medium'
+                        : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
+                    )
+                  }
+                >
+                  <item.icon
+                    className="size-4 shrink-0 opacity-50"
+                    strokeWidth={1.25}
+                    aria-hidden
+                  />
+                  {item.label}
+                  {item.preview ? (
+                    <span className="border-border/70 text-muted-foreground ml-auto rounded border px-1 py-px font-sans text-[9px] font-medium tracking-wide uppercase">
+                      Preview
+                    </span>
+                  ) : null}
+                </NavLink>
+              ))}
           </div>
         ))}
       </nav>
@@ -330,7 +459,14 @@ export default function AppShell() {
           <HaltBanner />
           <AgentSecurityAlertBanner />
         </div>
-        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-8">
+        <main
+          className={cn(
+            'mx-auto px-4 py-6 sm:px-8',
+            location.pathname.startsWith('/managed-agents/')
+              ? 'max-w-[1600px]'
+              : 'max-w-7xl',
+          )}
+        >
           {/* Keyed by org + route: clears a page error on navigation AND
               remounts org-scoped pages on org switch so local draft/filter
               state can't bleed across orgs. */}

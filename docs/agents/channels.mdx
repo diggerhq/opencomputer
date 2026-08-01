@@ -1,0 +1,109 @@
+---
+title: "Channels"
+description: "Run deployed agents from Slack and other conversational interfaces"
+---
+
+Channels make a deployed agent available from an external interface such as
+Slack. The agent's behavior remains defined by its source repository; the
+channel supplies messages to sessions and returns the streamed result.
+
+## Channel declarations
+
+Channel support is part of the agent repository. Adding Slack creates the
+channel declaration and Slack application manifest:
+
+```bash
+opencomputer channels add slack
+```
+
+```text
+support-agent/
+├── channels/
+│   └── slack.ts
+└── slack/
+    └── manifest.json
+```
+
+These files describe events and application behavior and are safe to commit.
+Slack installation credentials are managed separately from source code.
+
+Deploy the channel declaration before connecting the remote channel:
+
+```bash
+opencomputer deploy
+opencomputer channels connect slack --remote
+opencomputer channels list
+```
+
+The channel targets a deployed agent alias, so new deployments can advance
+that alias without reinstalling the Slack application.
+
+## Sessions from channels
+
+Each supported Slack conversation creates or resumes a managed agent session.
+Messages in the same user thread continue the same multi-turn session, while
+other users and threads remain isolated.
+
+Channel sessions use the same deployed source and runtime behavior as sessions
+started from the CLI or dashboard. They appear in the agent's session history
+so you can inspect their status and activity.
+
+## Linking a channel identity
+
+A Slack identity is not automatically treated as the person who installed the
+Slack application. Before an agent can access personal connections, each Slack
+user links their own OpenComputer identity.
+
+<Steps>
+  <Step title="Message the agent">
+    If the Slack user is not linked, the agent replies with a short-lived
+    OpenComputer dashboard link.
+  </Step>
+  <Step title="Sign in to OpenComputer">
+    Opening the link associates that Slack user with the authenticated
+    OpenComputer user.
+  </Step>
+  <Step title="Connect required services">
+    If the agent requires Gmail or another service, OpenComputer shows the
+    connection instructions for that user.
+  </Step>
+  <Step title="Message the agent again">
+    The channel session can now use only the connections owned by the linked
+    user.
+  </Step>
+</Steps>
+
+This prevents a shared Slack channel from inheriting the installer's Gmail or
+another teammate's connected accounts.
+
+## Connections and channels are different
+
+| Concept | Purpose | Ownership |
+| --- | --- | --- |
+| Connection | Authorizes an external service such as Gmail | Individual OpenComputer user |
+| Channel | Provides an interface for invoking a deployed agent | Agent deployment and installed workspace |
+| Channel identity link | Maps an external user to an OpenComputer user | Individual external user |
+
+A channel does not grant service access by itself. It identifies who sent the
+message, and the managed session resolves only that user's connections.
+
+## Disconnect a channel
+
+List remote channel installations and disconnect the one you no longer want:
+
+```bash
+opencomputer channels list --remote
+opencomputer channels disconnect slack <connection-id> --remote
+```
+
+Disconnecting a channel stops new messages from reaching the agent. It does not
+delete the agent, its deployments, or users' personal service connections.
+
+<CardGroup cols={2}>
+  <Card title="Connections" icon="plug" href="/agents/connections">
+    Authorize multiple user-scoped accounts with recognizable aliases.
+  </Card>
+  <Card title="Agents architecture" icon="diagram-project" href="/agents/architecture">
+    See how source, deployments, sessions, connections, and channels fit together.
+  </Card>
+</CardGroup>
