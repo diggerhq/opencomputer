@@ -7,7 +7,7 @@ import {
 } from "./api.js";
 import { login, logout, openBrowser } from "./auth.js";
 import { resolveConfig } from "./config.js";
-import { runOpenCode } from "./local.js";
+import { runLocalAgent } from "./local.js";
 import {
   addGmailTools,
   addSlackChannel,
@@ -107,6 +107,30 @@ function printSession(session: ManagedSessionSnapshot): void {
   );
 }
 
+function printToolProgress(event: ManagedAgentEvent): void {
+  if (
+    event.type !== "tool.started" &&
+    event.type !== "tool.completed" &&
+    event.type !== "tool.failed"
+  ) {
+    return;
+  }
+
+  const tool = String(event.data.tool ?? "tool");
+  if (event.type === "tool.started") {
+    const title =
+      typeof event.data.title === "string" && event.data.title
+        ? ` (${event.data.title})`
+        : "";
+    process.stderr.write(`tool: ${tool}${title}\n`);
+    return;
+  }
+
+  process.stderr.write(
+    `tool: ${tool} ${event.type === "tool.completed" ? "completed" : "failed"}\n`,
+  );
+}
+
 function printAgentEvent(event: ManagedAgentEvent, json: boolean): void {
   if (json) {
     process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -123,6 +147,8 @@ function printAgentEvent(event: ManagedAgentEvent, json: boolean): void {
     process.stderr.write(
       `turn failed: ${String(event.data.message ?? "unknown error")}\n`,
     );
+  } else {
+    printToolProgress(event);
   }
 }
 
@@ -167,6 +193,8 @@ async function sendAgentTurn(
         typeof event.data.text === "string"
       ) {
         completedText = event.data.text;
+      } else {
+        if (!json) printToolProgress(event);
       }
     },
     180_000,
@@ -286,6 +314,8 @@ async function runAgent(
         typeof event.data.text === "string"
       ) {
         completedText = event.data.text;
+      } else {
+        if (!json) printToolProgress(event);
       }
     },
     180_000,
@@ -395,8 +425,9 @@ export async function runCommand(
       const enterDirectory =
         directory === "." ? "" : `  cd ${directory}\n`;
       process.stdout.write(
-        `Created ${template.name}\n` +
+        `Created ${initialized.manifest.name} from ${template.name}\n` +
           `Directory: ${initialized.root}\n` +
+          `Name:      ${initialized.manifest.name}\n` +
           `Agent ID:  ${initialized.manifest.id}\n` +
           `Identity:  opencomputer.toml\n\n` +
           `Next:\n` +
@@ -417,8 +448,12 @@ export async function runCommand(
       );
     } else {
       for (const agent of agents) {
+        const name = agent.name?.trim() || agent.id;
+        const alias = agent.activeAlias?.trim() || "—";
+        const deploymentCount = agent.deploymentCount ?? 0;
         process.stdout.write(
-          `${agent.id.padEnd(24)} ${agent.activeAlias.padEnd(12)} ${agent.deploymentCount} deployment${agent.deploymentCount === 1 ? "" : "s"}\n`,
+          `${name.padEnd(24)} ${alias.padEnd(12)} ${deploymentCount} deployment${deploymentCount === 1 ? "" : "s"}\n` +
+            `${"".padEnd(25)}${agent.id}\n`,
         );
       }
     }
@@ -434,6 +469,7 @@ export async function runCommand(
     );
     const deployment = await client.registerDeployment({
       agentId: built.agentId,
+      name: built.name,
       alias,
       channels: built.channels,
       connections: built.connections,
@@ -469,7 +505,7 @@ export async function runCommand(
 
   if (command === "dev") {
     if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
-    await runOpenCode([], config);
+    await runLocalAgent(["dev"], config);
     return;
   }
 
@@ -496,7 +532,7 @@ export async function runCommand(
     const useRemote = remote || Boolean(agentOption) || action !== "create";
     if (!useRemote) {
       const prompt = args.join(" ").trim();
-      await runOpenCode(prompt ? ["run", prompt] : [], config);
+      await runLocalAgent(prompt ? ["run", prompt] : ["shell"], config);
       return;
     }
     if (action === "list") {
@@ -630,15 +666,23 @@ export async function runCommand(
       return;
     }
     if (action === "disconnect") {
-      const connectionId = args.shift();
-      if (!connectionId || args.length) {
+      const connectionReference = args.shift();
+      if (!connectionReference || args.length) {
         throw new Error(
-          "Usage: opencomputer connections disconnect <connection-id>",
+          "Usage: opencomputer connections disconnect gmail|<connection-id>",
         );
       }
-      const disconnected = await client.disconnectConnection(connectionId);
+      if (["gmail", "google"].includes(connectionReference.toLowerCase())) {
+        const disconnected = await client.disconnectGoogle("gmail");
+        if (globals.json) printJSON(disconnected);
+        else process.stdout.write("Disconnected Gmail.\n");
+        return;
+      }
+      const disconnected = await client.disconnectConnection(
+        connectionReference,
+      );
       if (globals.json) printJSON(disconnected);
-      else process.stdout.write(`Disconnected ${connectionId}.\n`);
+      else process.stdout.write(`Disconnected ${connectionReference}.\n`);
       return;
     }
     if (action !== "list" || args.length) {
@@ -861,7 +905,7 @@ export async function runCommand(
       return;
     }
     if (action === "start") {
-      await runOpenCode([], config);
+      await runLocalAgent(["dev"], config);
       return;
     }
     throw new Error("Unsupported Slack CLI hook.");

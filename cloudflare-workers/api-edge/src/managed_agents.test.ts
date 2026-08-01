@@ -113,6 +113,187 @@ describe("managed agents proxy", () => {
     });
   });
 
+  it("returns agent display names separately from stable IDs", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          agents: [
+            {
+              id: "0195f5fb-2d5d-4aa4-b28e-b0df0af60cd8",
+              name: "Gentle Falcon",
+              activeAlias: "production",
+              activeDeploymentId: "agent:digest",
+              deploymentCount: 2,
+              createdAt: "2026-07-31T00:00:00.000Z",
+              updatedAt: "2026-07-31T01:00:00.000Z",
+              artifact: "private",
+            },
+          ],
+        }),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/agents"),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(await response.json()).toEqual({
+      agents: [
+        {
+          id: "0195f5fb-2d5d-4aa4-b28e-b0df0af60cd8",
+          name: "Gentle Falcon",
+          activeAlias: "production",
+          activeDeploymentId: "agent:digest",
+          deploymentCount: 2,
+          createdAt: "2026-07-31T00:00:00.000Z",
+          updatedAt: "2026-07-31T01:00:00.000Z",
+        },
+      ],
+    });
+  });
+
+  it("exposes a sanitized active deployment for agent details", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          id: "agent:digest",
+          agentId: "agent",
+          alias: "production",
+          channels: ["slack"],
+          connections: ["gmail"],
+          createdAt: "2026-07-31T00:00:00.000Z",
+          artifact: { bucket: "private", key: "source.tar.gz" },
+          imageArn: "arn:aws:private",
+          imageVersion: "7",
+        }),
+      ),
+    );
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/deployments/agent%3Adigest",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(await response.json()).toEqual({
+      id: "agent:digest",
+      agentId: "agent",
+      alias: "production",
+      channels: ["slack"],
+      connections: ["gmail"],
+      createdAt: "2026-07-31T00:00:00.000Z",
+    });
+  });
+
+  it("lists connections and channels without provider credentials or account IDs", async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          connections: [
+            {
+              id: "connection_google",
+              kind: "tool",
+              provider: "google",
+              label: "gmail",
+              agentId: "email-triage",
+              alias: "production",
+              externalAccountId: "ca_private",
+              displayName: "Personal Gmail",
+              scopes: ["gmail.readonly"],
+              status: "connected",
+              createdAt: "2026-07-31T00:00:00.000Z",
+              updatedAt: "2026-07-31T01:00:00.000Z",
+              credential: "secret",
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          connections: [
+            {
+              id: "channel_slack",
+              agentId: "support-agent",
+              alias: "production",
+              appId: "app_private",
+              teamId: "team_private",
+              teamName: "OpenComputer",
+              botUserId: "bot_private",
+              status: "connected",
+              createdAt: "2026-07-31T00:00:00.000Z",
+              updatedAt: "2026-07-31T01:00:00.000Z",
+              botToken: "secret",
+            },
+          ],
+        }),
+      );
+    vi.stubGlobal("fetch", fetchSpy);
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test" };
+
+    const connections = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/connections"),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    const channels = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/channels"),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+
+    expect(await connections.json()).toEqual({
+      connections: [
+        {
+          id: "connection_google",
+          kind: "tool",
+          provider: "google",
+          label: "gmail",
+          agentId: "email-triage",
+          alias: "production",
+          displayName: "Personal Gmail",
+          status: "connected",
+          createdAt: "2026-07-31T00:00:00.000Z",
+          updatedAt: "2026-07-31T01:00:00.000Z",
+        },
+      ],
+    });
+    expect(await channels.json()).toEqual({
+      channels: [
+        {
+          id: "channel_slack",
+          channel: "slack",
+          agentId: "support-agent",
+          alias: "production",
+          teamName: "OpenComputer",
+          status: "connected",
+          createdAt: "2026-07-31T00:00:00.000Z",
+          updatedAt: "2026-07-31T01:00:00.000Z",
+        },
+      ],
+    });
+  });
+
   it("does not expose arbitrary private backend routes", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
@@ -180,6 +361,7 @@ describe("managed agents proxy", () => {
           method: "POST",
           body: JSON.stringify({
             agentId: "gmail-summarizer",
+            name: "Gentle Falcon",
             alias: "production",
             channels: [],
             connections: ["google"],
@@ -210,6 +392,12 @@ describe("managed agents proxy", () => {
     expect(headers.get("x-api-key")).toBeNull();
     expect(headers.get("x-opencomputer-agent-token")).toBeTruthy();
     expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(
+      JSON.parse(String((fetchSpy.mock.calls[2]?.[1] as RequestInit).body)),
+    ).toMatchObject({
+      agentId: "gmail-summarizer",
+      name: "Gentle Falcon",
+    });
     expect(JSON.stringify(await response.json())).not.toMatch(
       /bucket|imageArn|arn:aws|uploads\.test/i,
     );

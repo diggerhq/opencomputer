@@ -18,8 +18,9 @@ export interface ManagedAgentTemplate {
 
 export interface ManagedAgentSummary {
   id: string;
-  activeAlias: string;
-  deploymentCount: number;
+  name?: string;
+  activeAlias?: string;
+  deploymentCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -202,6 +203,7 @@ export class OpenComputerClient {
 
   registerDeployment(input: {
     agentId: string;
+    name: string;
     alias: string;
     channels: string[];
     connections: string[];
@@ -256,6 +258,18 @@ export class OpenComputerClient {
       expiresAt?: string;
     }>(
       `/api/managed-agents/connections/google/status?service=${encodeURIComponent(service)}`,
+    );
+  }
+
+  disconnectGoogle(service: string) {
+    return this.request<{
+      service: string;
+      toolkit: string;
+      status: "disconnected";
+      connectedAccountId?: string;
+    }>(
+      `/api/managed-agents/connections/google?service=${encodeURIComponent(service)}`,
+      { method: "DELETE" },
     );
   }
 

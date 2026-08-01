@@ -1244,7 +1244,9 @@ const managedAgentTemplates = [
 
 let managedAgentItems: Array<{
   id: string
+  name: string
   activeAlias: string
+  activeDeploymentId: string
   deploymentCount: number
   createdAt: string
   updatedAt: string
@@ -1262,6 +1264,69 @@ const ROUTES: Array<[RegExp, Handler]> = [
     () => ({ templates: managedAgentTemplates }),
   ],
   [/^\/managed-agents\/agents$/, () => ({ agents: managedAgentItems })],
+  [
+    /^\/managed-agents\/connections$/,
+    () => ({
+      connections: [
+        {
+          id: 'connection_google_preview',
+          kind: 'tool',
+          provider: 'google',
+          label: 'gmail',
+          agentId: 'email-triage',
+          alias: 'production',
+          displayName: 'Gmail',
+          status: 'connected',
+          createdAt: new Date(BASE).toISOString(),
+          updatedAt: new Date(BASE).toISOString(),
+        },
+      ],
+    }),
+  ],
+  [
+    /^\/managed-agents\/channels$/,
+    () => ({
+      channels: [
+        {
+          id: 'channel_slack_preview',
+          channel: 'slack',
+          agentId: 'research-assistant',
+          alias: 'production',
+          teamName: 'OpenComputer',
+          status: 'connected',
+          createdAt: new Date(BASE).toISOString(),
+          updatedAt: new Date(BASE).toISOString(),
+        },
+      ],
+    }),
+  ],
+  [
+    /^\/managed-agents\/deployments\/[^/]+$/,
+    () => ({
+      id: 'research-assistant:preview',
+      agentId: 'research-assistant',
+      alias: 'production',
+      channels: [],
+      connections: [],
+      createdAt: new Date(BASE).toISOString(),
+    }),
+  ],
+  [
+    /^\/managed-agents\/sessions$/,
+    () => ({
+      sessions: [
+        {
+          id: 'session_preview',
+          agentId: 'research-assistant',
+          deploymentId: 'research-assistant:preview',
+          status: 'suspended',
+          createdAt: new Date(BASE).toISOString(),
+          updatedAt: new Date(BASE).toISOString(),
+          turns: [],
+        },
+      ],
+    }),
+  ],
   [
     /^\/managed-agents\/sessions\/[^/]+\/events(?:\?.*)?$/,
     () => ({
@@ -1382,7 +1447,9 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
       managedAgentItems = [
         {
           id: template.id,
+          name: template.name,
           activeAlias: 'production',
+          activeDeploymentId: `${template.id}:preview`,
           deploymentCount: 1,
           createdAt: timestamp,
           updatedAt: timestamp,

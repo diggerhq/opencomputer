@@ -27,6 +27,11 @@ const SandboxDetail = lazy(() => import('./pages/SandboxDetail'))
 const SandboxWebhooks = lazy(() => import('./pages/SandboxWebhooks'))
 const DeferredAction = lazy(() => import('./pages/DeferredAction'))
 const ManagedAgentsHome = lazy(() => import('./managed-agents/Home'))
+const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
+const ManagedAgentConnections = lazy(
+  () => import('./managed-agents/Connections'),
+)
+const ManagedAgentChannels = lazy(() => import('./managed-agents/Channels'))
 
 export default function App() {
   return (
@@ -56,6 +61,22 @@ export default function App() {
                   <Dashboard />
                 )
               }
+            />
+            <Route
+              path="managed-agents/connections"
+              element={<ManagedAgentConnections />}
+            />
+            <Route
+              path="managed-agents/channels"
+              element={<ManagedAgentChannels />}
+            />
+            <Route
+              path="managed-agents/new"
+              element={<ManagedAgentsHome startersOnly />}
+            />
+            <Route
+              path="managed-agents/:agentId"
+              element={<ManagedAgentDetail />}
             />
             {/* Agent plane */}
             <Route path="agents" element={<Agents />} />

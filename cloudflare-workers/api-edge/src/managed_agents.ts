@@ -147,6 +147,36 @@ function publicDeployment(value: unknown): Record<string, unknown> {
   };
 }
 
+function publicConnection(value: unknown): Record<string, unknown> {
+  const connection = record(value) ?? {};
+  return {
+    id: connection.id,
+    kind: connection.kind,
+    provider: connection.provider,
+    label: connection.label,
+    agentId: connection.agentId,
+    alias: connection.alias,
+    displayName: connection.displayName,
+    status: connection.status,
+    createdAt: connection.createdAt,
+    updatedAt: connection.updatedAt,
+  };
+}
+
+function publicChannel(value: unknown): Record<string, unknown> {
+  const channel = record(value) ?? {};
+  return {
+    id: channel.id,
+    channel: "slack",
+    agentId: channel.agentId,
+    alias: channel.alias,
+    teamName: channel.teamName,
+    status: channel.status,
+    createdAt: channel.createdAt,
+    updatedAt: channel.updatedAt,
+  };
+}
+
 function stripPrivateValues(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripPrivateValues);
   const source = record(value);
@@ -209,7 +239,12 @@ function publicSuccessBody(
             const agent = record(value) ?? {};
             return {
               id: agent.id,
+              name:
+                typeof agent.name === "string" && agent.name
+                  ? agent.name
+                  : agent.id,
               activeAlias: agent.activeAlias,
+              activeDeploymentId: agent.activeDeploymentId,
               deploymentCount: agent.deploymentCount,
               createdAt: agent.createdAt,
               updatedAt: agent.updatedAt,
@@ -223,6 +258,23 @@ function publicSuccessBody(
   }
   if (method === "POST" && suffix === "/deployments") {
     return publicDeployment(body);
+  }
+  if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) {
+    return publicDeployment(body);
+  }
+  if (method === "GET" && suffix === "/connections") {
+    return {
+      connections: Array.isArray(body.connections)
+        ? body.connections.map(publicConnection)
+        : [],
+    };
+  }
+  if (method === "GET" && suffix === "/channels") {
+    return {
+      channels: Array.isArray(body.connections)
+        ? body.connections.map(publicChannel)
+        : [],
+    };
   }
   if (
     (method === "GET" && suffix.startsWith("/connections")) ||
@@ -401,6 +453,10 @@ async function deploySourceAgent(
     headers: uploadHeaders,
     body: JSON.stringify({
       agentId: body.agentId,
+      name:
+        typeof body.name === "string" && body.name.trim()
+          ? body.name.trim()
+          : body.agentId,
       alias: body.alias,
       channels: strings(body.channels),
       connections: strings(body.connections),
@@ -420,6 +476,7 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   }
   if (method === "GET" && suffix === "/me") return true;
   if (method === "POST" && suffix === "/deployments") return true;
+  if (method === "GET" && /^\/deployments\/[^/]+$/.test(suffix)) return true;
   if (
     (method === "GET" &&
       (/^\/connections(?:\/.*)?$/.test(suffix) ||

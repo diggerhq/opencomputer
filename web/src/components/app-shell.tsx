@@ -22,6 +22,8 @@ import {
   Loader2,
   CircleAlert,
   ChevronRight,
+  Plug,
+  Radio,
   type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
@@ -115,7 +117,38 @@ const LEGACY_NAV: NavGroup[] = [
 
 const MANAGED_AGENTS_NAV: NavGroup[] = [
   {
-    items: [{ to: '/', label: 'Agents', icon: Bot, end: true }],
+    items: [
+      { to: '/', label: 'Agents', icon: Bot, end: true },
+      {
+        to: '/managed-agents/connections',
+        label: 'Connections',
+        icon: Plug,
+      },
+      {
+        to: '/managed-agents/channels',
+        label: 'Channels',
+        icon: Radio,
+      },
+    ],
+  },
+  {
+    label: 'Durable sessions',
+    collapsible: true,
+    items: [
+      { to: '/agents', label: 'Agents', icon: Bot, preview: true },
+      {
+        to: '/sessions',
+        label: 'Sessions',
+        icon: MessagesSquare,
+        preview: true,
+      },
+      {
+        to: '/credentials',
+        label: 'Credentials',
+        icon: KeySquare,
+        preview: true,
+      },
+    ],
   },
   {
     label: 'Infrastructure',
@@ -205,8 +238,22 @@ function OrgSwitcher() {
 
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth()
-  const [infrastructureOpen, setInfrastructureOpen] = useState(false)
+  const location = useLocation()
   const nav = managedAgentsExperimentEnabled ? MANAGED_AGENTS_NAV : LEGACY_NAV
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(
+      nav
+        .filter((group) => group.collapsible && group.label)
+        .map((group) => [
+          group.label!,
+          group.items.some(
+            (item) =>
+              location.pathname === item.to ||
+              location.pathname.startsWith(`${item.to}/`),
+          ),
+        ]),
+    ),
+  )
   return (
     <div className="flex h-full min-h-0 flex-col">
       {(user?.orgs?.length ?? 0) > 1 ? (
@@ -221,14 +268,19 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             {group.label && group.collapsible ? (
               <button
                 type="button"
-                onClick={() => setInfrastructureOpen((open) => !open)}
+                onClick={() =>
+                  setOpenGroups((current) => ({
+                    ...current,
+                    [group.label!]: !current[group.label!],
+                  }))
+                }
                 className="text-muted-foreground/70 hover:text-foreground flex w-full items-center gap-1 px-3 pb-1 text-left text-[10px] font-medium tracking-wider uppercase transition-colors"
-                aria-expanded={infrastructureOpen}
+                aria-expanded={openGroups[group.label] ?? false}
               >
                 <ChevronRight
                   className={cn(
                     'size-3 transition-transform',
-                    infrastructureOpen && 'rotate-90',
+                    openGroups[group.label] && 'rotate-90',
                   )}
                 />
                 {group.label}
@@ -238,7 +290,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                 {group.label}
               </div>
             ) : null}
-            {(!group.collapsible || infrastructureOpen) &&
+            {(!group.collapsible || openGroups[group.label ?? '']) &&
               group.items.map((item) => (
                 <NavLink
                   key={item.to}

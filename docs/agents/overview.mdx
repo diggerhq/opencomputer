@@ -76,14 +76,14 @@ The important files are:
 
 ```toml
 schema = 1
-id = "gmail-summarizer"
-name = "Email triage"
+id = "0195f5fb-2d5d-4aa4-b28e-b0df0af60cd8"
+name = "Gentle Falcon"
 template = "email-triage"
 ```
 
-Commit this file to Git. The first deployment creates `gmail-summarizer`.
-Later deployments with the same ID create new versions of that agent rather
-than separate agents.
+Commit this file to Git. The readable name appears in the dashboard, while the
+UUID identifies the agent in deployments and APIs. Later deployments with the
+same UUID create new versions of that agent rather than separate agents.
 
 An alias gives callers a stable name for a version:
 

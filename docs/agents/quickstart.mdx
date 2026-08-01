@@ -45,8 +45,8 @@ cd gmail-summarizer
 npm install
 ```
 
-The directory name becomes the default agent ID. Confirm it before the first
-deployment:
+Initialization generates an immutable UUID and a readable two-word name.
+Confirm both before the first deployment:
 
 ```bash
 cat opencomputer.toml
@@ -56,10 +56,14 @@ You should see:
 
 ```toml
 schema = 1
-id = "gmail-summarizer"
-name = "Email triage"
+id = "0195f5fb-2d5d-4aa4-b28e-b0df0af60cd8"
+name = "Gentle Falcon"
 template = "email-triage"
 ```
+
+The generated name is what people see in the dashboard. The UUID is the
+unique identifier used by deployments, sessions, channels, and APIs. Generated
+names vary and can be edited without changing the agent's identity.
 
 <Warning>
 Keep the `id` stable after the first deployment. Changing it creates a

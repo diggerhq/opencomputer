@@ -26,7 +26,7 @@ flowchart LR
 The project is the portable definition of the agent. Its committed files
 describe:
 
-- stable identity in `opencomputer.toml`
+- stable UUID and readable display name in `opencomputer.toml`
 - behavior and approval rules in `instructions.md`
 - runtime and model configuration
 - tools and skills
@@ -53,11 +53,12 @@ details are not part of the CLI contract.
 
 ### Agent identity and deployments
 
-The `id` in `opencomputer.toml` identifies the agent across its lifetime. Each
-distinct source artifact becomes an immutable deployment.
+The UUID in `opencomputer.toml` identifies the agent across its lifetime. Its
+two-word name is display metadata and can change without creating a different
+agent. Each distinct source artifact becomes an immutable deployment.
 
 ```text
-gmail-summarizer
+0195f5fb-2d5d-4aa4-b28e-b0df0af60cd8 (Gentle Falcon)
 ├── deployment A
 ├── deployment B
 └── production ──> deployment B

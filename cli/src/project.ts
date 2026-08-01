@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import {
   access,
   cp,
@@ -8,7 +8,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 
 import type { ManagedAgentTemplate } from "./api.js";
 
@@ -21,6 +21,7 @@ export interface AgentManifest {
 
 export interface BuiltAgentArtifact {
   agentId: string;
+  name: string;
   channels: string[];
   connections: string[];
   body: Buffer;
@@ -29,6 +30,41 @@ export interface BuiltAgentArtifact {
 }
 
 const AGENT_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+const AGENT_NAME_ADJECTIVES = [
+  "Amber",
+  "Brave",
+  "Calm",
+  "Clever",
+  "Cosmic",
+  "Eager",
+  "Gentle",
+  "Golden",
+  "Lucid",
+  "Nimble",
+  "Quiet",
+  "Radiant",
+  "Steady",
+  "Swift",
+  "Vivid",
+  "Wise",
+] as const;
+
+const AGENT_NAME_NOUNS = [
+  "Beacon",
+  "Comet",
+  "Falcon",
+  "Forest",
+  "Harbor",
+  "Lantern",
+  "Meadow",
+  "Orchid",
+  "Otter",
+  "Panda",
+  "River",
+  "Summit",
+  "Willow",
+] as const;
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -97,6 +133,10 @@ export function agentIdFromName(value: string): string {
     throw new Error("Agent names must contain letters or numbers");
   }
   return id;
+}
+
+export function generateAgentName(): string {
+  return `${AGENT_NAME_ADJECTIVES[randomInt(AGENT_NAME_ADJECTIVES.length)]} ${AGENT_NAME_NOUNS[randomInt(AGENT_NAME_NOUNS.length)]}`;
 }
 
 function templateInstructions(template: ManagedAgentTemplate): string {
@@ -512,8 +552,8 @@ export async function initializeAgentProject(
   }
   const manifest: AgentManifest = {
     schema: 1,
-    id: agentIdFromName(basename(root)),
-    name: template.name,
+    id: randomUUID(),
+    name: generateAgentName(),
     template: template.id,
   };
   await writeManifest(root, manifest);
@@ -754,6 +794,7 @@ export async function buildAgentArtifact(
   );
   return {
     agentId: manifest.id,
+    name: manifest.name,
     channels,
     connections,
     body,

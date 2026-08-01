@@ -1,15 +1,17 @@
 import { useMemo, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import {
   Bot,
   BriefcaseBusiness,
   Check,
+  ChevronRight,
   Clipboard,
   ClipboardCheck,
   Lightbulb,
   Loader2,
   MessageSquareText,
-  Send,
+  Plus,
   Sparkles,
   TrendingUp,
   Workflow,
@@ -28,9 +30,9 @@ import { Button } from '@/components/ui/button'
 import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
+  displayManagedAgentName,
   getManagedAgents,
   getManagedAgentTemplates,
-  invokeManagedAgent,
   type ManagedAgentTemplate,
 } from './api'
 
@@ -44,6 +46,33 @@ const categories = [
 
 type Category = (typeof categories)[number]
 
+const starterCopy = [
+  {
+    title: 'Choose a job for your next agent.',
+    description:
+      'Pick a starting point, copy its build prompt, and turn it into an agent you can develop and deploy from source.',
+    sectionTitle: 'Ideas to start with',
+    sectionDescription:
+      'Each prompt creates an editable agent repository you can make your own.',
+  },
+  {
+    title: 'What should your agent take care of?',
+    description:
+      'Start with a useful workflow, shape the source locally, and deploy it when it is ready.',
+    sectionTitle: 'Pick a starting point',
+    sectionDescription:
+      'Copy an agent prompt, then adapt the generated source to your workflow.',
+  },
+  {
+    title: 'Start with a real task.',
+    description:
+      'Choose a workflow below and use the generated source as the beginning of your next agent.',
+    sectionTitle: 'Agent ideas',
+    sectionDescription:
+      'Explore a use case, copy its prompt, and keep building from the generated repository.',
+  },
+] as const
+
 const categoryIcons = {
   Comms: MessageSquareText,
   Operations: Workflow,
@@ -51,6 +80,15 @@ const categoryIcons = {
   Growth: TrendingUp,
   Insights: Lightbulb,
 } satisfies Record<Category, typeof Sparkles>
+
+function shuffled<T>(values: readonly T[]) {
+  const result = [...values]
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const other = Math.floor(Math.random() * (index + 1))
+    ;[result[index], result[other]] = [result[other], result[index]]
+  }
+  return result
+}
 
 function cliCommand(origin: string, command: string) {
   const apiOption =
@@ -153,45 +191,47 @@ function TemplateCard({
           onClick={onCopy}
         >
           {copied ? <Check /> : <Clipboard />}
-          {copied ? 'Setup prompt copied' : 'Copy setup prompt'}
+          {copied ? 'Agent prompt copied' : 'Copy agent prompt'}
         </Button>
       </PanelContent>
     </Panel>
   )
 }
 
-export default function ManagedAgentsHome() {
+export default function ManagedAgentsHome({
+  startersOnly = false,
+}: {
+  startersOnly?: boolean
+}) {
   const [selectedCategory, setSelectedCategory] = useState<Category>('Comms')
   const [copiedTemplateId, setCopiedTemplateId] = useState<string>()
-  const [selectedAgentId, setSelectedAgentId] = useState<string>()
-  const [prompt, setPrompt] = useState('')
-  const [lastResponse, setLastResponse] = useState('')
-  const templates = useQuery({
-    queryKey: ['managed-agent-templates'],
-    queryFn: getManagedAgentTemplates,
-  })
+  const [categoryOrder] = useState(() => shuffled(categories))
+  const [copy] = useState(
+    () => starterCopy[Math.floor(Math.random() * starterCopy.length)],
+  )
   const agents = useQuery({
     queryKey: ['managed-agents'],
     queryFn: getManagedAgents,
   })
-  const invoke = useMutation({
-    mutationFn: ({ agentId, input }: { agentId: string; input: string }) =>
-      invokeManagedAgent(agentId, input),
-    onSuccess: (result) => setLastResponse(result.output),
-    onError: (error) => notifyError("Couldn't run this agent.", error),
-  })
-
-  const loading = templates.isLoading || agents.isLoading
-  const failed = templates.isError || agents.isError
   const deployedAgents = agents.data ?? []
-  const firstRun = !loading && deployedAgents.length === 0
-  const activeAgentId = selectedAgentId ?? deployedAgents[0]?.id
+  const firstRun =
+    !agents.isLoading && !agents.isError && deployedAgents.length === 0
+  const showStarters = startersOnly || firstRun
+  const templates = useQuery({
+    queryKey: ['managed-agent-templates'],
+    queryFn: getManagedAgentTemplates,
+    enabled: showStarters,
+  })
+  const randomizedTemplates = useMemo(
+    () => shuffled(templates.data ?? []),
+    [templates.data],
+  )
   const visibleTemplates = useMemo(
     () =>
-      (templates.data ?? []).filter(
+      randomizedTemplates.filter(
         (template) => template.category === selectedCategory,
       ),
-    [selectedCategory, templates.data],
+    [randomizedTemplates, selectedCategory],
   )
 
   async function copySetupPrompt(template: ManagedAgentTemplate) {
@@ -200,232 +240,192 @@ export default function ManagedAgentsHome() {
         buildSetupPrompt(template, window.location.origin),
       )
       setCopiedTemplateId(template.id)
-      toast.success(`${template.name} setup prompt copied`)
+      toast.success(`${template.name} agent prompt copied`)
     } catch (error) {
-      notifyError("Couldn't copy the setup prompt.", error)
+      notifyError("Couldn't copy the agent prompt.", error)
     }
   }
 
   return (
     <div className="space-y-8">
       <PageHeader
-        title="Agents"
-        description="Start from source, develop locally with OpenCode, then deploy versioned agents with the OpenComputer CLI."
+        title={startersOnly ? 'Deploy another agent' : 'Agents'}
+        description={
+          startersOnly
+            ? 'Choose a starting point for your next agent repository.'
+            : 'Develop locally, then deploy versioned agents with the OpenComputer CLI.'
+        }
+        actions={
+          !startersOnly && deployedAgents.length > 0 ? (
+            <Button asChild>
+              <Link to="/managed-agents/new">
+                <Plus />
+                Deploy another agent
+              </Link>
+            </Button>
+          ) : undefined
+        }
       />
 
-      {firstRun ? (
+      {showStarters ? (
         <div className="relative overflow-hidden rounded-xl border bg-[radial-gradient(circle_at_top_right,color-mix(in_oklch,var(--primary)_12%,transparent),transparent_45%)] px-6 py-8 sm:px-8">
           <div className="max-w-2xl">
             <div className="bg-primary/10 text-primary mb-4 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium">
               <Sparkles className="size-3.5" />
-              Your first agent
+              {firstRun ? 'Your first agent' : 'Your next agent'}
             </div>
             <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-              Pick a job. Create the agent repository.
+              {copy.title}
             </h2>
             <p className="text-muted-foreground mt-3 max-w-xl text-sm leading-6">
-              Copy a ready-to-run setup prompt into Codex, Claude Code, or
-              OpenCode. It will create editable source, install its OpenCode
-              packages, test it locally, and deploy it through the OpenComputer
-              CLI.
+              {copy.description}
             </p>
-            <code className="bg-muted text-muted-foreground mt-5 inline-block rounded-md border px-3 py-2 font-mono text-xs">
-              opencomputer init email-triage
-            </code>
           </div>
         </div>
       ) : null}
 
-      {deployedAgents.length > 0 ? (
+      {!startersOnly && agents.isLoading ? (
+        <div className="flex min-h-48 items-center justify-center">
+          <Loader2 className="text-muted-foreground size-5 animate-spin" />
+        </div>
+      ) : !startersOnly && agents.isError ? (
+        <Panel>
+          <EmptyState
+            icon={Bot}
+            title="Your agents are temporarily unavailable"
+            description="Try loading the agents page again."
+            action={
+              <Button variant="outline" onClick={() => void agents.refetch()}>
+                Try again
+              </Button>
+            }
+          />
+        </Panel>
+      ) : !startersOnly && deployedAgents.length > 0 ? (
         <section className="space-y-3">
           <div>
             <h2 className="text-base font-semibold">Your agents</h2>
             <p className="text-muted-foreground text-sm">
-              Managed deployments available to your organization.
+              Select an agent to view its deployment and sessions.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {deployedAgents.map((agent) => (
-              <Panel
+              <Link
                 key={agent.id}
-                className={cn(
-                  activeAgentId === agent.id && 'border-primary/40',
-                )}
+                to={`/managed-agents/${encodeURIComponent(agent.id)}`}
+                className="group focus-visible:ring-ring/50 rounded-lg outline-none focus-visible:ring-3"
               >
-                <PanelContent className="flex items-center gap-3">
-                  <div className="bg-status-running-bg text-status-running flex size-9 shrink-0 items-center justify-center rounded-full">
-                    <Bot className="size-4" aria-hidden />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-mono text-sm font-medium">
-                      {agent.id}
-                    </p>
-                    <p className="text-muted-foreground mt-0.5 text-xs">
-                      {agent.activeAlias} · {agent.deploymentCount}{' '}
-                      {agent.deploymentCount === 1
-                        ? 'deployment'
-                        : 'deployments'}
-                    </p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant={
-                      activeAgentId === agent.id ? 'secondary' : 'outline'
-                    }
-                    onClick={() => {
-                      setSelectedAgentId(agent.id)
-                      setLastResponse('')
-                    }}
-                  >
-                    Test
-                  </Button>
-                </PanelContent>
-              </Panel>
+                <Panel className="group-hover:border-foreground/20 group-hover:bg-muted/25 h-full transition-colors">
+                  <PanelContent className="flex items-center gap-3">
+                    <div className="bg-status-running-bg text-status-running flex size-9 shrink-0 items-center justify-center rounded-full">
+                      <Bot className="size-4" aria-hidden />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">
+                        {displayManagedAgentName(agent)}
+                      </p>
+                      <p className="text-muted-foreground mt-0.5 text-xs">
+                        {agent.activeAlias} · {agent.deploymentCount}{' '}
+                        {agent.deploymentCount === 1
+                          ? 'deployment'
+                          : 'deployments'}
+                      </p>
+                    </div>
+                    <ChevronRight className="text-muted-foreground size-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+                  </PanelContent>
+                </Panel>
+              </Link>
             ))}
           </div>
-          {activeAgentId ? (
-            <Panel className="mt-4">
-              <PanelHeader>
-                <div>
-                  <PanelTitle>Test {activeAgentId}</PanelTitle>
-                  <PanelDescription className="mt-1">
-                    Start a managed run without leaving the agent experience.
-                  </PanelDescription>
-                </div>
-              </PanelHeader>
-              <PanelContent className="space-y-3">
-                <label
-                  htmlFor="managed-agent-prompt"
-                  className="text-sm font-medium"
-                >
-                  Message
-                </label>
-                <textarea
-                  id="managed-agent-prompt"
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  placeholder="Ask your agent to do something…"
-                  rows={3}
-                  className="border-input bg-background placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full resize-y rounded-md border px-3 py-2 text-sm outline-none focus-visible:ring-3"
-                />
-                <div className="flex justify-end">
-                  <Button
-                    disabled={!prompt.trim() || invoke.isPending}
-                    onClick={() => {
-                      setLastResponse('')
-                      invoke.mutate({
-                        agentId: activeAgentId,
-                        input: prompt.trim(),
-                      })
-                    }}
-                  >
-                    {invoke.isPending ? (
-                      <Loader2 className="animate-spin" />
-                    ) : (
-                      <Send />
-                    )}
-                    {invoke.isPending ? 'Agent is working…' : 'Run agent'}
-                  </Button>
-                </div>
-                {lastResponse ? (
-                  <div className="bg-muted/60 rounded-md border px-4 py-3">
-                    <p className="text-muted-foreground mb-2 text-[10px] font-medium tracking-wider uppercase">
-                      Response
-                    </p>
-                    <p className="text-sm leading-6 whitespace-pre-wrap">
-                      {lastResponse}
-                    </p>
-                  </div>
-                ) : null}
-              </PanelContent>
-            </Panel>
-          ) : null}
         </section>
       ) : null}
 
-      <section className="space-y-4">
-        <div>
-          <h2 className="text-base font-semibold">Agent starters</h2>
-          <p className="text-muted-foreground text-sm">
-            Copy a ready-to-run setup prompt for your coding agent.
-          </p>
-        </div>
-
-        {loading ? (
-          <div className="flex min-h-64 items-center justify-center">
-            <Loader2 className="text-muted-foreground size-5 animate-spin" />
+      {showStarters ? (
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-base font-semibold">{copy.sectionTitle}</h2>
+            <p className="text-muted-foreground text-sm">
+              {copy.sectionDescription}
+            </p>
           </div>
-        ) : failed ? (
-          <Panel>
-            <EmptyState
-              icon={Bot}
-              title="Agent templates are temporarily unavailable"
-              description="Check the managed-agent service configuration and try again."
-              action={
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    void templates.refetch()
-                    void agents.refetch()
-                  }}
-                >
-                  Try again
-                </Button>
-              }
-            />
-          </Panel>
-        ) : (
-          <>
-            <div
-              className="bg-muted/30 flex gap-1 overflow-x-auto rounded-lg border p-1"
-              role="tablist"
-              aria-label="Agent categories"
-            >
-              {categories.map((category) => {
-                const Icon = categoryIcons[category]
-                const count = (templates.data ?? []).filter(
-                  (template) => template.category === category,
-                ).length
-                return (
-                  <button
-                    key={category}
-                    type="button"
-                    role="tab"
-                    aria-selected={selectedCategory === category}
-                    onClick={() => setSelectedCategory(category)}
-                    className={cn(
-                      'flex min-w-max flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                      selectedCategory === category
-                        ? 'bg-background text-foreground shadow-sm'
-                        : 'text-muted-foreground hover:text-foreground',
-                    )}
+
+          {templates.isLoading ? (
+            <div className="flex min-h-64 items-center justify-center">
+              <Loader2 className="text-muted-foreground size-5 animate-spin" />
+            </div>
+          ) : templates.isError ? (
+            <Panel>
+              <EmptyState
+                icon={Bot}
+                title="Agent templates are temporarily unavailable"
+                description="Check the managed-agent service configuration and try again."
+                action={
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      void templates.refetch()
+                      void agents.refetch()
+                    }}
                   >
-                    <Icon className="size-3.5" aria-hidden />
-                    {category}
-                    <span className="text-[10px] opacity-60">{count}</span>
-                  </button>
-                )
-              })}
-            </div>
-            <div
-              className="grid gap-4 md:grid-cols-2 xl:grid-cols-3"
-              role="tabpanel"
-            >
-              {visibleTemplates.map((template) => (
-                <TemplateCard
-                  key={template.id}
-                  template={template}
-                  deployed={deployedAgents.some(
-                    (agent) => agent.id === template.id,
-                  )}
-                  copied={copiedTemplateId === template.id}
-                  onCopy={() => void copySetupPrompt(template)}
-                />
-              ))}
-            </div>
-          </>
-        )}
-      </section>
+                    Try again
+                  </Button>
+                }
+              />
+            </Panel>
+          ) : (
+            <>
+              <div
+                className="bg-muted/30 flex gap-1 overflow-x-auto rounded-lg border p-1"
+                role="tablist"
+                aria-label="Agent categories"
+              >
+                {categoryOrder.map((category) => {
+                  const Icon = categoryIcons[category]
+                  const count = (templates.data ?? []).filter(
+                    (template) => template.category === category,
+                  ).length
+                  return (
+                    <button
+                      key={category}
+                      type="button"
+                      role="tab"
+                      aria-selected={selectedCategory === category}
+                      onClick={() => setSelectedCategory(category)}
+                      className={cn(
+                        'flex min-w-max flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                        selectedCategory === category
+                          ? 'bg-background text-foreground shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground',
+                      )}
+                    >
+                      <Icon className="size-3.5" aria-hidden />
+                      {category}
+                      <span className="text-[10px] opacity-60">{count}</span>
+                    </button>
+                  )
+                })}
+              </div>
+              <div
+                className="grid gap-4 md:grid-cols-2 xl:grid-cols-3"
+                role="tabpanel"
+              >
+                {visibleTemplates.map((template) => (
+                  <TemplateCard
+                    key={template.id}
+                    template={template}
+                    deployed={deployedAgents.some(
+                      (agent) => agent.id === template.id,
+                    )}
+                    copied={copiedTemplateId === template.id}
+                    onCopy={() => void copySetupPrompt(template)}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </section>
+      ) : null}
     </div>
   )
 }

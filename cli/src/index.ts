@@ -1,8 +1,15 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { runCommand, type GlobalOptions } from "./commands.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.6";
+
+const BANNER = String.raw`   ____                   ______                            __
+  / __ \____  ___  ____  / ____/___  ____ ___  ____  __  / /____  _____
+ / / / / __ \/ _ \/ __ \/ /   / __ \/ __  __ \/ __ \/ / / / __ \/ ___/
+/ /_/ / /_/ /  __/ / / / /___/ /_/ / / / / / / /_/ / /_/ / /_/ / /
+\____/ .___/\___/_/ /_/\____/\____/_/ /_/ /_/ .___/\__,_/\____/_/
+    /_/                                      /_/`;
 
 function takeOption(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -23,7 +30,9 @@ function takeFlag(args: string[], name: string): boolean {
 }
 
 function help(): void {
-  process.stdout.write(`OpenComputer — build, test, connect, and deploy agents as code
+  process.stdout.write(`${BANNER}
+
+OpenComputer — build, test, connect, and deploy agents as code
 
 Usage:
   opencomputer login [--no-browser] [--force]
@@ -34,6 +43,7 @@ Usage:
   opencomputer init <template> [directory]
   opencomputer dev
   opencomputer session [prompt]
+  opencomputer session create <prompt> [--local]
   opencomputer session create [prompt] --remote [--agent <agent>@<alias>] [--keep]
   opencomputer session list
   opencomputer session inspect <session-id>
@@ -44,7 +54,7 @@ Usage:
   opencomputer connect google
   opencomputer connections connect gmail
   opencomputer connections list
-  opencomputer connections disconnect <connection-id>
+  opencomputer connections disconnect gmail|<connection-id>
   opencomputer channels add slack
   opencomputer channels connect slack [--local|--remote]
   opencomputer channels list [--local|--remote]

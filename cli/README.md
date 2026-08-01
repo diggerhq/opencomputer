@@ -1,8 +1,11 @@
 # OpenComputer CLI
 
 The OpenComputer CLI treats every agent as a normal source repository. A
-template creates editable instructions, OpenCode tools, connection
+template creates editable instructions, TypeScript tools, connection
 declarations, channel code, a sandbox workspace, and committed agent identity.
+
+[Bun](https://bun.sh/) 1.2 or newer is required. The CLI is still installed
+and published through npm:
 
 ```bash
 npm install --global @opencomputer/cli
@@ -44,8 +47,31 @@ selected alias.
 
 ## Sessions
 
-`opencomputer session` runs the current source locally. Deployed sessions have
-their own lifecycle and can be resumed across CLI invocations:
+`opencomputer dev` starts the local agent service and opens its React browser
+app. The app uses the AI SDK message lifecycle and supports multiple independent
+sessions, multi-turn conversations, and streamed tool activity:
+
+```bash
+opencomputer dev
+```
+
+For a terminal-only workflow, `opencomputer session` automatically starts a
+temporary local service when one is not already running and opens an OpenTUI
+multi-turn interface. The service is stopped when the interface exits:
+
+```bash
+opencomputer session
+```
+
+Pass a prompt for a single turn. This also starts and stops the service
+automatically when needed:
+
+```bash
+opencomputer session "Triage today's inbox."
+```
+
+Deployed sessions have their own lifecycle and can be resumed across CLI
+invocations:
 
 ```bash
 opencomputer session create --remote \

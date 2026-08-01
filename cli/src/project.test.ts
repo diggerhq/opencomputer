@@ -17,7 +17,12 @@ import {
   buildAgentArtifact,
   initializeAgentProject,
   prepareAgent,
+  readManifest,
 } from "./project.js";
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const PRETTY_NAME_PATTERN = /^[A-Z][a-z]+ [A-Z][a-z]+$/;
 
 const emailTemplate: ManagedAgentTemplate = {
   id: "email-triage",
@@ -33,7 +38,7 @@ test("a template creates a flat agent repository with stable identity", async ()
   const original = resolve(parent, "my-inbox-agent");
   const renamed = resolve(parent, "renamed-agent-folder");
   try {
-    await initializeAgentProject(emailTemplate, original);
+    const initialized = await initializeAgentProject(emailTemplate, original);
     assert.equal(
       (await stat(resolve(original, "instructions.md"))).isFile(),
       true,
@@ -59,13 +64,19 @@ test("a template creates a flat agent repository with stable identity", async ()
       ).isFile(),
       true,
     );
+    assert.match(initialized.manifest.id, UUID_PATTERN);
+    assert.match(initialized.manifest.name, PRETTY_NAME_PATTERN);
     assert.match(
       await readFile(resolve(original, "opencomputer.toml"), "utf8"),
-      /id = "my-inbox-agent"/,
+      new RegExp(`id = "${initialized.manifest.id}"`),
     );
 
     await rename(original, renamed);
-    assert.equal((await buildAgentArtifact(renamed)).agentId, "my-inbox-agent");
+    assert.deepEqual(await readManifest(renamed), initialized.manifest);
+    assert.equal(
+      (await buildAgentArtifact(renamed)).agentId,
+      initialized.manifest.id,
+    );
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -115,7 +126,8 @@ test("a template initializes at the root of a fresh Git repository", async () =>
 
     const initialized = await initializeAgentProject(emailTemplate, root);
     assert.equal(initialized.root, root);
-    assert.equal(initialized.manifest.id.startsWith("gmail-summarizer-"), true);
+    assert.match(initialized.manifest.id, UUID_PATTERN);
+    assert.match(initialized.manifest.name, PRETTY_NAME_PATTERN);
     assert.equal(await readFile(resolve(root, "README.md"), "utf8"), "# My agent\n");
     const gitignore = await readFile(resolve(root, ".gitignore"), "utf8");
     assert.match(gitignore, /\.DS_Store/);
