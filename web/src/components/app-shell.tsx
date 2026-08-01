@@ -1,5 +1,11 @@
-import { Suspense, useState } from 'react'
-import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
+import { Suspense, useEffect, useState } from 'react'
+import {
+  Link,
+  NavLink,
+  Outlet,
+  useLocation,
+  useNavigate,
+} from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   LayoutGrid,
@@ -55,7 +61,12 @@ type NavItem = {
   end?: boolean
   preview?: boolean
 }
-type NavGroup = { label?: string; items: NavItem[]; collapsible?: boolean }
+type NavGroup = {
+  label?: string
+  items: NavItem[]
+  collapsible?: boolean
+  landingTo?: string
+}
 
 // Two planes, subtly separated: the durable-agent plane and the raw-compute
 // (sandbox) plane, plus account/org. Groups render with spacing + a small muted
@@ -117,6 +128,9 @@ const LEGACY_NAV: NavGroup[] = [
 
 const MANAGED_AGENTS_NAV: NavGroup[] = [
   {
+    label: 'Serverless agents',
+    collapsible: true,
+    landingTo: '/',
     items: [
       { to: '/', label: 'Agents', icon: Bot, end: true },
       {
@@ -134,6 +148,7 @@ const MANAGED_AGENTS_NAV: NavGroup[] = [
   {
     label: 'Durable sessions',
     collapsible: true,
+    landingTo: '/agents',
     items: [
       { to: '/agents', label: 'Agents', icon: Bot, preview: true },
       {
@@ -153,12 +168,13 @@ const MANAGED_AGENTS_NAV: NavGroup[] = [
   {
     label: 'Infrastructure',
     collapsible: true,
+    landingTo: '/sandboxes',
     items: [
-      { to: '/browsers', label: 'Browsers', icon: Monitor },
       { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
       { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
       { to: '/templates', label: 'Sandbox templates', icon: Package },
       { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
+      { to: '/browsers', label: 'Browsers', icon: Monitor },
     ],
   },
   {
@@ -239,21 +255,28 @@ function OrgSwitcher() {
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth()
   const location = useLocation()
+  const navigate = useNavigate()
   const nav = managedAgentsExperimentEnabled ? MANAGED_AGENTS_NAV : LEGACY_NAV
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(
-      nav
-        .filter((group) => group.collapsible && group.label)
-        .map((group) => [
-          group.label!,
-          group.items.some(
-            (item) =>
-              location.pathname === item.to ||
-              location.pathname.startsWith(`${item.to}/`),
-          ),
-        ]),
-    ),
+  const activeCollapsibleGroup = nav.find(
+    (group) =>
+      group.collapsible &&
+      group.label &&
+      ((managedAgentsExperimentEnabled &&
+        group.label === 'Serverless agents' &&
+        location.pathname.startsWith('/managed-agents/')) ||
+        group.items.some(
+          (item) =>
+            location.pathname === item.to ||
+            (item.to !== '/' && location.pathname.startsWith(`${item.to}/`)),
+        )),
+  )?.label
+  const [openGroup, setOpenGroup] = useState<string | undefined>(
+    activeCollapsibleGroup,
   )
+
+  useEffect(() => {
+    if (activeCollapsibleGroup) setOpenGroup(activeCollapsibleGroup)
+  }, [activeCollapsibleGroup])
   return (
     <div className="flex h-full min-h-0 flex-col">
       {(user?.orgs?.length ?? 0) > 1 ? (
@@ -268,19 +291,17 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             {group.label && group.collapsible ? (
               <button
                 type="button"
-                onClick={() =>
-                  setOpenGroups((current) => ({
-                    ...current,
-                    [group.label!]: !current[group.label!],
-                  }))
-                }
+                onClick={() => {
+                  setOpenGroup(group.label)
+                  if (group.landingTo) void navigate(group.landingTo)
+                }}
                 className="text-muted-foreground/70 hover:text-foreground flex w-full items-center gap-1 px-3 pb-1 text-left text-[10px] font-medium tracking-wider uppercase transition-colors"
-                aria-expanded={openGroups[group.label] ?? false}
+                aria-expanded={openGroup === group.label}
               >
                 <ChevronRight
                   className={cn(
                     'size-3 transition-transform',
-                    openGroups[group.label] && 'rotate-90',
+                    openGroup === group.label && 'rotate-90',
                   )}
                 />
                 {group.label}
@@ -290,7 +311,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                 {group.label}
               </div>
             ) : null}
-            {(!group.collapsible || openGroups[group.label ?? '']) &&
+            {(!group.collapsible || openGroup === group.label) &&
               group.items.map((item) => (
                 <NavLink
                   key={item.to}
