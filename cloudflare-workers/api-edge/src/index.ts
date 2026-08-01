@@ -223,6 +223,14 @@ const orgPolicyCache = new Map<string, { policy: OrgPolicy | null; cachedAtMs: n
 // permissive — no spurious 429s.
 const CONCURRENCY_COUNT_TTL_MS = 1_500;
 const concurrencyCountCache = new Map<string, { count: number; cachedAtMs: number }>();
+// Sandbox → owning-cell route. proxyToCellSDK otherwise pays a blocking D1
+// read per sub-op (exec run-async + each result poll = 2-3 reads per SDK
+// runCommand). The route is immutable for a sandbox's lifetime — cells never
+// hand off sandboxes and org ownership never changes — so no TTL: entries are
+// dropped on DELETE and bounded by CACHE_MAX + isolate recycling. Populated at
+// create, which also closes the same-isolate race where a sub-op lands before
+// the waitUntil-deferred insertSandboxIndex write does. Never caches misses.
+const sandboxRouteCache = new Map<string, { cellID: string; orgID: string }>();
 
 function bumpLastUsed(env: Env, hash: string, entry: AuthEntry, nowMs: number): void {
   if (nowMs - entry.lastBumpMs < LAST_USED_BUMP_MS) return;
@@ -904,6 +912,12 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
     } catch {
       /* leave parsed empty — still record what we can */
     }
+    // Seed the route cache so this isolate's sub-ops (exec/files/delete) skip
+    // the sandboxes_index read — and don't race the deferred insert below.
+    if (parsed.sandboxID) {
+      if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
+      sandboxRouteCache.set(parsed.sandboxID, { cellID: cell.cell_id, orgID: caller.orgID });
+    }
     // Off the response path (see indexSandboxFromSSE) — waitUntil keeps the D1
     // write alive after we return; events-ingest reconciles the row anyway.
     ctx.waitUntil(
@@ -1000,16 +1014,25 @@ async function getSandbox(req: Request, env: Env, id: string): Promise<Response>
 // when the SDK's API key didn't exist in cell PG (api_keys are global in D1
 // now, not mirrored per-cell).
 async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, caller: Caller, id: string): Promise<Response> {
-  const row = await env.OPENCOMPUTER_DB.prepare("SELECT cell_id, org_id FROM sandboxes_index WHERE id = ?1")
-    .bind(id)
-    .first<{ cell_id: string; org_id: string }>();
+  // Route cache first — the sandbox→cell mapping is immutable, and the D1 read
+  // it replaces is a blocking per-sub-op cost (2-3× per SDK runCommand).
+  let route = sandboxRouteCache.get(id);
+  if (!route) {
+    const row = await env.OPENCOMPUTER_DB.prepare("SELECT cell_id, org_id FROM sandboxes_index WHERE id = ?1")
+      .bind(id)
+      .first<{ cell_id: string; org_id: string }>();
+    if (!row) return json({ error: "sandbox not found" }, 404);
+    route = { cellID: row.cell_id, orgID: row.org_id };
+    if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
+    sandboxRouteCache.set(id, route);
+  }
   // Authorization: the sandbox must belong to the caller's org. Without this,
   // any authenticated org could exec/files/pty/delete/hibernate/wake another
   // org's sandbox by id (the cell trusts the edge for authz). 404 not 403 so
   // we don't leak which sandbox ids exist.
-  if (!row || row.org_id !== caller.orgID) return json({ error: "sandbox not found" }, 404);
-  const cell = await lookupCell(env, row.cell_id);
-  if (!cell) return json({ error: `cell ${row.cell_id} not registered` }, 503);
+  if (route.orgID !== caller.orgID) return json({ error: "sandbox not found" }, 404);
+  const cell = await lookupCell(env, route.cellID);
+  if (!cell) return json({ error: `cell ${route.cellID} not registered` }, 503);
 
   const url = new URL(req.url);
   const target = stripApiKeyQueryParam(cell.base_url.replace(/\/$/, "") + url.pathname + url.search);
@@ -1024,7 +1047,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   // tokens and API keys), so the same handler chain that runs for SDK
   // X-API-Key auth runs here. cell_id in the token guards against replay
   // against a different cell.
-  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, row.cell_id, orgPol?.plan ?? "free", "", caller.userID);
+  const token = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, route.cellID, orgPol?.plan ?? "free", "", caller.userID);
 
   const headers = new Headers();
   for (const [k, v] of req.headers.entries()) {
@@ -1051,6 +1074,7 @@ async function proxyToCellSDK(req: Request, env: Env, ctx: ExecutionContext, cal
   let postUpdate: { status: string; setStopped: boolean; mode: string | null } | null = null;
   if (req.method === "DELETE" && path === `/api/sandboxes/${id}`) {
     postUpdate = { status: "stopped", setStopped: true, mode: null };
+    sandboxRouteCache.delete(id); // route is dead once the sandbox is destroyed
   } else if (req.method === "POST" && path === `/api/sandboxes/${id}/hibernate`) {
     postUpdate = { status: "hibernated", setStopped: false, mode: "paused" };
   } else if (req.method === "POST" && path === `/api/sandboxes/${id}/wake`) {

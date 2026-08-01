@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +36,31 @@ func (s *Server) poolTarget() int {
 		}
 	}
 	return 10
+}
+
+// poolRefillBatch is the max boxes a worker is topped up per reconcile tick.
+// They're manufactured concurrently (see reconcilePool), so this bounds the
+// burst of simultaneous golden-restores per worker. Default 3 (gentle cold
+// ramp); crank via OPENSANDBOX_POOL_REFILL_BATCH to recover a drained pool fast.
+func poolRefillBatch() int {
+	if v := os.Getenv("OPENSANDBOX_POOL_REFILL_BATCH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 3
+}
+
+// poolRefillInterval is how often the reconciler tops the pool up. Default 15s;
+// shorten via OPENSANDBOX_POOL_REFILL_INTERVAL_MS so a drained pool recovers
+// between bursts instead of over minutes.
+func poolRefillInterval() time.Duration {
+	if v := os.Getenv("OPENSANDBOX_POOL_REFILL_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return 15 * time.Second
 }
 
 // poolMaxMemPct is the host-memory ceiling for pool refill: once a worker's
@@ -125,7 +152,7 @@ func (s *Server) StartPoolReconciler(ctx context.Context, isLeader func() bool) 
 	template := poolTemplateName()
 	log.Printf("pool: reconciler started (region=%s per_worker_target=%d template=%s, leader-gated)", region, s.poolTarget(), template)
 
-	t := time.NewTicker(15 * time.Second)
+	t := time.NewTicker(poolRefillInterval())
 	defer t.Stop()
 	for {
 		select {
@@ -148,6 +175,7 @@ func (s *Server) StartPoolReconciler(ctx context.Context, isLeader func() bool) 
 // target 25 warms ~100, and adding/removing a worker adjusts automatically (a
 // drained worker's pool is wiped and never refilled here since it's skipped).
 func (s *Server) reconcilePool(ctx context.Context, region, template string, perWorkerTarget int) {
+	var wg sync.WaitGroup
 	for _, w := range s.workerRegistry.GetAllWorkers() {
 		if w.Region != region || w.Draining {
 			continue
@@ -169,23 +197,37 @@ func (s *Server) reconcilePool(ctx context.Context, region, template string, per
 		if deficit <= 0 {
 			continue
 		}
-		// Cap per worker per tick so a cold start ramps instead of bursting.
+		// Cap per worker per tick. Manufactured concurrently (below) so a cranked
+		// batch actually recovers a drained pool instead of serializing golden
+		// restores; the cap bounds the simultaneous-restore burst per worker.
 		batch := deficit
-		if batch > 3 {
-			batch = 3
+		if max := poolRefillBatch(); batch > max {
+			batch = max
 		}
-		made := 0
-		for i := 0; i < batch; i++ {
-			if err := s.manufacturePoolBoxOn(ctx, w.ID, region, template, w.GoldenVersion); err != nil {
-				log.Printf("pool: manufacture on %s failed (%d/%d): %v", w.ID, made, batch, err)
-				break
+		w := w
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var mwg sync.WaitGroup
+			var made int64
+			for i := 0; i < batch; i++ {
+				mwg.Add(1)
+				go func() {
+					defer mwg.Done()
+					if err := s.manufacturePoolBoxOn(ctx, w.ID, region, template, w.GoldenVersion); err != nil {
+						log.Printf("pool: manufacture on %s failed: %v", w.ID, err)
+						return
+					}
+					atomic.AddInt64(&made, 1)
+				}()
 			}
-			made++
-		}
-		if made > 0 {
-			log.Printf("pool: %s refilled %d (had %d, per-worker target %d)", w.ID, made, have, perWorkerTarget)
-		}
+			mwg.Wait()
+			if made > 0 {
+				log.Printf("pool: %s refilled %d (had %d, per-worker target %d)", w.ID, made, have, perWorkerTarget)
+			}
+		}()
 	}
+	wg.Wait()
 }
 
 // WipeWorkerPool destroys all pooled boxes parked on a worker — called when the

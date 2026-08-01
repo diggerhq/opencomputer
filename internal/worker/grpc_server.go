@@ -350,7 +350,24 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 			_ = s.manager.Kill(context.Background(), sb.ID)
 			return nil, fmt.Errorf("pool manufacture: backend does not support pause")
 		}
-		if _, perr := pm.Pause(ctx, sb.ID); perr != nil {
+		parked := "parked paused"
+		if hotPoolEnabled() {
+			// Hot pool: leave the box RUNNING (RAM-resident, agent live) so a claim
+			// is a pure assign — no QMP resume, no swap-in, no wake storm. Two
+			// guardrails vs a normal running box: (1) suppress billing while
+			// unclaimed — the usage ticker skips billingSuppressed boxes, and
+			// ClaimPooled clears the flag so billing starts exactly at claim; (2)
+			// Register(0) below keeps it out of idle-hibernation. Warm the guest so
+			// the first customer command skips cold page-faults.
+			if err := pm.SetBillingSuppressed(sb.ID); err != nil {
+				_ = s.manager.Kill(context.Background(), sb.ID)
+				return nil, fmt.Errorf("pool manufacture: suppress billing %s: %w", sb.ID, err)
+			}
+			if w, ok := s.manager.(guestWarmer); ok {
+				w.WarmGuest(ctx, sb.ID)
+			}
+			parked = "hot (running)"
+		} else if _, perr := pm.Pause(ctx, sb.ID); perr != nil {
 			_ = s.manager.Kill(context.Background(), sb.ID) // a box that won't pause is useless as a pool entry
 			return nil, fmt.Errorf("pool manufacture: pause %s: %w", sb.ID, perr)
 		}
@@ -358,7 +375,7 @@ func (s *GRPCServer) CreateSandbox(ctx context.Context, req *pb.CreateSandboxReq
 			s.router.Register(sb.ID, 0) // persistent — no idle timeout while parked
 			s.router.MarkPooled(sb.ID)
 		}
-		log.Printf("grpc: manufactured pool box %s (template=%s) — parked paused", sb.ID, cfg.Template)
+		log.Printf("grpc: manufactured pool box %s (template=%s) — %s", sb.ID, cfg.Template, parked)
 		return &pb.CreateSandboxResponse{
 			SandboxId:     sb.ID,
 			Status:        string(types.SandboxStatusPooled),
@@ -856,6 +873,20 @@ type pausableManager interface {
 	// + re-apply env/secrets/network. Skips the golden restore (pre-paid at
 	// manufacture). Billing/D1/logship are wired by the caller.
 	ClaimPooled(ctx context.Context, sandboxID string, cfg types.SandboxConfig) (*types.Sandbox, error)
+}
+
+// guestWarmer optionally warms a pool box's guest page cache at manufacture so
+// the first customer command skips cold faults. Only the qemu backend implements
+// it; other backends just skip warming.
+type guestWarmer interface {
+	WarmGuest(ctx context.Context, sandboxID string)
+}
+
+// hotPoolEnabled leaves manufactured pool boxes RUNNING (billing-suppressed)
+// instead of paused, so a claim is a pure assign — no QMP resume / swap-in /
+// wake storm. Default ON; set OPENSANDBOX_HOT_POOL=0 to fall back to a paused pool.
+func hotPoolEnabled() bool {
+	return os.Getenv("OPENSANDBOX_HOT_POOL") != "0"
 }
 
 // PauseSandbox freezes the VM's vCPUs and pages its guest RAM out to swap — the

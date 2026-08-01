@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/opensandbox/opensandbox/pkg/types"
+	pb "github.com/opensandbox/opensandbox/proto/agent"
 )
 
 // wakeSem bounds how many pool boxes may resume (Cont + guest-RAM swap-in) at
@@ -28,6 +29,32 @@ func wakeConcurrency() int {
 		}
 	}
 	return 8
+}
+
+// WarmGuest runs a best-effort warm-up command in a running pool box so the
+// interpreter/binary pages the first customer command needs are already resident
+// (page cache warm). Only meaningful for a HOT (unpaused) pool box — a paused
+// box's pages get reclaimed to swap, so warming it is pointless. Best-effort:
+// warm-up failures never fail manufacture. Command from OPENSANDBOX_POOL_WARMUP_CMD
+// (default warms the common runtimes).
+func (m *Manager) WarmGuest(ctx context.Context, sandboxID string) {
+	vm, err := m.getVM(sandboxID)
+	if err != nil || vm.agent == nil {
+		return
+	}
+	cmd := os.Getenv("OPENSANDBOX_POOL_WARMUP_CMD")
+	if cmd == "" {
+		cmd = "node -v; python3 --version"
+	}
+	execCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	if _, e := vm.agent.Exec(execCtx, &pb.ExecRequest{
+		Command:   "/bin/sh",
+		Args:      []string{"-c", cmd + " >/dev/null 2>&1 || true"},
+		RunAsRoot: true,
+	}); e != nil {
+		log.Printf("qemu: warm-guest %s: %v (best-effort)", sandboxID, e)
+	}
 }
 
 // ClaimPooled binds a parked pool box (manufactured via Create + Pause +
@@ -60,19 +87,20 @@ func (m *Manager) ClaimPooled(ctx context.Context, sandboxID string, cfg types.S
 		return nil, fmt.Errorf("no agent client for pooled sandbox %s", sandboxID)
 	}
 
-	// Bound concurrent wakes on this worker so a burst of claims doesn't thrash
-	// the swap tier all at once (see wakeSem). Wait here counts toward the claim,
-	// but a bounded queue beats every box swapping in simultaneously.
-	select {
-	case wakeSem <- struct{}{}:
-		defer func() { <-wakeSem }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
 	t0 := time.Now()
-	// Resume vCPUs. No billing hook — see doc comment.
+	// Resume vCPUs — paused pool boxes only. A HOT pool box (OPENSANDBOX_HOT_POOL)
+	// is already running, so it skips the wake gate, RAM prefetch, and Cont
+	// entirely: the claim is a pure assign + rebind. No billing hook — see doc.
 	if !vm.pausedAt.IsZero() {
+		// Bound concurrent wakes so a burst doesn't thrash the swap tier all at
+		// once (see wakeSem); held through the claim so the swap-in it kicks off
+		// stays bounded.
+		select {
+		case wakeSem <- struct{}{}:
+			defer func() { <-wakeSem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		// Eagerly swap the paged-out guest RAM back in (batched readahead) so the
 		// guest doesn't lazy-fault it page-by-page on first touch after Cont —
 		// the swap-in stall that otherwise dominates a warm-pool wake.

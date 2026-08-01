@@ -585,7 +585,13 @@ func (r *RedisWorkerRegistry) collectEligibleLocked(region string, anyRegion boo
 		if w.CPUPct >= routingHardCapPct || w.MemPct >= routingHardCapPct || w.DiskPct >= routingHardCapPct {
 			continue
 		}
-		if w.Capacity <= 0 || w.Current >= w.Capacity {
+		// Placement is gated by REAL resource pressure (the CPU/mem/disk hard-cap
+		// above), not an arbitrary per-worker sandbox count. The old
+		// `Current >= Capacity` slot cap rejected placement while workers still
+		// had tons of headroom (the "no workers available" 503s under burst).
+		// Capacity is retained only for the scale-up math + placement score; a
+		// worker that hasn't reported it yet still isn't a ready target.
+		if w.Capacity <= 0 {
 			continue
 		}
 		out = append(out, w)
