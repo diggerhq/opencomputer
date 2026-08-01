@@ -128,11 +128,11 @@ const LEGACY_NAV: NavGroup[] = [
 
 const MANAGED_AGENTS_NAV: NavGroup[] = [
   {
-    label: 'Projects',
+    label: 'Serverless agents',
     collapsible: true,
     landingTo: '/',
     items: [
-      { to: '/', label: 'Projects', icon: Bot, end: true },
+      { to: '/', label: 'Agents', icon: Bot, end: true },
       {
         to: '/managed-agents/connections',
         label: 'Connections',
@@ -262,7 +262,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       group.collapsible &&
       group.label &&
       ((managedAgentsExperimentEnabled &&
-        group.label === 'Projects' &&
+        group.label === 'Serverless agents' &&
         location.pathname.startsWith('/managed-agents/')) ||
         group.items.some(
           (item) =>

@@ -209,7 +209,7 @@ function MessageActivity({
         ) : (
           <Wrench className="size-3.5" aria-hidden />
         )}
-        <span>{running ? 'Project is working' : 'Activity'}</span>
+        <span>{running ? 'Agent is working' : 'Activity'}</span>
         <span className="ml-auto text-[10px]">
           {tools.length > 0
             ? `${tools.length} tool ${tools.length === 1 ? 'call' : 'calls'}`
@@ -275,8 +275,7 @@ function PlaygroundChat({
     messages: initialMessages,
     transport,
     throttle: 30,
-    onError: (chatError) =>
-      notifyError("Couldn't run this project.", chatError),
+    onError: (chatError) => notifyError("Couldn't run this agent.", chatError),
     onFinish: () => {
       void queryClient.invalidateQueries({
         queryKey: ['managed-agent-sessions', agentId],
@@ -320,7 +319,7 @@ function PlaygroundChat({
         {running ? (
           <div className="text-muted-foreground flex items-center gap-2 text-xs">
             <span className="bg-foreground size-1.5 animate-pulse rounded-full" />
-            Project is working
+            Agent is working
           </div>
         ) : null}
       </div>
@@ -361,7 +360,7 @@ function PlaygroundChat({
                 )}
               >
                 <p className="text-muted-foreground mb-1.5 text-[10px] font-semibold tracking-wider uppercase">
-                  {message.role === 'user' ? 'You' : 'Project'}
+                  {message.role === 'user' ? 'You' : 'Agent'}
                 </p>
                 {message.role === 'assistant' ? (
                   <MessageActivity message={message} running={messageRunning} />
@@ -377,7 +376,7 @@ function PlaygroundChat({
                 ) : messageRunning ? (
                   <div className="text-muted-foreground flex items-center gap-2 text-sm">
                     <Loader2 className="size-4 animate-spin" />
-                    Starting the project…
+                    Starting the agent…
                   </div>
                 ) : null}
               </div>
@@ -398,7 +397,7 @@ function PlaygroundChat({
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             onSend={send}
-            placeholder="Message this project…"
+            placeholder="Message this agent…"
             className="min-h-12 border-0 px-2 shadow-none focus-visible:border-transparent"
           />
           <div className="flex items-center justify-between gap-3 px-1 pt-1">
@@ -573,11 +572,11 @@ export default function ManagedAgentDetail() {
       <Panel>
         <EmptyState
           icon={Bot}
-          title="Project not found"
-          description="This project is not available in your organization."
+          title="Agent not found"
+          description="This agent is not available in your organization."
           action={
             <Button asChild variant="outline">
-              <Link to="/">Back to projects</Link>
+              <Link to="/">Back to agents</Link>
             </Button>
           }
         />
@@ -601,7 +600,7 @@ export default function ManagedAgentDetail() {
       )}
     >
       <PageHeader
-        title={agent ? displayManagedAgentName(agent) : 'Project'}
+        title={agent ? displayManagedAgentName(agent) : 'Agent'}
         description={
           activeDeployment.data
             ? `Active deployment · ${activeDeployment.data.alias}`
@@ -610,7 +609,7 @@ export default function ManagedAgentDetail() {
         actions={
           <Button asChild variant="outline" size="sm">
             <Link to="/">
-              <ArrowLeft /> All projects
+              <ArrowLeft /> All agents
             </Link>
           </Button>
         }
@@ -618,7 +617,7 @@ export default function ManagedAgentDetail() {
       />
 
       <div className="flex shrink-0 items-end justify-between gap-6 border-b">
-        <nav className="flex gap-5" aria-label="Project details">
+        <nav className="flex gap-5" aria-label="Agent details">
           {tabs.map((tab) => (
             <button
               key={tab.id}
@@ -722,7 +721,7 @@ export default function ManagedAgentDetail() {
             <div>
               <PanelTitle>Deployments</PanelTitle>
               <PanelDescription className="mt-1">
-                Immutable versions published from this project's source.
+                Immutable versions published from this agent's source.
               </PanelDescription>
             </div>
           </PanelHeader>
@@ -820,7 +819,7 @@ export default function ManagedAgentDetail() {
                   {replies.map((event) => (
                     <div key={event.id ?? event.seq}>
                       <p className="text-muted-foreground mb-1 text-[10px] font-medium tracking-wider uppercase">
-                        Project
+                        Agent
                       </p>
                       <p className="text-sm leading-6 whitespace-pre-wrap">
                         {eventText(event)}
@@ -853,7 +852,7 @@ export default function ManagedAgentDetail() {
             <div>
               <PanelTitle>Channels</PanelTitle>
               <PanelDescription className="mt-1">
-                Messaging channels connected to this deployed project.
+                Messaging channels connected to this deployed agent.
               </PanelDescription>
             </div>
           </PanelHeader>
@@ -866,7 +865,7 @@ export default function ManagedAgentDetail() {
               <EmptyState
                 icon={Radio}
                 title="No channels connected"
-                description="Connect Slack, Discord, or another channel from your checked-out project."
+                description="Connect Slack, Discord, or another channel from your checked-out agent project."
               />
             }
           />

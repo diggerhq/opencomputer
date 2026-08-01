@@ -1,40 +1,36 @@
 ---
-title: "Projects"
-description: "Build, test, connect, and deploy projects from source"
+title: "Serverless Agents"
+description: "Build, test, connect, and deploy agents as code"
 ---
 
-An OpenComputer project is a source-controlled directory containing its
+An OpenComputer agent is a source-controlled project that contains its
 identity, instructions, tools, connections, and runtime configuration. You
 develop it locally with the `opencomputer` CLI, test it with the same
 connections it will use when deployed, and publish new immutable versions
-without changing the project's identity.
-
-Conceptually, an OpenComputer project is similar to a Supabase project, but
-for hosting agents: it groups the source, configuration, deployments,
-connections, channels, and sessions for one agent-powered application.
+without changing the agent's identity.
 
 <CardGroup cols={2}>
-  <Card title="Projects as code" icon="code">
+  <Card title="Agents as code" icon="code">
     Prompts, tools, skills, connections, and runtime settings live together in
     a normal directory you can review and commit.
   </Card>
   <Card title="Local development" icon="terminal">
-    Run the project locally with your source files and managed
+    Run the agent locally with OpenCode, your project files, and managed
     connections before deploying it.
   </Card>
   <Card title="Versioned deployment" icon="code-branch">
-    A stable project ID points to immutable deployments. Deploying again updates
+    A stable agent ID points to immutable deployments. Deploying again updates
     an alias such as `production`.
   </Card>
   <Card title="Managed execution" icon="cloud">
-    Deployed projects run in isolated OpenComputer sandboxes while the platform
+    Deployed agents run in isolated OpenComputer sandboxes while the platform
     manages lifecycle, persistence, and connected services.
   </Card>
 </CardGroup>
 
 ## Project structure
 
-Initialize a project from a template:
+Initialize an agent from a template:
 
 ```bash
 opencomputer init email-triage gmail-summarizer
@@ -63,16 +59,16 @@ The important files are:
 
 | File | Purpose |
 |---|---|
-| `opencomputer.toml` | Committed identity for the project. Keep its `id` stable across deployments. |
-| `instructions.md` | The project's role, operating rules, and approval boundaries. |
+| `opencomputer.toml` | Committed identity for the agent. Keep its `id` stable across deployments. |
+| `instructions.md` | The agent's role, operating rules, and approval boundaries. |
 | `agent.ts` | Model and runtime permissions used by OpenCode. |
 | `opencomputer.config.ts` | OpenComputer runtime configuration. |
-| `tools/` | Code-native tools available to the project runtime. |
+| `tools/` | Code-native tools available to the agent. |
 | `connections/` | Declarations for managed services such as Gmail. |
 | `skills/` | Reusable domain knowledge and workflows. |
-| `channels/` | Interfaces such as Slack through which people can reach the project. |
-| `workspace/` | Durable working files packaged with the project. |
-| `evals/` | Repeatable checks for project behavior. |
+| `channels/` | Interfaces such as Slack through which people can reach the agent. |
+| `workspace/` | Durable working files packaged with the agent. |
+| `evals/` | Repeatable checks for agent behavior. |
 
 ## Identity and versions
 
@@ -86,8 +82,8 @@ template = "email-triage"
 ```
 
 Commit this file to Git. The readable name appears in the dashboard, while the
-UUID identifies the project in deployments and APIs. Later deployments with the
-same UUID create new versions of that project rather than separate projects.
+UUID identifies the agent in deployments and APIs. Later deployments with the
+same UUID create new versions of that agent rather than separate agents.
 
 An alias gives callers a stable name for a version:
 
@@ -119,12 +115,12 @@ opencomputer deploy --alias production
 
 ## Sessions
 
-`opencomputer session` runs the current source locally. For a deployed project,
+`opencomputer session` runs the current source locally. For a deployed agent,
 the CLI also exposes the complete managed session lifecycle:
 
 ```bash
 opencomputer session create --remote \
-  --project gmail-summarizer@production
+  --agent gmail-summarizer@production
 opencomputer session list
 opencomputer session send <session-id> "Summarize today's inbox."
 opencomputer session inspect <session-id>
@@ -138,8 +134,8 @@ By default, a completed remote turn suspends its runtime. A later
 
 ## Channels
 
-Channels let people invoke a deployed project from another interface. To add
-Slack to a project:
+Channels let people invoke a deployed agent from another interface. To add
+Slack to an agent:
 
 ```bash
 opencomputer channels add slack
@@ -156,13 +152,13 @@ The installation credentials remain managed outside the repository.
     Connect multiple user-owned service accounts with aliases.
   </Card>
   <Card title="Channels" icon="comments" href="/agents/channels">
-    Invoke deployed projects from Slack with per-user identity isolation.
+    Invoke deployed agents from Slack with per-user identity isolation.
   </Card>
 </CardGroup>
 
 <CardGroup cols={2}>
   <Card title="Build a Gmail summarizer" icon="envelope" href="/agents/quickstart">
-    Create, connect, test, and deploy a project from a template.
+    Create, connect, test, and deploy an agent from a template.
   </Card>
   <Card title="Architecture" icon="diagram-project" href="/agents/architecture">
     See how local projects, deployments, sandboxes, and connections fit together.

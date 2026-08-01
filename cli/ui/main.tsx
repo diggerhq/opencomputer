@@ -38,7 +38,7 @@ interface LocalEvent {
 
 const agentName =
   document.querySelector<HTMLMetaElement>('meta[name="opencomputer-agent"]')
-    ?.content ?? "Project";
+    ?.content ?? "Agent";
 const token = new URLSearchParams(location.hash.slice(1)).get("token") ?? "";
 
 async function api(path: string, init: RequestInit = {}): Promise<Response> {
@@ -328,7 +328,7 @@ function ChatPane({
           <div className="empty">
             <div className="empty-mark">✦</div>
             <h2>Start a conversation</h2>
-            <p>Test this project with its skills and connected tools.</p>
+            <p>Ask your agent to use its skills and connected tools.</p>
           </div>
         )}
         {messages.map((message, index) => {
@@ -437,7 +437,7 @@ function App() {
           <span className="dev-badge">DEV</span>
         </div>
         <div className="status">
-          <i /> Local project
+          <i /> Local agent
         </div>
       </header>
       <div className="workspace">
@@ -471,7 +471,7 @@ function App() {
             onFinished={() => void refresh()}
           />
         ) : (
-          <div className="loading">Starting local project…</div>
+          <div className="loading">Starting local agent…</div>
         )}
       </div>
     </div>

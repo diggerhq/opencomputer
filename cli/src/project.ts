@@ -103,7 +103,7 @@ async function prepareInitializationTarget(
   }
   if (conflicts.length) {
     throw new Error(
-      `Target already contains project files: ${conflicts.join(", ")}`,
+      `Target already contains agent files: ${conflicts.join(", ")}`,
     );
   }
 }
@@ -130,7 +130,7 @@ export function agentIdFromName(value: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   if (!id || !AGENT_ID_PATTERN.test(id)) {
-    throw new Error("Project names must contain letters or numbers");
+    throw new Error("Agent names must contain letters or numbers");
   }
   return id;
 }
@@ -213,7 +213,7 @@ ${template.suggestedPrompts.map((prompt) => `- ${prompt}`).join("\n")}
     : "the tools installed in this repository";
   return `# ${template.name}
 
-You are running an OpenComputer project responsible for this job:
+You are an OpenComputer agent responsible for this job:
 
 ${template.description}
 
@@ -392,13 +392,13 @@ export async function writeManifest(
 ): Promise<void> {
   if (!AGENT_ID_PATTERN.test(manifest.id)) {
     throw new Error(
-      "Project IDs must use lowercase letters, numbers, and single hyphens",
+      "Agent IDs must use lowercase letters, numbers, and single hyphens",
     );
   }
   await writeFile(
     resolve(root, "opencomputer.toml"),
     [
-      "# Committed project identity. Keep `id` stable across deployments.",
+      "# Committed agent identity. Keep `id` stable across deployments.",
       "schema = 1",
       `id = ${JSON.stringify(manifest.id)}`,
       `name = ${JSON.stringify(manifest.name)}`,
@@ -503,7 +503,7 @@ export async function addSlackChannel(root: string): Promise<string[]> {
         _metadata: { major_version: 1, minor_version: 1 },
         display_information: {
           name: manifest.name,
-          description: `Run the ${manifest.name} OpenComputer project from Slack.`,
+          description: `Run the ${manifest.name} OpenComputer agent from Slack.`,
           background_color: "#0B1220",
         },
         features: {
@@ -601,7 +601,7 @@ export async function initializeAgentProject(
   );
   await writeFile(
     resolve(root, "workspace", "README.md"),
-    "# Project workspace\n",
+    "# Agent workspace\n",
   );
   await updateGitignore(root);
   await writeFile(

@@ -21,7 +21,7 @@ test("normalizes the public API URL and rejects insecure remotes", () => {
   );
 });
 
-test("stores project CLI credentials in a mode-0600 file", async () => {
+test("stores agent CLI credentials in a mode-0600 file", async () => {
   const directory = await mkdtemp(join(tmpdir(), "opencomputer-cli-"));
   const path = join(directory, "nested", "config.json");
   process.env.OPENCOMPUTER_CONFIG = path;

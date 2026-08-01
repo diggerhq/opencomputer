@@ -32,7 +32,7 @@
         ]
       },
       {
-        "group": "Projects",
+        "group": "Serverless Agents",
         "pages": [
           "agents/overview",
           "agents/quickstart",

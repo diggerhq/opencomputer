@@ -33,7 +33,7 @@ const emailTemplate: ManagedAgentTemplate = {
   suggestedPrompts: ["Triage today's inbox."],
 };
 
-test("a template creates a flat project repository with stable identity", async () => {
+test("a template creates a flat agent repository with stable identity", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-agent-"));
   const original = resolve(parent, "my-inbox-agent");
   const renamed = resolve(parent, "renamed-agent-folder");
@@ -134,7 +134,7 @@ test("a template initializes at the root of a fresh Git repository", async () =>
     assert.match(gitignore, /\.opencomputer\//);
     await assert.rejects(
       initializeAgentProject(emailTemplate, root),
-      /Target already contains project files/,
+      /Target already contains agent files/,
     );
   } finally {
     await rm(root, { recursive: true, force: true });

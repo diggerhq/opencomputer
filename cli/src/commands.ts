@@ -60,7 +60,7 @@ async function requireAgentRoot(): Promise<string> {
   const root = await findAgentRoot();
   if (!root) {
     throw new Error(
-      "No OpenComputer project found. Run `opencomputer init <template>` first.",
+      "No OpenComputer agent repository found. Run `opencomputer init <template>` first.",
     );
   }
   return root;
@@ -211,7 +211,7 @@ async function sendAgentTurn(
   if (!json && (streamedText || completedText)) process.stdout.write("\n");
   if (completed.event.type === "turn.failed") {
     throw new Error(
-      String(completed.event.data.message ?? "Project turn failed"),
+      String(completed.event.data.message ?? "Agent turn failed"),
     );
   }
   if (!keep) {
@@ -273,14 +273,14 @@ async function waitForEvent(
         throw new Error(
           typeof event.data.reason === "string"
             ? event.data.reason
-            : "The project runtime disconnected.",
+            : "The agent runtime disconnected.",
         );
       }
       if (terminal(event)) return { event, cursor };
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error("Timed out waiting for the project.");
+  throw new Error("Timed out waiting for the agent.");
 }
 
 async function runAgent(
@@ -332,7 +332,7 @@ async function runAgent(
   }
   if (completed.event.type === "turn.failed") {
     throw new Error(
-      String(completed.event.data.message ?? "Project turn failed"),
+      String(completed.event.data.message ?? "Agent turn failed"),
     );
   }
   if (!keep) {
@@ -424,7 +424,7 @@ export async function runCommand(
     const template = (await client.templates()).find(
       (candidate) => candidate.id === templateId,
     );
-    if (!template) throw new Error(`Unknown project template: ${templateId}`);
+    if (!template) throw new Error(`Unknown agent template: ${templateId}`);
     const initialized = await initializeAgentProject(template, directory);
     if (globals.json) printJSON(initialized);
     else {
@@ -433,7 +433,7 @@ export async function runCommand(
         `Created ${initialized.manifest.name} from ${template.name}\n` +
           `Directory: ${initialized.root}\n` +
           `Name:      ${initialized.manifest.name}\n` +
-          `Project ID: ${initialized.manifest.id}\n` +
+          `Agent ID:  ${initialized.manifest.id}\n` +
           `Identity:  opencomputer.toml\n\n` +
           `Next:\n` +
           enterDirectory +
@@ -444,12 +444,12 @@ export async function runCommand(
     return;
   }
 
-  if (command === "projects") {
+  if (command === "agents") {
     const agents = await client.agents();
     if (globals.json) printJSON(agents);
     else if (!agents.length) {
       process.stdout.write(
-        "No projects deployed. Run `opencomputer templates` to get started.\n",
+        "No agents deployed. Run `opencomputer templates` to get started.\n",
       );
     } else {
       for (const agent of agents) {
@@ -501,7 +501,7 @@ export async function runCommand(
     const agent = args.shift();
     const prompt = args.join(" ").trim();
     if (!agent || !prompt) {
-      throw new Error("Usage: opencomputer run <project> <prompt>");
+      throw new Error("Usage: opencomputer run <agent> <prompt>");
     }
     const result = await runAgent(client, agent, prompt, keep, globals.json);
     if (globals.json) printJSON(result);
@@ -518,10 +518,10 @@ export async function runCommand(
     const local = flag(args, "--local");
     const remote = flag(args, "--remote");
     const keep = flag(args, "--keep");
-    const agentOption = option(args, "--project");
+    const agentOption = option(args, "--agent");
     const alias = option(args, "--alias") ?? "production";
     if (local && (remote || agentOption)) {
-      throw new Error("--local cannot be combined with --remote or --project.");
+      throw new Error("--local cannot be combined with --remote or --agent.");
     }
     const knownActions = new Set([
       "create",
@@ -553,7 +553,7 @@ export async function runCommand(
       const agent = agentOption ?? (await inferAgentReference(alias));
       if (!agent) {
         throw new Error(
-          "No project found. Pass --project <project>@<alias>.",
+          "No agent repository found. Pass --agent <agent>@<alias>.",
         );
       }
       if (prompt) {
@@ -590,7 +590,7 @@ export async function runCommand(
       else {
         process.stdout.write(
           `Session:    ${result.sessionId}\n` +
-            `Project:    ${result.agentId}\n` +
+            `Agent:      ${result.agentId}\n` +
             `Deployment: ${result.deploymentId ?? "—"}\n` +
             `Runtime:    ${result.status}\n`,
         );
@@ -780,7 +780,7 @@ export async function runCommand(
     if (action === "connect") {
       const local = flag(args, "--local");
       const remote = flag(args, "--remote");
-      const agentOption = option(args, "--project");
+      const agentOption = option(args, "--agent");
       const alias = option(args, "--alias") ?? "production";
       if (local === remote) {
         throw new Error("Choose exactly one of --local or --remote for Slack.");
@@ -803,7 +803,7 @@ export async function runCommand(
       const agent = agentOption ?? (await inferAgentReference(alias));
       if (!agent) {
         throw new Error(
-          "No project found. Pass --project <project>@<alias>.",
+          "No agent repository found. Pass --agent <agent>@<alias>.",
         );
       }
       const previous = await readRemoteSlackState(root);
@@ -870,7 +870,7 @@ export async function runCommand(
       const id = connectionId ?? stored?.connectionId;
       if (!id) {
         throw new Error(
-          "Pass a connection ID or connect Slack from this project first.",
+          "Pass a connection ID or connect Slack from this agent first.",
         );
       }
       const disconnected = await client.disconnectSlack(id);

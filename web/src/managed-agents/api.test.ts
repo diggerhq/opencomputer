@@ -8,7 +8,7 @@ describe('displayManagedAgentName', () => {
         id: '8d25ba55-d9de-4345-bedd-92ac5a3f1485',
         name: '8d25ba55-d9de-4345-bedd-92ac5a3f1485',
       }),
-    ).toBe('Untitled project')
+    ).toBe('Untitled agent')
     expect(
       displayManagedAgentName({ id: 'email-triage', name: 'email-triage' }),
     ).toBe('email-triage')

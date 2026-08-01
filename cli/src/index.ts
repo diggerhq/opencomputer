@@ -32,19 +32,19 @@ function takeFlag(args: string[], name: string): boolean {
 function help(): void {
   process.stdout.write(`${BANNER}
 
-OpenComputer — build, test, connect, and deploy projects
+OpenComputer — build, test, connect, and deploy agents as code
 
 Usage:
   opencomputer login [--no-browser] [--force]
   opencomputer logout [--local]
   opencomputer whoami
   opencomputer templates
-  opencomputer projects
+  opencomputer agents
   opencomputer init <template> [directory]
   opencomputer dev
   opencomputer session [prompt]
   opencomputer session create <prompt> [--local]
-  opencomputer session create [prompt] --remote [--project <project>@<alias>] [--keep]
+  opencomputer session create [prompt] --remote [--agent <agent>@<alias>] [--keep]
   opencomputer session list
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>
@@ -59,7 +59,7 @@ Usage:
   opencomputer channels list [--local|--remote]
   opencomputer channels disconnect slack [connection-id] [--local|--remote]
   opencomputer deploy [--alias <alias>]
-  opencomputer run <project> <prompt> [--keep]
+  opencomputer run <agent> <prompt> [--keep]
 
 Global options:
   --api-url <url>   OpenComputer API (default: https://app.opencomputer.dev)

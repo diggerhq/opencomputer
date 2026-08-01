@@ -1,17 +1,17 @@
 ---
 title: "Connections"
-description: "Give projects user-scoped access to services such as Gmail"
+description: "Give agents user-scoped access to services such as Gmail"
 ---
 
-Connections let a project use an external service without storing OAuth tokens
-or provider credentials in the project repository. A connection belongs to an
+Connections let an agent use an external service without storing OAuth tokens
+or provider credentials in the agent repository. A connection belongs to an
 OpenComputer user and can be used during both local development and deployed
 sessions.
 
 ## Declarations and authorizations
 
-Project source declares the kinds of connections its tools can use. For
-example, a Gmail project contains a Google connection declaration alongside its
+An agent repository declares the kinds of connections its tools can use. For
+example, a Gmail agent contains a Google connection declaration alongside its
 source:
 
 ```text
@@ -37,7 +37,7 @@ OpenComputer opens the provider authorization page and stores the resulting
 connection outside the repository.
 
 <Note>
-Deploying a project does not grant it access to the developer's account. At run
+Deploying an agent does not grant it access to the developer's account. At run
 time, OpenComputer resolves connections using the identity of the user who
 started the session.
 </Note>
@@ -53,7 +53,7 @@ opencomputer connection add gmail --alias work
 opencomputer connection list
 ```
 
-Project tools can select the appropriate alias for a request. If no alias is
+Agent tools can select the appropriate alias for a request. If no alias is
 specified, they use the `default` connection.
 
 Use short, recognizable aliases made from letters, numbers, dots, dashes, or
@@ -67,12 +67,12 @@ The same managed connection works in both execution modes:
 | Session | How access is provided |
 | --- | --- |
 | Local development | The CLI gives the local session a temporary connection capability. |
-| Deployed project | OpenComputer gives the managed session a user-scoped connection capability. |
+| Deployed agent | OpenComputer gives the managed session a user-scoped connection capability. |
 
-Provider credentials remain outside the project's source, workspace, prompts,
+Provider credentials remain outside the agent's source, workspace, prompts,
 and model output.
 
-When a project needs a connection that the current user has not authorized,
+When an agent needs a connection that the current user has not authorized,
 the session returns an authorization command and, when available, a dashboard
 link. This makes the same flow usable from the CLI, the playground, or a
 connected channel.
@@ -87,25 +87,25 @@ opencomputer connection remove work
 You can remove a connection by alias or by its connection ID. Use the ID when
 more than one listed connection has the same alias.
 
-Removing a connection prevents future sessions from using it. Project source and
+Removing a connection prevents future sessions from using it. Agent source and
 existing deployments are unchanged.
 
 ## Identity and security
 
 - Connections belong to an authenticated OpenComputer user, not a device,
-  directory, project, or organization-wide shared pool.
-- Two users running the same deployed project receive access to their own
+  directory, agent, or organization-wide shared pool.
+- Two users running the same deployed agent receive access to their own
   connections only.
-- A connection declaration limits which integrations a project expects, while
+- A connection declaration limits which integrations an agent expects, while
   the provider authorization limits the scopes that are actually available.
-- Project instructions should still require confirmation before consequential
+- Agent instructions should still require confirmation before consequential
   actions such as sending messages or modifying external data.
 
 <CardGroup cols={2}>
   <Card title="Deploy a Gmail summarizer" icon="envelope" href="/agents/quickstart">
-    Create a project, authorize Gmail, test it locally, and deploy it.
+    Create an agent, authorize Gmail, test it locally, and deploy it.
   </Card>
   <Card title="Channels" icon="comments" href="/agents/channels">
-    Let people invoke deployed projects from Slack and other interfaces.
+    Let people invoke deployed agents from Slack and other interfaces.
   </Card>
 </CardGroup>

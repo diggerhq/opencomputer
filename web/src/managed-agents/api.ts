@@ -138,7 +138,7 @@ export function displayManagedAgentName(
   agent: Pick<ManagedAgentSummary, 'id' | 'name'>,
 ) {
   const name = agent.name.trim()
-  return !name || UUID_NAME.test(name) ? 'Untitled project' : name
+  return !name || UUID_NAME.test(name) ? 'Untitled agent' : name
 }
 
 export async function getManagedAgentTemplates() {
@@ -268,14 +268,14 @@ async function waitForAgentEvent(
             ? event.data.reason
             : typeof event.data.message === 'string'
               ? event.data.message
-              : 'The project runtime disconnected.',
+              : 'The agent runtime disconnected.',
         )
       }
       if (terminal(event)) return { event, cursor }
     }
     await sleep(600)
   }
-  throw new Error('Timed out waiting for the project.')
+  throw new Error('Timed out waiting for the agent.')
 }
 
 export async function runManagedAgent(
@@ -332,7 +332,7 @@ export async function runManagedAgent(
       throw new Error(
         typeof completed.event.data.message === 'string'
           ? completed.event.data.message
-          : 'The project could not complete this request.',
+          : 'The agent could not complete this request.',
       )
     }
     return { sessionId, turnId: turn.turnId }
@@ -398,7 +398,7 @@ export async function continueManagedAgentSession(
       throw new Error(
         typeof completed.event.data.message === 'string'
           ? completed.event.data.message
-          : 'The project could not complete this request.',
+          : 'The agent could not complete this request.',
       )
     }
     return { sessionId, turnId: turn.turnId }
@@ -463,7 +463,7 @@ export async function invokeManagedAgent(agentId: string, input: string) {
       throw new Error(
         typeof completed.event.data.message === 'string'
           ? completed.event.data.message
-          : 'The project could not complete this request.',
+          : 'The agent could not complete this request.',
       )
     }
     return {

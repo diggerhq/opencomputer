@@ -1,17 +1,17 @@
 ---
 title: "Architecture"
-description: "How projects become managed, connected deployments"
+description: "How agent projects become managed, connected deployments"
 ---
 
-OpenComputer keeps project development code-first while managing
+OpenComputer keeps the agent development experience code-first while managing
 the infrastructure required to run it. You work with one public surface—the
-`opencomputer` CLI—and the same project can run locally or in a managed
+`opencomputer` CLI—and the same agent project can run locally or in a managed
 sandbox.
 
 ```mermaid
 flowchart LR
-    A["Project source<br/>Git + local files"] --> B["OpenComputer CLI"]
-    B --> C["Project control plane"]
+    A["Agent project<br/>Git + local files"] --> B["OpenComputer CLI"]
+    B --> C["Agent control plane"]
     C --> D["Immutable deployment<br/>stable ID + alias"]
     D --> E["Managed session"]
     E --> F["Isolated sandbox<br/>OpenCode + workspace"]
@@ -21,9 +21,9 @@ flowchart LR
 
 ## The layers
 
-### Project source
+### Agent project
 
-The project is the portable definition of the hosted agent. Its committed files
+The project is the portable definition of the agent. Its committed files
 describe:
 
 - stable UUID and readable display name in `opencomputer.toml`
@@ -45,17 +45,17 @@ The CLI owns the developer workflow:
 - authorize managed connections
 - run the project locally with OpenCode
 - package and deploy the project
-- start sessions from deployed projects
+- start sessions from deployed agents
 
 When you run `opencomputer deploy`, the CLI builds a canonical source artifact
-from the project directory and sends it to OpenComputer. Infrastructure provider
+from the agent directory and sends it to OpenComputer. Infrastructure provider
 details are not part of the CLI contract.
 
-### Project identity and deployments
+### Agent identity and deployments
 
-The UUID in `opencomputer.toml` identifies the project across its lifetime. Its
+The UUID in `opencomputer.toml` identifies the agent across its lifetime. Its
 two-word name is display metadata and can change without creating a different
-project. Each distinct source artifact becomes an immutable deployment.
+agent. Each distinct source artifact becomes an immutable deployment.
 
 ```text
 0195f5fb-2d5d-4aa4-b28e-b0df0af60cd8 (Gentle Falcon)
@@ -70,24 +70,24 @@ idempotent; deploying changed source creates a new version.
 
 ### Managed sessions and sandboxes
 
-A deployed run creates a managed session from the selected project version.
-OpenComputer prepares an isolated sandbox, loads the project source and
+A deployed run creates a managed session from the selected agent version.
+OpenComputer prepares an isolated sandbox, loads the agent source and
 workspace, starts OpenCode, and streams the result back to the CLI.
 
-The sandbox is an implementation detail of the project experience. You do not
-need to create or manage a separate sandbox before deploying a project.
+The sandbox is an implementation detail of the agent experience. You do not
+need to create or manage a separate sandbox before deploying an agent.
 
 Each session has:
 
 - the exact deployed source version
 - an isolated filesystem and process environment
-- a workspace that the project can use during the task
-- access to only the connections and channels declared for that project
+- a workspace that the agent can use during the task
+- access to only the connections and channels declared for that agent
 - lifecycle management handled by OpenComputer
 
 ### Connections
 
-Connections let project tools act on services such as Gmail without committing
+Connections let agent tools act on services such as Gmail without committing
 OAuth tokens to Git.
 
 For Gmail:
@@ -102,18 +102,18 @@ For Gmail:
     authorization flow. Add another alias to connect another Gmail account.
   </Step>
   <Step title="Develop locally">
-    The CLI gives the local project a short-lived, scoped route to the managed
+    The CLI gives the local agent a short-lived, scoped route to the managed
     connection.
   </Step>
   <Step title="Run when deployed">
     The managed session receives the same connection capability inside its
-    sandbox. Provider credentials remain outside the project and model output.
+    sandbox. Provider credentials remain outside the project and agent output.
   </Step>
 </Steps>
 
-Project instructions should still define explicit approval boundaries.
+An agent's instructions should still define explicit approval boundaries.
 Connection scope controls which service operations are possible; instructions
-control when the project should use them.
+control when the agent should use them.
 
 The Gmail connection is centralized for the OpenComputer user. Local
 development does not create a second local OAuth installation:
@@ -131,7 +131,7 @@ development does not create a second local OAuth installation:
                 scoped local    │         │ scoped managed
                 capability      │         │ capability
                     ┌───────────▼─┐     ┌─▼──────────────┐
-                    │Local project│     │Deployed project│
+                    │ Local agent │     │ Deployed agent │
                     │ + OpenCode  │     │ + sandbox      │
                     └───────────┬─┘     └─┬──────────────┘
                                 │         │
@@ -157,9 +157,9 @@ stay outside Git and are never given directly to the model.
 | Runtime | OpenCode on your machine | OpenCode in an isolated OpenComputer sandbox |
 | Connections | Scoped through the local CLI | Scoped through the managed runtime |
 | Best for | Iteration and debugging | Durable, repeatable execution |
-| Command | `opencomputer session` | `opencomputer session create --remote` or `opencomputer run <project>` |
+| Command | `opencomputer session` | `opencomputer session create --remote` or `opencomputer run <agent>` |
 
-This symmetry is intentional: develop the actual project locally, then deploy
+This symmetry is intentional: develop the actual agent locally, then deploy
 the same directory instead of rebuilding the workflow in a dashboard.
 
 Managed sessions can be listed, inspected, attached to, resumed with another
@@ -172,28 +172,28 @@ the sandbox runtime may suspend between turns and resume when needed.
 sequenceDiagram
     participant Developer
     participant CLI as OpenComputer CLI
-    participant Control as Project control plane
+    participant Control as Agent control plane
     participant Runtime as Managed sandbox
     participant Service as Connected service
 
     Developer->>CLI: opencomputer deploy
     CLI->>CLI: Build canonical source artifact
-    CLI->>Control: Publish source for stable project ID
+    CLI->>Control: Publish source for stable agent ID
     Control-->>CLI: Immutable deployment ID
     Developer->>CLI: opencomputer run gmail-summarizer "..."
     CLI->>Control: Start session from production alias
     Control->>Runtime: Load deployment and start OpenCode
     Runtime->>Service: Use scoped managed connection
-    Runtime-->>Control: Stream project events and result
+    Runtime-->>Control: Stream agent events and result
     Control-->>CLI: Stream result
 ```
 
 ## Security boundaries
 
-- Project source and identity are reviewable and commit-friendly.
+- Agent source and identity are reviewable and commit-friendly.
 - OAuth credentials are managed separately from source code.
 - Local connection access uses a scoped session capability.
-- Deployed projects run inside isolated sandboxes.
+- Deployed agents run inside isolated sandboxes.
 - The public CLI and API do not expose infrastructure-provider credentials or
   storage implementation details.
 - Consequential actions should remain behind explicit instructions and user
