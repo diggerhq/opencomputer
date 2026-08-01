@@ -105,15 +105,16 @@ Files containing local runtime state and environment secrets are ignored.
 Start the Google authorization flow:
 
 ```bash
-opencomputer connect google
+opencomputer connection add gmail --alias personal
 ```
 
 Open the authorization link, select the Google account, and approve the
 requested access. The CLI waits until the connection becomes active.
 
 <Note>
-Connections belong to your OpenComputer account, not to one local directory.
-If Gmail is already connected, the CLI reuses that connection.
+Connections belong to your OpenComputer user identity, not to one local
+directory. Give each account an alias, such as `personal` or `work`, to connect
+more than one Gmail account without sharing either account with another user.
 </Note>
 
 ## 6. Test locally

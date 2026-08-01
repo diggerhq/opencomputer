@@ -191,6 +191,10 @@ function stripPrivateValues(value: unknown): unknown {
 const PRIVATE_EVENT_KEYS = new Set([
   "accountId",
   "account_id",
+  "ownerUserId",
+  "owner_user_id",
+  "userId",
+  "user_id",
   "artifact",
   "bucket",
   "imageArn",

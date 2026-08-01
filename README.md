@@ -32,7 +32,7 @@ opencomputer templates
 opencomputer init email-triage
 cd email-triage
 npm install
-opencomputer connect google
+opencomputer connection add gmail --alias personal
 opencomputer session "Triage today's inbox."
 opencomputer deploy
 ```

@@ -66,10 +66,13 @@ async function requireAgentRoot(): Promise<string> {
   return root;
 }
 
-async function connectGoogle(client: OpenComputerClient): Promise<void> {
-  const started = await client.linkGoogle("gmail");
+async function connectGoogle(
+  client: OpenComputerClient,
+  label = "default",
+): Promise<void> {
+  const started = await client.linkGoogle("gmail", label);
   if (started.status === "connected") {
-    process.stdout.write("Gmail is already connected.\n");
+    process.stdout.write(`Gmail connection "${label}" is already connected.\n`);
     return;
   }
   if (!started.authorizationUrl) {
@@ -82,8 +85,11 @@ async function connectGoogle(client: OpenComputerClient): Promise<void> {
     : Date.now() + 5 * 60_000;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
-    if ((await client.googleConnection("gmail")).status === "connected") {
-      process.stdout.write("Gmail connected.\n");
+    if (
+      (await client.googleConnection(started.connectionId, "gmail")).status ===
+      "connected"
+    ) {
+      process.stdout.write(`Gmail connection "${label}" connected.\n`);
       return;
     }
   }
@@ -422,8 +428,7 @@ export async function runCommand(
     const initialized = await initializeAgentProject(template, directory);
     if (globals.json) printJSON(initialized);
     else {
-      const enterDirectory =
-        directory === "." ? "" : `  cd ${directory}\n`;
+      const enterDirectory = directory === "." ? "" : `  cd ${directory}\n`;
       process.stdout.write(
         `Created ${initialized.manifest.name} from ${template.name}\n` +
           `Directory: ${initialized.root}\n` +
@@ -545,8 +550,7 @@ export async function runCommand(
     }
     if (action === "create") {
       const prompt = args.join(" ").trim();
-      const agent =
-        agentOption ?? (await inferAgentReference(alias));
+      const agent = agentOption ?? (await inferAgentReference(alias));
       if (!agent) {
         throw new Error(
           "No agent repository found. Pass --agent <agent>@<alias>.",
@@ -573,9 +577,7 @@ export async function runCommand(
         90_000,
       );
       if (!keep) {
-        await client
-          .suspendSession(created.session.id)
-          .catch(() => undefined);
+        await client.suspendSession(created.session.id).catch(() => undefined);
       }
       const result = {
         sessionId: created.session.id,
@@ -651,43 +653,56 @@ export async function runCommand(
     if ((provider !== "google" && provider !== "gmail") || args.length) {
       throw new Error("Usage: opencomputer connect google");
     }
-    await connectGoogle(client);
+    await connectGoogle(client, "default");
     return;
   }
 
-  if (command === "connections") {
+  if (command === "connection" || command === "connections") {
     const action = args.shift();
-    if (action === "connect") {
+    if (action === "add" || action === "connect") {
       const provider = args.shift();
+      const alias = option(args, "--alias") ?? "default";
       if ((provider !== "google" && provider !== "gmail") || args.length) {
-        throw new Error("Usage: opencomputer connections connect gmail");
+        throw new Error(
+          "Usage: opencomputer connection add gmail [--alias <name>]",
+        );
       }
-      await connectGoogle(client);
+      await connectGoogle(client, alias);
       return;
     }
-    if (action === "disconnect") {
+    if (action === "remove" || action === "disconnect") {
       const connectionReference = args.shift();
       if (!connectionReference || args.length) {
         throw new Error(
-          "Usage: opencomputer connections disconnect gmail|<connection-id>",
+          "Usage: opencomputer connection remove <alias|connection-id>",
         );
       }
-      if (["gmail", "google"].includes(connectionReference.toLowerCase())) {
-        const disconnected = await client.disconnectGoogle("gmail");
-        if (globals.json) printJSON(disconnected);
-        else process.stdout.write("Disconnected Gmail.\n");
-        return;
-      }
-      const disconnected = await client.disconnectConnection(
-        connectionReference,
+      const connections = await client.connections();
+      const matches = connections.filter(
+        (connection) =>
+          connection.id === connectionReference ||
+          connection.label === connectionReference,
       );
+      if (!matches.length) {
+        throw new Error(`Connection "${connectionReference}" was not found.`);
+      }
+      if (matches.length > 1) {
+        throw new Error(
+          `More than one connection is named "${connectionReference}". Remove it by connection ID.`,
+        );
+      }
+      const connection = matches[0]!;
+      const disconnected =
+        connection.provider === "google"
+          ? await client.disconnectGoogle(connection.id, "gmail")
+          : await client.disconnectConnection(connection.id);
       if (globals.json) printJSON(disconnected);
-      else process.stdout.write(`Disconnected ${connectionReference}.\n`);
+      else process.stdout.write(`Removed connection "${connection.label}".\n`);
       return;
     }
     if (action !== "list" || args.length) {
       throw new Error(
-        "Use `opencomputer connections connect`, `list`, or `disconnect`.",
+        "Use `opencomputer connection add`, `list`, or `remove`.",
       );
     }
     const connections = await client.connections();
@@ -698,7 +713,8 @@ export async function runCommand(
         process.stdout.write(
           `${connection.id}  ${connection.provider.padEnd(10)} ` +
             `${connection.status.padEnd(11)} ` +
-            `${connection.displayName ?? connection.label}\n`,
+            `${connection.label.padEnd(16)} ` +
+            `${connection.displayName ?? ""}\n`,
         );
       }
     }
@@ -767,9 +783,7 @@ export async function runCommand(
       const agentOption = option(args, "--agent");
       const alias = option(args, "--alias") ?? "production";
       if (local === remote) {
-        throw new Error(
-          "Choose exactly one of --local or --remote for Slack.",
-        );
+        throw new Error("Choose exactly one of --local or --remote for Slack.");
       }
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const root = await requireSlackAgentRoot();
@@ -786,8 +800,7 @@ export async function runCommand(
         );
         return;
       }
-      const agent =
-        agentOption ?? (await inferAgentReference(alias));
+      const agent = agentOption ?? (await inferAgentReference(alias));
       if (!agent) {
         throw new Error(
           "No agent repository found. Pass --agent <agent>@<alias>.",
@@ -844,7 +857,11 @@ export async function runCommand(
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const root = await requireSlackAgentRoot();
       if (local) {
-        await runSlackCli(root, ["app", "uninstall", "--app", "local"], "local");
+        await runSlackCli(
+          root,
+          ["app", "uninstall", "--app", "local"],
+          "local",
+        );
         await clearSlackState(root, "local");
         process.stdout.write("Disconnected the local Slack app.\n");
         return;

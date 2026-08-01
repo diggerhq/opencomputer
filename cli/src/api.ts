@@ -234,8 +234,10 @@ export class OpenComputerClient {
     );
   }
 
-  linkGoogle(service: string) {
+  linkGoogle(service: string, label: string) {
     return this.request<{
+      connectionId: string;
+      label: string;
       service: string;
       toolkit: string;
       status: "connected" | "pending";
@@ -244,12 +246,14 @@ export class OpenComputerClient {
       expiresAt?: string;
     }>("/api/managed-agents/connections/google/link", {
       method: "POST",
-      body: JSON.stringify({ service }),
+      body: JSON.stringify({ service, label }),
     });
   }
 
-  googleConnection(service: string) {
+  googleConnection(connectionId: string, service: string) {
     return this.request<{
+      connectionId: string;
+      label: string;
       service: string;
       toolkit: string;
       status: "connected" | "pending";
@@ -257,18 +261,20 @@ export class OpenComputerClient {
       authorizationUrl?: string;
       expiresAt?: string;
     }>(
-      `/api/managed-agents/connections/google/status?service=${encodeURIComponent(service)}`,
+      `/api/managed-agents/connections/google/status?service=${encodeURIComponent(service)}&connectionId=${encodeURIComponent(connectionId)}`,
     );
   }
 
-  disconnectGoogle(service: string) {
+  disconnectGoogle(connectionId: string, service: string) {
     return this.request<{
+      connectionId: string;
+      label: string;
       service: string;
       toolkit: string;
       status: "disconnected";
       connectedAccountId?: string;
     }>(
-      `/api/managed-agents/connections/google?service=${encodeURIComponent(service)}`,
+      `/api/managed-agents/connections/google?service=${encodeURIComponent(service)}&connectionId=${encodeURIComponent(connectionId)}`,
       { method: "DELETE" },
     );
   }

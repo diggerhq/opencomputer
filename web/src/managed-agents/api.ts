@@ -69,6 +69,8 @@ const connectionsResponseSchema = z.object({
   connections: z.array(connectionSchema),
 })
 
+const channelIdentityLinkSchema = z.object({ linked: z.literal(true) })
+
 const channelsResponseSchema = z.object({
   channels: z.array(channelSchema),
 })
@@ -163,6 +165,17 @@ export async function getManagedAgentConnections() {
       connectionsResponseSchema,
     )
   ).connections.filter((connection) => connection.kind === 'tool')
+}
+
+export async function claimManagedAgentChannelIdentity(token: string) {
+  return apiFetch(
+    '/managed-agents/connections/channel-identity/link',
+    {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    },
+    channelIdentityLinkSchema,
+  )
 }
 
 export async function getManagedAgentChannels() {

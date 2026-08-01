@@ -14,7 +14,7 @@ opencomputer templates
 opencomputer init email-triage
 cd email-triage
 npm install
-opencomputer connect google
+opencomputer connection add gmail --alias personal
 opencomputer dev
 opencomputer session "Triage today's inbox."
 opencomputer deploy
@@ -86,8 +86,10 @@ opencomputer session end <session-id>
 Add and manage account connections and agent channels from the same CLI:
 
 ```bash
-opencomputer connections connect gmail
-opencomputer connections list
+opencomputer connection add gmail --alias personal
+opencomputer connection add gmail --alias work
+opencomputer connection list
+opencomputer connection remove work
 
 opencomputer channels add slack
 opencomputer deploy
