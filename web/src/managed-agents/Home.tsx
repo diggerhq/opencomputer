@@ -253,7 +253,7 @@ export default function ManagedAgentsHome({
         description={
           startersOnly
             ? 'Choose a starting point for your next project repository.'
-            : 'Develop locally, then deploy versioned projects with the OpenComputer CLI.'
+            : 'Develop agents locally, then deploy versioned projects with the OpenComputer CLI.'
         }
         actions={
           !startersOnly && deployedAgents.length > 0 ? (
