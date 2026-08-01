@@ -291,9 +291,10 @@ export class OpenComputerClient {
 
   async channelConnections(): Promise<ManagedSlackConnection[]> {
     const result = await this.request<{
-      connections: ManagedSlackConnection[];
+      channels?: ManagedSlackConnection[];
+      connections?: ManagedSlackConnection[];
     }>("/api/managed-agents/channels");
-    return result.connections;
+    return result.channels ?? result.connections ?? [];
   }
 
   completeSlackConnection(connectionId: string, botToken: string) {

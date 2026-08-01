@@ -2,7 +2,7 @@
 
 import { runCommand, type GlobalOptions } from "./commands.js";
 
-const VERSION = "0.3.8";
+const VERSION = "0.3.9";
 
 const BANNER = String.raw`   ____                   ______                            __
   / __ \____  ___  ____  / ____/___  ____ ___  ____  __  / /____  _____
