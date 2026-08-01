@@ -1,10 +1,10 @@
 ---
 title: "Quickstart"
-description: "Deploy a Gmail summarizer agent with the OpenComputer CLI"
+description: "Deploy a Gmail summarizer project with the OpenComputer CLI"
 ---
 
 This quickstart creates a source-controlled Gmail summarizer, connects your
-Google account, tests the agent locally, and deploys it to OpenComputer.
+Google account, tests the project locally, and deploys it to OpenComputer.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ Google account, tests the agent locally, and deploys it to OpenComputer.
 
 ## 1. Install and log in
 
-Install the agents-focused OpenComputer CLI:
+Install the project-focused OpenComputer CLI:
 
 ```bash
 npm install --global @opencomputer/cli
@@ -31,7 +31,7 @@ opencomputer whoami
 
 ## 2. Choose a template
 
-List the available agent use cases:
+List the available project use cases:
 
 ```bash
 opencomputer templates
@@ -63,14 +63,14 @@ template = "email-triage"
 
 The generated name is what people see in the dashboard. The UUID is the
 unique identifier used by deployments, sessions, channels, and APIs. Generated
-names vary and can be edited without changing the agent's identity.
+names vary and can be edited without changing the project's identity.
 
 <Warning>
 Keep the `id` stable after the first deployment. Changing it creates a
-different agent instead of a new version.
+different project instead of a new version.
 </Warning>
 
-## 3. Customize the agent
+## 3. Customize the project
 
 Open `instructions.md` and describe the job and its approval boundaries. For
 example:
@@ -87,14 +87,14 @@ Summarize unread and recent Gmail threads.
 The generated project already includes the Gmail tool and its Google
 connection declaration.
 
-## 4. Commit the agent
+## 4. Commit the project
 
 Treat the project like any other codebase:
 
 ```bash
 git init
 git add .
-git commit -m "Initialize Gmail summarizer agent"
+git commit -m "Initialize Gmail summarizer project"
 ```
 
 This commits `opencomputer.toml`, so future deployments use the same identity.
@@ -119,7 +119,7 @@ more than one Gmail account without sharing either account with another user.
 
 ## 6. Test locally
 
-Run one task with the local agent:
+Run one task with the local project:
 
 ```bash
 opencomputer session "Summarize up to 10 unread Gmail messages. Group them into urgent, needs action, and informational. Include sender, subject, a one-sentence summary, and any deadline. Do not modify any email."
@@ -143,7 +143,7 @@ Publish the current source as the `production` version:
 opencomputer deploy --alias production
 ```
 
-The result includes the stable agent ID and an immutable deployment ID:
+The result includes the stable project ID and an immutable deployment ID:
 
 ```text
 Deployed gmail-summarizer@production
@@ -151,13 +151,13 @@ Deployment: gmail-summarizer:<source-digest>
 Source ID:  opencomputer.toml
 ```
 
-Verify that the agent is registered:
+Verify that the project is registered:
 
 ```bash
-opencomputer agents
+opencomputer projects
 ```
 
-Run the deployed agent:
+Run the deployed project:
 
 ```bash
 opencomputer run gmail-summarizer \
@@ -174,13 +174,13 @@ git commit -m "Refine inbox urgency rules"
 opencomputer deploy --alias production
 ```
 
-The agent remains `gmail-summarizer`; the `production` alias moves to the new
+The project remains `gmail-summarizer`; the `production` alias moves to the new
 immutable version.
 
 ## Next
 
 <CardGroup cols={2}>
-  <Card title="Agents overview" icon="robot" href="/agents/overview">
+  <Card title="Projects overview" icon="robot" href="/agents/overview">
     Learn the project structure and versioning model.
   </Card>
   <Card title="Architecture" icon="diagram-project" href="/agents/architecture">

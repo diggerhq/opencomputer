@@ -2,7 +2,7 @@
 
 import { runCommand, type GlobalOptions } from "./commands.js";
 
-const VERSION = "0.3.7";
+const VERSION = "0.3.8";
 
 const BANNER = String.raw`   ____                   ______                            __
   / __ \____  ___  ____  / ____/___  ____ ___  ____  __  / /____  _____
@@ -32,19 +32,19 @@ function takeFlag(args: string[], name: string): boolean {
 function help(): void {
   process.stdout.write(`${BANNER}
 
-OpenComputer — build, test, connect, and deploy agents as code
+OpenComputer — build, test, connect, and deploy projects
 
 Usage:
   opencomputer login [--no-browser] [--force]
   opencomputer logout [--local]
   opencomputer whoami
   opencomputer templates
-  opencomputer agents
+  opencomputer projects
   opencomputer init <template> [directory]
   opencomputer dev
   opencomputer session [prompt]
   opencomputer session create <prompt> [--local]
-  opencomputer session create [prompt] --remote [--agent <agent>@<alias>] [--keep]
+  opencomputer session create [prompt] --remote [--project <project>@<alias>] [--keep]
   opencomputer session list
   opencomputer session inspect <session-id>
   opencomputer session attach <session-id>
@@ -59,7 +59,7 @@ Usage:
   opencomputer channels list [--local|--remote]
   opencomputer channels disconnect slack [connection-id] [--local|--remote]
   opencomputer deploy [--alias <alias>]
-  opencomputer run <agent> <prompt> [--keep]
+  opencomputer run <project> <prompt> [--keep]
 
 Global options:
   --api-url <url>   OpenComputer API (default: https://app.opencomputer.dev)

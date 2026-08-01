@@ -1,5 +1,5 @@
 const root = document.getElementById("root");
-if (root) root.textContent = "Starting local agent…";
+if (root) root.textContent = "Starting local project…";
 
 function showFailure(error: unknown): void {
   if (!root) return;
@@ -10,7 +10,7 @@ function showFailure(error: unknown): void {
     "display:grid;place-content:center;min-height:100vh;padding:32px;" +
     "font:14px/1.5 ui-sans-serif,system-ui;color:#9b3434;background:#f6f6f3;text-align:center";
   const title = document.createElement("strong");
-  title.textContent = "The local agent app could not start";
+  title.textContent = "The local project app could not start";
   const detail = document.createElement("p");
   detail.textContent = message;
   panel.append(title, detail);

@@ -61,7 +61,7 @@ export default function ManagedAgentConnections() {
     <div>
       <PageHeader
         title="Connections"
-        description="Connected accounts available to your agents."
+        description="Connected accounts available to your projects."
       />
 
       {channelLinkState !== 'idle' && (
@@ -69,9 +69,9 @@ export default function ManagedAgentConnections() {
           <PanelContent className="text-sm">
             {channelLinkState === 'linking' && 'Linking your channel identity…'}
             {channelLinkState === 'linked' &&
-              'Channel identity linked. This agent can now use your connections when you message it.'}
+              'Channel identity linked. This project can now use your connections when you message it.'}
             {channelLinkState === 'failed' &&
-              'This channel link is invalid or expired. Ask the agent for a new link.'}
+              'This channel link is invalid or expired. Ask the project for a new link.'}
           </PanelContent>
         </Panel>
       )}

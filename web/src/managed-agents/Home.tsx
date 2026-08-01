@@ -48,26 +48,26 @@ type Category = (typeof categories)[number]
 
 const starterCopy = [
   {
-    title: 'Choose a job for your next agent.',
+    title: 'Choose a job for your next project.',
     description:
-      'Pick a starting point, copy its build prompt, and turn it into an agent you can develop and deploy from source.',
+      'Pick a starting point, copy its build prompt, and turn it into a project you can develop and deploy from source.',
     sectionTitle: 'Ideas to start with',
     sectionDescription:
-      'Each prompt creates an editable agent repository you can make your own.',
+      'Each prompt creates an editable project repository you can make your own.',
   },
   {
-    title: 'What should your agent take care of?',
+    title: 'What should your project take care of?',
     description:
       'Start with a useful workflow, shape the source locally, and deploy it when it is ready.',
     sectionTitle: 'Pick a starting point',
     sectionDescription:
-      'Copy an agent prompt, then adapt the generated source to your workflow.',
+      'Copy a project prompt, then adapt the generated source to your workflow.',
   },
   {
     title: 'Start with a real task.',
     description:
-      'Choose a workflow below and use the generated source as the beginning of your next agent.',
-    sectionTitle: 'Agent ideas',
+      'Choose a workflow below and use the generated source as the beginning of your next project.',
+    sectionTitle: 'Project ideas',
     sectionDescription:
       'Explore a use case, copy its prompt, and keep building from the generated repository.',
   },
@@ -100,15 +100,15 @@ function buildSetupPrompt(template: ManagedAgentTemplate, origin: string) {
   const integrations = template.integrations.join(', ')
   const firstPrompt =
     template.suggestedPrompts[0] ?? `Help me configure ${template.name}.`
-  return `Create a local "${template.name}" OpenComputer agent repository for me.
+  return `Create a local "${template.name}" OpenComputer project repository for me.
 
-The agent's job:
+The project's job:
 ${template.description}
 
 Suggested integrations:
 ${integrations}
 
-Use the OpenComputer CLI and keep the agent as editable source code in this workspace.
+Use the OpenComputer CLI and keep the project as editable source code in this workspace.
 
 1. Check whether the \`opencomputer\` command is available. If it is missing, install the \`@opencomputer/cli\` package.
 2. Authenticate interactively:
@@ -117,12 +117,12 @@ Use the OpenComputer CLI and keep the agent as editable source code in this work
    ${cliCommand(origin, `init ${template.id} .`)}
 4. Run \`npm install\` in the repository.
 5. Inspect and tailor the checked-in source: \`opencomputer.toml\`, \`instructions.md\`, \`agent.ts\`, \`tools/\`, \`connections/\`, \`channels/\`, \`skills/\`, \`workspace/\`, and \`evals/\`.
-6. Keep the stable \`id\` in \`opencomputer.toml\`; future deployments of this repository must create new versions of that same agent.
+6. Keep the stable \`id\` in \`opencomputer.toml\`; future deployments of this repository must create new versions of that same project.
 7. Add and authorize only supported integrations. For Gmail, use \`opencomputer tools add gmail\` and \`${cliCommand(origin, 'connect google')}\`. For Slack, use \`opencomputer channels add slack\`.
-8. Test the editable agent locally with OpenCode:
+8. Test the editable project locally:
    \`opencomputer session "${firstPrompt.replace(/"/g, '\\"')}"\`
 9. Make any necessary source changes and test again.
-10. Commit the agent source, including \`opencomputer.toml\`, to Git.
+10. Commit the project source, including \`opencomputer.toml\`, to Git.
 11. Deploy from inside the repository:
    ${cliCommand(origin, 'deploy')}
 
@@ -191,7 +191,7 @@ function TemplateCard({
           onClick={onCopy}
         >
           {copied ? <Check /> : <Clipboard />}
-          {copied ? 'Agent prompt copied' : 'Copy agent prompt'}
+          {copied ? 'Project prompt copied' : 'Copy project prompt'}
         </Button>
       </PanelContent>
     </Panel>
@@ -240,27 +240,27 @@ export default function ManagedAgentsHome({
         buildSetupPrompt(template, window.location.origin),
       )
       setCopiedTemplateId(template.id)
-      toast.success(`${template.name} agent prompt copied`)
+      toast.success(`${template.name} project prompt copied`)
     } catch (error) {
-      notifyError("Couldn't copy the agent prompt.", error)
+      notifyError("Couldn't copy the project prompt.", error)
     }
   }
 
   return (
     <div className="space-y-8">
       <PageHeader
-        title={startersOnly ? 'Deploy another agent' : 'Agents'}
+        title={startersOnly ? 'Deploy another project' : 'Projects'}
         description={
           startersOnly
-            ? 'Choose a starting point for your next agent repository.'
-            : 'Develop locally, then deploy versioned agents with the OpenComputer CLI.'
+            ? 'Choose a starting point for your next project repository.'
+            : 'Develop locally, then deploy versioned projects with the OpenComputer CLI.'
         }
         actions={
           !startersOnly && deployedAgents.length > 0 ? (
             <Button asChild>
               <Link to="/managed-agents/new">
                 <Plus />
-                Deploy another agent
+                Deploy another project
               </Link>
             </Button>
           ) : undefined
@@ -272,7 +272,7 @@ export default function ManagedAgentsHome({
           <div className="max-w-2xl">
             <div className="bg-primary/10 text-primary mb-4 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium">
               <Sparkles className="size-3.5" />
-              {firstRun ? 'Your first agent' : 'Your next agent'}
+              {firstRun ? 'Your first project' : 'Your next project'}
             </div>
             <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
               {copy.title}
@@ -292,8 +292,8 @@ export default function ManagedAgentsHome({
         <Panel>
           <EmptyState
             icon={Bot}
-            title="Your agents are temporarily unavailable"
-            description="Try loading the agents page again."
+            title="Your projects are temporarily unavailable"
+            description="Try loading the projects page again."
             action={
               <Button variant="outline" onClick={() => void agents.refetch()}>
                 Try again
@@ -304,9 +304,9 @@ export default function ManagedAgentsHome({
       ) : !startersOnly && deployedAgents.length > 0 ? (
         <section className="space-y-3">
           <div>
-            <h2 className="text-base font-semibold">Your agents</h2>
+            <h2 className="text-base font-semibold">Your projects</h2>
             <p className="text-muted-foreground text-sm">
-              Select an agent to view its deployment and sessions.
+              Select a project to view its deployments and sessions.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -358,8 +358,8 @@ export default function ManagedAgentsHome({
             <Panel>
               <EmptyState
                 icon={Bot}
-                title="Agent templates are temporarily unavailable"
-                description="Check the managed-agent service configuration and try again."
+                title="Project templates are temporarily unavailable"
+                description="Check the project service configuration and try again."
                 action={
                   <Button
                     variant="outline"
@@ -378,7 +378,7 @@ export default function ManagedAgentsHome({
               <div
                 className="bg-muted/30 flex gap-1 overflow-x-auto rounded-lg border p-1"
                 role="tablist"
-                aria-label="Agent categories"
+                aria-label="Project categories"
               >
                 {categoryOrder.map((category) => {
                   const Icon = categoryIcons[category]

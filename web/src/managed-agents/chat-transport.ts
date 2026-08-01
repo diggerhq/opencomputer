@@ -14,7 +14,7 @@ function eventError(event: ManagedAgentEvent) {
     ? event.data.message
     : typeof event.data.reason === 'string'
       ? event.data.reason
-      : 'The agent could not complete this request.'
+      : 'The project could not complete this request.'
 }
 
 function lastUserText(messages: UIMessage[]) {

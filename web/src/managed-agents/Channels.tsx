@@ -36,7 +36,7 @@ export default function ManagedAgentChannels() {
     <div>
       <PageHeader
         title="Channels"
-        description="Places where agents can receive and send messages."
+        description="Places where projects can receive and send messages."
       />
 
       {channels.isLoading ? (

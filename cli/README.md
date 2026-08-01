@@ -1,8 +1,8 @@
 # OpenComputer CLI
 
-The OpenComputer CLI treats every agent as a normal source repository. A
+The OpenComputer CLI treats every project as a normal source repository. A
 template creates editable instructions, TypeScript tools, connection
-declarations, channel code, a sandbox workspace, and committed agent identity.
+declarations, channel code, a sandbox workspace, and committed project identity.
 
 [Bun](https://bun.sh/) 1.2 or newer is required. The CLI is still installed
 and published through npm:
@@ -40,14 +40,14 @@ email-triage/
 └── evals/
 ```
 
-`opencomputer.toml` is committed with the agent and contains its stable ID.
-The directory can be renamed without creating a different deployed agent; each
-`opencomputer deploy` publishes a new immutable deployment and advances the
-selected alias.
+`opencomputer.toml` is committed with the project and contains its stable ID.
+The directory can be renamed without creating a different deployed project;
+each `opencomputer deploy` publishes a new immutable deployment and advances
+the selected alias.
 
 ## Sessions
 
-`opencomputer dev` starts the local agent service and opens its React browser
+`opencomputer dev` starts the local project service and opens its React browser
 app. The app uses the AI SDK message lifecycle and supports multiple independent
 sessions, multi-turn conversations, and streamed tool activity:
 
@@ -75,7 +75,7 @@ invocations:
 
 ```bash
 opencomputer session create --remote \
-  --agent gmail-summarizer@production
+  --project gmail-summarizer@production
 opencomputer session list
 opencomputer session send <session-id> "Summarize today's inbox."
 opencomputer session inspect <session-id>
@@ -83,7 +83,7 @@ opencomputer session attach <session-id>
 opencomputer session end <session-id>
 ```
 
-Add and manage account connections and agent channels from the same CLI:
+Add and manage account connections and project channels from the same CLI:
 
 ```bash
 opencomputer connection add gmail --alias personal

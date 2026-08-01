@@ -402,7 +402,7 @@ async function createRuntimeSession(
   directory: string,
 ): Promise<string> {
   const created = await client.session.create({ directory });
-  if (!created.data) throw new Error("The local agent session did not start");
+  if (!created.data) throw new Error("The local project session did not start");
   return created.data.id;
 }
 
@@ -428,7 +428,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
   const root = await findAgentRoot();
   if (!root) {
     throw new Error(
-      "No OpenComputer agent repository found. Run `opencomputer init <template>` first.",
+      "No OpenComputer project found. Run `opencomputer init <template>` first.",
     );
   }
   const existing = await readDevState(root);
@@ -480,7 +480,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
     auth: { type: "api", key: gateway.token },
   });
   if (authenticated.error || authenticated.data !== true) {
-    throw new Error("The embedded agent runtime rejected its local credential");
+    throw new Error("The embedded project runtime rejected its local credential");
   }
 
   const token = randomBytes(32).toString("base64url");
@@ -637,7 +637,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
       }
       if (request.method === "GET" && url.pathname === "/api") {
         sendJSON(response, 200, {
-          service: "OpenComputer local agent",
+          service: "OpenComputer local project",
           agentId: manifest.id,
           endpoints: ["GET /sessions", "POST /sessions", "POST /sessions/:id"],
         });
@@ -682,7 +682,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
   const webUrl = `${state.url}/#token=${encodeURIComponent(token)}`;
   process.stdout.write(
     `OpenComputer dev service ready\n` +
-      `Agent: ${manifest.name} (${manifest.id})\n` +
+      `Project: ${manifest.name} (${manifest.id})\n` +
       `Web: ${webUrl}\n` +
       `Local API: ${state.url}\n` +
       `Session: opencomputer session\n`,
@@ -721,7 +721,7 @@ async function runLocalSession(
   if (!response.ok || !response.body) {
     const detail = await response.text().catch(() => "");
     throw new Error(
-      `The local agent service returned ${String(response.status)}` +
+      `The local project service returned ${String(response.status)}` +
         (detail ? `: ${detail}` : ""),
     );
   }
@@ -790,7 +790,7 @@ async function ensureDevService(
   const root = await findAgentRoot();
   if (!root) {
     throw new Error(
-      "No OpenComputer agent repository found. Run `opencomputer init <template>` first.",
+      "No OpenComputer project found. Run `opencomputer init <template>` first.",
     );
   }
   const existing = await readDevState(root);

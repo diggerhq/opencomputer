@@ -128,11 +128,11 @@ const LEGACY_NAV: NavGroup[] = [
 
 const MANAGED_AGENTS_NAV: NavGroup[] = [
   {
-    label: 'Serverless agents',
+    label: 'Projects',
     collapsible: true,
     landingTo: '/',
     items: [
-      { to: '/', label: 'Agents', icon: Bot, end: true },
+      { to: '/', label: 'Projects', icon: Bot, end: true },
       {
         to: '/managed-agents/connections',
         label: 'Connections',
@@ -262,7 +262,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       group.collapsible &&
       group.label &&
       ((managedAgentsExperimentEnabled &&
-        group.label === 'Serverless agents' &&
+        group.label === 'Projects' &&
         location.pathname.startsWith('/managed-agents/')) ||
         group.items.some(
           (item) =>
@@ -270,12 +270,18 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             (item.to !== '/' && location.pathname.startsWith(`${item.to}/`)),
         )),
   )?.label
-  const [openGroup, setOpenGroup] = useState<string | undefined>(
-    activeCollapsibleGroup,
+  const [openGroups, setOpenGroups] = useState<Set<string>>(
+    () => new Set(activeCollapsibleGroup ? [activeCollapsibleGroup] : []),
   )
 
   useEffect(() => {
-    if (activeCollapsibleGroup) setOpenGroup(activeCollapsibleGroup)
+    if (!activeCollapsibleGroup) return
+    setOpenGroups((current) => {
+      if (current.has(activeCollapsibleGroup)) return current
+      const next = new Set(current)
+      next.add(activeCollapsibleGroup)
+      return next
+    })
   }, [activeCollapsibleGroup])
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -292,16 +298,21 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
               <button
                 type="button"
                 onClick={() => {
-                  setOpenGroup(group.label)
+                  setOpenGroups((current) => {
+                    const next = new Set(current)
+                    if (next.has(group.label!)) next.delete(group.label!)
+                    else next.add(group.label!)
+                    return next
+                  })
                   if (group.landingTo) void navigate(group.landingTo)
                 }}
                 className="text-muted-foreground/70 hover:text-foreground flex w-full items-center gap-1 px-3 pb-1 text-left text-[10px] font-medium tracking-wider uppercase transition-colors"
-                aria-expanded={openGroup === group.label}
+                aria-expanded={openGroups.has(group.label)}
               >
                 <ChevronRight
                   className={cn(
                     'size-3 transition-transform',
-                    openGroup === group.label && 'rotate-90',
+                    openGroups.has(group.label) && 'rotate-90',
                   )}
                 />
                 {group.label}
@@ -311,7 +322,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
                 {group.label}
               </div>
             ) : null}
-            {(!group.collapsible || openGroup === group.label) &&
+            {(!group.collapsible || openGroups.has(group.label ?? '')) &&
               group.items.map((item) => (
                 <NavLink
                   key={item.to}
