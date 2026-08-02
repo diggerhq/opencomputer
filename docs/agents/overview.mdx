@@ -11,8 +11,8 @@ without changing the agent's identity.
 
 <CardGroup cols={2}>
   <Card title="Agents as code" icon="code">
-    Prompts, tools, skills, connections, and runtime settings live together in
-    a normal directory you can review and commit.
+    Prompts, tools, skills, connections, and runtime settings live together in a
+    normal directory you can review and commit.
   </Card>
   <Card title="Local development" icon="terminal">
     Run the agent locally with OpenCode, your project files, and managed
@@ -50,25 +50,23 @@ gmail-summarizer/
 ├── connections/
 │   └── google.json
 ├── skills/
-├── channels/
 ├── workspace/
 └── evals/
 ```
 
 The important files are:
 
-| File | Purpose |
-|---|---|
-| `opencomputer.toml` | Committed identity for the agent. Keep its `id` stable across deployments. |
-| `instructions.md` | The agent's role, operating rules, and approval boundaries. |
-| `agent.ts` | Model and runtime permissions used by OpenCode. |
-| `opencomputer.config.ts` | OpenComputer runtime configuration. |
-| `tools/` | Code-native tools available to the agent. |
-| `connections/` | Declarations for managed services such as Gmail. |
-| `skills/` | Reusable domain knowledge and workflows. |
-| `channels/` | Interfaces such as Slack through which people can reach the agent. |
-| `workspace/` | Durable working files packaged with the agent. |
-| `evals/` | Repeatable checks for agent behavior. |
+| File                     | Purpose                                                                    |
+| ------------------------ | -------------------------------------------------------------------------- |
+| `opencomputer.toml`      | Committed identity for the agent. Keep its `id` stable across deployments. |
+| `instructions.md`        | The agent's role, operating rules, and approval boundaries.                |
+| `agent.ts`               | Model and runtime permissions used by OpenCode.                            |
+| `opencomputer.config.ts` | OpenComputer runtime configuration.                                        |
+| `tools/`                 | Code-native tools available to the agent.                                  |
+| `connections/`           | Declarations for managed services such as Gmail.                           |
+| `skills/`                | Reusable domain knowledge and workflows.                                   |
+| `workspace/`             | Durable working files packaged with the agent.                             |
+| `evals/`                 | Repeatable checks for agent behavior.                                      |
 
 ## Identity and versions
 
@@ -99,9 +97,9 @@ opencomputer deploy --alias production
     closest to your job.
   </Step>
   <Step title="Develop locally">
-    Edit the instructions, tools, and skills in your editor. Use
-    `opencomputer session` for a single task or `opencomputer dev` for an
-    interactive OpenCode session.
+    Edit the instructions, tools, and skills in your editor. Use `opencomputer
+    session` for a single task or `opencomputer dev` for an interactive OpenCode
+    session.
   </Step>
   <Step title="Connect services">
     Authorize account-level connections through the CLI. OAuth credentials
@@ -134,18 +132,11 @@ By default, a completed remote turn suspends its runtime. A later
 
 ## Channels
 
-Channels let people invoke a deployed agent from another interface. To add
-Slack to an agent:
-
-```bash
-opencomputer channels add slack
-opencomputer deploy
-opencomputer channels connect slack --remote
-opencomputer channels list
-```
-
-The channel declaration and Slack project configuration live with the source.
-The installation credentials remain managed outside the repository.
+Channels let people invoke a deployed agent from another interface. After
+deploying, open the agent in the dashboard, select **Channels**, and connect a
+dedicated Slack app to the active deployment alias. OpenComputer generates the
+Slack manifest and guides you through installation; no Slack files or
+credentials are added to the agent repository.
 
 <CardGroup cols={2}>
   <Card title="Connections" icon="plug" href="/agents/connections">
@@ -157,10 +148,15 @@ The installation credentials remain managed outside the repository.
 </CardGroup>
 
 <CardGroup cols={2}>
-  <Card title="Build a Gmail summarizer" icon="envelope" href="/agents/quickstart">
+  <Card
+    title="Build a Gmail summarizer"
+    icon="envelope"
+    href="/agents/quickstart"
+  >
     Create, connect, test, and deploy an agent from a template.
   </Card>
   <Card title="Architecture" icon="diagram-project" href="/agents/architecture">
-    See how local projects, deployments, sandboxes, and connections fit together.
+    See how local projects, deployments, sandboxes, and connections fit
+    together.
   </Card>
 </CardGroup>

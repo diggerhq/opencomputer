@@ -723,6 +723,11 @@ export async function runCommand(
 
   if (command === "channels") {
     const action = args.shift();
+    if (action === "add" || action === "connect") {
+      throw new Error(
+        "Connect Slack from the deployed agent's Channels tab in the OpenComputer dashboard.",
+      );
+    }
     if (action === "list") {
       const localOnly = flag(args, "--local");
       const remoteOnly = flag(args, "--remote");

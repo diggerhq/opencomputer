@@ -170,6 +170,7 @@ function publicChannel(value: unknown): Record<string, unknown> {
     channel: "slack",
     agentId: channel.agentId,
     alias: channel.alias,
+    appName: channel.appName,
     teamName: channel.teamName,
     status: channel.status,
     createdAt: channel.createdAt,
@@ -289,6 +290,20 @@ function publicSuccessBody(
         ? body.connections.map(publicChannel)
         : [],
     };
+  }
+  if (method === "POST" && suffix === "/channels/slack/connections") {
+    return {
+      connection: publicChannel(body.connection),
+      manifest: stripPrivateValues(body.manifest),
+      createUrl: body.createUrl,
+      steps: strings(body.steps),
+    };
+  }
+  if (
+    (method === "PUT" || method === "DELETE") &&
+    /^\/channels\/slack\/connections\/[^/]+$/.test(suffix)
+  ) {
+    return publicChannel(body);
   }
   if (
     (method === "GET" && suffix.startsWith("/connections")) ||

@@ -59,7 +59,11 @@ const channelSchema = z.object({
   channel: z.string(),
   agentId: z.string(),
   alias: z.string(),
+  appName: z.string().nullish(),
   teamName: z.string().nullish(),
+  appId: z.string().nullish(),
+  teamId: z.string().nullish(),
+  botUserId: z.string().nullish(),
   status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -73,6 +77,13 @@ const channelIdentityLinkSchema = z.object({ linked: z.literal(true) })
 
 const channelsResponseSchema = z.object({
   channels: z.array(channelSchema),
+})
+
+const slackManifestResponseSchema = z.object({
+  connection: channelSchema,
+  manifest: z.record(z.string(), z.unknown()),
+  createUrl: z.string().url(),
+  steps: z.array(z.string()),
 })
 
 const sessionCreateSchema = z.object({
@@ -130,6 +141,7 @@ export type ManagedAgentEvent = z.infer<typeof eventSchema>
 export type ManagedAgentSession = z.infer<typeof sessionSchema>
 export type ManagedAgentConnection = z.infer<typeof connectionSchema>
 export type ManagedAgentChannel = z.infer<typeof channelSchema>
+export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
 
 const UUID_NAME =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -186,6 +198,40 @@ export async function getManagedAgentChannels() {
       channelsResponseSchema,
     )
   ).channels
+}
+
+export async function startManagedAgentSlack(
+  agentId: string,
+  name: string,
+  reconnect = false,
+) {
+  return apiFetch(
+    '/managed-agents/channels/slack/connections',
+    {
+      method: 'POST',
+      body: JSON.stringify({ agentId, name, reconnect }),
+    },
+    slackManifestResponseSchema,
+  )
+}
+
+export async function completeManagedAgentSlack(
+  connectionId: string,
+  input: { appId: string; signingSecret: string; botToken: string },
+) {
+  return apiFetch(
+    `/managed-agents/channels/slack/connections/${encodeURIComponent(connectionId)}`,
+    { method: 'PUT', body: JSON.stringify(input) },
+    channelSchema,
+  )
+}
+
+export async function disconnectManagedAgentSlack(connectionId: string) {
+  return apiFetch(
+    `/managed-agents/channels/slack/connections/${encodeURIComponent(connectionId)}`,
+    { method: 'DELETE' },
+    channelSchema,
+  )
 }
 
 export async function getManagedAgentDeployment(deploymentId: string) {

@@ -54,8 +54,6 @@ Usage:
   opencomputer connection add gmail [--alias <name>]
   opencomputer connection list
   opencomputer connection remove <alias|connection-id>
-  opencomputer channels add slack
-  opencomputer channels connect slack [--local|--remote]
   opencomputer channels list [--local|--remote]
   opencomputer channels disconnect slack [connection-id] [--local|--remote]
   opencomputer deploy [--alias <alias>]

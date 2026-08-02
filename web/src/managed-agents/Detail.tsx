@@ -13,7 +13,6 @@ import {
   GitCommitHorizontal,
   Loader2,
   Plus,
-  Radio,
   Send,
   Square,
   TerminalSquare,
@@ -43,11 +42,11 @@ import {
   getManagedAgents,
   getManagedAgentSessions,
   type ManagedAgentEvent,
-  type ManagedAgentChannel,
   type ManagedAgentSession,
 } from './api'
 import { ManagedAgentChatTransport } from './chat-transport'
 import { isNearScrollEnd } from './scroll-follow'
+import { ManagedSlackWizard } from './SlackWizard'
 
 type DetailTab = 'playground' | 'deployments' | 'sessions' | 'channels'
 
@@ -470,56 +469,12 @@ export default function ManagedAgentDetail() {
   const externalSessions = (sessions.data ?? []).filter(
     (session) => session.source !== 'playground',
   )
-  const agentChannels = (channels.data ?? []).filter(
-    (channel) => channel.agentId === agentId,
+  const activeAliasChannel = (channels.data ?? []).find(
+    (channel) =>
+      channel.agentId === agentId &&
+      channel.alias === (activeDeployment.data?.alias ?? agent?.activeAlias) &&
+      channel.status !== 'disconnected',
   )
-
-  const channelColumns: Column<ManagedAgentChannel>[] = [
-    {
-      key: 'channel',
-      header: 'Channel',
-      cell: (channel) => (
-        <span className="flex items-center gap-2 text-sm capitalize">
-          <Radio className="text-muted-foreground size-3.5" />
-          {channel.channel}
-        </span>
-      ),
-    },
-    {
-      key: 'workspace',
-      header: 'Workspace',
-      cell: (channel) => (
-        <span className="text-muted-foreground text-sm">
-          {channel.teamName || '—'}
-        </span>
-      ),
-    },
-    {
-      key: 'alias',
-      header: 'Deployment alias',
-      cell: (channel) => (
-        <span className="font-mono text-xs">{channel.alias}</span>
-      ),
-    },
-    {
-      key: 'status',
-      header: 'Status',
-      cell: (channel) => <StatusBadge status={channel.status} />,
-    },
-    {
-      key: 'updated',
-      header: 'Updated',
-      align: 'right',
-      cell: (channel) => (
-        <time
-          className="text-muted-foreground text-xs"
-          dateTime={channel.updatedAt}
-        >
-          {formatDate(channel.updatedAt)}
-        </time>
-      ),
-    },
-  ]
 
   const sessionColumns: Column<ManagedAgentSession>[] = [
     {
@@ -639,7 +594,9 @@ export default function ManagedAgentDetail() {
           <span>
             {activeDeployment.data?.connections.length ?? 0} connections
           </span>
-          <span>{agentChannels.length} channels</span>
+          <span>
+            {activeAliasChannel?.status === 'connected' ? 1 : 0} channels
+          </span>
         </div>
       </div>
 
@@ -856,19 +813,18 @@ export default function ManagedAgentDetail() {
               </PanelDescription>
             </div>
           </PanelHeader>
-          <ResourceTable
-            columns={channelColumns}
-            rows={agentChannels}
-            rowKey={(channel) => channel.id}
-            loading={channels.isLoading}
-            empty={
-              <EmptyState
-                icon={Radio}
-                title="No channels connected"
-                description="Connect Slack, Discord, or another channel from your checked-out agent project."
-              />
-            }
-          />
+          {agent && activeDeployment.data ? (
+            <ManagedSlackWizard
+              agentId={agent.id}
+              alias={activeDeployment.data.alias}
+              agentName={displayManagedAgentName(agent)}
+              connection={activeAliasChannel}
+            />
+          ) : (
+            <PanelContent className="text-muted-foreground text-sm">
+              Loading channels…
+            </PanelContent>
+          )}
         </Panel>
       ) : null}
     </div>
