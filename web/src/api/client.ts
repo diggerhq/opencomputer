@@ -1,4 +1,4 @@
-import posthog from 'posthog-js'
+import { resetAnalytics } from '../lib/analytics'
 import { z } from 'zod'
 import * as S from './schemas'
 import { ApiError } from './errors'
@@ -192,7 +192,7 @@ export async function logout(): Promise<void> {
   } catch {
     // ignore — fall back to /auth/login
   }
-  posthog.reset()
+  resetAnalytics()
   window.location.replace(dest)
 }
 

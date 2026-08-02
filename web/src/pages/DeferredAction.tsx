@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
-import posthog from 'posthog-js'
 import { useAuth } from '@/hooks/useAuth'
 import { Button } from '@/components/ui/button'
 import {
@@ -9,6 +8,7 @@ import {
   decodeAction,
   type ActionEnvelope,
 } from '@/lib/deferred-actions'
+import { captureAnalyticsEvent } from '@/lib/analytics'
 
 // /do — the deferred-action executor. Reads ?action=<envelope>, and:
 //  - anonymous → captures the pre-auth `landed` event, then bounces to WorkOS
@@ -49,7 +49,7 @@ export default function DeferredAction() {
       const started = performance.now()
       try {
         const result = await handler(env.params)
-        posthog.capture('deferred_action_executed', {
+        captureAnalyticsEvent('deferred_action_executed', {
           action_type: env.type,
           ms: Math.round(performance.now() - started),
           ...(result.analytics ?? {}), // e.g. agent_id
@@ -59,7 +59,7 @@ export default function DeferredAction() {
           state: result.navigateState,
         })
       } catch (e) {
-        posthog.capture('deferred_action_failed', {
+        captureAnalyticsEvent('deferred_action_failed', {
           action_type: env.type,
           reason: 'api_error',
         })
@@ -75,7 +75,7 @@ export default function DeferredAction() {
     // Structurally invalid → record why and stop; no auth needed to show this.
     if (!supported) {
       executedRef.current = true
-      posthog.capture('deferred_action_failed', {
+      captureAnalyticsEvent('deferred_action_failed', {
         action_type: envelope?.type ?? null,
         reason: envelope ? 'unknown_type' : 'malformed',
       })
@@ -87,7 +87,7 @@ export default function DeferredAction() {
       // Anonymous: record the top of the funnel while the URL is intact, then
       // hand off to login. sendBeacon so the batched event survives the nav.
       executedRef.current = true
-      posthog.capture(
+      captureAnalyticsEvent(
         'deferred_action_landed',
         { action_type: envelope.type, authenticated: false },
         { transport: 'sendBeacon' },
@@ -100,7 +100,7 @@ export default function DeferredAction() {
     }
 
     executedRef.current = true
-    posthog.capture('deferred_action_landed', {
+    captureAnalyticsEvent('deferred_action_landed', {
       action_type: envelope.type,
       authenticated: true,
     })
@@ -124,8 +124,8 @@ export default function DeferredAction() {
             This link isn&rsquo;t supported.
           </p>
           <p className="text-muted-foreground max-w-sm text-sm">
-            It may be from a newer version of the site. Head to your dashboard to
-            keep going.
+            It may be from a newer version of the site. Head to your dashboard
+            to keep going.
           </p>
           <Link
             to="/"

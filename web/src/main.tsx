@@ -11,6 +11,7 @@ import {
   DefaultErrorFallback,
 } from './components/error-boundary'
 import { reloadForStaleChunk } from './lib/chunk-reload'
+import { initializeAnalytics } from './lib/analytics'
 import './index.css'
 
 const queryClient = new QueryClient({
@@ -22,15 +23,10 @@ const queryClient = new QueryClient({
   },
 })
 
-const PH_TOKEN = import.meta.env.VITE_PUBLIC_POSTHOG_PROJECT_TOKEN
-const PH_HOST = import.meta.env.VITE_PUBLIC_POSTHOG_HOST
-if (PH_TOKEN) {
-  posthog.init(PH_TOKEN, {
-    api_host: PH_HOST || 'https://us.i.posthog.com',
-    defaults: '2025-05-24',
-    person_profiles: 'identified_only',
-  })
-}
+initializeAnalytics(
+  import.meta.env.VITE_PUBLIC_POSTHOG_PROJECT_TOKEN,
+  import.meta.env.VITE_PUBLIC_POSTHOG_HOST,
+)
 
 // After a deploy, an open tab still references the previous build's hashed route
 // chunks; navigating to a not-yet-loaded route fails the dynamic import and Vite

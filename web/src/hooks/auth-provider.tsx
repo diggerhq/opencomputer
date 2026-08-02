@@ -1,7 +1,7 @@
 import { useCallback, useEffect, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import posthog from 'posthog-js'
 import { getMe, switchOrg as switchOrgApi } from '../api/client'
+import { identifyAnalyticsUser } from '../lib/analytics'
 import { AuthContext } from './useAuth'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -21,7 +21,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Identify the analytics user once /me resolves (external-system sync).
   useEffect(() => {
     if (user?.id) {
-      posthog.identify(user.id, { email: user.email, org_id: user.orgId })
+      const activeOrg = user.orgs?.find((org) => org.isActive)
+      identifyAnalyticsUser({
+        id: user.id,
+        email: user.email,
+        orgId: user.orgId,
+        orgName: activeOrg?.name,
+      })
     }
   }, [user])
 
