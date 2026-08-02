@@ -66,6 +66,11 @@ export class VmSession extends DurableObject<WorkerEnv> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/connect") return this.acceptVmConnection();
+    if (url.pathname === "/location") {
+      const trace = await fetch("https://www.cloudflare.com/cdn-cgi/trace", { cache: "no-store" }).then((response) => response.text());
+      const fields = Object.fromEntries(trace.trim().split("\n").map((line) => line.split("=", 2)));
+      return json({ colo: fields.colo ?? null, loc: fields.loc ?? null });
+    }
     if (url.pathname === "/lease") {
       return json({ connected: this.connectedSocket() !== undefined });
     }
@@ -182,6 +187,14 @@ export default {
         frontendColo: request.cf?.colo ?? null,
         bootstrapMs: performance.now() - startedAt,
       });
+    }
+
+    const locationMatch = url.pathname.match(/^\/internal\/vms\/([^/]+)\/location$/);
+    if (locationMatch && request.method === "GET") {
+      const denied = await requireApiAuth(request, env);
+      if (denied) return denied;
+      if (locationMatch[1] !== env.POC_VM_ID) return json({ error: "not found" }, { status: 404 });
+      return stubFor(env, locationMatch[1]).fetch("https://do/location");
     }
 
     const denied = await requireApiAuth(request, env);
