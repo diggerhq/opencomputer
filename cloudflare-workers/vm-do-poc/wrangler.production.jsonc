@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "opencomputer-vm-do-benchmark-prod",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-02",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "b8f23cb87a7a6c64040d3134643da448",
+  "routes": [
+    {
+      "pattern": "vm-do-benchmark.opencomputer.dev",
+      "zone_name": "opencomputer.dev",
+      "custom_domain": true
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "VM_SESSIONS",
+        "class_name": "VmSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["VmSession"]
+    }
+  ],
+  "vars": {
+    "POC_VM_ID": "sb-674b9289"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

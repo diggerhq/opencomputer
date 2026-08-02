@@ -1,0 +1,20 @@
+{
+  "name": "opencomputer-vm-do-poc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit && node --check vm-agent.mjs && node --check provision-vm.mjs && node --check measure.mjs",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@opencomputer/sdk": "0.15.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "typescript": "^5.9.2",
+    "wrangler": "4.118.0"
+  }
+}
