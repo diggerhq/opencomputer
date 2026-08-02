@@ -5,13 +5,7 @@
   "compatibility_date": "2026-08-02",
   "compatibility_flags": ["nodejs_compat"],
   "account_id": "b8f23cb87a7a6c64040d3134643da448",
-  "routes": [
-    {
-      "pattern": "vm-do-benchmark.opencomputer.dev",
-      "zone_name": "opencomputer.dev",
-      "custom_domain": true
-    }
-  ],
+  "workers_dev": true,
   "durable_objects": {
     "bindings": [
       {
