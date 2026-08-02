@@ -888,7 +888,9 @@ export async function runCommand(
 
   if (command === "slack-hook") {
     const action = args.shift();
-    if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+    // Slack CLI app hooks append metadata such as --source=<directory>.
+    // The hook already resolves its repository from the working directory,
+    // so these Slack-owned arguments are intentionally ignored.
     const root = await requireSlackAgentRoot();
     const mode =
       process.env.OPENCOMPUTER_SLACK_MODE === "remote" ? "remote" : "local";
