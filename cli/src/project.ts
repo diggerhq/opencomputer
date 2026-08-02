@@ -386,6 +386,59 @@ export const send = tool({
 `;
 }
 
+function connectionControlToolSource(): string {
+  return `import { tool } from "@opencode-ai/plugin";
+
+async function connectionControl(
+  method: "GET" | "POST",
+  body?: unknown,
+): Promise<unknown> {
+  const base = process.env.OPENCOMPUTER_CONNECTIONS_URL;
+  const token = process.env.OPENCOMPUTER_CONNECTION_TOKEN;
+  if (!base || !token) {
+    throw new Error("OpenComputer connections are unavailable");
+  }
+  const response = await fetch(base, {
+    method,
+    headers: {
+      authorization: \`Bearer \${token}\`,
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const result = await response.json() as {
+    error?: { message?: string };
+    [key: string]: unknown;
+  };
+  if (!response.ok) {
+    throw new Error(result.error?.message ?? "Connection request failed");
+  }
+  return result;
+}
+
+export const list = tool({
+  description:
+    "List the connected accounts available to the current session identity. Use this to discover connection providers and aliases without exposing credentials.",
+  args: {},
+  async execute() {
+    return JSON.stringify(await connectionControl("GET"));
+  },
+});
+
+export const request = tool({
+  description:
+    "Ask the current user to connect an additional account. In a messaging channel OpenComputer privately sends the authorization link to that user; otherwise the result includes the link.",
+  args: {
+    service: tool.schema.string(),
+    label: tool.schema.string().optional(),
+  },
+  async execute(args) {
+    return JSON.stringify(await connectionControl("POST", args));
+  },
+});
+`;
+}
+
 export async function writeManifest(
   root: string,
   manifest: AgentManifest,
@@ -737,6 +790,11 @@ export async function prepareAgent(root: string): Promise<string> {
       });
     }
   }
+  await mkdir(resolve(runtime, ".opencode", "tools"), { recursive: true });
+  await writeFile(
+    resolve(runtime, ".opencode", "tools", "opencomputer-connections.ts"),
+    connectionControlToolSource(),
+  );
   const workspace = resolve(root, "workspace");
   if (await exists(workspace)) {
     await cp(workspace, runtime, { recursive: true });

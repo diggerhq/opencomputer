@@ -75,6 +75,14 @@ const connectionsResponseSchema = z.object({
 
 const channelIdentityLinkSchema = z.object({ linked: z.literal(true) })
 
+const connectionLinkSchema = z.object({
+  connectionId: z.string(),
+  service: z.string(),
+  label: z.string(),
+  status: z.enum(['connected', 'pending']),
+  authorizationUrl: z.string().url().optional(),
+})
+
 const channelsResponseSchema = z.object({
   channels: z.array(channelSchema),
 })
@@ -187,6 +195,20 @@ export async function claimManagedAgentChannelIdentity(token: string) {
       body: JSON.stringify({ token }),
     },
     channelIdentityLinkSchema,
+  )
+}
+
+export async function linkManagedAgentConnection(
+  service: string,
+  label: string,
+) {
+  return apiFetch(
+    '/managed-agents/connections/link',
+    {
+      method: 'POST',
+      body: JSON.stringify({ service, label }),
+    },
+    connectionLinkSchema,
   )
 }
 

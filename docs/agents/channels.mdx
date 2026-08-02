@@ -63,8 +63,9 @@ user links their own OpenComputer identity.
     OpenComputer user.
   </Step>
   <Step title="Connect required services">
-    If the agent requires Gmail or another service, OpenComputer shows the
-    connection instructions for that user.
+    If the agent needs Gmail or another declared service, it can send that
+    Slack user a private connection link. Authorization never appears in the
+    shared channel.
   </Step>
   <Step title="Message the agent again">
     The channel session can now use only the connections owned by the linked
@@ -74,6 +75,12 @@ user links their own OpenComputer identity.
 
 This prevents a shared Slack channel from inheriting the installer's Gmail or
 another teammate's connected accounts.
+
+OpenComputer identifies a Slack user within their Slack workspace and remembers
+the linked OpenComputer identity. The same person can therefore use their own
+connections across that workspace's OpenComputer agent apps without relinking
+each app. This identity boundary also keeps two Slack workspaces with matching
+user IDs separate.
 
 ## Connections and channels are different
 

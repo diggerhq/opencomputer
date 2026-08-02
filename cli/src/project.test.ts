@@ -96,6 +96,18 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
       (await stat(resolve(runtime, ".opencode", "tools", "gmail.ts"))).isFile(),
       true,
     );
+    assert.match(
+      await readFile(
+        resolve(
+          runtime,
+          ".opencode",
+          "tools",
+          "opencomputer-connections.ts",
+        ),
+        "utf8",
+      ),
+      /export const request = tool/,
+    );
     assert.equal(
       (await stat(resolve(runtime, "opencode.json"))).isFile(),
       true,
