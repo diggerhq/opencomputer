@@ -119,7 +119,7 @@ Use the OpenComputer CLI and keep the agent as editable source code in this work
 5. Inspect and tailor the checked-in source: \`opencomputer.toml\`, \`instructions.md\`, \`agent.ts\`, \`tools/\`, \`connections/\`, \`skills/\`, \`workspace/\`, and \`evals/\`.
 6. Keep the stable \`id\` in \`opencomputer.toml\`; future deployments of this repository must create new versions of that same agent.
 7. Add and authorize only supported connections. For Gmail, use \`opencomputer tools add gmail\` and \`${cliCommand(origin, 'connect google')}\`. Connect Slack from the deployed agent's Channels tab after deployment.
-8. Test the editable agent locally with OpenCode:
+8. Test the editable agent locally with the OpenComputer CLI:
    \`opencomputer session "${firstPrompt.replace(/"/g, '\\"')}"\`
 9. Make any necessary source changes and test again.
 10. Commit the agent source, including \`opencomputer.toml\`, to Git.
