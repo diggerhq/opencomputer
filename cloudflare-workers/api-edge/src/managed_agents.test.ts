@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  handleManagedAgentChannelConnection,
   mintManagedAgentsAssertion,
   proxyManagedAgents,
 } from "./managed_agents";
@@ -32,6 +33,65 @@ describe("managed agents proxy", () => {
       user_id: "user_test",
     });
     expect(Number(payload.exp) - Number(payload.iat)).toBe(120);
+  });
+
+  it("does not consume a channel connection grant on link preview", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await handleManagedAgentChannelConnection(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/channel-connections/org_test/0123456789abcdef0123456789abcdef",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).toContain("Continue");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("claims a channel grant and redirects to the provider", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        authorizationUrl: "https://connect.example.test/authorize",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const url =
+      "https://app.opencomputer.dev/api/managed-agents/channel-connections/org_test/0123456789abcdef0123456789abcdef";
+
+    const response = await handleManagedAgentChannelConnection(
+      new Request(url, { method: "POST" }),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(
+      "https://connect.example.test/authorize",
+    );
+    const [target, init] = fetchSpy.mock.calls[0] as unknown as [
+      URL,
+      RequestInit,
+    ];
+    expect(target.toString()).toBe(
+      "https://managedagents.test/v1/channel-connections/claim",
+    );
+    expect(await new Response(init.body).json()).toEqual({
+      token: "0123456789abcdef0123456789abcdef",
+    });
+    expect(
+      decodePayload(
+        new Headers(init.headers).get("x-opencomputer-agent-token")!,
+      ),
+    ).toMatchObject({ org_id: "org_test" });
   });
 
   it("keeps API keys out of the private backend request", async () => {
