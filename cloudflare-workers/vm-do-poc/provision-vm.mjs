@@ -39,7 +39,7 @@ try {
   const install = await sandbox.exec.run(`mkdir -p ${connectorDir} && npm install --prefix ${connectorDir} --no-audit --no-fund ws@8.21.1`);
   if (install.exitCode !== 0) throw new Error(`install ws failed: ${install.stderr}`);
   await sandbox.files.write(`${connectorDir}/agent.mjs`, agentSource);
-  const runtime = await sandbox.exec.run("node -p 'process.version' && curl -fsS --max-time 10 https://vm-do-poc.mo-oc-dev.com/health");
+  const runtime = await sandbox.exec.run(`node -p 'process.version' && curl -fsS --max-time 10 ${pocUrl}/health`);
   console.log(JSON.stringify({ sandboxId: sandbox.id, runtime: runtime.stdout.trim() }));
   const probe = await sandbox.exec.run(`node ${connectorDir}/agent.mjs`, {
     env: {
