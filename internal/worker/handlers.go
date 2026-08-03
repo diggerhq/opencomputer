@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -449,11 +450,22 @@ func (s *HTTPServer) execRunAsync(c echo.Context) error {
 			// returned). ensureRunning (the wake/restore) and the command both
 			// run here, off the connection.
 			t0 := time.Now()
-			var err error
-			if s.router != nil {
-				err = s.router.Route(context.Background(), id, "execRun", routeOp)
-			} else {
-				err = routeOp(context.Background())
+			route := func() error {
+				if s.router != nil {
+					return s.router.Route(context.Background(), id, "execRun", routeOp)
+				}
+				return routeOp(context.Background())
+			}
+			err := route()
+			// Transient per-sandbox op conflict — e.g. an exec racing the async
+			// claim-finalize of an edge-claimed box (ClaimSandbox holds the
+			// sandbox lock for ~100ms) or any in-flight pause/resume. We're in a
+			// background goroutine, so wait it out instead of failing the exec:
+			// polls report waking meanwhile, and a conflict that clears inside
+			// the run-async inline hold still returns single-round-trip.
+			for attempt := 0; err != nil && strings.Contains(err.Error(), "another operation is in progress") && attempt < 20; attempt++ {
+				time.Sleep(150 * time.Millisecond)
+				err = route()
 			}
 			wakeMs := time.Since(t0).Milliseconds() - createMs
 			if wakeMs < 0 {

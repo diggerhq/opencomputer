@@ -1001,15 +1001,17 @@ func (s *Scaler) smartScaleDown(_ context.Context, region string, workers []*Wor
 	}
 
 	// Refuse to drain if doing so would leave zero workers with placement room.
-	// The capacity reporter classifies a worker as "available" only when
-	// committed_memory_mb / total_memory_mb < memPressureThresholdPct. Picking
-	// the lightest-load worker as a drain target is fine when the rest of the
-	// fleet has spare memory, but if every other worker is already over the
-	// pressure line, draining the only low-pressure worker leaves the cell
+	// The capacity reporter classifies a worker as "available" only when its
+	// REAL memory usage (MemPct, RSS-based) < memPressureThresholdPct — mirror
+	// that here so the drain guard and the availability signal can't disagree.
+	// (Was committed-based; a pre-grown warm pool keeps committed near 100%
+	// permanently, which would have refused every future rolling replace.)
+	// Picking the lightest-load worker as a drain target is fine when the rest
+	// of the fleet has spare memory, but if every other worker is already over
+	// the pressure line, draining the only low-pressure worker leaves the cell
 	// reporting available_workers=0. The edge then rejects every new
 	// /api/sandboxes with "no cells available with capacity" — exactly the
-	// outage we hit on 2026-05-27 (4 workers, 2 overcommitted at 89%/137%,
-	// scaler drained the only 2 healthy ones).
+	// outage we hit on 2026-05-27 (scaler drained the only healthy workers).
 	availableAfter := 0
 	for _, w := range workers {
 		if w == nil || w.MachineID == target.MachineID {
@@ -1018,15 +1020,12 @@ func (s *Scaler) smartScaleDown(_ context.Context, region string, workers []*Wor
 		if s.state.IsDraining(w.MachineID) {
 			continue
 		}
-		if w.TotalMemoryMB <= 0 {
-			continue
-		}
-		if (w.CommittedMemoryMB*100)/w.TotalMemoryMB < memPressureThresholdPct {
+		if w.MemPct < memPressureThresholdPct {
 			availableAfter++
 		}
 	}
 	if availableAfter < 1 {
-		log.Printf("scaler: refusing smart drain of %s — would leave 0 workers under memory pressure threshold (%d%% committed cutoff); fleet has %d worker(s) but the rest are over the placement line",
+		log.Printf("scaler: refusing smart drain of %s — would leave 0 workers under memory pressure threshold (%d%% real-usage cutoff); fleet has %d worker(s) but the rest are over the placement line",
 			target.MachineID, memPressureThresholdPct, len(workers))
 		return
 	}

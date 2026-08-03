@@ -86,9 +86,21 @@ name = "CREDIT_ACCOUNT"
 class_name = "CreditAccount"
 script_name = "opensandbox-edge-dev"
 
+# Edge claim (src/pool_stock.ts): per-cell stock of pre-reserved hot pool
+# boxes so default-shape creates are answered at the edge. Kill switch:
+# EDGE_CLAIM = "0" in [vars].
+[[durable_objects.bindings]]
+name = "POOL_STOCK"
+class_name = "PoolStock"
+script_name = "opensandbox-edge-dev"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["CreditAccount"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PoolStock"]
 
 # v2 / v3 reconciliation entries were dropped after a clean `wrangler delete`
 # reset the migration ledger to v1. If you ever apply a DO change out-of-band

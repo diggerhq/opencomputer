@@ -19,10 +19,14 @@ import (
 // row in D1 with healthy_workers / available_workers / running_sandboxes /
 // capacity_updated_at, which the api-edge consults in its pickCell() cascade.
 //
-// "available" = worker whose CommittedMemoryMB / TotalMemoryMB is below the
-// pressure threshold (~85%). Single-worker-below-threshold is the right
-// placement gate because a sandbox lands on one worker — aggregating across
-// the cell would wrongly skip a cell with 1 free worker and 9 loaded ones.
+// "available" = worker whose REAL memory usage (MemPct, RSS-based) is below
+// the pressure threshold (~85%) — the same signal the routing hard-caps use.
+// NOT committed memory: virtio-mem boxes are demand-backed, so a pre-grown
+// warm pool commits pool_target×4GB while touching a fraction of it — gating
+// on committed read a 9%-used dev fleet as full (available_workers=0 → every
+// create 503'd). Single-worker-below-threshold is the right placement gate
+// because a sandbox lands on one worker — aggregating across the cell would
+// wrongly skip a cell with 1 free worker and 9 loaded ones.
 //
 // Reuses the existing event pipe so there's no second transport, no new HMAC
 // path, no new ingest endpoint. Cost: one extra event per cell per
@@ -146,7 +150,7 @@ func (r *CapacityReporter) emit(ctx context.Context) {
 		}
 		healthy++
 		running += w.Current
-		if w.TotalMemoryMB > 0 && (w.CommittedMemoryMB*100)/w.TotalMemoryMB < memPressureThresholdPct {
+		if w.MemPct < memPressureThresholdPct {
 			available++
 		}
 	}

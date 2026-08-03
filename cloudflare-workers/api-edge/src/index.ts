@@ -20,6 +20,7 @@
 //   GET  /health
 
 export { CreditAccount } from "../../shared/credit_account";
+export { PoolStock } from "./pool_stock";
 import { handleDashboard, type DashboardEnv } from "./dashboard";
 import {
   AGENT_SECURITY_NOTIFICATION_PATH,
@@ -89,6 +90,11 @@ export interface Env extends DashboardEnv {
   // DEDICATED HMAC secret for handing a freshly-minted OR key to sessions-api
   // (NOT the generic internal-auth — this route carries a live model key). §6.7.5.
   OC_MANAGED_CRED_HMAC_SECRET: string;
+  // Edge claim (pool_stock.ts): per-cell Durable Object stocking pre-reserved
+  // hot pool boxes so default-shape creates are answered at the edge with zero
+  // origin round trips. EDGE_CLAIM="0" is the kill switch (default on).
+  POOL_STOCK: DurableObjectNamespace;
+  EDGE_CLAIM?: string;
 }
 
 const DEFAULT_MAX_CONCURRENT_SANDBOXES = 50;
@@ -138,6 +144,42 @@ async function mintCapToken(
   if (billingProvider) payload.billing_provider = billingProvider;
   if (userID) payload.user_id = userID;
   const enc = new TextEncoder();
+  const signingInput =
+    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
+  return signingInput + "." + b64url(sig);
+}
+
+// Mint the sandbox-scoped JWT the create response carries (direct worker
+// access: exec WS, PTY, files). Byte-compatible with Go's
+// auth.IssueSandboxToken — same shared secret, iss="opensandbox", same claim
+// names — so cells/workers validate edge-minted tokens identically to
+// CP-minted ones. 24h TTL mirrors the CP.
+async function mintSandboxToken(
+  secret: string,
+  orgID: string,
+  sandboxID: string,
+  workerID: string,
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const enc = new TextEncoder();
+  const header = { alg: "HS256", typ: "JWT" };
+  const payload = {
+    sub: orgID,
+    iat: now,
+    exp: now + 24 * 3600,
+    iss: "opensandbox",
+    org_id: orgID,
+    sandbox_id: sandboxID,
+    worker_id: workerID,
+  };
   const signingInput =
     b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
   const key = await crypto.subtle.importKey(
@@ -794,6 +836,83 @@ function indexSandboxFromSSE(
   return new Response(resp.body.pipeThrough(stream), resp);
 }
 
+// edgeClaimEligible: a create qualifies for the edge fast path only when it
+// asks for exactly what pool boxes are manufactured as — base template at the
+// default shape (4GB/1cpu/default disk), no guest-side customization (envs,
+// secrets, image, snapshot, webhooks, preview auth). Anything else falls
+// through to the cell, which handles it exactly as before (including its own
+// pool claim for claimable shapes). metadata/timeout are pure bookkeeping the
+// finalize call persists, so they don't disqualify.
+function edgeClaimEligible(bodyText: string): boolean {
+  if (!bodyText) return true;
+  let b: Record<string, unknown>;
+  try {
+    b = JSON.parse(bodyText) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  const template = typeof b.templateID === "string" ? b.templateID : "";
+  if (template !== "" && template !== "base") return false;
+  if (b.envs && Object.keys(b.envs as object).length > 0) return false;
+  if (b.secretStore || b.image || b.snapshot || b.previewAuth || b.burst) return false;
+  if (Array.isArray(b.webhooks) && b.webhooks.length > 0) return false;
+  if (b.sandboxFamily || b.alias || b.cellId || b.networkEnabled != null) return false;
+  if (typeof b.port === "number" && b.port !== 0 && b.port !== 80) return false;
+  if (typeof b.cpuCount === "number" && b.cpuCount !== 0 && b.cpuCount !== 1) return false;
+  if (typeof b.memoryMB === "number" && b.memoryMB !== 0 && b.memoryMB !== 4096) return false;
+  if (typeof b.diskMB === "number" && b.diskMB !== 0 && b.diskMB !== 20480) return false;
+  return true;
+}
+
+// finalizeEdgeClaim runs off the response path (waitUntil): D1 index row so
+// the dashboard/GET sees the box, then the cell's claim-finalize (PG rebind +
+// worker ClaimSandbox: billing on, idle timeout). On failure the box is dead —
+// mark the index row error and drop the route so the customer's next op
+// surfaces a clean failure instead of a phantom.
+async function finalizeEdgeClaim(
+  env: Env,
+  caller: Caller,
+  cell: CellRow,
+  capToken: string,
+  sandboxID: string,
+  workerID: string,
+  bodyText: string,
+): Promise<void> {
+  try {
+    await insertSandboxIndex(env, caller, cell.cell_id, { sandboxID, workerID, status: "running", memoryMB: 4096 }, 1, 4096);
+  } catch (e) {
+    console.error(`edge-claim: index insert failed for ${sandboxID}:`, e);
+  }
+  try {
+    let body: Record<string, unknown> = {};
+    try {
+      body = bodyText ? (JSON.parse(bodyText) as Record<string, unknown>) : {};
+    } catch {
+      /* eligibility already vetted the body; belt-and-braces */
+    }
+    body.sandboxID = sandboxID;
+    // Bill/grow at the default create shape the box was manufactured as.
+    if (!body.memoryMB) body.memoryMB = 4096;
+    if (!body.cpuCount) body.cpuCount = 1;
+    const r = await fetch(cell.base_url.replace(/\/$/, "") + "/internal/sandboxes/claim-finalize", {
+      method: "POST",
+      headers: { authorization: "Bearer " + capToken, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  } catch (e) {
+    console.error(`edge-claim: FINALIZE FAILED for ${sandboxID} — marking error:`, e);
+    sandboxRouteCache.delete(sandboxID);
+    const nowSec = Math.floor(Date.now() / 1000);
+    await env.OPENCOMPUTER_DB.prepare(
+      "UPDATE sandboxes_index SET status='error', last_event_at=?2 WHERE id=?1",
+    )
+      .bind(sandboxID, nowSec)
+      .run()
+      .catch(() => {});
+  }
+}
+
 async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const caller = await authenticate(req, env);
   if (!caller) return json({ error: "missing or invalid API key" }, 401);
@@ -874,6 +993,40 @@ async function createSandbox(req: Request, env: Env, ctx: ExecutionContext): Pro
   }
 
   const capToken = await mintCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, plan, org.billing_provider, caller.userID);
+
+  // Edge claim: for a default-shape create, pop a pre-reserved hot box from
+  // this cell's PoolStock DO and answer right here — token minted at the edge,
+  // zero origin round trips. Finalize (billing on, PG rebind, idle timeout)
+  // runs async; exec arriving before it lands routes fine (the cell proxy
+  // resolves by worker_id regardless of claim status). Miss/error falls
+  // through to the normal cell create, which is never worse than before.
+  if (env.EDGE_CLAIM !== "0" && env.POOL_STOCK && edgeClaimEligible(bodyText)) {
+    try {
+      const stub = env.POOL_STOCK.get(env.POOL_STOCK.idFromName(cell.cell_id));
+      const r = await stub.fetch("https://pool-stock/claim", {
+        method: "POST",
+        body: JSON.stringify({ cell: { cellID: cell.cell_id, baseURL: cell.base_url } }),
+      });
+      if (r.ok) {
+        const box = (await r.json()) as { id: string; workerID: string; region: string; sandboxDomain: string };
+        const token = await mintSandboxToken(env.SESSION_JWT_SECRET, caller.orgID, box.id, box.workerID);
+        if (sandboxRouteCache.size >= CACHE_MAX) sandboxRouteCache.clear();
+        sandboxRouteCache.set(box.id, { cellID: cell.cell_id, orgID: caller.orgID });
+        ctx.waitUntil(finalizeEdgeClaim(env, caller, cell, capToken, box.id, box.workerID, bodyText));
+        const resp: Record<string, unknown> = {
+          sandboxID: box.id,
+          token,
+          status: "running",
+          region: box.region,
+          workerID: box.workerID,
+        };
+        if (box.sandboxDomain) resp.sandboxDomain = box.sandboxDomain;
+        return json(resp, 201);
+      }
+    } catch (e) {
+      console.error("edge-claim: falling back to cell create:", e);
+    }
+  }
 
   // SSE build streaming: image/snapshot creates can take minutes (apt installs,
   // etc.). Preserve live streaming, but index the final `result` event inline
