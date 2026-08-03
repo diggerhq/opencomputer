@@ -282,30 +282,50 @@ func execHoldMs(env string, def time.Duration) time.Duration {
 // awaitExecDone polls for command completion (in addition to selecting on Done)
 // so a laggy/absent Done close can't pin the hold for its full window when the
 // command has finished. Twin of the worker HTTPServer.awaitExecDone; see it for
-// the rationale. GetResult is a cheap in-map read for a live session.
+// the rationale. The per-tick check is a cheap ExitCode pointer read (no
+// scrollback copy); the full result is assembled by GetResult only on
+// completion, so the 2ms poll is effectively free.
 func (s *Server) awaitExecDone(ctx context.Context, id, sessionID string, hold time.Duration) (*types.ExecSessionResult, bool) {
-	if res, err := s.execSessionManager.GetResult(id, sessionID); err == nil && !res.Running {
-		return res, true
+	sess, serr := s.execSessionManager.GetSession(sessionID)
+	if serr != nil {
+		sess = nil
+	}
+	done := func() bool {
+		if sess != nil {
+			return sess.ExitCode != nil
+		}
+		r, e := s.execSessionManager.GetResult(id, sessionID)
+		return e == nil && !r.Running
+	}
+	finalize := func() (*types.ExecSessionResult, bool) {
+		if r, e := s.execSessionManager.GetResult(id, sessionID); e == nil && !r.Running {
+			return r, true
+		}
+		return nil, false
+	}
+	if done() {
+		return finalize()
 	}
 	var doneCh <-chan struct{}
-	if sess, err := s.execSessionManager.GetSession(sessionID); err == nil {
+	if sess != nil {
 		doneCh = sess.Done
 	}
 	deadline := time.NewTimer(hold)
 	defer deadline.Stop()
-	tick := time.NewTicker(10 * time.Millisecond)
+	tick := time.NewTicker(2 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		select {
 		case <-doneCh:
-			res, err := s.execSessionManager.GetResult(id, sessionID)
-			if err == nil && !res.Running {
-				return res, true
+			if r, ok := finalize(); ok {
+				return r, ok
 			}
 			doneCh = nil
 		case <-tick.C:
-			if res, err := s.execSessionManager.GetResult(id, sessionID); err == nil && !res.Running {
-				return res, true
+			if done() {
+				if r, ok := finalize(); ok {
+					return r, ok
+				}
 			}
 		case <-deadline.C:
 			return nil, false
