@@ -196,6 +196,33 @@ export class VmRoster extends DurableObject<WorkerEnv> {
     void this.ctx.storage.put("leases", Object.fromEntries(this.leases));
   }
 
+  // isLive asks a VM's VmSession DO whether its agent WebSocket is currently
+  // connected. Leasing a box whose agent died (crash, idle drop that outran the
+  // reconnect, worker restart) hands the customer a sandbox whose first exec
+  // 500s — so the allocator must gate on liveness. Pull-at-lease is simple and
+  // correct for the POC; a production allocator (PoolStock) would prefer
+  // push-based liveness (VmSession reports connect/disconnect) to keep the lease
+  // path hop-free.
+  private async isLive(id: string): Promise<boolean> {
+    const [live] = await this.isLiveDiag(id);
+    return live;
+  }
+
+  // isLiveDiag returns liveness + a short diagnostic string (DEBUG).
+  private async isLiveDiag(id: string): Promise<[boolean, string]> {
+    try {
+      const hint = (this.env.DO_LOCATION_HINT || "enam") as DurableObjectLocationHint;
+      const stub = this.env.VM_SESSIONS.get(this.env.VM_SESSIONS.idFromName(id), { locationHint: hint });
+      const r = await stub.fetch("https://do/lease"); // VmSession /lease → {connected}
+      const body = await r.text();
+      if (!r.ok) return [false, `${id}:status=${r.status}`];
+      const live = (JSON.parse(body) as { connected: boolean }).connected === true;
+      return [live, `${id}:${body}`];
+    } catch (e) {
+      return [false, `${id}:ERR:${String((e as Error)?.message ?? e)}`];
+    }
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const now = Date.now();
@@ -209,11 +236,34 @@ export class VmRoster extends DurableObject<WorkerEnv> {
       return json({ total: this.ids.length });
     }
     if (url.pathname === "/lease" && request.method === "POST") {
-      const free = this.ids.find((id) => !this.leases.has(id));
-      if (!free) return json({ error: "roster exhausted" }, { status: 409 });
-      this.leases.set(free, now);
+      // Liveness-gated: probe free candidates and hand out the first with a
+      // live agent, permanently evicting any dead box we encounter so it's
+      // never offered again. Bounded probe count keeps the lease latency sane
+      // even if a run of boxes died.
+      const dead: string[] = [];
+      const probe: string[] = []; // DEBUG diagnostics
+      let leasedId: string | null = null;
+      let probed = 0;
+      for (const id of this.ids) {
+        if (this.leases.has(id)) continue;
+        if (probed >= 8) break;
+        probed++;
+        const [live, diag] = await this.isLiveDiag(id);
+        probe.push(diag);
+        if (live) {
+          leasedId = id;
+          break;
+        }
+        dead.push(id);
+      }
+      if (dead.length) this.ids = this.ids.filter((x) => !dead.includes(x));
+      if (!leasedId) {
+        this.persist();
+        return json({ error: "no live VM available", evicted: dead.length, probe }, { status: 409 });
+      }
+      this.leases.set(leasedId, now);
       this.persist();
-      return json({ id: free });
+      return json({ id: leasedId });
     }
     if (url.pathname === "/release" && request.method === "POST") {
       const body = (await request.json()) as { id?: string };
