@@ -279,6 +279,42 @@ func execHoldMs(env string, def time.Duration) time.Duration {
 	return def
 }
 
+// awaitExecDone polls for command completion (in addition to selecting on Done)
+// so a laggy/absent Done close can't pin the hold for its full window when the
+// command has finished. Twin of the worker HTTPServer.awaitExecDone; see it for
+// the rationale. GetResult is a cheap in-map read for a live session.
+func (s *Server) awaitExecDone(ctx context.Context, id, sessionID string, hold time.Duration) (*types.ExecSessionResult, bool) {
+	if res, err := s.execSessionManager.GetResult(id, sessionID); err == nil && !res.Running {
+		return res, true
+	}
+	var doneCh <-chan struct{}
+	if sess, err := s.execSessionManager.GetSession(sessionID); err == nil {
+		doneCh = sess.Done
+	}
+	deadline := time.NewTimer(hold)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-doneCh:
+			res, err := s.execSessionManager.GetResult(id, sessionID)
+			if err == nil && !res.Running {
+				return res, true
+			}
+			doneCh = nil
+		case <-tick.C:
+			if res, err := s.execSessionManager.GetResult(id, sessionID); err == nil && !res.Running {
+				return res, true
+			}
+		case <-deadline.C:
+			return nil, false
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
+}
+
 // execRunAsyncRoute handles POST /exec/run-async — the async exec entrypoint.
 // It binds the request and dispatches a background exec session, returning a
 // handle immediately. Newer SDKs poll GET /exec/:execId/result for completion;
@@ -391,18 +427,13 @@ func (s *Server) execRunAsync(c echo.Context, id string, req types.ProcessConfig
 	// session.Done closes only after consumeExecOutput has captured ExitCode,
 	// so the GetResult read below is final. Truncated output falls through to
 	// the handle shape — ProcessResult can't carry the truncated flag.
-	if hold := execHoldMs("OPENSANDBOX_EXEC_INLINE_HOLD_MS", 400*time.Millisecond); hold > 0 && session.Done != nil {
-		select {
-		case <-session.Done:
-			if res, err := s.execSessionManager.GetResult(id, session.ID); err == nil && !res.Running && res.ExitCode != nil && !res.Truncated {
-				return c.JSON(http.StatusOK, types.ProcessResult{
-					ExitCode: *res.ExitCode,
-					Stdout:   string(res.Stdout),
-					Stderr:   string(res.Stderr),
-				})
-			}
-		case <-time.After(hold):
-		case <-c.Request().Context().Done():
+	if hold := execHoldMs("OPENSANDBOX_EXEC_INLINE_HOLD_MS", 400*time.Millisecond); hold > 0 {
+		if res, ok := s.awaitExecDone(c.Request().Context(), id, session.ID, hold); ok && res.ExitCode != nil && !res.Truncated {
+			return c.JSON(http.StatusOK, types.ProcessResult{
+				ExitCode: *res.ExitCode,
+				Stdout:   string(res.Stdout),
+				Stderr:   string(res.Stderr),
+			})
 		}
 	}
 
@@ -453,18 +484,11 @@ func (s *Server) execResult(c echo.Context) error {
 	// local scrollback+exit-code snapshot, no re-route needed.
 	if res.Running {
 		if hold := execHoldMs("OPENSANDBOX_EXEC_RESULT_HOLD_MS", 500*time.Millisecond); hold > 0 {
-			if sess, serr := s.execSessionManager.GetSession(sessionID); serr == nil && sess.Done != nil {
-				select {
-				case <-sess.Done:
-				case <-time.After(hold):
-				case <-c.Request().Context().Done():
-				}
-				if res2, rerr := s.execSessionManager.GetResult(id, sessionID); rerr == nil {
-					res = res2
-				}
-				if s.router != nil {
-					s.router.Touch(id) // the hold was interaction; keep the idle timer honest
-				}
+			if res2, ok := s.awaitExecDone(c.Request().Context(), id, sessionID, hold); ok {
+				res = res2
+			}
+			if s.router != nil {
+				s.router.Touch(id) // the hold was interaction; keep the idle timer honest
 			}
 		}
 	}
