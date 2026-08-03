@@ -172,6 +172,37 @@ function connect() {
     retryMs = 250;
     console.log(`connected to ${new URL(url).host}`);
     if (probeOnly) socket.close(1000, "probe complete");
+    // Keepalive: idle WebSockets get dropped by intermediaries (observed
+    // ~90-120s on CF), and every silent drop is a hard-fail window until the
+    // reconnect lands. Protocol-level pings are answered by the Cloudflare
+    // runtime without waking the (hibernated) Durable Object. Only the `ws`
+    // package exposes ping(); the global WebSocket (Node >=22) has no
+    // client-initiated ping, so there we fall back to nothing rather than
+    // corrupt the protobuf stream with app-level frames.
+    if (typeof socket.ping === "function") {
+      // Ping alone is not liveness: on a half-open TCP (DO evicted, FIN lost)
+      // pings vanish silently and the socket looks OPEN forever — the agent
+      // wedges "connected" while the DO reports no socket. Track pongs and
+      // terminate() after ~2.5 missed intervals so the close event fires and
+      // the reconnect loop takes over.
+      let lastPong = Date.now();
+      if (typeof socket.on === "function") socket.on("pong", () => (lastPong = Date.now()));
+      const keepalive = setInterval(() => {
+        if (Date.now() - lastPong > 75_000) {
+          console.error("pong timeout — terminating wedged socket");
+          clearInterval(keepalive);
+          if (typeof socket.terminate === "function") socket.terminate();
+          else socket.close(4000, "pong timeout");
+          return;
+        }
+        try {
+          socket.ping();
+        } catch {
+          clearInterval(keepalive);
+        }
+      }, 30_000);
+      socket.addEventListener("close", () => clearInterval(keepalive));
+    }
   });
   socket.addEventListener("message", async (event) => {
     let request;

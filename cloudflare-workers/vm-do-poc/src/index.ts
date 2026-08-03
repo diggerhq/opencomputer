@@ -105,7 +105,14 @@ export class VmSession extends DurableObject<WorkerEnv> {
   }
 
   private async run(command: string, cwd: string, env: Record<string, string>, timeoutMs: number): Promise<ExecResult> {
-    const socket = this.connectedSocket();
+    // Reconnect grace: a dropped socket takes the agent one backoff cycle to
+    // redial (250ms-10s). Waiting briefly here turns that window from a hard
+    // 500 into a slightly slower exec.
+    let socket = this.connectedSocket();
+    for (let waited = 0; !socket && waited < 3_000; waited += 100) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      socket = this.connectedSocket();
+    }
     if (!socket) throw new Error("warm VM is not connected");
     const requestId = this.nextRequestId++ >>> 0 || 1;
     const result = new Promise<ExecResult>((resolve, reject) => {
@@ -151,7 +158,12 @@ export class VmSession extends DurableObject<WorkerEnv> {
 }
 
 function stubFor(env: WorkerEnv, sandboxId: string): DurableObjectStub {
-  return env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(sandboxId), { locationHint: "enam" });
+  // Placement hint is config, not code: the DO must sit in the same region as
+  // the VM it fronts (the persistent WS is the long-lived hop; the Worker→DO
+  // leg rides Cloudflare's backbone from any ingress colo). enam matches the
+  // original IAD/eastus2 proof; our dev VMs are westus2 → wnam.
+  const hint = (env.DO_LOCATION_HINT || "enam") as DurableObjectLocationHint;
+  return env.VM_SESSIONS.get(env.VM_SESSIONS.idFromName(sandboxId), { locationHint: hint });
 }
 
 async function requireApiAuth(request: Request, env: WorkerEnv): Promise<Response | null> {
@@ -160,6 +172,78 @@ async function requireApiAuth(request: Request, env: WorkerEnv): Promise<Respons
     : json({ error: "unauthorized" }, { status: 401 });
 }
 
+// VmRoster is the minimal real allocator the single-VM floor test deferred:
+// one DO instance holding the fleet of provisioned VM ids with leased/free
+// state. create leases (one DO hop — the allocation cost the floor numbers
+// omit), DELETE releases. Leases self-expire so a crashed benchmark run can't
+// wedge the roster.
+const LEASE_TTL_MS = 120_000;
+
+export class VmRoster extends DurableObject<WorkerEnv> {
+  private ids: string[] = [];
+  private leases = new Map<string, number>(); // id -> leasedAt ms
+
+  constructor(ctx: DurableObjectState, env: WorkerEnv) {
+    super(ctx, env);
+    this.ctx.blockConcurrencyWhile(async () => {
+      this.ids = (await this.ctx.storage.get<string[]>("ids")) ?? [];
+      this.leases = new Map(Object.entries((await this.ctx.storage.get<Record<string, number>>("leases")) ?? {}));
+    });
+  }
+
+  private persist(): void {
+    void this.ctx.storage.put("ids", this.ids);
+    void this.ctx.storage.put("leases", Object.fromEntries(this.leases));
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const now = Date.now();
+    for (const [id, at] of this.leases) if (now - at > LEASE_TTL_MS) this.leases.delete(id);
+
+    if (url.pathname === "/seed" && request.method === "POST") {
+      const body = (await request.json()) as { ids?: string[] };
+      this.ids = [...new Set(body.ids ?? [])];
+      this.leases.clear();
+      this.persist();
+      return json({ total: this.ids.length });
+    }
+    if (url.pathname === "/lease" && request.method === "POST") {
+      const free = this.ids.find((id) => !this.leases.has(id));
+      if (!free) return json({ error: "roster exhausted" }, { status: 409 });
+      this.leases.set(free, now);
+      this.persist();
+      return json({ id: free });
+    }
+    if (url.pathname === "/release" && request.method === "POST") {
+      const body = (await request.json()) as { id?: string };
+      if (body.id) {
+        this.leases.delete(body.id);
+        this.persist();
+      }
+      return json({ ok: true });
+    }
+    if (url.pathname === "/known" && request.method === "POST") {
+      const body = (await request.json()) as { id?: string };
+      return json({ known: !!body.id && this.ids.includes(body.id) });
+    }
+    if (url.pathname === "/status") {
+      return json({ total: this.ids.length, leased: this.leases.size });
+    }
+    return new Response("not found", { status: 404 });
+  }
+}
+
+function rosterStub(env: WorkerEnv): DurableObjectStub {
+  const hint = (env.DO_LOCATION_HINT || "enam") as DurableObjectLocationHint;
+  return env.VM_ROSTER.get(env.VM_ROSTER.idFromName("roster"), { locationHint: hint });
+}
+
+// No per-id addressability gate: the bench token is the auth, and the roster's
+// job is ALLOCATION (create leases, DELETE releases), not access control. An
+// exec against an id with no connected agent fails in the DO ("warm VM is not
+// connected") — no roster hop on the hot path.
+
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     const url = new URL(request.url);
@@ -167,7 +251,10 @@ export default {
 
     const connectMatch = url.pathname.match(/^\/internal\/vms\/([^/]+)\/connect$/);
     if (connectMatch && request.headers.get("upgrade")?.toLowerCase() === "websocket") {
-      if (connectMatch[1] !== env.POC_VM_ID || !(await tokenMatches(socketSecret(request), env.VM_CONNECT_SECRET))) {
+      // Secret-only auth: agents connect before the roster is seeded (the
+      // roster gates the API surface, not the VM-side dial). An id that never
+      // joins the roster is simply unreachable.
+      if (!(await tokenMatches(socketSecret(request), env.VM_CONNECT_SECRET))) {
         return new Response("unauthorized", { status: 401 });
       }
       return stubFor(env, connectMatch[1]).fetch(new Request("https://do/connect", request));
@@ -177,7 +264,8 @@ export default {
     if (bootstrapMatch && request.method === "POST") {
       const denied = await requireApiAuth(request, env);
       if (denied) return denied;
-      if (bootstrapMatch[1] !== env.POC_VM_ID) return json({ error: "not found" }, { status: 404 });
+      // No roster gate: bootstrap is the provisioning probe and runs BEFORE
+      // the id joins the roster (bench-token auth is sufficient).
       const startedAt = performance.now();
       const response = await stubFor(env, bootstrapMatch[1]).fetch("https://do/lease");
       const lease = (await response.json()) as { connected: boolean };
@@ -193,33 +281,59 @@ export default {
     if (locationMatch && request.method === "GET") {
       const denied = await requireApiAuth(request, env);
       if (denied) return denied;
-      if (locationMatch[1] !== env.POC_VM_ID) return json({ error: "not found" }, { status: 404 });
+      // No roster gate — same reasoning as bootstrap.
       return stubFor(env, locationMatch[1]).fetch("https://do/location");
     }
 
     const denied = await requireApiAuth(request, env);
     if (denied) return denied;
 
+    if (url.pathname === "/internal/roster/seed" && request.method === "POST") {
+      return rosterStub(env).fetch("https://do/seed", { method: "POST", headers: { "content-type": "application/json" }, body: request.body });
+    }
+    if (url.pathname === "/internal/roster/status") {
+      return rosterStub(env).fetch("https://do/status");
+    }
+
     if (url.pathname === "/api/sandboxes" && request.method === "POST") {
+      // Real allocation: lease a VM from the roster (one DO round trip — the
+      // cost the single-VM floor test omitted). Falls back to the static
+      // single-VM flow when no roster is seeded.
       const startedAt = performance.now();
+      let vmId = env.POC_VM_ID;
+      const lease = await rosterStub(env).fetch("https://do/lease", { method: "POST" });
+      if (lease.ok) {
+        vmId = ((await lease.json()) as { id: string }).id;
+      } else if (lease.status === 409) {
+        const status = await (await rosterStub(env).fetch("https://do/status")).json<{ total: number }>();
+        if (status.total > 0) return json({ error: "no VMs available" }, { status: 503 });
+        // total 0 → roster never seeded → static single-VM fallback
+      }
       return json({
-        sandboxID: env.POC_VM_ID,
+        sandboxID: vmId,
         status: "running",
         templateID: "base",
-        connectURL: `${url.origin}/api/sandboxes/${env.POC_VM_ID}`,
+        connectURL: `${url.origin}/api/sandboxes/${vmId}`,
         token: env.BENCH_API_TOKEN,
         pocTiming: { createEdgeMs: performance.now() - startedAt },
       });
     }
 
     const sandboxMatch = url.pathname.match(/^\/api\/sandboxes\/([^/]+)$/);
-    if (sandboxMatch && sandboxMatch[1] === env.POC_VM_ID) {
-      if (request.method === "GET") return json({ sandboxID: env.POC_VM_ID, status: "running" });
-      if (request.method === "DELETE") return new Response(null, { status: 204 });
+    if (sandboxMatch) {
+      if (request.method === "GET") return json({ sandboxID: sandboxMatch[1], status: "running" });
+      if (request.method === "DELETE") {
+        await rosterStub(env).fetch("https://do/release", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: sandboxMatch[1] }),
+        });
+        return new Response(null, { status: 204 });
+      }
     }
 
     const execMatch = url.pathname.match(/^\/api\/sandboxes\/([^/]+)\/exec\/run-async$/);
-    if (execMatch && execMatch[1] === env.POC_VM_ID && request.method === "POST") {
+    if (execMatch && request.method === "POST") {
       const response = await stubFor(env, execMatch[1]).fetch("https://do/exec", {
         method: "POST",
         headers: { "content-type": "application/json" },

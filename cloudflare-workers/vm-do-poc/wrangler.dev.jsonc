@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // OpenSandbox dev-account deployment of the VM↔DO POC (iteration copy of the
+  // personal-account config in wrangler.jsonc). workers.dev URL — no DNS/cert.
+  // POC_VM_ID is stamped per provisioned sandbox before deploy.
+  "name": "opensandbox-vm-do-poc-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-02",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "1241f114453e32d292197e3fb36210b2",
+  "workers_dev": true,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "VM_SESSIONS",
+        "class_name": "VmSession"
+      },
+      {
+        "name": "VM_ROSTER",
+        "class_name": "VmRoster"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["VmSession"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["VmRoster"]
+    }
+  ],
+  "vars": {
+    "POC_VM_ID": "sb-ac0af601-w2",
+    "DO_LOCATION_HINT": "wnam"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
