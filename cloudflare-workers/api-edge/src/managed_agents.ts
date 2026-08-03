@@ -271,6 +271,7 @@ function publicSuccessBody(
     return {
       authorizationUrl: body.authorizationUrl,
       expiresAt: body.expiresAt,
+      status: body.status,
     };
   }
   if (method === "GET" && suffix === "/deployments") {
@@ -559,7 +560,7 @@ function channelConnectionPage(
         "cache-control": "no-store",
         "referrer-policy": "no-referrer",
         "x-content-type-options": "nosniff",
-        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
       },
     },
   );
@@ -629,6 +630,13 @@ export async function handleManagedAgentChannelConnection(
     );
   }
   const body = record(await response.json().catch(() => null));
+  if (body?.status === "connected") {
+    return channelConnectionPage(
+      url.pathname,
+      200,
+      "This account is already connected. You can return to Slack.",
+    );
+  }
   let authorizationUrl: URL | null = null;
   if (typeof body?.authorizationUrl === "string") {
     try {

@@ -51,6 +51,9 @@ describe("managed agents proxy", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-security-policy")).not.toContain(
+      "form-action",
+    );
     expect(await response.text()).toContain("Continue");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -92,6 +95,26 @@ describe("managed agents proxy", () => {
         new Headers(init.headers).get("x-opencomputer-agent-token")!,
       ),
     ).toMatchObject({ org_id: "org_test" });
+  });
+
+  it("shows a completed state when the channel account is already connected", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ status: "connected" })),
+    );
+    const response = await handleManagedAgentChannelConnection(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/channel-connections/org_test/0123456789abcdef0123456789abcdef",
+        { method: "POST" },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("already connected");
   });
 
   it("keeps API keys out of the private backend request", async () => {
