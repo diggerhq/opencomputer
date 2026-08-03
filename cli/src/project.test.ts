@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
+import ts from "typescript";
 
 import type { ManagedAgentTemplate } from "./api.js";
 import {
@@ -88,26 +89,48 @@ test("the compiler maps flat source into an OpenCode runtime", async () => {
   try {
     await initializeAgentProject(emailTemplate, root);
     const runtime = await prepareAgent(root);
-    assert.match(
-      await readFile(resolve(runtime, "AGENTS.md"), "utf8"),
-      /Email triage/,
+    const runtimeInstructions = await readFile(
+      resolve(runtime, "AGENTS.md"),
+      "utf8",
     );
+    assert.match(runtimeInstructions, /You are an OpenComputer agent/);
+    assert.match(runtimeInstructions, /Never direct users to OpenCode/);
+    assert.match(runtimeInstructions, /Email triage/);
     assert.equal(
       (await stat(resolve(runtime, ".opencode", "tools", "gmail.ts"))).isFile(),
       true,
+    );
+    const connectionTool = await readFile(
+      resolve(runtime, ".opencode", "tools", "opencomputer-connections.ts"),
+      "utf8",
+    );
+    assert.match(connectionTool, /export const request = tool/);
+    assert.match(connectionTool, /opencomputer\/fetch/);
+    assert.match(connectionTool, /newAccount/);
+    assert.match(
+      connectionTool,
+      /schema\.enum\(\["gmail", "calendar", "drive", "sheets"\]\)/,
+    );
+    assert.equal(connectionTool.includes('base.replace(/\\\/$/, "")'), true);
+    const transpiledConnectionTool = ts.transpileModule(connectionTool, {
+      compilerOptions: { module: ts.ModuleKind.ESNext },
+      reportDiagnostics: true,
+    });
+    assert.equal(
+      transpiledConnectionTool.diagnostics?.length ?? 0,
+      0,
+      transpiledConnectionTool.diagnostics
+        ?.map((diagnostic) =>
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+        )
+        .join("\n"),
     );
     assert.equal(
       (await stat(resolve(runtime, "opencode.json"))).isFile(),
       true,
     );
-    assert.match(
-      await readFile(resolve(runtime, "AGENTS.md"), "utf8"),
-      /start with the `gmail_search` tool/,
-    );
-    assert.match(
-      await readFile(resolve(runtime, "AGENTS.md"), "utf8"),
-      /summary count exactly matches/,
-    );
+    assert.match(runtimeInstructions, /start with the `gmail_search` tool/);
+    assert.match(runtimeInstructions, /summary count exactly matches/);
     assert.equal(
       (await stat(resolve(runtime, "README.md"))).isFile(),
       true,

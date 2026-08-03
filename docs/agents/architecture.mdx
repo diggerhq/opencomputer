@@ -30,7 +30,7 @@ describe:
 - behavior and approval rules in `instructions.md`
 - runtime and model configuration
 - tools and skills
-- required connections and channels
+- required connections
 - initial workspace files and evaluations
 
 The project contains declarations and code, not provider credentials.
@@ -82,7 +82,7 @@ Each session has:
 - the exact deployed source version
 - an isolated filesystem and process environment
 - a workspace that the agent can use during the task
-- access to only the connections and channels declared for that agent
+- access to the connections allowed by that agent and channels attached to its deployment alias
 - lifecycle management handled by OpenComputer
 
 ### Connections
@@ -151,13 +151,13 @@ stay outside Git and are never given directly to the model.
 
 ## Local and deployed execution
 
-| | Local session | Deployed session |
-|---|---|---|
-| Source | Current working directory | Immutable deployed artifact |
-| Runtime | OpenCode on your machine | OpenCode in an isolated OpenComputer sandbox |
-| Connections | Scoped through the local CLI | Scoped through the managed runtime |
-| Best for | Iteration and debugging | Durable, repeatable execution |
-| Command | `opencomputer session` | `opencomputer session create --remote` or `opencomputer run <agent>` |
+|             | Local session                | Deployed session                                                     |
+| ----------- | ---------------------------- | -------------------------------------------------------------------- |
+| Source      | Current working directory    | Immutable deployed artifact                                          |
+| Runtime     | OpenCode on your machine     | OpenCode in an isolated OpenComputer sandbox                         |
+| Connections | Scoped through the local CLI | Scoped through the managed runtime                                   |
+| Best for    | Iteration and debugging      | Durable, repeatable execution                                        |
+| Command     | `opencomputer session`       | `opencomputer session create --remote` or `opencomputer run <agent>` |
 
 This symmetry is intentional: develop the actual agent locally, then deploy
 the same directory instead of rebuilding the workflow in a dashboard.

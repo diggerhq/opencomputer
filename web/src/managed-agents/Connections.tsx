@@ -11,6 +11,7 @@ import {
   claimManagedAgentChannelIdentity,
   getManagedAgentConnections,
   getManagedAgents,
+  linkManagedAgentConnection,
 } from './api'
 
 function displayResourceName(value: string) {
@@ -22,8 +23,12 @@ function displayResourceName(value: string) {
 export default function ManagedAgentConnections() {
   const [searchParams, setSearchParams] = useSearchParams()
   const channelLinkStarted = useRef(false)
+  const connectionStarted = useRef(false)
   const [channelLinkState, setChannelLinkState] = useState<
     'idle' | 'linking' | 'linked' | 'failed'
+  >('idle')
+  const [connectionRequestState, setConnectionRequestState] = useState<
+    'idle' | 'connecting' | 'connected' | 'failed'
   >('idle')
   const requestedService = searchParams.get('service')
   const requestedAlias = searchParams.get('alias') || 'default'
@@ -57,6 +62,35 @@ export default function ManagedAgentConnections() {
       .catch(() => setChannelLinkState('failed'))
   }, [searchParams, setSearchParams])
 
+  useEffect(() => {
+    if (
+      searchParams.get('connect') !== '1' ||
+      !requestedService ||
+      connectionStarted.current ||
+      channelLinkState === 'linking'
+    ) {
+      return
+    }
+    connectionStarted.current = true
+    setConnectionRequestState('connecting')
+    void linkManagedAgentConnection(requestedService, requestedAlias)
+      .then((result) => {
+        if (result.authorizationUrl) {
+          window.location.assign(result.authorizationUrl)
+          return
+        }
+        setConnectionRequestState('connected')
+        void connections.refetch()
+      })
+      .catch(() => setConnectionRequestState('failed'))
+  }, [
+    channelLinkState,
+    connections,
+    requestedAlias,
+    requestedService,
+    searchParams,
+  ])
+
   return (
     <div>
       <PageHeader
@@ -84,11 +118,13 @@ export default function ManagedAgentConnections() {
               {requestedAlias}”
             </p>
             <p className="text-muted-foreground mt-1 text-sm">
-              Run{' '}
-              <code className="bg-muted rounded px-1.5 py-0.5 font-mono text-xs">
-                opencomputer connection add {requestedService} --alias{' '}
-                {requestedAlias}
-              </code>
+              {connectionRequestState === 'connecting'
+                ? 'Opening secure authorization…'
+                : connectionRequestState === 'connected'
+                  ? 'This connection is ready for your sessions.'
+                  : connectionRequestState === 'failed'
+                    ? 'The connection could not be started. Reload this link to try again.'
+                    : 'Continue to securely authorize this account.'}
             </p>
           </PanelContent>
         </Panel>

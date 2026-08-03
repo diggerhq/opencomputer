@@ -386,6 +386,69 @@ export const send = tool({
 `;
 }
 
+function connectionControlToolSource(): string {
+  return `import { tool } from "@opencode-ai/plugin";
+
+async function connectionControl(
+  method: "GET" | "POST",
+  body?: unknown,
+): Promise<unknown> {
+  const base = process.env.OPENCOMPUTER_CONNECTIONS_URL;
+  const token = process.env.OPENCOMPUTER_CONNECTION_TOKEN;
+  if (!base || !token) {
+    throw new Error("OpenComputer connections are unavailable");
+  }
+  const response = await fetch(
+    \`\${base.replace(/\\\/$/, "")}/opencomputer/fetch\`,
+    {
+      method: "POST",
+      headers: {
+        authorization: \`Bearer \${token}\`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        action: method === "GET" ? "list" : "request",
+        ...(body && typeof body === "object" ? body : {}),
+      }),
+    },
+  );
+  const result = await response.json() as {
+    error?: { message?: string };
+    message?: string;
+    [key: string]: unknown;
+  };
+  if (!response.ok) {
+    throw new Error(
+      result.error?.message ?? result.message ?? "Connection request failed",
+    );
+  }
+  return result;
+}
+
+export const list = tool({
+  description:
+    "List the connected accounts available to the current session identity. Use this to discover connection providers and aliases without exposing credentials.",
+  args: {},
+  async execute() {
+    return JSON.stringify(await connectionControl("GET"));
+  },
+});
+
+export const request = tool({
+  description:
+    "Ask the current user to connect an account. Use gmail for an email account. Set newAccount=true when the user asks for another account of the same service. In a messaging channel OpenComputer privately sends the authorization link to that user; otherwise the result includes the link.",
+  args: {
+    service: tool.schema.enum(["gmail", "calendar", "drive", "sheets"]),
+    label: tool.schema.string().optional(),
+    newAccount: tool.schema.boolean().optional(),
+  },
+  async execute(args) {
+    return JSON.stringify(await connectionControl("POST", args));
+  },
+});
+`;
+}
+
 export async function writeManifest(
   root: string,
   manifest: AgentManifest,
@@ -722,7 +785,26 @@ export async function prepareAgent(root: string): Promise<string> {
   await mkdir(runtime, { recursive: true });
   await writeFile(
     resolve(runtime, "AGENTS.md"),
-    await readFile(resolve(root, "instructions.md"), "utf8"),
+    `# OpenComputer runtime identity
+
+You are an OpenComputer agent. OpenCode is an internal execution detail, not
+the product or support surface presented to users.
+
+- Identify yourself and your environment as OpenComputer.
+- Never direct users to OpenCode commands, settings, websites, repositories,
+  issue trackers, or support channels.
+- Before saying an external account is unavailable, use the built-in
+  OpenComputer connection tools to list or request the required connection.
+- When the user asks for another account of the same service, request a new
+  account instead of returning the existing default connection.
+- If a connection request reports private-message delivery, tell the user to
+  check their private messages. If it returns an authorization URL, show it.
+- If a connection tool fails, report its exact error. Do not invent alternate
+  controls or third-party support instructions.
+
+# Agent instructions
+
+${await readFile(resolve(root, "instructions.md"), "utf8")}`,
   );
   const openCodeConfig = resolve(root, "opencode.json");
   if (await exists(openCodeConfig)) {
@@ -737,6 +819,11 @@ export async function prepareAgent(root: string): Promise<string> {
       });
     }
   }
+  await mkdir(resolve(runtime, ".opencode", "tools"), { recursive: true });
+  await writeFile(
+    resolve(runtime, ".opencode", "tools", "opencomputer-connections.ts"),
+    connectionControlToolSource(),
+  );
   const workspace = resolve(root, "workspace");
   if (await exists(workspace)) {
     await cp(workspace, runtime, { recursive: true });

@@ -72,10 +72,19 @@ The same managed connection works in both execution modes:
 Provider credentials remain outside the agent's source, workspace, prompts,
 and model output.
 
-When an agent needs a connection that the current user has not authorized,
-the session returns an authorization command and, when available, a dashboard
-link. This makes the same flow usable from the CLI, the playground, or a
-connected channel.
+Every agent runtime includes connection discovery and request tools. The agent
+can list the providers and aliases available to the current session identity,
+then ask that user to authorize a declared service when one is missing. These
+tools return connection metadata only; they never return provider credentials.
+
+In the CLI and playground, a connection request returns a secure dashboard
+link. In Slack, OpenComputer privately messages that link to the person who
+invoked the agent instead of posting it in the shared channel. After the user
+authorizes the account, later sessions can find the connection by its alias.
+
+An agent can request only connection providers declared by its deployed source.
+The user still chooses whether to authorize the account and which provider
+permissions to grant.
 
 ## List and remove connections
 

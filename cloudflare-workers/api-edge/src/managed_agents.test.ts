@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  handleManagedAgentChannelConnection,
   mintManagedAgentsAssertion,
   proxyManagedAgents,
 } from "./managed_agents";
@@ -32,6 +33,88 @@ describe("managed agents proxy", () => {
       user_id: "user_test",
     });
     expect(Number(payload.exp) - Number(payload.iat)).toBe(120);
+  });
+
+  it("does not consume a channel connection grant on link preview", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await handleManagedAgentChannelConnection(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/channel-connections/org_test/0123456789abcdef0123456789abcdef",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-security-policy")).not.toContain(
+      "form-action",
+    );
+    expect(await response.text()).toContain("Continue");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("claims a channel grant and redirects to the provider", async () => {
+    const fetchSpy = vi.fn(async () =>
+      Response.json({
+        authorizationUrl: "https://connect.example.test/authorize",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const url =
+      "https://app.opencomputer.dev/api/managed-agents/channel-connections/org_test/0123456789abcdef0123456789abcdef";
+
+    const response = await handleManagedAgentChannelConnection(
+      new Request(url, { method: "POST" }),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(
+      "https://connect.example.test/authorize",
+    );
+    const [target, init] = fetchSpy.mock.calls[0] as unknown as [
+      URL,
+      RequestInit,
+    ];
+    expect(target.toString()).toBe(
+      "https://managedagents.test/v1/channel-connections/claim",
+    );
+    expect(await new Response(init.body).json()).toEqual({
+      token: "0123456789abcdef0123456789abcdef",
+    });
+    expect(
+      decodePayload(
+        new Headers(init.headers).get("x-opencomputer-agent-token")!,
+      ),
+    ).toMatchObject({ org_id: "org_test" });
+  });
+
+  it("shows a completed state when the channel account is already connected", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ status: "connected" })),
+    );
+    const response = await handleManagedAgentChannelConnection(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/channel-connections/org_test/0123456789abcdef0123456789abcdef",
+        { method: "POST" },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("already connected");
   });
 
   it("keeps API keys out of the private backend request", async () => {
@@ -250,7 +333,9 @@ describe("managed agents proxy", () => {
     const caller = { orgID: "org_test", userID: "user_test" };
 
     const connections = await proxyManagedAgents(
-      new Request("https://app.opencomputer.dev/api/managed-agents/connections"),
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/connections",
+      ),
       env,
       caller,
       "/api/managed-agents",
@@ -291,6 +376,78 @@ describe("managed agents proxy", () => {
           updatedAt: "2026-07-31T01:00:00.000Z",
         },
       ],
+    });
+  });
+
+  it("returns a public per-agent Slack manifest", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      Response.json({
+        connection: {
+          id: "channel_slack",
+          agentId: "support-agent",
+          alias: "production",
+          status: "pending",
+          accountId: "private_org",
+          createdAt: "2026-08-01T00:00:00.000Z",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+        },
+        manifest: {
+          display_information: { name: "Support Helper" },
+          settings: {
+            event_subscriptions: {
+              request_url:
+                "https://managedagents.test/v1/webhooks/slack/id/token",
+            },
+          },
+        },
+        createUrl: "https://api.slack.com/apps",
+        steps: ["Create the app"],
+        runtimeToken: "private",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/channels/slack/connections",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            agentId: "support-agent@production",
+            name: "Support Helper",
+          }),
+        },
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+
+    expect(await response.json()).toEqual({
+      connection: {
+        id: "channel_slack",
+        channel: "slack",
+        agentId: "support-agent",
+        alias: "production",
+        status: "pending",
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-01T00:00:00.000Z",
+      },
+      manifest: {
+        display_information: { name: "Support Helper" },
+        settings: {
+          event_subscriptions: {
+            request_url:
+              "https://managedagents.test/v1/webhooks/slack/id/token",
+          },
+        },
+      },
+      createUrl: "https://api.slack.com/apps",
+      steps: ["Create the app"],
     });
   });
 

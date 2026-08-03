@@ -2,7 +2,7 @@
 
 import { runCommand, type GlobalOptions } from "./commands.js";
 
-const VERSION = "0.3.8";
+const VERSION = "0.3.9";
 
 const BANNER = String.raw`   ____                   ______                            __
   / __ \____  ___  ____  / ____/___  ____ ___  ____  __  / /____  _____
@@ -54,8 +54,6 @@ Usage:
   opencomputer connection add gmail [--alias <name>]
   opencomputer connection list
   opencomputer connection remove <alias|connection-id>
-  opencomputer channels add slack
-  opencomputer channels connect slack [--local|--remote]
   opencomputer channels list [--local|--remote]
   opencomputer channels disconnect slack [connection-id] [--local|--remote]
   opencomputer deploy [--alias <alias>]
