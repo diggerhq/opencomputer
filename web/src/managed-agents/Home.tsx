@@ -6,6 +6,7 @@ import {
   BriefcaseBusiness,
   Check,
   ChevronRight,
+  Clock3,
   Clipboard,
   ClipboardCheck,
   Lightbulb,
@@ -45,6 +46,9 @@ const categories = [
 ] as const
 
 type Category = (typeof categories)[number]
+type CopyAction = 'codex' | 'cli'
+
+const availableTemplateIds = new Set(['email-triage'])
 
 const starterCopy = [
   {
@@ -129,20 +133,54 @@ Use the OpenComputer CLI and keep the agent as editable source code in this work
 Connect only integrations that are actually available. Ask me for authorization when a connection requires it, never print credentials, and do not claim an integration or deployment succeeded unless the CLI confirms it.`
 }
 
+function buildCliInstructions(template: ManagedAgentTemplate, origin: string) {
+  const firstPrompt =
+    template.suggestedPrompts[0] ?? `Help me configure ${template.name}.`
+  return `# 1. Install the OpenComputer CLI
+npm install --global @opencomputer/cli
+
+# 2. Log in
+${cliCommand(origin, 'login')}
+
+# 3. Initialize the Gmail triage template in a new directory
+mkdir gmail-triage && cd gmail-triage
+${cliCommand(origin, `init ${template.id} .`)}
+npm install
+
+# 4. Connect your Gmail account
+${cliCommand(origin, 'connection add gmail --alias personal')}
+
+# 5. Test the agent locally
+${cliCommand(origin, `session "${firstPrompt.replace(/"/g, '\\"')}"`)}
+
+# 6. Deploy it
+${cliCommand(origin, 'deploy --alias production')}`
+}
+
 function TemplateCard({
   template,
   deployed,
-  copied,
-  onCopy,
+  copiedAction,
+  onCopyCodex,
+  onCopyCli,
 }: {
   template: ManagedAgentTemplate
   deployed: boolean
-  copied: boolean
-  onCopy: () => void
+  copiedAction?: CopyAction
+  onCopyCodex: () => void
+  onCopyCli: () => void
 }) {
   const Icon = categoryIcons[template.category as Category] ?? ClipboardCheck
+  const available = availableTemplateIds.has(template.id)
   return (
-    <Panel className="flex h-full flex-col overflow-hidden">
+    <Panel
+      className={cn(
+        'flex h-full flex-col overflow-hidden',
+        available
+          ? 'border-primary/30 bg-primary/[0.025] shadow-sm'
+          : 'bg-muted/15',
+      )}
+    >
       <PanelHeader className="border-0 pb-2">
         <div className="flex min-w-0 items-start gap-3">
           <div className="bg-primary/8 text-primary flex size-9 shrink-0 items-center justify-center rounded-md">
@@ -154,6 +192,17 @@ function TemplateCard({
               {deployed ? (
                 <span className="bg-status-running-bg text-status-running rounded-full px-2 py-0.5 text-[10px] font-medium">
                   Deployed
+                </span>
+              ) : null}
+              {available && !deployed ? (
+                <span className="bg-status-running-bg text-status-running rounded-full px-2 py-0.5 text-[10px] font-medium">
+                  Available now
+                </span>
+              ) : null}
+              {!available ? (
+                <span className="bg-muted text-muted-foreground inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium">
+                  <Clock3 className="size-3" aria-hidden />
+                  Coming soon
                 </span>
               ) : null}
             </div>
@@ -177,7 +226,7 @@ function TemplateCard({
             </span>
           ))}
         </div>
-        <div className="mt-5 space-y-2">
+        <div className={cn('mt-5 space-y-2', !available && 'opacity-65')}>
           <p className="text-muted-foreground text-[10px] font-medium tracking-wider uppercase">
             First task
           </p>
@@ -185,14 +234,38 @@ function TemplateCard({
             “{template.suggestedPrompts[0]}”
           </p>
         </div>
-        <Button
-          className="mt-6 w-full"
-          variant={copied ? 'secondary' : 'default'}
-          onClick={onCopy}
-        >
-          {copied ? <Check /> : <Clipboard />}
-          {copied ? 'Agent prompt copied' : 'Copy agent prompt'}
-        </Button>
+        {available ? (
+          <div className="mt-6 space-y-2">
+            <p className="text-muted-foreground text-xs leading-5">
+              Install → login → initialize → connect Gmail → test → deploy
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Button
+                variant={copiedAction === 'codex' ? 'secondary' : 'default'}
+                onClick={onCopyCodex}
+              >
+                {copiedAction === 'codex' ? <Check /> : <Clipboard />}
+                {copiedAction === 'codex'
+                  ? 'Codex prompt copied'
+                  : 'Copy Codex prompt'}
+              </Button>
+              <Button
+                variant={copiedAction === 'cli' ? 'secondary' : 'outline'}
+                onClick={onCopyCli}
+              >
+                {copiedAction === 'cli' ? <Check /> : <Clipboard />}
+                {copiedAction === 'cli'
+                  ? 'CLI steps copied'
+                  : 'Copy CLI instructions'}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button className="mt-6 w-full" variant="outline" disabled>
+            <Clock3 />
+            Coming soon
+          </Button>
+        )}
       </PanelContent>
     </Panel>
   )
@@ -204,7 +277,10 @@ export default function ManagedAgentsHome({
   startersOnly?: boolean
 }) {
   const [selectedCategory, setSelectedCategory] = useState<Category>('Comms')
-  const [copiedTemplateId, setCopiedTemplateId] = useState<string>()
+  const [copied, setCopied] = useState<{
+    templateId: string
+    action: CopyAction
+  }>()
   const [categoryOrder] = useState(() => shuffled(categories))
   const [copy] = useState(
     () => starterCopy[Math.floor(Math.random() * starterCopy.length)],
@@ -228,9 +304,13 @@ export default function ManagedAgentsHome({
   )
   const visibleTemplates = useMemo(
     () =>
-      randomizedTemplates.filter(
-        (template) => template.category === selectedCategory,
-      ),
+      randomizedTemplates
+        .filter((template) => template.category === selectedCategory)
+        .sort((left, right) => {
+          const leftAvailable = availableTemplateIds.has(left.id) ? 0 : 1
+          const rightAvailable = availableTemplateIds.has(right.id) ? 0 : 1
+          return leftAvailable - rightAvailable
+        }),
     [randomizedTemplates, selectedCategory],
   )
 
@@ -239,10 +319,22 @@ export default function ManagedAgentsHome({
       await navigator.clipboard.writeText(
         buildSetupPrompt(template, window.location.origin),
       )
-      setCopiedTemplateId(template.id)
-      toast.success(`${template.name} agent prompt copied`)
+      setCopied({ templateId: template.id, action: 'codex' })
+      toast.success(`${template.name} Codex prompt copied`)
     } catch (error) {
       notifyError("Couldn't copy the agent prompt.", error)
+    }
+  }
+
+  async function copyCliInstructions(template: ManagedAgentTemplate) {
+    try {
+      await navigator.clipboard.writeText(
+        buildCliInstructions(template, window.location.origin),
+      )
+      setCopied({ templateId: template.id, action: 'cli' })
+      toast.success(`${template.name} CLI instructions copied`)
+    } catch (error) {
+      notifyError("Couldn't copy the CLI instructions.", error)
     }
   }
 
@@ -417,8 +509,13 @@ export default function ManagedAgentsHome({
                     deployed={deployedAgents.some(
                       (agent) => agent.id === template.id,
                     )}
-                    copied={copiedTemplateId === template.id}
-                    onCopy={() => void copySetupPrompt(template)}
+                    copiedAction={
+                      copied?.templateId === template.id
+                        ? copied.action
+                        : undefined
+                    }
+                    onCopyCodex={() => void copySetupPrompt(template)}
+                    onCopyCli={() => void copyCliInstructions(template)}
                   />
                 ))}
               </div>
