@@ -385,6 +385,49 @@ func execHoldMs(env string, def time.Duration) time.Duration {
 	return def
 }
 
+// awaitExecDone blocks until the exec session's command has exited (its result
+// reports !Running) or the deadline/ctx elapses, returning the final result on
+// completion or nil on timeout. It polls the local handle on a short ticker in
+// ADDITION to selecting on Done — a claimed hot-pool box whose Done close lags
+// (or never fires, the silent-attach-stream failure mode) still returns the
+// instant the captured ExitCode becomes visible, instead of riding out the full
+// hold. GetResult is a cheap in-map read for a live session (no agent rebind),
+// so the ~10ms poll is negligible. Returns (result, true) when done, (nil,
+// false) on timeout/cancel.
+func (s *HTTPServer) awaitExecDone(ctx context.Context, id, sessionID string, hold time.Duration) (*types.ExecSessionResult, bool) {
+	// Already done? (command finished before we started waiting — the common
+	// fast case for pooled boxes).
+	if res, err := s.execSessionManager.GetResult(id, sessionID); err == nil && !res.Running {
+		return res, true
+	}
+	var doneCh <-chan struct{}
+	if sess, err := s.execSessionManager.GetSession(sessionID); err == nil {
+		doneCh = sess.Done // may be nil; a nil channel blocks forever, the ticker covers it
+	}
+	deadline := time.NewTimer(hold)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-doneCh:
+			res, err := s.execSessionManager.GetResult(id, sessionID)
+			if err == nil && !res.Running {
+				return res, true
+			}
+			doneCh = nil // consumed/spurious — fall back to the ticker
+		case <-tick.C:
+			if res, err := s.execSessionManager.GetResult(id, sessionID); err == nil && !res.Running {
+				return res, true
+			}
+		case <-deadline.C:
+			return nil, false
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
+}
+
 // execRunAsync is the async exec endpoint (POST /exec/run-async). It registers a
 // handle synchronously and returns immediately, then does the wake +
 // session-create + command run in a background goroutine. Because the connection
@@ -489,6 +532,7 @@ func (s *HTTPServer) execRunAsync(c echo.Context) error {
 		// benchmark tail). Failures and slow commands fall through to the handle
 		// unchanged; waking boxes never hold (see wasHibernated above).
 		if hold := execHoldMs("OPENSANDBOX_EXEC_INLINE_HOLD_MS", 400*time.Millisecond); hold > 0 && !wasHibernated {
+			held := time.Now()
 			deadline := time.NewTimer(hold)
 			defer deadline.Stop()
 			select {
@@ -497,22 +541,20 @@ func (s *HTTPServer) execRunAsync(c echo.Context) error {
 				state, sessionID := ae.state, ae.sessionID
 				ae.mu.Unlock()
 				if state == asyncExecRunning {
-					if sess, serr := s.execSessionManager.GetSession(sessionID); serr == nil && sess.Done != nil {
-						select {
-						case <-sess.Done:
-							// Done closes only after the attach stream captured
-							// ExitCode, so this read is final.
-							if res, rerr := s.execSessionManager.GetResult(id, sessionID); rerr == nil && !res.Running && res.ExitCode != nil && !res.Truncated {
-								return c.JSON(http.StatusOK, types.ProcessResult{
-									ExitCode: *res.ExitCode,
-									Stdout:   string(res.Stdout),
-									Stderr:   string(res.Stderr),
-								})
-							}
-						case <-deadline.C:
-						case <-c.Request().Context().Done():
-						}
+					// Poll for completion (not just <-Done) so a laggy/absent
+					// Done close doesn't burn the whole hold — see awaitExecDone.
+					remaining := hold - time.Since(held)
+					if res, ok := s.awaitExecDone(c.Request().Context(), id, sessionID, remaining); ok && res.ExitCode != nil && !res.Truncated {
+						slog.Debug("exec_inline_hit", "sandbox", id, "exec_id", execID, "held_ms", time.Since(held).Milliseconds())
+						return c.JSON(http.StatusOK, types.ProcessResult{
+							ExitCode: *res.ExitCode,
+							Stdout:   string(res.Stdout),
+							Stderr:   string(res.Stderr),
+						})
 					}
+					// Miss = command didn't finish inside the hold (genuinely slow,
+					// or the box couldn't complete it) — the anomaly worth seeing.
+					slog.Warn("exec_inline_miss", "sandbox", id, "exec_id", execID, "held_ms", time.Since(held).Milliseconds())
 				}
 			case <-deadline.C:
 			case <-c.Request().Context().Done():
@@ -591,21 +633,15 @@ func (s *HTTPServer) execResult(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
 	}
 	// Long-poll: a still-running command holds the response until it exits (or
-	// the hold elapses) and re-reads, so the SDK's first poll catches commands
-	// that outran the run-async inline hold instead of falling onto its
-	// 200/400ms retry ladder. Done closes only after the attach stream captured
-	// ExitCode, so the re-read is final.
+	// the hold elapses), so the SDK's first poll catches commands that outran
+	// the run-async inline hold instead of falling onto its 200/400ms retry
+	// ladder. Polls for completion (see awaitExecDone) rather than blocking
+	// solely on Done, so a laggy/absent Done close can't pin the poll for the
+	// whole hold when the command has actually finished.
 	if res.Running {
 		if hold := execHoldMs("OPENSANDBOX_EXEC_RESULT_HOLD_MS", 500*time.Millisecond); hold > 0 {
-			if sess, serr := s.execSessionManager.GetSession(sessionID); serr == nil && sess.Done != nil {
-				select {
-				case <-sess.Done:
-				case <-time.After(hold):
-				case <-c.Request().Context().Done():
-				}
-				if res2, rerr := s.execSessionManager.GetResult(id, sessionID); rerr == nil {
-					res = res2
-				}
+			if res2, ok := s.awaitExecDone(c.Request().Context(), id, sessionID, hold); ok {
+				res = res2
 			}
 		}
 	}
