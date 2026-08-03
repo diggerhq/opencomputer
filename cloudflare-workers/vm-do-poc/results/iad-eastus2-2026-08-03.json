@@ -1,0 +1,58 @@
+{
+  "date": "2026-08-03",
+  "topology": {
+    "client": "AWS us-east-1",
+    "clientCloudflareColo": "IAD",
+    "durableObjectColo": "IAD",
+    "vm": "OpenComputer Azure East US 2"
+  },
+  "computesdkTask": {
+    "package": "@computesdk/opencomputer@1.0.1",
+    "nodeVersion": "24",
+    "iterations": 100,
+    "concurrency": 1,
+    "succeeded": 100,
+    "failed": 0,
+    "timingMs": {
+      "tti": {
+        "min": 36.14551,
+        "median": 44.561831,
+        "p95": 49.369624,
+        "p99": 142.940823,
+        "max": 213.449508,
+        "mean": 47.573713
+      },
+      "create": {
+        "min": 10.08499,
+        "median": 15.645343,
+        "p95": 18.858801,
+        "p99": 25.401514,
+        "max": 178.292105,
+        "mean": 17.200888
+      },
+      "exec": {
+        "min": 26.055342,
+        "median": 28.93681,
+        "p95": 32.726674,
+        "p99": 55.02078,
+        "max": 125.310318,
+        "mean": 30.365496
+      }
+    }
+  },
+  "directStageProbe": {
+    "iterations": 100,
+    "timingMs": {
+      "total": { "min": 33.93, "median": 39.72, "p95": 46.43 },
+      "createClient": { "min": 8.67, "median": 12.01, "p95": 14.76 },
+      "execClient": { "min": 24.29, "median": 27.6, "p95": 32.24 },
+      "durableObject": { "min": 11, "median": 12, "p95": 15 },
+      "vmProcess": { "min": 4, "median": 4, "p95": 4 }
+    }
+  },
+  "caveats": [
+    "Create returned a statically configured pre-leased VM and did not execute a D1 allocation transaction.",
+    "The upstream task and provider were unchanged, but a reporting-only wrapper was used because the upstream runner requires BENCHMARKS_PLATFORM_API_KEY before local execution.",
+    "A run attempted while the VM was hibernated failed and is excluded from these results."
+  ]
+}
