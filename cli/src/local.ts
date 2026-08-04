@@ -24,7 +24,7 @@ import { renderDevUI } from "./dev-ui.js";
 import { findAgentRoot, prepareAgent, readManifest } from "./project.js";
 
 interface DevState {
-  version: 1;
+  version: 2;
   pid: number;
   url: string;
   token: string;
@@ -472,7 +472,7 @@ function statePath(root: string): string {
 async function readDevState(root: string): Promise<DevState | null> {
   try {
     const state = JSON.parse(await readFile(statePath(root), "utf8")) as DevState;
-    if (state.version !== 1 || !state.url || !state.token) return null;
+    if (state.version !== 2 || !state.url || !state.token) return null;
     const response = await fetch(`${state.url}/health`, {
       headers: { authorization: `Bearer ${state.token}` },
       signal: AbortSignal.timeout(1_000),
@@ -726,7 +726,7 @@ async function startDevService(config: ResolvedConfig): Promise<void> {
     throw new Error("The OpenComputer dev service did not receive a port");
   }
   const state: DevState = {
-    version: 1,
+    version: 2,
     pid: process.pid,
     url: `http://127.0.0.1:${String(address.port)}`,
     token,

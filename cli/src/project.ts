@@ -622,15 +622,36 @@ async function connectionControl(
       }),
     },
   );
-  const result = await response.json() as {
+  const responseText = await response.text();
+  let result: {
     error?: { message?: string };
     message?: string;
     [key: string]: unknown;
-  };
+  } | undefined;
+  if (responseText) {
+    try {
+      const parsed: unknown = JSON.parse(responseText);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        result = parsed as {
+          error?: { message?: string };
+          message?: string;
+          [key: string]: unknown;
+        };
+      }
+    } catch {
+      // Preserve the response text below so the user sees the upstream error.
+    }
+  }
   if (!response.ok) {
     throw new Error(
-      result.error?.message ?? result.message ?? "Connection request failed",
+      result?.error?.message ??
+        result?.message ??
+        responseText ??
+        "Connection request failed",
     );
+  }
+  if (!result) {
+    throw new Error("Connection service returned an empty response");
   }
   return result;
 }
