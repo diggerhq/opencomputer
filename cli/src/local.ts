@@ -375,6 +375,11 @@ async function streamTurn(
       sessionID,
       directory,
       model: { providerID: model.providerID, modelID: model.modelID },
+      // OpenComputer owns the multi-turn UI. The OpenCode question tool waits
+      // for a separate client-side reply channel that our CLI and hosted
+      // sessions do not expose, so agents must ask follow-up questions in the
+      // conversation instead.
+      tools: { question: false },
       parts: [{ type: "text", text: prompt }],
     });
     if (started.error) throw new Error(JSON.stringify(started.error));
