@@ -190,6 +190,8 @@ test("the PTO template creates Calendar tools without checked-in channel state",
     assert.match(calendarTool, /const calendarId = args\.calendarId \|\| "primary"/);
     assert.match(calendarTool, /: \["primary"\]/);
     assert.match(calendarTool, /end: \{ date: nextDate\(endDate\) \}/);
+    assert.match(calendarTool, /result\.detail/);
+    assert.match(calendarTool, /upstream\.error\?\.message/);
     const transpiledCalendarTool = ts.transpileModule(calendarTool, {
       compilerOptions: { module: ts.ModuleKind.ESNext },
       reportDiagnostics: true,

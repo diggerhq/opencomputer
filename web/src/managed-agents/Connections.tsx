@@ -183,13 +183,15 @@ export default function ManagedAgentConnections() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">
-                      {connection.displayName ||
-                        displayResourceName(
-                          connection.label || connection.provider,
-                        )}
+                      {displayResourceName(
+                        connection.label || connection.provider,
+                      )}
                     </p>
                     <p className="text-muted-foreground truncate text-xs">
                       {connectionService(connection)}
+                      {connection.displayName
+                        ? ` · ${connection.displayName}`
+                        : ''}
                       {agentName ? ` · ${agentName}` : ''}
                     </p>
                   </div>

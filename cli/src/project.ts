@@ -465,12 +465,25 @@ async function calendar(input: {
   const result = await response.json() as {
     status?: number;
     body?: string;
+    detail?: string;
     error?: { message?: string };
   };
   if (!response.ok || !result.status || result.status >= 400) {
+    let upstreamMessage: string | undefined;
+    if (result.body) {
+      try {
+        const upstream = JSON.parse(result.body) as {
+          error?: { message?: string };
+        };
+        upstreamMessage = upstream.error?.message;
+      } catch {
+        upstreamMessage = result.body;
+      }
+    }
     throw new Error(
       result.error?.message ??
-        result.body ??
+        result.detail ??
+        upstreamMessage ??
         \`Google Calendar returned \${String(result.status)}\`,
     );
   }
